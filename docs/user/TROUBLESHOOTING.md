@@ -17,10 +17,12 @@ the config knobs named below see [CONFIG.md](https://github.com/boldaxolotl/Bool
 terms below (Sandbox, Target, EDA Provisioning, Specialist, Booley Flow, Developer
 Agent) see the glossary in [GLOSSARY.md](https://github.com/boldaxolotl/Booley/blob/main/docs/GLOSSARY.md).
 
-## Monitoring Ticket work
+## Monitoring Goal work
 
-Use local Ticket status, logs, review briefings, and Doctor reports to monitor
-work. Provider rate-limit waits and retries are reported locally.
+Use `booley dashboard` inside the Sandbox for sessions, Goals, and Jobs.
+Inspect records with `booley goal status`; ask the agent
+for `goal_status(rules=true)` to recover evidence and rules after interruption.
+Read the Review Package and Session Summary when Finish succeeds.
 
 ## VS Code says “A mount config is invalid” while reopening the container
 
@@ -88,13 +90,11 @@ a Booley Flow from agent and autonomous discovery, set
 `[specialists.<name>].enabled = false`. Protocol utilities have no Project
 enable switch.
 
-Two intentional visibility cases remain. Interactive Mode hides
-`submit_run_report` because it finalizes autonomous Ticket runs. `tb_coder` is
-currently de-registered in every mode while the Developer Agent authors
-testbench code directly. A direct `booley flow` diagnostic run deliberately
-ignores both the project `enabled` discovery filter and Interactive MCP hiding,
-so it can list an implementation that an agent cannot. An individual Booley Flow may
-still report its configured flow as disabled when invoked directly.
+Interactive Mode hides `submit_run_report`; submit a Goal's Session Summary
+through `goal_finish`. `tb_coder` is de-registered while the session agent
+writes testbench code directly. Direct Flow diagnostics can list endpoints
+independently of the project discovery filter. An individual Flow may still
+report its configured flow as disabled when invoked directly.
 
 For any other missing MCP tool:
 
@@ -395,35 +395,18 @@ choosing between several credentials is in [CONFIG.md](https://github.com/boldax
 
 ## Two interactive agents keep clobbering each other's edits
 
-**Tickets get their own git worktree automatically**, so ticket runs never step
-on each other's tree. **Interactive tabs and terminals don't**: they all share
-the repo you opened, so two interactive agents editing the same worktree trip
-over each other's changes. When you want an interactive agent to work in
-parallel with others, tell it up front to create a fresh worktree and work
-there. (Background on the two modes: [USAGE.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/USAGE.md#interactive-mode).)
+Use one linked worktree per agent that edits code. Create it with
+`booley worktree new <name>` in the Sandbox, then enter Goal Mode there with
+`/booley-goal`. Tabs and terminals in the same worktree share files; the
+Dashboard warns about shared-worktree activity but does not isolate it.
 
-## Ticket worktrees show as `prunable` on the host
+## Worktrees show as `prunable` on the host
 
-```
-/work/.booley_project/worktrees/axi-fix  0000000 [detached HEAD] prunable
-```
-
-Ticket Workspaces in the default in-checkout layout are host-addressable when
-both the host and the Sandbox use Git 2.48 or newer and the Sandbox has been
-regenerated and recreated with the compatible Project-data alias layout. Run
-`booley init` after upgrading and recreating the Sandbox; new worktrees then use
-relative metadata, so host `git status` and `git worktree list` work normally.
-Init and the next Ticket activation or blocked/review preparation repair existing
-links only after proving their recorded repository and Ticket ownership. Repair
-is deferred while an incompatible Sandbox is running; ownership or missing
-registration errors require resolving the reported problem before retrying.
-
-With an older or unverified Git, new worktrees keep the container-only fallback,
-and `prunable` on the host is expected. **Do not "clean it up"**: a host-side
-`git worktree prune` can deregister an active Ticket Workspace. Use Git through
-the Sandbox instead. Once relative worktrees are enabled, keep both Git clients
-at 2.48 or newer. `booley doctor` reports fallback, incompatible downgrades,
-and non-portable live worktrees.
+Use Git inside the Sandbox to inspect its worktrees. A container path can be
+unreachable from the host and appear `prunable` there. Do not prune an active
+worktree based on that label. Inspect the Goal Record and preserve branch and
+Project commits before removing a workspace. For paired Project checkout
+removal, follow the absolute Git commands printed by `booley worktree new`.
 
 ## `git` cannot see files under `.booley_project/`
 
@@ -443,63 +426,23 @@ git -C .booley_project status                      # what changed in Booley's ow
 git -C .booley_project log --oneline -5
 ```
 
-The same applies to `tests.toml`, `ticket_creation.md`, the alternate
-`ticket_defaults.md`, `criteria.toml`, and the `.core` files. If
+The same applies to `tests.toml`, `goalsets/*.md`, `criteria.toml`, and the `.core` files. If
 `git -C .booley_project rev-parse --git-dir` errors, the directory is not a
 repository on this machine and those files were never version-controlled: copy
 one aside before you edit it.
 
-## `booley board` refuses to start: the Ticket Board needs migrating
+## Doctor reports files under `tickets/` or guidance files
 
-Booley keeps each live Ticket at `tickets/board/<slug>.md` with its status in
-`tickets/state/<slug>.json`, and closed Tickets in `tickets/history/`. Boards
-with Tickets in status folders (`board/queue/`, `board/done/`, ...) need
-manual recovery before use. Until the layout is corrected, `booley doctor` FAILs
-and `booley board` and `booley run` refuse to start. There is no migration
-command:
+`Project checks` reports `tickets.leftover-board` for nonempty
+`tickets/{board,state,logs,locks,waiver-candidates}` under the Project directory.
+Inspect and preserve any work you need, then delete the reported directory.
+Empty directories are listed in the same warning when applicable and are silent
+on their own; `tickets/history/` is not reported.
 
-1. Stop every `booley run`, and create `tickets/state/`.
-2. Move each document in `board/<folder>/` (except `done/` and `archived/`) to
-   `board/<slug>.md`. Except for drafts, write `state/<slug>.json` with
-   `state` set from the folder: `queue/` → `queued`, `waiting/` → `waiting`,
-   `blocked/` → `blocked`, `review/` → `review`, and `active/` → `blocked` with
-   `"blocked_reason": "migrated while running"`. Copy any values from the
-   Ticket's prior `logs/<slug>/.runtime/progress.json` (or
-   `logs/<slug>/progress.json`) over these defaults; the record holds exactly
-   these keys:
-
-   ```json
-   {"schema": 1, "state": "queued", "step": "", "steps_completed": [],
-    "workspace_intent": "fresh", "last_update": "", "failed_step": null,
-    "error": null, "blocked_reason": null, "blocked_step": null,
-    "execution_id": "", "execution_owner_pid": null}
-   ```
-
-3. Move each document in `board/done/` and `board/archived/` to
-   `history/<slug>.md`, adding a `closed:` block as the **last** frontmatter
-   key. `date` is the UTC time of the last `-> done` (or `-> archived`) line in
-   `logs/<slug>/human-logs/transitions.log`, else the file's modification time;
-   `generation` is the document's `machine.generation`, else empty:
-
-   ```yaml
-   closed:
-     outcome: done
-     date: '2026-09-30T12:00:00Z'
-     generation: ''
-   ```
-
-4. Delete the empty `board/<folder>/` directories, make sure
-   `.booley_project/.gitignore` ignores `tickets/board/` and `tickets/state/`,
-   and commit (skip `tickets/history` if no Ticket ever closed):
-
-   ```bash
-   git -C .booley_project rm -r --cached --ignore-unmatch -- tickets/board tickets/state
-   git -C .booley_project add .gitignore tickets/history
-   git -C .booley_project commit -m "Migrate the Ticket Board to state records"
-   ```
-
-5. `booley doctor` should pass its Ticket Board checks, and `booley board`
-   should list the same open Tickets as before.
+`tickets.leftover-guidance` names `ticket_creation.md` or `ticket_defaults.md`.
+Delete a file that matches the shipped template. For edited or unfamiliar
+content, move its rules into a Goalset under `.booley_project/goalsets/`, then
+delete it. Both warning IDs can be narrowly waived in `doctor-waivers.toml`.
 
 ## RTL simulates cleanly but `synth` rejects it under `slang`
 
@@ -807,8 +750,8 @@ the Campaign-bound evidence tool.
   is loaded. An infrastructure or persistence error can also block a requested
   evaluation without producing coverage findings. In that case, inspect the
   Target's `error` and `collection` status, correct the failure, and rerun.
-- Coverage Criteria use an uppercase, Target-keyed `COVERAGE` record such as
-  `COVERAGE: {sim_core: {tests: all, metrics: {toggle: {min_pct: 50}}}}`;
+- Coverage Goals use a Target-bound argument such as
+  `{"family":"coverage","target":"sim_core","tests":"all","metrics":{"toggle": 50}}`;
   replace `all` with an exact registered suite when needed. Choose only a
   supported native metric; no silent translation or waveform scoring remains.
 - Missing `sim_<target>.json`: follow the exact numbered report pointer. Missing `coverage_report.json` or mutable
@@ -817,29 +760,16 @@ the Campaign-bound evidence tool.
 
 ### Waiver Candidates at review
 
-- Ticket went to `review` although coverage missed: the Provisional Coverage
-  Verdict met the Criteria only by counting Waiver Candidates. Decide them in
-  `booley board show <slug>`; if the inspection is missing, run
-  `booley board review <slug>`.
-- `decide every offered Waiver Candidate`: approve lists the undecided IDs. Pass
-  each one to `--accept-waivers` or `--reject-waivers`; nothing defaults to accept.
-- `accepting Waiver Candidates requires merge`: drop `--no-merge`.
-- `[coverage.waivers] is not configured`: configure the
-  [approval directory](https://github.com/boldaxolotl/Booley/blob/main/docs/user/CONFIG.md#approved-coverage-waivers)
-  before accepting.
-- `waivers were already approved`: an earlier approve promoted them but did not
-  finish; rerun `booley board approve <slug>` without waiver flags.
-- Approve exits non-zero and the Ticket stays in review: the strict verdict with
-  your accepted candidates would still fail. Rejections are kept; nothing was
-  promoted. Fix the Ticket in review, reset it, or archive it.
-- Approver refused as the `[agent.git]` identity: approve on the host with your
-  personal `user.name` and `user.email`. The Sandbox intentionally uses the agent
-  identity and refuses approval. Refresh and recreate the Sandbox with an updated
-  image, or start an already updated Sandbox, to clean recognized worktree-scoped
-  identity pairs. Unrecognized custom overrides are preserved; if host approval
-  still refuses, inspect the Project checkout's worktree identity overrides.
-- Candidate shown as stale or invalid: its source changed since recording, it
-  came from another Campaign, or the evidence does not support it. Rerun
-  coverage and the Analyst to record fresh candidates.
-- A point you rejected is suppressed. It reopens when its source file
-  changes; closing the Ticket discards rejections.
+- Coverage remains unmet after Analyst screening: candidates are proposals,
+  not approvals. Ask the agent to use `goal_propose_change(kind="waiver")` and
+  inspect the exact candidate before deciding.
+- `[coverage.waivers] is not configured`: select the
+  [approval directory](https://github.com/boldaxolotl/Booley/blob/main/docs/user/CONFIG.md#approved-coverage-waivers) before approval.
+  Configuration is protected during Goal Mode; arrange it before entry.
+- A proposal remains pending: a cancelled or invalid form makes no decision.
+  Resume its exact proposal ID; if chat fallback is needed, give an explicit
+  approve/reject instruction and reason.
+- A candidate is stale or invalid: rerun coverage and Analyst screening for
+  the current source and Campaign. Do not copy candidate bytes into approval files.
+- Approval succeeded but the Goal is unmet: rerun coverage for fresh strict
+  evidence, then inspect `goal_status`. Approval alone cannot satisfy it.

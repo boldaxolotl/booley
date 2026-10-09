@@ -1,10 +1,7 @@
 """The Goal Mode MCP tools (ADR 0067): definitions, visibility, and dispatch.
 
 ``goal_enter``, ``goal_status``, ``goal_propose_change``, and ``goal_finish``
-are synthetic MCP tools served in-process by the MCP server. They exist only
-in an Interactive Mode tab, and only while ``BOOLEY_GOAL_MODE_PREVIEW=1`` is
-set (D13): with the switch unset they are neither listed nor callable, so a
-release exposes exactly one development surface.
+are synthetic MCP tools served in-process in an Interactive Mode session.
 
 ``goal_enter`` runs the entry transaction from :mod:`booley.goals.entry` in
 one worker thread, which takes and releases every Goal lock itself; no lock
@@ -35,7 +32,6 @@ from booley.goals.format import render_status
 from booley.goals.lifecycle import LifecycleError
 from booley.goals.model import goal_arg_json_schema
 from booley.goals.paths import SLUG_MAX_LENGTH, SLUG_PATTERN
-from booley.goals.preview import goal_mode_preview_enabled
 from booley.goals.proposals import ProposalError
 from booley.goals.rules import goal_mode_rules
 from booley.goals.session_key import session_key
@@ -68,12 +64,6 @@ _ENTER_DESCRIPTION = (
     "its Target. If the Project has a default Goalset, apply it (list 'default' in "
     "goalsets_used) unless the human explicitly skips it, with their reason."
 )
-_NOT_YET_DESCRIPTION = "Not available yet in this Booley version."
-
-
-def goal_tools_visible(*, interactive: bool) -> bool:
-    """Whether the Goal tools are listed and callable on this server (D13)."""
-    return interactive and goal_mode_preview_enabled()
 
 
 def goal_tool_defs() -> list[dict[str, Any]]:

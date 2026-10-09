@@ -28,7 +28,6 @@ pytestmark = pytest.mark.timeout(120)
 def test_open_done_findings_finish_without_ticket_assessment_or_second_approval(
     layout, monkeypatch, capsys, derived
 ):
-    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
     monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
     layout.record = enter_goals(
         layout,
@@ -181,7 +180,6 @@ def test_attempt_frozen_survives_real_status_and_reviewer_activity_without_new_e
     from booley.goals.paths import record_paths
     from tests.goals.test_finish import Crash
 
-    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
     monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
     layout.record = enter_goals(
         layout, [{"family": "review", "review": "rtl_bugs", "verdict": "done"}]

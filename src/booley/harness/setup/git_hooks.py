@@ -146,7 +146,7 @@ _OBSERVATION_MESSAGES = {
     LineEndingObservationCode.CRLF_MISMATCH: (
         "{count} tracked file(s) are checked out with CRLF — the Sandbox container "
         "will see every one as modified (phantom diffs break the dirty-tree check, scope "
-        "enforcement, and ticket worktrees)"
+        "enforcement, and worktrees)"
     ),
     LineEndingObservationCode.AUTOCRLF_EFFECTIVE_TRUE: (
         "core.autocrlf=true (Git for Windows' installer default) re-creates CRLF checkouts "
@@ -370,7 +370,7 @@ WORKTREE_RELATIVE_KEY = "worktree.useRelativePaths"
 def worktree_policy_repositories(
     project_root: Path, *, project_dir: Path | None = None
 ) -> tuple[Path, ...]:
-    """Return durable repositories that create Ticket Workspaces."""
+    """Return durable repositories that create worktrees."""
     repositories = [project_root]
     if project_dir is None:
         try:
@@ -510,7 +510,18 @@ def _repair_live_ticket_worktrees(ctx: InitContext) -> list[str]:
     directory = worktree_state_dir(ctx.project_root) / "worktrees"
     if not directory.is_dir():
         return []
-    linked = [row for row in directory.iterdir() if (row / ".git").is_file()]
+    # Git supplies canonical refs; only the Ticket generation namespace owns
+    # workspaces this compatibility repair can reconcile. The namespace is
+    # defined by ticket_board.ticket_baseline.TICKET_REF_PREFIX.
+    try:
+        linked = [
+            directory / row.path.name
+            for row in list_worktrees(ctx.project_root)
+            if (directory / row.path.name / ".git").is_file()
+            and (row.branch or "").startswith("refs/heads/booley-generation/")
+        ]
+    except (OSError, subprocess.SubprocessError) as exc:
+        return [f"could not list worktrees for repair: {exc}"]
     if not linked:
         return []
     try:
@@ -617,11 +628,11 @@ def _step_worktree_link_policy(
 
 def _report_worktree_link_policy(ctx: InitContext, *, capable: bool) -> None:
     if capable:
-        ok("new Ticket Workspaces use relative links on host and in the Sandbox")
+        ok("new worktrees use relative links on host and in the Sandbox")
         detail = "relative links enabled"
     else:
         warn(
-            "new Ticket Workspaces use the container-only absolute-link fallback; "
+            "new worktrees use the container-only absolute-link fallback; "
             "do not run host `git worktree prune`"
         )
         detail = "absolute-link fallback"
@@ -648,7 +659,7 @@ def read_worktree_prune_expire(project_root: Path) -> str | None:
 
 
 def _step_worktree_prune_guard(ctx: InitContext, *, project_dir: Path | None = None) -> None:
-    """Keep automatic pruning disabled in every Ticket Workspace repository."""
+    """Keep automatic pruning disabled in every worktree repository."""
     ctx.step_banner("worktree prune guard")
 
     # Confirm the project root is a git repo before touching its config.

@@ -23,7 +23,6 @@ sudo chown -R 1000:1000 demo "${EVIDENCE_DIR}"
   -e BOOLEY_IN_SANDBOX=1 \
   -e BOOLEY_RUN_PICORV32_FLOWS=1 \
   -e PYTHONPATH=/booley-source/src \
-  -e BOOLEY_GOAL_MODE_PREVIEW=1 \
   -e BOOLEY_MCP_MODE=interactive \
   booley-riscv-test bash -euo pipefail -c \
   'bash /booley-source/.github/scripts/verify_picorv32_demo.sh'

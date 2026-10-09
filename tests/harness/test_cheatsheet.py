@@ -153,7 +153,7 @@ class TestCheatCommand:
         assert "Architecture" not in out
         assert (
             out.index("\nCommands\n")
-            < out.index("\nTicket Board\n")
+            < out.index("\nGoal Mode\n")
             < out.index("\nBooley Flows\n")
             < out.index("\nSpecialists\n")
             < out.index("\nCriteria\n")
@@ -172,15 +172,6 @@ class TestCheatCommand:
         out = capsys.readouterr().out
         assert out.index("Host-only commands") < out.index("Sandbox-only commands")
         assert out.index("Sandbox-only commands") < out.index("Either-location and mixed commands")
-
-    def test_board_flag_explains_review_without_partial_rework(self, capsys):
-        assert tlr._cmd_cheat(self._parse(["cheat", "--board"]), Path.cwd()) == 0
-        out = " ".join(capsys.readouterr().out.split())
-        assert "review → archived" in out
-        assert "review ──full reset──► queued" in out
-        assert "Ordinary review → queued is invalid" in out
-        assert "clean start" in out
-        assert "Booley Flows" not in out
 
     def test_criteria_flag_narrows_output(self, capsys):
         assert tlr._cmd_cheat(self._parse(["cheat", "--criteria"]), Path.cwd()) == 0
@@ -203,7 +194,7 @@ class TestCheatCommand:
         assert "Target campaign with target + scope" in specialists_out
         assert "\n  sim " not in specialists_out
 
-    @pytest.mark.parametrize("section", ("commands", "board", "project", "skills"))
+    @pytest.mark.parametrize("section", ("commands", "goals", "project", "skills"))
     def test_compact_tables_fit_120_columns(self, capsys, section):
         """Keep the fixed-width table from wrapping its separator or rows."""
         assert tlr._cmd_cheat(self._parse(["cheat", f"--{section}"]), Path.cwd()) == 0
@@ -239,12 +230,12 @@ class TestCheatCommand:
         for path in (
             "booley.toml",
             "tests.toml",
-            "ticket_creation.md",
+            "goalsets/",
             "doctor-waivers.toml",
             "AGENTS.md",
         ):
             assert path in basic
-        assert "/booley-ticket-create" in basic
+        assert "/booley-goal" in basic
         for path in ("criteria.toml", "mcp_tools/*.py"):
             assert path not in basic
             assert path in custom
@@ -265,7 +256,7 @@ class TestCheatCommand:
             encoding="utf-8"
         )
         assert "start with `booley cheat`" in usage
-        assert "booley cheat --board" in usage
+        assert "booley cheat --goals" in usage
         assert "booley cheat --commands --project-files" in usage
 
     def test_missing_cheatsheet_is_reported(self, capsys, monkeypatch):
@@ -282,7 +273,7 @@ def test_command_table_matches_locations():
     """All public commands and their venues agree with top-level help."""
     import re
 
-    text = cheatsheet_path().read_text(encoding="utf-8").split("### Ticket Board")[0]
+    text = cheatsheet_path().read_text(encoding="utf-8").split("### Goal Mode")[0]
     sections = re.split(r"^#### ", text, flags=re.MULTILINE)[1:]
     locations = {}
     for section in sections:

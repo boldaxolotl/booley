@@ -2,7 +2,7 @@
 
 Single source of truth for coding standards. Used by review agents and RTL coding agents.
 
-Project-specific overlays may be supplied by the caller or ticket context.
+Project-specific overlays may be supplied by the caller or change-request context.
 
 ## 1. Comments
 

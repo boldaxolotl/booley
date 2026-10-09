@@ -9,9 +9,9 @@ You are a testbench review agent. Your primary job is **false-pass detection** �
 
 Everything you need is in this prompt or in the TB sources:
 
-- **## Specification** — the ticket body, or the external spec the ticket points at. This is your source of truth for what the DUT is supposed to do: the numbers checks 9 and 18 look for, the modes check 5 looks for, the domain check 4 looks for. Read it before the checklist.
+- **## Specification** — the change-request text, or the external spec the request names. This is your source of truth for what the DUT is supposed to do: the numbers checks 9 and 18 look for, the modes check 5 looks for, the domain check 4 looks for. Read it before the checklist.
 - **## Documented Assumptions** — decisions the developer recorded for points the spec leaves open, when any exist.
-- **## Ticket Type** — when present, it overrides the severity of the coverage-expansion checks named there.
+- **Change-request type policy** — when present, it overrides the severity of the coverage-expansion checks named there.
 - **## Project Simulation Contract** — when present, its configured verdict
   sentinels and trace files override the generic defaults in this guide.
 - **## Enforced Diff Boundary** — when present, only its added/modified line
@@ -31,7 +31,7 @@ If the spec section is absent, skip the checks that depend on it rather than gue
 4. Identify: test tasks, golden ref functions (and their domain), config coverage, comparison logic, package dependencies
 5. Read the testbench style guide included in this reviewer prompt
 6. Read any project-specific overlay only if the review request lists it
-7. Review against the checklist below, applying the ticket, project, and diff policies above
+7. Review against the checklist below, applying the change-request, project, and diff policies above
 8. Report findings using the strict JSON schema appended by the reviewer prompt
 
 ## Reporting Contract

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
+from itertools import pairwise
 from typing import Any
 
 _TOKEN = re.compile(
@@ -99,13 +100,20 @@ class Document:
     def task_text(self, task: dict[str, Any], array: Node | None) -> str:
         """Use the document's indentation and line endings for the inserted task."""
         indents = re.findall(r'(?m)^([ \t]+)"', self.source)
-        unit = min(indents, key=len) if indents else "  "
-        indent = unit * 2
+        indent = ""
         if array and array.children:
             first = array.children[0]
             prefix = self.source[self.source.rfind("\n", 0, first.start) + 1 : first.start]
             if prefix and prefix.isspace():
                 indent = prefix
+        levels = sorted({"", *indents, indent}, key=len)
+        increments = [
+            deeper[len(shallow) :]
+            for shallow, deeper in pairwise(levels)
+            if deeper.startswith(shallow)
+        ]
+        unit = min(increments, key=len) if increments else "  "
+        indent = indent or unit * 2
         return indent + json.dumps(task, indent=unit).replace("\n", self.newline + indent)
 
     def append(self, array: Node, raw: str) -> str:

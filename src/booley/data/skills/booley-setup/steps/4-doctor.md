@@ -191,7 +191,7 @@ the user report.
 
 Setup is not finished until `.booley_project/` has a decided home in git.
 Leaving it merely untracked-and-unmentioned is wrong in both modes: the config,
-hooks, tickets, and authored cores under it are real work, and nothing is
+hooks, Goalsets, and authored cores under it are real work, and nothing is
 versioning them. The plan's row 16 says which of the two outcomes applies. Do
 this once, at the end, when the config has stopped moving.
 
@@ -227,7 +227,7 @@ allowlist exactly—hybrid does not authorize committing operational state.
   otherwise. Hidden authored cores require `[stealth] enabled = true`, and
   `booley init` creates the inner repo and ignored root-level projections.
   Its `.gitignore` (written by `booley init`) already keeps the
-  transient state — `tmp/`, `.runtime/`, `worktrees/`, ticket logs and locks —
+  transient state — `tmp/`, `.runtime/`, `worktrees/`, Goal logs and locks —
   out. The inner repo is invisible to the parent, which sees only an excluded
   directory.
 - Also confirm the RTL repo's own `.gitignore` picked up **no** Booley lines
@@ -253,7 +253,7 @@ allowlist exactly—hybrid does not authorize committing operational state.
   `.gitignore`; the point is to track the directory, not to re-hide it.
 - Verify what landed with `git ls-files .booley_project | head`: the inner
   `.gitignore` should have kept `tmp/`, `.runtime/`, `worktrees/`, and the
-  ticket logs/locks out. If transient state slipped in, unstage it and fix the
+  Goal logs/locks out. If transient state slipped in, unstage it and fix the
   inner `.gitignore` before committing — a committed `.runtime/` churns every
   run.
 - Expect one **WARN**, not a FAIL, on the next doctor run: `git info/exclude
@@ -291,7 +291,7 @@ exit-code sidecars, and exact Doctor scratch subtrees in the current run
 manifest. A Doctor scratch registration must name the bounded leaf subtree and
 the producing command; never register the shared `.booley_project/tmp/` root.
 Record any structured Findings attachment dependency while the source still
-exists. Active Job/process state, clean stamps, Tickets, worktrees, reusable
+exists. Active Job/process state, clean stamps, Goal Records, worktrees, reusable
 `.runtime/edalize` slots, and pre-existing residue are preserved or unresolved,
 never adopted by discovery.
 

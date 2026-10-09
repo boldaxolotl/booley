@@ -1,0 +1,22 @@
+{
+  "327f2c465f58d8a02e54d449e8d73a93d54385a4a3768c277c7230aafd8f0deb": {
+    "commit": "0a04b01e145009d2ae6c28bfafa969320bf67b56",
+    "fixture": "327f2c465f58.md",
+    "path": "src/booley/data/skills/booley-ticket-create/TICKET_CREATION_TEMPLATE.md"
+  },
+  "6726a385942fc92999b8af11a91f03a49b40473cd71a3c4199af9e2a1d763cb3": {
+    "commit": "a992f445894323b3a9334f4aa66085b3b6576bb6",
+    "fixture": "6726a385942f.md",
+    "path": "src/booley/data/skills/booley-ticket-create/TICKET_DEFAULTS_TEMPLATE.md"
+  },
+  "70b52fc601a60d43b51aadf3c201da8b02213fe8bccd92003393788909af299f": {
+    "commit": "06da0fd586e8fad894e6eea4e99b290188390162",
+    "fixture": "70b52fc601a6.md",
+    "path": "src/booley/data/skills/booley-ticket-create/TICKET_CREATION_TEMPLATE.md"
+  },
+  "bedd4e02040c2a1ba2c4594933e729a2a9380e0d8d92a5befa000256fef87137": {
+    "commit": "e34dfdb5f5f460eb3d50e4505368e31a6d09b25d",
+    "fixture": "bedd4e02040c.md",
+    "path": "src/booley/data/skills/booley-ticket-create/TICKET_CREATION_TEMPLATE.md"
+  }
+}

@@ -1080,8 +1080,8 @@ class ReviewerSpecialist(Specialist):
             "--spec",
             default=None,
             help=(
-                "Path to the specification the review checks. Ticket Mode resolves "
-                "its sealed ticket and linked spec automatically."
+                "Path to the specification the review checks. Required for spec-focused "
+                "reviews; pass the Project specification path."
             ),
         )
         self._add_dry_run_arg(parser)
@@ -1772,8 +1772,7 @@ object, even after calling the capability.
             exit_code=EXIT_ERROR,
             report_text=(
                 "Spec review needs a spec to check against, but none was found. "
-                "In Ticket Mode the ticket body (or its spec: field) is used "
-                "automatically; in Interactive Mode pass --spec <path>."
+                "Pass --spec <path> with the Project specification to review."
             ),
         )
 

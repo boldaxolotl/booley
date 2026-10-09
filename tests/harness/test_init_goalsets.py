@@ -21,7 +21,6 @@ from booley.goals.goalsets import (
     seed_goalsets,
 )
 from booley.goals.model import GoalFamily, parse_goal_args
-from booley.goals.preview import GOAL_MODE_PREVIEW_ENV
 from booley.goals.translate import translate_goals
 from booley.harness import init_cmd
 from booley.harness.setup.common import InitContext
@@ -187,41 +186,56 @@ def project_dir(tmp_path: Path) -> Path:
 def _backfill(project_dir: Path, *, check_only: bool) -> None:
     ctx = InitContext(project_root=project_dir.parent, check_only=check_only)
     init_cmd._backfill_config_skeletons(project_dir, ctx)
+    init_cmd._step_goalsets(ctx)
 
 
-def test_init_without_preview_switch_seeds_nothing(
-    project_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.delenv(GOAL_MODE_PREVIEW_ENV, raising=False)
-
-    _backfill(project_dir, check_only=False)
-
-    assert (project_dir / "booley.toml").exists()
-    assert not (project_dir / GOALSETS_DIR).exists()
-
-
-def test_init_with_preview_switch_seeds_the_goalsets(
+def test_init_seeds_the_goalsets(
     project_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setenv(GOAL_MODE_PREVIEW_ENV, "1")
 
     _backfill(project_dir, check_only=False)
 
     assert {path.name for path in (project_dir / GOALSETS_DIR).iterdir()} == EXPECTED_FILES
-    # booley.toml, tests.toml, ticket_creation.md, and the four Goalsets.
-    assert "added 7 config skeleton file(s)" in capsys.readouterr().out
+    # Config skeletons and Goalsets each have one reconciliation step.
+    output = capsys.readouterr().out
+    assert "added 2 config skeleton file(s)" in output
+    assert output.count("created 4 Goalsets") == 1
+    assert "Goalsets already present" not in output
 
 
-def test_init_check_only_writes_nothing_with_preview_switch_on(
+def test_init_check_only_writes_nothing(
     project_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setenv(GOAL_MODE_PREVIEW_ENV, "1")
 
     _backfill(project_dir, check_only=True)
 
     assert list(project_dir.iterdir()) == []
-    assert "would add 7 config skeleton file(s)" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "would add 2 config skeleton file(s)" in output
+    assert output.count("4 missing Goalsets") == 1
+
+
+@pytest.mark.parametrize("check_only", [False, True])
+def test_goalset_step_selects_init_destination_not_parent_project(
+    tmp_path, monkeypatch, check_only
+):
+    parent = tmp_path / ".booley_project"
+    parent.mkdir()
+    child = tmp_path / "child"
+    child.mkdir()
+    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    ctx = InitContext(project_root=child, check_only=check_only)
+    init_cmd._step_goalsets(ctx)
+    assert not list(parent.iterdir())
+    if check_only:
+        assert not (child / ".booley_project").exists()
+        assert ctx.results[-1].status == "warn"
+    else:
+        assert {p.name for p in (child / ".booley_project/goalsets").iterdir()} == EXPECTED_FILES
+        assert ctx.results[-1].status == "ok"
+    init_cmd._step_goalsets(ctx)
+    assert ctx.results[-1].status == ("warn" if check_only else "skip")

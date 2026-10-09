@@ -55,7 +55,6 @@ from booley.review.generation import (
 )
 from booley.runtime.agent import call_agent
 from booley.runtime.agent_config import get_backend_config, load_backend_config
-from booley.runtime.paths import skills_dir
 from booley.runtime.project_dir import PROJECT_DIR_NAME, resolve_project_dir
 from booley.runtime.timefmt import utc_now_rfc3339
 from booley.ticket_board.acceptance_diagnostics import (
@@ -715,7 +714,7 @@ def _resolve_project_review_repository(
 
 
 def _prompt_text() -> str:
-    path = skills_dir() / "booley-ticket-triage" / _PROMPT_FILE
+    path = Path(__file__).with_name(_PROMPT_FILE)
     try:
         return path.read_text(encoding="utf-8")
     except OSError as exc:

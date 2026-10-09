@@ -71,7 +71,6 @@ def review_issues(has_finding):
 def test_modern_review_relaxation_preserves_actual_specialist_receipt(
     layout, monkeypatch, has_finding
 ):
-    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
     monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
     layout.record = enter_goals(
         layout, [{"family": "review", "review": "rtl_bugs", "verdict": "clean"}]

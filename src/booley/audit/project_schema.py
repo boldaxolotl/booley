@@ -12,7 +12,7 @@ from booley.audit.config_common import (
     fail_finding,
     failure,
 )
-from booley.config.goals import goal_mode_preview_enabled, parse_dashboard
+from booley.config.goals import parse_dashboard
 from booley.core.boundary import BoundaryError, as_dict, as_str, is_str_list, require_bool
 
 KNOWN_BOOLEY_TOML_TABLES = frozenset(
@@ -27,12 +27,14 @@ KNOWN_BOOLEY_TOML_TABLES = frozenset(
         "interactive",
         "feedback",
         "sources",
-        "developer",
+        "goals",
         "eda",
         "stealth",
         "submodules",
     }
 )
+
+IGNORED_BOOLEY_TOML_TABLES = frozenset({"developer"})
 
 RETIRED_BOOLEY_TOML_TABLES = {
     "mcp_tools": (
@@ -53,7 +55,7 @@ def audit_known_tables(data: Mapping[str, Any]) -> ConfigTableAudit:
     """Audit recognized tables, rejecting retired MCP visibility configuration."""
     findings: list[ConfigFinding] = []
     for key in data:
-        if key in KNOWN_BOOLEY_TOML_TABLES or (key == "goals" and goal_mode_preview_enabled()):
+        if key in KNOWN_BOOLEY_TOML_TABLES or key in IGNORED_BOOLEY_TOML_TABLES:
             continue
         if key == "mcp_tools":
             findings.append(
@@ -255,11 +257,10 @@ def audit_sandbox_table(data: Mapping[str, Any]) -> ConfigTableAudit:
             "booley.toml [sandbox].mode is retired; the Sandbox is always Docker",
             "delete [sandbox].mode",
         )
-    if goal_mode_preview_enabled():
-        try:
-            parse_dashboard(data)
-        except BoundaryError as exc:
-            return failure(str(exc), "set [sandbox].dashboard to true or false")
+    try:
+        parse_dashboard(data)
+    except BoundaryError as exc:
+        return failure(str(exc), "set [sandbox].dashboard to true or false")
     from booley.config.host_config import retired_project_policy_message
 
     migration = retired_project_policy_message({"sandbox": sandbox})
@@ -292,18 +293,31 @@ def audit_interactive_table(data: Mapping[str, Any]) -> ConfigTableAudit:
     )
 
 
-def audit_developer_table(data: Mapping[str, Any]) -> ConfigTableAudit:
-    """Keep auto-retry's disable control single-valued."""
-    developer = as_dict(data.get("developer"))
-    if developer is None:
-        return ConfigTableAudit()
-    auto_retry = as_dict(developer.get("auto_retry"))
-    if auto_retry is None or "enabled" not in auto_retry:
-        return ConfigTableAudit()
-    return failure(
-        "booley.toml [developer.auto_retry].enabled is retired",
-        "delete enabled and use max_attempts = 0 to disable",
-    )
+def audit_ignored_settings(data: Mapping[str, Any]) -> ConfigTableAudit:
+    """Warn about ignored execution settings without validating their contents."""
+    findings = []
+    for table in sorted(IGNORED_BOOLEY_TOML_TABLES & data.keys()):
+        findings.append(
+            ConfigFinding(
+                ConfigFindingSeverity.WARN,
+                f"booley.toml [{table}] is ignored",
+                f"delete [{table}] from booley.toml",
+                check_id="config.ignored-table",
+                subject=table,
+            )
+        )
+    jobs = as_dict(data.get("jobs"))
+    if jobs is not None and "max_tickets" in jobs:
+        findings.append(
+            ConfigFinding(
+                ConfigFindingSeverity.WARN,
+                "booley.toml [jobs].max_tickets is ignored",
+                "delete max_tickets from [jobs] in booley.toml",
+                check_id="config.ignored-key",
+                subject="jobs.max_tickets",
+            )
+        )
+    return ConfigTableAudit(tuple(findings))
 
 
 def audit_eda_config(data: Mapping[str, Any]) -> ConfigTableAudit:
@@ -333,8 +347,6 @@ def audit_goals_table(data: Mapping[str, Any]) -> ConfigTableAudit:
     """Validate Goal presentation knobs without inferring client lifecycle."""
     from booley.config.goals import parse_quiet_after
 
-    if not goal_mode_preview_enabled():
-        return ConfigTableAudit()
     try:
         parse_quiet_after(data)
     except ValueError as exc:

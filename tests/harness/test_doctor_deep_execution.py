@@ -264,7 +264,7 @@ def test_probe_cost_accounting_and_completeness_are_independent(
         )
     reporter, tracker = doctor._Reporter.create(), deep.DeepCheckTracker()
     doctor._track_developer_probe(project, reporter, tracker)
-    assert reporter.agent_calls == [doctor._AgentCallRecord("developer probe", usage)]
+    assert reporter.agent_calls == [doctor._AgentCallRecord("agent probe", usage)]
     assert tracker.missing == (("developer-probe",) if storage_fails else ())
 
 
@@ -314,7 +314,7 @@ def _qualification_project(tmp_path, monkeypatch, policy, missing, health_failur
         "_check_memory_invariant",
         "_run_container_checks",
         "_run_mcp_checks",
-        "_run_ticket_preflight_parity_checks",
+        "_run_project_checks",
     ):
         monkeypatch.setattr(doctor, name, lambda *_args, **_kw: None)
     monkeypatch.setattr(sandbox_artifact, "observe_execution", lambda *_args, **_kw: _artifact())

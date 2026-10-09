@@ -7,10 +7,11 @@ with AI coding agents to follow it.
 
 1. [Read this first](#read-this-first)
 2. [Check your setup](#first-verify-your-setup)
-3. [Two ways to work](#choose-a-mode)
+3. [Choose how to work](#choose-how-to-work)
 4. [Interactive Mode](#interactive-mode): [first session](#open-your-first-agent-session), [good prompts](#write-a-useful-prompt), [reviewing changes](#what-the-agent-is-allowed-to-do), [waveforms](#viewing-waveforms)
-5. [Ticket Mode](#ticket-driven-workflow): [creating Tickets](#creating-tickets), [acceptance criteria](#acceptance-criteria), [Scope](#scope), [when a Ticket finishes](#where-the-work-lands-on_success), [reviewing results](#ticket-board-lifecycle)
-6. [Running unattended](#running-unattended): [several Tickets at once](#concurrent-tickets), [without VS Code](#entering-the-sandbox-without-vs-code)
+5. [Goal Mode](#goal-mode): [Goalsets](#goalsets-and-entry), [evidence](#working-with-evidence), [human decisions](#changes-and-human-decisions), [Finish](#finish-and-review)
+6. [Recovery and parallel work](#recovery-unattended-work-and-parallel-sessions), [without VS Code](#entering-the-sandbox-without-vs-code)
+
 7. [Auth & billing](#auth--billing)
 8. [Reporting problems and feedback](#when-booley-itself-misbehaves)
 9. Reference: [Flows & Specialists](#booley-flows--specialists), [Criteria catalog](#criteria-catalog), [CLI](#cli-reference)
@@ -49,12 +50,12 @@ Sandbox limits and network egress for both execution modes are host-owned
 | Place | What goes there | Example |
 | --- | --- | --- |
 | **Host terminal** | Commands on your own computer, outside Docker | `booley doctor`, `code .` |
-| **Container terminal** | Commands inside the Sandbox, after VS Code has reopened the project in its container | `booley run`, `git diff` |
+| **Container terminal** | Commands inside the Sandbox, after VS Code has reopened the project in its container | `booley dashboard`, `git diff` |
 | **Agent chat** | Plain-language requests and skills that start with `/` | *"Run lint and explain every finding"* |
 
 Command blocks go in the terminal named in the text around them. Sentences in
 *italics* are prompts for the agent chat. Skills such as
-`/booley-ticket-create` also go in the agent chat, not in a terminal.
+`/booley-goal` also go in the agent chat, not in a terminal.
 
 Booley uses some terms with exact meanings. When one is unfamiliar, look it up
 in the glossary linked from the [context map](../../GLOSSARY-MAP.md).
@@ -78,7 +79,7 @@ Use the selector once, at the root, command, or nested operation. It also works 
 `booley` inside the Sandbox to select the Project for chat. On the host, bare
 `booley` prints help without resolving the selector.
 `auth --status` and `cheat --list` accept and ignore it without discovering a Project.
-`bootstrap`, `projects`, `eda`, and Ticket Mode `run`/`board` retain their grammar
+`bootstrap`, `projects`, and `eda` retain their grammar
 and do not accept the new selector. Full option names are stable; ambiguous
 abbreviations produce an error. Arguments after a command's payload `--` stay opaque.
 
@@ -111,24 +112,16 @@ Don't continue until `booley doctor` shows no failures or warnings.
 - If Booley says its version changed, type `/booley-heal` in the agent chat.
 - For a quick overview of Booley, start with `booley cheat`. It's long, so
   `booley cheat --list` shows its sections and you can print just the ones you
-  need, for example `booley cheat --board` or `booley cheat --commands --project-files`.
+  need, for example `booley cheat --goals` or `booley cheat --commands --project-files`.
 - `booley doctor --deep` goes further and runs short real simulations, lints,
   and syntheses.
 
-## Choose a mode
+## Choose how to work
 
-Booley has two ways to work. Both use the same configuration, Flows,
-Specialists, and Sandbox.
-
-1. **Interactive Mode: start here.** You chat with the agent and watch it work.
-   Do the first session below even if you have used coding agents before. It
-   shows how Booley picks Targets, runs Flows, and reports results.
-2. **Ticket Mode: move on once that feels familiar.** You write down a task as
-   a Ticket, and `booley run` does the work on its own, with no chat window
-   needed. This is the best way to do well-defined development work.
-
-Interactive Mode stays useful after that for investigations, quick changes,
-and one-off Flow runs.
+Start with Interactive Mode to explore and run individual Flows. Use
+`/booley-goal` in the same Sandbox agent chat when a task needs mandatory
+completion conditions. Goal Mode supports both human guidance and unattended
+work, with one linked worktree and Goal Branch per session.
 
 ## Interactive Mode
 
@@ -236,7 +229,7 @@ doesn't replace your own review.
 > it writes good commit messages. It **can't** push to GitHub or any other
 > server, because the container blocks that network access. So: let it commit,
 > review the commits, then push them yourself from a terminal outside the
-> container. (Ticket Mode always works this way.)
+> container.
 
 Per-session logs of Flow and Specialist calls through Booley’s tool server
 are saved in `.booley_project/.interactive_logs/`. Chat transcripts live in
@@ -271,282 +264,189 @@ or decimal, and `@red`/`@blue`/`@green` for a color. `bwave gui --help` has
 the rest. If a view fails to open, see
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md#bwave-gui-fails-on-a-scoped-view).
 
-## Ticket-Driven Workflow
+## Goal Mode
 
-In Ticket Mode you work with Booley like a project lead with an engineer: you
-hand over written tasks and review the results. A **Ticket** is a Markdown file
-on your machine. It records the task, the files likely to change, and the
-checks that must pass. It is not a Jira or GitHub issue, and nothing is sent
-anywhere.
+Goal Mode gives one agent session mandatory, evidence-backed completion
+conditions. Open a Sandbox agent session and type `/booley-goal` with the work
+you want done. The skill helps you choose a clean linked worktree, Goalsets,
+Targets, and ad-hoc Goals, then calls `goal_enter`. Booley creates a Goal Branch
+from the worktree's current HEAD and records that base for comparisons.
 
-The whole loop:
+### Goalsets and entry
 
-1. **Create.** In the agent chat, type `/booley-ticket-create` and describe the
-   change in your own words. The skill asks questions, then shows you the
-   finished Ticket. When you approve it, the Ticket gets a short name, its
-   **slug** (for example `fix-fifo-backpressure`), and joins the queue.
-2. **Run.** In a container terminal:
+Goalsets are Project-owned Markdown files under `.booley_project/goalsets/`.
+`booley init` creates missing `feature.md`, `bugfix.md`, `refactor.md`, and
+`verification.md` without rewriting existing files. Customize their prose to
+express your project's rules. The agent translates them into concrete Goals;
+Booley validates the arguments, not the prose. Each Goal records its origin.
 
-   ```bash
-   booley board show          # confirm the Ticket is queued
-   booley run --ticket <slug>
-   ```
+An optional `default.md` applies to every entry. Skipping it requires your
+explicit instruction and reason. Setup can create this file; initialization
+does not seed it. You can also add Goals for this particular change. Duplicate
+Goals merge to the stricter condition, and entry reports every merge.
 
-   Leave it running. The screen shows progress while the agent edits code,
-   runs Flows, and checks the Ticket's criteria. It stops when the work is
-   ready for review, done, or stuck and waiting for you.
-3. **Review.** In the agent chat, type `/booley-ticket-triage` to look at a
-   finished or stuck Ticket and decide what happens next.
+A Goal names a Flow or review family and the applicable Target, tests, and
+thresholds. Every Goal is mandatory. For example, a Goalset excerpt can ask for:
 
-`booley run` without `--ticket` works through the whole queue, one Ticket after
-another.
-
-### Creating Tickets
-
-You don't need a perfect description. Tell `/booley-ticket-create` everything
-you know, however messy, and it turns that into a precise Ticket.
-
-- **Pick *Detailed plan*** when it asks, unless the change is truly trivial and
-  you already know every file it touches. *Lightweight* skips the questions
-  and fills in the Ticket on its own.
-- **Answer its questions.** They come in rounds, each with a suggested answer.
-  It looks up facts in the code itself instead of asking you.
-- **Check the criteria most carefully** when it shows the draft. The criteria
-  are the whole contract: Booley only checks those, and the prose in the Ticket
-  checks nothing. The `scope` field keeps the agent out of unrelated files. Ask
-  for any changes before you approve.
-- **Approving finishes the job.** The skill adds any new Targets the Ticket
-  needs and queues it. There are no further approval steps.
-
-**Project-wide rules.** If every Ticket in your project should get the same
-checks, write them in `.booley_project/ticket_creation.md` in plain Markdown:
-
-```markdown
-- Include a corrective security review in every feature Ticket.
-- Every Ticket uses the `sim_smoke` and `sim_regression` Targets.
-- Feature and refactor Tickets must prove that area does not regress on `synth_area`.
+```json
+[
+  {"family": "lint", "target": "lint_fifo"},
+  {"family": "sim", "target": "sim_fifo"},
+  {"family": "review", "review": "rtl_bugs", "verdict": "clean"},
+  {"family": "synth", "target": "synth_fifo", "thresholds": {"area_increase_at_most": "10%"}}
+]
 ```
 
-No special format is needed. The skill reads this file each time it creates a
-Ticket and turns the rules into real criteria. Instructions you give for one
-Ticket win over these rules, and the skill tells you when a rule is unclear or
-can't be met. Editing the file doesn't change existing Tickets. `ticket_defaults.md` is also accepted.
+Use the [Criteria catalog](#criteria-catalog) and `booley cheat --criteria` for
+the evidence keys and threshold parameters used by Goals. A new Target can be
+named at entry but stays unmet until it exists. Spec reviews name a spec file
+relative to the worktree.
 
-**Writing a Ticket by hand** is possible but advanced: a hand-written Ticket
-must pass the same checks the skill does for you. Follow
-`booley-ticket-create/SKILL.md` and its `TICKET_TEMPLATE.md`, then check the
-result with `booley run --ticket <slug> --dry-run`.
+### Threshold parameters
 
-### Acceptance Criteria
+<!-- BEGIN GENERATED: criteria-params -->
+`synth` and `fpga` Goals name each Target directly and accept metric thresholds. Four flavours apply per metric: two absolute, two relative to the Goal base commit:
 
-A Ticket doesn't list steps. It lists **acceptance criteria**: checks that must
-pass before the work counts as finished. They are grouped by the Flow or
-Specialist that checks them:
+| Flavour param suffix | Baseline? | Meaning |
+|----------------------|:---------:|---------|
+| `_max` | no | metric must stay **≤** the given value |
+| `_min` | no | metric must stay **≥** the given value |
+| `_increase_at_most` | yes | metric may grow **at most N%** above baseline |
+| `_reduce_at_least` | yes | metric must shrink **at least N%** below baseline |
 
-```yaml
-CRITERIA_MANDATORY:
-  LINT:
-    lint_core: clean
-  SIM:
-    sim_core: {all: pass}
-  REVIEW:
-    rtl: {bugs: clean}
-    tb: {quality: clean}
-CRITERIA_OPTIONAL:
-  SYNTH:
-    synth_core: {area_um2_max: 10000, fmax_mhz_min: 400}
+Percentage threshold values must include the `%` suffix (for example, `"cell_count_reduce_at_least": "8%"` inside `thresholds`).
+
+For a relative threshold on a new Target, set `baseline` to an existing Target. The baseline Target defaults to the candidate name and must exist at the Goal base commit. Booley runs it on base code and the candidate on current code. Missing or mismatched baseline evidence fails the check.
+
+Goal argument examples:
+
+```json
+{"family": "synth", "target": "asic_small", "baseline": "asic_base",
+ "thresholds": {"cell_count_reduce_at_least": "8%"}}
 ```
 
-Booley decides when they pass, not the agent:
-
-- A criterion passes only when its Flow or Specialist says so. For example, a
-  `SIM` criterion needs `sim` to report a pass, and a `REVIEW` criterion needs a
-  `reviewer` run. The agent saying "it works" never counts.
-- When the code changes, criteria that depend on it must pass again.
-- **Mandatory** criteria must all pass before the Ticket can reach review.
-  **Optional** ones don't block, but the agent must explain each one it
-  couldn't meet.
-
-Each `REVIEW` entry needs an outcome. `clean` means every finding must be
-fixed, or waived with a written reason. `done` means the review only has to
-run: its findings are reported, not fixed.
-
-You rarely write this by hand; `/booley-ticket-create` does it for you. The
-[Criteria catalog](#criteria-catalog) lists every criterion under the name
-Booley reports it by (for example, `REVIEW: rtl: {bugs: clean}` shows up as
-`review_rtl_bugs`). `booley cheat --criteria` prints the same list, including
-any your project added.
-How criteria are checked is in
-[ARCHITECTURE.md](../internals/ARCHITECTURE.md#ticket-mode).
-
-#### Threshold parameters
-
-Synthesis, FPGA, and cycle-count criteria can set limits. A limit is either a
-fixed number (`_max`, `_min`) or a change compared with the code before the
-Ticket started (`_increase_at_most`, `_reduce_at_least`; percentages need a
-`%`). Timing limits can apply to a single clock, such as `clk_i.`:
-
-```yaml
-SYNTH: {synth_core: {cell_count_reduce_at_least: 8%, clk_i.fmax_mhz_min: 400}}
-CYCLE_COUNT: {sim_coremark: {coremark: {cycle_count_max: 100000}}}
+```json
+{"family": "fpga", "target": "fpga_top", "thresholds": {"lut_count_max": 5000}}
 ```
 
-`booley cheat --criteria` lists every metric and which limits it accepts.
+**`synthesis_ok` (ASIC)**
 
-### Scope
+| Metric | _max | _min | _increase_at_most | _reduce_at_least |
+|--------|:---:|:---:|:---:|:---:|
+| `area` | — | — | ✓ | ✓ |
+| `area_kge` | ✓ | — | — | — |
+| `area_um2` | ✓ | — | — | — |
+| `cell_count` | ✓ | — | ✓ | ✓ |
+| `critical_path_ps` | ✓ | — | ✓ | ✓ |
+| `fmax_mhz` | — | ✓ | ✓ | ✓ |
+| `wire_count` | ✓ | — | ✓ | ✓ |
 
-A Ticket names the files it expects to change. That's a plan, not a fence. If
-the job really needs another file, such as a shared package or a neighboring
-module, the agent edits it, and Booley lists it in
-`.runtime/scope_deviations.json` so you see it during review.
+> Absolute area caps pick a unit (`area_um2` / `area_kge`); the unit-agnostic `area` row carries the baseline-relative bounds only.
 
-Two things are off limits: Booley's own bookkeeping files, and the Targets and
-settings prepared when the Ticket was created. If a Target turns out to be
-wrong, the Ticket stops and waits for you rather than letting the agent change
-it.
+> Mutually exclusive: `area_um2_max` ⊕ `area_kge_max`.
 
-If the same file keeps showing up outside the scope, your Tickets' scopes are
-probably too narrow.
+> Mutually exclusive: `critical_path_ps_max` ⊕ `fmax_mhz_min`.
 
-### Where the work lands (`on_success`)
+**`fpga_impl_ok` (FPGA)**
 
-Each Ticket lists what should happen once its criteria pass:
+| Metric | _max | _min | _increase_at_most | _reduce_at_least |
+|--------|:---:|:---:|:---:|:---:|
+| `bram_count` | ✓ | — | ✓ | ✓ |
+| `critical_path_ps` | ✓ | — | ✓ | ✓ |
+| `dsp_count` | ✓ | — | ✓ | ✓ |
+| `ff_count` | ✓ | — | ✓ | ✓ |
+| `fmax_mhz` | — | ✓ | — | — |
+| `lut_count` | ✓ | — | ✓ | ✓ |
 
-```yaml
-on_success: [triage_report, review, merge, cleanup]
+> Mutually exclusive: `critical_path_ps_max` ⊕ `fmax_mhz_min`.
+
+**Per-test `CYCLE_COUNT`**
+
+`cycle_count` Goals name the Target with `target` and the registered test with `test`; put bounds in `thresholds`. All thresholds for that test must pass. Relative forms compare the same Target/test at the Goal base commit.
+
+```json
+{"family": "cycle_count", "target": "sim", "test": "smoke",
+ "thresholds": {"cycle_count_max": 1000, "cycle_count_reduce_at_least": "8%"}}
 ```
 
-**This full list is the default**, and most Tickets keep it:
-`/booley-ticket-create` fills in all four, and you only remove the ones you
-don't want. (Every Ticket must have the field, so a hand-written Ticket has to
-list it too.)
+| Parameter | Baseline? | Unit | Passing relation |
+|-----------|:---------:|------|------------------|
+| `cycle_count_max` | no | cycles | current ≤ threshold |
+| `cycle_count_min` | no | cycles | current ≥ threshold |
+| `cycle_count_increase_at_least` | yes | percent | signed change ≥ +N% |
+| `cycle_count_increase_at_most` | yes | percent | signed change ≤ +N% |
+| `cycle_count_reduce_at_least` | yes | percent | signed change ≤ -N% |
+| `cycle_count_reduce_at_most` | yes | percent | signed change ≥ -N% |
+| `cycle_count_increase_at_least_cycles` | yes | cycles | current - baseline ≥ N |
+| `cycle_count_increase_at_most_cycles` | yes | cycles | current - baseline ≤ N |
+| `cycle_count_reduce_at_least_cycles` | yes | cycles | baseline - current ≥ N |
+| `cycle_count_reduce_at_most_cycles` | yes | cycles | baseline - current ≤ N |
 
-The actions always run in this order, whatever order you write them in, and
-each step waits for the one before it. Leave an action out and it's skipped:
+A named `[SIM_CYCLES] <test> <count>` observation is gated evidence only when that exact test passes. Missing, malformed, duplicate, unnamed, failed, or inconclusive evidence fails closed. Without a `cycle_count` Criterion, existing Cycle Count records remain observational.
 
-1. **`triage_report`**: writes an HTML explanation of the work for the reviewer
-   (one extra AI call). It only applies together with `review`.
-2. **`review`**: parks the Ticket until you approve it. Its branch and working
-   copy stay in place so you can inspect them. Nothing below happens until you
-   approve. Without `review`, the Ticket goes straight on to the next step.
-3. **`merge`**: merges the work into the destination branch. Leave it
-   out to keep that branch untouched.
-4. **`cleanup`**: deletes the Ticket's branch and working copy, after the merge
-   succeeds if there is one. The accepted commits stay reachable. Leave it out
-   to keep them.
+Relative comparisons report an **observed Cycle Count change**. When declared workload inputs differ, review reports disclose the changes and do not attribute the result to RTL alone.
+<!-- END GENERATED: criteria-params -->
 
-So with `review` in the list, nothing reaches your branch until you've
-approved it. Without `review`, `merge` and `cleanup` run as soon as the
-criteria pass, unless a `_done` review left findings open: then the Ticket
-waits for your approval anyway.
+### Working with evidence
 
-**Adding Targets in a Ticket.** Most Tickets use the Targets you already have.
-To add one, mark it where the Ticket mentions it, and include `merge`:
+The agent passes the absolute worktree root as `work_dir` on every Booley call.
+Only Booley Flows and Specialists meet Goals. Shell output or the agent saying
+"done" does not. `goal_status` shows each Goal's current evidence and freshness;
+code changes can require another run. For a bugfix, reproduce the reported bug
+with a failing test before editing the design.
 
-```yaml
-CRITERIA_MANDATORY:
-  LINT: {lint_style (new): clean}
-  SIM:
-    sim_core_v2 (replaces sim_core): {all: pass}
-    ticket_probe (temp): {smoke: pass}
-```
+Protected Inputs decide how evidence is produced: `booley.toml`,
+`FUSESOC_IGNORE`, and the Project's `hooks`, `.managed`, `generators`, and
+`mcp_tools` directories. Editing one blocks Finish until reverted and discards
+affected evidence. Never weaken tests or Targets to make a Goal pass. The
+Review Package flags `.core`, `tests.toml`, and `.sdc`/`.xdc` edits.
 
-`(new)` Targets stay after the merge. `(replaces sim_core)` swaps out the prior
-Target. `(temp)` Targets exist only to prove this Ticket and are removed
-afterwards. A Ticket can't edit or delete existing Targets. The full rules are
-in [ADR 0060](../adr/0060-model-target-changes-with-ticket-target-plans.md).
+### Changes and human decisions
 
-### Ticket Board lifecycle
+When a Goal needs to be added, relaxed, retargeted, or changed through a coverage
+waiver, the agent uses `goal_propose_change`. You see the exact proposal and
+approve or reject it with a reason. The client form is used when available;
+chat fallback records your quoted instruction against the saved proposal ID.
+Silence cannot approve a change. Approved changes appear in the Change Log.
+Coverage Waiver Candidates need your decision; the Analyst cannot approve them.
 
-`booley board show` lists every live Ticket and its status; add `--all` to
-include done and archived Tickets from Ticket History. `booley board show
-<slug>` finds a Ticket either way. A Ticket usually moves like this:
+### Finish and review
 
-```text
-draft ──► queued ──► running ──► review ──► done
-  │          ▲          │           └──────► archived
-  └─► waiting┘          └─► blocked ──► queued
-```
+Finish requires all Goals met with fresh evidence at a clean, committed HEAD
+and a Session Summary. The agent calls `goal_finish` with the record ID, a
+stable operation ID, and that summary. The Review Package contains the diff
+against the base, final Goals and evidence, the Change Log, open review
+findings, Target changes, constraint edits, and the Session Summary.
 
-- **waiting**: it depends on another Ticket and is queued once that one is
-  done.
-- **blocked**: the agent is stuck and needs you. Answer it with
-  `/booley-ticket-triage`; the Ticket goes back to the queue and picks up where
-  it left off.
-- **review**: the criteria passed and the Ticket waits for your decision.
+A `clean` review requires no open findings. A `done` review is advisory:
+findings remain in the package and do not require a second approval to Finish.
+Read the package before deciding what to merge. Completion keeps the Goal
+Branch and worktree; merge, publication, and cleanup need separate instructions.
 
-Each live Ticket is one file, `.booley_project/tickets/board/<slug>.md`, and
-its status is kept beside it in `tickets/state/<slug>.json`. Both are ignored
-by Git. When a Ticket is done or archived, its document moves to
-`tickets/history/<slug>.md`, which Booley commits. Boards made before this
-layout need a one-time manual migration; see
-[Troubleshooting](TROUBLESHOOTING.md#booley-board-refuses-to-start-the-ticket-board-needs-migrating).
+Local Goal Records live under `.booley_project/goals/<goal-id>/`. Outside
+Stealth, Finish commits the Session Summary under
+`.booley_project/goals/history/<goal-id>.md` in the Goal worktree when that
+path is Git-trackable. Stealth or excluded summaries stay local.
 
-**Reviewing a finished Ticket.** `/booley-ticket-triage` walks you through it.
-It shows the diff, the criteria results, any files outside the scope, and, with
-`triage_report`, a link to the HTML explanation (open it and choose **Show
-Preview**). You then choose one of three things:
+### Recovery, unattended work, and parallel sessions
 
-1. **Approve** it. It moves to done.
-2. **Reset** it. This throws the work away and runs the Ticket again from
-   scratch.
-3. **Archive** it. If the remaining work needs different criteria, write a new
-   Ticket instead.
+The same Goal session can work with your guidance or unattended. If intent is
+missing or a Goal cannot be met, the agent explains what decision it needs.
+After a crash or reconnection, ask it to call `goal_status(rules=true)` in the
+same worktree before continuing. Saved proposal IDs and Finish operation IDs
+allow recovery without duplicating a decision or completion. A Finish result
+of `revalidation_required` needs fresh evidence and a new summary and operation ID.
 
-There is no "send it back for a bit more work". Booley approves exactly the
-commits whose criteria passed. If you commit anything during review, triage
-helps you move those commits to a separate branch before approving.
+Abandonment is available only on your explicit instruction, through
+`goal_finish(abandon=true)` with your quoted words. Quiet presence or an agent
+being stuck never abandons a Goal automatically. The branch and worktree remain.
 
-**Fixing a blocked Ticket.** Triage can also propose loosening a criterion or
-widening the scope when that's what the Ticket needs. You see the exact change
-before approving it, and the Ticket then continues with its work kept.
-
-`booley board review <slug> --force` rebuilds the review summary, which is
-also handy for looking at a blocked Ticket's partial work. `booley board show
-<slug>` displays it.
-
-Two Git surprises are covered in Troubleshooting:
-[Ticket worktrees show as `prunable`](TROUBLESHOOTING.md#ticket-worktrees-show-as-prunable-on-the-host)
-and [`git` cannot see files under `.booley_project/`](TROUBLESHOOTING.md#git-cannot-see-files-under-booley_project).
-
-## Running Unattended
-
-Ticket Mode is built to run for hours without you. At a minimum, you create a
-Ticket and later review the result. In between, Booley:
-
-- keeps simulating and fixing until the criteria pass,
-- picks up where it left off after a reboot, crash, or usage limit,
-- stops and asks you (**blocked**) instead of guessing when it's stuck.
-
-When you answer a blocked Ticket, you can add feedback to steer the next
-attempt without starting over.
-
-`booley run` stops by itself once the queue has been empty for 5 minutes
-(`--idle-timeout`, in seconds). Use `--idle-timeout 0` to keep it waiting for
-new Tickets forever. It only runs inside the container. On a host terminal it
-tells you to reopen in the container, or to use
-`booley session enter -- booley run`.
-
-For long runs, set up a login that won't expire mid-run; see
-[Auth & billing](#auth--billing).
-
-### Concurrent tickets
-
-To run several Tickets at once, start one `booley run` in each container
-terminal. By default two can run together (`[jobs] max_tickets`, see
-[CONFIG.md](CONFIG.md#jobs--concurrency-jobs)). Extra runs wait their turn, and
-the screen shows their place in line.
-
-The same goes for the individual **Jobs** a Ticket starts, such as one
-simulation, one synthesis, or one Specialist run. Each kind has its own limit.
-Your interactive requests go ahead of Ticket work, but a running Job is never
-interrupted. The agent can cancel a Job if you ask it to.
-
-> **Tip: work in parallel once Booley feels familiar.** Run several Tickets and
-> several agent chats at the same time. Each Ticket gets its own working copy
-> of the code automatically, but chat sessions share one. To keep two chat
-> agents from overwriting each other, see
-> [TROUBLESHOOTING.md](TROUBLESHOOTING.md#two-interactive-agents-keep-clobbering-each-others-edits).
+For parallel work, use one linked worktree and Goal Branch per session. Start
+another agent in another container terminal and invoke `/booley-goal` there.
+Jobs share the Project's [admission caps](CONFIG.md#jobs--concurrency-jobs).
+`booley dashboard` shows sessions, Goals, and Jobs inside the Sandbox; it opens
+on VS Code folder attachment by default. Opt out with `[sandbox].dashboard=false`.
+Inspect records with `booley goal status`.
 
 ### Entering the Sandbox without VS Code
 
@@ -583,17 +483,13 @@ does, with either a **subscription** or an **API key**:
 | `claude` | Claude Pro/Max/Team/Enterprise (your login in `~/.claude/.credentials.json`) | `ANTHROPIC_API_KEY` |
 | `codex` | your Codex login (`codex login`, saved in `~/.codex/auth.json`) | `OPENAI_API_KEY` |
 
-Both work everywhere, in Ticket Mode and in Interactive Mode.
+Both work in Interactive Mode and Goal Mode.
 
 - **Subscription:** usage counts against your plan. Claude rate-limit events
-  make Booley wait and retry the agent call, within its retry and timeout
-  budgets. Codex usage caps stop the agent call; Booley does not automatically
-  resume it at the reset time. A Developer Agent failure leaves the Ticket
-  blocked. The Ticket runner may pause for a detected limit, but that pause
-  does not requeue an already-blocked Ticket. After the limit resets or you
-  resolve a spending or credit cap, use
-  `booley board move <slug> queue` to retry it. A standalone Specialist must be
-  invoked again.
+  make Booley wait and retry a Specialist call within its retry and timeout
+  budgets. Codex usage caps stop the call; it must be invoked again after the
+  limit resets. Resume an interrupted Goal session with `goal_status(rules=true)`.
+
 - **API key:** you pay per token.
 
 If an API key is exported, it is used even when you also have a subscription.
@@ -639,7 +535,7 @@ It doesn't have to be a bug. Confusing behavior, praise, complaints, wishes, or
 This section is reference. You rarely call Flows or Specialists yourself: ask
 the agent (*"run the reset test on `sim_lite`"*, *"how much area did that
 cost?"*) and it picks the Flow or Specialist, Target, and options. The **Sets** column shows
-which [acceptance criteria](#acceptance-criteria) each one can satisfy. Which
+which [acceptance criteria](#working-with-evidence) each one can satisfy. Which
 EDA program runs underneath depends on the Target; see
 [SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md). `booley cheat --flows` and
 `booley cheat --specialists` print the same lists.
@@ -674,11 +570,11 @@ For example: `booley specialist reviewer --category rtl --focus bugs --scope rtl
 
 #### `coverage_analyst`
 
-Call the `coverage_analyst` Specialist from your connected agent session with `campaign="<exact-coverage.json>"` and optional `instruction="<question>"`. The Analyst explains retained native evidence and proposes advisory next steps; its model only reads evidence. It does not run Simulation, read waveforms, evaluate Criteria, or approve waivers. In Ticket Mode, Booley records its screened Waiver Candidates for a human to accept or reject at Ticket review. When every mandatory Criterion is met strictly or by a verified Provisional Coverage Verdict, submit your run report and finish for human review without blocking or marking strict coverage met. Verified Target sources are optional; stale sources give report-only analysis.
+Call the `coverage_analyst` Specialist from your connected agent session with `campaign="<exact-coverage.json>"` and optional `instruction="<question>"`. The Analyst explains retained native evidence and proposes advisory next steps; its model only reads evidence. It does not run Simulation, read waveforms, evaluate Criteria, or approve waivers. In Goal Mode, screened Waiver Candidates support a proposed Goal change, which needs human approval. Finish requires every Goal met; advisory reports do not mark strict coverage met. Verified Target sources are optional; stale sources give report-only analysis.
 
 #### `reviewer`
 
-Read-only, single-focus code review. It reports `CRITICAL`, `MAJOR`, and `MINOR` findings. In Interactive Mode, review the selected files using your specification or steering. In Ticket Mode, `_done` reports findings without requiring fixes, but open findings make the Ticket wait for your approval even without `review` in `on_success`. `_clean` requires every finding to be fixed or waived with a justification.
+Read-only, single-focus code review. It reports `CRITICAL`, `MAJOR`, and `MINOR` findings. In Interactive Mode, review the selected files using your specification or steering. In Goal Mode, `done` reports findings without requiring fixes; the review package includes open findings. `clean` requires every finding to be fixed or waived with a justification.
 
 The result links saved review evidence, including rejected proposals for inspection. Rejected proposals do not affect Criteria.
 
@@ -688,13 +584,13 @@ Call the `reviewer` Specialist from your connected agent session with `scope="<f
 |----------|-------|----------------|------|
 | `rtl` | `bugs` | Functional bug patterns, synthesis hazards, reset/width/signing mistakes, and ifdef/config consistency | `review_rtl_bugs` |
 | `rtl` | `protocol` | Bus/protocol rule compliance, handshake behavior, ordering, and clock-domain crossings (CDC) | `review_rtl_protocol` |
-| `rtl` | `spec` | Spec compliance: the RTL implements what the ticket/spec requires, no more and no less | `review_rtl_spec` |
+| `rtl` | `spec` | Spec compliance: the RTL implements what the change request/spec requires, no more and no less | `review_rtl_spec` |
 | `rtl` | `code_style` | Comments, naming, readability, maintainability, magic values, and assertion/cover-point quality | `review_rtl_code_style` |
 | `rtl` | `optimization` | Unused/dead RTL and strict power/performance/area improvements with no functional or engineering trade-off | `review_rtl_optimization` |
 | `rtl` | `security` | Fault-injection resistance, simple power/timing leakage, secret exposure, and unsafe failure behavior | `review_rtl_security` |
 | `tb` | `quality` | False-pass paths in scoped testbench sources, missing checks and edge cases, coverage gaps, timing/sampling mistakes, and TB code quality | `review_tb_quality` |
 
-Arguments: required `scope="<file,...>"` selects files; `steer=["<context>"]` adds review context; `dry_run=true` validates and previews without invoking an agent. The `spec` focus needs specification text: Ticket Mode resolves its mounted ticket or linked spec automatically, while Interactive Mode uses `spec="<path>"`.
+Arguments: required `scope="<file,...>"` selects files; `steer=["<context>"]` adds review context; `dry_run=true` validates and previews without invoking an agent. The `spec` focus needs specification text: use `spec="<path>"` or the spec file named by the Review Goal.
 
 #### `mutation_tester`
 
@@ -702,7 +598,7 @@ Proposal-locked mutation testing. A read-only LLM creator returns exact source r
 
 **Mutation campaign modes:**
 
-| Campaign | Ticket Mode (`mandatory` or `optional`) | Interactive Mode arguments |
+| Campaign | Goal arguments | Interactive Mode arguments |
 |----------|-----------------------------------------|------------------------|
 | Default fixed | Target campaign with `target` + `scope` — generate 10 mutations and require all 10 detected | _(no goal arguments)_ — the same 10-of-10 campaign |
 | Explicit fixed | add `total: N` and `min_detected: K` | `count="N"` requires all N; add `min_detected=K` to require K |
@@ -745,21 +641,18 @@ booley flow sim --target sim_counter --coverage
 Then call the `coverage_analyst` Specialist from your connected agent session with
 `campaign="<reports>/sim/12/targets/sim_counter/coverage.json"`.
 
-In a Ticket, add a [coverage criterion](CONFIG.md#native-coverage-configuration)
-for each Target that needs one. Only a passing coverage run satisfies it. The
-Analyst never changes criteria. In a Ticket it may record Waiver Candidates;
-if counting them would meet the criterion, the Ticket goes to `review` and you
-accept or reject each one with `booley board approve <slug> --accept-waivers
-ID,... --reject-waivers ID,...`. See
-[FLOW_REFERENCE.md](FLOW_REFERENCE.md#coverage-waivers-at-review).
+In Goal Mode, add a [coverage Goal](CONFIG.md#native-coverage-configuration)
+for each Target that needs one. Only valid coverage evidence satisfies it.
+The Analyst may screen Waiver Candidates; approving one requires your decision
+through `goal_propose_change`. Rerun coverage after approval to obtain fresh
+strict evidence. See [coverage waivers at review](FLOW_REFERENCE.md#coverage-waivers-at-review).
 
 ## Criteria catalog
 
-Every built-in criterion, under the name Booley uses in reports and
-`booley board show`. In a Ticket you write them grouped by Flow or Specialist
-instead; see [Acceptance Criteria](#acceptance-criteria). `{target}` means one
-criterion per Target (for example `sim_pass_sim_core`). Criteria are defined in `criteria.toml`, which
-is also where a project can add its own.
+Every built-in Criterion under the name Booley uses in evidence reports.
+Goals use these keys after entry translates their family arguments.
+`{target}` means one Criterion per Target, for example `sim_pass_sim_core`.
+Criteria are defined in `criteria.toml`, where custom tools can add their own.
 
 <!-- BEGIN GENERATED: criteria -->
 #### Build & Elaborate
@@ -776,7 +669,7 @@ is also where a project can add its own.
 |-----------|-------------|--------|-------|
 | `review_rtl_bugs` | RTL review: bug patterns, synthesis hazards, and ifdef/config consistency (the RTL as hardware, not against the spec) | `reviewer` (`category="rtl"`, `focus="bugs"`) | pre-sim |
 | `review_rtl_protocol` | RTL review: bus/protocol compliance and clock-domain crossings (CDC) | `reviewer` (`category="rtl"`, `focus="protocol"`) | pre-sim |
-| `review_rtl_spec` | RTL review: spec compliance (RTL matches the ticket/spec, no more, no less) | `reviewer` (`category="rtl"`, `focus="spec"`) | pre-sim |
+| `review_rtl_spec` | RTL review: spec compliance (RTL matches the Goal/spec, no more, no less) | `reviewer` (`category="rtl"`, `focus="spec"`) | pre-sim |
 | `review_rtl_code_style` | RTL review: comments, naming, readability, and assertion coverage (post-sim) | `reviewer` (`category="rtl"`, `focus="code_style"`) | post-sim |
 | `review_rtl_optimization` | RTL review: unused/dead code and missed power/performance/area wins, strict improvements only (post-sim) | `reviewer` (`category="rtl"`, `focus="optimization"`) | post-sim |
 | `review_rtl_security` | RTL review: hardware attack resistance to fault injection, simple power/timing analysis, and secret exposure (post-sim) | `reviewer` (`category="rtl"`, `focus="security"`) | post-sim |
@@ -821,13 +714,9 @@ is also where a project can add its own.
 `booley session enter`.
 
 ```bash
-# Tickets (container)
-booley run --ticket <slug>        # run one Ticket
-booley run                        # work through the whole queue
-booley run --dry-run              # check the setup without running anything
-booley run --idle-timeout 0       # keep waiting for new Tickets forever
-booley board                      # show the Ticket board
-booley board --all                # ...including done and archived Tickets
+# Goal inspection and Dashboard (Sandbox)
+booley goal status                # status for this worktree
+booley dashboard                  # sessions, Goals, and Jobs
 
 # Worktrees (container)
 booley worktree new <name>        # .booley_project/worktrees/<name>, paired Project or clean snapshot
@@ -835,7 +724,8 @@ booley worktree new <name>        # .booley_project/worktrees/<name>, paired Pro
 # Quick reference
 booley cheat                      # the whole cheatsheet
 booley cheat --list               # its section names
-booley cheat --criteria           # one section (combine as many as you like)
+booley cheat --goals              # Goal Mode workflow
+booley cheat --criteria           # evidence catalog (combine sections)
 
 # Health checks
 booley doctor                     # check setup
@@ -868,9 +758,9 @@ by that scan; run `booley projects discover <nested path>` on a nested Project
 directly to import it.
 
 Booley also runs a quick health check on its own when the container starts and
-before `booley run`: about once a week, daily while problems remain, and
+on supported command and Flow paths: about once a week, daily while problems remain, and
 whenever the configuration changes. It never blocks work. New problems show up
-in `booley session up`, `booley run`, and the next Flow result. The last result
+in `booley session up` and the next Flow result. The last result
 is in `.booley_project/runtime/doctor/last.log`.
 
 Plain Doctor and `booley session up` also report whether prior deep validation is
@@ -880,5 +770,4 @@ leave that evidence intact. Deep due is advisory and never launches deep checks.
 See [Doctor health and deep validation](DOCTOR.md) for qualification, failed and
 cancelled attempts, and image identity handling.
 
-Each Ticket run ends with one `BOOLEY_RUN_RESULT` line of JSON for scripts;
-`booley cheat --board` describes it.
+Use `booley cheat --goals` for the Goal lifecycle and MCP tools.

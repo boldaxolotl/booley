@@ -300,15 +300,6 @@ def test_no_manual_contract_commands_remain() -> None:
     assert "return-to-draft" in help_text
 
 
-def test_packaged_ticket_template_has_no_generated_basis_fields() -> None:
-    template = (
-        Path(__file__).parents[2]
-        / "src/booley/data/skills/booley-ticket-create/TICKET_TEMPLATE.md"
-    ).read_text(encoding="utf-8")
-    assert "target_contract:" not in template
-    assert "base_sha:" not in template
-
-
 def _basis_project(tmp_path: Path) -> tuple[Path, Path, TicketIO]:
     root = tmp_path / "project"
     root.mkdir()
@@ -2604,9 +2595,9 @@ def test_paired_submodule_move(tmp_path: Path) -> None:
 # Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
 @pytest.mark.timeout(90)
 def test_board_show_matches_outer_and_project_data_cwd(tmp_path, monkeypatch, capsys):
-    from argparse import Namespace
 
-    from booley.harness.booley import _cmd_board, find_project_root
+    from booley.runtime.project_discovery import discover_project_root
+    from booley.ticket_board import cli
 
     root, data, tio = _paired_basis_project(tmp_path)
     slug = "root-parity"
@@ -2630,38 +2621,31 @@ def test_board_show_matches_outer_and_project_data_cwd(tmp_path, monkeypatch, ca
     assert missing.returncode != 0
     monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
     monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
-    args = Namespace(board_command="show", slug=slug, all=False, no_open_diffs=True)
+    monkeypatch.setattr(
+        cli, "detect_tickets_dir", lambda: discover_project_root() / ".booley_project/tickets"
+    )
     capsys.readouterr()
     monkeypatch.chdir(root)
-    outer_code = _cmd_board(args, find_project_root())
+    outer_code = cli.main(["show", slug])
     outer_output = capsys.readouterr()
     monkeypatch.chdir(data)
-    assert _cmd_board(args, find_project_root()) == outer_code == 0
+    assert cli.main(["show", slug]) == outer_code == 0
     assert capsys.readouterr() == outer_output
 
 
-@pytest.mark.parametrize("command", ["show", "review", "move"])
-def test_invalid_authored_ticket_board_routes_exit_two(tmp_path, monkeypatch, capsys, command):
-    from argparse import Namespace
+@pytest.mark.parametrize("command", ["show", "move-ticket"])
+def test_invalid_authored_ticket_board_routes_refuse(tmp_path, monkeypatch, capsys, command):
 
-    from booley.harness.booley import _cmd_board
-
-    root, data, _tio = _basis_project(tmp_path)
+    _root, data, _tio = _basis_project(tmp_path)
     path = data / "tickets" / "board" / "invalid.md"
     path.write_text("---\nsummary: invalid\ntype: nonsense\n---\n")
-    args = Namespace(
-        board_command=command,
-        slug="invalid",
-        all=False,
-        no_open_diffs=True,
-        reason="",
-        request=False,
-        target="queue",
-        feedback="",
-        force=False,
-        repair=False,
-    )
-    assert _cmd_board(args, root) == 2
+    from booley.ticket_board import cli
+
+    monkeypatch.setattr(cli, "detect_tickets_dir", lambda: data / "tickets")
+    argv = [command, "invalid"]
+    if command == "move-ticket":
+        argv += ["--to", "queue"]
+    assert cli.main(argv) == (1 if command == "move-ticket" else 2)
     assert "invalid" in capsys.readouterr().err
 
 
@@ -2704,13 +2688,10 @@ def test_real_git_failure_promotion_keeps_waiting_without_policy(tmp_path, monke
     assert "acceptance-input-change-required" not in output
 
 
-@pytest.mark.parametrize("entrypoint", ["harness", "standalone"])
 def test_board_renders_commit_identity_failure_after_valid_conversion(
-    tmp_path, monkeypatch, capsys, entrypoint
+    tmp_path, monkeypatch, capsys
 ):
-    from argparse import Namespace
 
-    from booley.harness.booley import _cmd_board
     from booley.ticket_board import cli, ticket_baseline
 
     root, data, tio = _paired_basis_project(tmp_path)
@@ -2731,14 +2712,9 @@ def test_board_renders_commit_identity_failure_after_valid_conversion(
         return original(command, *args, **kwargs)
 
     monkeypatch.setattr(ticket_baseline.subprocess, "run", git)
-    if entrypoint == "harness":
-        result = _cmd_board(
-            Namespace(board_command="show", slug=slug, all=False, no_open_diffs=True), root
-        )
-    else:
-        monkeypatch.setenv("PROJECT_ROOT", str(root))
-        monkeypatch.setattr(cli, "detect_tickets_dir", lambda: data / "tickets")
-        result = cli.main(["show", slug])
+    monkeypatch.setenv("PROJECT_ROOT", str(root))
+    monkeypatch.setattr(cli, "detect_tickets_dir", lambda: data / "tickets")
+    result = cli.main(["show", slug])
     assert result == 2
     assert "Ticket commit identity changed" in capsys.readouterr().err
 

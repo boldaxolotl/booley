@@ -1,7 +1,7 @@
 """Split the quick-reference cheatsheet into flag-addressable sections.
 
 ``booley cheat`` prints the whole sheet by default, but most callers want one
-slice of it: the ticket-create skill only needs the criteria catalog, a user
+slice of it: the Goal skill only needs the criteria catalog, a user
 debugging a container only needs the Sandbox & Docker table. Section flags
 (``--criteria``, ``--flows``, ...) narrow the output so neither pays for the
 rest.
@@ -32,7 +32,7 @@ class Section:
 
 SECTIONS: tuple[Section, ...] = (
     Section("commands", "Commands", "Public `booley` subcommands"),
-    Section("board", "Ticket Board", "Ticket lifecycle and valid transitions"),
+    Section("goals", "Goal Mode", "Goals, Goalsets, and session lifecycle"),
     Section("flows", "Booley Flows", "Deterministic end-to-end orchestration"),
     Section(
         "specialists",
@@ -46,7 +46,7 @@ SECTIONS: tuple[Section, ...] = (
         "Project Files",
         "Editable .booley_project files and affected capabilities",
     ),
-    Section("skills", "Skills", "Ticket-authoring / triage skills"),
+    Section("skills", "Skills", "Project and Goal workflow skills"),
     Section("artifacts", "Artifacts", "Where reports, logs, and state land"),
     Section(
         "sandbox",

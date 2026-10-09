@@ -678,7 +678,7 @@ jobs:
             --mount type=bind,src="${{ github.workspace }}/demo/.booley_project",dst=/booley-project \
             --mount type=bind,src="${RUNNER_TEMP}/demo-surface-evidence",dst=/evidence \
             -w /work -e BOOLEY_PROJECT_DIR=/booley-project -e BOOLEY_IN_SANDBOX=1 \
-            -e BOOLEY_GOAL_MODE_PREVIEW=1 -e BOOLEY_MCP_MODE=interactive \
+            -e BOOLEY_MCP_MODE=interactive \
             -e PYTHONPATH=/booley-source/.github/scripts \
             "${IMAGE}" python3 -m release_validation.demo_surface \
             --project /work --project-state /booley-project \
@@ -743,7 +743,7 @@ jobs:
             --mount type=bind,src="${{ steps.nangate.outputs.root }}",dst=/opt/pdk,readonly \
             --mount type=bind,src="${RUNNER_TEMP}/picorv32-evidence",dst=/evidence \
             -w /work -e BOOLEY_PROJECT_DIR=/booley-project -e BOOLEY_IN_SANDBOX=1 \
-            -e BOOLEY_GOAL_MODE_PREVIEW=1 -e BOOLEY_MCP_MODE=interactive \
+            -e BOOLEY_MCP_MODE=interactive \
             -e BOOLEY_GOAL_READINESS_EVIDENCE=/evidence/goal-readiness.json -e BOOLEY_RUN_PICORV32_FLOWS "${IMAGE}" bash -euo pipefail -c \
             'bash /booley-source/.github/scripts/verify_picorv32_demo.sh'
       - name: Restore demo ownership

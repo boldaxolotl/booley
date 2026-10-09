@@ -39,7 +39,7 @@ of a Sandbox already running from that image. Selecting an image in configuratio
 also does not substitute it for the active image.
 
 A qualifying deep run must have no active health failures or unwaived warnings
-and must complete every applicable deep check: the Developer Agent authorization
+and must complete every applicable deep check: the agent authorization
 and memory probe, selected Simulation/Lint/ASIC Synthesis smokes, enabled sim/lint
 good-and-bad self-tests, and selected-core live resolution. Disabled capabilities
 and intentionally excluded FPGA implementation are legitimate exclusions.
@@ -82,6 +82,24 @@ Storage failures are informational and do not claim new saved success. A known
 unsuccessful result still makes that invocation due when saving fails; later
 commands can only observe evidence that was successfully saved.
 
-Deep due is advisory: it does not affect health warnings, exit codes, Ticket
-Preflight, or execution, and never schedules or automatically launches deep
+Deep due is advisory: it does not affect health warnings, exit codes or execution, and never schedules or automatically launches deep
 checks. Automatic plain Doctor retains its existing scheduling policy.
+
+## Project checks and Goal state
+
+The **Project checks** section validates Project Git state, configuration,
+custom endpoints, and Goal presence. Goal warnings distinguish active records
+from quiet attributable session presence; quiet does not prove abandonment.
+
+- `tickets.leftover-board`: nonempty `tickets/board`, `tickets/state`,
+  `tickets/logs`, `tickets/locks`, or `tickets/waiver-candidates` is reported
+  by directory name. Preserve needed work, then delete that directory. Empty
+  directories are listed in the same line when applicable but do not warn on
+  their own. `tickets/history/` is silent.
+- `tickets.leftover-guidance`: `ticket_creation.md` or `ticket_defaults.md`
+  matches a shipped template, so delete it; if edited or unfamiliar, move its
+  rules into a Goalset under `.booley_project/goalsets/`, then delete it.
+
+Both IDs are stable and waivable through `doctor-waivers.toml`. Doctor also
+WARNs on ignored `[developer]` settings and `[jobs].max_tickets` with a delete
+fix. These settings do not configure Goal Mode.

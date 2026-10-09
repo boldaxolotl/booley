@@ -146,7 +146,8 @@ def test_nested_child_run_init_isolates_every_project_write(
     content = child_config.read_text(encoding="utf-8")
     assert 'provider = "codex"' in content
     assert 'auth = "subscription"' in content
-    assert (child_config.parent / "tickets").is_dir()
+    assert not (child_config.parent / "tickets").exists()
+    assert (child_config.parent / "goalsets" / "feature.md").is_file()
     assert parent_config.read_text(encoding="utf-8") == original
     assert set(parent_project_dir.iterdir()) == parent_entries
     assert (parent_project_dir / ".git" / "config").read_bytes() == parent_git_config
@@ -471,7 +472,7 @@ def test_full_init_passes_verified_runtime_image_id_to_interactive_mode(tmp_path
     for name in (
         "_step_project_dir",
         "_step_core_projections",
-        "_step_tickets",
+        "_step_goalsets",
         "_step_auth",
         "_step_git_hooks",
         "_step_project_git_hooks",

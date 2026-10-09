@@ -104,7 +104,7 @@ self-containment.
 Audit the capsule for semantic as well as textual leakage. Remove or replace:
 
 - original filenames, identifiers, comments, paths, remotes, user/organization
-  names, and ticket/customer names;
+  names, and change-request/customer names;
 - proprietary protocols, topology, register maps, opcodes, memory layouts,
   timing/area targets, device selections, and unusual parameter values not
   essential to the trigger;

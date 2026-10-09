@@ -4,7 +4,7 @@ Canonical style guide for SystemVerilog testbenches (`*_tb.sv`), including
 unit testbenches and testbenches that compile across multiple hardware
 configurations.
 
-Project-specific overlays may be supplied by the caller or ticket context.
+Project-specific overlays may be supplied by the caller or change-request context.
 
 ---
 

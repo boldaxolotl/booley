@@ -141,6 +141,7 @@ booley = [
     "dev_support/*.sh",
     "runtime/*.sh",
     "harness/console/*.tcss",
+    "ticket_board/explain-diff-prompt.md",
 ]
 
 [tool.setuptools.exclude-package-data]

@@ -103,7 +103,7 @@ firmware compile, vector staging) declares it as
 ([CONFIG.md](CONFIG.md#pre-sim-commands-flowssimpre_run_commands)) —
 the project's own Makefile runs inside the Sandbox, and Booley keeps the
 same Flow contract above it. A simulator outside this matrix is out of scope
-for Ticket Mode; widening the matrix is the sanctioned extension axis.
+for Goal Mode; widening the matrix is the sanctioned extension axis.
 
 > **`synth` is a PPA estimate, not tape-out.** It's a fast
 > power/performance/area estimate to optimize RTL against, whatever

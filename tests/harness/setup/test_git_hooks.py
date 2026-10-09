@@ -2670,3 +2670,102 @@ def test_local_attributes_publication_failure_messages_name_actual_target(tmp_pa
     assert "attributes publication" in output and str(attrs) in output
     assert "tracked files untouched" not in output
     assert "commit it" not in output
+
+
+@pytest.mark.parametrize("branch", [None, "goal/example-20261009", "user-feature"])
+def test_worktree_link_repair_silently_skips_goal_and_user_worktrees(
+    tmp_path, monkeypatch, capsys, branch
+):
+    from booley.runtime import worktree_paths
+
+    _git_init(tmp_path)
+    (tmp_path / ".booley_project").mkdir()
+    _run_git(
+        tmp_path,
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@t",
+        "commit",
+        "--allow-empty",
+        "-qm",
+        "initial",
+    )
+    _run_git(tmp_path, "config", WORKTREE_RELATIVE_KEY, "true")
+    checkout = tmp_path / ".booley_project/worktrees/example"
+    args = ["worktree", "add", "--detach"] if branch is None else ["worktree", "add", "-b", branch]
+    _run_git(tmp_path, *args, str(checkout))
+    monkeypatch.setattr(worktree_paths, "relative_worktree_paths", lambda _: True)
+    before = (checkout / ".git").read_bytes()
+    ctx = _ctx(tmp_path)
+    assert git_hooks._repair_live_ticket_worktrees(ctx) == []
+    _step_worktree_link_policy(ctx, host_git_version=(2, 53, 0), sandbox_git_version=(2, 53, 0))
+    assert "ticket" not in capsys.readouterr().out.lower()
+    assert not (tmp_path / ".booley_project/tickets").exists()
+    assert (checkout / ".git").read_bytes() == before
+    assert ctx.results[-1].status == "skip"
+
+
+def test_worktree_link_repair_maps_foreign_parent_to_local_workspace(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from booley.runtime import session_runtime, worktree_paths
+    from booley.runtime.worktrees import WorktreeEntry
+    from booley.ticket_board import io
+
+    directory = tmp_path / ".booley_project/worktrees"
+    checkout = directory / "demo"
+    checkout.mkdir(parents=True)
+    (checkout / ".git").write_text("gitdir: /work/.git/worktrees/demo\n")
+    tickets = tmp_path / "tickets"
+    tickets.mkdir()
+    (tickets / "demo.md").write_text("recorded Ticket\n")
+    monkeypatch.setattr(worktree_paths, "relative_worktree_paths", lambda _: True)
+    monkeypatch.setattr(worktree_paths, "worktree_state_dir", lambda _: directory.parent)
+    monkeypatch.setattr(session_runtime, "assert_worktree_repair_safe", lambda _: None)
+    monkeypatch.setattr(io, "TicketIO", lambda *a, **kw: SimpleNamespace(tickets_dir=tickets))
+    entry = WorktreeEntry(
+        Path("/booley-project/worktrees/demo"), branch="refs/heads/booley-generation/demo/1"
+    )
+    monkeypatch.setattr(git_hooks, "list_worktrees", lambda _: (entry,))
+    repaired = []
+
+    def repair(root, tio, slug, local, linked):
+        assert (root, tio.tickets_dir, slug, local, linked) == (
+            tmp_path,
+            tickets,
+            "demo",
+            directory,
+            [checkout],
+        )
+        repaired.append(checkout)
+        return {checkout}
+
+    monkeypatch.setattr(git_hooks, "_repair_recorded_ticket", repair)
+    assert git_hooks._repair_live_ticket_worktrees(_ctx(tmp_path)) == []
+    assert repaired == [checkout]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        OSError("Git unavailable"),
+        subprocess.CalledProcessError(128, ["git", "worktree", "list"]),
+        subprocess.TimeoutExpired(["git"], 30),
+    ],
+)
+def test_worktree_link_repair_reports_git_listing_failure(tmp_path, monkeypatch, failure):
+    from booley.runtime import worktree_paths
+
+    (tmp_path / ".booley_project/worktrees").mkdir(parents=True)
+    monkeypatch.setattr(worktree_paths, "relative_worktree_paths", lambda _: True)
+    monkeypatch.setattr(
+        worktree_paths, "worktree_state_dir", lambda _: tmp_path / ".booley_project"
+    )
+
+    def unavailable(_):
+        raise failure
+
+    monkeypatch.setattr(git_hooks, "list_worktrees", unavailable)
+    (message,) = git_hooks._repair_live_ticket_worktrees(_ctx(tmp_path))
+    assert message == f"could not list worktrees for repair: {failure}"

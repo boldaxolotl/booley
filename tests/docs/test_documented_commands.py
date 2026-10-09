@@ -20,12 +20,6 @@ ROOT = Path(__file__).resolve().parents[2]
 COMMAND = re.compile(r"(?<![\w./-])(?:python -m booley\.[\w.]+|booley)(?=\s|$)")
 # No hidden commands are approved for current user/packaged documentation.
 HIDDEN_COMMAND_ALLOWLIST: set[tuple[str, ...]] = set()
-# Changelog entries describe retired interfaces rather than current instructions.
-HISTORICAL_COMMANDS = {
-    ("src/booley/data/refs/CHANGELOG.md", "booley flow elab"),
-    ("src/booley/data/refs/CHANGELOG.md", "booley board prepare-review"),
-    ("src/booley/data/refs/CHANGELOG.md", "booley feedback preview"),
-}
 
 
 @cache
@@ -153,7 +147,7 @@ def test_documented_command_paths_are_registered_and_public() -> None:
     count = 0
     for directory in (ROOT / "src/booley/data", ROOT / "docs/user"):
         for doc in sorted(directory.rglob("*")):
-            if not doc.is_file():
+            if not doc.is_file() or doc == ROOT / "src/booley/data/refs/CHANGELOG.md":
                 continue
             try:
                 text = doc.read_text(encoding="utf-8")
@@ -161,8 +155,6 @@ def test_documented_command_paths_are_registered_and_public() -> None:
                 continue  # Binary packaged assets cannot contain shell examples.
             for line, tokens in _commands(text):
                 count += 1
-                if (doc.relative_to(ROOT).as_posix(), " ".join(tokens)) in HISTORICAL_COMMANDS:
-                    continue
                 error = _command_error(tokens)
                 if error:
                     failures.append(f"{doc.relative_to(ROOT)}:{line}: {error}")
@@ -175,11 +167,11 @@ def test_documented_command_paths_are_registered_and_public() -> None:
     [
         (
             "booley board amend slug --changes-file changes.json --preview",
-            "unknown subcommand board amend",
+            "unknown subcommand board",
         ),
         ("booley shell -- echo hello", "hidden subcommand shell"),
         ("booley session prepare", "hidden subcommand session prepare"),
-        ("booley board prepare-review", "hidden subcommand board prepare-review"),
+        ("booley board prepare-review", "unknown subcommand board"),
         ("booley flow coverage_analyst --campaign coverage.json", "unknown Flow coverage_analyst"),
         ("python -m booley.ticket_board not-a-command", "unknown subcommand not-a-command"),
     ],
@@ -212,7 +204,7 @@ CLASSIFIED=$(python -m booley.ticket_board classify)
     [
         "booley eda grant add /project --kind vivado",
         "booley eda installation list",
-        "booley board --project-root /project show slug",
+        "python -m booley.ticket_board show slug",
         "python -m booley.ticket_board amend slug --changes-file file --apply --expected-preview digest",
     ],
 )

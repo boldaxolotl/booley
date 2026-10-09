@@ -343,7 +343,6 @@ async def test_deleted_goal_worktree_does_not_break_status_or_dashboard(
     from booley.goals.status import build_status
     from booley.mcp.goal_tools import dispatch_goal_tool
 
-    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
     work = tmp_path / "removed"
     healthy = tmp_path / "healthy"
     unoccupied = tmp_path / "unoccupied"

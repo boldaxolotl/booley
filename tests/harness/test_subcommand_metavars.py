@@ -62,18 +62,6 @@ def test_top_level_usage_includes_every_public_command(parser: argparse.Argument
 @pytest.mark.parametrize(
     ("path", "hidden"),
     [
-        (
-            ("board",),
-            {
-                "request-review",
-                "refresh-review",
-                "finalize-review",
-                "review-exec",
-                "prepare-review",
-                "review-briefing",
-                "blocked-briefing",
-            },  # Deprecated review adapters are removed from the help listing.
-        ),
         (("session",), {"prepare"}),  # Hidden lifecycle compatibility command.
         (("upgrade",), set()),
         (("projects",), set()),

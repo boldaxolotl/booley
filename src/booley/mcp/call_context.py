@@ -7,10 +7,10 @@ use. :func:`resolve_call_context` is now the one place that decides them, so a
 later resolver can retarget a whole call (jobs, state, logs, and the endpoint
 subprocess environment) without touching every reader.
 
-Outside Goal preview every value equals the scattered read it replaced: the explicit
+Ordinary calls use the explicit
 ``work_dir`` or the server's cwd, the container-wide jobs root, and the server
 process's own ``BOOLEY_*`` variables. ``subprocess_env_overrides`` is empty.
-With preview enabled, an explicit worktree selects its active Goal Record and
+An explicit worktree selects its active Goal Record and
 freezes one Run Binding. All evidence paths and subprocess overrides follow that
 record; an omitted worktree is refused while any occupying record exists.
 ``ticket_file`` feeds :func:`~booley.mcp.flow_execution_selection.select_flow_execution`.
@@ -26,12 +26,12 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
+from booley.core.checkout_role import SourceCheckoutProjectError
 from booley.goals.binding import GoalBindingError, GoalRunBinding, bind_run
 from booley.goals.paths import record_paths
-from booley.goals.preview import goal_mode_preview_enabled
 from booley.goals.protected_inputs import ProtectedInputRoots
 from booley.goals.session_key import session_key
-from booley.goals.store import GoalRecordCorruptError, GoalStore
+from booley.goals.store import GoalRecordCorruptError, GoalStore, WorktreeIdentityError
 from booley.mcp.flow_execution_selection import configured_ticket_file
 from booley.runtime.job_records import make_run_id
 from booley.runtime.project_dir import resolve_project_dir
@@ -101,10 +101,9 @@ def _env_path(name: str) -> Path | None:
 def resolve_call_context(arguments: Mapping[str, Any]) -> CallContext:
     """Resolve the facts one tool call with *arguments* runs under."""
     explicit = _explicit_work_dir(arguments)
-    if goal_mode_preview_enabled():
-        goal = _goal_call_context(arguments, explicit)
-        if goal is not None:
-            return goal
+    goal = _goal_call_context(arguments, explicit)
+    if goal is not None:
+        return goal
     return CallContext(
         explicit_work_dir=explicit,
         jobs_root=container_jobs_root(),
@@ -130,12 +129,33 @@ def require_goal_work_dir(arguments: Mapping[str, Any], store: GoalStore) -> Non
         )
 
 
+def project_goal_store() -> GoalStore | None:
+    """Resolve the session's Goal store, preserving ordinary calls without a Project."""
+    try:
+        return GoalStore(resolve_project_dir())
+    except (FileNotFoundError, SourceCheckoutProjectError):
+        return None
+
+
 def _goal_call_context(arguments: Mapping[str, Any], explicit: Path | None) -> CallContext | None:
-    store = GoalStore(resolve_project_dir())
+    store = project_goal_store()
+    if store is None:
+        return None
     require_goal_work_dir(arguments, store)
     if explicit is None:
         return None
-    record = store.active_for_worktree(explicit)
+    try:
+        record = store.active_for_worktree(explicit)
+    except WorktreeIdentityError:
+        scan = store.list_active()
+        if scan.corrupt:
+            raise GoalRecordCorruptError(scan.corrupt) from None
+        if any(
+            explicit.resolve().is_relative_to(Path(item.worktree_path).resolve())
+            for item in scan.records
+        ):
+            raise
+        return None
     if record is None:
         return None
     invocation = make_run_id("goal", compact_utc_now(), 0)
@@ -170,7 +190,7 @@ def _goal_call_context(arguments: Mapping[str, Any], explicit: Path | None) -> C
 def binding_from_environment() -> GoalRunBinding | None:
     """Deserialize admission facts in an endpoint; never bind again at execution."""
     raw = os.environ.get("BOOLEY_GOAL_RUN_BINDING")
-    if not goal_mode_preview_enabled() or not raw:
+    if not raw:
         return None
     try:
         return GoalRunBinding.from_json(json.loads(raw))

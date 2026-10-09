@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -11,10 +12,11 @@ from booley.runtime import devcontainer, session_issuance
 from booley.runtime.jsonc import Document
 from tests.conftest import symlink_or_skip
 
+_REAL_TASK_FILE_TRACKED = tasks._task_file_tracked
+
 
 @pytest.fixture
 def project(tmp_path, monkeypatch):
-    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
     root = tmp_path / "project"
     root.mkdir()
     data = root / ".booley_project"
@@ -23,6 +25,7 @@ def project(tmp_path, monkeypatch):
     (common / "info").mkdir(parents=True)
     (common / "info/exclude").write_bytes(b"# user\n/other\n")
     monkeypatch.setattr(tasks, "git_directories", lambda _: SimpleNamespace(common_dir=common))
+    monkeypatch.setattr(tasks, "_task_file_tracked", lambda _: False)
     monkeypatch.setattr(session_issuance, "stamp_path_for_identity", lambda _: root / "stamp.json")
     monkeypatch.setattr(
         session_issuance, "_legacy_stamp_path", lambda _: root / "legacy-stamp.json"
@@ -32,7 +35,7 @@ def project(tmp_path, monkeypatch):
     )
 
 
-def test_new_directory_task_preview_env_and_idempotent_disable(project, monkeypatch):
+def test_new_directory_task_and_idempotent_disable(project, monkeypatch):
     baseline = project.exclude.read_bytes()
     assert tasks.inspect(project.root, project.data).pending
     assert not project.file.exists()
@@ -40,15 +43,15 @@ def test_new_directory_task_preview_env_and_idempotent_disable(project, monkeypa
     assert transaction.applied
     task = Document(project.file.read_bytes().decode()).root.value["tasks"][0]
     assert task["command"] == "booley dashboard"
-    assert task["options"]["env"] == {"BOOLEY_GOAL_MODE_PREVIEW": "1"}
+    assert "options" not in task
     assert task["runOptions"] == {"runOn": "folderOpen", "instanceLimit": 1}
     assert project.exclude.read_bytes().startswith(baseline)
     assert not tasks.inspect(project.root, project.data).pending
-    monkeypatch.delenv("BOOLEY_GOAL_MODE_PREVIEW")
+    (project.data / "booley.toml").write_text("[sandbox]\ndashboard = false\n")
     tasks.reconcile(project.root, project.data)
     assert not project.file.exists()
     assert project.exclude.read_bytes() == baseline
-    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
+    (project.data / "booley.toml").write_text("[sandbox]\ndashboard = true\n")
     tasks.reconcile(project.root, project.data)
     assert b"/.vscode\n" in project.exclude.read_bytes()
 
@@ -60,7 +63,7 @@ def test_disable_retains_exclude_ownership_until_user_tail_allows_removal(projec
     tasks.reconcile(project.root, project.data)
     owned = project.exclude.read_bytes()
     project.exclude.write_bytes(owned + b"# user appended\n/extra\n")
-    monkeypatch.delenv("BOOLEY_GOAL_MODE_PREVIEW")
+    (project.data / "booley.toml").write_text("[sandbox]\ndashboard = false\n")
     tasks.reconcile(project.root, project.data)
     owner_path = project.data / "runtime/dashboard-task.json"
     owner = json.loads(owner_path.read_bytes())
@@ -140,7 +143,7 @@ def test_user_edited_owned_task_never_overwritten_or_removed(project, monkeypatc
     project.file.write_bytes(project.file.read_bytes().replace(*edit))
     edited = project.file.read_bytes()
     assert "user-edited" in tasks.inspect(project.root, project.data).diagnostics[0]
-    monkeypatch.delenv("BOOLEY_GOAL_MODE_PREVIEW")
+    (project.data / "booley.toml").write_text("[sandbox]\ndashboard = false\n")
     tasks.reconcile(project.root, project.data)
     assert project.file.read_bytes() == edited
 
@@ -228,7 +231,7 @@ def test_both_issuance_success_paths_and_failure_rollback(project, monkeypatch, 
     monkeypatch.setattr(session_issuance, "_issue_document_with_requirements", issued)
     session_issuance._persist_prepared(project.root, prepared, requirements=requirements)
     assert project.file.exists()
-    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "0")
+    (project.data / "booley.toml").write_text("[sandbox]\ndashboard = false\n")
     session_issuance._persist_prepared(project.root, prepared, requirements=requirements)
     assert not project.file.exists()
 
@@ -256,18 +259,11 @@ def test_issuance_failure_after_task_publication_restores_previous_files(project
     assert not (project.data / "runtime/dashboard-task.json").exists()
 
 
-def test_preview_off_leaves_existing_unowned_malformed_tasks_unobserved(project, monkeypatch):
+def test_dashboard_disabled_leaves_unowned_malformed_tasks_unobserved(project, monkeypatch):
     project.file.parent.mkdir()
     project.file.write_bytes(b"user unsupported document")
-    monkeypatch.delenv("BOOLEY_GOAL_MODE_PREVIEW")
+    (project.data / "booley.toml").write_text("[sandbox]\ndashboard = false\n")
     assert tasks.inspect(project.root, project.data) == tasks.TaskPlan()
-
-
-def test_preview_env_is_sealed_into_container_for_mcp_and_task():
-    spec = devcontainer.build_devcontainer_spec(goal_preview=True, dashboard=False)
-    assert spec["containerEnv"]["BOOLEY_GOAL_MODE_PREVIEW"] == "1"
-    assert "BOOLEY_GOAL_MODE_PREVIEW" not in spec["remoteEnv"]
-    assert "BOOLEY_GOAL_MODE_PREVIEW" not in devcontainer.build_devcontainer_spec()["containerEnv"]
 
 
 @pytest.mark.parametrize("baseline", [b"# user no trailing newline", b"# user\n"])
@@ -278,7 +274,7 @@ def test_disable_preserves_exact_exclude_separator_and_deleted_task(
     tasks.reconcile(project.root, project.data)
     project.file.unlink()  # User removal stays an opt-out while enabled.
     assert tasks.inspect(project.root, project.data).diagnostics
-    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "0")
+    (project.data / "booley.toml").write_text("[sandbox]\ndashboard = false\n")
     tasks.reconcile(project.root, project.data)
     assert not project.file.exists()
     assert project.exclude.read_bytes() == baseline
@@ -304,7 +300,7 @@ def test_disable_restores_absent_exclude_file(project, monkeypatch):
     project.exclude.unlink()
     tasks.reconcile(project.root, project.data)
     assert project.exclude.exists()
-    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "0")
+    (project.data / "booley.toml").write_text("[sandbox]\ndashboard = false\n")
     tasks.reconcile(project.root, project.data)
     assert not project.exclude.exists()
 
@@ -374,17 +370,17 @@ def test_disable_keeps_user_created_empty_vscode(project):
 
 def test_reenable_does_not_claim_user_recreated_vscode(project, monkeypatch):
     tasks.reconcile(project.root, project.data)
-    monkeypatch.delenv("BOOLEY_GOAL_MODE_PREVIEW")
+    (project.data / "booley.toml").write_text("[sandbox]\ndashboard = false\n")
     tasks.reconcile(project.root, project.data)
     assert not project.file.parent.exists()
     project.file.parent.mkdir()
     user_file = project.file.parent / "user.txt"
     user_file.write_bytes(b"keep")
     baseline = project.exclude.read_bytes()
-    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
+    (project.data / "booley.toml").write_text("[sandbox]\ndashboard = true\n")
     tasks.reconcile(project.root, project.data)
     assert project.exclude.read_bytes() == baseline
-    monkeypatch.delenv("BOOLEY_GOAL_MODE_PREVIEW")
+    (project.data / "booley.toml").write_text("[sandbox]\ndashboard = false\n")
     tasks.reconcile(project.root, project.data)
     assert user_file.read_bytes() == b"keep"
     assert project.file.parent.exists()
@@ -418,3 +414,186 @@ def test_crlf_task_enable_update_disable_restores_exact_bytes(project, monkeypat
     tasks.reconcile(project.root, project.data)
     assert project.file.read_bytes() == original
     assert project.exclude.read_bytes() == exclude
+
+
+def test_owned_task_update_removes_environment_and_keeps_disable_reversible(project, monkeypatch):
+    obsolete = {
+        **tasks.TASK,
+        "options": {"env": {"BOOLEY_" + "GOAL_MODE" + "_PREVIEW": "1"}},
+    }
+    baseline = project.exclude.read_bytes()
+    with monkeypatch.context() as prior:
+        prior.setattr(tasks, "TASK", obsolete)
+        tasks.reconcile(project.root, project.data)
+    assert "options" in Document(project.file.read_text()).root.value["tasks"][0]
+    assert tasks.reconcile(project.root, project.data).applied
+    assert Document(project.file.read_text()).root.value["tasks"] == [tasks.TASK]
+    assert not tasks.inspect(project.root, project.data).pending
+    (project.data / "booley.toml").write_text("[sandbox]\ndashboard = false\n")
+    tasks.reconcile(project.root, project.data)
+    assert not project.file.exists()
+    assert project.exclude.read_bytes() == baseline
+
+
+def test_new_non_git_directory_silently_has_no_dashboard_plan(tmp_path, caplog):
+    root = tmp_path / "new"
+    root.mkdir()
+    project_dir = root / ".booley_project"
+    assert tasks.inspect(root, project_dir) == tasks.TaskPlan()
+    assert not tasks.reconcile(root, project_dir).applied
+    assert caplog.records == []
+    assert list(root.iterdir()) == []
+
+
+@pytest.mark.parametrize("unit,newline", [("  ", "\n"), ("    ", "\r\n"), ("\t", "\n")])
+def test_owned_task_upgrade_preserves_indent_and_unrelated_text(
+    project, monkeypatch, unit, newline
+):
+    import json
+
+    old_task = {**tasks.TASK, "options": {"env": {"old-preview": "1"}}}
+    source = (
+        '{"version": "2.0.0", "tasks": [\n'
+        + unit * 2
+        + json.dumps(old_task, indent=unit).replace("\n", "\n" + unit * 2)
+        + "\n]}\n"
+    )
+    source = source.replace("\n", newline)
+    project.file.parent.mkdir()
+    project.file.write_bytes(source.encode())
+    owner = project.data / "runtime/dashboard-task.json"
+    owner.parent.mkdir()
+    raw = Document(source).root.members["tasks"].children[0]
+    owner.write_text(
+        json.dumps(
+            {
+                "schema": 1,
+                "root": str(project.root.resolve()),
+                "enabled": True,
+                "task": source[raw.start : raw.end],
+            }
+        )
+    )
+    tasks.reconcile(project.root, project.data)
+    after = project.file.read_bytes().decode()
+    assert newline + unit * 3 + '"label":' in after
+    assert newline + unit * 2 + "}" in after
+    assert "options" not in after
+    assert after.startswith('{"version": "2.0.0", "tasks": [')
+    assert after.endswith(newline + "]}" + newline)
+    assert not tasks.inspect(project.root, project.data).pending
+
+
+def test_task_inspection_resolves_git_directories_once(project, monkeypatch):
+    original = tasks.git_directories
+    calls = []
+
+    def directories(root):
+        calls.append(root)
+        return original(root)
+
+    monkeypatch.setattr(tasks, "git_directories", directories)
+    assert tasks.inspect(project.root, project.data).pending
+    assert calls == [project.root]
+
+
+@pytest.mark.parametrize("owned", [False, True])
+@pytest.mark.parametrize("disabled", [False, True])
+def test_tracked_task_file_is_preserved_with_informational_notice(
+    tmp_path, monkeypatch, owned, disabled
+):
+    def git(*args):
+        result = subprocess.run(
+            ["git", *args], cwd=tmp_path, capture_output=True, text=True, timeout=30, check=True
+        )
+        return result.stdout
+
+    git("init", "-q")
+    data = tmp_path / ".booley_project"
+    data.mkdir()
+    task_file = tmp_path / ".vscode/tasks.json"
+    if owned:
+        tasks.reconcile(tmp_path, data)
+    else:
+        task_file.parent.mkdir()
+        task_file.write_text('{"version":"2.0.0","tasks":[]}\n')
+    git("add", "-f", ".vscode/tasks.json")
+    if disabled:
+        (data / "booley.toml").write_text("[sandbox]\ndashboard = false\n")
+    before = {
+        path.relative_to(tmp_path): path.read_bytes()
+        for path in tmp_path.rglob("*")
+        if path.is_file() and ".git" not in path.parts
+    }
+    with monkeypatch.context() as changed_task:
+        changed_task.setattr(tasks, "TASK", {**tasks.TASK, "command": "booley dashboard --new"})
+        plan = tasks.inspect(tmp_path, data)
+        assert not plan.pending and not plan.diagnostics
+        # An owned task already carries the Dashboard label: nothing to tell the user.
+        assert len(plan.notices) == (0 if disabled or owned else 1)
+        if not disabled and not owned:
+            assert plan.notices == (
+                "Dashboard task not installed: .vscode/tasks.json is tracked by Git; add the task yourself or set [sandbox].dashboard = false",
+            )
+        assert not tasks.reconcile(tmp_path, data).applied
+    after = {
+        path.relative_to(tmp_path): path.read_bytes()
+        for path in tmp_path.rglob("*")
+        if path.is_file() and ".git" not in path.parts
+    }
+    assert after == before
+
+
+@pytest.mark.parametrize("check_only", [False, True])
+def test_init_tracked_task_notice_is_one_informational_line(
+    tmp_path, monkeypatch, capsys, check_only
+):
+    from booley.harness import init_cmd
+    from booley.harness.setup.common import InitContext
+
+    notice = (
+        "Dashboard task not installed: .vscode/tasks.json is tracked by Git; "
+        "add the task yourself or set [sandbox].dashboard = false"
+    )
+    plan = SimpleNamespace(dashboard_tasks=tasks.TaskPlan(notices=(notice,)), pending_details=())
+    monkeypatch.setattr(init_cmd, "_interactive_precondition_failed", lambda *a, **kw: False)
+    monkeypatch.setattr(
+        init_cmd,
+        "_interactive_spec_sources",
+        lambda *a, **kw: SimpleNamespace(build=lambda: None, mask_paths=()),
+    )
+    monkeypatch.setattr(init_cmd, "_inspect_interactive_plan", lambda *a: plan)
+    monkeypatch.setattr(
+        init_cmd,
+        "_apply_interactive_plan",
+        lambda *a: pytest.fail("informational plan should not need changes"),
+    )
+    ctx = InitContext(project_root=tmp_path, check_only=check_only)
+    init_cmd._step_interactive(ctx)
+    output = capsys.readouterr().out
+    assert output.count(notice) == 1
+    assert "[!!]" not in output
+    assert ctx.results[-1].status == "skip"
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        subprocess.CompletedProcess([], 128, "", "Git index unavailable"),
+        subprocess.TimeoutExpired(cmd="git", timeout=30),
+        OSError("git missing"),
+    ],
+    ids=["exit-128", "timeout", "start-failure"],
+)
+def test_git_tracking_failure_refuses_task_mutation(project, monkeypatch, failure):
+    def ls_files(*_args, **_kwargs):
+        if isinstance(failure, BaseException):
+            raise failure
+        return failure
+
+    monkeypatch.setattr(tasks, "_task_file_tracked", _REAL_TASK_FILE_TRACKED)
+    monkeypatch.setattr(tasks.subprocess, "run", ls_files)
+    plan = tasks.inspect(project.root, project.data)
+    assert not plan.pending
+    assert "could not inspect Dashboard task Git tracking" in plan.diagnostics[0]
+    assert not project.file.exists()

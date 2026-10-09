@@ -1,4 +1,4 @@
-"""Regression contracts for shipped ticket workflow skills."""
+"""Regression contracts for shipped workflow skills."""
 
 import re
 
@@ -13,17 +13,6 @@ def _skill_text(name: str, relative: str = "SKILL.md") -> str:
 
 def _compact_skill_text(name: str, relative: str = "SKILL.md") -> str:
     return " ".join(_skill_text(name, relative).split())
-
-
-def test_triage_routes_confirmed_booley_bugs_to_feedback_skill_by_default():
-    main = _skill_text("booley-ticket-triage")
-    blocked = _skill_text("booley-ticket-triage", "steps/02-blocked.md")
-    review = _skill_text("booley-ticket-triage", "steps/03-review.md")
-
-    assert "invoke `/booley-feedback` by default" in main
-    assert "invoke\n`/booley-feedback`" in blocked
-    assert "invoke `/booley-feedback`" in review
-    assert "redacted export for the user to share manually" in main
 
 
 def test_feedback_routes_private_project_bugs_through_verified_synthetic_reproducer():
@@ -84,352 +73,6 @@ def test_setup_does_not_offer_removed_feedback_submission_workflow():
     assert "A separate redacted export is created only when the user explicitly" in findings
     assert "only when the user explicitly asks" in findings
     assert "one-time Feedback offer" not in cleanup
-
-
-def test_triage_leads_with_explicit_blockers_and_evidence_links():
-    blocked = _skill_text("booley-ticket-triage", "steps/02-blocked.md")
-
-    assert "**Blocked by** section" in blocked
-    assert "state the board-level block reason" in blocked
-    assert "one per numbered item" in blocked
-    assert "[blocked.md](/absolute/path/to/blocked.md)" in blocked
-    assert "Escalation log: not present" in blocked
-    assert "Do not open with the passing checks" in blocked
-
-
-def test_triage_recovers_acceptance_input_changes_through_a_new_generation():
-    blocked = _skill_text("booley-ticket-triage", "steps/02-blocked.md")
-    summary = _skill_text("booley-ticket-triage", "steps/04-summary.md")
-
-    ordered_steps = (
-        'python -m booley.ticket_board return-to-draft "$SLUG"',
-        "Correct the authoring filesets",
-        "Resolve the draft Ticket's absolute path",
-        'python -m booley.ticket_board validate-ticket "<absolute draft Ticket path>" --check-git',
-        'python -m booley.ticket_board enqueue "$SLUG"',
-    )
-    positions = [blocked.index(step) for step in ordered_steps]
-
-    assert positions == sorted(positions)
-    assert "acceptance-input-change-required" in blocked
-    assert "logs/<slug>/runs/<NNN>/" in blocked
-    assert "preserves the prior Ticket baseline" in blocked
-    assert "fresh Ticket authoring" in blocked
-    assert "`outer_worktree` and `project_worktree`" in blocked
-    assert "`booley board return-to-draft" not in blocked
-    assert "`booley board enqueue" not in blocked
-    assert "published and enqueued" in blocked
-    assert "published and queued" not in blocked
-    assert "| Returned to draft | <n> | ... |" in summary
-
-
-def test_triage_review_briefing_is_fixed_compact_and_html_linked():
-    review = _skill_text("booley-ticket-triage", "steps/03-review.md")
-    template = _skill_text("booley-ticket-triage", "review-template.md")
-
-    for required in (
-        "booley board show $SLUG",
-        "fast freshness check",
-        "Do not run `board review` during\ninteractive triage",
-        "Do not routinely reread",
-        "every declared criterion",
-        "feature-branch commit (oldest first)",
-        "changed path (including renames and submodules)",
-        "current-run usage summary",
-        "without `triage_report` in their `on_success` list",
-        "deterministic criteria",
-    ):
-        assert required in review
-    for required in (
-        "| Category | Criterion | Required? | Status | Metric / evidence |",
-        "#### Scope deviations",
-        "#### Commit history",
-        "`<abbreviated SHA>` — <complete commit subject; one line per commit, oldest first>",
-        "#### Changed files",
-        "#### Reports",
-        "[Developer Agent report (REPORT.md)](/absolute/path/to/REPORT.md)",
-        "[Polished HTML report](/absolute/runtime/path/to/report.html)",
-        "#### Explanation highlights",
-        "#### Review findings and dispositions",
-        "#### Run economics",
-    ):
-        assert required in template
-    ordered_sections = (
-        "#### Reports",
-        "#### Decision summary",
-        "#### Findings",
-        "#### Explanation highlights",
-        "#### Scope deviations",
-        "#### Changed files",
-        "#### Criteria",
-        "#### Review findings and dispositions",
-        "#### Commit history",
-        "#### Run economics",
-    )
-    assert [template.index(section) for section in ordered_sections] == sorted(
-        template.index(section) for section in ordered_sections
-    )
-    assert template.index("Developer Agent report") < template.index("Polished HTML report")
-    assert "run-summary.md" not in template
-    assert "usage.md" not in template
-    assert "prepare-review $SLUG" not in review
-    assert "command:livePreview" not in template
-
-
-def test_triage_treats_all_review_modes_as_freshness_sensitive():
-    review = _skill_text("booley-ticket-triage", "steps/03-review.md")
-    contract = " ".join(review.split())
-
-    for required in (
-        "Both `review_*_done` and `review_*_clean` are freshness-sensitive",
-        "recorded source fingerprint",
-        "accepted waiver",
-        "including `MINOR`",
-    ):
-        assert required in contract
-
-
-def test_triage_review_distinguishes_direct_fix_from_clean_reset():
-    review = _skill_text("booley-ticket-triage", "steps/03-review.md")
-    contract = " ".join(review.split())
-
-    for required in (
-        "For current accepted review, ask: **approve** / **reset** / **archive** / **skip**",
-        "For stale accepted review, ask: **restore exact accepted heads** / **reset** / **archive** / **skip**",
-        "STALE ACCEPTANCE — Ticket heads changed after acceptance.",
-        "For a briefing marked **unaccepted**",
-        "Criteria Satisfaction Records are immutable",
-        "save every post-acceptance commit on a separate safety branch",
-        "A new `git revert` commit does not restore an accepted head",
-        "publishes first acceptance, and completes the Ticket",
-        "This is a clean start",
-        "Do not selectively retain reviewed work",
-        "never resumes through an ordinary move to `queued`",
-        "booley board reset $SLUG",
-        '--reason "<correction reason>"',
-    ):
-        assert required in contract
-    assert "acceptance recovery" not in contract
-
-
-def test_ticket_create_defaults_every_review_to_corrective_mode():
-    skill = _skill_text("booley-ticket-create")
-    template = _skill_text("booley-ticket-create", "TICKET_TEMPLATE.md")
-    contract = " ".join(skill.split())
-
-    assert "RTL bugs REVIEW" in skill
-    assert "TB quality REVIEW" in skill
-    assert "rtl: {bugs: clean}" in template
-    assert "tb: {quality: clean}" in template
-    assert "Choose exactly one `REVIEW` outcome" in contract
-    assert (
-        "`clean` when completion plus no open findings is required because it implies `done`"
-        in contract
-    )
-
-
-def test_ticket_create_hands_human_off_to_booley_run():
-    skill = _skill_text("booley-ticket-create")
-
-    assert "suggest `booley run`" in skill
-    assert "/booley-run-and-fix" not in skill
-
-
-def test_ticket_create_companions_cover_target_plan_decisions():
-    guidance = _skill_text("booley-ticket-create", "TICKET_CREATION_TEMPLATE.md")
-    grilling = _skill_text("booley-ticket-create", "grilling.md")
-
-    assert "Criteria, Target Plan" in guidance
-    for required in (
-        "New Target lifecycle",
-        "coexist",
-        "replace a runnable predecessor",
-        "evidence-only",
-        "(new)",
-        "(temp)",
-    ):
-        assert required in grilling
-
-
-def test_ticket_create_stops_at_ticket_target_and_placeholder_authoring():
-    skill = _skill_text("booley-ticket-create")
-    contract = " ".join(skill.split())
-
-    for required in (
-        "Ticket creation authors only the Ticket, Target definitions, their referenced filesets",
-        "local parameter declarations, unambiguously owned",
-        "empty placeholder files for Scope paths marked `[new]`",
-        "existing definitions remain unchanged",
-        "The developer who runs the Ticket authors its implementation",
-        "A placeholder is a zero-byte file",
-        "do not put declarations, modules, packages, assertions, stimulus",
-        "approved planned Target definitions, referenced inputs, and owned test tables",
-        "create only empty placeholders for `[new]` Scope paths",
-        "do not implement any part of the Ticket",
-        "stop and report the blocker",
-        "creating that code is outside this skill",
-    ):
-        assert required in contract
-    for retired in (
-        "author every needed Target/control file",
-        "Create or edit all required .core files, constraints",
-    ):
-        assert retired not in contract
-
-
-def test_ticket_create_grills_frontiers_then_uses_one_ticket_approval():
-    skill = _skill_text("booley-ticket-create")
-    grilling = _skill_text("booley-ticket-create", "grilling.md")
-    contract = " ".join(f"{skill}\n{grilling}".split())
-
-    for required in (
-        "ask the entire currently unblocked frontier in each round",
-        "The **frontier** is every unresolved decision whose prerequisites are already settled",
-        "Ask the whole frontier in one round",
-        "defer it to a later round",
-        "After each response, record the settled decisions and recompute the frontier",
-        "continue directly to the draft gate",
-        "The complete ticket and any new Target definitions form the one post-grill review artifact",
-        "Detailed mode skips 2d and 2e",
-        "single post-grill review artifact",
-        "MANDATORY TICKET APPROVAL",
-        "Target Plan",
-        "New and Temporal Target entries",
-        "complete Target definition",
-        "Target Plan: none",
-        "Create this ticket and Target Plan? (yes / edit / cancel)",
-        "Author them exactly as approved",
-        "requires changing an approved Target definition, return to 2f",
-        "require no further user confirmation",
-        "Basis publication remains an internal implementation detail",
-    ):
-        assert required in contract
-    for retired in (
-        "explicit approval to seal",
-        "separate seal gate",
-        "combined ticket + Target diff",
-    ):
-        assert retired not in contract
-    assert "one question at a time" not in contract.lower()
-    assert (
-        "summarize the resulting shared understanding and ask the user to confirm it"
-        not in contract
-    )
-
-
-def test_ticket_create_applies_free_form_project_guidance_only_during_creation():
-    skill = _skill_text("booley-ticket-create")
-    contract = " ".join(skill.split())
-
-    for required in (
-        "Ticket Creation Guidance is Project-owned, free-form Markdown",
-        "consumed **only here, during creation**",
-        "Read `ticket_creation.md` when it exists",
-        "read `ticket_defaults.md` only when `ticket_creation.md` is absent",
-        "Start from the shipped §B/§D inference",
-        "Project guidance overrides shipped inference",
-        "explicit instructions for the current Ticket override the Project file",
-        "Validate the resolved Ticket through §C",
-        "has no schema, required headings, completeness check, or static validation pass",
-        "Ambiguous, conflicting, or unresolvable applicable guidance",
-        "treat uncommented Project-authored mappings as expressions of intent",
-        "A comment-only scaffold adds no guidance",
-        "validation never does",
-        '--document-file "$TICKET_PATH"',
-    ):
-        assert required in contract
-    assert "Target annotations, and `on_success`" in contract
-    for retired in (
-        "All five blocks must then be present",
-        "An active file fully replaces",
-        "Validate the **entire active file**",
-        "merge, add/remove, or inheritance syntax",
-    ):
-        assert retired not in contract
-    assert "`on_success` values" in contract
-    assert "remove_targets" not in contract
-
-
-def test_ticket_create_fixes_target_plan_at_creation_time():
-    skill = _skill_text("booley-ticket-create")
-    template = _skill_text("booley-ticket-create", "TICKET_TEMPLATE.md")
-    contract = " ".join(skill.split())
-
-    for required in (
-        "The Target Plan is derived",
-        "Use exact registered Target and test selectors",
-        "(replaces <existing Target>)",
-        "An annotated Target requires `merge`",
-    ):
-        assert required in contract
-    assert "do not author target_plan" in template
-
-
-def test_ticket_create_reconciles_scope_and_provider_dependencies() -> None:
-    skill = _skill_text("booley-ticket-create")
-    contract = " ".join(skill.split())
-
-    for required in (
-        "ordinary scope-overlap and interface-dependency inference",
-        "add that provider to `dependencies` in human mode",
-        "reject the request and name every missing provider dependency",
-        "After Criteria and the derived Target Plan are fully resolved, rerun §A",
-        "mandatory in both lightweight and detailed modes",
-        "reconcile the final `dependencies`",
-    ):
-        assert required in contract
-
-
-def test_ticket_create_distinguishes_paired_repository_destinations() -> None:
-    skill = _skill_text("booley-ticket-create")
-    template = _skill_text("booley-ticket-create", "TICKET_TEMPLATE.md")
-    contract = " ".join(skill.split())
-
-    for required in (
-        "`branch` is a branch name in the outer repository, without `refs/heads/`",
-        "`project_destination_ref` is the canonical full local branch ref in the paired Project repository",
-        "Agent mode requires `branch` explicitly",
-        "never obtains it from `git branch --show-current`",
-        "treat the supplied pair as authoritative",
-        "which repository rejected which Ticket field",
-        "workspace-materialization warning is a blocker",
-    ):
-        assert required in contract
-    assert "project_destination_ref: refs/heads/<project destination>" in template
-    assert "required when the paired Project repository destination differs" in template
-
-
-def test_ticket_create_agent_file_input_is_bounded_and_observable() -> None:
-    contract = " ".join(_skill_text("booley-ticket-create").split())
-
-    assert "--input-file" in contract
-    assert "readable regular file beneath the resolved Project directory" in contract
-    assert "before the initial dependency scan" in contract
-    assert "SHA-256" in contract and "byte count" in contract
-    for milestone in (
-        "input loaded",
-        "initial dependency and guidance resolution complete",
-        "Criteria, Target, and test resolution complete",
-        "mandatory final dependency rescan complete",
-        "draft/workspace created",
-        "Target definitions, test tables, and placeholders authored",
-        "validation complete",
-        "enqueue complete",
-    ):
-        assert milestone in contract
-    assert "retry the Ticket Create attempt" not in contract
-    assert "thinking-token" not in contract
-
-
-def test_ticket_creation_template_is_packaged_free_form_markdown():
-    template = _skill_text("booley-ticket-create", "TICKET_CREATION_TEMPLATE.md")
-
-    assert template.startswith("# Ticket Creation Guidance")
-    assert "in any Markdown form" in template
-    assert "corrective security review in every feature Ticket" in template
-    assert "standard simulation matrix" in template
-    assert "area does not regress" in template
-    assert "```yaml" not in template
 
 
 def test_setup_grills_one_dependency_frontier_per_round():
@@ -549,7 +192,7 @@ def test_agents_template_limits_doctor_during_task_work():
         "do not run it for task work or handoffs",
         "in the handoff instead of fixing them",
         "Never edit `booley.toml`, `.core` files, `doctor-waivers.toml`, "
-        "or Ticket Board directories to silence such a finding",
+        "or Goal Records to silence such a finding",
         "deep verification (`/booley-heal`) is due",
     ):
         assert required in agents
@@ -779,19 +422,6 @@ def test_setup_plan_template_records_tech_cell_evidence_not_cell_names_only():
     assert "cell-name list alone" in template
 
 
-def test_triage_reset_retains_baseline_and_routes_contract_changes_to_reauthoring():
-    reference = _compact_skill_text("booley-ticket-triage", "flow-specialist-reference.md")
-    blocked = _compact_skill_text("booley-ticket-triage", "steps/02-blocked.md")
-    assert "restores all participant worktrees at the same immutable Ticket baseline" in reference
-    assert "it preserves that baseline" in reference
-    assert (
-        "To change Target definitions or source baselines, return the Ticket to draft" in reference
-    )
-    assert "validate, and enqueue a new generation" in reference
-    assert "Lifecycle commands require a sealed Ticket" in reference
-    assert "discards implementation state and restores all participant worktrees" in blocked
-
-
 def test_setup_tells_owned_main_verilator_targets_to_declare_trace_files():
     step = _compact_skill_text("booley-setup", "steps/2-project-config.md")
 
@@ -799,27 +429,6 @@ def test_setup_tells_owned_main_verilator_targets_to_declare_trace_files():
     assert "Icarus needs no wiring" in step
     assert "owns its C++ `main()`" in step
     assert "`[flows.sim].trace_files` to that name relative to `run_cwd`" in step
-
-
-def test_triage_decides_waiver_candidates_one_at_a_time():
-    """ADR 0066: the triage skill is the approval interface; nothing defaults to accept."""
-    review = " ".join(_skill_text("booley-ticket-triage", "steps/03-review.md").split())
-    template = _skill_text("booley-ticket-triage", "review-template.md")
-
-    for required in (
-        "**decide waivers and approve**",
-        "**one at a time**",
-        "justification is unverified",
-        "never accept on the user's behalf",
-        "--accept-waivers <id,...> --reject-waivers <id,...>",
-        "records the rejections, promotes nothing, and leaves the Ticket in review",
-        "chore(<slug>): approve coverage waivers",
-    ):
-        assert required in review
-    assert template.index("#### Criteria") < template.index("#### Waiver Candidates")
-    assert template.index("#### Waiver Candidates") < template.index(
-        "#### Review findings and dispositions"
-    )
 
 
 _SETUP_TERMS = (
@@ -994,3 +603,77 @@ def test_setup_hidden_footprint_enables_stealth():
 def test_setup_grill_terms_are_in_glossary():
     terms = _glossary_terms()
     _assert_terms_defined(_skill_text("booley-setup", "steps/0-plan.md"), terms)
+
+
+@pytest.mark.parametrize(
+    ("relative", "requirements"),
+    [
+        (
+            "SKILL.md",
+            (
+                "work_dir",
+                "goalsets_used",
+                "default_skipped=true",
+                "skip_reason",
+                "Protected Inputs",
+                "Only Booley Flow and Specialist evidence",
+                'operation="resume"',
+                "proposal_id",
+                "approval_quote",
+                "Never fabricate approval or infer it from silence",
+                "goal_status(work_dir=..., rules=true)",
+                "caller-stable UUID",
+                "revalidation_required",
+                "Abandon only on explicit human instruction",
+                "instruction_quote",
+            ),
+        ),
+        (
+            "review.md",
+            (
+                "Session Summary",
+                "Change Log",
+                "freshness",
+                "Target changes",
+                "constraint edits",
+                "Open `done` findings need no second approval",
+                "merging or publishing remains a separate human instruction",
+            ),
+        ),
+    ],
+)
+def test_goal_skill_carries_lifecycle_and_human_authority_contract(relative, requirements):
+    text = _compact_skill_text("booley-goal", relative)
+    for requirement in requirements:
+        assert requirement in text
+
+
+def test_goal_skill_routes_machinery_failures_to_private_manual_feedback():
+    text = _compact_skill_text("booley-goal")
+    assert "/booley-feedback" in text
+    assert "private reproducer handling" in text
+    assert "redacted export only on explicit human request" in text
+    assert "leaves submission to the human" in text
+    assert "Do not weaken a Goal to hide an infrastructure failure" in text
+
+
+def test_goal_skill_links_packaged_review_and_names_only_public_goal_tools():
+    from booley.mcp.goal_tools import goal_tool_defs
+
+    text = _skill_text("booley-goal")
+    assert "[review.md](review.md)" in text
+    assert (skills_dir() / "booley-goal" / "review.md").is_file()
+    mentioned = set(re.findall(r"`(goal_[a-z_]+)(?:`|\()", text))
+    assert mentioned == {tool["name"] for tool in goal_tool_defs()}
+    assert "booley dashboard" in text
+    metadata = _skill_text("booley-goal", "agents/openai.yaml")
+    assert "$booley-goal" in metadata
+
+
+def test_heal_requires_user_decision_for_ticket_leftovers():
+    skill = " ".join(_skill_text("booley-heal").split())
+    assert "Treat every `tickets.leftover-*` finding as a user decision" in skill
+    assert "Ask the user before moving, archiving, or deleting" in skill
+    assert "including unchanged shipped guidance" in skill
+    assert "it does not authorize deletion" in skill
+    assert "Leave the finding active until the user approves" in skill

@@ -94,7 +94,7 @@ _REVIEW_FOCUS_DESCRIPTIONS: dict[str, str] = {
         "clock-domain crossings (CDC)"
     ),
     "review_rtl_spec": (
-        "Spec compliance: the RTL implements what the ticket/spec requires, no more and no less"
+        "Spec compliance: the RTL implements what the change request/spec requires, no more and no less"
     ),
     "review_rtl_code_style": (
         "Comments, naming, readability, maintainability, magic values, and "
@@ -225,9 +225,9 @@ def _render_reviewer_reference(satisfies_args: dict[str, str] | None) -> list[st
         "",
         "Read-only, single-focus code review. It reports `CRITICAL`, `MAJOR`, and "
         "`MINOR` findings. In Interactive Mode, review the selected files using your "
-        "specification or steering. In Ticket Mode, `_done` reports findings without "
-        "requiring fixes, but open findings make the Ticket wait for your approval even "
-        "without `review` in `on_success`. `_clean` requires every finding to be fixed "
+        "specification or steering. In Goal Mode, `done` reports findings without "
+        "requiring fixes; the review package includes open findings. `clean` requires "
+        "every finding to be fixed "
         "or waived with a justification.",
         "",
         "The result links saved review evidence, including rejected proposals for "
@@ -252,8 +252,7 @@ def _render_reviewer_reference(satisfies_args: dict[str, str] | None) -> list[st
             'Arguments: required `scope="<file,...>"` selects files; '
             '`steer=["<context>"]` adds review context; `dry_run=true` validates and previews '
             "without invoking an agent. The `spec` focus needs specification text: "
-            "Ticket Mode resolves its mounted ticket or linked spec automatically, "
-            'while Interactive Mode uses `spec="<path>"`.',
+            'use `spec="<path>"` or the spec file named by the Review Goal.',
         ]
     )
     return lines
@@ -271,7 +270,7 @@ def _render_mutation_tester_reference() -> list[str]:
         "",
         "**Mutation campaign modes:**",
         "",
-        "| Campaign | Ticket Mode (`mandatory` or `optional`) | Interactive Mode arguments |",
+        "| Campaign | Goal arguments | Interactive Mode arguments |",
         "|----------|-----------------------------------------|------------------------|",
         "| Default fixed | Target campaign with `target` + `scope` — generate 10 mutations and require all 10 detected | _(no goal arguments)_ — the same 10-of-10 campaign |",
         '| Explicit fixed | add `total: N` and `min_detected: K` | `count="N"` requires all N; add `min_detected=K` to require K |',
@@ -298,11 +297,9 @@ def _render_coverage_analyst_reference() -> list[str]:
         'and optional `instruction="<question>"`. The Analyst explains retained '
         "native evidence and proposes advisory next steps; its model only reads evidence. "
         "It does not run Simulation, read waveforms, evaluate Criteria, or approve waivers. "
-        "In Ticket Mode, Booley records its screened Waiver Candidates for a human "
-        "to accept or reject at Ticket review. "
-        "When every mandatory Criterion is met strictly or by a verified Provisional "
-        "Coverage Verdict, submit your run report and finish for human review without "
-        "blocking or marking strict coverage met. "
+        "In Goal Mode, screened Waiver Candidates support a proposed Goal change, "
+        "which needs human approval. Finish requires every Goal met; advisory "
+        "reports do not mark strict coverage met. "
         "Verified Target sources are optional; stale sources give report-only analysis.",
     ]
 

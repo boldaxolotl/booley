@@ -312,20 +312,3 @@ def test_cli_reports_a_broken_record_instead_of_a_traceback(
     assert cli.main(["show", "t1"]) == 2
 
     assert "state record for 't1' is not valid JSON" in capsys.readouterr().err
-
-
-def test_booley_board_reports_a_broken_record_instead_of_a_traceback(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    from argparse import Namespace
-
-    from booley.harness import booley
-
-    def broken(*_args):
-        raise StateRecordError("state record for 't1' is invalid")
-
-    monkeypatch.setattr(booley, "_run_board_command", broken)
-
-    assert booley._cmd_board(Namespace(board_command="show", slug="t1"), tmp_path) == 2
-
-    assert "state record for 't1' is invalid" in capsys.readouterr().err

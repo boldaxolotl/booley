@@ -77,7 +77,6 @@ from booley.flows.progress_lifecycle import (
 from booley.flows.sim.coverage_evidence import COVERAGE_POINT_REFERENCE_PATTERN
 from booley.goals.binding import GoalBindingError, GoalRunBinding
 from booley.goals.paths import record_paths
-from booley.goals.preview import goal_mode_preview_enabled
 from booley.goals.store import GoalStore, GoalStoreError
 from booley.goals.warnings import goal_warnings
 from booley.mcp.application import (
@@ -93,6 +92,7 @@ from booley.mcp.application import (
 from booley.mcp.call_context import (
     CallContext,
     container_jobs_root,
+    project_goal_store,
     resolve_call_context,
     resolve_work_dir,
 )
@@ -101,7 +101,6 @@ from booley.mcp.goal_tools import (
     GOAL_TOOL_NAMES,
     dispatch_goal_tool,
     goal_tool_defs,
-    goal_tools_visible,
 )
 from booley.mcp.session_observer import SessionMaintenanceApp, SessionObserver
 from booley.mcp.session_peer import PeerBoundary
@@ -160,12 +159,12 @@ _DEFAULT_MAX_STDERR_BYTES = 4_000
 # "Unknown MCP tool".
 _INTERACTIVE_HIDDEN_REASONS = {
     "tb_coder": (
-        "it writes testbench code as a step of an autonomous ticket run — "
+        "it writes testbench code for autonomous development — "
         "interactively, edit the testbench directly"
     ),
     "submit_run_report": (
-        "it finalizes an autonomous ticket run by writing REPORT.md for the "
-        "human reviewer — only the Developer Agent in Ticket Mode calls it"
+        "it writes an autonomous development report — in a Goal session, "
+        "provide the Session Summary to goal_finish"
     ),
 }
 _INTERACTIVE_MCP_EXCLUDED = frozenset(_INTERACTIVE_HIDDEN_REASONS)
@@ -230,7 +229,7 @@ _SLEEP_MCP_TOOL_DESCRIPTION = (
     "Diagnostic MCP tool (exposed only when BOOLEY_MCP_DEBUG_TOOLS is set): hold "
     "this MCP tool call open for 'seconds' server-side, then return timing "
     "details. Exists to measure the MCP client's MCP-tool-call kill ceiling "
-    "(ADR 0027) — it does no RTL work and is never useful for a ticket."
+    "(ADR 0027) — it does no RTL work and is intended for timing diagnostics."
 )
 
 # ADR 0027: endpoints heavy/long enough to outlive the MCP client's call cap run as
@@ -607,7 +606,7 @@ def _interactive_hidden_note(mcp_tool_name: str) -> str | None:
         return None
     return (
         f"{mcp_tool_name} is hidden in Interactive Mode: "
-        f"{_INTERACTIVE_HIDDEN_REASONS[mcp_tool_name]}. Ticket Mode runs still get it."
+        f"{_INTERACTIVE_HIDDEN_REASONS[mcp_tool_name]}."
     )
 
 
@@ -667,9 +666,9 @@ def _goal_tools_visible() -> bool:
     """Return whether the Goal Mode MCP tools are listed and callable.
 
     Only a human's Interactive Mode tab (never a nested Specialist server), and
-    only behind the Goal Mode preview switch (ADR 0067 D13).
+    as required by ADR 0067 D13.
     """
-    return goal_tools_visible(interactive=_interactive_mcp_mode() and _nested_allowlist() is None)
+    return _interactive_mcp_mode() and _nested_allowlist() is None
 
 
 def _coverage_evidence_mode() -> bool:
@@ -2161,11 +2160,10 @@ def _report_mcp_tool_def() -> dict[str, Any] | None:
         },
     }
 
-    if goal_mode_preview_enabled():
-        definition["schema"]["properties"]["work_dir"] = {
-            "type": "string",
-            "description": "Goal worktree whose reports to fetch. Required while Goal Mode is active.",
-        }
+    definition["schema"]["properties"]["work_dir"] = {
+        "type": "string",
+        "description": "Goal worktree whose reports to fetch. Required while Goal Mode is active.",
+    }
     return definition
 
 
@@ -2507,15 +2505,13 @@ def _dispatch_report(arguments: dict[str, Any]) -> McpToolContent:
     """Handle the synthetic report-fetch MCP tool without spawning a subprocess."""
     raw = arguments.get("endpoint")
     endpoint = raw.strip() if isinstance(raw, str) and raw.strip() else None
-    context = None
-    if goal_mode_preview_enabled():
-        work_dir_error = _validate_work_dir(arguments.get("work_dir"))
-        if work_dir_error is not None:
-            return _error_result(work_dir_error)
-        try:
-            context = resolve_call_context(arguments)
-        except (GoalBindingError, GoalStoreError) as exc:
-            return _error_result(str(exc))
+    work_dir_error = _validate_work_dir(arguments.get("work_dir"))
+    if work_dir_error is not None:
+        return _error_result(work_dir_error)
+    try:
+        context = resolve_call_context(arguments)
+    except (GoalBindingError, GoalStoreError) as exc:
+        return _error_result(str(exc))
     report = _latest_report(endpoint, context=context)
     content = [
         TextContent(type="text", text=_format_report_card(report, endpoint, context=context))
@@ -2633,12 +2629,12 @@ class LocatedJob:
 def job_roots() -> tuple[Path, ...]:
     """Container jobs and every retained Goal Record, including terminal ones."""
     roots = [container_jobs_root()]
-    if goal_mode_preview_enabled():
-        store = GoalStore(resolve_project_dir())
-        roots.extend(
-            record_paths(store.project_dir, rec.id).jobs_dir
-            for rec in store.list_records().records
-        )
+    store = project_goal_store()
+    if store is None:
+        return tuple(root for root in roots if root is not None)
+    roots.extend(
+        record_paths(store.project_dir, rec.id).jobs_dir for rec in store.list_records().records
+    )
     return tuple(dict.fromkeys(root for root in roots if root is not None))
 
 
@@ -4291,8 +4287,6 @@ async def _observe_tool_completion(
     observer: SessionObserver | None,
 ) -> McpToolPayload | McpInputRequired:
     """Add at most one shared warning without changing successful tool payloads."""
-    if not goal_mode_preview_enabled():
-        return payload
     if observer is not None:
         outcome = (
             "input-required"
@@ -4345,7 +4339,7 @@ async def _resolve_observed_request_context(
     request = (
         McpRequestContext() if context is None else _application_request_context(context, params)
     )
-    if observer is None or not goal_mode_preview_enabled():
+    if observer is None:
         return request
     client = context.session.client_params if context is not None else None
     name = client.client_info.name if client is not None else ""
@@ -4624,8 +4618,7 @@ def main() -> None:
         "--transport",
         choices=("stdio", "http"),
         default=os.environ.get("BOOLEY_MCP_TRANSPORT", "stdio"),
-        help="stdio: client-spawned child (Ticket Mode); "
-        "http: standalone loopback server (Interactive Mode)",
+        help="stdio: client-spawned child; http: standalone loopback server (Interactive Mode)",
     )
     parser.add_argument(
         "--port",
@@ -4647,7 +4640,7 @@ def main() -> None:
 def _goal_warning_result(
     result: McpToolContent, binding: GoalRunBinding | None, session_key: str | None
 ) -> McpToolContent:
-    if binding is None or not goal_mode_preview_enabled():
+    if binding is None:
         return result
     try:
         prefix = goal_warnings(

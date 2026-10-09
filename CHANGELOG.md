@@ -9,18 +9,41 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## 0.3.1 - 05 OCT 2026
 
-### Preview Goal workflow
+### Major features
 
-- Fresh met Goals in the preview workflow can finish with a frozen
-  evidence package and Session Summary; open done-review findings remain visible.
-  Finish and abandonment use explicit record and operation IDs for retries.
+- **Goal Mode is the workflow for evidence-backed RTL work.** Open an agent
+  session in the Sandbox and use `/booley-goal` to translate Project Goalsets,
+  work in a linked worktree and Goal Branch, and gather Flow and Specialist
+  evidence. Every Goal is mandatory; only a human can approve Goal changes.
+  Finish returns a Review Package and Session Summary. Open done-review
+  findings remain visible; Finish and abandonment use explicit record and
+  operation IDs for recoverable retries.
+- **Sandbox Dashboard.** Sessions, Goals, and Jobs are visible through
+  `booley dashboard` and the default VS Code folder-attachment task.
+
 ### Upgrade notes
 
-- New non-Stealth Interactive Mode initialization keeps Goal history eligible
-  for commits. Existing explicit Git exclusions remain in place; excluded or
-  Stealth summaries stay local and completion reports that publication was skipped.
-  Project configuration remains untracked until you commit it; initialization
-  makes these paths eligible without staging or committing them.
+- Ticket Mode commands `booley run` and `booley board` are removed from the
+  public command surface. Each prints a pointer to `/booley-goal` and exits 2.
+  The Ticket creation and triage skills are replaced by `/booley-goal`.
+- Doctor WARNs on nonempty `tickets/{board,state,logs,locks,waiver-candidates}`
+  with `tickets.leftover-board`; preserve needed work before deleting them.
+  `tickets/history/` stays untouched and silent. `tickets.leftover-guidance`
+  suggests deleting unchanged shipped `ticket_creation.md`/`ticket_defaults.md`,
+  or moving edited rules into Goalsets before deleting the files.
+- `[developer]`, including `[developer.auto_retry]`, and `[jobs].max_tickets`
+  are ignored. Doctor WARNs with delete fixes; remove these settings.
+- Initialization adds a Booley-owned Dashboard task to `.vscode/tasks.json`
+  and enables automatic tasks for attachment by default. Opt out with
+  `[sandbox].dashboard = false`; reconciliation removes unchanged owned copies
+  while preserving user-edited tasks. Tracked `.vscode/tasks.json` files are
+  preserved with an informational notice; add the Dashboard task yourself or
+  opt out with `[sandbox].dashboard = false`.
+- New non-Stealth initialization keeps Goal history eligible for commits.
+  Existing explicit Git exclusions remain in place; excluded or Stealth
+  summaries stay local, and completion reports skipped publication. Project
+  configuration remains untracked until you commit it; initialization makes
+  these paths eligible without staging or committing them.
 
 ### Installation
 
@@ -446,7 +469,7 @@ adding new features.
   migration guidance.
 - Ticket Boards from earlier versions need a one-time manual migration. Until
   then Doctor FAILs and `booley board` and `booley run` refuse to start. Follow
-  [the Troubleshooting entry](https://github.com/boldaxolotl/Booley/blob/main/docs/user/TROUBLESHOOTING.md#booley-board-refuses-to-start-the-ticket-board-needs-migrating).
+  [the Troubleshooting entry](https://github.com/boldaxolotl/Booley/blob/main/docs/user/TROUBLESHOOTING.md#doctor-reports-files-under-tickets-or-guidance-files).
   `booley board` lists live Tickets only; add `--all` for closed ones. Bare
   `booley board archive` only resumes an interrupted archive. `--force` and
   `--keep-logs` have no effect. Closed Tickets cannot be reopened, and their

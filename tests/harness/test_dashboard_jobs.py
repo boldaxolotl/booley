@@ -309,7 +309,6 @@ def test_server_job_lifecycle_does_not_include_other_interactive_roots(tmp_path,
     from booley.mcp import server
     from booley.runtime.job_snapshot import retained_job_roots
 
-    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
     current = tmp_path / ".interactive_logs/current/.runtime/jobs"
     historic = tmp_path / ".interactive_logs/historic/.runtime/jobs"
     historic.mkdir(parents=True)

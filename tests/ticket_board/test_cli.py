@@ -194,12 +194,9 @@ def test_reset_to_is_hidden_but_reports_supported_reset(capsys):
 
 
 @pytest.mark.parametrize("command", ["contract-seal", "revise-contract"])
-@pytest.mark.parametrize("surface", ["module", "public"])
-def test_rejected_contract_command_reports_reauthoring_fix(capsys, command, surface):
-    from booley.harness.booley import _build_parser
-
-    parser = build_parser() if surface == "module" else _build_parser()
-    args = [command, "example"] if surface == "module" else ["board", command, "example"]
+def test_rejected_contract_command_reports_reauthoring_fix(capsys, command):
+    parser = build_parser()
+    args = [command, "example"]
     with pytest.raises(SystemExit) as error:
         parser.parse_args(args)
     assert error.value.code == 2

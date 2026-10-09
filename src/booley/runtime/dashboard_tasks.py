@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import subprocess
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,10 +14,12 @@ from typing import Any
 from booley.config.goals import parse_dashboard
 from booley.core.boundary import require_dict
 from booley.core.file_lock import nonblocking_file_lock
-from booley.goals.preview import goal_mode_preview_enabled
 from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.jsonc import Document, Node
-from booley.runtime.project_repositories import git_directories
+from booley.runtime.project_repositories import (
+    GitDirectoryInspectionError,
+    git_directories,
+)
 from booley.runtime.safe_storage import refuse_symlinks
 
 logger = logging.getLogger(__name__)
@@ -25,7 +28,6 @@ TASK = {
     "label": LABEL,
     "type": "shell",
     "command": "booley dashboard",
-    "options": {"env": {"BOOLEY_GOAL_MODE_PREVIEW": "1"}},
     "runOptions": {"runOn": "folderOpen", "instanceLimit": 1},
     "presentation": {"reveal": "always", "panel": "dedicated", "clear": False},
     "problemMatcher": [],
@@ -51,6 +53,7 @@ class TaskPlan:
     diagnostics: tuple[str, ...] = ()
     created_vscode: bool = False
     remove_vscode: Path | None = None
+    notices: tuple[str, ...] = ()
 
     @property
     def pending(self) -> bool:
@@ -59,9 +62,7 @@ class TaskPlan:
 
 
 def enabled(project_dir: Path) -> bool:
-    """Preview plus strict [sandbox].dashboard (default true)."""
-    if not goal_mode_preview_enabled():
-        return False
+    """Strict [sandbox].dashboard (default true)."""
     path = project_dir / "booley.toml"
     data = tomllib.loads(path.read_bytes().decode("utf-8")) if path.exists() else {}
     return parse_dashboard(data)
@@ -88,7 +89,11 @@ def _opt_out(folder: Path) -> bool:
 def inspect(root: Path, project_dir: Path) -> TaskPlan:
     """Refuse conflicts safely; preserve malformed, linked, unowned or user-edited content."""
     try:
-        return _inspect(root, project_dir)
+        common_dir = git_directories(root).common_dir
+    except GitDirectoryInspectionError:
+        return TaskPlan()
+    try:
+        return _inspect(root, project_dir, common_dir)
     except (OSError, ValueError, RuntimeError, UnicodeError) as exc:
         return TaskPlan(diagnostics=(f"Dashboard task unavailable: {exc}",))
 
@@ -97,6 +102,7 @@ def inspect(root: Path, project_dir: Path) -> TaskPlan:
 class _TaskFiles:
     root: Path
     project_dir: Path
+    common_dir: Path
     before: bytes | None
     ownership: bytes | None
     owner: dict[str, Any]
@@ -110,10 +116,47 @@ class _TaskFiles:
         return self.project_dir / "runtime/dashboard-task.json"
 
 
-def _inspect(root: Path, project_dir: Path) -> TaskPlan:
+def _task_file_tracked(root: Path) -> bool:
+    """Whether Git tracks ``.vscode/tasks.json``; raise when Git cannot answer.
+
+    Calls Git directly: ``run_git`` reports a timeout or a failed start as exit
+    code 1, which ``ls-files --error-unmatch`` also uses for "untracked", and a
+    tracked file must never be edited because Git could not be asked.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", "--", ".vscode/tasks.json"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise OSError(f"could not inspect Dashboard task Git tracking: {exc}") from exc
+    if result.returncode not in (0, 1):
+        raise OSError(f"could not inspect Dashboard task Git tracking: {result.stderr.strip()}")
+    return result.returncode == 0
+
+
+def _names_dashboard_task(path: Path) -> bool:
+    """Whether a user-maintained tasks file already carries the Dashboard task."""
+    content = _bytes(path)
+    return content is not None and json.dumps(LABEL).encode() in content
+
+
+def _inspect(root: Path, project_dir: Path, common_dir: Path) -> TaskPlan:
     folder = root / ".vscode"
-    ownership = _bytes(project_dir / "runtime/dashboard-task.json")
     active = enabled(project_dir)
+    if _task_file_tracked(root):
+        if not active or _names_dashboard_task(folder / "tasks.json"):
+            return TaskPlan()
+        notice = (
+            "Dashboard task not installed: .vscode/tasks.json is tracked by Git; "
+            "add the task yourself or set [sandbox].dashboard = false"
+        )
+        return TaskPlan(notices=(notice,))
+    ownership = _bytes(project_dir / "runtime/dashboard-task.json")
     if not active and ownership is None:
         return TaskPlan()
     owner = (
@@ -123,7 +166,9 @@ def _inspect(root: Path, project_dir: Path) -> TaskPlan:
     )
     if owner and (owner.get("schema") != 1 or owner.get("root") != str(root.resolve())):
         raise ValueError("unsupported or foreign Dashboard task ownership")
-    files = _TaskFiles(root, project_dir, _bytes(folder / "tasks.json"), ownership, owner)
+    files = _TaskFiles(
+        root, project_dir, common_dir, _bytes(folder / "tasks.json"), ownership, owner
+    )
     desired = active and not _opt_out(folder)
     if files.before is None and not desired:
         return _plan_changes(files, "", False, RAW_TASK) if owner else TaskPlan()
@@ -244,7 +289,9 @@ def _plan_changes(files: _TaskFiles, after: str, desired: bool, raw_task: str) -
             else owner.get("created_document", "")
         ),
     }
-    new_owner["exclude_suffix"] = _exclude_change(root, bool(created), desired, owner, changes)
+    new_owner["exclude_suffix"] = _exclude_change(
+        files.common_dir, bool(created), desired, owner, changes
+    )
     new_owner["exclude_created"] = owner.get("exclude_created", False) or any(
         change.path.name == "exclude" and change.before is None for change in changes
     )
@@ -265,12 +312,16 @@ def _plan_changes(files: _TaskFiles, after: str, desired: bool, raw_task: str) -
 
 
 def _exclude_change(
-    root: Path, created: bool, desired: bool, owner: dict[str, Any], changes: list[FileChange]
+    common_dir: Path,
+    created: bool,
+    desired: bool,
+    owner: dict[str, Any],
+    changes: list[FileChange],
 ) -> str:
     suffix = owner.get("exclude_suffix", "")
     if not created and (desired or not suffix):
         return suffix
-    path = git_directories(root).common_dir / "info/exclude"
+    path = common_dir / "info/exclude"
     before = _bytes(path)
     content = before or b""
     if desired and b"/.vscode" not in content.splitlines():

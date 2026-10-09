@@ -101,14 +101,14 @@ devcontainer entered via **Reopen in Container** in VS Code, or
 worktree and runs the `booley` CLI in a container terminal; the sandbox
 toolchain ships in the container, so EDA-tool probes and smoke checks run directly
 (`verilator --version`, or `booley flow <name> --quiet …` — runs any Booley Flow, passing
-the rest of the line to it verbatim). `booley run`, `booley board`, and
+the rest of the line to it verbatim). `booley goal`, `booley dashboard`, and
 `booley doctor` are container commands here. Use `--quiet` for captured Flow
 reproduction output: direct shell calls otherwise add live stderr progress and
 an observation transcript. Human live-output options are documented in
 `docs/user/FLOW_REFERENCE.md` → “Live progress and logs”.
 
 The CLIs fail fast on the wrong side, each naming the fix: `booley init`
-refuses in-container; the workflow CLI (`booley run`/`board`, `bwave`) refuses
+refuses in-container; the workflow CLI (`booley goal`, `booley dashboard`, `bwave`) refuses
 on the host. To check explicitly: `/.dockerenv` exists only in the container.
 `SETUP-PLAN.md` carries the full context across the boundary — a fresh
 in-container session just re-invokes this skill and phase detection resumes
@@ -266,7 +266,7 @@ Two rules that outrank any step's local convenience. A step may look like it
 wants you to break these; it doesn't.
 
 - **Stay out of the repo (minimal footprint).** All of Booley's operational
-  state lives under `.booley_project/` — config, hooks, tickets, the project
+  state lives under `.booley_project/` — config, hooks, Goalsets, the project
   `docker/` image, logs, and `SETUP-PLAN.md`. Do **not** add or commit
   Booley-generated files into the target repo's tracked tree: no
   `README.booley.md` / integration notes, no logs, no generated artifacts

@@ -31,7 +31,6 @@ def _proc_peers(tmp_path):
 async def test_each_http_post_uses_its_own_peer_in_one_sdk_session(
     tmp_path, monkeypatch, stateless
 ):
-    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
     proc = _proc_peers(tmp_path)
     lookup = session_peer.peer_identity
     monkeypatch.setattr(
@@ -141,7 +140,6 @@ async def test_reused_sdk_handler_task_reads_message_request_not_inherited_peer(
     from mcp.types import CallToolRequestParams
     from starlette.requests import Request
 
-    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
     proc = _proc_peers(tmp_path)
     lookup = session_peer.peer_identity
     monkeypatch.setattr(

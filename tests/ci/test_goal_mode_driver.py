@@ -237,7 +237,6 @@ def test_client_uses_modern_wire_preview_and_verifies_saved_state(
             )
     assert captured["store"] == tmp_path / "primary/.booley_project"
     assert captured["mode"] == "2026-07-28"
-    assert captured["server"].env["BOOLEY_GOAL_MODE_PREVIEW"] == "1"
     assert captured["server"].env["BOOLEY_MCP_MODE"] == "interactive"
     assert captured["server"].env["BOOLEY_PROJECT_DIR"] == str(
         tmp_path / "primary/.booley_project"

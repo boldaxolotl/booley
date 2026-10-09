@@ -117,7 +117,7 @@ def check_stealth_cores(project: ProjectAudit, *, mode: ReadinessMode) -> Diagno
 
 
 def inspect_worktree_portability(request: WorktreePortabilityRequest) -> DiagnosticReport:
-    """Inspect repository policy and every live Ticket Workspace without repair."""
+    """Inspect repository policy and every live worktree without repair."""
     report = Findings()
     repositories = worktree_policy_repositories(
         request.project.project_root, project_dir=request.project.project_dir
@@ -150,7 +150,7 @@ def inspect_worktree_portability(request: WorktreePortabilityRequest) -> Diagnos
         )
     elif not capable:
         report.warn(
-            "new Ticket Workspaces use the container-only absolute-link fallback; "
+            "new worktrees use the container-only absolute-link fallback; "
             "run Git in the Sandbox and do not run host `git worktree prune`",
             check_id="git.worktree-portability",
             subject=str(request.project.project_root),
@@ -239,7 +239,7 @@ def _inspect_repository_policies(
             report.warn(
                 f"{repository}: {WORKTREE_RELATIVE_KEY} is {policy or 'unset'}"
                 + (
-                    "; Ticket Workspaces use the container-only absolute-link fallback; "
+                    "; worktrees use the container-only absolute-link fallback; "
                     "run Git in the Sandbox and do not run host `git worktree prune`"
                     if inferred_host
                     else ""
@@ -344,13 +344,13 @@ def _inspect_live_worktrees(project: ProjectAudit, report: Findings) -> None:
         problems = _worktree_metadata_problems(worktree)
         if problems:
             report.warn(
-                f"{worktree}: non-portable Ticket Workspace metadata ({', '.join(problems)})",
+                f"{worktree}: non-portable worktree metadata ({', '.join(problems)})",
                 "run a supported worktree move/repair with Git 2.48 or newer",
                 check_id="git.worktree-portability",
                 subject=str(worktree),
             )
         else:
-            report.pass_(f"{worktree}: Ticket Workspace metadata is relative")
+            report.pass_(f"{worktree}: worktree metadata is relative")
 
 
 def _check_project_setup(
@@ -443,7 +443,7 @@ def _validate_booley_toml(data: dict[str, Any], project_dir: Path, report: Findi
     valid &= _add_config_audit(project_schema.audit_sandbox_table(data), report)
     valid &= _add_config_audit(project_schema.audit_goals_table(data), report)
     valid &= _add_config_audit(project_schema.audit_interactive_table(data), report)
-    valid &= _add_config_audit(project_schema.audit_developer_table(data), report)
+    valid &= _add_config_audit(project_schema.audit_ignored_settings(data), report)
     valid &= _add_config_audit(project_schema.audit_known_tables(data), report)
     from booley.mcp.registry import discover_mcp_tools
 

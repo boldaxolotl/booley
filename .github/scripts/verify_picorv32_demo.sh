@@ -2,7 +2,6 @@
 set -euo pipefail
 
 export BOOLEY_MCP_MODE=interactive
-export BOOLEY_GOAL_MODE_PREVIEW=1
 
 source_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 python "${source_root}/.github/scripts/picorv32_demo_contract.py" \

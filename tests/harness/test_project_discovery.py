@@ -307,48 +307,27 @@ def test_baseline_ancestry_rc_matrix(tmp_path, monkeypatch, code):
         assert ("acceptance-input-change-required" in str(caught.value)) == (code == 1)
 
 
-def test_board_boundary_does_not_mask_programmer_valueerror(tmp_path, monkeypatch, capsys):
-    from argparse import Namespace
-
-    from booley.harness import booley
+def test_module_boundary_does_not_mask_programmer_valueerror(tmp_path, monkeypatch, capsys):
+    from booley.ticket_board import cli
     from booley.ticket_board.io import TicketValidationError
+
+    monkeypatch.setattr(cli, "detect_tickets_dir", lambda: tmp_path / "tickets")
+    monkeypatch.setattr(cli, "TicketIO", lambda *_: object())
+    monkeypatch.setattr(cli, "open_board", lambda *_a, **_k: None)
 
     def invalid(*args):
         raise TicketValidationError("invalid authored Ticket")
 
-    monkeypatch.setattr(booley, "_run_board_command", invalid)
-    assert booley._cmd_board(Namespace(), tmp_path) == 2
+    monkeypatch.setitem(cli.HANDLERS, "show", invalid)
+    assert cli.main(["show", "demo"]) == 2
     assert "invalid authored Ticket" in capsys.readouterr().err
 
     def programmer(*args):
         raise ValueError("programmer failure")
 
-    monkeypatch.setattr(booley, "_run_board_command", programmer)
+    monkeypatch.setitem(cli.HANDLERS, "show", programmer)
     with pytest.raises(ValueError, match="programmer failure"):
-        booley._cmd_board(Namespace(), tmp_path)
-
-
-@pytest.mark.parametrize("owned", [True, False])
-def test_sandbox_requires_checkout_local_ownership(tmp_path, monkeypatch, owned):
-    from booley.runtime import project_discovery as discovery
-
-    outer = tmp_path / "checkout"
-    data = tmp_path / "data"
-    outer.mkdir()
-    data.mkdir()
-    subprocess.run(["git", "init", str(outer)], check=True, capture_output=True, timeout=30)
-    if owned:
-        (outer / "booley.toml").write_text(f'[project]\ndir = "{data.as_posix()}"\n')
-    monkeypatch.setattr(discovery, "WORK_DIR", str(outer))
-    monkeypatch.setattr(discovery, "PROJECT_DIR_TARGET", str(data))
-    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(data))
-    monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
-    if owned:
-        assert discovery.discover_project_root(data) == outer
-    else:
-        with pytest.raises(discovery.ProjectRootDiscoveryError):
-            discovery.discover_project_root(data)
+        cli.main(["show", "demo"])
 
 
 def test_linked_git_marker_and_symlink_data(tmp_path, monkeypatch):
@@ -365,7 +344,7 @@ def test_linked_git_marker_and_symlink_data(tmp_path, monkeypatch):
     assert discover_project_root(alias) == outer
 
 
-def test_source_stale_data_refuses_board_but_feedback_routes(tmp_path, monkeypatch):
+def test_source_stale_data_refuses_goal_but_feedback_routes(tmp_path, monkeypatch):
     from booley.harness.booley import _command_project_root
     from booley.runtime.project_discovery import ProjectRootDiscoveryError
 
@@ -377,7 +356,7 @@ def test_source_stale_data_refuses_board_but_feedback_routes(tmp_path, monkeypat
     monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
     monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
     with pytest.raises(ProjectRootDiscoveryError):
-        _command_project_root("board")
+        _command_project_root("goal")
     assert _command_project_root("feedback") == tmp_path
 
 
@@ -535,3 +514,26 @@ def test_containment_alias_explicit_authority(tmp_path, monkeypatch):
     assert project_discovery._owning_checkouts([owner], root) == {owner}
     reset_cache()
     assert project_discovery._owning_checkouts([nested], root) == set()
+
+
+@pytest.mark.parametrize("owned", [True, False])
+def test_sandbox_requires_checkout_local_ownership(tmp_path, monkeypatch, owned):
+    from booley.runtime import project_discovery as discovery
+
+    outer = tmp_path / "checkout"
+    data = tmp_path / "data"
+    outer.mkdir()
+    data.mkdir()
+    subprocess.run(["git", "init", str(outer)], check=True, capture_output=True, timeout=30)
+    if owned:
+        (outer / "booley.toml").write_text(f'[project]\ndir = "{data.as_posix()}"\n')
+    monkeypatch.setattr(discovery, "WORK_DIR", str(outer))
+    monkeypatch.setattr(discovery, "PROJECT_DIR_TARGET", str(data))
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(data))
+    monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
+    if owned:
+        assert discovery.discover_project_root(data) == outer
+    else:
+        with pytest.raises(discovery.ProjectRootDiscoveryError):
+            discovery.discover_project_root(data)

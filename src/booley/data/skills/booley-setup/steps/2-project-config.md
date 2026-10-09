@@ -70,7 +70,8 @@ python -c "import booley, pathlib; print(pathlib.Path(booley.__file__).parent / 
 Two project-side extension points:
 
 - **`post-setup` hook** — `.booley_project/hooks/post-setup.sh`, `….py`, or
-  extensionless `post-setup` runs after each sandboxed worktree is created;
+  extensionless `post-setup` can be run from a new sandboxed worktree before
+  Goal entry; `booley worktree new` does not invoke it automatically;
   it may install/build dependencies, copy files, create symlinks, or prepare
   generated inputs.
 - **Project image** — to add open-source tools and project dependencies that
@@ -364,7 +365,7 @@ Step 4's final gate:
   live *remotely*: every local `fusesoc run` then tries to re-download the core
   instead of using the checkout you are standing in, and the sandbox egress
   proxy answers `403`. The error names neither the block nor the fix. The repo
-  under setup **is** the source — drop the block. Doctor and ticket preflight
+  under setup **is** the source — drop the block. Doctor and Project checks
   reject a configured in-tree core with this offline-incompatible declaration.
 - The yosys generic flow requires `arch:` (e.g. `arch: xilinx`) even when the
   value is meaningless for an ASIC run — dropping it fails only at resolution
@@ -527,10 +528,10 @@ runaway, but a default-off sink is the real fix.)
 #### Cocotb Targets
 
 The project's testbench flavor — `sv`, `cocotb`, or `mixed` with a default —
-is a **project convention fixed at setup**, not a per-ticket choice
+is a **project convention fixed at setup**, not a per-session choice
 and was decided in the plan's row 4 (a mandatory grill
 question in Step 0); read it from `SETUP-PLAN.md`, don't re-ask. Targets
-authored here embody it, and during tickets the Developer follows the
+authored here embody it, and during Goal Mode the agent follows the
 existing Target's shape.
 
 A **Cocotb Target** is an ordinary sim Target whose flow options declare the
@@ -641,7 +642,7 @@ What goes here:
   explicit `provider` and `auth` values. Carry them forward unchanged; for a
   Project with a missing field, write only the missing field settled during planning. Preserve
   an existing `[agent.git]` identity unchanged; it controls the default author
-  and committer for Interactive and Ticket Mode checkouts.
+  and committer for Interactive and Goal Mode checkouts.
 - **Feedback redaction — preserve it when present.** Booley never transmits
   feedback. Keep any user-supplied `redact_extra = ["…"]` and
   `redact_identifiers` settings; they affect only an explicit local export. See
@@ -792,3 +793,15 @@ a review artifact (not a question):
 
 If the user wants contributor guidance next, use Step 3 (AGENTS.md) after the
 approved config is on disk.
+
+## Goalsets
+
+Read the seeded `goalsets/{feature,bugfix,refactor,verification}.md` files and
+adapt their Goals to the Project's supported Targets and verification intent.
+Preserve existing Project edits. Offer to create `goalsets/default.md` for rules
+that should apply to every entry; create it only when the human selects that
+policy in the setup plan. Goalsets are free-form Markdown translated by the
+agent, with concrete family/Target examples for `/booley-goal`. Do not put
+`[developer]` or `[jobs].max_tickets` in the Project configuration; Doctor treats
+them as ignored settings with delete fixes. Document `[sandbox].dashboard=false`
+when the human opts out of the default Dashboard attachment task.

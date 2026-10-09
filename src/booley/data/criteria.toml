@@ -34,7 +34,7 @@ category    = "rtl"
 group       = "build"
 
 [review_rtl_spec]
-description = "RTL review: spec compliance (RTL matches the ticket/spec, no more, no less)"
+description = "RTL review: spec compliance (RTL matches the Goal/spec, no more, no less)"
 workflow_region = "pre_sim"
 per_target  = false
 category    = "none"

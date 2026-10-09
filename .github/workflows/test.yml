@@ -1350,7 +1350,7 @@ jobs:
               --mount type=bind,src="${{ github.workspace }}",dst=/work,readonly
               --mount type=bind,src="${{ steps.nangate.outputs.root }}",dst=/opt/pdk,readonly
               --mount type=bind,src="${VALIDATION_TMP}",dst=/validation-tmp
-              -e TMPDIR=/validation-tmp -e BOOLEY_GOAL_MODE_SMOKE=1 -e BOOLEY_GOAL_MODE_PREVIEW=1 -e BOOLEY_MCP_MODE=interactive
+              -e TMPDIR=/validation-tmp -e BOOLEY_GOAL_MODE_SMOKE=1 -e BOOLEY_MCP_MODE=interactive
               booley-test bash -c "pip install --break-system-packages pytest==9.1.1 pytest-asyncio==1.4.0 &&
               python -m pytest /work/tests/smoke/test_goal_mode_image_smoke.py
               -v --tb=short --junitxml=/validation-tmp/goal-mode.xml

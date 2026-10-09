@@ -25,8 +25,8 @@ Inside the Sandbox, for Interactive Mode, we recommend `booley` / `booley chat`,
 | Command | Purpose |
 |---------|---------|
 | `booley chat` | Explicit spelling of the Sandbox default `booley` command |
-| `booley run` | Execute queued or named tickets |
-| `booley board` | Create, inspect, move, reset, or archive tickets |
+| `booley goal` | Inspect Goal Records, status, and abandonment |
+| `booley dashboard` | Show sessions, Goals, and Jobs |
 | `booley worktree` | Create a linked worktree with paired versioned Project inputs or a clean non-versioned snapshot |
 
 #### Either-location and mixed commands
@@ -48,33 +48,28 @@ For Host Bootstrap, `--check-only` reports pending work without writing and
 user-owned files. Force does not overwrite configuration or disable Docker's
 layer cache.
 
-### Ticket Board
+### Goal Mode
 
-One Ticket keeps one branch, worktree, and evidence history.
+Use `/booley-goal` in a Sandbox agent chat. One session owns a clean linked
+worktree and Goal Branch; every Goal is mandatory and judged by Flow or
+Specialist evidence at the current code.
 
-| Path | Meaning |
-|------|---------|
-| `draft → queued → running → review → done` | Normal lifecycle |
-| `draft → waiting → queued` | Wait for dependency Tickets |
-| `running → blocked → queued` | Human input, then resume the same Ticket |
-| `running → queued` | Exceptional interruption recovery; wait for active jobs first |
-| `running → done` | Omit `review` from the Ticket's `on_success` list |
-| `review → archived` | Close this Ticket; use a new Ticket for separate follow-up |
-| `review ──full reset──► queued` | Retire worktree/branch; archive artifacts; clear active state |
+| Step/tool | Purpose |
+|-----------|---------|
+| `goal_enter` | Translate Goalsets into concrete Goals and create a Goal Branch |
+| `goal_status` | Inspect evidence and freshness; `rules=true` restores working rules |
+| `goal_propose_change` | Add, relax, retarget, or propose a coverage waiver; only the human approves |
+| `goal_finish` | All Goals met at clean committed HEAD plus Session Summary → Review Package |
+| `goal_finish(abandon=true)` | Explicit human instruction only; preserve branch and worktree |
+| `booley goal status` | Inspect local records |
+| `booley dashboard` | Sessions, Goals, and Jobs inside the Sandbox |
 
-Review is a decision point, not a partial-rework loop. Fix small findings
-directly in the existing Ticket worktree and finish as `done`; archive it and
-create a new Ticket; or reset the entire run. Ordinary `review → queued` is
-invalid—the explicit reset is a clean start, never a resume of reviewed work.
-
-Inspect with `booley board show`; handle blocked and review decisions with
-`/booley-ticket-triage`.
-
-Every normal `booley run` ending prints one `BOOLEY_RUN_RESULT ` JSON record.
-Its disposition is `review` or `done` (exit 0), or `blocked` or `failed`
-(exit 1). Review-package and HTML paths are `null` outside review. A `failed`
-run leaves the Ticket blocked or queued after automatic retry. Infrastructure
-errors can also exit 1, so automation should classify runs from the record.
+Pass `work_dir` on every Booley call. Resume saved proposal and Finish IDs
+rather than editing records. Protected Input changes block Finish until
+reverted. Open `done` review findings remain visible; Finish does not merge.
+Project-owned Goalsets live under `goalsets/`; `default.md` applies unless the
+human explicitly skips it with a reason. Initialization seeds four create-only
+Goalsets and preserves edits.
 
 ### Booley Flows
 
@@ -115,11 +110,11 @@ For example: `booley specialist reviewer --category rtl --focus bugs --scope rtl
 
 #### `coverage_analyst`
 
-Call the `coverage_analyst` Specialist from your connected agent session with `campaign="<exact-coverage.json>"` and optional `instruction="<question>"`. The Analyst explains retained native evidence and proposes advisory next steps; its model only reads evidence. It does not run Simulation, read waveforms, evaluate Criteria, or approve waivers. In Ticket Mode, Booley records its screened Waiver Candidates for a human to accept or reject at Ticket review. When every mandatory Criterion is met strictly or by a verified Provisional Coverage Verdict, submit your run report and finish for human review without blocking or marking strict coverage met. Verified Target sources are optional; stale sources give report-only analysis.
+Call the `coverage_analyst` Specialist from your connected agent session with `campaign="<exact-coverage.json>"` and optional `instruction="<question>"`. The Analyst explains retained native evidence and proposes advisory next steps; its model only reads evidence. It does not run Simulation, read waveforms, evaluate Criteria, or approve waivers. In Goal Mode, screened Waiver Candidates support a proposed Goal change, which needs human approval. Finish requires every Goal met; advisory reports do not mark strict coverage met. Verified Target sources are optional; stale sources give report-only analysis.
 
 #### `reviewer`
 
-Read-only, single-focus code review. It reports `CRITICAL`, `MAJOR`, and `MINOR` findings. In Interactive Mode, review the selected files using your specification or steering. In Ticket Mode, `_done` reports findings without requiring fixes, but open findings make the Ticket wait for your approval even without `review` in `on_success`. `_clean` requires every finding to be fixed or waived with a justification.
+Read-only, single-focus code review. It reports `CRITICAL`, `MAJOR`, and `MINOR` findings. In Interactive Mode, review the selected files using your specification or steering. In Goal Mode, `done` reports findings without requiring fixes; the review package includes open findings. `clean` requires every finding to be fixed or waived with a justification.
 
 The result links saved review evidence, including rejected proposals for inspection. Rejected proposals do not affect Criteria.
 
@@ -129,13 +124,13 @@ Call the `reviewer` Specialist from your connected agent session with `scope="<f
 |----------|-------|----------------|------|
 | `rtl` | `bugs` | Functional bug patterns, synthesis hazards, reset/width/signing mistakes, and ifdef/config consistency | `review_rtl_bugs` |
 | `rtl` | `protocol` | Bus/protocol rule compliance, handshake behavior, ordering, and clock-domain crossings (CDC) | `review_rtl_protocol` |
-| `rtl` | `spec` | Spec compliance: the RTL implements what the ticket/spec requires, no more and no less | `review_rtl_spec` |
+| `rtl` | `spec` | Spec compliance: the RTL implements what the change request/spec requires, no more and no less | `review_rtl_spec` |
 | `rtl` | `code_style` | Comments, naming, readability, maintainability, magic values, and assertion/cover-point quality | `review_rtl_code_style` |
 | `rtl` | `optimization` | Unused/dead RTL and strict power/performance/area improvements with no functional or engineering trade-off | `review_rtl_optimization` |
 | `rtl` | `security` | Fault-injection resistance, simple power/timing leakage, secret exposure, and unsafe failure behavior | `review_rtl_security` |
 | `tb` | `quality` | False-pass paths in scoped testbench sources, missing checks and edge cases, coverage gaps, timing/sampling mistakes, and TB code quality | `review_tb_quality` |
 
-Arguments: required `scope="<file,...>"` selects files; `steer=["<context>"]` adds review context; `dry_run=true` validates and previews without invoking an agent. The `spec` focus needs specification text: Ticket Mode resolves its mounted ticket or linked spec automatically, while Interactive Mode uses `spec="<path>"`.
+Arguments: required `scope="<file,...>"` selects files; `steer=["<context>"]` adds review context; `dry_run=true` validates and previews without invoking an agent. The `spec` focus needs specification text: use `spec="<path>"` or the spec file named by the Review Goal.
 
 #### `mutation_tester`
 
@@ -143,7 +138,7 @@ Proposal-locked mutation testing. A read-only LLM creator returns exact source r
 
 **Mutation campaign modes:**
 
-| Campaign | Ticket Mode (`mandatory` or `optional`) | Interactive Mode arguments |
+| Campaign | Goal arguments | Interactive Mode arguments |
 |----------|-----------------------------------------|------------------------|
 | Default fixed | Target campaign with `target` + `scope` — generate 10 mutations and require all 10 detected | _(no goal arguments)_ — the same 10-of-10 campaign |
 | Explicit fixed | add `total: N` and `min_detected: K` | `count="N"` requires all N; add `min_detected=K` to require K |
@@ -175,7 +170,7 @@ variants, and the first public test that killed each detected mutant.
 |-----------|-------------|--------|-------|
 | `review_rtl_bugs` | RTL review: bug patterns, synthesis hazards, and ifdef/config consistency (the RTL as hardware, not against the spec) | `reviewer` (`category="rtl"`, `focus="bugs"`) | pre-sim |
 | `review_rtl_protocol` | RTL review: bus/protocol compliance and clock-domain crossings (CDC) | `reviewer` (`category="rtl"`, `focus="protocol"`) | pre-sim |
-| `review_rtl_spec` | RTL review: spec compliance (RTL matches the ticket/spec, no more, no less) | `reviewer` (`category="rtl"`, `focus="spec"`) | pre-sim |
+| `review_rtl_spec` | RTL review: spec compliance (RTL matches the Goal/spec, no more, no less) | `reviewer` (`category="rtl"`, `focus="spec"`) | pre-sim |
 | `review_rtl_code_style` | RTL review: comments, naming, readability, and assertion coverage (post-sim) | `reviewer` (`category="rtl"`, `focus="code_style"`) | post-sim |
 | `review_rtl_optimization` | RTL review: unused/dead code and missed power/performance/area wins, strict improvements only (post-sim) | `reviewer` (`category="rtl"`, `focus="optimization"`) | post-sim |
 | `review_rtl_security` | RTL review: hardware attack resistance to fault injection, simple power/timing analysis, and secret exposure (post-sim) | `reviewer` (`category="rtl"`, `focus="security"`) | post-sim |
@@ -216,7 +211,7 @@ variants, and the first public test that killed each detected mutant.
 **Threshold parameters:**
 
 <!-- BEGIN GENERATED: criteria-params -->
-`SYNTH` and `FPGA` Criteria name each Target directly and accept metric thresholds. Four flavours apply per metric: two absolute, two relative to the Ticket baseline:
+`synth` and `fpga` Goals name each Target directly and accept metric thresholds. Four flavours apply per metric: two absolute, two relative to the Goal base commit:
 
 | Flavour param suffix | Baseline? | Meaning |
 |----------------------|:---------:|---------|
@@ -225,13 +220,20 @@ variants, and the first public test that killed each detected mutant.
 | `_increase_at_most` | yes | metric may grow **at most N%** above baseline |
 | `_reduce_at_least` | yes | metric must shrink **at least N%** below baseline |
 
-Percentage threshold values must include the `%` suffix (for example, `cell_count_reduce_at_least: 8%`).
+Percentage threshold values must include the `%` suffix (for example, `"cell_count_reduce_at_least": "8%"` inside `thresholds`).
 
-Ticket syntax: `SYNTH: {synth_core: {cell_count_max: 500, fmax_mhz_min: 400}}`.
+For a relative threshold on a new Target, set `baseline` to an existing Target. The baseline Target defaults to the candidate name and must exist at the Goal base commit. Booley runs it on base code and the candidate on current code. Missing or mismatched baseline evidence fails the check.
 
-For a relative threshold on a new Target, add `baseline: <existing-target>` inside that Target's threshold mapping. Existing Targets use their own Ticket-baseline version by default.
+Goal argument examples:
 
-In Ticket Mode, enqueue publishes an immutable Ticket baseline. A baseline-relative `SYNTH` or `FPGA` Criterion runs the pair's baseline Target at the basis commit and its candidate Target at the Ticket head. Both Targets and their directed binding are fixed. Developer execution cannot change acceptance controls; a missing or incorrect Target blocks as `acceptance-input-change-required` and requires `return-to-draft`. Missing or mismatched baseline evidence never skips a relative check.
+```json
+{"family": "synth", "target": "asic_small", "baseline": "asic_base",
+ "thresholds": {"cell_count_reduce_at_least": "8%"}}
+```
+
+```json
+{"family": "fpga", "target": "fpga_top", "thresholds": {"lut_count_max": 5000}}
+```
 
 **`synthesis_ok` (ASIC)**
 
@@ -266,7 +268,12 @@ In Ticket Mode, enqueue publishes an immutable Ticket baseline. A baseline-relat
 
 **Per-test `CYCLE_COUNT`**
 
-Nest each registered test under its Target and give it one or more thresholds; all thresholds for that test must pass. Relative forms compare the same Target/test at the Ticket baseline by default.
+`cycle_count` Goals name the Target with `target` and the registered test with `test`; put bounds in `thresholds`. All thresholds for that test must pass. Relative forms compare the same Target/test at the Goal base commit.
+
+```json
+{"family": "cycle_count", "target": "sim", "test": "smoke",
+ "thresholds": {"cycle_count_max": 1000, "cycle_count_reduce_at_least": "8%"}}
+```
 
 | Parameter | Baseline? | Unit | Passing relation |
 |-----------|:---------:|------|------------------|
@@ -280,8 +287,6 @@ Nest each registered test under its Target and give it one or more thresholds; a
 | `cycle_count_increase_at_most_cycles` | yes | cycles | current - baseline ≤ N |
 | `cycle_count_reduce_at_least_cycles` | yes | cycles | baseline - current ≥ N |
 | `cycle_count_reduce_at_most_cycles` | yes | cycles | baseline - current ≤ N |
-
-Ticket syntax: `CYCLE_COUNT: {sim_coremark: {coremark: {cycle_count_max: 100000, cycle_count_reduce_at_least: 5%}}}`.
 
 A named `[SIM_CYCLES] <test> <count>` observation is gated evidence only when that exact test passes. Missing, malformed, duplicate, unnamed, failed, or inconclusive evidence fails closed. Without a `cycle_count` Criterion, existing Cycle Count records remain observational.
 
@@ -329,14 +334,14 @@ the design sources they describe.
 |------|-------------|---------|
 | `booley.toml` | Project, Flow, agent, sandbox, and job policy | All Flows and Specialists |
 | `tests.toml` | Per-Target tests, selectors, skips, and environment | `sim`, `mutation_tester` |
-| `ticket_creation.md` | Free-form Ticket Creation Guidance | `/booley-ticket-create` only |
+| `goalsets/*.md` | Project-owned Goal bundles and optional default | `/booley-goal` |
 | `doctor-waivers.toml` | Reviewed warning waivers and expiry | No endpoint; `doctor` only |
-| `AGENTS.md` | Project instructions, ownership, and gotchas | Developer Agent and Specialists |
+| `AGENTS.md` | Project instructions, ownership, and gotchas | Agent sessions and Specialists |
 | `rtl_style_guide.md` | Project RTL style overrides | `reviewer` RTL code-style focus |
 | `tb_style_guide.md` | Project testbench style overrides | `reviewer` TB quality focus |
 | `docker/Dockerfile` | Project image build steps and dependencies | Flows/Specialists in the Sandbox |
 | `<requirements>.txt` | Python dependency pins selected by `booley.toml` | Flows/Specialists in the Sandbox |
-| `hooks/post-setup.*` | Per-worktree setup commands | All Ticket Mode endpoints |
+| `hooks/post-setup.*` | Per-worktree setup commands | Worktree setup |
 
 #### Custom tool files
 
@@ -352,29 +357,26 @@ do not need these files.
 
 | Skill | Use it when | Result |
 |-------|-------------|--------|
-| `/booley-ticket-create <desc>` | You want to create a ticket | Apply guidance; preview and enqueue |
-| `/booley-ticket-triage` | Tickets are blocked or awaiting review | Unblock/reset or approve/reject |
+| `/booley-goal` | Work needs mandatory evidence-backed Goals | Goals, evidence, and review |
 | `/booley-heal` | Doctor or Flow health has drifted | Repair safe findings; verify Doctor |
 | `/booley-feedback` | Report bugs, friction, praise, or ideas | Redact evidence; export for manual sharing |
 
 ### Artifacts
 
-`<LOGS>/<slug>/` is one ticket's log directory under the project's ticket
-logs root.
+`<GOAL>` means `<project_dir>/goals/<goal-id>/`, the local Goal Record.
 
 | Artifact | Path | Use |
 |----------|------|-----|
-| Human summary and ticket snapshot | `<LOGS>/<slug>/` (`REPORT.md`, `ticket.md`, plans, summaries) | Start here when reviewing what the run did |
-| Prepared HTML explanation | `<LOGS>/<slug>/*-explanation-<slug>.html` and `.runtime/triage-prep/` | Rich change walkthrough linked from approve/reject triage |
-| Human-readable logs and prompts | `<LOGS>/<slug>/human-logs/` | Follow the run, errors, prompts, and rendered transcripts |
-| Machine state and checkpoints | `<LOGS>/<slug>/.runtime/` | Resume/debug state; implementation detail rather than the first review stop |
-| Per-invocation Flow reports | `<LOGS>/<slug>/.runtime/flow-reports/<flow>/<N>/report.json` | Structured verdict, metrics, and evidence (`N` is the invocation number) |
-| Per-invocation Specialist reports | `<LOGS>/<slug>/.runtime/mcp-tool-reports/<mcp-tool>/<N>/report.json` | Structured Specialist verdict and evidence |
-| Raw agent transcripts | `<LOGS>/<slug>/.runtime/transcripts/` | Provider-level debugging when the rendered transcript is insufficient |
+| Goal state and base | `<GOAL>/record.json` | Worktree, branch, Goals, and lifecycle |
+| Session Summary | `<GOAL>/SUMMARY.md` | What changed, evidence used, uncertainties |
+| Review Package | `<GOAL>/review-package.json` | Diff, final evidence, Change Log, and review findings |
+| Approved Goal changes | `<GOAL>/changes.jsonl` | Human decisions and reasons |
+| Evidence logs | `<GOAL>/logs/` | Flow/Specialist evidence and retained reports |
+| Summary on the Goal Branch | `.booley_project/goals/history/<goal-id>.md` | Committed outside Stealth when Git-trackable |
 
 ### Sandbox & Docker
 
-The `booley-sandbox` image contains Booley's EDA toolchain, agent runtimes, and development dependencies. It backs the per-folder Sandbox (devcontainer) where all Booley work, Interactive and Ticket Mode alike, executes; a project image selected by `[sandbox].image` can extend it.
+The `booley-sandbox` image contains Booley's EDA toolchain, agent runtimes, and development dependencies. It backs the per-folder Sandbox (devcontainer) where all Booley work, Interactive Mode and Goal Mode alike, executes; a project image selected by `[sandbox].image` can extend it.
 
 | Command | What it does |
 |---------|-------------|
@@ -394,4 +396,8 @@ it replaces itself with the native CLI. Invoke `claude` or `codex` directly to
 pass agent-specific options. The selected provider's VS Code extension is an
 optional alternative in the attached container window.
 
-**Explicit `booley chat`, `booley run`, and `booley board` are container-only.** Bare `booley` prints help on the host and opens the configured agent inside the Sandbox. Run them from a terminal **inside** the devcontainer (Reopen in Container, or `booley session enter`). For Ticket Mode, use one terminal per concurrent ticket, up to `[jobs] max_tickets` (default 2); extra runs queue with "waiting for slot (position N)". Launched on the host these commands fail fast and name the fix. `booley init` and `booley session` stay host-side; `booley doctor` works on either side.
+**`booley chat`, `booley goal`, and `booley dashboard` run in the Sandbox.**
+Bare `booley` prints help on the host and starts the configured agent in the
+Sandbox. For parallel Goal work, use one linked worktree per session. The
+Dashboard attach task defaults on; set `[sandbox].dashboard=false` to opt out.
+`booley init` and `booley session` run on the host; Doctor works on either side.

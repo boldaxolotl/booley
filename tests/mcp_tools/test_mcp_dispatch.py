@@ -524,6 +524,12 @@ class TestReportFetch:
         assert len(blocks) == 1
         assert "RESULT: PASS" in blocks[0].text
 
+    def test_dispatch_report_refuses_invalid_work_dir(self, _report_env):
+        out = _dispatch_report({"work_dir": 42})
+        assert isinstance(out, mcp_server.McpDispatchResult)
+        assert out.is_error
+        assert "work_dir" in out.value[0].text
+
     def test_dispatch_report_blank_endpoint_is_global(self, _report_env):
         _seed_report(_report_env, "sim", {"flow": "sim"})
         # Blank string is treated as "no filter" (most recent across all endpoints).

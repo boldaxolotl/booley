@@ -1,4 +1,4 @@
-"""The Goal Mode MCP tools: schema, visibility behind the preview switch, dispatch (ADR 0067 D13)."""
+"""The Goal Mode MCP tools: schema, Interactive visibility, dispatch (ADR 0067 D13)."""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ from jsonschema import Draft202012Validator
 
 from booley.core.project_dir import reset_cache
 from booley.goals.model import goal_arg_json_schema
-from booley.goals.preview import GOAL_MODE_PREVIEW_ENV
 from booley.mcp import goal_tools
 from booley.mcp import server as mcp_server
 from booley.mcp.application import UnknownMcpToolError
@@ -21,13 +20,12 @@ GOAL_TOOLS = {"goal_enter", "goal_finish", "goal_propose_change", "goal_status"}
 
 @pytest.fixture(autouse=True)
 def _plain_server_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """An MCP server process with no mode, allowlist, or preview switch set."""
+    """An MCP server process with no mode, allowlist, set."""
     for name in (
         "BOOLEY_NESTED_AGENT",
         "BOOLEY_MCP_TOOLS",
         "BOOLEY_MCP_MODE",
         "BOOLEY_COVERAGE_CAMPAIGN",
-        GOAL_MODE_PREVIEW_ENV,
     ):
         monkeypatch.delenv(name, raising=False)
     project = tmp_path / ".booley_project"
@@ -85,20 +83,12 @@ def test_goal_enter_schema_accepts_and_rejects(arguments: dict[str, Any], valid:
 # ---------------------------------------------------------------------------
 
 
-def test_goal_tools_hidden_with_the_preview_switch_unset(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
-
-    assert not _listed() & GOAL_TOOLS
-
-
 def test_goal_tools_hidden_outside_interactive_mode(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv(GOAL_MODE_PREVIEW_ENV, "1")
 
     assert not _listed() & GOAL_TOOLS
 
 
 def test_goal_tools_hidden_from_nested_specialist_servers(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv(GOAL_MODE_PREVIEW_ENV, "1")
     monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
     monkeypatch.setenv("BOOLEY_NESTED_AGENT", "1")
     monkeypatch.setenv("BOOLEY_NESTED_MCP_TOOLS", "goal_enter")
@@ -106,18 +96,7 @@ def test_goal_tools_hidden_from_nested_specialist_servers(monkeypatch: pytest.Mo
     assert not _listed() & GOAL_TOOLS
 
 
-@pytest.mark.parametrize("value", ["true", "yes", "0", ""])
-def test_only_the_exact_switch_value_exposes_goal_tools(
-    monkeypatch: pytest.MonkeyPatch, value: str
-) -> None:
-    monkeypatch.setenv(GOAL_MODE_PREVIEW_ENV, value)
-    monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
-
-    assert not _listed() & GOAL_TOOLS
-
-
-def test_goal_tools_listed_in_an_interactive_preview_tab(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv(GOAL_MODE_PREVIEW_ENV, "1")
+def test_goal_tools_listed_in_an_interactive_tab(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
 
     assert _listed() >= GOAL_TOOLS
@@ -131,20 +110,9 @@ _ENTER = {"work_dir": "/nowhere", "slug": "fix", "goals": [{"family": "lint", "t
 
 
 @pytest.mark.parametrize("name", sorted(GOAL_TOOLS))
-def test_calling_a_goal_tool_with_the_switch_unset_is_unknown(
-    monkeypatch: pytest.MonkeyPatch, name: str
-) -> None:
-    monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
-
-    with pytest.raises(UnknownMcpToolError):
-        _call(name, _ENTER if name == "goal_enter" else {"work_dir": "/nowhere"})
-
-
-@pytest.mark.parametrize("name", sorted(GOAL_TOOLS))
 def test_calling_a_goal_tool_outside_interactive_mode_is_unknown(
     monkeypatch: pytest.MonkeyPatch, name: str
 ) -> None:
-    monkeypatch.setenv(GOAL_MODE_PREVIEW_ENV, "1")
 
     with pytest.raises(UnknownMcpToolError):
         _call(name, _ENTER if name == "goal_enter" else {"work_dir": "/nowhere"})
@@ -154,7 +122,7 @@ def test_dispatch_refuses_a_hidden_goal_tool_even_if_named(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The special-tool router re-checks visibility, not only the catalog."""
-    monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
+    monkeypatch.delenv("BOOLEY_MCP_MODE", raising=False)
 
     result = asyncio.run(
         mcp_server._dispatch_special_mcp_tool("goal_enter", dict(_ENTER), None, [])  # type: ignore[arg-type]
@@ -167,7 +135,6 @@ def test_dispatch_refuses_a_hidden_goal_tool_even_if_named(
 def test_finish_requires_explicit_retry_binding(
     monkeypatch: pytest.MonkeyPatch, name: str
 ) -> None:
-    monkeypatch.setenv(GOAL_MODE_PREVIEW_ENV, "1")
     monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
 
     payload = _call(name, {"work_dir": "/nowhere"})
@@ -177,7 +144,6 @@ def test_finish_requires_explicit_retry_binding(
 
 
 def test_goal_enter_without_work_dir_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv(GOAL_MODE_PREVIEW_ENV, "1")
     monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
 
     payload = _call("goal_enter", {"slug": "fix", "goals": [{"family": "lint", "target": "t"}]})
@@ -187,7 +153,6 @@ def test_goal_enter_without_work_dir_is_rejected(monkeypatch: pytest.MonkeyPatch
 
 
 def test_goal_enter_refusal_is_a_tool_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv(GOAL_MODE_PREVIEW_ENV, "1")
     monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
 
     payload = _call("goal_enter", _ENTER)

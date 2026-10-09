@@ -82,6 +82,22 @@ def test_pending_bootstrap_completes_with_waivable_warning_and_correct_health(
     assert doctor_stamp.stamp_path(project_dir).exists() is waived
 
 
+def test_typed_report_preserves_warning_deduplication_and_machine_fields():
+    reporter = doctor._Reporter.create()
+    first = DiagnosticFinding(
+        Severity.WARN, "first wording", "repair", "project.example", "target", "same"
+    )
+    second = DiagnosticFinding(
+        Severity.WARN, "new wording", "repair", "project.example", "target", "same"
+    )
+    reporter.diagnostics(DiagnosticReport((first, second)))
+    result = reporter.result(0)
+    assert result.counts["warn"] == 1
+    assert result.findings == (
+        doctor.DoctorFinding("warn", "first wording", "repair", "project.example", "target"),
+    )
+
+
 @pytest.mark.parametrize("read_only", [False, True])
 @pytest.mark.parametrize("valid", [False, True])
 def test_project_observations_and_repairs_keep_the_existing_order(
@@ -111,7 +127,6 @@ def test_project_observations_and_repairs_keep_the_existing_order(
     trace(doctor, "_check_line_endings", "line-endings")
     trace(doctor, "_check_worktree_core_shadow_guard", "shadow")
     trace(readiness, "check_stealth_cores", "projections")
-    trace(doctor, "_check_board_orphans", "orphans")
     doctor.run_doctor_result(argparse.Namespace(deep=False), tmp_path, read_only=read_only)
     expected = [
         "config",
@@ -122,25 +137,8 @@ def test_project_observations_and_repairs_keep_the_existing_order(
         "line-endings",
         "shadow",
         "projections",
-        "orphans",
     ]
     if not valid:
-        expected = ["config", "upgrade", "prune", "line-endings", "orphans"]
+        expected = ["config", "upgrade", "prune", "line-endings"]
     assert events == expected
     assert (tmp_path / "AGENTS.md").exists() is (valid and not read_only)
-
-
-def test_typed_report_preserves_warning_deduplication_and_machine_fields():
-    reporter = doctor._Reporter.create()
-    first = DiagnosticFinding(
-        Severity.WARN, "first wording", "repair", "project.example", "target", "same"
-    )
-    second = DiagnosticFinding(
-        Severity.WARN, "new wording", "repair", "project.example", "target", "same"
-    )
-    reporter.diagnostics(DiagnosticReport((first, second)))
-    result = reporter.result(0)
-    assert result.counts["warn"] == 1
-    assert result.findings == (
-        doctor.DoctorFinding("warn", "first wording", "repair", "project.example", "target"),
-    )
