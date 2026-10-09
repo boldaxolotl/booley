@@ -976,3 +976,36 @@ def test_paired_hint_skips_project_snapshot(versioned_project, monkeypatch):
     monkeypatch.setattr(pairing, "_remove_copy", remove)
     assert _new("no-copy", versioned_project) == 0
     assert seen == [False]
+
+
+@pytest.mark.parametrize(
+    ("failure", "message"),
+    [
+        (subprocess.TimeoutExpired(cmd="bash", timeout=1), "timed out"),
+        (OSError("bash missing"), "failed to start: bash missing"),
+    ],
+)
+def test_outer_creation_failures_become_creation_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: BaseException, message: str
+) -> None:
+    def fail(*_args: object, **_kwargs: object) -> None:
+        raise failure
+
+    monkeypatch.setattr(worktree_cmd.subprocess, "run", fail)
+    with pytest.raises(worktree_cmd.WorktreeCreationError, match=message):
+        worktree_cmd._create_outer("wt", tmp_path, paired_project=False)
+
+
+def test_failed_outer_rollback_is_reported_and_noted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def broken_rollback(*_args: object) -> None:
+        raise OSError("worktree busy")
+
+    monkeypatch.setattr(worktree_cmd, "rollback_outer_worktree", broken_rollback)
+    failure = RuntimeError("pairing failed")
+
+    worktree_cmd._rollback_creation(tmp_path, tmp_path / "wt", "wt", failure)
+
+    assert "outer rollback failed: worktree busy" in capsys.readouterr().err
+    assert failure.__notes__ == ["outer rollback failed: worktree busy"]
