@@ -20,6 +20,15 @@ from pathlib import Path
 from typing import Literal
 
 from booley.commit_policy.policy import stealth_enabled
+from booley.runtime.git_attributes_policy import (
+    GITATTRIBUTES_RULE,
+    fallback_user_attributes,
+    has_attribute_policy,
+    has_managed_attributes,
+    local_policy_owned,
+    native_attribute_path,
+    system_attributes_disabled,
+)
 
 LineEndingRole = Literal["project-checkout", "project-data"]
 
@@ -415,9 +424,6 @@ def read_autocrlf_setting(project_root: Path, *, local: bool = False) -> Autocrl
     if value not in {"true", "false"}:
         return None
     return AutocrlfSetting(value == "true", is_set=True)
-
-
-GITATTRIBUTES_RULE = "* text=auto eol=lf"
 
 
 def _eol_policy_is_user_owned(project_root: Path) -> bool:
@@ -1122,33 +1128,12 @@ def _upstream_attributes(root: Path) -> dict[str, tuple[_FileIdentity | None, by
     return inputs
 
 
-def _has_policy(content: bytes) -> bool:
-    return any(
-        line.strip() and not line.lstrip().startswith(b"#") for line in content.splitlines()
-    )
-
-
-def _local_policy_owned(content: bytes) -> bool:
-    unrelated = {b"export-ignore", b"-export-ignore", b"export-subst", b"-export-subst"}
-    for line in content.splitlines():
-        fields = line.strip().split()
-        if not fields or fields[0].startswith(b"#"):
-            continue
-        if len(fields) < 2 or any(field not in unrelated for field in fields[1:]):
-            return True
-    return False
-
-
-def _local_default(content: bytes) -> bool:
-    return GITATTRIBUTES_RULE.encode() in [line.strip() for line in content.splitlines()]
-
-
 def _upstream_owned(inputs: dict[str, tuple[_FileIdentity | None, bytes]]) -> bool:
     for name, (_, raw_content) in inputs.items():
         if name.startswith(("selection:", "link:")):
             continue
         content = raw_content.partition(b"\0")[2] if name.startswith("index:") else raw_content
-        if _has_policy(content):
+        if has_attribute_policy(content):
             return True
     return False
 
@@ -1163,7 +1148,7 @@ def _crlf_index_dirt(root: Path) -> bool:
     return bool(crlf.intersection(dirty | staged))
 
 
-def _attribute_path_result(root: Path, *args: str) -> subprocess.CompletedProcess:
+def _attribute_path_result(root: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
     return subprocess.run(
         ["git", "-C", str(root), *args],
         capture_output=True,
@@ -1174,42 +1159,11 @@ def _attribute_path_result(root: Path, *args: str) -> subprocess.CompletedProces
 
 
 def _native_attribute_path(root: Path, variable: str) -> tuple[bool, Path | None]:
-    result = _attribute_path_result(root, "var", variable)
-    if result.returncode == 1 and not result.stdout and not result.stderr:
-        return True, None
-    if result.returncode:
-        diagnostic = _output_bytes(result.stderr) + _output_bytes(result.stdout)
-        if b"usage: git var" in diagnostic:
-            return False, None
-        raise ValueError(f"could not resolve {variable}: {_error_text(result.stderr)}")
-    value = os.fsdecode(_output_bytes(result.stdout)).removesuffix("\n")
-    return True, _resolved_attribute_path(root, value)
-
-
-def _resolved_attribute_path(root: Path, value: str) -> Path | None:
-    if not value:
-        return None
-    if value.startswith(("~", "%(prefix)")):
-        raise ValueError("Git did not expand the selected attributes path")
-    path = Path(value)
-    return path if path.is_absolute() else root / path
+    return native_attribute_path(root, variable, _attribute_path_result)
 
 
 def _fallback_user_attributes(root: Path) -> Path | None:
-    result = _attribute_path_result(root, "config", "--path", "--get", "core.attributesFile")
-    if result.returncode == 0:
-        value = os.fsdecode(_output_bytes(result.stdout)).removesuffix("\n")
-        return _resolved_attribute_path(root, value)
-    if result.returncode != 1:
-        raise ValueError(f"could not read core.attributesFile: {_error_text(result.stderr)}")
-    xdg, home = os.environ.get("XDG_CONFIG_HOME"), os.environ.get("HOME")
-    if xdg:
-        return _resolved_attribute_path(root, str(Path(xdg) / "git/attributes"))
-    return (
-        _resolved_attribute_path(root, str(Path(home) / ".config/git/attributes"))
-        if home
-        else None
-    )
+    return fallback_user_attributes(root, _attribute_path_result)
 
 
 def _user_file_snapshots(path: Path) -> dict[str, tuple[_FileIdentity | None, bytes]]:
@@ -1238,18 +1192,6 @@ def _user_file_snapshots(path: Path) -> dict[str, tuple[_FileIdentity | None, by
     raise ValueError(f"attributes symlink chain exceeds 40 links: {path}")
 
 
-def _system_attributes_disabled() -> bool:
-    value = os.environ.get("GIT_ATTR_NOSYSTEM", "").lower()
-    if value in ("", "0", "false", "no", "off"):
-        return False
-    if value in ("1", "true", "yes", "on"):
-        return True
-    try:
-        return int(value) != 0
-    except ValueError as exc:
-        raise ValueError("GIT_ATTR_NOSYSTEM is not a Git Boolean") from exc
-
-
 def _worktree_user_inputs(root: Path) -> dict[str, tuple[_FileIdentity | None, bytes]]:
     inputs: dict[str, tuple[_FileIdentity | None, bytes]] = {}
     supported, path = _native_attribute_path(root, "GIT_ATTR_GLOBAL")
@@ -1258,7 +1200,7 @@ def _worktree_user_inputs(root: Path) -> dict[str, tuple[_FileIdentity | None, b
     inputs["selection:user:" + str(root)] = (None, os.fsencode(path) if path else b"")
     if path:
         inputs.update(_user_file_snapshots(path))
-    if _system_attributes_disabled():
+    if system_attributes_disabled():
         inputs["selection:system:" + str(root)] = (None, b"disabled")
         return inputs
     supported, system = _native_attribute_path(root, "GIT_ATTR_SYSTEM")
@@ -1310,7 +1252,7 @@ def _nonlocal_attributes_plan(repository: LineEndingRepository, target: Attribut
         try:
             common = _common_attributes(repository.root)
             _, content = _policy_content(common)
-            if _local_default(content):
+            if has_managed_attributes(content):
                 observations.append(
                     _observation(
                         LineEndingObservationCode.LOCAL_POLICY_CONFLICT,
@@ -1342,7 +1284,7 @@ def _attributes_plan(repository: LineEndingRepository, stealth: bool):
         inputs = _upstream_attributes(repository.root)
         inputs.update(_effective_user_inputs(repository.root))
         upstream = _upstream_owned(inputs)
-        default = _local_default(common_content)
+        default = has_managed_attributes(common_content)
         if default and upstream:
             observations.append(
                 _observation(
@@ -1361,7 +1303,7 @@ def _attributes_plan(repository: LineEndingRepository, stealth: bool):
             repository.root, common, common_content, upstream, inputs, observations
         )
         inputs[str(common)] = (common_identity, common_content)
-        owned = upstream or _local_policy_owned(common_content)
+        owned = upstream or local_policy_owned(common_content)
         return target, inputs, owned, not owned, observations, None
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         return (
@@ -1400,7 +1342,7 @@ def _record_stealth_policy(
                 detail="existing upstream/user/system attributes policy is preserved; no local default installed",
             )
         )
-    elif not _local_policy_owned(content):
+    elif not local_policy_owned(content):
         observations.append(
             _observation(
                 LineEndingObservationCode.LOCAL_POLICY_MISSING,

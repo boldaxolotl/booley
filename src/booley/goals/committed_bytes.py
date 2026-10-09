@@ -2,20 +2,62 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
+import subprocess
 import tempfile
 from collections.abc import Generator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 from booley.goals.lifecycle import LifecycleError
+from booley.runtime.git_attributes_policy import (
+    GITATTRIBUTES_RULE,
+    fallback_user_attributes,
+    has_attribute_policy,
+    has_managed_attributes,
+    is_null_attributes_path,
+    native_attribute_path,
+    system_attributes_disabled,
+)
 from booley.runtime.history_commit import FileCommitError
 from booley.runtime.pinned_history import raw_git
 
+AMBIENT_ATTRIBUTES_ERROR = (
+    "unsupported ambient input attributes; Finish accepts Booley's managed info/attributes "
+    "rule from booley init. Remove other local/user/system attributes or commit equivalent "
+    ".gitattributes policy before finish"
+)
+
+
+ATTRIBUTES_CHANGED_ERROR = "unsupported ambient input attributes changed during finish"
+
+
+@dataclass(frozen=True)
+class BytePolicy:
+    """Private replay bytes and a public, content-free materialization record."""
+
+    autocrlf: str
+    eol: str
+    info_attributes: bytes
+
+    def record(self) -> dict[str, str]:
+        return {
+            "autocrlf": self.autocrlf,
+            "eol": self.eol,
+            "managed_rule": GITATTRIBUTES_RULE if self.info_attributes else "",
+            "info_attributes_sha256": (
+                hashlib.sha256(self.info_attributes).hexdigest() if self.info_attributes else ""
+            ),
+        }
+
 
 @contextmanager
-def shadow_repository(repository: Path) -> Generator[tuple[Path, dict[str, str]]]:
-    """Object-only scratch repository; no live/global attributes, templates or filters."""
+def shadow_repository(
+    repository: Path, info_attributes: bytes
+) -> Generator[tuple[Path, dict[str, str]]]:
+    """Object-only scratch repository with only the explicitly captured local policy."""
     with tempfile.TemporaryDirectory(prefix="booley-pinned-bytes-") as scratch:
         shadow, template = Path(scratch) / "repository", Path(scratch) / "template"
         template.mkdir()
@@ -40,14 +82,27 @@ def shadow_repository(repository: Path) -> Generator[tuple[Path, dict[str, str]]
             "GIT_CONFIG_PARAMETERS": "",
             "GIT_NO_LAZY_FETCH": "1",
         }
+        if info_attributes:
+            env["GIT_ATTR_NOSYSTEM"] = "1"
+            info = shadow / ".git/info"
+            info.mkdir()
+            (info / "attributes").write_bytes(info_attributes)
         yield shadow, env
 
 
 def attributes(
-    repository: Path, commit: str, names: list[bytes], *, ambient: bool = False
+    repository: Path,
+    commit: str,
+    names: list[bytes],
+    *,
+    ambient: bool = False,
+    policy: BytePolicy,
 ) -> dict[bytes, dict[str, str]]:
     """Pinned index attributes, optionally compared with effective external policy."""
-    with shadow_repository(repository) as (shadow, env):
+    with shadow_repository(repository, policy.info_attributes) as (
+        shadow,
+        env,
+    ):
         raw_git(shadow, "read-tree", commit, env=env)
         args = (
             "check-attr",
@@ -90,13 +145,12 @@ def projected_blobs(
     commit: str,
     rows: dict[bytes, bytes],
     attrs: dict[bytes, dict[str, str]],
-    policy: dict[str, str],
+    policy: BytePolicy,
 ) -> dict[bytes, bytes]:
     """Git's built-in conversion, with exact pinned attributes and hermetic configuration."""
-    if attributes(repository, commit, list(rows), ambient=True) != attrs:
-        raise LifecycleError(
-            "unsupported ambient input attributes; commit equivalent .gitattributes policy before finish"
-        )
+    _require_current_policy(repository, policy)
+    if attributes(repository, commit, list(rows), ambient=True, policy=policy) != attrs:
+        raise LifecycleError(AMBIENT_ATTRIBUTES_ERROR)
     for name, values in attrs.items():
         if any(
             values[key] not in {"unspecified", "unset"}
@@ -107,16 +161,19 @@ def projected_blobs(
                 "the whole selected versioned participant requires a hermetic working-byte proof, "
                 "including unconsumed files; custom filters/encodings are unsupported"
             )
-    with shadow_repository(repository) as (shadow, env):
+    with shadow_repository(repository, policy.info_attributes) as (
+        shadow,
+        env,
+    ):
         raw_git(shadow, "read-tree", commit, env=env)
         raw_git(
             shadow,
             "-c",
             "core.attributesFile=" + os.devnull,
             "-c",
-            "core.autocrlf=" + policy["autocrlf"],
+            "core.autocrlf=" + policy.autocrlf,
             "-c",
-            "core.eol=" + policy["eol"],
+            "core.eol=" + policy.eol,
             "checkout-index",
             "--all",
             "--force",
@@ -129,6 +186,21 @@ def projected_blobs(
         }
 
 
+def _require_current_policy(repository: Path, policy: BytePolicy) -> None:
+    try:
+        current = byte_policy(repository)
+    except LifecycleError as exc:
+        raise LifecycleError(ATTRIBUTES_CHANGED_ERROR) from exc
+    for name, previous, observed in (
+        ("core.autocrlf", policy.autocrlf, current.autocrlf),
+        ("core.eol", policy.eol, current.eol),
+    ):
+        if observed != previous:
+            raise LifecycleError(f"{name} changed during finish")
+    if current.info_attributes != policy.info_attributes:
+        raise LifecycleError(ATTRIBUTES_CHANGED_ERROR)
+
+
 def config(repository: Path, name: str, default: str) -> str:
     try:
         return raw_git(repository, "config", "--get", name).strip().decode("ascii").lower()
@@ -138,8 +210,63 @@ def config(repository: Path, name: str, default: str) -> str:
         return default
 
 
-def byte_policy(repository: Path) -> dict[str, str]:
-    return {
-        "autocrlf": config(repository, "core.autocrlf", "false"),
-        "eol": config(repository, "core.eol", "crlf" if os.name == "nt" else "lf"),
-    }
+def byte_policy(repository: Path) -> BytePolicy:
+    return BytePolicy(
+        autocrlf=config(repository, "core.autocrlf", "false"),
+        eol=config(repository, "core.eol", "crlf" if os.name == "nt" else "lf"),
+        info_attributes=_info_attributes_policy(repository),
+    )
+
+
+def _info_attributes_policy(repository: Path) -> bytes:
+    """Replay init's managed policy; without it retain the effective-attribute comparison."""
+    try:
+        name = raw_git(repository, "rev-parse", "--git-path", "info/attributes")
+        path = Path(os.fsdecode(name).rstrip("\r\n"))
+        path = path if path.is_absolute() else repository / path
+        if path.is_symlink() or path.parent.is_symlink() or (path.exists() and not path.is_file()):
+            return b""
+        content = path.read_bytes() if path.exists() else b""
+    except OSError:
+        return b""  # Retain Git's own effective-policy decision when no rule can be captured.
+    try:
+        if not has_managed_attributes(content):
+            return b""
+        if not has_managed_attributes(content, replayable=True):
+            raise LifecycleError(AMBIENT_ATTRIBUTES_ERROR)
+        _require_no_external_attributes(repository)
+    except (OSError, ValueError) as exc:
+        raise LifecycleError(AMBIENT_ATTRIBUTES_ERROR) from exc
+    return content
+
+
+def _require_no_external_attributes(repository: Path) -> None:
+    # Ask Git which files it actually reads rather than re-deriving its selection:
+    # `git config --get` can report a lower-scope `core.attributesFile` than the one
+    # Git applies (e.g. a missing `:(optional)` path falls back to the XDG file).
+    supported, user = native_attribute_path(repository, "GIT_ATTR_GLOBAL", _attribute_path_query)
+    if not supported:
+        user = fallback_user_attributes(repository, _attribute_path_query)
+    if user is not None and not is_null_attributes_path(repository, user):
+        _require_no_attribute_policy(user)
+    if system_attributes_disabled():
+        return
+    supported, system = native_attribute_path(repository, "GIT_ATTR_SYSTEM", _attribute_path_query)
+    if not supported:
+        raise LifecycleError(AMBIENT_ATTRIBUTES_ERROR)
+    if system is not None:
+        _require_no_attribute_policy(system)
+
+
+def _require_no_attribute_policy(path: Path) -> None:
+    if path.exists() and (not path.is_file() or has_attribute_policy(path.read_bytes())):
+        raise LifecycleError(AMBIENT_ATTRIBUTES_ERROR)
+
+
+def _attribute_path_query(repository: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
+    """Adapt pinned-history reads to the shared attribute resolver's process-result boundary."""
+    try:
+        output = raw_git(repository, *args)
+    except FileCommitError as exc:
+        return subprocess.CompletedProcess(args, 128 if str(exc) else 1, b"", str(exc).encode())
+    return subprocess.CompletedProcess(args, 0, output, b"")

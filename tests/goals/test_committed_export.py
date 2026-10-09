@@ -5,6 +5,7 @@ from __future__ import annotations
 import stat
 import subprocess
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
@@ -12,6 +13,9 @@ from booley.goals.committed_export import export_tree, materializations_unchange
 from booley.goals.input_identity import root_bindings
 from booley.goals.lifecycle import LifecycleError
 from tests.goals.conftest import git
+
+if TYPE_CHECKING:
+    from booley.goals.model import GoalRecord
 
 pytestmark = pytest.mark.timeout(120)
 
@@ -256,7 +260,7 @@ def paired_selection_fixture(tmp_path, outside):
         input_topology_digest="sha256:" + topology_digest(root, project, project),
     )
 
-    return root, project, record
+    return root, project, cast("GoalRecord", record)
 
 
 @pytest.mark.parametrize("outside", [False, True])
@@ -408,8 +412,8 @@ def test_unset_builtin_git_configuration_preserves_projection_defaults(tmp_path,
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     root = repository(tmp_path / "source")
     git(root, "config", "--unset", "core.autocrlf")
-    assert byte_policy(root)["autocrlf"] == "false"
-    assert byte_policy(root)["eol"] in {"lf", "crlf"}
+    assert byte_policy(root).autocrlf == "false"
+    assert byte_policy(root).eol in {"lf", "crlf"}
 
 
 @pytest.mark.parametrize("move", [False, True])

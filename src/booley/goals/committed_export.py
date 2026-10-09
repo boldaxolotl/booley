@@ -12,7 +12,13 @@ from typing import Any
 from booley.core.boundary import is_str_list, require_dict
 from booley.core.config_paths import resolve_booley_toml
 from booley.goals.baseline_objects import baseline_repository, cached_administration
-from booley.goals.committed_bytes import attributes, byte_policy, projected_blobs
+from booley.goals.committed_bytes import (
+    ATTRIBUTES_CHANGED_ERROR,
+    BytePolicy,
+    attributes,
+    byte_policy,
+    projected_blobs,
+)
 from booley.goals.input_identity import directory_identity, rebase_path
 from booley.goals.lifecycle import LifecycleError
 from booley.goals.proposals import digest
@@ -41,13 +47,14 @@ def export_tree(
     validate_pin(repository, commit)
     confined(destination, scratch).mkdir(parents=True, exist_ok=True)
     rows = tree_rows(repository, commit)
-    attrs, policy = attributes(repository, commit, list(rows)), byte_policy(repository)
+    policy = byte_policy(repository)
+    attrs = attributes(repository, commit, list(rows), policy=policy)
     _export_blobs(repository, commit, destination, scratch, rows, attrs, policy)
     proofs = [
         {
             "path": str(repository),
             "pin": commit,
-            "policy": policy,
+            "policy": policy.record(),
             "attributes_digest": digest(attrs_json(attrs)),
             "submodule": False,
         }
@@ -164,7 +171,7 @@ def _export_blobs(
     scratch: Path,
     rows: dict[bytes, bytes],
     attrs: dict[bytes, dict[str, str]],
-    policy: dict[str, str],
+    policy: BytePolicy,
 ) -> None:
     blobs = projected_blobs(repository, commit, rows, attrs, policy)
     for name, metadata in rows.items():
@@ -218,13 +225,15 @@ def materializations_unchanged(proof: dict[str, Any], current_roots: dict[str, A
             ) or raw_git(path, "rev-parse", "HEAD").strip().decode("ascii") != row["current_pin"]:
                 return False
         names = list(tree_rows(path, row["pin"]))
-        pinned = attributes(path, row["pin"], names)
-        if attributes(path, row["pin"], names, ambient=True) != pinned:
-            raise LifecycleError("unsupported ambient input attributes changed during finish")
-        if (
-            byte_policy(path) != row["policy"]
-            or digest(attrs_json(pinned)) != row["attributes_digest"]
-        ):
+        try:
+            policy = byte_policy(path)
+        except LifecycleError as exc:
+            raise LifecycleError(ATTRIBUTES_CHANGED_ERROR) from exc
+        pinned = attributes(path, row["pin"], names, policy=policy)
+        if attributes(path, row["pin"], names, ambient=True, policy=policy) != pinned:
+            raise LifecycleError(ATTRIBUTES_CHANGED_ERROR)
+        recorded = {"managed_rule": "", "info_attributes_sha256": "", **row["policy"]}
+        if policy.record() != recorded or digest(attrs_json(pinned)) != row["attributes_digest"]:
             return False
     return True
 
@@ -247,10 +256,9 @@ class PinnedWorkingBytes:
 
 def pinned_working_bytes(repository: Path, pin: str) -> PinnedWorkingBytes:
     rows = tree_rows(repository, pin)
-    attrs = attributes(repository, pin, list(rows))
-    return PinnedWorkingBytes(
-        rows, projected_blobs(repository, pin, rows, attrs, byte_policy(repository))
-    )
+    policy = byte_policy(repository)
+    attrs = attributes(repository, pin, list(rows), policy=policy)
+    return PinnedWorkingBytes(rows, projected_blobs(repository, pin, rows, attrs, policy))
 
 
 def tracked_matches_pin(
