@@ -6,7 +6,10 @@ universal allowlist. The test-only analyzer records source knowledge without add
 a production abstraction layer.
 
 Current measurements include the integrated #530, #531, and #532 changes.
-Historical snapshots retain their original revisions and dates. Direction rules
+Historical snapshots retain their original revisions and dates. Goal Mode is
+the only public workflow; Ticket modules and their dependency rules are retained
+until Phase 9a removes them. Package names such as `booley.harness` below identify
+source owners, not an active execution mode. Direction rules
 are normative; dated graph snapshots are diagnostic evidence.
 
 ## Source map
@@ -24,9 +27,9 @@ The package layout maps to the canonical concepts indexed by the
 | Criteria | `booley.criteria` | Define and evaluate reusable acceptance policy independently of its producing endpoint; `criteria.endpoint_catalog` owns the immutable relationship interface supplied by composition roots. |
 | Criterion evidence values | `booley.evidence` | Own persisted evidence field names, deterministic recipe identity/comparison, reviewer receipts/dispositions, and per-clock timing values shared by Criteria and evidence-producing Flows. |
 | Specialist | `booley.specialists` | Run a scoped LLM sub-agent and return structured evidence. |
-| Harness | `booley.harness.developer`, `booley.harness.developer_guardrails` | Drive the Developer Agent toward accepted Criteria. |
+| Retired Harness | `booley.harness.developer`, `booley.harness.developer_guardrails` | Retained Ticket execution loop until Phase 9a removes it; unreachable through the public CLI. |
 | Goal Mode | `booley.goals` | Translate Goals into Criteria and own Goal Records, their locks and revisions, worktree identity, and the Change Log. |
-| Ticket Board | `booley.ticket_board` | Persist Tickets, transitions, Criteria state, execution records, and the complete ticket-review lifecycle; project resolved Ticket documents into generic Criteria declarations. |
+| Retired Ticket Board | `booley.ticket_board` | The Ticket workflow is retired, but Goal Mode and Specialists still depend on shared Flow loading, agent execution, waiver, and review modules; unbound MCP calls use `TicketAcceptanceRecorder`, and `booley flow` retains its `BOOLEY_TICKET_FILE` adapter. Phase 9a relocates shared dependencies to `evidence/` or `goals/` and removes Ticket-only adapters before deleting the package. |
 | MCP | `booley.mcp` | Expose Flows and Specialists to calling agents. |
 | B-Wave | `booley.bwave` | Inspect, convert, discover, and query waveform stores; own the B-Wave half of streaming and control human viewing. |
 
@@ -62,7 +65,7 @@ functions. D14 has no waiver or composition exception.
   resolves `runtime.session_paths.session_jobs_dir` after Interactive logging setup;
   the job manager retains each run's root from submission through completion,
   and restarted readers locate a unique run across the container root and every
-  retained Goal Record (all lifecycle states) while Goal preview is enabled.
+  retained Goal Record (all lifecycle states).
   Located jobs carry their root into terminal writes and report discovery.
   Standalone readers resolve the same session location. Explicit `None` disables persistence.
 - `core.models.AgentArtifactPaths` carries resolved output paths. An optional
@@ -72,7 +75,8 @@ functions. D14 has no waiver or composition exception.
   resolved locations; standalone calls use adjacent transcript sidecars.
 - Claude Runtime owns provider rate-limit detection, wait/retry, and budget
   pause/resume without importing Ticket Board policy.
-- `ticket_board.ticket_repositories` owns Ticket Workspace requests, Scope routing,
+- Retained until Phase 9a removes it, `ticket_board.ticket_repositories` owns
+  Ticket Workspace requests, Scope routing,
   branch handoff, Board-change protection and cleanup. Authoring callers invoke
   `ticket_board.workspace_ops` directly, without a reverse workspace import.
   `runtime.project_repositories` owns generic repository discovery, coordinate
@@ -304,6 +308,10 @@ permission to correspond to a current exact production edge.
 
 ## Ticket review lifecycle boundary
 
+This lifecycle facade is retained until Phase 9a removes it. It is a public
+Python interface inside the retained package, not an exposed product workflow;
+`booley board` now prints a Goal Mode pointer and exits 2.
+
 `ticket_board.review_lifecycle` is the deep public facade for automatic handoff,
 requested review, refresh, regeneration, finalization, briefing, and review-bound
 endpoint execution. Ticket Board owns admission, captured inspection identity,
@@ -334,14 +342,18 @@ scanning or execution responsibility out of Flows.
 `evidence.acceptance` owns storage-independent resolved acceptance inputs.
 `flows.execution_persistence` defines the execution and recording interface,
 including `AcceptanceRecorder.acceptance_identity()`, the public read of the
-identity evidence is recorded under; `ticket_board.flow_execution` supplies the
-Ticket Board adapter. This keeps Ticket baseline lookup and ledger writes
-outside deterministic Flow execution under D17.
+identity evidence is recorded under. `goals.flow_execution.GoalFlowExecution`
+supplies the bound Goal adapter and recorder; `ticket_board.flow_execution`
+supplies both the legacy Ticket adapter and `TicketAcceptanceRecorder` used by
+unbound MCP calls. These adapters remain live until Phase 9a removes or relocates them. Goal
+binding and Ticket baseline lookup stay outside deterministic Flow execution
+under their respective composition contracts.
 
 `criteria.evidence_ledger` owns durable Criterion evidence storage: V1 appends,
 V2 Simulation Campaign transactions, their lock, recovery, and publication
 checkpoints. Callers pass an `EvidenceScope` (a purpose plus an
 `EvidenceIdentityCodec`) and, for V2, an `EvidenceProjection`.
+Retained until Phase 9a removes its compatibility facade,
 `ticket_board.acceptance_ledger` composes it for Tickets: the
 `ticket_acceptance` purpose, the `TicketIdentity` codec, and report-submission
 fencing. The dependency points from `ticket_board` to `criteria` only (D30).
@@ -858,7 +870,7 @@ python3 tests/architecture/compare_report.py \
   --before-ref <exact-base> --after-ref <exact-head> --repo-root .
 ```
 
-## Goal evidence composition (preview)
+## Goal evidence composition
 
 `booley.goals` owns immutable Run Bindings, publication gates, state merging,
 freshness policy, status views, and neutral evidence metrics. D35 continues to
@@ -871,11 +883,13 @@ persistence strategy through the acceptance recorder at `EndpointState.read_stat
 The optional `CriterionSourceTarget` recorder capability supplies a declared Goal
 Target before an endpoint samples source fingerprints; publication preserves that
 sample instead of recapturing source digests. Ticket recorders retain their existing
-producer-supplied Target policy. The optional `CriterionFreshness` capability reads
+producer-supplied Target policy until Phase 9a removes them. The optional
+`CriterionFreshness` capability reads
 Goal status for the exact in-memory Reviewer receipt, checked against a locked
 disk snapshot and its bound specification identity. Replayed Goal receipts do
 not write state, so their audit cannot replace a concurrently completed review.
-Ticket Reviewers retain the existing persistent freshness refresh.
+Retained Ticket Reviewers use the existing persistent freshness refresh until
+Phase 9a removes that path.
 
 Status resolves a supplied worktree subdirectory to its containing Git root, then
 enumerates the record's declared Goals, with absent evidence unmet and
@@ -884,4 +898,5 @@ working contents and tracked HEAD contents; Worktree Identity and symbolic Goal
 Branch; the evidence identity group's specification revisions; then Goal source,
 Target surface, Reviewer receipt, and simulation-suite freshness. Status performs
 no persistence or re-binding. The Phase 2 audit key is now a Worktree Identity key;
-process-session discovery and shared-worktree session enumeration remain Phase 6.
+the Phase 6 Session Registry now supplies session discovery and shared-worktree
+warnings. It is presentational and never selects a Goal Record.

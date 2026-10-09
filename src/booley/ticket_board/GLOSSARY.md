@@ -1,9 +1,13 @@
 # Ticket Board glossary
 
-This is the canonical vocabulary for Ticket authoring, execution state, and
-acceptance. Shared Booley concepts such as **Target**, **Booley Flow**,
-**Developer Agent**, and **Harness** are defined in the
-[shared glossary](../../../docs/GLOSSARY.md).
+This is the canonical vocabulary for the retired Ticket workflow's authoring,
+execution state, and acceptance. **Ticket Mode**, **Developer Agent**, and
+**Harness** are listed under the shared glossary's
+[retired terminology](../../../docs/GLOSSARY.md#retired-and-ambiguous-terminology).
+Shared **Target** and **Booley Flow** concepts remain in the
+[shared glossary](../../../docs/GLOSSARY.md). Some `ticket_board/` modules and
+the Criterion vocabulary still support Goal Mode and Specialists; Phase 9a
+relocates those dependencies before deleting this package and glossary.
 
 ## Language
 
@@ -90,8 +94,10 @@ _Avoid_: Ticket editing, reset, fresh authoring
 ### Execution and evidence
 
 **Criterion**:
-A named boolean condition in a Ticket's acceptance state, bound to the
-evidence and subject it evaluates.
+A named boolean condition bound to the evidence and subject it evaluates.
+It belongs to a Ticket's acceptance state in the retired workflow and remains
+the internal policy/evaluation vocabulary in `ticket_board/`, `criteria/`, and
+`evidence/` code used by Goal Mode until Phase 9a relocates the shared code.
 _Avoid_: check, gate, acceptance test
 
 **Cycle Count Criterion**:

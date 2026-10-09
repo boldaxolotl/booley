@@ -6,6 +6,20 @@ and supplies before/after evidence for the architecture programme in
 diagnostic evidence, not a numeric fan-out gate. The programme's separate
 14 OCT 2026 decision date is unchanged.
 
+## Goal Mode update (2026-10-09)
+
+Goal Mode is the only public workflow after Phase 7b. Doctor's "Project checks"
+diagnose shared configuration, Git, Custom Flow metadata, and Criteria wiring;
+Goal entry separately refuses invalid worktrees or Goal inputs. Doctor no longer
+checks Ticket Board layout, committed Ticket History, or board orphans. It warns
+about non-empty leftover board directories and old Ticket guidance, suggesting
+deletion or migration into a Goalset; `tickets/history/` is left inert and silent.
+
+The Ticket Preflight and Developer Agent modules are retained until Phase 9a
+removes them. Active `booley.harness` diagnostic and setup modules remain current.
+The dated dependency measurements and validation records below describe their
+original revisions.
+
 ## Interfaces and ownership
 
 Doctor retains check selection, phase ordering, rendering, warning waivers,
@@ -49,9 +63,10 @@ fixes accompanying the extraction.
 | Project RECONCILE | Uses existing guidance-link and core-projection owners to repair generated artifacts. It does not run Init or issue a Runtime. |
 
 Project operations remain separate because actual observations and repairs are
-interleaved with other Doctor checks. The order stays configuration, upgrade
+interleaved with other Doctor checks. At the original extraction, the order was configuration, upgrade
 review, guidance, worktree pruning, line endings, shadow guard, projections,
-then board orphans. Invalid configuration retains the resolved Project directory
+then board orphans. Phase 7b removed the board-orphan check; shared Project
+checks and Goal migration diagnostics now follow their current Doctor ordering. Invalid configuration retains the resolved Project directory
 for later checks while skipping operations that require validated Project data.
 Automatic/read-only Doctor uses INSPECT; manual Doctor retains its existing
 bounded repairs. Deep Flow startup, configured timeouts, negative selftests,

@@ -32,7 +32,7 @@ file, and every Flow run is generated from that description. Existing projects
 therefore port their build description when adopting Booley; [SETUP.md](../user/SETUP.md)
 covers that process.
 
-Owning the build system is what buys the rest: the agent reaches every EDA tool through one interface instead of guessing at per-project conventions, and **Criteria** (the named pass/fail conditions a Ticket must satisfy; see the [Ticket Board glossary](../../src/booley/ticket_board/GLOSSARY.md)) are tracked automatically from the results, which is also what makes the whole thing usable in CI.
+Owning the build system is what buys the rest: the agent reaches every EDA tool through one interface instead of guessing at per-project conventions, and **Goals** (the mandatory conditions of Goal Mode; see the [shared glossary](../GLOSSARY.md)) are judged from bound evidence in those results, which is also what makes the whole thing usable in CI.
 
 A deterministic **Booley Flow** has to do two things: turn the caller's request into a real EDA tool invocation, and turn the result back into facts Booley can reason about. This doc covers both halves for the built-ins: the **invocation** half (FuseSoC and Edalize generate the command) and the **interpretation** half (the per-Flow evidence contract). See [ARCHITECTURE.md](ARCHITECTURE.md) for where this layer sits in the whole system.
 
@@ -46,7 +46,7 @@ must return. The remaining sections are per-Flow references for `sim`,
 
 Rather than hand-build commands per EDA tool, Booley builds command generation on two upstream libraries: **FuseSoC** resolves the design description and **Edalize** emits the backend command. These are internal building blocks, not external services. The deliberate line Booley draws is in *what it delegates to them*: it uses them to generate the command, but interpreting the result back into facts stays in Booley's own code.
 
-The canonical design description is a FuseSoC **`.core` file** (CAPI2, FuseSoC's YAML schema). Each `.core` declares one or more **Targets**, and a Target fixes everything needed to *build* the design: the fileset (with `file_type` and `tags: [tb]` testbench markers), typed parameters, the toplevel module, and the EDA tool used for resolution (`flow_options.tool`: Verilator, Icarus, Yosys, or Vivado; [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md) is the source-of-truth matrix). Simulation and lint execute that selected tool. FPGA implementation instead rebuilds the resolved Target inputs into a Vivado EDAM; its `fpga` Target-name axis declares Flow intent, while `flow_options.tool` still selects `tool_*` conditional inputs during FuseSoC setup. The `--target` argument to `sim`, `lint`, `synth`, and `fpga` names one of these Targets. Each is both a `booley flow` CLI selection (`booley flow sim --target sim_dut`) and an MCP tool the agent calls during Ticket execution; the Flow contract is the same either way.
+The canonical design description is a FuseSoC **`.core` file** (CAPI2, FuseSoC's YAML schema). Each `.core` declares one or more **Targets**, and a Target fixes everything needed to *build* the design: the fileset (with `file_type` and `tags: [tb]` testbench markers), typed parameters, the toplevel module, and the EDA tool used for resolution (`flow_options.tool`: Verilator, Icarus, Yosys, or Vivado; [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md) is the source-of-truth matrix). Simulation and lint execute that selected tool. FPGA implementation instead rebuilds the resolved Target inputs into a Vivado EDAM; its `fpga` Target-name axis declares Flow intent, while `flow_options.tool` still selects `tool_*` conditional inputs during FuseSoC setup. The `--target` argument to `sim`, `lint`, `synth`, and `fpga` names one of these Targets. Each is both a `booley flow` CLI selection (`booley flow sim --target sim_dut`) and an MCP tool the agent calls during Goal Mode; the Flow contract is the same either way.
 
 Resolution happens in two phases (`src/booley/fusesoc/fusesoc_registry.py`): a cheap,
 side-effect-free parse of the `.core` YAML (to validate `--target` names and
@@ -168,9 +168,43 @@ inside the selected checkout and removes it on normal exit or exceptions. The
 plan discloses that limited preparation side effect; EDA and project Pre-Run
 commands are never dispatched.
 
+### Goal baselines and editable design inputs
+
+The internal [Criteria](../../src/booley/ticket_board/GLOSSARY.md#execution-and-evidence)
+names below are the policy and evidence keys used to evaluate declared Goals.
+This vocabulary remains live in `ticket_board/`, `criteria/`, and `evidence/`;
+Phase 9a relocates shared Ticket-owned implementations before deleting the
+package and its glossary. Ordinary CLI Flow calls remain diagnostic; Goal
+verification uses the MCP-bound execution adapter.
+
+Goal entry pins the clean linked worktree's HEAD as its base and creates a Goal
+Branch. A baseline-relative Goal resolves its baseline Target at that base;
+the current candidate Target is an editable design input. Renaming or removing
+a bound Target leaves the Goal unmet until it is restored or a human approves a
+retargeting Goal Change Proposal. Target, test-registry, and SDC/XDC changes are
+exposed in the Review Package rather than guarded by a Ticket Scope allowlist.
+
+Protected Inputs include Project configuration and checkout-root `booley.toml`,
+every configuration candidate's legacy `pipeline.toml` sibling, worktree-root
+`FUSESOC_IGNORE`, and `hooks`, `.managed`, `generators`, and `mcp_tools` at their
+consumer roots. The snapshot covers session-Project, worktree, main-checkout,
+and configured Project-directory candidates according to the readers described
+in `goals/protected_inputs.py`; it includes fallback copies as well as the
+currently selected configuration. Goal entry captures working and committed
+input identities; drift warns and blocks Finish until reverted.
+Run admission and publication bind evidence to the Goal Record, specification
+revisions, source fingerprints, and Target surface. Approved coverage-policy
+changes use the Goal proposal-and-approval transaction described below.
+
 ### Ticket baselines
 
-Ticket Mode treats the Target recipe as acceptance input, not implementation
+This section describes Ticket baseline policy retained until Phase 9a removes it.
+The Ticket workflow is unreachable through the public `booley run` / `booley board` CLI, which
+prints a Goal Mode pointer and exits 2. Its baseline protections do not define
+Goal Mode policy. `booley flow` still has a `BOOLEY_TICKET_FILE` adapter, and
+shared `ticket_board/` dependencies remain live until they are relocated.
+
+The retired Ticket Mode treats the Target recipe as acceptance input, not implementation
 work. `create-file` opens a Ticket Workspace before enqueue, so new or changed
 Targets are authored on Ticket-owned branches without changing the Project's
 destination branches or making Doctor observe a half-configured Target. Enqueue
@@ -360,19 +394,26 @@ Only a true target-level `pass` satisfies `sim_pass_{target}`; an
 and configuration errors (bad `--target`, disabled Flow, unknown `--test`) are
 exit-2 Flow errors, outside the verdict vocabulary.
 
-### Per-test Cycle Count Criteria
+### Per-test Cycle Count Goals
 
-`cycle_count` is a specialized simulation Criterion. Each list item binds one
-Target and registered test to one or more numeric thresholds:
+`cycle_count` is a specialized simulation Goal. Each Goal binds one Target and
+registered Test Run to one or more numeric thresholds. For example, a concrete
+Goal entry argument is:
 
-```yaml
-cycle_count:
-  - target: sim_coremark
-    test: coremark
-    cycle_count_max: 100000
-    cycle_count_reduce_at_least: 5%
-    cycle_count_reduce_at_least_cycles: 2000
+```json
+{
+  "family": "cycle_count",
+  "target": "sim_coremark",
+  "test": "coremark",
+  "thresholds": {
+    "cycle_count_max": 100000,
+    "cycle_count_reduce_at_least": "5%",
+    "cycle_count_reduce_at_least_cycles": 2000
+  }
+}
 ```
+
+The evidence implementation retains Criterion keys internally.
 
 The named test must pass and emit exactly one
 `[SIM_CYCLES] <test> <non-negative-count>` record. Every threshold is ANDed;
@@ -383,7 +424,7 @@ Count Criterion even when another test in the same batch fails. With no
 
 Absolute `_max`/`_min` thresholds use the current run only. Percentage-relative
 and `_cycles` delta thresholds automatically run the same Target/test at the
-Ticket's pinned baseline in an ephemeral worktree. A zero baseline cannot
+Goal Mode's pinned base in an ephemeral worktree. A zero baseline cannot
 define a percentage and fails that check closed. Review reports call the result
 an **observed Cycle Count change** and disclose changes to known declared RTL,
 testbench, firmware, vectors, constraints, and other workload inputs. Such input
@@ -488,8 +529,9 @@ not Booley config, so it lives on the Target: a `.vlt` file for Verilator,
 `veribleLintRules` / `veribleLintWaiver` filesets (and the `ruleset` / `rules`
 flow options) for Verible. Booley adds no severity tiers and no waiver
 machinery of its own: every finding counts against the Criterion, and a waiver
-edit lands in the diff like any other change, where ticket Scope and the
-Reviewer agent ([GLOSSARY.md](../GLOSSARY.md)) are the control.
+edit lands in the diff like any other design-input change, where the
+Review Package and Reviewer Specialist ([GLOSSARY.md](../GLOSSARY.md)) expose it
+for inspection. Goal Mode has no Ticket Scope allowlist.
 
 The CLI adds `--scope` (comma-separated path fragments, which filter the findings
 *and* the Criteria counts with them), `--dry-run`, and `--timeout` (positive
@@ -713,10 +755,12 @@ Either way the failing stage's own output (a missing liberty file, a
 Yosys/sv2v error) is carried into the report, so the reason is named instead
 of a bare "no metrics".
 
-#### Ticket baselines and recorded recipes
+#### Goal baselines and recorded recipes
 
-Ticket Mode's shared baseline and recipe invariants are defined in
-[Ticket baselines](#ticket-baselines).
+Goal Mode's base commit and editable Target policy are defined in
+[Goal baselines and editable design inputs](#goal-baselines-and-editable-design-inputs).
+Retained Ticket recipe invariants are documented separately under
+[Ticket baselines](#ticket-baselines) until Phase 9a removes that code.
 
 ### Reports and Criteria detail
 
@@ -946,10 +990,12 @@ clock `clk_i` (see [USAGE.md](../user/USAGE.md#threshold-parameters)).
 Provisioning and setup failures are Flow errors. Missing metrics, timing
 violations, and critical design conditions are design failures.
 
-#### Ticket baselines and recorded recipes
+#### Goal baselines and recorded recipes
 
-Ticket Mode's shared baseline and recipe invariants are defined in
-[Ticket baselines](#ticket-baselines).
+Goal Mode's base commit and editable Target policy are defined in
+[Goal baselines and editable design inputs](#goal-baselines-and-editable-design-inputs).
+Retained Ticket recipe invariants are documented separately under
+[Ticket baselines](#ticket-baselines) until Phase 9a removes that code.
 
 ### Reports and Criteria detail
 
@@ -1012,8 +1058,25 @@ preserved in structured output. Progress is observational and never resumed.
 Project-wide waiver configuration is `[coverage.waivers]` in the project-data
 `booley.toml`, with explicit `anchor` (`rtl_repository` or
 `project_data_repository`) and safe relative `directory`. Target window/hook
-configuration remains under `flow_options.booley.coverage`. Once a Ticket is
-sealed, hand-editing, adding, deleting, or replacing an approval file or
+configuration remains under `flow_options.booley.coverage`.
+
+In Goal Mode, the Coverage Analyst's deterministic wrapper records screened
+Waiver Candidates in the bound Goal Record's `waiver-candidates.json`, alongside
+strict and provisional verdicts. A Provisional Coverage Verdict informs the
+human's decision and cannot meet a Goal. The agent proposes a coverage waiver
+through `goal_propose_change`; human approval captures promotion effects,
+updates the Approved Waiver Set, recomputes strict coverage, and records the
+change in the Goal Change Log. Candidate, Campaign, source, and policy identities
+are revalidated before application. External waiver-policy changes invalidate
+old coverage evidence; they are not an implicit Goal approval.
+
+#### Retained Ticket waiver promotion
+
+The following sealed-input and review-time promotion path is retained until
+Phase 9a removes it. Public `booley board` invocations return a Goal Mode pointer
+and exit 2; Goal Mode does not use the Acceptance Journal or Ticket generations.
+
+Once a Ticket is sealed, hand-editing, adding, deleting, or replacing an approval file or
 one of its referenced proof artifacts requires `return-to-draft`; the new
 Ticket generation records a fresh protected-input baseline.
 
@@ -1041,6 +1104,8 @@ approval still make the review inputs stale.
 Rejections, keyed by Target, point, and source SHA-256, filter later proposals and
 survive return-to-draft and `board reset`, which clear only candidates; closing the
 Ticket discards the record.
+
+#### Coverage Campaign artifacts
 
 The canonical Target directory holds `simulation.json` and a
 `booley.coverage-campaign-reference/v1` `coverage.json`, not the Coverage Campaign
@@ -1090,7 +1155,7 @@ stable `COV_*` error codes. Summary readers validate manifest-local facts withou
 opening point storage. Campaign and Simulation publication precede Criterion evidence. Coverage
 observations use transaction-qualified ledger sequence directories. Their
 transaction identity is included in `acceptance_transactions` in the same atomic
-Harness state save as the updated Criteria. Acceptance readers ignore evidence
+bound evidence-state save as the updated Criteria. Acceptance readers ignore evidence
 from transactions absent from the saved state, including partially written
 sequences. Thus an interrupted evidence append or failed state save preserves
 the prior authoritative projection without deleting historical observations.

@@ -14,12 +14,18 @@ result = LintFlow().execute(LintRequest(target="lint", work_dir=Path.cwd(), diag
 print(result.exit_code, result.outcome.detail)
 ```
 
-This entry point runs inside the Sandbox and performs the same Ticket
-validation, admission and persistence as the CLI. It constructs no parser or
-schema. `SimRequest`, `SynthRequest` and `FpgaRequest` live beside their respective
+This entry point runs inside the Sandbox and performs the same boundary
+validation, admission and persistence as the CLI. Ordinary direct typed and
+`booley flow` calls use `StandaloneFlowExecution`, without Goal evidence
+persistence. MCP composition supplies `GoalFlowExecution` with its captured
+Run Binding for Goal verification; a direct caller must explicitly compose
+that adapter to use the same evidence path. The typed entry point constructs
+no parser or schema. `SimRequest`, `SynthRequest` and `FpgaRequest` live beside their respective
 implementations. Requests are copied for execution because preparation and
-baseline work may change the working inputs. Ticket identity and state-file
+baseline work may change the working inputs. The Goal binding and state-file
 location are environment-derived preparation fields, excluded from constructors.
+The legacy Ticket identity fields and adapters are retained until Phase 9a
+removes them.
 
 ## Ownership
 
@@ -53,10 +59,17 @@ Built-ins do not inherit `EndpointContext`.
 
 ## Ordering and failures
 
-Preparation validates the runtime, Flow enablement and Ticket acceptance surface
-before loading mutable state. Target-to-Criterion binding validation precedes job
-admission. The admitted claim remains held through invocation, final acceptance,
-mutable completion persistence and reporting, then is released.
+Preparation validates the runtime, Flow enablement, bound Goal worktree, and
+Target-to-Goal binding before job admission. The Run Binding captures the record
+and specification revisions plus Protected Inputs; publication rechecks it
+before appending evidence or merging mutable state. Failed publication binding
+discards the evidence rather than assigning it to another Goal Record.
+
+The retained Ticket adapter additionally validates its sealed acceptance surface
+before loading mutable state; that path is retained until Phase 9a removes it.
+
+The admitted claim remains held through invocation, final acceptance, mutable
+completion persistence and reporting, then is released.
 
 Acceptance has two recording points. Each `set_criterion` computes changes,
 records immutable evidence, then saves mutable state and emits its update. At
@@ -89,11 +102,12 @@ rendering consume an immutable endpoint catalog assembled outside Criteria; the
 former W1/W2 discovery waivers were retired by #284.
 
 `tests/flows/test_transport_contract.py` captures all four pre-refactor schemas,
-exercises direct typed and CLI calls, checks Ticket gates and acceptance ordering,
-distinguishes acceptance failures, runs a real lint child through MCP with a fake
+exercises direct typed and CLI calls, checks retained Ticket gates and acceptance
+ordering, distinguishes acceptance failures, runs a real lint child through MCP with a fake
 EDA executable, and checks Project-local constructor/schema/loader compatibility.
-The existing Flow/backend, MCP, Ticket/Criteria and architecture suites cover the
-remaining execution and persistence behavior.
+The Flow/backend, MCP, Goal/evidence, Criteria, and architecture suites cover
+current execution and persistence behavior; retained Ticket suites characterize
+compatibility code until Phase 9a removes it.
 
 ### Verilator compiler cache ownership
 
@@ -112,8 +126,9 @@ that compiles uncached with a refresh warning; only malformed configuration
 fails preparation.
 
 Sandbox Issuance fixes `BOOLEY_COMPILER_CACHE_ROOT` under the existing Project
-mount in both container and remote environments. Ticket/review subprocesses
-inherit it when repointing `BOOLEY_PROJECT_DIR` to checkout-local authored data.
+mount in both container and remote environments. Goal-bound and review
+subprocesses inherit it; retained Ticket subprocesses also inherit it when
+repointing `BOOLEY_PROJECT_DIR` to checkout-local authored data.
 Its presence/value participates in spec validation, digest/drift detection, and
 refresh; no new mount is introduced. Non-issued development resolves ownership
 through `resolve_project_dir` and selected configuration through
@@ -124,4 +139,4 @@ registered as a disposable `flow-cache` artifact. Setup cleanup preserves
 unowned legacy runtime residue. Legacy `.booley/project` resynchronization
 excludes precisely `project/.runtime/compiler-cache`, preserving adjacent
 runtime/authored content. Baseline core copying only copies the core subtree;
-ordinary Project Git ignores exclude `.runtime` from Ticket snapshots.
+ordinary Project Git ignores exclude `.runtime` from source snapshots.

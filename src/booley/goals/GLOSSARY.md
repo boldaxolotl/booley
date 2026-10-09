@@ -5,7 +5,9 @@ stored, changed, and bound to a worktree. **Goal Mode**, **Goal**,
 **Goalset**, **Goal Branch**, **Goal Record**, **Goal Change Proposal**,
 **Change Log**, **Protected Input**, **Review Package**, and **Session** are
 defined in the [shared glossary](../../../docs/GLOSSARY.md); this glossary
-uses them with that meaning.
+uses them with that meaning. **Waiver Candidate** and **Provisional Coverage
+Verdict** belong to the [Simulation Coverage glossary](../flows/sim/GLOSSARY.md);
+Goal Mode uses its proposal-and-approval workflow to promote a candidate.
 
 ## Language
 

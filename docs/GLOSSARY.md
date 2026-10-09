@@ -4,12 +4,12 @@ This is the canonical vocabulary for concepts shared across Booley. Consult it
 when a term is unfamiliar; it is not an onboarding sequence. The
 [context map](../GLOSSARY-MAP.md) points to the separately owned vocabularies.
 
-Booley is the **agentic RTL IDE**: the integrated working environment for human-guided and autonomous RTL development. **Interactive Mode** and **Ticket Mode** share the same isolated **Sandbox**, Booley Flows, and Specialists; neither mode alone defines the product.
+Booley is the **agentic RTL IDE**: the integrated working environment for human-guided and autonomous RTL development. **Goal Mode** and **Interactive Mode** share the same isolated **Sandbox**, Booley Flows, and Specialists; neither mode alone defines the product.
 _Avoid_ (for the product itself): framework, system, library, platform, toolkit, package, harness
 
 The glossary also records words to _avoid_. Booley's concepts collide with
 overloaded industry words such as “tool,” “agent,” “target,” and “harness”; one
-term per concept keeps prompts, tickets, documentation, and code aligned. Treat
+term per concept keeps prompts, Goals, documentation, and code aligned. Treat
 each entry's _Avoid_ terms as rejected synonyms rather than loose alternatives.
 
 ## Using Booley
@@ -34,10 +34,10 @@ _Avoid_: Project Initialization, onboarding, porting
 
 ### Execution
 
-How and where Booley work runs. The **Sandbox** is the execution environment; **Ticket Mode** and **Interactive Mode** are the two ways to drive it; the remaining entries are the machinery inside.
+How and where Booley work runs. The **Sandbox** is the execution environment; **Goal Mode** and **Interactive Mode** are the two execution modes; the remaining entries are the machinery inside.
 
 **Sandbox**:
-The isolated execution environment for one opened project folder, and the place where all Booley work executes. It owns filesystem access, shell execution, git operations, EDA subprocesses, MCP servers, logs, and secrets; the host may provision immutable EDA installation files and narrowly scoped license connectivity, but never execution authority. Tickets receive their own git worktrees and branches inside the Sandbox; the branch and its commits are the durable artifact of a run, while the worktree itself is Sandbox-scoped scratch. Docker is the default implementation, not the domain concept.
+The isolated execution environment for one opened project folder, and the place where all Booley work executes. It owns filesystem access, shell execution, git operations, EDA subprocesses, MCP servers, logs, and secrets; the host may provision immutable EDA installation files and narrowly scoped license connectivity, but never execution authority. Goal Mode runs in a linked git worktree on its own Goal Branch inside the Sandbox; the branch and its commits are durable artifacts, while the worktree is Sandbox-scoped scratch. Docker is the default implementation, not the domain concept.
 _Avoid_: Session Runtime, Session Container, Docker Session, MCP sandbox, per-ticket sandbox
 
 **Sandbox Image**:
@@ -48,16 +48,12 @@ _Avoid_: Runtime Image, Session Image, sandbox tag, container, Dockerfile
 The host-owned act of sealing and vouching for one exact Sandbox specification, including its immutable image, trusted mounts, network policy, and granted provisioning inputs. It is distinct from **EDA Provisioning**, which decides where EDA installation files originate.
 _Avoid_: Session Runtime Issuance, EDA runtime spec, provisioning issuance
 
-**Ticket Mode**:
-The ticket-driven execution mode: a `booley run` invocation, issued from inside a Sandbox, launches a Developer Agent per selected Ticket and drives each Ticket through its lifecycle to completion or escalation. Multiple Tickets may execute concurrently within one Sandbox, alongside an Interactive Mode session; each Ticket works in its own git worktree and branch. Ticket Mode no longer creates a Sandbox of its own.
-_Avoid_: batch mode, automated mode, host mode
-
 **Interactive Mode**:
-Execution mode in which a human steers Claude Code or Codex inside a Sandbox, using the recommended CLI or an optional VS Code extension in a window attached to that Sandbox. The agent's filesystem access, shell execution, git operations, MCP servers, Booley Flows, and Specialists execute inside it; ordinary interactive work has no Ticket or Criteria tracking. Explicit human review of a Ticket retains its Scope and records Criteria evidence while the human directs the work, without a Developer Agent.
+Execution mode in which a human steers Claude Code or Codex inside a Sandbox, using the recommended CLI or an optional VS Code extension in a window attached to that Sandbox. The agent's filesystem access, shell execution, git operations, MCP servers, Booley Flows, and Specialists execute inside it; work outside Goal Mode has no persistent Goal tracking. The same session may enter Goal Mode when the human is ready to state machine-checked Goals.
 _Avoid_: MCP Mode, Standalone Mode, Tab Mode, Booley Interactive
 
 **Goal Mode**:
-The state one agent session enters, on its own Goal Branch, in which its work is judged against its Goals until it finishes with all Goals met or is abandoned. It serves both human-steered and unattended work, and replaces Ticket Mode.
+The execution mode an agent session enters in a linked worktree, on its own Goal Branch, in which its work is judged against its Goals until it finishes with all Goals met or is abandoned. It serves both human-steered and unattended work; the worktree owns its Goal Record.
 _Avoid_: ticket mode, ticket, goal session, objective
 
 **Goal Branch**:
@@ -66,6 +62,7 @@ _Avoid_: ticket branch, work branch
 
 **Goal**:
 A named, mandatory boolean condition held by a session in Goal Mode, met only by Booley Flow or Specialist evidence at the session's current code. The agent may ask to relax a Goal; only a human may approve it.
+The internal [Criterion](../src/booley/ticket_board/GLOSSARY.md#execution-and-evidence) vocabulary remains in shared evaluation code; use Goal for the public success condition.
 _Avoid_: Criterion, acceptance criterion, optional criterion, check, gate
 
 **Goalset**:
@@ -89,7 +86,7 @@ The append-only record inside a Goal Record of every approved Goal Change Propos
 _Avoid_: audit log, history, journal
 
 **Protected Input**:
-A file that decides how evidence is produced and is therefore digested at Goal Mode entry: `booley.toml`, `FUSESOC_IGNORE`, and the `hooks`, `.managed`, `generators`, and `mcp_tools` directories under the Project directory. Editing one warns at once and blocks Finish until reverted.
+A file that decides how evidence is produced and is therefore digested at Goal Mode entry: Project configuration and checkout-root `booley.toml`, their legacy `pipeline.toml` siblings, `FUSESOC_IGNORE`, and the `hooks`, `.managed`, `generators`, and `mcp_tools` directories at their consumer roots. The snapshot covers the session Project, worktree, and main-checkout copies that consumers can read (see [Goal baselines](internals/FLOW_IMPLEMENTATION.md#goal-baselines-and-editable-design-inputs)). Editing one warns at once and blocks Finish until reverted.
 _Avoid_: frozen file, locked config, Scope
 
 **Review Package**:
@@ -101,27 +98,15 @@ In the Session Registry, one agent client thread or process that calls Booley fr
 _Avoid_: connection, tab, MCP session, Sandbox session
 
 **Sandbox Attachment**:
-The connection method by which a human-facing app or autonomous driver uses a Sandbox. VS Code Dev Containers ("Open Folder in Container" / "Reopen in Container") is the first Interactive Mode attachment; direct subprocess execution is the Ticket Mode attachment.
+The connection method by which a human-facing app or autonomous driver uses a Sandbox. VS Code Dev Containers ("Open Folder in Container" / "Reopen in Container") attaches the editor and its agent sessions for Interactive Mode and Goal Mode; `booley session` provides terminal attachment for automation.
 _Avoid_: Runtime Attachment, remote, tunnel, app bridge
 
 **Doctor**:
 The diagnostic command for Booley's build and execution machinery in a **Project**'s environment, including integration with Project build configuration. Its intended scope treats correctly executed and interpreted design failures as compatible with healthy machinery and leaves design correctness to normal **Booley Flows**; current classification limits and deep validation policy are described in the [Doctor reference](user/DOCTOR.md).
 _Avoid_: design verification, Ticket Preflight, acceptance gate
 
-**Ticket Preflight**:
-The fast-fail validation Booley runs before Ticket intake. It checks the execution environment, Ticket Board and Git state, Custom Flow metadata, Criteria structure, and configured agent backend. Blocking failures stop the run before Ticket work begins; non-blocking findings are warnings. `booley doctor` provides related diagnostics without starting a Ticket run, but it does not reproduce every Ticket Preflight result.
-_Avoid_: bare Preflight, Flow validation, doctor, startup test
-
-**Harness**:
-The Ticket Mode infrastructure that the Developer Agent operates within, managing ticket lifecycle, Criteria tracking, logging, and cleanup. Interactive Mode may reuse lower-level Sandbox infrastructure, but does not run inside the Harness.
-_Avoid_: engine, core, framework, harness
-
-**Developer Agent**:
-The LLM agent that drives Booley Flow and Specialist selection during ticket execution, making decisions about what to invoke next based on criteria state. The Developer Agent also authors RTL and testbench code itself; there is no separate coder Specialist (the TB Coder Specialist is retained but hidden until it matures; see [ROADMAP.md](internals/ROADMAP.md)); its edits are allowed when Scope permits, invalidate dependent Criteria, and require the relevant Booley Flows to pass like any other edit.
-_Avoid_: bare "Developer", loop, controller, scheduler, harness
-
 **Workflow Region**:
-An advisory cluster of Developer Agent activity, useful Specialists, Booley Flows, and intended outcomes. The three Workflow Regions are `pre_sim`, `core_loop`, and `post_sim`; each Criterion declares its region via the `workflow_region` key in criteria.toml, which drives advisory ordering only. Workflow Regions guide ticket execution without imposing mandatory order, mandatory Flow use, or hidden completion gates.
+An advisory cluster of agent activity, useful Specialists, Booley Flows, and intended outcomes. The three Workflow Regions are `pre_sim`, `core_loop`, and `post_sim`; each internal [Criterion](../src/booley/ticket_board/GLOSSARY.md#execution-and-evidence) declares its region via the `workflow_region` key in criteria.toml, which drives advisory ordering only. Workflow Regions organize capability guidance without imposing mandatory order, mandatory Flow use, or hidden completion gates in Goal Mode.
 _Avoid_: stage, phase, pipeline step
 
 **Sandbox Policy**:
@@ -153,7 +138,7 @@ A background run of a Booley Flow or Specialist, tracked by a `run_id` through t
 _Avoid_: task, process, async call
 
 **Job Class**:
-The admission category of a Job or Developer Agent, determined by which scarce resource it consumes: EDA work inside the Sandbox (`heavy`), model-API-bound Specialist work (`light`), or a Developer Agent itself (`ticket`). Each class carries a configurable concurrency cap; work beyond the cap queues in priority order (Interactive Mode ahead of Ticket Mode) rather than being refused, and running work is never preempted. The one refusal is a full queue: past the configured `queue_max`, admission raises rather than waits.
+The admission category of a Job, determined by which scarce resource it consumes: EDA work inside the Sandbox (`heavy`) or model-API-bound Specialist work (`light`). Each class has a configurable concurrency cap; excess work queues without preempting running work, and a full queue refuses admission. Queue priority comes from the requester role, independently of class: `interactive` sorts ahead of `ticket`, which is also the fallback priority for an unknown role. The legacy `ticket` class exists only for retained Ticket execution code until Phase 9a removes it; agent sessions in Goal Mode do not consume it.
 _Avoid_: tier, weight, pool, semaphore
 
 ### Configuration
@@ -161,7 +146,7 @@ _Avoid_: tier, weight, pool, semaphore
 The design-description primitives Booley references but does not own. **Target** is the load-bearing one: almost every other entry binds to a Target by name.
 
 **Project**:
-A codebase initialized with `booley init`, containing a `.booley_project/` directory with tickets, configuration, and logs. Booley discovers the active project by walking up the directory tree.
+A codebase initialized with `booley init`, containing a `.booley_project/` directory with Goalsets, Goal Records, configuration, and logs. Booley discovers the active project by walking up the directory tree.
 _Avoid_: repo, workspace
 
 **Project Inventory**:
@@ -185,7 +170,7 @@ A named FuseSoC `.core` build target, the single source of truth for one design-
 
 - *Naming.* Booley-authored Targets are named `<axis>_<subject>`: a leading axis token naming the Booley Flow family (`sim`, `lint`, `synth`, `fpga`), then a subject that distinguishes the Target from others, coarse to fine (`sim_smoke`, `synth_timing`). The axis leads because the name is the only place `synth` and `fpga` are distinguishable at all — CAPI2 (FuseSoC's Core API v2, the `.core` file format) has no synthesis flow, so both resolve as `generic` — and because a leading axis makes the sorted `booley targets` listing group itself by Flow. Vendored upstream cores keep whatever names upstream gave them.
 - *Parameter ownership.* The Target owns the parameters outright: names, types, defaults, and *values* alike. There is no per-call override surface: every define and parameter lives in the Target as a declared value, and a run that needs different values needs a different Target.
-- *Identity and selection.* A Target's durable identity is its declaring core's VLNV (FuseSoC Vendor:Library:Name:Version) plus its Target name. A Booley Flow receives the shortest selector that is unambiguous in the Project: the bare Target name when unique, otherwise a sufficient VLNV suffix followed by `#name`. Identity and selector name the same Target but are not interchangeable representations; Criteria and evidence compare identity while commands render selectors. Every Booley Flow call selects its Target explicitly; Doctor selection lives on the Target itself.
+- *Identity and selection.* A Target's durable identity is its declaring core's VLNV (FuseSoC Vendor:Library:Name:Version) plus its Target name. A Booley Flow receives the shortest selector that is unambiguous in the Project: the bare Target name when unique, otherwise a sufficient VLNV suffix followed by `#name`. Identity and selector name the same Target but are not interchangeable representations; Goals and evidence compare identity while commands render selectors. Every Booley Flow call selects its Target explicitly; Doctor selection lives on the Target itself.
 
 _Avoid_: Design Configuration, build config, profile, named config
 
@@ -209,11 +194,11 @@ _Avoid_: Pre-Run Commands, pre-test hook, prebuild adapter, test fixture script
 | **MCP tool** | Protocol-level mechanism used to invoke a Flow or Specialist | Implementation detail rather than product taxonomy |
 
 **Booley Flow**:
-Deterministic end-to-end orchestration: `lint`, `sim` (Simulation), `synth` (ASIC Synthesis), or `fpga` (FPGA Implementation). In Ticket Mode it is invoked by the Developer Agent and updates Criteria; in Interactive Mode it is invoked inside the Sandbox through an MCP tool with no Criteria side effects. A resolved **Target** supplies the EDA-selection field used during FuseSoC resolution. Simulation and lint drive that selected tool directly; the FPGA Flow rebuilds the resolved design inputs into its fixed Vivado EDAM, so the Target's `fpga` naming axis declares drivability while its EDA-selection field remains a resolution input. Every Booley Flow builds its command through Booley's FuseSoC/Edalize path, executes inside the **Sandbox**, and interprets the result into evidence.
+Deterministic end-to-end orchestration: `lint`, `sim` (Simulation), `synth` (ASIC Synthesis), or `fpga` (FPGA Implementation). In Goal Mode its MCP-bound evidence updates Goals; an ordinary CLI call returns a diagnostic verdict without persistent Goal state. It can be invoked through MCP or the CLI inside the Sandbox. A resolved **Target** supplies the EDA-selection field used during FuseSoC resolution. Simulation and lint drive that selected tool directly; the FPGA Flow rebuilds the resolved design inputs into its fixed Vivado EDAM, so the Target's `fpga` naming axis declares drivability while its EDA-selection field remains a resolution input. Every Booley Flow builds its command through Booley's FuseSoC/Edalize path, executes inside the **Sandbox**, and interprets the result into evidence.
 _Avoid_: B-Tool, mechanical tool, utility, command
 
 **EDA tool**:
-Concrete external program driven by a Flow, such as Verilator, Icarus, Verible, Yosys, or Vivado. A Target's EDA-selection field participates in FuseSoC resolution and normally selects the program; the FPGA Flow is the fixed-backend exception and always drives Vivado. The Booley Flow owns orchestration, evidence normalization, artifacts, and Criteria rather than delegating those responsibilities to the EDA tool.
+Concrete external program driven by a Flow, such as Verilator, Icarus, Verible, Yosys, or Vivado. A Target's EDA-selection field participates in FuseSoC resolution and normally selects the program; the FPGA Flow is the fixed-backend exception and always drives Vivado. The Booley Flow owns orchestration, evidence normalization, artifacts, and evidence rather than delegating those responsibilities to the EDA tool.
 _Avoid_: bare tool, Booley Flow, backend
 
 **MCP tool**:
@@ -221,11 +206,11 @@ Protocol-level mechanism used to invoke a Flow or Specialist. MCP tools are impl
 _Avoid_: bare tool, Booley Flow (when referring specifically to the protocol endpoint)
 
 **Elaboration Check**:
-A fast Simulation Flow mode that compiles, elaborates, and links a simulation Target without running its tests. It verifies structural readiness but does not satisfy a simulation Criterion.
+A fast Simulation Flow mode that compiles, elaborates, and links a simulation Target without running its tests. It can satisfy an `elab` Goal through `elab_pass` evidence; it does not satisfy a `sim` Goal, which requires test execution.
 _Avoid_: syntax check, compile-only, Elaboration Flow, simulation substitute
 
 **Specialist**:
-An optional LLM-powered sub-agent invoked with fresh context for a single delegated task. Does not carry history from previous invocations. The active Specialists are Reviewer, Mutation Tester, and [Coverage Analyst](../src/booley/flows/sim/GLOSSARY.md) (the canonical list lives in [USAGE.md](user/USAGE.md#booley-flows--specialists)); TB Coder also exists but is hidden until it matures; the Developer Agent authors testbenches itself. Specialists are capabilities the Developer Agent may use, not mandatory stages in a fixed pipeline.
+An optional LLM-powered sub-agent invoked with fresh context for a single delegated task. Does not carry history from previous invocations. The active Specialists are Reviewer, Mutation Tester, and [Coverage Analyst](../src/booley/flows/sim/GLOSSARY.md) (the canonical list lives in [USAGE.md](user/USAGE.md#booley-flows--specialists)); TB Coder also exists but is hidden until it matures; the session's agent authors testbenches itself. Specialists are capabilities that agent may use, not mandatory stages in a fixed pipeline.
 _Avoid_: agentic MCP tool, agent, worker
 
 **Specialist Source Isolation**:
@@ -233,7 +218,7 @@ When a **Specialist** reviews or mutates one side of the design, the other side'
 _Avoid_: optional blindness, reviewer independence
 
 **Custom Flow**:
-A project-authored Booley Flow that does not ship with Booley. Its MCP tool implementation lives under `.booley_project/mcp_tools/`; it implements the same deterministic orchestration and evidence contract as built-in Flows, is discovered and invoked through the same MCP tool infrastructure, and may update project Criteria. It adds a new Flow alongside the built-ins (for example, a DRC check); it is not a side door for replacing the EDA tool driven by an existing Flow.
+A project-authored Booley Flow that does not ship with Booley. Its MCP tool implementation lives under `.booley_project/mcp_tools/`; it implements the same deterministic orchestration and evidence contract as built-in Flows, is discovered and invoked through the same MCP tool infrastructure, and may produce evidence for declared Goals. It adds a new Flow alongside the built-ins (for example, a DRC check); it is not a side door for replacing the EDA tool driven by an existing Flow.
 _Avoid_: Custom Tool, plugin, user tool, project tool
 
 ### Simulation evidence
@@ -276,24 +261,26 @@ _Avoid_: regex, marker, exit-code-only verdict
 
 ### Presentation
 
-**Console**:
-The full-screen TUI (Textual) that shows live execution state: one active Booley Flow or Specialist at a time, persistent Criteria panel, and dynamic counters. It is the display for Ticket execution.
-_Avoid_: flashy mode, monitor
-
 **Booley Dashboard**:
-The read-only terminal view, one per Sandbox, of every Goal Mode, Booley Flow job, and health signal in that Sandbox. It replaces the Console.
+The read-only terminal view, one per Sandbox, of agent sessions, Goals, Booley Flow Jobs, and health signals in that Sandbox.
 _Avoid_: control room, console, monitor
 
 ## Retired and ambiguous terminology
 
-You will not need these unless you are reading older tickets, code, or docs; they are terms that were renamed or removed. Skim now, refer back when you hit one.
+You will not need these unless you are reading older work records, code, or docs; they are terms that were renamed or removed. Skim now, refer back when you hit one.
+
+- **Ticket Mode** → **Goal Mode**: Retired ticket-driven workflow. `booley run` and `booley board` now print a migration pointer and exit 2; the Ticket loop and Board implementation are retained until Phase 9a removes them.
+- **Ticket Preflight** → **Goal entry refusals** and **Doctor** "Project checks": The old Ticket-intake gate is retired; entry enforces Goal worktree and input requirements, while Doctor diagnoses shared Project machinery. They are separate checks, not a one-for-one reproduction of Ticket Preflight.
+- **Harness** → **none**: Retired name for Ticket lifecycle orchestration. Name the Goal Record, evidence machinery, or Sandbox capability concerned. The `booley.harness` package still contains active CLI, Doctor, and setup code; its Ticket loop is retained until Phase 9a removes it.
+- **Developer Agent** → **the agent session in Goal Mode**: The session's agent chooses capabilities and authors code; there is no separate Ticket-execution agent in the public workflow.
+- **Console** → **Booley Dashboard** for the live view; **none** for the old single-Ticket display: The Dashboard shows sessions, Goals, Jobs, and health across the Sandbox. Ticket Console implementation is retained until Phase 9a removes it.
 
 - **"tool"**: Overloaded across Booley, agent clients, MCP, and EDA. Never use the bare word in Booley prose or identifiers: say **Booley Flow** for deterministic orchestration, **EDA tool** for the external program a Flow drives, and **MCP tool** only for the protocol-level invocation mechanism.
-- **"agent"**: Overloaded across Booley (Specialist), Claude Code (the outer agent), and the LLM industry generally. Use **Specialist** for Booley's LLM-powered sub-agents, **Developer Agent** for the agent that executes Tickets.
-- **"stage"**, and lowercase **"harness"** used as a synonym for Booley's architecture as a whole: legacy framing: the system is a Developer Agent choosing capabilities, not a fixed pipeline. Do not use them that way. (The capitalized **Harness** *is* canonical: the Ticket Mode infrastructure the Developer Agent runs within; see its entry above. What to avoid is "harness" as a loose synonym for the overall system.)
-- **"engine" / "core"**: Legacy synonyms for Harness. Do not use.
+- **"agent"**: Overloaded across Booley (Specialist), Claude Code (the outer agent), and the LLM industry generally. Use **Specialist** for Booley's LLM-powered sub-agents and **the agent session in Goal Mode** for the session driving Goal-bound work.
+- **"stage"**: Legacy framing for a mandatory pipeline. The agent session chooses Booley Flows and Specialists as needed; use **Workflow Region** only for advisory capability groupings.
+- **"engine" / "core"**: Legacy names for retired orchestration infrastructure. No replacement umbrella term; name the capability or source module.
 - **"Design Configuration"**: Retired. The Booley-side bundle of EDA params no longer exists; design-description lives in a FuseSoC **Target**, and Booley only references it by name. Use **Target**.
-- **"Session ID"**: Never implemented. Branch names and worktree paths derive from the ticket slug, and container names from the workspace folder name; there is no stable per-Sandbox identity to refer to.
+- **"Session ID"** as a Sandbox identity: Never implemented. Use **Session** for the presentational agent-client identity, **Worktree Identity** for the checkout, or **Goal Record** for the work being tracked; none is a per-Sandbox Session ID.
 - **"parameter override"** / **`-d`** / **`--define`**: Retired. There is no per-call build-time injection into a **Target**; declare the value in the Target, or use a different Target.
 - **"plusarg override"** / **`--plusarg`**: Never offered. A run-time argument that a run needs is declared as a **Test Variant**, so every Test Run is a declared configuration.
 - **"colon-free target names"**: Retired absolute. VLNV grammar (the FuseSoC Vendor:Library:Name:Version identifier) is permitted on Booley's surface: bare names when unambiguous, `vlnv#name` on collision.

@@ -183,3 +183,7 @@ Recorded after the Phase 0 spikes
   `booley-goal` skill are registered only when `BOOLEY_GOAL_MODE_PREVIEW=1`
   is set until the release that removes Ticket Mode; "no coexistence" is
   enforced on registration, not on files.
+
+## Amendment (2026-10-09)
+
+Rollout switch removed; Goal Mode is the only public workflow (Phase 7b, PR #1321); Ticket code removal follows in Phase 9a.
