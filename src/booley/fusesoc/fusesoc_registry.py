@@ -1664,6 +1664,11 @@ def _core_relative_path(core_file: Path, root: Path, declared: str) -> str:
     return canonical_project_path(root, candidate)
 
 
+def core_files_root(core_file: Path, project_root: Path) -> Path:
+    """Public form of :func:`_core_files_root` for cheap readers outside FuseSoC."""
+    return _core_files_root(core_file, project_root)
+
+
 def _core_files_root(core_file: Path, project_root: Path) -> Path:
     """Effective fileset root for an authoritative core.
 

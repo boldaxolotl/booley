@@ -93,13 +93,17 @@ def _evaluate(key: str, entry: Any, root: Path, goal: GoalSpec | None, **kwargs:
     return evaluate_goal_freshness(key, entry, goal=goal, work_dir=root, **kwargs)
 
 
-def test_surface_wraps_cross_drive_fileset_resolution_error(project: Path, monkeypatch) -> None:
+def test_surface_skips_cross_drive_fileset_paths_like_any_outside_root(
+    project: Path, monkeypatch
+) -> None:
     def cross_drive(*_args, **_kwargs):
         raise ValueError("path is on a different drive")
 
     monkeypatch.setattr("booley.fusesoc.fusesoc_registry.os.path.relpath", cross_drive)
-    with pytest.raises(TargetSurfaceError, match="different drive"):
-        target_surface_fingerprint(project, None)
+    surface = target_surface_fingerprint(project, None)
+
+    assert "top.sdc" not in surface["files"]
+    assert "top.core" in surface["files"]
 
 
 # ---------------------------------------------------------------------------
