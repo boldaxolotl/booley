@@ -42,7 +42,7 @@ settings to a shell shared with unrelated work. Note all prefixes, suffixes,
 executables and control directories before use. No privileges or ptrace needed.
 
 For every gated policy case, create a clean linked worktree from committed
-fixture setup, start `booley session enter -- codex ...`, and send `/booley-goal`
+fixture setup, start `booley session enter -- codex ...`, and send `$booley-goal`
 with that case's concrete coverage Goal. Convert fixture `min_pct` objects to
 numeric Goal `metrics` floors. Collect through MCP with `work_dir`; ordinary CLI
 runs are diagnostic. Preserve Goal Record `booley_state.json` and
@@ -204,8 +204,10 @@ interruption event; an EIO return alone is not an interruption.
 Restoring is a separate step: disable injection by launching a fresh command
 without its environment; restore only copied fixture inputs, confirm their bytes
 and original permissions, then run the corresponding valid public operation.
-Publication retry means a **new invocation number**, never resuming a partial
-Campaign. Pruning retry means the **same exact selection**, preserving journals,
+Publication retry for incomplete collection means a **new invocation number**,
+never resuming a partial Campaign. For the Goal acceptance-state rename fault
+after all terminal Results exist, use the child's MCP `sim` exact resume with
+`work_dir`, as described in `simulation-campaign/RUNBOOK.md`. Pruning retry means the **same exact selection**, preserving journals,
 quarantine and tombstones. Never delete a lock to bypass active production.
 Do not restore acceptance by writing state files; the valid public Flow produces
 new authoritative evidence. Keep every failed transaction for inspection.

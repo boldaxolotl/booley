@@ -2,7 +2,8 @@
 
 Drive the published PicoRV32 demo Project through Booley end to end. The run covers setup, an
 Interactive B-Wave repair, Dhrystone and Zbb Goals, proposals, Finish, crash resume, a
-Simulation Campaign, Vivado, and negative cases. The IP is small and well known, so failures point
+Simulation Campaign, Vivado, and negative cases across primary and optional
+follow-up runs. The IP is small and well known, so failures point
 at Booley, usually at handoffs: paired repos, evidence freshness, Grants, Sessions, cleanup.
 
 ## Pins and prerequisites
@@ -15,9 +16,13 @@ at Booley, usually at handoffs: paired repos, evidence freshness, Grants, Sessio
   backend.
 - Optional: Vivado 2025.2 on x86-64 Linux (areas 6 and 11), a paid license and relay (11), a Git
   server you control (13), and VS Code with the Codex extension (2).
-- Budget: 8 h, areas in priority order. Log any area not reached as skipped. Goal children run in the background while the operator works independent areas
-  9–14. The area budgets total 440 minutes, including 120 minutes of Zbb child
-  time, with 40 minutes contingency. Rerun on Windows (WSL2, no Vivado) or another client only when asked.
+- Budget: 8 h for the primary run: 460 area minutes (including 90 for
+  continuity and 150 for Zbb/proposals) plus 20 contingency. Areas 2, 9 and
+  11–14 are optional follow-up work outside this timebox (195 minutes total);
+  the non-Stealth history control adds an optional 25 minutes. Preserve their
+  original timeboxes and log them as skipped unless a follow-up is requested.
+  Run primary areas sequentially; Interactive children never overlap an active
+  Goal in the same Project. Rerun on Windows/another client only when asked.
 
 ## Mission-specific rules
 - Upstream RTL and the Project pin are immutable inputs. Hidden faults stay
@@ -30,7 +35,7 @@ at Booley, usually at handoffs: paired repos, evidence freshness, Grants, Sessio
 
 ## Areas
 
-### 1. setup — Install, split repos, init, Stealth, Doctor, baseline (~40 min)
+### 1. setup — Install, split repos, init, Stealth, Doctor, baseline (~70 min)
 Intent: a first setup succeeds from the public docs alone, and the unchanged demo passes every Flow.
 Try:
 - Clone both pins and confirm they are clean. Make `.booley_project` a standalone Git repo, then run
@@ -43,7 +48,9 @@ Try:
   `booley: {doctor: [fpga]}` to `fpga_core` in `cores/picorv32_impl.core`.
 - Enable Stealth with `ignore_native_cores = true`. Only the hidden authored cores are projected,
   with no copied RTL and no symlinks. Dot-prefixed paths don't count as native.
-- Create paired run-owned destination branches (outer and Project-data). Commit the setup changes
+- Create run-owned destination branches (outer and standalone Project-data).
+  Area 1 makes the Project its own Git repo: require the paired checkout printed
+  by `booley worktree new` before using two-branch integration. Commit the setup changes
   (Flows, EDA, FPGA Doctor Target) to the Project-data one. Both repos must be clean before area 4.
 - Build `firmware/firmware.hex` before the first Doctor run, since Doctor resolves the sim Target
   against it. `booley doctor` and `booley doctor --deep` should show no warnings. Repeat
@@ -53,7 +60,7 @@ Try:
 Look for: undocumented steps, a stale image, over- or under-matching waivers, stale reports, wrong
 tool resolution.
 
-### 2. interactive-bwave — Interactive readiness and B-Wave semantics (~20 min)
+### 2. interactive-bwave — Interactive readiness and B-Wave semantics (~35 min, optional follow-up)
 Intent: the Interactive child has the right context, and B-Wave returns correct values, not just
 exit 0.
 Try:
@@ -69,7 +76,7 @@ Try:
 Look for: off-by-one sampling, silent empty results, `--virtual` accepted where the docs reject it.
 Known B-Wave defects still count as findings.
 
-### 3. interactive-repair — Seeded Wishbone fault, diagnosis, repair (~20 min)
+### 3. interactive-repair — Seeded Wishbone fault, diagnosis, repair (~30 min)
 Intent: an Interactive child can find and fix a real bug from traces.
 Try:
 - Save a checkpoint. On a run-owned disposable branch, inject `fixtures/wishbone-fault.md`
@@ -92,15 +99,14 @@ Try:
 - Install `goals/continuity.md` and `goals/evolution.md` in Project `goalsets/`
   and commit. Create a linked workspace from the primary checkout with
   `booley session enter -- booley worktree new <unique-name>`.
-- Start the Codex Goal child, send `/booley-goal` plus `goals/continuity.md`.
+- Start the Codex Goal child, send `$booley-goal` plus `goals/continuity.md`.
   Confirm translated Goals, origin, record ID, base commit, branch and worktree
   identity, then explicitly abandon this entry probe.
 - Use `goals/entry-probe.json` for a separate disposable ad-hoc entry; abandon
   it on the operator's explicit instruction before removing its workspace.
 - Probe refusal for the main checkout, dirty outer tree and dirty paired
   Project checkout, each in isolation.
-- Separately probe a worktree copy of the Project directory, active/finishing
-  occupant and existing same-day Goal Branch.
+- Separately probe an active/finishing occupant and existing same-day Goal Branch.
 - Probe a missing relative baseline Target and missing spec separately.
   A missing candidate Target only warns and remains unmet. Preserve each
   diagnostic and restore that probe's owned inputs.
@@ -111,11 +117,11 @@ Try:
 Look for: branch collisions on rerun, collapsed Project/worktree identity,
 missing origins, or entry mutating a refused workspace.
 
-### 5. goal-evidence — Dhrystone contract and fresh evidence (~45 min)
+### 5. goal-evidence — Dhrystone contract and fresh evidence (~90 min)
 Intent: a verification Goal delivers self-checking firmware with evidence bound to its Target.
 Depends on: area 4's working entry route; if entry failed, fix only the reported setup cause.
 Try:
-- Enter a fresh continuity Goal in a new clean paired worktree. The child follows
+- Enter a fresh continuity Goal in a new clean linked worktree. The child follows
   `goals/continuity.md`: 100 iterations, deterministic final
   validation, mismatch error/trap, success magic `123456789` at `0x20000000`
   only after validation, and `[SIM_CYCLES] dhry <n>` with n ≤ 110000.
@@ -125,25 +131,28 @@ Try:
   freshness, rerun and require fresh evidence. Restore and commit intended work.
 - In a separate disposable Project copy, change a Protected Input, observe warnings/discarded
   evidence and blocked Finish, restore exact bytes and rerun the affected producer.
-- Follow `fixtures/dhrystone-guard.md` in a separate disposable Project/Goal: corrupt one expected
-  operand, require trap/no magic/no cycles, restore and rerun to pass. Abandon
-  the probe explicitly; preserve the real continuity Goal's Review Package.
 - Finish the continuity Goal, inspect the package as in area 7 and integrate
-  both repository branches before cutting the Zbb worktree.
+  the outer branch plus the Project-data branch when printed.
+- After that integration, follow `fixtures/dhrystone-guard.md` in a separate
+  disposable Project/Goal: corrupt one expected operand, require trap/no magic/
+  no cycles, restore and rerun to pass. Explicitly abandon the probe and retain
+  the real continuity Goal's Review Package before cutting the Zbb worktree.
 Look for: a pass before validation, the cap bound to the wrong test, stale
-Goal evidence or a missing `sim_dhry_checked` in the paired merge.
+Goal evidence or a missing `sim_dhry_checked` in a printed Project-data merge.
 
-### 6. goal-change — Zbb feature and human decisions (~120 min child time)
+### 6. goal-change — Zbb feature and human decisions (~150 min child time)
 Intent: a second Goal starts from integrated Dhrystone work and tests add, relax and retarget.
-Depends on: area 5 finished and both branches integrated; never hand-implement a substitute.
+Depends on: area 5 finished and all printed branches integrated; never hand-implement a substitute.
 Try:
-- With both destination checkouts clean, create a new paired worktree. Give a
-  new Codex child `/booley-goal` plus `goals/evolution.md`. Copy the installed
-  ISA manual into the worktree at `docs/riscv-isa-unprivileged.html` before entry
-  and commit it; bind the spec review to that relative path. Inspect the copied
-  file, not a link/index: the reviewer reads its text and truncates after 30,000
-  characters. Save that boundary with the review evidence. With Vivado, include
-  `goals/fpga.json` as ad-hoc Goals; without it, log that family as skipped.
+- With participating destination checkouts clean, create a new linked worktree. Give a
+  new Codex child `$booley-goal` plus `goals/evolution.md`. Before entry, the
+  operator extracts the installed manual's normative Zbb encodings and semantics
+  for all 18 ops into `docs/riscv-zbb-spec.html`. Keep exact source bytes,
+  including the relevant headings; record the installed manual's path, SHA-256
+  and source byte range(s) beside the excerpt. Verify it is self-contained and
+  no longer than 30,000 UTF-8 characters, then commit both files. Bind spec review
+  to the excerpt, which the reviewer reads in full. With Vivado, the operator
+  supplies `goals/fpga.json` as ad-hoc Goals; otherwise log that family as skipped.
 - All 18 Zbb ops match the manual; `ENABLE_ZBB` defaults to 0 in core, AXI and
   WB, registered PCPI responds in one cycle, and the disabled test arms MMIO
   immediately before the encoding and requires its illegal-instruction trap.
@@ -175,12 +184,14 @@ Try:
   Inspect diff/base, final Goals, evidence pointers, Change Log, open `done`
   findings, `.core`, `tests.toml`, `.sdc`/`.xdc` changes and Target semantic diff.
 - In this Stealth Project, the Session Summary stays local and no history commit
-  is made. In a non-Stealth disposable control with a trackable history path,
-  Finish commits the summary on the Goal Branch before integration.
-- Finish preserves branch/worktree. The operator reviews and merges both outer
-  and paired Project-data branches; remove the paired checkout first as printed.
+  is made. Optional follow-up (~25 min, outside the primary timebox): create a
+  non-Stealth disposable control with a trackable history path, complete its
+  Goal and require Finish to commit the summary before integration.
+- Finish preserves branch/worktree. The operator reviews and merges the outer Goal Branch
+  and any printed paired Project-data branch; remove the paired checkout first
+  when present, following the printed cleanup steps.
   Regress sim/lint/synth on the integrated destination and save both final HEADs.
-Look for: Finish merging or cleaning without instruction, missing paired commits,
+Look for: Finish merging or cleaning without instruction, missing commits from a printed pair,
 a changed final HEAD escaping revalidation or advisory findings missing from the package.
 Depends on: area 6; area 5 also uses this review/integration procedure.
 
@@ -200,12 +211,14 @@ Try:
 - Quiet/stuck presence never abandons automatically. Give explicit operator
   instruction to abandon this disposable Goal; the child quotes it in
   `goal_finish(abandon=true, instruction_quote=...)`. Also exercise the human
-  CLI route `booley goal abandon` in another disposable worktree. Preserve
+  CLI route in another disposable Goal: have the child run `booley goal abandon`
+  with that Goal worktree as cwd. A host call must explicitly select it, e.g.
+  `booley session enter -- sh -c 'cd <worktree> && booley goal abandon …'`. Preserve
   branches/checkpoints, then remove only owned resources.
 Look for: a new record substituted for recovery, lost commits, or abandonment
 without an explicit instruction. Resolve every interrupted Goal within this area.
 
-### 9. sim-protocol — Simulation grades, test protocol, guards (~20 min)
+### 9. sim-protocol — Simulation grades, test protocol, guards (~30 min, optional follow-up)
 Intent: every sim outcome gets the right verdict, and the guards fire.
 Try (disposable Targets and TBs on a run-owned branch):
 - Pass, design fail, inconclusive, and infra get distinct classes. A pass+fail+pass multi-Target run
@@ -220,7 +233,7 @@ Try (disposable Targets and TBs on a run-owned branch):
   rerun, and expect fresh passes with no leftover producer.
 Look for: inconclusive runs graded as pass, stale artifacts, orphaned simulators.
 
-### 10. lint-synth — Lint and synthesis negatives, metric thresholds (~20 min)
+### 10. lint-synth — Lint and synthesis negatives, metric thresholds (~35 min)
 Intent: lint and synth give distinct, correct outcomes and fail closed.
 Try:
 - Lint gives a distinct report for each of clean, warning, syntax error, and missing tool. A
@@ -239,7 +252,7 @@ Try:
 Look for: missing and incompatible tools confused, duplicate aggregate rows, waivers that hide other
 warnings.
 
-### 11. vivado-fpga — Provisioned Vivado, Grants, FPGA Flow, licenses (~25 min, Linux)
+### 11. vivado-fpga — Provisioned Vivado, Grants, FPGA Flow, licenses (~40 min, Linux, optional follow-up)
 Intent: host EDA provisioning is exact, read-only, and revocable.
 Try:
 - Register host Vivado 2025.2 under a run-owned name, then list and show it. Compare canonical paths
@@ -259,7 +272,7 @@ Try:
 Look for: a stale Session spec after regrant, borrowed Grants or installations changed, cached
 results passed off as fresh.
 
-### 12. sim-campaign — Simulation Campaign (~20 min)
+### 12. sim-campaign — Simulation Campaign (~30 min, optional follow-up)
 Intent: a campaign keeps request order, resumes exactly, and grants Goals only for the full
 suite.
 Try: follow `fixtures/simulation-campaign/RUNBOOK.md` in a run-owned Project copy.
@@ -270,7 +283,7 @@ Try: follow `fixtures/simulation-campaign/RUNBOOK.md` in a run-owned Project cop
   grants `sim_pass_sim_campaign`. Cross-check with `validate_campaign.py`.
 Look for: catalog order overriding request order, completed items rerun, subset-granted Goals.
 
-### 13. git-stealth-security — Git safety, Stealth commits, runtime isolation (~20 min)
+### 13. git-stealth-security — Git safety, Stealth commits, runtime isolation (~35 min, optional follow-up)
 Intent: the guards block unsafe history and escapes, and the Sandbox stays fenced.
 Try:
 - Stealth (`fixtures/stealth.md`, three cases on disposable empty commits): a `Co-Authored-By`
@@ -289,7 +302,7 @@ Try:
   auth), and the ref is unchanged.
 Look for: truncation instead of refusal, symlinks getting through, host secrets in the Sandbox.
 
-### 14. host-inventory — Install prerequisites, inventory, toolchain, docs (~10 min)
+### 14. host-inventory — Install prerequisites, inventory, toolchain, docs (~25 min, optional follow-up)
 Intent: host-level commands and the public docs hold up.
 Try:
 - Remove or age one prerequisite in a disposable host fixture. Readiness names it before any
@@ -305,7 +318,7 @@ Try:
   them, and the documented recovery after a seeded fault is enough to resume.
 Look for: symlinked roots imported, views that disagree, advertised names that don't exist.
 
-### 15. cleanup — Product cleanup (~15 min)
+### 15. cleanup — Product cleanup (~20 min)
 Exercise Booley's own cleanup first (Goal worktrees, owned Targets, Session stop). Then release
 every `resources.md` row: branches, worktrees, copies, Targets, projections, hooks, Sessions,
 mounts, processes, Grants, registrations, License Profiles, relays. Leave borrowed Grants,
@@ -313,8 +326,8 @@ installations, images, and Sessions untouched. Record the final pin state. Nothi
 
 ## Known traps
 - Use unique worktree names and Goal slugs: an existing same-day Goal Branch refuses entry.
-- Integrate both repositories before cutting the next worktree; a clean outer tree alone
-  does not prove the Project-data branch is current.
+- Integrate every printed branch before cutting the next worktree. When a paired
+  checkout was printed, a clean outer tree alone does not prove its branch is current.
 - A regrant alone leaves the Session spec stale. Reissue it before any Doctor, FPGA, or mount check.
 - Exit 125 from `booley session enter --` means your argv is missing the executable. It's not a lint
   verdict.

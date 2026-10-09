@@ -1,6 +1,6 @@
 ### Seeded RTL fault
 
-Recipe for the mission's `goal-repair` area. After the observability Goal finishes and both branches are integrated and you have saved a clean checkpoint, the operator changes only `src/eth/rtl/taxi_eth_mac_10g.sv`, on a run-owned branch listed in `resources.md`. At the `taxi_mac_pause_ctrl_tx` connection, replace:
+Recipe for the mission's `goal-repair` area. After the observability Goal finishes and the outer branch (and paired Project-data branch, if printed) is integrated and you have saved a clean checkpoint, the operator changes only `src/eth/rtl/taxi_eth_mac_10g.sv`, on a run-owned branch listed in `resources.md`. At the `taxi_mac_pause_ctrl_tx` connection, replace:
 
 ```systemverilog
 .tx_pfc_req(tx_pfc_req)

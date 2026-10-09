@@ -11,8 +11,10 @@ mismatch is a finding rather than a judgement call.
 - Tools/host needs: pinned Verilator 5.052 in the issued Sandbox, Yosys with
   SAT/induction, gcc, Python, Docker; ~8 GiB RAM and ~20 GiB free disk for the
   large `sim_scale` Campaign; a Codex or Claude client for the Analyst.
-- Budget: 8 h total (405 area minutes plus 75 minutes contingency). Areas are in priority order; if time runs out, log the rest
-  as skipped. Rerun with the other client or on Windows for host coverage.
+- Budget: 8 h total: 405 area minutes plus 75 contingency. Areas run in
+  priority order; log areas not reached as skipped. Run areas sequentially;
+  Interactive children never overlap an active Goal in the same Project.
+  Rerun with the other client or on Windows only when asked.
 
 These areas hunt native-coverage bugs: collection, exact arithmetic, Goal policy, waivers, Campaign
 storage, retention, a coverage Goal and the Coverage Analyst. They do **not** use the UART design: they run
@@ -179,7 +181,7 @@ Try:
   unsafe/absolute path, symlink, invalid final record, duplicate point, wrong rollup/source
   rollup/evaluation, invalid-overall-score, invalid-source-score, resource ceiling.
 - Publication faults with `../../shared/coverage/faults/filesystem.py` (table in RUNBOOK.md): fail `link …/coverage.json`, `rename
-  …/simulation.json`, the Goal Record `booley_state.json` evidence write, terminal `progress.json`; shared
+  …/simulation.json` and terminal `progress.json`; shared
   abort across three Targets; `--gate interrupt` then reap the producer → no complete claim, lock released;
   fresh run gets a new number, no resume.
 - Rerun and re-analyze while keeping an old Campaign → old bytes identical, no `latest` alias.
@@ -203,8 +205,11 @@ Try:
 - Follow `../../shared/coverage/simulation-campaign/RUNBOOK.md`: interrupt `sim_toggle half --coverage`
   mid-collection; resume and `--dry-run` from the Manifest → rc2 before any EDA launch naming a new
   `--coverage` run, attempt inventory unchanged; the fresh run is the control;
-  fail the Development State save via a directory at its `.tmp` path, remove, resume (one transaction, no
-  new attempt); flip one byte in a terminal `result.json` → rc2 before any EDA launch, restore → resume
+  fail the Goal state rename with `faults/filesystem.py --operation rename`
+  on the captured `goals/<id>/booley_state.json` path and `--gate acceptance`;
+  remove the injection and resume through the child's MCP `sim` with absolute
+  `work_dir` (one transaction, no new attempt). CLI Flows bind no Goal evidence.
+  Flip one byte in a terminal `result.json` → rc2 before any EDA launch, restore → resume
   without rerun. Cross-check with `../../shared/coverage/simulation-campaign/validate_aggregate.py`.
 Look for: collateral deletion, number reuse, double-committed transactions.
 Depends on: baseline.retention.
@@ -217,8 +222,8 @@ Try:
 - Before entry, install `../../shared/coverage/goals/tests.toml` (`sim_generated`
   = `[gap]` only), copy `../../shared/coverage/goals/close-test-gap.md` to
   Project `goalsets/`, configure `[coverage.waivers]` with an approval directory
-  outside Protected Inputs, and commit all setup. Create a clean paired worktree.
-- Send a Codex child `/booley-goal` plus that Goalset. Collect via MCP with
+  outside Protected Inputs, and commit all setup. Create a clean linked worktree.
+- Send a Codex child `$booley-goal` plus that Goalset. Collect via MCP with
   `work_dir`: sim passes but `cover_property` misses 100; `goal_status` remains
   unmet and Finish refuses. Ask the Analyst about the exact Campaign. A plain
   sim produces no coverage evidence.
@@ -226,13 +231,20 @@ Try:
   Recollect to 100 and inspect exact Campaign/Simulation pointers. Save passing
   evidence, edit a relevant TB comment in the active worktree, require stale
   evidence, recollect and commit. Finish and inspect the clean TB-only diff/package;
-  the operator integrates both branches. Post-Finish edits need a new Goal.
+  the operator integrates the printed branches using the shared rules.
+  Post-Finish edits need a new Goal.
 - In a separate disposable Project/Goal using `../../shared/coverage/goals/waiver.json`,
   use the fixed eligible zero-hit parity points and real proof from area 4.
   Configure and commit waiver settings before entry, then collect and have the
   Analyst screen `waiver-candidates.json`. Create exact `waiver` proposals by
   `goal_key`/`candidate_id`: operator rejects one and approves the other with
   reasons (form or quoted chat). Preserve rejection and Change Log provenance.
+  At the Goal's 100% floor, unwaived coverage is 6/8 (75%); approving one
+  bit-zero waiver leaves 6/7 and the Goal unmet: commit its installed files and
+  recollect to verify that result. After the rejection probe, have the Analyst
+  screen the new Campaign and create a fresh exact proposal for its remaining
+  point. Approve it with a reason, commit and recollect; both bound waivers
+  remove those points, yielding 6/6 (100%).
 - Approval installs bound waiver/proof files; commit those before Finish.
   Rerun coverage for fresh strict evidence: approval alone cannot meet the Goal.
   Finish or explicitly abandon this disposable record. Never waive the decoder

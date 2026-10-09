@@ -38,7 +38,7 @@ adding to QA; it is a breadth guide, not a pass/fail contract.
 | Lint Flow | [picorv32/interactive-repair](missions/picorv32/MISSION.md), [picorv32/lint-synth](missions/picorv32/MISSION.md), [picorv32/setup](missions/picorv32/MISSION.md), [picorv32/goal-change](missions/picorv32/MISSION.md), [taxi/final-regression](missions/taxi/MISSION.md), [taxi/lint-synth](missions/taxi/MISSION.md), [taxi/goal-repair](missions/taxi/MISSION.md), [uart/goal-feature](missions/uart/MISSION.md), [uart/final-regression](missions/uart/MISSION.md), [uart/setup-interactive](missions/uart/MISSION.md) |
 | Synthesis Flow | [picorv32/lint-synth](missions/picorv32/MISSION.md), [picorv32/setup](missions/picorv32/MISSION.md), [picorv32/goal-change](missions/picorv32/MISSION.md), [taxi/cleanup](missions/taxi/MISSION.md), [taxi/final-regression](missions/taxi/MISSION.md), [taxi/lint-synth](missions/taxi/MISSION.md), [taxi/goal-repair](missions/taxi/MISSION.md), [uart/goal-feature](missions/uart/MISSION.md), [uart/final-regression](missions/uart/MISSION.md), [uart/setup-interactive](missions/uart/MISSION.md) |
 | FPGA Flow | [picorv32/goal-change](missions/picorv32/MISSION.md), [picorv32/vivado-fpga](missions/picorv32/MISSION.md) |
-| Specialist reviews | [picorv32/goal-change](missions/picorv32/MISSION.md), [taxi/goal-repair](missions/taxi/MISSION.md), [taxi/goal-operations](missions/taxi/MISSION.md), [uart/reviews-mutation](missions/uart/MISSION.md) |
+| Specialist reviews | [picorv32/goal-change](missions/picorv32/MISSION.md), [taxi/goal-repair](missions/taxi/MISSION.md), [uart/reviews-mutation](missions/uart/MISSION.md) |
 | Mutation testing | [uart/reviews-mutation](missions/uart/MISSION.md) |
 | Specialist isolation | [uart/reviews-mutation](missions/uart/MISSION.md) |
 | Goal evidence binding and freshness | [picorv32/goal-evidence](missions/picorv32/MISSION.md), [picorv32/sim-campaign](missions/picorv32/MISSION.md), [taxi/goal-observability](missions/taxi/MISSION.md), [taxi/goal-repair](missions/taxi/MISSION.md), [coverage/cov-retention](missions/coverage/MISSION.md), [coverage/cov-goal](missions/coverage/MISSION.md), [uart/goal-feature](missions/uart/MISSION.md) |
@@ -52,7 +52,7 @@ adding to QA; it is a breadth guide, not a pass/fail contract.
 | Finish and Review Package | [picorv32/goal-finish](missions/picorv32/MISSION.md), [uart/goal-feature](missions/uart/MISSION.md), [taxi/goal-repair](missions/taxi/MISSION.md) |
 | Base-relative Goal evidence | [picorv32/goal-change](missions/picorv32/MISSION.md), [taxi/goal-repair](missions/taxi/MISSION.md) |
 | Explicit abandon | [picorv32/goal-resume-after-crash](missions/picorv32/MISSION.md), [taxi/goal-operations](missions/taxi/MISSION.md) |
-| Operator paired integration | [picorv32/goal-finish](missions/picorv32/MISSION.md), [taxi/goal-observability](missions/taxi/MISSION.md), [uart/goal-feature](missions/uart/MISSION.md) |
+| Operator integration (paired when printed) | [picorv32/goal-finish](missions/picorv32/MISSION.md), [taxi/goal-observability](missions/taxi/MISSION.md), [uart/goal-feature](missions/uart/MISSION.md) |
 | Crash resume and idempotence | [picorv32/goal-resume-after-crash](missions/picorv32/MISSION.md), [coverage/cov-retention](missions/coverage/MISSION.md) |
 | Concurrent Goal children and Dashboard | [taxi/goal-operations](missions/taxi/MISSION.md) |
 | Doctor Goal warnings | [taxi/goal-operations](missions/taxi/MISSION.md) |

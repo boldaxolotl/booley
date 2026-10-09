@@ -15,10 +15,11 @@ Python stack and five clocks surface stale caches, skipped tests and dropped clo
   Cocotb, Verible, Yosys+slang, OpenROAD; VS Code attached for the area-6 viewer.
 - Primary: Ubuntu x86-64 + Codex CLI; rerun on Windows (Docker Desktop, WSL2), VS Code Codex or
   Claude CLI for coverage.
-- Budget: 8 h total. Areas are in priority order; if time runs out, log the rest as skipped. The area budgets total 475 minutes, including two 60-minute Goal children,
-  with 5 minutes contingency. Children may overlap independent areas 5, 7, 8
-  and 12. Close
-  each child's area only after Finish or explicit abandon.
+- Budget: 8 h for the primary run: 460 area minutes plus 20 contingency.
+  Area 8 is an optional 35-minute follow-up outside this timebox. Log it as
+  skipped unless a follow-up is requested. Run primary areas sequentially;
+  Interactive children never overlap an active Goal in the same Project.
+  Rerun on the other host/client only when asked.
 
 ## Mission-specific rules
 - Taxi baseline is immutable: only Setup, Goal children and the area-10
@@ -51,7 +52,7 @@ Try:
   symlink (Windows). Rerun plain `booley init`: no drift. Another run with the other provider:
   issued auth/client policy follows.
 - Image faults: changed dependency pin → stale image rebuilt; bounded post-setup hook in a new
-  paired Goal workspace runs once; status/resume does not rerun it; nonzero hook blocks, fix + documented retry; opted-in
+  linked Goal workspace runs once; status/resume does not rerun it; nonzero hook blocks, fix + documented retry; opted-in
   disposable host skill is read-only.
 Look for: re-approval requests, Taxi edits, missing `cocotb_test`/`pytest` (imported at TB module
 scope), implicit stealth, symlink loops, stale Session Runtime after `init` rebuilds the image.
@@ -168,7 +169,7 @@ Try, inside the Sandbox:
   or auth) and the ref is unchanged.
 - An interrupt leaves no descendant processes.
 
-### 8. submodules — Disposable submodule companion Project (~35 min)
+### 8. submodules — Disposable submodule companion Project (~35 min, optional follow-up)
 Intent: offline pinned-submodule rebuilds; a missing required one breaks simulation.
 Try:
 - `python3 fixtures/build_submodules.py <new-dir>` (uses `fixtures/fixture.core`) builds outer A/B,
@@ -196,7 +197,7 @@ Look for: stale-cache passes, silent fetches, newer checkout as baseline, half-c
 Intent: a verification Goal yields exact observability tests and a real mutation score.
 Depends on: clean Setup state and committed Project configuration/Goalsets.
 Try:
-- Create a paired worktree, start a Codex child and send `/booley-goal` with
+- Create a linked worktree, start a Codex child and send `$booley-goal` with
   `goals/observability.md`. The new files are
   `qa/taxi_eth_mac_10g/test_observability.{py,sv}` and the ordinary Target
   `sim_mac_10g_observability`; existing Taxi source/tests must stay unchanged.
@@ -210,34 +211,34 @@ Try:
   RX error, statistics and TX tag/timestamp, and lock before execution. Preserve
   pristine baseline, 8 isolated variants, first killing tests and source restoration.
 - Finish with fresh evidence at a clean committed HEAD; inspect package and
-  non-Stealth history commit, then the operator integrates both branches.
+  non-Stealth history commit, then the operator integrates the printed branches using the shared rules.
   The new Target stays selectable for the repair Goal.
 Look for: weakened upstream tests, mutants seeing new tests, missing restoration,
-incorrect evidence binding or a Target lost during paired integration.
+incorrect evidence binding or a Target lost during integration.
 
 ### 10. goal-repair — Seeded PFC fault and bugfix Goal (~60 min)
 Intent: the new oracle catches what upstream misses; a blind Goal child restores upstream bytes.
-Depends on: area 9 finished and both branches integrated. If it failed, log and skip repair;
+Depends on: area 9 finished and the printed branches integrated. If it failed, log and skip repair;
 the operator does not author replacement tests.
 Try:
 - Rerun both sims on integrated RTL. Apply `fixtures/pfc-fault.md` in a disposable
   copy and commit: upstream PFC still passes, new test fails with class 0 seen
   as class 1 and fresh FST shows the rotation. Save the failure before repair.
   Without that split, restore and skip this Goal.
-- Cut a paired worktree from the seed commit; start a new Codex child with
-  `/booley-goal` plus `goals/repair.md` and only bounded visible diagnostics.
+- Cut a linked worktree from the seed commit; start a new Codex child with
+  `$booley-goal` plus `goals/repair.md` and only bounded visible diagnostics.
   Require the child's fresh reproduction before editing and evidence-based diagnosis.
 - Repair must be byte-identical to upstream; both full sims and elaborations
   pass, lint is clean, logical cells +0%, physical cells/critical path +0% with
   identical SDC/library/recipe. RTL bugs review is clean; protocol/spec reviews done.
-- Finish, save package/history and integrate both branches. On failure explicitly
+- Finish, save package/history and integrate the printed branches using the shared rules. On failure explicitly
   abandon, keep checkpoint/report/diff in evidence and restore post-observability state.
 Look for: child edits to tests/config, unqualified timing changes or stale Goal evidence.
 
-### 11. goal-operations — Concurrent children, Dashboard and warnings (~40 min)
+### 11. goal-operations — Concurrent children, Dashboard and warnings (~60 min)
 Intent: separate worktrees isolate Goal evidence and expose operator diagnostics without changing policy.
 Try:
-- Start two Codex children in two clean paired worktrees with distinct slugs
+- Start two Codex children in two clean linked worktrees with distinct slugs
   and `goals/operations.json`. Every MCP call includes its `work_dir`, including
   independent calls against the primary checkout. Evidence and artifacts cannot
   cross records. Check the Sandbox admission cap and cancellation of waiting jobs.

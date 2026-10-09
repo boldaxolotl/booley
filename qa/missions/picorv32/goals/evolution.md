@@ -1,8 +1,8 @@
 # Goalset: evolution
 
 Implement RV32 Zbb PCPI from the integrated Dhrystone result. The public ISA
-manual is copied into `docs/riscv-isa-unprivileged.html` before entry; review
-that file. Implement ANDN, ORN, XNOR, CLZ, CTZ, CPOP, MIN, MINU, MAX, MAXU,
+Zbb excerpt is installed at `docs/riscv-zbb-spec.html` before entry; review
+that self-contained excerpt. Implement ANDN, ORN, XNOR, CLZ, CTZ, CPOP, MIN, MINU, MAX, MAXU,
 SEXT.B, SEXT.H, ZEXT.H, ROL, ROR, RORI, ORC.B and REV8. Add `ENABLE_ZBB`,
 default 0, consistently in core, AXI and WB, using registered internal PCPI
 with fixed one-cycle response.
@@ -16,7 +16,6 @@ execute them. Keep Target definitions and owned test tables for future regressio
 Mutation steering covers Zbb decode, result generation, PCPI handshake and enable
 gating. Implementation assets are `picorv32.v`, `testbench.v`, `testbench_wb.v`,
 `Makefile`, and new `tests/zbb.S`, plus needed Project Target/test definitions.
-With Vivado configured, additionally enter `fpga.json` as ad-hoc Goals.
 
 ## Goals
 
@@ -118,7 +117,7 @@ With Vivado configured, additionally enter `fpga.json` as ad-hoc Goals.
     "family": "review",
     "review": "rtl_spec",
     "verdict": "done",
-    "spec": "docs/riscv-isa-unprivileged.html",
+    "spec": "docs/riscv-zbb-spec.html",
     "origin": "evolution"
   },
   {

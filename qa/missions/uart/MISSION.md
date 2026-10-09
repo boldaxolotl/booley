@@ -14,7 +14,9 @@ also exercises the host, auth, runtime, policy, Doctor and feedback surfaces.
   `doc/interfaces.md`, `doc/block_diagram.svg`, and the Apache-2.0 `LICENSE`. Before you start,
   check their hashes against `spec/corpus-manifest.json`.
 - Scenario inputs: `spec/qa_uart.sv` (interface-only stub), `spec/mmio-addendum.md`,
-  `spec/contract.md`. Origin: a new, empty, run-owned Git repository.
+  `spec/timing-addendum.md` and `spec/contract.md`. The contract file inlines
+  registers/MMIO only; it omits timing, serial behavior, theory and programmer
+  guidance, which the child reads from the separate allowed sources. Origin: a new, empty, run-owned Git repository.
 - Host: Docker with at least 6 GB free, plus artifact space; Verilator and Yosys come from the
   standard image. The evaluator needs cocotb 2.1.0 and Icarus outside the Sandbox.
 - Also: a Codex or Claude client; the previous published Booley release (upgrade and legacy
@@ -23,10 +25,11 @@ also exercises the host, auth, runtime, policy, Doctor and feedback surfaces.
 - Hosts: written for Ubuntu and Windows (Docker Desktop WSL2) with Codex CLI, Codex VS Code
   and Claude CLI; rerun on another host or client for coverage. Area 2's CRLF cases are
   Windows-only.
-- Budget: 8 h total. Areas are in priority order; if time runs out, log the rest as skipped.
-  The revised area budgets total 435 minutes, including 90 minutes of feature
-  child time and 45 minutes for bounded repairs, with 45 minutes contingency.
-  Independent areas 8–15 may overlap the feature child.
+- Budget: 8 h for the primary run: 460 area minutes, including 90 for feature
+  work and 45 for bounded repair, plus 20 contingency. Areas 12, 16 and 17 are
+  optional follow-up work outside this timebox (55 minutes total); log them as
+  skipped unless requested. Run primary areas sequentially; Interactive children
+  never overlap an active Goal in the same Project.
 
 ## Mission-specific rules
 - **Clean room.** "Developer" means every agent that writes UART code: the Setup client, the
@@ -72,7 +75,7 @@ Try:
   isolated route then installs the same build.
 Look for: a stale `booley` on PATH, version/commit mismatch, docs that don't match the route.
 
-### 2. bootstrap-init — Bootstrap, scaffold and init variants (~25 min)
+### 2. bootstrap-init — Bootstrap, scaffold and init variants (~30 min)
 Intent: onboard a greenfield Project on an empty origin; bootstrap runs implicitly.
 Try:
 - Bootstrap check-only reports `pending`. Then run `booley init --scaffold` without an explicit
@@ -90,17 +93,18 @@ Try:
   flag, dirty/hardlinked/protected files refused with bytes unchanged, then fix and retry.
 Look for: check-only runs that change state, init overwriting user files, vague refusals.
 
-### 3. setup-interactive — Setup and Interactive MMIO baseline (~35 min)
+### 3. setup-interactive — Setup and Interactive MMIO baseline (~45 min)
 Intent: packaged Setup plus an Interactive session give a green, committed baseline.
 Try:
 - In the Sandbox, run `/booley-setup new` with `prompts/setup.md` supplied up front. Plain,
   deep (verifies the counter) and plain Doctor again are all clean.
-- Copy `spec/` (never `evaluator/`) into the Project and create a linked worktree and give a Codex Goal child `/booley-goal` plus
-  `prompts/interactive.md` and `goals/baseline.json`: `qa_uart` interface plus minimal CTRL reset/read/write, an MMIO smoke
-  test, and `sim_uart`, `lint_uart`, `synth_uart`. Through MCP/Flows the smoke sim self-checks
-  and passes, lint is clean, Yosys gives a fresh netlist and reports, then Doctor is clean.
-- A fresh trace read back through B-Wave matches the stimulus. Commit the baseline,
-  Finish and inspect the package, then integrate both branches before area 4.
+- Copy `spec/` (never `evaluator/`) into the Project and give an Interactive
+  child `prompts/interactive.md`: `qa_uart` interface plus minimal CTRL
+  reset/read/write, an MMIO smoke test, and `sim_uart`, `lint_uart`, `synth_uart`.
+  Through MCP/Flows the smoke sim self-checks and passes, lint is clean, Yosys
+  gives a fresh netlist and reports, then Doctor is clean.
+- A fresh trace read back through B-Wave matches the stimulus. Commit the clean
+  baseline before area 4. Run this Interactive area with no active Goal in the Project.
 Look for: supplied choices ignored, stale artifacts called fresh, MCP calls without matching
 artifacts, the full UART implemented too early.
 
@@ -110,7 +114,7 @@ Depends on: area 3's committed minimal baseline; if Setup failed, record and ski
 Try:
 - Commit copied `goals/feature.md` and `goals/repair.md` in Project `goalsets/`,
   alongside initialization's seeded files and managed ignore rules. Create a
-  paired worktree and send a Codex child `/booley-goal` plus `goals/feature.md`
+  linked worktree and send a Codex child `$booley-goal` plus `goals/feature.md`
   and allowed spec files. Review concrete Goals, Targets and the spec-review
   binding to `spec/contract.md`, which contains the frozen register definitions
   and MMIO addendum.
@@ -119,8 +123,9 @@ Try:
   reviews must yield fresh Goal-bound evidence and real artifacts.
 - Finish requires clean committed HEAD and Session Summary; save record ID,
   package, base, protected-input status and final commit. Operator inspection
-  covers the whole diff; integrate outer and paired branches, preserve the
-  non-Stealth history commit and remove the paired checkout first as printed.
+  covers the whole diff. Integrate the outer Goal Branch and preserve the
+  non-Stealth history commit. This scaffold has no separate Project Git repo
+  and therefore no paired branch; clean up the printed outer checkout.
 Look for: sources outside the clean-room list, corpus conflicts papered over,
 stale evidence or Finish claiming completion with dirty files. Conformance is
 judged independently in area 5.
@@ -150,15 +155,15 @@ Depends on: area 4; if it never finished, evaluate the last commit, labeled unac
 ### 6. goal-repair — Bounded conformance repair Goals (~45 min)
 Intent: check whether a Goal child repairs real mismatches from limited feedback.
 Try:
-- Only after a real area-5 mismatch on finished work: cut a fresh paired
-  worktree from the integrated result and send a new Codex child `/booley-goal`
+- Only after a real area-5 mismatch on finished work: cut a fresh linked
+  worktree from the integrated result and send a new Codex child `$booley-goal`
   plus `goals/repair.md`, for attempt 1/2. Supply at most five failing diagnostic
   excerpts: case ID, stimulus, expected/observed, timing and waveform excerpt.
   Save exact excerpts outside the child's reach; never reveal evaluator code,
   complete cases or seed. The original public spec remains visible.
 - Require a fresh reproduction before fixing, an authored regression and the
   complete original Goals. Finish and inspect package/history, then integrate
-  both branches. Rerun the entire frozen evaluator manifest with the same seed
+  the outer Goal Branch. Rerun the entire frozen evaluator manifest with the same seed
   on the new commit; at most two repairs. Unfinished feature work is not a repair.
 - If a repair cannot finish, explicitly abandon and preserve its checkpoint;
   grade that commit only as unfinished, keeping prior evaluator failures.
@@ -171,7 +176,7 @@ Doctor. In Git, confirm a clean accepted commit, the local merge, ordinary sourc
 paths, and literal commit messages (Stealth is off).
 Look for: stale reports, Doctor drift after Goal work.
 
-### 8. reviews-mutation — Specialist reviews, isolation, mutation (~25 min)
+### 8. reviews-mutation — Specialist reviews, isolation, mutation (~35 min)
 Try:
 - Seed a real RTL bug on a disposable branch. The review reports `done` (advisory); an
   unresolved MINOR-or-worse finding leaves the clean Goal unmet; an explicit waiver makes
@@ -191,7 +196,7 @@ Try:
   Finish or explicitly abandon the record before leaving this area.
 Look for: stale reviews still counted as clean, TB content leaking into an RTL-side workspace.
 
-### 9. auth — Authentication and secret boundary (~15 min)
+### 9. auth — Authentication and secret boundary (~20 min)
 Try: clearing a disposable store gives `unconfigured`. Store a disposable credential through
 each documented form (store, stdin); status shows provider and auth class, never the secret.
 Configure subscription, API and automatic selection in turn; the reported class must follow the
@@ -199,7 +204,7 @@ documented precedence. Restore the credential: auth is ready and borrowed creden
 unchanged. Search the Project, logs and `evidence/` for credential material.
 Look for: secrets echoed in errors or logs, precedence that differs from the docs.
 
-### 10. runtime-lifecycle — Session runtime and legacy containers (~20 min)
+### 10. runtime-lifecycle — Session runtime and legacy containers (~30 min)
 Try:
 - From no runtime: `session up`, `status`, `validate`; `down` leaves no owned descendants.
   `session enter` passes a child's exit code through (0 and nonzero). Interrupting a child
@@ -213,7 +218,7 @@ Try:
   bind is restored.
 Look for: orphaned processes, the wrong container replaced, rollbacks that leave nothing up.
 
-### 11. doctor-upgrade — Doctor waivers and upgrade review (~15 min)
+### 11. doctor-upgrade — Doctor waivers and upgrade review (~20 min)
 Try:
 - A benign warning gives an actionable WARN; a matching unexpired waiver waives it; expiring
   the waiver, or separately changing the warning's identity, stops it applying. A waived hard
@@ -222,7 +227,7 @@ Try:
   names both endpoints; after the documented heal and ack, nothing is pending, Doctor clean.
 Look for: waivers that hide failures, a pending review that never clears.
 
-### 12. host-policy — Host policy file (~20 min)
+### 12. host-policy — Host policy file (~25 min, optional follow-up)
 Follow `fixtures/host-policy/README.md`.
 Try:
 - With no config file, the documented defaults apply.
@@ -238,7 +243,7 @@ Try:
 - Observed provider, relay and egress routes match the declared policy.
 Look for: typos accepted silently, a partial bootstrap after a rejection.
 
-### 13. sandbox-isolation — Sandbox isolation (~15 min)
+### 13. sandbox-isolation — Sandbox isolation (~20 min)
 Try:
 - In the Sandbox: non-root restricted user; no host home, SSH keys or Docker socket mounted;
   PDK writes refused; undeclared routes blocked while provider calls work; interrupting owned
@@ -250,7 +255,7 @@ Try:
   automatic Doctor persists its report.
 Look for: writable mounts that should be read-only, missing local lifecycle reports.
 
-### 14. interactive-surface — MCP, discovery, custom flows, feedback (~20 min)
+### 14. interactive-surface — MCP, discovery, custom flows, feedback (~25 min)
 Try:
 - Launch: bare `booley`/chat starts the configured provider in the Project directory. With a
   missing client executable (disposable), you get an actionable error; restore it. Make a safe
@@ -269,7 +274,7 @@ Try:
 - Seed a fault mid-flow and resume using only the documented recovery.
 Look for: docs, help and MCP disagreeing; lost feedback entries; incomplete redaction.
 
-### 15. sim-campaign — Simulation Campaign attempt contract (~15 min)
+### 15. sim-campaign — Simulation Campaign attempt contract (~20 min)
 Setup: copy `fixtures/simulation-campaign/` to `qa-campaign/` in the Project, register its
 `campaign.core`, and merge its `tests.toml`. Use one TOML fragment per campaign.
 Try:
@@ -284,7 +289,7 @@ Try:
 - Optionally cross-check with `fixtures/simulation-campaign/validate_campaign.py`.
 Look for: global serialization, a leaked build root, a failed hook reported as a pass.
 
-### 16. external-image — Externally supplied image (~10 min)
+### 16. external-image — Externally supplied image (~15 min, optional follow-up)
 Try: copy the MMIO smoke sources into a disposable Project with separate state and select the
 pinned image through the published config. Start the runtime and confirm the exact Booley
 version and image digest, then run Doctor and the smoke test. Stop and recreate the runtime
@@ -292,14 +297,14 @@ through the documented lifecycle: the digest is unchanged, the Project persists,
 rebuilt. Rerun the smoke test, then remove the owned runtime and Project but keep the image.
 Look for: hidden downloads or rebuilds, a digest that drifts.
 
-### 17. gui-client — VS Code client (~10 min, only if VS Code is available)
+### 17. gui-client — VS Code client (~15 min, only if VS Code is available, optional follow-up)
 Try: attach VS Code to the Sandbox and run the baseline prompt; call status, Targets, a Flow
 and a Specialist through its MCP (read-only; no Goals entered). Screenshot the fresh MMIO
 trace in the Waveform Viewer; headless or B-Wave-only readback doesn't count.
 Look for: attachment or MCP failures that appear only in the GUI.
 
-### 18. cleanup — Product cleanup (~15 min)
-Exercise Booley's own cleanup: `session down`, explicit Goal abandon where needed, paired-first Git
+### 18. cleanup — Product cleanup (~20 min)
+Exercise Booley's own cleanup: `session down`, explicit Goal abandon where needed, printed Git
 worktree removal using the printed USAGE steps, and Project deregistration. Record any owned process or container left behind and any
 unrelated state touched. Keep the evaluator seed, manifest and results in the run dir, outside
 every Project. Release every `resources.md` row and nothing else. Compare borrowed resources
@@ -311,7 +316,7 @@ their starting state.
   RX prose says 32 bytes (normative is 64); an example uses an undocumented TX-overflow
   interrupt; the RX watermark example shifts by three, hidden by a zero threshold; the theory
   text names `STATUS.BREAK`, but only `INTR_STATE.rx_break_err` (bit 5) exists.
-- Cut repairs from the integrated finished commit in both repositories.
+- Cut repairs from the integrated finished outer commit; this scaffold has no paired repository.
 - The timing addendum's finite bounds are scenario choices that the developer also receives:
   RX sync ≤ B/4, TX start ≤ 2B, and the timeout IRQ in 30B–34B at NCO=0x4000, VAL=32. Waiting
   past them is an observation timeout, not an RTL bug.

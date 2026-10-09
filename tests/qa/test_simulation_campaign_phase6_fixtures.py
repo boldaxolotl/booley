@@ -11,17 +11,21 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from tests.goals.conftest import git
 
 from booley.criteria.evidence_ledger import AcceptanceTransaction, record_or_verify_transaction
 from booley.criteria.state import DevelopmentState
+from booley.goals.binding import bind_run
 from booley.goals.model import (
     GoalRecord,
+    GoalSpec,
     GoalState,
     RecordedGoal,
-    WorktreeIdentity,
     parse_goal_args,
 )
+from booley.goals.protected_inputs import ProtectedInputRoots, snapshot_protected_inputs
 from booley.goals.recorder import GOAL_SCOPE, GoalProjection, goal_identity
+from booley.goals.state_store import GoalStatePersistence
 from booley.goals.store import GoalStore
 from booley.goals.translate import translate_goals
 
@@ -125,8 +129,23 @@ def _facts(campaign_id: str, manifest_sha256: str, result_path: Path) -> dict[st
     }
 
 
-def _goal_state(tmp_path: Path) -> tuple[DevelopmentState, GoalProjection, dict[str, Any]]:
-    specs = translate_goals(
+def _goal_worktree(tmp_path: Path) -> tuple[Path, Path]:
+    main = tmp_path / "main"
+    main.mkdir()
+    git(main, "init", "-q", "-b", "main")
+    (main / "README.md").write_text("QA recovery fixture\n", encoding="utf-8")
+    git(main, "add", "README.md")
+    git(main, "commit", "-q", "-m", "fixture")
+    (main / ".git/info/exclude").write_text("/.booley_project\n", encoding="utf-8")
+    control = main / ".booley_project"
+    control.mkdir()
+    worktree = tmp_path / "worktree"
+    git(main, "worktree", "add", "-q", "-b", "goal/qa-campaign-20260922", str(worktree))
+    return control, worktree
+
+
+def _campaign_specs() -> tuple[GoalSpec, ...]:
+    return translate_goals(
         parse_goal_args(
             [
                 {"family": "sim", "target": "sim_toggle"},
@@ -139,39 +158,74 @@ def _goal_state(tmp_path: Path) -> tuple[DevelopmentState, GoalProjection, dict[
             ]
         )
     ).goals
+
+
+def _goal_state(tmp_path: Path) -> tuple[DevelopmentState, GoalProjection, dict[str, Any]]:
+    specs = _campaign_specs()
     record_id = "qa-campaign-20260922T010000Z"
-    identity = WorktreeIdentity("c3fa3451-3a73-4a43-936c-9a2c40f88d30", "worktrees/qa")
+    control, worktree = _goal_worktree(tmp_path)
+    store = GoalStore(control)
+    identity = store.identify_worktree(worktree, create=True)
+    assert identity is not None
+    snapshot = snapshot_protected_inputs(ProtectedInputRoots(worktree, control))
     record = GoalRecord(
         id=record_id,
         state=GoalState.ENTERING,
         worktree=identity,
-        worktree_path=str(tmp_path / "worktree"),
+        worktree_path=str(worktree),
         branch="goal/qa-campaign-20260922",
         original_ref="main",
-        base_sha="3" * 40,
+        base_sha=git(worktree, "rev-parse", "HEAD"),
         entered_at="2026-09-22T01:00:00Z",
         goals=tuple(RecordedGoal(spec, 1) for spec in specs),
+        protected_paths=snapshot.encoded_paths,
+        protected_digest=snapshot.working_digest,
+        protected_head_digest=snapshot.head_digest,
     )
-    store = GoalStore(tmp_path / "project")
     with store.worktree_lock(identity) as lock:
         record = store.create(lock, record)
     with store.record_lock(record.id) as lock:
         store.save(lock, replace(record, state=GoalState.ACTIVE))
-    state = DevelopmentState(slug=record_id, strict_criteria=True)
-    state.init_criteria(
-        {spec.key: True for spec in specs},
-        criterion_params={spec.key: spec.params for spec in specs},
-        strict=True,
-    )
+    persistence = GoalStatePersistence(bind_run(store, worktree, "qa-recovery"))
+    state = DevelopmentState.load(persistence.state_file, persistence)
+    state.save()
     group = goal_identity(record_id, {spec.key: 1 for spec in specs})
     return state, GoalProjection(store, record.id), group
+
+
+def _fail_goal_state_rename(
+    record: Callable[[], AcceptanceTransaction], state_file: Path, archived: Path
+) -> None:
+    replace_path = Path.replace
+    failed_temporaries: list[Path] = []
+
+    def fail_rename(source: Path, target: str | Path) -> Path:
+        if Path(target) == state_file:
+            document = json.loads(source.read_text(encoding="utf-8"))
+            if document["acceptance_transactions"]:
+                failed_temporaries.append(source)
+                raise OSError("controlled Goal state rename failure")
+        return replace_path(source, target)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(Path, "replace", fail_rename)
+        with pytest.raises(OSError, match="controlled Goal state rename failure"):
+            record()
+    assert len(failed_temporaries) == 1
+    temporary = failed_temporaries[0]
+    assert temporary.name.startswith(".booley_state.json.") and temporary.suffix == ".tmp"
+    assert temporary.parent == state_file.parent and not temporary.exists()
+    assert state_file.read_bytes() == archived.read_bytes()
 
 
 def _recover_transaction(
     tmp_path: Path, facts: dict[str, Any], *, coverage_met: bool
 ) -> TransactionEvidence:
     state, projection, identity = _goal_state(tmp_path)
-    archived = _write(tmp_path / "archived-state.json", state.to_dict(), pretty=True)
+    assert isinstance(state.persistence, GoalStatePersistence)
+    state_file = state.persistence.state_file
+    archived = tmp_path / "archived-state.json"
+    archived.write_bytes(state_file.read_bytes())
     shadow = DevelopmentState.from_json_object(state.to_dict())
     changes = [
         change
@@ -184,13 +238,7 @@ def _recover_transaction(
     ]
     logs = tmp_path / "logs"
 
-    def fail_save(checkpoint: str) -> None:
-        if checkpoint == "before:acceptance_state":
-            raise OSError("controlled state save failure")
-
-    def record(
-        checkpoint: Callable[[str], None] | None = None,
-    ) -> AcceptanceTransaction:
+    def record() -> AcceptanceTransaction:
         return record_or_verify_transaction(
             logs,
             state,
@@ -199,17 +247,17 @@ def _recover_transaction(
             projection=projection,
             acceptance_facts=facts,
             identity=identity,
-            publication_checkpoint=checkpoint,
         )
 
-    with pytest.raises(OSError, match="controlled state save failure"):
-        record(fail_save)
-    failed = _write(tmp_path / "failed-state.json", state.to_dict(), pretty=True)
+    _fail_goal_state_rename(record, state_file, archived)
+    failed = tmp_path / "failed-state.json"
+    failed.write_bytes(state_file.read_bytes())
     transaction = record()
     # A third call proves product recovery does not select the transaction twice.
     replay = record()
     assert replay == transaction
-    recovered = _write(tmp_path / "recovered-state.json", state.to_dict(), pretty=True)
+    recovered = tmp_path / "recovered-state.json"
+    recovered.write_bytes(state_file.read_bytes())
     return TransactionEvidence(
         intent=next((logs / "acceptance/intents").glob("*.json")),
         transaction=logs / "acceptance/transactions" / f"{transaction.transaction_id}.json",

@@ -31,22 +31,33 @@ timeline, or immutable product artifacts.
 ## Acceptance recovery
 
 Commit fixture registration and initialized Project files before creating a
-linked worktree. Start a Codex child with `/booley-goal` naming a `sim` Goal on
+linked worktree. Start a Codex child with `$booley-goal` naming a `sim` Goal on
 `sim_toggle`; use its complete registered suite and pass `work_dir` on every
 MCP call. Goal evidence uses purpose `goal_evidence`, subject `goal` and an
 identity with record ID, Goal keys and spec revisions. Preserve the Goal Record
-and its `logs/acceptance/` evidence. Preserve its Development State and evidence ledger before
-execution. Let the selected Simulation Campaign publish all terminal Results,
-then deterministically fail the Development State save by creating an owned
-directory at that state file's exact `.tmp` path. This fault must be installed
-only after the terminal evidence exists and before the compatibility projection
-can become complete. Record its path, owner, permissions, and creation/removal
-times; do not alter the state file or evidence ledger.
+and its `logs/acceptance/` evidence. Before execution, archive its Development
+State and evidence ledger. With the Goal active, restart the run-owned Codex
+child/MCP launcher under `../faults/filesystem.py` from the shared RUNBOOK
+fault table, before the first collection call. Use `--operation rename`, the exact captured
+`/goals/<record-id>/booley_state.json` suffix, the resolved control Project as
+`--owned`, `--gate acceptance` and the archived state as `--baseline-state`.
+Use a fresh control directory, the compiled `boundary.so` and a bounded
+`--timeout` suitable for this one sim call. Verify the process-local injection
+reaches the child's MCP server; it must not affect another client. The
+acceptance gate lets earlier state writes pass. The Campaign publishes all
+terminal Results before the gate fails the Goal state replacement whose random
+temporary JSON adds a new transaction. Save that paused JSON,
+the consumed event and the failed response; a missing handshake is a fixture
+failure. The child collects through MCP `sim(work_dir=..., coverage=true)`
+using the complete suite. CLI Flows bind no Goal evidence. After the failed
+call, stop only the faulted child/server and its owned producer group.
 
 Archive the failed publication, evidence-ledger intent, transaction, evidence records,
 Development State, attempt inventory, summary, and incomplete compatibility
-projection. Remove only the owned `.tmp` directory and resume the exact printed
-Manifest. Require record-or-verify recovery of the same intent, exactly one
+projection. Restart the child/server without the injection and resume the exact
+printed Manifest through the child's MCP `sim` call with absolute `work_dir`
+and the same Goal Record, using its `resume_from` argument. Require
+record-or-verify recovery of the same intent, exactly one
 matching transaction directory and exactly one selection of its transaction ID
 in Development State, no contradictory duplicate records, no new Simulation
 Attempt, and final `simulation.json` with `complete:true`. Run
@@ -62,13 +73,14 @@ independent cross-check rather than replacement evidence.
 After archiving a byte-exact valid `result.json`, mutate one owned byte in its
 live copy. Preserve its valid and corrupt digests, all other terminal records,
 the before-attempt inventory, and a timestamped process sample. Resume the exact
-Manifest. Require exit 2 with a diagnostic that names Simulation Result
+Manifest through the child's MCP `sim` with absolute `work_dir`. Require exit 2
+with a diagnostic that names Simulation Result
 integrity, unchanged attempt inventory, and no EDA process launch. Preserve the
 rejected corrupt bytes even when the diagnostic differs.
 
 Restore only the archived Result bytes, authenticate their exact digest, and
-resume the same Manifest as the valid control. The completed work item must not
-rerun. Preserve the successful validation/recovery evidence, final summary, and
+resume the same Manifest through that MCP route as the valid control. The
+completed work item must not rerun. Preserve the successful validation/recovery evidence, final summary, and
 compatibility projection. Build the small rejection record consumed by
 `validate_recovery.py` only from the captured public exit, diagnostic, process
 samples, inventories, and digests; the record is an index, not substitute
@@ -77,14 +89,14 @@ evidence.
 ## Resource recovery and cleanup
 
 List every run-owned report root, nested Coverage Campaign, Goal Record state,
-evidence ledger directory, temporary-path fault, corrupt copy, process group,
+evidence ledger directory, process-local rename fault, corrupt copy, process group,
 and fixture registration in `resources.md` before the first mutation. Recovery
 always saves the observed failure before restoring only owned bytes or paths,
 then runs the valid control in the same run. It never depends on the negative
 case having behaved as expected.
 
 After capture, finish or explicitly abandon the Goal and reap all owned producers and remove only run-owned report/runtime
-state, Goal Record state, temporary faults, corrupt working copies, and copied fixture
+state, Goal Record state, injection environment and control directories, corrupt working copies, and copied fixture
 registration. Keep the interrupted, failed, corrupt and restored evidence copies
 for findings. Confirm the shared fixture and pinned sources are unchanged and
 mark each `resources.md` row released. These cases reuse the terminal aggregate;
