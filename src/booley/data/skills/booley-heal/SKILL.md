@@ -64,8 +64,7 @@ Never describe one of those partial outcomes as healed.
    context-aware, so do not assume a host result proves the Sandbox or
    vice versa.
 2. Run plain `booley doctor` and retain its complete output. Manual Doctor is
-   the repair entry point for limited housekeeping such as guidance links or
-   board orphans; include those changes in the evidence and rerun before
+   the repair entry point for limited housekeeping such as guidance links; include those changes in the evidence and rerun before
    diagnosing remaining rows.
 3. Build the active set from every `FAIL` and unwaived `WARN`. Record, where
    present, the severity, message, `fix:` hint, check ID, and subject.

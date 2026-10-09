@@ -154,8 +154,8 @@ leaves all of this on a blank slate:
 - `.booley_project/booley.toml` and `tests.toml` — **comment-only placeholders
   with zero keys**;
 - `.booley_project/.gitignore`, a `FUSESOC_IGNORE` marker, a managed
-  `.managed/project-git-hooks.pyz` bundle, Project-authored `hooks/`, and empty
-  `tickets/{board/*,logs,locks}/` dirs;
+  `.managed/project-git-hooks.pyz` bundle, Project-authored `hooks/`, and four create-only
+  `goalsets/{feature,bugfix,refactor,verification}.md` files;
 - an **inner git repo** at `.booley_project/.git`, with no commit in it — but
   only when `[stealth] enabled` is on (the runtime fallback before setup makes
   its explicit choice); with the scrub explicitly off, init skips it and the
@@ -445,14 +445,14 @@ script lines) as you go.
 - **Git submodules.** Run `git submodule status` in the outer repository and,
   when `.booley_project` is a standalone Git repository, run
   `git -C .booley_project submodule status` too. If either has any, add a
-  decision row — but a short one: ticket worktrees get their submodules
+  decision row — but a short one: Goal worktrees get their submodules
   reconstructed from local Git objects at the same repository path, never
   cloned, so private SSH URLs are not consulted (mechanics in CONFIG.md →
   "Submodules"). What the plan owes is the precondition and, if the outer repo
   has heavy submodules nothing builds against, the explicit list:
   - Every selected submodule must be **present, clean, non-shallow, and contain
     the required pinned commit objects** in its owning repository before any
-    ticket runs — host-side `git submodule update --init --recursive` in the
+    Goal work — host-side `git submodule update --init --recursive` in the
     outer repo and `git -C .booley_project submodule update --init --recursive`
     in a standalone paired repo, with no uncommitted submodule work left.
     Worktree setup hard-errors otherwise with the missing path, dirty checkout,
@@ -463,7 +463,7 @@ script lines) as you go.
     `booley.toml`; an explicit empty list selects none, and a non-empty list is
     intersected with the selected revision's gitlinks. Every top-level gitlink
     in a paired project repo is materialized. Nested gitlinks are recursive.
-  - Execution-time check: a ticket worktree comes up with the submodule
+  - Execution-time check: a Goal worktree comes up with the submodule
     populated (the main checkout looking fine proves only the precondition).
 - **Design scale.** Past ~250 files or ~150K LOC (`booley doctor` prints a
   NOTE at that scale), plan for it: an early ingest smoke (an `iverilog`
@@ -832,14 +832,14 @@ surfaced that the standard list doesn't name: generator steps, **git
 submodules** (a row whenever either participating repository's
 `git submodule status` is non-empty: the host-side
 initialized/clean/full-history precondition, and `[submodules].paths` if only
-some outer gitlinks should reach ticket worktrees), **scope exclusions** (a VHDL twin, a subsystem nobody
+some outer gitlinks should reach Goal worktrees), **scope exclusions** (a VHDL twin, a subsystem nobody
 targets — say what is excluded and why, never leave it implied), multi-clock
 timing intent, environment modules, a TB stdout tee, unusual directory layouts.
 The checklist is the floor, not the ceiling.
 
 Close with the **execution-time checks** list: every planned verification that
 needs the sandbox (fusesoc target resolution, `-march` compile check, ingest
-smoke, image EDA-tool probes, submodule population in a ticket worktree). Steps
+smoke, image EDA-tool probes, submodule population in a Goal worktree). Steps
 2–4 run these; include semantic, frontend, mapped-netlist, and physical-link
 checks for every enabled synthesis Target, plus CDC preservation checks when
 applicable. A failed check that contradicts a decision triggers the deviation
@@ -855,7 +855,7 @@ appears. Ask by the template’s plain label, with row number/internal key only
 in parentheses — a user who does not yet
 speak Booley still has to make every call here.
 
-Refine the decision sheet with the user, ticket-creation style:
+Refine the decision sheet with concrete options and their tradeoffs:
 
 - **Map the open rows as a dependency tree.** A decision branches into every
   decision that depends on it. The current **frontier** is every unresolved
@@ -999,8 +999,8 @@ compile-flag probe.
    Python deps), see CONFIG.md → "RISC-V toolchain image".
 
 2. **Post-setup hook**: build the firmware on demand instead of committing a
-   `.hex`. A `post-setup` hook runs inside the container after each ticket
-   worktree is created; point it at the repo's software build (Ibex's is a
+   `.hex`. A Project setup script can run inside the container after a Goal
+   worktree is created, before entry; point it at the repo's software build (Ibex's is a
    Make target):
 
    ```bash
@@ -1024,3 +1024,11 @@ compile-flag probe.
    firmware file is present on disk but untracked, or if a committed artifact
    looks built from in-repo source; both nudge you toward this build-on-demand
    pattern.
+
+## Goalset policy in the plan
+
+Record which seeded Goalsets need Project-specific rules. Ask whether a
+`goalsets/default.md` should apply to every Goal entry, and record the answer
+with the existing verification intent. Initialization seeds four Goalsets
+create-only and does not create a default. Also record any requested opt-out of
+the default Dashboard task with `[sandbox].dashboard=false`.

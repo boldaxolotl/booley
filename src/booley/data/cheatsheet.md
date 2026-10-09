@@ -25,8 +25,8 @@ Inside the Sandbox, for Interactive Mode, we recommend `booley` / `booley chat`,
 | Command | Purpose |
 |---------|---------|
 | `booley chat` | Explicit spelling of the Sandbox default `booley` command |
-| `booley run` | Execute queued or named tickets |
-| `booley board` | Create, inspect, move, reset, or archive tickets |
+| `booley goal` | Inspect Goal Records, status, and abandonment |
+| `booley dashboard` | Show sessions, Goals, and Jobs |
 | `booley worktree` | Create a linked worktree with paired versioned Project inputs or a clean non-versioned snapshot |
 
 #### Either-location and mixed commands
@@ -48,33 +48,28 @@ For Host Bootstrap, `--check-only` reports pending work without writing and
 user-owned files. Force does not overwrite configuration or disable Docker's
 layer cache.
 
-### Ticket Board
+### Goal Mode
 
-One Ticket keeps one branch, worktree, and evidence history.
+Use `/booley-goal` in a Sandbox agent chat. One session owns a clean linked
+worktree and Goal Branch; every Goal is mandatory and judged by Flow or
+Specialist evidence at the current code.
 
-| Path | Meaning |
-|------|---------|
-| `draft → queued → running → review → done` | Normal lifecycle |
-| `draft → waiting → queued` | Wait for dependency Tickets |
-| `running → blocked → queued` | Human input, then resume the same Ticket |
-| `running → queued` | Exceptional interruption recovery; wait for active jobs first |
-| `running → done` | Omit `review` from the Ticket's `on_success` list |
-| `review → archived` | Close this Ticket; use a new Ticket for separate follow-up |
-| `review ──full reset──► queued` | Retire worktree/branch; archive artifacts; clear active state |
+| Step/tool | Purpose |
+|-----------|---------|
+| `goal_enter` | Translate Goalsets into concrete Goals and create a Goal Branch |
+| `goal_status` | Inspect evidence and freshness; `rules=true` restores working rules |
+| `goal_propose_change` | Add, relax, retarget, or propose a coverage waiver; only the human approves |
+| `goal_finish` | All Goals met at clean committed HEAD plus Session Summary → Review Package |
+| `goal_finish(abandon=true)` | Explicit human instruction only; preserve branch and worktree |
+| `booley goal status` | Inspect local records |
+| `booley dashboard` | Sessions, Goals, and Jobs inside the Sandbox |
 
-Review is a decision point, not a partial-rework loop. Fix small findings
-directly in the existing Ticket worktree and finish as `done`; archive it and
-create a new Ticket; or reset the entire run. Ordinary `review → queued` is
-invalid—the explicit reset is a clean start, never a resume of reviewed work.
-
-Inspect with `booley board show`; handle blocked and review decisions with
-`/booley-ticket-triage`.
-
-Every normal `booley run` ending prints one `BOOLEY_RUN_RESULT ` JSON record.
-Its disposition is `review` or `done` (exit 0), or `blocked` or `failed`
-(exit 1). Review-package and HTML paths are `null` outside review. A `failed`
-run leaves the Ticket blocked or queued after automatic retry. Infrastructure
-errors can also exit 1, so automation should classify runs from the record.
+Pass `work_dir` on every Booley call. Resume saved proposal and Finish IDs
+rather than editing records. Protected Input changes block Finish until
+reverted. Open `done` review findings remain visible; Finish does not merge.
+Project-owned Goalsets live under `goalsets/`; `default.md` applies unless the
+human explicitly skips it with a reason. Initialization seeds four create-only
+Goalsets and preserves edits.
 
 ### Booley Flows
 
@@ -323,14 +318,14 @@ the design sources they describe.
 |------|-------------|---------|
 | `booley.toml` | Project, Flow, agent, sandbox, and job policy | All Flows and Specialists |
 | `tests.toml` | Per-Target tests, selectors, skips, and environment | `sim`, `mutation_tester` |
-| `ticket_creation.md` | Free-form Ticket Creation Guidance | `/booley-ticket-create` only |
+| `goalsets/*.md` | Project-owned Goal bundles and optional default | `/booley-goal` |
 | `doctor-waivers.toml` | Reviewed warning waivers and expiry | No endpoint; `doctor` only |
 | `AGENTS.md` | Project instructions, ownership, and gotchas | Developer Agent and Specialists |
 | `rtl_style_guide.md` | Project RTL style overrides | `reviewer` RTL code-style focus |
 | `tb_style_guide.md` | Project testbench style overrides | `reviewer` TB quality focus |
 | `docker/Dockerfile` | Project image build steps and dependencies | Flows/Specialists in the Sandbox |
 | `<requirements>.txt` | Python dependency pins selected by `booley.toml` | Flows/Specialists in the Sandbox |
-| `hooks/post-setup.*` | Per-worktree setup commands | All Ticket Mode endpoints |
+| `hooks/post-setup.*` | Per-worktree setup commands | Worktree setup |
 
 #### Custom tool files
 
@@ -346,29 +341,26 @@ do not need these files.
 
 | Skill | Use it when | Result |
 |-------|-------------|--------|
-| `/booley-ticket-create <desc>` | You want to create a ticket | Apply guidance; preview and enqueue |
-| `/booley-ticket-triage` | Tickets are blocked or awaiting review | Unblock/reset or approve/reject |
+| `/booley-goal` | Work needs mandatory evidence-backed Goals | Goals, evidence, and review |
 | `/booley-heal` | Doctor or Flow health has drifted | Repair safe findings; verify Doctor |
 | `/booley-feedback` | Report bugs, friction, praise, or ideas | Redact evidence; export for manual sharing |
 
 ### Artifacts
 
-`<LOGS>/<slug>/` is one ticket's log directory under the project's ticket
-logs root.
+`<GOAL>` means `<project_dir>/goals/<goal-id>/`, the local Goal Record.
 
 | Artifact | Path | Use |
 |----------|------|-----|
-| Human summary and ticket snapshot | `<LOGS>/<slug>/` (`REPORT.md`, `ticket.md`, plans, summaries) | Start here when reviewing what the run did |
-| Prepared HTML explanation | `<LOGS>/<slug>/*-explanation-<slug>.html` and `.runtime/triage-prep/` | Rich change walkthrough linked from approve/reject triage |
-| Human-readable logs and prompts | `<LOGS>/<slug>/human-logs/` | Follow the run, errors, prompts, and rendered transcripts |
-| Machine state and checkpoints | `<LOGS>/<slug>/.runtime/` | Resume/debug state; implementation detail rather than the first review stop |
-| Per-invocation Flow reports | `<LOGS>/<slug>/.runtime/flow-reports/<flow>/<N>/report.json` | Structured verdict, metrics, and evidence (`N` is the invocation number) |
-| Per-invocation Specialist reports | `<LOGS>/<slug>/.runtime/mcp-tool-reports/<mcp-tool>/<N>/report.json` | Structured Specialist verdict and evidence |
-| Raw agent transcripts | `<LOGS>/<slug>/.runtime/transcripts/` | Provider-level debugging when the rendered transcript is insufficient |
+| Goal state and base | `<GOAL>/record.json` | Worktree, branch, Goals, and lifecycle |
+| Session Summary | `<GOAL>/SUMMARY.md` | What changed, evidence used, uncertainties |
+| Review Package | `<GOAL>/review-package.json` | Diff, final evidence, Change Log, and review findings |
+| Approved Goal changes | `<GOAL>/changes.jsonl` | Human decisions and reasons |
+| Evidence logs | `<GOAL>/logs/` | Flow/Specialist evidence and retained reports |
+| Summary on the Goal Branch | `.booley_project/goals/history/<goal-id>.md` | Committed outside Stealth when Git-trackable |
 
 ### Sandbox & Docker
 
-The `booley-sandbox` image contains Booley's EDA toolchain, agent runtimes, and development dependencies. It backs the per-folder Sandbox (devcontainer) where all Booley work, Interactive and Ticket Mode alike, executes; a project image selected by `[sandbox].image` can extend it.
+The `booley-sandbox` image contains Booley's EDA toolchain, agent runtimes, and development dependencies. It backs the per-folder Sandbox (devcontainer) where all Booley work, Interactive Mode and Goal Mode alike, executes; a project image selected by `[sandbox].image` can extend it.
 
 | Command | What it does |
 |---------|-------------|
@@ -388,4 +380,8 @@ it replaces itself with the native CLI. Invoke `claude` or `codex` directly to
 pass agent-specific options. The selected provider's VS Code extension is an
 optional alternative in the attached container window.
 
-**Explicit `booley chat`, `booley run`, and `booley board` are container-only.** Bare `booley` prints help on the host and opens the configured agent inside the Sandbox. Run them from a terminal **inside** the devcontainer (Reopen in Container, or `booley session enter`). For Ticket Mode, use one terminal per concurrent ticket, up to `[jobs] max_tickets` (default 2); extra runs queue with "waiting for slot (position N)". Launched on the host these commands fail fast and name the fix. `booley init` and `booley session` stay host-side; `booley doctor` works on either side.
+**`booley chat`, `booley goal`, and `booley dashboard` run in the Sandbox.**
+Bare `booley` prints help on the host and starts the configured agent in the
+Sandbox. For parallel Goal work, use one linked worktree per session. The
+Dashboard attach task defaults on; set `[sandbox].dashboard=false` to opt out.
+`booley init` and `booley session` run on the host; Doctor works on either side.

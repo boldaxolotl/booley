@@ -1,0 +1,4 @@
+interface:
+  display_name: "Booley Goal"
+  short_description: "Guide RTL work from Goals to evidence and review"
+  default_prompt: "Use $booley-goal to enter or resume Goal Mode and complete this RTL work with evidence."

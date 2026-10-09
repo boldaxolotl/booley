@@ -2,20 +2,20 @@
 
 Booley's core move is putting **one agent-native interface over the whole fragmented EDA toolchain**, every EDA tool and every coding agent behind the same typed surface, and wrapping the result in a single VS Code window. That makes agents more capable, but it also gives the engineer a faster, lower-friction RTL workflow. Every feature below builds on that foundation; the reasoning behind the load-bearing choices is in [WHY.md](../internals/WHY.md).
 
-New to Booley's vocabulary (Developer Agent, Specialist, Sandbox, Booley Flow, Target, Ticket Board)? The [context map](../../GLOSSARY-MAP.md) points to each canonical glossary and its rejected synonyms.
+New to Booley's vocabulary (agent, Specialist, Sandbox, Booley Flow, Target, Goal Mode)? The [context map](../../GLOSSARY-MAP.md) points to each canonical glossary and its rejected synonyms.
 
 - [One Interface Over Every EDA Tool and Agent](#one-interface-over-every-eda-tool-and-agent)
 - [The Agentic RTL IDE](#the-agentic-rtl-ide)
 - [Open Source and Local-First](#open-source-and-local-first)
 - [Interactive Mode](#interactive-mode)
-- [Ticket-Driven Workflow](#ticket-driven-workflow)
+- [Goal Mode](#goal-mode)
 - [Structured Booley Flow Contracts](#structured-booley-flow-contracts)
 - [Named Targets and Tests](#named-targets-and-tests)
-- [Machine-Checked Acceptance Criteria](#machine-checked-acceptance-criteria)
+- [Evidence-backed Goals](#evidence-backed-goals)
 - [Docker Sandboxing](#docker-sandboxing)
 - [Fresh Context per Specialist](#fresh-context-per-specialist)
 - [Waveform-Based Debug](#waveform-based-debug)
-- [Ticket Mode with Checkpoint & Resume](#ticket-mode-with-checkpoint--resume)
+- [Goal recovery](#goal-recovery)
 - [Multi-Category Code Review](#multi-category-code-review)
 - [Mutation Testing](#mutation-testing)
 - [Lint Triage](#lint-triage)
@@ -23,7 +23,7 @@ New to Booley's vocabulary (Developer Agent, Specialist, Sandbox, Booley Flow, T
 - [Expert-Written RTL Guides](#expert-written-rtl-guides)
 - [Agent-Driven Setup](#agent-driven-setup)
 - [Extensible Toolkit](#extensible-toolkit)
-- [Parallel Instances](#parallel-instances)
+- [Parallel Instances](#parallel-sessions)
 - [Windows Support](#windows-support)
 - [Firmware-in-the-Loop Debug](#firmware-in-the-loop-debug)
 - [Stealth Mode](#stealth-mode)
@@ -42,9 +42,9 @@ EDA-tool support lives in the [supported EDA tools matrix](SUPPORTED-EDA-TOOLS.m
 
 Booley is not only infrastructure for an agent. It is workflow infrastructure for the hardware engineer: editor, EDA tools, waveforms, run status, review evidence, and agent share a single VS Code window.
 
-Work interactively through conversation—edit code, run Booley Flows, debug a failure, open a scoped waveform view (`bwave gui`, see [Waveform-Based Debug](#waveform-based-debug))—or let autonomous tickets run in container terminals alongside. In either mode, Booley removes the manual transitions among editor, build commands, logs, waveform viewer, and review artifacts. Less time spent on that plumbing means faster iterations and more opportunities to verify, refine, and optimize the design.
+Work interactively through conversation—edit code, run Booley Flows, debug a failure, open a scoped waveform view (`bwave gui`, see [Waveform-Based Debug](#waveform-based-debug))—or let Goal sessions work unattended in container terminals alongside. In either mode, Booley removes the manual transitions among editor, build commands, logs, waveform viewer, and review artifacts. Less time spent on that plumbing means faster iterations and more opportunities to verify, refine, and optimize the design.
 
-Today that means stock VS Code chrome plus the agent chat and the Booley Flows it drives; native UI surfaces (ticket panel, criterion status, Flow dashboards) are on the [roadmap](../internals/ROADMAP.md#native-ide-surface-in-vs-code), and the long-term direction is Booley as a **standalone agentic IDE**.
+Today that means stock VS Code chrome plus the agent chat and the Booley Flows it drives; native UI surfaces (Goal status, evidence status, Flow dashboards) are on the [roadmap](../internals/ROADMAP.md#native-ide-surface-in-vs-code), and the long-term direction is Booley as a **standalone agentic IDE**.
 
 ## Open Source and Local-First
 
@@ -52,17 +52,20 @@ Booley is free under Apache 2.0 and runs entirely on your machine.
 
 ## Interactive Mode
 
-Booley has two modes of operation; the next two sections ground the ticket-and-criteria vocabulary the mechanism sections below build on. Interactive Mode is the workflow for small tasks, codebase exploration, and interactive debug and coding sessions: anything human-in-the-loop. `booley init` registers a Booley MCP server with your agent CLI, so your interactive Claude Code or Codex session can call Booley Flows and Specialists (`sim`, `lint`, `reviewer`, `mutation_tester`, ...) directly from natural-language prompts, no ticket, no Developer Agent, each call self-contained. See [USAGE.md: Interactive Mode](USAGE.md#interactive-mode).
+Interactive Mode is the workflow for small tasks, codebase exploration, and interactive debug and coding sessions: anything human-in-the-loop. `booley init` registers a Booley MCP server with your agent CLI, so your interactive Claude Code or Codex session can call Booley Flows and Specialists (`sim`, `lint`, `reviewer`, `mutation_tester`, ...) directly from natural-language prompts,  each call self-contained. See [USAGE.md: Interactive Mode](USAGE.md#interactive-mode).
 
-## Ticket-Driven Workflow
+## Goal Mode
 
-The workflow for long autonomous agentic work. You write tickets, agent executes them. Tickets are simple Markdown files with YAML frontmatter, stored on your local filesystem. No JIRA, no GitHub Issues, no external services. Four ticket types are supported: **Feature**, **Bug Fix**, **Refactor**, and **Verification**. See [USAGE.md: Ticket-Driven Workflow](USAGE.md#ticket-driven-workflow).
-
-Each ticket declares a file **scope** — the files the work is expected to touch. An agent that needs to edit something outside it can, and Booley reports every such file to you at triage instead of discarding the change behind your back. What makes parallel ticket execution safe is the per-ticket worktree and branch, not the scope; the one thing a commit may never touch is Booley's own bookkeeping. See [USAGE.md: Scope](USAGE.md#scope).
+Use `/booley-goal` in a Sandbox agent session for work with mandatory completion
+conditions. Project-owned Goalsets become concrete Goals at entry; one linked
+worktree and Goal Branch hold the work. Only Booley Flow and Specialist evidence
+meets Goals. Human-approved changes are recorded in the Change Log, and Finish
+returns a Review Package and Session Summary. The same session supports guided
+or unattended work. See [Goal Mode](USAGE.md#goal-mode).
 
 ## Structured Booley Flow Contracts
 
-Booley Flows are evidence contracts between real EDA behavior and Booley's decision loop. An MCP tool call does not just dump terminal output back into context: it resolves Targets and tests, runs the Flow, validates the result, stores predictable logs/traces/reports, and returns a normalized verdict the Developer Agent can safely use.
+Booley Flows are evidence contracts between real EDA behavior and Booley's decision loop. An MCP tool call does not just dump terminal output back into context: it resolves Targets and tests, runs the Flow, validates the result, stores predictable logs/traces/reports, and returns a normalized verdict the agent can safely use.
 
 This matters most for high-consequence steps: simulation, lint, synthesis, debug, review, mutation testing. A passing simulation satisfies criteria only when the Booley Flow returns a valid `pass` verdict. Lint and synthesis likewise report structured findings or metrics instead of EDA-tool-specific log fragments. Failures, timeouts, inconclusive runs, and contract errors stay distinct, so the agent can choose the right next action instead of guessing from noisy EDA output.
 
@@ -91,23 +94,27 @@ tests = ["test_basic", "test_edge_cases"]
 
 This is the identity half of the Booley Flow contract, and it matters for two reasons. First, **reproducibility**: a request to run one test resolves to exactly that test under exactly that Target's parameters and top module, and the resulting report carries the resolved identity. There is no gap between "what the agent asked for" and "what actually ran" for it to hallucinate into. Second, **conditional-compilation coverage**: designs with `ifdef`-gated features declare one Target per build, and Booley can fan Flows (lint, simulation, synthesis) across all of them instead of silently validating only the default build.
 
-Because Targets and tests are data, not code, the same names mean the same thing to the Developer Agent, every Specialist, the Booley Flows, and you, across every run.
+Because Targets and tests are data, not code, the same names mean the same thing to the agent, every Specialist, the Booley Flows, and you, across every run.
 
 The same model covers **cocotb (Python) testbenches**: a Target whose flow options declare a `cocotb_module` lists its `@cocotb.test()` function names in `tests.toml`, and `sim` runs the selected set batched in one sim process, taking per-test verdicts from cocotb's `results.xml`; `--test` filters the set the same way, and `sim_pass_{target}` keeps its meaning.
 
-## Machine-Checked Acceptance Criteria
+## Evidence-backed Goals
 
-A ticket declares **acceptance criteria**, and the harness, not the agent, decides when they are met. This is Booley's core defense against an agent declaring victory on work it never finished; criteria are satisfied only by a valid Booley Flow or Specialist verdict and re-verified whenever the underlying code changes. This is especially useful for configuration-heavy tickets with dozens of criteria, where relying on the agent to remember every check is fragile. See [USAGE.md: Acceptance Criteria](USAGE.md#acceptance-criteria).
+Every Goal is mandatory. Booley decides whether it is met from valid Flow or
+Specialist evidence at the current code, and stale evidence requires another
+run. Thresholds can enforce area, timing, cycle count, coverage, and mutation
+budgets. The agent can propose a change; only the human can approve it.
+See [Working with evidence](USAGE.md#working-with-evidence).
 
 ## Docker Sandboxing
 
 Agents run with `--dangerously-skip-permissions` to operate autonomously. Docker sandboxing keeps this safe: every agent runs inside the per-folder Sandbox container with only the project workspace mounted, full access inside, no access to the host outside. There is no general internet access either: egress is restricted to the LLM API endpoints through a Booley proxy, so a prompt-injection payload picked up from a web page has nowhere to reach. The agent runs as a non-root user, and an idle reaper stops orphaned sessions. The sandbox image ships every built-in EDA tool (see [One Interface Over Every EDA Tool and Agent](#one-interface-over-every-eda-tool-and-agent)) and both agent CLIs preinstalled.
 
-The sandbox is **customizable** in two ways. Use `[sandbox].image` for a project image that extends `booley-sandbox` with EDA tools that must exist in every container. Use a `post-setup` hook at `<project_dir>/hooks/post-setup.sh` for per-worktree setup after worktree creation.
+The sandbox is **customizable** in two ways. Use `[sandbox].image` for a project image that extends `booley-sandbox` with EDA tools that must exist in every container. Run a Project setup script under `<project_dir>/hooks/` when a new worktree needs generated inputs before Goal entry.
 
 ## Fresh Context per Specialist
 
-Long single-context agent sessions degrade: the model loses the thread, gets distracted by stale logs, and quality falls off over a multi-hour task. Booley's answer is context isolation: each Specialist (code review, mutation testing) runs in a fresh LLM context, so none of them drags along stale logs or drafts from earlier iterations. A fresh context also means a fresh perspective: a Specialist that didn't write the code has no attachment to it and no memory of the reasoning that produced it, so it judges what's actually there rather than what was intended. This matters most for the reviewer: an agent reviewing its own work tends to confirm it, while an unbiased one finds the real issues. Continuity lives in structured state carried by the Developer Agent (tickets, criteria, reports), not in an ever-growing conversation. See [ARCHITECTURE.md](../internals/ARCHITECTURE.md#the-sandbox).
+Long single-context agent sessions degrade: the model loses the thread, gets distracted by stale logs, and quality falls off over a multi-hour task. Booley's answer is context isolation: each Specialist (code review, mutation testing) runs in a fresh LLM context, so none of them drags along stale logs or drafts from earlier iterations. A fresh context also means a fresh perspective: a Specialist that didn't write the code has no attachment to it and no memory of the reasoning that produced it, so it judges what's actually there rather than what was intended. This matters most for the reviewer: an agent reviewing its own work tends to confirm it, while an unbiased one finds the real issues. Continuity lives in structured state carried by the agent (Goal Records, evidence, summaries), not in an ever-growing conversation. See [ARCHITECTURE.md](../internals/ARCHITECTURE.md#the-sandbox).
 
 ## Waveform-Based Debug
 
@@ -115,9 +122,12 @@ For debugging, Booley **observes actual simulation behavior** through a custom-b
 
 **FST trace store.** Raw VCD files from complex designs can reach 10 GB+, so Booley's successful trace artifact is FST: the open, transition-based waveform format, typically 10-50x smaller than the source VCD and readable by any off-the-shelf viewer (GTKWave, VaporView). `bwave gui` puts a scoped view straight into the user's VS Code window. Booley reads a Target's authored native FST directly. When the Target has no trace generation, Booley adds VCD tracing and streams the VCD through a named pipe (FIFO) to `bwave`, which converts it to FST in parallel. The reasoning is in [WHY.md: Why FST is the trace contract](../internals/WHY.md#why-fst-is-the-trace-contract).
 
-## Ticket Mode with Checkpoint & Resume
+## Goal recovery
 
-Booley is designed for unsupervised multi-hour execution, recovering from interruptions (reboot, crash, subscription limit) by resuming from the last completed Booley Flow or Specialist invocation, and blocking tickets for human triage when it gets stuck. See [USAGE.md: Running Unattended](USAGE.md#running-unattended).
+After interruption or context compaction, `goal_status(rules=true)` recovers the
+record and working rules in the same worktree. Saved proposal and Finish IDs
+make retries recoverable. Quiet presence does not end a Goal; abandonment
+requires explicit human instruction. See [Recovery](USAGE.md#recovery-unattended-work-and-parallel-sessions).
 
 ## Multi-Category Code Review
 
@@ -125,10 +135,10 @@ Code review is split into focus categories with severity-stratified issue tracki
 
 - **Correctness category** (functional, protocol, ifdef checking) runs once the RTL is ready and compiles, before any simulation: the equivalent of an RTL engineer's "quick look at the code I have just written," catching bugs before they cost time and tokens in simulation-fix loops.
 - **Quality category** (optional: security, optimization, coding standards) runs after the RTL is bug-free and targets issues beyond functional correctness.
-- Findings are classified as CRITICAL, MAJOR, or MINOR. A `_clean` review requires every current finding, including MINOR, to be verified fixed or explicitly waived with user-visible justification. A terminal `_done` review reports findings without triggering fixes; if it reports any, the Ticket waits for your approval before merging.
+- Findings are classified as CRITICAL, MAJOR, or MINOR. A `_clean` review requires every current finding, including MINOR, to be verified fixed or explicitly waived with user-visible justification. A terminal `_done` review reports findings without triggering fixes; advisory findings remain visible at Finish.
 - Testbench code gets its own separate review.
 
-The shipped reviewer is read-only: it reports issues by severity, and the Developer Agent resolves findings for `_clean` reviews. See [USAGE.md: RTL Code Review](USAGE.md#rtl-code-review) for the per-category criteria.
+The shipped reviewer is read-only: it reports issues by severity, and the agent resolves findings for `_clean` reviews. See [USAGE.md: RTL Code Review](USAGE.md#rtl-code-review) for the per-category criteria.
 
 ## Mutation Testing
 
@@ -140,7 +150,7 @@ The biggest issue with lint EDA tools is signal-to-noise ratio: dangerous warnin
 
 ## LLM Backend Selection
 
-Booley works with either agent platform: **Codex CLI** (OpenAI) or **Claude Code** (Anthropic). Pick one per project via `booley.toml [agent] provider`; the Developer Agent and every specialist then run on that single provider. Each platform brings its own agentic runtime, MCP tool integration, and execution model, which Booley drives through a unified interface.
+Booley works with either agent platform: **Codex CLI** (OpenAI) or **Claude Code** (Anthropic). Pick one per project via `booley.toml [agent] provider`; the agent and every specialist then run on that single provider. Each platform brings its own agentic runtime, MCP tool integration, and execution model, which Booley drives through a unified interface.
 
 Both backends support **subscription-based auth** alongside API billing: a Claude Pro/Max subscription (Claude Code) or a ChatGPT/Codex subscription (Codex CLI). That means you can run Booley on an existing subscription instead of paying per-token API costs, which matters for a token-hungry workflow like RTL development. See the Auth & billing note in [USAGE.md](USAGE.md) for details.
 
@@ -154,13 +164,14 @@ Making a project Booley-ready is a guided, mostly hands-off process. Booley ship
 
 ## Extensible Toolkit
 
-Booley's MCP surface is designed for extension. The built-in Booley Flows and Specialists cover the core RTL workflow (simulation, synthesis, lint, review), but every project has unique needs: formal verification, logic equivalence checking, DFT insertion, custom lint rules, power analysis. Project-specific MCP tools can be added via the `.booley_project/mcp_tools/` directory, following the same base-class interface as built-in MCP tools. The Developer Agent discovers and invokes them just like built-in MCP tools. See [MCP-TOOLS.md](../internals/MCP-TOOLS.md) for the architecture and extension guide.
+Booley's MCP surface is designed for extension. The built-in Booley Flows and Specialists cover the core RTL workflow (simulation, synthesis, lint, review), but every project has unique needs: formal verification, logic equivalence checking, DFT insertion, custom lint rules, power analysis. Project-specific MCP tools can be added via the `.booley_project/mcp_tools/` directory, following the same base-class interface as built-in MCP tools. The agent discovers and invokes them just like built-in MCP tools. See [MCP-TOOLS.md](../internals/MCP-TOOLS.md) for the architecture and extension guide.
 
-## Parallel Instances
+## Parallel sessions
 
-Multiple tickets can run concurrently inside one Sandbox: start another `booley run` in another container terminal and it picks up the next ticket from the queue independently, alongside your interactive session.
-
-Concurrency is safe by design, not by luck. Each running ticket operates in its own git worktree and its own artifact directory, so most isolation is **structural**: runs do not share the files they work on. Racing runs resolve ticket pickup through the Ticket Board (Booley's filesystem-backed ticket queue) and its atomic directory moves, and resource contention is governed by per-Job-Class admission caps (`[jobs]` in booley.toml, see [CONFIG.md](CONFIG.md#jobs--concurrency-jobs)) — a Job Class being the admission category a unit of work falls into (in-Sandbox EDA, model-API Specialist work, or a ticket's Developer Agent). Work beyond a cap waits in a priority queue (Interactive Mode ahead of Ticket Mode, running Jobs never preempted) instead of overcommitting the container.
+Run each Goal session in a separate linked worktree and Goal Branch inside the
+Sandbox. The Dashboard shows concurrent sessions, Goals, and Jobs. Per-Job-Class
+admission caps in `[jobs]` limit resource use; excess work queues and running
+Jobs are never preempted. See [Jobs](CONFIG.md#jobs--concurrency-jobs).
 
 ## Windows Support
 
@@ -211,10 +222,9 @@ cores. Disable the feature with
 The Coverage Analyst explains one retained native Coverage Campaign, keeping
 observed counts and stored verdicts separate from causal hypotheses. It can
 suggest tests and Waiver Candidates, but cannot launch Simulation, read
-waveforms, evaluate Criteria, or approve exclusions. In Ticket Mode Booley
-records the screened candidates; a Ticket short only by those points goes to
-review, where you accept or reject each one with `booley board approve`, and
-accepted ones merge with the RTL as Approved Waivers. Verified
+waveforms, evaluate Criteria, or approve exclusions. In Goal Mode Booley
+records screened candidates for a human decision through `goal_propose_change`;
+approved waivers require fresh coverage evidence before Finish. Verified
 Target sources are optional. Large Campaigns use bounded overview, point, and
 source retrieval rather than copying every point into the model prompt; point views
 preserve Approved Waiver provenance. Native-payload pruning leaves the normalized

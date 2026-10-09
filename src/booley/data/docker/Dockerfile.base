@@ -366,7 +366,7 @@ ENV BOOLEY_CONTAINER=1
 # booley server (json_response=True) sends headers only on completion — so
 # server-side waits are capped at 270s; this ENV removes the 60s MCP-level
 # kill underneath that. Image-level ENV so it reaches every entry path —
-# tabs, docker exec, the Ticket-Mode runner — even when a stale devcontainer
+# tabs, docker exec, Goal sessions — even when a stale devcontainer
 # spec predates it.
 ENV MCP_TOOL_TIMEOUT=7200000
 

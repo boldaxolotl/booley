@@ -122,7 +122,7 @@ Sandbox split is described in [ARCHITECTURE.md](../internals/ARCHITECTURE.md#ove
 > **`booley init` is the host command; the workflow CLI is container-only.**
 > Bare `booley` prints help and a getting-started hint on the host; inside the
 > Sandbox it opens the Project’s configured agent. Explicit `booley chat`,
-> `booley run`, `booley board`, and `bwave`
+> `booley goal`, `booley dashboard`, and `bwave`
 > refuse to run on the host (Reopen in Container); `booley init` refuses inside
 > the container, where there is no Docker. Either side fails fast with a message
 > naming the fix.
@@ -178,7 +178,7 @@ the base Sandbox Image, and global sidecars. Project Initialization walks throug
 
 1. Creating `.booley_project/` with placeholder configs
 2. Recording the selected agent provider and authentication policy
-3. The tickets directory tree and selected-provider credential checks
+3. The four create-only Goalsets and selected-provider credential checks
 4. Reconciling the Project-selected or Project-derived Sandbox Image while
    verifying its immutable base ancestry
 5. Installing Git hooks (repo-level plus the managed Project Git-policy bundle)
@@ -297,7 +297,7 @@ Each step is also a standalone how-to file in the skill's `steps/` directory if
 you'd rather write it by hand.
 
 Once `booley doctor` (and `--deep`) is green, you're set up. Head to
-[USAGE.md](USAGE.md) to write and run your first ticket, or start an Interactive
+[USAGE.md](USAGE.md) to enter your first Goal Mode with `/booley-goal`, or start an Interactive
 Mode session.
 
 ### A new IP: greenfield mode
@@ -331,7 +331,7 @@ Then replace the counter in `rtl/my_ip.sv` with your design and grow the
 testbench, keeping the generated wiring as the pattern. Re-run the doctor gate
 whenever the shape of the project changes (new Target, new flow, new
 constraints). From there, drive development the normal way: see
-[USAGE.md](USAGE.md) to write and run your first ticket, or start an Interactive
+[USAGE.md](USAGE.md) to enter your first Goal Mode with `/booley-goal`, or start an Interactive
 Mode session.
 
 ## Notes
@@ -373,5 +373,5 @@ including relocated data.
   (custom image/EDA tools and post-setup hook).
 - [SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md): which EDA tools Booley drives, at
   which boundary. The reference the skill's plan step checks against.
-- [USAGE.md](USAGE.md): CLI reference and the ticket-driven workflow.
+- [USAGE.md](USAGE.md): CLI reference and Goal Mode.
 - [TROUBLESHOOTING.md](TROUBLESHOOTING.md): symptoms and their fixes when something misbehaves.

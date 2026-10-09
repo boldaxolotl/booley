@@ -9,7 +9,7 @@ since cocotb's bus interfaces bind to interface *instances* and something has
 to instantiate them. Either way the verdict comes from cocotb's `results.xml`,
 never from printed sentinels.
 
-Project-specific overlays may be supplied by the caller or ticket context. The
+Project-specific overlays may be supplied by the caller or change-request context. The
 SystemVerilog `tb_style_guide.md` does not apply to Python testbenches.
 
 ---

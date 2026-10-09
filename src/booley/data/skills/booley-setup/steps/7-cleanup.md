@@ -56,7 +56,7 @@ booley cleanup preview --run-id <run-id> --retention minimal \
 Print and record the returned digest in the ledger. Show counts and byte totals
 grouped as:
 
-- **Preserve:** configuration, authored cores/scripts, waivers, Tickets,
+- **Preserve:** configuration, authored cores/scripts, waivers, Goal Records,
   reports, `SETUP-PLAN.md`, `SETUP-REPORT.md`, `PARITY-REPORT.md`, Findings
   semantics, Doctor stamps, active Job state, and structured evidence needed by
   a retained Finding or report.

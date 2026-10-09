@@ -4,7 +4,7 @@
 [project]
 name = "<project>"
 
-# Optional identity for agent-authored commits in Interactive and Ticket Mode.
+# Optional identity for agent-authored commits in Interactive and Goal Mode.
 # Values are applied to each checkout at worktree scope. Missing fields use the
 # neutral defaults `Dev` and `dev@localhost`.
 # [agent.git]
@@ -66,3 +66,11 @@ enabled = false              # synthesis recipe belongs in Target flow_options
 # tagged `tags: [tb]` is testbench, everything else is RTL (ADR 0026). There is
 # no [sources.*] table in booley.toml anymore; tag your testbench fileset in the
 # .core instead (see CORE_TEMPLATE.yaml).
+
+# Dashboard opens on VS Code folder attachment; false removes the owned task.
+# [sandbox]
+# dashboard = true
+
+# Quiet attributable presence expires after this many seconds (60..604800).
+# [goals]
+# quiet_after = 7200

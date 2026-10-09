@@ -1,4 +1,4 @@
-"""Regression contracts for shipped ticket workflow skills."""
+"""Regression contracts for shipped workflow skills."""
 
 import re
 
@@ -192,7 +192,7 @@ def test_agents_template_limits_doctor_during_task_work():
         "do not run it for task work or handoffs",
         "in the handoff instead of fixing them",
         "Never edit `booley.toml`, `.core` files, `doctor-waivers.toml`, "
-        "or Ticket Board directories to silence such a finding",
+        "or Goal Records to silence such a finding",
         "deep verification (`/booley-heal`) is due",
     ):
         assert required in agents
@@ -603,3 +603,68 @@ def test_setup_hidden_footprint_enables_stealth():
 def test_setup_grill_terms_are_in_glossary():
     terms = _glossary_terms()
     _assert_terms_defined(_skill_text("booley-setup", "steps/0-plan.md"), terms)
+
+
+@pytest.mark.parametrize(
+    ("relative", "requirements"),
+    [
+        (
+            "SKILL.md",
+            (
+                "work_dir",
+                "goalsets_used",
+                "default_skipped=true",
+                "skip_reason",
+                "Protected Inputs",
+                "Only Booley Flow and Specialist evidence",
+                'operation="resume"',
+                "proposal_id",
+                "approval_quote",
+                "Never fabricate approval or infer it from silence",
+                "goal_status(work_dir=..., rules=true)",
+                "caller-stable UUID",
+                "revalidation_required",
+                "Abandon only on explicit human instruction",
+                "instruction_quote",
+            ),
+        ),
+        (
+            "review.md",
+            (
+                "Session Summary",
+                "Change Log",
+                "freshness",
+                "Target changes",
+                "constraint edits",
+                "Open `done` findings need no second approval",
+                "merging or publishing remains a separate human instruction",
+            ),
+        ),
+    ],
+)
+def test_goal_skill_carries_lifecycle_and_human_authority_contract(relative, requirements):
+    text = _compact_skill_text("booley-goal", relative)
+    for requirement in requirements:
+        assert requirement in text
+
+
+def test_goal_skill_routes_machinery_failures_to_private_manual_feedback():
+    text = _compact_skill_text("booley-goal")
+    assert "/booley-feedback" in text
+    assert "private reproducer handling" in text
+    assert "redacted export only on explicit human request" in text
+    assert "leaves submission to the human" in text
+    assert "Do not weaken a Goal to hide an infrastructure failure" in text
+
+
+def test_goal_skill_links_packaged_review_and_names_only_public_goal_tools():
+    from booley.mcp.goal_tools import goal_tool_defs
+
+    text = _skill_text("booley-goal")
+    assert "[review.md](review.md)" in text
+    assert (skills_dir() / "booley-goal" / "review.md").is_file()
+    mentioned = set(re.findall(r"`(goal_[a-z_]+)(?:`|\()", text))
+    assert mentioned == {tool["name"] for tool in goal_tool_defs()}
+    assert "booley dashboard" in text
+    metadata = _skill_text("booley-goal", "agents/openai.yaml")
+    assert "$booley-goal" in metadata

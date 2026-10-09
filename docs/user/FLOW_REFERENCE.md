@@ -14,7 +14,7 @@ Related references:
 
 ## Running a Flow
 
-Normally you ask the Interactive or Developer Agent to run a Flow. Name the
+Normally you ask the session agent to run a Flow. Name the
 Target, and for `sim` name the test (or ask for the Target's full suite). To
 reproduce or debug a run yourself, use the CLI inside the Sandbox:
 
@@ -100,7 +100,7 @@ completed invocation directories manually when not needed; leave any
 directory containing an `active` marker untouched. There is no automatic pruning.
 Help, validation-only, dry-run and quiet calls create no transcript.
 
-Typed/MCP calls and runtime-composed Ticket calls retain their existing event
+Typed/MCP calls and runtime-composed calls retain their existing event
 transport. Ordinary direct shell calls gain stderr progress even without a TTY,
 including Interactive Agent shell calls. Agents or scripts requiring the previous
 captured transcript should pass `--quiet`.
@@ -125,7 +125,7 @@ is `sim --resume-from`, which takes its Target from the Campaign it resumes.)
 | `--target <name,...>` | Targets to run (see above). |
 | `-C/--project PATH` | Select the Project checkout or worktree; nested paths discover their owning checkout. Omission preserves cwd discovery. |
 | `--report-dir <path>` | Write reports here instead of the default report root. |
-| `--diagnostic` | Run without recording Ticket Criteria. A strict Ticket requires it for Flow/Target pairs outside its baseline. |
+| `--diagnostic` | Run diagnostically without recording Goal evidence. |
 | `--dry-run` | Resolve and validate the work, print the plan, and stop. No EDA tool runs and no state changes. |
 | `--timeout DURATION` | Active-time budget per work unit (queue time is not counted). Overrides `[flows.<name>].timeout_ms`. Simulation builds instead use `[flows.sim].build_timeout_ms`, and Pre-Sim Commands use an independent fixed budget; see [Simulation timeouts](CONFIG.md#simulation-build-pre-sim-and-run-timeouts). |
 
@@ -176,7 +176,7 @@ Hidden `--work-dir` remains a literal path alias for one compatibility release,
 with a stderr notice. Canonical selection discovers nested checkout paths and
 ignores `RTL_PROJECT_ROOT`; the alias preserves literal resolution. Never mix
 selectors or timeout flags, even if their values agree. Module entrypoints expose
-the same canonical options for Booley-owned endpoints. Saved Ticket commands,
+the same canonical options for Booley-owned endpoints. Saved reproduction commands,
 internal Simulation backend protocols and historical evidence keep their contracts.
 
 ## Reading results
@@ -198,7 +198,7 @@ longer. Build, Elaboration Check, and Pre-Sim Command timeouts instead exit `2`.
 The CLI prints a final verdict card: stdout on success, stderr on failure.
 
 **Reports.** Each run writes a structured JSON report and complete logs. By
-default they go under `flow-reports/` in the project-data directory (Ticket and
+default they go under `flow-reports/` in the project-data directory (Goal and
 agent runs use their runtime directory). `--report-dir` overrides this. Booley
 never writes reports into the RTL checkout. The verdict card and the report both
 point at the exact log and artifact paths, so you rarely need to go looking.
@@ -284,35 +284,26 @@ Each test gets one verdict:
   (`missing_input`, exit `1`). Either way the cause is kept, and assertions are
   reported as not observed.
 
-Criteria are Ticket Mode acceptance conditions: a Ticket declares them, and
-Flow runs made for that Ticket record whether they were met (see
-[Acceptance Criteria](USAGE.md#acceptance-criteria)). An Interactive Mode run
-only reports its verdict and exit code; it records no Criteria.
+Goal Mode translates Goals into evidence keys. Ordinary Interactive Mode runs
+report verdicts without a Goal Record. In an active Goal worktree, pass
+`work_dir` on every MCP call so Booley can bind evidence to that record.
 
-Within a Ticket, a `sim` run can satisfy these Criteria:
+- `sim_pass_<target>` requires the Target's full registered simulation suite.
+  Passing a hand-picked subset does not meet this Goal.
+- `cycle_count_<target>_<test>` requires one named passing test and all its
+  Cycle Count thresholds.
+- `elab_pass_<target>` requires a successful build; see below.
 
-- `sim_pass_*`: declared under `SIM` for either the Target's complete Required
-  Simulation Suite (`all: pass`) or individual named tests (`smoke: pass`).
-  Passing a hand-picked subset does not satisfy an `all` Criterion.
-- `cycle_count_<target>_<test>`: checks one named test. It passes when that test
-  passes and its reported Cycle Count meets every threshold the Ticket declares
-  (see [Threshold parameters](USAGE.md#threshold-parameters)).
-- `elab_pass_<target>`: see [Elaboration checks](#elaboration-checks).
+For example, entry can include:
 
-For example, a Ticket can require two tests independently:
-
-```yaml
-CRITERIA_MANDATORY:
-  SIM:
-    sim_core:
-      smoke: pass
-      regression: pass
+```json
+[{"family": "sim", "target": "sim_core"},
+ {"family": "cycle_count", "target": "sim_core", "test": "smoke",
+  "thresholds": {"cycle_count_max": 100}}]
 ```
 
-Each named test has its own Criterion, evaluated from that test's results.
-Run it with `booley flow sim --target sim_core --test smoke`, or include it in
-a full-suite run. To additionally require the complete suite, add `all: pass`
-under the same Target.
+Run the full suite for the simulation Goal. The named Cycle Count Goal uses
+that test's observed result. See [Goal Mode](USAGE.md#goal-mode).
 
 ### Elaboration checks
 
@@ -325,7 +316,7 @@ The Target build in either mode uses the shared
 [`build_timeout_ms`](CONFIG.md#simulation-build-pre-sim-and-run-timeouts)
 budget rather than `--timeout`.
 
-Within a Ticket, a successful build satisfies `elab_pass_<target>`, whether it
+In Goal Mode, a successful build satisfies `elab_pass_<target>`, whether it
 comes from `--mode elab-only` or from the build step of a normal run. It is
 recorded as soon as the build succeeds, so a later test failure does not erase
 it.
@@ -460,10 +451,9 @@ and testbench improvements. The verdict card prints the exact
   the partial points and nothing is waived.
 - **Ungated** (no Coverage Criterion): Booley collects and stores the Campaign
   with evaluation `not_requested`. Use it to explore.
-- **Gated** (Ticket with a `coverage_<target>` Criterion): Booley also checks
+- **Gated** (Goal Mode with a `coverage_<target>` Goal): Booley also checks
   the thresholds. Only a persisted `pass` satisfies
-  the Criterion. A Ticket short only by points its Waiver Candidates would
-  waive goes to review instead; see
+  the Criterion. A Goal remains unmet until strict evidence passes; see
   [Coverage waivers at review](#coverage-waivers-at-review).
 - **Raw numbers** (`--no-waivers`): applies no approved waivers. With a
   Coverage Criterion it needs `--diagnostic`; otherwise Booley exits 2 before
@@ -479,14 +469,11 @@ explicitly.
 
 #### Coverage Criteria and waivers
 
-A Ticket declares thresholds per Target:
+A coverage Goal declares thresholds per Target:
 
-```yaml
-CRITERIA_MANDATORY:
-  COVERAGE:
-    sim_counter:
-      tests: all
-      metrics: {line: {min_pct: 90}, branch: {min_pct: 80}}
+```json
+{"family": "coverage", "target": "sim_counter", "tests": "all",
+ "metrics": {"line": 90, "branch": 80}}
 ```
 
 Only points in the RTL count toward the percentages; testbench and generated
@@ -499,49 +486,25 @@ full syntax.
 
 #### Coverage waivers at review
 
-In Ticket Mode, the Coverage Analyst's own code (not its model) records the
-Waiver Candidates it screens as `ready_for_human_review` in an ignored
-per-Ticket record, `tickets/waiver-candidates/<slug>.json`. An `unreachable`
-candidate needs a zero-hit point; a point with hits stays "investigate". Outside
-Ticket Mode nothing is recorded.
+In Goal Mode, the Coverage Analyst's code screens Waiver Candidates and saves
+those ready for human review in the local Goal Record's `waiver-candidates.json`.
+An `unreachable` candidate needs a zero-hit point. A candidate carries no
+approval authority; only strict coverage evidence meets a Goal.
 
-Gated evaluation then reports two verdicts: the strict one (Approved Waiver Set
-only) and a **Provisional Coverage Verdict** that also counts the candidates.
-Only the strict verdict satisfies a Criterion. When every unmet mandatory
-Coverage Criterion is met provisionally, the Ticket goes to `review` as an
-unaccepted inspection, never straight to `done`, whatever `on_success` says.
-`booley board review <slug>` regenerates that inspection.
+Ask the agent to propose each needed candidate with
+`goal_propose_change(operation="create", kind="waiver", goal_key=...,
+candidate_id=..., rationale=...)`. Inspect the point, source, Campaign,
+coverage delta, and justification before approving or rejecting the exact
+proposal. The client form records your decision and reason; chat fallback
+records your quoted instruction. No candidate is accepted by default.
 
-`booley board show <slug>` lists the candidates as offered, not needed (the
-strict verdict already passes), stale (source changed or another Campaign), or
-invalid (not re-derivable from the evidence), each with its coverage
-delta. Justifications are marked unverified; your decision is the authority.
-
-```bash
-booley board approve <slug> --accept-waivers W1,W2 --reject-waivers W3 \
-  [--approval-ref REF]
-```
-
-- Decide every offered candidate; an undecided one fails approve. Nothing
-  defaults to accept, and accepting requires merge (no `--no-merge`).
-- If approval stops before acceptance is frozen, retry with the same explicit
-  waiver decisions and approval reference. Booley recovers its own partial
-  writes and still rejects unrelated changes to the reviewed inputs. A saved
-  promotion plan supplies no approval authority. After acceptance is frozen,
-  `booley board approve <slug>` resumes completion without repeating decisions.
-- Approve predicts the strict verdict first. If it would still fail, approve
-  records the rejections, promotes nothing, exits non-zero, and the Ticket
-  stays in review: fix it there, reset it, or archive it.
-- Otherwise the Acceptance Journal commits
-  `chore(<slug>): approve coverage waivers` in its merge candidate: it appends
-  the records to `<source>.toml` and writes `proofs/<id>.md` (proof kind
-  `review`) for each `unreachable` one. The waivers reach the destination with
-  the RTL they justify; the Ticket branch never changes.
-- `approved_by` is the Project checkout's Git identity (the `[agent.git]`
-  identity is refused). `approval_ref` defaults to `ticket:<slug>@<capture_sha>`.
-- A rejection is kept by Target, point, and source SHA-256 and filters later
-  proposals until that source changes. Return-to-draft and `board reset` clear
-  the candidates but keep rejections; closing the Ticket discards both.
+Approval writes the bound waiver and any review proof into the configured
+[approval directory](CONFIG.md#approved-coverage-waivers) and records the
+change in the Change Log. Rerun coverage to obtain fresh strict evidence;
+approval itself does not meet a Goal. A stale or invalid candidate needs a new
+Campaign and Analyst screening. A rejection is retained for that exact point
+and source content. Finish includes the approved changes and evidence in its
+Review Package, leaving merge to your separate instruction.
 
 #### Results
 
@@ -609,7 +572,7 @@ which tests to add, and Waiver Candidates for human review.
 
 Call the `coverage_analyst` Specialist from your connected agent session with `campaign="<exact coverage.json>"`.
 
-It never runs simulation, changes Criteria, or approves waivers; in Ticket
+It never runs simulation, changes Criteria, or approves waivers; in Goal
 Mode Booley records its candidates for
 [approval at review](#coverage-waivers-at-review). See
 [USAGE.md](USAGE.md#coverage_analyst).

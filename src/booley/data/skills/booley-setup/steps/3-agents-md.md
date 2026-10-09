@@ -44,7 +44,7 @@ file is high leverage: do not auto-write, pad, or invent facts.
 - Do not read RTL, testbench, or test contents by default. Stable docs and
   config are enough for this task.
 - Bad content — omit all of it: repo maps and large directory listings;
-  `booley init` or setup instructions; raw simulator command guesses; Board
+  `booley init` or setup instructions; raw simulator command guesses; Goal lifecycle
   operating instructions; instructions that tell the assistant to choose
   execution mode; generic verification commands sections; generic coding
   advice not grounded in this Project; duplicated README material; detailed

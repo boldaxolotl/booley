@@ -634,7 +634,7 @@ Interactive Mode logs land under `.booley_project/.interactive_logs/<session-id>
 
 ## Chapter 3: Criteria and MCP Tool Routing
 
-Criteria are the success conditions of Ticket Mode: each Ticket declares mandatory and optional Criteria, and the Harness—not the agent—decides when they are met (see [USAGE.md](../user/USAGE.md#acceptance-criteria)). An implementation's `satisfies` metadata builds the Criterion-to-MCP-tool map that tells the Developer Agent which capability can evaluate each condition.
+Criteria are the success conditions of Ticket Mode: each Ticket declares mandatory and optional Criteria, and the Harness—not the agent—decides when they are met (see [USAGE.md](../user/USAGE.md#working-with-evidence)). An implementation's `satisfies` metadata builds the Criterion-to-MCP-tool map that tells the Developer Agent which capability can evaluate each condition.
 
 Built-in families such as `sim_pass_*`, `lint_clean_*`, and `synthesis_ok_*` use exactly this mechanism. Project Criteria join the same catalog and routing map.
 

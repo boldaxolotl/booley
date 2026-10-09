@@ -1,12 +1,10 @@
 """User-facing README wording and ordering contracts."""
 
+import json
 from pathlib import Path
 
-from booley.ticket_board.ticket_document import (
-    TicketAuthoringView,
-    TicketConversionContext,
-    convert_ticket_document,
-)
+from booley.goals.model import GoalFamily, parse_goal_args
+from booley.goals.translate import translate_goals
 
 README = (Path(__file__).resolve().parent.parent / "README.md").read_text(encoding="utf-8")
 
@@ -50,23 +48,25 @@ def test_try_the_demo_leads_with_the_demo_readme_link():
     )
 
 
-def test_ticket_example_converts_through_the_real_ticket_boundary():
-    """The README's example ticket must stay valid as the ticket syntax evolves."""
-    # The only ```yaml block in the README that starts with frontmatter is the ticket.
-    example = README.split("```yaml\n---\n", 1)[1].split("```", 1)[0]
-    # Accept every Target selector as-is; the example isn't tied to a real Project.
-    view = TicketAuthoringView(
-        resolve_target=lambda selector, _flow: selector,
-        tests_for_target=lambda _target: ("smoke",),
-    )
-    context = TicketConversionContext("draft", lambda _generated: view)
+def test_goalset_example_translates_through_the_real_goal_boundary():
+    """The Goalset excerpt must produce the advertised mandatory Goals."""
+    example = README.split("```json\n", 1)[1].split("```", 1)[0]
+    translation = translate_goals(parse_goal_args(json.loads(example)))
 
-    conversion = convert_ticket_document("---\n" + example, context)
-
-    assert conversion.diagnostics == ()
-    assert conversion.document is not None
-    capabilities = {row.capability for row in conversion.document.spec.criteria}
-    assert capabilities == {"LINT", "SIM", "COVERAGE", "REVIEW", "SYNTH"}
+    assert translation.warnings == ()
+    assert {goal.family for goal in translation.goals} == {
+        GoalFamily.LINT,
+        GoalFamily.SIM,
+        GoalFamily.COVERAGE,
+        GoalFamily.REVIEW,
+        GoalFamily.SYNTH,
+    }
+    assert all(criterion.mandatory for criterion in translation.criteria)
+    assert all(goal.origins == ("fifo-feature",) for goal in translation.goals)
+    coverage = next(goal for goal in translation.goals if goal.family is GoalFamily.COVERAGE)
+    synthesis = next(goal for goal in translation.goals if goal.family is GoalFamily.SYNTH)
+    assert coverage.target == "sim_fifo"
+    assert synthesis.target == "synth_fifo"
 
 
 def test_installation_names_host_agent_cli_prerequisite():

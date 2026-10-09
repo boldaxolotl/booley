@@ -9,7 +9,7 @@
 
 Booley turns Claude Code or Codex into a capable RTL assistant. It runs the agent in a sandbox, hands it real EDA tools, and checks its work against your acceptance criteria: passing tests, area and timing budgets, cycle counts, coverage, and more. You design; it does the grunt work.
 
-![Booley in VS Code with RTL, an interactive agent session, ticket progress, and waveform inspection](docs/user/assets/booley-screenshot.png)
+![Booley in VS Code with RTL, an interactive agent session, Goal progress, and waveform inspection](docs/user/assets/booley-screenshot.png)
 
 ## Integrated Development Environment
 
@@ -26,36 +26,30 @@ RTL development is fragmented across editors, tool-specific commands, build envi
 The mental model behind Booley is simple: treat an LLM agent like a talented junior engineer. It can write RTL and testbenches, but it is inexperienced with EDA tools, prone to questionable design decisions, and too risky to give unrestricted host access—it could, for example, force-push to your Git repository and rewrite its history. Booley gives it a constrained workspace, explicit specifications, automated checks, and human review.
 
 - **Sandboxed for autonomous execution:** the agent and every command it launches run inside a Docker container with restricted mounts and network access. You can delegate long-running tasks to agents without approving every bash tool call and without worrying about your files and git history ([details](https://github.com/boldaxolotl/Booley/blob/main/docs/user/FEATURES.md#docker-sandboxing), [security model](https://github.com/boldaxolotl/Booley/blob/main/docs/internals/ARCHITECTURE.md#security--trust-model)).
-- **Strict guardrails and acceptance criteria:** in Ticket Mode, Booley checks explicit acceptance criteria you define during ticket creation. Area and cycle-count criteria help the agent stay within the project's PPA budget, while coverage and mutation-testing criteria help it write stronger testbenches. At review time, one briefing shows scope deviations and the results of configured checks, so you can see at a glance what passed and what needs attention ([details](https://github.com/boldaxolotl/Booley/blob/main/docs/user/USAGE.md#acceptance-criteria)).
+- **Strict guardrails and acceptance criteria:** in Goal Mode, Booley checks mandatory Goals chosen at entry. Area and cycle-count criteria help the agent stay within the project's PPA budget, while coverage and mutation-testing criteria help it write stronger testbenches. At review time, one briefing shows Goal changes, Target and constraint edits, and evidence, so you can see at a glance what passed and what needs attention ([details](https://github.com/boldaxolotl/Booley/blob/main/docs/user/USAGE.md#goal-mode)).
 - **Waveform-aware debugging:** `bwave` lets the agent query real traces instead of guessing from RTL. Ask "How many `i_ready`/`o_valid` handshakes occurred between 1,000 and 2,000 ns?" or "When did `data_o` equal `0xDEADBEEF`?" The agent answers from actual simulation data instead of spending minutes reasoning from code (and getting it wrong) ([details](https://github.com/boldaxolotl/Booley/blob/main/docs/user/FEATURES.md#waveform-based-debug)).
 
-There are two ways you can cooperate with LLM agents in Booley:
-- **Interactive Mode:** unlike a plain Claude Code or Codex chat, the agent starts with immediate access to the project's available Booley Flows and Specialists (focused sub-agents for code review, mutation testing, and coverage analysis, each started with fresh context) and already knows what the project can build, run, and test. From your first prompt, it is ready to inspect or edit RTL, run a simulation, lint, or synthesis Flow, and call a Specialist. You remain in the loop, guiding the work and making decisions as they come up.
-- **Ticket Mode:** the autonomous path. You write a ticket, specifying what needs doing, which files are in scope, which tests must pass, and any other completion criteria. Booley creates an isolated worktree, where the agent runs any Booley Flows and Specialist reviews required by the ticket's acceptance criteria; Booley tracks completion and hands you a review-ready result.
+Use **Interactive Mode** to explore, debug, and call Flows and Specialists with
+an agent in the Sandbox. Enter **Goal Mode** with `/booley-goal` when work needs
+explicit completion conditions. The same session can run with your guidance or
+unattended, in its own linked worktree and Goal Branch. Booley tracks evidence
+and requires every Goal to be met before Finish returns a Review Package.
 
-A ticket is a Markdown file with YAML frontmatter. Booley won't hand the work back for review until every mandatory criterion is green:
+A **Goalset** is Project-owned Markdown under `.booley_project/goalsets/`.
+The agent translates its prose into concrete Goals at entry. For example:
 
-```yaml
----
-summary: Add a registered bypass path to the FIFO read port
-type: feature
-branch: main
-scope:
-  - rtl/fifo.sv
-  - tb/test_fifo.py
-on_success: [triage_report, review]
-CRITERIA_MANDATORY:
-  LINT:     {lint_fifo: clean}
-  SIM:      {sim_fifo: {all: pass}}
-  COVERAGE: {sim_fifo: {tests: all, metrics: {line: {min_pct: 90}}}}
-  REVIEW:   {rtl: {bugs: clean}}
-CRITERIA_OPTIONAL:
-  SYNTH:    {synth_fifo: {area_increase_at_most: 10%}}
----
+> **Goalset: fifo-feature**
+> Lint the FIFO, pass its simulation suite, reach at least 90% line coverage,
+> finish an RTL bug review clean, and synthesize within 10% of the base area.
 
-## Description
-
-Current state, required changes, affected interfaces…
+```json
+[
+  {"family": "lint", "target": "lint_fifo", "origin": "fifo-feature"},
+  {"family": "sim", "target": "sim_fifo", "origin": "fifo-feature"},
+  {"family": "coverage", "target": "sim_fifo", "tests": "all", "metrics": {"line": 90}, "origin": "fifo-feature"},
+  {"family": "review", "review": "rtl_bugs", "verdict": "clean", "origin": "fifo-feature"},
+  {"family": "synth", "target": "synth_fifo", "thresholds": {"area_increase_at_most": "10%"}, "origin": "fifo-feature"}
+]
 ```
 
 See [FEATURES.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/FEATURES.md) for the full list of capabilities.
@@ -65,19 +59,17 @@ See [FEATURES.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/FEAT
 Three ways in, ordered by how much you want to invest:
 
 1. **[Level 1: Watch](#level-1-watch).** See an engineer drive Booley on a demo project, start to finish. Zero setup.
-2. **[Level 2: Try the demo yourself](#level-2-try-the-demo-yourself).** Clone the configured demo, create a Ticket with the bundled ticket-creation skill, and run your own change.
+2. **[Level 2: Try the demo yourself](#level-2-try-the-demo-yourself).** Clone the configured demo, enter Goal Mode with `/booley-goal`, and run your own change.
 3. **[Level 3: Use it on your own project](#level-3-use-it-on-your-own-project).** Full integration on your own RTL.
 
 ### Level 1: Watch
 
-Four videos show an engineer driving Booley on a demo project end to end, so viewers can see the workflow before touching anything:
+Two videos show an engineer driving Booley on a demo project end to end, so viewers can see the workflow before touching anything:
 
 1. **[Design Optimization](https://youtu.be/zHuvU4QJbvE)** (12:43)
 2. **[Finding and Fixing Bugs](https://youtu.be/hsYHHZcx82w)** (9:40)
-3. **[Feature Ticket Creation](https://youtu.be/sy1KMCHYnEw)** (10:36)
-4. **[Ticket Results Review](https://youtu.be/nHOgd5Jz6Eo)** (11:21)
 
-I recorded all four videos, then replaced my narration with text-to-speech to stay anonymous for now.
+I recorded both videos, then replaced my narration with text-to-speech to stay anonymous for now.
 
 ### Level 2: Try the demo yourself
 
@@ -179,7 +171,7 @@ Support for additional commercial EDA tools is coming soon; see the
 - **You need prior digital design experience.** Even the most advanced LLM is useless without electronic engineering fundamentals; Booley assumes you can read RTL, judge a waveform, and know what a sane result looks like.
 - **Source languages are SystemVerilog and Verilog only.** VHDL is not supported.
 - **UVM is not supported.**
-- **Setup can take effort.** I've tried to make the setup process as streamlined as possible, but every build system is different; complex flows or heavy licensed EDA tools may still need project-specific work. It's a price you pay once, though. After that, every ticket and every session builds on it, and development speeds up significantly.
+- **Setup can take effort.** I've tried to make the setup process as streamlined as possible, but every build system is different; complex flows or heavy licensed EDA tools may still need project-specific work. It's a price you pay once, though. After that, every Goal and every session builds on it, and development speeds up significantly.
 - **Work in progress.** Expect occasional bugs and rough edges in the UI. I'm actively on it, and things keep getting better.
 
 ## How Booley is built

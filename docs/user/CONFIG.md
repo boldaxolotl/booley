@@ -13,7 +13,7 @@ fills each file.
 **Read this first.** This is a reference, not a tutorial. It assumes you have
 skimmed the [README](../../README.md) overview and know Booley's controlled
 vocabulary: terms used here without definition — **Target**, **Booley Flow**,
-**EDA Provisioning**, **Sandbox**, **Specialist**, **Developer Agent**, **VLNV** —
+**EDA Provisioning**, **Sandbox**, **Specialist**, **VLNV** —
 are indexed by the [context map](../../GLOSSARY-MAP.md) if one is unfamiliar. Every
 project has exactly two mandatory pieces: `.booley_project/booley.toml` (first
 section below) and at least one FuseSoC `.core` file describing your design. If
@@ -64,7 +64,7 @@ memory settings belong only in the Project file. Init and Doctor reject
 host-only keys placed in Project `[sandbox]`.
 
 This Sandbox Policy applies to the whole Docker daemon, across all Projects
-and both Ticket Mode and Interactive Mode. The
+and both Goal Mode and Interactive Mode. The
 timeout and admission cap cover all Booley Sandboxes, and every extra
 egress hostname becomes reachable from every Project.
 
@@ -81,7 +81,7 @@ Project identity, Flow selection, and agent configuration live in
 
 `[project]` carries the project `name` and `preflight_checks` — see
 [Per-Target environment](#per-target-environment-env) for the last one, which is
-about ticket file-existence checks rather than identity. Everything else is
+about testbench file-existence checks rather than identity. Everything else is
 detailed below, starting with the shared `enabled`
 setting for Booley Flows and Specialists.
 
@@ -101,8 +101,8 @@ enabled = false
 
 `enabled` defaults to `true` when omitted. For a Specialist, `enabled = false`
 removes its MCP tool from Interactive Mode, makes it unavailable through
-`booley specialist`, and removes it from the Developer Agent's available
-Specialists in Ticket Mode. The same switch filters project-defined Specialists.
+`booley specialist`, and removes it from Goal sessions' available
+Specialists. The same switch filters project-defined Specialists.
 `enabled` is the visibility key under `[specialists.<name>]`;
 Specialist model selection belongs in `[models.roles]` (see
 [Model selection](#model-selection-models)).
@@ -111,7 +111,7 @@ Specialist sections must be tables, and `enabled` must be a TOML boolean
 (`true` or `false`, without quotes). Doctor and discovery reject unknown
 Specialist names, including Flow names or direct MCP endpoints placed under
 `[specialists]`. Malformed or unreadable configuration stops endpoint discovery
-and Ticket Preflight rather than enabling every capability by default.
+and Project checks rather than enabling every capability by default.
 
 Protocol utility endpoints such as `submit_run_report` have no Project
 `enabled` switch; execution mode and MCP server filters control their visibility.
@@ -224,7 +224,7 @@ The selected checkout's `booley.toml` (or `pipeline.toml`) owns these
 settings; malformed explicit configuration fails preparation.
 
 The cache lives at `.runtime/compiler-cache/ccache` in the issued Project data
-mount. Ticket worktrees share it while retaining their own configuration and
+mount. Goal worktrees share it while retaining their own configuration and
 fresh build generations. Sandbox recreation, generation cleanup, and disabling
 caching preserve its entries. A Sandbox created before this cache existed keeps
 building, uncached, with a warning; run `booley session refresh` on the host to
@@ -238,9 +238,9 @@ CCACHE_DIR=/booley-project/.runtime/compiler-cache/ccache ccache --clear
 ```
 
 The size is a **per-build automatic eviction target**, not an instantaneous disk
-quota. Concurrent writers and partial cleanup may temporarily exceed it. A Ticket
+quota. Concurrent writers and partial cleanup may temporarily exceed it. A build
 configured for `1G` can evict entries useful to a sibling configured for `5G`; the
-shared cache is not promised to remain below the smallest Ticket's setting.
+shared cache is not promised to remain below the smallest worktree's setting.
 Booley does not rewrite a shared `ccache.conf` or force cleanup after each build.
 
 Managed `OBJCACHE`, `CCACHE_DIR`, `CCACHE_MAXSIZE`,
@@ -351,7 +351,7 @@ Target's `simulation.json` as `tests[].cycles`; see
 Native Coverage runs report null counts. Configuring `cycle_sentinels` replaces the
 built-in cycle prefix; it does not affect the pass/fail verdict. A count-only record is readable when it is the only
 cycle record in the log. That count-only form and all named records remain observational
-unless the Ticket declares a `cycle_count` Criterion. Gated evidence on the
+unless Goal Mode names a `cycle_count` Goal. Gated evidence on the
 non-Campaign path requires exactly one named record; the Simulation Campaign path
 accepts any valid count, including a count-only record. Missing or invalid
 records yield a null count.
@@ -456,7 +456,7 @@ artifact staging never has to guess the sim's working directory:
 | `BOOLEY_TEST_NAMES` | always | the run's test list, space-joined |
 | `BOOLEY_RUN_CWD` | always | the directory the Simulation Flow runs in ([`run_cwd`](#sim-working-directory-flowssimrun_cwd) when set; otherwise the Project root) |
 | `BOOLEY_BUILD_ROOT` | `pre_sim_build_access = "legacy-per-test"` only | the fresh private per-test Edalize build tree; deliberately absent in immutable mode |
-| `BOOLEY_PROJECT_ROOT` / `BOOLEY_PROJECT_DIR` | always | same meaning as in the [post-setup hook](#post-setup-hook) |
+| `BOOLEY_PROJECT_ROOT` / `BOOLEY_PROJECT_DIR` | always | same meaning as in the [post-setup hook](#worktree-setup-hooks) |
 | `BOOLEY_SIM_EDA_TOOL` | after Target resolution | concrete EDA tool driven by this Simulation Flow run |
 
 `BOOLEY_PROJECT_DIR` deserves a note: **inside the Sandbox it is
@@ -490,7 +490,7 @@ prevents a prior manifest from resuming.
 
 Simulate-only by design: no ported project has ever needed a non-sim prebuild.
 For a *once-per-worktree* setup step (not per-run), use the [post-setup
-hook](#post-setup-hook) (defined under [Advanced setups](#advanced-setups))
+hook](#worktree-setup-hooks) (defined under [Advanced setups](#advanced-setups))
 instead.
 
 ### How Booley asks for a waveform (`[flows.sim].trace_args`)
@@ -748,7 +748,7 @@ convention sv2v and Verilator both honor) hits "unknown macro" errors without it
 **`fail_on_timing_violation`** defaults `false`: synthesis succeeded
 structurally, and many projects synthesize against placeholder constraints, so a
 violation prints `RESULT: WARN -- timing VIOLATED` and exits 0. Turn it on once
-the SDC is real, or an rc-only consumer (ticket gate, CI step) reads a -2.6 ns
+the SDC is real, or an rc-only consumer (Goal evidence consumer, CI step) reads a -2.6 ns
 design as success.
 
 ### Elaboration Check (`[flows.sim]`)
@@ -793,15 +793,13 @@ All Booley work executes inside the one per-folder Sandbox, and the
 number of running EDA tools must be limited or the container runs out of memory.
 Every Booley Flow or Specialist run is a **Job** with a **Job Class** determined by where
 it executes; each class has a cap, and work beyond the cap waits in a queue
-(interactive work ahead of ticket work, FIFO within a class, running Jobs
-never preempted) rather than being refused. The defaults:
+(FIFO within a priority class, running Jobs never preempted) rather than being refused. The defaults:
 
 ```toml
 [jobs]
 max_heavy   = 1   # in-container EDA subprocesses (sim, synth)
 heavy_memory = "4g" # reserved memory per HEAVY job; calibrate with Doctor --deep
 max_light   = 3   # Specialists (model-API-bound: reviewer, mutation_tester)
-max_tickets = 2   # concurrent `booley run` Developer Agents
 queue_max   = 8   # per-class queue depth; a full queue is the only BLOCKED response
 ```
 
@@ -856,21 +854,7 @@ Complete execution records are retained for seven days; an active Job lease
 pins its referenced record, and nonterminal or unfamiliar records are never
 garbage-collected automatically.
 
-### Auto-retry on transient crashes (`[developer.auto_retry]`)
 
-When the Developer Agent dies to a server-side failure (today, an `API Error:
-Response stalled mid-stream`), the ticket is blocked with the
-half-finished verdict (usually "exited with N unmet criteria"). No human can fix
-a stream stall, so triaging it wastes a pass. Booley requeues the ticket itself:
-
-```toml
-[developer.auto_retry]
-max_attempts = 1      # per ticket, over its whole lifetime; 0 disables
-```
-
-Only the known signature qualifies. Ordinary crashes, usage limits, context
-exhaustion, and Developer budget expiry all fall through to triage unchanged;
-retrying those just reproduces them.
 
 ### Sandbox (`[sandbox]`)
 
@@ -1338,8 +1322,8 @@ file. Read them there.
 
 ### Agent provider (`[agent]`)
 
-Both modes run the Developer Agent and every nested Specialist on a single LLM
-backend, Claude or Codex:
+The configured chat launcher and Specialists use one selected provider, Claude
+or Codex:
 
 ```toml
 [agent]
@@ -1376,7 +1360,7 @@ billing](USAGE.md#auth--billing).
 #### Git identity (`[agent.git]`)
 
 Set the default author and committer identity for Git commands run in
-Interactive Mode and Ticket Mode:
+Interactive Mode and Goal Mode:
 
 ```toml
 [agent.git]
@@ -1394,54 +1378,17 @@ Sandbox creation and startup remove a complete worktree
 Git identity pair matching the current settings or `Dev <dev@localhost>`;
 unrecognized custom overrides and other Git settings are preserved. Changed
 `[agent.git]` settings require refreshing and recreating the Sandbox to update
-its immutable environment. Ticket Mode still applies identity to each Ticket's
-worktree-specific Git configuration at creation. Explicit Git overrides such
+its immutable environment. Explicit Git overrides such
 as `git commit --author` or the `GIT_AUTHOR_*` and `GIT_COMMITTER_*` environment
 variables still take precedence.
 
-### Developer Agent policy (`[developer]`)
 
-```toml
-[developer]
-human_in_the_loop = true   # default
-run_report = true          # default
-
-[developer.limits]
-active_timeout_seconds = 1800   # 30 minutes (default)
-wall_timeout_seconds = 43200    # 12 hours (default)
-```
-
-- **`human_in_the_loop`**: whether a human operator is available to unblock
-  the agent. When `true` (default), the Developer Agent blocks on missing or
-  ambiguous spec and spec reviewers enforce strict grounding. Set `false` for
-  benchmarks and unattended bulk runs: the agent resolves spec-silent points
-  itself and reviewers tolerate documented readings.
-- **`run_report`**: whether every ticket run must end with a structured run
-  report (`REPORT.md` written via `submit_run_report`). When `true` (default),
-  the report is a hard exit condition — the run fails review until it is
-  submitted, any unmet optional criteria require a justification in it, and
-  any later code change stales it. Set `false` when nobody
-  consumes the reports (benchmarks, bulk unattended runs): the exit condition
-  becomes "all mandatory criteria met and every unmet optional criterion is
-  justified." `submit_run_report` is skipped when every optional criterion is
-  met, saving its per-run token cost; if an optional criterion remains unmet,
-  the agent still submits a report containing the required justification.
-- **`active_timeout_seconds`**: limits Developer Agent work that consumes its
-  own session time: model turns, file inspection and edits, and shell commands.
-  It pauses while the agent is synchronously waiting for a Booley MCP tool
-  (including queue and Flow execution time) and during transient-provider retry
-  backoff. Detached jobs do not pause it while the agent does other work.
-- **`wall_timeout_seconds`**: hard elapsed-time ceiling for the Developer run.
-  It never pauses, including during Booley tool waits. Both limits are fresh on
-  a new run or human unblock and are shown live in the Ticket Mode status bar.
-  Reaching either limit is a terminal local timeout, not a transient provider
-  error, so backend retry does not multiply the configured budget.
 
 ### Model selection (`[models]`)
 
-Every agent Booley runs picks a model through one of three **capability
-tiers**: `heavy`, `standard`, `light`. The Developer Agent runs `heavy`,
-specialists floor at `standard`, cheap internal steps run `light`. Each
+Booley Specialists select models through three **capability tiers**:
+`heavy`, `standard`, `light`. Specialists floor at `standard`; cheap internal
+steps run `light`. The interactive agent uses its native CLI model settings. Each
 provider ships defaults, so an untouched project needs no `[models]` at all.
 
 Override a tier to move every agent on it at once:
@@ -1458,21 +1405,16 @@ alone does not disturb the other two.
 
 #### Pinning one agent (`[models.roles]`)
 
-When a tier is the wrong grain (Developer Agent on your best model, but review
-and mutate on something cheaper), pin a single agent by name:
+To choose a model for one Specialist, pin its role by name:
 
 ```toml
 [models.roles]
-developer = "claude-fable-5"         # a literal model id
 reviewer = "claude-opus-4-8"
 mutation_tester = "light"            # …or a tier name
-triage_report = "standard"           # precomputed rich HTML explanation
 ```
 
 A tier name resolves through the `[models]` table (and tracks any override of
-it); anything else is passed to the provider verbatim. Pinnable roles are the
-harness steps `developer`, `recovery`, and `triage_report`, plus every specialist named as its
-Specialist: `reviewer`, `mutation_tester`, `coverage_analyst`, `tb_coder`. An unknown
+it); anything else is passed to the provider verbatim. Specialist roles include `reviewer`, `mutation_tester`, `coverage_analyst`, `tb_coder`. An unknown
 role FAILs `booley doctor`.
 
 A pin overrides a specialist's minimum-tier floor and sets the **model only**;
@@ -1568,7 +1510,7 @@ only one Target for it; the Elaboration Check reuses a sim Target. Targets with 
 Use `default:` only when another core depends on this one; Booley does not show
 it as a selectable Target. Vendored upstream cores keep their original names.
 Renaming a Target also requires updating its `tests.toml` section, Doctor
-metadata references, explicit callers, and ticket criteria. For Python testbenches, see
+metadata references, explicit callers, and Goals. For Python testbenches, see
 [Cocotb Targets](#cocotb-targets-python-testbenches).
 
 #### Verible lint Target
@@ -1678,7 +1620,7 @@ filesets (the `tags:[tb]` partition marks the TB sources). What lives
 in `booley.toml` is the per-Flow execution knobs (`enabled`) plus a few
 unrelated flags — never the source-dir listing itself. One such flag is
 `[sources.testbench].preflight_checks` (bool, default `true`): set it `false`
-to skip the check that a ticket's testbench files already exist on disk, which
+to skip the check that a Target's testbench files already exist on disk, which
 is what you want when the TB is authored during the run. (The broader
 `[project].preflight_checks` toggles *all* such file-existence checks — scope
 files and TB alike; the per-section flag narrows the relaxation to just the TB.)
@@ -1754,7 +1696,7 @@ What differs from an SV Target:
   worth deciding **which** variants earn a full module sweep rather than
   generating the whole matrix. A common shape is: every module on the default
   variant, plus the one or two modules that actually exercise the varying
-  behaviour on the other variants. Ticket criteria name Targets explicitly, so
+  behaviour on the other variants. Goals name Targets explicitly, so
   an unenumerated combination is simply one nobody gates on.
 - **Image-provisioned only**, Icarus or Verilator. Commercial simulators are
   out of scope for Cocotb Targets.
@@ -1811,7 +1753,7 @@ stalls at time zero, follow the diagnosis and recovery in
   example cores) are quarantined with a `FUSESOC_IGNORE` marker file in the
   directory. Booley's `.core` scanner skips any directory carrying one, exactly
   as FuseSoC's own scanner does.
-- **Git submodules** work, but Ticket Mode does not clone them. See
+- **Git submodules** work, but Goal Mode does not clone them. See
   [Submodules](#submodules) below.
 - **Multi-core repos** (a FuseSoC-native project shipping tens or hundreds of
   `.core` files: ibex has 208, with a `lint` target in 54 of them) work with
@@ -1823,11 +1765,11 @@ stalls at time zero, follow the diagnosis and recovery in
 
 ### Submodules
 
-Ticket Mode and baseline-relative Flows run in isolated git worktrees. Booley
+Goal Mode and baseline-relative Flows run in isolated git worktrees. Booley
 does not run `git submodule update` there: doing so may re-clone from a private
 SSH URL that the Sandbox cannot reach.
 
-After the ticket's final branch or the Flow's baseline ref is selected, Booley
+After the worktree's branch or the Flow's baseline ref is selected, Booley
 reads that revision's exact gitlinks and reconstructs each submodule from the
 initialized repository at the **same path** in the main Project. It transfers
 the pinned commit's local Git objects into a standalone detached repository;
@@ -1845,7 +1787,7 @@ git -C .booley_project submodule update --init --recursive
 ```
 
 Every selected submodule must be **present, clean, and non-shallow** in its
-owning outer or paired project repository before a ticket or baseline Flow
+owning outer or paired project repository before Goal entry or a baseline Flow
 starts. Its local object database must also contain the complete object closure
 for the destination's pinned commit. Worktree setup hard-errors when one of
 these preconditions is not met, for example:
@@ -1946,7 +1888,7 @@ hatches that remain, and what each is for:
   MCP tool](../internals/MCP-TOOLS.md) — it adds an MCP tool alongside the built-ins, never a
   side door into `sim_pass_*`.
 
-A simulator outside the built-in matrix is out of scope for Ticket Mode by
+A simulator outside the built-in matrix is out of scope for Goal Mode by
 declared boundary; widening the matrix is the sanctioned extension axis
 (per EDA tool: Edalize wiring → output parser → criteria-map row → Doctor probe).
 The current matrix — image-bundled plus authorized host-provisioned EDA tools — is in
@@ -2041,7 +1983,7 @@ the pulled base's repository digests. It does not compare Docker image IDs from
 the publisher and consumer, because those local identities are not registry
 provenance.
 
-Use the [post-setup hook](#post-setup-hook) (below) for per-worktree
+Use the [post-setup hook](#worktree-setup-hooks) (below) for per-worktree
 preparation. Use a custom image for EDA tools that must exist in every container
 before commands run.
 
@@ -2147,38 +2089,27 @@ refresh, and Doctor—resolve that generated image name consistently.
 
 ### Custom MCP tools
 
-Project-specific MCP tools can be added via `.booley_project/mcp_tools/`, following the same base-class interface as built-in MCP tools. The Developer Agent discovers and invokes them just like built-in MCP tools. See [MCP-TOOLS.md](../internals/MCP-TOOLS.md) for the architecture and extension guide.
+Project-specific MCP tools can be added via `.booley_project/mcp_tools/`, following the same base-class interface as built-in MCP tools. The agent discovers and invokes them just like built-in MCP tools. See [MCP-TOOLS.md](../internals/MCP-TOOLS.md) for the architecture and extension guide.
 
-### Post-Setup Hook
+### Worktree setup hooks
 
-Place a script at `.booley_project/hooks/post-setup.sh` (a `post-setup.py` or extensionless `post-setup` is also discovered) to run project-specific setup after worktree creation. The hook receives environment variables (`BOOLEY_WORKTREE`, `BOOLEY_PROJECT_DIR`, `BOOLEY_TICKET_SLUG`, `BOOLEY_TICKET_FILE`, `BOOLEY_SIM_FLOW_ENABLED`, `BOOLEY_IN_DOCKER`) for context.
+Project setup scripts can live under `.booley_project/hooks/`. After creating a
+Goal worktree with `booley worktree new`, run any Project-specific setup it
+needs from that worktree before entry. The command creates the worktree and
+Project checkout; it does not invoke these scripts automatically. Keep generated
+build outputs ignored and commit deliberate Project inputs before Goal entry.
+Hooks are Protected Inputs during Goal Mode.
 
-Discovery order is `.sh`, `.py`, then extensionless; only the first existing
-file runs. The hook runs once for each newly created ticket worktree, with that
-worktree as its current directory, after project state has been copied and
-before the Developer Agent starts. Shell and extensionless hooks run with the
-platform Bash; Python hooks run with Booley's Python interpreter.
-
-The hook has a 15-minute limit. A non-zero exit, timeout, or launch error blocks
-the ticket setup and surfaces a bounded stderr diagnostic. Its stdout and
-stderr are retained in debug logs. Write hooks to be idempotent: a recovered or
-recreated worktree can run setup again. Generated tracked files are committed
-on the ticket feature branch by the setup stage, so generate only deliberate,
-reproducible project inputs; keep caches and bulky build outputs in ignored
-build directories.
-
-Stealth project state is intentionally outside the host repository's git
-history. Back up or version `.booley_project/` separately, together with any
-root `FUSESOC_IGNORE` quarantine marker. Booley propagates that marker into
-ticket and baseline worktrees, but a fresh clone cannot reconstruct hidden
-configuration that was never exported.
+Stealth Project configuration is outside the outer Git history. Back it up or
+version it separately together with `FUSESOC_IGNORE`; a fresh clone cannot
+reconstruct hidden configuration that was never exported.
 
 ### Coverage Analyst model role
 
 `coverage_analyst` retains its configured Specialist model role and standard tier
 floor. Its input is one exact canonical `coverage.json` path plus an optional
 `instruction`. It has no per-call coverage policy or waiver-directory settings;
-Ticket Mode candidate recording needs no configuration.
+Goal Mode candidate recording needs no configuration.
 The model receives normalized evidence and, only when the entire current Target
 closure matches its recorded fingerprints, verified RTL/testbench text.
 
@@ -2211,18 +2142,11 @@ When reset is excluded, declare both hooks and call start before write. A
 hooks, missing declarations, and unproved calls are errors. These controls cannot
 be overridden in `[flows.sim]` or invocation flags.
 
-One Ticket authoring record shares policy while expanding into independent
-Target-bound `coverage_<target>` Criteria:
+A coverage Goal sets policy independently for each Target:
 
-```yaml
-CRITERIA_MANDATORY:
-  COVERAGE:
-    sim_counter:
-      tests: all
-      metrics: {line: {min_pct: 90}, branch: {min_pct: 80}, toggle: {min_pct: 75}}
-    sim_counter_wide:
-      tests: all
-      metrics: {line: {min_pct: 90}, branch: {min_pct: 80}, toggle: {min_pct: 75}}
+```json
+{"family": "coverage", "target": "sim_counter", "tests": "all",
+ "metrics": {"line": 90, "branch": 80, "toggle": 75}}
 ```
 
 Each Target must be explicit. `tests` is `all` or a nonempty exact list
@@ -2287,13 +2211,12 @@ provenance. Every `--coverage` run loads this directory, with or without a Cover
 Criterion. Without one, an invalid set, or an unmatched approval in a completely
 collected Campaign, still blocks evaluation and exits 2. `--no-waivers` skips
 loading. Analyst Waiver Candidates have no approval authority of their own and
-cannot be copied here by hand; they become approval files only through
-`booley board approve --accept-waivers`, which writes them here in the Ticket's
-merge (see [Coverage waivers at review](FLOW_REFERENCE.md#coverage-waivers-at-review)).
+cannot be copied here by hand; they become approval files through a human-approved
+`goal_propose_change` waiver proposal (see [Coverage waivers at review](FLOW_REFERENCE.md#coverage-waivers-at-review)).
 
-### Dashboard and quiet Goal presence (preview)
+### Dashboard and quiet Goal presence (`[goals]`)
 
-In the developer preview, the Sandbox Dashboard opens on VS Code
+The Sandbox Dashboard opens on VS Code
 folder attachment by default. Configure these values in the Project directory's
 `booley.toml`:
 
@@ -2305,11 +2228,10 @@ dashboard = true
 quiet_after = 7200
 ```
 
-`dashboard = false` removes an unchanged Booley-owned attach task. Turning the
-preview off does the same on the next `booley init` or Sandbox refresh. Existing
+`dashboard = false` removes an unchanged Booley-owned attach task. Reconciliation runs on `booley init` or Sandbox refresh. Existing
 user tasks, comments, unknown fields, and user-edited Dashboard tasks are
-preserved. A same-label user task is preserved with a diagnostic. Set
-`task.allowAutomaticTasks` to `"off"` in `.vscode/settings.json` to opt out.
+preserved. A same-label user task is preserved with a diagnostic. The owned task lives in `.vscode/tasks.json`; initialization enables
+`task.allowAutomaticTasks` in `.vscode/settings.json` for attachment.
 Booley adds a local `.vscode` Git exclusion only when it creates that directory;
 its ownership record persists across reconciliation.
 

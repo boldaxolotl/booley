@@ -32,7 +32,7 @@
 
 | # | Decision | What it decides | Internal key | Value | Resolution | Confidence | Evidence / why | Open question |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 | Which jobs should Booley run for you (simulate, lint, synthesize, FPGA build)? | Select the Booley Flows and a build Target for each job so only intended work runs. | Flows: enabled + Target per flow |  |  |  |  |  |
+| 1 | Which jobs should Booley execute for you (simulate, lint, synthesize, FPGA build)? | Select the Booley Flows and a build Target for each job so only intended work runs. | Flows: enabled + Target per flow |  |  |  |  |  |
 | 2 | Where do Booley's build descriptions (`.core` files) live, and what are the build configurations called? | Choose who owns each build description and its Target names; placement follows the git-history choice. | `.core` ownership/placement strategy & target names (must agree with row 16) |  |  |  |  |  |
 | 3 | Which module is the top of the design? Does it need a flat-port wrapper? | Select the entry module for each job and adapt interface ports when the simulator needs flat signals. | Toplevel(s); flat-port wrapper? |  |  |  |  |  |
 | 4 | Are your testbenches SystemVerilog, cocotb (Python), or both? | Choose how tests run and how their results are read; this controls the build and test layout. | Testbench flavor (sv/cocotb/mixed) |  |  |  |  |  |
@@ -178,3 +178,9 @@
 - **Cleanup preview digest:** <unset>
 - **Recovery journal:** idle
 - **Final disposition:** <unset>
+
+### Goalset policy
+
+- **Project rules for seeded Goalsets:** <rules and applicable Targets>
+- **Create `goalsets/default.md`:** <human decision; applies to every entry>
+- **Dashboard attachment task:** <default on, or requested opt-out>

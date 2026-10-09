@@ -44,7 +44,7 @@ pass/fail results from cocotb's result file instead of log-line sentinels.
 ## Sandbox
 A Sandbox is the isolated environment where Booley runs commands, edits files,
 and invokes EDA tools for your project. It is usually a Docker container with
-your EDA tools, and contains the separate worktrees used for ticket work.
+your EDA tools, and contains the separate worktrees used for Goal work.
 
 ## Doctor
 Doctor is Booley's health-check command for the build setup and execution
@@ -130,7 +130,11 @@ A Sandbox image is the reusable installed filesystem from which a Sandbox is
 created, typically a Docker image containing your EDA tools. It supplies the
 programs; the Sandbox is the running environment that uses them.
 
-## Ticket
-A Ticket is one self-contained piece of hardware development work with its own
-requirements for acceptance and tracked lifecycle. It tells an agent what to
-change and what evidence must pass before the work is accepted.
+## Goal Mode
+Goal Mode binds one agent session to a linked worktree and Goal Branch, with
+mandatory completion conditions judged by Booley Flow and Specialist evidence.
+
+## Goalset
+A Goalset is a Project-owned Markdown bundle under `goalsets/`. The agent
+translates its prose into concrete Goals at entry. An optional `default.md`
+applies to every entry unless the human explicitly skips it with a reason.

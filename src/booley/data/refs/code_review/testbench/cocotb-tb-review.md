@@ -19,13 +19,13 @@ instance naming) against Python testbenches.
 
 Everything you need is in this prompt or in the TB sources:
 
-- **## Specification** — the ticket body, or the external spec the ticket
-  points at. This is your source of truth for what the DUT is supposed to do.
+- **## Specification** — the change-request text, or the external spec the request
+  names. This is your source of truth for what the DUT is supposed to do.
   Read it before the checklist; skip spec-dependent checks if it is absent
   rather than guessing.
 - **## Documented Assumptions** — decisions the developer recorded for points
   the spec leaves open, when any exist.
-- **## Ticket Type** — when present, it overrides the severity of the
+- **Change-request type policy** — when present, it overrides the severity of the
   coverage-expansion checks named there.
 - The TB module(s) under **Review the following files**, plus the helper
   packages they import.
@@ -48,7 +48,7 @@ helpers — that is what the Grep instruction in the methodology preamble is for
    their domain), comparison logic, BFM usage, package dependencies
 5. Read the cocotb testbench style guide included in this reviewer prompt
 6. Read any project-specific overlay only if the review request lists it
-7. Review against the checklist below, applying the **## Ticket Type** policy
+7. Review against the checklist below, applying the **Change-request type policy**
    if one is present
 8. Report findings using the strict JSON schema appended by the reviewer prompt
 
