@@ -1,9 +1,8 @@
 """Drive Goal Mode through modern stdio MCP in a disposable user-style workspace.
 
 Readiness leaves the Goal Mode active in a disposable workspace. Caller inputs
-are only cloned. The user worktree script creates the outer checkout, then this
-driver replaces its Stealth Project copy with a paired linked Project worktree.
-This workaround remains until ``booley worktree new`` creates that pairing itself.
+are only cloned. ``booley worktree new`` creates the outer checkout and its
+paired Project checkout through the same path used in Interactive Mode.
 The control Project is the main checkout's directory. Preview is explicitly
 enabled here for 7a; 7b removes it.
 """
@@ -15,7 +14,6 @@ import asyncio
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -33,8 +31,6 @@ from booley.goals.model import GoalArg, GoalFamily, GoalRecord, GoalState, goal_
 from booley.goals.store import GoalStore
 from booley.goals.translate import translate_goals
 from booley.runtime.atomic_files import atomic_replace_bytes
-from booley.runtime.paths import worktree_create_script
-from booley.runtime.platform_paths import bash_bin
 from booley.runtime.project_prepare import prepare_project
 from booley.runtime.project_repositories import is_git_worktree_root
 from booley.targets.catalog import TargetCatalog
@@ -259,27 +255,17 @@ def create_workspace(
     paired = _clone_project(project_state, primary, directory, env)
     with (primary / ".git/info/exclude").open("a", encoding="utf-8") as stream:
         stream.write("\n/.booley_project\n/.booley-projected-*.core\n")
-    _run(
-        [bash_bin(), str(worktree_create_script())],
-        primary,
-        env | {"BOOLEY_PYTHON": str(python)},
-        stdin_payload=json.dumps(
-            {"name": "ci-demo", "cwd": str(primary), "on_existing": "refuse"}
-        ),
-    )
-    worktree = primary / ".booley_project/worktrees/ci-demo"
-    if paired:
-        shutil.rmtree(worktree / ".booley_project")
-        _run(
-            ["git", "worktree", "add", "--detach", str(worktree / ".booley_project"), "HEAD"],
-            primary / ".booley_project",
-            env,
-        )
     for repository in (primary, *((primary / ".booley_project",) if paired else ())):
         _run(["git", "config", "user.name", "Booley CI"], repository, env)
         _run(
             ["git", "config", "user.email", "booley-ci@users.noreply.github.com"], repository, env
         )
+    _run(
+        [str(python), "-m", "booley.harness.booley", "worktree", "new", "ci-demo"],
+        primary,
+        env,
+    )
+    worktree = primary / ".booley_project/worktrees/ci-demo"
     return Workspace(primary, worktree)
 
 

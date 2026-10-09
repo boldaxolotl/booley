@@ -1,4 +1,4 @@
-"""``booley worktree new <name>``: create a linked worktree with a clean Project snapshot.
+"""``booley worktree new <name>``: create a linked worktree with paired or snapshot Project inputs.
 
 The command wraps the packaged ``worktree_create.sh`` with its default
 ``refuse`` policy, so an existing destination (possibly an active worktree
@@ -6,6 +6,8 @@ holding someone's work) is never deleted. The worktree lands where Ticket
 setup puts its worktrees, ``.booley_project/worktrees/<name>``, on a detached
 HEAD at the workspace's current commit unless the name uses the
 ``<branch>--<description>`` convention to check out an existing branch.
+A standalone versioned Project gets a paired checkout on ``booley-worktree/<name>``
+at its clean HEAD; a non-versioned Project gets a clean snapshot.
 """
 
 from __future__ import annotations
@@ -21,6 +23,16 @@ from pathlib import Path
 from booley.runtime.paths import worktree_create_script
 from booley.runtime.platform_paths import bash_bin
 from booley.runtime.project_dir import PROJECT_DIR_NAME
+from booley.runtime.project_repositories import run_git
+from booley.runtime.project_worktree_pairing import (
+    ProjectPairingError,
+    pair_project_worktree,
+    project_pairing_source,
+    remove_creation_lock,
+    rollback_outer_worktree,
+    validate_project_pairing,
+    worktree_removal_instructions,
+)
 
 # Same single-path-component rule the script enforces; checking it at the
 # CLI boundary gives an argparse error before any process starts.
@@ -44,7 +56,7 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
     """Register ``booley worktree`` and its ``new`` command."""
     parser = subparsers.add_parser(
         "worktree",
-        help="Create a linked worktree with a clean Project snapshot",
+        help="Create a linked worktree with paired or snapshot Project inputs",
         description="Create linked Git worktrees for this Project.",
     )
     commands = parser.add_subparsers(dest="worktree_command", metavar="{new}", required=True)
@@ -53,8 +65,10 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
         help="Create .booley_project/worktrees/<name> and print its path",
         description=(
             "Create a linked Git worktree at .booley_project/worktrees/<name> with a "
-            "clean .booley_project snapshot (live run and session state stays "
-            "behind). The worktree starts on a detached HEAD at the current commit; a "
+            "paired Project checkout on booley-worktree/<name> for a versioned "
+            "Project, or a clean .booley_project snapshot for a non-versioned Project "
+            "(live run and session state stays behind). The outer worktree starts on a "
+            "detached HEAD at the current commit; a "
             "<branch>--<description> name checks out that existing branch instead. "
             "An existing destination is refused and left untouched. Prints the "
             "worktree path."
@@ -73,15 +87,17 @@ def worktree_path(project_root: Path, name: str) -> Path:
     return project_root / PROJECT_DIR_NAME / "worktrees" / name
 
 
-def run(args: argparse.Namespace, project_root: Path) -> int:
-    """Run the worktree script with the refusing policy; print the new path."""
+class WorktreeCreationError(Exception):
+    """The outer worktree script could not create the requested checkout."""
+
+
+def _create_outer(name: str, project_root: Path, *, paired_project: bool) -> None:
     script = worktree_create_script()
     if not script.is_file():
-        print(f"ERROR: worktree script not found: {script}", file=sys.stderr)
-        return 1
-    payload = {"name": args.name, "cwd": str(project_root), "on_existing": "refuse"}
-    # Pin the script to this interpreter (it otherwise probes PATH for Python).
+        raise WorktreeCreationError(f"worktree script not found: {script}")
+    payload = {"name": name, "cwd": str(project_root), "on_existing": "refuse"}
     environment = {**os.environ}
+    environment["BOOLEY_WORKTREE_PAIRED_PROJECT"] = "1" if paired_project else "0"
     environment.setdefault("BOOLEY_PYTHON", sys.executable)
     try:
         result = subprocess.run(
@@ -94,21 +110,62 @@ def run(args: argparse.Namespace, project_root: Path) -> int:
             timeout=_CREATE_TIMEOUT_S,
             check=False,
         )
-    except subprocess.TimeoutExpired:
-        print(
-            f"ERROR: worktree creation timed out after {_CREATE_TIMEOUT_S} s",
-            file=sys.stderr,
-        )
-        return 1
+    except subprocess.TimeoutExpired as exc:
+        raise WorktreeCreationError(
+            f"worktree creation timed out after {_CREATE_TIMEOUT_S} s"
+        ) from exc
     except OSError as exc:
-        print(f"ERROR: worktree creation failed to start: {exc}", file=sys.stderr)
-        return 1
+        raise WorktreeCreationError(f"worktree creation failed to start: {exc}") from exc
     if result.returncode != 0:
-        # Surface only the script's ERROR lines; the rest is progress chatter.
-        errors = [line for line in result.stderr.splitlines() if line.startswith("ERROR:")]
+        errors = [
+            line.removeprefix("ERROR:").lstrip()
+            for line in result.stderr.splitlines()
+            if line.startswith("ERROR:")
+        ]
         detail = "\n".join(errors) or result.stderr.strip() or "(no output)"
-        print(detail, file=sys.stderr)
+        raise WorktreeCreationError(detail)
+
+
+def run(args: argparse.Namespace, project_root: Path) -> int:
+    """Create the outer and paired checkouts atomically; print removal instructions."""
+    worktree = worktree_path(project_root, args.name)
+    created = False
+    source = None
+    try:
+        source = project_pairing_source(project_root)
+        validate_project_pairing(source, args.name)
+        _create_outer(args.name, project_root, paired_project=source is not None)
+        created = True
+        paired = pair_project_worktree(project_root, worktree, args.name, source=source)
+    except BaseException as exc:
+        if created:
+            _rollback_creation(project_root, worktree, args.name, exc)
+        if not isinstance(exc, (WorktreeCreationError, ProjectPairingError, OSError)):
+            raise
+        print(f"ERROR: {exc}", file=sys.stderr)
+        if source is not None and _is_named_pair(worktree, args.name):
+            print(
+                worktree_removal_instructions(project_root, worktree, args.name), file=sys.stderr
+            )
         return 1
-    # The script prints a POSIX path; report the native one instead.
-    print(worktree_path(project_root, args.name))
+    print(worktree)
+    if paired:
+        print(worktree_removal_instructions(project_root, worktree, args.name), file=sys.stderr)
     return 0
+
+
+def _rollback_creation(root: Path, worktree: Path, name: str, failure: BaseException) -> None:
+    try:
+        rollback_outer_worktree(root, worktree)
+        remove_creation_lock(root, name)
+    except (OSError, ProjectPairingError) as cleanup:
+        failure.add_note(f"outer rollback failed: {cleanup}")
+        print(f"ERROR: outer rollback failed: {cleanup}", file=sys.stderr)
+
+
+def _is_named_pair(worktree: Path, name: str) -> bool:
+    nested = worktree / PROJECT_DIR_NAME
+    if not (nested / ".git").is_file():
+        return False
+    branch = run_git(nested, "symbolic-ref", "--short", "HEAD")
+    return branch.returncode == 0 and branch.stdout.strip() == f"booley-worktree/{name}"

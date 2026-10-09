@@ -111,6 +111,12 @@ CREATING_MARKER="$WORKTREE_DIR/.creating"
 # references under .booley_project/ are still read.
 mkdir -p "$CWD/.booley_project"
 FUSESOC_IGNORE_MARKER="$CWD/.booley_project/FUSESOC_IGNORE"
+# A standalone Project may have no committed root marker. Quarantine its
+# transient worktrees without adding an untracked input to the clean source.
+if [ "${BOOLEY_WORKTREE_PAIRED_PROJECT:-}" = "1" ] && [ ! -f "$FUSESOC_IGNORE_MARKER" ]; then
+    mkdir -p "$CWD/.booley_project/worktrees"
+    FUSESOC_IGNORE_MARKER="$CWD/.booley_project/worktrees/FUSESOC_IGNORE"
+fi
 if [ ! -f "$FUSESOC_IGNORE_MARKER" ]; then
     printf '# Booley state dir: keep transient worktree .core copies out of FuseSoC/Booley core discovery.\n' \
         > "$FUSESOC_IGNORE_MARKER" 2>/dev/null || true
@@ -294,7 +300,10 @@ if [ "$ON_EXISTING" = "refuse" ]; then
     if [ -n "$_destination_problem" ]; then
         _parent_lock_release
         echo "ERROR: worktree destination is not free ($_destination_problem): $WORKTREE_DIR" >&2
-        echo "ERROR: choose another name, or remove the old worktree yourself with 'git worktree remove' once its work is safe" >&2
+        if [ -f "$WORKTREE_DIR/.booley_project/.git" ]; then
+            echo "ERROR: remove the paired Project first, then the outer worktree, once its work is safe" >&2
+        fi
+        echo "ERROR: choose another name, or remove the old worktree once its work is safe" >&2
         exit 1
     fi
 fi
@@ -472,9 +481,9 @@ fi
 # Live state stays behind: Ticket boards/logs/locks, Goal state under goals/
 # (records, locks, and history; committed Goal history reaches the worktree
 # through Git only), and per-session runtime state under runtime/sessions/.
-# Those two patterns start with ./ so tar matches only the top-level members
+# The ./ patterns match only top-level members
 # (the archive is built from "."); a nested directory named goals is copied.
-if [ -d "$CWD/.booley_project" ]; then
+if [ "${BOOLEY_WORKTREE_PAIRED_PROJECT:-0}" != "1" ] && [ -d "$CWD/.booley_project" ]; then
     echo "Copying .booley_project/ into worktree..." >&2
     mkdir -p "$WORKTREE_DIR/.booley_project"
     tar -C "$CWD/.booley_project" --exclude='.git' \
@@ -493,6 +502,14 @@ if [ -d "$CWD/.booley_project" ]; then
         --exclude='tickets/locks' \
         --exclude='./goals' \
         --exclude='./runtime/sessions' \
+        --exclude='./runtime/doctor/*.lock' \
+        --exclude='./runtime/jobs/slots' \
+        --exclude='./tickets/state' \
+        --exclude='./tickets/waiver-candidates' \
+        --exclude='./.runtime' \
+        --exclude='./flow-reports' \
+        --exclude='./logs' \
+        --exclude='./.baseline-wt-*' \
         --exclude='.locks' \
         --exclude='tmp' \
         --exclude='eval' \

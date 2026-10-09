@@ -17,6 +17,7 @@ import pytest
 from booley.flows.baseline_worktree import (
     BaselineWorktreeError,
     baseline_worktree,
+    git_full_sha,
     git_short_sha,
 )
 from booley.runtime.submodule_materialization import materialize_submodules
@@ -704,6 +705,27 @@ def test_standalone_paired_project_without_upstream_is_refused(tmp_path: Path) -
     """Without a pinned revision the upstream fork point is required, and absent here."""
     goal, _paired, _entry_sha = _paired_checkout_without_upstream(tmp_path)
 
+    with (
+        pytest.raises(BaselineWorktreeError, match="no baseline upstream"),
+        baseline_worktree(goal, "HEAD"),
+    ):
+        pass
+
+
+@pytest.mark.parametrize("recorded", ["invalid-ref", "HEAD"])
+def test_standalone_baseline_upstream_wins_over_user_pairing_base(tmp_path, recorded):
+    goal, paired, entry_sha = _paired_checkout_without_upstream(tmp_path)
+    _git(paired, "config", "branch.goal-project.booleyBase", recorded)
+    _git(paired, "config", "branch.goal-project.remote", ".")
+    _git(paired, "config", "branch.goal-project.merge", "refs/heads/master")
+    with baseline_worktree(goal, "HEAD") as baseline:
+        assert git_full_sha("HEAD", baseline / ".booley_project") == entry_sha
+
+
+@pytest.mark.parametrize("recorded", ["missing-commit", "", "HEAD:cores/top.core"])
+def test_invalid_recorded_pairing_base_is_refused(tmp_path, recorded):
+    goal, paired, _entry_sha = _paired_checkout_without_upstream(tmp_path)
+    _git(paired, "config", "branch.goal-project.booleyBase", recorded)
     with (
         pytest.raises(BaselineWorktreeError, match="no baseline upstream"),
         baseline_worktree(goal, "HEAD"),

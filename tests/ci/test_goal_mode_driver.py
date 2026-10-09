@@ -159,24 +159,24 @@ def test_workspace_mutations_only_target_own_clone(tmp_path, monkeypatch) -> Non
             (destination / ".git/info").mkdir(parents=True)
             if destination.name == ".booley_project":
                 (destination / "booley.toml").write_text("[project]\n")
-        elif stdin_payload is not None:
-            (cwd / ".booley_project/worktrees/ci-demo/.booley_project").mkdir(parents=True)
-        elif command[1] == "worktree":
-            destination = Path(command[-2])
-            destination.mkdir()
+        elif command[1:5] == ["-m", "booley.harness.booley", "worktree", "new"]:
+            destination = cwd / ".booley_project/worktrees/ci-demo/.booley_project"
+            destination.mkdir(parents=True)
             (destination / ".git").write_text("paired pointer")
         return ""
 
     monkeypatch.setattr(driver, "_run", run)
     monkeypatch.setattr(driver, "is_git_worktree_root", lambda _path: True)
-    monkeypatch.setattr(driver, "bash_bin", lambda: "bash")
     workspace = driver.create_workspace(source, state, owned)
     assert all(cwd == owned or owned in cwd.parents for _, cwd in commands)
     assert (workspace.worktree / ".booley_project/.git").is_file()
     assert workspace.project_dir == owned / "primary/.booley_project"
     assert (state / "goals/saved").read_text() == "retained"
     assert "--no-hardlinks" in commands[0][0]
-    assert any(Path(command[-1]).name == "worktree_create.sh" for command, _ in commands)
+    assert any(
+        command[1:] == ["-m", "booley.harness.booley", "worktree", "new", "ci-demo"]
+        for command, _ in commands
+    )
 
 
 def test_final_allowed_poll_can_complete() -> None:
