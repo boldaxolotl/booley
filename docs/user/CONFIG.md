@@ -2230,8 +2230,11 @@ quiet_after = 7200
 
 `dashboard = false` removes an unchanged Booley-owned attach task. Reconciliation runs on `booley init` or Sandbox refresh. Existing
 user tasks, comments, unknown fields, and user-edited Dashboard tasks are
-preserved. A same-label user task is preserved with a diagnostic. The owned task lives in `.vscode/tasks.json`; initialization enables
-`task.allowAutomaticTasks` in `.vscode/settings.json` for attachment.
+preserved. A same-label user task is preserved with a diagnostic. The owned task lives in `.vscode/tasks.json`; the Sandbox's VS Code settings
+enable `task.allowAutomaticTasks` so the task runs on attach. Set
+`"task.allowAutomaticTasks": "off"` in `.vscode/settings.json` to keep Booley from
+adding the task to that folder. When Git tracks `.vscode/tasks.json`, Booley leaves
+the file unchanged and `booley init` prints how to add the task yourself.
 Booley adds a local `.vscode` Git exclusion only when it creates that directory;
 its ownership record persists across reconciliation.
 

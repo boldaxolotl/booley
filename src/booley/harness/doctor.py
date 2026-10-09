@@ -3283,7 +3283,13 @@ def _check_custom_endpoints_and_criteria(project_root: Path, _pass: Check, _fail
     except EndpointValidationError as exc:
         _fail("custom endpoint/Criteria validation failed", exc.failures[0])
         return
-    except (ImportError, OSError, ValueError, SourceCheckoutProjectError) as exc:
+    except SourceCheckoutProjectError as exc:
+        _fail(
+            f"custom endpoint/Criteria validation failed: {exc}",
+            "run Doctor from the Project's workspace, not a Booley source checkout",
+        )
+        return
+    except (ImportError, OSError, ValueError) as exc:
         _fail(
             f"custom endpoint/Criteria validation failed: {exc}",
             "fix .booley_project/mcp_tools and Criteria configuration",

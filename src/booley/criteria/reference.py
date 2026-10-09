@@ -235,7 +235,7 @@ def _cycle_count_params_reference(descriptors) -> list[str]:
         "",
         "`cycle_count` Goals name the Target with `target` and the registered test with `test`; "
         "put bounds in `thresholds`. All thresholds for that test must pass. Relative forms "
-        "compare the same Target/test at the Goal base commit by default.",
+        "compare the same Target/test at the Goal base commit.",
         "",
         "```json",
         '{"family": "cycle_count", "target": "sim", "test": "smoke",',

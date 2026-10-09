@@ -268,7 +268,7 @@ Goal argument examples:
 
 **Per-test `CYCLE_COUNT`**
 
-`cycle_count` Goals name the Target with `target` and the registered test with `test`; put bounds in `thresholds`. All thresholds for that test must pass. Relative forms compare the same Target/test at the Goal base commit by default.
+`cycle_count` Goals name the Target with `target` and the registered test with `test`; put bounds in `thresholds`. All thresholds for that test must pass. Relative forms compare the same Target/test at the Goal base commit.
 
 ```json
 {"family": "cycle_count", "target": "sim", "test": "smoke",
@@ -336,7 +336,7 @@ the design sources they describe.
 | `tests.toml` | Per-Target tests, selectors, skips, and environment | `sim`, `mutation_tester` |
 | `goalsets/*.md` | Project-owned Goal bundles and optional default | `/booley-goal` |
 | `doctor-waivers.toml` | Reviewed warning waivers and expiry | No endpoint; `doctor` only |
-| `AGENTS.md` | Project instructions, ownership, and gotchas | Developer Agent and Specialists |
+| `AGENTS.md` | Project instructions, ownership, and gotchas | Agent sessions and Specialists |
 | `rtl_style_guide.md` | Project RTL style overrides | `reviewer` RTL code-style focus |
 | `tb_style_guide.md` | Project testbench style overrides | `reviewer` TB quality focus |
 | `docker/Dockerfile` | Project image build steps and dependencies | Flows/Specialists in the Sandbox |

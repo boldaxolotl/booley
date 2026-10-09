@@ -356,6 +356,25 @@ class TestCustomToolsAndCriteria:
         assert rec.kinds() == {"fail"}
         assert "criteria.toml is not a table" in rec.fails()[0]
 
+    def test_source_checkout_refusal_points_at_the_project_workspace(self, tmp_path, monkeypatch):
+        from booley.mcp import endpoint_validation
+        from booley.runtime.checkout_role import SourceCheckoutProjectError
+
+        def boom(_root):
+            raise SourceCheckoutProjectError("refusing the Booley source checkout")
+
+        monkeypatch.setattr(endpoint_validation, "validate_custom_endpoints_and_criteria", boom)
+        rec = _Rec()
+        fixes: list[str] = []
+
+        def fail_with_fix(m: str, fix: str = "") -> None:
+            rec.f(m, fix)
+            fixes.append(fix)
+
+        doctor._check_custom_endpoints_and_criteria(tmp_path, rec.p, fail_with_fix)
+        assert rec.kinds() == {"fail"}
+        assert fixes == ["run Doctor from the Project's workspace, not a Booley source checkout"]
+
 
 # ---------------------------------------------------------------------------
 # _check_git_conflicts + _warn_if_dirty — real git repos in tmp_path

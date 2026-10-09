@@ -39,7 +39,7 @@ of a Sandbox already running from that image. Selecting an image in configuratio
 also does not substitute it for the active image.
 
 A qualifying deep run must have no active health failures or unwaived warnings
-and must complete every applicable deep check: the Developer Agent authorization
+and must complete every applicable deep check: the agent authorization
 and memory probe, selected Simulation/Lint/ASIC Synthesis smokes, enabled sim/lint
 good-and-bad self-tests, and selected-core live resolution. Disabled capabilities
 and intentionally excluded FPGA implementation are legitimate exclusions.

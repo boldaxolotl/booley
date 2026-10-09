@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import subprocess
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,7 +19,6 @@ from booley.runtime.jsonc import Document, Node
 from booley.runtime.project_repositories import (
     GitDirectoryInspectionError,
     git_directories,
-    run_git,
 )
 from booley.runtime.safe_storage import refuse_symlinks
 
@@ -116,18 +116,46 @@ class _TaskFiles:
         return self.project_dir / "runtime/dashboard-task.json"
 
 
+def _task_file_tracked(root: Path) -> bool:
+    """Whether Git tracks ``.vscode/tasks.json``; raise when Git cannot answer.
+
+    Calls Git directly: ``run_git`` reports a timeout or a failed start as exit
+    code 1, which ``ls-files --error-unmatch`` also uses for "untracked", and a
+    tracked file must never be edited because Git could not be asked.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", "--", ".vscode/tasks.json"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise OSError(f"could not inspect Dashboard task Git tracking: {exc}") from exc
+    if result.returncode not in (0, 1):
+        raise OSError(f"could not inspect Dashboard task Git tracking: {result.stderr.strip()}")
+    return result.returncode == 0
+
+
+def _names_dashboard_task(path: Path) -> bool:
+    """Whether a user-maintained tasks file already carries the Dashboard task."""
+    content = _bytes(path)
+    return content is not None and json.dumps(LABEL).encode() in content
+
+
 def _inspect(root: Path, project_dir: Path, common_dir: Path) -> TaskPlan:
     folder = root / ".vscode"
     active = enabled(project_dir)
-    tracked = run_git(root, "ls-files", "--error-unmatch", "--", ".vscode/tasks.json")
-    if tracked.returncode == 0:
+    if _task_file_tracked(root):
+        if not active or _names_dashboard_task(folder / "tasks.json"):
+            return TaskPlan()
         notice = (
             "Dashboard task not installed: .vscode/tasks.json is tracked by Git; "
             "add the task yourself or set [sandbox].dashboard = false"
         )
-        return TaskPlan(notices=(notice,)) if active else TaskPlan()
-    if tracked.returncode != 1:
-        raise OSError(f"could not inspect Dashboard task Git tracking: {tracked.stderr.strip()}")
+        return TaskPlan(notices=(notice,))
     ownership = _bytes(project_dir / "runtime/dashboard-task.json")
     if not active and ownership is None:
         return TaskPlan()

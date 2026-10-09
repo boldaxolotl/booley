@@ -12,6 +12,8 @@ from booley.runtime import devcontainer, session_issuance
 from booley.runtime.jsonc import Document
 from tests.conftest import symlink_or_skip
 
+_REAL_TASK_FILE_TRACKED = tasks._task_file_tracked
+
 
 @pytest.fixture
 def project(tmp_path, monkeypatch):
@@ -23,7 +25,7 @@ def project(tmp_path, monkeypatch):
     (common / "info").mkdir(parents=True)
     (common / "info/exclude").write_bytes(b"# user\n/other\n")
     monkeypatch.setattr(tasks, "git_directories", lambda _: SimpleNamespace(common_dir=common))
-    monkeypatch.setattr(tasks, "run_git", lambda *_: subprocess.CompletedProcess([], 1, "", ""))
+    monkeypatch.setattr(tasks, "_task_file_tracked", lambda _: False)
     monkeypatch.setattr(session_issuance, "stamp_path_for_identity", lambda _: root / "stamp.json")
     monkeypatch.setattr(
         session_issuance, "_legacy_stamp_path", lambda _: root / "legacy-stamp.json"
@@ -527,8 +529,9 @@ def test_tracked_task_file_is_preserved_with_informational_notice(
         changed_task.setattr(tasks, "TASK", {**tasks.TASK, "command": "booley dashboard --new"})
         plan = tasks.inspect(tmp_path, data)
         assert not plan.pending and not plan.diagnostics
-        assert len(plan.notices) == (0 if disabled else 1)
-        if not disabled:
+        # An owned task already carries the Dashboard label: nothing to tell the user.
+        assert len(plan.notices) == (0 if disabled or owned else 1)
+        if not disabled and not owned:
             assert plan.notices == (
                 "Dashboard task not installed: .vscode/tasks.json is tracked by Git; add the task yourself or set [sandbox].dashboard = false",
             )
@@ -573,13 +576,24 @@ def test_init_tracked_task_notice_is_one_informational_line(
     assert ctx.results[-1].status == "skip"
 
 
-def test_git_tracking_failure_refuses_task_mutation(project, monkeypatch):
-    monkeypatch.setattr(
-        tasks,
-        "run_git",
-        lambda *_: subprocess.CompletedProcess([], 128, "", "Git index unavailable"),
-    )
+@pytest.mark.parametrize(
+    "failure",
+    [
+        subprocess.CompletedProcess([], 128, "", "Git index unavailable"),
+        subprocess.TimeoutExpired(cmd="git", timeout=30),
+        OSError("git missing"),
+    ],
+    ids=["exit-128", "timeout", "start-failure"],
+)
+def test_git_tracking_failure_refuses_task_mutation(project, monkeypatch, failure):
+    def ls_files(*_args, **_kwargs):
+        if isinstance(failure, BaseException):
+            raise failure
+        return failure
+
+    monkeypatch.setattr(tasks, "_task_file_tracked", _REAL_TASK_FILE_TRACKED)
+    monkeypatch.setattr(tasks.subprocess, "run", ls_files)
     plan = tasks.inspect(project.root, project.data)
     assert not plan.pending
-    assert "Git index unavailable" in plan.diagnostics[0]
+    assert "could not inspect Dashboard task Git tracking" in plan.diagnostics[0]
     assert not project.file.exists()
