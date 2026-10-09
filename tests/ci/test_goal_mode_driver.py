@@ -17,8 +17,9 @@ import goal_mode_driver as driver
 from tests.smoke import test_goal_mode_image_smoke as smoke
 
 _ID = "ci-demo-20261009T120000Z"
+_WORKTREE = Path("/fixture")
 _LINT = driver.load_contract(Path(".github/contracts/picorv32-demo.toml")).required_goals[0]
-_ENTER = f"Goal Mode {_ID} entered in /fixture.\nGoals (all unmet):\n- lint_clean_lint_core"
+_ENTER = f"Goal Mode {_ID} entered in {_WORKTREE}.\nGoals (all unmet):\n- lint_clean_lint_core"
 _STATUS = f"{_ID} (active) · 1/1 met\nlint_clean_lint_core met clean"
 
 
@@ -39,7 +40,7 @@ class FakeSession:
 def _exercise(replies, *, goals=(_LINT,), readiness=False):
     session = FakeSession(replies)
     operation = driver.readiness if readiness else driver.roundtrip
-    result = asyncio.run(operation(session, Path("/fixture"), goals))
+    result = asyncio.run(operation(session, _WORKTREE, goals))
     return result, session.calls
 
 
@@ -56,7 +57,7 @@ def test_roundtrip_requires_enter_lint_fresh_status_and_finish() -> None:
     assert set(result["steps"]) == {"goal_enter", "lint", "goal_status", "goal_finish"}
     assert all(step["status"] == "pass" and step["response"] for step in result["steps"].values())
     assert [name for name, _ in calls] == ["goal_enter", "lint", "goal_status", "goal_finish"]
-    assert all(arguments["work_dir"] == "/fixture" for _, arguments in calls)
+    assert all(arguments["work_dir"] == str(_WORKTREE) for _, arguments in calls)
     finish = calls[-1][1]
     assert finish["record_id"] == _ID and finish["operation_id"] and finish["summary"]
     assert "abandon" not in finish and "instruction_quote" not in finish
@@ -79,7 +80,7 @@ def test_readiness_lists_full_contract_and_leaves_unmet_goals_active() -> None:
         _reply("", error=False),
         _reply("ERROR: refused", error=True),
         _reply("No record"),
-        _reply(_ENTER.replace("/fixture", "/foreign")),
+        _reply(_ENTER.replace(str(_WORKTREE), str(Path("/foreign")))),
         _reply("ERROR: refusal without flag", error=None),
     ],
 )
@@ -128,7 +129,8 @@ def test_finish_requires_successful_completion_proof(reply) -> None:
 def test_detached_flow_polls_exact_job_until_exit_zero() -> None:
     session = FakeSession([_reply("run_id=lint/1"), _reply("running"), _reply("EXIT_CODE: 0")])
     assert (
-        asyncio.run(driver.run_flow(session, "lint", {"work_dir": "/fixture"})) == "EXIT_CODE: 0"
+        asyncio.run(driver.run_flow(session, "lint", {"work_dir": str(_WORKTREE)}))
+        == "EXIT_CODE: 0"
     )
     assert session.calls[1:] == [("booley_poll", {"run_id": "lint/1", "wait_seconds": 30})] * 2
 
@@ -167,6 +169,7 @@ def test_workspace_mutations_only_target_own_clone(tmp_path, monkeypatch) -> Non
 
     monkeypatch.setattr(driver, "_run", run)
     monkeypatch.setattr(driver, "is_git_worktree_root", lambda _path: True)
+    monkeypatch.setattr(driver, "bash_bin", lambda: "bash")
     workspace = driver.create_workspace(source, state, owned)
     assert all(cwd == owned or owned in cwd.parents for _, cwd in commands)
     assert (workspace.worktree / ".booley_project/.git").is_file()
@@ -339,7 +342,7 @@ def test_unflagged_error_refusal_is_classified_once(flag) -> None:
         [_reply("ERROR: Goals must be met and fresh before finish: sim_fail", error=flag)]
     )
     with pytest.raises(driver.GoalToolRefusalError):
-        asyncio.run(driver.finish(session, Path("/fixture"), _ID))
+        asyncio.run(driver.finish(session, _WORKTREE, _ID))
 
 
 def test_flow_polling_uses_one_deadline(monkeypatch) -> None:

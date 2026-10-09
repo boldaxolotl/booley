@@ -1353,7 +1353,10 @@ jobs:
               -e TMPDIR=/validation-tmp -e BOOLEY_GOAL_MODE_SMOKE=1 -e BOOLEY_GOAL_MODE_PREVIEW=1 -e BOOLEY_MCP_MODE=interactive
               booley-test bash -c "pip install --break-system-packages pytest==9.1.1 pytest-asyncio==1.4.0 &&
               python -m pytest /work/tests/smoke/test_goal_mode_image_smoke.py
-              -v --tb=short -o cache_dir=/validation-tmp/pytest-cache"
+              -v --tb=short --junitxml=/validation-tmp/goal-mode.xml
+              -o cache_dir=/validation-tmp/pytest-cache &&
+              python /work/.github/scripts/assert_junit.py /validation-tmp/goal-mode.xml
+              --label goal-mode --min-tests 3 --max-skips 0"
 
       - name: Run pinned Ibex lint demo
         if: needs.changes.outputs.riscv_image == 'true'
@@ -1433,6 +1436,15 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+      - name: Upload Goal readiness evidence
+        if: always() && needs.changes.outputs.riscv_image == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: goal-readiness-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/riscv-image-evidence/goal-readiness/goal-readiness.json
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Upload coverage release test timing
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -1441,6 +1453,7 @@ jobs:
           path: |
             ${{ runner.temp }}/bwave-smoke/coverage-release/coverage-release.xml
             ${{ runner.temp }}/bwave-smoke/coverage-release/test-timings.jsonl
+            ${{ runner.temp }}/bwave-smoke/goal-mode/goal-mode.xml
           if-no-files-found: warn
           retention-days: 14
 

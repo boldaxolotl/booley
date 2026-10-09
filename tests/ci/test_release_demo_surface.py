@@ -12,6 +12,10 @@ sys.path.insert(0, str(ROOT / ".github/scripts"))
 
 from release_validation import demo_surface
 
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="validates a POSIX release container with uid/gid"
+)
+
 
 def _validate(root: Path) -> dict[str, object]:
     return demo_surface.validate(

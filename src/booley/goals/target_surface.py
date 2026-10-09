@@ -144,7 +144,13 @@ def _auxiliary_fileset_files(
             for text, file_type in _file_items(item, default_type):
                 if _is_hdl(text, file_type):
                     continue
-                path = (root / core_relative_to_project(core, root, text)).resolve()
+                try:
+                    relative = core_relative_to_project(core, root, text)
+                except ValueError as exc:
+                    raise TargetSurfaceError(
+                        f"Fileset path {text!r} in {core} cannot be rebased: {exc}"
+                    ) from exc
+                path = (root / relative).resolve()
                 if path.is_relative_to(root) and not path.is_dir():
                     yield path
 

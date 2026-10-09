@@ -196,6 +196,18 @@ def test_goal_readiness_evidence_is_mounted_and_retained(path, directory) -> Non
     assert "dst=/evidence" in commands
     assert "BOOLEY_GOAL_READINESS_EVIDENCE=/evidence/goal-readiness.json" in commands
     assert directory in commands
+    if path == TEST_WORKFLOW:
+        steps = workflow["jobs"]["bwave-smoke"]["steps"]
+        upload = next(
+            step for step in steps if step.get("name") == "Upload Goal readiness evidence"
+        )
+        assert upload["if"] == "always() && needs.changes.outputs.riscv_image == 'true'"
+        assert (
+            upload["with"]["path"]
+            == "${{ runner.temp }}/riscv-image-evidence/goal-readiness/goal-readiness.json"
+        )
+        assert upload["with"]["if-no-files-found"] == "error"
+        return
     uploads = [
         step
         for job in workflow["jobs"].values()

@@ -34,6 +34,7 @@ from typing import Any
 from booley.core.boundary import as_dict, as_str
 from booley.evidence.acceptance import PairedBaselineMode, PairedProjectBaseline
 from booley.evidence.fields import BASELINE_REF_PARAM
+from booley.fusesoc.core_projection import projection_enabled
 from booley.fusesoc.fusesoc_registry import prepare_core_library_plan, state_cores_dir
 from booley.runtime.project_repositories import paired_project_repository
 from booley.runtime.submodule_materialization import (
@@ -146,7 +147,9 @@ def baseline_worktree(
 
 
 def _copy_baseline_configuration(project_root: Path, worktree: Path) -> None:
-    """Shared Project cores retain their authored projection configuration."""
+    """Copied Stealth cores retain their explicit projection configuration."""
+    if not projection_enabled(project_root) or not (worktree / ".booley_project/cores").is_dir():
+        return
     source = worktree_state_dir(project_root) / "booley.toml"
     destination = worktree / ".booley_project" / "booley.toml"
     if source.is_file() and not destination.exists():

@@ -68,9 +68,12 @@ configuration, dependency configuration, or CI orchestration changes. Unknown
 paths fail safe to the exhaustive set. Main pushes and the full scheduled
 matrix also run every recovery permutation.
 
-Goal code and tests and review code are release-sensitive inputs for the
-standard and RISC-V image validation. They do not independently select exhaustive
-Ticket Board recovery permutations.
+Goal and review code select standard and RISC-V image validation. Goal tests
+(`tests/goals/`) select standard image validation only. The RISC-V prefixes are
+`.github/actions/prepare-picorv32-demo/`, `demo/`, `src/booley/goals/`,
+`src/booley/review/`, `src/booley/evidence/`, and
+`tests/fixtures/goal_mode_smoke/`. These paths do not independently select
+exhaustive Ticket Board recovery permutations.
 
 ## Performance telemetry
 

@@ -1,9 +1,11 @@
 """Drive Goal Mode through modern stdio MCP in a disposable user-style workspace.
 
 Readiness leaves the Goal Mode active in a disposable workspace. Caller inputs
-are only cloned; the normal worktree command creates the checkout, with a paired
-Project worktree for versioned Project data. The control Project is the main
-checkout's directory. Preview is explicitly enabled here for 7a; 7b removes it.
+are only cloned. The user worktree script creates the outer checkout, then this
+driver replaces its Stealth Project copy with a paired linked Project worktree.
+This workaround remains until ``booley worktree new`` creates that pairing itself.
+The control Project is the main checkout's directory. Preview is explicitly
+enabled here for 7a; 7b removes it.
 """
 
 from __future__ import annotations
