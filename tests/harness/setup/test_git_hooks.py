@@ -17,6 +17,7 @@ import subprocess
 import zipfile
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -31,6 +32,7 @@ from booley.harness.setup.git_hooks import (
     _step_worktree_prune_guard,
     read_worktree_prune_expire,
 )
+from booley.runtime.git_attributes_policy import GITATTRIBUTES_RULE
 
 pytestmark = pytest.mark.usefixtures("isolated_git_attributes")
 
@@ -1501,7 +1503,7 @@ class TestLineEndingsAutoFix:
         # appending the whole-tree LF default would override `-text` exemptions
         # that keep CRLF-native payloads intact. First line loses to every rule
         # below it — which is what a default should do.
-        from booley.harness.setup.git_hooks import GITATTRIBUTES_RULE, _step_line_endings
+        from booley.harness.setup.git_hooks import _step_line_endings
 
         self._crlf_repo(tmp_path)
         (tmp_path / ".gitattributes").write_bytes(b"*.bat -text\n")
@@ -1513,7 +1515,7 @@ class TestLineEndingsAutoFix:
 
     def test_gitattributes_rule_preserves_binary_detection(self, tmp_path: Path):
         _disable_line_ending_stealth(tmp_path)
-        from booley.harness.setup.git_hooks import GITATTRIBUTES_RULE, _step_line_endings
+        from booley.harness.setup.git_hooks import _step_line_endings
 
         _git_init(tmp_path)
         subprocess.run(
@@ -1759,7 +1761,7 @@ class TestLineEndingsAutoFix:
         # .gitattributes is normally tracked, so its staged replacement comes
         # from the index. Writing the rule before applying that replacement
         # would silently lose the part of the fix that reaches teammates.
-        from booley.harness.setup.git_hooks import GITATTRIBUTES_RULE, _step_line_endings
+        from booley.harness.setup.git_hooks import _step_line_endings
 
         self._crlf_repo(tmp_path)
         TestLineEndingsStep._add_file(tmp_path, ".gitattributes", b"*.bat -text\n")
@@ -2251,10 +2253,10 @@ class TestLineEndingsAutoFix:
         plan = plan_guidance_links(tmp_path, project_dir)
         original_unlink = Path.unlink
 
-        def locked_claude(path: Path, *args: object, **kwargs: object) -> None:
+        def locked_claude(path: Path, missing_ok: bool = False) -> None:
             if path == tmp_path / "CLAUDE.md":
                 raise PermissionError("guidance is open in another application")
-            original_unlink(path, *args, **kwargs)
+            original_unlink(path, missing_ok=missing_ok)
 
         monkeypatch.setattr(Path, "unlink", locked_claude)
         ctx = _ctx(tmp_path)
@@ -2465,7 +2467,7 @@ class TestDetachGuidanceHardlinks:
         _run_git(tmp_path, "add", "-f", "AGENTS.md", "CLAUDE.md")
         original_run = subprocess.run
 
-        def unreadable(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        def unreadable(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
             if "ls-files" not in args:
                 return original_run(args, **kwargs)
             if failure == "timeout":

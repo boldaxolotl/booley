@@ -18,6 +18,7 @@ from booley.harness.setup.line_endings import (
     LineEndingStatus,
     reconcile_project_line_endings,
 )
+from booley.runtime.git_attributes_policy import GITATTRIBUTES_RULE
 
 pytestmark = pytest.mark.usefixtures("isolated_git_attributes")
 
@@ -675,7 +676,7 @@ def test_local_default_warns_after_upstream_policy_or_opt_out(tmp_path: Path, op
 def test_old_untracked_default_is_preserved_until_manual_migration(tmp_path: Path):
     data = _stealth_repo(tmp_path)
     leaked = tmp_path / ".gitattributes"
-    leaked.write_text(line_endings.GITATTRIBUTES_RULE + "\n")
+    leaked.write_text(GITATTRIBUTES_RULE + "\n")
     before = _snapshot(leaked)
     report = reconcile_project_line_endings(tmp_path, data, mode=LineEndingMode.REPAIR)
     assert report.status is LineEndingStatus.UNSAFE

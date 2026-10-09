@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import tempfile
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -11,8 +12,11 @@ from pathlib import Path
 from booley.goals.lifecycle import LifecycleError
 from booley.runtime.git_attributes_policy import (
     GITATTRIBUTES_RULE,
-    default_user_attributes,
+    configured_attributes_path,
+    fallback_user_attributes,
     has_managed_attributes,
+    native_attribute_path,
+    resolved_attribute_path,
     system_attributes_disabled,
 )
 from booley.runtime.history_commit import FileCommitError
@@ -27,7 +31,7 @@ AMBIENT_ATTRIBUTES_ERROR = (
 
 @contextmanager
 def shadow_repository(
-    repository: Path, info_attributes: str = ""
+    repository: Path, info_attributes: bytes
 ) -> Generator[tuple[Path, dict[str, str]]]:
     """Object-only scratch repository with only the explicitly captured local policy."""
     with tempfile.TemporaryDirectory(prefix="booley-pinned-bytes-") as scratch:
@@ -58,7 +62,7 @@ def shadow_repository(
         if info_attributes:
             info = shadow / ".git/info"
             info.mkdir()
-            (info / "attributes").write_bytes(info_attributes.encode() + b"\n")
+            (info / "attributes").write_bytes(info_attributes)
         yield shadow, env
 
 
@@ -68,11 +72,13 @@ def attributes(
     names: list[bytes],
     *,
     ambient: bool = False,
-    policy: dict[str, str] | None = None,
+    policy: dict[str, str],
 ) -> dict[bytes, dict[str, str]]:
     """Pinned index attributes, optionally compared with effective external policy."""
-    policy = policy if policy is not None else byte_policy(repository)
-    with shadow_repository(repository, policy.get("info_attributes", "")) as (shadow, env):
+    with shadow_repository(repository, bytes.fromhex(policy["info_attributes_hex"])) as (
+        shadow,
+        env,
+    ):
         raw_git(shadow, "read-tree", commit, env=env)
         args = (
             "check-attr",
@@ -133,7 +139,10 @@ def projected_blobs(
                 "the whole selected versioned participant requires a hermetic working-byte proof, "
                 "including unconsumed files; custom filters/encodings are unsupported"
             )
-    with shadow_repository(repository, policy.get("info_attributes", "")) as (shadow, env):
+    with shadow_repository(repository, bytes.fromhex(policy["info_attributes_hex"])) as (
+        shadow,
+        env,
+    ):
         raw_git(shadow, "read-tree", commit, env=env)
         raw_git(
             shadow,
@@ -165,61 +174,62 @@ def config(repository: Path, name: str, default: str) -> str:
 
 
 def byte_policy(repository: Path) -> dict[str, str]:
+    content = _info_attributes_policy(repository)
     return {
         "autocrlf": config(repository, "core.autocrlf", "false"),
         "eol": config(repository, "core.eol", "crlf" if os.name == "nt" else "lf"),
-        "info_attributes": _info_attributes_policy(repository),
+        "info_attributes": GITATTRIBUTES_RULE if content else "",
+        "info_attributes_hex": content.hex(),
     }
 
 
-def _info_attributes_policy(repository: Path) -> str:
-    """Accept only the managed single line; unrelated ambient policy is not projected."""
+def _info_attributes_policy(repository: Path) -> bytes:
+    """Replay init's managed policy; without it retain the effective-attribute comparison."""
     try:
         name = raw_git(
             repository, "rev-parse", "--path-format=absolute", "--git-path", "info/attributes"
         )
         path = Path(os.fsdecode(name).rstrip("\r\n"))
         if path.is_symlink() or path.parent.is_symlink() or (path.exists() and not path.is_file()):
-            raise LifecycleError(AMBIENT_ATTRIBUTES_ERROR)
+            return b""
         content = path.read_bytes() if path.exists() else b""
-        if content and not has_managed_attributes(content, exclusive=True):
+    except OSError:
+        return b""  # Retain Git's own effective-policy decision when no rule can be captured.
+    try:
+        if not has_managed_attributes(content):
+            return b""
+        if not has_managed_attributes(content, replayable=True):
             raise LifecycleError(AMBIENT_ATTRIBUTES_ERROR)
-        _require_no_external_attributes(repository, managed=bool(content))
+        _require_no_external_attributes(repository)
     except (OSError, ValueError) as exc:
         raise LifecycleError(AMBIENT_ATTRIBUTES_ERROR) from exc
-    return GITATTRIBUTES_RULE if content else ""
+    return content
 
 
-def _require_no_external_attributes(repository: Path, *, managed: bool) -> None:
-    try:
-        configured = raw_git(repository, "config", "--path", "--get", "core.attributesFile")
-    except FileCommitError as exc:
-        if str(exc):
-            raise LifecycleError(AMBIENT_ATTRIBUTES_ERROR) from exc
-        configured = b""
-    configured = configured.removesuffix(b"\n")
-    if configured and os.fsdecode(configured).lower() != os.devnull.lower():
+def _require_no_external_attributes(repository: Path) -> None:
+    configured, selected = configured_attributes_path(repository, _attribute_path_query)
+    null = resolved_attribute_path(repository, os.devnull)
+    if selected is not None and str(selected).lower() != str(null).lower():
         raise LifecycleError(AMBIENT_ATTRIBUTES_ERROR)
     # Ask Git for its platform-specific paths rather than guessing installation prefixes.
     for variable in ("GIT_ATTR_GLOBAL", "GIT_ATTR_SYSTEM"):
-        if variable == "GIT_ATTR_GLOBAL" and configured:
+        if variable == "GIT_ATTR_GLOBAL" and configured and selected is not None:
             continue  # The only accepted explicit selection is the platform null device.
         if variable == "GIT_ATTR_SYSTEM" and system_attributes_disabled():
             continue
-        path = _external_attributes_path(repository, variable, managed=managed)
+        supported, path = native_attribute_path(repository, variable, _attribute_path_query)
+        if not supported:
+            if variable == "GIT_ATTR_SYSTEM":
+                raise LifecycleError(AMBIENT_ATTRIBUTES_ERROR)
+            path = fallback_user_attributes(repository, _attribute_path_query)
         if path is not None and path.exists() and (not path.is_file() or path.read_bytes()):
             raise LifecycleError(AMBIENT_ATTRIBUTES_ERROR)
 
 
-def _external_attributes_path(repository: Path, variable: str, *, managed: bool) -> Path | None:
+def _attribute_path_query(repository: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
+    """Adapt pinned-history reads to the shared attribute resolver's process-result boundary."""
     try:
-        name = os.fsdecode(raw_git(repository, "var", variable)).removesuffix("\n")
+        output = raw_git(repository, *args)
     except FileCommitError as exc:
-        if not str(exc):
-            return None
-        # Like Initialization, do not install/replay a managed rule over unknown system policy.
-        if "usage: git var" not in str(exc) or (variable == "GIT_ATTR_SYSTEM" and managed):
-            raise LifecycleError(AMBIENT_ATTRIBUTES_ERROR) from exc
-        name = str(default_user_attributes() or "") if variable == "GIT_ATTR_GLOBAL" else ""
-    path = Path(name)
-    return (path if path.is_absolute() else repository / path) if name else None
+        return subprocess.CompletedProcess(args, 128 if str(exc) else 1, b"", str(exc).encode())
+    return subprocess.CompletedProcess(args, 0, output, b"")

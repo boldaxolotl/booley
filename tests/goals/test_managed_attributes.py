@@ -11,7 +11,7 @@ from booley.goals.committed_export import export_tree, materializations_unchange
 from booley.goals.finish import finish_goal
 from booley.goals.input_identity import root_bindings
 from booley.goals.lifecycle import LifecycleError
-from booley.harness.setup.line_endings import GITATTRIBUTES_RULE
+from booley.runtime.git_attributes_policy import GITATTRIBUTES_RULE
 from tests.goals.conftest import enter_goals, git
 from tests.goals.test_committed_export import raw_blob, repository
 from tests.goals.test_finish import environment, request
@@ -47,12 +47,12 @@ def test_info_policy_projection_matches_real_checkout(tmp_path, managed):
     scratch = tmp_path / "scratch"
     scratch.mkdir()
     proof = export_tree(root, git(root, "rev-parse", "HEAD"), scratch / "view", scratch=scratch)
-    assert attributes(root, git(root, "rev-parse", "HEAD"), [b"lf.txt"])[b"lf.txt"]["eol"] == (
-        "lf" if managed else "unspecified"
-    )
+    assert attributes(
+        root, git(root, "rev-parse", "HEAD"), [b"lf.txt"], policy=proof[0]["policy"]
+    )[b"lf.txt"]["eol"] == ("lf" if managed else "unspecified")
     for name in ("crlf.txt", "lf.txt"):
         assert (scratch / "view" / name).read_bytes() == (root / name).read_bytes()
-    assert proof[0]["policy"].get("info_attributes", "") == (GITATTRIBUTES_RULE if managed else "")
+    assert proof[0]["policy"]["info_attributes"] == (GITATTRIBUTES_RULE if managed else "")
     roots = root_bindings({"rtl": root, "project": root})
     capture = {"committed_materializations": proof, "path_roots": roots}
     assert materializations_unchanged(capture, roots)
@@ -61,9 +61,7 @@ def test_info_policy_projection_matches_real_checkout(tmp_path, managed):
         assert not materializations_unchanged(capture, roots)
 
 
-@pytest.mark.parametrize(
-    "source", ["extra-info", "comment", "user-file", "default-user", "system-config"]
-)
+@pytest.mark.parametrize("source", ["extra-info", "user-file", "default-user", "system-config"])
 def test_other_ambient_policy_is_refused_even_when_managed_rule_masks_it(
     tmp_path, monkeypatch, source
 ):
@@ -72,9 +70,8 @@ def test_other_ambient_policy_is_refused_even_when_managed_rule_masks_it(
     git(root, "add", "-A")
     git(root, "commit", "-qm", "base")
     info = managed_attributes(root)
-    if source in {"extra-info", "comment"}:
-        extra = b"nonexistent export-ignore\n" if source == "extra-info" else b"# extra line\n"
-        info.write_bytes(info.read_bytes() + extra)
+    if source == "extra-info":
+        info.write_bytes(info.read_bytes() + b"nonexistent text\n")
     else:
         user = tmp_path / "git/attributes"
         user.parent.mkdir()
@@ -124,7 +121,7 @@ def test_empty_info_or_recognized_rule_whitespace_is_safe(tmp_path, content):
     scratch = tmp_path / "scratch"
     scratch.mkdir()
     proof = export_tree(root, git(root, "rev-parse", "HEAD"), scratch / "view", scratch=scratch)
-    assert proof[0]["policy"]["info_attributes"] == (GITATTRIBUTES_RULE if content else "")
+    assert bytes.fromhex(proof[0]["policy"]["info_attributes_hex"]) == content
 
 
 @pytest.mark.parametrize("change", ["remove", "extra"])
@@ -147,22 +144,19 @@ def test_finish_recovery_revalidates_local_policy(layout, change):
         result = finish_goal(call, environment(layout))
         assert result["status"] == "revalidation_required"
     else:
-        info.write_bytes(info.read_bytes() + b"nonexistent export-ignore\n")
+        info.write_bytes(info.read_bytes() + b"nonexistent text\n")
         with pytest.raises(LifecycleError, match="unsupported ambient input attributes"):
             finish_goal(call, environment(layout))
 
 
-@pytest.mark.parametrize("source", ["info-directory", "user-directory", "invalid-system-switch"])
+@pytest.mark.parametrize("source", ["user-directory", "invalid-system-switch"])
 def test_unsafe_attribute_inputs_refuse_with_actionable_error(tmp_path, monkeypatch, source):
     root = repository(tmp_path / "source")
     (root / "rtl.v").write_bytes(b"design\n")
     git(root, "add", "-A")
     git(root, "commit", "-qm", "base")
-    info = managed_attributes(root)
-    if source == "info-directory":
-        info.unlink()
-        info.mkdir()
-    elif source == "user-directory":
+    managed_attributes(root)
+    if source == "user-directory":
         (tmp_path / "git/attributes").mkdir(parents=True)
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     else:

@@ -228,7 +228,8 @@ def materializations_unchanged(proof: dict[str, Any], current_roots: dict[str, A
         pinned = attributes(path, row["pin"], names, policy=policy)
         if attributes(path, row["pin"], names, ambient=True, policy=policy) != pinned:
             raise LifecycleError(AMBIENT_ATTRIBUTES_ERROR)
-        if policy != row["policy"] or digest(attrs_json(pinned)) != row["attributes_digest"]:
+        recorded = {"info_attributes": "", "info_attributes_hex": "", **row["policy"]}
+        if policy != recorded or digest(attrs_json(pinned)) != row["attributes_digest"]:
             return False
     return True
 

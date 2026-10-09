@@ -10,10 +10,11 @@ import subprocess
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
-from booley.goals.committed_bytes import attributes
+from booley.goals.committed_bytes import attributes, byte_policy
 from booley.goals.finish import finish_goal
 from booley.goals.lifecycle import LifecycleError
 from booley.goals.model import GoalState
@@ -21,6 +22,9 @@ from booley.goals.store import GoalStore
 from tests.goals.conftest import git
 from tests.goals.test_committed_export import repository
 from tests.goals.test_finish import Crash, environment, publication_layout, request
+
+if TYPE_CHECKING:
+    from booley.goals.model import GoalRecord
 
 pytestmark = pytest.mark.timeout(120)
 
@@ -34,7 +38,7 @@ def test_pinned_attributes_accept_paths_beyond_process_argument_limit(tmp_path):
     # names exceed Linux ARG_MAX and Windows's command-line limit without a huge
     # fixture checkout; Git must receive literal NUL-separated input paths.
     names = [(("directory/" * 64) + f"source-{i}.v").encode() for i in range(4000)]
-    values = attributes(root, git(root, "rev-parse", "HEAD"), names)
+    values = attributes(root, git(root, "rev-parse", "HEAD"), names, policy=byte_policy(root))
     assert set(values) == set(names)
     assert all(row["text"] == "set" and row["eol"] == "lf" for row in values.values())
 
@@ -269,10 +273,10 @@ def snapshot_submodules(tmp_path):
         paired_project_base_sha=None,
         input_topology_digest="sha256:" + topology_digest(root, project, None),
     )
-    select_inputs(record, root)
+    select_inputs(cast("GoalRecord", record), root)
     record.project_snapshot = snapshot_project(root)
     git(root, "submodule", "deinit", "-q", "-f", "module")
-    return root, project, record
+    return root, project, cast("GoalRecord", record)
 
 
 def test_nonversioned_project_snapshot_controls_original_and_final_submodule_selection(tmp_path):

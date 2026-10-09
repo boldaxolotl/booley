@@ -22,8 +22,10 @@ from typing import Literal
 from booley.commit_policy.policy import stealth_enabled
 from booley.runtime.git_attributes_policy import (
     GITATTRIBUTES_RULE,
-    default_user_attributes,
+    fallback_user_attributes,
     has_managed_attributes,
+    local_policy_owned,
+    native_attribute_path,
     system_attributes_disabled,
 )
 
@@ -1131,17 +1133,6 @@ def _has_policy(content: bytes) -> bool:
     )
 
 
-def _local_policy_owned(content: bytes) -> bool:
-    unrelated = {b"export-ignore", b"-export-ignore", b"export-subst", b"-export-subst"}
-    for line in content.splitlines():
-        fields = line.strip().split()
-        if not fields or fields[0].startswith(b"#"):
-            continue
-        if len(fields) < 2 or any(field not in unrelated for field in fields[1:]):
-            return True
-    return False
-
-
 def _upstream_owned(inputs: dict[str, tuple[_FileIdentity | None, bytes]]) -> bool:
     for name, (_, raw_content) in inputs.items():
         if name.startswith(("selection:", "link:")):
@@ -1162,7 +1153,7 @@ def _crlf_index_dirt(root: Path) -> bool:
     return bool(crlf.intersection(dirty | staged))
 
 
-def _attribute_path_result(root: Path, *args: str) -> subprocess.CompletedProcess:
+def _attribute_path_result(root: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
     return subprocess.run(
         ["git", "-C", str(root), *args],
         capture_output=True,
@@ -1173,36 +1164,11 @@ def _attribute_path_result(root: Path, *args: str) -> subprocess.CompletedProces
 
 
 def _native_attribute_path(root: Path, variable: str) -> tuple[bool, Path | None]:
-    result = _attribute_path_result(root, "var", variable)
-    if result.returncode == 1 and not result.stdout and not result.stderr:
-        return True, None
-    if result.returncode:
-        diagnostic = _output_bytes(result.stderr) + _output_bytes(result.stdout)
-        if b"usage: git var" in diagnostic:
-            return False, None
-        raise ValueError(f"could not resolve {variable}: {_error_text(result.stderr)}")
-    value = os.fsdecode(_output_bytes(result.stdout)).removesuffix("\n")
-    return True, _resolved_attribute_path(root, value)
-
-
-def _resolved_attribute_path(root: Path, value: str) -> Path | None:
-    if not value:
-        return None
-    if value.startswith(("~", "%(prefix)")):
-        raise ValueError("Git did not expand the selected attributes path")
-    path = Path(value)
-    return path if path.is_absolute() else root / path
+    return native_attribute_path(root, variable, _attribute_path_result)
 
 
 def _fallback_user_attributes(root: Path) -> Path | None:
-    result = _attribute_path_result(root, "config", "--path", "--get", "core.attributesFile")
-    if result.returncode == 0:
-        value = os.fsdecode(_output_bytes(result.stdout)).removesuffix("\n")
-        return _resolved_attribute_path(root, value)
-    if result.returncode != 1:
-        raise ValueError(f"could not read core.attributesFile: {_error_text(result.stderr)}")
-    path = default_user_attributes()
-    return _resolved_attribute_path(root, str(path)) if path is not None else None
+    return fallback_user_attributes(root, _attribute_path_result)
 
 
 def _user_file_snapshots(path: Path) -> dict[str, tuple[_FileIdentity | None, bytes]]:
@@ -1342,7 +1308,7 @@ def _attributes_plan(repository: LineEndingRepository, stealth: bool):
             repository.root, common, common_content, upstream, inputs, observations
         )
         inputs[str(common)] = (common_identity, common_content)
-        owned = upstream or _local_policy_owned(common_content)
+        owned = upstream or local_policy_owned(common_content)
         return target, inputs, owned, not owned, observations, None
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         return (
@@ -1381,7 +1347,7 @@ def _record_stealth_policy(
                 detail="existing upstream/user/system attributes policy is preserved; no local default installed",
             )
         )
-    elif not _local_policy_owned(content):
+    elif not local_policy_owned(content):
         observations.append(
             _observation(
                 LineEndingObservationCode.LOCAL_POLICY_MISSING,
