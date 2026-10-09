@@ -252,7 +252,23 @@ def _paired_project_base_sha(project_worktree: Path) -> str:
     """Resolve the standalone fork point of a paired Project branch."""
     upstream = _git(project_worktree, "rev-parse", "@{upstream}", timeout=30)
     if upstream.returncode != 0:
-        raise BaselineWorktreeError("paired project ticket branch has no baseline upstream")
+        branch = _git(project_worktree, "symbolic-ref", "--short", "HEAD", timeout=30)
+        base = _git(
+            project_worktree,
+            "config",
+            "--get",
+            f"branch.{branch.stdout.strip()}.booleyBase",
+            timeout=30,
+        )
+        upstream = _git(
+            project_worktree,
+            "rev-parse",
+            "--verify",
+            f"{base.stdout.strip()}^{{commit}}",
+            timeout=30,
+        )
+        if branch.returncode or base.returncode or upstream.returncode:
+            raise BaselineWorktreeError("paired project ticket branch has no baseline upstream")
     merge_base = _git(
         project_worktree,
         "merge-base",

@@ -23,6 +23,7 @@ from pathlib import Path
 from booley.runtime.paths import worktree_create_script
 from booley.runtime.platform_paths import bash_bin
 from booley.runtime.project_dir import PROJECT_DIR_NAME
+from booley.runtime.project_repositories import run_git
 from booley.runtime.project_worktree_pairing import (
     ProjectPairingError,
     pair_project_worktree,
@@ -142,7 +143,7 @@ def run(args: argparse.Namespace, project_root: Path) -> int:
         if not isinstance(exc, (WorktreeCreationError, ProjectPairingError, OSError)):
             raise
         print(f"ERROR: {exc}", file=sys.stderr)
-        if source is not None and (worktree / PROJECT_DIR_NAME / ".git").is_file():
+        if source is not None and _is_named_pair(worktree, args.name):
             print(
                 worktree_removal_instructions(project_root, worktree, args.name), file=sys.stderr
             )
@@ -160,3 +161,11 @@ def _rollback_creation(root: Path, worktree: Path, name: str, failure: BaseExcep
     except (OSError, ProjectPairingError) as cleanup:
         failure.add_note(f"outer rollback failed: {cleanup}")
         print(f"ERROR: outer rollback failed: {cleanup}", file=sys.stderr)
+
+
+def _is_named_pair(worktree: Path, name: str) -> bool:
+    nested = worktree / PROJECT_DIR_NAME
+    if not (nested / ".git").is_file():
+        return False
+    branch = run_git(nested, "symbolic-ref", "--short", "HEAD")
+    return branch.returncode == 0 and branch.stdout.strip() == f"booley-worktree/{name}"

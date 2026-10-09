@@ -16,9 +16,10 @@ from booley.runtime.incontainer_git_identity import (
     load_git_identity,
 )
 from booley.runtime.project_dir import PROJECT_DIR_NAME
-from booley.runtime.project_gitignore import is_project_transient_path
+from booley.runtime.project_gitignore import is_project_transient_path, missing_gitignore_patterns
 from booley.runtime.project_repositories import (
     GitDirectoryInspectionError,
+    ProjectRepositoryChange,
     common_git_dir,
     git_directories,
     is_standalone_git_repository,
@@ -40,6 +41,8 @@ def project_pairing_source(project_root: Path) -> Path | None:
             "cannot create a worktree from a paired Project checkout; "
             "run booley worktree new from the primary workspace"
         )
+    if (source / ".git").is_dir():
+        _require_git(source, "rev-parse", "--git-dir")
     return source if is_standalone_git_repository(source) else None
 
 
@@ -60,24 +63,42 @@ def _require_base(source: Path, branch: str) -> str:
     )
     changes = parse_porcelain_z(status)
     if changes:
-        transient = [change.path for change in changes if is_project_transient_path(change.path)]
-        inputs = [change.path for change in changes if not is_project_transient_path(change.path)]
-        remedies = []
-        if transient:
-            remedies.append(
-                f"transient state: {', '.join(transient)}; Project .gitignore is missing "
-                "current Booley patterns; run `booley init` from a host terminal, then commit the updated .gitignore"
-            )
-        if inputs:
-            remedies.append(
-                f"inputs: {', '.join(inputs)}; commit them in `{PROJECT_DIR_NAME}` first"
-            )
-        raise ProjectPairingError(
-            "Project repository has uncommitted changes; " + "; ".join(remedies)
-        )
+        _refuse_dirty_project(source, changes)
+    _require_git(source, "check-ref-format", "--branch", branch)
     if run_git(source, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}").returncode == 0:
         raise ProjectPairingError(f"Project branch {branch!r} already exists; choose another name")
     return head.stdout.strip()
+
+
+def _listed_paths(paths: list[str]) -> str:
+    listed = ", ".join(paths[:5])
+    return listed + (f" and {len(paths) - 5} more" if len(paths) > 5 else "")
+
+
+def _refuse_dirty_project(source: Path, changes: tuple[ProjectRepositoryChange, ...]) -> None:
+    ignore = source / ".gitignore"
+    stale = missing_gitignore_patterns(
+        ignore.read_text(encoding="utf-8") if ignore.exists() else ""
+    )
+    transient, inputs = [], []
+    for change in changes:
+        group = (
+            transient
+            if stale and change.status == "??" and is_project_transient_path(change.path)
+            else inputs
+        )
+        group.append(change.path)
+    remedies = []
+    if transient:
+        remedies.append(
+            f"transient state: {_listed_paths(transient)}; Project .gitignore is missing "
+            "current Booley patterns; run `booley init` from a host terminal, then commit the updated .gitignore"
+        )
+    if inputs:
+        remedies.append(
+            f"inputs: {_listed_paths(inputs)}; commit them in `{PROJECT_DIR_NAME}` first"
+        )
+    raise ProjectPairingError("Project repository has uncommitted changes; " + "; ".join(remedies))
 
 
 @contextmanager
@@ -101,7 +122,8 @@ def _remove_copy(worktree: Path) -> Path:
         raise ProjectPairingError(f"Project copy escapes its containing worktree: {nested}")
     if (nested / ".git").exists():
         raise ProjectPairingError(f"refusing to replace a versioned Project checkout: {nested}")
-    safe_rmtree(nested)
+    if nested.exists():
+        safe_rmtree(nested)
     return nested
 
 
@@ -125,12 +147,34 @@ def _configure_checkout(source: Path, nested: Path) -> None:
     apply_git_identity(nested, load_git_identity(source))
 
 
-def _rollback_pair(source: Path, nested: Path, branch: str) -> None:
-    result = run_git(source, "worktree", "remove", "--force", str(nested))
-    if result.returncode:
-        safe_rmtree(nested)
-    _require_git(source, "worktree", "prune")
-    if run_git(source, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}").returncode == 0:
+def _remove_registration(repository: Path, worktree: Path) -> None:
+    result = run_git(repository, "worktree", "remove", "--force", "--force", str(worktree))
+    if not result.returncode:
+        return
+    # An interrupted add may leave only its administrative entry. Never prune
+    # other missing checkouts: users may still intend to restore those paths.
+    if worktree.exists():
+        safe_rmtree(worktree)
+    common = common_git_dir(repository)
+    if common is None:
+        raise ProjectPairingError(f"cannot find Git common directory: {repository}")
+    registrations = common / "worktrees"
+    if not registrations.is_dir():
+        return
+    for admin in registrations.iterdir():
+        pointer = admin / "gitdir"
+        if admin.is_symlink() or not pointer.is_file():
+            continue
+        target = Path(pointer.read_text(encoding="utf-8").strip())
+        if not target.is_absolute():
+            target = admin / target
+        if target.resolve() == (worktree / ".git").resolve():
+            safe_rmtree(admin)
+
+
+def _rollback_pair(source: Path, nested: Path, branch: str, *, created_branch: bool) -> None:
+    _remove_registration(source, nested)
+    if created_branch:
         _require_git(source, "branch", "-D", branch)
 
 
@@ -144,6 +188,7 @@ def pair_project_worktree(
     with _project_lock(source):
         base = _require_base(source, branch)
         nested = _remove_copy(worktree)
+        created_branch = False
         try:
             _require_git(source, "config", "gc.worktreePruneExpire", "never")
             _require_git(
@@ -158,10 +203,12 @@ def pair_project_worktree(
                 str(nested),
                 base,
             )
+            created_branch = True
+            _require_git(source, "config", f"branch.{branch}.booleyBase", base)
             _configure_checkout(source, nested)
         except BaseException as exc:
             try:
-                _rollback_pair(source, nested, branch)
+                _rollback_pair(source, nested, branch, created_branch=created_branch)
             except (OSError, ProjectPairingError) as cleanup:
                 exc.add_note(f"paired rollback failed: {cleanup}")
                 if isinstance(exc, Exception):
@@ -174,10 +221,7 @@ def pair_project_worktree(
 
 def rollback_outer_worktree(project_root: Path, worktree: Path) -> None:
     """Remove the newly created outer checkout after paired rollback completes."""
-    result = run_git(project_root, "worktree", "remove", "--force", str(worktree))
-    if result.returncode:
-        safe_rmtree(worktree)
-    _require_git(project_root, "worktree", "prune")
+    _remove_registration(project_root, worktree)
 
 
 def validate_project_pairing(source: Path | None, name: str) -> None:

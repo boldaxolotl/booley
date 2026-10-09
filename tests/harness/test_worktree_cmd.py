@@ -435,8 +435,6 @@ def test_pairing_failure_rolls_back_both_repositories(
             if (failure == "add" and "add" in args) or (
                 failure == "configure" and args[:2] == ("config", "--worktree")
             ):
-                if failure == "add":
-                    original(repository, *args)
                 raise pairing.ProjectPairingError("injected failure")
             return original(repository, *args)
 
@@ -761,3 +759,220 @@ def test_unexpected_runtime_error_is_rolled_back_and_reraised(
     with pytest.raises(RuntimeError, match="unexpected implementation defect"):
         _new("unexpected", versioned_project)
     _assert_creation_absent(versioned_project, "unexpected")
+
+
+@pytest.mark.parametrize("detached", [False, True])
+def test_user_worktree_standalone_baseline_pins_pairing_base(
+    versioned_project, python_outer, detached
+):
+    from booley.evidence.acceptance import PairedProjectBaseline
+    from booley.flows.baseline_worktree import baseline_worktree
+    from tests.goals.conftest import git
+
+    root = versioned_project
+    source = root / ".booley_project"
+    base = git(source, "rev-parse", "HEAD")
+    if detached:
+        git(source, "checkout", "--detach")
+    assert _new("baseline", root) == 0
+    worktree = worktree_cmd.worktree_path(root, "baseline")
+    paired = worktree / ".booley_project"
+    assert git(paired, "config", "branch.booley-worktree/baseline.booleyBase") == base
+    assert (
+        subprocess.run(
+            ["git", "rev-parse", "@{upstream}"],
+            cwd=paired,
+            capture_output=True,
+            timeout=30,
+            check=False,
+        ).returncode
+        != 0
+    )
+    _write(paired / "cores/constraints/top.sdc", "# later design\n")
+    git(paired, "add", ".")
+    git(paired, "commit", "-qm", "later")
+    with baseline_worktree(
+        worktree, "HEAD", paired_project=PairedProjectBaseline.standalone()
+    ) as baseline:
+        frozen = baseline / ".booley_project"
+        assert git(frozen, "rev-parse", "HEAD") == base
+        assert "create_clock" in (frozen / "cores/constraints/top.sdc").read_text()
+    assert not baseline.exists()
+    assert (paired / "cores/constraints/top.sdc").read_text() == "# later design\n"
+
+
+@pytest.mark.parametrize("missing_path", [False, True, "admin-only"])
+def test_pairing_rollback_preserves_other_missing_registrations_and_removes_locked_own(
+    versioned_project, python_outer, monkeypatch, missing_path
+):
+    from booley.runtime import project_worktree_pairing as pairing
+    from tests.goals.conftest import git
+
+    root = versioned_project
+    source = root / ".booley_project"
+    others = []
+    for repository, path in (
+        (root, root.parent / "missing-outer"),
+        (source, root.parent / "missing-project"),
+    ):
+        git(repository, "worktree", "add", "--detach", str(path), "HEAD")
+        admin = pairing.git_directories(path).git_dir
+        shutil.rmtree(path)
+        others.append(admin)
+
+    def fail(_source, nested):
+        git(source, "worktree", "lock", str(nested))
+        if missing_path:
+            shutil.rmtree(nested)
+        raise pairing.ProjectPairingError("locked failure")
+
+    if missing_path == "admin-only":
+        original = pairing.run_git
+
+        def missing_remove(repository, *args):
+            if repository == source and args[:2] == ("worktree", "remove"):
+                return subprocess.CompletedProcess(args, 1, "", "missing checkout")
+            return original(repository, *args)
+
+        monkeypatch.setattr(pairing, "run_git", missing_remove)
+    monkeypatch.setattr(pairing, "_configure_checkout", fail)
+    assert _new("locked", root) == 1
+    _assert_creation_absent(root, "locked")
+    assert all(admin.is_dir() for admin in others)
+    assert (
+        subprocess.run(
+            ["git", "config", "--get", "branch.booley-worktree/locked.booleyBase"],
+            check=False,
+            cwd=source,
+            capture_output=True,
+            timeout=30,
+        ).returncode
+        != 0
+    )
+
+
+def test_failed_add_preserves_branch_it_did_not_create(
+    versioned_project, python_outer, monkeypatch
+):
+    from booley.runtime import project_worktree_pairing as pairing
+    from tests.goals.conftest import git
+
+    source = versioned_project / ".booley_project"
+    original = pairing._require_git
+
+    def fail(repository, *args):
+        if "add" in args:
+            git(source, "branch", "booley-worktree/raced")
+            raise pairing.ProjectPairingError("branch created by another actor")
+        return original(repository, *args)
+
+    monkeypatch.setattr(pairing, "_require_git", fail)
+    assert _new("raced", versioned_project) == 1
+    assert git(source, "rev-parse", "booley-worktree/raced") == git(source, "rev-parse", "HEAD")
+    assert not worktree_cmd.worktree_path(versioned_project, "raced").exists()
+
+
+@pytest.mark.parametrize("tracked", [False, True])
+def test_transient_named_inputs_are_not_misdiagnosed(
+    versioned_project, monkeypatch, capsys, tracked
+):
+    from tests.goals.conftest import git
+
+    source = versioned_project / ".booley_project"
+    path = source / "logs/authored.txt"
+    if tracked:
+        _write(path, "committed\n")
+        git(source, "add", "-f", str(path))
+        git(source, "commit", "-qm", "authored log")
+    else:
+        with (source / ".gitignore").open("a") as handle:
+            handle.write("!/logs/\n!/logs/**\n")
+        git(source, "add", ".gitignore")
+        git(source, "commit", "-qm", "authored logs allowed")
+    _write(path, "changed\n")
+    monkeypatch.setattr(
+        worktree_cmd, "_create_outer", lambda *_a, **_kw: pytest.fail("build before refusal")
+    )
+    assert _new("input", versioned_project) == 1
+    error = capsys.readouterr().err
+    assert "inputs: logs/authored.txt" in error
+    assert "transient state" not in error
+    assert "booley init" not in error
+
+
+def test_dirty_diagnostics_cap_each_group(versioned_project, capsys):
+    from tests.goals.conftest import git
+
+    source = versioned_project / ".booley_project"
+    _write(source / ".gitignore", "/worktrees/\n/runtime/\n")
+    git(source, "add", ".gitignore")
+    git(source, "commit", "-qm", "old ignores")
+    for index in range(7):
+        _write(source / f"logs/run{index}", "state\n")
+        _write(source / f"input{index}.txt", "input\n")
+    assert _new("bounded", versioned_project) == 1
+    error = capsys.readouterr().err
+    assert error.count("and 2 more") == 2
+    assert "run4" in error and "input4.txt" in error
+    assert "run5" not in error and "input5.txt" not in error
+
+
+@pytest.mark.parametrize("name", ["bad..ref", "bad.lock", "bad."])
+def test_invalid_project_branch_is_refused_before_build(
+    versioned_project, monkeypatch, capsys, name
+):
+    monkeypatch.setattr(
+        worktree_cmd, "_create_outer", lambda *_a, **_kw: pytest.fail("invalid ref built")
+    )
+    assert _new(name, versioned_project) == 1
+    assert "check-ref-format" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("branch", ["booley-ticket/active", "other-user"])
+def test_refused_destination_does_not_print_teardown_for_another_branch(
+    versioned_project, python_outer, monkeypatch, capsys, branch
+):
+    from tests.goals.conftest import git
+
+    root = versioned_project
+    assert _new("occupied", root) == 0
+    capsys.readouterr()
+    nested = worktree_cmd.worktree_path(root, "occupied") / ".booley_project"
+    git(nested, "branch", "-m", branch)
+
+    def refuse(*_args, **_kwargs):
+        raise worktree_cmd.WorktreeCreationError(
+            "choose another name, or remove the old worktree once safe"
+        )
+
+    monkeypatch.setattr(worktree_cmd, "_create_outer", refuse)
+    assert _new("occupied", root) == 1
+    error = capsys.readouterr().err
+    assert "choose another name" in error
+    assert "git -C" not in error and "branch -D" not in error
+    assert git(nested, "symbolic-ref", "--short", "HEAD") == branch
+
+
+def test_unreadable_project_git_directory_is_refused(tmp_path, monkeypatch, capsys):
+    (tmp_path / ".booley_project/.git").mkdir(parents=True)
+    monkeypatch.setattr(
+        worktree_cmd, "_create_outer", lambda *_a, **_kw: pytest.fail("broken repo copied")
+    )
+    assert _new("broken", tmp_path) == 1
+    assert "git rev-parse --git-dir failed" in capsys.readouterr().err
+
+
+@_real_script
+def test_paired_hint_skips_project_snapshot(versioned_project, monkeypatch):
+    from booley.runtime import project_worktree_pairing as pairing
+
+    original = pairing._remove_copy
+    seen = []
+
+    def remove(worktree):
+        seen.append((worktree / ".booley_project").exists())
+        return original(worktree)
+
+    monkeypatch.setattr(pairing, "_remove_copy", remove)
+    assert _new("no-copy", versioned_project) == 0
+    assert seen == [False]

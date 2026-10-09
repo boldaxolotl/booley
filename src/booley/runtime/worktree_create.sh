@@ -483,7 +483,7 @@ fi
 # through Git only), and per-session runtime state under runtime/sessions/.
 # The ./ patterns match only top-level members
 # (the archive is built from "."); a nested directory named goals is copied.
-if [ -d "$CWD/.booley_project" ]; then
+if [ "${BOOLEY_WORKTREE_PAIRED_PROJECT:-0}" != "1" ] && [ -d "$CWD/.booley_project" ]; then
     echo "Copying .booley_project/ into worktree..." >&2
     mkdir -p "$WORKTREE_DIR/.booley_project"
     tar -C "$CWD/.booley_project" --exclude='.git' \
