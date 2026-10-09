@@ -33,7 +33,10 @@ def test_each_nonempty_directory_has_a_waivable_warning_and_delete_fix(tmp_path)
     assert {f.check_id for f in findings} == {"tickets.leftover-board"}
     assert all(f.severity == "warn" for f in findings)
     for finding in findings:
-        assert finding.fix == f"delete {tmp_path / 'tickets' / finding.subject}"
+        assert finding.fix == (
+            "move any Ticket you still need into a Goalset or archive it, "
+            f"then delete {tmp_path / 'tickets' / finding.subject}"
+        )
         assert "empty directories: locks" in finding.message
 
 
@@ -74,3 +77,31 @@ def test_edited_guidance_warns_to_move_rules_before_delete(tmp_path, name):
         "move its rules into a Goalset under .booley_project/goalsets/, "
         f"then delete {tmp_path / name}"
     )
+
+
+@pytest.mark.parametrize("kind", ["board", "guidance"])
+def test_unreadable_leftovers_warn_without_crashing(tmp_path, monkeypatch, kind):
+    if kind == "board":
+        path = tmp_path / "tickets/board"
+        path.mkdir(parents=True)
+        method = "iterdir"
+    else:
+        path = tmp_path / "ticket_defaults.md"
+        path.write_text("Project rules")
+        method = "read_bytes"
+    original = getattr(Path, method)
+
+    def unreadable(candidate, *args, **kwargs):
+        if candidate == path:
+            raise PermissionError("access denied")
+        return original(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(Path, method, unreadable)
+    (finding,) = _findings(tmp_path)
+    assert finding.severity == "warn"
+    assert finding.check_id == (
+        "tickets.leftover-board" if kind == "board" else "tickets.leftover-guidance"
+    )
+    assert "access denied" in finding.message
+    assert "Goalset" in finding.fix
+    assert path.exists()

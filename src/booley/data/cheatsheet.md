@@ -211,7 +211,7 @@ variants, and the first public test that killed each detected mutant.
 **Threshold parameters:**
 
 <!-- BEGIN GENERATED: criteria-params -->
-`synthesis` and `fpga` Goals name each Target directly and accept metric thresholds. Four flavours apply per metric: two absolute, two relative to the Goal base commit:
+`synth` and `fpga` Goals name each Target directly and accept metric thresholds. Four flavours apply per metric: two absolute, two relative to the Goal base commit:
 
 | Flavour param suffix | Baseline? | Meaning |
 |----------------------|:---------:|---------|
@@ -220,9 +220,20 @@ variants, and the first public test that killed each detected mutant.
 | `_increase_at_most` | yes | metric may grow **at most N%** above baseline |
 | `_reduce_at_least` | yes | metric must shrink **at least N%** below baseline |
 
-Percentage threshold values must include the `%` suffix (for example, `cell_count_reduce_at_least: 8%`).
+Percentage threshold values must include the `%` suffix (for example, `"cell_count_reduce_at_least": "8%"` inside `thresholds`).
 
-For a relative threshold on a new Target, set `baseline_target` to an existing Target. The baseline Target defaults to the candidate name and must exist at the Goal base commit. Booley runs it on base code and the candidate on current code. Missing or mismatched baseline evidence fails the check.
+For a relative threshold on a new Target, set `baseline` to an existing Target. The baseline Target defaults to the candidate name and must exist at the Goal base commit. Booley runs it on base code and the candidate on current code. Missing or mismatched baseline evidence fails the check.
+
+Goal argument examples:
+
+```json
+{"family": "synth", "target": "asic_small", "baseline": "asic_base",
+ "thresholds": {"cell_count_reduce_at_least": "8%"}}
+```
+
+```json
+{"family": "fpga", "target": "fpga_top", "thresholds": {"lut_count_max": 5000}}
+```
 
 **`synthesis_ok` (ASIC)**
 
@@ -257,7 +268,12 @@ For a relative threshold on a new Target, set `baseline_target` to an existing T
 
 **Per-test `CYCLE_COUNT`**
 
-Nest each registered test under its Target and give it one or more thresholds; all thresholds for that test must pass. Relative forms compare the same Target/test at the Goal base commit by default.
+`cycle_count` Goals name the Target with `target` and the registered test with `test`; put bounds in `thresholds`. All thresholds for that test must pass. Relative forms compare the same Target/test at the Goal base commit by default.
+
+```json
+{"family": "cycle_count", "target": "sim", "test": "smoke",
+ "thresholds": {"cycle_count_max": 1000, "cycle_count_reduce_at_least": "8%"}}
+```
 
 | Parameter | Baseline? | Unit | Passing relation |
 |-----------|:---------:|------|------------------|

@@ -5214,6 +5214,7 @@ class TestMemoryInvariant:
         doctor._check_memory_invariant(_adr28_project(tmp_path), rec.p, rec.w, rec.s)
         assert rec.kinds() == {"pass"}
         assert "10g ≥ 1x4g + 1x1g + 2g = 7g" in rec.events[0][1]
+        assert "per Sandbox session" in rec.events[0][1]
 
     def test_unlimited_cgroup_passes_with_note(self, tmp_path, monkeypatch):
         _set_venue(monkeypatch, True)

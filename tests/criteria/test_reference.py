@@ -218,3 +218,28 @@ def test_specialist_producers_show_named_arguments_without_cli_syntax() -> None:
     assert '`reviewer` (`category="rtl"`, `focus="bugs"`)' in row
     assert "--" not in row
     assert "MCP" not in rendered
+
+
+def test_generated_goal_examples_and_named_keys_parse_through_goal_boundary():
+    import json
+    import re
+
+    from booley.goals.model import parse_goal_arg
+
+    rendered = render_criteria_params_reference()
+    examples = [
+        json.loads(text) for text in re.findall(r"```json\n(.*?)\n```", rendered, re.DOTALL)
+    ]
+    assert len(examples) >= 3
+    for example in examples:
+        parse_goal_arg(example)
+    prose = re.sub(r"```.*?```", "", rendered, flags=re.DOTALL)
+    named_keys = set(re.findall(r"(?:set|with|in) `([a-z_]+)`", prose))
+    assert {"baseline", "target", "test", "thresholds"} <= named_keys
+    assert named_keys <= set().union(*(example.keys() for example in examples))
+    families = re.findall(r"`([a-z_]+)`(?: and `([a-z_]+)`)? Goals", prose)
+    assert families
+    for pair in families:
+        for family in filter(None, pair):
+            example = next((raw for raw in examples if raw["family"] == family), examples[0])
+            parse_goal_arg({**example, "family": family})

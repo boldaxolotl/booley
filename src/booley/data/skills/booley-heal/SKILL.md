@@ -159,6 +159,19 @@ user hand-off. Do not let one host-only action hide other useful progress.
 
 ## 5. Handle exceptional findings
 
+### Ticket leftovers need a user decision
+
+Treat every `tickets.leftover-*` finding as a user decision. Ask the user before
+moving, archiving, or deleting the reported files or directories, including
+unchanged shipped guidance. The `fix:` hint describes the available repair;
+it does not authorize deletion. Inspect and explain what would be preserved,
+where it would go, and what would be deleted so the user can approve a concrete
+choice. Gitignored Ticket content can still contain work the user needs.
+
+Continue independent repairs while waiting. Leave the finding active until
+the user approves and the chosen action is verified; report **Repair blocked**
+if this decision is the only remaining work.
+
 ### External or host-only action
 
 Do not execute an action outside the current Sandbox. Give the user a

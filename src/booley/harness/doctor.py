@@ -109,6 +109,7 @@ from booley.runtime import (
 from booley.runtime import devcontainer as dc
 from booley.runtime import interactive_docker as idk
 from booley.runtime import project_image as pi
+from booley.runtime.checkout_role import SourceCheckoutProjectError
 from booley.runtime.git import _git_common_dir
 from booley.runtime.platform_paths import docker_mount_path
 from booley.runtime.project_dir import (
@@ -1506,7 +1507,9 @@ def _check_memory_invariant(
         f"+ 2g = {fmt(requirement.required_bytes)}"
     )
     orch_note = (
-        "measured agent RSS" if measured else "1g agent fallback — doctor --deep measures it"
+        "measured agent RSS per Sandbox session"
+        if measured
+        else "1g agent fallback per Sandbox session — doctor --deep measures it"
     )
     if limit >= requirement.required_bytes:
         _pass(
@@ -3033,23 +3036,46 @@ _SHIPPED_TICKET_GUIDANCE_HASHES = frozenset(
 
 def _check_ticket_leftovers(project_dir: Path, _warn: Check) -> None:
     """Warn about actionable board data and guidance; keep Ticket History inert."""
-    folders = [
-        project_dir / "tickets" / name
-        for name in ("board", "state", "logs", "locks", "waiver-candidates")
-    ]
-    nonempty = [path for path in folders if path.is_dir() and any(path.iterdir())]
-    empty = [path.name for path in folders if path.is_dir() and not any(path.iterdir())]
+    _check_leftover_board(project_dir, _warn)
+    _check_leftover_guidance(project_dir, _warn)
+
+
+def _check_leftover_board(project_dir: Path, _warn: Check) -> None:
+    nonempty: dict[Path, str] = {}
+    empty: list[str] = []
+    for name in ("board", "state", "logs", "locks", "waiver-candidates"):
+        path = project_dir / "tickets" / name
+        try:
+            if not path.is_dir():
+                continue
+            if any(path.iterdir()):
+                nonempty[path] = f"leftover Ticket Board data in {path}"
+            else:
+                empty.append(name)
+        except OSError as exc:
+            nonempty[path] = f"could not inspect leftover Ticket Board data in {path}: {exc}"
     suffix = f"; empty directories: {', '.join(empty)}" if empty else ""
-    for path in nonempty:
+    for path, message in nonempty.items():
         _warning_sink(_warn, "tickets.leftover-board", subject=path.name)(
-            f"leftover Ticket Board data in {path}{suffix}",
-            f"delete {path}",
+            message + suffix,
+            f"move any Ticket you still need into a Goalset or archive it, then delete {path}",
         )
+
+
+def _check_leftover_guidance(project_dir: Path, _warn: Check) -> None:
     for name in ("ticket_creation.md", "ticket_defaults.md"):
         path = project_dir / name
-        if not path.is_file():
+        warning = _warning_sink(_warn, "tickets.leftover-guidance", subject=name)
+        try:
+            if not path.is_file():
+                continue
+            content = path.read_bytes().replace(b"\r\n", b"\n")
+        except OSError as exc:
+            warning(
+                f"could not read leftover Ticket guidance in {path}: {exc}",
+                f"check permissions for {path}; move any needed rules into a Goalset before deleting it",
+            )
             continue
-        content = path.read_bytes().replace(b"\r\n", b"\n")
         shipped = hashlib.sha256(content).hexdigest() in _SHIPPED_TICKET_GUIDANCE_HASHES
         fix = (
             f"delete {path}"
@@ -3059,9 +3085,7 @@ def _check_ticket_leftovers(project_dir: Path, _warn: Check) -> None:
                 f"then delete {path}"
             )
         )
-        _warning_sink(_warn, "tickets.leftover-guidance", subject=name)(
-            f"leftover Ticket guidance in {path}", fix
-        )
+        warning(f"leftover Ticket guidance in {path}", fix)
 
 
 def _check_project_gitignore(project_dir: Path, _pass: Check, _warn: Check) -> None:
@@ -3259,7 +3283,7 @@ def _check_custom_endpoints_and_criteria(project_root: Path, _pass: Check, _fail
     except EndpointValidationError as exc:
         _fail("custom endpoint/Criteria validation failed", exc.failures[0])
         return
-    except (ImportError, OSError, ValueError) as exc:
+    except (ImportError, OSError, ValueError, SourceCheckoutProjectError) as exc:
         _fail(
             f"custom endpoint/Criteria validation failed: {exc}",
             "fix .booley_project/mcp_tools and Criteria configuration",

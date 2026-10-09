@@ -513,13 +513,15 @@ def _repair_live_ticket_worktrees(ctx: InitContext) -> list[str]:
     # Git supplies canonical refs; only the Ticket generation namespace owns
     # workspaces this compatibility repair can reconcile. The namespace is
     # defined by ticket_board.ticket_baseline.TICKET_REF_PREFIX.
-    linked = [
-        row.path
-        for row in list_worktrees(ctx.project_root)
-        if row.path.parent == directory
-        and (row.path / ".git").is_file()
-        and (row.branch or "").startswith("refs/heads/booley-generation/")
-    ]
+    try:
+        linked = [
+            directory / row.path.name
+            for row in list_worktrees(ctx.project_root)
+            if (directory / row.path.name / ".git").is_file()
+            and (row.branch or "").startswith("refs/heads/booley-generation/")
+        ]
+    except (OSError, subprocess.SubprocessError) as exc:
+        return [f"could not list worktrees for repair: {exc}"]
     if not linked:
         return []
     try:

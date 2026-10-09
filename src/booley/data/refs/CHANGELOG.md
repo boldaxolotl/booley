@@ -36,7 +36,9 @@ Packaged release history starts at 0.2.7. For older changes, see
 - Initialization adds a Booley-owned Dashboard task to `.vscode/tasks.json`
   and enables automatic tasks for attachment by default. Opt out with
   `[sandbox].dashboard = false`; reconciliation removes unchanged owned copies
-  while preserving user-edited tasks.
+  while preserving user-edited tasks. Tracked `.vscode/tasks.json` files are
+  preserved with an informational notice; add the Dashboard task yourself or
+  opt out with `[sandbox].dashboard = false`.
 - New non-Stealth initialization keeps Goal history eligible for commits.
   Existing explicit Git exclusions remain in place; excluded or Stealth
   summaries stay local, and completion reports skipped publication. Project

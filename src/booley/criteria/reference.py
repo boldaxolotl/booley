@@ -169,7 +169,7 @@ def _param_flavours(params: frozenset[str]) -> dict[str, set[str]]:
 
 def _implementation_params_intro() -> list[str]:
     return [
-        "`synthesis` and `fpga` Goals name each Target directly and accept "
+        "`synth` and `fpga` Goals name each Target directly and accept "
         "metric thresholds. Four flavours apply per metric: two absolute, "
         "two relative to the Goal base commit:",
         "",
@@ -181,12 +181,23 @@ def _implementation_params_intro() -> list[str]:
         "| `_reduce_at_least` | yes | metric must shrink **at least N%** below baseline |",
         "",
         "Percentage threshold values must include the `%` suffix (for example, "
-        "`cell_count_reduce_at_least: 8%`).",
+        '`"cell_count_reduce_at_least": "8%"` inside `thresholds`).',
         "",
-        "For a relative threshold on a new Target, set `baseline_target` to an existing "
+        "For a relative threshold on a new Target, set `baseline` to an existing "
         "Target. The baseline Target defaults to the candidate name and must exist "
         "at the Goal base commit. Booley runs it on base code and the candidate on "
         "current code. Missing or mismatched baseline evidence fails the check.",
+        "",
+        "Goal argument examples:",
+        "",
+        "```json",
+        '{"family": "synth", "target": "asic_small", "baseline": "asic_base",',
+        ' "thresholds": {"cell_count_reduce_at_least": "8%"}}',
+        "```",
+        "",
+        "```json",
+        '{"family": "fpga", "target": "fpga_top", "thresholds": {"lut_count_max": 5000}}',
+        "```",
         "",
     ]
 
@@ -222,9 +233,14 @@ def _cycle_count_params_reference(descriptors) -> list[str]:
     lines = [
         "**Per-test `CYCLE_COUNT`**",
         "",
-        "Nest each registered test under its Target and give it one or more thresholds; "
-        "all thresholds for that test must pass. Relative forms compare the same "
-        "Target/test at the Goal base commit by default.",
+        "`cycle_count` Goals name the Target with `target` and the registered test with `test`; "
+        "put bounds in `thresholds`. All thresholds for that test must pass. Relative forms "
+        "compare the same Target/test at the Goal base commit by default.",
+        "",
+        "```json",
+        '{"family": "cycle_count", "target": "sim", "test": "smoke",',
+        ' "thresholds": {"cycle_count_max": 1000, "cycle_count_reduce_at_least": "8%"}}',
+        "```",
         "",
         "| Parameter | Baseline? | Unit | Passing relation |",
         "|-----------|:---------:|------|------------------|",

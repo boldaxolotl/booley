@@ -1298,8 +1298,8 @@ def _apply_dry_run_implications(args: argparse.Namespace) -> None:
 
 def _global_options_parser() -> argparse.ArgumentParser:
     """Read root options without actions that print help or inspect a Project."""
-    parser = argparse.ArgumentParser(add_help=False, exit_on_error=False, allow_abbrev=False)
-    parser.add_argument("--project", "-C", "-p")
+    parser = argparse.ArgumentParser(add_help=False, exit_on_error=False)
+    parser.add_argument("--project", "-C")
     parser.add_argument("--help", "-h", "--version", action="store_true")
     return parser
 
@@ -1318,11 +1318,11 @@ def _argv_command(argv: list[str], globals_parser: argparse.ArgumentParser) -> s
         if prefix and prefix[-1] == "--":
             prefix = prefix[:-1]
         try:
-            _, unknown = globals_parser.parse_known_args(prefix)
+            options, unknown = globals_parser.parse_known_args(prefix)
         except argparse.ArgumentError:
             continue
         if not unknown:
-            return word
+            return None if options.help else word
     return None
 
 

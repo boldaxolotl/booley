@@ -668,3 +668,12 @@ def test_goal_skill_links_packaged_review_and_names_only_public_goal_tools():
     assert "booley dashboard" in text
     metadata = _skill_text("booley-goal", "agents/openai.yaml")
     assert "$booley-goal" in metadata
+
+
+def test_heal_requires_user_decision_for_ticket_leftovers():
+    skill = " ".join(_skill_text("booley-heal").split())
+    assert "Treat every `tickets.leftover-*` finding as a user decision" in skill
+    assert "Ask the user before moving, archiving, or deleting" in skill
+    assert "including unchanged shipped guidance" in skill
+    assert "it does not authorize deletion" in skill
+    assert "Leave the finding active until the user approves" in skill

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -22,6 +23,7 @@ def project(tmp_path, monkeypatch):
     (common / "info").mkdir(parents=True)
     (common / "info/exclude").write_bytes(b"# user\n/other\n")
     monkeypatch.setattr(tasks, "git_directories", lambda _: SimpleNamespace(common_dir=common))
+    monkeypatch.setattr(tasks, "run_git", lambda *_: subprocess.CompletedProcess([], 1, "", ""))
     monkeypatch.setattr(session_issuance, "stamp_path_for_identity", lambda _: root / "stamp.json")
     monkeypatch.setattr(
         session_issuance, "_legacy_stamp_path", lambda _: root / "legacy-stamp.json"
@@ -491,3 +493,93 @@ def test_task_inspection_resolves_git_directories_once(project, monkeypatch):
     monkeypatch.setattr(tasks, "git_directories", directories)
     assert tasks.inspect(project.root, project.data).pending
     assert calls == [project.root]
+
+
+@pytest.mark.parametrize("owned", [False, True])
+@pytest.mark.parametrize("disabled", [False, True])
+def test_tracked_task_file_is_preserved_with_informational_notice(
+    tmp_path, monkeypatch, owned, disabled
+):
+    def git(*args):
+        result = subprocess.run(
+            ["git", *args], cwd=tmp_path, capture_output=True, text=True, timeout=30, check=True
+        )
+        return result.stdout
+
+    git("init", "-q")
+    data = tmp_path / ".booley_project"
+    data.mkdir()
+    task_file = tmp_path / ".vscode/tasks.json"
+    if owned:
+        tasks.reconcile(tmp_path, data)
+    else:
+        task_file.parent.mkdir()
+        task_file.write_text('{"version":"2.0.0","tasks":[]}\n')
+    git("add", "-f", ".vscode/tasks.json")
+    if disabled:
+        (data / "booley.toml").write_text("[sandbox]\ndashboard = false\n")
+    before = {
+        path.relative_to(tmp_path): path.read_bytes()
+        for path in tmp_path.rglob("*")
+        if path.is_file() and ".git" not in path.parts
+    }
+    with monkeypatch.context() as changed_task:
+        changed_task.setattr(tasks, "TASK", {**tasks.TASK, "command": "booley dashboard --new"})
+        plan = tasks.inspect(tmp_path, data)
+        assert not plan.pending and not plan.diagnostics
+        assert len(plan.notices) == (0 if disabled else 1)
+        if not disabled:
+            assert plan.notices == (
+                "Dashboard task not installed: .vscode/tasks.json is tracked by Git; add the task yourself or set [sandbox].dashboard = false",
+            )
+        assert not tasks.reconcile(tmp_path, data).applied
+    after = {
+        path.relative_to(tmp_path): path.read_bytes()
+        for path in tmp_path.rglob("*")
+        if path.is_file() and ".git" not in path.parts
+    }
+    assert after == before
+
+
+@pytest.mark.parametrize("check_only", [False, True])
+def test_init_tracked_task_notice_is_one_informational_line(
+    tmp_path, monkeypatch, capsys, check_only
+):
+    from booley.harness import init_cmd
+    from booley.harness.setup.common import InitContext
+
+    notice = (
+        "Dashboard task not installed: .vscode/tasks.json is tracked by Git; "
+        "add the task yourself or set [sandbox].dashboard = false"
+    )
+    plan = SimpleNamespace(dashboard_tasks=tasks.TaskPlan(notices=(notice,)), pending_details=())
+    monkeypatch.setattr(init_cmd, "_interactive_precondition_failed", lambda *a, **kw: False)
+    monkeypatch.setattr(
+        init_cmd,
+        "_interactive_spec_sources",
+        lambda *a, **kw: SimpleNamespace(build=lambda: None, mask_paths=()),
+    )
+    monkeypatch.setattr(init_cmd, "_inspect_interactive_plan", lambda *a: plan)
+    monkeypatch.setattr(
+        init_cmd,
+        "_apply_interactive_plan",
+        lambda *a: pytest.fail("informational plan should not need changes"),
+    )
+    ctx = InitContext(project_root=tmp_path, check_only=check_only)
+    init_cmd._step_interactive(ctx)
+    output = capsys.readouterr().out
+    assert output.count(notice) == 1
+    assert "[!!]" not in output
+    assert ctx.results[-1].status == "skip"
+
+
+def test_git_tracking_failure_refuses_task_mutation(project, monkeypatch):
+    monkeypatch.setattr(
+        tasks,
+        "run_git",
+        lambda *_: subprocess.CompletedProcess([], 128, "", "Git index unavailable"),
+    )
+    plan = tasks.inspect(project.root, project.data)
+    assert not plan.pending
+    assert "Git index unavailable" in plan.diagnostics[0]
+    assert not project.file.exists()

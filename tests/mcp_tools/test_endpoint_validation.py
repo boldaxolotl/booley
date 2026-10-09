@@ -164,3 +164,51 @@ def test_unavailable_validator_dependency_skips_validation(project, monkeypatch,
     with caplog.at_level(logging.DEBUG, logger="booley.mcp.endpoint_validation"):
         validate_custom_endpoints_and_criteria(project[0])
     assert "validation skipped (imports unavailable)" in caplog.text
+
+
+@pytest.mark.parametrize("conflict", [False, True])
+def test_external_project_directory_has_doctor_preflight_parity(tmp_path, monkeypatch, conflict):
+    from booley.harness import doctor
+    from booley.runtime.project_dir import reset_cache
+
+    root = tmp_path / "design"
+    root.mkdir()
+    external = tmp_path / "external-project-data"
+    (external / "mcp_tools").mkdir(parents=True)
+    (external / "criteria.toml").write_text(
+        '[lint_clean]\ndescription = "Conflict"\n'
+        if conflict
+        else '[custom_gate]\ndescription = "Custom"\n'
+    )
+    _endpoint(external, satisfies="['custom_gate']")
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(external))
+    reset_cache()
+    outcomes = []
+    doctor._check_custom_endpoints_and_criteria(
+        root,
+        lambda message: outcomes.append(("pass", message)),
+        lambda message, fix="": outcomes.append(("fail", message)),
+    )
+    if conflict:
+        with pytest.raises(TicketPreflightError, match="CRITERIA CONFLICT"):
+            _validate_custom_endpoints_and_criteria(root)
+        assert outcomes == [("fail", "custom endpoint/Criteria validation failed")]
+    else:
+        _validate_custom_endpoints_and_criteria(root)
+        assert outcomes == [("pass", "custom endpoints and Criteria validated")]
+    assert not (root / ".booley_project").exists()
+
+
+def test_doctor_source_checkout_validation_is_failure_not_traceback():
+    from pathlib import Path
+
+    from booley.harness import doctor
+
+    outcomes = []
+    doctor._check_custom_endpoints_and_criteria(
+        Path(doctor.__file__).resolve().parents[3],
+        lambda _: pytest.fail("Source Checkout was accepted as a Project"),
+        lambda message, fix="": outcomes.append(message),
+    )
+    assert len(outcomes) == 1
+    assert "Source Checkout cannot be initialized or used as a Project" in outcomes[0]

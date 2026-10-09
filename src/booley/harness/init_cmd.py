@@ -1410,6 +1410,8 @@ def _step_interactive(
     plan = _inspect_interactive_plan(ctx, request)
     if plan is None:
         return
+    for notice in plan.dashboard_tasks.notices:
+        info(notice)
     if ctx.check_only or (not plan.pending_details and not ctx.force):
         _report_interactive_state(ctx, plan)
         return

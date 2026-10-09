@@ -85,7 +85,7 @@ def test_retired_command_after_variable_global_values(nargs, values, command, mo
     assert capsys.readouterr().err == cli.RETIRED_COMMAND_POINTERS[command] + "\n"
 
 
-@pytest.mark.parametrize("prefix", [["-p/x"], ["-C/x"], ["--help"], ["--version"], ["--"]])
+@pytest.mark.parametrize("prefix", [["-C/x"], ["--proj", "/absent"], ["--"]])
 @pytest.mark.parametrize("command", ["run", "board"])
 def test_retired_command_after_attached_or_zero_arity_options(
     prefix, command, monkeypatch, capsys
@@ -103,3 +103,37 @@ def test_required_global_value_is_not_a_command(nargs):
     parser.add_argument("--extra", nargs=nargs)
     assert cli._argv_command(["--extra", "board"], parser) is None
     assert cli._argv_command(["--extra", "board", "goal", "status"], parser) == "goal"
+
+
+@pytest.mark.parametrize("flag", ["--version", "-h", "--help"])
+@pytest.mark.parametrize("command", ["run", "board"])
+def test_global_exit_option_before_retired_command_wins(flag, command, monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["booley", flag, command])
+    with pytest.raises(SystemExit) as caught:
+        cli._parse_cli()
+    assert caught.value.code == 0
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert "booley" in captured.out
+    assert "/booley-goal" not in captured.out
+
+
+def test_preparser_global_options_match_root_parser():
+    root = cli._build_parser()
+    globals_parser = cli._global_options_parser()
+
+    def options(parser):
+        return {
+            option: action.nargs for action in parser._actions for option in action.option_strings
+        }
+
+    assert options(globals_parser) == options(root)
+    assert globals_parser.allow_abbrev == root.allow_abbrev
+
+
+def test_nonexistent_short_project_option_is_rejected(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["booley", "-p/x", "run"])
+    with pytest.raises(SystemExit) as caught:
+        cli._parse_cli()
+    assert caught.value.code == 2
+    assert "/booley-goal" not in capsys.readouterr().err

@@ -15,7 +15,11 @@ from booley.core.boundary import require_dict
 from booley.core.file_lock import nonblocking_file_lock
 from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.jsonc import Document, Node
-from booley.runtime.project_repositories import GitDirectoryInspectionError, git_directories
+from booley.runtime.project_repositories import (
+    GitDirectoryInspectionError,
+    git_directories,
+    run_git,
+)
 from booley.runtime.safe_storage import refuse_symlinks
 
 logger = logging.getLogger(__name__)
@@ -49,6 +53,7 @@ class TaskPlan:
     diagnostics: tuple[str, ...] = ()
     created_vscode: bool = False
     remove_vscode: Path | None = None
+    notices: tuple[str, ...] = ()
 
     @property
     def pending(self) -> bool:
@@ -113,8 +118,17 @@ class _TaskFiles:
 
 def _inspect(root: Path, project_dir: Path, common_dir: Path) -> TaskPlan:
     folder = root / ".vscode"
-    ownership = _bytes(project_dir / "runtime/dashboard-task.json")
     active = enabled(project_dir)
+    tracked = run_git(root, "ls-files", "--error-unmatch", "--", ".vscode/tasks.json")
+    if tracked.returncode == 0:
+        notice = (
+            "Dashboard task not installed: .vscode/tasks.json is tracked by Git; "
+            "add the task yourself or set [sandbox].dashboard = false"
+        )
+        return TaskPlan(notices=(notice,)) if active else TaskPlan()
+    if tracked.returncode != 1:
+        raise OSError(f"could not inspect Dashboard task Git tracking: {tracked.stderr.strip()}")
+    ownership = _bytes(project_dir / "runtime/dashboard-task.json")
     if not active and ownership is None:
         return TaskPlan()
     owner = (

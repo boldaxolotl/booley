@@ -2704,3 +2704,68 @@ def test_worktree_link_repair_silently_skips_goal_and_user_worktrees(
     assert not (tmp_path / ".booley_project/tickets").exists()
     assert (checkout / ".git").read_bytes() == before
     assert ctx.results[-1].status == "skip"
+
+
+def test_worktree_link_repair_maps_foreign_parent_to_local_workspace(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from booley.runtime import session_runtime, worktree_paths
+    from booley.runtime.worktrees import WorktreeEntry
+    from booley.ticket_board import io
+
+    directory = tmp_path / ".booley_project/worktrees"
+    checkout = directory / "demo"
+    checkout.mkdir(parents=True)
+    (checkout / ".git").write_text("gitdir: /work/.git/worktrees/demo\n")
+    tickets = tmp_path / "tickets"
+    tickets.mkdir()
+    (tickets / "demo.md").write_text("recorded Ticket\n")
+    monkeypatch.setattr(worktree_paths, "relative_worktree_paths", lambda _: True)
+    monkeypatch.setattr(worktree_paths, "worktree_state_dir", lambda _: directory.parent)
+    monkeypatch.setattr(session_runtime, "assert_worktree_repair_safe", lambda _: None)
+    monkeypatch.setattr(io, "TicketIO", lambda *a, **kw: SimpleNamespace(tickets_dir=tickets))
+    entry = WorktreeEntry(
+        Path("/booley-project/worktrees/demo"), branch="refs/heads/booley-generation/demo/1"
+    )
+    monkeypatch.setattr(git_hooks, "list_worktrees", lambda _: (entry,))
+    repaired = []
+
+    def repair(root, tio, slug, local, linked):
+        assert (root, tio.tickets_dir, slug, local, linked) == (
+            tmp_path,
+            tickets,
+            "demo",
+            directory,
+            [checkout],
+        )
+        repaired.append(checkout)
+        return {checkout}
+
+    monkeypatch.setattr(git_hooks, "_repair_recorded_ticket", repair)
+    assert git_hooks._repair_live_ticket_worktrees(_ctx(tmp_path)) == []
+    assert repaired == [checkout]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        OSError("Git unavailable"),
+        subprocess.CalledProcessError(128, ["git", "worktree", "list"]),
+        subprocess.TimeoutExpired(["git"], 30),
+    ],
+)
+def test_worktree_link_repair_reports_git_listing_failure(tmp_path, monkeypatch, failure):
+    from booley.runtime import worktree_paths
+
+    (tmp_path / ".booley_project/worktrees").mkdir(parents=True)
+    monkeypatch.setattr(worktree_paths, "relative_worktree_paths", lambda _: True)
+    monkeypatch.setattr(
+        worktree_paths, "worktree_state_dir", lambda _: tmp_path / ".booley_project"
+    )
+
+    def unavailable(_):
+        raise failure
+
+    monkeypatch.setattr(git_hooks, "list_worktrees", unavailable)
+    (message,) = git_hooks._repair_live_ticket_worktrees(_ctx(tmp_path))
+    assert message == f"could not list worktrees for repair: {failure}"
