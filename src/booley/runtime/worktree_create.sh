@@ -111,6 +111,12 @@ CREATING_MARKER="$WORKTREE_DIR/.creating"
 # references under .booley_project/ are still read.
 mkdir -p "$CWD/.booley_project"
 FUSESOC_IGNORE_MARKER="$CWD/.booley_project/FUSESOC_IGNORE"
+# A standalone Project may have no committed root marker. Quarantine its
+# transient worktrees without adding an untracked input to the clean source.
+if [ "${BOOLEY_WORKTREE_PAIRED_PROJECT:-}" = "1" ] && [ ! -f "$FUSESOC_IGNORE_MARKER" ]; then
+    mkdir -p "$CWD/.booley_project/worktrees"
+    FUSESOC_IGNORE_MARKER="$CWD/.booley_project/worktrees/FUSESOC_IGNORE"
+fi
 if [ ! -f "$FUSESOC_IGNORE_MARKER" ]; then
     printf '# Booley state dir: keep transient worktree .core copies out of FuseSoC/Booley core discovery.\n' \
         > "$FUSESOC_IGNORE_MARKER" 2>/dev/null || true
@@ -294,6 +300,9 @@ if [ "$ON_EXISTING" = "refuse" ]; then
     if [ -n "$_destination_problem" ]; then
         _parent_lock_release
         echo "ERROR: worktree destination is not free ($_destination_problem): $WORKTREE_DIR" >&2
+        if [ -f "$WORKTREE_DIR/.booley_project/.git" ]; then
+            echo "ERROR: remove the paired Project first with 'git -C .booley_project worktree remove $WORKTREE_DIR/.booley_project' once its work is safe" >&2
+        fi
         echo "ERROR: choose another name, or remove the old worktree yourself with 'git worktree remove' once its work is safe" >&2
         exit 1
     fi
@@ -477,7 +486,12 @@ fi
 if [ -d "$CWD/.booley_project" ]; then
     echo "Copying .booley_project/ into worktree..." >&2
     mkdir -p "$WORKTREE_DIR/.booley_project"
-    tar -C "$CWD/.booley_project" --exclude='.git' \
+    PROJECT_COPY_PATTERNS=$(PYTHONPATH="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)${PYTHONPATH:+:$PYTHONPATH}" "${PY[@]}" -c 'from booley.runtime.project_gitignore import project_snapshot_tar_excludes; print("\n".join(project_snapshot_tar_excludes()))')
+    PROJECT_COPY_EXCLUDES=()
+    while IFS= read -r pattern; do
+        PROJECT_COPY_EXCLUDES+=("--exclude=$pattern")
+    done <<< "$PROJECT_COPY_PATTERNS"
+    tar -C "$CWD/.booley_project" "${PROJECT_COPY_EXCLUDES[@]}" --exclude='.git' \
         --exclude='.venv' \
         --exclude='__pycache__' \
         --exclude='baselines' \

@@ -5,7 +5,7 @@ Subcommands:
     run       Persistent ticket execution loop
     chat      Open the Project's configured agent CLI
     board     Print the ticket board
-    worktree  Create a linked worktree with a clean Project snapshot
+    worktree  Create a linked worktree with paired or snapshot Project inputs
     cheat     Print quick-reference cheatsheet
     doctor    Run environment health checks
     bootstrap Prepare Project-independent host resources

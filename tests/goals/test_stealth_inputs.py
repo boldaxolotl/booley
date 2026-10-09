@@ -13,6 +13,7 @@ from booley.goals.model import parse_goal_args
 from booley.goals.target_surface import target_surface_fingerprint
 from booley.mcp.goal_generated_inputs import _committed_only_inputs
 from booley.runtime.project_dir import reset_cache
+from booley.runtime.project_worktree_pairing import pair_project_worktree
 from booley.targets.catalog import TargetCatalog
 from tests.goals.conftest import git
 from tests.goals.test_finish import environment, request
@@ -50,7 +51,7 @@ def stealth(tmp_path_factory):
     git(control, "commit", "-qm", "Project")
     worktree = control / "worktrees/wt"
     git(main, "worktree", "add", "--detach", str(worktree), "HEAD")
-    git(control, "worktree", "add", "--detach", str(worktree / ".booley_project"), "HEAD")
+    assert pair_project_worktree(main, worktree, "wt")
     with pytest.MonkeyPatch.context() as patch:
         patch.setenv("BOOLEY_PROJECT_DIR", str(control))
         reset_cache()
@@ -80,6 +81,14 @@ def test_baseline_resolves_projected_rtl_and_sibling_constraint(stealth, paired)
         paths = {item.path for item in inputs}
         assert paths == {"rtl.v", ".booley_project/cores/constraints/top.sdc"}
         assert all((baseline / item.path).is_file() for item in inputs)
+
+
+def test_user_pairing_pins_project_head_at_goal_entry(stealth):
+    assert stealth.record.paired_project_base_sha == git(stealth.control, "rev-parse", "HEAD")
+    assert (
+        git(stealth.worktree / ".booley_project", "symbolic-ref", "--short", "HEAD")
+        == "booley-worktree/wt"
+    )
 
 
 def test_finish_consumes_committed_projected_rtl_and_sibling_constraint(stealth):

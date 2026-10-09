@@ -830,7 +830,7 @@ booley board                      # show the Ticket board
 booley board --all                # ...including done and archived Tickets
 
 # Worktrees (container)
-booley worktree new <name>        # .booley_project/worktrees/<name>, clean Project snapshot
+booley worktree new <name>        # .booley_project/worktrees/<name>, paired Project or clean snapshot
 
 # Quick reference
 booley cheat                      # the whole cheatsheet
@@ -847,6 +847,17 @@ booley doctor --deep --skip-agent-checks   # CI: skip the login checks
 booley projects                   # list known projects
 booley projects discover <dir>    # find existing projects under <dir>
 ```
+
+`booley worktree new <name>` gives a versioned `.booley_project` repository a
+paired checkout on `booley-worktree/<name>` at its current HEAD. Commit tracked
+changes and untracked files in the Project repository first; an unborn
+repository and an existing Project branch are refused. Ignored state stays
+behind. A non-versioned Project gets a clean snapshot. Run this command from
+the primary workspace; creating from a paired Project checkout is refused.
+The outer checkout starts detached unless `<branch>--<description>` selects an
+existing branch. To remove a paired workspace, remove the Project checkout
+first with `git -C .booley_project worktree remove <worktree>/.booley_project`,
+then run `git worktree remove <worktree>`. The Project branch retains its commits.
 
 `booley projects discover` stops descending at each initialized Project to
 avoid scanning its RTL, vendor, and build trees. Nested Projects are not imported

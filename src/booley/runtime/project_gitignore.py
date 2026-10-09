@@ -117,3 +117,16 @@ def _reincludes_after(keys: list[str], reinclude: str, overridden_pattern: str) 
         return False
     last_reinclude = max(position for position, key in enumerate(keys) if key == reinclude)
     return last_reinclude > max(overridden_positions)
+
+
+def project_snapshot_tar_excludes() -> tuple[str, ...]:
+    """Exclude canonical transient state from the top level of a tar snapshot.
+
+    Goal history arrives from the outer Git checkout; snapshots exclude all
+    live Goal state, including untracked history, via the script's existing rule.
+    """
+    return tuple(
+        "./" + pattern.strip("/")
+        for pattern in PROJECT_GITIGNORE_PATTERNS
+        if not pattern.startswith("!") and not pattern.startswith("goals/")
+    )

@@ -234,3 +234,249 @@ def test_help_never_names_the_preview_surface(capsys) -> None:
         tlr._build_parser().parse_args(["worktree", "new", "--help"])
 
     assert "Goal" not in capsys.readouterr().out
+
+
+@pytest.fixture(scope="module")
+def versioned_project(tmp_path_factory):
+    """A clean Stealth outer repository with a standalone Project at its HEAD."""
+    from booley.runtime.project_gitignore import PROJECT_GITIGNORE
+    from tests.goals.conftest import git
+    from tests.goals.test_stealth_inputs import CORE
+
+    root = tmp_path_factory.mktemp("paired-user") / "main"
+    root.mkdir()
+    git(root, "init", "-q", "-b", "main")
+    _write(root / "rtl.v", "module top; endmodule\n")
+    git(root, "add", ".")
+    git(root, "commit", "-qm", "RTL")
+    _write(root / ".git/info/exclude", "/.booley_project\n/.booley-projected-*.core\n")
+    source = root / ".booley_project"
+    _write(source / ".gitignore", PROJECT_GITIGNORE)
+    _write(
+        source / "booley.toml",
+        "[stealth]\nenabled=true\n[agent.git]\nname='Worktree Test'\nemail='wt@test.invalid'\n",
+    )
+    _write(source / "cores/top.core", CORE)
+    _write(source / "cores/constraints/top.sdc", "create_clock -period 10 [get_ports clk]\n")
+    git(source, "init", "-q", "-b", "main")
+    git(source, "add", ".")
+    git(source, "commit", "-qm", "Project")
+    _write(source / "runtime/doctor/stale.lock", "ignored\n")
+    return root
+
+
+@pytest.fixture
+def python_outer(monkeypatch):
+    """Exercise Python pairing on every OS without depending on a POSIX script."""
+    from tests.goals.conftest import git
+
+    def create(name, root):
+        destination = worktree_cmd.worktree_path(root, name)
+        git(root, "worktree", "add", "--detach", str(destination), "HEAD")
+        _write(destination / ".booley_project/booley.toml", "# script snapshot\n")
+
+    monkeypatch.setattr(worktree_cmd, "_create_outer", create)
+
+
+@_real_script
+def test_user_command_pairs_committed_project_and_prints_removal(versioned_project, capsys):
+    from tests.goals.conftest import git
+
+    root = versioned_project
+    source = root / ".booley_project"
+    assert _new("real-paired", root) == 0
+    worktree = worktree_cmd.worktree_path(root, "real-paired")
+    paired = worktree / ".booley_project"
+    assert (paired / ".git").is_file()
+    assert git(paired, "symbolic-ref", "--short", "HEAD") == "booley-worktree/real-paired"
+    assert git(paired, "rev-parse", "HEAD") == git(source, "rev-parse", "HEAD")
+    assert not (paired / "runtime").exists()
+    assert not git(source, "status", "--porcelain")
+    for key, value in (
+        ("core.autocrlf", "false"),
+        ("submodule.recurse", "false"),
+        ("diff.ignoreSubmodules", "all"),
+        ("user.name", "Worktree Test"),
+        ("user.email", "wt@test.invalid"),
+    ):
+        assert git(paired, "config", "--worktree", "--get", key) == value
+    output = capsys.readouterr()
+    assert output.out.strip() == str(worktree)
+    assert output.err.index("git -C .booley_project worktree remove") < output.err.index(
+        "Then: git worktree remove"
+    )
+    assert _new("real-paired", root) == 1
+    assert "remove the paired Project first" in capsys.readouterr().err
+
+
+def test_python_pairing_accepts_detached_project_head(versioned_project, python_outer):
+    from tests.goals.conftest import git
+
+    root = versioned_project
+    source = root / ".booley_project"
+    git(source, "checkout", "--detach")
+    try:
+        assert _new("detached-project", root) == 0
+        paired = worktree_cmd.worktree_path(root, "detached-project") / ".booley_project"
+        assert git(paired, "rev-parse", "HEAD") == git(source, "rev-parse", "HEAD")
+        assert git(paired, "symbolic-ref", "--short", "HEAD") == "booley-worktree/detached-project"
+    finally:
+        git(source, "checkout", "main")
+
+
+@pytest.mark.parametrize("dirty", ["tracked", "untracked"])
+def test_dirty_project_refuses_and_rolls_back(versioned_project, python_outer, capsys, dirty):
+    from tests.goals.conftest import git
+
+    root = versioned_project
+    source = root / ".booley_project"
+    path = source / ("cores/top.core" if dirty == "tracked" else "untracked.sdc")
+    before = path.read_bytes() if path.exists() else None
+    path.write_text("work in progress\n", encoding="utf-8")
+    name = f"dirty-{dirty}"
+    try:
+        assert _new(name, root) == 1
+        error = capsys.readouterr().err
+        assert path.relative_to(source).as_posix() in error
+        assert "commit them in `.booley_project` first" in error
+        _assert_creation_absent(root, name)
+        assert path.read_text(encoding="utf-8") == "work in progress\n"
+    finally:
+        if before is None:
+            path.unlink()
+        else:
+            path.write_bytes(before)
+        assert not git(source, "status", "--porcelain")
+
+
+def _assert_creation_absent(root, name):
+    from tests.goals.conftest import git
+
+    worktree = worktree_cmd.worktree_path(root, name)
+    assert not worktree.exists()
+    for repository in (root, root / ".booley_project"):
+        listing = git(repository, "worktree", "list", "--porcelain")
+        assert worktree.as_posix() not in listing
+    assert (
+        _git(
+            root / ".booley_project",
+            "show-ref",
+            "--verify",
+            "--quiet",
+            f"refs/heads/booley-worktree/{name}",
+        ).returncode
+        != 0
+    )
+
+
+def test_unborn_project_refuses_and_rolls_back(tmp_path, python_outer, capsys):
+    from tests.goals.conftest import git
+
+    root = tmp_path / "unborn"
+    root.mkdir()
+    git(root, "init", "-q")
+    _write(root / "rtl.v", "module top; endmodule\n")
+    git(root, "add", ".")
+    git(root, "commit", "-qm", "RTL")
+    _write(root / ".git/info/exclude", "/.booley_project\n")
+    source = root / ".booley_project"
+    _write(source / ".gitignore", "worktrees/\n")
+    git(source, "init", "-q")
+    assert _new("unborn", root) == 1
+    assert "commit the Project repository first" in capsys.readouterr().err
+    _assert_creation_absent(root, "unborn")
+
+
+def test_project_branch_collision_preserves_existing_branch(
+    versioned_project, python_outer, capsys
+):
+    from tests.goals.conftest import git
+
+    root = versioned_project
+    source = root / ".booley_project"
+    git(source, "branch", "booley-worktree/collision")
+    head = git(source, "rev-parse", "booley-worktree/collision")
+    assert _new("collision", root) == 1
+    assert "already exists" in capsys.readouterr().err
+    assert not worktree_cmd.worktree_path(root, "collision").exists()
+    assert git(source, "rev-parse", "booley-worktree/collision") == head
+
+
+def test_paired_caller_is_refused_before_outer_creation(versioned_project, python_outer, capsys):
+    root = versioned_project
+    assert _new("paired-caller", root) == 0
+    caller = worktree_cmd.worktree_path(root, "paired-caller")
+    assert _new("nested", caller) == 1
+    assert "run booley worktree new from the primary workspace" in capsys.readouterr().err
+    assert not worktree_cmd.worktree_path(caller, "nested").exists()
+
+
+@pytest.mark.parametrize("failure", ["add", "configure", "identity"])
+def test_pairing_failure_rolls_back_both_repositories(
+    versioned_project, python_outer, monkeypatch, capsys, failure
+):
+    from booley.runtime import project_worktree_pairing as pairing
+
+    root = versioned_project
+    name = f"failure-{failure}"
+    if failure == "identity":
+
+        def fail(*_args):
+            raise pairing.ProjectPairingError("injected identity failure")
+
+        monkeypatch.setattr(pairing, "apply_git_identity", fail)
+    else:
+        original = pairing._require_git
+
+        def require(repository, *args):
+            if (failure == "add" and "add" in args) or (
+                failure == "configure" and args[:2] == ("config", "--worktree")
+            ):
+                if failure == "add":
+                    original(repository, *args)
+                raise pairing.ProjectPairingError("injected failure")
+            return original(repository, *args)
+
+        monkeypatch.setattr(pairing, "_require_git", require)
+    assert _new(name, root) == 1
+    assert "injected" in capsys.readouterr().err
+    _assert_creation_absent(root, name)
+
+
+@_real_script
+def test_snapshot_omits_canonical_transient_paths(project):
+    paths = [
+        "runtime/doctor/stale.lock",
+        "runtime/jobs/slots/slot.json",
+        "tickets/state/t.json",
+        "tickets/waiver-candidates/w.json",
+        ".runtime/build.bin",
+        "flow-reports/report.json",
+        "logs/log.txt",
+        ".baseline-wt-stale/result",
+    ]
+    for path in paths:
+        _write(project / ".booley_project" / path, "stale\n")
+    assert _new("transient-snapshot", project) == 0
+    copied = worktree_cmd.worktree_path(project, "transient-snapshot") / ".booley_project"
+    assert (copied / "booley.toml").is_file()
+    assert all(not (copied / path).exists() for path in paths)
+
+
+@_real_script
+def test_ci_driver_creates_pairing_through_user_command(versioned_project, tmp_path, monkeypatch):
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / ".github/scripts"))
+    import goal_mode_driver as driver
+
+    from tests.goals.conftest import git
+
+    # Exercise the installed CLI entry point from source in a disposable workspace.
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[2] / "src"))
+    workspace = driver.create_workspace(
+        versioned_project, versioned_project / ".booley_project", tmp_path
+    )
+    paired = workspace.worktree / ".booley_project"
+    assert (paired / ".git").is_file()
+    assert git(paired, "symbolic-ref", "--short", "HEAD") == "booley-worktree/ci-demo"
+    assert git(paired, "rev-parse", "HEAD") == git(workspace.project_dir, "rev-parse", "HEAD")
