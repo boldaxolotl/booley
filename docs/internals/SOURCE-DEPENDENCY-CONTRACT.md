@@ -29,7 +29,7 @@ The package layout maps to the canonical concepts indexed by the
 | Specialist | `booley.specialists` | Run a scoped LLM sub-agent and return structured evidence. |
 | Retired Harness | `booley.harness.developer`, `booley.harness.developer_guardrails` | Retained Ticket execution loop until Phase 9a removes it; unreachable through the public CLI. |
 | Goal Mode | `booley.goals` | Translate Goals into Criteria and own Goal Records, their locks and revisions, worktree identity, and the Change Log. |
-| Retired Ticket Board | `booley.ticket_board` | Retain Ticket lifecycle, review, and compatibility evidence adapters until Phase 9a removes or relocates them. |
+| Retired Ticket Board | `booley.ticket_board` | The Ticket workflow is retired, but Goal Mode and Specialists still depend on shared Flow loading, agent execution, waiver, and review modules; unbound MCP calls use `TicketAcceptanceRecorder`, and `booley flow` retains its `BOOLEY_TICKET_FILE` adapter. Phase 9a relocates shared dependencies to `evidence/` or `goals/` and removes Ticket-only adapters before deleting the package. |
 | MCP | `booley.mcp` | Expose Flows and Specialists to calling agents. |
 | B-Wave | `booley.bwave` | Inspect, convert, discover, and query waveform stores; own the B-Wave half of streaming and control human viewing. |
 
@@ -344,7 +344,8 @@ scanning or execution responsibility out of Flows.
 including `AcceptanceRecorder.acceptance_identity()`, the public read of the
 identity evidence is recorded under. `goals.flow_execution.GoalFlowExecution`
 supplies the bound Goal adapter and recorder; `ticket_board.flow_execution`
-supplies the legacy Ticket adapter retained until Phase 9a removes it. Goal
+supplies both the legacy Ticket adapter and `TicketAcceptanceRecorder` used by
+unbound MCP calls. These adapters remain live until Phase 9a removes or relocates them. Goal
 binding and Ticket baseline lookup stay outside deterministic Flow execution
 under their respective composition contracts.
 

@@ -62,6 +62,7 @@ _Avoid_: ticket branch, work branch
 
 **Goal**:
 A named, mandatory boolean condition held by a session in Goal Mode, met only by Booley Flow or Specialist evidence at the session's current code. The agent may ask to relax a Goal; only a human may approve it.
+The internal [Criterion](../src/booley/ticket_board/GLOSSARY.md#execution-and-evidence) vocabulary remains in shared evaluation code; use Goal for the public success condition.
 _Avoid_: Criterion, acceptance criterion, optional criterion, check, gate
 
 **Goalset**:
@@ -85,7 +86,7 @@ The append-only record inside a Goal Record of every approved Goal Change Propos
 _Avoid_: audit log, history, journal
 
 **Protected Input**:
-A file that decides how evidence is produced and is therefore digested at Goal Mode entry: `booley.toml`, `FUSESOC_IGNORE`, and the `hooks`, `.managed`, `generators`, and `mcp_tools` directories under the Project directory. Editing one warns at once and blocks Finish until reverted.
+A file that decides how evidence is produced and is therefore digested at Goal Mode entry: Project configuration and checkout-root `booley.toml`, their legacy `pipeline.toml` siblings, `FUSESOC_IGNORE`, and the `hooks`, `.managed`, `generators`, and `mcp_tools` directories at their consumer roots. The snapshot covers the session Project, worktree, and main-checkout copies that consumers can read (see [Goal baselines](internals/FLOW_IMPLEMENTATION.md#goal-baselines-and-editable-design-inputs)). Editing one warns at once and blocks Finish until reverted.
 _Avoid_: frozen file, locked config, Scope
 
 **Review Package**:
@@ -105,7 +106,7 @@ The diagnostic command for Booley's build and execution machinery in a **Project
 _Avoid_: design verification, Ticket Preflight, acceptance gate
 
 **Workflow Region**:
-An advisory cluster of agent activity, useful Specialists, Booley Flows, and intended outcomes. The three Workflow Regions are `pre_sim`, `core_loop`, and `post_sim`; each Criterion declares its region via the `workflow_region` key in criteria.toml, which drives advisory ordering only. Workflow Regions organize capability guidance without imposing mandatory order, mandatory Flow use, or hidden completion gates in Goal Mode.
+An advisory cluster of agent activity, useful Specialists, Booley Flows, and intended outcomes. The three Workflow Regions are `pre_sim`, `core_loop`, and `post_sim`; each internal [Criterion](../src/booley/ticket_board/GLOSSARY.md#execution-and-evidence) declares its region via the `workflow_region` key in criteria.toml, which drives advisory ordering only. Workflow Regions organize capability guidance without imposing mandatory order, mandatory Flow use, or hidden completion gates in Goal Mode.
 _Avoid_: stage, phase, pipeline step
 
 **Sandbox Policy**:
@@ -137,7 +138,7 @@ A background run of a Booley Flow or Specialist, tracked by a `run_id` through t
 _Avoid_: task, process, async call
 
 **Job Class**:
-The admission category of a Job, determined by which scarce resource it consumes: EDA work inside the Sandbox (`heavy`) or model-API-bound Specialist work (`light`). Each class has a configurable concurrency cap; excess work queues without preempting running work, and a full queue refuses admission. The legacy `ticket` class exists only for retained Ticket execution code until Phase 9a removes it; agent sessions in Goal Mode do not consume it.
+The admission category of a Job, determined by which scarce resource it consumes: EDA work inside the Sandbox (`heavy`) or model-API-bound Specialist work (`light`). Each class has a configurable concurrency cap; excess work queues without preempting running work, and a full queue refuses admission. Queue priority comes from the requester role, independently of class: `interactive` sorts ahead of `ticket`, which is also the fallback priority for an unknown role. The legacy `ticket` class exists only for retained Ticket execution code until Phase 9a removes it; agent sessions in Goal Mode do not consume it.
 _Avoid_: tier, weight, pool, semaphore
 
 ### Configuration
@@ -205,7 +206,7 @@ Protocol-level mechanism used to invoke a Flow or Specialist. MCP tools are impl
 _Avoid_: bare tool, Booley Flow (when referring specifically to the protocol endpoint)
 
 **Elaboration Check**:
-A fast Simulation Flow mode that compiles, elaborates, and links a simulation Target without running its tests. It verifies structural readiness but does not satisfy a simulation Goal.
+A fast Simulation Flow mode that compiles, elaborates, and links a simulation Target without running its tests. It can satisfy an `elab` Goal through `elab_pass` evidence; it does not satisfy a `sim` Goal, which requires test execution.
 _Avoid_: syntax check, compile-only, Elaboration Flow, simulation substitute
 
 **Specialist**:

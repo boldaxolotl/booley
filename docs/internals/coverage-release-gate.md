@@ -14,7 +14,7 @@ The release does not introduce a waveform scorer or approve Waiver Candidates.
 | Gate | Executable evidence |
 |---|---|
 | Interactive Mode | `tests/flows/sim/test_coverage_flow.py`: collect through `SimulateFlow`, then invoke the Analyst with the produced exact path; model transport is substituted and project bytes remain unchanged. |
-| Ticket Mode | The same suite checks independent persisted Simulation/Coverage verdicts for pass/pass, fail/pass, pass/fail, fail/fail, and collector-blocked combinations. Transaction fault tests cover every publication boundary. |
+| Goal Mode | `tests/goals/test_translate.py` checks concrete simulation and coverage Goal translation; `tests/goals/test_recorder.py` checks bound evidence publication, transaction recovery, and acceptance of complete coverage Campaign simulation detail. `tests/flows/sim/test_coverage_flow.py` checks independent Simulation/Coverage verdicts and collector/publication failures; its retained Ticket-adapter cases remain compatibility evidence until Phase 9a. |
 | Campaign V3 storage | `tests/flows/sim/test_coverage_campaign_store.py` checks summary-only reads, deterministic source rollups, exact deep-load equivalence, the V1/V2 hard cutoff, resource ceilings, tamper rejection, safe paths, and create-if-absent publication. Retention and Analyst tests require the integrity-linked point store. |
 | Public contracts | CLI aliases and help, MCP boolean schema, exposed Criterion catalog, generated references, docs-schema tests, and transport schema fixture. |
 | Python | Full `tests/` suite with the hosted platform/marker matrix; inspect all skips. |

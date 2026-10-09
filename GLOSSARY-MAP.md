@@ -19,6 +19,9 @@ the context that owns the work at hand.
 
 - **Goal Mode → Shared Booley**: a Goal is judged by Booley Flow and Specialist
   evidence on shared Targets; the Goal Record holds that evidence.
+- **Goal Mode → Retired Ticket Board**: Goal Mode and Specialists still use
+  shared execution, review, and waiver modules in `ticket_board/`. Phase 9a
+  relocates shared dependencies to `evidence/` or `goals/` before deleting the package.
 - **Shared Booley → B-Wave**: a traced Simulation Flow produces a shared
   Trace Artifact, which B-Wave queries or opens in a Waveform Viewer.
 - **Simulation Coverage → Shared Booley**: a coverage Campaign measures one
@@ -26,7 +29,8 @@ the context that owns the work at hand.
 - **Simulation Coverage → Goal Mode**: a Coverage Criterion supplies the
   evaluation policy for a coverage Goal; its evidence is stored in the Goal Record.
 - **Retired Ticket Board → Shared Booley**: retained Ticket code still uses
-  shared Targets, Booley Flows, and Criteria until Phase 9a removes it.
+  shared Targets and Booley Flows. Its Criterion vocabulary also remains in
+  live internal evidence evaluation until Phase 9a relocates the shared code.
 - **Shared Booley and Public QA → Feedback**: product use records observations; Public
   QA triage files confirmed product and documentation problems as issues.
 - **Public QA → all product contexts**: QA missions hunt for bugs across the

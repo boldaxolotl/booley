@@ -17,7 +17,7 @@ script or tool that consumes Flow output.
 Booley picks the report root in this order:
 
 1. `--report-dir`, if given.
-2. For Ticket and agent-driven runs, `<runtime>/flow-reports`.
+2. When `BOOLEY_RUNTIME_DIR` is set, `<runtime>/flow-reports`. Goal-bound MCP calls supply the Goal Record's runtime directory; retained Ticket-bound calls supply the Ticket runtime.
 3. Otherwise, `flow-reports/` in the Project data directory.
 
 Booley never writes `flow-reports/` into the RTL checkout itself.
@@ -42,7 +42,7 @@ Consumers must use the numbered `<report-root>/<name>/<N>/...` paths.
 | `flow`, `target`, `argv` | Which Flow ran, the requested Target selector, and the parsed arguments. |
 | `exit_code`, `passed` | The overall result. |
 | `criterion_key`, `criterion_met` | The effective key and boolean verdict when exactly one applicable Criterion maps to the invocation and was evaluated. Empty key and `null` verdict for zero/multiple mapped Criteria, no evaluation, or every multi-Target invocation (including partial runs). `passed` remains independent of this verdict. |
-| `timestamp`, `elapsed_s`, `slug` | Start time, duration, and the Ticket slug (empty outside a Ticket). |
+| `timestamp`, `elapsed_s`, `slug` | Start time, duration, and execution identity: the Goal Record ID for Goal-bound runs or the Ticket slug for retained Ticket-bound runs; normally empty for standalone diagnostics. |
 | `detail` | Flow-specific results and pointers to per-Target files. |
 | `eda_tool`, `run_id`, `report_text` | The EDA tool used, the job ID, and the printed verdict card, when present. |
 | `usage` | For Specialists that call a model: `input_tokens`, `output_tokens`, `cached_tokens`, `cache_create_tokens`, and `cost_usd`. |

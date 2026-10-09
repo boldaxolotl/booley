@@ -170,8 +170,11 @@ commands are never dispatched.
 
 ### Goal baselines and editable design inputs
 
-The internal Criteria names below are the policy and evidence keys used to
-evaluate declared Goals. Ordinary CLI Flow calls remain diagnostic; Goal
+The internal [Criteria](../../src/booley/ticket_board/GLOSSARY.md#execution-and-evidence)
+names below are the policy and evidence keys used to evaluate declared Goals.
+This vocabulary remains live in `ticket_board/`, `criteria/`, and `evidence/`;
+Phase 9a relocates shared Ticket-owned implementations before deleting the
+package and its glossary. Ordinary CLI Flow calls remain diagnostic; Goal
 verification uses the MCP-bound execution adapter.
 
 Goal entry pins the clean linked worktree's HEAD as its base and creates a Goal
@@ -181,19 +184,25 @@ a bound Target leaves the Goal unmet until it is restored or a human approves a
 retargeting Goal Change Proposal. Target, test-registry, and SDC/XDC changes are
 exposed in the Review Package rather than guarded by a Ticket Scope allowlist.
 
-Protected Inputs are `booley.toml`, `FUSESOC_IGNORE`, and the Project's `hooks`,
-`.managed`, `generators`, and `mcp_tools` directories. Goal entry captures working
-and committed input identities; drift warns and blocks Finish until reverted.
+Protected Inputs include Project configuration and checkout-root `booley.toml`,
+every configuration candidate's legacy `pipeline.toml` sibling, worktree-root
+`FUSESOC_IGNORE`, and `hooks`, `.managed`, `generators`, and `mcp_tools` at their
+consumer roots. The snapshot covers session-Project, worktree, main-checkout,
+and configured Project-directory candidates according to the readers described
+in `goals/protected_inputs.py`; it includes fallback copies as well as the
+currently selected configuration. Goal entry captures working and committed
+input identities; drift warns and blocks Finish until reverted.
 Run admission and publication bind evidence to the Goal Record, specification
 revisions, source fingerprints, and Target surface. Approved coverage-policy
 changes use the Goal proposal-and-approval transaction described below.
 
 ### Ticket baselines
 
-This section describes implementation retained until Phase 9a removes it.
-It is unreachable through the public `booley run` / `booley board` CLI, which
+This section describes Ticket baseline policy retained until Phase 9a removes it.
+The Ticket workflow is unreachable through the public `booley run` / `booley board` CLI, which
 prints a Goal Mode pointer and exits 2. Its baseline protections do not define
-Goal Mode policy.
+Goal Mode policy. `booley flow` still has a `BOOLEY_TICKET_FILE` adapter, and
+shared `ticket_board/` dependencies remain live until they are relocated.
 
 The retired Ticket Mode treats the Target recipe as acceptance input, not implementation
 work. `create-file` opens a Ticket Workspace before enqueue, so new or changed

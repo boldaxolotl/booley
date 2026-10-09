@@ -56,7 +56,7 @@ Booley has three agent-facing implementation families:
 |--------|-------------------|----------------|
 | `BuiltinFlow` | `sim`, `lint`, `synth`, `fpga` | Run deterministic work and normalize its evidence; these are Booley Flows in Booley's controlled vocabulary |
 | `Specialist` | `reviewer`, `mutation_tester` | Run a focused LLM agent with a purpose-built prompt and interpret its response |
-| Direct `McpTool` subclass | Project-local protocol utilities | Implement orchestration that is neither a deterministic Flow nor a Specialist |
+| Direct `McpTool` subclass | Retained `submit_run_report` | Implement orchestration that is neither a deterministic Flow nor a Specialist; Project-local custom tools can use the same contract |
 
 Built-in and custom MCP tools share the same base interfaces and MCP surface. Their source differs, but the calling model does not. Every agent-facing MCP tool and every subprocess it launches runs inside the Sandbox. A supported host-provisioned EDA installation changes where immutable tool files originate, not where the command executes.
 
@@ -84,7 +84,7 @@ Every agent-facing call follows the same shape:
    update instead follows the invocation error path; see the failure distinctions
    in [Built-in Flow execution](FLOW-EXECUTION.md).
 
-Interactive Mode outside Goal Mode uses the same registry and implementations without persistent Goal state. An active Goal Record adds evidence binding and freshness checks to that same session; it does not launch another agent.
+Interactive Mode outside Goal Mode uses the same registry and implementations without persistent Goal state. An occupying Goal Record adds evidence binding and freshness checks to calls into its worktree; it does not launch another agent. While any Goal Record occupies the Project, every endpoint call without explicit `work_dir` is refused, including calls intended to run outside that worktree.
 
 ### How Host-Provisioned EDA Fits
 
@@ -145,7 +145,8 @@ enabled = false                 # remove one discovered Specialist MCP tool
 - Built-in Flows are scanned from `booley.flows`, Specialists from `booley.specialists`, and protocol utilities from `booley.mcp`.
 - Custom Flows and MCP tools are scanned from `.booley_project/mcp_tools/*.py`.
 - `[flows.<name>].enabled = false` disables a Flow; `[specialists.<name>].enabled = false` disables a Specialist. Protocol utilities have no Project enable switch.
-- The public catalog includes `goal_enter`, `goal_status`, `goal_propose_change`, and `goal_finish` without a rollout switch. Interactive sessions, including those in Goal Mode, hide retired Ticket-only tools such as `submit_run_report`; its implementation is retained until Phase 9a removes it. `tb_coder` is currently de-registered in all modes. Environment-level MCP filters also narrow nested or explicitly scoped servers, but they are not project registration.
+- Interactive, non-nested servers list `goal_enter`, `goal_status`, `goal_propose_change`, and `goal_finish` without a rollout switch. These Goal tools bypass `BOOLEY_MCP_TOOLS`; default and nested servers do not list them.
+- For regular discovered tools, nested allowlists take precedence, followed by `BOOLEY_MCP_TOOLS`, then the `BOOLEY_MCP_MODE=interactive` filter. That interactive filter hides the retired `submit_run_report`; default servers can still expose it, and explicit allowlists can override the interactive filter. Its implementation is retained until Phase 9a removes it. `tb_coder` is currently de-registered in all modes. These environment filters are separate from Project registration.
 - `booley flow` is the human diagnostic entry point for Booley Flows; the MCP tool diagnostic surface covers Specialists and non-Flow endpoints.
 
 ### Execution Boundary
@@ -217,7 +218,7 @@ Criteria themselves are defined and expanded.
 | `BuiltinFlow` | Execute typed requests through a composed Flow session | `sim`, `lint`, `synth`, `fpga` |
 | `BooleyFlow` | Preserve the Custom Flow CLI/subprocess extension contract | Project-local Flows |
 | `Specialist` | Build a focused prompt, run an LLM agent loop, and interpret its output | `reviewer`, `mutation_tester` |
-| `McpTool` | Implement orchestration directly when neither higher-level contract fits | Project-local protocol utilities |
+| `McpTool` | Implement orchestration directly when neither higher-level contract fits; also available to Project-local custom tools | Retained `submit_run_report` |
 
 Import `McpTool` / `McpToolResult` from `booley.mcp.base`, `Specialist`
 from `booley.specialists.specialist`, and `BooleyFlow` from
@@ -296,7 +297,9 @@ The shared `code_modifying` and `satisfies` attributes are explained below.
 
 A direct subclass implements `_run()` and returns a `McpToolResult`.
 The retired `submit_run_report` uses this shape to write Ticket execution state;
-it is hidden from the public catalog and retained until Phase 9a removes it.
+the `BOOLEY_MCP_MODE=interactive` filter hides it, while default servers can still
+expose it and nested or explicit allowlists take precedence over that filter.
+It is a built-in protocol utility in `booley.mcp`, retained until Phase 9a removes it.
 Goal Mode receives its Session Summary through `goal_finish`. A deterministic
 custom subprocess normally remains a `BooleyFlow` so it inherits the common in-runtime lifecycle.
 
@@ -578,7 +581,7 @@ Interactive Mode is the normal way to try a Custom Flow or Specialist. Once the 
 - *"Run `drc_check` on the `variant_a` Target with the signoff rule set."*
 - *"Ask `protocol_reviewer` to check `rtl/axi_slave.sv`."*
 
-The agent selects the arguments and invokes the custom MCP tool. Goal Mode uses the same implementation and registry with an immutable Run Binding; evidence may update the declared Goals when its keys and subject match them. Outside Goal Mode, the verdict is returned to the session without persistent Goal state.
+The agent selects the arguments and invokes the custom MCP tool. Goal Mode uses the same implementation and registry with an immutable Run Binding; evidence may update the declared Goals when its keys and subject match them. Outside Goal Mode, the verdict is returned to the session without persistent Goal state. While any Goal Record occupies the Project, every endpoint call must pass explicit `work_dir`, including diagnostic calls outside the Goal worktree: “Pass work_dir on every Booley call while Goal Mode is active”. This is enforced across endpoint dispatch, report-fetch, and Goal-tool paths rather than only for evidence-producing calls.
 
 #### Diagnose a Flow Through the Direct CLI
 
@@ -602,6 +605,9 @@ data (`flow-reports/` for Flows, `mcp-tool-reports/` for Specialists), unless th
 caller supplies another report destination. Exit codes retain
 their normal meaning: 0 = criterion met, 1 = ran and failed, 2 = unable to reach
 a verdict.
+
+The retained `BOOLEY_TICKET_FILE` environment adapter can still select Ticket
+execution for `booley flow`; Phase 9a removes this compatibility path.
 
 #### Make a Specialist Read-Only
 
@@ -650,8 +656,12 @@ Goals are Goal Mode's mandatory success conditions. Only bound Booley Flow or
 Specialist evidence can meet them; Finish checks current evidence for every Goal
 (see [USAGE.md](../user/USAGE.md#working-with-evidence)). The implementation
 translates Goals into shared Criteria definitions and evidence keys, then routes
-producer `set_criterion()` updates to the declared Goals. Criteria is the internal
-policy/evaluation vocabulary, not a second public workflow.
+producer `set_criterion()` updates to the declared Goals.
+[Criterion](../../src/booley/ticket_board/GLOSSARY.md#execution-and-evidence)
+remains live internal policy/evaluation vocabulary in `ticket_board/`,
+`criteria/`, and `evidence/`, including the shared code used by Goal Mode and
+Specialists. Phase 9a relocates the shared Ticket-owned implementations before
+deleting `ticket_board/` and its glossary; Criteria do not define a second public workflow.
 
 Entry accepts the fixed families in `goals.model.GoalFamily`: `lint`, `sim`,
 `elab`, `synth`, `fpga`, `cycle_count`, `coverage`, `mutation`, and `review`.
@@ -720,7 +730,8 @@ category    = "rtl"
 
 - Project criteria **cannot** override base criteria (hard error in shared endpoint validation, reported by Doctor)
 - An MCP tool with empty `satisfies` gets a warning (probably misconfigured)
-- Multiple MCP tools can claim the same Criterion: the Criterion→MCP-tool map keeps one endpoint per Criterion (the last one discovered that claims it)
+- Each Criterion family has one catalog endpoint binding. Conflicting claims raise `CriterionEndpointCatalogError`; repeated identical bindings are accepted rather than resolved by discovery order.
+- While any Goal Record occupies the Project, every endpoint call without explicit `work_dir` is refused across dispatch paths, even if it is intended as a diagnostic call outside the Goal worktree.
 - A Flow's Criterion contract is independent of whether a supported EDA installation is image- or host-provisioned
 
 ### Extending the Diagnostic Criterion Catalog
