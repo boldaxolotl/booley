@@ -48,3 +48,21 @@ combined six-shard capacity.
 Eight shards spread the same work about 25% thinner per job without changing
 the timing model, the four-worker scheduler, or the job limit. Revisit the
 count with the 20-run comparison above once the suite size settles.
+
+## October 9, 2026: default raised to ten
+
+Eight shards were again close to the 15-minute job limit. On the five `main`
+push runs from
+[37811658032](https://github.com/boldaxolotl/booley/actions/runs/37811658032)
+through [37875988225](https://github.com/boldaxolotl/booley/actions/runs/37875988225),
+the slowest of the eight Windows shards ran 845 to 877 seconds against the
+900-second limit, and the fastest ran 484 to 567 seconds.
+
+Ten shards keep the timing model, the four-worker scheduler, and the job limit
+unchanged. Manual runs can still select four, six, or eight shards. The wide gap
+between the fastest and slowest shard suggests the timing model has drifted
+from real durations; refreshing it is separate work.
+
+The first ten-shard run, pull request run
+[37897720629](https://github.com/boldaxolotl/booley/actions/runs/37897720629),
+ran its slowest Windows shard in 743 seconds and its fastest in 413 seconds.

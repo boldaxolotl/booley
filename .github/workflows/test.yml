@@ -13,11 +13,12 @@ on:
         description: Windows Python 3.14 shard count for CI benchmarking
         required: true
         type: choice
-        default: "8"
+        default: "10"
         options:
           - "4"
           - "6"
           - "8"
+          - "10"
       windows_shard_benchmark:
         description: Run the ordinary Python-code job set for shard benchmarking
         required: true
@@ -90,7 +91,7 @@ jobs:
           python .github/scripts/ci_changes.py
           --repo . --base "${BASE_SHA}" --head "${HEAD_SHA}"
           --event-name "${EVENT_NAME}"
-          --windows-shard-count "${{ inputs.windows_shard_count || '8' }}"
+          --windows-shard-count "${{ inputs.windows_shard_count || '10' }}"
           --windows-shard-benchmark "${{ inputs.windows_shard_benchmark || false }}"
           --riscv-measurement "${{ inputs.riscv_measurement || 'automatic' }}"
           --github-output "${GITHUB_OUTPUT}" --force-all "${FORCE_ALL}"
@@ -426,7 +427,7 @@ jobs:
 
       - name: Prove every sharded test ran exactly once
         env:
-          WINDOWS_SHARD_COUNT: ${{ inputs.windows_shard_count || '8' }}
+          WINDOWS_SHARD_COUNT: ${{ inputs.windows_shard_count || '10' }}
         run: >-
           python .github/scripts/ci_test_shards.py
           --root "${RUNNER_TEMP}/shards"

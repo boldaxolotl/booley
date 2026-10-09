@@ -146,7 +146,7 @@ def _jobs(outputs: dict[str, str]) -> dict[str, bool]:
     return json.loads(outputs["jobs"])
 
 
-@pytest.mark.parametrize("shard_count", [4, 6, 8])
+@pytest.mark.parametrize("shard_count", [4, 6, 8, 10])
 def test_windows_shard_experiment_builds_complete_matrix(shard_count: int) -> None:
     entries = build_test_matrix(shard_count)["include"]
     shards = [entry for entry in entries if entry["mode"] == "shard"]
