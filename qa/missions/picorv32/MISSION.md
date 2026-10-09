@@ -147,11 +147,14 @@ Try:
 - With participating destination checkouts clean, create a new linked worktree. Give a
   new Codex child `$booley-goal` plus `goals/evolution.md`. Before entry, the
   operator extracts the installed manual's normative Zbb encodings and semantics
-  for all 18 ops into `docs/riscv-zbb-spec.html`. Keep exact source bytes,
-  including the relevant headings; record the installed manual's path, SHA-256
-  and source byte range(s) beside the excerpt. Verify it is self-contained and
-  no longer than 30,000 UTF-8 characters, then commit both files. Bind spec review
-  to the excerpt, which the reviewer reads in full. With Vivado, the operator
+  for all 18 ops, including their headings, as plain text with HTML tags removed,
+  into `docs/riscv-zbb-spec.txt`. Record the installed manual's path, SHA-256,
+  source byte range(s) and the tag-stripping step beside the excerpt. The
+  reviewer reads at most 30,000 characters: if the text is longer, keep the
+  encodings and semantics of all 18 ops, drop examples and commentary, and record
+  what was dropped. Verify the excerpt is self-contained and within the limit,
+  log its character count, then commit it and its record. Bind spec review to it.
+  When Vivado is already registered and granted (area 11 ran first), the operator
   supplies `goals/fpga.json` as ad-hoc Goals; otherwise log that family as skipped.
 - All 18 Zbb ops match the manual; `ENABLE_ZBB` defaults to 0 in core, AXI and
   WB, registered PCPI responds in one cycle, and the disabled test arms MMIO

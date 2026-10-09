@@ -163,13 +163,20 @@ def test_uart_review_contract_contains_frozen_spec_text() -> None:
 
 def test_capability_map_links_resolve_to_mission_areas() -> None:
     document = QA_ROOT / "AREAS.md"
-    links = re.findall(r"\[([^]]+)\]\(([^)]+)\)", document.read_text(encoding="utf-8"))
+    links = re.findall(
+        r"\[([^]]+)\]\(([^)]+)\)( \(optional\))?", document.read_text(encoding="utf-8")
+    )
     assert links
-    for label, link in links:
+    for label, link, marker in links:
         assert "#" not in link, link
         mission = document.parent / link
         assert mission.is_file(), link
-        area_names = re.findall(
-            r"^### \d+\. ([\w-]+) —", mission.read_text(encoding="utf-8"), re.MULTILINE
+        headings = dict(
+            re.findall(
+                r"^### \d+\. ([\w-]+) —(.*)$", mission.read_text(encoding="utf-8"), re.MULTILINE
+            )
         )
-        assert label.split("/", 1)[1] in area_names, label
+        area = label.split("/", 1)[1]
+        assert area in headings, label
+        # The map marks exactly the areas the mission schedules outside its primary timebox.
+        assert bool(marker) == ("optional follow-up" in headings[area]), label

@@ -1,7 +1,7 @@
 # Goalset: evolution
 
 Implement RV32 Zbb PCPI from the integrated Dhrystone result. The public ISA
-Zbb excerpt is installed at `docs/riscv-zbb-spec.html` before entry; review
+Zbb excerpt is installed at `docs/riscv-zbb-spec.txt` before entry; review
 that self-contained excerpt. Implement ANDN, ORN, XNOR, CLZ, CTZ, CPOP, MIN, MINU, MAX, MAXU,
 SEXT.B, SEXT.H, ZEXT.H, ROL, ROR, RORI, ORC.B and REV8. Add `ENABLE_ZBB`,
 default 0, consistently in core, AXI and WB, using registered internal PCPI
@@ -117,7 +117,7 @@ gating. Implementation assets are `picorv32.v`, `testbench.v`, `testbench_wb.v`,
     "family": "review",
     "review": "rtl_spec",
     "verdict": "done",
-    "spec": "docs/riscv-zbb-spec.html",
+    "spec": "docs/riscv-zbb-spec.txt",
     "origin": "evolution"
   },
   {

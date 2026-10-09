@@ -289,7 +289,7 @@ Try:
   `resources.md` rows. Credentials, base images, caches and remotes are unchanged; nothing pushed.
 
 ## Known traps
-- Integrate both Goal Branch and Project-data branch before starting repair.
+- Integrate the Goal Branch, and the Project-data branch when `booley worktree new` printed a paired checkout, before starting repair.
 - Gearbox off follows the pinned pytest driver, not the Makefile default; RX/TX keep IFG 12 and 0.
 - `src/*/lib/taxi` symlinks point to the repo root (infinite walks); use `FUSESOC_IGNORE` or real
   paths, not `.f` hops.

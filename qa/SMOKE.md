@@ -21,7 +21,8 @@ first line of the report.
 7. Synthesis runs and reports area and timing.
 8. `bwave` lists signals from a trace the simulation produced.
 9. One Goal Mode round trip succeeds in a clean linked worktree: invoke
-   `$booley-goal`, enter with a lint Goal, run lint with `work_dir`, inspect
+   the booley-goal skill (`$booley-goal` in Codex, `/booley-goal` in Claude
+   Code), enter with a lint Goal, run lint with `work_dir`, inspect
    `goal_status`, commit the work, and Finish with a Session Summary. Read the
    Review Package and committed summary (or explicit local-publication reason).
 10. Booley's cleanup leaves no orphan containers, worktrees, or branches.

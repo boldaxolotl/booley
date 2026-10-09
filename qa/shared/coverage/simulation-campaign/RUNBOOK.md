@@ -36,25 +36,37 @@ linked worktree. Start a Codex child with `$booley-goal` naming a `sim` Goal on
 MCP call. Goal evidence uses purpose `goal_evidence`, subject `goal` and an
 identity with record ID, Goal keys and spec revisions. Preserve the Goal Record
 and its `logs/acceptance/` evidence. Before execution, archive its Development
-State and evidence ledger. With the Goal active, restart the run-owned Codex
-child/MCP launcher under `../faults/filesystem.py` from the shared RUNBOOK
-fault table, before the first collection call. Use `--operation rename`, the exact captured
+State and evidence ledger.
+
+The Goal state is written by the Flow process that the container's shared HTTP
+MCP server starts, not by the Codex child. The child reaches that server
+through a URL, so an injection on the child never reaches the writer. Run this
+step with no other MCP client attached to the container. With the Goal active
+and before the first collection call, stop the running server
+(`python -m booley.mcp.server --transport http`; its log is
+`/tmp/booley_mcp_http.log`) and start the same command under `../faults/filesystem.py` from the shared RUNBOOK fault
+table, with `BOOLEY_MCP_MODE=interactive` and without `BOOLEY_NESTED_AGENT`,
+`BOOLEY_NESTED_MCP_TOOLS` or `BOOLEY_MCP_TOOLS` (as the container start does).
+Use `--operation rename`, the exact captured
 `/goals/<record-id>/booley_state.json` suffix, the resolved control Project as
-`--owned`, `--gate acceptance` and the archived state as `--baseline-state`.
-Use a fresh control directory, the compiled `boundary.so` and a bounded
-`--timeout` suitable for this one sim call. Verify the process-local injection
-reaches the child's MCP server; it must not affect another client. The
-acceptance gate lets earlier state writes pass. The Campaign publishes all
+`--owned`, `--gate acceptance`, the archived state as `--baseline-state`, a
+fresh control directory, the compiled `boundary.so` and a `--timeout` longer
+than the sim call. Confirm the server answers before the child calls it.
+
+The acceptance gate lets earlier state writes pass. The Campaign publishes all
 terminal Results before the gate fails the Goal state replacement whose random
-temporary JSON adds a new transaction. Save that paused JSON,
-the consumed event and the failed response; a missing handshake is a fixture
-failure. The child collects through MCP `sim(work_dir=..., coverage=true)`
-using the complete suite. CLI Flows bind no Goal evidence. After the failed
-call, stop only the faulted child/server and its owned producer group.
+temporary JSON adds a new transaction. The child collects through MCP
+`sim(work_dir=..., coverage=true)` using the complete suite; CLI Flows bind no
+Goal evidence. After the failed call, send SIGTERM to the faulted server
+process only (not to the wrapper), so `filesystem.py` sees it exit, services
+the last event and checks `consumed`. Save the paused JSON, the consumed event,
+the failed response and the wrapper's exit status. A missing `consumed` marker
+is a fixture failure; a wrapper `TimeoutError` means the server was not stopped
+and the step must be repeated.
 
 Archive the failed publication, evidence-ledger intent, transaction, evidence records,
 Development State, attempt inventory, summary, and incomplete compatibility
-projection. Restart the child/server without the injection and resume the exact
+projection. Start the server again the normal way (no injection) and resume the exact
 printed Manifest through the child's MCP `sim` call with absolute `work_dir`
 and the same Goal Record, using its `resume_from` argument. Require
 record-or-verify recovery of the same intent, exactly one

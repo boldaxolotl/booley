@@ -236,18 +236,23 @@ Try:
 - In a separate disposable Project/Goal using `../../shared/coverage/goals/waiver.json`,
   use the fixed eligible zero-hit parity points and real proof from area 4.
   Configure and commit waiver settings before entry, then collect and have the
-  Analyst screen `waiver-candidates.json`. Create exact `waiver` proposals by
-  `goal_key`/`candidate_id`: operator rejects one and approves the other with
-  reasons (form or quoted chat). Preserve rejection and Change Log provenance.
-  At the Goal's 100% floor, unwaived coverage is 6/8 (75%); approving one
-  bit-zero waiver leaves 6/7 and the Goal unmet: commit its installed files and
-  recollect to verify that result. After the rejection probe, have the Analyst
-  screen the new Campaign and create a fresh exact proposal for its remaining
-  point. Approve it with a reason, commit and recollect; both bound waivers
-  remove those points, yielding 6/6 (100%).
+  Analyst screen `waiver-candidates.json`. `sim_waiver` counts its clock points,
+  so record the observed toggle numerator/denominator instead of expecting
+  `sim_toggle`'s 8-point figures. The Goal stays unmet until both bit-zero
+  points are waived.
+- Create exact `waiver` proposals by `goal_key`/`candidate_id` for both bit-zero
+  points. The operator approves one with a reason (form or quoted chat): commit
+  its installed files and recollect; the Goal is still unmet. Approve the second,
+  commit and recollect: only now is the floor met. Preserve Change Log
+  provenance for both decisions.
+- Rejection probe, in its own disposable Goal record: create a proposal for one
+  bit-zero point and reject it with a reason. Re-screen the next Campaign: the
+  rejected point is filtered by rejection, and a new proposal for it is refused
+  in this record. That is the designed durable rejection, not a defect. Abandon
+  the record.
 - Approval installs bound waiver/proof files; commit those before Finish.
   Rerun coverage for fresh strict evidence: approval alone cannot meet the Goal.
-  Finish or explicitly abandon this disposable record. Never waive the decoder
+  Finish or explicitly abandon each disposable record. Never waive the decoder
   gap in the main Goal; its completion requires the TB change.
 Look for: stale evidence honored, Analyst self-approval, candidates treated as
 strict evidence, protected config edits during active work or uncommitted approvals.
