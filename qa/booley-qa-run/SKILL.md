@@ -108,14 +108,10 @@ Write each finding the moment you observe it, before any workaround or retry.
    Record the choice in `log.md` before continuing.
 3. **Smoke** (when requested). Walk `qa/SMOKE.md` from the derived source root and put its table in
    `log.md`.
-4. **Mission.** Read `qa/missions/<mission>/MISSION.md` and work its areas in
-   order under the principles above. Keep `log.md` current after each area:
+4. **Mission.** Read `qa/missions/<mission>/MISSION.md` and apply
+   `qa/shared/GOAL-CHILD.md` for its Goal areas. Work the areas in priority order
+   under the principles above. Keep `log.md` current after each area:
    `done`, `partial`, or `skipped`, with the reason.
-   For design work, start the mission's Codex Goal child in the Sandbox and send
-   `/booley-goal` plus its prompt. Keep hidden inputs with the operator. Act as
-   deciding human for disposable proposals (exact quoted decision/reason or
-   client form); silence keeps proposals pending. Pass `work_dir` on every MCP
-   call while any Goal is active. Resolve each Goal before closing its area.
 5. **Cleanup.** Run the mission's cleanup area (Booley's own cleanup is under
    test), then release every remaining `resources.md` row and mark it. Keep the
    run dir. A release you cannot complete is marked `failed` with a note, and

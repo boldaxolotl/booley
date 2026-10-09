@@ -5,15 +5,12 @@ MMIO/timing addenda. Author owned RTL and self-checking SystemVerilog TB assets;
 preserve interface, full required behavior and Target contracts. Use only the
 mission's allowed documentation and ordinary Project inspection; retrieve no
 existing UART RTL or tests. Report corpus conflicts instead of inventing rules.
-`spec/contract.md` links the immutable corpus and MMIO contract for spec
-review. Require fresh netlist/reports for synthesis. Do not invent relative PPA,
+`spec/contract.md` contains the frozen register definitions and MMIO addendum
+for spec review. Require fresh netlist/reports for synthesis. Do not invent relative PPA,
 hidden coverage or mutation gates. Operator conformance evaluation is separate
 from Finish; the child sees no evaluator implementation, seed or generated cases.
 
 ## Goals
-
-All Goals are mandatory. Copy this file into the resolved Project's `goalsets/`
-before entry. Follow the candidate's `booley-goal/SKILL.md` and USAGE Goal Mode.
 
 ```json
 [

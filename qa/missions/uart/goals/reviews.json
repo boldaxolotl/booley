@@ -1,14 +1,5 @@
 [
   {
-    "family": "mutation",
-    "target": "sim_uart",
-    "scope": [
-      "rtl/"
-    ],
-    "min_detected": 2,
-    "total": 3
-  },
-  {
     "family": "review",
     "review": "rtl_security",
     "verdict": "done"

@@ -24,9 +24,6 @@ mandatory. Do not edit existing Taxi files or weaken upstream tests.
 
 ## Goals
 
-All Goals are mandatory. Copy this file into the resolved Project's `goalsets/`
-before entry. Follow the candidate's `booley-goal/SKILL.md` and USAGE Goal Mode.
-
 ```json
 [
   {

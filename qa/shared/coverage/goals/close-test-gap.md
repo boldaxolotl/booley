@@ -10,9 +10,6 @@ clean committed TB-only diff and Session Summary.
 
 ## Goals
 
-All Goals are mandatory. Copy this file into the resolved Project's `goalsets/`
-before entry. Follow the candidate's `booley-goal/SKILL.md` and USAGE Goal Mode.
-
 ```json
 [
   {

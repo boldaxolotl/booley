@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from booley.goals.model import parse_goal_args
+from booley.goals.model import GoalArg, parse_goal_args
 from booley.goals.translate import translate_goals
 
 QA_ROOT = Path(__file__).resolve().parents[2] / "qa"
@@ -112,6 +112,11 @@ AD_HOC_FIXTURES = sorted(QA_ROOT.glob("missions/*/goals/*.json")) + sorted(
 )
 
 
+def _goal_args(text: str) -> tuple[GoalArg, ...]:
+    raw = json.loads(text.replace("<target>", "qa_target").replace("<spec>", "docs/spec.md"))
+    return parse_goal_args(raw)
+
+
 @pytest.mark.parametrize("fixture", GOAL_FIXTURES, ids=lambda p: str(p.relative_to(QA_ROOT)))
 def test_goalsets_parse_and_translate(fixture: Path) -> None:
     markdown = fixture.read_text(encoding="utf-8")
@@ -119,8 +124,7 @@ def test_goalsets_parse_and_translate(fixture: Path) -> None:
     assert "## Goals" in markdown
     blocks = JSON_BLOCK.findall(markdown)
     assert len(blocks) == 1
-    raw = json.loads(blocks[0].replace("<target>", "qa_target").replace("<spec>", "docs/spec.md"))
-    args = parse_goal_args(raw)
+    args = _goal_args(blocks[0])
     translated = translate_goals(args)
     assert translated.goals
     assert all(arg.origin == fixture.stem for arg in args)
@@ -129,18 +133,32 @@ def test_goalsets_parse_and_translate(fixture: Path) -> None:
 
 @pytest.mark.parametrize("fixture", AD_HOC_FIXTURES, ids=lambda p: str(p.relative_to(QA_ROOT)))
 def test_ad_hoc_goals_parse_and_translate(fixture: Path) -> None:
-    raw = json.loads(
-        fixture.read_text(encoding="utf-8")
-        .replace("<target>", "qa_target")
-        .replace("<spec>", "docs/spec.md")
-    )
-    translated = translate_goals(parse_goal_args(raw))
+    translated = translate_goals(_goal_args(fixture.read_text(encoding="utf-8")))
     assert translated.goals
     assert all(goal.origins == ("ad-hoc",) for goal in translated.goals)
 
 
-def _heading_anchor(heading: str) -> str:
-    return re.sub(r"[^\w\- ]", "", heading.lower()).replace(" ", "-")
+@pytest.mark.parametrize(
+    "fixture",
+    [*GOAL_FIXTURES, *AD_HOC_FIXTURES],
+    ids=lambda p: str(p.relative_to(QA_ROOT)),
+)
+def test_mutation_scopes_name_source_files(fixture: Path) -> None:
+    text = fixture.read_text(encoding="utf-8")
+    payload = JSON_BLOCK.findall(text)[0] if fixture.suffix == ".md" else text
+    for goal in translate_goals(_goal_args(payload)).goals:
+        if goal.family.value == "mutation":
+            for entry in goal.params["scope"]:
+                assert not entry.endswith(("/", "\\")), entry
+                assert Path(entry).suffix in {".v", ".sv", ".vhd", ".vhdl"}, entry
+
+
+def test_uart_review_contract_contains_frozen_spec_text() -> None:
+    spec = QA_ROOT / "missions/uart/spec"
+    contract = (spec / "contract.md").read_text(encoding="utf-8")
+    assert (spec / "corpus/hw/ip/uart/doc/registers.md").read_text(encoding="utf-8") in contract
+    assert (spec / "mmio-addendum.md").read_text(encoding="utf-8") in contract
+    assert len(contract) <= 30_000
 
 
 def test_capability_map_links_resolve_to_mission_areas() -> None:
@@ -148,10 +166,10 @@ def test_capability_map_links_resolve_to_mission_areas() -> None:
     links = re.findall(r"\[([^]]+)\]\(([^)]+)\)", document.read_text(encoding="utf-8"))
     assert links
     for label, link in links:
-        path, anchor = link.split("#", 1)
-        mission = document.parent / path
+        assert "#" not in link, link
+        mission = document.parent / link
         assert mission.is_file(), link
-        headings = re.findall(r"^### (.+)$", mission.read_text(encoding="utf-8"), re.MULTILINE)
-        matches = [heading for heading in headings if _heading_anchor(heading) == anchor]
-        assert len(matches) == 1, link
-        assert label.split("/", 1)[1] == matches[0].split()[1], label
+        area_names = re.findall(
+            r"^### \d+\. ([\w-]+) —", mission.read_text(encoding="utf-8"), re.MULTILINE
+        )
+        assert label.split("/", 1)[1] in area_names, label

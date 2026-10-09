@@ -6,13 +6,13 @@ import hashlib
 import importlib.util
 import json
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from booley.criteria.evidence_ledger import record_or_verify_transaction
+from booley.criteria.evidence_ledger import AcceptanceTransaction, record_or_verify_transaction
 from booley.criteria.state import DevelopmentState
 from booley.goals.model import (
     GoalRecord,
@@ -27,6 +27,25 @@ from booley.goals.translate import translate_goals
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / "qa/shared/coverage/simulation-campaign"
+
+
+@dataclass(frozen=True)
+class TransactionEvidence:
+    intent: Path
+    transaction: Path
+    evidence_root: Path
+    archived: Path
+    failed: Path
+    recovered: Path
+    transaction_id: str
+
+
+@dataclass(frozen=True)
+class RecoveryEvidence:
+    manifest: Path
+    results: list[Path]
+    simulation: Path
+    transaction: TransactionEvidence
 
 
 def _module():
@@ -150,7 +169,7 @@ def _goal_state(tmp_path: Path) -> tuple[DevelopmentState, GoalProjection, dict[
 
 def _recover_transaction(
     tmp_path: Path, facts: dict[str, Any], *, coverage_met: bool
-) -> dict[str, Any]:
+) -> TransactionEvidence:
     state, projection, identity = _goal_state(tmp_path)
     archived = _write(tmp_path / "archived-state.json", state.to_dict(), pretty=True)
     shadow = DevelopmentState.from_json_object(state.to_dict())
@@ -169,8 +188,10 @@ def _recover_transaction(
         if checkpoint == "before:acceptance_state":
             raise OSError("controlled state save failure")
 
-    with pytest.raises(OSError, match="controlled state save failure"):
-        record_or_verify_transaction(
+    def record(
+        checkpoint: Callable[[str], None] | None = None,
+    ) -> AcceptanceTransaction:
+        return record_or_verify_transaction(
             logs,
             state,
             changes,
@@ -178,42 +199,29 @@ def _recover_transaction(
             projection=projection,
             acceptance_facts=facts,
             identity=identity,
-            publication_checkpoint=fail_save,
+            publication_checkpoint=checkpoint,
         )
+
+    with pytest.raises(OSError, match="controlled state save failure"):
+        record(fail_save)
     failed = _write(tmp_path / "failed-state.json", state.to_dict(), pretty=True)
-    transaction = record_or_verify_transaction(
-        logs,
-        state,
-        changes,
-        scope=GOAL_SCOPE,
-        projection=projection,
-        acceptance_facts=facts,
-        identity=identity,
-    )
+    transaction = record()
     # A third call proves product recovery does not select the transaction twice.
-    replay = record_or_verify_transaction(
-        logs,
-        state,
-        changes,
-        scope=GOAL_SCOPE,
-        projection=projection,
-        acceptance_facts=facts,
-        identity=identity,
-    )
+    replay = record()
     assert replay == transaction
     recovered = _write(tmp_path / "recovered-state.json", state.to_dict(), pretty=True)
-    return {
-        "intent": next((logs / "acceptance/intents").glob("*.json")),
-        "transaction": logs / "acceptance/transactions" / f"{transaction.transaction_id}.json",
-        "evidence_root": logs / "acceptance/evidence",
-        "archived": archived,
-        "failed": failed,
-        "recovered": recovered,
-        "transaction_id": transaction.transaction_id,
-    }
+    return TransactionEvidence(
+        intent=next((logs / "acceptance/intents").glob("*.json")),
+        transaction=logs / "acceptance/transactions" / f"{transaction.transaction_id}.json",
+        evidence_root=logs / "acceptance/evidence",
+        archived=archived,
+        failed=failed,
+        recovered=recovered,
+        transaction_id=transaction.transaction_id,
+    )
 
 
-def _acceptance_evidence(tmp_path: Path, *, coverage_met: bool = True) -> dict[str, Any]:
+def _acceptance_evidence(tmp_path: Path, *, coverage_met: bool = True) -> RecoveryEvidence:
     campaign_id = "c3fa3451-3a73-4a43-936c-9a2c40f88d30"
     manifest_value = {
         "$schema": "booley.simulation-campaign-manifest/v1",
@@ -239,23 +247,21 @@ def _acceptance_evidence(tmp_path: Path, *, coverage_met: bool = True) -> dict[s
             "passed": True,
         },
     )
-    return {"manifest": manifest, "results": [result], "simulation": simulation, **recovered}
+    return RecoveryEvidence(manifest, [result], simulation, recovered)
 
 
-def _acceptance_args(evidence: dict[str, Any]) -> tuple[object, ...]:
-    return tuple(
-        evidence[key]
-        for key in (
-            "manifest",
-            "results",
-            "intent",
-            "transaction",
-            "evidence_root",
-            "archived",
-            "failed",
-            "recovered",
-            "simulation",
-        )
+def _acceptance_args(evidence: RecoveryEvidence) -> tuple[object, ...]:
+    transaction = evidence.transaction
+    return (
+        evidence.manifest,
+        evidence.results,
+        transaction.intent,
+        transaction.transaction,
+        transaction.evidence_root,
+        transaction.archived,
+        transaction.failed,
+        transaction.recovered,
+        evidence.simulation,
     )
 
 
@@ -274,20 +280,20 @@ def _mutate_json(path: Path, mutation: Callable[[dict[str, Any]], None]) -> None
     _write(path, value)
 
 
-def _add_extra_record(evidence: dict[str, Any]) -> None:
-    transaction_id = evidence["transaction_id"]
-    extra = evidence["evidence_root"] / f"000000099.tx.{transaction_id}" / "record.json"
+def _add_extra_record(evidence: RecoveryEvidence) -> None:
+    transaction_id = evidence.transaction.transaction_id
+    extra = evidence.transaction.evidence_root / f"000000099.tx.{transaction_id}" / "record.json"
     _write(extra, {"unexpected": True})
 
 
-def _add_duplicate_intent(evidence: dict[str, Any]) -> None:
-    intent = evidence["intent"]
+def _add_duplicate_intent(evidence: RecoveryEvidence) -> None:
+    intent = evidence.transaction.intent
     duplicate = intent.with_name("f" * 64 + ".json")
     duplicate.write_bytes(intent.read_bytes())
 
 
-def _add_duplicate_commit(evidence: dict[str, Any]) -> None:
-    transaction = evidence["transaction"]
+def _add_duplicate_commit(evidence: RecoveryEvidence) -> None:
+    transaction = evidence.transaction.transaction
     duplicate = transaction.with_name("e" * 64 + ".json")
     duplicate.write_bytes(transaction.read_bytes())
 
@@ -297,31 +303,33 @@ def _add_duplicate_commit(evidence: dict[str, Any]) -> None:
     [
         (
             lambda e: _mutate_json(
-                e["intent"], lambda d: d.update(acceptance_facts_sha256="sha256:" + "0" * 64)
+                e.transaction.intent,
+                lambda d: d.update(acceptance_facts_sha256="sha256:" + "0" * 64),
             ),
             "facts digest",
         ),
         (
             lambda e: _mutate_json(
-                e["transaction"], lambda d: d.update(envelope_sha256="sha256:" + "0" * 64)
+                e.transaction.transaction, lambda d: d.update(envelope_sha256="sha256:" + "0" * 64)
             ),
             "envelope digest",
         ),
         (
             lambda e: _mutate_json(
-                e["transaction"], lambda d: d["records"][0].update(transaction_ordinal=1)
+                e.transaction.transaction, lambda d: d["records"][0].update(transaction_ordinal=1)
             ),
             "record ordinal",
         ),
         (
             lambda e: _mutate_json(
-                e["transaction"], lambda d: d["records"][0].update(role="baseline")
+                e.transaction.transaction, lambda d: d["records"][0].update(role="baseline")
             ),
             "record role",
         ),
         (
             lambda e: _mutate_json(
-                e["transaction"], lambda d: d["records"][0].update(sha256="sha256:" + "0" * 64)
+                e.transaction.transaction,
+                lambda d: d["records"][0].update(sha256="sha256:" + "0" * 64),
             ),
             "record digest",
         ),
@@ -336,10 +344,13 @@ def _add_duplicate_commit(evidence: dict[str, Any]) -> None:
         (_add_extra_record, "outside its commit"),
         (_add_duplicate_intent, "multiple acceptance intents"),
         (_add_duplicate_commit, "multiple transactions"),
-        (lambda e: e["failed"].write_text(e["failed"].read_text() + " "), "archived state bytes"),
+        (
+            lambda e: e.transaction.failed.write_text(e.transaction.failed.read_text() + " "),
+            "archived state bytes",
+        ),
         (
             lambda e: _mutate_json(
-                e["recovered"],
+                e.transaction.recovered,
                 lambda d: d["criteria"]["sim_pass_sim_toggle"]["detail"].update(extra=True),
             ),
             "Criteria mutation",
@@ -348,7 +359,7 @@ def _add_duplicate_commit(evidence: dict[str, Any]) -> None:
 )
 def test_acceptance_recovery_validator_rejects_hostile_mutations(
     tmp_path: Path,
-    mutation: Callable[[dict[str, Any]], None],
+    mutation: Callable[[RecoveryEvidence], None],
     message: str,
 ) -> None:
     evidence = _acceptance_evidence(tmp_path)
@@ -366,7 +377,7 @@ def test_acceptance_recovery_rejects_invalid_manifest_reference(
 ) -> None:
     evidence = _acceptance_evidence(tmp_path)
     _mutate_json(
-        evidence["simulation"],
+        evidence.simulation,
         lambda document: document["campaign_manifest"].update({field: value}),
     )
     with pytest.raises(ValueError, match=message):
@@ -416,27 +427,28 @@ def test_recovery_rejects_invalid_goal_identity(
     message: str,
 ) -> None:
     evidence = _acceptance_evidence(tmp_path)
-    _mutate_json(evidence["intent"], mutation)
+    _mutate_json(evidence.transaction.intent, mutation)
     with pytest.raises(ValueError, match=message):
         _module().validate_acceptance_recovery(*_acceptance_args(evidence))
 
 
 def test_recovery_rejects_state_from_another_goal(tmp_path: Path) -> None:
     evidence = _acceptance_evidence(tmp_path)
-    for key in ("archived", "failed", "recovered"):
-        _mutate_json(evidence[key], lambda d: d.update(slug="other-20260922T010000Z"))
+    transaction = evidence.transaction
+    for path in (transaction.archived, transaction.failed, transaction.recovered):
+        _mutate_json(path, lambda d: d.update(slug="other-20260922T010000Z"))
     with pytest.raises(ValueError, match="state Goal record ID differs"):
         _module().validate_acceptance_recovery(*_acceptance_args(evidence))
 
 
 def _mutate_first_record(
-    evidence: dict[str, Any], mutation: Callable[[dict[str, Any]], None]
+    evidence: RecoveryEvidence, mutation: Callable[[dict[str, Any]], None]
 ) -> None:
-    transaction = json.loads(evidence["transaction"].read_text())
+    transaction = json.loads(evidence.transaction.transaction.read_text())
     sequence = transaction["records"][0]["sequence"]
     path = (
-        evidence["evidence_root"]
-        / f"{sequence:09d}.tx.{evidence['transaction_id']}"
+        evidence.transaction.evidence_root
+        / f"{sequence:09d}.tx.{evidence.transaction.transaction_id}"
         / "record.json"
     )
     _mutate_json(path, mutation)

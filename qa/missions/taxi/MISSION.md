@@ -27,32 +27,8 @@ Python stack and five clocks surface stale caches, skipped tests and dropped clo
 - Send `prompts/setup.md` and `prompts/interactive.md` verbatim. The repair
   child gets the failing assertion, expected/observed classes, upstream-test
   contrast, affected file and evidence pointers; hide seed location and fix.
-- The host operator starts a long-lived Codex Goal child in the Sandbox with
-  `booley session enter -- codex ...`, then sends `/booley-goal` and the area's
-  mission prompt. The operator never implements the child's design work. Read
-  `src/booley/data/skills/booley-goal/SKILL.md` (including `review.md`) and
-  `docs/user/USAGE.md` "Goal Mode" from the candidate build for the workflow.
-- The operator is the deciding human for disposable QA proposals: answer entry
-  choices and approve or reject the exact proposal with a reason, through the
-  client form or a message the child quotes as `approval_quote`. A proposal
-  affecting a merged deliverable needs the live maintainer; without one, keep
-  it pending and log it. Silence never supplies approval.
-- While any Goal is active, every MCP Booley call passes absolute `work_dir`;
-  independent non-Goal areas use the primary checkout root. Finish or explicitly
-  abandon every Goal before closing its area. Background children may overlap
-  independent operator areas; keep their owning area open until resolved.
-- Host-issued container commands use `booley session enter -- booley ...`;
-  bare Sandbox commands below are for the child/container terminal.
-- Before entry, copy the selected `goals/*.md` into the resolved Project's
-  `goalsets/`, and commit setup, seeded Goalsets and the managed `.gitignore`.
-  `goals/*.json` are ad-hoc `goal_enter` argument lists. Use unique slugs per run.
-  Design implementations occur only in clean linked Goal worktrees.
-- Operator integration of finished work merges the outer `goal/<slug>-<date>`
-  Goal Branch and the paired `booley-worktree/<name>` Project-data branch into
-  their respective run-owned destinations. Record both in `resources.md`.
-  Preserve the package, remove the paired checkout first using the printed
-  USAGE cleanup steps, and leave both destinations clean in the primary
-  checkout before `booley session enter -- booley worktree new <name>` again.
+- Follow the shared [Goal-child operating rules](../../shared/GOAL-CHILD.md)
+  for every Goal area.
 
 ## Areas
 
@@ -64,8 +40,9 @@ Try:
   (`SETUP-PLAN.md` is a record, not a gate). Expect Targets `sim_mac_10g`, `lint_mac_10g`,
   `synth_mac_10g`, `synth_mac_10g_physical`; a derived image from the full pinned `tox.ini` stack;
   explicit `[stealth] enabled = false`; `fixtures/taxi_mac_10g.sdc` as Project-owned config.
-- Copy `prompts/setup.md` into outer `docs/taxi-contract.md` and commit it
-  as the immutable visible spec for later Goal review.
+- Copy the full text of `prompts/setup.md` into outer `docs/taxi-contract.md`
+  and verify the bytes match: the spec reviewer inlines this file, not linked
+  documents. Commit it as the immutable visible spec for later Goal review.
 - Nothing installs at runtime; the TB import works in the Sandbox; pins (pytest 8.3.4 … scapy 2.6.1)
   match `prompts/setup.md`.
 - Compare config/cores/guidance with the plan (every deviation stated). Run the Setup findings

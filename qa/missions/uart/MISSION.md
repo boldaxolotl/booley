@@ -31,7 +31,8 @@ also exercises the host, auth, runtime, policy, Doctor and feedback surfaces.
 ## Mission-specific rules
 - **Clean room.** "Developer" means every agent that writes UART code: the Setup client, the
   Interactive client and the Goal child. It may see only `spec/corpus/`,
-  `spec/qa_uart.sv`, both addenda, `spec/corpus-manifest.json`, the `prompts/` and `goals/`
+  `spec/qa_uart.sv`, both addenda, `spec/contract.md`, `spec/corpus-manifest.json`,
+  the `prompts/` and `goals/`
   payloads, Booley's docs, `--help` and packaged skills, and the ordinary Project. No OpenTitan
   HJSON, regtool output, RTL, tests, UVM, DIFs, models, current docs or upstream browsing; if
   it fetches any, record a finding.
@@ -44,7 +45,7 @@ also exercises the host, auth, runtime, policy, Doctor and feedback surfaces.
 - **Acceptance is not conformance**; only the evaluator decides conformance. Never tune
   oracles, cases or seed to the candidate; one seed and frozen manifest per run; keep failures.
 - **Payloads verbatim:** `prompts/*.md`, `goals/*.md`; no hidden coverage, mutation-score or
-  relative-PPA Criteria.
+  relative-PPA Goals.
 - **Spec precedence:** the addenda first, then register definitions and precise behavior text,
   then examples. The 64-byte RX FIFO and the 32-byte TX FIFO are normative.
 - **Stealth is off** (`[stealth] enabled = false`): ordinary paths and literal commit messages.
@@ -56,32 +57,8 @@ also exercises the host, auth, runtime, policy, Doctor and feedback surfaces.
 - **Host policy** cases run only under a disposable `XDG_CONFIG_HOME` on a dedicated Docker
   daemon. Never touch the real host policy (`fixtures/host-policy/README.md`).
 
-- The host operator starts a long-lived Codex Goal child in the Sandbox with
-  `booley session enter -- codex ...`, then sends `/booley-goal` and the area's
-  mission prompt. The operator never implements the child's design work. Read
-  `src/booley/data/skills/booley-goal/SKILL.md` (including `review.md`) and
-  `docs/user/USAGE.md` "Goal Mode" from the candidate build for the workflow.
-- The operator is the deciding human for disposable QA proposals: answer entry
-  choices and approve or reject the exact proposal with a reason, through the
-  client form or a message the child quotes as `approval_quote`. A proposal
-  affecting a merged deliverable needs the live maintainer; without one, keep
-  it pending and log it. Silence never supplies approval.
-- While any Goal is active, every MCP Booley call passes absolute `work_dir`;
-  independent non-Goal areas use the primary checkout root. Finish or explicitly
-  abandon every Goal before closing its area. Background children may overlap
-  independent operator areas; keep their owning area open until resolved.
-- Host-issued container commands use `booley session enter -- booley ...`;
-  bare Sandbox commands below are for the child/container terminal.
-- Before entry, copy the selected `goals/*.md` into the resolved Project's
-  `goalsets/`, and commit setup, seeded Goalsets and the managed `.gitignore`.
-  `goals/*.json` are ad-hoc `goal_enter` argument lists. Use unique slugs per run.
-  Design implementations occur only in clean linked Goal worktrees.
-- Operator integration of finished work merges the outer `goal/<slug>-<date>`
-  Goal Branch and the paired `booley-worktree/<name>` Project-data branch into
-  their respective run-owned destinations. Record both in `resources.md`.
-  Preserve the package, remove the paired checkout first using the printed
-  USAGE cleanup steps, and leave both destinations clean in the primary
-  checkout before `booley session enter -- booley worktree new <name>` again.
+- Follow the shared [Goal-child operating rules](../../shared/GOAL-CHILD.md)
+  for every Goal area.
 
 ## Areas
 
@@ -135,7 +112,8 @@ Try:
   alongside initialization's seeded files and managed ignore rules. Create a
   paired worktree and send a Codex child `/booley-goal` plus `goals/feature.md`
   and allowed spec files. Review concrete Goals, Targets and the spec-review
-  binding to `spec/contract.md` (which indexes the immutable corpus and both addenda).
+  binding to `spec/contract.md`, which contains the frozen register definitions
+  and MMIO addendum.
 - The child authors owned `rtl/` and `tb/` assets. Elaboration cannot substitute
   for full sim; sim, lint, synth and clean RTL-bugs/protocol/spec/TB-quality
   reviews must yield fresh Goal-bound evidence and real artifacts.
@@ -196,7 +174,7 @@ Look for: stale reports, Doctor drift after Goal work.
 ### 8. reviews-mutation — Specialist reviews, isolation, mutation (~25 min)
 Try:
 - Seed a real RTL bug on a disposable branch. The review reports `done` (advisory); an
-  unresolved MINOR-or-worse finding leaves the clean Criterion unmet; an explicit waiver makes
+  unresolved MINOR-or-worse finding leaves the clean Goal unmet; an explicit waiver makes
   it clean; a relevant edit makes both stale; a rerun on fixed source gives fresh evidence.
 - `review-spec`, `review-security`, `review-tb-quality` reports each name their focus. A
   conflicting Project guide beats the bundled one, which stays present. Specialist workspaces
@@ -205,8 +183,11 @@ Try:
 - Mutation: the default dry run gives the documented 10/10 and auto sizing lands in 3–25. A
   locked small N/K campaign with killed and surviving mutants shows a pristine baseline,
   per-mutant outcomes and first killing tests. A rerun reuses the lock; regen writes a new one.
-- Disposable Goals from `goals/reviews.json` cover mutation, security-, spec- and
+- Disposable Goals from `goals/reviews.json` cover security-, spec- and
   TB-quality reviews; each Goal is bound/evaluated and each report type-specific.
+  Before entry, combine that list with an ad-hoc mutation Goal on `sim_uart`
+  with `min_detected: 2`, `total: 3`
+  and a `scope` listing actual RTL source files resolved by that Target.
   Finish or explicitly abandon the record before leaving this area.
 Look for: stale reviews still counted as clean, TB content leaking into an RTL-side workspace.
 
@@ -277,8 +258,8 @@ Try:
 - MCP: the Interactive Sandbox exposes Goal entry/status/proposal/Finish schemas. Disabling an
   endpoint removes it with an explaining diagnostic; re-enabling restores its schema. Flow and
   Specialist names agree across help, cheat sheet, MCP and skills; note the route you used.
-- Custom Flow: install a deterministic Flow with an endpoint and a Criterion. Discovery shows
-  its schema; a dry run validates inputs without artifacts; a real run satisfies the Criterion;
+- Custom Flow: install a deterministic Flow with an endpoint. Discovery shows
+  its schema; a dry run validates inputs without artifacts; a real run reports success;
   Doctor flags a syntax fault; disabling hides it; restoring brings discovery and runs back.
 - Feedback (`booley feedback`): add a defect, friction, impression and win, then list them.
   Concurrent appends keep every entry; test triage and a filed mark (filed entries leave the

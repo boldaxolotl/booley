@@ -55,6 +55,7 @@ def _goal_subject(value: object) -> dict[str, object]:
     )
     _need(identity["purpose"] == "goal_evidence", "Goal identity purpose differs")
     record_id = goal["record_id"]
+    # Mirror the product record-ID format; this validator is independent of the product.
     _need(
         isinstance(record_id, str)
         and re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*-\d{8}T\d{6}Z", record_id) is not None,

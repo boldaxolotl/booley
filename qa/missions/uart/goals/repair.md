@@ -10,9 +10,6 @@ the same seed; at most two repairs. Unfinished feature work is not a repair.
 
 ## Goals
 
-All Goals are mandatory. Copy this file into the resolved Project's `goalsets/`
-before entry. Follow the candidate's `booley-goal/SKILL.md` and USAGE Goal Mode.
-
 ```json
 [
   {

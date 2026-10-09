@@ -1,6 +1,6 @@
 # Native coverage on a fixed fixture Project
 
-Hunt native-coverage bugs end to end: collection, exact arithmetic, Criteria
+Hunt native-coverage bugs end to end: collection, exact arithmetic, Goal
 policy, waivers, Campaign storage, retention, a coverage Goal, and the
 Coverage Analyst. The fixture's counts are known by construction, so every
 mismatch is a finding rather than a judgement call.
@@ -14,7 +14,7 @@ mismatch is a finding rather than a judgement call.
 - Budget: 8 h total (405 area minutes plus 75 minutes contingency). Areas are in priority order; if time runs out, log the rest
   as skipped. Rerun with the other client or on Windows for host coverage.
 
-These areas hunt native-coverage bugs: collection, exact arithmetic, Criteria policy, waivers, Campaign
+These areas hunt native-coverage bugs: collection, exact arithmetic, Goal policy, waivers, Campaign
 storage, retention, a coverage Goal and the Coverage Analyst. They do **not** use the UART design: they run
 on the fixed fixture project `../../shared/coverage/project/`, whose counts are known by construction
 (`expected.json`, `policies.json`, `baselines.json` beside it), so any mismatch is a finding. Fault-tool
@@ -55,32 +55,8 @@ recipes live in `../../shared/coverage/RUNBOOK.md`; skim it before area 1.
 - Analyst calls: ~3 min each. Provider pipe fixture is Linux-runtime only. Rerun with the other client
   (Codex vs Claude) for host coverage if time allows.
 
-- The host operator starts a long-lived Codex Goal child in the Sandbox with
-  `booley session enter -- codex ...`, then sends `/booley-goal` and the area's
-  mission prompt. The operator never implements the child's design work. Read
-  `src/booley/data/skills/booley-goal/SKILL.md` (including `review.md`) and
-  `docs/user/USAGE.md` "Goal Mode" from the candidate build for the workflow.
-- The operator is the deciding human for disposable QA proposals: answer entry
-  choices and approve or reject the exact proposal with a reason, through the
-  client form or a message the child quotes as `approval_quote`. A proposal
-  affecting a merged deliverable needs the live maintainer; without one, keep
-  it pending and log it. Silence never supplies approval.
-- While any Goal is active, every MCP Booley call passes absolute `work_dir`;
-  independent non-Goal areas use the primary checkout root. Finish or explicitly
-  abandon every Goal before closing its area. Background children may overlap
-  independent operator areas; keep their owning area open until resolved.
-- Host-issued container commands use `booley session enter -- booley ...`;
-  bare Sandbox commands below are for the child/container terminal.
-- Before entry, copy the selected `goals/*.md` into the resolved Project's
-  `goalsets/`, and commit setup, seeded Goalsets and the managed `.gitignore`.
-  `goals/*.json` are ad-hoc `goal_enter` argument lists. Use unique slugs per run.
-  Design implementations occur only in clean linked Goal worktrees.
-- Operator integration of finished work merges the outer `goal/<slug>-<date>`
-  Goal Branch and the paired `booley-worktree/<name>` Project-data branch into
-  their respective run-owned destinations. Record both in `resources.md`.
-  Preserve the package, remove the paired checkout first using the printed
-  USAGE cleanup steps, and leave both destinations clean in the primary
-  checkout before `booley session enter -- booley worktree new <name>` again.
+- Follow the shared [Goal-child operating rules](../../shared/GOAL-CHILD.md)
+  for every Goal area.
 
 ## Areas
 
@@ -92,11 +68,11 @@ Try:
   `coverage_analyst` needs an exact Campaign path.
 - `--coverage` vs `--cov` on `sim_generated` (equivalent, fresh invocation numbers); MCP `sim` with
   `coverage: true`, then with string `"true"` (schema rejection before simulation); omit collection while a
-  coverage Criterion exists → plain sim, no Campaign, no coverage acceptance.
+  coverage Goal exists → plain sim, no Campaign, no coverage acceptance.
 - Harness kinds: `sim_generated` (two tests), `sim_custom` (C++ main), `sim_hdl` (tagged HDL TB),
   `sim_cocotb` (one process/database per test, verdicts from XML). Reverse the Target/test order → stable
   order, no cross-Target merge.
-- Suite choice: no Criterion/selection → full registered suite minus default-skipped; explicit skipped test
+- Suite choice: no Goal/selection → full registered suite minus default-skipped; explicit skipped test
   runs; sealed policy suite never selects: no filter → registered suite minus skips, and a sealed list
   that differs is a gated suite mismatch, rc2; explicit different suite → collected but gated result
   blocked, rc2; skipping a required test → visible mismatch, not a smaller denominator.
@@ -138,7 +114,7 @@ Look for: averaged per-test percentages, reset-inflated counts, float rounding, 
 accepted, a zero that looks like "blocked".
 Depends on: baseline.native, baseline.custom.
 
-### 3. cov-policy — Criteria policy, verdict matrix and eligibility (~55 min)
+### 3. cov-policy — Goal policy, verdict matrix and eligibility (~55 min)
 Intent: sealed coverage Goals must gate on exact rationals and keep simulation and coverage truths
 separate.
 Try:
@@ -152,17 +128,19 @@ Try:
   Abandon each policy record explicitly after retaining its evidence; use a new
   unique slug/worktree for the next case.
 - Verdicts on `sim_custom` `[gap]`/`[fail]` at 66/100: pass/pass and pass/fail rc0 (pass/fail records the
-  Criterion unmet and names the missed metric), fail/pass and fail/fail rc1;
+  Goal unmet and names the missed metric), fail/pass and fail/fail rc1;
   invalid collector → sim pass, gated blocked, rc2; ungated → `not_requested` rc0. Multi-Target `sim_pass`,
   `sim_miss`, `sim_collector_error` → rc2 with each Target's truths distinct.
 - Eligibility: only RTL-closure points count. TB points unscored; `sim_custom` tests `native-generated` /
   `native-foreign` add out-of-closure records → unscored, RTL denominator unchanged. `native-fsm`,
   `native-covergroup`, `native-unknown` → kept, never silently scored. Zero-eligible metric and unavailable
   metric → blocked, not vacuous pass.
-- Authoring negatives (one field each, through `parse_goal_args` plus
-  `translate_goals`, or entry refusal): empty tests/metrics, floor 0, -1, 100.01,
+- Authoring negatives: ask the Goal child to attempt `goal_enter` with one
+  invalid field per request and save each public refusal: empty tests/metrics,
+  floor 0, -1, 100.01,
   true, NaN, inf, `"90"`, unknown metric, and `coverage_*` as family or metric
-  are refused. An unregistered test is not an entry refusal: enter then expect
+  are refused. Non-finite JSON values may be refused by the public client/schema
+  before reaching entry; retain that diagnostic. An unregistered test is not an entry refusal: enter then expect
   failure at collection and explicitly abandon. There is no empty-target-list probe.
 Look for: rounding-to-display passing 66.67, AND treated as OR, TB points in the denominator, rc precedence
 errors.

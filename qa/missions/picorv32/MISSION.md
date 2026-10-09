@@ -25,32 +25,8 @@ at Booley, usually at handoffs: paired repos, evidence freshness, Grants, Sessio
 - The Project pin is assumed to contain seeded `goalsets/` and the managed
   `.gitignore`; repeat initialization must not drift. The owner refreshes the
   Project pin separately.
-- The host operator starts a long-lived Codex Goal child in the Sandbox with
-  `booley session enter -- codex ...`, then sends `/booley-goal` and the area's
-  mission prompt. The operator never implements the child's design work. Read
-  `src/booley/data/skills/booley-goal/SKILL.md` (including `review.md`) and
-  `docs/user/USAGE.md` "Goal Mode" from the candidate build for the workflow.
-- The operator is the deciding human for disposable QA proposals: answer entry
-  choices and approve or reject the exact proposal with a reason, through the
-  client form or a message the child quotes as `approval_quote`. A proposal
-  affecting a merged deliverable needs the live maintainer; without one, keep
-  it pending and log it. Silence never supplies approval.
-- While any Goal is active, every MCP Booley call passes absolute `work_dir`;
-  independent non-Goal areas use the primary checkout root. Finish or explicitly
-  abandon every Goal before closing its area. Background children may overlap
-  independent operator areas; keep their owning area open until resolved.
-- Host-issued container commands use `booley session enter -- booley ...`;
-  bare Sandbox commands below are for the child/container terminal.
-- Before entry, copy the selected `goals/*.md` into the resolved Project's
-  `goalsets/`, and commit setup, seeded Goalsets and the managed `.gitignore`.
-  `goals/*.json` are ad-hoc `goal_enter` argument lists. Use unique slugs per run.
-  Design implementations occur only in clean linked Goal worktrees.
-- Operator integration of finished work merges the outer `goal/<slug>-<date>`
-  Goal Branch and the paired `booley-worktree/<name>` Project-data branch into
-  their respective run-owned destinations. Record both in `resources.md`.
-  Preserve the package, remove the paired checkout first using the printed
-  USAGE cleanup steps, and leave both destinations clean in the primary
-  checkout before `booley session enter -- booley worktree new <name>` again.
+- Follow the shared [Goal-child operating rules](../../shared/GOAL-CHILD.md)
+  for every Goal area.
 
 ## Areas
 
@@ -98,15 +74,14 @@ Intent: an Interactive child can find and fix a real bug from traces.
 Try:
 - Save a checkpoint. On a run-owned disposable branch, inject `fixtures/wishbone-fault.md`
   yourself in a disposable copy and commit it: in `picorv32_wb`, change `we` from the OR to the AND of
-  `mem_wstrb[3:0]`. Start a Goal child with `/booley-goal` and `prompts/repair-interactive.md`,
-  selecting the seeded bugfix Goalset for the affected Targets.
+  `mem_wstrb[3:0]`. Start an Interactive Mode child on that branch and send
+  `prompts/repair-interactive.md`.
 - Expected: byte stores hit `ERROR`. The trace is non-empty and shows `mem_wstrb`, `we`, `wbm_*`,
   `mem_valid`, `mem_ready`, and `ram_we`. B-Wave explains the fault, the fix restores an OR
   reduction of `mem_wstrb[3:0]` (the upstream bytes or `|mem_wstrb`), sim and lint pass, the local
   repair commit on top of the fault commit is non-empty, and the push is blocked.
 - Before calling a diagnosis wrong, replay the child's exact B-Wave argv, sampling, and clock/reset
-  defaults. Restore the checkpoint and abandon the disposable Goal on the operator
-  instruction before closing the area.
+  defaults. Preserve the repair evidence and restore the checkpoint before closing the area.
 Look for: an empty repair commit, a repair that weakens a test, a push that gets through, lost MCP
 tools.
 
@@ -119,13 +94,16 @@ Try:
   `booley session enter -- booley worktree new <unique-name>`.
 - Start the Codex Goal child, send `/booley-goal` plus `goals/continuity.md`.
   Confirm translated Goals, origin, record ID, base commit, branch and worktree
-  identity, then explicitly abandon this entry probe. Use `goals/entry-probe.json` for a separate disposable ad-hoc entry;
-  abandon it on the operator's explicit instruction before removing its workspace.
-- In isolated probes require refusal for the main checkout, dirty outer tree,
-  dirty paired Project checkout, a worktree copy of the Project directory,
-  active/finishing occupant, existing same-day Goal Branch, missing relative
-  baseline Target, or missing spec. A missing candidate Target only warns and
-  remains unmet. Preserve the diagnostic and restore each probe's owned inputs.
+  identity, then explicitly abandon this entry probe.
+- Use `goals/entry-probe.json` for a separate disposable ad-hoc entry; abandon
+  it on the operator's explicit instruction before removing its workspace.
+- Probe refusal for the main checkout, dirty outer tree and dirty paired
+  Project checkout, each in isolation.
+- Separately probe a worktree copy of the Project directory, active/finishing
+  occupant and existing same-day Goal Branch.
+- Probe a missing relative baseline Target and missing spec separately.
+  A missing candidate Target only warns and remains unmet. Preserve each
+  diagnostic and restore that probe's owned inputs.
 - Add and commit a disposable `default.md`. Entry without an include-or-skip
   decision refuses; explicit skip needs the operator's instruction and reason.
   Include it on a control entry. Abandon probes, then remove `default.md` and
@@ -162,7 +140,9 @@ Try:
 - With both destination checkouts clean, create a new paired worktree. Give a
   new Codex child `/booley-goal` plus `goals/evolution.md`. Copy the installed
   ISA manual into the worktree at `docs/riscv-isa-unprivileged.html` before entry
-  and commit it; bind the spec review to that relative path. With Vivado, include
+  and commit it; bind the spec review to that relative path. Inspect the copied
+  file, not a link/index: the reviewer reads its text and truncates after 30,000
+  characters. Save that boundary with the review evidence. With Vivado, include
   `goals/fpga.json` as ad-hoc Goals; without it, log that family as skipped.
 - All 18 Zbb ops match the manual; `ENABLE_ZBB` defaults to 0 in core, AXI and
   WB, registered PCPI responds in one cycle, and the disabled test arms MMIO
@@ -209,11 +189,14 @@ Intent: a restarted client recovers the same Goal Record without losing work or 
 Try:
 - Enter a disposable Goal via `goals/entry-probe.json`, gather evidence and
   commit a harmless implementation checkpoint. Save worktree, record, branch,
-  pending proposal ID and any Finish operation arguments, then kill/reap the child.
+  and evidence pointers. Before the crash, create an `add` proposal for a lint
+  Goal on `lint_core`, save its exact pending proposal ID and withhold a decision.
+  Then kill/reap the child.
 - Restart a Codex child in the same worktree. Its first Booley call is
   `goal_status(work_dir=..., rules=true)`; recover rules, Goals, evidence and
-  pending proposals before editing. Resume the exact saved proposal/operation;
-  no new record, duplicate approval or duplicate evidence may be fabricated.
+  pending proposals before editing. Resume the exact saved proposal ID;
+  it stays pending until the operator explicitly rejects it with a reason.
+  No new record, duplicate approval or duplicate evidence may be fabricated.
 - Quiet/stuck presence never abandons automatically. Give explicit operator
   instruction to abandon this disposable Goal; the child quotes it in
   `goal_finish(abandon=true, instruction_quote=...)`. Also exercise the human
@@ -230,7 +213,7 @@ Try (disposable Targets and TBs on a run-owned branch):
 - Elab-only results persist. A run-only argument to elab is rejected. A successful elab survives a
   later failing run.
 - Sentinels map pass → pass, fail → fail, both → fail, and none → inconclusive. A named cycle count
-  parses exactly, but a malformed one never satisfies a Criterion and never reads as zero.
+  parses exactly, but a malformed one never satisfies a Goal and never reads as zero.
 - A skipped-by-default test runs only when named. A plusarg or getopt token runs exactly that test.
 - Guards: going over the disk budget kills the run and names the largest files. A frozen clock gets
   the documented watchdog class. A pre-run step stages fresh firmware with no TB edits. Restore,
@@ -251,7 +234,7 @@ Try:
   one as incompatible. A latch is critical. A timing miss is advisory without a threshold and a
   failure with one. Metrics are fresh and name the tools.
 - A disposable linked-worktree baseline pair names both commits with a numeric delta. Absolute,
-  relative, directed, and named-clock Criteria evaluate. A missing or mismatched baseline fails
+  relative, directed, and named-clock Goals evaluate. A missing or mismatched baseline fails
   closed.
 Look for: missing and incompatible tools confused, duplicate aggregate rows, waivers that hide other
 warnings.
@@ -277,7 +260,7 @@ Look for: a stale Session spec after regrant, borrowed Grants or installations c
 results passed off as fresh.
 
 ### 12. sim-campaign — Simulation Campaign (~20 min)
-Intent: a campaign keeps request order, resumes exactly, and grants Criteria only for the full
+Intent: a campaign keeps request order, resumes exactly, and grants Goals only for the full
 suite.
 Try: follow `fixtures/simulation-campaign/RUNBOOK.md` in a run-owned Project copy.
 - `--test tail --test quick` keeps that order, and `--tests-file reverse-tests.txt` normalizes to
@@ -285,7 +268,7 @@ Try: follow `fixtures/simulation-campaign/RUNBOOK.md` in a run-owned Project cop
 - The manifest bytes stay stable. Kill the run during `slow` and `--resume-from` it: `quick` stays
   unchanged. Resuming with changed sources or a changed suite is refused. A partial suite never
   grants `sim_pass_sim_campaign`. Cross-check with `validate_campaign.py`.
-Look for: catalog order overriding request order, completed items rerun, subset-granted Criteria.
+Look for: catalog order overriding request order, completed items rerun, subset-granted Goals.
 
 ### 13. git-stealth-security — Git safety, Stealth commits, runtime isolation (~20 min)
 Intent: the guards block unsafe history and escapes, and the Sandbox stays fenced.

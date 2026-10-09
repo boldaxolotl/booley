@@ -20,9 +20,6 @@ With Vivado configured, additionally enter `fpga.json` as ad-hoc Goals.
 
 ## Goals
 
-All Goals are mandatory. Copy this file into the resolved Project's `goalsets/`
-before entry. Follow the candidate's `booley-goal/SKILL.md` and USAGE Goal Mode.
-
 ```json
 [
   {

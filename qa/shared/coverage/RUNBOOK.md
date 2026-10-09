@@ -130,8 +130,10 @@ separate Targets cloned from the fixed recipes at setup, with exact identities
 `sim_pass`, `sim_miss`, `sim_collector_error`; registry tests are [gap], [gap],
 [native-missing], respectively. Thresholds are 66, 100, 66 cover_property.
 
-Authoring negatives use `parse_goal_args` plus `translate_goals` (or entry
-refusals) and change just one field. Empty tests/metrics are literal empty
+Authoring negatives ask the Goal child to attempt `goal_enter` through its
+public MCP route, changing one field per request. Save each refusal before any
+record or branch is created; a client/schema rejection of non-finite JSON values
+is also a public refusal. Empty tests/metrics are literal empty
 list/map; there is one Target per Goal. Floors are 0, -1, 100.01, true, NaN,
 inf and string "90", separately. Legacy `coverage_*` families/metrics refuse.
 Unknown test `not_registered` enters but fails collection; preserve that
@@ -269,14 +271,14 @@ original closure before the separate verified-source rerun.
 The simulated-provider cases are deterministic **external input** tests. Their
 reports never stand in for a real-model result. Live closure/advice/source modes
 use the configured provider directly; save its genuine transcript and confirm
-the Campaign, Project, Criteria and waiver bytes are unchanged. Model instruction
+the Campaign, Project, Goals and waiver bytes are unchanged. Model instruction
 for a gap is:
 
 > Begin with overview of this exact Campaign. Retrieve uncovered eligible points
 > for rtl/coverage_dut.sv and verified excerpts for decoder choice 2. Separate
 > immutable observations from hypotheses. Recommend a concrete missing test using
 > only delivered references. State retrieval limitations. Do not run simulation,
-> read waveforms, edit files or Criteria, or approve waivers.
+> read waveforms, edit files or Goals, or approve waivers.
 
 For Codex, create an executable owned launcher named `codex` invoking
 `faults/provider.py`, ahead of the original on **only that Analyst process's** PATH.

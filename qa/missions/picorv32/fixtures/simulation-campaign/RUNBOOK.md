@@ -20,7 +20,7 @@ and copies of every referenced JSON document under `evidence/sim-campaign/`.
 The `validate_campaign.py` helper is a read-only structural cross-check with one
 subcommand per check: `selection` (exact ordered selection), `backlinks`
 (manifest/summary/compatibility backlinks), `resume` (interrupted resume),
-`rejection` (fail-closed rejection), and `journal` (Criteria journal scope).
+`rejection` (fail-closed rejection), and `journal` (Goal evidence scope).
 Run `python3 validate_campaign.py <check> --help` for its arguments. Your own
 reading of the evidence against the steps below is what decides a finding.
 
@@ -66,13 +66,13 @@ owned catalog test to the copied `tests.toml`, repeat the rejection, restore the
 catalog exactly, and finish the resume successfully. Compare the files against
 a saved copy after every restoration.
 
-## Criteria scope
+## Goal evidence scope
 
 Commit the fixture registration before entry, create a clean linked worktree and
 start a Codex child with `/booley-goal`, naming a `sim` Goal on `sim_campaign`.
-Pass `work_dir` on every MCP call while active. Capture the Criteria state and Acceptance Journal
+Pass `work_dir` on every MCP call while active. Capture the Goal Record and Goal evidence
 before and after each invocation. A passing strict subset (`quick`) must leave
-the Criterion unmet. A new Simulation Campaign containing the complete Required
+the Goal unmet. A new Simulation Campaign containing the complete Required
 Simulation Suite (`quick`, `slow`, `tail`) must publish it only after all three
 durable results commit. If an extra registered test is temporarily added and
 explicitly selected, its failure must still make the Simulation Campaign grade strict;
