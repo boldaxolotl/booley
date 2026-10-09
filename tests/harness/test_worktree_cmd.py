@@ -414,7 +414,7 @@ def test_paired_caller_is_refused_before_outer_creation(versioned_project, pytho
     assert not worktree_cmd.worktree_path(caller, "nested").exists()
 
 
-@pytest.mark.parametrize("failure", ["add", "configure", "identity"])
+@pytest.mark.parametrize("failure", ["add", "after-add", "configure", "identity"])
 def test_pairing_failure_rolls_back_both_repositories(
     versioned_project, python_outer, monkeypatch, capsys, failure
 ):
@@ -432,6 +432,10 @@ def test_pairing_failure_rolls_back_both_repositories(
         original = pairing._require_git
 
         def require(repository, *args):
+            if failure == "after-add" and "add" in args:
+                # Git created the branch (and possibly the checkout) before failing.
+                original(repository, *args)
+                raise pairing.ProjectPairingError("injected failure after add")
             if (failure == "add" and "add" in args) or (
                 failure == "configure" and args[:2] == ("config", "--worktree")
             ):
@@ -851,7 +855,7 @@ def test_pairing_rollback_preserves_other_missing_registrations_and_removes_lock
     )
 
 
-def test_failed_add_preserves_branch_it_did_not_create(
+def test_failed_add_preserves_a_moved_branch_it_did_not_create(
     versioned_project, python_outer, monkeypatch
 ):
     from booley.runtime import project_worktree_pairing as pairing
@@ -859,16 +863,18 @@ def test_failed_add_preserves_branch_it_did_not_create(
 
     source = versioned_project / ".booley_project"
     original = pairing._require_git
+    # A branch with its own commit is never this run's: rollback must keep it.
+    moved = git(source, "commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "other work")
 
     def fail(repository, *args):
         if "add" in args:
-            git(source, "branch", "booley-worktree/raced")
+            git(source, "branch", "booley-worktree/raced", moved)
             raise pairing.ProjectPairingError("branch created by another actor")
         return original(repository, *args)
 
     monkeypatch.setattr(pairing, "_require_git", fail)
     assert _new("raced", versioned_project) == 1
-    assert git(source, "rev-parse", "booley-worktree/raced") == git(source, "rev-parse", "HEAD")
+    assert git(source, "rev-parse", "booley-worktree/raced") == moved
     assert not worktree_cmd.worktree_path(versioned_project, "raced").exists()
 
 
@@ -959,7 +965,49 @@ def test_unreadable_project_git_directory_is_refused(tmp_path, monkeypatch, caps
         worktree_cmd, "_create_outer", lambda *_a, **_kw: pytest.fail("broken repo copied")
     )
     assert _new("broken", tmp_path) == 1
-    assert "git rev-parse --git-dir failed" in capsys.readouterr().err
+    assert "git rev-parse --absolute-git-dir failed" in capsys.readouterr().err
+
+
+def test_corrupt_project_git_directory_inside_workspace_is_refused(tmp_path, monkeypatch, capsys):
+    from tests.goals.conftest import git
+
+    # Git skips the empty .git directory and would otherwise resolve the outer one.
+    git(tmp_path, "init", "-q", "-b", "main")
+    (tmp_path / ".booley_project/.git").mkdir(parents=True)
+    monkeypatch.setattr(
+        worktree_cmd, "_create_outer", lambda *_a, **_kw: pytest.fail("broken repo copied")
+    )
+    assert _new("broken", tmp_path) == 1
+    assert "cannot read the Project repository" in capsys.readouterr().err
+
+
+def test_existing_project_registration_is_refused_and_preserved(
+    versioned_project, python_outer, capsys
+):
+    from tests.goals.conftest import git
+
+    root = versioned_project
+    source = root / ".booley_project"
+    nested = worktree_cmd.worktree_path(root, "taken") / ".booley_project"
+    git(source, "worktree", "add", "-q", "-b", "booley-ticket/taken", str(nested), "HEAD")
+    git(source, "worktree", "lock", str(nested))
+    shutil.rmtree(nested)
+
+    assert _new("taken", root) == 1
+    assert "already registers a checkout" in capsys.readouterr().err
+    assert nested.as_posix() in git(source, "worktree", "list", "--porcelain")
+    assert git(source, "rev-parse", "booley-ticket/taken")
+
+
+def test_undecodable_gitignore_still_explains_dirty_project(
+    versioned_project, python_outer, capsys
+):
+    root = versioned_project
+    source = root / ".booley_project"
+    (source / ".gitignore").write_bytes("logs/\n".encode("utf-16"))
+
+    assert _new("utf16", root) == 1
+    assert "uncommitted changes" in capsys.readouterr().err
 
 
 @_real_script

@@ -42,7 +42,13 @@ def project_pairing_source(project_root: Path) -> Path | None:
             "run booley worktree new from the primary workspace"
         )
     if (source / ".git").is_dir():
-        _require_git(source, "rev-parse", "--git-dir")
+        # Git skips an unusable .git directory and keeps searching upward, so a
+        # broken Project repository would otherwise resolve to the outer one.
+        resolved = Path(_require_git(source, "rev-parse", "--absolute-git-dir").strip())
+        if resolved.resolve() != (source / ".git").resolve():
+            raise ProjectPairingError(
+                f"cannot read the Project repository at {source}: Git resolved {resolved}"
+            )
     return source if is_standalone_git_repository(source) else None
 
 
@@ -70,6 +76,22 @@ def _require_base(source: Path, branch: str) -> str:
     return head.stdout.strip()
 
 
+def _refuse_registered(source: Path, nested: Path) -> None:
+    """Refuse when the Project already registers a checkout at *nested*.
+
+    Rollback removes the registration at that path, so it must only ever be one
+    this run created (for example, not a Ticket checkout whose directory is gone).
+    """
+    listing = _require_git(source, "worktree", "list", "--porcelain")
+    target = nested.resolve()
+    for line in listing.splitlines():
+        if line.startswith("worktree ") and Path(line[len("worktree ") :]).resolve() == target:
+            raise ProjectPairingError(
+                f"the Project repository already registers a checkout at {nested}; "
+                f"remove it with `git -C {source} worktree remove --force {nested}` first"
+            )
+
+
 def _listed_paths(paths: list[str]) -> str:
     listed = ", ".join(paths[:5])
     return listed + (f" and {len(paths) - 5} more" if len(paths) > 5 else "")
@@ -78,7 +100,7 @@ def _listed_paths(paths: list[str]) -> str:
 def _refuse_dirty_project(source: Path, changes: tuple[ProjectRepositoryChange, ...]) -> None:
     ignore = source / ".gitignore"
     stale = missing_gitignore_patterns(
-        ignore.read_text(encoding="utf-8") if ignore.exists() else ""
+        ignore.read_text(encoding="utf-8", errors="replace") if ignore.exists() else ""
     )
     transient, inputs = [], []
     for change in changes:
@@ -172,9 +194,16 @@ def _remove_registration(repository: Path, worktree: Path) -> None:
             safe_rmtree(admin)
 
 
-def _rollback_pair(source: Path, nested: Path, branch: str, *, created_branch: bool) -> None:
+def _rollback_pair(source: Path, nested: Path, branch: str, base: str) -> None:
+    """Remove this run's registration and branch.
+
+    ``worktree add -b`` creates the branch before checking out, so a failed or
+    interrupted add can leave it behind. The locked pre-check proved the branch
+    absent, so a branch still at *base* is this run's; a moved one is kept.
+    """
     _remove_registration(source, nested)
-    if created_branch:
+    tip = run_git(source, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}")
+    if tip.returncode == 0 and tip.stdout.strip() == base:
         _require_git(source, "branch", "-D", branch)
 
 
@@ -187,8 +216,8 @@ def pair_project_worktree(
     branch = f"booley-worktree/{name}"
     with _project_lock(source):
         base = _require_base(source, branch)
+        _refuse_registered(source, worktree / PROJECT_DIR_NAME)
         nested = _remove_copy(worktree)
-        created_branch = False
         try:
             _require_git(source, "config", "gc.worktreePruneExpire", "never")
             _require_git(
@@ -203,12 +232,11 @@ def pair_project_worktree(
                 str(nested),
                 base,
             )
-            created_branch = True
             _require_git(source, "config", f"branch.{branch}.booleyBase", base)
             _configure_checkout(source, nested)
         except BaseException as exc:
             try:
-                _rollback_pair(source, nested, branch, created_branch=created_branch)
+                _rollback_pair(source, nested, branch, base)
             except (OSError, ProjectPairingError) as cleanup:
                 exc.add_note(f"paired rollback failed: {cleanup}")
                 if isinstance(exc, Exception):

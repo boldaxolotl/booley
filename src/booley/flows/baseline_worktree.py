@@ -268,7 +268,9 @@ def _paired_project_base_sha(project_worktree: Path) -> str:
             timeout=30,
         )
         if branch.returncode or base.returncode or upstream.returncode:
-            raise BaselineWorktreeError("paired project ticket branch has no baseline upstream")
+            raise BaselineWorktreeError(
+                "paired Project branch has no baseline upstream or recorded pairing base"
+            )
     merge_base = _git(
         project_worktree,
         "merge-base",
