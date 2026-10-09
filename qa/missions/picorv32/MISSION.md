@@ -9,7 +9,7 @@ at Booley, usually at handoffs: paired repos, evidence freshness, Grants, Sessio
 ## Pins and prerequisites
 - Booley: the candidate under test (set by the run skill; not pinned here).
 - Project: https://github.com/boldaxolotl/booley-prj-picorv32 @
-  `b8fe2370cb9aa7d93617850169f42f07821865d6` (upstream RTL plus Stealth `.booley_project`).
+  `9e187ceae6357b47b50bdc835609b4570fd28832` (upstream RTL plus Stealth `.booley_project`).
 - Upstream: https://github.com/YosysHQ/picorv32 @ `a473fc8fca393771d83b0ffcf0b14db3393339d8`.
 - Tools/host: Docker (≥6 GB free); the `booley init` Sandbox image (xPack GCC 15.2, srec_cat, dtc,
   Spike, `/opt/riscv-docs`, Icarus, Verilator, sv2v/Yosys/OpenROAD); a logged-in Codex or Claude
@@ -27,9 +27,8 @@ at Booley, usually at handoffs: paired repos, evidence freshness, Grants, Sessio
 ## Mission-specific rules
 - Upstream RTL and the Project pin are immutable inputs. Hidden faults stay
   with the operator. Send `prompts/*.md` verbatim; never reveal the seed recipe.
-- The Project pin is assumed to contain seeded `goalsets/` and the managed
-  `.gitignore`; repeat initialization must not drift. The owner refreshes the
-  Project pin separately.
+- The pinned Project already contains seeded `goalsets/` and the managed
+  `.gitignore`; repeat initialization must not drift.
 - Follow the shared [Goal-child operating rules](../../shared/GOAL-CHILD.md)
   for every Goal area.
 
