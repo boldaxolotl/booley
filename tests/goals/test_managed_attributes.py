@@ -1,5 +1,6 @@
 """Real Git projections and Finish under Project Initialization's local policy."""
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -47,12 +48,12 @@ def test_info_policy_projection_matches_real_checkout(tmp_path, managed):
     scratch = tmp_path / "scratch"
     scratch.mkdir()
     proof = export_tree(root, git(root, "rev-parse", "HEAD"), scratch / "view", scratch=scratch)
-    assert attributes(
-        root, git(root, "rev-parse", "HEAD"), [b"lf.txt"], policy=proof[0]["policy"]
-    )[b"lf.txt"]["eol"] == ("lf" if managed else "unspecified")
+    assert attributes(root, git(root, "rev-parse", "HEAD"), [b"lf.txt"], policy=byte_policy(root))[
+        b"lf.txt"
+    ]["eol"] == ("lf" if managed else "unspecified")
     for name in ("crlf.txt", "lf.txt"):
         assert (scratch / "view" / name).read_bytes() == (root / name).read_bytes()
-    assert proof[0]["policy"]["info_attributes"] == (GITATTRIBUTES_RULE if managed else "")
+    assert proof[0]["policy"]["managed_rule"] == (GITATTRIBUTES_RULE if managed else "")
     roots = root_bindings({"rtl": root, "project": root})
     capture = {"committed_materializations": proof, "path_roots": roots}
     assert materializations_unchanged(capture, roots)
@@ -105,7 +106,7 @@ def test_finish_accepts_and_records_managed_policy_for_each_participant(layout, 
     assert result["status"] == "finished"
     proof = json.loads(Path(result["package"]).read_bytes())["input_proof"]
     assert all(
-        row["policy"]["info_attributes"] == GITATTRIBUTES_RULE
+        row["policy"]["managed_rule"] == GITATTRIBUTES_RULE
         for row in proof["committed_materializations"]
     )
     assert finish_goal(call, environment(layout)) == result
@@ -121,7 +122,9 @@ def test_empty_info_or_recognized_rule_whitespace_is_safe(tmp_path, content):
     scratch = tmp_path / "scratch"
     scratch.mkdir()
     proof = export_tree(root, git(root, "rev-parse", "HEAD"), scratch / "view", scratch=scratch)
-    assert bytes.fromhex(proof[0]["policy"]["info_attributes_hex"]) == content
+    assert proof[0]["policy"]["info_attributes_sha256"] == (
+        hashlib.sha256(content).hexdigest() if content else ""
+    )
 
 
 @pytest.mark.parametrize("change", ["remove", "extra"])
@@ -180,7 +183,8 @@ def test_numeric_system_disable_switch_keeps_managed_projection_hermetic(tmp_pat
     assert (scratch / "view/rtl.v").read_bytes() == b"design\n"
 
 
-def test_policy_drift_between_attribute_query_and_projection_refuses(tmp_path):
+@pytest.mark.parametrize("change", ["managed", "extra-line"])
+def test_policy_drift_between_attribute_query_and_projection_refuses(tmp_path, change):
     from booley.runtime.pinned_history import tree_rows
 
     root = repository(tmp_path / "source")
@@ -190,8 +194,10 @@ def test_policy_drift_between_attribute_query_and_projection_refuses(tmp_path):
     pin = git(root, "rev-parse", "HEAD")
     policy = byte_policy(root)
     attrs = attributes(root, pin, [b"rtl.v"], policy=policy)
-    managed_attributes(root)
-    with pytest.raises(LifecycleError, match="unsupported ambient input attributes"):
+    info = managed_attributes(root)
+    if change == "extra-line":
+        info.write_bytes(info.read_bytes() + b"nonexistent text\n")
+    with pytest.raises(LifecycleError, match="input attributes changed during finish"):
         projected_blobs(root, pin, tree_rows(root, pin), attrs, policy)
 
 

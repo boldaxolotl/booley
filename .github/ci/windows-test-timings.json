@@ -794,6 +794,8 @@
     "tests/goals/test_managed_attributes_round1.py::test_no_managed_policy_preserves_ineffective_external_attributes[default-user]": 3.924,
     "tests/goals/test_managed_attributes_round1.py::test_no_managed_policy_preserves_ineffective_external_attributes[system]": 2.973,
     "tests/goals/test_managed_attributes_round1.py::test_no_managed_policy_preserves_ineffective_external_attributes[user]": 3.276,
+    "tests/goals/test_managed_attributes_round2.py::test_init_with_comment_only_xdg_attributes_can_finish": 3.117,
+    "tests/goals/test_managed_attributes_round2.py::test_no_managed_policy_finish_accepts_real_system_attributes": 2.694,
     "tests/goals/test_mcp_routing.py::test_corrupt_record_refused[False]": 0.185,
     "tests/goals/test_mcp_routing.py::test_corrupt_record_refused[True]": 0.182,
     "tests/goals/test_mcp_routing.py::test_custom_tool_stamp_uses_declared_target_without_recapturing[False]": 4.54716,

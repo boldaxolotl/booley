@@ -13,7 +13,8 @@ from booley.core.boundary import is_str_list, require_dict
 from booley.core.config_paths import resolve_booley_toml
 from booley.goals.baseline_objects import baseline_repository, cached_administration
 from booley.goals.committed_bytes import (
-    AMBIENT_ATTRIBUTES_ERROR,
+    ATTRIBUTES_CHANGED_ERROR,
+    BytePolicy,
     attributes,
     byte_policy,
     projected_blobs,
@@ -53,7 +54,7 @@ def export_tree(
         {
             "path": str(repository),
             "pin": commit,
-            "policy": policy,
+            "policy": policy.record(),
             "attributes_digest": digest(attrs_json(attrs)),
             "submodule": False,
         }
@@ -170,7 +171,7 @@ def _export_blobs(
     scratch: Path,
     rows: dict[bytes, bytes],
     attrs: dict[bytes, dict[str, str]],
-    policy: dict[str, str],
+    policy: BytePolicy,
 ) -> None:
     blobs = projected_blobs(repository, commit, rows, attrs, policy)
     for name, metadata in rows.items():
@@ -224,12 +225,15 @@ def materializations_unchanged(proof: dict[str, Any], current_roots: dict[str, A
             ) or raw_git(path, "rev-parse", "HEAD").strip().decode("ascii") != row["current_pin"]:
                 return False
         names = list(tree_rows(path, row["pin"]))
-        policy = byte_policy(path)
+        try:
+            policy = byte_policy(path)
+        except LifecycleError as exc:
+            raise LifecycleError(ATTRIBUTES_CHANGED_ERROR) from exc
         pinned = attributes(path, row["pin"], names, policy=policy)
         if attributes(path, row["pin"], names, ambient=True, policy=policy) != pinned:
-            raise LifecycleError(AMBIENT_ATTRIBUTES_ERROR)
-        recorded = {"info_attributes": "", "info_attributes_hex": "", **row["policy"]}
-        if policy != recorded or digest(attrs_json(pinned)) != row["attributes_digest"]:
+            raise LifecycleError(ATTRIBUTES_CHANGED_ERROR)
+        recorded = {"managed_rule": "", "info_attributes_sha256": "", **row["policy"]}
+        if policy.record() != recorded or digest(attrs_json(pinned)) != row["attributes_digest"]:
             return False
     return True
 

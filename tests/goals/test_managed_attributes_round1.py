@@ -1,12 +1,13 @@
 """Real-Git compatibility controls for managed Finish attribute policy."""
 
+import hashlib
 import json
 import os
 from pathlib import Path
 
 import pytest
 
-from booley.goals.committed_bytes import shadow_repository
+from booley.goals.committed_bytes import byte_policy, shadow_repository
 from booley.goals.committed_export import export_tree, materializations_unchanged
 from booley.goals.finish import finish_goal
 from booley.goals.input_identity import root_bindings
@@ -54,8 +55,8 @@ def test_old_materialization_row_without_local_policy_remains_valid(tmp_path):
     scratch = tmp_path / "scratch"
     scratch.mkdir()
     rows = export_tree(root, git(root, "rev-parse", "HEAD"), scratch / "view", scratch=scratch)
-    del rows[0]["policy"]["info_attributes"]
-    del rows[0]["policy"]["info_attributes_hex"]
+    del rows[0]["policy"]["managed_rule"]
+    del rows[0]["policy"]["info_attributes_sha256"]
     roots = root_bindings({"rtl": root, "project": root})
     proof = {"committed_materializations": rows, "path_roots": roots}
     assert materializations_unchanged(proof, roots)
@@ -91,9 +92,10 @@ def test_init_preserves_export_only_content_and_finish_replays_it(layout, commen
         "committed_materializations"
     ]
     policy = rows[0]["policy"]
-    assert policy["info_attributes"] == GITATTRIBUTES_RULE
-    assert bytes.fromhex(policy["info_attributes_hex"]) == content
-    with shadow_repository(layout.worktree, bytes.fromhex(policy["info_attributes_hex"])) as (
+    assert policy["managed_rule"] == GITATTRIBUTES_RULE
+    assert policy["info_attributes_sha256"] == hashlib.sha256(content).hexdigest()
+    assert comment not in Path(result["package"]).read_bytes()
+    with shadow_repository(layout.worktree, byte_policy(layout.worktree).info_attributes) as (
         shadow,
         env,
     ):

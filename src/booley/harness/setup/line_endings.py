@@ -23,6 +23,7 @@ from booley.commit_policy.policy import stealth_enabled
 from booley.runtime.git_attributes_policy import (
     GITATTRIBUTES_RULE,
     fallback_user_attributes,
+    has_attribute_policy,
     has_managed_attributes,
     local_policy_owned,
     native_attribute_path,
@@ -1127,18 +1128,12 @@ def _upstream_attributes(root: Path) -> dict[str, tuple[_FileIdentity | None, by
     return inputs
 
 
-def _has_policy(content: bytes) -> bool:
-    return any(
-        line.strip() and not line.lstrip().startswith(b"#") for line in content.splitlines()
-    )
-
-
 def _upstream_owned(inputs: dict[str, tuple[_FileIdentity | None, bytes]]) -> bool:
     for name, (_, raw_content) in inputs.items():
         if name.startswith(("selection:", "link:")):
             continue
         content = raw_content.partition(b"\0")[2] if name.startswith("index:") else raw_content
-        if _has_policy(content):
+        if has_attribute_policy(content):
             return True
     return False
 

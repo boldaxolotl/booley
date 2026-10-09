@@ -1,17 +1,38 @@
 """The managed line-ending rule shared by Initialization and committed-byte proofs."""
 
 import os
+import re
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 GITATTRIBUTES_RULE = "* text=auto eol=lf"
 AttributeQuery = Callable[..., subprocess.CompletedProcess[bytes]]
 
 
+def _policy_lines(content: bytes) -> Iterator[bytes]:
+    # Git attr.c uses this exact blank set; VT/FF are pattern bytes, not whitespace.
+    for raw_line in content.split(b"\n"):
+        line = raw_line.strip(b" \t\r\n")
+        if line and not line.startswith(b"#"):
+            yield line
+
+
+def has_attribute_policy(content: bytes) -> bool:
+    """Whether Git attribute lines contain anything beyond blanks and comments."""
+    return any(_policy_lines(content))
+
+
+def is_null_attributes_path(root: Path, path: Path) -> bool:
+    """Match Git's null device with platform-native path case semantics."""
+    return os.path.normcase(str(path)) == os.path.normcase(
+        str(resolved_attribute_path(root, os.devnull))
+    )
+
+
 def has_managed_attributes(content: bytes, *, replayable: bool = False) -> bool:
     """Recognize the managed rule, optionally requiring init-compatible extra content."""
-    lines = [line.strip() for line in content.splitlines()]
+    lines = list(_policy_lines(content))
     rule = GITATTRIBUTES_RULE.encode()
     if not replayable:
         return rule in lines
@@ -23,10 +44,8 @@ def has_managed_attributes(content: bytes, *, replayable: bool = False) -> bool:
 def local_policy_owned(content: bytes) -> bool:
     """Whether local policy prevents Initialization from prepending its default."""
     unrelated = {b"export-ignore", b"-export-ignore", b"export-subst", b"-export-subst"}
-    for line in content.splitlines():
-        fields = line.strip().split()
-        if not fields or fields[0].startswith(b"#"):
-            continue
+    for line in _policy_lines(content):
+        fields = re.split(rb"[ \t\r\n]+", line)
         if len(fields) < 2 or any(field not in unrelated for field in fields[1:]):
             return True
     return False
