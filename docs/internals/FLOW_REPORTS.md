@@ -17,7 +17,7 @@ script or tool that consumes Flow output.
 Booley picks the report root in this order:
 
 1. `--report-dir`, if given.
-2. When `BOOLEY_RUNTIME_DIR` is set, `<runtime>/flow-reports`. Goal-bound MCP calls supply the Goal Record's runtime directory; retained Ticket-bound calls supply the Ticket runtime.
+2. When `BOOLEY_RUNTIME_DIR` is set, `<runtime>/flow-reports`. Every MCP endpoint subprocess sets it: Goal-bound calls use the Goal Record's runtime directory, ordinary Interactive calls use the server's session runtime under `.interactive_logs/<session>/.runtime`, and retained Ticket-bound calls use the Ticket runtime.
 3. Otherwise, `flow-reports/` in the Project data directory.
 
 Booley never writes `flow-reports/` into the RTL checkout itself.

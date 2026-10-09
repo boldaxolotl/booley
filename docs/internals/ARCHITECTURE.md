@@ -72,7 +72,7 @@ Interactive Mode is both the hands-on workflow and the front door to the Sandbox
 
 ## Goal Mode
 
-Goal Mode uses the existing agent session rather than launching a separate Ticket loop. Entry requires a clean linked worktree and creates a Goal Branch from HEAD. The worktree owns one Goal Record; any session in that worktree may continue it. While any Goal Record occupies the Project, every endpoint call without explicit `work_dir` is refused across dispatch paths: “Pass work_dir on every Booley call while Goal Mode is active”. This Project-wide rule also applies to calls intended to run outside the Goal worktree. Calls into an occupied Goal worktree capture an immutable Run Binding to the record, its Goal specifications, and Protected Inputs.
+Goal Mode uses the existing agent session rather than launching a separate Ticket loop. Entry requires a clean linked worktree and creates a Goal Branch from HEAD. The worktree owns one Goal Record; any session in that worktree may continue it. While any Goal Record occupies the Project, a Booley Flow, Specialist or custom-tool call, a report fetch, or a Goal tool call without explicit `work_dir` is refused (so is any such call while a Goal Record is unreadable): “Pass work_dir on every Booley call while Goal Mode is active”. This Project-wide rule also applies to calls intended to run outside the Goal worktree. Calls into an occupied Goal worktree capture an immutable Run Binding to the record, its Goal specifications, and Protected Inputs.
 
 Ordinary CLI Flow calls remain diagnostic; evidence that should count toward a Goal runs through MCP with its Run Binding.
 

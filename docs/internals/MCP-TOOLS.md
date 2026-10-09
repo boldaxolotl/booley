@@ -84,7 +84,7 @@ Every agent-facing call follows the same shape:
    update instead follows the invocation error path; see the failure distinctions
    in [Built-in Flow execution](FLOW-EXECUTION.md).
 
-Interactive Mode outside Goal Mode uses the same registry and implementations without persistent Goal state. An occupying Goal Record adds evidence binding and freshness checks to calls into its worktree; it does not launch another agent. While any Goal Record occupies the Project, every endpoint call without explicit `work_dir` is refused, including calls intended to run outside that worktree.
+Interactive Mode outside Goal Mode uses the same registry and implementations without persistent Goal state. An occupying Goal Record adds evidence binding and freshness checks to calls into its worktree; it does not launch another agent. While any Goal Record occupies the Project, endpoint dispatch, report fetches and Goal tools refuse calls without explicit `work_dir`, including calls intended to run outside that worktree; status, poll, cancel, Target listing and B-Wave tools are not affected.
 
 ### How Host-Provisioned EDA Fits
 
@@ -731,7 +731,7 @@ category    = "rtl"
 - Project criteria **cannot** override base criteria (hard error in shared endpoint validation, reported by Doctor)
 - An MCP tool with empty `satisfies` gets a warning (probably misconfigured)
 - Each Criterion family has one catalog endpoint binding. Conflicting claims raise `CriterionEndpointCatalogError`; repeated identical bindings are accepted rather than resolved by discovery order.
-- While any Goal Record occupies the Project, every endpoint call without explicit `work_dir` is refused across dispatch paths, even if it is intended as a diagnostic call outside the Goal worktree.
+- While any Goal Record occupies the Project (or one is unreadable), endpoint dispatch, report fetches and Goal tools refuse calls without explicit `work_dir`, even if a call is intended as a diagnostic outside the Goal worktree.
 - A Flow's Criterion contract is independent of whether a supported EDA installation is image- or host-provisioned
 
 ### Extending the Diagnostic Criterion Catalog

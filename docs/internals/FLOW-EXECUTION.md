@@ -63,7 +63,7 @@ Preparation validates the runtime, Flow enablement, bound Goal worktree, and
 Target-to-Goal binding before job admission. The Run Binding captures the record
 and specification revisions plus Protected Inputs; publication rechecks it
 before appending evidence or merging mutable state. Failed publication binding
-discards the evidence rather than assigning it to another Goal Mode.
+discards the evidence rather than assigning it to another Goal Record.
 
 The retained Ticket adapter additionally validates its sealed acceptance surface
 before loading mutable state; that path is retained until Phase 9a removes it.
