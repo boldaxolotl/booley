@@ -856,8 +856,11 @@ behind. A non-versioned Project gets a clean snapshot. Run this command from
 the primary workspace; creating from a paired Project checkout is refused.
 The outer checkout starts detached unless `<branch>--<description>` selects an
 existing branch. To remove a paired workspace, remove the Project checkout
-first with `git -C .booley_project worktree remove <worktree>/.booley_project`,
-then run `git worktree remove <worktree>`. The Project branch retains its commits.
+first with `git -C <absolute-project-dir> worktree remove <absolute-worktree>/.booley_project`,
+then run `git -C <absolute-workspace-root> worktree remove <absolute-worktree>`.
+To reuse the name, preserve any Project commits you need, then delete its branch
+with `git -C <absolute-project-dir> branch -D booley-worktree/<name>`.
+The command prints these steps with absolute paths.
 
 `booley projects discover` stops descending at each initialized Project to
 avoid scanning its RTL, vendor, and build trees. Nested Projects are not imported

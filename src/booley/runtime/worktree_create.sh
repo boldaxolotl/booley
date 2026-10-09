@@ -301,9 +301,9 @@ if [ "$ON_EXISTING" = "refuse" ]; then
         _parent_lock_release
         echo "ERROR: worktree destination is not free ($_destination_problem): $WORKTREE_DIR" >&2
         if [ -f "$WORKTREE_DIR/.booley_project/.git" ]; then
-            echo "ERROR: remove the paired Project first with 'git -C .booley_project worktree remove $WORKTREE_DIR/.booley_project' once its work is safe" >&2
+            echo "ERROR: remove the paired Project first, then the outer worktree, once its work is safe" >&2
         fi
-        echo "ERROR: choose another name, or remove the old worktree yourself with 'git worktree remove' once its work is safe" >&2
+        echo "ERROR: choose another name, or remove the old worktree once its work is safe" >&2
         exit 1
     fi
 fi
@@ -481,17 +481,12 @@ fi
 # Live state stays behind: Ticket boards/logs/locks, Goal state under goals/
 # (records, locks, and history; committed Goal history reaches the worktree
 # through Git only), and per-session runtime state under runtime/sessions/.
-# Those two patterns start with ./ so tar matches only the top-level members
+# The ./ patterns match only top-level members
 # (the archive is built from "."); a nested directory named goals is copied.
 if [ -d "$CWD/.booley_project" ]; then
     echo "Copying .booley_project/ into worktree..." >&2
     mkdir -p "$WORKTREE_DIR/.booley_project"
-    PROJECT_COPY_PATTERNS=$(PYTHONPATH="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)${PYTHONPATH:+:$PYTHONPATH}" "${PY[@]}" -c 'from booley.runtime.project_gitignore import project_snapshot_tar_excludes; print("\n".join(project_snapshot_tar_excludes()))')
-    PROJECT_COPY_EXCLUDES=()
-    while IFS= read -r pattern; do
-        PROJECT_COPY_EXCLUDES+=("--exclude=$pattern")
-    done <<< "$PROJECT_COPY_PATTERNS"
-    tar -C "$CWD/.booley_project" "${PROJECT_COPY_EXCLUDES[@]}" --exclude='.git' \
+    tar -C "$CWD/.booley_project" --exclude='.git' \
         --exclude='.venv' \
         --exclude='__pycache__' \
         --exclude='baselines' \
@@ -507,6 +502,14 @@ if [ -d "$CWD/.booley_project" ]; then
         --exclude='tickets/locks' \
         --exclude='./goals' \
         --exclude='./runtime/sessions' \
+        --exclude='./runtime/doctor/*.lock' \
+        --exclude='./runtime/jobs/slots' \
+        --exclude='./tickets/state' \
+        --exclude='./tickets/waiver-candidates' \
+        --exclude='./.runtime' \
+        --exclude='./flow-reports' \
+        --exclude='./logs' \
+        --exclude='./.baseline-wt-*' \
         --exclude='.locks' \
         --exclude='tmp' \
         --exclude='eval' \

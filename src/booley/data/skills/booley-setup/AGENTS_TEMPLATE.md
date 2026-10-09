@@ -34,7 +34,7 @@ tracks a content-identical root `AGENTS.md` (see `steps/3-agents-md.md`, Step 3)
 - To build or simulate another branch/commit without touching the workspace, do not run plain `git worktree add`, use an arbitrary path, or manually copy/symlink `.booley_project/`. A bare checkout lacks Booley state; the live state contains machine-specific runtime data.
 - Inside the Sandbox, run `booley worktree new <name>` from the workspace root to create `.booley_project/worktrees/<name>` with a paired Project checkout on `booley-worktree/<name>` when `.booley_project` is its own Git repository, or a clean snapshot when it is non-versioned. Commit Project changes first; ignored state stays behind. It prints the worktree path and refuses a name whose destination already exists.
   (a `<branch>--<description>` name checks out `<branch>`; otherwise the worktree is a detached HEAD at the current commit).
-- Remove a paired checkout first with `git -C .booley_project worktree remove <worktree>/.booley_project`, then `git worktree remove <worktree>`.
+- Follow the printed absolute-path removal steps: `git -C <absolute-project-dir> worktree remove <absolute-worktree>/.booley_project`, then `git -C <absolute-workspace-root> worktree remove <absolute-worktree>`. To reuse the name, preserve any needed Project commits, then run `git -C <absolute-project-dir> branch -D booley-worktree/<name>`.
 - Pass `work_dir=<worktree path>` to a Flow (`sim`, `lint`, `synth`, ...) to use that checkout; omit it for the normal workspace. Either way, project config comes from the canonical project dir.
 - For synthesis/implementation QoR against a past commit, prefer `synth`/`fpga`'s built-in `--baseline <git ref>` over a manual worktree.
 ```

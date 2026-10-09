@@ -3,15 +3,22 @@
 from __future__ import annotations
 
 import os
+import shlex
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from booley.runtime.file_lock import release_file_lock, wait_for_file_lock
+from booley.runtime.file_lock import release_file_lock, try_file_lock, wait_for_file_lock
 from booley.runtime.filesystem_utils import safe_rmtree
-from booley.runtime.incontainer_git_identity import apply_git_identity, load_git_identity
+from booley.runtime.incontainer_git_identity import (
+    GitIdentityError,
+    apply_git_identity,
+    load_git_identity,
+)
 from booley.runtime.project_dir import PROJECT_DIR_NAME
+from booley.runtime.project_gitignore import is_project_transient_path
 from booley.runtime.project_repositories import (
+    GitDirectoryInspectionError,
     common_git_dir,
     git_directories,
     is_standalone_git_repository,
@@ -53,10 +60,20 @@ def _require_base(source: Path, branch: str) -> str:
     )
     changes = parse_porcelain_z(status)
     if changes:
-        paths = ", ".join(change.path for change in changes)
+        transient = [change.path for change in changes if is_project_transient_path(change.path)]
+        inputs = [change.path for change in changes if not is_project_transient_path(change.path)]
+        remedies = []
+        if transient:
+            remedies.append(
+                f"transient state: {', '.join(transient)}; Project .gitignore is missing "
+                "current Booley patterns; rerun booley init, then commit the updated .gitignore"
+            )
+        if inputs:
+            remedies.append(
+                f"inputs: {', '.join(inputs)}; commit them in `{PROJECT_DIR_NAME}` first"
+            )
         raise ProjectPairingError(
-            f"Project repository has uncommitted changes: {paths}; "
-            f"commit them in `{PROJECT_DIR_NAME}` first"
+            "Project repository has uncommitted changes; " + "; ".join(remedies)
         )
     if run_git(source, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}").returncode == 0:
         raise ProjectPairingError(f"Project branch {branch!r} already exists; choose another name")
@@ -89,6 +106,9 @@ def _remove_copy(worktree: Path) -> Path:
 
 
 def _configure_checkout(source: Path, nested: Path) -> None:
+    # Like the outer script, keep this repository capability enabled across
+    # removals/rollback. Enabling it is idempotent; checkout settings and identity
+    # remain in config.worktree, and the primary checkout keeps its shared settings.
     _require_git(source, "config", "extensions.worktreeConfig", "true")
     relative = os.path.relpath(nested.resolve(), git_directories(nested).git_dir).replace(
         os.sep, "/"
@@ -114,9 +134,10 @@ def _rollback_pair(source: Path, nested: Path, branch: str) -> None:
         _require_git(source, "branch", "-D", branch)
 
 
-def pair_project_worktree(project_root: Path, worktree: Path, name: str) -> bool:
+def pair_project_worktree(
+    project_root: Path, worktree: Path, name: str, *, source: Path | None
+) -> bool:
     """Replace the script's snapshot with a new Project branch, rolling back failures."""
-    source = project_pairing_source(project_root)
     if source is None:
         return False
     branch = f"booley-worktree/{name}"
@@ -124,6 +145,7 @@ def pair_project_worktree(project_root: Path, worktree: Path, name: str) -> bool
         base = _require_base(source, branch)
         nested = _remove_copy(worktree)
         try:
+            _require_git(source, "config", "gc.worktreePruneExpire", "never")
             _require_git(
                 source,
                 "-c",
@@ -137,11 +159,15 @@ def pair_project_worktree(project_root: Path, worktree: Path, name: str) -> bool
                 base,
             )
             _configure_checkout(source, nested)
-        except (OSError, RuntimeError, ValueError) as exc:
+        except BaseException as exc:
             try:
                 _rollback_pair(source, nested, branch)
-            except (OSError, RuntimeError, ValueError) as cleanup:
-                raise ProjectPairingError(f"{exc}; paired rollback failed: {cleanup}") from exc
+            except (OSError, ProjectPairingError) as cleanup:
+                exc.add_note(f"paired rollback failed: {cleanup}")
+                if isinstance(exc, Exception):
+                    raise ProjectPairingError(f"{exc}; paired rollback failed: {cleanup}") from exc
+            if isinstance(exc, (GitIdentityError, GitDirectoryInspectionError, ValueError)):
+                raise ProjectPairingError(str(exc)) from exc
             raise
     return True
 
@@ -152,3 +178,38 @@ def rollback_outer_worktree(project_root: Path, worktree: Path) -> None:
     if result.returncode:
         safe_rmtree(worktree)
     _require_git(project_root, "worktree", "prune")
+
+
+def validate_project_pairing(source: Path | None, name: str) -> None:
+    """Refuse invalid Project inputs before paying for the outer checkout."""
+    if source is not None:
+        _require_base(source, f"booley-worktree/{name}")
+
+
+def worktree_removal_instructions(project_root: Path, worktree: Path, name: str) -> str:
+    """Format absolute inner/outer removal and explicit Project branch cleanup."""
+    root, outer = project_root.resolve(), worktree.resolve()
+    source = root / PROJECT_DIR_NAME
+
+    def quote(path: Path) -> str:
+        return shlex.quote(str(path))
+
+    return (
+        f"Remove the paired Project first: git -C {quote(source)} worktree remove {quote(outer / PROJECT_DIR_NAME)}\n"
+        f"Then remove the outer worktree: git -C {quote(root)} worktree remove {quote(outer)}\n"
+        f"To reuse the name, delete the Project branch after preserving its commits: "
+        f"git -C {quote(source)} branch -D {shlex.quote(f'booley-worktree/{name}')}"
+    )
+
+
+def remove_creation_lock(project_root: Path, name: str) -> None:
+    """Remove this failed creation's per-name file only when it is unlocked."""
+    locks = project_root / PROJECT_DIR_NAME / "worktrees" / ".locks"
+    path = locks / f"{name}.lock"
+    if not path.is_file() or (locks / f"{name}.mkdir.lock").exists():
+        return
+    with path.open("r+", encoding="utf-8") as handle, try_file_lock(handle) as acquired:
+        if acquired and os.name != "nt":
+            path.unlink()
+    if acquired and os.name == "nt":
+        path.unlink(missing_ok=True)

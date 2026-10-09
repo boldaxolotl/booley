@@ -16,25 +16,15 @@ from booley.runtime.project_dir import reset_cache
 from booley.runtime.project_worktree_pairing import pair_project_worktree
 from booley.targets.catalog import TargetCatalog
 from tests.goals.conftest import git
+from tests.goals.stealth_support import CORE
 from tests.goals.test_finish import environment, request
 from tests.goals.test_status import publish
 
-CORE = """CAPI=2:
-name: ::top:0
-filesets:
-  rtl: {files: [rtl.v], file_type: verilogSource}
-  constraints:
-    files: [.booley_project/cores/constraints/top.sdc]
-    file_type: SDC
-targets:
-  top: {filesets: [rtl, constraints], toplevel: top, default_tool: verilator}
-""".replace(" targets:", "targets:")
 
-
-@pytest.fixture(scope="module")
-def stealth(tmp_path_factory):
-    main = tmp_path_factory.mktemp("stealth") / "main"
-    main.mkdir()
+@pytest.fixture
+def stealth(tmp_path):
+    main = tmp_path / "stealth" / "main"
+    main.mkdir(parents=True)
     git(main, "init", "-q", "-b", "main")
     (main / "rtl.v").write_text("module top; endmodule\n")
     git(main, "add", ".")
@@ -51,7 +41,7 @@ def stealth(tmp_path_factory):
     git(control, "commit", "-qm", "Project")
     worktree = control / "worktrees/wt"
     git(main, "worktree", "add", "--detach", str(worktree), "HEAD")
-    assert pair_project_worktree(main, worktree, "wt")
+    assert pair_project_worktree(main, worktree, "wt", source=control)
     with pytest.MonkeyPatch.context() as patch:
         patch.setenv("BOOLEY_PROJECT_DIR", str(control))
         reset_cache()

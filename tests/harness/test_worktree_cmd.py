@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import argparse
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -141,8 +143,7 @@ def project(tmp_path: Path, monkeypatch) -> Path:
 
 
 def _new(name: str, project_root: Path) -> int:
-    args = tlr._build_parser().parse_args(["worktree", "new", name])
-    return worktree_cmd.run(args, project_root)
+    return worktree_cmd.run(argparse.Namespace(name=name), project_root)
 
 
 @_real_script
@@ -236,15 +237,15 @@ def test_help_never_names_the_preview_surface(capsys) -> None:
     assert "Goal" not in capsys.readouterr().out
 
 
-@pytest.fixture(scope="module")
-def versioned_project(tmp_path_factory):
+@pytest.fixture
+def versioned_project(tmp_path):
     """A clean Stealth outer repository with a standalone Project at its HEAD."""
     from booley.runtime.project_gitignore import PROJECT_GITIGNORE
     from tests.goals.conftest import git
-    from tests.goals.test_stealth_inputs import CORE
+    from tests.goals.stealth_support import CORE
 
-    root = tmp_path_factory.mktemp("paired-user") / "main"
-    root.mkdir()
+    root = tmp_path / "paired-user" / "main"
+    root.mkdir(parents=True)
     git(root, "init", "-q", "-b", "main")
     _write(root / "rtl.v", "module top; endmodule\n")
     git(root, "add", ".")
@@ -270,7 +271,7 @@ def python_outer(monkeypatch):
     """Exercise Python pairing on every OS without depending on a POSIX script."""
     from tests.goals.conftest import git
 
-    def create(name, root):
+    def create(name, root, *, paired_project):
         destination = worktree_cmd.worktree_path(root, name)
         git(root, "worktree", "add", "--detach", str(destination), "HEAD")
         _write(destination / ".booley_project/booley.toml", "# script snapshot\n")
@@ -302,11 +303,13 @@ def test_user_command_pairs_committed_project_and_prints_removal(versioned_proje
         assert git(paired, "config", "--worktree", "--get", key) == value
     output = capsys.readouterr()
     assert output.out.strip() == str(worktree)
-    assert output.err.index("git -C .booley_project worktree remove") < output.err.index(
-        "Then: git worktree remove"
-    )
+    from booley.runtime.project_worktree_pairing import worktree_removal_instructions
+
+    assert worktree_removal_instructions(root, worktree, "real-paired") in output.err
+    assert git(source, "config", "extensions.worktreeConfig") == "true"
+    assert git(source, "config", "gc.worktreePruneExpire") == "never"
     assert _new("real-paired", root) == 1
-    assert "remove the paired Project first" in capsys.readouterr().err
+    assert "Remove the paired Project first" in capsys.readouterr().err
 
 
 def test_python_pairing_accepts_detached_project_head(versioned_project, python_outer):
@@ -455,12 +458,24 @@ def test_snapshot_omits_canonical_transient_paths(project):
         "logs/log.txt",
         ".baseline-wt-stale/result",
     ]
+    preserved = [
+        "runtime/doctor_stamp.json",
+        "runtime/developer_probe.json",
+        "runtime/upgrade_review.json",
+        "SETUP-REPORT.md",
+        "FEEDBACK-REPORT.md",
+        "cores/logs/keep.txt",
+        "cores/flow-reports/keep.json",
+    ]
+    for path in preserved:
+        _write(project / ".booley_project" / path, "keep\n")
     for path in paths:
         _write(project / ".booley_project" / path, "stale\n")
     assert _new("transient-snapshot", project) == 0
     copied = worktree_cmd.worktree_path(project, "transient-snapshot") / ".booley_project"
     assert (copied / "booley.toml").is_file()
     assert all(not (copied / path).exists() for path in paths)
+    assert all((copied / path).read_text(encoding="utf-8") == "keep\n" for path in preserved)
 
 
 @_real_script
@@ -480,3 +495,269 @@ def test_ci_driver_creates_pairing_through_user_command(versioned_project, tmp_p
     assert (paired / ".git").is_file()
     assert git(paired, "symbolic-ref", "--short", "HEAD") == "booley-worktree/ci-demo"
     assert git(paired, "rev-parse", "HEAD") == git(workspace.project_dir, "rev-parse", "HEAD")
+
+
+def test_static_snapshot_additions_are_canonical_transient_patterns(versioned_project):
+    from booley.runtime.paths import worktree_create_script
+    from booley.runtime.project_gitignore import is_project_transient_path
+
+    script = worktree_create_script().read_text(encoding="utf-8")
+    copy = script.split('tar -C "$CWD/.booley_project"', 1)[1].split("-cf - .", 1)[0]
+    excludes = set(re.findall(r"--exclude='([^']+)'", copy))
+    additions = {
+        "./runtime/doctor/*.lock",
+        "./runtime/jobs/slots",
+        "./tickets/state",
+        "./tickets/waiver-candidates",
+        "./.runtime",
+        "./flow-reports",
+        "./logs",
+        "./.baseline-wt-*",
+    }
+    assert additions <= excludes
+    assert {"./runtime", "./SETUP-REPORT.md", "./FEEDBACK-REPORT.md"}.isdisjoint(excludes)
+    assert "PROJECT_COPY_PATTERNS" not in script
+    for pattern in additions:
+        path = pattern.removeprefix("./").replace("*", "sample")
+        if not path.endswith(".lock"):
+            path += "/state.json"
+        # The fixture's .gitignore is exactly PROJECT_GITIGNORE_PATTERNS.
+        assert (
+            _git(
+                versioned_project / ".booley_project",
+                "check-ignore",
+                "--no-index",
+                "--quiet",
+                path,
+            ).returncode
+            == 0
+        )
+        assert is_project_transient_path(path)
+
+
+def test_canonical_transient_classifier_matches_git_including_reincludes(versioned_project):
+    from booley.runtime.project_gitignore import is_project_transient_path
+
+    paths = [
+        "goals/g1/record.json",
+        "goals/history/kept.md",
+        "goals/history/tmp/state.json",
+        "flow-reports/report.json",
+        "cores/flow-reports/report.json",
+        "logs/log",
+        "cores/logs/log",
+        "runtime/doctor_stamp.json",
+        "cores/top.core",
+        "foo/__pycache__/a.pyc",
+        "foo/a.pyc",
+        ".baseline-wt-old/state",
+        "foo/.baseline-wt-old/state",
+    ]
+    for path in paths:
+        result = _git(
+            versioned_project / ".booley_project", "check-ignore", "--no-index", "--quiet", path
+        )
+        assert result.returncode in {0, 1}
+        assert is_project_transient_path(path) == (result.returncode == 0), path
+
+
+@pytest.mark.parametrize("mixed", [False, True])
+def test_stale_ignore_diagnoses_transient_and_input_groups(
+    versioned_project, monkeypatch, capsys, mixed
+):
+    from tests.goals.conftest import git
+
+    root = versioned_project
+    source = root / ".booley_project"
+    # Retain the existing runtime ignore, but model an older Project without Goal/report patterns.
+    _write(source / ".gitignore", "worktrees/\nruntime/\n")
+    git(source, "add", ".gitignore")
+    git(source, "commit", "-qm", "old ignore policy")
+    _write(source / "goals/g1/record.json", "transient\n")
+    _write(source / "flow-reports/report.json", "transient\n")
+    if mixed:
+        _write(source / "cores/top.core", "design edit\n")
+
+    def unexpected(*_args, **_kwargs):
+        pytest.fail("outer creation must not run for invalid source inputs")
+
+    monkeypatch.setattr(worktree_cmd, "_create_outer", unexpected)
+    assert _new("stale", root) == 1
+    error = capsys.readouterr().err
+    assert "Project .gitignore is missing current Booley patterns" in error
+    assert "rerun booley init" in error
+    assert "goals/g1/record.json" in error and "flow-reports/report.json" in error
+    if mixed:
+        assert "inputs: cores/top.core; commit them in `.booley_project` first" in error
+    else:
+        assert "commit them" not in error
+    _assert_creation_absent(root, "stale")
+
+
+@pytest.mark.parametrize("problem", ["dirty", "collision", "unborn"])
+def test_precheck_refuses_before_outer_creation(versioned_project, monkeypatch, problem):
+    from tests.goals.conftest import git
+
+    source = versioned_project / ".booley_project"
+    if problem == "dirty":
+        _write(source / "new.core", "uncommitted\n")
+    elif problem == "collision":
+        git(source, "branch", "booley-worktree/precheck")
+    else:
+        git(source, "symbolic-ref", "HEAD", "refs/heads/unborn")
+
+    def unexpected(*_args, **_kwargs):
+        pytest.fail("prechecks must run before building the outer checkout")
+
+    monkeypatch.setattr(worktree_cmd, "_create_outer", unexpected)
+    assert _new("precheck", versioned_project) == 1
+
+
+@pytest.mark.parametrize("boundary", ["outer", "paired"])
+def test_interrupt_rolls_back_and_reraises(versioned_project, python_outer, monkeypatch, boundary):
+    from booley.runtime import project_worktree_pairing as pairing
+
+    def interrupt(*_args, **_kwargs):
+        raise KeyboardInterrupt("injected interrupt")
+
+    if boundary == "outer":
+        monkeypatch.setattr(worktree_cmd, "pair_project_worktree", interrupt)
+    else:
+        monkeypatch.setattr(pairing, "_configure_checkout", interrupt)
+    with pytest.raises(KeyboardInterrupt, match="injected interrupt"):
+        _new("interrupted", versioned_project)
+    _assert_creation_absent(versioned_project, "interrupted")
+
+
+@_real_script
+def test_real_script_rollback_removes_only_its_unlocked_name_lock(versioned_project, monkeypatch):
+    from booley.runtime import project_worktree_pairing as pairing
+
+    locks = versioned_project / ".booley_project/worktrees/.locks"
+    _write(locks / "other.lock", "preserve\n")
+
+    def interrupt(*_args):
+        raise KeyboardInterrupt("after Project add")
+
+    monkeypatch.setattr(pairing, "apply_git_identity", interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        _new("interrupt-real", versioned_project)
+    _assert_creation_absent(versioned_project, "interrupt-real")
+    assert not (locks / "interrupt-real.lock").exists()
+    assert (locks / "other.lock").read_text(encoding="utf-8") == "preserve\n"
+
+
+def test_rollback_lock_cleanup_preserves_a_held_lock(tmp_path):
+    from booley.runtime.file_lock import nonblocking_file_lock
+    from booley.runtime.project_worktree_pairing import remove_creation_lock
+
+    lock = tmp_path / ".booley_project/worktrees/.locks/held.lock"
+    _write(lock, "owned elsewhere\n")
+    with lock.open("r+", encoding="utf-8") as handle, nonblocking_file_lock(handle):
+        remove_creation_lock(tmp_path, "held")
+        assert lock.is_file()
+    remove_creation_lock(tmp_path, "held")
+    assert not lock.exists()
+
+
+def test_failed_configuration_keeps_idempotent_repository_capability(
+    versioned_project, python_outer, monkeypatch
+):
+    from booley.runtime import project_worktree_pairing as pairing
+    from tests.goals.conftest import git
+
+    source = versioned_project / ".booley_project"
+    original = pairing.apply_git_identity
+
+    def failure(*_args):
+        raise pairing.GitIdentityError("identity failed")
+
+    monkeypatch.setattr(pairing, "apply_git_identity", failure)
+    assert _new("retry", versioned_project) == 1
+    assert git(source, "config", "extensions.worktreeConfig") == "true"
+    assert git(source, "config", "gc.worktreePruneExpire") == "never"
+    assert Path(git(source, "rev-parse", "--show-toplevel")).samefile(source)
+    assert not git(source, "status", "--porcelain")
+    _assert_creation_absent(versioned_project, "retry")
+    monkeypatch.setattr(pairing, "apply_git_identity", original)
+    assert _new("retry", versioned_project) == 0
+    assert not git(source, "status", "--porcelain")
+
+
+@_real_script
+def test_script_refusal_has_one_error_prefix(project, capsys):
+    _write(worktree_cmd.worktree_path(project, "busy") / "keep.txt", "keep\n")
+    assert _new("busy", project) == 1
+    error = capsys.readouterr().err
+    assert "ERROR: destination" in error or "ERROR: worktree destination" in error
+    assert "ERROR: ERROR:" not in error
+
+
+@_real_script
+def test_goal_entry_and_finish_use_real_user_worktree(versioned_project, monkeypatch):
+    from types import SimpleNamespace
+
+    from booley.fusesoc.core_projection import reconcile_projected_cores
+    from booley.goals.entry import EntryEnvironment, EntryRequest, enter_goal_mode
+    from booley.goals.finish import finish_goal
+    from booley.goals.model import parse_goal_args
+    from booley.runtime.project_dir import reset_cache
+    from tests.goals.conftest import git
+    from tests.goals.test_finish import environment, request
+    from tests.goals.test_status import publish
+
+    root = versioned_project
+    control = root / ".booley_project"
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(control))
+    reset_cache()
+    try:
+        assert _new("user-goal", root) == 0
+        worktree = worktree_cmd.worktree_path(root, "user-goal")
+        reconcile_projected_cores(worktree)
+        record = enter_goal_mode(
+            EntryRequest(
+                worktree, "user-goal", parse_goal_args([{"family": "lint", "target": "top"}])
+            ),
+            EntryEnvironment(control),
+        ).record
+        assert record.paired_project_base_sha == git(control, "rev-parse", "HEAD")
+        layout = SimpleNamespace(main=root, control=control, worktree=worktree, record=record)
+        publish(layout)
+        assert finish_goal(request(layout), environment(layout))["status"] == "finished"
+    finally:
+        reset_cache()
+
+
+def test_pairing_source_is_discovered_once_and_dirty_state_is_rechecked(
+    versioned_project, python_outer, monkeypatch, capsys
+):
+    source_query = worktree_cmd.project_pairing_source
+    create = worktree_cmd._create_outer
+    queries = []
+
+    def discover(root):
+        queries.append(root)
+        return source_query(root)
+
+    def build(name, root, **kwargs):
+        create(name, root, **kwargs)
+        _write(root / ".booley_project/cores/top.core", "changed during outer creation\n")
+
+    monkeypatch.setattr(worktree_cmd, "project_pairing_source", discover)
+    monkeypatch.setattr(worktree_cmd, "_create_outer", build)
+    assert _new("moving-inputs", versioned_project) == 1
+    assert queries == [versioned_project]
+    assert "cores/top.core" in capsys.readouterr().err
+    _assert_creation_absent(versioned_project, "moving-inputs")
+
+
+def test_unexpected_runtime_error_is_rolled_back_and_reraised(
+    versioned_project, python_outer, monkeypatch
+):
+    def unexpected(*_args, **_kwargs):
+        raise RuntimeError("unexpected implementation defect")
+
+    monkeypatch.setattr(worktree_cmd, "pair_project_worktree", unexpected)
+    with pytest.raises(RuntimeError, match="unexpected implementation defect"):
+        _new("unexpected", versioned_project)
+    _assert_creation_absent(versioned_project, "unexpected")

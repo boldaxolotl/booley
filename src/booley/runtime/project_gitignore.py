@@ -6,6 +6,8 @@ missing.
 
 from __future__ import annotations
 
+from fnmatch import fnmatchcase
+
 # Inside ``.booley_project/`` we ignore transient state that should never be
 # committed (tmp scratch, runtime logs, lockfiles).  ``.interactive_logs/`` is
 # new in ADR 0012 — per-session transcripts written by the MCP server when an
@@ -119,14 +121,29 @@ def _reincludes_after(keys: list[str], reinclude: str, overridden_pattern: str) 
     return last_reinclude > max(overridden_positions)
 
 
-def project_snapshot_tar_excludes() -> tuple[str, ...]:
-    """Exclude canonical transient state from the top level of a tar snapshot.
+def is_project_transient_path(path: str) -> bool:
+    """Match a file and its ancestors against Booley's canonical ignore policy.
 
-    Goal history arrives from the outer Git checkout; snapshots exclude all
-    live Goal state, including untracked history, via the script's existing rule.
+    This handles the fixed directory/basename patterns and ordered re-includes
+    in PROJECT_GITIGNORE_PATTERNS, independently of a Project's stale ignore file.
     """
-    return tuple(
-        "./" + pattern.strip("/")
-        for pattern in PROJECT_GITIGNORE_PATTERNS
-        if not pattern.startswith("!") and not pattern.startswith("goals/")
-    )
+    parts = path.split("/")
+    for end in range(1, len(parts) + 1):
+        ignored = False
+        for pattern in PROJECT_GITIGNORE_PATTERNS:
+            body = pattern.lstrip("!").strip("/")
+            if pattern.endswith("/") and end == len(parts):
+                continue
+            expected = body.split("/")
+            candidate = (
+                parts[:end]
+                if "/" in body or pattern.lstrip("!").startswith("/")
+                else [parts[end - 1]]
+            )
+            if len(candidate) == len(expected) and all(
+                fnmatchcase(value, glob) for value, glob in zip(candidate, expected, strict=True)
+            ):
+                ignored = not pattern.startswith("!")
+        if ignored:
+            return True
+    return False

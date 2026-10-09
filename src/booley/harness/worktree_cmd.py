@@ -24,9 +24,13 @@ from booley.runtime.paths import worktree_create_script
 from booley.runtime.platform_paths import bash_bin
 from booley.runtime.project_dir import PROJECT_DIR_NAME
 from booley.runtime.project_worktree_pairing import (
+    ProjectPairingError,
     pair_project_worktree,
     project_pairing_source,
+    remove_creation_lock,
     rollback_outer_worktree,
+    validate_project_pairing,
+    worktree_removal_instructions,
 )
 
 # Same single-path-component rule the script enforces; checking it at the
@@ -82,15 +86,17 @@ def worktree_path(project_root: Path, name: str) -> Path:
     return project_root / PROJECT_DIR_NAME / "worktrees" / name
 
 
-def _create_outer(name: str, project_root: Path) -> None:
+class WorktreeCreationError(Exception):
+    """The outer worktree script could not create the requested checkout."""
+
+
+def _create_outer(name: str, project_root: Path, *, paired_project: bool) -> None:
     script = worktree_create_script()
     if not script.is_file():
-        raise RuntimeError(f"worktree script not found: {script}")
+        raise WorktreeCreationError(f"worktree script not found: {script}")
     payload = {"name": name, "cwd": str(project_root), "on_existing": "refuse"}
     environment = {**os.environ}
-    environment["BOOLEY_WORKTREE_PAIRED_PROJECT"] = (
-        "1" if project_pairing_source(project_root) is not None else "0"
-    )
+    environment["BOOLEY_WORKTREE_PAIRED_PROJECT"] = "1" if paired_project else "0"
     environment.setdefault("BOOLEY_PYTHON", sys.executable)
     try:
         result = subprocess.run(
@@ -104,37 +110,53 @@ def _create_outer(name: str, project_root: Path) -> None:
             check=False,
         )
     except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(f"worktree creation timed out after {_CREATE_TIMEOUT_S} s") from exc
+        raise WorktreeCreationError(
+            f"worktree creation timed out after {_CREATE_TIMEOUT_S} s"
+        ) from exc
     except OSError as exc:
-        raise RuntimeError(f"worktree creation failed to start: {exc}") from exc
+        raise WorktreeCreationError(f"worktree creation failed to start: {exc}") from exc
     if result.returncode != 0:
-        errors = [line for line in result.stderr.splitlines() if line.startswith("ERROR:")]
+        errors = [
+            line.removeprefix("ERROR:").lstrip()
+            for line in result.stderr.splitlines()
+            if line.startswith("ERROR:")
+        ]
         detail = "\n".join(errors) or result.stderr.strip() or "(no output)"
-        raise RuntimeError(detail)
+        raise WorktreeCreationError(detail)
 
 
 def run(args: argparse.Namespace, project_root: Path) -> int:
-    """Create the outer and paired checkouts atomically; print paths and removal order."""
+    """Create the outer and paired checkouts atomically; print removal instructions."""
     worktree = worktree_path(project_root, args.name)
     created = False
+    source = None
     try:
-        project_pairing_source(project_root)
-        _create_outer(args.name, project_root)
+        source = project_pairing_source(project_root)
+        validate_project_pairing(source, args.name)
+        _create_outer(args.name, project_root, paired_project=source is not None)
         created = True
-        paired = pair_project_worktree(project_root, worktree, args.name)
-    except (OSError, RuntimeError, ValueError) as exc:
+        paired = pair_project_worktree(project_root, worktree, args.name, source=source)
+    except BaseException as exc:
         if created:
-            try:
-                rollback_outer_worktree(project_root, worktree)
-            except (OSError, RuntimeError, ValueError) as cleanup:
-                print(f"ERROR: outer rollback failed: {cleanup}", file=sys.stderr)
+            _rollback_creation(project_root, worktree, args.name, exc)
+        if not isinstance(exc, (WorktreeCreationError, ProjectPairingError, OSError)):
+            raise
         print(f"ERROR: {exc}", file=sys.stderr)
+        if source is not None and (worktree / PROJECT_DIR_NAME / ".git").is_file():
+            print(
+                worktree_removal_instructions(project_root, worktree, args.name), file=sys.stderr
+            )
         return 1
     print(worktree)
     if paired:
-        print(
-            f"Remove paired Project first: git -C {PROJECT_DIR_NAME} worktree remove "
-            f"'{worktree / PROJECT_DIR_NAME}'\nThen: git worktree remove '{worktree}'",
-            file=sys.stderr,
-        )
+        print(worktree_removal_instructions(project_root, worktree, args.name), file=sys.stderr)
     return 0
+
+
+def _rollback_creation(root: Path, worktree: Path, name: str, failure: BaseException) -> None:
+    try:
+        rollback_outer_worktree(root, worktree)
+        remove_creation_lock(root, name)
+    except (OSError, ProjectPairingError) as cleanup:
+        failure.add_note(f"outer rollback failed: {cleanup}")
+        print(f"ERROR: outer rollback failed: {cleanup}", file=sys.stderr)
