@@ -30,11 +30,11 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from enum import StrEnum
 from pathlib import PurePosixPath, PureWindowsPath
 from types import MappingProxyType
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from booley.core.boundary import (
     BoundaryError,
@@ -238,6 +238,28 @@ GoalArg = (
     | MutationGoalArg
     | ReviewGoalArg
 )
+
+
+def goal_arg_to_json(goal: GoalArg) -> dict[str, Any]:
+    """Encode one validated GoalArg for the public entry boundary."""
+    result = {
+        item.name: _goal_arg_json_value(value)
+        for item in fields(goal)
+        if (value := getattr(goal, item.name)) is not None
+    }
+    if isinstance(goal, MutationGoalArg):
+        result.update(result.pop("params"))
+    return result
+
+
+def _goal_arg_json_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            key: _goal_arg_json_value(item) for key, item in cast(Mapping[str, Any], value).items()
+        }
+    if isinstance(value, tuple):
+        return [_goal_arg_json_value(item) for item in cast(tuple[Any, ...], value)]
+    return value
 
 
 # Characters that would make the Criterion grammar read a Target name as a

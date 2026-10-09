@@ -41,7 +41,12 @@ from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
 from booley.core.boundary import as_dict
-from booley.fusesoc.fusesoc_registry import discover_cores, read_core
+from booley.fusesoc.fusesoc_registry import (
+    core_files_root,
+    core_relative_to_project,
+    discover_cores,
+    read_core,
+)
 from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.targets.catalog import TargetCatalog
 from booley.targets.declared_inputs import core_program_paths
@@ -84,7 +89,10 @@ def target_surface_fingerprint(
     if tests_toml is not None:
         files[("tests", _label(tests_toml, root))] = tests_toml
     for core, document in documents.items():
-        for program in core_program_paths(document, core_file=core, project_root=root):
+        programs = core_program_paths(
+            document, core_file=core, project_root=root, files_root=core_files_root(core, root)
+        )
+        for program in programs:
             files[("program", _label(program, root))] = program
         for listed in _auxiliary_fileset_files(document, core, root):
             files[("fileset", _label(listed, root))] = listed
@@ -144,7 +152,14 @@ def _auxiliary_fileset_files(
             for text, file_type in _file_items(item, default_type):
                 if _is_hdl(text, file_type):
                     continue
-                path = (core.parent / text).resolve()
+                try:
+                    relative = core_relative_to_project(core, root, text)
+                except ValueError:
+                    # Windows cross-drive paths cannot be expressed relative to
+                    # *root*; like any other path outside it, they are not part
+                    # of the surface (POSIX drops the same input below).
+                    continue
+                path = (root / relative).resolve()
                 if path.is_relative_to(root) and not path.is_dir():
                     yield path
 

@@ -986,13 +986,9 @@ jobs:
       - name: Prepare isolated validation temp directories
         shell: bash
         run: |
-          for validation in agent-policy openroad verible isolation fifo native-fst verilator coverage-release simulator cocotb ticket-mode; do
+          for validation in agent-policy openroad verible isolation fifo native-fst verilator coverage-release simulator cocotb goal-mode; do
             install -d -m 0777 "${RUNNER_TEMP}/bwave-smoke/${validation}"
           done
-          install -d -m 0777 \
-            "${RUNNER_TEMP}/bwave-smoke/ticket-mode/alias-project" \
-            "${RUNNER_TEMP}/bwave-smoke/ticket-mode/alias-project/.booley_project"
-          sudo chown -R 1000:1000 "${RUNNER_TEMP}/bwave-smoke/ticket-mode/alias-project"
 
       # ADR 0070: reuse the published RISC-V tooling stage when the main-only
       # publisher has a label-verified image for this exact stage text. A
@@ -1050,7 +1046,6 @@ jobs:
           - name: Run RISC-V candidate image contract
             if: needs.changes.outputs.riscv_image == 'true'
             env:
-              TICKET_SLUG: ${{ steps.riscv-demo.outputs.ticket_slug }}
               TOOLING_SOURCE: ${{ steps.riscv-tooling.outputs.source }}
               TOOLING_CONTEXT: ${{ steps.riscv-tooling.outputs.context }}
             run: |
@@ -1177,7 +1172,7 @@ jobs:
                 --record "${records}/picorv32-runtime.json" \
                 --name picorv32_runtime_demo --topology nested -- \
                 .github/scripts/run_picorv32_ci_demo.sh \
-                "${{ github.workspace }}" "${TICKET_SLUG}" \
+                "${{ github.workspace }}" \
                 "booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-riscv"
               lane_status=0
 
@@ -1341,27 +1336,27 @@ jobs:
               python3 -m booley.flows.sim --project /validation-tmp/project --target sim_icarus &&
               python3 -m booley.flows.sim --project /validation-tmp/project --target sim_verilator"
 
-          - name: Run Ticket Mode production-image smoke
+          - name: Run Goal Mode production-image smoke
             env:
-              VALIDATION_TMP: ${{ runner.temp }}/bwave-smoke/ticket-mode
+              VALIDATION_TMP: ${{ runner.temp }}/bwave-smoke/goal-mode
             run: >-
               python .github/scripts/riscv_phase_metrics.py timed-run
-              --record "${RUNNER_TEMP}/riscv-image-evidence/records/ticket-mode.json"
-              --name ticket_mode --topology parallel --
+              --record "${RUNNER_TEMP}/riscv-image-evidence/records/goal-mode.json"
+              --name goal_mode --topology parallel --
               .github/scripts/run_with_container_cleanup.sh
-              booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-ticket-mode
+              booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-goal-mode
               docker run --rm --init
-              --name booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-ticket-mode
+              --name booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-goal-mode
               --mount type=bind,src="${{ github.workspace }}",dst=/work,readonly
               --mount type=bind,src="${{ steps.nangate.outputs.root }}",dst=/opt/pdk,readonly
               --mount type=bind,src="${VALIDATION_TMP}",dst=/validation-tmp
-              --mount type=bind,src="${VALIDATION_TMP}/alias-project/.booley_project",dst=/booley-enqueue-alias
-              -e TMPDIR=/validation-tmp -e BOOLEY_TICKET_MODE_SMOKE=1
-              -e BOOLEY_ENQUEUE_ALIAS_PROJECT=/validation-tmp/alias-project
-              -e BOOLEY_ENQUEUE_ALIAS_DATA=/booley-enqueue-alias
+              -e TMPDIR=/validation-tmp -e BOOLEY_GOAL_MODE_SMOKE=1 -e BOOLEY_GOAL_MODE_PREVIEW=1 -e BOOLEY_MCP_MODE=interactive
               booley-test bash -c "pip install --break-system-packages pytest==9.1.1 pytest-asyncio==1.4.0 &&
-              python -m pytest /work/tests/smoke/test_ticket_mode_image_smoke.py
-              -v --tb=short -o cache_dir=/validation-tmp/pytest-cache"
+              python -m pytest /work/tests/smoke/test_goal_mode_image_smoke.py
+              -v --tb=short --junitxml=/validation-tmp/goal-mode.xml
+              -o cache_dir=/validation-tmp/pytest-cache &&
+              python /work/.github/scripts/assert_junit.py /validation-tmp/goal-mode.xml
+              --label goal-mode --min-tests 3 --max-skips 0"
 
       - name: Run pinned Ibex lint demo
         if: needs.changes.outputs.riscv_image == 'true'
@@ -1410,6 +1405,13 @@ jobs:
           if test -e ibex-demo; then
             sudo chown -R "$(id -u):$(id -g)" ibex-demo
           fi
+          readiness="${RUNNER_TEMP}/riscv-image-evidence/goal-readiness"
+          if test -e "${readiness}"; then
+            sudo chown -R "$(id -u):$(id -g)" "${readiness}"
+          fi
+          if test -f "${readiness}/goal-readiness.json"; then
+            sudo chmod a+r "${readiness}/goal-readiness.json"
+          fi
 
       - name: Finalize RISC-V phase evidence
         if: always() && needs.changes.outputs.riscv_image == 'true'
@@ -1434,6 +1436,15 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+      - name: Upload Goal readiness evidence
+        if: always() && needs.changes.outputs.riscv_image == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: goal-readiness-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/riscv-image-evidence/goal-readiness/goal-readiness.json
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Upload coverage release test timing
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -1442,6 +1453,7 @@ jobs:
           path: |
             ${{ runner.temp }}/bwave-smoke/coverage-release/coverage-release.xml
             ${{ runner.temp }}/bwave-smoke/coverage-release/test-timings.jsonl
+            ${{ runner.temp }}/bwave-smoke/goal-mode/goal-mode.xml
           if-no-files-found: warn
           retention-days: 14
 

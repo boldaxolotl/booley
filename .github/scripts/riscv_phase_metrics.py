@@ -74,7 +74,7 @@ _EXPECTED_PHASES = {
     "riscv_tool_substrate_construction_export": "nested",
     "riscv_tool_substrate_transfer_load": "nested",
     "simulator": "parallel",
-    "ticket_mode": "parallel",
+    "goal_mode": "parallel",
     "verible": "parallel",
     "verilator": "parallel",
     "wheel_overlay_construction_export": "nested",

@@ -17,8 +17,6 @@ OUTPUT_KEYS = (
     "upstream_ref",
     "project_repository",
     "project_ref",
-    "ticket_fixture",
-    "ticket_slug",
     "toolchain_url",
     "toolchain_sha256",
 )

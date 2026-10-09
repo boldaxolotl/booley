@@ -16,7 +16,7 @@ module tb_fail;
         rst_ni = 1'b1;
         enable_i = 1'b1;
         repeat (2) @(posedge clk_i);
-        $display("[SIM_RESULT] FAILED: intentional Ticket Mode smoke failure");
+        $display("[SIM_RESULT] FAILED: intentional Goal Mode smoke failure");
         $finish;
     end
 endmodule

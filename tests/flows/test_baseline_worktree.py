@@ -440,6 +440,23 @@ def test_no_stealth_cores_is_a_noop(tmp_path: Path) -> None:
         assert not (wt / ".booley_project").exists()
 
 
+def test_nonstealth_ignored_project_baseline_keeps_live_tests_resolution(tmp_path: Path) -> None:
+    from booley.runtime.project_dir import resolve_checkout_project_dir
+
+    _init_repo(tmp_path)
+    (tmp_path / ".git/info/exclude").write_text("/.booley_project\n", encoding="utf-8")
+    project = tmp_path / ".booley_project"
+    (project / "booley.toml").write_text("[stealth]\nenabled=false\n", encoding="utf-8")
+    tests = project / "tests.toml"
+    tests.write_text('[top]\ntests=["smoke"]\n', encoding="utf-8")
+    with baseline_worktree(tmp_path, "HEAD") as worktree:
+        assert not (worktree / ".booley_project").exists()
+        assert resolve_checkout_project_dir(worktree) == project
+        assert (
+            resolve_checkout_project_dir(worktree) / "tests.toml"
+        ).read_bytes() == tests.read_bytes()
+
+
 def test_git_short_sha_falls_back_on_bad_ref(tmp_path: Path) -> None:
     _init_repo(tmp_path)
     # A resolvable ref returns a real short sha (hex, <= 40 chars).

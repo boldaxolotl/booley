@@ -34,7 +34,7 @@ from .conftest import place_ticket
 
 
 def _git_project(tmp_path: Path, monkeypatch) -> tuple[Path, TicketIO]:
-    fixture = Path(__file__).resolve().parents[1] / "fixtures" / "ticket_mode_smoke"
+    fixture = Path(__file__).resolve().parents[1] / "fixtures" / "goal_mode_smoke"
     project = tmp_path / "project"
     shutil.copytree(fixture, project)
     monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project / ".booley_project"))

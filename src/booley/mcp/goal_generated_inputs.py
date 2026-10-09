@@ -13,7 +13,7 @@ from typing import Any, cast
 from booley.criteria.evidence_ledger import validated_evidence_records
 from booley.criteria.state import DevelopmentState
 from booley.flows.sim.campaign.codec import MANIFEST_MAX_BYTES, decode_simulation_campaign_manifest
-from booley.fusesoc.fusesoc_registry import read_core
+from booley.fusesoc.fusesoc_registry import core_files_root, read_core
 from booley.goals.derivation import selected_observations
 from booley.goals.input_view import GeneratedBuildInput
 from booley.goals.lifecycle import LifecycleError
@@ -140,7 +140,14 @@ def _committed_only_inputs(root: Path, catalog: TargetCatalog, target: str) -> f
         if item.file_type.startswith(("verilogSource", "systemVerilogSource", "vhdlSource"))
     }
     for core in catalog.core_closure((handle,)) or ():
-        paths.update(core_program_paths(read_core(core), core_file=core, project_root=root))
+        paths.update(
+            core_program_paths(
+                read_core(core),
+                core_file=core,
+                project_root=root,
+                files_root=core_files_root(core, root),
+            )
+        )
     config = resolve_checkout_project_dir(root) / "booley.toml"
     if config.is_file():
         paths.update(

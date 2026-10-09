@@ -1,6 +1,6 @@
 CAPI=2:
-name: booley:fixtures:ticket_mode_smoke:0.1.0
-description: Production-image Ticket Mode smoke fixture
+name: booley:fixtures:goal_mode_smoke:0.1.0
+description: Production-image Goal Mode smoke fixture
 
 filesets:
   rtl:

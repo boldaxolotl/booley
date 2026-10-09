@@ -8,13 +8,13 @@ on:
     paths:
       - ".github/actions/prepare-picorv32-demo/**"
       - ".github/contracts/picorv32-demo.toml"
-      - ".github/contracts/picorv32-demo-ticket.md"
       - ".github/scripts/export_demo_contract.py"
-      - ".github/scripts/install_demo_ticket.py"
+      - ".github/scripts/goal_mode_driver.py"
       - ".github/scripts/picorv32_ci_inputs.py"
       - ".github/scripts/picorv32_demo_contract.py"
       - ".github/scripts/pull_image_identity.py"
       - ".github/scripts/verify_picorv32_demo.sh"
+      - ".github/scripts/run_picorv32_ci_demo.sh"
       - ".github/workflows/picorv32-demo.yml"
       - "pyproject.toml"
       - "src/booley/__init__.py"
@@ -34,6 +34,8 @@ on:
       - "src/booley/dev_support/validate_commit_msg.py"
       - "src/booley/eda/**"
       - "src/booley/evidence/**"
+      - "src/booley/goals/**"
+      - "src/booley/review/**"
       - "src/booley/feedback/**"
       - "src/booley/flows/**"
       - "src/booley/fusesoc/**"
@@ -104,21 +106,23 @@ jobs:
           retention-days: 14
 
       - name: Prepare bind-mount ownership
-        run: sudo chown -R 1000:1000 demo
+        run: |
+          mkdir -p "${RUNNER_TEMP}/picorv32-demo"
+          sudo chown -R 1000:1000 demo "${RUNNER_TEMP}/picorv32-demo"
 
       - name: Verify public demo contract with current Booley source
-        env:
-          TICKET_SLUG: ${{ steps.demo.outputs.ticket_slug }}
         run: |
           docker run --init --rm --network none \
             --mount type=bind,src="${{ github.workspace }}",dst=/booley-source,readonly \
             --mount type=bind,src="${{ github.workspace }}/demo",dst=/work \
             --mount type=bind,src="${{ github.workspace }}/demo/.booley_project",dst=/booley-project \
+            --mount type=bind,src="${RUNNER_TEMP}/picorv32-demo",dst=/evidence \
             -w /work \
             -e BOOLEY_PROJECT_DIR=/booley-project \
             -e BOOLEY_IN_SANDBOX=1 \
+            -e BOOLEY_GOAL_READINESS_EVIDENCE=/evidence/goal-readiness.json \
             -e PYTHONPATH=/booley-source/src \
-            -e TICKET_SLUG \
+            -e BOOLEY_GOAL_MODE_PREVIEW=1 -e BOOLEY_MCP_MODE=interactive \
             "${{ steps.runtime-image.outputs.image }}" bash -euo pipefail -c '
               bash /booley-source/.github/scripts/verify_picorv32_demo.sh
             '
@@ -126,6 +130,15 @@ jobs:
       - name: Restore checkout ownership
         if: always()
         run: |
-          if test -e demo; then
-            sudo chown -R "$(id -u):$(id -g)" demo
-          fi
+          for path in demo "${RUNNER_TEMP}/picorv32-demo"; do
+            if test -e "${path}"; then sudo chown -R "$(id -u):$(id -g)" "${path}"; fi
+          done
+
+      - name: Retain Goal readiness evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: picorv32-goal-readiness-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/picorv32-demo/goal-readiness.json
+          if-no-files-found: error
+          retention-days: 14

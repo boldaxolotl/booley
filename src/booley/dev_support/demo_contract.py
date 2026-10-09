@@ -11,12 +11,10 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from booley.core.scope_matching import scope_matches_file
 from booley.dev_support.demo_contract_codec import (
     DemoContract,
     DemoContractError,
     GeneratedInput,
-    RequiredBinding,
     load_contract,
 )
 from booley.flows.execution import flow_enabled
@@ -24,21 +22,11 @@ from booley.fusesoc import fusesoc_registry
 from booley.runtime.project_prepare import prepare_project
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import FuseSocError
-from booley.ticket_board.io import TicketIO
-from booley.ticket_board.readiness import check_ticket_ready
-from booley.ticket_board.scanner import find_ticket_file
-from booley.ticket_board.ticket_document import (
-    TicketConversionContext,
-    TicketSpec,
-    convert_ticket_document,
-    ticket_authoring_view,
-)
 
 __all__ = [
     "DemoContract",
     "DemoContractError",
     "GeneratedInput",
-    "RequiredBinding",
     "load_contract",
     "validate_demo",
 ]
@@ -87,75 +75,20 @@ def _status(repository: Path) -> str:
     ).stdout.strip()
 
 
-def _ticket_fields(root: Path, project_dir: Path, slug: str) -> tuple[TicketSpec, Path]:
-    ticket, _status_name = find_ticket_file(project_dir / "tickets", slug, project_root=root)
-    if ticket is None:
-        raise DemoContractError(f"ticket {slug!r} is missing")
-    document = TicketIO(project_dir / "tickets", project_root=root).load_document(slug)
-    return document.spec, ticket
-
-
-def _validate_ticket_fixture(
-    contract_path: Path, fixture: str, ticket: Path, root: Path
-) -> list[str]:
-    repository_root = contract_path.resolve().parents[2]
-    fixture_path = repository_root / fixture
-    if not fixture_path.is_file():
-        return [f"CI-owned ticket fixture is missing: {fixture}"]
-    try:
-        view = ticket_authoring_view(root)
-        fixture_conversion = convert_ticket_document(
-            fixture_path.read_text(encoding="utf-8"),
-            TicketConversionContext("draft", lambda _generated: view),
-        )
-        ticket_conversion = convert_ticket_document(
-            ticket.read_text(encoding="utf-8"),
-            TicketConversionContext("executable", lambda _generated: view),
-        )
-        if fixture_conversion.document is None or ticket_conversion.document is None:
-            diagnostics = (*fixture_conversion.diagnostics, *ticket_conversion.diagnostics)
-            raise ValueError("; ".join(item.message for item in diagnostics))
-        fixture_digest = fixture_conversion.document.spec.semantic_digest()
-        ticket_digest = ticket_conversion.document.spec.semantic_digest()
-    except (OSError, ValueError) as exc:
-        return [f"cannot compare CI-owned ticket fixture {fixture}: {exc}"]
-    if fixture_digest != ticket_digest:
-        return [f"injected ticket does not match CI-owned fixture: {fixture}"]
-    return []
-
-
-def _prepare_demo_project(root: Path, ticket: Path, slug: str) -> list[str]:
+def _prepare_demo_project(root: Path) -> list[str]:
     preparation = prepare_project(
-        root,
-        root,
-        slug=slug,
-        ticket_path=ticket,
-        sim_flow_enabled=flow_enabled("sim", root),
+        root, root, slug="demo-readiness", sim_flow_enabled=flow_enabled("sim", root)
     )
     return [] if preparation.ok else [preparation.error]
 
 
-def _validate_targets(
-    root: Path, fields: Mapping[str, Any], targets: tuple[str, ...]
-) -> list[str]:
-    """Resolve every advertised Target unless all missing inputs are Scope [new]."""
+def _validate_targets(root: Path, targets: tuple[str, ...]) -> list[str]:
+    """Resolve every advertised Target; readiness never allows future inputs."""
     errors: list[str] = []
-    future = {
-        entry.removesuffix(" [new]")
-        for entry in fields.get("scope", [])
-        if isinstance(entry, str) and entry.endswith(" [new]")
-    }
     catalog = TargetCatalog.build(root)
     with tempfile.TemporaryDirectory(prefix="booley-demo-targets-") as build_root:
         for index, target in enumerate(targets):
             try:
-                missing = [
-                    item.path
-                    for item in _target_inputs(catalog, target)
-                    if not (root / item.path).exists()
-                ]
-                if missing and set(missing) <= future:
-                    continue
                 resolved = _resolve_catalog_target(
                     catalog,
                     target,
@@ -168,36 +101,14 @@ def _validate_targets(
     return errors
 
 
-def _validate_bindings(spec: TicketSpec, bindings: tuple[RequiredBinding, ...]) -> list[str]:
-    actual = {
-        (
-            f"CRITERIA_{'MANDATORY' if criterion.mandatory else 'OPTIONAL'}."
-            f"{criterion.capability}",
-            criterion.target.rsplit("#", 1)[-1],
-        )
-        for criterion in spec.criteria
-        if criterion.target is not None
-    }
-    errors: list[str] = []
-    for expected in bindings:
-        pair = (expected.criterion, expected.target)
-        if pair not in actual:
-            errors.append(f"ticket is missing required binding {pair[0]} -> {pair[1]}")
-    return errors
-
-
 def _validate_generated_inputs(
     root: Path,
-    fields: Mapping[str, Any],
     generated_inputs: tuple[GeneratedInput, ...],
 ) -> tuple[list[str], dict[str, str]]:
     errors: list[str] = []
     digests: dict[str, str] = {}
-    scope = [
-        entry.removesuffix(" [new]") for entry in fields.get("scope", []) if isinstance(entry, str)
-    ]
     for generated in generated_inputs:
-        item_errors, path, digest = _validate_generated_input(root, scope, generated)
+        item_errors, path, digest = _validate_generated_input(root, generated)
         errors.extend(item_errors)
         if path and digest:
             digests[path] = digest
@@ -206,7 +117,6 @@ def _validate_generated_inputs(
 
 def _validate_generated_input(
     root: Path,
-    scope: list[str],
     generated: GeneratedInput,
 ) -> tuple[list[str], str, str]:
     """Validate one generated artifact's producer, consumers, and Git policy."""
@@ -220,8 +130,6 @@ def _validate_generated_input(
         errors.append(f"generated input was not prepared: {path}")
     else:
         digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
-    if scope_matches_file(scope, path):
-        errors.append(f"generated input must not be ticket Scope: {path}")
     if _git(root, "ls-files", "--error-unmatch", "--", path, check=False).returncode == 0:
         errors.append(f"generated input must not be committed: {path}")
     if _git(root, "check-ignore", "--quiet", "--", path, check=False).returncode != 0:
@@ -253,7 +161,6 @@ def validate_demo(
     try:
         _require_checkout_ref(root, contract.upstream_ref, "upstream")
         _require_checkout_ref(project, contract.project_ref, "project")
-        spec, ticket = _ticket_fields(root, project, contract.ticket_slug)
     except DemoContractError as exc:
         return [str(exc)]
     except subprocess.CalledProcessError as exc:
@@ -261,20 +168,11 @@ def validate_demo(
         return [f"Git inspection failed (rc={exc.returncode}): {detail}"]
 
     before = (_status(root), _status(project))
-    fields = spec.fields
-    errors.extend(
-        _validate_ticket_fixture(Path(contract_path), contract.ticket_fixture, ticket, root)
-    )
-    first = check_ticket_ready(root, contract.ticket_slug)
-    errors.extend(first.errors)
-    errors.extend(_prepare_demo_project(root, ticket, contract.ticket_slug))
-    errors.extend(_validate_targets(root, fields, contract.required_targets))
-    errors.extend(_validate_bindings(spec, contract.required_bindings))
-    generated_errors, first_digests = _validate_generated_inputs(
-        root, fields, contract.generated_inputs
-    )
+    errors.extend(_prepare_demo_project(root))
+    errors.extend(_validate_targets(root, contract.required_targets))
+    generated_errors, first_digests = _validate_generated_inputs(root, contract.generated_inputs)
     errors.extend(generated_errors)
-    errors.extend(_validate_second_preparation(root, ticket, contract, fields, first_digests))
+    errors.extend(_validate_second_preparation(root, contract, first_digests))
     after = (_status(root), _status(project))
     if before != after:
         errors.append("project preparation changed Git-visible checkout state")
@@ -284,23 +182,10 @@ def validate_demo(
 
 
 def _validate_second_preparation(
-    root: Path,
-    ticket: Path,
-    contract: DemoContract,
-    fields: Mapping[str, Any],
-    first_digests: Mapping[str, str],
+    root: Path, contract: DemoContract, first_digests: Mapping[str, str]
 ) -> list[str]:
-    errors = [
-        f"second preparation: {error}"
-        for error in check_ticket_ready(root, contract.ticket_slug).errors
-    ]
-    errors.extend(
-        f"second preparation: {error}"
-        for error in _prepare_demo_project(root, ticket, contract.ticket_slug)
-    )
-    generated_errors, second_digests = _validate_generated_inputs(
-        root, fields, contract.generated_inputs
-    )
+    errors = [f"second preparation: {error}" for error in _prepare_demo_project(root)]
+    generated_errors, second_digests = _validate_generated_inputs(root, contract.generated_inputs)
     errors.extend(f"second preparation: {error}" for error in generated_errors)
     if first_digests != second_digests:
         errors.append("project preparation is not idempotent: generated input digests changed")

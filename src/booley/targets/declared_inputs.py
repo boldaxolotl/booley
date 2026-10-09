@@ -43,17 +43,20 @@ def core_program_paths(
     core_file: Path,
     project_root: Path,
     strict: bool = False,
+    files_root: Path | None = None,
 ) -> tuple[Path, ...]:
     """Return programs from FuseSoC ``scripts.cmd`` and generator commands.
 
     Script commands are already argv; generator commands are single paths. Only
     explicitly executable Target options are parsed; other options and symbolic
-    hook/generator references are deliberately ignored.
+    hook/generator references are deliberately ignored. Relative programs resolve
+    against *files_root* — the core's effective fileset root, which differs from
+    its directory for projected Stealth cores — defaulting to the core directory.
     """
     candidates = _core_program_candidates(doc, strict=strict)
     return _resolve_program_paths(
         candidates,
-        search_root=core_file.parent,
+        search_root=core_file.parent if files_root is None else files_root,
         project_root=project_root,
         strict=strict,
     )
