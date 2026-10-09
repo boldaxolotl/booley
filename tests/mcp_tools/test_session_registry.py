@@ -200,7 +200,6 @@ def test_peer_endpoint_and_inode_unique_revalidation(tmp_path):
 async def test_observer_broken_registry_cannot_change_attribution_or_dispatch(
     monkeypatch, tmp_path
 ):
-    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
     observer = SessionObserver(budget=1)
     monkeypatch.setattr(
         observer,
@@ -229,7 +228,6 @@ def test_registry_missing_snapshot_is_file_write_free(tmp_path):
 
 @pytest.mark.asyncio
 async def test_thread_identity_survives_busy_presentation_worker(monkeypatch):
-    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
     observer = SessionObserver()
     blocked = asyncio.get_running_loop().create_future()
     observer._pending = blocked
@@ -252,7 +250,6 @@ def test_visible_expiry_filters_without_deletion(registry):
 async def test_maintenance_prunes_during_silence(monkeypatch, registry):
     from booley.mcp import session_observer
 
-    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
     registry.upsert(facts(), "sim", "completed", now=100)
     observer = SessionObserver(now=lambda: 200, budget=1)
     monkeypatch.setattr(observer, "_registry", lambda: registry)
@@ -350,7 +347,6 @@ def test_stateless_client_without_metadata_does_not_guess_distinct_process(tmp_p
 
 @pytest.mark.asyncio
 async def test_invalid_workdir_does_not_discard_a_valid_thread_error_attribution(monkeypatch):
-    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
     monkeypatch.setattr(session_registry, "_worktree_facts", lambda root: (root, "cwd", ""))
     result = await SessionObserver().attribution({"work_dir": 42}, {"threadId": "one"}, "codex")
     assert result.key == "codex:one"
@@ -361,7 +357,6 @@ async def test_invalid_workdir_does_not_discard_a_valid_thread_error_attribution
 async def test_calls_without_workdir_refresh_previous_association_not_server_cwd(
     registry, monkeypatch
 ):
-    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
     registry.upsert(facts(), "sim", "completed", now=100)
     observer = SessionObserver(now=lambda: 101, budget=1)
     monkeypatch.setattr(observer, "_registry", lambda: registry)
@@ -376,7 +371,6 @@ async def test_calls_without_workdir_refresh_previous_association_not_server_cwd
 
 @pytest.mark.asyncio
 async def test_first_call_without_workdir_never_associates_server_cwd(registry, monkeypatch):
-    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
     observer = SessionObserver(budget=1)
     monkeypatch.setattr(observer, "_registry", lambda: registry)
     observed = await observer.attribution({}, {"threadId": "one"}, "codex")
@@ -410,7 +404,6 @@ def test_path_rows_follow_repository_identity_after_first_goal_entry(tmp_path):
 async def test_busy_fallback_uses_same_worktree_key_and_namespace(tmp_path, monkeypatch):
     from booley.goals.store import REPOSITORY_ID_FILE
 
-    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
     git = tmp_path / ".git"
     (git / REPOSITORY_ID_FILE).parent.mkdir(parents=True)
     (git / REPOSITORY_ID_FILE).write_text("00000000-0000-4000-8000-000000000001\n")
@@ -434,7 +427,6 @@ async def test_slow_peer_finishes_presence_after_response_budget(registry, monke
 
     from booley.mcp import session_observer
 
-    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
     monkeypatch.setattr(session_registry, "namespace", lambda *_: SCOPE)
     release = threading.Event()
     entered = asyncio.Event()
@@ -461,7 +453,6 @@ async def test_slow_peer_finishes_presence_after_response_budget(registry, monke
 
 @pytest.mark.asyncio
 async def test_pruning_does_not_block_request_attribution(registry, monkeypatch):
-    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
     observer = SessionObserver(budget=1)
     blocked = asyncio.get_running_loop().create_future()
     observer._pending = blocked  # An existing request may continue while maintenance runs.
@@ -507,7 +498,6 @@ async def test_busy_calls_on_same_process_keep_latest_call_outcome(
 
     from booley.mcp import session_observer
 
-    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
     release = threading.Event()
     entered = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -541,7 +531,6 @@ async def test_concurrent_first_process_calls_keep_each_presence_and_own_outcome
 
     from booley.mcp import session_observer
 
-    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
     monkeypatch.setattr(session_registry, "namespace", lambda *_: SCOPE)
     release = threading.Event()
     entered = asyncio.Event()
@@ -594,7 +583,6 @@ async def test_presence_queue_coalesces_latest_call_and_diagnoses_overflow(
 
     from booley.mcp import session_observer
 
-    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
     monkeypatch.setattr(session_observer, "MAX_PENDING", 2)
     release = threading.Event()
     entered = asyncio.Event()

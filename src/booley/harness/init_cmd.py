@@ -15,7 +15,7 @@ contiguous; identity lives in the ``record`` key, not the number.
     - Host bootstrap preflight (git, Docker, VS Code); unavailable Docker aborts
     - Scaffold a new IP from scratch (``--scaffold`` only)
     - Project directory (.booley_project/ with config skeletons)
-    - Tickets directory tree (board, state records, logs)
+    - Project Goalsets
     - Agent authentication setup
     - Skill deployment (system-level ~/.agents/ or ~/.claude/)
     - Pinned Nangate45 download into the per-user cache
@@ -60,7 +60,6 @@ from booley.fusesoc.core_projection import (
     reconcile_projected_cores,
 )
 from booley.goals.goalsets import seed_goalsets
-from booley.goals.preview import goal_mode_preview_enabled
 
 # --- Re-exported for backward compatibility (Single Responsibility split) ---
 # These symbols were relocated into sibling init_* modules so this file is just
@@ -165,7 +164,6 @@ from booley.runtime.project_gitignore import (
 )
 from booley.runtime.session_issuance import SessionSpecInputs
 from booley.runtime.timefmt import detect_host_timezone
-from booley.ticket_board.board_layout import required_board_directories
 
 # ---------------------------------------------------------------------------
 # Layout constants
@@ -216,12 +214,6 @@ TESTS_TOML_SKELETON = """\
 """
 
 
-def _ticket_creation_skeleton() -> str:
-    """Read the free-form Ticket Creation Guidance template shipped with the skill."""
-    template = skills_dir() / "booley-ticket-create" / "TICKET_CREATION_TEMPLATE.md"
-    return template.read_text(encoding="utf-8")
-
-
 # ---------------------------------------------------------------------------
 # Init step: project directory (record key: project_dir)
 # ---------------------------------------------------------------------------
@@ -229,32 +221,22 @@ def _ticket_creation_skeleton() -> str:
 
 def _backfill_config_skeletons(project_dir: Path, ctx: InitContext) -> None:
     """Create missing config skeletons without guessing project-specific values."""
-    # configs.toml is deliberately absent: the legacy registry was removed by
-    # ADR 0022 (.core owns design-description) and doctor fails on an empty one.
-    # tests.toml carries verification-intent; ticket_creation.md is Project-owned
-    # Ticket Creation Guidance. Existing ticket_defaults.md is the legacy fallback
-    # filename, so its presence suppresses the new scaffold rather than shadowing
-    # user content.
+    # Create-only configuration and Goalsets preserve Project-authored content.
     skeletons = {
         "booley.toml": BOOLEY_TOML_SKELETON,
         "tests.toml": TESTS_TOML_SKELETON,
     }
-    if not (project_dir / "ticket_defaults.md").exists():
-        skeletons["ticket_creation.md"] = _ticket_creation_skeleton()
     added = [
         name
         for name, body in skeletons.items()
         if guarded_write(project_dir / name, body, dry_run=ctx.check_only, newline="\n")
         is WriteOutcome.WRITTEN
     ]
-    # Goalsets are seeded only while the Goal Mode preview switch is on; the
-    # files are create-only, so a Project's own edits always survive.
-    if goal_mode_preview_enabled():
-        added += [
-            path.relative_to(project_dir).as_posix()
-            for path, outcome in seed_goalsets(project_dir, dry_run=ctx.check_only)
-            if outcome is WriteOutcome.WRITTEN
-        ]
+    added += [
+        path.relative_to(project_dir).as_posix()
+        for path, outcome in seed_goalsets(project_dir, dry_run=ctx.check_only)
+        if outcome is WriteOutcome.WRITTEN
+    ]
     if not added:
         return
     if ctx.check_only:
@@ -487,36 +469,24 @@ def _step_core_projections(ctx: InitContext) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Init step: tickets tree (record key: tickets)
+# Init step: Goalsets (record key: goalsets)
 # ---------------------------------------------------------------------------
 
 
-def _step_tickets(ctx: InitContext) -> None:
-    ctx.step_banner("tickets tree")
-
-    tickets_dir = resolve_project_dir(ctx.project_root) / "tickets"
-
-    # Board directories come from the lifecycle's board layout, the same source
-    # doctor's required-dirs check reads, so the two cannot drift.
-    required = required_board_directories(tickets_dir)
-    required.append(tickets_dir / "logs")
-    required.append(tickets_dir / "locks")
-
-    missing = [p for p in required if not p.is_dir()]
-    if not missing:
-        skip(f"tickets tree already present ({len(required)} dirs)")
-        ctx.record("tickets", "skip", "already present")
-        return
-
-    if ctx.check_only:
-        warn(f"{len(missing)} missing directories (would create)")
-        ctx.record("tickets", "warn", f"{len(missing)} dirs missing")
-        return
-
-    for p in required:
-        p.mkdir(parents=True, exist_ok=True)
-    ok(f"created tickets tree ({len(required)} dirs)")
-    ctx.record("tickets", "ok", "created")
+def _step_goalsets(ctx: InitContext) -> None:
+    """Reconcile the four create-only Project Goalsets."""
+    ctx.step_banner("Goalsets")
+    outcomes = seed_goalsets(resolve_project_dir(ctx.project_root), dry_run=ctx.check_only)
+    added = sum(outcome is WriteOutcome.WRITTEN for _, outcome in outcomes)
+    if not added:
+        skip("Goalsets already present")
+        ctx.record("goalsets", "skip", "already present")
+    elif ctx.check_only:
+        warn(f"{added} missing Goalsets (would create)")
+        ctx.record("goalsets", "warn", f"{added} files missing")
+    else:
+        ok(f"created {added} Goalsets")
+        ctx.record("goalsets", "ok", "created")
 
 
 # ---------------------------------------------------------------------------
@@ -1255,7 +1225,6 @@ class _InteractiveSpecSources:
             mcp_start_command=dc.mcp_post_start_command(),
             memory=_project_sandbox_memory(self.project_root),
             dashboard=_dashboard_enabled(inputs.project_data_source),
-            goal_preview=goal_mode_preview_enabled(),
             forward_oauth_token=bool(auth_token.resolve_token(self.app)),
             token_seed_source=(docker_mount_path(self.token_seed) if self.token_seed else None),
             host_skills=list(self.host_skills),
@@ -1847,7 +1816,7 @@ def _step_guidance_links(ctx: InitContext, planned: InitPlan | None = None) -> N
 def _run_seed(ctx: InitContext, selection: AgentSelection) -> int:
     """Seed only the Interactive Mode devcontainer for this folder/worktree.
 
-    Used per user-created worktree and per Ticket Mode worktree: the long-lived
+    Used for each worktree: the long-lived
     Docker objects are global (re-ensured idempotently here), but each session
     folder needs its own untracked ``.devcontainer/`` and exclude entry, since a
     folder without the seeded config will not offer "Reopen in Container".
@@ -2098,7 +2067,7 @@ def _run_project_init_steps(
     if not _step_agent_config(ctx, selection, agent_config_path):
         return _print_summary(ctx)
     _step_core_projections(ctx)
-    _step_tickets(ctx)
+    _step_goalsets(ctx)
     _step_auth(
         ctx,
         selection,

@@ -169,9 +169,9 @@ def _param_flavours(params: frozenset[str]) -> dict[str, set[str]]:
 
 def _implementation_params_intro() -> list[str]:
     return [
-        "`SYNTH` and `FPGA` Criteria name each Target directly and accept "
+        "`synthesis` and `fpga` Goals name each Target directly and accept "
         "metric thresholds. Four flavours apply per metric: two absolute, "
-        "two relative to the Ticket baseline:",
+        "two relative to the Goal base commit:",
         "",
         "| Flavour param suffix | Baseline? | Meaning |",
         "|----------------------|:---------:|---------|",
@@ -183,20 +183,10 @@ def _implementation_params_intro() -> list[str]:
         "Percentage threshold values must include the `%` suffix (for example, "
         "`cell_count_reduce_at_least: 8%`).",
         "",
-        "Ticket syntax: `SYNTH: {synth_core: {cell_count_max: 500, fmax_mhz_min: 400}}`.",
-        "",
-        "For a relative threshold on a new Target, add `baseline: <existing-target>` "
-        "inside that Target's threshold mapping. Existing Targets use their own "
-        "Ticket-baseline version by default.",
-        "",
-        "In Ticket Mode, enqueue publishes an immutable Ticket baseline. A "
-        "baseline-relative `SYNTH` or `FPGA` Criterion runs the pair's "
-        "baseline Target at the basis commit and its candidate Target at the Ticket "
-        "head. Both Targets and their directed binding are fixed. Developer execution "
-        "cannot change acceptance controls; a missing or incorrect Target blocks as "
-        "`acceptance-input-change-required` and requires `return-to-draft`. Missing or "
-        "mismatched baseline evidence never skips a relative "
-        "check.",
+        "For a relative threshold on a new Target, set `baseline_target` to an existing "
+        "Target. The baseline Target defaults to the candidate name and must exist "
+        "at the Goal base commit. Booley runs it on base code and the candidate on "
+        "current code. Missing or mismatched baseline evidence fails the check.",
         "",
     ]
 
@@ -234,7 +224,7 @@ def _cycle_count_params_reference(descriptors) -> list[str]:
         "",
         "Nest each registered test under its Target and give it one or more thresholds; "
         "all thresholds for that test must pass. Relative forms compare the same "
-        "Target/test at the Ticket baseline by default.",
+        "Target/test at the Goal base commit by default.",
         "",
         "| Parameter | Baseline? | Unit | Passing relation |",
         "|-----------|:---------:|------|------------------|",
@@ -256,10 +246,6 @@ def _cycle_count_params_reference(descriptors) -> list[str]:
         lines.append(f"| `{param}` | {baseline} | {descriptor.unit} | {relations[param]} |")
     lines.extend(
         [
-            "",
-            "Ticket syntax: "
-            "`CYCLE_COUNT: {sim_coremark: {coremark: {cycle_count_max: 100000, "
-            "cycle_count_reduce_at_least: 5%}}}`.",
             "",
             "A named `[SIM_CYCLES] <test> <count>` observation is gated evidence only when "
             "that exact test passes. Missing, malformed, duplicate, unnamed, failed, "

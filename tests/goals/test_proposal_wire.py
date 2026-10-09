@@ -10,14 +10,12 @@ from mcp import Client, MCPError
 from mcp.types import ElicitResult, InputRequiredResult
 
 from booley.goals.paths import record_paths
-from booley.goals.preview import GOAL_MODE_PREVIEW_ENV
 from booley.goals.proposals import list_proposals
 from booley.mcp import server
 from tests.goals.test_proposals import CYCLE_ARG, CYCLE_KEY, setup_cycle
 
 
 def sdk(layout, monkeypatch):
-    monkeypatch.setenv(GOAL_MODE_PREVIEW_ENV, "1")
     monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
     monkeypatch.setattr(server, "_bwave_mcp_tools_for_mode", lambda: [])
     lifetime = server._McpLifetime(None, None)

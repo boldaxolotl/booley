@@ -132,34 +132,40 @@ def test_history_document_without_a_record_is_an_error_row(
     assert "shipped" in capsys.readouterr().out
 
 
-def _booley_board(board, monkeypatch, argv: list[str]) -> int:
-    from booley.harness import booley as tlr
-
-    monkeypatch.setattr(tlr, "tickets_dir_from_project_root", lambda _root: board.tickets_dir)
-    return tlr._cmd_board(tlr._build_parser().parse_args(argv), board._project_root)
+def _module_board(board, monkeypatch, argv: list[str]) -> int:
+    monkeypatch.setattr(cli, "detect_tickets_dir", lambda: board.tickets_dir)
+    words = [word for word in argv[1:] if word != "--all"]
+    words = words or ["board"]
+    if "--all" in argv:
+        words.append("--all")
+    try:
+        return cli.main(words)
+    except SystemExit as exc:
+        return int(exc.code)
 
 
 @pytest.mark.parametrize(
     "argv", [["board", "--all"], ["board", "show", "--all"], ["board", "--all", "show"]]
 )
-def test_booley_board_takes_all_flag(board, monkeypatch, capsys, argv):
+def test_module_board_takes_all_flag(board, monkeypatch, capsys, argv):
     plain = [arg for arg in argv if arg != "--all"]
-    assert _booley_board(board, monkeypatch, plain) == 0
+    assert _module_board(board, monkeypatch, plain) == 0
     assert "shipped" not in capsys.readouterr().out
 
-    assert _booley_board(board, monkeypatch, argv) == 0
+    assert _module_board(board, monkeypatch, argv) == 0
     assert "shipped" in capsys.readouterr().out
 
 
-def test_booley_board_refuses_all_on_commands_that_do_not_list(board, monkeypatch, capsys):
-    assert _booley_board(board, monkeypatch, ["board", "--all", "reset", "live"]) == 2
+def test_module_board_refuses_all_on_commands_that_do_not_list(board, monkeypatch, capsys):
+    assert _module_board(board, monkeypatch, ["board", "--all", "reset", "live"]) == 2
     assert "--all" in capsys.readouterr().err
 
 
-def test_booley_board_show_finds_a_closed_ticket(board, monkeypatch, capsys):
-    assert _booley_board(board, monkeypatch, ["board", "show", "dropped"]) == 0
+def test_module_board_show_finds_a_closed_ticket(board, monkeypatch, capsys):
+    assert _module_board(board, monkeypatch, ["board", "show", "dropped"]) == 0
     out = capsys.readouterr().out
-    assert "dropped: archived" in out
+    assert "ticket:    dropped" in out
+    assert "status:    archived" in out
     assert _closed_date(board, "dropped") in out
 
 

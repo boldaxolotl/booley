@@ -98,21 +98,6 @@ def test_init_accepts_uninitialized_folder(git_checkout, tmp_path, monkeypatch):
     assert roots == [tmp_path]
 
 
-def test_host_refusal_preserves_arguments(monkeypatch, capsys):
-    monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: False)
-    monkeypatch.setattr(sys, "argv", ["booley", "run", "--slug", "ticket with spaces"])
-    with pytest.raises(SystemExit):
-        cli._enforce_runtime_location("run")
-    import os
-
-    invocation = (
-        'booley run --slug "ticket with spaces"'
-        if os.name == "nt"
-        else "booley run --slug 'ticket with spaces'"
-    )
-    assert f"booley session enter -- {invocation}" in capsys.readouterr().err
-
-
 @pytest.mark.parametrize("selection", ["explicit", "stale-env", "source-env"])
 def test_invalid_project_selection_is_a_clean_cli_error(selection, tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
@@ -280,10 +265,12 @@ def test_bare_sandbox_preserves_project_guards(source, tmp_path, monkeypatch, ca
 
 @pytest.mark.parametrize(
     ("command", "inside"),
-    [("board", True), ("cheat", False), ("cheat", True), ("doctor", False), ("doctor", True)],
+    [("goal", True), ("cheat", False), ("cheat", True), ("doctor", False), ("doctor", True)],
 )
 def test_canonical_replacements_dispatch(command, inside, cli_project, monkeypatch):
-    monkeypatch.setattr(sys, "argv", ["booley", command])
+    monkeypatch.setattr(
+        sys, "argv", ["booley", command, *(["status"] if command == "goal" else [])]
+    )
     monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: inside)
     calls = []
     monkeypatch.setitem(
@@ -293,30 +280,14 @@ def test_canonical_replacements_dispatch(command, inside, cli_project, monkeypat
     assert calls == [(command, cli_project)]
 
 
-@pytest.mark.parametrize("command", ["chat", "board"])
+@pytest.mark.parametrize("command", ["chat", "goal", "dashboard"])
 def test_explicit_sandbox_commands_still_refuse_host(command, cli_project, monkeypatch, capsys):
-    monkeypatch.setattr(sys, "argv", ["booley", command])
+    monkeypatch.setattr(
+        sys, "argv", ["booley", command, *(["status"] if command == "goal" else [])]
+    )
     monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: False)
     monkeypatch.setitem(cli._EARLY_COMMANDS, command, _unexpected_runtime_work)
     with pytest.raises(SystemExit) as error:
         cli.main()
     assert error.value.code == 2
     assert "runs inside the Booley Sandbox" in capsys.readouterr().err
-
-
-@pytest.mark.parametrize("inside", [False, True])
-@pytest.mark.parametrize("flag", ["--slug", "-s"])
-def test_top_level_slug_remains_one_shot_run(inside, flag, monkeypatch, capsys):
-    monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: inside)
-    parser = cli._build_parser()
-    args = cli._normalize_args(parser, parser.parse_args([flag, "example-ticket"]))
-    assert cli._effective_command(args) == "run"
-    assert args.ticket == args.slug == "example-ticket"
-    assert args.count == 1
-    if inside:
-        cli._enforce_runtime_location(args.command)
-    else:
-        with pytest.raises(SystemExit) as error:
-            cli._enforce_runtime_location(args.command)
-        assert error.value.code == 2
-        assert "runs inside the Booley Sandbox" in capsys.readouterr().err

@@ -16,8 +16,6 @@
 - :mod:`booley.goals.protected_inputs` — the protected-input resolver
   contract, digest, and violation check.
 - :mod:`booley.goals.rules` — the rules text an agent follows in Goal Mode.
-- :mod:`booley.goals.preview` — the switch that registers the Goal Mode
-  surface before it replaces Ticket Mode.
 - :mod:`booley.goals.binding` — the immutable binding of one run to the
   worktree's active Goal Mode.
 - :mod:`booley.goals.publication` — the gate every Goal evidence write passes.

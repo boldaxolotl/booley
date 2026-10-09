@@ -8,7 +8,7 @@
       },
       "diagnostic": {
         "default": false,
-        "description": "Run without satisfying Ticket criteria. In Ticket Mode this is required for a Flow/Target combination outside the Ticket baseline.",
+        "description": "Run without satisfying Goals. Use for a Flow/Target combination outside the active Goal definition.",
         "type": "boolean"
       },
       "instruction": {
@@ -35,7 +35,7 @@
       },
       "diagnostic": {
         "default": false,
-        "description": "Run without satisfying Ticket criteria. In Ticket Mode this is required for a Flow/Target combination outside the Ticket baseline.",
+        "description": "Run without satisfying Goals. Use for a Flow/Target combination outside the active Goal definition.",
         "type": "boolean"
       },
       "dry_run": {
@@ -91,7 +91,7 @@
       },
       "diagnostic": {
         "default": false,
-        "description": "Run without satisfying Ticket criteria. In Ticket Mode this is required for a Flow/Target combination outside the Ticket baseline.",
+        "description": "Run without satisfying Goals. Use for a Flow/Target combination outside the active Goal definition.",
         "type": "boolean"
       },
       "dry_run": {

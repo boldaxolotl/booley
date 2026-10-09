@@ -15,7 +15,6 @@ from typing import Any
 from starlette.requests import Request
 
 from booley.config.goals import quiet_after
-from booley.goals.preview import goal_mode_preview_enabled
 from booley.mcp.session_peer import observed_peer
 from booley.mcp.session_registry import (
     Attribution,
@@ -183,8 +182,6 @@ class SessionObserver:
         tool: str = "request",
     ) -> Attribution | None:
         """Resolve once; queued observations survive the bounded response deadline."""
-        if not goal_mode_preview_enabled():
-            return None
         work_dir = arguments.get("work_dir")
         root = Path(work_dir) if isinstance(work_dir, str) and work_dir else None
         if root is not None and not root.is_dir():
@@ -310,15 +307,14 @@ class SessionObserver:
 
     async def maintain(self) -> None:
         """Prune during MCP silence; owned by the server lifespan, never Dashboard reads."""
-        if goal_mode_preview_enabled():
-            await self._bounded(
-                lambda: self._registry().prune(
-                    now=self.now(),
-                    namespace=namespace(),
-                    worktree_exists=registered_worktree_presence(Path.cwd()),
-                ),
-                maintenance=True,
-            )
+        await self._bounded(
+            lambda: self._registry().prune(
+                now=self.now(),
+                namespace=namespace(),
+                worktree_exists=registered_worktree_presence(Path.cwd()),
+            ),
+            maintenance=True,
+        )
 
     async def maintenance_loop(self) -> None:
         """One timed maintenance iteration per minute until lifespan cancellation."""

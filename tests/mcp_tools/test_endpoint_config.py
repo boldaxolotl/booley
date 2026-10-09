@@ -7,8 +7,8 @@ import pytest
 from booley.audit.project_schema import audit_known_tables
 from booley.harness.developer import _load_endpoint_config as developer_config
 from booley.harness.setup import readiness
-from booley.harness.ticket_preflight import _load_endpoint_config as preflight_config
 from booley.mcp.endpoint_config import get_endpoint_config
+from booley.mcp.endpoint_validation import _load_endpoint_config as endpoint_config
 from booley.mcp.registry import discover_mcp_tools
 from booley.ticket_board.validation import (
     _read_endpoint_config as ticket_config,
@@ -18,7 +18,7 @@ from booley.ticket_board.validation import (
 )
 
 
-@pytest.mark.parametrize("loader", [get_endpoint_config, developer_config, preflight_config])
+@pytest.mark.parametrize("loader", [get_endpoint_config, developer_config, endpoint_config])
 def test_specialist_visibility_is_shared_across_execution_modes(tmp_path, monkeypatch, loader):
     monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
     project = tmp_path / ".booley_project"
@@ -39,7 +39,7 @@ def test_specialist_visibility_is_shared_across_execution_modes(tmp_path, monkey
 
 
 @pytest.mark.parametrize("table", ["mcp_tools", "tools"])
-@pytest.mark.parametrize("loader", [get_endpoint_config, developer_config, preflight_config])
+@pytest.mark.parametrize("loader", [get_endpoint_config, developer_config, endpoint_config])
 def test_retired_visibility_tables_fail_with_migration_guidance(
     tmp_path, monkeypatch, loader, table
 ):
@@ -108,7 +108,7 @@ def test_ticket_validation_returns_retirement_as_an_error(tmp_path):
         "[specialists.reveiwer]\nenabled = false\n",
     ],
 )
-@pytest.mark.parametrize("loader", [get_endpoint_config, developer_config, preflight_config])
+@pytest.mark.parametrize("loader", [get_endpoint_config, developer_config, endpoint_config])
 def test_invalid_specialist_settings_fail_closed(tmp_path, monkeypatch, config, loader):
     monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
     project = tmp_path / ".booley_project"
@@ -119,7 +119,7 @@ def test_invalid_specialist_settings_fail_closed(tmp_path, monkeypatch, config, 
         loader(tmp_path)
 
 
-@pytest.mark.parametrize("loader", [get_endpoint_config, developer_config, preflight_config])
+@pytest.mark.parametrize("loader", [get_endpoint_config, developer_config, endpoint_config])
 def test_malformed_toml_fails_closed_in_every_endpoint_loader(tmp_path, monkeypatch, loader):
     monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
     project = tmp_path / ".booley_project"
@@ -228,3 +228,14 @@ def test_mcp_entry_point_renders_catalog_configuration_error(tmp_path, monkeypat
     output = capsys.readouterr().err
     assert "[specialists.*]" in output
     assert "Traceback" not in output
+
+
+def test_endpoint_validation_reads_the_resolved_project_directory(tmp_path):
+    from booley.mcp.endpoint_validation import validate_custom_endpoints_and_criteria
+
+    project = tmp_path / "project-data"
+    project.mkdir()
+    (tmp_path / "booley.toml").write_text('[project]\ndir = "project-data"\n')
+    (project / "booley.toml").write_text("[specialists.reveiwer]\nenabled = false\n")
+    with pytest.raises(ValueError, match="reveiwer"):
+        validate_custom_endpoints_and_criteria(tmp_path)

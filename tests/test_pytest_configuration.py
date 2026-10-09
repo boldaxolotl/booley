@@ -855,7 +855,6 @@ def test_image_validations_run_in_an_isolated_native_parallel_group() -> None:
     assert "--min-tests 21 --max-skips 0" in coverage["run"]
     goal_mode = next(step for step in validations if step["name"].startswith("Run Goal Mode"))
     assert "BOOLEY_GOAL_MODE_SMOKE=1" in goal_mode["run"]
-    assert "BOOLEY_GOAL_MODE_PREVIEW=1" in goal_mode["run"]
     assert "test_goal_mode_image_smoke.py" in goal_mode["run"]
     assert "--junitxml=/validation-tmp/goal-mode.xml" in goal_mode["run"]
     assert "assert_junit.py" in goal_mode["run"]

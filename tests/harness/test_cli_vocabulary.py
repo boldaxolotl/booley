@@ -136,10 +136,7 @@ def test_recursive_command_inventory():
     top = {route[0] for route, _ in routes if len(route) == 1}
     assert top == cli.COMMAND_PROJECT_BINDINGS.keys()
     for route, parser in routes:
-        if route and (
-            route[0] in {"run", "board"}
-            or cli.COMMAND_PROJECT_BINDINGS[route[0]] is cli.ProjectBinding.INDEPENDENT
-        ):
+        if route and (cli.COMMAND_PROJECT_BINDINGS[route[0]] is cli.ProjectBinding.INDEPENDENT):
             assert "--project" not in parser._option_string_actions
         else:
             assert_controls(parser)

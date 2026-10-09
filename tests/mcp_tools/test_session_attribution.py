@@ -59,7 +59,6 @@ def context():
     "name", ["ordinary", "custom", "booley_poll", "goal_status", "goal_finish", "tools/list"]
 )
 async def test_all_application_dispatch_paths_get_same_explicit_identity(monkeypatch, name):
-    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
     observed = []
 
     async def dispatch(_name, arguments, _source, request):
@@ -97,7 +96,6 @@ async def test_all_application_dispatch_paths_get_same_explicit_identity(monkeyp
 
 @pytest.mark.asyncio
 async def test_validation_unknown_input_required_and_stdio_outcomes(monkeypatch):
-    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
 
     async def dispatch(*_args):
         return McpInputRequired(
@@ -204,8 +202,6 @@ async def test_interactive_and_inactive_goal_replies_do_not_append_shared_warnin
 ):
     from mcp.types import TextContent
 
-    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
-
     async def dispatch(*_):
         return McpDispatchResult([TextContent(type="text", text=text)], False)
 
@@ -225,8 +221,6 @@ async def test_interactive_and_inactive_goal_replies_do_not_append_shared_warnin
 @pytest.mark.asyncio
 async def test_goal_aware_shared_warning_keeps_structured_content(monkeypatch):
     from mcp.types import TextContent
-
-    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
 
     async def dispatch(*_):
         return McpDispatchResult(
@@ -264,7 +258,6 @@ async def test_async_goal_reply_refreshes_shared_warning_after_deferred_peer(
     from booley.mcp.session_registry import SessionRegistry, resolve_attribution
     from booley.runtime.pid import ProcessIdentity
 
-    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
     monkeypatch.setattr(session_registry, "namespace", lambda *_: "fixture")
     monkeypatch.setattr(session_observer, "namespace", lambda *_: "fixture")
     registry = SessionRegistry(tmp_path / "data")
@@ -326,7 +319,6 @@ async def test_running_goal_poll_is_goal_aware_and_keeps_progress_payload(
     from booley.goals.binding import GoalRunBinding
     from booley.goals.model import WorktreeIdentity
 
-    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
     binding = GoalRunBinding(
         tmp_path,
         "fixture-20261008T100000Z",
@@ -386,7 +378,6 @@ async def test_deferred_peer_resolution_is_used_before_job_admission(tmp_path, m
     from booley.mcp.session_registry import SessionRegistry
     from booley.runtime.pid import ProcessIdentity
 
-    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
     monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path))
     monkeypatch.chdir(tmp_path)
     release = threading.Event()
@@ -450,7 +441,6 @@ async def test_resolved_identity_survives_registry_publication_failure(
     from booley.mcp import session_observer
     from booley.mcp.session_observer import SessionObserver
 
-    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
     fallback = Attribution("worktree:fixture", "worktree", str(tmp_path), "fixture")
     peer = Attribution("pid:fixture:7:1", "process", str(tmp_path), "fixture")
     monkeypatch.setattr(session_observer, "resolve_attribution", lambda *_a, **_k: fallback)
@@ -483,37 +473,12 @@ async def test_resolved_identity_survives_registry_publication_failure(
 
 
 @pytest.mark.asyncio
-async def test_preview_off_goal_payload_has_no_presentation_warning(monkeypatch):
-    from mcp.types import TextContent
-
-    monkeypatch.delenv("BOOLEY_GOAL_MODE_PREVIEW", raising=False)
-
-    async def dispatch(*_):
-        return McpDispatchResult(
-            [TextContent(type="text", text="retained Goal Job")], False, goal_aware=True
-        )
-
-    app = McpApplication(
-        [{"name": "probe", "schema": {"type": "object"}}],
-        dispatch=dispatch,
-        request_dispatch=dispatch,
-        canonicalize=lambda n: n,
-        on_discovery_error=lambda _: None,
-    )
-    result = await server._call_application_tool(
-        app, CallToolRequestParams(name="probe"), None, Observer()
-    )
-    assert [block.text for block in result.content] == ["retained Goal Job"]
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize("failure", ["record", "shared", "duplicate"])
 async def test_advisory_completion_preserves_success_and_deduplicates_warning(
     monkeypatch, failure
 ):
     from mcp.types import TextContent
 
-    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
     dispatched = False
     warning = "WARNING: another session shares this Goal worktree"
 
@@ -559,11 +524,3 @@ def test_non_linux_pid_stamping_does_not_run_blocking_ps(tmp_path, monkeypatch):
     record = job_records.JobRecord("run", "sim", "2026-10-08T10:00:00Z", 60)
     server._JobManager._stamp_pid(manager, record, 99)
     assert record.pid == 99 and record.process_identity is None
-
-
-def test_preview_off_retained_binding_never_reads_goal_warnings(monkeypatch):
-    monkeypatch.delenv("BOOLEY_GOAL_MODE_PREVIEW", raising=False)
-    monkeypatch.setattr(server, "GoalStore", lambda *_: pytest.fail("preview-off Goal warnings"))
-    binding = SimpleNamespace(project_dir=Path("/fixture"), record_id="retained")
-    result = McpDispatchResult([], False)
-    assert server._goal_warning_result(result, binding, None) is result

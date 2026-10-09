@@ -130,8 +130,6 @@ from booley.targets.domain import (
     flow_can_drive,
 )
 from booley.targets.flow_names import config_section
-from booley.ticket_board.board_layout import required_board_directories
-from booley.ticket_board.legacy_layout import legacy_layout_problems, migration_pointer
 
 if TYPE_CHECKING:
     from booley.harness import developer_probe
@@ -749,7 +747,7 @@ def _run_project_phase(
     *,
     read_only: bool,
 ) -> tuple[str | None, ProjectAudit | None]:
-    """Run host, config, Git, and Ticket Board checks."""
+    """Run host, config, Git, and Goal presence checks."""
     banner("Host checks")
     host = host_diagnostics.inspect_host()
     reporter.diagnostics(host.report)
@@ -779,13 +777,6 @@ def _run_project_phase(
             project.project_dir, reporter.pass_, reporter.warn_, project_root=project.project_root
         )
         reporter.diagnostics(readiness.check_stealth_cores(project, mode=mode))
-    _check_board_orphans(
-        project_root,
-        reporter.pass_,
-        reporter.warn_,
-        reporter.skip_,
-        repair=not read_only,
-    )
     return docker_exe, project
 
 
@@ -848,7 +839,7 @@ def _warn_missing_project_data_branch(
 ) -> None:
     message = (
         f"Project-data repository {project_repo} has no local branch {outer_branch!r}; "
-        "implicit paired Tickets will fail"
+        "implicit paired Project routing will fail"
     )
     command = shlex.join(["git", "-C", str(project_repo), "switch", "-c", outer_branch])
     fix = (
@@ -904,10 +895,9 @@ def _outer_branch_for_project_data(
 
 
 def _check_goal_presence(root: Path, project_dir: Path | None, reporter: _Reporter) -> None:
-    from booley.goals.preview import goal_mode_preview_enabled
     from booley.harness.dashboard.doctor import inspect_presence
 
-    if not goal_mode_preview_enabled() or project_dir is None:
+    if project_dir is None:
         return
     result = inspect_presence(
         root, project_dir, inside_sandbox=runtime_context.inside_session_runtime()
@@ -943,7 +933,7 @@ def _run_runtime_phase(
     reporter: _Reporter,
     progress: Check,
 ) -> None:
-    """Run runtime-location, container, MCP, and Ticket Preflight parity checks."""
+    """Run runtime-location, container, MCP, and Project checks."""
     progress("Sandbox/auth checks")
     sandbox_image = _sandbox_image(project)
     if project is not None:
@@ -980,8 +970,8 @@ def _run_runtime_phase(
         verbose,
         reporter,
     )
-    progress("Ticket Preflight parity checks")
-    _run_ticket_preflight_parity_checks(project, reporter)
+    progress("Project checks")
+    _run_project_checks(project, reporter)
 
 
 def _run_flow_and_core_phase(
@@ -1212,14 +1202,14 @@ def _check_worktree_prune_guard(
     if not wrong:
         _pass(
             f"{WORKTREE_PRUNE_KEY}={WORKTREE_PRUNE_VALUE} "
-            f"in {len(repositories)} Ticket Workspace repository/repositories"
+            f"in {len(repositories)} worktree repository/repositories"
         )
         return
     repository, value = wrong[0]
     detail = f"set to {value!r}" if value else "unset"
     _fail(
         f"{WORKTREE_PRUNE_KEY} is {detail} — a host-side `git gc` can prune "
-        f"legacy or fallback Ticket Workspace registrations in {repository}",
+        f"legacy or fallback worktree registrations in {repository}",
         f"git -C {repository} config {WORKTREE_PRUNE_KEY} {WORKTREE_PRUNE_VALUE}",
     )
 
@@ -1273,7 +1263,7 @@ def _report_repository_line_endings(
         _fail(
             f"{identity}: {crlf.count} tracked file(s) are checked out with CRLF — the "
             "Sandbox sees every one as modified, which breaks the dirty-tree check, "
-            "scope enforcement, and ticket worktrees",
+            "protected inputs, and worktrees",
             "booley init   (automatically repairs a clean tree; commit or stash first)",
         )
         return
@@ -1284,7 +1274,7 @@ def _report_repository_line_endings(
     )
     if risk is not None:
         if risk.code is LineEndingObservationCode.AUTOCRLF_EFFECTIVE_TRUE:
-            message = "core.autocrlf=true — the tree is LF today, but the next clone or checkout will re-create it with CRLF and break Ticket Mode"
+            message = "core.autocrlf=true — the tree is LF today, but the next clone or checkout will re-create it with CRLF and break Goal Mode"
         else:
             message = "core.autocrlf is not set locally — the effective value is false today, but a global config change can re-create CRLF checkouts"
         emit = _warning_sink(_warn, "git.autocrlf-risk", subject=repository.role)
@@ -1386,7 +1376,7 @@ def _check_worktree_core_shadow_guard(
         )
     else:
         _warn(
-            ".booley_project/FUSESOC_IGNORE missing; a future ticket worktree's "
+            ".booley_project/FUSESOC_IGNORE missing; a future worktree's "
             ".core could shadow the repo-root source — run `booley init`"
         )
 
@@ -1404,63 +1394,6 @@ def _worktree_core_directory(project_dir: Path, project_root: Path | None) -> Pa
 
 # State-dir subtrees that legitimately hold transient .core COPIES (worktree /
 # baseline checkouts, build caches) — never authored sources, never "stranded".
-
-
-def _check_board_orphans(
-    project_root: Path,
-    _pass: Check,
-    _warn: Check,
-    _skip: Check,
-    *,
-    repair: bool = True,
-) -> None:
-    """ADR 0028 Decision 11: Ticket Board self-heal for dead developer PIDs.
-
-    A ticket stuck in active/ whose owning PID is dead (crashed ``booley
-    run``, killed container process) is recovered — blocked with a note for
-    triage — by the same startup sweep every ``booley run`` performs. PIDs
-    are container-scoped under ADR 0028, so the sweep is only meaningful when
-    doctor itself runs inside the Sandbox; host-side it is skipped
-    (a container PID checked from the host is a different namespace).
-    """
-    _warn = _warning_sink(_warn, "tickets.orphan-recovered")
-
-    from booley.runtime import runtime_context
-
-    if not runtime_context.inside_session_runtime():
-        _skip("board orphan self-heal: runs in-container (ticket PIDs are container-scoped)")
-        return
-
-    # Lazy imports: booley.harness.booley imports this module at load time.
-    from booley.harness.booley import get_active_slugs
-    from booley.harness.orphan_handler import find_startup_orphans, handle_startup_orphans
-
-    active = get_active_slugs(project_root)
-    if not active:
-        _pass("no tickets in active/ — no orphans to recover")
-        return
-
-    if not repair:
-        orphans = find_startup_orphans(project_root)
-        if orphans:
-            names = ", ".join(orphans[:3])
-            suffix = f" and {len(orphans) - 3} more" if len(orphans) > 3 else ""
-            _warn(
-                f"found {len(orphans)} orphaned ticket(s) in active/: {names}{suffix}",
-                "run `booley run` or manual `booley doctor` to recover them for triage",
-            )
-        else:
-            _pass(f"{len(active)} active ticket(s), all with live owner PIDs")
-        return
-
-    recovered = handle_startup_orphans(project_root)
-    if recovered:
-        _warn(
-            f"recovered {recovered} orphaned ticket(s) from active/ "
-            "(dead developer PID) — blocked with a note for triage"
-        )
-    else:
-        _pass(f"{len(active)} active ticket(s), all with live owner PIDs")
 
 
 # ---------------------------------------------------------------------------
@@ -1573,9 +1506,7 @@ def _check_memory_invariant(
         f"+ 2g = {fmt(requirement.required_bytes)}"
     )
     orch_note = (
-        "measured developer RSS"
-        if measured
-        else "1g developer fallback — doctor --deep measures it"
+        "measured agent RSS" if measured else "1g agent fallback — doctor --deep measures it"
     )
     if limit >= requirement.required_bytes:
         _pass(
@@ -1759,7 +1690,7 @@ def _run_developer_probe(
         if getattr(exc, "agent_failure", False):
             _fail(
                 f"developer probe agent could not complete a trivial call — every "
-                f"ticket agent will fail the same way at launch: {exc}",
+                f"agent will fail the same way at launch: {exc}",
                 "check agent auth at THIS Sandbox location (booley auth, or claude login + "
                 "container recreate); see the harness log for the agent's error",
             )
@@ -2716,7 +2647,7 @@ def _check_subscription_creds_health(
         else:
             _warn(
                 f"subscription login at {creds_path} is expired ({when}) and refresh "
-                "fails once the host has rotated the shared refresh token — ticket "
+                "fails once the host has rotated the shared refresh token — "
                 "agents then crash at launch",
                 f"booley auth --app {app}  (or refresh the host login and recreate the container)",
             )
@@ -3053,26 +2984,23 @@ def _advisory_mcp_tools(project: ProjectAudit) -> set[str]:
     }
 
 
-def _run_ticket_preflight_parity_checks(
+def _run_project_checks(
     project: ProjectAudit | None,
     reporter: _Reporter,
 ) -> None:
-    """Mirror cheap Ticket Preflight checks, plus the Project ignore policy they rely on."""
-    banner("Run checks")
+    """Run shared Project configuration, repository, and backend checks."""
+    banner("Project checks")
     if project is None:
-        reporter.skip_("run checks skipped - project config invalid")
+        reporter.skip_("Project checks skipped - project config invalid")
         return
 
-    _check_tickets_tree(project.project_dir, reporter.pass_, reporter.fail_)
-    _check_ticket_board_layout(project.project_dir, reporter.pass_, reporter.fail_)
+    _check_ticket_leftovers(project.project_dir, reporter.warn_)
     _check_project_gitignore(project.project_dir, reporter.pass_, reporter.warn_)
-    _check_ticket_history_committed(project.project_dir, reporter.pass_, reporter.warn_)
     _check_goal_history_ignored(
         project.project_root, project.project_dir, reporter.pass_, reporter.warn_
     )
     _check_git_state(project.project_root, reporter.pass_, reporter.note_, reporter.fail_)
     _check_repo_footprint(project.project_root, reporter.pass_, reporter.warn_)
-    _check_ticket_board_import(project.project_root, reporter.pass_, reporter.fail_)
     _check_custom_endpoints_and_criteria(project.project_root, reporter.pass_, reporter.fail_)
     if reporter.agent_check_enabled("worker backend health check"):
         _check_agent_backend_health(
@@ -3084,33 +3012,47 @@ def _run_ticket_preflight_parity_checks(
         )
 
 
-def _check_tickets_tree(project_dir: Path, _pass: Check, _fail: Fail) -> None:
-    tickets_dir = project_dir / "tickets"
-    required = required_board_directories(tickets_dir)
-    required.extend([tickets_dir / "logs", tickets_dir / "locks"])
-    missing = [path for path in required if not path.is_dir()]
-    if missing:
-        _fail(
-            f"tickets tree missing {len(missing)} directories",
-            "booley init",
+_SHIPPED_TICKET_GUIDANCE_HASHES = frozenset(
+    [
+        "327f2c465f58d8a02e54d449e8d73a93d54385a4a3768c277c7230aafd8f0deb",
+        "6726a385942fc92999b8af11a91f03a49b40473cd71a3c4199af9e2a1d763cb3",
+        "70b52fc601a60d43b51aadf3c201da8b02213fe8bccd92003393788909af299f",
+        "bedd4e02040c2a1ba2c4594933e729a2a9380e0d8d92a5befa000256fef87137",
+    ]
+)
+
+
+def _check_ticket_leftovers(project_dir: Path, _warn: Check) -> None:
+    """Warn about actionable board data and guidance; keep Ticket History inert."""
+    folders = [
+        project_dir / "tickets" / name
+        for name in ("board", "state", "logs", "locks", "waiver-candidates")
+    ]
+    nonempty = [path for path in folders if path.is_dir() and any(path.iterdir())]
+    empty = [path.name for path in folders if path.is_dir() and not any(path.iterdir())]
+    suffix = f"; empty directories: {', '.join(empty)}" if empty else ""
+    for path in nonempty:
+        _warning_sink(_warn, "tickets.leftover-board", subject=path.name)(
+            f"leftover Ticket Board data in {path}{suffix}",
+            f"delete {path}",
         )
-        return
-    _pass("tickets tree present")
-
-
-def _check_ticket_board_layout(project_dir: Path, _pass: Check, _fail: Fail) -> None:
-    """Fail while the board keeps pre-ADR-0065 leftovers board commands refuse to run on."""
-    problems = legacy_layout_problems(project_dir / "tickets")
-    for problem in problems:
-        if not problem.migration:
-            _fail(f"Ticket Board cannot be checked: {problem.summary}", problem.fix)
+    for name in ("ticket_creation.md", "ticket_defaults.md"):
+        path = project_dir / name
+        if not path.is_file():
             continue
-        _fail(
-            f"Ticket Board needs a manual migration: {problem.summary}",
-            f"{problem.fix}; {migration_pointer()}",
+        content = path.read_bytes().replace(b"\r\n", b"\n")
+        shipped = hashlib.sha256(content).hexdigest() in _SHIPPED_TICKET_GUIDANCE_HASHES
+        fix = (
+            f"delete {path}"
+            if shipped
+            else (
+                "move its rules into a Goalset under .booley_project/goalsets/, "
+                f"then delete {path}"
+            )
         )
-    if not problems:
-        _pass("Ticket Board uses state records")
+        _warning_sink(_warn, "tickets.leftover-guidance", subject=name)(
+            f"leftover Ticket guidance in {path}", fix
+        )
 
 
 def _check_project_gitignore(project_dir: Path, _pass: Check, _warn: Check) -> None:
@@ -3140,46 +3082,6 @@ def _check_project_gitignore(project_dir: Path, _pass: Check, _warn: Check) -> N
         )
         return
     _pass("transient Booley state is gitignored")
-
-
-def _check_ticket_history_committed(project_dir: Path, _pass: Check, _warn: Check) -> None:
-    """Warn about Closed Tickets whose history record Booley has not committed yet.
-
-    Closing never waits for the commit (ADR 0065); the next board operation
-    retries it. A record that stays uncommitted means that retry keeps failing
-    (for example a detached HEAD or a missing Git identity).
-    """
-    from booley.ticket_board.history_publication import (
-        HistoryCommitError,
-        history_ignored,
-        pending_history_commits,
-    )
-    from booley.ticket_board.ticket_history import TicketHistoryError
-
-    _warn = _warning_sink(_warn, "tickets.history-uncommitted")
-    tickets_dir = project_dir / "tickets"
-    try:
-        if history_ignored(tickets_dir):
-            _warn(
-                "tickets/history/ is gitignored; Closed Tickets' history records won't be committed",
-                "un-ignore tickets/history in the repository's .gitignore",
-            )
-            return
-        pending = pending_history_commits(tickets_dir)
-    except (HistoryCommitError, TicketHistoryError) as exc:
-        _warn(
-            f"cannot inspect Ticket History commits: {exc}",
-            "fix the repository state, then run any `booley board` command",
-        )
-        return
-    if not pending:
-        _pass("Ticket History committed")
-        return
-    shown = ", ".join(pending[:5]) + (", …" if len(pending) > 5 else "")
-    _warn(
-        f"{len(pending)} Closed Ticket history record(s) not committed yet ({shown})",
-        "run any `booley board` command to retry the commit and read its warning",
-    )
 
 
 def _check_goal_history_ignored(root: Path, project_dir: Path, _pass: Check, _warn: Warn) -> None:
@@ -3337,35 +3239,15 @@ def _check_repo_footprint(project_root: Path, _pass: Check, _warn: Check) -> Non
         _pass("no Booley scaffolding files tracked in the repo")
 
 
-def _check_ticket_board_import(project_root: Path, _pass: Check, _fail: Fail) -> None:
-    try:
-        result = subprocess.run(
-            [sys.executable, "-c", "import booley.ticket_board"],
-            cwd=project_root,
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
-        _fail(f"ticket_board import probe failed: {exc}", "reinstall Booley")
-        return
-    if result.returncode == 0:
-        _pass("ticket_board package importable")
-    else:
-        detail = result.stderr.strip() or result.stdout.strip() or "import failed"
-        _fail(f"ticket_board package not importable: {detail}", "reinstall Booley")
-
-
 def _check_custom_endpoints_and_criteria(project_root: Path, _pass: Check, _fail: Fail) -> None:
     try:
-        from booley.harness.ticket_preflight import (
-            TicketPreflightError,
-            _validate_custom_endpoints_and_criteria,
+        from booley.mcp.endpoint_validation import (
+            EndpointValidationError,
+            validate_custom_endpoints_and_criteria,
         )
 
-        _validate_custom_endpoints_and_criteria(project_root)
-    except TicketPreflightError as exc:
+        validate_custom_endpoints_and_criteria(project_root)
+    except EndpointValidationError as exc:
         _fail("custom endpoint/Criteria validation failed", exc.failures[0])
         return
     except (ImportError, OSError, ValueError) as exc:
@@ -4022,8 +3904,8 @@ def _run_core_security_audit(
                 subject=f"{violation.core_file.name}:{violation.target or '-'}",
             )(
                 f"{line} (advisory: doctor audits the union of writable "
-                "category dirs, not a real ticket Scope — the binding "
-                "check runs per-ticket at commit time)"
+                "category dirs, without a change-specific scope — the binding "
+                "check runs at commit time)"
             )
         else:
             audit.fail(line, "ADR 0022 decision 21")
@@ -4309,8 +4191,8 @@ def _check_target_naming(
         )
         _note(
             f"Target '{name}' in {ref.core_file.name}: {target_naming.violation(name)} "
-            f"— {fix} (renaming also touches tests.toml keys and any ticket "
-            "criteria naming it)"
+            f"— {fix} (renaming also touches tests.toml keys and any "
+            "Goals naming it)"
         )
 
 
@@ -5079,7 +4961,7 @@ def _check_sim_run_cwd(project: ProjectAudit, _pass: Check, _warn: Check) -> Non
         _warning_sink(_warn, "sim.run-cwd-untracked", subject=configured)(
             f"sim run_cwd {configured} exists but contains no committed file "
             "(gitignored, untracked, or only staged), so it will be missing in a "
-            "fresh checkout or Ticket worktree",
+            "fresh checkout or worktree",
             LITERAL_RUN_CWD_REMEDY,
         )
         return

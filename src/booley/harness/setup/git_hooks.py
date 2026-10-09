@@ -370,7 +370,7 @@ WORKTREE_RELATIVE_KEY = "worktree.useRelativePaths"
 def worktree_policy_repositories(
     project_root: Path, *, project_dir: Path | None = None
 ) -> tuple[Path, ...]:
-    """Return durable repositories that create Ticket Workspaces."""
+    """Return durable repositories that create worktrees."""
     repositories = [project_root]
     if project_dir is None:
         try:
@@ -617,11 +617,11 @@ def _step_worktree_link_policy(
 
 def _report_worktree_link_policy(ctx: InitContext, *, capable: bool) -> None:
     if capable:
-        ok("new Ticket Workspaces use relative links on host and in the Sandbox")
+        ok("new worktrees use relative links on host and in the Sandbox")
         detail = "relative links enabled"
     else:
         warn(
-            "new Ticket Workspaces use the container-only absolute-link fallback; "
+            "new worktrees use the container-only absolute-link fallback; "
             "do not run host `git worktree prune`"
         )
         detail = "absolute-link fallback"
@@ -648,7 +648,7 @@ def read_worktree_prune_expire(project_root: Path) -> str | None:
 
 
 def _step_worktree_prune_guard(ctx: InitContext, *, project_dir: Path | None = None) -> None:
-    """Keep automatic pruning disabled in every Ticket Workspace repository."""
+    """Keep automatic pruning disabled in every worktree repository."""
     ctx.step_banner("worktree prune guard")
 
     # Confirm the project root is a git repo before touching its config.

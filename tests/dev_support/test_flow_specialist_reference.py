@@ -152,10 +152,7 @@ def test_specialist_reference_lists_every_reviewer_focus_and_mutation_mode() -> 
     for criterion, args in (reviewer.satisfies_args or {}).items():
         assert criterion in rendered
         assert args.split("--focus ", maxsplit=1)[1] in rendered
-    assert (
-        "| Campaign | Ticket Mode (`mandatory` or `optional`) | Interactive Mode arguments |"
-        in rendered
-    )
+    assert "| Campaign | Goal arguments | Interactive Mode arguments |" in rendered
     assert "| Default fixed |" in rendered
     assert "| Explicit fixed |" in rendered
     assert "| Size-scaled |" in rendered

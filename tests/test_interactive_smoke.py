@@ -437,10 +437,11 @@ def _fake_runtime_preview(project, build_spec, *, expected_image_id=None):
 
 
 def _fake_runtime_issue(project, prepared, *, force_dependencies=False):
-    from booley.runtime import devcontainer
+    from booley.runtime import dashboard_tasks, devcontainer
 
     del force_dependencies
     devcontainer.write_devcontainer(project, prepared.spec)
+    dashboard_tasks.reconcile(project, prepared.inputs.project_data_source)
     return SimpleNamespace(license_profile=None)
 
 
@@ -473,7 +474,7 @@ def _stub_full_init_dependencies(
 ) -> None:
     for name in (
         "_step_core_projections",
-        "_step_tickets",
+        "_step_goalsets",
         "_step_auth",
         "_step_git_hooks",
         "_step_project_git_hooks",

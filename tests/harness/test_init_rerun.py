@@ -266,7 +266,7 @@ class TestFullInitRerun:
         user_owned = [
             pdir / "booley.toml",
             pdir / "tests.toml",
-            pdir / "ticket_creation.md",
+            pdir / "goalsets" / "feature.md",
             pdir / "FUSESOC_IGNORE",
         ]
         for f in user_owned:
@@ -313,46 +313,6 @@ class TestFullInitRerun:
             assert f.read_bytes() == expected, (
                 f"managed file {f} not byte-stable across init re-runs"
             )
-
-    def test_missing_ticket_creation_is_backfilled_without_touching_other_config(self, repo: Path):
-        assert _run_full_init(repo) in (0, 2)
-        pdir = repo / ".booley_project"
-        guidance = pdir / "ticket_creation.md"
-        guidance.unlink()
-        booley_before = (pdir / "booley.toml").read_bytes()
-        tests_before = (pdir / "tests.toml").read_bytes()
-
-        assert _run_full_init(repo) in (0, 2)
-
-        assert guidance.read_text(encoding="utf-8").startswith("# Ticket Creation Guidance")
-        assert (pdir / "booley.toml").read_bytes() == booley_before
-        assert (pdir / "tests.toml").read_bytes() == tests_before
-
-    def test_check_only_reports_ticket_creation_backfill_without_writing(self, repo: Path, capsys):
-        assert _run_full_init(repo) in (0, 2)
-        pdir = repo / ".booley_project"
-        guidance = pdir / "ticket_creation.md"
-        guidance.unlink()
-
-        ctx = InitContext(project_root=repo, check_only=True)
-        init_cmd._backfill_config_skeletons(pdir, ctx)
-
-        assert not guidance.exists()
-        assert "would add 1 config skeleton file" in capsys.readouterr().out
-
-    def test_legacy_ticket_defaults_suppresses_new_guidance_scaffold(self, repo: Path):
-        assert _run_full_init(repo) in (0, 2)
-        pdir = repo / ".booley_project"
-        guidance = pdir / "ticket_creation.md"
-        guidance.unlink()
-        legacy = pdir / "ticket_defaults.md"
-        legacy_text = "# Existing project guidance\n\nAlways run the full regression.\n"
-        legacy.write_text(legacy_text, encoding="utf-8")
-
-        assert _run_full_init(repo) in (0, 2)
-
-        assert not guidance.exists()
-        assert legacy.read_text(encoding="utf-8") == legacy_text
 
     def test_step_numbers_are_contiguous_end_to_end(self, repo: Path, capsys):
         """F-2: the emitted sequence used to read 1, 2, 3, 5, 8, 9, 9b, 10,
@@ -807,3 +767,17 @@ def test_image_convergence_reports_live_sandbox_drift(repo, monkeypatch, capsys,
         assert "booley session down && booley session up" in output
     else:
         assert "booley session down" not in output
+
+
+def test_init_does_not_scaffold_board_or_ticket_guidance(repo):
+    assert _run_full_init(repo) in (0, 2)
+    project = repo / ".booley_project"
+    assert not (project / "tickets").exists()
+    assert not (project / "ticket_creation.md").exists()
+    assert not (project / "ticket_defaults.md").exists()
+    assert {p.name for p in (project / "goalsets").iterdir()} == {
+        "feature.md",
+        "bugfix.md",
+        "refactor.md",
+        "verification.md",
+    }

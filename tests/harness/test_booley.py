@@ -25,15 +25,10 @@ from booley.runtime.project_dir import reset_cache
 from booley.ticket_board.board_layout import (
     StateRecord,
     read_state_record,
-    state_record_path,
     ticket_document_path,
     write_state_record,
 )
 from booley.ticket_board.lifecycle import parse_board_target
-from booley.ticket_board.ticket_document import (
-    convert_ticket_document,
-    ticket_conversion_context,
-)
 
 TICKETS_REL = Path(".booley") / "project" / "tickets"
 
@@ -79,30 +74,6 @@ def test_doctor_parser_accepts_deep_flag():
 
     assert args.command == "doctor"
     assert args.deep is True
-
-
-def test_board_review_surface_parses_public_actions():
-    parser = tlr._build_parser()
-    requested = parser.parse_args(["board", "review", "demo", "--request", "--reason", "inspect"])
-    validation = parser.parse_args(["board", "validate", "demo", "--", "python", "-m", "example"])
-    approval = parser.parse_args(["board", "approve", "demo", "--no-cleanup"])
-    shown = parser.parse_args(["board", "show", "demo", "--no-open-diffs"])
-
-    assert requested.request and requested.reason == "inspect"
-    assert validation.endpoint_command == ["python", "-m", "example"]
-    assert approval.no_cleanup
-    assert shown.slug == "demo" and shown.no_open_diffs
-
-
-def test_board_help_hides_deprecated_review_commands(capsys):
-    parser = tlr._build_parser()
-    with pytest.raises(SystemExit) as exc:
-        parser.parse_args(["board", "--help"])
-    assert exc.value.code == 0
-    output = capsys.readouterr().out
-    assert "{show,review,approve,validate,check-ready,create,move,reset,archive}" in output
-    assert "request-review" not in output
-    assert "[may invoke agent]" in output
 
 
 def _board_git(repository: Path, *args: str) -> str:
@@ -178,196 +149,6 @@ def board_create_project_env(
         monkeypatch.delenv(variable, raising=False)
     yield monkeypatch
     reset_cache()
-
-
-def test_board_create_uses_matching_paired_project_branch(
-    tmp_path: Path,
-    board_create_project_env: pytest.MonkeyPatch,
-) -> None:
-    branch = "release/next"
-    root, project_dir, outer_sha = _board_create_project(
-        tmp_path,
-        board_create_project_env,
-        branch,
-    )
-    slug = f"generated-{branch.replace('/', '-')}"
-    args = tlr._build_parser().parse_args(["board", "create", slug])
-
-    assert tlr._cmd_board(args, root) == 0
-
-    draft = project_dir / "tickets" / "board" / f"{slug}.md"
-    assert draft.is_file()
-    # A draft has no state record.
-    assert not state_record_path(project_dir / "tickets", slug).exists()
-    with ticket_conversion_context(root, slug, "draft") as context:
-        converted = convert_ticket_document(draft.read_text(encoding="utf-8"), context)
-    assert converted.diagnostics == ()
-    assert converted.document is not None
-    assert converted.document.spec.fields["branch"] == branch
-    assert isinstance(converted.document.spec.fields["branch"], str)
-    assert converted.document.spec.fields["project_destination_ref"] == f"refs/heads/{branch}"
-    workspace = project_dir / "worktrees" / slug
-    workspace_sha = _board_git(workspace, "rev-parse", "HEAD")
-    assert workspace_sha == outer_sha
-
-
-def test_board_create_quotes_yaml_keyword_branch(
-    tmp_path: Path,
-    board_create_project_env: pytest.MonkeyPatch,
-) -> None:
-    branch = "true"
-    root, project_dir, _outer_sha = _board_create_project(
-        tmp_path,
-        board_create_project_env,
-        branch,
-        paired=False,
-    )
-    materialize = MagicMock()
-    board_create_project_env.setattr(
-        tlr.TicketIO,
-        "_materialize_ticket_workspace",
-        materialize,
-    )
-    slug = "yaml-keyword"
-    args = tlr._build_parser().parse_args(["board", "create", slug])
-
-    assert tlr._cmd_board(args, root) == 0
-
-    draft = project_dir / "tickets" / "board" / f"{slug}.md"
-    with ticket_conversion_context(root, slug, "draft") as context:
-        converted = convert_ticket_document(draft.read_text(encoding="utf-8"), context)
-    assert converted.diagnostics == ()
-    assert converted.document is not None
-    assert converted.document.spec.fields["branch"] == branch
-    assert isinstance(converted.document.spec.fields["branch"], str)
-    materialize.assert_called_once()
-
-
-def test_board_create_rejects_detached_head(
-    tmp_path: Path,
-    board_create_project_env: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    root, project_dir, _outer_sha = _board_create_project(
-        tmp_path,
-        board_create_project_env,
-        "release/next",
-    )
-    _board_git(root, "checkout", "--detach")
-    materialize = MagicMock()
-    board_create_project_env.setattr(
-        tlr.TicketIO,
-        "_materialize_ticket_workspace",
-        materialize,
-    )
-    args = tlr._build_parser().parse_args(["board", "create", "detached-draft"])
-
-    assert tlr._cmd_board(args, root) == 1
-
-    assert "detached HEAD" in capsys.readouterr().err
-    assert not (project_dir / "tickets" / "board" / "detached-draft.md").exists()
-    materialize.assert_not_called()
-
-
-def test_board_create_reports_branch_inspection_failure(
-    tmp_path: Path,
-    board_create_project_env: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    root, project_dir, _outer_sha = _board_create_project(
-        tmp_path,
-        board_create_project_env,
-        "release/next",
-    )
-    inspection = MagicMock()
-    inspection.branch = None
-    inspection.detail = "git inspection timed out"
-    board_create_project_env.setattr(tlr, "inspect_symbolic_branch", lambda _root: inspection)
-    args = tlr._build_parser().parse_args(["board", "create", "inspection-failure"])
-
-    assert tlr._cmd_board(args, root) == 1
-
-    assert "cannot inspect the Project checkout branch" in capsys.readouterr().err
-    draft = project_dir / "tickets" / "board" / "inspection-failure.md"
-    assert not draft.exists()
-
-
-def test_board_create_rejects_non_git_project(
-    tmp_path: Path,
-    board_create_project_env: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    root = tmp_path / "project"
-    project_dir = root / ".booley_project"
-    drafts = project_dir / "tickets" / "board"
-    drafts.mkdir(parents=True)
-    board_create_project_env.setenv("BOOLEY_PROJECT_DIR", str(project_dir))
-    reset_cache()
-    materialize = MagicMock()
-    board_create_project_env.setattr(
-        tlr.TicketIO,
-        "_materialize_ticket_workspace",
-        materialize,
-    )
-    args = tlr._build_parser().parse_args(["board", "create", "non-git"])
-
-    assert tlr._cmd_board(args, root) == 1
-
-    assert "root of a Git worktree" in capsys.readouterr().err
-    assert not (drafts / "non-git.md").exists()
-    materialize.assert_not_called()
-
-
-def test_board_create_rejects_uninitialized_git_repository(
-    tmp_path: Path,
-    board_create_project_env: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    root = tmp_path / "project"
-    root.mkdir()
-    _board_git(root, "init", "-b", "main")
-    board_create_project_env.delenv("BOOLEY_PROJECT_DIR", raising=False)
-    reset_cache()
-    materialize = MagicMock()
-    board_create_project_env.setattr(
-        tlr.TicketIO,
-        "_materialize_ticket_workspace",
-        materialize,
-    )
-    args = tlr._build_parser().parse_args(["board", "create", "uninitialized"])
-
-    assert tlr._cmd_board(args, root) == 1
-
-    assert "run 'booley init'" in capsys.readouterr().err
-    assert not (root / ".booley_project" / "tickets").exists()
-    assert not (root / ".booley" / "project" / "tickets").exists()
-    materialize.assert_not_called()
-
-
-def test_board_create_rejects_mismatched_paired_project_branch(
-    tmp_path: Path,
-    board_create_project_env: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    root, project_dir, _outer_sha = _board_create_project(
-        tmp_path,
-        board_create_project_env,
-        "release/next",
-        project_branch="main",
-    )
-    materialize = MagicMock()
-    board_create_project_env.setattr(
-        tlr.TicketIO,
-        "_materialize_ticket_workspace",
-        materialize,
-    )
-    args = tlr._build_parser().parse_args(["board", "create", "mismatched-project"])
-
-    assert tlr._cmd_board(args, root) == 1
-
-    assert "paired project destination 'refs/heads/release/next'" in capsys.readouterr().err
-    assert not (project_dir / "tickets" / "board" / "mismatched-project.md").exists()
-    materialize.assert_not_called()
 
 
 def test_doctor_parser_accepts_concise_flag():
@@ -917,7 +698,7 @@ def _host_venue(monkeypatch):
 
 
 class TestEnforceVenue:
-    @pytest.mark.parametrize("command", ["run", "chat", "board"])
+    @pytest.mark.parametrize("command", ["goal", "chat", "dashboard"])
     def test_container_only_command_refused_on_host(self, command, monkeypatch, capsys):
         """Workflow commands on the host -> exit 2 with the actionable fix."""
         monkeypatch.setattr(sys, "argv", ["booley", command])
@@ -929,7 +710,7 @@ class TestEnforceVenue:
         assert "Sandbox" in err
         assert "Reopen in Container" in err  # names the fix, not just the rule
 
-    @pytest.mark.parametrize("command", ["run", "chat", "board"])
+    @pytest.mark.parametrize("command", ["goal", "chat", "dashboard"])
     def test_container_only_command_allowed_in_container(self, command, monkeypatch):
         monkeypatch.setenv("BOOLEY_CONTAINER", "1")
         tlr._enforce_runtime_location(command)  # must not raise
@@ -964,7 +745,7 @@ class TestEnforceVenue:
         `auth` is host-only too: it drives the host's browser OAuth flow and
         writes the host's ~/.config, neither of which exists in the sandbox.
         """
-        assert {"run", "chat", "board", "worktree"} == tlr._CONTAINER_ONLY_COMMANDS
+        assert {"goal", "dashboard", "chat", "worktree"} == tlr._CONTAINER_ONLY_COMMANDS
         assert {
             "bootstrap",
             "init",
@@ -977,7 +758,7 @@ class TestEnforceVenue:
     def test_top_level_help_labels_every_advertised_command_location(self):
         help_text = tlr._build_parser().format_help()
 
-        assert "run" in help_text and "[Sandbox]" in help_text
+        assert "goal" in help_text and "[Sandbox]" in help_text
         assert "projects" in help_text and "[host]" in help_text
         assert "doctor" in help_text and "[either]" in help_text
         assert "flow" in help_text and "[mixed]" in help_text
@@ -1007,7 +788,7 @@ class TestEffectiveCommand:
         return tlr._build_parser().parse_args(argv)
 
     def test_subcommand_passthrough(self):
-        assert tlr._effective_command(self._parse(["run"])) == "run"
+        assert tlr._effective_command(self._parse(["goal", "status"])) == "goal"
         assert tlr._effective_command(self._parse(["init"])) == "init"
 
     def test_unnormalized_no_command_has_no_effective_command(self):
@@ -1018,175 +799,6 @@ class TestEffectiveCommand:
         parser = tlr._build_parser()
         args = tlr._normalize_args(parser, parser.parse_args([]))
         assert tlr._effective_command(args) == "chat"
-
-
-def test_prepare_review_board_parser():
-    args = tlr._build_parser().parse_args(["board", "prepare-review", "demo-ticket", "--force"])
-    assert args.board_command == "prepare-review"
-    assert args.slug == "demo-ticket"
-    assert args.force is True
-
-
-def test_prepare_review_command_accepts_html_free_briefing(tmp_path, monkeypatch, capsys):
-    from booley.ticket_board import review_lifecycle as review_prep
-
-    async def prepare(*_args, **_kwargs):
-        return review_prep.ReviewPrepOutcome(
-            "ready",
-            "review briefing prepared; HTML explanation unavailable",
-            package_path=tmp_path / "briefing.json",
-        )
-
-    monkeypatch.setattr(review_prep, "prepare_review_command", prepare)
-    args = tlr._build_parser().parse_args(["board", "prepare-review", "demo-ticket"])
-
-    assert tlr._cmd_board_prepare_review(args, tmp_path) == 0
-    assert f"Review package ready: {tmp_path / 'briefing.json'}" in capsys.readouterr().out
-
-
-@pytest.mark.parametrize("command", ["review", "prepare-review"])
-def test_review_commands_print_package_free_accepted_guidance(
-    command, tmp_path, monkeypatch, capsys
-):
-    from booley.ticket_board import review_lifecycle
-
-    message = "Ticket 'demo' is already accepted; run booley board approve demo to complete it."
-
-    async def accepted(*_args, **_kwargs):
-        return review_lifecycle.ReviewPrepOutcome("accepted", message)
-
-    monkeypatch.setattr(review_lifecycle, "review_command", accepted)
-    monkeypatch.setattr(review_lifecycle, "prepare_review_command", accepted)
-    args = tlr._build_parser().parse_args(["board", command, "demo"])
-    handler = tlr._cmd_board_review if command == "review" else tlr._cmd_board_prepare_review
-
-    assert handler(args, tmp_path) == 0
-    output = capsys.readouterr().out
-    assert output.strip() == message
-    assert "Review package ready: None" not in output
-
-
-def test_review_briefing_board_parser():
-    args = tlr._build_parser().parse_args(
-        ["board", "review-briefing", "demo-ticket", "--no-open-diffs"]
-    )
-    assert args.board_command == "review-briefing"
-    assert args.slug == "demo-ticket"
-    assert args.no_open_diffs is True
-
-
-def test_blocked_briefing_board_parser():
-    args = tlr._build_parser().parse_args(["board", "blocked-briefing", "demo-ticket"])
-    assert args.board_command == "blocked-briefing"
-    assert args.slug == "demo-ticket"
-
-
-def test_board_command_handlers_cover_public_dispatch(monkeypatch, tmp_path, capsys):
-    from booley.harness import blocked_prep
-    from booley.ticket_board import io, review_lifecycle
-
-    assert tlr._cmd_board(Namespace(board_command=None), tmp_path) == 0
-
-    async def review(*_args, **_kwargs):
-        return Namespace(ready=True, package_path=tmp_path / "review.json", message="fresh")
-
-    monkeypatch.setattr(review_lifecycle, "review_command", review)
-    review_args = tlr._build_parser().parse_args(["board", "review", "demo"])
-    assert tlr._cmd_board_review(review_args, tmp_path) == 0
-
-    async def failed_review(*_args, **_kwargs):
-        return Namespace(ready=False, message="review unavailable")
-
-    monkeypatch.setattr(review_lifecycle, "review_command", failed_review)
-    assert tlr._cmd_board_review(review_args, tmp_path) == 2
-    assert "review unavailable" in capsys.readouterr().err
-
-    monkeypatch.setattr(review_lifecycle, "approve_review_command", lambda *_a, **_k: True)
-    approve_args = tlr._build_parser().parse_args(["board", "approve", "demo"])
-    assert tlr._cmd_board_approve(approve_args, tmp_path) == 0
-
-    monkeypatch.setattr(
-        review_lifecycle,
-        "approve_review_command",
-        lambda *_a, **_k: (_ for _ in ()).throw(ValueError("bad approval")),
-    )
-    assert tlr._cmd_board_approve(approve_args, tmp_path) == 2
-    assert "bad approval" in capsys.readouterr().err
-
-    class FakeTio:
-        board = None
-        tickets_dir = tmp_path / "tickets"  # no Ticket History: a missing slug stays missing
-
-        def __init__(self, *_args, **_kwargs):
-            pass
-
-        def find_ticket(self, _slug):
-            return self.board
-
-        def inspect_ticket(self, slug):
-            return self.find_ticket(slug)
-
-    monkeypatch.setattr(io, "TicketIO", FakeTio)
-    missing_args = tlr._build_parser().parse_args(["board", "show", "demo"])
-    assert tlr._cmd_board_show(missing_args, tmp_path) == 2
-
-    FakeTio.board = {"file": "board/demo.md", "status": "active", "summary": "work"}
-    assert tlr._cmd_board_show(missing_args, tmp_path) == 0
-    assert "demo: active — work" in capsys.readouterr().out
-
-    FakeTio.board = {"file": "board/demo.md", "status": "blocked", "summary": "work"}
-    monkeypatch.setattr(
-        blocked_prep,
-        "render_blocked_dossier",
-        lambda *_a, **_k: Namespace(ready=False, status="stale", message="dossier unavailable"),
-    )
-    assert tlr._cmd_board_show(missing_args, tmp_path) == 2
-    assert "dossier unavailable" in capsys.readouterr().err
-
-    monkeypatch.setattr(
-        blocked_prep,
-        "render_blocked_dossier",
-        lambda *_a, **_k: Namespace(ready=True, message="dossier"),
-    )
-    monkeypatch.setattr(
-        review_lifecycle,
-        "review_briefing_command",
-        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("review briefing called")),
-    )
-    assert tlr._cmd_board_show(missing_args, tmp_path) == 0
-    output = capsys.readouterr().out
-    assert "dossier" in output
-
-
-def test_board_show_does_not_append_review_guidance_to_accepted_failure(
-    monkeypatch, tmp_path, capsys
-):
-    from booley.ticket_board import io, review_lifecycle
-
-    class FakeTio:
-        def __init__(self, *_args, **_kwargs):
-            pass
-
-        def find_ticket(self, _slug):
-            return {"file": "board/demo.md", "status": "review", "summary": "work"}
-
-        def inspect_ticket(self, slug):
-            return self.find_ticket(slug)
-
-    monkeypatch.setattr(io, "TicketIO", FakeTio)
-    monkeypatch.setattr(
-        review_lifecycle,
-        "review_briefing_command",
-        lambda *_a, **_k: Namespace(
-            status="failed",
-            message="Criteria Satisfaction Record is corrupt: bad binding",
-        ),
-    )
-    args = tlr._build_parser().parse_args(["board", "show", "demo"])
-    assert tlr._cmd_board_show(args, tmp_path) == 2
-    error = capsys.readouterr().err
-    assert "Criteria Satisfaction Record is corrupt" in error
-    assert "board review" not in error
 
 
 def _blocked_diagnosis() -> dict:
@@ -1200,133 +812,6 @@ def _blocked_diagnosis() -> dict:
         "recommended_action": "retry with feedback",
         "findings": [],
     }
-
-
-@pytest.mark.asyncio
-async def test_board_show_blocked_uses_dossier_without_review_package(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    from contextlib import contextmanager
-
-    from booley.core.models import AgentResult
-    from booley.harness import blocked_prep
-    from booley.ticket_board import review_lifecycle, ticket_document
-    from booley.ticket_board.frontmatter import format_frontmatter
-    from booley.ticket_board.ticket_document import TicketConversionContext, ticket_authoring_view
-
-    monkeypatch.delenv("TICKETS_DIR", raising=False)
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
-    monkeypatch.delenv("BOOLEY_CONTROL_PROJECT_ROOT", raising=False)
-    from tests.ticket_board.conftest import place_ticket
-
-    ticket = place_ticket(
-        tmp_path / ".booley_project" / "tickets",
-        "demo",
-        "blocked",
-        format_frontmatter(
-            {
-                "summary": "demo",
-                "type": "feature",
-                "branch": "main",
-                "scope": ["source.txt"],
-                "on_success": ["review"],
-                "CRITERIA_MANDATORY": {"REVIEW": {"rtl": {"bugs": "done"}}},
-                "machine": {},
-            },
-            "## Description\nDemo work.\n",
-        ),
-    )
-    worktree = tmp_path / ".booley_project" / "worktrees" / "demo"
-    worktree.mkdir(parents=True)
-    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=worktree, check=True)
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=worktree, check=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=worktree, check=True)
-    (worktree / "source.txt").write_text("source\n", encoding="utf-8")
-    subprocess.run(["git", "add", "source.txt"], cwd=worktree, check=True)
-    subprocess.run(["git", "commit", "-qm", "base"], cwd=worktree, check=True)
-
-    @contextmanager
-    def conversion_context(_root, _slug, _stage):
-        yield TicketConversionContext(
-            "executable",
-            lambda _generated: ticket_authoring_view(worktree),
-            lambda: worktree,
-        )
-
-    async def invoke(_ctx, _evidence):
-        return AgentResult(structured=_blocked_diagnosis())
-
-    monkeypatch.setattr(blocked_prep, "_invoke", invoke)
-    monkeypatch.setattr(ticket_document, "ticket_conversion_context", conversion_context)
-    monkeypatch.setattr(
-        review_lifecycle,
-        "review_briefing_command",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected review")),
-    )
-    assert (await blocked_prep.prepare_blocked_dossier(tmp_path, "demo")).ready
-    resolved = blocked_prep._resolve_context(tmp_path, "demo")
-    assert resolved.ticket_path == ticket
-    assert resolved.worktree == worktree.resolve()
-    args = tlr._build_parser().parse_args(["board", "show", "demo", "--no-open-diffs"])
-
-    assert tlr._cmd_board_show(args, tmp_path) == 0
-    assert "**Blocked by:**" in capsys.readouterr().out
-    briefing_args = tlr._build_parser().parse_args(["board", "blocked-briefing", "demo"])
-    assert tlr._cmd_board_blocked_briefing(briefing_args, tmp_path) == 0
-    assert "**Blocked by:**" in capsys.readouterr().out
-
-
-@pytest.mark.asyncio
-async def test_board_show_blocked_names_changed_dossier_input(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    from booley.core.models import AgentResult
-    from booley.harness import blocked_prep
-    from booley.ticket_board import io
-
-    ticket = tmp_path / "blocked" / "demo.md"
-    ticket.parent.mkdir()
-    ticket.write_text("ticket\n", encoding="utf-8")
-    context = blocked_prep.BlockedContext(
-        tmp_path,
-        "demo",
-        ticket,
-        tmp_path / "logs" / "demo",
-        tmp_path / "logs" / "demo" / ".runtime" / "triage-prep",
-        None,
-    )
-
-    async def invoke(_ctx, _evidence):
-        return AgentResult(structured=_blocked_diagnosis())
-
-    class FakeTio:
-        def __init__(self, *_args, **_kwargs):
-            pass
-
-        def inspect_ticket(self, _slug):
-            return {"file": "board/demo.md", "status": "blocked"}
-
-    monkeypatch.setattr(blocked_prep, "_resolve_context", lambda *_args: context)
-    monkeypatch.setattr(blocked_prep, "_invoke", invoke)
-    monkeypatch.setattr(io, "TicketIO", FakeTio)
-    assert (await blocked_prep.prepare_blocked_dossier(tmp_path, "demo")).ready
-    ticket.write_text("changed\n", encoding="utf-8")
-    args = tlr._build_parser().parse_args(["board", "show", "demo", "--no-open-diffs"])
-
-    assert tlr._cmd_board_show(args, tmp_path) == 2
-    error = capsys.readouterr().err
-    assert "ticket changed" in error
-    assert "run booley board review demo" in error
-
-
-def test_board_review_handler_rejects_inconsistent_options(capsys, tmp_path):
-    reason = tlr._build_parser().parse_args(["board", "review", "demo", "--reason", "why"])
-    assert tlr._cmd_board_review(reason, tmp_path) == 2
-    assert "--reason requires --request" in capsys.readouterr().err
-
-    force = tlr._build_parser().parse_args(["board", "review", "demo", "--request", "--force"])
-    assert tlr._cmd_board_review(force, tmp_path) == 2
-    assert "--force cannot be combined with --request" in capsys.readouterr().err
 
 
 # ===========================================================================
@@ -3077,248 +2562,6 @@ class TestHandlePostRunFastFailure:
 # ===========================================================================
 
 
-class TestDryRunImplications:
-    """`booley run --dry-run` used to block forever headlessly: the idle poll
-    waited for a ticket it would never execute, and the TUI took the terminal."""
-
-    def _parse(self, argv: list[str]):
-        parser = tlr._build_parser()
-        return tlr._normalize_args(parser, parser.parse_args(argv))
-
-    def test_dry_run_implies_one_shot(self):
-        assert self._parse(["run", "--dry-run"]).count == 1
-
-    def test_explicit_count_wins(self):
-        assert self._parse(["run", "--dry-run", "-n", "3"]).count == 3
-
-    def test_plain_run_still_polls_forever(self):
-        args = self._parse(["run"])
-        assert args.count == 0
-
-    def test_dry_run_never_starts_the_console(self):
-        assert tlr._will_use_console(self._parse(["run", "--dry-run"])) is False
-
-    def test_idle_exit_names_dry_run_not_a_phantom_n_flag(self):
-        args = self._parse(["run", "--dry-run"])
-        counts = {"active": 0, "waiting": 0, "blocked": 0, "review": 0, "executable": 0}
-        with patch.object(tlr, "status") as status:
-            action = tlr._handle_idle(args, counts, tlr._IdleState())
-        assert action == "break"
-        assert "--dry-run" in status.call_args.args[0]
-
-    def test_idle_exit_still_names_n_when_user_passed_it(self):
-        args = self._parse(["run", "-n", "2"])
-        counts = {"active": 0, "waiting": 0, "blocked": 0, "review": 0, "executable": 0}
-        with patch.object(tlr, "status") as status:
-            action = tlr._handle_idle(args, counts, tlr._IdleState())
-        assert action == "break"
-        assert "-n 2" in status.call_args.args[0]
-
-    def test_preview_only_reads_board_and_environment(self, tmp_path):
-        args = self._parse(["run", "--dry-run"])
-        counts = {
-            "active": 0,
-            "waiting": 0,
-            "blocked": 0,
-            "review": 0,
-            "executable": 1,
-        }
-        with (
-            patch.object(tlr, "get_ticket_counts", return_value=counts) as classify,
-            patch.object(tlr, "find_venv_python", return_value="/venv/python") as find_python,
-            patch.object(tlr, "_log_attempt") as log_attempt,
-            patch.object(tlr, "_show_dry_run") as show,
-        ):
-            rc = tlr._preview_ticket_run(args, tmp_path)
-
-        assert rc == 0
-        classify.assert_called_once_with(tmp_path)
-        find_python.assert_called_once_with(tmp_path)
-        log_attempt.assert_called_once_with(args, 1, counts)
-        show.assert_called_once_with("/venv/python")
-
-    def test_main_bypasses_mutating_runtime_for_preview(self, tmp_path, monkeypatch):
-        (tmp_path / ".booley_project").mkdir()
-        args = self._parse(["run", "--dry-run", "--project-root", str(tmp_path)])
-        preview = MagicMock(return_value=0)
-        monkeypatch.setattr(tlr, "_parse_cli", lambda: args)
-        monkeypatch.setattr(tlr, "_enforce_runtime_location", lambda _command: None)
-        monkeypatch.setattr(tlr.runtime_context, "ensure_proxy_env", lambda: False)
-        monkeypatch.setattr(tlr, "_handle_early_exits", lambda *_args: None)
-        monkeypatch.setattr(tlr, "_print_banner", lambda _args: None)
-        monkeypatch.setattr(tlr, "_preview_ticket_run", preview)
-        monkeypatch.setattr(
-            tlr,
-            "_setup_runtime",
-            lambda *_args: pytest.fail("dry-run must not set up mutating runtime state"),
-        )
-        monkeypatch.setattr(
-            tlr,
-            "_ticket_loop",
-            lambda *_args: pytest.fail("dry-run must not enter the mutating ticket loop"),
-        )
-
-        assert tlr.main() == 0
-        preview.assert_called_once_with(args, tmp_path)
-
-
-class TestNamedTicketImplications:
-    """A named ticket must not turn into a long-lived queue runner."""
-
-    def _parse(self, argv: list[str]):
-        parser = tlr._build_parser()
-        return tlr._normalize_args(parser, parser.parse_args(argv))
-
-    def test_named_ticket_is_one_shot(self):
-        assert self._parse(["run", "--ticket", "fix-crc"]).count == 1
-
-    def test_named_ticket_overrides_count(self):
-        assert self._parse(["run", "--ticket", "fix-crc", "-n", "2"]).count == 1
-
-    def test_one_ticket_failure_exits_nonzero(self, tmp_path):
-        args = self._parse(["run", "--ticket", "fix-crc"])
-        counts = {"executable": 1}
-        with (
-            patch.object(tlr, "_run_automatic_doctor"),
-            patch.object(tlr, "handle_startup_orphans"),
-            patch.object(tlr, "get_ticket_counts", return_value=counts),
-            patch.object(tlr, "_execute_one_ticket", return_value="next_failed"),
-            patch.object(tlr, "_shutdown_requested", return_value=False),
-            patch.object(tlr.os, "chdir"),
-        ):
-            assert tlr._ticket_loop(args, tmp_path, "/venv/python") == 1
-
-    def test_child_failure_is_preserved_after_post_run_cleanup(self, tmp_path):
-        args = self._parse(["run", "--ticket", "fix-crc"])
-        with (
-            patch.object(tlr, "_log_attempt"),
-            patch.object(tlr, "_run_harness", return_value=(1, 10.0)),
-            patch.object(tlr, "_handle_post_run", return_value="next"),
-        ):
-            assert tlr._execute_one_ticket(args, tmp_path, "/venv/python", 1, {}) == (
-                "next_failed"
-            )
-
-
-class TestCheckReady:
-    def _parse(self, argv: list[str]):
-        parser = tlr._build_parser()
-        return tlr._normalize_args(parser, parser.parse_args(argv))
-
-    def test_parser_exposes_no_agent_readiness_mode(self):
-        args = self._parse(["run", "--ticket", "demo", "--check-ready"])
-        assert args.check_ready is True
-        assert args.ticket == "demo"
-
-    def test_parser_exposes_board_readiness_alias(self):
-        args = self._parse(["board", "check-ready", "demo"])
-        assert args.board_command == "check-ready"
-        assert args.slug == "demo"
-
-    def test_readiness_reports_validation_errors(self, tmp_path, monkeypatch, capsys):
-        result = MagicMock(errors=("bad criterion",), warnings=())
-        check = MagicMock(return_value=result)
-        monkeypatch.setattr("booley.ticket_board.readiness.check_ticket_ready", check)
-        args = self._parse(["run", "--ticket", "demo", "--check-ready"])
-
-        assert tlr._check_ticket_readiness(args, tmp_path) == 2
-        assert "bad criterion" in capsys.readouterr().err
-        check.assert_called_once_with(tmp_path, "demo")
-
-    def test_board_alias_renders_the_same_readiness_result(self, tmp_path, monkeypatch, capsys):
-        result = MagicMock(errors=("bad criterion",), warnings=("warning",))
-        check = MagicMock(return_value=result)
-        monkeypatch.setattr("booley.ticket_board.readiness.check_ticket_ready", check)
-        args = self._parse(["board", "check-ready", "demo"])
-
-        assert tlr._cmd_board(args, tmp_path) == 2
-        captured = capsys.readouterr()
-        assert "warning" in captured.err
-        assert "bad criterion" in captured.err
-        check.assert_called_once_with(tmp_path, "demo")
-
-
-class TestIdleShutdown:
-    """`booley run` must not outlive its queue (F-50)."""
-
-    def _parse(self, argv: list[str]):
-        parser = tlr._build_parser()
-        return tlr._normalize_args(parser, parser.parse_args(argv))
-
-    @staticmethod
-    def _counts(**kw):
-        base = {"active": 0, "waiting": 0, "blocked": 0, "review": 0, "executable": 0}
-        base.update(kw)
-        return base
-
-    def test_idle_timeout_defaults_to_a_finite_value(self):
-        assert self._parse(["run"]).idle_timeout == tlr.DEFAULT_IDLE_TIMEOUT_S
-        assert tlr.DEFAULT_IDLE_TIMEOUT_S > 0
-
-    def test_drained_board_exits_after_the_timeout(self, monkeypatch):
-        args = self._parse(["run", "--idle-timeout", "60"])
-        idle = tlr._IdleState()
-        clock = [1000.0]
-        monkeypatch.setattr(tlr.time, "monotonic", lambda: clock[0])
-        monkeypatch.setattr(tlr, "interruptible_sleep", lambda _s: True)
-
-        with patch.object(tlr, "status"):
-            # First drained poll only arms the timer.
-            assert tlr._handle_idle(args, self._counts(review=2), idle) == "continue"
-            assert idle.drained_since == 1000.0
-            clock[0] += 59
-            assert tlr._handle_idle(args, self._counts(review=2), idle) == "continue"
-            clock[0] += 2
-            assert tlr._handle_idle(args, self._counts(review=2), idle) == "break"
-
-    def test_active_or_waiting_tickets_keep_the_runner_alive(self, monkeypatch):
-        """Work that can still become executable on its own must not trip the timer."""
-        args = self._parse(["run", "--idle-timeout", "1"])
-        idle = tlr._IdleState()
-        clock = [1000.0]
-        monkeypatch.setattr(tlr.time, "monotonic", lambda: clock[0])
-        monkeypatch.setattr(tlr, "interruptible_sleep", lambda _s: True)
-
-        with patch.object(tlr, "status"):
-            for counts in (self._counts(active=1), self._counts(waiting=1)):
-                clock[0] += 10_000
-                assert tlr._handle_idle(args, counts, idle) == "continue"
-                assert idle.drained_since is None
-
-    def test_new_work_disarms_the_timer(self, monkeypatch):
-        args = self._parse(["run", "--idle-timeout", "60"])
-        idle = tlr._IdleState()
-        clock = [1000.0]
-        monkeypatch.setattr(tlr.time, "monotonic", lambda: clock[0])
-        monkeypatch.setattr(tlr, "interruptible_sleep", lambda _s: True)
-
-        with patch.object(tlr, "status"):
-            tlr._handle_idle(args, self._counts(review=1), idle)
-            idle.reset()  # the loop calls this when a ticket becomes executable
-            clock[0] += 10_000
-            assert tlr._handle_idle(args, self._counts(review=1), idle) == "continue"
-
-    def test_zero_timeout_polls_forever(self, monkeypatch):
-        args = self._parse(["run", "--idle-timeout", "0"])
-        idle = tlr._IdleState()
-        clock = [1000.0]
-        monkeypatch.setattr(tlr.time, "monotonic", lambda: clock[0])
-        monkeypatch.setattr(tlr, "interruptible_sleep", lambda _s: True)
-
-        with patch.object(tlr, "status"):
-            for _ in range(3):
-                clock[0] += 10_000
-                assert tlr._handle_idle(args, self._counts(), idle) == "continue"
-
-    def test_drained_board_announces_the_pending_exit(self, monkeypatch):
-        args = self._parse(["run", "--idle-timeout", "60"])
-        idle = tlr._IdleState()
-        monkeypatch.setattr(tlr, "interruptible_sleep", lambda _s: True)
-        with patch.object(tlr, "status") as status:
-            tlr._handle_idle(args, self._counts(review=1), idle)
-        assert any("Queue drained" in c.args[0] for c in status.call_args_list)
-
-
 class TestClaimTicketSlotShutdown:
     def test_queued_claim_aborts_on_shutdown_event(self, tmp_path, monkeypatch):
         # A Runner queued behind max_tickets busy Developers must stop
@@ -3343,53 +2586,6 @@ class TestClaimTicketSlotShutdown:
         _holders, waiters = world_store.snapshot(job_slots.CLASS_TICKET)
         assert waiters == []
         world_store.release(holder)
-
-
-class TestBoardProjectRoot:
-    """fpu F-41: `booley run` took --project-root and `booley board` refused it
-    (`unrecognized arguments`), so driving another checkout's board meant cd-ing
-    or exporting BOOLEY_PROJECT_DIR."""
-
-    @staticmethod
-    def _parse(argv):
-        parser = tlr._build_parser()
-        return tlr._normalize_args(parser, parser.parse_args(argv))
-
-    @pytest.mark.parametrize(
-        "argv",
-        [
-            ["board", "--project-root", "/tmp/proj"],
-            ["board", "-p", "/tmp/proj", "show"],
-            ["board", "show", "--project-root", "/tmp/proj"],
-            ["board", "move", "slug", "done", "-p", "/tmp/proj"],
-            ["board", "create", "slug", "-p", "/tmp/proj"],
-            ["board", "reset", "slug", "-p", "/tmp/proj"],
-            ["board", "archive", "-p", "/tmp/proj"],
-        ],
-    )
-    def test_accepted_on_both_sides_of_the_subcommand(self, argv):
-        args = self._parse(argv)
-
-        assert args.command == "board"
-        assert args.project_root == "/tmp/proj"
-
-    def test_subparser_does_not_clobber_the_parent_value(self):
-        """default=SUPPRESS is load-bearing — subparsers share the namespace."""
-        assert self._parse(["board", "-p", "/tmp/proj", "show"]).project_root == "/tmp/proj"
-
-    def test_absent_leaves_discovery_to_find_project_root(self):
-        """main() falls back to find_project_root() when the attr is unset."""
-        args = self._parse(["board", "show"])
-
-        assert not getattr(args, "project_root", "")
-
-    def test_reset_accepts_correction_reason(self):
-        args = self._parse(["board", "reset", "slug", "--reason", "review rejected it"])
-
-        assert args.reason == "review rejected it"
-
-    def test_run_still_takes_it(self):
-        assert self._parse(["run", "--project-root", "/tmp/proj"]).project_root == "/tmp/proj"
 
 
 def test_hidden_session_prepare_accepts_explicit_workspace_root():
@@ -3480,52 +2676,6 @@ def test_project_root_is_not_exposed_on_unrelated_session_commands(command):
 
     with pytest.raises(SystemExit):
         parser.parse_args(["session", command, "--project-root", "/tmp/project"])
-
-
-@pytest.mark.parametrize("action", ["request", "refresh", "finalize"])
-@pytest.mark.parametrize("ready", [True, False])
-def test_requested_review_cli_routes_arguments_and_failure(
-    tmp_path, monkeypatch, capsys, action, ready
-):
-    from booley.ticket_board import review_lifecycle as requests
-    from booley.ticket_board import review_preparation as preparation
-
-    async def request(root, slug, **kwargs):
-        assert root == tmp_path and slug == "demo"
-        assert kwargs == {"reason": "Inspect gates", "repair": False, "action": action}
-        return preparation.ReviewPrepOutcome(
-            "ready" if ready else "failed", "unmet gate", package_path=tmp_path / "briefing.json"
-        )
-
-    monkeypatch.setattr(requests, "request_review_command", request)
-    args = tlr._build_parser().parse_args(
-        ["board", f"{action}-review", "demo", "--reason", "Inspect gates"]
-    )
-    assert tlr._cmd_requested_review(args, tmp_path, action) == (0 if ready else 2)
-    output = capsys.readouterr()
-    assert "Review package ready" in output.out if ready else "unmet gate" in output.err
-
-
-@pytest.mark.parametrize("failure", [False, True])
-def test_review_exec_cli_preserves_command_exit_or_reports_error(
-    tmp_path, monkeypatch, capsys, failure
-):
-    from booley.ticket_board import review_lifecycle as interactive
-
-    def run(root, slug, command):
-        assert root == tmp_path and slug == "demo"
-        assert command == ["verify", "--target", "example"]
-        if failure:
-            raise ValueError("stale review execution")
-        return 7
-
-    monkeypatch.setattr(interactive, "run_review_command", run)
-    args = tlr._build_parser().parse_args(
-        ["board", "review-exec", "demo", "--", "verify", "--target", "example"]
-    )
-    assert tlr._cmd_review_exec(args, tmp_path) == (2 if failure else 7)
-    if failure:
-        assert "stale review execution" in capsys.readouterr().err
 
 
 def test_failed_blocked_renderers_do_not_append_immediate_retry_hint(
@@ -3663,9 +2813,7 @@ def test_project_binding_independent_never_discovers(tmp_path, monkeypatch, argv
     assert tlr._dispatch_main() == 0
 
 
-@pytest.mark.parametrize(
-    "argv", [["run"], ["init"], ["auth", "--clear"], [], ["doctor"], ["board"]]
-)
+@pytest.mark.parametrize("argv", [["goal", "status"], ["dashboard"], ["chat"]])
 def test_source_project_binding_required_dispatch(tmp_path, monkeypatch, argv):
     (tmp_path / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
     (tmp_path / ".git").mkdir()
@@ -3719,7 +2867,7 @@ def test_source_project_binding_cheat_selected_imports(tmp_path, monkeypatch, so
     assert criteria_calls == ([] if source else [project])
 
 
-@pytest.mark.parametrize("command", ["doctor", "board", "session", "cleanup"])
+@pytest.mark.parametrize("command", ["doctor", "goal", "session", "cleanup"])
 @pytest.mark.parametrize("selected_source", [True, False])
 def test_source_project_binding_selected_root(tmp_path, monkeypatch, command, selected_source):
     source = tmp_path / "source"
@@ -3730,10 +2878,10 @@ def test_source_project_binding_selected_root(tmp_path, monkeypatch, command, se
     (project / ".booley_project").mkdir()
     selected, cwd = (source, project) if selected_source else (project, source)
     monkeypatch.chdir(cwd)
-    suffix = {"doctor": [], "board": [], "session": ["down"], "cleanup": ["prepare"]}[command]
-    argv = ["booley", command, *suffix, "--project-root", str(selected)]
-    if command == "cleanup":
-        argv = ["booley", command, "--project-root", str(selected), *suffix]
+    suffix = {"doctor": [], "goal": ["status"], "session": ["down"], "cleanup": ["prepare"]}[
+        command
+    ]
+    argv = ["booley", "--project", str(selected), command, *suffix]
     monkeypatch.setattr(sys, "argv", argv)
     monkeypatch.setattr(tlr, "_enforce_runtime_location", lambda *_: None)
     monkeypatch.setattr(tlr, "_host_install_authority_error", lambda *_: None)
@@ -3873,3 +3021,100 @@ def test_bare_cheat_project_names_section_replacement(capsys):
     notice = capsys.readouterr().err
     assert "--project" in notice
     assert "--project-files" in notice
+
+
+class TestIdleShutdown:
+    """The dormant Ticket loop must not outlive its queue (F-50)."""
+
+    @staticmethod
+    def _counts(**kw):
+        base = {"active": 0, "waiting": 0, "blocked": 0, "review": 0, "executable": 0}
+        base.update(kw)
+        return base
+
+    def test_drained_board_exits_after_the_timeout(self, monkeypatch):
+        args = Namespace(count=0, wait=5, idle_timeout=60)
+        idle = tlr._IdleState()
+        clock = [1000.0]
+        monkeypatch.setattr(tlr.time, "monotonic", lambda: clock[0])
+        monkeypatch.setattr(tlr, "interruptible_sleep", lambda _s: True)
+
+        with patch.object(tlr, "status"):
+            # First drained poll only arms the timer.
+            assert tlr._handle_idle(args, self._counts(review=2), idle) == "continue"
+            assert idle.drained_since == 1000.0
+            clock[0] += 59
+            assert tlr._handle_idle(args, self._counts(review=2), idle) == "continue"
+            clock[0] += 2
+            assert tlr._handle_idle(args, self._counts(review=2), idle) == "break"
+
+    def test_active_or_waiting_tickets_keep_the_runner_alive(self, monkeypatch):
+        """Work that can still become executable on its own must not trip the timer."""
+        args = Namespace(count=0, wait=5, idle_timeout=1)
+        idle = tlr._IdleState()
+        clock = [1000.0]
+        monkeypatch.setattr(tlr.time, "monotonic", lambda: clock[0])
+        monkeypatch.setattr(tlr, "interruptible_sleep", lambda _s: True)
+
+        with patch.object(tlr, "status"):
+            for counts in (self._counts(active=1), self._counts(waiting=1)):
+                clock[0] += 10_000
+                assert tlr._handle_idle(args, counts, idle) == "continue"
+                assert idle.drained_since is None
+
+    def test_new_work_disarms_the_timer(self, monkeypatch):
+        args = Namespace(count=0, wait=5, idle_timeout=60)
+        idle = tlr._IdleState()
+        clock = [1000.0]
+        monkeypatch.setattr(tlr.time, "monotonic", lambda: clock[0])
+        monkeypatch.setattr(tlr, "interruptible_sleep", lambda _s: True)
+
+        with patch.object(tlr, "status"):
+            tlr._handle_idle(args, self._counts(review=1), idle)
+            idle.reset()  # the loop calls this when a ticket becomes executable
+            clock[0] += 10_000
+            assert tlr._handle_idle(args, self._counts(review=1), idle) == "continue"
+
+    def test_zero_timeout_polls_forever(self, monkeypatch):
+        args = Namespace(count=0, wait=5, idle_timeout=0)
+        idle = tlr._IdleState()
+        clock = [1000.0]
+        monkeypatch.setattr(tlr.time, "monotonic", lambda: clock[0])
+        monkeypatch.setattr(tlr, "interruptible_sleep", lambda _s: True)
+
+        with patch.object(tlr, "status"):
+            for _ in range(3):
+                clock[0] += 10_000
+                assert tlr._handle_idle(args, self._counts(), idle) == "continue"
+
+    def test_drained_board_announces_the_pending_exit(self, monkeypatch):
+        args = Namespace(count=0, wait=5, idle_timeout=60)
+        idle = tlr._IdleState()
+        monkeypatch.setattr(tlr, "interruptible_sleep", lambda _s: True)
+        with patch.object(tlr, "status") as status:
+            tlr._handle_idle(args, self._counts(review=1), idle)
+        assert any("Queue drained" in c.args[0] for c in status.call_args_list)
+
+
+def test_one_ticket_failure_exits_nonzero(tmp_path):
+    args = Namespace(ticket="fix-crc", slug="fix-crc", count=1, wait=5, dry_run=False)
+    counts = {"executable": 1}
+    with (
+        patch.object(tlr, "_run_automatic_doctor"),
+        patch.object(tlr, "handle_startup_orphans"),
+        patch.object(tlr, "get_ticket_counts", return_value=counts),
+        patch.object(tlr, "_execute_one_ticket", return_value="next_failed"),
+        patch.object(tlr, "_shutdown_requested", return_value=False),
+        patch.object(tlr.os, "chdir"),
+    ):
+        assert tlr._ticket_loop(args, tmp_path, "/venv/python") == 1
+
+
+def test_child_failure_is_preserved_after_post_run_cleanup(tmp_path):
+    args = Namespace(ticket="fix-crc", slug="fix-crc", count=1, wait=5, dry_run=False)
+    with (
+        patch.object(tlr, "_log_attempt"),
+        patch.object(tlr, "_run_harness", return_value=(1, 10.0)),
+        patch.object(tlr, "_handle_post_run", return_value="next"),
+    ):
+        assert tlr._execute_one_ticket(args, tmp_path, "/venv/python", 1, {}) == ("next_failed")

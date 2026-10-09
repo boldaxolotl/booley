@@ -14,7 +14,6 @@ def test_reference_docs_do_not_use_stale_paths_or_flags():
     assert ".booley_project/tmp" not in text
     assert "../project/" not in text
     assert "--vcd" not in text
-    assert "shipped with the booley-ticket-create skill" not in text
 
 
 def test_code_review_guides_do_not_duplicate_output_contract():

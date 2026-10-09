@@ -888,7 +888,6 @@ def build_devcontainer_spec(
     mask_source: str = "",
     local_timezone: str = "",
     dashboard: bool = False,
-    goal_preview: bool = False,
 ) -> dict:
     """Build the ``devcontainer.json`` dict for an Interactive Mode session.
 
@@ -1027,10 +1026,6 @@ def build_devcontainer_spec(
         **identity_env,
         COMPILER_CACHE_ROOT_ENV: ISSUED_COMPILER_CACHE_ROOT,
     }
-
-    # The postStart HTTP MCP server inherits containerEnv, independently of VS Code tasks.
-    if goal_preview:
-        spec["containerEnv"]["BOOLEY_GOAL_MODE_PREVIEW"] = "1"
 
     seed_source = _creds_seed_target_for_app(app)
     post_create = _build_post_create_command(

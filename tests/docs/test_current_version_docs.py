@@ -212,7 +212,6 @@ def test_visible_cli_help_describes_current_version() -> None:
     rendered = cli_help()
     assert {
         "booley",
-        "booley board",
         "booley doctor",
         "booley session",
         "booley flow sim",

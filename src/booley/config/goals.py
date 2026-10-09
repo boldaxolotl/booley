@@ -1,6 +1,5 @@
 """Validated Goal presentation configuration."""
 
-import os
 import tomllib
 from collections.abc import Mapping
 from pathlib import Path
@@ -39,16 +38,3 @@ def parse_dashboard(data: Mapping[str, Any]) -> bool:
     return require_bool(
         require_dict(data.get("sandbox", {}), field="[sandbox]"), "dashboard", default=True
     )
-
-
-GOAL_MODE_PREVIEW_ENV = "BOOLEY_GOAL_MODE_PREVIEW"
-
-
-def goal_mode_preview_enabled(environ: Mapping[str, str] | None = None) -> bool:
-    """Whether the Goal Mode surface is registered: the switch is exactly ``1``.
-
-    Any other value, including ``true`` or an empty string, leaves it off, so a
-    stray variable never exposes a second surface.
-    """
-    source = os.environ if environ is None else environ
-    return source.get(GOAL_MODE_PREVIEW_ENV, "").strip() == "1"

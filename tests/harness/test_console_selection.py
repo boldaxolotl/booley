@@ -13,13 +13,6 @@ from booley.harness import booley as parent
 from booley.harness import developer, terminal
 
 
-@pytest.mark.parametrize("flag", ["--no-console", "-L"])
-def test_run_rejects_removed_log_mode(flag):
-    with pytest.raises(SystemExit) as error:
-        parent._build_parser().parse_args(["run", flag])
-    assert error.value.code == 2
-
-
 def test_harness_rejects_removed_log_mode(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["harness", "--no-console"])
     with pytest.raises(SystemExit) as error:

@@ -42,7 +42,6 @@ from booley.runtime.project_dir import reset_cache
 from booley.targets.catalog import TargetCatalog
 from booley.ticket_board.board_layout import (
     StateRecord,
-    read_state_record,
     required_board_directories,
     ticket_document_path,
     write_state_record,
@@ -679,37 +678,6 @@ def test_doctor_fails_when_mcp_probe_does_not_set_interactive_logs(
     assert "MCP interactive log setup failed" in output
 
 
-def test_doctor_fails_without_tickets_tree(tmp_path, monkeypatch, capsys):
-    project_dir = _write_project(tmp_path, write_tickets=False)
-    _patch_environment(monkeypatch, tmp_path, project_dir)
-
-    rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
-
-    output = capsys.readouterr().out
-    assert rc == 1
-    assert "tickets tree missing" in output
-
-
-def test_tickets_tree_requires_state_record_directory(tmp_path):
-    """A pre-ADR-0065 board (per-state dirs, no state/) is not a healthy tree."""
-    tickets_dir = tmp_path / "tickets"
-    for legacy in ("queue", "active"):
-        (tickets_dir / "board" / legacy).mkdir(parents=True)
-    (tickets_dir / "logs").mkdir()
-    (tickets_dir / "locks").mkdir()
-    rec = _Rec()
-
-    doctor._check_tickets_tree(tmp_path, rec.p, rec.f)
-
-    assert rec.events == [("fail", "tickets tree missing 1 directories")]
-    assert rec.fix_hints == ["booley init"]
-
-    (tickets_dir / "state").mkdir()
-    rec = _Rec()
-    doctor._check_tickets_tree(tmp_path, rec.p, rec.f)
-    assert rec.events == [("pass", "tickets tree present")]
-
-
 def _gitignore_probe(project_dir: Path) -> list[doctor.DoctorFinding]:
     """Run the Project ``.gitignore`` probe against *project_dir* and return its findings."""
     reporter = doctor._Reporter.create()
@@ -840,149 +808,6 @@ def _history_repo(tmp_path: Path, monkeypatch) -> Path:
         "[stealth]\nenabled = false\n", encoding="utf-8"
     )
     return tmp_path
-
-
-def test_ticket_history_probe_passes_without_history(tmp_path, monkeypatch):
-    project_dir = _history_repo(tmp_path, monkeypatch)
-    (project_dir / "tickets").mkdir()
-
-    reporter = _history_probe(project_dir)
-
-    assert reporter.findings is not None
-    assert [(f.severity, f.message) for f in reporter.findings] == [
-        ("pass", "Ticket History committed")
-    ]
-
-
-def test_ticket_history_probe_warns_until_records_are_committed(tmp_path, monkeypatch):
-    """An uncommitted record WARNs with its slug; Booley's commit clears it (ADR 0065)."""
-    from booley.ticket_board.history_publication import commit_history_record
-    from tests.ticket_board.conftest import place_closed_ticket
-
-    project_dir = _history_repo(tmp_path, monkeypatch)
-    tickets_dir = project_dir / "tickets"
-    place_closed_ticket(tickets_dir, "alpha", "---\nsummary: a\n---\n")
-    place_closed_ticket(tickets_dir, "beta", "---\nsummary: b\n---\n", outcome="archived")
-
-    reporter = _history_probe(project_dir)
-
-    assert reporter.findings is not None
-    warnings = [f for f in reporter.findings if f.severity == "warn"]
-    assert len(warnings) == 1
-    assert warnings[0].check_id == "tickets.history-uncommitted"
-    assert "2 Closed Ticket history record(s) not committed yet (alpha, beta)" in (
-        warnings[0].message
-    )
-    assert not any(f.severity == "pass" for f in reporter.findings)
-
-    assert commit_history_record(tickets_dir, "alpha", policy_root=tmp_path)
-    reporter = _history_probe(project_dir)
-    warnings = [f for f in reporter.findings or [] if f.severity == "warn"]
-    assert len(warnings) == 1
-    assert "(beta)" in warnings[0].message
-    assert "alpha" not in warnings[0].message
-
-    assert commit_history_record(tickets_dir, "beta", policy_root=tmp_path)
-    reporter = _history_probe(project_dir)
-    assert [(f.severity, f.message) for f in reporter.findings or []] == [
-        ("pass", "Ticket History committed")
-    ]
-
-
-def test_ticket_history_probe_passes_for_records_committed_by_hand(tmp_path, monkeypatch):
-    from tests.ticket_board.conftest import place_closed_ticket
-
-    project_dir = _history_repo(tmp_path, monkeypatch)
-    place_closed_ticket(project_dir / "tickets", "alpha", "---\nsummary: a\n---\n")
-    _history_git(project_dir, "add", "tickets")
-    _history_git(project_dir, "commit", "-q", "-m", "history")
-
-    reporter = _history_probe(project_dir)
-
-    assert [(f.severity, f.message) for f in reporter.findings or []] == [
-        ("pass", "Ticket History committed")
-    ]
-
-
-def test_ticket_history_probe_has_nothing_to_warn_outside_a_repository(tmp_path, monkeypatch):
-    """No repository tracks history, so an uncommitted record is not a finding."""
-    from tests.ticket_board.conftest import place_closed_ticket
-
-    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path.parent))
-    place_closed_ticket(tmp_path / "tickets", "alpha", "---\nsummary: a\n---\n")
-
-    reporter = _history_probe(tmp_path)
-
-    assert [(f.severity, f.message) for f in reporter.findings or []] == [
-        ("pass", "Ticket History committed")
-    ]
-
-
-def test_ticket_history_probe_warns_when_history_is_gitignored(tmp_path, monkeypatch):
-    """An ignored history/ is never committed, so Doctor must not report it committed."""
-    from booley.ticket_board.history_publication import publish_history_record
-    from tests.ticket_board.conftest import place_closed_ticket
-
-    project_dir = _history_repo(tmp_path, monkeypatch)
-    (project_dir / ".gitignore").write_text("tickets/history/\n", encoding="utf-8")
-    place_closed_ticket(project_dir / "tickets", "alpha", "---\nsummary: a\n---\n")
-
-    reporter = _history_probe(project_dir)
-
-    assert [(f.severity, f.check_id) for f in reporter.findings or []] == [
-        ("warn", "tickets.history-uncommitted")
-    ]
-    warning = (reporter.findings or [])[0]
-    assert "gitignored" in warning.message
-    assert "un-ignore tickets/history" in warning.fix
-    # Publication itself stays non-failing: nothing tracks the record.
-    assert publish_history_record(project_dir / "tickets", "alpha", policy_root=tmp_path)
-
-
-def test_doctor_reports_ticket_board_import_failure(tmp_path, monkeypatch, capsys):
-    project_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, project_dir)
-
-    def fake_run(cmd, **kwargs):
-        if cmd[:3] == [sys.executable, "-c", "import booley.ticket_board"]:
-            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="boom")
-        if "_discover_booley_mcp_tools" in " ".join(str(part) for part in cmd):
-            return subprocess.CompletedProcess(
-                cmd,
-                0,
-                stdout=json.dumps(
-                    {
-                        "tools": [
-                            "synth",
-                            "bwave",
-                            "coverage_analyst",
-                            "lint",
-                            "mutation_tester",
-                            "reviewer",
-                            "sim",
-                        ],
-                        "errors": [],
-                        "logs_dir": "/work/.booley_project/.interactive_logs/session",
-                        "logs_dir_ok": True,
-                    }
-                ),
-                stderr="",
-            )
-        if cmd[:3] == ["git", "rev-parse", "--is-inside-work-tree"]:
-            return subprocess.CompletedProcess(cmd, 0, stdout="true\n", stderr="")
-        if cmd[:3] == ["git", "status", "--porcelain"]:
-            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-        if cmd[:3] == ["git", "rev-parse", "--git-dir"]:
-            return subprocess.CompletedProcess(cmd, 0, stdout=str(tmp_path / ".git"), stderr="")
-        return subprocess.CompletedProcess(cmd, 0, stdout="ok\n", stderr="")
-
-    monkeypatch.setattr(doctor.subprocess, "run", fake_run)
-
-    rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
-
-    output = capsys.readouterr().out
-    assert rc == 1
-    assert "ticket_board package not importable" in output
 
 
 def test_doctor_deep_runs_first_config_without_dry_run(tmp_path, monkeypatch):
@@ -2175,7 +2000,9 @@ class TestKnownTablesMatchLiveConfig:
         unknown = {
             table: where
             for table, where in tables.items()
-            if table not in project_schema.KNOWN_BOOLEY_TOML_TABLES
+            if table
+            not in project_schema.KNOWN_BOOLEY_TOML_TABLES
+            | project_schema.IGNORED_BOOLEY_TOML_TABLES
         }
         assert unknown == {}, f"live booley.toml tables doctor calls ignored: {unknown}"
 
@@ -2186,7 +2013,9 @@ class TestKnownTablesMatchLiveConfig:
         unknown = {
             table: where
             for table, where in tables.items()
-            if table not in project_schema.KNOWN_BOOLEY_TOML_TABLES
+            if table
+            not in project_schema.KNOWN_BOOLEY_TOML_TABLES
+            | project_schema.IGNORED_BOOLEY_TOML_TABLES
         }
         assert unknown == {}, f"live booley.toml tables doctor calls ignored: {unknown}"
 
@@ -2649,7 +2478,7 @@ targets:
         Ibex's upstream `check_tool_requirements.core` references a script
         under `util/`, which doctor classes as writable — so the audit failed
         the whole setup gate over a generator the configured Targets never
-        invoke. The binding check is the per-ticket Scope at commit time.
+        invoke. The binding check is the per-change-specific scope at commit time.
         """
         (tmp_path / "design.core").write_text(
             _CLEAN_SIM_CORE
@@ -2669,7 +2498,7 @@ generators:
         warns = [m for lvl, m in rec.events if lvl == "warn"]
         assert any("in_scope_script" in m for m in warns)
         # The advisory must say why it is not a gate, or it reads as a bug.
-        assert any("per-ticket" in m for m in warns)
+        assert any("at commit time" in m for m in warns)
 
     def test_structural_core_violation_still_hard_fails(self, tmp_path: Path):
         """Scope-independent violations are properties of the .core itself."""
@@ -5271,7 +5100,7 @@ class TestWorktreeCoreShadowGuard:
         rec = _Rec()
         doctor._check_worktree_core_shadow_guard(tmp_path, rec.p, rec.w)
         assert rec.kinds() == {"warn"}
-        assert "future ticket worktree" in self._warns(rec)[0]
+        assert "future worktree" in self._warns(rec)[0]
 
     def test_missing_marker_with_stale_core_escalates(self, tmp_path: Path):
         wt = tmp_path / "worktrees" / "scalar_1bfe1733"
@@ -5291,7 +5120,7 @@ class TestWorktreeCoreShadowGuard:
         rec = _Rec()
         doctor._check_worktree_core_shadow_guard(tmp_path, rec.p, rec.w)
         assert rec.kinds() == {"warn"}
-        assert "future ticket worktree" in self._warns(rec)[0]
+        assert "future worktree" in self._warns(rec)[0]
 
 
 # ---------------------------------------------------------------------------
@@ -5318,86 +5147,6 @@ def _seed_active_ticket(tickets: Path, slug: str = "stuck") -> None:
     lock_dir = tickets / "logs" / slug
     lock_dir.mkdir(parents=True, exist_ok=True)
     (lock_dir / "ticket.lock").write_text("99999", encoding="utf-8")
-
-
-class TestBoardOrphanSelfHeal:
-    """active/ tickets whose owner PID is dead must be recovered by doctor
-    (in-container only: ticket PIDs are container-scoped under ADR 0028)."""
-
-    def test_host_side_skips(self, monkeypatch, tmp_path: Path):
-        monkeypatch.setattr("booley.runtime.runtime_context.inside_session_runtime", lambda: False)
-        rec = _Rec()
-        doctor._check_board_orphans(tmp_path, rec.p, rec.w, rec.s)
-        assert rec.kinds() == {"skip"}
-
-    def test_no_active_tickets_passes(self, monkeypatch, tmp_path: Path):
-        monkeypatch.setattr("booley.runtime.runtime_context.inside_session_runtime", lambda: True)
-        tickets = _seed_board(tmp_path)
-        monkeypatch.setenv("TICKETS_DIR", str(tickets))
-        rec = _Rec()
-        doctor._check_board_orphans(tmp_path, rec.p, rec.w, rec.s)
-        assert rec.kinds() == {"pass"}
-
-    def test_dead_pid_recovered_with_warn(self, monkeypatch, tmp_path: Path):
-        monkeypatch.setattr("booley.runtime.runtime_context.inside_session_runtime", lambda: True)
-        tickets = _seed_board(tmp_path)
-        _seed_active_ticket(tickets)
-        monkeypatch.setenv("TICKETS_DIR", str(tickets))
-        monkeypatch.setattr(
-            "booley.harness.orphan_handler.is_pid_alive",
-            lambda _pid: False,
-        )
-        board_calls: list[list[str]] = []
-
-        def fake_board(_root, args, **_kw):
-            board_calls.append(list(args))
-            return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
-
-        monkeypatch.setattr("booley.harness.booley._run_board", fake_board)
-
-        rec = _Rec()
-        doctor._check_board_orphans(tmp_path, rec.p, rec.w, rec.s)
-
-        assert rec.kinds() == {"warn"}
-        assert any("recovered 1" in m for lvl, m in rec.events if lvl == "warn")
-        # The recovery went through the board: blocked with a note.
-        assert any(args[0] == "block" and "stuck" in args for args in board_calls)
-
-    def test_live_pid_passes(self, monkeypatch, tmp_path: Path):
-        monkeypatch.setattr("booley.runtime.runtime_context.inside_session_runtime", lambda: True)
-        tickets = _seed_board(tmp_path)
-        _seed_active_ticket(tickets)
-        monkeypatch.setenv("TICKETS_DIR", str(tickets))
-        monkeypatch.setattr(
-            "booley.harness.orphan_handler.is_pid_alive",
-            lambda _pid: True,
-        )
-        rec = _Rec()
-        doctor._check_board_orphans(tmp_path, rec.p, rec.w, rec.s)
-        assert rec.kinds() == {"pass"}
-        assert any("live owner PIDs" in m for _lvl, m in rec.events)
-
-    def test_read_only_reports_dead_pid_without_moving_ticket(self, monkeypatch, tmp_path: Path):
-        monkeypatch.setattr("booley.runtime.runtime_context.inside_session_runtime", lambda: True)
-        tickets = _seed_board(tmp_path)
-        _seed_active_ticket(tickets)
-        monkeypatch.setenv("TICKETS_DIR", str(tickets))
-        monkeypatch.setattr("booley.harness.orphan_handler.is_pid_alive", lambda _pid: False)
-        board_calls: list[list[str]] = []
-        monkeypatch.setattr(
-            "booley.harness.booley._run_board",
-            lambda _root, args, **_kw: board_calls.append(list(args)),
-        )
-        rec = _Rec()
-
-        doctor._check_board_orphans(tmp_path, rec.p, rec.w, rec.s, repair=False)
-
-        assert rec.kinds() == {"warn"}
-        assert "found 1 orphaned" in rec.events[0][1]
-        assert board_calls == []
-        record = read_state_record(tickets, "stuck")
-        assert record is not None
-        assert record.state is TicketState.RUNNING
 
 
 # ---------------------------------------------------------------------------
@@ -5503,14 +5252,14 @@ class TestMemoryInvariant:
         rec = _Rec()
         doctor._check_memory_invariant(project, rec.p, rec.w, rec.s)
         assert rec.kinds() == {"warn"}
-        assert "1g developer fallback" in rec.events[0][1]
+        assert "1g agent fallback" in rec.events[0][1]
 
         developer_probe.record_measurement(project.project_dir, _GIB // 2)
         rec = _Rec()
         doctor._check_memory_invariant(project, rec.p, rec.w, rec.s)
         assert rec.kinds() == {"pass"}
         assert "2x0.5g" in rec.events[0][1]
-        assert "measured developer RSS" in rec.events[0][1]
+        assert "measured agent RSS" in rec.events[0][1]
 
     def test_caps_come_from_jobs_table(self, tmp_path, monkeypatch):
         _set_venue(monkeypatch, False)
@@ -6099,7 +5848,7 @@ class TestDeveloperProbe:
         rec = _Rec()
         doctor._run_developer_probe(_adr28_project(tmp_path), rec.p, rec.s, rec.f)
         assert rec.kinds() == {"fail"}
-        assert "every ticket agent will fail" in rec.events[0][1]
+        assert "every agent will fail" in rec.events[0][1]
 
     def test_deep_phase_announces_probe_and_reports_usage(self, tmp_path, monkeypatch, capsys):
         """Issue #885: RUN line precedes the agent call; summary reports spend."""
@@ -7883,25 +7632,6 @@ def test_sim_run_cwd_inside_nested_project_repo_uses_the_innermost_repository(
 
     assert not c.warned
     assert any("is committed" in m for m in c.passed)
-
-
-def test_ticket_board_layout_probe_fails_when_git_cannot_be_asked(tmp_path, monkeypatch):
-    """Doctor FAILs a board whose tracked-state check Git could not answer."""
-    from booley.ticket_board import legacy_layout
-
-    tickets = tmp_path / "tickets"
-    for name in ("board", "state", "history"):
-        (tickets / name).mkdir(parents=True)
-    failed = subprocess.CompletedProcess([], 129, stdout="", stderr="fatal: bad index")
-    monkeypatch.setattr(legacy_layout.subprocess, "run", lambda *_a, **_k: failed)
-    reporter = doctor._Reporter.create()
-
-    doctor._check_ticket_board_layout(tmp_path, reporter.pass_, reporter.fail_)
-
-    findings = reporter.findings or []
-    assert [f.severity for f in findings] == ["fail"]
-    assert "Ticket Board cannot be checked" in findings[0].message
-    assert "fatal: bad index" in findings[0].message
 
 
 @pytest.mark.parametrize(

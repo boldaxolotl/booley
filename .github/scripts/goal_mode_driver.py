@@ -300,7 +300,6 @@ async def client_session(
     """The driver and image smoke share control paths, environment and protocol."""
     env = os.environ | {
         "BOOLEY_MCP_MODE": "interactive",
-        "BOOLEY_GOAL_MODE_PREVIEW": "1",
         "BOOLEY_PROJECT_DIR": str(workspace.project_dir),
         "BOOLEY_IN_SANDBOX": "1",
     }

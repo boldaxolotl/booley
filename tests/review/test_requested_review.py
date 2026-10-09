@@ -3,7 +3,6 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-from booley.harness.booley import _cmd_board_show
 from booley.ticket_board.cli_handlers import _cmd_move_ticket
 from booley.ticket_board.io import TicketIO
 from booley.ticket_board.lifecycle import TicketState
@@ -373,7 +372,6 @@ def test_stale_accepted_handoff_refuses_approval_without_state_change(
 # Git-heavy recovery lifecycle: allow CI latency; native worker-crash cause is unconfirmed.
 @pytest.mark.timeout(210)
 def test_stale_accepted_handoff_surfaces_public_recovery_guidance(blocked, monkeypatch, capsys):
-    from booley.harness import booley as harness
     from booley.ticket_board.review_lifecycle import review_command, run_review_command
 
     stale = _stale_automatic_handoff(blocked, monkeypatch)
@@ -386,9 +384,11 @@ def test_stale_accepted_handoff_surfaces_public_recovery_guidance(blocked, monke
         run_review_command(stale.root, "demo", ["echo", "must-not-run"])
     assert "restore the exact frozen heads" in str(caught.value)
 
-    args = harness._build_parser().parse_args(["board", "show", "demo", "--no-open-diffs"])
-    assert harness._cmd_board_show(args, stale.root) == 0
-    briefing = capsys.readouterr().out
+    from booley.ticket_board.review_lifecycle import review_briefing_command
+
+    outcome = review_briefing_command(stale.root, "demo", open_diffs=False)
+    assert outcome.status == "ready"
+    briefing = outcome.briefing
     assert "STALE ACCEPTANCE" in briefing
     assert f"outer frozen: {stale.frozen_head}" in briefing
     assert f"outer live: {stale.live_head}" in briefing
@@ -396,8 +396,9 @@ def test_stale_accepted_handoff_surfaces_public_recovery_guidance(blocked, monke
     assert "booley board reset demo" in briefing
 
     stale.prepared.package_path.write_text("{}\n", encoding="utf-8")
-    assert harness._cmd_board_show(args, stale.root) == 2
-    integrity_error = capsys.readouterr().err
+    invalid = review_briefing_command(stale.root, "demo", open_diffs=False)
+    assert invalid.status == "failed"
+    integrity_error = invalid.message
     assert "invalid review package binding" in integrity_error
     assert "STALE ACCEPTANCE" not in integrity_error
     assert "board review" not in integrity_error
@@ -681,9 +682,11 @@ def test_requested_review_and_board_show_project_live_stale_criteria_read_only(b
     assert rows["_report_submitted"]["freshness"] == "stale"
     assert state_path.read_bytes() == before
 
-    args = SimpleNamespace(slug="demo", no_open_diffs=True)
-    assert _cmd_board_show(args, root) == 0
-    rendered = capsys.readouterr().out
+    from booley.ticket_board.review_lifecycle import review_briefing_command
+
+    briefing = review_briefing_command(root, "demo", open_diffs=False)
+    assert briefing.status == "ready"
+    rendered = briefing.briefing
     assert rendered.count("STALE (tb)") >= 2
     assert "**Recommendation:** hold" in rendered
     assert "Stale mandatory verification evidence" in rendered
@@ -1080,16 +1083,6 @@ def test_scoped_endpoint_records_real_evidence_then_requires_run_report(
     ]
     assert run_review_command(root, "demo", report) == 0
     _finish_interactive_fixture(root, tio, interrupt, monkeypatch)
-
-
-def test_review_exec_parser_keeps_board_dispatch():
-    from booley.harness.booley import _build_parser
-
-    args = _build_parser().parse_args(
-        ["board", "review-exec", "demo", "--", "python", "-m", "example"]
-    )
-    assert args.command == "board"
-    assert args.endpoint_command == ["python", "-m", "example"]
 
 
 # Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).

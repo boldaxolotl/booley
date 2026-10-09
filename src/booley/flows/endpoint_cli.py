@@ -100,8 +100,8 @@ def add_common_args(
         "--diagnostic",
         action="store_true",
         help=(
-            "Run without satisfying Ticket criteria. In Ticket Mode this "
-            "is required for a Flow/Target combination outside the Ticket baseline."
+            "Run without satisfying Goals. Use for a Flow/Target combination "
+            "outside the active Goal definition."
         ),
     )
 

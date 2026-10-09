@@ -314,7 +314,7 @@ def _qualification_project(tmp_path, monkeypatch, policy, missing, health_failur
         "_check_memory_invariant",
         "_run_container_checks",
         "_run_mcp_checks",
-        "_run_ticket_preflight_parity_checks",
+        "_run_project_checks",
     ):
         monkeypatch.setattr(doctor, name, lambda *_args, **_kw: None)
     monkeypatch.setattr(sandbox_artifact, "observe_execution", lambda *_args, **_kw: _artifact())

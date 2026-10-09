@@ -37,7 +37,6 @@ from typing import TYPE_CHECKING, cast
 from booley.config.jobs import parse_caps
 from booley.feedback import cli as feedback_cli
 from booley.feedback.storage import feedback_storage_dir
-from booley.goals.preview import goal_mode_preview_enabled
 from booley.harness import cheatsheet, doctor_stamp, upgrade_cli, upgrade_review
 from booley.harness.auth_cmd import run_auth
 from booley.harness.blocking import EXIT_USER_QUIT
@@ -84,7 +83,6 @@ from booley.runtime.timefmt import UtcLogFormatter, format_human_datetime
 from booley.ticket_board.board_layout import documents_in_state, locate_document
 from booley.ticket_board.cli import add_all_tickets_flag
 from booley.ticket_board.cli_handlers import reject_all_outside_listing, show_board_view
-from booley.ticket_board.cli_migrations import TicketArgumentParser
 from booley.ticket_board.helpers import tickets_dir_from_project_root
 from booley.ticket_board.io import TicketIO
 from booley.ticket_board.legacy_layout import LegacyBoardLayoutError, require_current_layout
@@ -128,9 +126,9 @@ class CommandLocation(Enum):
 
 
 COMMAND_LOCATIONS = {
-    "run": CommandLocation.SESSION_RUNTIME,
+    "goal": CommandLocation.SESSION_RUNTIME,
+    "dashboard": CommandLocation.SESSION_RUNTIME,
     "chat": CommandLocation.SESSION_RUNTIME,
-    "board": CommandLocation.SESSION_RUNTIME,
     "worktree": CommandLocation.SESSION_RUNTIME,
     "cheat": CommandLocation.EITHER,
     "doctor": CommandLocation.EITHER,
@@ -160,9 +158,9 @@ class ProjectBinding(Enum):
 
 
 COMMAND_PROJECT_BINDINGS = {
-    "run": ProjectBinding.REQUIRED,
+    "goal": ProjectBinding.REQUIRED,
+    "dashboard": ProjectBinding.REQUIRED,
     "chat": ProjectBinding.REQUIRED,
-    "board": ProjectBinding.REQUIRED,
     "worktree": ProjectBinding.REQUIRED,
     "cheat": ProjectBinding.OPTIONAL,
     "doctor": ProjectBinding.REQUIRED,
@@ -181,30 +179,20 @@ COMMAND_PROJECT_BINDINGS = {
     "shell": ProjectBinding.REQUIRED,
 }
 
-# Goal Mode preview commands (ADR 0067 D13). They join the effective catalogs
-# below only while BOOLEY_GOAL_MODE_PREVIEW=1, so the released catalogs above,
-# help, and the cheatsheet never mention them.
-GOAL_PREVIEW_COMMAND_LOCATIONS = {
-    "goal": CommandLocation.SESSION_RUNTIME,
-    "dashboard": CommandLocation.SESSION_RUNTIME,
-}
-GOAL_PREVIEW_COMMAND_PROJECT_BINDINGS = {
-    "goal": ProjectBinding.REQUIRED,
-    "dashboard": ProjectBinding.REQUIRED,
+RETIRED_COMMAND_POINTERS = {
+    command: f"`booley {command}` is not available; Goal Mode replaces it: "
+    "open an agent session in the Sandbox and run /booley-goal"
+    for command in ("run", "board")
 }
 
 
 def command_locations() -> dict[str, CommandLocation]:
-    """Return the effective location catalog: released commands plus preview ones."""
-    if goal_mode_preview_enabled():
-        return {**COMMAND_LOCATIONS, **GOAL_PREVIEW_COMMAND_LOCATIONS}
+    """Return the public command location catalog."""
     return COMMAND_LOCATIONS
 
 
 def command_project_bindings() -> dict[str, ProjectBinding]:
-    """Return the effective Project-binding catalog: released plus preview commands."""
-    if goal_mode_preview_enabled():
-        return {**COMMAND_PROJECT_BINDINGS, **GOAL_PREVIEW_COMMAND_PROJECT_BINDINGS}
+    """Return the public command Project-binding catalog."""
     return COMMAND_PROJECT_BINDINGS
 
 
@@ -461,8 +449,7 @@ def _install_project_options(parser: argparse.ArgumentParser) -> None:
             if isinstance(action, argparse._SubParsersAction):
                 for name, child in action.choices.items():
                     if not route and (
-                        name in {"run", "board"}
-                        or command_project_bindings()[name] is ProjectBinding.INDEPENDENT
+                        command_project_bindings()[name] is ProjectBinding.INDEPENDENT
                     ):
                         continue
                     install(child, (*route, name))
@@ -552,7 +539,7 @@ def _invoke_endpoint(endpoint, argv, args, **kwargs) -> int:
 
 def _build_parser() -> argparse.ArgumentParser:
     """Build the CLI argument parser with subcommands + legacy flags."""
-    parser = TicketArgumentParser(
+    parser = argparse.ArgumentParser(
         prog="booley",
         description="Booley — RTL development harness.",
         epilog=(
@@ -576,60 +563,10 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar=f"{{{','.join(command_locations())}}}",
     )
 
-    run_p = sub.add_parser(
-        "run",
-        help="Run ticket execution [may invoke agent]",
-        description="Run selected Tickets. Each executed Ticket starts a Developer Agent; review handoff may start report agents.",
-    )
-    run_p.add_argument(
-        "--ticket",
-        "-t",
-        type=str,
-        default="",
-        help="Ticket slug to execute (default: auto-select from queue)",
-    )
-    run_p.add_argument(
-        "--project-root", "-p", type=str, default="", help="Path to the RTL project root"
-    )
-    run_p.add_argument(
-        "--wait", type=int, default=5, help="Seconds to wait between loop iterations (default: 5)"
-    )
-    run_p.add_argument(
-        "-n", "--count", type=int, default=0, help="Max tickets to run (0 = unlimited)"
-    )
-    run_p.add_argument(
-        "--idle-timeout",
-        type=int,
-        default=DEFAULT_IDLE_TIMEOUT_S,
-        help=(
-            "Exit after this many seconds with a fully drained queue — nothing "
-            f"executable, active, or waiting (default: {DEFAULT_IDLE_TIMEOUT_S}; "
-            "0 = poll forever)"
-        ),
-    )
-    run_p.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Validate setup without executing tickets (implies -n 1)",
-    )
-    run_p.add_argument(
-        "--check-ready",
-        action="store_true",
-        help="Prepare and fully validate one ticket without agents or board transitions",
-    )
-    run_p.add_argument(
-        "--verbose", "-v", action="store_true", help="Enable verbose logging output"
-    )
-
-    _add_board_subparsers(sub)
     add_worktree_subparser(sub)
     _add_utility_subparsers(sub)
-    if goal_mode_preview_enabled():
-        _add_goal_subparser(sub)
-        sub.add_parser("dashboard", help="Open the read-only Sandbox Dashboard")
-
-    # Hidden shortcut for a named one-shot run.
-    parser.add_argument("--slug", "-s", type=str, default="", help=argparse.SUPPRESS)
+    _add_goal_subparser(sub)
+    sub.add_parser("dashboard", help="Open the read-only Sandbox Dashboard")
 
     _install_project_options(parser)
     _decorate_command_help(sub)
@@ -1185,9 +1122,9 @@ def _add_utility_subparsers(sub) -> None:
 
 
 def _add_goal_subparser(sub) -> None:
-    """Add the Goal Mode preview group `booley goal` (ADR 0067 D13).
+    """Add the Goal Mode group `booley goal` (ADR 0067 D13).
 
-    Registered only while BOOLEY_GOAL_MODE_PREVIEW=1; see command_locations().
+    Registered in the public command catalog; see command_locations().
     """
     goal_p = cast(
         "argparse.ArgumentParser",
@@ -1332,8 +1269,7 @@ def _normalize_project_options(parser, args) -> None:
     if args.command == "cleanup" and not hasattr(args, "project_root"):
         args.project_root = ""
     if hasattr(args, "_cli_selection") and (
-        args.command in {"run", "board"}
-        or command_project_bindings()[args.command] is ProjectBinding.INDEPENDENT
+        command_project_bindings()[args.command] is ProjectBinding.INDEPENDENT
     ):
         parser.error(f"--project is unsupported for {args.command}")
     _extract_endpoint_selection(parser, args)
@@ -1342,12 +1278,9 @@ def _normalize_project_options(parser, args) -> None:
 def _normalize_args(
     parser: argparse.ArgumentParser, args: argparse.Namespace
 ) -> argparse.Namespace:
-    """Resolve the run shortcut and location-dependent default; fill defaults."""
+    """Resolve the location-dependent default command."""
     if args.command is None:
-        if getattr(args, "slug", ""):
-            args.command = "run"
-            args.ticket = args.slug
-        elif not runtime_context.inside_session_runtime():
+        if not runtime_context.inside_session_runtime():
             parser.print_help()
             print(
                 "\nGetting started: run `booley bootstrap`, then `booley init` in your RTL "
@@ -1361,21 +1294,6 @@ def _normalize_args(
 
     _normalize_project_options(parser, args)
     _validate_doctor_args(parser, args)
-
-    if args.command == "run":
-        for attr, default in _RUN_DEFAULTS.items():
-            if not hasattr(args, attr):
-                setattr(args, attr, default)
-        if not args.ticket:
-            args.ticket = getattr(args, "slug", "")
-        args.slug = args.ticket
-        # A named ticket is a one-shot request. Leaving the general queue
-        # runner alive after it reaches review/done lets a later, unrelated
-        # queued ticket wake the loop and re-activate the completed slug.
-        if args.ticket:
-            args.count = 1
-        _validate_run_mode(parser, args)
-        _apply_dry_run_implications(args)
 
     return args
 
@@ -1409,10 +1327,34 @@ def _apply_dry_run_implications(args: argparse.Namespace) -> None:
         args.count = 1
 
 
+def _argv_command(parser: argparse.ArgumentParser, argv: list[str]) -> str | None:
+    """Find the command word without parsing any of its trailing arguments."""
+    index = 0
+    while index < len(argv):
+        word = argv[index]
+        if word == "--":
+            return argv[index + 1] if index + 1 < len(argv) else None
+        if not word.startswith("-"):
+            return word
+        option, separator, _ = word.partition("=")
+        action = parser._option_string_actions.get(option)
+        if action is None:
+            return None
+        if action.dest in {"help", "version"}:
+            return None
+        index += 1
+        if action.nargs != 0 and not separator:
+            index += action.nargs if isinstance(action.nargs, int) else 1
+    return None
+
+
 def _parse_cli() -> argparse.Namespace:
     """Parse CLI args with subcommands."""
     _force_utf8()
     parser = _build_parser()
+    command = _argv_command(parser, sys.argv[1:])
+    if command in RETIRED_COMMAND_POINTERS:
+        parser.exit(2, RETIRED_COMMAND_POINTERS[command] + "\n")
     return _normalize_args(parser, parser.parse_args())
 
 
@@ -3000,8 +2942,6 @@ def _enforce_runtime_location(command: str | None) -> None:
     if command is None:
         return
     error: str | None = None
-    # The effective catalog adds preview commands (e.g. `goal`) to the
-    # released _CONTAINER_ONLY_COMMANDS / _HOST_ONLY_COMMANDS sets.
     location = command_locations().get(command)
     if location is CommandLocation.SESSION_RUNTIME:
         argv = ["booley", *sys.argv[1:]]

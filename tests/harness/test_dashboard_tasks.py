@@ -14,7 +14,6 @@ from tests.conftest import symlink_or_skip
 
 @pytest.fixture
 def project(tmp_path, monkeypatch):
-    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
     root = tmp_path / "project"
     root.mkdir()
     data = root / ".booley_project"
@@ -32,7 +31,7 @@ def project(tmp_path, monkeypatch):
     )
 
 
-def test_new_directory_task_preview_env_and_idempotent_disable(project, monkeypatch):
+def test_new_directory_task_and_idempotent_disable(project, monkeypatch):
     baseline = project.exclude.read_bytes()
     assert tasks.inspect(project.root, project.data).pending
     assert not project.file.exists()
@@ -40,15 +39,15 @@ def test_new_directory_task_preview_env_and_idempotent_disable(project, monkeypa
     assert transaction.applied
     task = Document(project.file.read_bytes().decode()).root.value["tasks"][0]
     assert task["command"] == "booley dashboard"
-    assert task["options"]["env"] == {"BOOLEY_GOAL_MODE_PREVIEW": "1"}
+    assert "options" not in task
     assert task["runOptions"] == {"runOn": "folderOpen", "instanceLimit": 1}
     assert project.exclude.read_bytes().startswith(baseline)
     assert not tasks.inspect(project.root, project.data).pending
-    monkeypatch.delenv("BOOLEY_GOAL_MODE_PREVIEW")
+    (project.data / "booley.toml").write_text("[sandbox]\ndashboard = false\n")
     tasks.reconcile(project.root, project.data)
     assert not project.file.exists()
     assert project.exclude.read_bytes() == baseline
-    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
+    (project.data / "booley.toml").write_text("[sandbox]\ndashboard = true\n")
     tasks.reconcile(project.root, project.data)
     assert b"/.vscode\n" in project.exclude.read_bytes()
 
@@ -60,7 +59,7 @@ def test_disable_retains_exclude_ownership_until_user_tail_allows_removal(projec
     tasks.reconcile(project.root, project.data)
     owned = project.exclude.read_bytes()
     project.exclude.write_bytes(owned + b"# user appended\n/extra\n")
-    monkeypatch.delenv("BOOLEY_GOAL_MODE_PREVIEW")
+    (project.data / "booley.toml").write_text("[sandbox]\ndashboard = false\n")
     tasks.reconcile(project.root, project.data)
     owner_path = project.data / "runtime/dashboard-task.json"
     owner = json.loads(owner_path.read_bytes())
@@ -140,7 +139,7 @@ def test_user_edited_owned_task_never_overwritten_or_removed(project, monkeypatc
     project.file.write_bytes(project.file.read_bytes().replace(*edit))
     edited = project.file.read_bytes()
     assert "user-edited" in tasks.inspect(project.root, project.data).diagnostics[0]
-    monkeypatch.delenv("BOOLEY_GOAL_MODE_PREVIEW")
+    (project.data / "booley.toml").write_text("[sandbox]\ndashboard = false\n")
     tasks.reconcile(project.root, project.data)
     assert project.file.read_bytes() == edited
 
@@ -228,7 +227,7 @@ def test_both_issuance_success_paths_and_failure_rollback(project, monkeypatch, 
     monkeypatch.setattr(session_issuance, "_issue_document_with_requirements", issued)
     session_issuance._persist_prepared(project.root, prepared, requirements=requirements)
     assert project.file.exists()
-    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "0")
+    (project.data / "booley.toml").write_text("[sandbox]\ndashboard = false\n")
     session_issuance._persist_prepared(project.root, prepared, requirements=requirements)
     assert not project.file.exists()
 
@@ -256,18 +255,11 @@ def test_issuance_failure_after_task_publication_restores_previous_files(project
     assert not (project.data / "runtime/dashboard-task.json").exists()
 
 
-def test_preview_off_leaves_existing_unowned_malformed_tasks_unobserved(project, monkeypatch):
+def test_dashboard_disabled_leaves_unowned_malformed_tasks_unobserved(project, monkeypatch):
     project.file.parent.mkdir()
     project.file.write_bytes(b"user unsupported document")
-    monkeypatch.delenv("BOOLEY_GOAL_MODE_PREVIEW")
+    (project.data / "booley.toml").write_text("[sandbox]\ndashboard = false\n")
     assert tasks.inspect(project.root, project.data) == tasks.TaskPlan()
-
-
-def test_preview_env_is_sealed_into_container_for_mcp_and_task():
-    spec = devcontainer.build_devcontainer_spec(goal_preview=True, dashboard=False)
-    assert spec["containerEnv"]["BOOLEY_GOAL_MODE_PREVIEW"] == "1"
-    assert "BOOLEY_GOAL_MODE_PREVIEW" not in spec["remoteEnv"]
-    assert "BOOLEY_GOAL_MODE_PREVIEW" not in devcontainer.build_devcontainer_spec()["containerEnv"]
 
 
 @pytest.mark.parametrize("baseline", [b"# user no trailing newline", b"# user\n"])
@@ -278,7 +270,7 @@ def test_disable_preserves_exact_exclude_separator_and_deleted_task(
     tasks.reconcile(project.root, project.data)
     project.file.unlink()  # User removal stays an opt-out while enabled.
     assert tasks.inspect(project.root, project.data).diagnostics
-    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "0")
+    (project.data / "booley.toml").write_text("[sandbox]\ndashboard = false\n")
     tasks.reconcile(project.root, project.data)
     assert not project.file.exists()
     assert project.exclude.read_bytes() == baseline
@@ -304,7 +296,7 @@ def test_disable_restores_absent_exclude_file(project, monkeypatch):
     project.exclude.unlink()
     tasks.reconcile(project.root, project.data)
     assert project.exclude.exists()
-    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "0")
+    (project.data / "booley.toml").write_text("[sandbox]\ndashboard = false\n")
     tasks.reconcile(project.root, project.data)
     assert not project.exclude.exists()
 
@@ -374,17 +366,17 @@ def test_disable_keeps_user_created_empty_vscode(project):
 
 def test_reenable_does_not_claim_user_recreated_vscode(project, monkeypatch):
     tasks.reconcile(project.root, project.data)
-    monkeypatch.delenv("BOOLEY_GOAL_MODE_PREVIEW")
+    (project.data / "booley.toml").write_text("[sandbox]\ndashboard = false\n")
     tasks.reconcile(project.root, project.data)
     assert not project.file.parent.exists()
     project.file.parent.mkdir()
     user_file = project.file.parent / "user.txt"
     user_file.write_bytes(b"keep")
     baseline = project.exclude.read_bytes()
-    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
+    (project.data / "booley.toml").write_text("[sandbox]\ndashboard = true\n")
     tasks.reconcile(project.root, project.data)
     assert project.exclude.read_bytes() == baseline
-    monkeypatch.delenv("BOOLEY_GOAL_MODE_PREVIEW")
+    (project.data / "booley.toml").write_text("[sandbox]\ndashboard = false\n")
     tasks.reconcile(project.root, project.data)
     assert user_file.read_bytes() == b"keep"
     assert project.file.parent.exists()
@@ -418,3 +410,32 @@ def test_crlf_task_enable_update_disable_restores_exact_bytes(project, monkeypat
     tasks.reconcile(project.root, project.data)
     assert project.file.read_bytes() == original
     assert project.exclude.read_bytes() == exclude
+
+
+def test_owned_task_update_removes_environment_and_keeps_disable_reversible(project, monkeypatch):
+    obsolete = {
+        **tasks.TASK,
+        "options": {"env": {"BOOLEY_" + "GOAL_MODE" + "_PREVIEW": "1"}},
+    }
+    baseline = project.exclude.read_bytes()
+    with monkeypatch.context() as prior:
+        prior.setattr(tasks, "TASK", obsolete)
+        tasks.reconcile(project.root, project.data)
+    assert "options" in Document(project.file.read_text()).root.value["tasks"][0]
+    assert tasks.reconcile(project.root, project.data).applied
+    assert Document(project.file.read_text()).root.value["tasks"] == [tasks.TASK]
+    assert not tasks.inspect(project.root, project.data).pending
+    (project.data / "booley.toml").write_text("[sandbox]\ndashboard = false\n")
+    tasks.reconcile(project.root, project.data)
+    assert not project.file.exists()
+    assert project.exclude.read_bytes() == baseline
+
+
+def test_new_non_git_directory_silently_has_no_dashboard_plan(tmp_path, caplog):
+    root = tmp_path / "new"
+    root.mkdir()
+    project_dir = root / ".booley_project"
+    assert tasks.inspect(root, project_dir) == tasks.TaskPlan()
+    assert not tasks.reconcile(root, project_dir).applied
+    assert caplog.records == []
+    assert list(root.iterdir()) == []

@@ -23,7 +23,6 @@ from tests.goals.conftest import git, update_record
 
 @pytest.fixture(autouse=True)
 def preview(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
     monkeypatch.setenv("BOOLEY_TOP_LEVEL", "1")
 
 
@@ -81,14 +80,12 @@ def test_corrupt_record_refused(goal_mode: SimpleNamespace) -> None:
         resolve_call_context({})
 
 
-def test_wrong_branch_and_preview_off(
-    goal_mode: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_wrong_branch_refuses(goal_mode: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
     git(goal_mode.worktree, "checkout", "--detach")
     with pytest.raises(GoalBindingError, match="Goal Branch"):
         resolve_call_context({"work_dir": str(goal_mode.worktree)})
-    monkeypatch.delenv("BOOLEY_GOAL_MODE_PREVIEW")
-    assert resolve_call_context({}).binding is None
+    with pytest.raises(GoalBindingError, match="Pass work_dir"):
+        resolve_call_context({})
 
 
 def test_multi_root_retained_records_and_ambiguity(
@@ -572,8 +569,27 @@ def test_public_report_recovery_selects_goal_root(goal_mode, monkeypatch, tmp_pa
     missing = server._dispatch_report({"endpoint": "sim", "work_dir": str(goal_mode.worktree)})
     assert "Reports on disk: lint." in missing[0].text
     assert "sim" not in missing[0].text.split("Reports on disk:")[1]
-    monkeypatch.delenv("BOOLEY_GOAL_MODE_PREVIEW")
-    assert "work_dir" not in server._report_mcp_tool_def()["schema"]["properties"]
-    legacy = server._dispatch_report({"endpoint": "sim"})
-    content = legacy[0] if isinstance(legacy, tuple) else legacy
-    assert "old-interactive" in content[0].text
+    assert "work_dir" in server._report_mcp_tool_def()["schema"]["properties"]
+    still_omitted = server._dispatch_report({"endpoint": "sim"})
+    assert still_omitted.is_error and "Pass work_dir" in still_omitted.value[0].text
+
+
+def test_non_git_ordinary_directory_is_not_bound_to_an_unrelated_goal(goal_mode, tmp_path):
+    ordinary = tmp_path / "ordinary"
+    ordinary.mkdir()
+    context = resolve_call_context({"work_dir": str(ordinary)})
+    assert context.binding is None
+    assert context.work_dir == ordinary
+
+
+def test_goal_path_with_missing_git_metadata_refuses(goal_mode, monkeypatch):
+    from booley.goals import store as store_module
+    from booley.goals.store import WorktreeIdentityError
+    from booley.runtime.project_repositories import GitDirectoryInspectionError
+
+    def missing(_path):
+        raise GitDirectoryInspectionError("worktree metadata missing")
+
+    monkeypatch.setattr(store_module, "git_directories", missing)
+    with pytest.raises(WorktreeIdentityError, match="metadata missing"):
+        resolve_call_context({"work_dir": str(goal_mode.worktree)})

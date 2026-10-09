@@ -786,11 +786,9 @@ def test_archive_retries_descriptor_failure_after_close(tmp_path: Path, monkeypa
     assert not descriptor.exists()
 
 
-@pytest.mark.parametrize("command", [_cmd_archive, "harness"])
 # Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
 @pytest.mark.timeout(90)
-def test_partial_resume_fails_in_both_clis(tmp_path: Path, command, capsys, monkeypatch) -> None:
-    from booley.harness.booley import _cmd_board_archive
+def test_partial_resume_fails_in_module_handler(tmp_path: Path, capsys, monkeypatch) -> None:
 
     reset_cache()
     monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
@@ -818,10 +816,7 @@ def test_partial_resume_fails_in_both_clis(tmp_path: Path, command, capsys, monk
     invalid.write_text("not json\n", encoding="utf-8")
     args = SimpleNamespace(slug=None, keep_logs=False, force=False)
 
-    if command == "harness":
-        result = _cmd_board_archive(args, tio)
-    else:
-        result = command(tio, args)
+    result = _cmd_archive(tio, args)
 
     captured = capsys.readouterr()
     assert result == 1

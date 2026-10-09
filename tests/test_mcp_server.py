@@ -1196,6 +1196,10 @@ class TestBooleyStatus:
             "booley_report",
             "booley_status",
             "booley_targets",
+            "goal_enter",
+            "goal_finish",
+            "goal_propose_change",
+            "goal_status",
             "sim",
         ]
 
@@ -1351,6 +1355,10 @@ class TestBooleySleep:
             "booley_sleep",
             "booley_status",
             "booley_targets",
+            "goal_enter",
+            "goal_finish",
+            "goal_propose_change",
+            "goal_status",
             "sim",
         ]
 
@@ -1973,7 +1981,7 @@ class TestInteractiveHiddenNote:
 
         assert note is not None
         assert "hidden in Interactive Mode" in note
-        assert "Ticket Mode" in note  # where it does run
+        assert self._reasons[mcp_tool_name] in note
 
     def test_genuinely_unknown_mcp_tool_gets_no_excuse(self, monkeypatch):
         monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")

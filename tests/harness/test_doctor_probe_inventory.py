@@ -44,7 +44,7 @@ ORCHESTRATORS = (
     "_run_container_checks",
     "_run_container_tool_checks",
     "_run_mcp_checks",
-    "_run_ticket_preflight_parity_checks",
+    "_run_project_checks",
     "_run_deep_checks",
     "_run_deep_phase",
     "_run_project_phase",
@@ -86,18 +86,15 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
             "_run_mcp_probe",
         }
     ),
-    "_run_ticket_preflight_parity_checks": frozenset(
+    "_run_project_checks": frozenset(
         {
             "_check_goal_history_ignored",
             "_check_agent_backend_health",
             "_check_custom_endpoints_and_criteria",
             "_check_git_state",
             "_check_project_gitignore",
+            "_check_ticket_leftovers",
             "_check_repo_footprint",
-            "_check_ticket_board_import",
-            "_check_ticket_board_layout",
-            "_check_ticket_history_committed",
-            "_check_tickets_tree",
         }
     ),
     "_run_deep_checks": frozenset(
@@ -119,7 +116,6 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
             "load_project",
             "check_guidance",
             "check_stealth_cores",
-            "_check_board_orphans",
             "_check_line_endings",
             "_check_project_data_destination_branch",
             "_check_upgrade_review",
@@ -135,7 +131,7 @@ EXPECTED_INVENTORY: dict[str, frozenset[str]] = {
             "inspect_worktree_portability",
             "_run_container_checks",
             "_run_mcp_checks",
-            "_run_ticket_preflight_parity_checks",
+            "_run_project_checks",
         }
     ),
     "_run_flow_and_core_phase": frozenset(

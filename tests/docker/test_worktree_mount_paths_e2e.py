@@ -302,7 +302,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from booley.core.models import AgentResult
 from booley.harness import blocked_prep
-from booley.harness.booley import _cmd_board_review, _cmd_board_show
+from booley.ticket_board.review_lifecycle import review_command
+import asyncio
 async def bounded_fixture_agent(_ctx, _evidence):
     return AgentResult(structured={
         'classification': 'ticket-code', 'board_reason': 'fixture blocked',
@@ -313,8 +314,7 @@ async def bounded_fixture_agent(_ctx, _evidence):
     })
 blocked_prep._invoke = bounded_fixture_agent
 args = SimpleNamespace(slug='demo', request=False, reason='', force=False, repair=False, no_open_diffs=True)
-assert _cmd_board_review(args, Path('/work')) == 0
-assert _cmd_board_show(args, Path('/work')) == 0
+assert asyncio.run(review_command(Path('/work'), 'demo')).ready
 assert blocked_prep.render_blocked_dossier(Path('/work'), 'demo').ready
 """
 

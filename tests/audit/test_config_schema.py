@@ -198,14 +198,12 @@ def test_retired_structural_controls_have_actionable_failures() -> None:
     audits = (
         project_schema.audit_sandbox_table({"sandbox": {"mode": "docker"}}),
         project_schema.audit_interactive_table({"interactive": {"app": "claude"}}),
-        project_schema.audit_developer_table({"developer": {"auto_retry": {"enabled": False}}}),
     )
 
     assert all(not audit.is_valid for audit in audits)
     assert [audit.findings[0].fix for audit in audits] == [
         "delete [sandbox].mode",
         "delete it and select the runtime with [agent].provider",
-        "delete enabled and use max_attempts = 0 to disable",
     ]
 
 
@@ -429,3 +427,24 @@ def test_project_sandbox_accepts_project_fields() -> None:
     assert project_schema.audit_sandbox_table(
         {"sandbox": {"memory": "8g", "image": "project-image", "pip_requirements": ["req.txt"]}}
     ).is_valid
+
+
+@pytest.mark.parametrize("developer", [{}, {"auto_retry": {"enabled": False}}, "ignored"])
+def test_developer_settings_are_ignored_with_one_actionable_warning(developer):
+    audit = project_schema.audit_developer_table({"developer": developer})
+    assert audit.is_valid
+    assert len(audit.findings) == 1
+    warning = audit.findings[0]
+    assert warning.severity is config_common.ConfigFindingSeverity.WARN
+    assert warning.check_id == "config.ignored-table"
+    assert warning.subject == "developer"
+    assert warning.fix == "delete [developer] from booley.toml"
+    assert "developer" in project_schema.IGNORED_BOOLEY_TOML_TABLES
+    assert "developer" not in project_schema.KNOWN_BOOLEY_TOML_TABLES
+
+
+def test_jobs_max_tickets_is_ignored_with_warning():
+    audit = project_schema.audit_developer_table({"jobs": {"max_tickets": 0}})
+    assert audit.is_valid
+    assert audit.findings[0].check_id == "config.ignored-key"
+    assert audit.findings[0].fix == "delete max_tickets from [jobs] in booley.toml"

@@ -115,11 +115,11 @@ For example: `booley specialist reviewer --category rtl --focus bugs --scope rtl
 
 #### `coverage_analyst`
 
-Call the `coverage_analyst` Specialist from your connected agent session with `campaign="<exact-coverage.json>"` and optional `instruction="<question>"`. The Analyst explains retained native evidence and proposes advisory next steps; its model only reads evidence. It does not run Simulation, read waveforms, evaluate Criteria, or approve waivers. In Ticket Mode, Booley records its screened Waiver Candidates for a human to accept or reject at Ticket review. When every mandatory Criterion is met strictly or by a verified Provisional Coverage Verdict, submit your run report and finish for human review without blocking or marking strict coverage met. Verified Target sources are optional; stale sources give report-only analysis.
+Call the `coverage_analyst` Specialist from your connected agent session with `campaign="<exact-coverage.json>"` and optional `instruction="<question>"`. The Analyst explains retained native evidence and proposes advisory next steps; its model only reads evidence. It does not run Simulation, read waveforms, evaluate Criteria, or approve waivers. In Goal Mode, screened Waiver Candidates support a proposed Goal change, which needs human approval. Finish requires every Goal met; advisory reports do not mark strict coverage met. Verified Target sources are optional; stale sources give report-only analysis.
 
 #### `reviewer`
 
-Read-only, single-focus code review. It reports `CRITICAL`, `MAJOR`, and `MINOR` findings. In Interactive Mode, review the selected files using your specification or steering. In Ticket Mode, `_done` reports findings without requiring fixes, but open findings make the Ticket wait for your approval even without `review` in `on_success`. `_clean` requires every finding to be fixed or waived with a justification.
+Read-only, single-focus code review. It reports `CRITICAL`, `MAJOR`, and `MINOR` findings. In Interactive Mode, review the selected files using your specification or steering. In Goal Mode, `done` reports findings without requiring fixes; the review package includes open findings. `clean` requires every finding to be fixed or waived with a justification.
 
 The result links saved review evidence, including rejected proposals for inspection. Rejected proposals do not affect Criteria.
 
@@ -129,13 +129,13 @@ Call the `reviewer` Specialist from your connected agent session with `scope="<f
 |----------|-------|----------------|------|
 | `rtl` | `bugs` | Functional bug patterns, synthesis hazards, reset/width/signing mistakes, and ifdef/config consistency | `review_rtl_bugs` |
 | `rtl` | `protocol` | Bus/protocol rule compliance, handshake behavior, ordering, and clock-domain crossings (CDC) | `review_rtl_protocol` |
-| `rtl` | `spec` | Spec compliance: the RTL implements what the ticket/spec requires, no more and no less | `review_rtl_spec` |
+| `rtl` | `spec` | Spec compliance: the RTL implements what the change request/spec requires, no more and no less | `review_rtl_spec` |
 | `rtl` | `code_style` | Comments, naming, readability, maintainability, magic values, and assertion/cover-point quality | `review_rtl_code_style` |
 | `rtl` | `optimization` | Unused/dead RTL and strict power/performance/area improvements with no functional or engineering trade-off | `review_rtl_optimization` |
 | `rtl` | `security` | Fault-injection resistance, simple power/timing leakage, secret exposure, and unsafe failure behavior | `review_rtl_security` |
 | `tb` | `quality` | False-pass paths in scoped testbench sources, missing checks and edge cases, coverage gaps, timing/sampling mistakes, and TB code quality | `review_tb_quality` |
 
-Arguments: required `scope="<file,...>"` selects files; `steer=["<context>"]` adds review context; `dry_run=true` validates and previews without invoking an agent. The `spec` focus needs specification text: Ticket Mode resolves its mounted ticket or linked spec automatically, while Interactive Mode uses `spec="<path>"`.
+Arguments: required `scope="<file,...>"` selects files; `steer=["<context>"]` adds review context; `dry_run=true` validates and previews without invoking an agent. The `spec` focus needs specification text: use `spec="<path>"` or the spec file named by the Review Goal.
 
 #### `mutation_tester`
 
@@ -143,7 +143,7 @@ Proposal-locked mutation testing. A read-only LLM creator returns exact source r
 
 **Mutation campaign modes:**
 
-| Campaign | Ticket Mode (`mandatory` or `optional`) | Interactive Mode arguments |
+| Campaign | Goal arguments | Interactive Mode arguments |
 |----------|-----------------------------------------|------------------------|
 | Default fixed | Target campaign with `target` + `scope` — generate 10 mutations and require all 10 detected | _(no goal arguments)_ — the same 10-of-10 campaign |
 | Explicit fixed | add `total: N` and `min_detected: K` | `count="N"` requires all N; add `min_detected=K` to require K |
@@ -175,7 +175,7 @@ variants, and the first public test that killed each detected mutant.
 |-----------|-------------|--------|-------|
 | `review_rtl_bugs` | RTL review: bug patterns, synthesis hazards, and ifdef/config consistency (the RTL as hardware, not against the spec) | `reviewer` (`category="rtl"`, `focus="bugs"`) | pre-sim |
 | `review_rtl_protocol` | RTL review: bus/protocol compliance and clock-domain crossings (CDC) | `reviewer` (`category="rtl"`, `focus="protocol"`) | pre-sim |
-| `review_rtl_spec` | RTL review: spec compliance (RTL matches the ticket/spec, no more, no less) | `reviewer` (`category="rtl"`, `focus="spec"`) | pre-sim |
+| `review_rtl_spec` | RTL review: spec compliance (RTL matches the Goal/spec, no more, no less) | `reviewer` (`category="rtl"`, `focus="spec"`) | pre-sim |
 | `review_rtl_code_style` | RTL review: comments, naming, readability, and assertion coverage (post-sim) | `reviewer` (`category="rtl"`, `focus="code_style"`) | post-sim |
 | `review_rtl_optimization` | RTL review: unused/dead code and missed power/performance/area wins, strict improvements only (post-sim) | `reviewer` (`category="rtl"`, `focus="optimization"`) | post-sim |
 | `review_rtl_security` | RTL review: hardware attack resistance to fault injection, simple power/timing analysis, and secret exposure (post-sim) | `reviewer` (`category="rtl"`, `focus="security"`) | post-sim |
@@ -216,7 +216,7 @@ variants, and the first public test that killed each detected mutant.
 **Threshold parameters:**
 
 <!-- BEGIN GENERATED: criteria-params -->
-`SYNTH` and `FPGA` Criteria name each Target directly and accept metric thresholds. Four flavours apply per metric: two absolute, two relative to the Ticket baseline:
+`synthesis` and `fpga` Goals name each Target directly and accept metric thresholds. Four flavours apply per metric: two absolute, two relative to the Goal base commit:
 
 | Flavour param suffix | Baseline? | Meaning |
 |----------------------|:---------:|---------|
@@ -227,11 +227,7 @@ variants, and the first public test that killed each detected mutant.
 
 Percentage threshold values must include the `%` suffix (for example, `cell_count_reduce_at_least: 8%`).
 
-Ticket syntax: `SYNTH: {synth_core: {cell_count_max: 500, fmax_mhz_min: 400}}`.
-
-For a relative threshold on a new Target, add `baseline: <existing-target>` inside that Target's threshold mapping. Existing Targets use their own Ticket-baseline version by default.
-
-In Ticket Mode, enqueue publishes an immutable Ticket baseline. A baseline-relative `SYNTH` or `FPGA` Criterion runs the pair's baseline Target at the basis commit and its candidate Target at the Ticket head. Both Targets and their directed binding are fixed. Developer execution cannot change acceptance controls; a missing or incorrect Target blocks as `acceptance-input-change-required` and requires `return-to-draft`. Missing or mismatched baseline evidence never skips a relative check.
+For a relative threshold on a new Target, set `baseline_target` to an existing Target. The baseline Target defaults to the candidate name and must exist at the Goal base commit. Booley runs it on base code and the candidate on current code. Missing or mismatched baseline evidence fails the check.
 
 **`synthesis_ok` (ASIC)**
 
@@ -266,7 +262,7 @@ In Ticket Mode, enqueue publishes an immutable Ticket baseline. A baseline-relat
 
 **Per-test `CYCLE_COUNT`**
 
-Nest each registered test under its Target and give it one or more thresholds; all thresholds for that test must pass. Relative forms compare the same Target/test at the Ticket baseline by default.
+Nest each registered test under its Target and give it one or more thresholds; all thresholds for that test must pass. Relative forms compare the same Target/test at the Goal base commit by default.
 
 | Parameter | Baseline? | Unit | Passing relation |
 |-----------|:---------:|------|------------------|
@@ -280,8 +276,6 @@ Nest each registered test under its Target and give it one or more thresholds; a
 | `cycle_count_increase_at_most_cycles` | yes | cycles | current - baseline ≤ N |
 | `cycle_count_reduce_at_least_cycles` | yes | cycles | baseline - current ≥ N |
 | `cycle_count_reduce_at_most_cycles` | yes | cycles | baseline - current ≤ N |
-
-Ticket syntax: `CYCLE_COUNT: {sim_coremark: {coremark: {cycle_count_max: 100000, cycle_count_reduce_at_least: 5%}}}`.
 
 A named `[SIM_CYCLES] <test> <count>` observation is gated evidence only when that exact test passes. Missing, malformed, duplicate, unnamed, failed, or inconclusive evidence fails closed. Without a `cycle_count` Criterion, existing Cycle Count records remain observational.
 

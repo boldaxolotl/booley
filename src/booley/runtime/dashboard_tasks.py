@@ -13,10 +13,9 @@ from typing import Any
 from booley.config.goals import parse_dashboard
 from booley.core.boundary import require_dict
 from booley.core.file_lock import nonblocking_file_lock
-from booley.goals.preview import goal_mode_preview_enabled
 from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.jsonc import Document, Node
-from booley.runtime.project_repositories import git_directories
+from booley.runtime.project_repositories import GitDirectoryInspectionError, git_directories
 from booley.runtime.safe_storage import refuse_symlinks
 
 logger = logging.getLogger(__name__)
@@ -25,7 +24,6 @@ TASK = {
     "label": LABEL,
     "type": "shell",
     "command": "booley dashboard",
-    "options": {"env": {"BOOLEY_GOAL_MODE_PREVIEW": "1"}},
     "runOptions": {"runOn": "folderOpen", "instanceLimit": 1},
     "presentation": {"reveal": "always", "panel": "dedicated", "clear": False},
     "problemMatcher": [],
@@ -59,9 +57,7 @@ class TaskPlan:
 
 
 def enabled(project_dir: Path) -> bool:
-    """Preview plus strict [sandbox].dashboard (default true)."""
-    if not goal_mode_preview_enabled():
-        return False
+    """Strict [sandbox].dashboard (default true)."""
     path = project_dir / "booley.toml"
     data = tomllib.loads(path.read_bytes().decode("utf-8")) if path.exists() else {}
     return parse_dashboard(data)
@@ -87,6 +83,10 @@ def _opt_out(folder: Path) -> bool:
 
 def inspect(root: Path, project_dir: Path) -> TaskPlan:
     """Refuse conflicts safely; preserve malformed, linked, unowned or user-edited content."""
+    try:
+        git_directories(root)
+    except GitDirectoryInspectionError:
+        return TaskPlan()
     try:
         return _inspect(root, project_dir)
     except (OSError, ValueError, RuntimeError, UnicodeError) as exc:

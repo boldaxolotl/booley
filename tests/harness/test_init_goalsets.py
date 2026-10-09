@@ -21,7 +21,6 @@ from booley.goals.goalsets import (
     seed_goalsets,
 )
 from booley.goals.model import GoalFamily, parse_goal_args
-from booley.goals.preview import GOAL_MODE_PREVIEW_ENV
 from booley.goals.translate import translate_goals
 from booley.harness import init_cmd
 from booley.harness.setup.common import InitContext
@@ -189,39 +188,26 @@ def _backfill(project_dir: Path, *, check_only: bool) -> None:
     init_cmd._backfill_config_skeletons(project_dir, ctx)
 
 
-def test_init_without_preview_switch_seeds_nothing(
-    project_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.delenv(GOAL_MODE_PREVIEW_ENV, raising=False)
-
-    _backfill(project_dir, check_only=False)
-
-    assert (project_dir / "booley.toml").exists()
-    assert not (project_dir / GOALSETS_DIR).exists()
-
-
-def test_init_with_preview_switch_seeds_the_goalsets(
+def test_init_seeds_the_goalsets(
     project_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setenv(GOAL_MODE_PREVIEW_ENV, "1")
 
     _backfill(project_dir, check_only=False)
 
     assert {path.name for path in (project_dir / GOALSETS_DIR).iterdir()} == EXPECTED_FILES
-    # booley.toml, tests.toml, ticket_creation.md, and the four Goalsets.
-    assert "added 7 config skeleton file(s)" in capsys.readouterr().out
+    # booley.toml, tests.toml, and the four Goalsets.
+    assert "added 6 config skeleton file(s)" in capsys.readouterr().out
 
 
-def test_init_check_only_writes_nothing_with_preview_switch_on(
+def test_init_check_only_writes_nothing(
     project_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setenv(GOAL_MODE_PREVIEW_ENV, "1")
 
     _backfill(project_dir, check_only=True)
 
     assert list(project_dir.iterdir()) == []
-    assert "would add 7 config skeleton file(s)" in capsys.readouterr().out
+    assert "would add 6 config skeleton file(s)" in capsys.readouterr().out

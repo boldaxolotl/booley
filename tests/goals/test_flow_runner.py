@@ -17,7 +17,7 @@ from tests.goals.conftest import bind
 
 @pytest.fixture(autouse=True)
 def preview(monkeypatch):
-    monkeypatch.setenv("BOOLEY_GOAL_MODE_PREVIEW", "1")
+    pass
 
 
 @pytest.fixture
