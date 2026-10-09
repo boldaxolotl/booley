@@ -1,5 +1,9 @@
 # Goal Mode live validation (ADR 0067)
 
+> **2026-10-09:** The rollout switch was removed in Phase 7b (PR #1321).
+> Goal Mode is now the only public workflow. The checks below retain their
+> historical switch-gated setup unchanged.
+
 Goal Mode remains gated by `BOOLEY_GOAL_MODE_PREVIEW=1`. These checks use
 isolated clones and linked worktrees of the public PicoRV32 example inside a
 Booley Sandbox. They do not alter the installed framework or the user Project.

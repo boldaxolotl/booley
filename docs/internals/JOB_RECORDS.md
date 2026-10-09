@@ -11,7 +11,7 @@ The existing endpoint, argv, PID, timestamps, timeout, lease, status, exit-code,
 and display-scope fields retain their meanings. New detached run IDs append eight
 hexadecimal characters from UUID4 to the endpoint, timestamp, and counter.
 
-With `BOOLEY_GOAL_MODE_PREVIEW=1`, `mcp.server.job_roots()` enumerates the
+`mcp.server.job_roots()` enumerates the
 container jobs root and the jobs root of every retained Goal Record, including
 entering, finishing, finished, abandoned, and failed records. `_locate_job` checks
 these roots plus the manager's remembered admission root and returns

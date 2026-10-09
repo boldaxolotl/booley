@@ -3,7 +3,7 @@
 This guide defines Booley's MCP tool framework and explains how Custom Flows
 and custom MCP tools extend it. It covers discovery, the shared Python contracts,
 Criteria, in-container execution, and validation. Custom MCP tools work in both
-Interactive Mode and Ticket Mode. Host EDA provisioning is deliberately not a
+Interactive Mode and Goal Mode. Host EDA provisioning is deliberately not a
 custom-MCP extension surface: it requires a built-in, evidence-backed policy.
 
 ## Document boundary
@@ -28,8 +28,8 @@ built-in flows. Follow the links above for those references.
 This is an implementation-level guide. It assumes the vocabulary and whole-system model from:
 
 - **[GLOSSARY-MAP.md](../../GLOSSARY-MAP.md)** — the controlled-vocabulary
-  index. This guide uses both the shared Booley and Ticket Board glossaries.
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** — how the Developer Agent, Specialists, and the Booley Flow contract fit together at run time.
+  index. This guide uses the shared Booley, Goal Mode, and Simulation Coverage glossaries.
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** — how the agent session, Specialists, and the Booley Flow contract fit together at run time.
 - **[CONFIG.md](../user/CONFIG.md)** — the configuration reference for `booley.toml`, `.core` files, `tests.toml`, EDA provisioning, and Pre-Sim Commands.
 - **[FLOW_REFERENCE.md](../user/FLOW_REFERENCE.md)** — the public contract for invoking and interpreting built-in Booley Flows.
 - **[FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md)** — how built-in deterministic Booley Flows turn FuseSoC Targets into commands and normalize EDA output into evidence.
@@ -48,7 +48,7 @@ shape in it.
 
 ## Overview
 
-The Developer Agent does not invoke an EDA command, project script, or Specialist directly. It calls a discovered MCP tool inside the Sandbox. That MCP tool owns the request schema, execution, result interpretation, and any Criterion updates.
+The session's agent does not invoke an EDA command, project script, or Specialist directly. It calls a discovered MCP tool inside the Sandbox. That MCP tool owns the request schema, execution, result interpretation, and any bound Goal evidence updates.
 
 Booley has three agent-facing implementation families:
 
@@ -56,7 +56,7 @@ Booley has three agent-facing implementation families:
 |--------|-------------------|----------------|
 | `BuiltinFlow` | `sim`, `lint`, `synth`, `fpga` | Run deterministic work and normalize its evidence; these are Booley Flows in Booley's controlled vocabulary |
 | `Specialist` | `reviewer`, `mutation_tester` | Run a focused LLM agent with a purpose-built prompt and interpret its response |
-| Direct `McpTool` subclass | `submit_run_report` | Implement orchestration that is neither a deterministic Flow nor a Specialist |
+| Direct `McpTool` subclass | Project-local protocol utilities | Implement orchestration that is neither a deterministic Flow nor a Specialist |
 
 Built-in and custom MCP tools share the same base interfaces and MCP surface. Their source differs, but the calling model does not. Every agent-facing MCP tool and every subprocess it launches runs inside the Sandbox. A supported host-provisioned EDA installation changes where immutable tool files originate, not where the command executes.
 
@@ -74,17 +74,17 @@ Every agent-facing call follows the same shape:
    outcome. `McpToolResult` is the source-compatible public name for that
    outcome in Project-local extensions.
 7. The coordinator calls the explicit acceptance-recorder interface before
-   mutable state/report persistence, then releases admission. In Ticket Mode,
-   normalized Criterion changes are appended before state is saved; Interactive
-   Mode has no persistent Criterion evidence. If final acceptance recording
-   fails, the coordinator returns exit 2, adds a structured `completion_error`,
+   mutable state/report persistence, then releases admission. In Goal Mode,
+   evidence is appended under the captured Run Binding before state is merged;
+   calls outside Goal Mode have no persistent Goal evidence. If final acceptance
+   recording fails, the coordinator returns exit 2, adds a structured `completion_error`,
    preserves existing result and Target facts, skips final mutable persistence,
    and makes one bounded recovery-report attempt before admission cleanup. Later
    recovery failures do not overwrite the first diagnosis. An append failure during an in-run Criterion
    update instead follows the invocation error path; see the failure distinctions
    in [Built-in Flow execution](FLOW-EXECUTION.md).
 
-Interactive Mode uses the same registry and implementations, but it has no Ticket state. The result is returned to the current session without persisting Criteria.
+Interactive Mode outside Goal Mode uses the same registry and implementations without persistent Goal state. An active Goal Record adds evidence binding and freshness checks to that same session; it does not launch another agent.
 
 ### How Host-Provisioned EDA Fits
 
@@ -145,7 +145,7 @@ enabled = false                 # remove one discovered Specialist MCP tool
 - Built-in Flows are scanned from `booley.flows`, Specialists from `booley.specialists`, and protocol utilities from `booley.mcp`.
 - Custom Flows and MCP tools are scanned from `.booley_project/mcp_tools/*.py`.
 - `[flows.<name>].enabled = false` disables a Flow; `[specialists.<name>].enabled = false` disables a Specialist. Protocol utilities have no Project enable switch.
-- Visibility can still differ by runtime mode. Interactive Mode hides autonomous-only MCP tools such as `submit_run_report`; `tb_coder` is currently de-registered in all modes. Environment-level MCP filters also narrow nested or explicitly scoped servers, but they are not project registration.
+- The public catalog includes `goal_enter`, `goal_status`, `goal_propose_change`, and `goal_finish` without a rollout switch. Interactive sessions, including those in Goal Mode, hide retired Ticket-only tools such as `submit_run_report`; its implementation is retained until Phase 9a removes it. `tb_coder` is currently de-registered in all modes. Environment-level MCP filters also narrow nested or explicitly scoped servers, but they are not project registration.
 - `booley flow` is the human diagnostic entry point for Booley Flows; the MCP tool diagnostic surface covers Specialists and non-Flow endpoints.
 
 ### Execution Boundary
@@ -184,7 +184,7 @@ and discovery reject names that do not belong to discovered Specialists.
 | Built-in Specialist | Installed `booley.specialists` package | Enabled unless `[specialists.<name>].enabled = false` | Yes, subject to mode-specific hiding |
 | Protocol utility | Installed `booley.mcp` package | Available by default; no Project enable switch | Yes, subject to mode-specific hiding |
 | Custom MCP tool | `.booley_project/mcp_tools/*.py` | Flows use `[flows]`, Specialists use `[specialists]`, direct endpoints have no Project enable switch | Yes, subject to mode-specific hiding |
-Use unique MCP tool names. Ticket Preflight warns when a custom name collides with a discovered built-in MCP tool, but registry discovery is a separate pass, so the warning is not an enforcement boundary.
+Use unique MCP tool names. Shared endpoint validation warns when a custom name collides with a discovered built-in MCP tool. Doctor runs that validation, but registry discovery is a separate pass, so the warning is not an enforcement boundary.
 
 ### Register a Custom Endpoint
 
@@ -204,9 +204,10 @@ and schemas; see [Built-in Flow execution](FLOW-EXECUTION.md). Custom Flows reta
 `McpTool` extension contract. All paths use the same execution coordinator and
 acceptance/reporting services inside the Sandbox.
 
-Criterion-aware MCP endpoints can produce verdicts against *Criteria* (the named
-pass/fail conditions a ticket gates on). This chapter explains how an
-implementation declares and records those verdicts; Chapter 3 explains how the
+Criterion-aware MCP endpoints produce verdicts using the internal *Criteria*
+evaluation interface. Goal Mode translates its mandatory Goals into this shared
+representation; catalog entries alone do not define new Goal families. This
+chapter explains how an implementation declares and records those verdicts; Chapter 3 explains how the
 Criteria themselves are defined and expanded.
 
 ### Base Classes
@@ -216,7 +217,7 @@ Criteria themselves are defined and expanded.
 | `BuiltinFlow` | Execute typed requests through a composed Flow session | `sim`, `lint`, `synth`, `fpga` |
 | `BooleyFlow` | Preserve the Custom Flow CLI/subprocess extension contract | Project-local Flows |
 | `Specialist` | Build a focused prompt, run an LLM agent loop, and interpret its output | `reviewer`, `mutation_tester` |
-| `McpTool` | Implement orchestration directly when neither higher-level contract fits | `submit_run_report` |
+| `McpTool` | Implement orchestration directly when neither higher-level contract fits | Project-local protocol utilities |
 
 Import `McpTool` / `McpToolResult` from `booley.mcp.base`, `Specialist`
 from `booley.specialists.specialist`, and `BooleyFlow` from
@@ -231,7 +232,7 @@ Every MCP tool inherits a base argument set. A concrete implementation adds only
 | Arg | Meaning |
 |-----|---------|
 | `-C/--project PATH` | Human CLI Project checkout selection; transport parser and MCP keep `work_dir` |
-| `--report-dir` | Where `report.json` lands; in ticket runs it defaults from the runtime env |
+| `--report-dir` | Where `report.json` lands; bound Goal runs default to the record's runtime reports |
 | `--target` | Which project Target to operate on (comma-separated). This is what `self.args.target` reads in the examples below |
 
 The Target value is also what the `per_target` Criterion convention keys on.
@@ -294,9 +295,10 @@ The shared `code_modifying` and `satisfies` attributes are explained below.
 #### Direct `McpTool` Subclasses
 
 A direct subclass implements `_run()` and returns a `McpToolResult`.
-`submit_run_report` uses this shape because it writes Harness state rather than
-wrapping a deterministic command or an LLM. A deterministic custom subprocess
-normally remains a `BooleyFlow` so it inherits the common in-runtime lifecycle.
+The retired `submit_run_report` uses this shape to write Ticket execution state;
+it is hidden from the public catalog and retained until Phase 9a removes it.
+Goal Mode receives its Session Summary through `goal_finish`. A deterministic
+custom subprocess normally remains a `BooleyFlow` so it inherits the common in-runtime lifecycle.
 
 ### McpToolResult
 
@@ -321,8 +323,9 @@ line-count fields (`lines_added`/`lines_removed`) are stamped by the base
 
 **`set_criterion()` and reports:** call `set_criterion(key, met)` for each Criterion
 you evaluate. The effective changes determine the Flow/Specialist report even if
-later persistence fails; `exit_code` independently exposes that failure. Ticket
-completion is judged on persistent state. Standalone evaluations remain in memory.
+later persistence fails; `exit_code` independently exposes that failure. Goal
+completion is judged on persisted, current evidence for the declared Goals.
+Standalone evaluations remain in memory.
 Flow/Specialist extensions that supplied result-only headlines must migrate to
 `set_criterion()`; explicit result fields no longer determine their final headline.
 Generic `mcp_tool` endpoints retain their existing result-field contract, including
@@ -379,8 +382,8 @@ make every pointer trustworthy:
   [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md).
 - **Always work-dir-relative.** Absolute container paths are not portable
   artifact references. Paths are relative to the MCP tool's work dir,
-  including when Ticket Mode places reports outside the
-  ticket worktree.
+  including when Goal Mode places reports in a Goal Record outside the
+  calling worktree.
 
 A `--baseline` run is a deliberate exception: it executes in a throwaway
 worktree, so paths relativized there could resolve to unrelated current-run
@@ -416,13 +419,13 @@ class MultiTool(Specialist):
     }
 ```
 
-`satisfies_args` are **prompt hints**: they tell the Developer Agent which CLI arguments to pass when invoking the MCP tool for a specific Criterion. They are not executed directly.
+`satisfies_args` are **prompt hints**: they tell the session's agent which CLI arguments to pass when invoking the MCP tool for a specific Criterion. They are not executed directly.
 
-**Static-discovery limitation:** The MCP tool registry reads class metadata without importing the file, using Python's abstract syntax tree (AST). It can extract only literal values. A computed expression such as `satisfies = BASE + ["extra"]` therefore appears empty, and Ticket Preflight warns about it.
+**Static-discovery limitation:** The MCP tool registry reads class metadata without importing the file, using Python's abstract syntax tree (AST). It can extract only literal values. A computed expression such as `satisfies = BASE + ["extra"]` therefore appears empty, and shared endpoint validation warns about it.
 
 ### `per_target` Convention
 
-When a Criterion has `per_target = true`, the framework expands it across the project Targets when the Criterion→MCP-tool map is built at run start (e.g., `drc_clean` × `[variant_a, variant_b, variant_c]` → `drc_clean_variant_a`, `drc_clean_variant_b`, `drc_clean_variant_c`). Custom Criteria expand across all Targets; built-in Flow-gated families (`sim_pass_*`, `lint_clean_*`, …) further filter by Target–Flow compatibility.
+The shared Criterion catalog uses `per_target = true` for keys such as `drc_clean_variant_a`, `drc_clean_variant_b`, and `drc_clean_variant_c`. Catalog expansion uses all Project Targets for custom Criteria and Target–Flow compatibility for built-in families (`sim_pass_*`, `lint_clean_*`, …). Goal entry instead translates concrete per-Target Goal arguments into their evidence keys; catalog expansion never creates additional Goals.
 
 In your Flow code, use the convention:
 
@@ -435,10 +438,14 @@ for key in keys:
 
 ### `code_modifying` Flag
 
+Goal status independently checks source and Target fingerprints; an old passing
+result cannot remain fresh merely because an endpoint omitted this flag. The
+shared mutable Criterion invalidation interface still uses it as follows.
+
 When any endpoint declares `code_modifying = True`:
 - After a successful (exit 0) run, a git diff triggers automatic criteria invalidation
 - All criteria matching the modified category (RTL or TB) are reset
-- **Getting it wrong** means stale Criteria: a false negative on `code_modifying` means the Developer Agent won't know to re-run checks after the endpoint changes code
+- **Getting it wrong** means stale Criteria: a false negative on `code_modifying` means the session's agent won't know to re-run checks after the endpoint changes code
 
 ### Sandbox Boundary
 
@@ -561,7 +568,8 @@ if __name__ == "__main__":
 
 Save each class under `.booley_project/mcp_tools/` and define every Criterion
 named by `satisfies` as described in Chapter 3. An undefined Criterion draws a
-Ticket Preflight warning and can never be selected by a ticket.
+shared endpoint-validation warning. Registering a project Criterion does not
+make it selectable as a new Goal family.
 
 #### Try It in Interactive Mode
 
@@ -570,7 +578,7 @@ Interactive Mode is the normal way to try a Custom Flow or Specialist. Once the 
 - *"Run `drc_check` on the `variant_a` Target with the signoff rule set."*
 - *"Ask `protocol_reviewer` to check `rtl/axi_slave.sv`."*
 
-The agent selects the arguments and invokes the custom MCP tool. Ticket Mode invokes the same implementation through the same registry; the difference is that its Developer Agent also supplies Ticket state and records Criterion results. Interactive Mode has no Ticket or persistent Criteria state, so the verdict is returned only to the current session.
+The agent selects the arguments and invokes the custom MCP tool. Goal Mode uses the same implementation and registry with an immutable Run Binding; evidence may update the declared Goals when its keys and subject match them. Outside Goal Mode, the verdict is returned to the session without persistent Goal state.
 
 #### Diagnose a Flow Through the Direct CLI
 
@@ -586,8 +594,12 @@ agent, which exercises their supported MCP interface.
 
 You do not need `booley session enter` when VS Code or your terminal is already attached to the Sandbox. That command exists for headless automation that needs to enter the runtime without an Interactive Mode client.
 
-Direct Flow runs have no Ticket state: no Criterion is persisted, and
-`report.json` is written only when `--report-dir` is supplied. Exit codes retain
+Ordinary `booley flow` and direct typed calls use standalone execution and do
+not capture a Goal Run Binding from the current worktree. They return diagnostic
+verdicts without persisting Goal evidence; Goal verification should use the MCP
+endpoint with explicit `work_dir`. Reports default to checkout-local Project
+data (`flow-reports/` for Flows, `mcp-tool-reports/` for Specialists), unless the
+caller supplies another report destination. Exit codes retain
 their normal meaning: 0 = criterion met, 1 = ran and failed, 2 = unable to reach
 a verdict.
 
@@ -628,15 +640,33 @@ Category isolation is separate from write isolation. Some built-ins temporarily 
 
 #### Find Its Logs
 
-Interactive Mode logs land under `.booley_project/.interactive_logs/<session-id>/`; Ticket Mode logs land under `.booley_project/tickets/logs/<ticket-slug>/`. If a custom MCP tool does not appear in Interactive Mode, check its syntax and literal metadata, confirm the appropriate `[flows.<name>]` or `[specialists.<name>]` section is not disabled, and restart the Sandbox so MCP discovery runs again. In Ticket Mode, also check the Developer Agent output for Ticket Preflight errors.
+Interactive session logs land under `.booley_project/.interactive_logs/<session-id>/`. A bound Goal run keeps receipts and logs under the Goal Record's `logs/` and machine-owned reports under its `.runtime/flow-reports/`. Use the exact returned artifact paths. If a custom MCP tool does not appear, check its syntax and literal metadata, confirm the appropriate `[flows.<name>]` or `[specialists.<name>]` section is enabled, run Doctor's shared endpoint checks, and restart the Sandbox so MCP discovery runs again.
 
 ---
 
-## Chapter 3: Criteria and MCP Tool Routing
+## Chapter 3: Goals, Criteria, and MCP Tool Routing
 
-Criteria are the success conditions of Ticket Mode: each Ticket declares mandatory and optional Criteria, and the Harness—not the agent—decides when they are met (see [USAGE.md](../user/USAGE.md#working-with-evidence)). An implementation's `satisfies` metadata builds the Criterion-to-MCP-tool map that tells the Developer Agent which capability can evaluate each condition.
+Goals are Goal Mode's mandatory success conditions. Only bound Booley Flow or
+Specialist evidence can meet them; Finish checks current evidence for every Goal
+(see [USAGE.md](../user/USAGE.md#working-with-evidence)). The implementation
+translates Goals into shared Criteria definitions and evidence keys, then routes
+producer `set_criterion()` updates to the declared Goals. Criteria is the internal
+policy/evaluation vocabulary, not a second public workflow.
 
-Built-in families such as `sim_pass_*`, `lint_clean_*`, and `synthesis_ok_*` use exactly this mechanism. Project Criteria join the same catalog and routing map.
+Entry accepts the fixed families in `goals.model.GoalFamily`: `lint`, `sim`,
+`elab`, `synth`, `fpga`, `cycle_count`, `coverage`, `mutation`, and `review`.
+Every per-Target Goal names its Target, and simulation Goals resolve exact Test
+Runs. The agent translates Goalset prose into concrete entry arguments; entry
+does not expand a project Criterion into a new family. Every Goal is mandatory;
+changes require a human-approved Goal Change Proposal.
+
+An implementation's literal `satisfies` metadata supplies the catalog relationship
+between Criterion keys and producing endpoints. Built-in keys such as
+`sim_pass_*`, `lint_clean_*`, and `synthesis_ok_*` are reused by Goal evidence.
+Project Criteria remain in that catalog for extension validation and diagnostic
+evaluation, but adding a name to `criteria.toml` or `satisfies` does not extend
+Goal entry's schema. A Custom Flow can publish evidence for a declared supported
+Goal only when its evidence contract, key, and subject match that Goal.
 
 ### Where Criteria Live
 
@@ -645,7 +675,7 @@ Built-in families such as `sim_pass_*`, `lint_clean_*`, and `synthesis_ok_*` use
 | Booley package `data/criteria.toml` | Base criteria (shipped with framework: sim, lint, etc.) |
 | `.booley_project/criteria.toml` | Project-specific criteria you define |
 
-Base criteria are read-only: look at them for format reference, but never redefine them in your project file (Ticket Preflight hard-fails on collision).
+Base criteria are read-only: look at them for format reference, but never redefine them in your project file (shared endpoint validation fails on collision).
 
 ### Criterion Schema
 
@@ -676,7 +706,7 @@ category    = "rtl"
 | Field | Values | Meaning |
 |-------|--------|---------|
 | `description` | string | Human-readable purpose |
-| `workflow_region` | `pre_sim`, `core_loop`, `post_sim` | The Workflow Region the criterion belongs to; drives advisory ordering of Developer Agent activity (see *Workflow Region* in [GLOSSARY.md](../GLOSSARY.md)) and never gates execution. Legacy key `phase` is still read |
+| `workflow_region` | `pre_sim`, `core_loop`, `post_sim` | The Workflow Region the criterion belongs to; organizes advisory capability guidance (see *Workflow Region* in [GLOSSARY.md](../GLOSSARY.md)) and never gates execution. Legacy key `phase` is still read |
 | `per_target` | `true`/`false` | If true, expands to one criterion per target (e.g., `drc_clean_variant_a`, `drc_clean_variant_b`) |
 | `category` | `rtl`, `tb`, `none` | Controls invalidation cascade |
 
@@ -688,12 +718,12 @@ category    = "rtl"
 
 ### Rules
 
-- Project criteria **cannot** override base criteria (hard error during Ticket Preflight)
+- Project criteria **cannot** override base criteria (hard error in shared endpoint validation, reported by Doctor)
 - An MCP tool with empty `satisfies` gets a warning (probably misconfigured)
 - Multiple MCP tools can claim the same Criterion: the Criterion→MCP-tool map keeps one endpoint per Criterion (the last one discovered that claims it)
 - A Flow's Criterion contract is independent of whether a supported EDA installation is image- or host-provisioned
 
-### Extending It: Add a Project Criterion
+### Extending the Diagnostic Criterion Catalog
 
 1. Choose a unique Criterion name that does not collide with the base catalog.
 2. Add its `description`, `workflow_region`, `per_target`, and `category` fields to `.booley_project/criteria.toml`.
@@ -702,6 +732,8 @@ category    = "rtl"
 5. For `per_target = true`, supply the expanded `<criterion>_<target>` key to `set_criterion()`.
 6. Flow/Specialist headline fields are derived centrally from `set_criterion()` evaluations; generic `mcp_tool` endpoints retain their result-field contract.
 7. Run `booley doctor`, then inspect the live catalog with `booley cheat --criteria`.
+8. Exercise the endpoint diagnostically. To count in Goal Mode, its output must
+   match a supported declared Goal; the project catalog cannot add a family.
 
 ---
 
@@ -766,7 +798,7 @@ documented in [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md).
 
 ## Chapter 5: Validation and Diagnostics
 
-MCP tool validation is split across the same boundaries as discovery. The in-container registry validates what it can expose, Ticket Preflight checks custom-MCP-tool metadata and Criterion wiring, and Doctor checks the initialized project as a whole. None of these replaces an execution test of the real endpoint.
+MCP tool validation is split across the same boundaries as discovery. The in-container registry validates what it can expose; shared `mcp.endpoint_validation` checks custom-MCP-tool metadata and Criterion wiring, and Doctor composes those checks with initialized-Project diagnostics. Goal entry separately validates its worktree and concrete Goal arguments. None of these replaces an execution test of the real endpoint.
 
 ### Project Extension Checks
 
@@ -780,11 +812,13 @@ MCP tool validation is split across the same boundaries as discovery. The in-con
 | 6 | Project criteria redefines base criterion | **Hard fail** |
 | 7 | Empty `satisfies` for an enabled MCP tool | Warning |
 
-The Criterion collision in check 6 stops execution. The other checks log diagnostics for the affected file. Registry discovery is separate, so a collision warning should not be treated as enforcement; fix it before running. Collision detection considers every installed built-in, independent of project `enabled` settings.
+The Criterion collision in check 6 is a hard validation failure reported by Doctor. The other checks log diagnostics for the affected file. Registry discovery is separate, so a collision warning should not be treated as enforcement; fix it before running. Collision detection considers every installed built-in, independent of project `enabled` settings.
 
-### Checking Ticket Preflight Output
+### Checking Project and Goal Entry Diagnostics
 
-Ticket Preflight runs automatically at the start of every `booley run`; there is no standalone Ticket Preflight command. `booley doctor` performs related aggregate checks for custom MCP tools and Criteria, but it does not reproduce every per-file Ticket Preflight warning or print the Criterion-to-MCP-tool map. Use `booley cheat --criteria` to inspect the live Criteria catalog.
+Run `booley doctor` for shared Project, custom endpoint, and Criteria validation. It reports aggregate health; per-file validation diagnostics use the shared validator's logging. Use `booley cheat --criteria` to inspect the live Criteria catalog. Goal entry refusals cover clean linked-worktree requirements, occupied records, Goal shapes, and bound inputs; they do not reproduce Ticket Preflight.
+
+The Ticket Preflight wrapper is retained until Phase 9a removes it. `booley run` prints a Goal Mode pointer and exits 2 rather than starting intake or Preflight.
 
 For built-in Booley Flows, use `booley doctor` to catch unavailable dependencies or incompatible project Targets, then invoke the Flow directly when diagnosing its arguments or EDA integration. The per-Flow evidence and artifact contracts are documented in [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md).
 
@@ -795,7 +829,7 @@ For built-in Booley Flows, use `booley doctor` to catch unavailable dependencies
 3. Invoke it in Interactive Mode with a known passing case and a known failing case.
 4. Use `booley flow <name> ...` for a Flow inside the Sandbox to isolate argument parsing and result interpretation from agent behavior; invoke a non-Flow endpoint through the Interactive Mode agent.
 5. For a direct Flow, confirm exit 0, 1, and 2 mean met, unmet, and unable to run respectively; for a non-Flow endpoint, confirm the agent reports those verdict states clearly.
-6. For Ticket use, inspect `booley cheat --criteria` and run a ticket that exercises persistent Criterion updates and invalidation.
+6. For Goal use, inspect `booley cheat --criteria`, enter with supported concrete Goals, and verify evidence publication and staleness with `goal_status`. A project-only Criterion is diagnostic unless it maps to a supported declared Goal; it cannot add a Goal family.
 
 ---
 
@@ -810,7 +844,7 @@ For built-in Booley Flows, use `booley doctor` to catch unavailable dependencies
 | Define when my Flow should run | Create a Criterion in `criteria.toml`, reference it in `satisfies` |
 | Configure a built-in Booley Flow | Use the per-Flow reference in [CONFIG.md](../user/CONFIG.md#booleytoml) |
 | Try a custom MCP tool | Restart the Sandbox, then ask the Interactive Mode agent to invoke it |
-| Debug MCP tool discovery | `booley doctor` for aggregate checks; inspect Ticket Preflight logs for per-file warnings |
+| Debug MCP tool discovery | `booley doctor` for aggregate checks; inspect shared endpoint-validation diagnostics |
 | See base criteria for reference | Check `data/criteria.toml` in the Booley package |
 | Wrap a legacy script as a Flow | Subclass `BooleyFlow`, call the script via `_build_command` |
 
@@ -889,23 +923,27 @@ for the ordered persistence and Criterion-evidence transaction.
 
 ## Reviewer evidence contract
 
-Reviewer runs in both Interactive Mode and Ticket Mode. Ordinary Interactive
-reviews have no staged Ticket: findings use the supplied specification,
-steering, or concrete code behavior as their scope anchor. Ticket-bound reviews
-use the staged Ticket and accepted decisions. The shared Reviewer prompt owns
+Reviewer runs in both Interactive Mode and Goal Mode. Findings use the supplied
+specification, steering, or concrete code behavior as their scope anchor; a
+spec-review Goal names its specification file explicitly. Retained Ticket-bound
+reviews still use their staged Ticket and accepted decisions until Phase 9a
+removes that path. The shared Reviewer prompt owns
 disposition and output instructions; category guides contain review checklists.
 
 ### Validation and dispositions
 
-Reviewer validates the output schema and explicit source membership. Ticket
-clauses and Project policy inform the agent; phrase matching and Ticket headings
-never discard or rewrite valid dispositions. In-scope `current` findings can
+Reviewer validates the output schema and explicit source membership.
+Specifications and Project policy inform the agent; phrase matching never
+discards or rewrites valid dispositions. In-scope `current` findings can
 make a `_clean` Criterion unmet. `advisory`, `deferred`, and `out_of_scope` findings
 remain observations. A `_done` Criterion completes review regardless of
-dispositions and preserves findings. Current findings require unaccepted human
-review and explicit approval before acceptance, completion, merge, or cleanup,
-regardless of the success destination. `_clean` requires current findings to be
-verified fixed or explicitly waived with user-visible justification.
+dispositions and preserves findings. In Goal Mode, a `done` Goal may Finish
+with open findings exposed in the Review Package; those findings do not create
+a human completion gate. A `clean` Goal requires current findings to be verified
+fixed or explicitly waived with user-visible justification. The retained Ticket
+review path still requires explicit approval of current findings before its
+acceptance or completion, until Phase 9a removes it. Merging a Goal Branch is
+ordinary Git outside Goal completion.
 
 Filtered source proposals and malformed canonical, `ReportFindings` mirror,
 and verification rows are separate non-gating audit evidence. Mixed valid and
@@ -943,14 +981,17 @@ with the Campaign manifest and integrity-linked point-store digest as observed e
 The report carries immutable observed evidence, model-authored hypotheses and recommendations,
 explicit limitations, source-access status, screened Waiver Candidates, and the exact
 bounded evidence-retrieval scope.
-No Criteria are satisfied or mutated, including in Ticket Mode. In Ticket Mode
-the non-model wrapper records `ready_for_human_review` candidates in the ignored
-per-Ticket record `tickets/waiver-candidates/<slug>.json` (ADR 0066), adds a
+The Analyst does not mark Goals met or mutate their evidence state. In Goal Mode,
+the non-model wrapper records `ready_for_human_review` candidates in the bound
+Goal Record's `waiver-candidates.json`, adds a
 `waiver_candidate_record` detail (`recorded`, `filtered_by_rejection`,
-`candidate_ids`, strict and provisional verdicts), and prints one Console line
+`candidate_ids`, strict and provisional verdicts), and prints one summary line
 `Waiver Candidates recorded N (filtered by rejection M); coverage strict X ·
 provisional Y`. A recording failure reports `status: failed` without failing the
-analysis. Outside Ticket Mode nothing is recorded. Invalid input or
+analysis. Outside a bound Goal Mode, ordinary Interactive analysis records no
+candidates. The Ticket candidate-recording path is retained until Phase 9a
+removes it; its store implementation is also reused by Goal Mode until relocation.
+Invalid input or
 malformed/model-incomplete output is an execution error; a valid advisory report
 succeeds even when its Campaign records simulation failure or a coverage miss.
 
@@ -993,7 +1034,7 @@ Candidates identify exact points and remain `not_approved`: non-RTL/unscored,
 unknown, duplicate, or invalid-reason candidates are `forbidden`; missing source
 verification or evidence, or an `unreachable` point with observed hits, is
 `investigate`; otherwise `ready_for_human_review` asks for a human accept or reject
-at Ticket review. `unreachable` needs no model proof reference: approval writes
+through a coverage-waiver Goal Change Proposal. `unreachable` needs no model proof reference: approval writes
 a `review` proof. The model never writes the record.
 
 Capability-isolated Codex calls use a private exact-model catalog to remove model-provided

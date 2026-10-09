@@ -2,7 +2,7 @@
 
 [ARCHITECTURE.md](ARCHITECTURE.md) says *what* Booley is and *how* the pieces fit. This document says *why* the load-bearing pieces are the way they are: only the choices that would have produced a fundamentally different framework if made differently, with their costs stated honestly. These don't get revisited without rebuilding.
 
-This doc assumes Booley's vocabulary — Target, Booley Flow, Specialist, EDA Provisioning, Ticket Mode — rather than redefining it. [GLOSSARY.md](../GLOSSARY.md) is the glossary if a term is unfamiliar; you don't need to read ARCHITECTURE.md first.
+This doc assumes Booley's vocabulary — Target, Booley Flow, Specialist, EDA Provisioning, Goal Mode — rather than redefining it. [GLOSSARY.md](../GLOSSARY.md) is the glossary if a term is unfamiliar; you don't need to read ARCHITECTURE.md first.
 
 ## Why Docker
 
@@ -18,9 +18,9 @@ Docker settled *where* agent work runs; it didn't settle *how many* containers. 
 
 Interactive Mode settled it first, on implementation cost. The Dev Containers extension's natural unit is one container per opened VS Code window; anything finer (a container per chat tab) means session-to-container plumbing the extension doesn't have. One container per opened folder was the version that was easy to build, so that's the version that exists.
 
-Ticket Mode then chose to run inside that *same* container for two reasons. Similarity: the closer its environment is to Interactive Mode's, the more code the two share (one MCP server, one EDA stack, one config path), and shared code gets debugged once; a separate per-ticket container would have doubled the environments to keep working. And the single window: `booley run` is just another terminal tab next to your interactive session, inside the one VS Code window you already have open; outside the container, driving it would mean a separate terminal outside the IDE.
+Goal Mode stays inside that *same* container and agent session. The evidence machinery shares one MCP server, one EDA stack, and one configuration path with Interactive Mode. An unattended Goal Mode is a tab left running in the same window; it needs neither a separate container nor a separate execution agent.
 
-The cost is real: a shared container makes admission control mandatory — a slot budget that decides how many tickets plus the interactive session may run at once, because they all draw on one memory budget — and every worktree in it sits in one trust domain. Both consequences are handled, not free; see [ARCHITECTURE.md](ARCHITECTURE.md#the-sandbox) for the machinery.
+The cost is real: a shared container makes admission control mandatory — a slot budget that decides how many Flow and Specialist Jobs from concurrent sessions may run at once, because they all draw on one memory budget — and every worktree in it sits in one trust domain. Both consequences are handled, not free; see [ARCHITECTURE.md](ARCHITECTURE.md#the-sandbox) for the machinery.
 
 ## Why VS Code
 
@@ -32,15 +32,15 @@ VS Code is the interactive front end because it collapses three needs into one p
 
 Together these make VS Code the shell of an *agentic RTL IDE*: editor, sandboxed toolchain, and agent in one window. RTL work has never had an IDE. An ASIC engineer today lives in a code editor with a stack of terminals firing heavy EDA tools by hand, and this is where Booley builds one.
 
-## Why two modes
+## Why Goal Mode within Interactive Mode
 
-Two ways to drive one sandbox complicates the UI, and that is a real cost. We pay it because each mode covers a job the other structurally cannot.
+Exploration and machine-checked completion need different state, but they can use the same agent session. The human enters Goal Mode when the success conditions become clear, rather than writing a separate work item before exploration starts.
 
-Interactive Mode is not optional; it's inevitable. Hardware work is full of tasks where step B depends on what you learned in step A: explore a design, measure something, look at a waveform, decide the next move from the result. That can't be packaged into a ticket: the plan is discovered as you go. Any honest hardware-design workflow *requires* a hands-on, tight-loop mode. This is the floor.
+Interactive Mode is not optional; it's inevitable. Hardware work is full of tasks where step B depends on what you learned in step A: explore a design, measure something, look at a waveform, decide the next move from the result. The plan is discovered as you go. Any honest hardware-design workflow *requires* a hands-on, tight-loop mode. This is the floor.
 
-Ticket Mode is aspirational, but useful today: whenever you have a **well-scoped task that runs long**, you write a self-contained ticket, `booley run` drives it to completion unattended, and you review the result later. This is how we *want* to work with agents: hand off a bounded job, come back to reviewable output. The machinery that makes that trustworthy, **machine-checkable acceptance criteria** and **explicit scope**, exists precisely to keep a long-running agent from drifting off its goal.
+Goal Mode supplies **mandatory machine-checked Goals** for work that should reach a reviewable result. Only Booley Flow or Specialist evidence can meet them; code changes require fresh evidence, and a human must approve any Goal relaxation. The agent may work unattended until it needs a decision. Finish presents evidence and a Session Summary without a human completion override or an automatic merge.
 
-Ticket Mode also seeds a longer-term ambition: **design-IP-from-spec.** Once tickets are the trustworthy unit of unattended work, a manager agent can *author* tickets for worker agents to execute, the ticket becoming the shared language between them. Ticket Mode is the down payment on that future.
+The cost is durable Goal state, Run Bindings, freshness checks, and an approval log. That state makes long-running work inspectable without maintaining a second acceptance system. ADR 0067 replaces Ticket Mode outright; the Ticket Board and Developer Agent loop are retained until Phase 9a removes them, and `booley run` / `booley board` already return migration pointers with exit 2.
 
 ## Why FuseSoC
 
@@ -64,7 +64,7 @@ The agent reaches every Booley Flow through a single MCP (Model Context Protocol
 
 ## Why plain files
 
-Every piece of Booley state is a file: the ticket board is directories with atomic moves, run state is persisted JSON, the job slot store lives on disk, and a run's durable artifact is a git branch. No database, no state daemon. The reason is simplicity, literally: nothing to install, nothing to keep running, nothing that can be down, and every piece of state can be inspected with `ls` and `cat` and recovered with git. The cost is that filesystem semantics (atomic renames, lock files) become our concurrency primitives, which takes care to get right: a trade that works at one-human-per-project scale, which is the scale Booley targets.
+Every piece of Booley state is a file: Goal Records and their Change Logs are local files, evidence state is persisted JSON, the job slot store lives on disk, and a run's durable artifact is a git branch. No database, no state daemon. The reason is simplicity, literally: nothing to install, nothing to keep running, nothing that can be down, and every piece of state can be inspected with `ls` and `cat` and recovered with git. The cost is that filesystem semantics (atomic renames, lock files) become our concurrency primitives, which takes care to get right: a trade that works at one-human-per-project scale, which is the scale Booley targets.
 
 ## Why FST is the trace contract
 

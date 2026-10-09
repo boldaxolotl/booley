@@ -1,98 +1,67 @@
-# Requested human review
+# Human review in Goal Mode
 
-Use this workflow when a blocked Ticket needs human inspection or interactive
-verification without another Developer Agent run. Review and acceptance are
-separate: a requested review retains outstanding gates and cannot be approved.
+Human review happens in the agent session and on its Goal Branch. Goal Mode has
+no Ticket Board transition or human override of Finish. The Review Package
+exposes the final diff, Goal evidence, Change Log, open review findings, Target
+changes, constraint edits, and mandatory Session Summary.
 
-## Enter review
+## Inspect and verify
 
-Commit source changes in every Ticket repository, then run:
-
-```bash
-booley board review SLUG --request --reason "Finish verification interactively"
-booley board show SLUG
-```
-
-The request prepares a complete package before publishing the board transition.
-It preserves the Ticket worktree, branch, evidence and original block reason.
-If preparation fails, the Ticket stays blocked and the command reports the
-failure. Retry the request after correcting it. Generic `move-ticket` cannot
-enter review or done.
-
-The package contains structured facts, a terminal briefing and materialized
-diffs. Model-enabled preparation also produces an HTML explanation when its
-structured explanation validates. `on_success.triage_report: false` produces
-the deterministic package without a model call or HTML. Both modes read the
-persisted package when briefing; neither substitutes live criterion state.
-
-A legacy Ticket mechanically moved into review without acceptance can use:
+Continue in the linked worktree that owns the Goal Record. `/booley-goal`
+guides the workflow; `goal_status(rules=true)` returns the entry rules again
+when needed. The human can also inspect a snapshot with:
 
 ```bash
-booley board review SLUG --request --repair --reason "Recover unaccepted review"
+booley goal status --long
 ```
 
-Repair still requires a valid retained Ticket baseline and worktree. Corrupt
-acceptance or missing generation identity is an error, not permission to
-manufacture a Criteria Satisfaction Record.
+Invoke Booley Flows and Specialists through MCP with explicit `work_dir` for
+that worktree. Ordinary CLI Flow calls remain diagnostic and do not bind Goals.
+The admitted Run Binding selects the record and specification revisions that
+may receive evidence; neither a new session nor a shared server retargets an
+already-running Job. Relevant code or Target edits make old evidence stale,
+so re-run the affected checks before Finish.
 
-## Verify interactively
+A Reviewer `clean` Goal requires current findings to be fixed or explicitly
+waived with justification. A Reviewer `done` Goal completes the review while
+retaining open findings for inspection in the Review Package; it does not add a
+human approval gate to Finish. Inspect those findings before deciding to merge
+with ordinary Git.
 
-Make corrections in the existing Ticket worktree. Use the explicit Ticket
-context for every Flow, Specialist and final run report that should count as
-Criterion evidence:
+## Approve a Goal change
 
-```bash
-booley board validate SLUG -- python -m booley.mcp.submit_run_report --help
-```
+The agent proposes an addition, relaxation, retargeting, or coverage waiver with
+`goal_propose_change`. A human approves or rejects it with a reason through the
+client's elicitation form, or in chat when the form is unavailable. The fallback
+records the human's quoted words and marks the approval as agent-recorded.
+The Change Log preserves the decision; approval never substitutes for evidence.
 
-Replace the command after `--` with the endpoint's normal CLI invocation and
-arguments. `validate` starts the command in the retained worktree, with
-isolated Ticket state/log/Basis bindings and interactive scheduling priority.
-An isolated MCP server can be started the same way. It never retargets a shared
-server. Ordinary unbound endpoint calls do not record this Ticket's evidence.
-A scoped process has a two-hour execution limit; detached Jobs must finish or
-be canceled before refreshing or approving.
+A coverage Waiver Candidate must be screened and bound to the record's Campaign
+and source identities. Its Provisional Coverage Verdict is advisory; approving
+its Goal Change Proposal promotes the waiver and recalculates strict coverage
+under the updated policy. A provisional pass alone cannot meet a Goal.
 
-Commit corrections before generating another package. To capture new committed
-heads and new verification evidence, run:
+## Finish, abandon, and recover
 
-```bash
-booley board review SLUG
-booley board show SLUG
-```
+Commit the changes and provide a Session Summary before `goal_finish`. Finish
+requires every Goal met with fresh evidence at a clean committed HEAD and no
+Protected Input violation. It presents the Review Package in chat; HTML is
+available on request. Finish does not merge or clean up the worktree. Outside
+Stealth it publishes a history summary when the destination is usable; local-only
+publication is reported explicitly.
 
-`board review --force` regenerates the current unaccepted inspection; it
-rejects changed heads/evidence and directs you to `board review`. A failed
-refresh preserves the previous package generation as historical evidence. A
-stale package is never reported as current.
+An interrupted Finish or approved change is recovered from its durable captured
+intent on retry; changed or corrupt captured inputs fail closed. After an agent
+crash, a session in the same worktree may resume with `goal_status(rules=true)`.
+The human may abandon from that worktree with `booley goal abandon`; the work,
+branch, and abandoned record remain available for inspection.
 
-After verification, submit the normal final run report through `validate`,
-including changed-file justifications and optional-criterion explanations.
-Then run:
+## Retained Ticket review implementation
 
-```bash
-booley board approve SLUG
-booley board show SLUG
-```
-
-Approval runs the normal Criteria checks. Unmet gates retain unaccepted
-review; passing checks freeze the first Criteria Satisfaction Record and bind
-the selected package without another agent call. Completion applies normal
-merge and cleanup policy. This workflow does not replace an existing Criteria
-Satisfaction Record after further source edits; such edits remain subject to
-the existing acceptance protections.
-
-**Hold** leaves the Ticket in review. **Reset** is the existing destructive clean
-restart. **Archive** of a review Ticket requires the existing `--force` option.
-
-## Publication and recovery
-
-Each preparation writes a separate package generation. A per-Ticket operation
-record fences concurrent mutation, while report agents run outside the board
-lock. Publication rechecks the Basis, execution identity, source cleanliness,
-heads and evidence digest under the lock. An interruption during publication
-retains a pending record; rerun the recorded review or approve command to
-finish publication. Completion remains fenced until publication is coherent.
-Retries reuse the exact timestamp and selected Criteria Satisfaction Record,
-rather than replacing write-once acceptance. Changed or corrupt pending inputs
-fail closed with their evidence preserved.
+The former requested-review workflow, its `board review` / `validate` / `approve`
+handlers, immutable inspections, and Acceptance Journal are retained until
+Phase 9a removes them. They are not a public workflow: `booley board` prints a
+Goal Mode migration pointer and exits 2. Their source lives under
+`src/booley/ticket_board/`; the [Ticket Board glossary](../../../src/booley/ticket_board/GLOSSARY.md)
+describes those retained concepts. Historical Ticket packages remain evidence,
+not instructions to invoke the retired CLI.

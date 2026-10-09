@@ -18,7 +18,7 @@ The simulation interval in which native counters contribute to a Coverage Campai
 _Avoid_: waveform slice
 
 **Coverage Criterion**:
-A Target-bound acceptance policy combining native metric thresholds with an exact test suite.
+A Target-bound coverage evaluation policy combining native metric thresholds with an exact test suite; in Goal Mode it evaluates a coverage Goal.
 _Avoid_: Analyst score, inferred coverage goal
 
 **Approved Waiver Set**:
@@ -26,13 +26,13 @@ The immutable project-wide set of human-approved Target-and-Coverage-Point exclu
 _Avoid_: cached LLM waivers
 
 **Waiver Candidate**:
-A proposed exclusion recorded for one Ticket or Goal Record; it becomes part of the Approved Waiver Set only when a human approves it through that record's approval workflow.
+A proposed exclusion recorded for one Goal Record; it becomes part of the Approved Waiver Set only when a human approves the corresponding Goal Change Proposal.
 _Avoid_: approved waiver, automatic exclusion, pending waiver
 
 **Provisional Coverage Verdict**:
-A Coverage Criterion evaluation that also counts the Ticket's Waiver Candidates; it can send a Ticket to review but never satisfies a Criterion.
+A Coverage Criterion evaluation that also counts a Goal Record's Waiver Candidates; it informs human waiver decisions but never satisfies a Goal.
 _Avoid_: soft pass, pending verdict
 
 **Coverage Analyst**:
-A Specialist that explains one Coverage Campaign and may record Waiver Candidates for its Ticket or Goal Record; its model only reads evidence.
+A Specialist that explains one Coverage Campaign and may record Waiver Candidates for its Goal Record; its model only reads evidence.
 _Avoid_: coverage scorer, waveform coverage engine
