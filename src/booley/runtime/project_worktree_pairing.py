@@ -16,7 +16,7 @@ from booley.runtime.incontainer_git_identity import (
     load_git_identity,
 )
 from booley.runtime.project_dir import PROJECT_DIR_NAME
-from booley.runtime.project_gitignore import is_project_transient_path, missing_gitignore_patterns
+from booley.runtime.project_gitignore import missing_gitignore_patterns, project_transient_pattern
 from booley.runtime.project_repositories import (
     GitDirectoryInspectionError,
     ProjectRepositoryChange,
@@ -99,14 +99,16 @@ def _listed_paths(paths: list[str]) -> str:
 
 def _refuse_dirty_project(source: Path, changes: tuple[ProjectRepositoryChange, ...]) -> None:
     ignore = source / ".gitignore"
-    stale = missing_gitignore_patterns(
-        ignore.read_text(encoding="utf-8", errors="replace") if ignore.exists() else ""
+    stale = set(
+        missing_gitignore_patterns(
+            ignore.read_text(encoding="utf-8", errors="replace") if ignore.exists() else ""
+        )
     )
     transient, inputs = [], []
     for change in changes:
         group = (
             transient
-            if stale and change.status == "??" and is_project_transient_path(change.path)
+            if change.status == "??" and project_transient_pattern(change.path) in stale
             else inputs
         )
         group.append(change.path)

@@ -1150,3 +1150,150 @@ def test_tracked_bundle_manual_remedy_preserves_copy_and_allows_pairing(
     assert bundle.is_file()
     assert not (paired / ".managed/project-git-hooks.pyz").exists()
     reset_cache()
+
+
+@pytest.fixture
+def per_path_project(isolated_git_attributes, request, tmp_path):
+    root = request.getfixturevalue("versioned_project")
+    empty = tmp_path / "empty-excludes"
+    empty.write_text("", encoding="utf-8")
+    for repository in (root, root / ".booley_project"):
+        assert _git(repository, "config", "core.excludesFile", str(empty)).returncode == 0
+        assert _git(repository, "config", "user.name", "Test User").returncode == 0
+        assert _git(repository, "config", "user.email", "test@example.com").returncode == 0
+    return root
+
+
+def _per_path_policy(source, patterns, reincludes=""):
+    _write(source / ".gitignore", "".join(f"{pattern}\n" for pattern in patterns) + reincludes)
+    assert _git(source, "add", ".gitignore").returncode == 0
+    assert _git(source, "commit", "-qm", "Project ignore policy").returncode == 0
+
+
+def _per_path_observation(source, path, expected_pattern):
+    result = _git(source, "check-ignore", "--no-index", "-v", path)
+    assert result.returncode in {0, 1}
+    if expected_pattern is None:
+        assert result.stdout == ""
+    else:
+        metadata, observed = result.stdout.rstrip("\n").split("\t")
+        assert observed == path
+        assert metadata.split(":", 2)[2] == expected_pattern
+    assert f"?? {path}" in _git(source, "status", "--porcelain", "--untracked-files=all").stdout
+
+
+@pytest.mark.parametrize("mixed", [False, True])
+def test_unrelated_missing_pattern_preserves_per_path_input_group(per_path_project, capsys, mixed):
+    from booley.runtime.project_gitignore import PROJECT_GITIGNORE_PATTERNS
+
+    root = per_path_project
+    source = root / ".booley_project"
+    patterns = [pattern for pattern in PROJECT_GITIGNORE_PATTERNS if pattern != "flow-reports/"]
+    _per_path_policy(source, patterns, "!/logs/\n!/logs/**\n")
+    _write(source / "logs/authored.txt", "authored\n")
+    _per_path_observation(source, "logs/authored.txt", "!/logs/**")
+    if mixed:
+        _write(source / "flow-reports/report.json", "evidence\n")
+        _per_path_observation(source, "flow-reports/report.json", None)
+    assert _new("per-path", root) == 1
+    error = capsys.readouterr().err
+    expected = "Project repository has uncommitted changes; "
+    if mixed:
+        expected += (
+            "transient state: flow-reports/report.json; Project .gitignore is missing "
+            "current Booley patterns; run `booley init` from a host terminal, "
+            "then commit the updated .gitignore; "
+        )
+    expected += "inputs: logs/authored.txt; commit them in `.booley_project` first"
+    assert expected in error
+    if not mixed:
+        assert "booley init" not in error
+    _assert_creation_absent(root, "per-path")
+
+
+@pytest.mark.parametrize(
+    ("path", "missing", "reincludes", "transient", "oracle"),
+    [
+        ("flow-reports/report.json", "flow-reports/", "", True, None),
+        ("logs/authored.txt", "flow-reports/", "!/logs/\n!/logs/**\n", False, "!/logs/**"),
+        ("cores/logs/authored.txt", "flow-reports/", "", False, None),
+        ("logs/authored.txt", None, "!/logs/\n!/logs/**\n", False, "!/logs/**"),
+        ("cores/runtime/state.json", "runtime/", "", True, None),
+        ("goals/history/kept.md", "flow-reports/", "", False, None),
+        ("goals/history/tmp/state.json", "tmp/", "", True, None),
+    ],
+)
+def test_per_path_remedy_respects_nested_and_history_policy(
+    per_path_project, capsys, path, missing, reincludes, transient, oracle
+):
+    from booley.runtime.project_gitignore import PROJECT_GITIGNORE_PATTERNS
+
+    root = per_path_project
+    source = root / ".booley_project"
+    if missing == "runtime/":
+        (source / "runtime/doctor/stale.lock").unlink()
+    _per_path_policy(source, [p for p in PROJECT_GITIGNORE_PATTERNS if p != missing], reincludes)
+    _write(source / path, "state\n")
+    _per_path_observation(source, path, oracle)
+    assert _new("per-path", root) == 1
+    error = capsys.readouterr().err
+    assert f"{'transient state' if transient else 'inputs'}: {path};" in error
+    assert ("booley init" in error) == transient
+    _assert_creation_absent(root, "per-path")
+
+
+@pytest.mark.parametrize("missing", ["/logs/", "flow-reports/"])
+def test_per_path_tracked_changes_always_require_input_commit(per_path_project, capsys, missing):
+    from booley.runtime.project_gitignore import PROJECT_GITIGNORE_PATTERNS
+
+    root = per_path_project
+    source = root / ".booley_project"
+    _per_path_policy(source, [p for p in PROJECT_GITIGNORE_PATTERNS if p != missing])
+    _write(source / "logs/authored.txt", "committed\n")
+    assert _git(source, "add", "-f", "logs/authored.txt").returncode == 0
+    assert _git(source, "commit", "-qm", "Authored log").returncode == 0
+    _write(source / "logs/authored.txt", "edited\n")
+    assert _new("per-path", root) == 1
+    error = capsys.readouterr().err
+    assert "inputs: logs/authored.txt; commit them in `.booley_project` first" in error
+    assert "booley init" not in error
+    _assert_creation_absent(root, "per-path")
+
+
+@pytest.mark.parametrize("missing", ["tmp/", "/tmp/"])
+def test_responsible_overlap_membership_selects_per_path_remedy(
+    per_path_project, capsys, monkeypatch, missing
+):
+    from booley.runtime import project_gitignore as policy
+
+    root = per_path_project
+    source = root / ".booley_project"
+    patterns = ("runtime/", "tmp/", "/tmp/")
+    monkeypatch.setattr(policy, "PROJECT_GITIGNORE_PATTERNS", patterns)
+    _per_path_policy(source, [p for p in patterns if p != missing], "!/tmp/\n!/tmp/**\n")
+    _write(source / "tmp/authored.txt", "authored\n")
+    _per_path_observation(source, "tmp/authored.txt", "!/tmp/**")
+    assert _new("responsible", root) == 1
+    error = capsys.readouterr().err
+    transient = missing == "/tmp/"
+    assert f"{'transient state' if transient else 'inputs'}: tmp/authored.txt;" in error
+    assert ("booley init" in error) == transient
+    _assert_creation_absent(root, "responsible")
+
+
+def test_responsible_canonical_negation_keeps_per_path_input(
+    per_path_project, capsys, monkeypatch
+):
+    from booley.runtime import project_gitignore as policy
+
+    root = per_path_project
+    source = root / ".booley_project"
+    monkeypatch.setattr(policy, "PROJECT_GITIGNORE_PATTERNS", ("runtime/", "*.json", "!*.json"))
+    _per_path_policy(source, ("runtime/", "!*.json"))
+    _write(source / "authored.json", "{}\n")
+    _per_path_observation(source, "authored.json", "!*.json")
+    assert _new("responsible", root) == 1
+    error = capsys.readouterr().err
+    assert "inputs: authored.json;" in error
+    assert "booley init" not in error
+    _assert_creation_absent(root, "responsible")
