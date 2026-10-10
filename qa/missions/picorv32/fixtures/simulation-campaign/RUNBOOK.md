@@ -70,7 +70,8 @@ a saved copy after every restoration.
 
 Commit the fixture registration before entry, create a clean linked worktree and
 start a Codex child with `$booley-goal`, naming a `sim` Goal on `sim_campaign`.
-Pass `work_dir` on every MCP call while active. Capture the Goal Record and Goal evidence
+Pass `work_dir` on every MCP call that accepts it while active (listed in
+`qa/shared/GOAL-CHILD.md`). Capture the Goal Record and Goal evidence
 before and after each invocation. A passing strict subset (`quick`) must leave
 the Goal unmet. A new Simulation Campaign containing the complete Required
 Simulation Suite (`quick`, `slow`, `tail`) must publish it only after all three

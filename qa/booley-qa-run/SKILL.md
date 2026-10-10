@@ -104,7 +104,7 @@ Write each finding the moment you observe it, before any workaround or retry.
    choose one of these paths:
    - test the installed build and record its identity in the header; or
    - install `origin/main` as the canonical host install and run
-     `booley bootstrap`.
+     `booley bootstrap --update` (plain Bootstrap refuses a changed install).
    Record the choice in `log.md` before continuing.
 3. **Smoke** (when requested). Walk `qa/SMOKE.md` from the derived source root and put its table in
    `log.md`.

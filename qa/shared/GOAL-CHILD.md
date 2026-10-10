@@ -13,9 +13,14 @@ Apply these rules to every mission area that uses a Goal child.
   client form or a message the child quotes as `approval_quote`. A proposal
   affecting a merged deliverable needs the live maintainer; without one, keep
   it pending and log it. Silence never supplies approval.
-- While any Goal is active, every MCP Booley call passes absolute `work_dir`;
-  independent non-Goal areas use the primary checkout root. Finish or explicitly
-  abandon every Goal before closing its area and starting the next area.
+- While any Goal is active, pass absolute `work_dir` on every built-in Booley
+  MCP call that takes it: Flows, Specialists, Goal calls, `booley_targets` and
+  `booley_report`. `booley_status`, `booley_poll`, `booley_cancel`,
+  `booley_sleep` and `coverage_evidence` have no `work_dir` argument and
+  reject one. For any other MCP call, follow its advertised schema.
+  Independent non-Goal areas use the primary checkout root. Finish or
+  explicitly abandon every Goal before closing its area and starting the next
+  area.
   Schedule Interactive children only when no Goal is active in the same Project.
 - Host-issued container commands use `booley session enter -- booley ...`;
   bare Sandbox commands below are for the child/container terminal.
