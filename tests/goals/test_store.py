@@ -390,15 +390,21 @@ def test_lock_order_is_worktree_then_record(repo: dict[str, Path]) -> None:
         pass
 
 
-def test_record_lock_is_reentrant_within_one_context(repo: dict[str, Path]) -> None:
+def test_record_lock_is_reentrant_within_one_context(
+    repo: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
     store = GoalStore(repo["project"], lock_timeout_s=0.2)
     record = _enter(store, repo["linked"], "a-20261006T101500Z")
     with store.record_lock(record.id) as outer:
-        started = time.monotonic()
-        with store.record_lock(record.id) as inner:
-            assert inner is outer
-            saved = store.save(inner, replace(record, state=GoalState.ACTIVE))
-        assert time.monotonic() - started < 0.1
+
+        def reject_second_acquisition(*_args: object, **_kwargs: object) -> None:
+            raise AssertionError("reentry must reuse the held file lock")
+
+        with monkeypatch.context() as patch:
+            patch.setattr("booley.goals.store.wait_for_file_lock", reject_second_acquisition)
+            with store.record_lock(record.id) as inner:
+                assert inner is outer
+                saved = store.save(inner, replace(record, state=GoalState.ACTIVE))
         assert outer.held  # leaving the nested block keeps the outer hold
         store.save(outer, replace(saved, state=GoalState.ABANDONED))
         # Re-entry does not relax the lock order.
