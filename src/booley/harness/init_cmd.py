@@ -50,7 +50,7 @@ from pathlib import Path
 from booley import __version__
 from booley.commit_policy import stealth_enabled
 from booley.config.host_config import retired_project_policy_message
-from booley.core.boundary import require_dict
+from booley.core.boundary import as_dict, as_str, require_dict
 from booley.fusesoc.core_projection import (
     PROJECTED_CORE_GLOB,
     CoreProjectionError,
@@ -1535,11 +1535,27 @@ def _print_configured_advisory(ctx: InitContext) -> None:
     info("  * Ensure git working tree is clean (no in-progress rebase/merge/cherry-pick)")
 
 
-_DEMO_PROJECT_ORIGIN = "github.com/boldaxolotl/booley-prj-picorv32"
+#: Origin prefix of the preconfigured Projects the Booley maintainers publish
+#: (``booley-prj-picorv32``, ``booley-prj-caliptra``, ...). Matching the naming
+#: scheme instead of one repository means a newly published Project gets the
+#: right send-off without a Booley release.
+_PUBLISHED_PROJECT_ORIGIN_PREFIX = "github.com/boldaxolotl/booley-prj-"
+
+#: Paths (relative to the Project directory) where a new untracked file changes
+#: the published setup — an added core is a new Target. Untracked files
+#: elsewhere are ignored on purpose: init writes its own (``.managed/``,
+#: ``goalsets/``) and ordinary use leaves reports and notes behind, so counting
+#: them would flip the send-off on the first re-run.
+_PUBLISHED_PROJECT_SETUP_PATHS = ("tests.toml", "AGENTS.md", "cores")
+
+#: Tracked files a pristine checkout may differ in, as git pathspecs: init
+#: appends its transient-state rules to ``.gitignore``, and ``booley.toml`` is
+#: compared by content instead (see ``_published_config_unchanged``).
+_PUBLISHED_PROJECT_INIT_OWNED = (":(exclude).gitignore", ":(exclude)booley.toml")
 
 
-def _normalize_demo_origin(origin: str) -> str:
-    """Normalize common GitHub remote URL forms for an exact repository comparison."""
+def _normalize_git_origin(origin: str) -> str:
+    """Normalize common GitHub remote URL forms for a repository comparison."""
     normalized = origin.strip().lower().replace("\\", "/").rstrip("/")
     if normalized.endswith(".git"):
         normalized = normalized[:-4]
@@ -1550,44 +1566,141 @@ def _normalize_demo_origin(origin: str) -> str:
     return normalized.removeprefix("git@").replace("github.com:", "github.com/", 1)
 
 
-def _is_demo_project(project_root: Path) -> bool:
-    """Whether the project state is the published PicoRV32 demo checkout."""
-    try:
-        project_dir = resolve_project_dir(project_root)
-    except FileNotFoundError:
-        return False
+def _query_project_git(project_dir: Path, *args: str) -> str | None:
+    """Run a read-only git query in *project_dir*; ``None`` when it cannot answer.
+
+    A failure only ever downgrades the send-off to the ordinary one, so it is
+    reported as a warning instead of failing init. Git exiting non-zero with
+    nothing on stderr is its normal "no such value" answer and stays silent.
+    """
     try:
         result = subprocess.run(
-            ["git", "-C", str(project_dir), "config", "--get", "remote.origin.url"],
+            ["git", "-C", str(project_dir), *args],
             capture_output=True,
             text=True,
             timeout=5,
             check=False,
         )
     except subprocess.TimeoutExpired:
-        warn(f"could not inspect PicoRV32 demo origin at {project_dir}: git timed out after 5s")
-        return False
+        warn(f"could not inspect published Project state at {project_dir}: git timed out after 5s")
+        return None
     except (FileNotFoundError, OSError) as exc:
-        warn(f"could not inspect PicoRV32 demo origin at {project_dir}: {exc}")
-        return False
+        warn(f"could not inspect published Project state at {project_dir}: {exc}")
+        return None
     if result.returncode != 0:
         if error := result.stderr.strip():
             warn(
-                f"could not inspect PicoRV32 demo origin at {project_dir}: "
+                f"could not inspect published Project state at {project_dir}: "
                 f"git exited {result.returncode}: {error}"
             )
+        return None
+    return result.stdout.strip()
+
+
+def _has_published_project_origin(project_dir: Path) -> bool:
+    """Whether *project_dir* was cloned from a maintainer-published Project."""
+    origin = _query_project_git(project_dir, "config", "--get", "remote.origin.url")
+    if origin is None:
         return False
-    return _normalize_demo_origin(result.stdout) == _DEMO_PROJECT_ORIGIN
+    normalized = _normalize_git_origin(origin)
+    # A bare prefix names no repository, so it must not match.
+    return (
+        normalized.startswith(_PUBLISHED_PROJECT_ORIGIN_PREFIX)
+        and normalized != _PUBLISHED_PROJECT_ORIGIN_PREFIX
+    )
 
 
-def _print_demo_advisory() -> None:
-    """Send the preconfigured demo straight to its documented runtime steps."""
-    info("This is the preconfigured PicoRV32 demo — the booley-setup skill does not apply.")
+def _without_agent_table(toml_text: str) -> dict[str, object]:
+    """Parse booley.toml text and drop ``[agent]``, the table init itself fills in."""
+    document = tomllib.loads(toml_text)
+    document.pop("agent", None)
+    return document
+
+
+def _published_config_unchanged(project_dir: Path) -> bool:
+    """Whether booley.toml still says what the published commit says.
+
+    Compared by parsed content with ``[agent]`` left out, not by bytes: init
+    records the user's provider and auth choice there when the published file
+    leaves them open, and that choice must not turn a pristine checkout into a
+    "modified" one.
+    """
+    published = _query_project_git(project_dir, "show", "HEAD:./booley.toml")
+    if published is None:
+        return False
+    try:
+        current = (project_dir / "booley.toml").read_text(encoding="utf-8")
+        return _without_agent_table(current) == _without_agent_table(published)
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        # Unreadable config is the ordinary send-off's problem to report.
+        return False
+
+
+def _published_files_unchanged(project_dir: Path) -> bool:
+    """Whether the checkout still holds the published files, init's writes aside."""
+    tracked_changes = _query_project_git(
+        project_dir,
+        "status",
+        "--porcelain",
+        "--untracked-files=no",
+        "--",
+        ".",
+        *_PUBLISHED_PROJECT_INIT_OWNED,
+    )
+    if tracked_changes != "":
+        return False
+    added_setup_files = _query_project_git(
+        project_dir,
+        "status",
+        "--porcelain",
+        "--untracked-files=all",
+        "--",
+        *_PUBLISHED_PROJECT_SETUP_PATHS,
+    )
+    return added_setup_files == "" and _published_config_unchanged(project_dir)
+
+
+def _is_published_project(project_root: Path) -> bool:
+    """Whether the Project state is an unmodified maintainer-published checkout.
+
+    Three conditions, cheapest first so an ordinary Project costs one git call:
+    the origin follows the published naming scheme, ``HEAD`` carries no commit
+    the origin lacks, and the published files are unchanged.
+    """
+    try:
+        project_dir = resolve_project_dir(project_root)
+    except FileNotFoundError:
+        return False
+    if not _has_published_project_origin(project_dir):
+        return False
+    local_commits = _query_project_git(
+        project_dir, "rev-list", "--count", "HEAD", "--not", "--remotes=origin"
+    )
+    return local_commits == "0" and _published_files_unchanged(project_dir)
+
+
+def _project_display_name(project_root: Path) -> str:
+    """The ``[project].name`` to show the user, or ``""`` when it is unset."""
+    from booley.config.settings import _load_booley_toml
+
+    project = as_dict(_load_booley_toml(project_root).get("project"), default={}) or {}
+    return (as_str(project.get("name"), "") or "").strip()
+
+
+def _print_published_advisory(ctx: InitContext) -> None:
+    """Send a preconfigured published Project straight to its runtime steps."""
+    name = _project_display_name(ctx.project_root)
+    subject = f"preconfigured {name} Project" if name else "preconfigured Project"
+    info(f"This is the {subject} — the booley-setup skill does not apply.")
     print()
-    info("  * Open the PicoRV32 folder in VS Code")
+    info(f"  * Open the {ctx.project_root.name} folder in VS Code")
     info('  * In the popup notification, choose "Reopen in Container"')
     info('    No popup? Press F1 (or Ctrl+Shift+P) and run "Dev Containers: Reopen in Container"')
-    info("  * In the container, run `bash .booley_project/hooks/post-setup.sh`")
+    # Only some published Projects ship a post-setup hook; naming a script
+    # that is not there would send the user to a "No such file" error.
+    project_dir = resolve_project_dir(ctx.project_root)
+    if (project_dir / "hooks" / "post-setup.sh").is_file():
+        info("  * In the container, run `bash .booley_project/hooks/post-setup.sh`")
     info("  * Then run `booley doctor --deep`; use booley-heal if it reports warnings")
 
 
@@ -1615,11 +1728,11 @@ def _print_incomplete_advisory(failed: list[str]) -> None:
     info("  * Only then start the booley-setup skill (Step 0, the plan phase)")
 
 
-def _print_success_advisory(ctx: InitContext, *, demo: bool, scaffolded: bool) -> str:
+def _print_success_advisory(ctx: InitContext, *, published: bool, scaffolded: bool) -> str:
     """Print the successful-run send-off and return its summary detail."""
-    if demo:
-        _print_demo_advisory()
-        return "demo"
+    if published:
+        _print_published_advisory(ctx)
+        return "published"
     if scaffolded:
         info("Scaffolded starter project: booley.toml/tests.toml are populated and")
         info(
@@ -1653,14 +1766,14 @@ def _step_advisories(ctx: InitContext) -> None:
         _print_incomplete_advisory(failed)
         ctx.record("advisories", "ok", "incomplete")
         return
-    demo = _is_demo_project(ctx.project_root)
+    published = _is_published_project(ctx.project_root)
     # A scaffolded project needs a different send-off: --scaffold already wrote
     # a populated booley.toml with every enabled Flow and Specialist already wired up, so
     # pointing the user at Steps 4-6 ("enable the disabled Flows and Specialists") contradicts
     # what just happened on their disk (SETUP.md: such a project "typically
     # only wants Step 3").
     scaffolded = any(r.name == "scaffold" and r.status in ("ok", "warn") for r in ctx.results)
-    detail = _print_success_advisory(ctx, demo=demo, scaffolded=scaffolded)
+    detail = _print_success_advisory(ctx, published=published, scaffolded=scaffolded)
     ctx.record("advisories", "ok", detail)
 
 
@@ -1710,16 +1823,17 @@ def _print_summary(ctx: InitContext) -> int:
         return exit_code
 
     # The send-off has to match what the advisories step just printed. Telling a fully
-    # configured project (a demo repo cloned with its .booley_project/ intact)
+    # configured project (a published Project cloned with its .booley_project/ intact)
     # to "finish the setup skills above" contradicts the empty step list right
     # above it, and reads as if init left work undone.
     advisory = next((r for r in ctx.results if r.name == "advisories"), None)
     if advisory is None:
         # --seed: no advisories step ran, so there is nothing "above" to finish.
         print(green("Booley base setup complete."))
-    elif advisory.detail == "demo":
-        print(green("Booley demo setup complete."))
-        print(green("Next: open the PicoRV32 folder in VS Code and use its popup notification"))
+    elif advisory.detail == "published":
+        print(green("Booley setup complete — this preconfigured Project is ready."))
+        folder = ctx.project_root.name
+        print(green(f"Next: open the {folder} folder in VS Code and use its popup notification"))
         print(
             green('to choose "Reopen in Container". No popup? Press F1 (or Ctrl+Shift+P) and run')
         )

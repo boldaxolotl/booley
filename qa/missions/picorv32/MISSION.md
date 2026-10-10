@@ -338,8 +338,9 @@ installations, images, and Sessions untouched. Record the final pin state. Nothi
 - Exit 125 from `booley session enter --` means your argv is missing the executable. It's not a lint
   verdict.
 - B-Wave replays must use the child's defaults. Explicit sampling flags aren't equivalent.
-- `booley init` on this demo prints "the booley-setup skill does not apply". That's expected: area 1
-  configures the demo by hand.
+- The first `booley init` on the unchanged demo prints "the booley-setup skill does not apply".
+  That's expected: area 1 configures the demo by hand. Once area 1's edits are in, the repeat run
+  reports the Project as already configured instead; it's no longer the published checkout.
 - Fixture testbenches must print a pass sentinel the Project configures (`ALL TESTS PASSED.` here).
   Configured sentinels replace the built-in `[SIM_RESULT]` markers, so a clean `$finish` alone
   grades INCONCLUSIVE.
