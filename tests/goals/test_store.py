@@ -602,7 +602,7 @@ def test_a_released_lock_is_never_honoured_again(repo: dict[str, Path]) -> None:
 
 
 def test_a_second_project_spelling_re_enters_the_same_lock(
-    repo: dict[str, Path], tmp_path: Path
+    repo: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store = GoalStore(repo["project"], lock_timeout_s=0.2)
     record = _enter(store, repo["linked"], "a-20261006T101500Z")
@@ -611,11 +611,16 @@ def test_a_second_project_spelling_re_enters_the_same_lock(
     aliased = GoalStore(spelling, lock_timeout_s=0.2)
 
     with store.record_lock(record.id) as outer:
-        started = time.monotonic()
-        with aliased.record_lock(record.id) as inner:
-            assert inner is outer
-            saved = aliased.save(inner, replace(record, state=GoalState.ACTIVE))
-        assert time.monotonic() - started < 0.1
+
+        def reject_second_acquisition(*_args: object, **_kwargs: object) -> None:
+            raise AssertionError("alias reentry must reuse the held file lock")
+
+        with monkeypatch.context() as patch:
+            patch.setattr("booley.goals.store.wait_for_file_lock", reject_second_acquisition)
+            with aliased.record_lock(record.id) as inner:
+                assert inner is outer
+                saved = aliased.save(inner, replace(record, state=GoalState.ACTIVE))
+        assert outer.held
     assert store.load(record.id) == saved
 
 
