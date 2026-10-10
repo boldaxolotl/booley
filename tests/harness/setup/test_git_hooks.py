@@ -32,6 +32,26 @@ from booley.harness.setup.git_hooks import (
     _step_worktree_prune_guard,
     read_worktree_prune_expire,
 )
+from booley.harness.setup.line_endings import (
+    LineEndingActionKind as ActionKind,
+)
+from booley.harness.setup.line_endings import (
+    LineEndingActionResult as ActionResult,
+)
+from booley.harness.setup.line_endings import (
+    LineEndingActionState as ActionState,
+)
+from booley.harness.setup.line_endings import (
+    LineEndingObservation as Observation,
+)
+from booley.harness.setup.line_endings import (
+    LineEndingObservationCode as ObservationCode,
+)
+from booley.harness.setup.line_endings import (
+    LineEndingRepository,
+    LineEndingStatus,
+    RepositoryLineEndingReport,
+)
 from booley.runtime.git_attributes_policy import GITATTRIBUTES_RULE
 
 pytestmark = pytest.mark.usefixtures("isolated_git_attributes")
@@ -2771,3 +2791,141 @@ def test_worktree_link_repair_reports_git_listing_failure(tmp_path, monkeypatch,
     monkeypatch.setattr(git_hooks, "list_worktrees", unavailable)
     (message,) = git_hooks._repair_live_ticket_worktrees(_ctx(tmp_path))
     assert message == f"could not list worktrees for repair: {failure}"
+
+
+_UNSAFE_DETAILS = {
+    ObservationCode.AUTOCRLF_UNREADABLE: "autocrlf unreadable",
+    ObservationCode.LOCAL_AUTOCRLF_UNREADABLE: "local autocrlf unreadable",
+    ObservationCode.EOL_SCAN_UNREADABLE: "EOL scan unreadable",
+    ObservationCode.STATUS_UNREADABLE: "status comparison unreadable",
+    ObservationCode.AUTOCRLF_EFFECTIVE_TRUE: "autocrlf policy unsafe",
+    ObservationCode.AUTOCRLF_NOT_PINNED: "autocrlf policy unsafe",
+    ObservationCode.CRLF_MISMATCH: "CRLF working tree",
+    ObservationCode.STALE_INDEX: "stale index metadata",
+    ObservationCode.CANDIDATE_UNSAFE: "attributes inspection failed",
+    ObservationCode.LOCAL_POLICY_MISSING: "repository-local line-ending policy missing",
+    ObservationCode.LEAKED_ROOT_POLICY: "untracked legacy .gitattributes",
+    ObservationCode.LOCAL_POLICY_CONFLICT: "repository-local line-ending policy conflict",
+}
+_UNSAFE_CODES = tuple(
+    code for code in ObservationCode if code is not ObservationCode.UPSTREAM_POLICY
+)
+
+
+def _summary_report(observations=(), actions=(), status=LineEndingStatus.UNSAFE):
+    return RepositoryLineEndingReport(
+        LineEndingRepository("project-checkout", Path("/repo")), status, observations, actions
+    )
+
+
+@pytest.mark.parametrize("code", _UNSAFE_CODES)
+@pytest.mark.parametrize("completed", [False, True])
+def test_line_ending_result_detail_unsafe_codes(code, completed):
+    assert set(_UNSAFE_DETAILS) == set(_UNSAFE_CODES)
+    detail = (
+        "attributes inspection failed"
+        if code is ObservationCode.CANDIDATE_UNSAFE
+        else "raw detail sentinel"
+    )
+    expected = _UNSAFE_DETAILS[code]
+    assert expected != code.value
+    assert expected != "raw detail sentinel"
+    actions = (ActionResult(ActionKind.PIN_AUTOCRLF, ActionState.COMPLETED),) if completed else ()
+    report = _summary_report((Observation(code, detail=detail),), actions)
+    assert git_hooks._line_ending_result_detail(report) == expected
+
+
+@pytest.mark.parametrize("detail", ["specific unsafe cause", None, ""])
+@pytest.mark.parametrize("completed", [False, True])
+def test_line_ending_result_detail_unmapped(monkeypatch, detail, completed):
+    monkeypatch.setattr(
+        git_hooks,
+        "_OBSERVATION_RESULT_DETAILS",
+        tuple(
+            pair
+            for pair in git_hooks._OBSERVATION_RESULT_DETAILS
+            if pair[0] is not ObservationCode.LEAKED_ROOT_POLICY
+        ),
+    )
+    observations = (
+        Observation(ObservationCode.UPSTREAM_POLICY, detail="benign policy"),
+        Observation(ObservationCode.LEAKED_ROOT_POLICY, detail=detail),
+    )
+    actions = (
+        (ActionResult(ActionKind.NORMALIZE_FILES, ActionState.COMPLETED),) if completed else ()
+    )
+    assert git_hooks._line_ending_result_detail(_summary_report(observations, actions)) == (
+        detail or ObservationCode.LEAKED_ROOT_POLICY.value
+    )
+
+
+@pytest.mark.parametrize(
+    "other", [ObservationCode.LOCAL_POLICY_CONFLICT, ObservationCode.AUTOCRLF_NOT_PINNED]
+)
+def test_line_ending_result_detail_legacy_priority(other):
+    report = _summary_report((Observation(other), Observation(ObservationCode.LEAKED_ROOT_POLICY)))
+    assert git_hooks._line_ending_result_detail(report) == "untracked legacy .gitattributes"
+
+
+@pytest.mark.parametrize(
+    "refused,completed",
+    [
+        (ActionKind.PUBLISH_ATTRIBUTES, ActionKind.NORMALIZE_FILES),
+        (ActionKind.PIN_AUTOCRLF, ActionKind.REFRESH_INDEX),
+    ],
+)
+def test_line_ending_result_detail_refusal(refused, completed):
+    report = _summary_report(
+        actions=(
+            ActionResult(completed, ActionState.COMPLETED),
+            ActionResult(refused, ActionState.REFUSED, detail="publication unsafe"),
+        )
+    )
+    assert git_hooks._line_ending_result_detail(report) == "publication unsafe"
+
+
+def test_line_ending_result_detail_safe_and_verification():
+    assert (
+        git_hooks._line_ending_result_detail(_summary_report(status=LineEndingStatus.SAFE))
+        == "no CRLF"
+    )
+    action = ActionResult(ActionKind.NORMALIZE_FILES, ActionState.COMPLETED)
+    assert (
+        git_hooks._line_ending_result_detail(
+            _summary_report(actions=(action,), status=LineEndingStatus.SAFE)
+        )
+        == "normalized"
+    )
+    report = _summary_report((Observation(ObservationCode.EOL_SCAN_UNREADABLE),), (action,))
+    assert git_hooks._line_ending_result_detail(report) == "EOL verification unreadable"
+    assert git_hooks._line_ending_result_detail(_summary_report()) == "unsafe line-ending state"
+
+
+@pytest.mark.parametrize("distinct", [False, True])
+@pytest.mark.parametrize("check_only", [False, True])
+def test_legacy_line_endings_summary(tmp_path, capsys, distinct, check_only):
+    from booley.harness.init_cmd import _print_summary
+
+    _run_git(tmp_path, "init", "-q")
+    _run_git(tmp_path, "config", "core.autocrlf", "false")
+    data = tmp_path / ".booley_project"
+    data.mkdir()
+    if distinct:
+        _run_git(data, "init", "-q")
+        _run_git(data, "config", "core.autocrlf", "false")
+    (data / "booley.toml").write_text("[stealth]\nenabled = true\n")
+    legacy = tmp_path / ".gitattributes"
+    content = (GITATTRIBUTES_RULE + "\n").encode()
+    legacy.write_bytes(content)
+    ctx = _ctx(tmp_path, check_only=check_only)
+    git_hooks._step_line_endings(ctx, data)
+    result = ctx.results[-1]
+    assert result.status == ("warn" if check_only else "err")
+    assert "untracked legacy .gitattributes" in result.detail
+    if distinct:
+        assert "project-checkout:" in result.detail
+    else:
+        assert result.detail == "untracked legacy .gitattributes"
+    assert legacy.read_bytes() == content
+    assert _print_summary(ctx) == (1 if check_only else 2)
+    assert result.detail in capsys.readouterr().out
