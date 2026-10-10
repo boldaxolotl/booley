@@ -104,3 +104,23 @@ def test_status_defaults_to_summary_for_multiple_modes_and_preserves_warnings(go
     assert "lint_clean_top" in detailed
     assert "Pending proposals: 2" in detailed
     assert "Worktree:" in detailed
+
+
+@pytest.mark.parametrize("status", ["unmet", "stale"])
+@pytest.mark.parametrize("reason", ["", "contract requires the complete suite"])
+def test_detailed_unmet_reason_and_compact_output(goal_mode, status, reason):
+    view = GoalStatusView(
+        goal_mode.record, (GoalStatus("sim_pass_top", status, "1/1 tests", reason),), "", 0
+    )
+    detailed = " ".join(render_status((view,), short=False).split())
+    assert "1/1 tests" in detailed
+    if status == "unmet" and reason:
+        assert "1/1 tests — " + reason in detailed
+    elif reason:
+        assert reason not in detailed
+    else:
+        assert "—" not in detailed
+    compact = render_status((view,), short=True)
+    assert "1/1 tests" not in compact
+    if reason:
+        assert reason not in compact

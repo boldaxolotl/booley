@@ -30,6 +30,8 @@ from booley.goals.recorder import (
     validate_goal_identity,
 )
 from booley.goals.simulation import GOAL_SUITE_DETAIL_KEY
+from booley.goals.status import build_status
+from booley.goals.store import GoalStore
 from booley.ticket_board.acceptance_ledger import TicketIdentity
 from tests.goals.conftest import (
     LINT_KEY,
@@ -134,13 +136,41 @@ def test_v1_records_a_stamped_observation_under_its_identity_group(
 def test_v1_partial_simulation_pass_is_recorded_unmet(goal_mode: SimpleNamespace) -> None:
     recorder = GoalEvidenceRecorder(bind(goal_mode))
 
-    state = _v1(goal_mode, recorder, SIM_KEY, True, {"required_tests": [], "passed_tests": []})
+    state = _v1(
+        goal_mode,
+        recorder,
+        SIM_KEY,
+        True,
+        {"required_tests": [], "passed_tests": [], "tests_passed": 1, "tests_total": 1},
+    )
 
     entry = state.criteria[SIM_KEY]
     assert entry.met is False
     assert entry.detail[GOAL_SUITE_DETAIL_KEY] == ["smoke"]
     assert "complete resolved suite" in entry.detail["goal_contract_violation"]
     assert _disk_state(goal_mode)["criteria"][SIM_KEY]["met"] is False
+    goal = next(
+        g
+        for g in build_status(GoalStore(goal_mode.control), goal_mode.record).goals
+        if g.key == SIM_KEY
+    )
+    assert goal.status == "unmet"
+    assert goal.evidence_summary == "1/1 tests"
+    assert goal.reason == entry.detail["goal_contract_violation"]
+
+    _v1(
+        goal_mode,
+        GoalEvidenceRecorder(bind(goal_mode, "run-2")),
+        SIM_KEY,
+        False,
+        {**PASSING_SIM, "passed_tests": [], "tests_passed": 0, "tests_total": 1},
+    )
+    goal = next(
+        g
+        for g in build_status(GoalStore(goal_mode.control), goal_mode.record).goals
+        if g.key == SIM_KEY
+    )
+    assert (goal.status, goal.evidence_summary, goal.reason) == ("unmet", "0/1 tests", "")
 
 
 def test_v1_complete_simulation_pass_records_its_suite(goal_mode: SimpleNamespace) -> None:
@@ -150,6 +180,12 @@ def test_v1_complete_simulation_pass_records_its_suite(goal_mode: SimpleNamespac
 
     assert state.criteria[SIM_KEY].met is True
     assert state.criteria[SIM_KEY].detail[GOAL_SUITE_DETAIL_KEY] == ["smoke"]
+    goal = next(
+        g
+        for g in build_status(GoalStore(goal_mode.control), goal_mode.record).goals
+        if g.key == SIM_KEY
+    )
+    assert (goal.status, goal.reason) == ("met", "")
 
 
 def test_v2_transaction_selects_its_identity_group(goal_mode: SimpleNamespace) -> None:
@@ -519,3 +555,51 @@ def test_complete_coverage_campaign_detail_stays_met(goal_mode: SimpleNamespace)
 
     assert state.criteria[SIM_KEY].met is True
     assert "goal_contract_violation" not in state.criteria[SIM_KEY].detail
+
+
+def test_v2_partial_simulation_reason_survives_projection(goal_mode):
+    recorder = GoalEvidenceRecorder(bind(goal_mode))
+    state = _load(goal_mode, recorder)
+    shadow = DevelopmentState.from_json_object(state.to_dict())
+    changes = shadow.set_criterion(
+        SIM_KEY,
+        True,
+        detail={
+            "required_tests": [],
+            "passed_tests": [],
+            "tests_passed": 1,
+            "tests_total": 1,
+        },
+    )
+    recorder.record_or_verify_transaction(
+        state, changes, acceptance_facts=campaign_facts(), ticket_identity={}
+    )
+    goal = next(
+        g
+        for g in build_status(GoalStore(goal_mode.control), goal_mode.record).goals
+        if g.key == SIM_KEY
+    )
+    assert (goal.status, goal.evidence_summary) == ("unmet", "1/1 tests")
+    assert (
+        goal.reason
+        == _disk_state(goal_mode)["criteria"][SIM_KEY]["detail"]["goal_contract_violation"]
+    )
+
+
+@pytest.mark.parametrize("met", [False, True])
+def test_unresolvable_simulation_suite_exposes_reason(goal_mode, met):
+    def unresolved(_root, _target):
+        raise ValueError("suite unavailable")
+
+    recorder = GoalEvidenceRecorder(
+        bind(goal_mode), resolvers=GoalFreshnessResolvers(simulation_suite=unresolved)
+    )
+    state = _v1(goal_mode, recorder, SIM_KEY, met, dict(PASSING_SIM))
+    goal = next(
+        g
+        for g in build_status(GoalStore(goal_mode.control), goal_mode.record).goals
+        if g.key == SIM_KEY
+    )
+    assert goal.status == "unmet"
+    assert goal.reason == state.criteria[SIM_KEY].detail["goal_contract_violation"]
+    assert "suite unavailable" in goal.reason

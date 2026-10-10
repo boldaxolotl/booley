@@ -151,3 +151,25 @@ def test_status_outside_git_lists_active_without_hiding_missing_identity(goal_mo
     (goal_mode.main / ".git" / REPOSITORY_ID_FILE).unlink()
     with pytest.raises(WorktreeIdentityError):
         status_views(GoalStore(goal_mode.control), goal_mode.worktree)
+
+
+@pytest.mark.parametrize("violation", [None, False, 7, [], {}])
+def test_unmet_invalid_contract_reason_is_ignored(goal_mode, violation):
+    path = record_paths(goal_mode.control, goal_mode.record.id).state_file
+    raw = json.loads(path.read_text())
+    raw["criteria"][LINT_KEY]["detail"] = {"warnings": 2, "goal_contract_violation": violation}
+    path.write_text(json.dumps(raw))
+    goal = lint_status(goal_mode)
+    assert (goal.status, goal.evidence_summary, goal.reason) == ("unmet", "2 warnings", "")
+
+
+def test_projection_conflict_reason_precedes_contract_reason(goal_mode):
+    publish(goal_mode)
+    path = record_paths(goal_mode.control, goal_mode.record.id).state_file
+    raw = json.loads(path.read_text())
+    raw["criteria"][LINT_KEY]["met"] = False
+    raw["criteria"][LINT_KEY]["detail"]["goal_contract_violation"] = "untrusted explanation"
+    path.write_text(json.dumps(raw))
+    goal = lint_status(goal_mode)
+    assert goal.status == "unmet"
+    assert goal.reason == "Goal state differs from its selected immutable producer observation"

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from booley.core.boundary import as_str
 from booley.criteria.evidence_ledger import validated_evidence_records
 from booley.goals.apply_barrier import pending_applies
 from booley.goals.change_policy import conflict
@@ -170,7 +171,9 @@ def _goal_status(
             if entry is None or not entry.detail
             else format_criterion_metric(key, entry)
         )
-        return GoalStatus(key, "unmet", metric or "unmet")
+        violation = entry.detail.get("goal_contract_violation") if entry and entry.detail else None
+        reason = as_str(violation, "") or ""
+        return GoalStatus(key, "unmet", metric or "unmet", reason)
     reason = drift or _revision_violation(goal, evidence, record)
     if not reason:
         reason = evaluate_goal_freshness(

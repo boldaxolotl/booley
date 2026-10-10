@@ -198,7 +198,10 @@ def render_status(views: tuple[GoalStatusView, ...], *, short: bool | None = Non
             console.print(f"Branch: {view.record.branch}")
             table = Table("Goal", "Status", "Evidence", box=None, padding=(0, 1))
             for goal in view.goals:
-                table.add_row(goal.key, goal.status, goal.evidence_summary)
+                evidence = goal.evidence_summary
+                if goal.status == "unmet" and goal.reason:
+                    evidence += f" — {goal.reason}"
+                table.add_row(goal.key, goal.status, evidence)
             console.print(table)
             console.print(f"Pending proposals: {view.pending_proposals}")
             conflicts = dict(view.proposal_conflicts)
