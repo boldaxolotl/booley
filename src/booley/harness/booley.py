@@ -1099,14 +1099,18 @@ def _add_goal_subparser(sub) -> None:
         "argparse.ArgumentParser",
         sub.add_parser(
             "goal",
-            help="Inspect or abandon this worktree's Goal Mode",
-            description="Goal Mode commands for the Goal Mode this worktree hosts.",
+            help="Inspect or abandon this worktree's Goal Mode; status shows every active Goal Mode in the Project when this worktree hosts none",
+            description="Inspect this worktree's Goal Mode, or every active Goal Mode in the Project when this worktree hosts none. Abandon applies to this worktree's Goal Mode.",
         ),
     )
     goal_sub = goal_p.add_subparsers(
         dest="goal_command", metavar="{status,abandon}", required=True
     )
-    status_p = goal_sub.add_parser("status", help="Show this worktree's Goal Mode status")
+    status_help = (
+        "Show this worktree's Goal Mode, or every active Goal Mode in the Project "
+        "when this worktree hosts none."
+    )
+    status_p = goal_sub.add_parser("status", help=status_help, description=status_help)
     detail = status_p.add_mutually_exclusive_group()
     detail.add_argument("--short", action="store_true", help="One-line summary")
     detail.add_argument("--long", action="store_true", help="Full detail")
@@ -1132,14 +1136,18 @@ def _cmd_goal(args: argparse.Namespace, _project_root: Path) -> int:
         from booley.criteria.evidence_ledger import AcceptanceLedgerError
         from booley.goals.format import render_status
         from booley.goals.state_store import GoalStateError
-        from booley.goals.status import status_views
+        from booley.goals.status import select_status
         from booley.goals.store import GoalStore, GoalStoreError
         from booley.runtime.project_dir import resolve_project_dir
 
         try:
-            views = status_views(GoalStore(resolve_project_dir(_project_root)), Path.cwd())
+            selection = select_status(GoalStore(resolve_project_dir(_project_root)), Path.cwd())
             short = True if args.short else False if args.long else None
-            print(render_status(views, short=short) if views else "No active Goal Mode.")
+            print(
+                render_status(selection.views, short=short, project_wide=selection.project_wide)
+                if selection.views
+                else "No active Goal Mode."
+            )
             return 0
         except (GoalStoreError, GoalStateError, AcceptanceLedgerError) as exc:
             print(f"ERROR: {exc}", file=sys.stderr)

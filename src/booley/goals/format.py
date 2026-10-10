@@ -196,12 +196,19 @@ def format_met_goal_metric(key: str, entry: Any) -> str:
     return format_criterion_metric(key, entry) or "evidence recorded"
 
 
-def render_status(views: tuple[GoalStatusView, ...], *, short: bool | None = None) -> str:
+def render_status(
+    views: tuple[GoalStatusView, ...],
+    *,
+    short: bool | None = None,
+    project_wide: bool = False,
+) -> str:
     """Render long detail for one Goal Mode, short rows for several by default."""
     import io
 
     stream = io.StringIO()
     console = Console(file=stream, color_system=None, width=120, markup=False)
+    if project_wide and views:
+        console.print("No Goal Mode is active here. Active Goal Modes in this Project:")
     compact = len(views) != 1 if short is None else short
     for view in views:
         console.print(
