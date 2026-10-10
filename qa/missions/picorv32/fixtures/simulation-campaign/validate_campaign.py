@@ -137,7 +137,8 @@ def validate(manifest_path: Path, expected: list[str]) -> dict[str, object]:
     manifest, raw = _load(manifest_path)
     _need(raw.endswith(b"\n"), "manifest is not newline-terminated")
     _need(
-        manifest.get("$schema") == "booley.simulation-campaign-manifest/v1",
+        manifest.get("$schema")
+        in {f"booley.simulation-campaign-manifest/v{version}" for version in (1, 2, 3)},
         "unexpected manifest schema",
     )
     _need(_work_item_names(manifest) == expected, "work-item order differs")

@@ -221,7 +221,8 @@ def _known_preparation_pair(old, new) -> bool:
     return (
         old["planner"] == new["planner"] == "fusesoc_setup"
         and old_provenance["kind"] == new_provenance["kind"] == "fusesoc"
-        and old_provenance["contract_version"] == new_provenance["contract_version"] == "1"
+        and old_provenance["contract_version"] == new_provenance["contract_version"]
+        and old_provenance["contract_version"] in {"1", "2"}
         and old_provenance["version"] == new_provenance["version"]
         and _diagnostic_value(
             {key: value for key, value in old.items() if key != "generated_files"}
@@ -236,14 +237,17 @@ def _known_preparation_pair(old, new) -> bool:
 
 
 def _prepared_source_matches(entry, source) -> bool:
-    return all(entry[field] == source[field] for field in ("path", "bytes", "sha256"))
+    return entry.get("source_path", entry["path"]) == source["path"] and all(
+        entry[field] == source[field] for field in ("bytes", "sha256")
+    )
 
 
 def _prepared_existing_cause(projection, before, after, sources) -> bool:
     old_sources, new_sources = sources
-    path = before["path"]
+    path = before.get("source_path", before["path"])
     return (
-        old_sources is not None
+        after.get("source_path", after["path"]) == path
+        and old_sources is not None
         and new_sources is not None
         and path in old_sources
         and path in new_sources
@@ -575,6 +579,7 @@ def _identity_document(manifest: SimulationCampaignManifest) -> Mapping[str, obj
     return {
         key: document[key]
         for key in (
+            "$schema",
             "target",
             "workload",
             "required_suite",
