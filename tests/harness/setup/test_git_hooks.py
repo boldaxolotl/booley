@@ -3212,6 +3212,7 @@ def test_tracked_bundle_advisory_ignores_ambient_git_selectors(
     with monkeypatch.context() as ambient:
         for name, value in overrides.items():
             ambient.setenv(name, value)
+        assert reconcile._locations(ctx) == locations
         reconcile._report_bundle_tracking(ctx, locations)
     output = capsys.readouterr().out
     command = shlex.join(

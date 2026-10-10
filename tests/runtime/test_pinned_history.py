@@ -267,3 +267,55 @@ def test_dry_tree_oid_preserves_git_ordering_and_rejects_committed_ancestors(rep
             predicted = publication_tree_oid(repo, candidate)
             assert before == _git(repo, "count-objects", "-v")
             assert predicted == publication_tree(repo, publication.pin, path, publication.blob)
+
+
+def test_publication_ignores_inherited_foreign_selection(repo, publication, tmp_path, monkeypatch):
+    from tests.goals.conftest import git
+    from tests.goals.test_attribute_projection import hostile
+    from tests.goals.test_committed_export import repository
+
+    foreign = repository(tmp_path / "foreign")
+    (foreign / "README").write_bytes(b"foreign\n")
+    git(foreign, "add", "README")
+    git(foreign, "commit", "-qm", "foreign")
+    before = {
+        str(p.relative_to(foreign)): p.read_bytes() for p in foreign.rglob("*") if p.is_file()
+    }
+    for key, value in hostile(foreign).items():
+        monkeypatch.setenv(key, value)
+    commit = publish_pinned(repo, publication, "summary", lambda _: None)
+    assert proves_publication(repo, commit, publication)
+    assert before == {
+        str(p.relative_to(foreign)): p.read_bytes() for p in foreign.rglob("*") if p.is_file()
+    }
+
+
+def test_explicit_index_and_object_directory_override_inherited_values(
+    repo, tmp_path, monkeypatch
+):
+    index = tmp_path / "explicit-index"
+    objects = tmp_path / "explicit-objects"
+    objects.mkdir()
+    monkeypatch.setenv("GIT_INDEX_FILE", str(tmp_path / "poison-index"))
+    monkeypatch.setenv("GIT_OBJECT_DIRECTORY", str(tmp_path / "poison-objects"))
+    raw_git(
+        repo,
+        "read-tree",
+        "HEAD",
+        env={"GIT_INDEX_FILE": str(index), "GIT_OBJECT_DIRECTORY": str(repo / ".git/objects")},
+    )
+    assert index.is_file()
+    oid = (
+        raw_git(
+            repo,
+            "hash-object",
+            "-w",
+            "--stdin",
+            input_bytes=b"explicit objects\n",
+            env={"GIT_OBJECT_DIRECTORY": str(objects)},
+        )
+        .strip()
+        .decode()
+    )
+    assert (objects / oid[:2] / oid[2:]).is_file()
+    assert not (tmp_path / "poison-index").exists()

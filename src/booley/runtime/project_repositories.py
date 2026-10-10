@@ -6,6 +6,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from booley.runtime.git_environment import inherited_git_environment
 from booley.runtime.project_dir import PROJECT_DIR_NAME, resolve_checkout_project_dir
 
 
@@ -216,6 +217,7 @@ def run_git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             ["git", *args],
             cwd=cwd,
+            env=inherited_git_environment(),
             capture_output=True,
             text=True,
             timeout=30,
