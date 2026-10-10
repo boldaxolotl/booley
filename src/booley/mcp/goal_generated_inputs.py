@@ -15,7 +15,7 @@ from booley.criteria.state import DevelopmentState
 from booley.flows.sim.campaign.codec import MANIFEST_MAX_BYTES, decode_simulation_campaign_manifest
 from booley.fusesoc.fusesoc_registry import core_files_root, read_core
 from booley.goals.derivation import selected_observations
-from booley.goals.input_view import GeneratedBuildInput
+from booley.goals.input_view import GeneratedBuildInput, is_always_committed_input
 from booley.goals.lifecycle import LifecycleError
 from booley.goals.model import GoalRecord
 from booley.goals.paths import record_paths
@@ -100,7 +100,12 @@ def _disclosed_inputs(
         for entry in disclosure["generated_files"]:
             if entry["kind"] != "generated_input":
                 continue
-            relative = Path(entry["path"])
+            if (
+                producer["$schema"] == "booley.simulation-campaign-manifest/v3"
+                or disclosure["tool_provenance"]["contract_version"] == "2"
+            ) and "source_path" not in entry:
+                continue
+            relative = Path(entry.get("source_path", entry["path"]))
             path = root / relative
             if (
                 relative.is_absolute()
@@ -108,7 +113,11 @@ def _disclosed_inputs(
                 or not path.resolve().is_relative_to(root)
             ):
                 raise LifecycleError("generated producer path escapes the selected worktree")
-            if path.resolve() in committed_only:
+            if (
+                path.resolve() in committed_only
+                or is_always_committed_input(relative)
+                or is_always_committed_input(Path(entry["path"]))
+            ):
                 continue
             result.append(
                 GeneratedBuildInput(

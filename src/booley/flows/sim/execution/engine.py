@@ -15,6 +15,8 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, TypeGuard
 
+from fusesoc.vlnv import Vlnv
+
 from booley.config.project_config import load_test_configuration_field, lookup_target_section
 from booley.core.build_paths import work_root_for
 from booley.core.project_dir import PROJECT_DIR_NAME
@@ -151,6 +153,67 @@ def _prepared_source_identity(
 
 
 @dataclass(frozen=True)
+class _SourceDeclaration:
+    source_path: str
+    core: str
+    file_type: str
+    names: tuple[str, ...]
+
+
+def _safe_declared_path(root: Path, path: str) -> str:
+    # Lexical normalization retains symlink evidence for Finish's own boundary.
+    absolute = Path(os.path.normpath(root / path))
+    if not absolute.is_relative_to(root):
+        raise SimulationBuildSlotError(f"declared Simulation source escapes Project: {path}")
+    return absolute.relative_to(root).as_posix()
+
+
+def _source_declarations(handle: TargetHandle) -> tuple[_SourceDeclaration, ...]:
+    catalog = TargetCatalog.build(handle.project_root)
+    inspection = catalog.inspect(handle)
+    root = handle.project_root.resolve()
+    core_roots = {
+        str(Vlnv(str(fusesoc_registry.read_core(core)["name"]))): fusesoc_registry.core_files_root(
+            core, root
+        )
+        for core in catalog.core_closure((handle,)) or ()
+    }
+    result = []
+    for item in inspection.inputs:
+        source = _safe_declared_path(root, item.path)
+        core = str(Vlnv(item.core))
+        names = [source, str(root / source)]
+        copyto = item.attributes.get("copyto")
+        if isinstance(copyto, str):
+            destination = _safe_declared_path(root, copyto)
+            names = [destination, str(root / destination)]
+        elif core in core_roots:
+            relative = Path(os.path.relpath(root / source, core_roots[core]))
+            if ".." not in relative.parts:
+                names.append((Path("src") / Vlnv(core).sanitized_name / relative).as_posix())
+        result.append(
+            _SourceDeclaration(
+                source, core, item.file_type, tuple(name.replace("\\", "/") for name in names)
+            )
+        )
+    return tuple(result)
+
+
+def _declared_source_path(
+    item: fusesoc_registry.ResolvedFile, declarations: tuple[_SourceDeclaration, ...]
+) -> str | None:
+    name = os.path.normpath(item.name).replace("\\", "/")
+    matches = [
+        declaration
+        for declaration in declarations
+        if name in declaration.names
+        and item.file_type == declaration.file_type
+        and (item.core is None or str(Vlnv(item.core)) == declaration.core)
+    ]
+    return matches[0].source_path if len(matches) == 1 else None
+
+
+@dataclass(frozen=True)
 class _Attempt:
     prepared: PreparedSimulationBuild
     identity: AdapterTransportIdentity
@@ -217,6 +280,7 @@ class PreparedOrdinaryGroup:
         prepared_surface: Mapping[str, str],
         prepared_inputs: Mapping[str, str],
         generation_before: Mapping[str, str],
+        source_declarations: tuple[_SourceDeclaration, ...],
     ) -> None:
         self._execution = execution
         self._handle = handle
@@ -230,6 +294,7 @@ class PreparedOrdinaryGroup:
         # Every candidate-generation file before any legacy per-test Pre-Sim
         # Command ran; a hook that wrote into the candidate forbids reuse.
         self._generation_before = generation_before
+        self._source_declarations = source_declarations
         self._lease_active = True
         self._build_process: SubprocessResult | None = None
         self._build: BuildOutcome | None = None
@@ -279,6 +344,10 @@ class PreparedOrdinaryGroup:
 
     def prepared_source_entries(self) -> tuple[dict[str, object], ...]:
         """Return the canonical staged source closure produced by setup."""
+        if project_compile_surface(self._compile_surface) != self._sources_before:
+            raise SimulationBuildSlotError(
+                "compile inputs changed during setup or Pre-Sim Commands"
+            )
         entries: list[dict[str, object]] = []
         identities: set[Path] = set()
         root = self._attempt.prepared.build_root.resolve()
@@ -309,8 +378,10 @@ class PreparedOrdinaryGroup:
                     f"duplicate prepared Simulation source identity: {relative.as_posix()}"
                 )
             identities.add(relative)
+            source_path = _declared_source_path(item, self._source_declarations)
             entries.append(
                 {
+                    **({"source_path": source_path} if source_path is not None else {}),
                     "path": relative.as_posix(),
                     "bytes": len(raw),
                     "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
@@ -629,7 +700,7 @@ def _planning_disclosure(entries: tuple[dict[str, object], ...]) -> dict[str, ob
         "tool_provenance": {
             "kind": "fusesoc",
             "version": version,
-            "contract_version": "1",
+            "contract_version": "2",
         },
         "cleanup": {"removed": True},
     }
@@ -681,6 +752,7 @@ class SimulationExecution:
         started = time.monotonic()
         compile_surface = resolve_target_compile_surface(handle)
         sources_before = project_compile_surface(compile_surface)
+        source_declarations = _source_declarations(handle)
         announce_unit("configure", target=handle.selector)
         policy = _build_policy(self._options.trace)
         with SimulationBuildSession(handle, policy.variant) as session:
@@ -700,6 +772,7 @@ class SimulationExecution:
                     project_compile_surface(compile_surface, include_operational_cores=True),
                     snapshot_build_inputs(attempt.prepared),
                     snapshot_generation_files(attempt.prepared),
+                    source_declarations,
                 )
                 yield group
             finally:

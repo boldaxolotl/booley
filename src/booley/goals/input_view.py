@@ -677,20 +677,9 @@ def _require_materialized_target(view: CommittedView, target: str | None) -> Non
                 raise LifecycleError(f"consumed design input is a materialized symlink: {path}")
 
 
-def _materialize_generated(
-    view: CommittedView, path: Path, authorized: tuple[GeneratedBuildInput, ...]
-) -> None:
-    """Generated build data is exceptional; HDL and declaration inputs remain committed."""
-    identity = next(
-        (
-            item
-            for item in authorized
-            if current_path(item.path, view.current_roots or {})
-            == current_path(path, view.current_roots or {})
-        ),
-        None,
-    )
-    if identity is None or path.suffix.lower() in {
+def is_always_committed_input(path: Path) -> bool:
+    """HDL, declarations, and executable inputs require committed proof."""
+    return path.suffix.lower() in {
         ".v",
         ".sv",
         ".vh",
@@ -704,7 +693,23 @@ def _materialize_generated(
         ".tcl",
         ".sdc",
         ".xdc",
-    }:
+    }
+
+
+def _materialize_generated(
+    view: CommittedView, path: Path, authorized: tuple[GeneratedBuildInput, ...]
+) -> None:
+    """Generated build data is exceptional; HDL and declaration inputs remain committed."""
+    identity = next(
+        (
+            item
+            for item in authorized
+            if current_path(item.path, view.current_roots or {})
+            == current_path(path, view.current_roots or {})
+        ),
+        None,
+    )
+    if identity is None or is_always_committed_input(path):
         raise LifecycleError(
             f"consumed design input has no committed representation: {path}; commit it before finish"
         )

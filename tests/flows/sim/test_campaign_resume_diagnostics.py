@@ -80,7 +80,6 @@ def test_public_source_resume_names_cause_without_new_attempt(tmp_path, monkeypa
     assert "source changed: rtl/counter.sv" in result.outcome.report_text
     assert result.outcome.detail["mismatch_summary"] == [
         "source changed: rtl/counter.sv",
-        "prepared source changed: src/acme_demo_counter_1/rtl/counter.sv",
     ]
     assert len(result.outcome.detail["mismatches"]) == 16
     assert "sha256:" not in result.outcome.report_text
@@ -165,7 +164,6 @@ def test_public_resume_cli_summary_detail_and_dry_run_immutability(
     assert "source changed: rtl/counter.sv" in result.outcome.detail["mismatch_summary"]
     assert result.outcome.detail["mismatch_summary"] == [
         "source changed: rtl/counter.sv",
-        "prepared source changed: src/acme_demo_counter_1/rtl/counter.sv",
     ]
     assert "/planning_disclosures/" not in result.outcome.report_text or verbose
     assert result.outcome.detail["derived_fingerprint_count"] == 8
@@ -273,6 +271,45 @@ def test_public_resume_bool_to_int_names_parameter_and_explains_command_digest(
     assert not any(line.startswith("/workload/source_recipe/parameters/") for line in raw)
     assert result.outcome.detail["derived_fingerprint_count"] == 9
     assert len(executions) == 1
+    assert {
+        key: value
+        for key, value in _snapshot(manifest.parent).items()
+        if not key.startswith("dependency-receipts/")
+    } == before
+
+
+def test_legacy_interrupted_campaign_new_source_mapping_refuses_before_attempt(
+    tmp_path, monkeypatch
+):
+    from booley.flows.sim.execution.engine import _planning_disclosure
+
+    def legacy_disclosure(entries):
+        disclosure = _planning_disclosure(entries)
+        disclosure["tool_provenance"]["contract_version"] = "1"
+        return disclosure
+
+    with monkeypatch.context() as legacy:
+        legacy.setattr("booley.flows.sim.execution.engine._planning_disclosure", legacy_disclosure)
+        legacy.setattr(
+            "booley.flows.sim.execution.engine._source_declarations", lambda _handle: ()
+        )
+        reports, manifest, executions = _interrupted_campaign(tmp_path, legacy)
+    document = json.loads(manifest.read_bytes())
+    assert document["$schema"] == "booley.simulation-campaign-manifest/v1"
+    assert "source_path" not in document["planning_disclosures"][0]["generated_files"][0]
+    before = _snapshot(manifest.parent)
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: "a" * 40)
+    monkeypatch.setattr("booley.flows.sim.campaign.resume.git_full_sha", lambda *_args: "a" * 40)
+    result = SimulateFlow().execute(
+        SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports)
+    )
+    assert result.exit_code == 2
+    assert len(executions) == 1
+    assert any("$schema" in line for line in result.outcome.detail["mismatch_summary"]), (
+        result.outcome.detail
+    )
+    assert any("source_path" in line for line in result.outcome.detail["mismatch_summary"])
     assert {
         key: value
         for key, value in _snapshot(manifest.parent).items()
