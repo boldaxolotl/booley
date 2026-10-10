@@ -558,7 +558,7 @@ def test_actual_reviewer_evidence_keeps_versioned_project_clean(
     reviewer, monkeypatch, payload, code
 ):
     from booley.runtime import project_dir
-    from tests.runtime.test_project_runtime_gitignore import assert_clean, initialize_repository
+    from tests.project_runtime_git_support import assert_clean, initialize_repository
 
     root = Path(reviewer.args.work_dir)
     data = root / ".booley_project"

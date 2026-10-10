@@ -53,13 +53,13 @@ def _log(project):
 
 
 def _commit_project_data(state, monkeypatch):
-    from tests.runtime.test_project_runtime_gitignore import initialize_repository
+    from tests.project_runtime_git_support import initialize_repository
 
     initialize_repository(state, state, monkeypatch)
 
 
 def _project_data_status(state):
-    from tests.runtime.test_project_runtime_gitignore import git
+    from tests.project_runtime_git_support import git
 
     return git(state, "status", "--short", "--untracked-files=all")
 
@@ -355,7 +355,7 @@ class TestList:
 def test_actual_feedback_writers_keep_versioned_project_clean(run, project, monkeypatch, origin):
     from booley.feedback.materialize import materialize_attachments
     from booley.feedback.render import Environment
-    from tests.runtime.test_project_runtime_gitignore import assert_clean, initialize_repository
+    from tests.project_runtime_git_support import assert_clean, initialize_repository
 
     state = project / ".booley_project"
     initialize_repository(state, state, monkeypatch)
@@ -400,40 +400,4 @@ def test_actual_feedback_writers_keep_versioned_project_clean(run, project, monk
     assert_clean(state)
     assert run("export", "--all") == 0
     assert (state / "BOOLEY-FEEDBACK.md").is_file()
-    assert_clean(state)
-
-
-@pytest.mark.parametrize("writer", ["export", "attachments"])
-def test_feedback_evidence_publication_is_git_local(run, project, monkeypatch, writer):
-    from booley.feedback.materialize import materialize_attachments
-    from booley.feedback.render import Environment
-    from tests.runtime.test_project_runtime_gitignore import assert_clean, initialize_repository
-
-    state = project / ".booley_project"
-    initialize_repository(state, state, monkeypatch)
-    env = Environment(doctor_deep_clean=True)
-    monkeypatch.setattr("booley.feedback.render.collect_environment", lambda *_a, **_kw: env)
-    source = project / "raw.log"
-    source.write_text("preserved evidence\n")
-    run(
-        "add",
-        "--title",
-        "local finding",
-        "--attach",
-        str(source),
-        "--bucket",
-        "booley",
-        "--repro",
-        "run",
-        "--observed",
-        "error",
-        "--expected",
-        "pass",
-    )
-    if writer == "export":
-        assert run("export", "--all") == 0
-        assert (state / "BOOLEY-FEEDBACK.md").is_file()
-    else:
-        assert materialize_attachments(state, [source], env=env) == (source,)
-        assert list((state / "setup-evidence/attachments").glob("*.txt.json"))
     assert_clean(state)

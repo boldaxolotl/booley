@@ -460,7 +460,7 @@ def test_snapshot_omits_canonical_transient_paths(project):
         "logs/log.txt",
         ".baseline-wt-stale/result",
     ]
-    from tests.runtime.test_project_runtime_gitignore import NEW_RUNTIME_PATHS
+    from tests.project_runtime_git_support import NEW_RUNTIME_PATHS
 
     preserved = [
         *NEW_RUNTIME_PATHS,
@@ -542,7 +542,7 @@ def test_static_snapshot_additions_are_canonical_transient_patterns(versioned_pr
 
 def test_canonical_transient_classifier_matches_git_including_reincludes(versioned_project):
     from booley.runtime.project_gitignore import is_project_transient_path
-    from tests.runtime.test_project_runtime_gitignore import NEW_RUNTIME_PATHS
+    from tests.project_runtime_git_support import NEW_RUNTIME_PATHS
 
     paths = [
         *NEW_RUNTIME_PATHS,

@@ -6,19 +6,16 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from tests.project_runtime_git_support import (
+    NEW_RUNTIME_PATHS,
+    assert_clean,
+    git,
+    initialize_repository,
+)
 
 from booley.feedback.findings import Finding, append, rewrite
 from booley.harness.init_cmd import InitContext, _backfill_project_gitignore
 from booley.runtime import project_dir
-
-NEW_RUNTIME_PATHS = (
-    "reviewer-evidence/audit.json",
-    "findings.jsonl",
-    "findings.jsonl.tmp",
-    "BOOLEY-FEEDBACK.md",
-    "setup-evidence/attachments/log.txt",
-    "PARITY-REPORT.md",
-)
 
 # Audit policy owners, including interrupted publications. Concrete writer calls
 # below complement these path fixtures; these are deliberately Git-policy tests.
@@ -76,38 +73,6 @@ AUTHORED_PATHS = (
     "custom-output/report.json",
     *(f"{prefix}/{path}" for prefix in ("cores", "selftest") for path in NEW_RUNTIME_PATHS),
 )
-
-
-def git(root: Path, *args: str) -> str:
-    """Run bounded Git against an isolated fixture repository."""
-    return subprocess.run(
-        ["git", "-C", str(root), *args], check=True, capture_output=True, text=True, timeout=10
-    ).stdout
-
-
-def initialize_repository(root: Path, data: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Commit inputs before any writer, without inherited Git ignore rules."""
-    config = root.parent / f"{root.name}-git-config"
-    config.mkdir(exist_ok=True)
-    empty = config / "empty"
-    empty.touch()
-    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
-    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty))
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
-    monkeypatch.setenv("HOME", str(config))
-    git(root, "init", "-q", "-b", "main")
-    git(root, "config", "core.excludesFile", str(empty))
-    git(root, "config", "user.name", "Fixture")
-    git(root, "config", "user.email", "fixture@example.invalid")
-    _backfill_project_gitignore(data, InitContext(project_root=root))
-    git(root, "add", ".")
-    git(root, "commit", "-qm", "initialized inputs")
-    assert_clean(root)
-
-
-def assert_clean(root: Path) -> None:
-    """Include every untracked descendant in the cleanliness assertion."""
-    assert git(root, "status", "--short", "--untracked-files=all") == ""
 
 
 @pytest.fixture(params=["standalone", "nested"])
@@ -304,14 +269,15 @@ def test_audited_storage_families_keep_project_clean(versioned_project):
     assert_clean(repo)
     # Git worktrees are themselves a runtime storage family. The real Git
     # command publishes administrative state and a checkout under its owner.
-    linked = data / "worktrees" / "audit"
-    git(repo, "worktree", "add", "-q", "--detach", str(linked))
-    assert (linked / ".git").is_file()
-    assert_clean(repo)
+    for linked in (data / "worktrees/audit", data / ".baseline-wt-audit"):
+        git(repo, "worktree", "add", "-q", "--detach", str(linked))
+        assert (linked / ".git").is_file()
+        assert_clean(repo)
 
 
 @pytest.mark.parametrize("family", ["lint", "sim", "synth", "fpga"])
-def test_actual_flow_report_publication_keeps_project_clean(versioned_project, family):
+@pytest.mark.parametrize("owner", ["flow-reports", "tmp/doctor/flow-reports"])
+def test_actual_flow_report_publication_keeps_project_clean(versioned_project, family, owner):
     from booley.flows import endpoint_reporting
     from booley.flows.fpga.flow import FpgaImplFlow
     from booley.flows.lint.flow import LintFlow
@@ -326,13 +292,11 @@ def test_actual_flow_report_publication_keeps_project_clean(versioned_project, f
         "synth": AsicSynthesizeFlow,
         "fpga": FpgaImplFlow,
     }[family]()
-    flow.context._args = flow.request_type(
-        target="demo", work_dir=root, report_dir=data / "flow-reports"
-    )
+    flow.context._args = flow.request_type(target="demo", work_dir=root, report_dir=data / owner)
     with flow.context.publication_resources:
         path = endpoint_reporting.write_report(flow.context, EndpointOutcome(exit_code=0))
     assert path is not None and path.is_file()
-    assert (data / "flow-reports" / f"{family}.json").is_file()
+    assert (data / owner / f"{family}.json").is_file()
     assert_clean(repo)
     if family == "lint":
         flow._lint_invocation_dir = flow.reserve_invocation_dir()
@@ -373,4 +337,156 @@ def test_compiler_cache_preparation_keeps_project_clean(versioned_project):
     assert policy.root is not None
     _prepare_directory(policy.root)
     assert policy.root.is_dir()
+    assert_clean(repo)
+
+
+def test_campaign_publications_and_run_lock_keep_project_clean(versioned_project):
+    from tests.flows.sim.test_campaign_manifest_codec import _manifest
+
+    from booley.flows.sim.campaign.codec import (
+        canonical_json_bytes,
+        decode_simulation_campaign_manifest,
+    )
+    from booley.flows.sim.campaign.run_directory import (
+        claimed_run_directory,
+        expand_run_directory,
+    )
+    from booley.flows.sim.campaign.store import CampaignStore
+
+    root, data, repo = versioned_project
+    store = CampaignStore(data / ".runtime/campaigns/audit")
+    store.publish_manifest(decode_simulation_campaign_manifest(canonical_json_bytes(_manifest())))
+    assert store.manifest_path.is_file()
+    assert_clean(repo)
+    store.regenerate_summary()
+    assert store.summary_path.is_file()
+    assert_clean(repo)
+    run = expand_run_directory(
+        str(data / ".runtime/campaign-runs/{attempt}"),
+        project_root=root,
+        campaign_id="audit",
+        target_key="sim",
+        work_item_key="smoke",
+        attempt_key="first",
+    )
+    identity = {"campaign_id": "audit", "work_item_id": "smoke", "attempt_id": "first"}
+    with claimed_run_directory(run, identity=identity) as directory:
+        assert (directory / ".booley-simulation-attempt.json").is_file()
+        assert run.lock_path.is_file()
+        assert_clean(repo)
+    assert not run.path.exists()
+    assert run.lock_path.is_file()
+    assert_clean(repo)
+
+
+def test_doctor_probe_and_upgrade_publications_keep_project_clean(versioned_project):
+    from booley.harness import developer_probe, synth_probe, upgrade_review
+
+    _root, data, repo = versioned_project
+    for path in (
+        developer_probe.record_measurement(data, 1024),
+        synth_probe.record_measurement(data, "synth", 1.0),
+    ):
+        assert path.is_file()
+        assert_clean(repo)
+    upgrade_review.observe(data, current_version="0.3.0", now="2026-10-10T00:00:00Z")
+    assert upgrade_review.state_path(data).is_file()
+    assert_clean(repo)
+
+
+def test_job_slot_publication_keeps_project_clean(versioned_project):
+    from booley.runtime.job_slots import SlotStore
+
+    _root, data, repo = versioned_project
+    store = SlotStore(data / "runtime/jobs/slots", now=lambda: 100.0)
+    token = store.submit("light", pid=1, argv=["fixture"])
+    try:
+        assert token.path.is_file()
+        assert_clean(repo)
+    finally:
+        store.release(token)
+    assert_clean(repo)
+
+
+def test_ignored_evidence_is_omitted_from_specialist_visible_inputs(versioned_project):
+    from booley.specialists.specialist_workspace import _visible_paths
+
+    _root, data, repo = versioned_project
+    for name in NEW_RUNTIME_PATHS:
+        path = data / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("local evidence\n")
+    authored = data / "SETUP-PLAN.md"
+    authored.write_text("authored setup plan\n")
+    visible = _visible_paths(repo)
+    assert authored.relative_to(repo) in visible
+    assert all((data / name).relative_to(repo) not in visible for name in NEW_RUNTIME_PATHS)
+
+
+def test_specialist_session_and_mutation_round_storage_keep_project_clean(
+    versioned_project, monkeypatch
+):
+    from booley.dev_support.mutation_lock import verification_rounds_dir
+    from booley.specialists.mutation_tester import MutationTesterSpecialist, VerificationOutcome
+    from booley.specialists.reviewer import ReviewerSpecialist
+
+    root, data, repo = versioned_project
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(data))
+    monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
+    endpoint = ReviewerSpecialist()
+    endpoint._last_session_id = "fixture-session"
+    endpoint._persist_session_id("reviewer")
+    assert (data / ".runtime/sessions/reviewer.session_id").is_file()
+    assert_clean(repo)
+    MutationTesterSpecialist()._write_round_log(1, VerificationOutcome(True, True, True))
+    assert (verification_rounds_dir() / "round_1.log").is_file()
+    assert_clean(repo)
+
+
+def test_init_upgrade_requires_committing_repaired_ignore_file(versioned_project):
+    root, data, repo = versioned_project
+    ignore = data / ".gitignore"
+    ignore.write_text("\n".join(p for p in ignore.read_text().splitlines() if p[0:1] != "/"))
+    git(repo, "add", str(ignore))
+    git(repo, "commit", "-qm", "old project policy")
+    assert_clean(repo)
+    _backfill_project_gitignore(data, InitContext(project_root=root))
+    assert " M " in git(repo, "status", "--short", "--untracked-files=all")
+    git(repo, "add", str(ignore))
+    git(repo, "commit", "-qm", "reconciled project policy")
+    assert_clean(repo)
+
+
+def test_retained_ticket_storage_families_keep_project_clean(versioned_project):
+    from tests.ticket_board.test_waiver_candidates import _rejection
+
+    from booley.ticket_board.board_layout import (
+        waiver_candidates_lock_path,
+        waiver_candidates_path,
+    )
+    from booley.ticket_board.persistence import atomic_write_once
+    from booley.ticket_board.waiver_candidates import record_rejections
+
+    _root, data, repo = versioned_project
+    board = data / "tickets/board/audit.md"
+    board.parent.mkdir(parents=True)
+    assert atomic_write_once(board, b"runtime ticket record\n", mode=0o644)
+    assert board.is_file()
+    assert_clean(repo)
+    tickets = data / "tickets"
+    assert record_rejections(tickets, "audit", [_rejection()]) == 1
+    assert waiver_candidates_path(tickets, "audit").is_file()
+    assert waiver_candidates_lock_path(tickets, "audit").is_file()
+    assert_clean(repo)
+
+
+def test_dashboard_task_runtime_ownership_keeps_project_clean(versioned_project):
+    from booley.runtime.dashboard_tasks import reconcile
+
+    _root, data, repo = versioned_project
+    transaction = reconcile(repo, data)
+    assert transaction.applied
+    assert (data / "runtime/dashboard-task.json").is_file()
+    assert (data / "runtime/dashboard-task.lock").is_file()
     assert_clean(repo)

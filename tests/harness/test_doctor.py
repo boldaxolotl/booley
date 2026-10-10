@@ -8186,3 +8186,27 @@ def test_local_evidence_pattern_warning_and_init_repair(tmp_path, missing):
     assert missing in findings[0].message
     _backfill_project_gitignore(tmp_path, InitContext(project_root=tmp_path))
     assert [f.severity for f in _gitignore_probe(tmp_path)] == ["pass"]
+
+
+def test_unanchored_evidence_workarounds_receive_canonical_init_repair(tmp_path):
+    from booley.harness.init_cmd import InitContext, _backfill_project_gitignore
+
+    new = (
+        "/reviewer-evidence/",
+        "/findings.jsonl",
+        "/findings.jsonl.tmp",
+        "/BOOLEY-FEEDBACK.md",
+        "/setup-evidence/",
+        "/PARITY-REPORT.md",
+    )
+    original = "".join(
+        f"{p.lstrip('/') if p in new else p}\n"
+        for p in project_gitignore.PROJECT_GITIGNORE_PATTERNS
+    )
+    ignore = tmp_path / ".gitignore"
+    ignore.write_text(original)
+    assert [f.severity for f in _gitignore_probe(tmp_path)] == ["warn"]
+    _backfill_project_gitignore(tmp_path, InitContext(project_root=tmp_path))
+    assert ignore.read_text().startswith(original)
+    assert all(p in ignore.read_text().splitlines() for p in new)
+    assert [f.severity for f in _gitignore_probe(tmp_path)] == ["pass"]
