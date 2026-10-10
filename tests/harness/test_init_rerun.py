@@ -978,3 +978,79 @@ def test_project_dir_check_full_init_reports_backfills_without_mutation(repo, mo
     assert _check_only(repo) == 0
     assert "would" not in capsys.readouterr().out
     assert _complete_snapshot(repo) == before
+
+
+def _managed_git(root: Path, *args: str) -> bytes:
+    return subprocess.run(
+        ["git", "-C", str(root), *args], capture_output=True, check=True, timeout=10
+    ).stdout
+
+
+def test_initial_authored_scaffolding_remains_uncommitted(repo):
+    before = _managed_git(repo, "ls-files", "--stage", "-z")
+    assert _run_full_init(repo) == 0
+    data = repo / ".booley_project"
+    assert (data / "booley.toml").is_file()
+    assert _managed_git(repo, "ls-files", "--stage", "-z") == before
+    assert not _managed_git(data, "ls-files", "--stage", "-z")
+    assert b"booley.toml" in _managed_git(data, "status", "--porcelain", "--untracked-files=all")
+
+
+@pytest.mark.parametrize("topology", ["standalone", "nested"])
+def test_managed_bundle_publication_leaves_versioned_project_clean(repo, topology):
+    if topology == "nested":
+        initial = repo / ".booley_project"
+        initial.mkdir(mode=0o700)
+        (initial / "booley.toml").write_text("[stealth]\nenabled=false\n")
+    assert _run_full_init(repo) == 0
+    data = repo / ".booley_project"
+    owner = data if topology == "standalone" else repo
+    for repository in {repo, owner}:
+        _managed_git(repository, "config", "user.name", "Fixture")
+        _managed_git(repository, "config", "user.email", "fixture@example.invalid")
+    # The user's authored baseline is committed between first scaffolding and
+    # runtime initialization. The generated bundle is never included in it.
+    bundle = data / ".managed/project-git-hooks.pyz"
+    bundle.unlink()
+    _managed_git(owner, "add", ".")
+    _managed_git(owner, "commit", "-qm", "prepared authored Project")
+    if topology == "standalone":
+        (repo / "rtl.v").write_text("module top; endmodule\n")
+        _managed_git(repo, "add", ".")
+        _managed_git(repo, "commit", "-qm", "prepared RTL")
+    index = _managed_git(owner, "ls-files", "--stage", "-z")
+    assert _run_full_init(repo) == 0
+    assert bundle.is_file()
+    assert _managed_git(data, "check-ignore", "--no-index", str(bundle))
+    assert _managed_git(owner, "status", "--porcelain", "--untracked-files=all") == b""
+    assert _managed_git(owner, "ls-files", "--stage", "-z") == index
+
+
+def test_managed_bundle_ignore_backfill_and_check(repo, capsys):
+    assert _run_full_init(repo) == 0
+    data = repo / ".booley_project"
+    ignore = data / ".gitignore"
+    stale = ignore.read_text().replace(".managed/\n", "") + "# custom policy\ncustom/\n"
+    ignore.write_text(stale)
+    _managed_git(data, "config", "user.name", "Fixture")
+    _managed_git(data, "config", "user.email", "fixture@example.invalid")
+    _managed_git(data, "add", ".gitignore")
+    _managed_git(data, "commit", "-qm", "stale authored policy")
+    before = _managed_git(data, "ls-files", "--stage", "-z")
+    capsys.readouterr()
+    ctx = InitContext(project_root=repo, check_only=True)
+    init_cmd._step_project_dir(ctx)
+    assert (
+        "would add 1 missing ignore pattern(s) to .gitignore: .managed/" in capsys.readouterr().out
+    )
+    assert ignore.read_text() == stale
+    assert _managed_git(data, "ls-files", "--stage", "-z") == before
+    init_cmd._step_project_dir(InitContext(project_root=repo))
+    repaired = ignore.read_text()
+    assert repaired.startswith(stale)
+    assert repaired.count(".managed/\n") == 1
+    assert b".managed" not in _managed_git(data, "status", "--porcelain", "--untracked-files=all")
+    assert b" M .gitignore" in _managed_git(data, "status", "--porcelain")
+    init_cmd._step_project_dir(InitContext(project_root=repo))
+    assert ignore.read_text() == repaired
+    assert _managed_git(data, "ls-files", "--stage", "-z") == before

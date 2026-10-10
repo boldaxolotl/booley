@@ -42,6 +42,7 @@ from fnmatch import fnmatchcase
 # ``__pycache__/`` + ``*.pyc``: Project-authored Python lifecycle hooks may
 # still run in ``.booley_project/hooks/``. The managed Git policy bundle is
 # isolated under ``.booley_project/.managed/`` and runs from its zip archive.
+# Ignore the generated bundle and temporary files from interrupted publication.
 PROJECT_GITIGNORE_PATTERNS = (
     "tmp/",
     "flow-reports/",
@@ -58,6 +59,7 @@ PROJECT_GITIGNORE_PATTERNS = (
     ".runtime/",
     "runtime/",
     "worktrees/",
+    ".managed/",
     "__pycache__/",
     "*.pyc",
     "SETUP-REPORT.md",

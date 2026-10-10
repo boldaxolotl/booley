@@ -527,12 +527,66 @@ def _pending_detail(
     return details
 
 
+def _tracking_git(directory: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    """Inspect the owning repository without ambient repository overrides."""
+    env = os.environ.copy()
+    for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_PREFIX"):
+        env.pop(name, None)
+    env["LC_ALL"] = "C"
+    return subprocess.run(
+        ["git", "-C", str(directory), "--literal-pathspecs", *args],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+        env=env,
+    )
+
+
+def _bundle_tracking_detail(locations: _Locations) -> str | None:
+    """Return manual remediation only when the literal bundle is in the index."""
+    project = locations.project_dir.resolve()
+    ancestor = next(path for path in (project, *project.parents) if path.is_dir())
+    owner_probe = _tracking_git(ancestor, "rev-parse", "--show-toplevel")
+    if owner_probe.returncode:
+        if "fatal: not a git repository" in owner_probe.stderr:
+            return None
+        raise RuntimeError(owner_probe.stderr.strip() or "Git owner discovery failed")
+    if not owner_probe.stdout.strip():
+        raise RuntimeError("Git owner discovery returned an empty repository root")
+    owner = Path(owner_probe.stdout.strip()).resolve()
+    relative = locations.bundle_path.resolve().relative_to(owner).as_posix()
+    tracked = _tracking_git(owner, "ls-files", "--error-unmatch", "--", relative)
+    if tracked.returncode == 1:
+        return None
+    if tracked.returncode:
+        raise RuntimeError(tracked.stderr.strip() or "Git bundle index inspection failed")
+    command = shlex.join(["git", "-C", str(owner), "rm", "--cached", "--", relative])
+    return (
+        f"Generated Project Git-hook bundle is already tracked; untrack it with: {command}. "
+        "Commit the intentional removal and changed ignore policy yourself outside active Goal Mode; "
+        "rerun init in other checkouts if removal deletes their local bundle."
+    )
+
+
+def _report_bundle_tracking(ctx: InitContext, locations: _Locations) -> None:
+    """Keep a manual tracking advisory separate from mechanical pending work."""
+    try:
+        detail = _bundle_tracking_detail(locations)
+    except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
+        detail = f"Could not inspect Project Git-hook bundle tracking: {exc}; inspect Git tracking manually."
+    if detail:
+        warn(detail)
+        ctx.record("project_git_hook_tracking", "skip", detail)
+
+
 def step_project_git_hooks(ctx: InitContext) -> None:
     """Reconcile the bundle, adapters, and legacy managed files."""
     ctx.step_banner("project Git-hook bundle")
     locations = _locations(ctx)
     if locations is None:
         return
+    _report_bundle_tracking(ctx, locations)
     try:
         bundle = build_project_git_hook_bundle()
         current = _current_source_bytes()
