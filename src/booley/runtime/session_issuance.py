@@ -30,6 +30,7 @@ from booley.core.boundary import (
 )
 from booley.core.differences import format_differences
 from booley.core.private_store import PrivateStore
+from booley.core.project_identity import project_label_id
 from booley.core.user_paths import config_dir
 from booley.eda.provisioning import authority
 from booley.eda.provisioning import session_requirements as eda_requirements
@@ -964,7 +965,7 @@ def authenticate(project_root: Path, spec: dict[str, Any], spec_path: Path) -> I
 def labels(issuance: Issuance) -> tuple[str, ...]:
     """Return exact resource labels for lifecycle, revoke, Doctor, and reaping."""
     values = {
-        "booley.project-id": hashlib.sha256(issuance.project_root.encode()).hexdigest(),
+        "booley.project-id": project_label_id(issuance.project_root),
         "booley.spec-digest": issuance.spec_sha256,
         "booley.eda-policy": str(issuance.policy_revision),
         "booley.eda-installation": issuance.installation or "none",

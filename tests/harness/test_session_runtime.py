@@ -24,6 +24,18 @@ from booley.runtime import devcontainer as dc
 from booley.runtime import issuance_invalidation, session_spec
 from booley.runtime import session_issuance as runtime_spec
 from booley.runtime import session_runtime as sr
+from booley.runtime.session_admission import (
+    admit_start as real_admit_start,
+)
+from booley.runtime.session_admission import (
+    claim_vscode_start as real_claim_vscode_start,
+)
+from booley.runtime.session_admission import (
+    clear_vscode_claim as real_clear_vscode_claim,
+)
+from booley.runtime.session_admission import (
+    vscode_sandboxes as real_vscode_sandboxes,
+)
 from tests.lifecycle_lock_support import held_lifecycle_lock, observe_lifecycle_contention
 
 
@@ -4236,3 +4248,59 @@ def test_startup_preserves_identity_drift_diagnostic(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime_spec, "validate", refuse)
     with pytest.raises(sr.SessionError, match=r"\[agent.git\].*refresh and recreate"):
         sr._validate_up_request(tmp_path, None)
+
+
+def test_mismatched_editor_stop_remove_down_releases_capacity(tmp_path, monkeypatch):
+    from booley.runtime import session_admission as admission
+
+    monkeypatch.setattr(admission, "admit_start", real_admit_start)
+    monkeypatch.setattr(admission, "claim_vscode_start", real_claim_vscode_start)
+    monkeypatch.setattr(admission, "clear_vscode_claim", real_clear_vscode_claim)
+    monkeypatch.setattr(admission, "vscode_sandboxes", real_vscode_sandboxes)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setattr(
+        admission, "load_host_policy", lambda **kw: admission.SandboxHostPolicy(max_sessions=1)
+    )
+    documents = {}
+
+    def docker(argv, **kwargs):
+        if argv[1] == "ps":
+            rows = []
+            for key, document in documents.items():
+                if "-a" not in argv and not document["State"]["Running"]:
+                    continue
+                row = f"{key}\teditor"
+                if "-a" in argv:
+                    row += f"\t{project}"
+                rows.append(row)
+            return subprocess.CompletedProcess(argv, 0, "\n".join(rows), "")
+        return subprocess.CompletedProcess(argv, 0, json.dumps(documents[argv[3]]), "")
+
+    assert admission.claim_vscode_start(project, run=docker)
+    documents["editor-id"] = {
+        "Name": "/editor",
+        "Created": "2026-09-27T08:00:00Z",
+        "Config": {
+            "Labels": {
+                "booley.role": "interactive",
+                "booley.project-id": "wrong",
+                "devcontainer.local_folder": str(project),
+            }
+        },
+        "State": {"Running": True, "StartedAt": "2026-09-27T08:00:00Z"},
+    }
+    monkeypatch.setattr(sr, "_run", docker)
+    monkeypatch.setattr(sr.idk, "container_exists", lambda name: False)
+    monkeypatch.setattr(sr, "_relay_resources", lambda root: None)
+    monkeypatch.setattr(sr, "_relay_objects_exist", lambda relay: False)
+    with pytest.raises(sr.SessionError, match="identity disagrees"):
+        sr._down_unlocked(project)
+    documents["editor-id"]["State"]["Running"] = False
+    with pytest.raises(sr.SessionError, match="identity disagrees"):
+        sr._down_unlocked(project)
+    del documents["editor-id"]
+    assert sr._down_unlocked(project).claim_cleared
+    admission.admit_start(project, target_name="headless", run=docker)
+    assert admission.claim_vscode_start(project, run=docker)

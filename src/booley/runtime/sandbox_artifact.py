@@ -28,6 +28,7 @@ from booley.core.boundary import (
     require_str,
     require_str_value,
 )
+from booley.core.project_identity import matches_project_label
 from booley.runtime import runtime_context
 from booley.runtime.image_provenance import is_local_image_id
 
@@ -66,9 +67,9 @@ def _container_state(workspace: Path, container: str) -> dict | None:
         config = require_dict(state.get("Config"), field="Config")
         labels = require_dict(config.get("Labels"), field="Labels")
         running = require_dict(state.get("State"), field="State").get("Running")
-        owned = labels.get("booley.role") == "interactive" and labels.get(
-            "booley.project-id"
-        ) == sr.dc.canonical_project_id(workspace)
+        owned = labels.get("booley.role") == "interactive" and matches_project_label(
+            labels.get("booley.project-id"), str(workspace.resolve(strict=True))
+        )
         if not owned or running is not True:
             return None
         name = require_str_value(

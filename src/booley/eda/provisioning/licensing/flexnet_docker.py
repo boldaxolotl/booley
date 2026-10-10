@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from booley.core.differences import format_differences
+from booley.core.project_identity import project_label_id
 from booley.core.resources import package_data_dir
 
 from .flexnet_relay import (
@@ -530,7 +531,7 @@ def cleanup_project_resources_for_identity(
 ) -> tuple[str, ...]:
     """Remove resources for an already-canonical persisted Project identity."""
     run = runner or _run_docker
-    project_id = hashlib.sha256(project_root.encode()).hexdigest()
+    project_id = project_label_id(project_root)
     label = f"booley.project-id={project_id}"
     residual: list[str] = []
     for kind, list_args in (

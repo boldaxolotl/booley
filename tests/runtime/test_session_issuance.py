@@ -2553,3 +2553,25 @@ def test_previously_issued_legacy_prepare_survives_full_validation(
     assert runtime_spec.authenticate(project, spec, path) == stamp
     assert runtime_spec.validate(project, spec, path) == stamp
     assert runtime_spec.load_issued_snapshot(project) == stamp
+
+
+def test_project_label_preserves_exact_full_digest_for_deleted_root():
+    import hashlib
+
+    stamp = runtime_spec.Issuance(
+        version=1,
+        project_root="/deleted/Project",
+        spec_sha256="a" * 64,
+        image="image",
+        image_id="sha256:" + "b" * 64,
+        keeper_image="keeper",
+        policy_revision=1,
+        installation=None,
+        license_profile=None,
+        wrapper_sha256=None,
+        relay_image_id=None,
+        validator_sha256="c" * 64,
+    )
+    labels = dict(label.split("=", 1) for label in runtime_spec.labels(stamp))
+    assert labels["booley.project-id"] == hashlib.sha256(b"/deleted/Project").hexdigest()
+    assert labels["booley.spec-digest"] == "a" * 64
