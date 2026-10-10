@@ -99,9 +99,10 @@ def canonical_json_bytes(value: object) -> bytes:
 
 _MANIFEST_V1_SCHEMA = "booley.simulation-campaign-manifest/v1"
 # v2 = v1 plus the required ``workload.no_waivers: true`` (raw coverage, #992).  v1 is
-# immutable, so the new member lives behind a new version; default runs still write v1.
+# immutable; v3 additionally permits explicit declared source identities in disclosures.
 _MANIFEST_V2_SCHEMA = "booley.simulation-campaign-manifest/v2"
-_MANIFEST_SCHEMAS = frozenset({_MANIFEST_V1_SCHEMA, _MANIFEST_V2_SCHEMA})
+_MANIFEST_V3_SCHEMA = "booley.simulation-campaign-manifest/v3"
+_MANIFEST_SCHEMAS = frozenset({_MANIFEST_V1_SCHEMA, _MANIFEST_V2_SCHEMA, _MANIFEST_V3_SCHEMA})
 
 _MANIFEST_FIELDS = frozenset(
     {
@@ -999,7 +1000,7 @@ def _validate_manifest(value: Mapping[str, object]) -> None:
     workload = _validate_workload(value["workload"], schema)
     suite = _validate_required_suite(value["required_suite"])
     variants = _validate_variants(value["build_variants"], workload)
-    disclosures = _validate_disclosures(value["planning_disclosures"])
+    disclosures = _validate_disclosures(value["planning_disclosures"], schema)
     prerequisites = _validate_prerequisites(value["prerequisites"])
     items = _validate_work_items(value["work_items"], target, suite, variants)
     _validate_manifest_fingerprints(
@@ -1023,7 +1024,18 @@ def _validate_target(value: object, field: str) -> Mapping[str, object]:
 
 def _validate_workload(value: object, schema: str) -> Mapping[str, object]:
     # v2 adds exactly one member, ``no_waivers``; the v1 grammar never changes.
-    extra = {"no_waivers"} if schema == _MANIFEST_V2_SCHEMA else set()
+    extra = (
+        {"no_waivers"}
+        if (
+            schema == _MANIFEST_V2_SCHEMA
+            or (
+                schema == _MANIFEST_V3_SCHEMA
+                and isinstance(value, Mapping)
+                and "no_waivers" in value
+            )
+        )
+        else set()
+    )
     workload = _exact_object(
         value,
         extra
@@ -1170,11 +1182,22 @@ def _validate_source_recipe(value: object) -> None:
     )
 
 
-def _validate_source_entries(value: object, field: str) -> list[Mapping[str, object]]:
+def _validate_source_entries(
+    value: object, field: str, *, source_mapping: bool = False
+) -> list[Mapping[str, object]]:
     entries = _exact_list(value, field, MAX_LIST_ITEMS)
     decoded: list[Mapping[str, object]] = []
     for index, item in enumerate(entries):
-        entry = _exact_object(item, {"path", "bytes", "sha256", "kind"}, f"{field}[{index}]")
+        extra = (
+            {"source_path"}
+            if source_mapping and isinstance(item, Mapping) and "source_path" in item
+            else set()
+        )
+        entry = _exact_object(
+            item, {"path", "bytes", "sha256", "kind"} | extra, f"{field}[{index}]"
+        )
+        if extra:
+            validate_relative_path(cast(str, entry["source_path"]))
         validate_relative_path(cast(str, entry["path"]))
         _require_nonnegative_int(entry["bytes"], f"{field}.bytes")
         _require_digest(entry["sha256"], f"{field}.sha256")
@@ -1275,7 +1298,7 @@ def _validate_variant(variant: Mapping[str, object], workload: Mapping[str, obje
         raise SimulationCampaignIntegrityError("build variant recipe digest/ID disagrees")
 
 
-def _validate_disclosures(value: object) -> list[Mapping[str, object]]:
+def _validate_disclosures(value: object, schema: str) -> list[Mapping[str, object]]:
     disclosures = _exact_list(value, "planning_disclosures", MAX_WORK_ITEMS)
     decoded: list[Mapping[str, object]] = []
     for index, item in enumerate(disclosures):
@@ -1285,8 +1308,16 @@ def _validate_disclosures(value: object) -> list[Mapping[str, object]]:
             f"planning_disclosures[{index}]",
         )
         _bounded_string(disclosure["planner"], f"planning_disclosures[{index}].planner")
-        _validate_source_entries(disclosure["scratch_inputs"], "scratch_inputs")
-        _validate_source_entries(disclosure["generated_files"], "generated_files")
+        _validate_source_entries(
+            disclosure["scratch_inputs"],
+            "scratch_inputs",
+            source_mapping=schema == _MANIFEST_V3_SCHEMA,
+        )
+        _validate_source_entries(
+            disclosure["generated_files"],
+            "generated_files",
+            source_mapping=schema == _MANIFEST_V3_SCHEMA,
+        )
         provenance = _exact_object(
             disclosure["tool_provenance"],
             {"kind", "version", "contract_version"},
@@ -1625,6 +1656,7 @@ _DOCUMENT_SPECS: dict[
 }
 _DOCUMENT_VALIDATORS = {spec[0]: spec[3] for spec in _DOCUMENT_SPECS.values()}
 _DOCUMENT_VALIDATORS[_MANIFEST_V2_SCHEMA] = _validate_manifest
+_DOCUMENT_VALIDATORS[_MANIFEST_V3_SCHEMA] = _validate_manifest
 
 
 def _decode_registered(raw: bytes, value_type: type[T]) -> T:

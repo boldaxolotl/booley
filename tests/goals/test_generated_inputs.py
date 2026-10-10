@@ -32,26 +32,44 @@ def classified(
     suffix=".vmem",
     kind="generated_input",
     wrong_hash=False,
+    wrong_size=False,
     foreign_target=False,
     foreign_origin=False,
     hdl_type=False,
     planner_program=False,
+    copyto=None,
+    source_metadata=False,
+    real_producer=False,
+    unmapped=False,
+    source_override=None,
+    disclosure_override=None,
 ):
     layout.record = enter_goals(layout, [{"family": "lint", "target": "top"}])
-    relative = "prepared" + suffix
+    relative = (
+        ("dhrystone/dhry.hex" if suffix == ".vmem" else "dhrystone/dhry" + suffix)
+        if copyto is not None
+        else "prepared" + suffix
+    )
     source = layout.worktree / relative
+    source.parent.mkdir(parents=True, exist_ok=True)
     source.write_bytes(b"00112233\n")
     (layout.main / ".git/info/exclude").write_bytes(f"/.booley_project\n{relative}\n".encode())
     core = layout.worktree / "top.core"
     core.write_bytes(
         core.read_bytes().replace(
             b"files: [rtl.v]",
-            f"files: [rtl.v, {{{relative}: {{file_type: {'verilogSource' if hdl_type else 'user'}}}}}]".encode(),
+            f"files: [rtl.v, {{{relative}: {{file_type: {'verilogSource' if hdl_type else 'user'}{', copyto: ' + copyto if copyto is not None else ''}}}}}]".encode(),
         )
     )
     if planner_program:
         core.write_bytes(
             core.read_bytes() + f"scripts:\n  generate: {{cmd: [./{relative}]}}\n".encode()
+        )
+    if real_producer:
+        core.write_text(
+            core.read_text().replace(
+                "toplevel: top", "toplevel: top, flow: sim, flow_options: {tool: icarus}"
+            )
         )
     git(layout.worktree, "add", "top.core")
     git(layout.worktree, "commit", "-qm", "declare generated build input")
@@ -68,9 +86,14 @@ def classified(
         "scratch_inputs": [],
         "generated_files": [
             {
-                "path": relative,
+                "path": copyto if copyto is not None else relative,
+                **(
+                    {"source_path": source_override or relative}
+                    if source_metadata and not unmapped
+                    else {}
+                ),
                 "kind": kind,
-                "bytes": len(source.read_bytes()),
+                "bytes": len(source.read_bytes()) + int(wrong_size),
                 "sha256": "sha256:"
                 + ("0" * 64 if wrong_hash else hashlib.sha256(source.read_bytes()).hexdigest()),
             }
@@ -78,9 +101,16 @@ def classified(
         "tool_provenance": {"kind": "fusesoc", "version": "2", "contract_version": "1"},
         "cleanup": {"removed": True},
     }
+    if real_producer:
+        disclosure = _real_disclosure(layout)
+    if disclosure_override is not None:
+        disclosure = disclosure_override
+    source_metadata = source_metadata or disclosure["tool_provenance"]["contract_version"] == "2"
     manifest = finalize_manifest(
         {
-            "$schema": "booley.simulation-campaign-manifest/v1",
+            "$schema": "booley.simulation-campaign-manifest/v3"
+            if source_metadata
+            else "booley.simulation-campaign-manifest/v1",
             "campaign_id": str(uuid4()),
             "created_at": "2026-10-07T10:00:00Z",
             "origin": {"execution_id": ("c" if foreign_origin else "b") * 32, "invocation_id": 7},
@@ -109,6 +139,19 @@ def classified(
         state, changes, acceptance_facts=facts, ticket_identity={}
     )
     return source, path, transaction
+
+
+def _real_disclosure(layout):
+    from booley.flows.sim.execution import SimulationExecution, SimulationOptions
+    from booley.targets.catalog import TargetCatalog
+    from tests.flows.sim.test_execution_engine import _subprocess_invoker
+
+    handle = TargetCatalog.build(layout.worktree).select("top", for_flow="sim")
+    execution = SimulationExecution(
+        invoke=_subprocess_invoker(layout.worktree), options=SimulationOptions(timeout_ms=30_000)
+    )
+    with execution.ordinary_group(handle, ()) as group:
+        return group.planning_disclosure()
 
 
 def test_selected_campaign_generated_build_data_is_materialized_and_frozen(layout):
@@ -214,4 +257,182 @@ def test_nonstandard_extension_design_and_planner_inputs_still_require_commit(la
         planner_program=kind == "core-program",
     )
     with pytest.raises(LifecycleError, match="committed representation"):
+        finish_goal(request(layout), completion_environment(EntryEnvironment(layout.control)))
+
+
+@pytest.mark.parametrize("copyto", ["dhry.hex", "dhrystone/dhry.hex"])
+def test_copyto_generated_source_finish(layout, copyto):
+    source, _, _ = classified(layout, copyto=copyto, source_metadata=True)
+    result = complete_goal(
+        {
+            "work_dir": str(layout.worktree),
+            "record_id": layout.record.id,
+            "operation_id": request(layout).operation_id,
+            "summary": "generated proof",
+        },
+        EntryEnvironment(layout.control),
+    )
+    facts = json.loads(Path(result["package"]).read_bytes())
+    row = next(
+        row
+        for row in facts["input_proof"]["nonversioned_observations"]
+        if row["classification"] == "GeneratedBuildInput"
+    )
+    assert (
+        row["provenance"]["generated_entry"]["source_path"]
+        == source.relative_to(layout.worktree).as_posix()
+    )
+
+
+@pytest.mark.parametrize("copyto", ["dhry.hex", "dhrystone/dhry.hex", None])
+def test_copyto_real_producer_codec_finish(layout, copyto):
+    source, _, _ = classified(layout, copyto=copyto, source_metadata=True, real_producer=True)
+    call = request(layout)
+    result = complete_goal(
+        {
+            "work_dir": str(layout.worktree),
+            "record_id": layout.record.id,
+            "operation_id": call.operation_id,
+            "summary": call.summary,
+        },
+        EntryEnvironment(layout.control),
+    )
+    facts = json.loads(Path(result["package"]).read_bytes())
+    row = next(
+        row
+        for row in facts["input_proof"]["nonversioned_observations"]
+        if row["classification"] == "GeneratedBuildInput"
+    )
+    assert (
+        row["provenance"]["generated_entry"]["source_path"]
+        == source.relative_to(layout.worktree).as_posix()
+    )
+
+
+@pytest.mark.parametrize("destination", ["dhry.py", "dhry.vh", "dhry.svh", "dhry.tcl", "dhry.sh"])
+def test_copyto_protected_destination_refuses_finish(layout, destination):
+    classified(layout, suffix=".gen", copyto=destination, source_metadata=True)
+    with pytest.raises(LifecycleError, match="no committed representation"):
+        finish_goal(request(layout), completion_environment(EntryEnvironment(layout.control)))
+
+
+@pytest.mark.parametrize("case", ["legacy-renamed", "v3-unmapped", "traversal"])
+def test_copyto_unproven_source_refuses_finish(layout, case):
+    if case == "traversal":
+        from booley.flows.sim.campaign.codec import SimulationCampaignIntegrityError
+
+        with pytest.raises(SimulationCampaignIntegrityError):
+            classified(
+                layout, copyto="dhry.hex", source_metadata=True, source_override="../escape.hex"
+            )
+        return
+    classified(
+        layout,
+        copyto="dhrystone/dhry.hex" if case == "v3-unmapped" else "dhry.hex",
+        source_metadata=case != "legacy-renamed",
+        unmapped=case == "v3-unmapped",
+    )
+    with pytest.raises(LifecycleError, match="no committed representation"):
+        finish_goal(request(layout), completion_environment(EntryEnvironment(layout.control)))
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    [
+        ".v",
+        ".sv",
+        ".vh",
+        ".svh",
+        ".vhd",
+        ".vhdl",
+        ".core",
+        ".toml",
+        ".py",
+        ".sh",
+        ".tcl",
+        ".sdc",
+        ".xdc",
+    ],
+)
+def test_v3_protected_source_requires_commit(layout, suffix):
+    classified(layout, suffix=suffix, source_metadata=True)
+    with pytest.raises(LifecycleError, match=r"(no committed representation|met and fresh)"):
+        finish_goal(request(layout), completion_environment(EntryEnvironment(layout.control)))
+
+
+@pytest.mark.parametrize("drift", ["size", "symlink", "missing-producer", "digest"])
+def test_copyto_generated_proof_refuses_live_drift(layout, drift, tmp_path):
+    source, producer, _ = classified(
+        layout,
+        copyto="dhry.hex",
+        source_metadata=True,
+        wrong_hash=drift == "digest",
+        wrong_size=drift == "size",
+    )
+    if drift == "symlink":
+        outside = tmp_path / "outside.hex"
+        outside.write_bytes(source.read_bytes())
+        source.unlink()
+        source.symlink_to(outside)
+    elif drift == "missing-producer":
+        producer.unlink()
+    with pytest.raises(
+        LifecycleError,
+        match=r"(selected producer proof|escapes|committed representation|met and fresh)",
+    ):
+        finish_goal(request(layout), completion_environment(EntryEnvironment(layout.control)))
+
+
+@pytest.mark.parametrize("restriction", ["hdl_type", "planner_program"])
+def test_copyto_nonstandard_design_or_program_source_requires_commit(layout, restriction):
+    classified(layout, copyto="dhry.hex", source_metadata=True, **{restriction: True})
+    with pytest.raises(LifecycleError, match="no committed representation"):
+        finish_goal(request(layout), completion_environment(EntryEnvironment(layout.control)))
+
+
+def test_copyto_source_symlink_escape_rejected_at_proof_boundary(layout, tmp_path):
+    from booley.mcp.goal_generated_inputs import _disclosed_inputs
+
+    source, manifest, _ = classified(layout, copyto="dhry.hex", source_metadata=True)
+    outside = tmp_path / "outside-data.hex"
+    outside.write_bytes(source.read_bytes())
+    source.unlink()
+    source.symlink_to(outside)
+    producer = json.loads(manifest.read_bytes())
+    row = {"detail": {"_source_fingerprint": {"target": "top"}}}
+    with pytest.raises(LifecycleError, match="escapes the selected worktree"):
+        _disclosed_inputs(layout.worktree, producer, row, {})
+
+
+def test_entirely_ambiguous_producer_cannot_authorize_destination_decoy(layout, tmp_path):
+    from dataclasses import replace
+
+    from booley.flows.sim.execution.engine import _SourceDeclaration
+    from booley.fusesoc.fusesoc_registry import ResolvedFile
+    from tests.flows.sim.test_execution_engine import _handle, _prepared_group_with_sources
+
+    group = _prepared_group_with_sources(_handle(tmp_path / "producer"))
+    destination = "dhrystone/dhry.hex"
+    staged = group.build_root / destination
+    staged.parent.mkdir(parents=True)
+    staged.write_bytes(b"00112233\n")
+    group._attempt.prepared = replace(
+        group._attempt.prepared,
+        resolved=replace(
+            group._attempt.prepared.resolved, files=(ResolvedFile(destination, "user"),)
+        ),
+    )
+    group._source_declarations = tuple(
+        _SourceDeclaration(source, "::top:0", "user", (destination,))
+        for source in ("source-a/data.hex", "source-b/data.hex")
+    )
+    disclosure = group.planning_disclosure()
+    assert all("source_path" not in entry for entry in disclosure["generated_files"])
+    assert disclosure["tool_provenance"]["contract_version"] == "2"
+    # The live Target declares the staged name as an ignored destination decoy;
+    # even matching bytes cannot establish the absent source association.
+    source, manifest, _ = classified(layout, copyto=destination, disclosure_override=disclosure)
+    assert source.read_bytes() == staged.read_bytes()
+    assert json.loads(manifest.read_bytes())["$schema"] == "booley.simulation-campaign-manifest/v3"
+    with pytest.raises(LifecycleError, match="no committed representation"):
         finish_goal(request(layout), completion_environment(EntryEnvironment(layout.control)))

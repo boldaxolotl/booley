@@ -419,13 +419,27 @@ def test_shared_build_is_recovered_by_a_fresh_executor_and_scoped_per_invocation
     assert len(tuple(store.root.glob("build-variants/*/attempts/*/build-result.json"))) == 2
 
 
+@pytest.mark.parametrize("mapped", [False, True])
 def test_legacy_mode_builds_and_discloses_each_work_item_privately(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mapped: bool
 ) -> None:
     disclosures = _legacy_disclosures()
+    if mapped:
+        for disclosure in disclosures.values():
+            disclosure["generated_files"] = [
+                {
+                    "path": "staged.hex",
+                    "source_path": "data/source.hex",
+                    "bytes": 1,
+                    "sha256": "sha256:" + "a" * 64,
+                    "kind": "generated_input",
+                }
+            ]
     base_manifest = _manifest_for(("alpha", "beta"), access="legacy-per-test")
     manifest_document = json.loads(canonical_json_bytes(base_manifest.document))
     manifest_document.pop("fingerprints")
+    if mapped:
+        manifest_document["$schema"] = "booley.simulation-campaign-manifest/v3"
     manifest_document["planning_disclosures"] = list(disclosures.values())
     manifest = finalize_manifest(manifest_document)
     plan = create_simulation_campaign_plan(manifest)
@@ -464,6 +478,26 @@ def test_legacy_mode_builds_and_discloses_each_work_item_privately(
         )
     )
     _assert_private_legacy_results(outcome, counters, hooks, invocation)
+    if mapped:
+        from booley.flows.sim.campaign.coordinator import ResumeCampaignRunRequest
+        from tests.flows.sim.test_campaign_phase4 import _validated_campaign
+
+        store = CampaignStore(invocation / "targets/sim/campaign")
+        validated = _validated_campaign(store, manifest, project, _handle(project))
+        resumed = SimulationCampaign(_executor(build_root, counters, disclosures=disclosures)).run(
+            ResumeCampaignRunRequest(
+                validated,
+                plan,
+                project,
+                invocation.parent,
+                CampaignPolicy(),
+                invocation,
+                _admission(),
+            )
+        )
+        assert resumed.complete
+        assert counters["compile"] == 2
+        assert store.load_manifest() == manifest
 
 
 def _legacy_disclosures():
@@ -651,14 +685,22 @@ def _packaged_source_disclosure(raw: bytes) -> dict[str, object]:
     }
 
 
+@pytest.mark.parametrize("mapped", [False, True])
 def test_changed_packaged_source_fails_disclosure_equality_before_compile(
     tmp_path: Path,
+    mapped: bool,
 ) -> None:
     planned = _packaged_source_disclosure(b"planned wheel bytes")
     execution = _packaged_source_disclosure(b"different execution wheel bytes")
+    if mapped:
+        execution = _packaged_source_disclosure(b"planned wheel bytes")
+        planned["generated_files"][0].update(path="staged.hex", source_path="data/source.hex")
+        execution["generated_files"][0].update(path="staged.hex", source_path="other/source.hex")
     base_manifest = _manifest_for(("alpha",))
     document = json.loads(canonical_json_bytes(base_manifest.document))
     document.pop("fingerprints")
+    if mapped:
+        document["$schema"] = "booley.simulation-campaign-manifest/v3"
     document["planning_disclosures"] = [planned]
     manifest = finalize_manifest(document)
     project = tmp_path / "project"
