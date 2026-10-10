@@ -196,16 +196,17 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          export PYTHON="$(command -v python)"
-          bash src/booley/data/docker/build.sh 2>&1 | tee ${RUNNER_TEMP}/worktree-image-build.log
+          PYTHON="$(command -v python)"
+          export PYTHON
+          bash src/booley/data/docker/build.sh 2>&1 | tee "${RUNNER_TEMP}/worktree-image-build.log"
       - name: Run required worktree mount cases
         env:
           BOOLEY_REQUIRE_WORKTREE_DOCKER: '1'
           BOOLEY_WORKTREE_DOCKER_IMAGE: booley-sandbox:latest
-        run: python -m pytest tests/docker/test_worktree_mount_paths_e2e.py -q --tb=short -rs --timeout=300 --junitxml=${RUNNER_TEMP}/worktree-mounts.xml
+        run: python -m pytest tests/docker/test_worktree_mount_paths_e2e.py -q --tb=short -rs --timeout=300 --junitxml="${RUNNER_TEMP}/worktree-mounts.xml"
       - name: Assert worktree execution evidence
         if: always()
-        run: python .github/scripts/assert_junit.py ${RUNNER_TEMP}/worktree-mounts.xml --min-tests 8 --max-skips 0
+        run: python .github/scripts/assert_junit.py "${RUNNER_TEMP}/worktree-mounts.xml" --min-tests 8 --max-skips 0
       - name: Upload worktree execution evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

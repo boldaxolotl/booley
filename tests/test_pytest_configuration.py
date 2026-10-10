@@ -695,7 +695,7 @@ def test_scheduled_worktree_mounts_requires_real_docker_execution() -> None:
     assert job["env"]["BUILDX_BUILDER"] == "default"
     producer = _named_step(job, "Build canonical Sandbox Image")["run"]
     assert "bash src/booley/data/docker/build.sh" in producer
-    assert 'export PYTHON="$(command -v python)"' in producer
+    assert 'PYTHON="$(command -v python)"\nexport PYTHON' in producer
     assert "set -o pipefail" in producer
     assert not any("setup-buildx-action" in item.get("uses", "") for item in job["steps"])
     assert "if" not in job
@@ -710,13 +710,13 @@ def test_scheduled_worktree_mounts_requires_real_docker_execution() -> None:
     assert step["env"]["BOOLEY_WORKTREE_DOCKER_IMAGE"] == "booley-sandbox:latest"
     command = step["run"]
     assert "python -m pytest tests/docker/test_worktree_mount_paths_e2e.py" in command
-    assert "--junitxml=${RUNNER_TEMP}/worktree-mounts.xml" in command
+    assert '--junitxml="${RUNNER_TEMP}/worktree-mounts.xml"' in command
     assert "--timeout=300" in command
     assert " -m " not in command.replace("python -m pytest", "pytest")
     assert " -n " not in command
     evidence = _named_step(job, "Assert worktree execution evidence")
     assert evidence["if"] == "always()"
-    assert "assert_junit.py ${RUNNER_TEMP}/worktree-mounts.xml" in evidence["run"]
+    assert 'assert_junit.py "${RUNNER_TEMP}/worktree-mounts.xml"' in evidence["run"]
     assert "--min-tests 8 --max-skips 0" in evidence["run"]
     for item in [job, *job["steps"]]:
         assert not item.get("continue-on-error", False)
