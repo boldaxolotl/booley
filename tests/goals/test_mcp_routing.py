@@ -596,3 +596,36 @@ def test_goal_path_with_missing_git_metadata_refuses(goal_mode, monkeypatch):
     monkeypatch.setattr(store_module, "git_directories", missing)
     with pytest.raises(WorktreeIdentityError, match="metadata missing"):
         resolve_call_context({"work_dir": str(goal_mode.worktree)})
+
+
+@pytest.mark.parametrize("met", [False, True])
+def test_goal_status_simulation_contract_explanation(goal_mode, met):
+    from booley.goals.recorder import GoalEvidenceRecorder
+    from tests.goals.conftest import SIM_KEY, bind
+    from tests.goals.test_recorder import _v1
+
+    state = _v1(
+        goal_mode,
+        GoalEvidenceRecorder(bind(goal_mode)),
+        SIM_KEY,
+        met,
+        {
+            "required_tests": [] if met else ["smoke"],
+            "passed_tests": [],
+            "tests_passed": 1 if met else 0,
+            "tests_total": 1,
+        },
+    )
+    result = asyncio.run(
+        dispatch_goal_tool(
+            "goal_status", {"work_dir": str(goal_mode.worktree)}, project_dir=goal_mode.control
+        )
+    )
+    assert not result.is_error
+    text = " ".join(result.value[0].text.split())
+    assert f"{int(met)}/1 tests" in text
+    if met:
+        assert state.criteria[SIM_KEY].detail["goal_contract_violation"] in text
+    else:
+        assert "complete resolved suite" not in text
+        assert "—" not in text

@@ -170,7 +170,9 @@ def _goal_status(
             if entry is None or not entry.detail
             else format_criterion_metric(key, entry)
         )
-        return GoalStatus(key, "unmet", metric or "unmet")
+        violation = entry.detail.get("goal_contract_violation") if entry and entry.detail else None
+        reason = violation if isinstance(violation, str) else ""
+        return GoalStatus(key, "unmet", metric or "unmet", reason)
     reason = drift or _revision_violation(goal, evidence, record)
     if not reason:
         reason = evaluate_goal_freshness(
