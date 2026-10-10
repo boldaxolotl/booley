@@ -177,3 +177,42 @@ jobs:
             ${{ runner.temp }}/bwave-differential.xml
           if-no-files-found: warn
           retention-days: 30
+
+  worktree-mounts:
+    name: Worktree mount Docker acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      BUILDX_BUILDER: default
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install worktree test environment
+        run: pip install -e ".[test]" build==1.6.1
+      - name: Build canonical Sandbox Image
+        shell: bash
+        run: |
+          set -o pipefail
+          export PYTHON="$(command -v python)"
+          bash src/booley/data/docker/build.sh 2>&1 | tee ${RUNNER_TEMP}/worktree-image-build.log
+      - name: Run required worktree mount cases
+        env:
+          BOOLEY_REQUIRE_WORKTREE_DOCKER: '1'
+          BOOLEY_WORKTREE_DOCKER_IMAGE: booley-sandbox:latest
+        run: python -m pytest tests/docker/test_worktree_mount_paths_e2e.py -q --tb=short -rs --timeout=300 --junitxml=${RUNNER_TEMP}/worktree-mounts.xml
+      - name: Assert worktree execution evidence
+        if: always()
+        run: python .github/scripts/assert_junit.py ${RUNNER_TEMP}/worktree-mounts.xml --min-tests 8 --max-skips 0
+      - name: Upload worktree execution evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: worktree-mounts-evidence
+          path: |
+            ${{ runner.temp }}/worktree-mounts.xml
+            ${{ runner.temp }}/worktree-image-build.log
+          if-no-files-found: error
+          retention-days: 30
