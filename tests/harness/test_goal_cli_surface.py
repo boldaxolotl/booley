@@ -160,3 +160,22 @@ def test_usage_status_describes_both_selection_cases():
     assert "this worktree" in line
     assert "every active Goal Mode in the Project" in line
     assert "when this worktree hosts none" in line
+
+
+def test_goal_group_description_and_catalog_describe_selection(capsys):
+    root = cli._build_parser()
+    commands = next(
+        action
+        for action in root._actions
+        if hasattr(action, "choices") and action.choices and "goal" in action.choices
+    )
+    goal = commands.choices["goal"]
+    assert "every active Goal Mode in the Project" in goal.description
+    assert "when this worktree hosts none" in goal.description
+    with pytest.raises(SystemExit) as caught:
+        root.parse_args(["--help"])
+    assert caught.value.code == 0
+    text = " ".join(capsys.readouterr().out.split())
+    assert (
+        "status shows every active Goal Mode in the Project when this worktree hosts none" in text
+    )
