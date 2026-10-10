@@ -23,6 +23,17 @@ def _format_coverage_metric(
     return "?" if stale else (str(status) if status else None)
 
 
+def _format_status_metric(
+    key: str, entry: Any, d: dict[str, Any], p: dict[str, Any], stale: bool
+) -> str | None:
+    """Format the status-only elaboration and Coverage Criterion families."""
+    if key == "elab_pass" or key.startswith("elab_pass_"):
+        if not getattr(entry, "met", False):
+            return ""
+        return "?" if stale else "elaborated"
+    return _format_coverage_metric(key, d, p, stale)
+
+
 def _format_fpga_impl_metric(d: dict[str, Any], stale: bool) -> str | None:
     """Format FPGA implementation LUT/FF usage + optional timing, or None."""
     if stale:
@@ -138,8 +149,8 @@ def format_criterion_metric(key: str, entry: Any) -> str:  # noqa: PLR0911 — m
     p: dict[str, Any] = entry.params or {}
     stale = getattr(entry, "stale", False)
 
-    # Coverage Campaign status.
-    coverage = _format_coverage_metric(key, d, p, stale)
+    # Elaboration and Coverage Campaign status.
+    coverage = _format_status_metric(key, entry, d, p, stale)
     if coverage is not None:
         return coverage
 
@@ -178,6 +189,11 @@ def format_criterion_metric(key: str, entry: Any) -> str:  # noqa: PLR0911 — m
         return finding_count
 
     return ""
+
+
+def format_met_goal_metric(key: str, entry: Any) -> str:
+    """Present recorded met evidence even when the producer supplied no metric."""
+    return format_criterion_metric(key, entry) or "evidence recorded"
 
 
 def render_status(views: tuple[GoalStatusView, ...], *, short: bool | None = None) -> str:

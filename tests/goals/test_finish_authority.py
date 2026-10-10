@@ -271,3 +271,11 @@ def test_skipped_attempt_refuses_unexpected_git_intent_before_artifacts(complete
     with pytest.raises(LifecycleError, match="skipped publication"):
         finish_goal(call, environment(complete))
     assert not (operation / "SUMMARY.md").exists()
+
+
+def test_package_reader_refuses_empty_goal_metric(complete):
+    result = finish_goal(request(complete), environment(complete))
+    facts = json.loads(Path(result["package"]).read_bytes())
+    facts["goals"][0]["metric"] = ""
+    with pytest.raises(GoalPackageError, match="metric must be a non-empty string"):
+        GoalCompletionPackage.from_json(facts)
