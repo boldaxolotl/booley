@@ -123,6 +123,7 @@ def snapshot_jobs(
 ) -> JobSnapshot:
     """Read files only. Never poll, derive/reconcile status, adopt or invoke a reaper."""
     cache = artifact_cache if artifact_cache is not None else JobArtifactCache()
+    cache.configure_project(project_dir, max_endpoints=MAX_JOBS)
     cache.begin()
     tokens, rows, diagnostics = [], [], []
     catalogs: dict[str, TargetCatalog | None] = {}
@@ -131,20 +132,34 @@ def snapshot_jobs(
         for kind in ("heavy", "light", "ticket"):
             holders, waiters = store.observe(kind)
             tokens.extend((*holders, *waiters))
+    records, record_diagnostics = _snapshot_records(project_dir, interactive_root)
+    diagnostics.extend(record_diagnostics)
+    cache.prepare_endpoints((root, rec.endpoint) for root, rec in records)
+    for root, rec in records:
+        rows.append(_project_job(root, rec, tokens, proc_root, catalogs, cache))
+    diagnostics.extend(cache.diagnostics)
+    diagnostics.extend(_ambiguous_ids(rows))
+    cache.complete()
+    return JobSnapshot(tuple(rows), tuple(diagnostics))
+
+
+def _snapshot_records(
+    project_dir: Path, interactive_root: Path | None
+) -> tuple[list[tuple[Path, job_records.JobRecord]], list[str]]:
+    """Collect the bounded projection before selecting eviction victims."""
+    records, diagnostics = [], []
     roots = retained_job_roots(project_dir, interactive_root=interactive_root)
     for root in roots:
         if root.is_symlink():
             diagnostics.append(f"Job root unavailable: {root}")
             continue
-        for path in islice(root.glob("*.json"), max(0, MAX_JOBS - len(rows))):
+        for path in islice(root.glob("*.json"), max(0, MAX_JOBS - len(records))):
             rec = _read_job(path)
             if rec is None:
                 diagnostics.append(f"Job record unavailable: {path}")
                 continue
-            rows.append(_project_job(root, rec, tokens, proc_root, catalogs, cache))
-    diagnostics.extend(cache.diagnostics)
-    diagnostics.extend(_ambiguous_ids(rows))
-    return JobSnapshot(tuple(rows), tuple(diagnostics))
+            records.append((root, rec))
+    return records, diagnostics
 
 
 def _read_job(path: Path) -> job_records.JobRecord | None:

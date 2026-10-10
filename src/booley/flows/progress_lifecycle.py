@@ -132,14 +132,22 @@ def write_progress_json(
 
 
 def read_progress_for_run(
-    report_roots: Sequence[Path], endpoint: str, run_id: str
+    report_roots: Sequence[Path],
+    endpoint: str,
+    run_id: str,
+    *,
+    trusted_path_validator: Callable[[Path], None] | None = None,
 ) -> tuple[Path, dict[str, Any]] | None:
     """Return the newest trusted run-scoped checkpoint and its exact path."""
     candidates: list[tuple[int, Path]] = []
     for root in report_roots:
         try:
             endpoint_root = root / endpoint
-            if not endpoint_root.is_dir() or _has_link_between(endpoint_root, root):
+            if trusted_path_validator is not None:
+                trusted_path_validator(endpoint_root)
+            if not endpoint_root.is_dir() or (
+                trusted_path_validator is None and _has_link_between(endpoint_root, root)
+            ):
                 continue
             invocations = tuple(endpoint_root.iterdir())
         except (OSError, ValueError):
@@ -149,11 +157,15 @@ def read_progress_for_run(
             if not invocation.name.isdigit():
                 continue
             try:
+                if trusted_path_validator is not None:
+                    trusted_path_validator(path)
                 candidates.append((path.lstat().st_mtime_ns, path))
             except OSError:
                 continue
     for _mtime, path in sorted(candidates, key=lambda item: item[0], reverse=True):
-        document = _read_trusted_progress(path, report_roots)
+        document = _read_trusted_progress(
+            path, report_roots, trusted_path_validator=trusted_path_validator
+        )
         if (
             document is not None
             and document.get("flow") == endpoint
@@ -163,9 +175,20 @@ def read_progress_for_run(
     return None
 
 
-def read_progress_document(path: Path, report_roots: Sequence[Path]) -> dict[str, Any] | None:
+def read_progress_document(
+    path: Path,
+    report_roots: Sequence[Path],
+    *,
+    trusted_path_validator: Callable[[Path], None] | None = None,
+    raise_io_errors: bool = False,
+) -> dict[str, Any] | None:
     """Read one validated checkpoint without publication or recovery."""
-    return _read_trusted_progress(path, report_roots)
+    return _read_trusted_progress(
+        path,
+        report_roots,
+        trusted_path_validator=trusted_path_validator,
+        raise_io_errors=raise_io_errors,
+    )
 
 
 def repair_progress_after_reap(report_roots: Sequence[Path], endpoint: str, run_id: str) -> bool:
@@ -237,14 +260,29 @@ def validate_coverage_origin_progress(path: Path) -> dict[str, Any]:
     return document
 
 
-def _read_trusted_progress(path: Path, report_roots: Sequence[Path]) -> dict[str, Any] | None:
+def _read_trusted_progress(
+    path: Path,
+    report_roots: Sequence[Path],
+    *,
+    trusted_path_validator: Callable[[Path], None] | None = None,
+    raise_io_errors: bool = False,
+) -> dict[str, Any] | None:
     try:
-        if _has_link_between(path, _containing_root(path, report_roots)):
+        root = _containing_root(path, report_roots)
+        if trusted_path_validator is not None:
+            trusted_path_validator(path)
+        elif _has_link_between(path, root):
             return None
-        document = _read_json_object_nofollow(path)
+        document = _read_json_object_nofollow(
+            path, trusted_path=trusted_path_validator is not None
+        )
         validate_progress_shape(document)
         return document
-    except (OSError, ValueError, json.JSONDecodeError):
+    except OSError:
+        if raise_io_errors:
+            raise
+        return None
+    except (ValueError, UnicodeError):
         return None
 
 
@@ -319,8 +357,21 @@ def _write_progress_json_unlocked(path: Path, document: Mapping[str, object]) ->
         Path(temporary).unlink(missing_ok=True)
 
 
-def _read_json_object_nofollow(path: Path) -> dict[str, Any]:
-    descriptor = open_regular_nofollow(path)
+def _open_validated_progress(path: Path) -> int:
+    """The supplied validator owns ancestors; still refuse a nonregular final file."""
+    if os.name == "nt":
+        # Preserve the final lexical filename for Windows handle-based link refusal.
+        return open_regular_nofollow(path.parent.resolve() / path.name)
+    flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0)
+    descriptor = os.open(path, flags)
+    if stat.S_ISREG(os.fstat(descriptor).st_mode):
+        return descriptor
+    os.close(descriptor)
+    raise OSError(f"progress is not a regular file: {path}")
+
+
+def _read_json_object_nofollow(path: Path, *, trusted_path: bool = False) -> dict[str, Any]:
+    descriptor = _open_validated_progress(path) if trusted_path else open_regular_nofollow(path)
     with os.fdopen(descriptor, "r", encoding="utf-8") as stream:
         if os.fstat(stream.fileno()).st_size > _MAX_PROGRESS_BYTES:
             raise ValueError("progress exceeds the size limit")
