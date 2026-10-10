@@ -13,7 +13,7 @@ from fnmatch import fnmatchcase
 # new in ADR 0012 — per-session transcripts written by the MCP server when an
 # outer Claude Code / Codex tab calls Booley Flows and Specialists.
 #
-# Only *fixed-name*, Booley-owned transient dirs belong here — patterns that are
+# Only *fixed-name*, Booley-owned local output paths belong here — patterns that are
 # correct for every project. ``flow-reports/`` is durable Flow evidence that is
 # transient to Git. ``/logs/`` holds root-level pre-intake diagnostics, while
 # ``/.baseline-wt-*/`` covers root-level temporary baseline worktrees whose
@@ -62,6 +62,13 @@ PROJECT_GITIGNORE_PATTERNS = (
     "*.pyc",
     "SETUP-REPORT.md",
     "FEEDBACK-REPORT.md",
+    # Durable local evidence is transient to Git, including interrupted rewrites.
+    "/reviewer-evidence/",
+    "/findings.jsonl",
+    "/findings.jsonl.tmp",
+    "/BOOLEY-FEEDBACK.md",
+    "/setup-evidence/",
+    "/PARITY-REPORT.md",
 )
 
 # Each ``!`` re-include and the required pattern it overrides. Git applies the

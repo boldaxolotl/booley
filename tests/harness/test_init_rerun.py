@@ -782,3 +782,31 @@ def test_init_does_not_scaffold_board_or_ticket_guidance(repo):
         "refactor.md",
         "verification.md",
     }
+
+
+@pytest.mark.parametrize("stale", [False, True])
+def test_reconcile_all_fixed_local_evidence_patterns(tmp_path, stale):
+    patterns = (
+        "/reviewer-evidence/",
+        "/findings.jsonl",
+        "/findings.jsonl.tmp",
+        "/BOOLEY-FEEDBACK.md",
+        "/setup-evidence/",
+        "/PARITY-REPORT.md",
+    )
+    ignore = tmp_path / ".gitignore"
+    if stale:
+        ignore.write_bytes(b"# custom policy\r\nmy_custom_dir/\r\ntmp/\r\n")
+        before = ignore.read_bytes()
+        init_cmd._backfill_project_gitignore(
+            tmp_path, InitContext(project_root=tmp_path, check_only=True)
+        )
+        assert ignore.read_bytes() == before
+    init_cmd._backfill_project_gitignore(tmp_path, InitContext(project_root=tmp_path))
+    first = ignore.read_bytes()
+    assert all(ignore.read_text().splitlines().count(pattern) == 1 for pattern in patterns)
+    if stale:
+        custom_lines = before.decode().splitlines()
+        assert first.decode().splitlines()[: len(custom_lines)] == custom_lines
+    init_cmd._backfill_project_gitignore(tmp_path, InitContext(project_root=tmp_path))
+    assert ignore.read_bytes() == first

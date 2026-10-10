@@ -18,3 +18,10 @@ __pycache__/
 *.pyc
 SETUP-REPORT.md
 FEEDBACK-REPORT.md
+
+/reviewer-evidence/
+/findings.jsonl
+/findings.jsonl.tmp
+/BOOLEY-FEEDBACK.md
+/setup-evidence/
+/PARITY-REPORT.md
