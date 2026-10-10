@@ -90,6 +90,8 @@ _LEGACY_RELATIVE_METADATA = """
 from pathlib import Path
 checkout = Path('/work/.booley_project/worktrees/demo')
 metadata = Path('/work/.git/worktrees/demo')
+subprocess.run(['git', '-C', '/work', 'config', 'core.repositoryformatversion', '1'], check=True)
+subprocess.run(['git', '-C', '/work', 'config', 'extensions.relativeWorktrees', 'true'], check=True)
 (checkout / '.git').write_text('gitdir: ../../../work/.git/worktrees/demo\\n')
 (metadata / 'gitdir').write_text('../../../../booley-project/worktrees/demo/.git\\n')
 """
@@ -272,8 +274,7 @@ def test_blocked_board_review_and_show_repair_actual_legacy_checkout(tmp_path: P
     assert host.returncode == 0, host.stderr
 
 
-_LEGACY_BLOCKED_SETUP = (
-    """
+_BLOCKED_SETUP = """
 import subprocess
 from pathlib import Path
 from booley.ticket_board.io import TicketIO
@@ -309,6 +310,9 @@ assert record is not None
 write_state_record(tio.tickets_dir, 'demo', record.with_state(TicketState.BLOCKED))
 
 """
+
+_LEGACY_BLOCKED_SETUP = (
+    _BLOCKED_SETUP
     + _LEGACY_RELATIVE_METADATA
     + """
 assert '../../../work/.git/' in (state / 'worktrees/demo/.git').read_text()
@@ -454,7 +458,7 @@ def test_external_absolute_fallback_supports_blocked_review_and_show(
     tmp_path: Path, docker_image, monkeypatch
 ):
     root, local = _repository(tmp_path)
-    setup = _LEGACY_BLOCKED_SETUP.split(_LEGACY_RELATIVE_METADATA, maxsplit=1)[0]
+    setup = _BLOCKED_SETUP
     setup += "\ngit('worktree', 'remove', '--force', '/work/.booley_project/worktrees/demo')\n"
     produced = _container(docker_image[0], root, local, setup, duplicate=True)
     assert produced.returncode == 0, produced.stderr

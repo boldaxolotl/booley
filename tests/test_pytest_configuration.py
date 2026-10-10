@@ -695,10 +695,17 @@ def test_scheduled_worktree_mounts_requires_real_docker_execution() -> None:
     assert job["env"]["BUILDX_BUILDER"] == "default"
     producer = _named_step(job, "Build canonical Sandbox Image")["run"]
     assert "bash src/booley/data/docker/build.sh" in producer
-    assert "PYTHON" in producer
+    assert 'export PYTHON="$(command -v python)"' in producer
     assert "set -o pipefail" in producer
     assert not any("setup-buildx-action" in item.get("uses", "") for item in job["steps"])
+    assert "if" not in job
     step = _named_step(job, "Run required worktree mount cases")
+    assert "if" not in step
+    names = [item.get("name") for item in job["steps"]]
+    assert names.index("Build canonical Sandbox Image") < names.index(step["name"])
+    upload = _named_step(job, "Upload worktree execution evidence")
+    assert upload["if"] == "always()"
+    assert upload["with"]["if-no-files-found"] == "error"
     assert step["env"]["BOOLEY_REQUIRE_WORKTREE_DOCKER"] == "1"
     assert step["env"]["BOOLEY_WORKTREE_DOCKER_IMAGE"] == "booley-sandbox:latest"
     command = step["run"]
