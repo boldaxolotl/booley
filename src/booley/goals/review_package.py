@@ -11,7 +11,7 @@ from booley.criteria.evidence_ledger import canonical_json, validated_evidence_r
 from booley.criteria.state import DevelopmentState
 from booley.goals.changes import read_change_log
 from booley.goals.derivation import selected_observations
-from booley.goals.format import format_criterion_metric
+from booley.goals.format import format_met_goal_metric
 from booley.goals.lifecycle import LifecycleError
 from booley.goals.model import GoalRecord
 from booley.goals.paths import record_paths
@@ -119,7 +119,7 @@ def _package_rows(
                 "spec": goal.spec.to_json(),
                 "met": True,
                 "fresh": True,
-                "metric": format_criterion_metric(goal.spec.key, state.criteria[goal.spec.key]),
+                "metric": format_met_goal_metric(goal.spec.key, state.criteria[goal.spec.key]),
                 "modified_target": modified,
                 "selected_observation": observation,
                 "observation_sha256": _row_digest(observation),

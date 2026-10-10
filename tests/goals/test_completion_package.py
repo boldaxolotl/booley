@@ -224,3 +224,142 @@ def test_attempt_frozen_survives_real_status_and_reviewer_activity_without_new_e
         json.loads(Path(result["package"]).read_bytes())["goals"][0]["selected_observation"]
         == exact[0]
     )
+
+
+@pytest.mark.parametrize(
+    ("family", "detail", "expected"),
+    [
+        ("elab", {"mode": "elab", "target": "top", "attempts": 1}, "elaborated"),
+        ("lint", {}, "evidence recorded"),
+    ],
+)
+def test_elaboration_and_custom_producer_metric_finish(layout, family, detail, expected):
+    from types import SimpleNamespace
+
+    from booley.criteria.state import DevelopmentState
+    from booley.flows.endpoint_state import EndpointState
+    from booley.goals.flow_execution import GoalFlowExecution
+    from booley.goals.status import build_status
+    from booley.goals.store import GoalStore
+    from tests.goals.conftest import bind
+
+    layout.record = enter_goals(layout, [{"family": family, "target": "top"}])
+    adapter = GoalFlowExecution(bind(layout))
+    key = layout.record.goals[0].spec.key
+    endpoint = SimpleNamespace(
+        args=SimpleNamespace(work_dir=layout.worktree), _acceptance_recorder=adapter
+    )
+    stamped = EndpointState._stamp_source_fingerprint(
+        endpoint, key, True, detail, source_target=None
+    )
+    state = DevelopmentState.load(adapter.state_file, adapter.state_persistence())
+    changes = state.set_criterion(key, True, detail=stamped)
+    adapter.record_changes(state, changes, invocation_id="ignored", producer="custom")
+    state.save()
+    goal = build_status(GoalStore(layout.control), layout.record).goals[0]
+    assert goal.status == "met"
+    result = finish_goal(
+        LifecycleRequest(layout.worktree, layout.record.id, str(uuid4()), summary="Completed."),
+        environment(layout),
+    )
+    assert result["status"] == "finished"
+    facts = json.loads(Path(result["package"]).read_bytes())
+    assert facts["goals"][0]["metric"] == goal.evidence_summary == expected
+    assert GoalCompletionPackage.from_json(facts).to_json() == facts
+
+
+METRIC_CASES = [
+    ("lint", "lint_clean_top", {"warnings": 0}, "clean"),
+    ("sim", "sim_pass_top", {"tests_passed": 2, "tests_total": 2}, "2/2 tests"),
+    ("elab", "elab_pass_top", {"mode": "elab"}, "elaborated"),
+    ("synth", "synthesis_ok_top", {"cells": 12}, "12 cells"),
+    ("fpga", "fpga_impl_ok_top", {"lut_count": 1}, "1 LUTs"),
+    ("cycle_count", "cycle_count_top_test", {"cycles": 1234}, "1,234 cycles"),
+    ("coverage", "coverage_top", {"status": "pass"}, "pass"),
+    ("mutation", "mutation_score_top", {"detected": 0, "total_valid": 10}, "0/10 (0%)"),
+    ("lint", "custom_gate", {"opaque": True}, "evidence recorded"),
+]
+
+
+def metric_cases():
+    from booley.goals.model import REVIEW_KINDS, REVIEW_VERDICTS
+
+    reviews = [
+        (
+            "review",
+            f"review_{kind}_{verdict}",
+            {"issues": 0},
+            "clean" if verdict == "clean" else "reviewed, 0 findings",
+        )
+        for kind in REVIEW_KINDS
+        for verdict in REVIEW_VERDICTS
+    ]
+    normal = METRIC_CASES + reviews
+    absent = [
+        (family, key, {}, "elaborated" if family == "elab" else "evidence recorded")
+        for family, key, _, _ in normal
+    ]
+    return (
+        normal
+        + absent
+        + [
+            (
+                "mutation",
+                "mutation_score_top",
+                {"detected": 0, "total_valid": 0},
+                "evidence recorded",
+            ),
+            ("sim", "sim_pass_top", {"tests_passed": 0, "tests_total": 0}, "evidence recorded"),
+        ]
+    )
+
+
+def metric_package(layout, monkeypatch, family, key, detail):
+    from dataclasses import replace
+
+    from booley.criteria.state import DevelopmentState
+    from booley.goals import review_package
+    from booley.goals.model import GoalFamily
+    from booley.review.goal_package import GoalReviewContext
+
+    # Opaque keys exercise package compatibility, not Goal entry policy.
+    layout.record = enter_goals(layout, [{"family": "lint", "target": "top"}])
+    goal = layout.record.goals[0]
+    spec = replace(goal.spec, family=GoalFamily(family), key=key)
+    record = replace(layout.record, goals=(replace(goal, spec=spec),))
+    state = DevelopmentState()
+    state.set_criterion(key, True, detail=detail)
+    observation = {
+        "sequence": 1,
+        "producer": "custom",
+        "recorded_at": "2026-10-10T00:00:00Z",
+        "invocation_id": "metric-test",
+        "detail": detail,
+    }
+    monkeypatch.setattr(review_package, "selected_observations", lambda *_: {key: observation})
+    monkeypatch.setattr(review_package, "validated_evidence_records", lambda *_: [observation])
+    context = GoalReviewContext(
+        record.to_json(),
+        record.base_sha,
+        record.base_sha,
+        record.branch,
+        str(layout.control / "logs"),
+        "Completed.",
+        {},
+        [],
+        [],
+        {},
+    )
+    return review_package.build_goal_package(context, record, state, layout.control), state
+
+
+@pytest.mark.parametrize(("family", "key", "detail", "expected"), metric_cases())
+def test_all_goal_family_package_metrics(layout, monkeypatch, family, key, detail, expected):
+    from booley.goals.format import format_met_goal_metric
+
+    package, state = metric_package(layout, monkeypatch, family, key, detail)
+    facts = package.to_json()
+    assert (
+        facts["goals"][0]["metric"] == format_met_goal_metric(key, state.criteria[key]) == expected
+    )
+    assert GoalCompletionPackage.from_json(facts).to_json() == facts
