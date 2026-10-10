@@ -8160,3 +8160,53 @@ def test_memory_invariant_is_independent_of_ignored_ticket_cap(tmp_path, monkeyp
     doctor._check_memory_invariant(project, rec.p, rec.w, rec.s)
     assert rec.kinds() == {"pass"}
     assert "1x4g + 1x1g + 2g = 7g" in rec.events[0][1]
+
+
+@pytest.mark.parametrize(
+    "missing",
+    [
+        "/reviewer-evidence/",
+        "/findings.jsonl",
+        "/findings.jsonl.tmp",
+        "/BOOLEY-FEEDBACK.md",
+        "/setup-evidence/",
+        "/PARITY-REPORT.md",
+    ],
+)
+def test_local_evidence_pattern_warning_and_init_repair(tmp_path, missing):
+    from booley.harness.init_cmd import InitContext, _backfill_project_gitignore
+
+    ignore = tmp_path / ".gitignore"
+    ignore.write_text(
+        "".join(f"{p}\n" for p in project_gitignore.PROJECT_GITIGNORE_PATTERNS if p != missing)
+    )
+    findings = _gitignore_probe(tmp_path)
+    assert len(findings) == 1
+    assert findings[0].severity == "warn"
+    assert missing in findings[0].message
+    _backfill_project_gitignore(tmp_path, InitContext(project_root=tmp_path))
+    assert [f.severity for f in _gitignore_probe(tmp_path)] == ["pass"]
+
+
+def test_unanchored_evidence_workarounds_receive_canonical_init_repair(tmp_path):
+    from booley.harness.init_cmd import InitContext, _backfill_project_gitignore
+
+    new = (
+        "/reviewer-evidence/",
+        "/findings.jsonl",
+        "/findings.jsonl.tmp",
+        "/BOOLEY-FEEDBACK.md",
+        "/setup-evidence/",
+        "/PARITY-REPORT.md",
+    )
+    original = "".join(
+        f"{p.lstrip('/') if p in new else p}\n"
+        for p in project_gitignore.PROJECT_GITIGNORE_PATTERNS
+    )
+    ignore = tmp_path / ".gitignore"
+    ignore.write_text(original)
+    assert [f.severity for f in _gitignore_probe(tmp_path)] == ["warn"]
+    _backfill_project_gitignore(tmp_path, InitContext(project_root=tmp_path))
+    assert ignore.read_text().startswith(original)
+    assert all(p in ignore.read_text().splitlines() for p in new)
+    assert [f.severity for f in _gitignore_probe(tmp_path)] == ["pass"]

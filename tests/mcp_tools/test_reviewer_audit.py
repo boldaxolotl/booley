@@ -551,3 +551,35 @@ def test_fresh_superseded_proposal_is_rejected(reviewer, monkeypatch):
     result = reviewer._run()
     assert result.exit_code == 2
     assert result.detail["rejected"]
+
+
+@pytest.mark.parametrize("payload, code", [({"issues": []}, 0), ({"issues": None}, 2)])
+def test_actual_reviewer_evidence_keeps_versioned_project_clean(
+    reviewer, monkeypatch, payload, code
+):
+    from booley.runtime import project_dir
+    from tests.project_runtime_git_support import assert_clean, initialize_repository
+
+    root = Path(reviewer.args.work_dir)
+    data = root / ".booley_project"
+    data.mkdir()
+    (data / "booley.toml").write_text('[project]\nname = "fixture"\n')
+    state_path = data / "goals" / "audit" / "state.json"
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(data))
+    reviewer.state._file_path = state_path
+    reviewer.args.state_file = state_path
+    monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
+    reviewer.state.save()
+    initialize_repository(root, data, monkeypatch)
+    project_dir.reset_cache()
+    try:
+        output(reviewer, monkeypatch, payload)
+        result = reviewer._run()
+        assert result.exit_code == code
+        path = Path(result.detail["audit_evidence"])
+        assert path.parent == data / "reviewer-evidence"
+        assert path.is_file()
+        assert evidence(result) == result.detail
+        assert_clean(root)
+    finally:
+        project_dir.reset_cache()

@@ -15,7 +15,6 @@ from booley.feedback import cli
 from booley.feedback.findings import read_log
 from booley.feedback.storage import feedback_storage_dir
 from booley.runtime import project_dir as project_dir_mod
-from booley.runtime.project_gitignore import PROJECT_GITIGNORE
 
 
 @pytest.fixture
@@ -53,35 +52,16 @@ def _log(project):
     return read_log(project / ".booley_project")
 
 
-def _commit_project_data(state):
-    (state / ".gitignore").write_text(PROJECT_GITIGNORE, encoding="utf-8")
-    subprocess.run(["git", "init", "-q", str(state)], check=True)
-    subprocess.run(["git", "-C", str(state), "add", "."], check=True)
-    subprocess.run(
-        [
-            "git",
-            "-C",
-            str(state),
-            "-c",
-            "user.name=Fixture",
-            "-c",
-            "user.email=fixture@example.invalid",
-            "commit",
-            "-qm",
-            "fixture",
-        ],
-        check=True,
-    )
+def _commit_project_data(state, monkeypatch):
+    from tests.project_runtime_git_support import initialize_repository
+
+    initialize_repository(state, state, monkeypatch)
 
 
 def _project_data_status(state):
-    result = subprocess.run(
-        ["git", "-C", str(state), "status", "--short"],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return result.stdout
+    from tests.project_runtime_git_support import git
+
+    return git(state, "status", "--short", "--untracked-files=all")
 
 
 def test_source_feedback_uses_shared_git_metadata(tmp_path):
@@ -287,10 +267,13 @@ class TestReporting:
         ],
         ids=["setup-report", "bug-report"],
     )
-    def test_user_report_keeps_project_data_repository_clean(self, run, project, finding_args):
+    def test_user_report_keeps_project_data_repository_clean(
+        self, run, project, finding_args, monkeypatch
+    ):
         state = project / ".booley_project"
+        _commit_project_data(state, monkeypatch)
         run(*finding_args)
-        _commit_project_data(state)
+        assert _project_data_status(state) == ""
 
         assert run("report") == 0
         assert _project_data_status(state) == ""
@@ -366,3 +349,55 @@ class TestList:
         assert "💬 1 friction" in out
         assert "📣 1 impression(s)" in out
         assert "1 win(s)" in out
+
+
+@pytest.mark.parametrize("origin", ["setup", "bug"])
+def test_actual_feedback_writers_keep_versioned_project_clean(run, project, monkeypatch, origin):
+    from booley.feedback.materialize import materialize_attachments
+    from booley.feedback.render import Environment
+    from tests.project_runtime_git_support import assert_clean, initialize_repository
+
+    state = project / ".booley_project"
+    initialize_repository(state, state, monkeypatch)
+    environment = Environment(doctor_deep_clean=True)
+    monkeypatch.setattr(
+        "booley.feedback.render.collect_environment", lambda *_a, **_kw: environment
+    )
+    source = project / "attached.log"
+    source.write_text("local attachment\n", encoding="utf-8")
+    assert (
+        run(
+            "add",
+            "--title",
+            "local note",
+            "--origin",
+            origin,
+            "--attach",
+            str(source),
+            "--bucket",
+            "booley",
+            "--repro",
+            "run",
+            "--observed",
+            "error",
+            "--expected",
+            "pass",
+        )
+        == 0
+    )
+    assert (state / "findings.jsonl").is_file()
+    assert_clean(state)
+    assert run("triage", "F-1", "--bucket", "booley") == 0
+    assert _log(project).entries[0].bucket == "booley"
+    assert_clean(state)
+    assert materialize_attachments(state, [source], env=environment) == (source,)
+    assert list((state / "setup-evidence/attachments").glob("*.txt"))
+    assert list((state / "setup-evidence/attachments").glob("*.txt.json"))
+    assert_clean(state)
+    assert run("report") == 0
+    name = "SETUP-REPORT.md" if origin == "setup" else "FEEDBACK-REPORT.md"
+    assert (state / name).is_file()
+    assert_clean(state)
+    assert run("export", "--all") == 0
+    assert (state / "BOOLEY-FEEDBACK.md").is_file()
+    assert_clean(state)
