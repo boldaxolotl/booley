@@ -52,7 +52,9 @@ def classified(
     )
     source = layout.worktree / relative
     source.parent.mkdir(parents=True, exist_ok=True)
-    source.write_bytes(b"00112233\n")
+    source.write_bytes(
+        b"CAPI=2:\nname: ::generated_data:0\n" if suffix == ".core" else b"00112233\n"
+    )
     (layout.main / ".git/info/exclude").write_bytes(f"/.booley_project\n{relative}\n".encode())
     core = layout.worktree / "top.core"
     core.write_bytes(
@@ -356,6 +358,13 @@ def test_copyto_unproven_source_refuses_finish(layout, case):
 )
 def test_v3_protected_source_requires_commit(layout, suffix):
     classified(layout, suffix=suffix, source_metadata=True)
+    from booley.mcp.goal_generated_inputs import _disclosed_inputs
+
+    paths = record_paths(layout.control, layout.record.id)
+    manifest = paths.runtime_dir / "flow-reports/sim/7/targets/top/campaign/manifest.json"
+    producer = json.loads(manifest.read_bytes())
+    row = {"detail": {"_source_fingerprint": {"target": "top"}}}
+    assert _disclosed_inputs(layout.worktree, producer, row, {}) == []
     with pytest.raises(LifecycleError, match=r"(no committed representation|met and fresh)"):
         finish_goal(request(layout), completion_environment(EntryEnvironment(layout.control)))
 
@@ -378,7 +387,12 @@ def test_copyto_generated_proof_refuses_live_drift(layout, drift, tmp_path):
         producer.unlink()
     with pytest.raises(
         LifecycleError,
-        match=r"(selected producer proof|escapes|committed representation|met and fresh)",
+        match={
+            "size": "differs from selected producer proof",
+            "digest": "differs from selected producer proof",
+            "symlink": "Goals must be met and fresh",
+            "missing-producer": "no committed representation",
+        }[drift],
     ):
         finish_goal(request(layout), completion_environment(EntryEnvironment(layout.control)))
 
@@ -436,3 +450,18 @@ def test_entirely_ambiguous_producer_cannot_authorize_destination_decoy(layout, 
     assert json.loads(manifest.read_bytes())["$schema"] == "booley.simulation-campaign-manifest/v3"
     with pytest.raises(LifecycleError, match="no committed representation"):
         finish_goal(request(layout), completion_environment(EntryEnvironment(layout.control)))
+
+
+def test_legacy_path_preserving_copyto_finish(layout):
+    classified(layout, copyto="dhrystone/dhry.hex")
+    finish_goal(request(layout), completion_environment(EntryEnvironment(layout.control)))
+
+
+def test_new_producer_contract_never_uses_legacy_staged_fallback(layout):
+    from booley.mcp.goal_generated_inputs import _disclosed_inputs
+
+    _, manifest, _ = classified(layout, copyto="dhrystone/dhry.hex")
+    producer = json.loads(manifest.read_bytes())
+    producer["planning_disclosures"][0]["tool_provenance"]["contract_version"] = "2"
+    row = {"detail": {"_source_fingerprint": {"target": "top"}}}
+    assert _disclosed_inputs(layout.worktree, producer, row, {}) == []

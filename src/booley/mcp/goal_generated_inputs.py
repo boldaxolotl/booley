@@ -102,8 +102,8 @@ def _disclosed_inputs(
                 continue
             if (
                 producer["$schema"] == "booley.simulation-campaign-manifest/v3"
-                and "source_path" not in entry
-            ):
+                or disclosure["tool_provenance"]["contract_version"] == "2"
+            ) and "source_path" not in entry:
                 continue
             relative = Path(entry.get("source_path", entry["path"]))
             path = root / relative
