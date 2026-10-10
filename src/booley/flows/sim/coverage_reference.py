@@ -121,7 +121,10 @@ def publish_coverage_campaign_reference(
 
 def resolve_coverage_campaign_reference(path: Path) -> ResolvedCoverageCampaign:
     """Load the reference and authenticate only its selected nested campaign."""
-    absolute = canonical_project_alias_path(path.absolute())
+    try:
+        absolute = canonical_project_alias_path(path.absolute())
+    except ValueError as exc:
+        raise CoverageCampaignReferenceError(str(exc)) from exc
     raw = _read_regular(absolute, "Coverage Campaign reference", MAX_REFERENCE_BYTES)
     return _resolve_coverage_campaign_reference_bytes(absolute, raw)
 
@@ -176,7 +179,10 @@ def resolve_persisted_coverage_campaign_reference(
     reports_root: Path, value: object
 ) -> ResolvedCoverageCampaign:
     """Authenticate an acceptance-state pointer and its selected nested Campaign."""
-    reports_root = canonical_project_alias_path(reports_root.absolute())
+    try:
+        reports_root = canonical_project_alias_path(reports_root.absolute())
+    except ValueError as exc:
+        raise CoverageCampaignReferenceError(str(exc)) from exc
     persisted = _exact(
         value,
         {"path_base", "path", "bytes", "sha256", "nested_campaign_sha256"},

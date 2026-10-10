@@ -28,6 +28,7 @@ from booley.flows.sim.coverage_provisional import (
     criterion_from_evaluation,
     evaluate_provisional_coverage,
 )
+from booley.runtime.sandbox_layout import canonical_project_alias_path
 from booley.ticket_board import waiver_candidates as store
 from booley.ticket_board.helpers import tickets_dir_from_project_root
 
@@ -86,7 +87,9 @@ def _binding(
         raise ValueError("only point-store Campaigns (V3/V4) can bind Waiver Candidates")
     assert summary.point_store is not None  # V3/V4 always carry a point store
     try:
-        relative = campaign_path.absolute().relative_to(flow_reports_root.absolute())
+        relative = canonical_project_alias_path(campaign_path.absolute()).relative_to(
+            canonical_project_alias_path(flow_reports_root.absolute())
+        )
     except ValueError as exc:
         raise ValueError("Campaign is not under this Ticket's flow-reports directory") from exc
     return store.CampaignBinding(

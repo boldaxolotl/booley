@@ -17,7 +17,7 @@ from pathlib import Path
 PROJECT_DIR_TARGET = "/booley-project"
 
 WORK_DIR = "/work"
-PROJECT_ALIAS_TARGET = "/work/.booley_project"
+PROJECT_DATA_MOUNT_PATH = "/work/.booley_project"
 
 
 def canonical_project_alias_path(path: Path) -> Path:
@@ -31,8 +31,6 @@ def canonical_project_alias_path(path: Path) -> Path:
     alias = Path(PROJECT_DIR_TARGET)
     if not path.is_absolute() or not path.is_relative_to(alias):
         return path
-    if ".." in path.parts:
-        raise ValueError("Project alias paths must not contain traversal")
     try:
         info = alias.lstat()
         parent = alias.parent.lstat()
@@ -42,10 +40,12 @@ def canonical_project_alias_path(path: Path) -> Path:
             and stat.S_ISDIR(parent.st_mode)
             and parent.st_uid == 0
             and not parent.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
-            and str(alias.readlink()) == PROJECT_ALIAS_TARGET
+            and str(alias.readlink()) == PROJECT_DATA_MOUNT_PATH
         )
     except OSError:
         return path
     if not trusted:
         return path
-    return Path(PROJECT_ALIAS_TARGET) / path.relative_to(alias)
+    if ".." in path.parts:
+        raise ValueError("Project alias paths must not contain traversal")
+    return Path(PROJECT_DATA_MOUNT_PATH) / path.relative_to(alias)

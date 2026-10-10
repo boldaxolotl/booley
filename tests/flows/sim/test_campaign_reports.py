@@ -12,7 +12,8 @@ from tests.runtime.test_sandbox_layout import project_alias
 __all__ = ["flow_project", "project_alias"]
 
 
-def test_project_alias_simulation_executes_campaign(flow_project, tmp_path, monkeypatch):
+@pytest.mark.parametrize("relative", [False, True])
+def test_project_alias_simulation_executes_campaign(flow_project, tmp_path, monkeypatch, relative):
     from booley.flows.sim.flow import SimulateFlow
     from booley.flows.sim.request import SimRequest
     from booley.harness import doctor
@@ -27,11 +28,13 @@ def test_project_alias_simulation_executes_campaign(flow_project, tmp_path, monk
     from tests.runtime.test_sandbox_layout import configure_project_alias
 
     configure_project_alias(monkeypatch, alias, data)
+    if relative:
+        monkeypatch.chdir(tmp_path)
     result = SimulateFlow().execute(
         SimRequest(
             target="sim",
             work_dir=flow_project,
-            report_dir=alias / "reports",
+            report_dir=Path("booley-project/reports") if relative else alias / "reports",
             test=("first",),
             timeout_ms=30_000,
         )

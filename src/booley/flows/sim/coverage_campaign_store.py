@@ -636,11 +636,18 @@ def _read_document(path: Path) -> tuple[dict[str, object], str]:
         os.close(descriptor)
 
 
+def _canonical_campaign_path(path: Path) -> Path:
+    try:
+        return canonical_project_alias_path(path.absolute())
+    except ValueError as exc:
+        raise CoverageCampaignStoreError("COV_PATH_UNSAFE", str(exc)) from exc
+
+
 def read_coverage_summary(
     path: Path, expected_target: DurableTargetIdentity
 ) -> CoverageCampaignSummary:
     """Read V3/V4 manifest facts without opening Coverage Point storage."""
-    path = canonical_project_alias_path(path.absolute())
+    path = _canonical_campaign_path(path)
     try:
         document, digest = _read_document(path)
         schema = document.get("$schema")
@@ -805,7 +812,7 @@ def load_coverage_campaign(
     path: Path, expected_target: DurableTargetIdentity | None = None
 ) -> LoadedCoverageCampaign:
     """Deep-load one V3/V4 Campaign and accept no point evidence before validation."""
-    path = canonical_project_alias_path(path.absolute())
+    path = _canonical_campaign_path(path)
     try:
         document, digest = _read_document(path)
         schema = document.get("$schema")
@@ -834,7 +841,7 @@ def load_coverage_campaign_bytes(
     expected_target: DurableTargetIdentity | None = None,
 ) -> LoadedCoverageCampaign:
     """Deep-load a V3/V4 Campaign from exact manifest bytes already authenticated."""
-    path = canonical_project_alias_path(path.absolute())
+    path = _canonical_campaign_path(path)
     try:
         if not raw or len(raw) > MAX_MANIFEST_BYTES:
             raise CoverageCampaignStoreError(

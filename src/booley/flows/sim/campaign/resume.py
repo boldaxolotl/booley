@@ -95,7 +95,10 @@ def validate_resume_manifest(
     revision_root: Callable[[Mapping[str, str]], Path] | None = None,
 ) -> ValidatedResumeManifest:
     """Decode one manifest exactly once and traverse only authenticated links."""
-    canonical = canonical_project_alias_path(manifest_path.absolute())
+    try:
+        canonical = canonical_project_alias_path(manifest_path.absolute())
+    except ValueError as exc:
+        raise SimulationCampaignIntegrityError(str(exc)) from exc
     if canonical.name != "manifest.json" or canonical.parent.name != "campaign":
         raise SimulationCampaignIntegrityError(
             "--resume-from must name one exact campaign/manifest.json"

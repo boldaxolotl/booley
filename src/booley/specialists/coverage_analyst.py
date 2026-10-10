@@ -107,7 +107,10 @@ class CoverageAnalystSpecialist(Specialist):
         self, campaign: Path, instruction: str
     ) -> tuple[CoverageAnalysisReport, LoadedCoverageCampaign, Path]:
         campaign = campaign if campaign.is_absolute() else self.args.work_dir / campaign
-        campaign = canonical_project_alias_path(campaign.absolute())
+        try:
+            campaign = canonical_project_alias_path(campaign.absolute())
+        except ValueError as exc:
+            raise CoverageAnalysisError(str(exc)) from exc
         loaded = read_coverage_campaign(campaign)
         sources = coverage_sources(loaded.campaign, self.args.work_dir)
         report = self._analyze_bound(

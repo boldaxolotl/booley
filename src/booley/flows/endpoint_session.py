@@ -81,7 +81,9 @@ def _canonicalize_simulation_report_root(endpoint: EndpointState) -> EndpointOut
     if endpoint.endpoint_kind != "flow" or endpoint.name != "sim":
         return None
     try:
-        endpoint.args.report_dir = canonical_project_alias_path(Path(endpoint.args.report_dir))
+        endpoint.args.report_dir = canonical_project_alias_path(
+            Path(endpoint.args.report_dir).absolute()
+        )
     except ValueError as exc:
         result = EndpointOutcome(exit_code=EXIT_ERROR, report_text=str(exc))
         endpoint._publish_console_report(result)

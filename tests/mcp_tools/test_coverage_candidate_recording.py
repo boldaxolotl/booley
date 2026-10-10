@@ -254,3 +254,32 @@ def test_goal_record_directory_parameter_keeps_candidates_out_of_ticket_store(ti
     assert (goal_dir / "waiver-candidates.json").is_file()
     assert not (context.tickets_dir / "waiver-candidates").exists()
     assert not store.load(context.tickets_dir, context.slug, directory=goal_dir).is_empty
+
+
+def test_image_alias_reports_root_records_canonical_campaign(
+    ticket, tmp_path, monkeypatch
+) -> None:
+    from tests.conftest import require_symlinks, symlink_or_skip
+    from tests.runtime.test_sandbox_layout import configure_project_alias
+
+    context, loaded, campaign, path, sha = ticket
+    require_symlinks(tmp_path)
+    alias = tmp_path / "booley-project"
+    symlink_or_skip(alias, tmp_path / "reports", target_is_directory=True)
+    configure_project_alias(monkeypatch, alias, tmp_path / "reports")
+    context = replace(context, flow_reports_root=alias)
+    section = record_ticket_candidates(
+        context,
+        campaign,
+        loaded.summary,
+        path,
+        _screened(campaign.points[0].id, sha),
+        invocation_id="7",
+        now=_NOW,
+    )
+    assert section["status"] == "recorded", section
+    record = store.load(context.tickets_dir, "t-1")
+    assert (
+        next(iter(record.candidates.values())).binding.campaign_path
+        == "sim/12/targets/sim_counter/coverage.json"
+    )

@@ -53,8 +53,8 @@ class CoverageSourceClosure:
 
 def read_coverage_campaign(path: Path) -> LoadedCoverageCampaign:
     """Require an exact canonical path and a matching completed Target projection."""
-    path = canonical_project_alias_path(path.absolute())
     try:
+        path = canonical_project_alias_path(path.absolute())
         _safe_path(path)
         if path.name != "coverage.json" or path.parent.parent.name != "targets":
             raise CoverageAnalysisError("Supply the exact canonical Target coverage.json path")

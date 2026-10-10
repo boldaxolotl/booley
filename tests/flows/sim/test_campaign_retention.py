@@ -17,6 +17,9 @@ from booley.flows.sim.coverage_progress import CoverageProgress
 from booley.flows.sim.coverage_transaction import run_coverage_target
 from tests.flows.sim.test_coverage_invocation import project
 from tests.flows.sim.test_coverage_transaction import NativeExecution
+from tests.runtime.test_sandbox_layout import project_alias
+
+__all__ = ["project_alias"]
 
 
 def campaign(tmp_path):
@@ -938,3 +941,23 @@ def test_image_alias_prunes_only_authenticated_invocation(tmp_path, monkeypatch)
     prune_invocation(alias, 1)
     assert not (tmp_path / "reports/sim/1").exists()
     assert (neighbor / "keep").read_text() == "unrelated"
+
+
+def test_prune_canonicalizes_explicit_project_data(project_alias, monkeypatch) -> None:
+    from contextlib import nullcontext
+
+    from booley.flows.sim import campaign_retention as retention
+
+    alias, data = project_alias
+    root = data / "reports/sim/1"
+    root.mkdir(parents=True)
+    received = []
+    monkeypatch.setattr(retention, "_retention_invocation_lock", lambda *_: nullcontext())
+    monkeypatch.setattr(retention, "_completed_tombstone", lambda *_: False)
+    monkeypatch.setattr(retention, "_read_prune_batch", lambda *_: None)
+    monkeypatch.setattr(retention, "_dependent_invocations", lambda *_: ())
+    monkeypatch.setattr(
+        retention, "_prune_invocation", lambda root, *, project_data: received.append(project_data)
+    )
+    retention.prune_invocation(data / "reports", 1, project_data=alias)
+    assert received == [data]

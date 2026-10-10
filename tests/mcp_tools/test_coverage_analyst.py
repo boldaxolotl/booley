@@ -919,3 +919,12 @@ def test_image_alias_analyst_binds_canonical_campaign(project_alias, monkeypatch
     (root / "linked").symlink_to(root, target_is_directory=True)
     with pytest.raises(ValueError, match=r"link|traversal"):
         specialist._analyze_path(alias / "linked" / path.relative_to(root), "explain")
+
+
+def test_image_alias_analyst_traversal_uses_domain_error(project_alias) -> None:
+    from booley.flows.sim.coverage_analysis_input import CoverageAnalysisError
+
+    alias, _data = project_alias
+    analyst = CoverageAnalystSpecialist()
+    with pytest.raises(CoverageAnalysisError, match="traversal"):
+        analyst.coverage_analyst(alias / "child/../coverage.json")
