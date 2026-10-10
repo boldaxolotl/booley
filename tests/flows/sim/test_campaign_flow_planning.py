@@ -209,3 +209,62 @@ def test_campaign_baseline_preview_materializes_project_topologies(
     assert prerequisites == {"sim_core": [prerequisite]}
     assert flow.args.work_dir == root
     assert roots and not roots[0].exists()
+
+
+@pytest.mark.parametrize("mapping", [False, True])
+@pytest.mark.parametrize("contract_version", ["1", "2"])
+@pytest.mark.parametrize("raw_coverage", [False, True])
+def test_disclosed_source_mapping_selects_v3_without_changing_legacy_shape(
+    mapping, raw_coverage, contract_version
+):
+    from booley.flows.sim.campaign.flow_planning import _manifest_document
+    from tests.flows.sim.test_campaign_manifest_codec import _manifest
+
+    document = _manifest()
+    workload = document["workload"]
+    workload["coverage"] = raw_coverage
+    if raw_coverage:
+        workload["no_waivers"] = True
+    entry = {
+        "path": "staged.hex",
+        "bytes": 1,
+        "sha256": "sha256:" + "a" * 64,
+        "kind": "generated_input",
+    }
+    if mapping:
+        entry["source_path"] = "data/source.hex"
+    disclosure = {
+        "planner": "fusesoc_setup",
+        "scratch_inputs": [],
+        "generated_files": [entry],
+        "tool_provenance": {
+            "kind": "fusesoc",
+            "version": "2",
+            "contract_version": contract_version,
+        },
+        "cleanup": {"removed": True},
+    }
+    from booley.flows.sim.campaign.flow_planning import _variant_document, _work_items
+
+    variant = _variant_document(workload, [], False)
+    variants, items = (
+        [variant],
+        _work_items([()], document["target"], variant, "run", "literal", kind="ordinary_hdl"),
+    )
+    document["build_variants"] = variants
+    document["work_items"] = items
+    # This boundary chooses the schema; finalization recalculates the fingerprints.
+    manifest = _manifest_document(
+        1,
+        "",
+        document["target"],
+        workload,
+        document["required_suite"],
+        document["build_variants"][0],
+        [disclosure],
+        [],
+        document["work_items"],
+    )
+    assert manifest.document["$schema"] == "booley.simulation-campaign-manifest/" + (
+        "v3" if mapping or contract_version == "2" else "v2" if raw_coverage else "v1"
+    )

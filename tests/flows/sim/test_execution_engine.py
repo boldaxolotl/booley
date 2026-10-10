@@ -130,6 +130,7 @@ def _prepared_group_with_sources(
         {},
         {},
         {},
+        (),
     )
 
 
@@ -140,6 +141,8 @@ def _inspection(*, cocotb: bool) -> SimpleNamespace:
         parameters={},
         flow_options={"cocotb_module": "test_demo"} if cocotb else {},
         tool_options={},
+        inputs=(),
+        core_closure=lambda _handles: (),
         rtl_files=(),
         tb_files=(),
     )
@@ -176,6 +179,9 @@ def test_prepared_source_entries_accept_project_absolute_sources(tmp_path: Path)
         make_argv=("true",),
     )
     group = object.__new__(PreparedOrdinaryGroup)
+    group._source_declarations = ()
+    group._compile_surface = TargetCompileSurface(handle.project_root, (), ())
+    group._sources_before = {}
     group._handle = handle
     group._attempt = SimpleNamespace(prepared=prepared, trace_requested=False)
 
@@ -211,6 +217,9 @@ def test_prepared_source_entries_reject_project_external_sources(tmp_path: Path)
         make_argv=("true",),
     )
     group = object.__new__(PreparedOrdinaryGroup)
+    group._source_declarations = ()
+    group._compile_surface = TargetCompileSurface(handle.project_root, (), ())
+    group._sources_before = {}
     group._handle = handle
     group._attempt = SimpleNamespace(prepared=prepared, trace_requested=False)
 
@@ -3131,6 +3140,10 @@ def test_ordinary_group_builds_before_launching_supplied_snapshot(
         options=SimulationOptions(timeout_ms=5000, build_timeout_ms=7000),
     )
     with (
+        patch(
+            "booley.flows.sim.execution.engine.TargetCatalog.build",
+            return_value=_inspection(cocotb=False),
+        ),
         patch.object(execution, "_prepare_build", return_value=(prepared, TraceMode.VCD_FIFO)),
         patch("booley.flows.sim.execution.engine.new_attempt_token", return_value="abc123"),
         patch.object(SimulationBuildSession, "capture_inputs", return_value={}),
@@ -3190,6 +3203,10 @@ def test_ordinary_group_refuses_snapshot_launch_until_lease_released(
     prepared = _prepared(handle, cocotb=False)
     execution = SimulationExecution(invoke=MagicMock(), options=SimulationOptions())
     with (
+        patch(
+            "booley.flows.sim.execution.engine.TargetCatalog.build",
+            return_value=_inspection(cocotb=False),
+        ),
         patch.object(execution, "_prepare_build", return_value=(prepared, TraceMode.VCD_FIFO)),
         patch("booley.flows.sim.execution.engine.new_attempt_token", return_value="abc123"),
         execution.ordinary_group(handle, ("smoke",)) as group,
@@ -3245,3 +3262,164 @@ def test_actual_engine_ascii_cycle_records(tmp_path, record, expected):
 
     outcome = _run_execution(handle, prepared, invoke, ("smoke",), cocotb=False)
     assert outcome.tests[0].cycles == expected
+
+
+@pytest.mark.parametrize("copyto", ["firmware.hex", "data/firmware.hex", None])
+@pytest.mark.parametrize("source_bytes", [b"00000013\n", b"00000013\r\n"])
+def test_real_copyto_prepared_source_entries(tmp_path, monkeypatch, copyto, source_bytes):
+    importlib.import_module("fusesoc")
+    importlib.import_module("edalize")
+    project = tmp_path / "project"
+    _write_runtime_input_project(project)
+    (project / "data/firmware.hex").write_bytes(source_bytes)
+    core = project / "runtime_input.core"
+    core.write_text(
+        core.read_text().replace(
+            ", copyto: firmware.hex", "" if copyto is None else ", copyto: " + copyto
+        )
+    )
+    fake_bin = _write_fake_icarus_tools(tmp_path)
+    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
+    handle = TargetCatalog.build(project).select("sim", for_flow="sim")
+    execution = SimulationExecution(
+        invoke=_subprocess_invoker(project), options=SimulationOptions(timeout_ms=30_000)
+    )
+    with execution.ordinary_group(handle, ()) as group:
+        entries = group.prepared_source_entries()
+        data = next(entry for entry in entries if str(entry["path"]).endswith("firmware.hex"))
+        assert data["source_path"] == "data/firmware.hex"
+        assert data["path"] == (copyto or "src/acme_lib_runtime_input_1/data/firmware.hex")
+        assert data["sha256"] == "sha256:" + hashlib.sha256(source_bytes).hexdigest()
+        (group.build_root / data["path"]).write_bytes(b"prepared bytes changed")
+        changed = next(
+            entry
+            for entry in group.prepared_source_entries()
+            if str(entry["path"]).endswith("firmware.hex")
+        )
+        assert (
+            changed["sha256"] == "sha256:" + hashlib.sha256(b"prepared bytes changed").hexdigest()
+        )
+        assert (project / "data/firmware.hex").read_bytes() == source_bytes
+
+
+@pytest.mark.parametrize(
+    "core, declarations, expected",
+    [
+        (None, [("nested/a.hex", "a:b:c:1")], "nested/a.hex"),
+        (None, [("nested/a.hex", "a:b:c:1"), ("other/a.hex", "a:b:d:1")], None),
+        ("a:b:c:1", [("nested/a.hex", "a:b:c:1"), ("other/a.hex", "a:b:d:1")], "nested/a.hex"),
+        ("a:b:foreign:1", [("nested/a.hex", "a:b:c:1")], None),
+    ],
+)
+def test_copyto_source_association_requires_unique_full_destination_and_core(
+    tmp_path, core, declarations, expected
+):
+    from booley.flows.sim.execution.engine import _SourceDeclaration
+
+    group = _prepared_group_with_sources(_handle(tmp_path))
+    staged = group.build_root / "a.hex"
+    staged.write_bytes(b"staged bytes")
+    group._attempt.prepared = replace(
+        group._attempt.prepared,
+        resolved=replace(
+            group._attempt.prepared.resolved, files=(ResolvedFile("a.hex", "user", core=core),)
+        ),
+    )
+    group._source_declarations = tuple(
+        _SourceDeclaration(path, owner, "user", ("a.hex",)) for path, owner in declarations
+    )
+    entry = group.prepared_source_entries()[0]
+    assert entry.get("source_path") == expected
+    assert entry["sha256"] == "sha256:" + hashlib.sha256(b"staged bytes").hexdigest()
+
+
+def test_copyto_declaration_drift_refuses_publication(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    _write_runtime_input_project(project)
+    fake_bin = _write_fake_icarus_tools(tmp_path)
+    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
+    handle = TargetCatalog.build(project).select("sim", for_flow="sim")
+    execution = SimulationExecution(
+        invoke=_subprocess_invoker(project), options=SimulationOptions(timeout_ms=30_000)
+    )
+    with execution.ordinary_group(handle, ()) as group:
+        core = project / "runtime_input.core"
+        core.write_text(core.read_text().replace("copyto: firmware.hex", "copyto: changed.hex"))
+        with pytest.raises(SimulationBuildSlotError, match="compile inputs changed"):
+            group.prepared_source_entries()
+
+
+@pytest.mark.parametrize(
+    "source, expected", [("nested/../data.hex", "data.hex"), ("../outside.hex", None)]
+)
+def test_copyto_declared_path_lexical_confinement(tmp_path, source, expected):
+    from booley.flows.sim.execution.engine import _safe_declared_path
+
+    if expected is None:
+        with pytest.raises(SimulationBuildSlotError, match="escapes Project"):
+            _safe_declared_path(tmp_path, source)
+    else:
+        (tmp_path / "nested").symlink_to(tmp_path.parent, target_is_directory=True)
+        assert _safe_declared_path(tmp_path, source) == expected
+
+
+def test_prepared_source_entries_real_dependency_core_export_root(tmp_path, monkeypatch):
+    importlib.import_module("fusesoc")
+    importlib.import_module("edalize")
+    project = tmp_path / "project"
+    _write_runtime_input_project(project)
+    core = project / "runtime_input.core"
+    core.write_text(
+        core.read_text().replace(
+            "      - data/firmware.hex: {file_type: user, copyto: firmware.hex}",
+            "    depend: [acme:lib:data:1]",
+        )
+    )
+    dependency = project / "dependency"
+    (dependency / "inputs").mkdir(parents=True)
+    (dependency / "inputs/firmware.hex").write_bytes(b"dependency bytes")
+    (dependency / "data.core").write_text(
+        "CAPI=2:\nname: acme:lib:data:1\nfilesets:\n  data:\n    files: [inputs/firmware.hex]\n    file_type: user\ntargets:\n  default:\n    filesets: [data]\n"
+    )
+    fake_bin = _write_fake_icarus_tools(tmp_path)
+    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
+    handle = TargetCatalog.build(project).select("sim", for_flow="sim")
+    execution = SimulationExecution(
+        invoke=_subprocess_invoker(project), options=SimulationOptions(timeout_ms=30_000)
+    )
+    with execution.ordinary_group(handle, ()) as group:
+        data = next(
+            entry
+            for entry in group.prepared_source_entries()
+            if str(entry["path"]).endswith("firmware.hex")
+        )
+        assert data["path"] == "src/acme_lib_data_1/inputs/firmware.hex"
+        assert data["source_path"] == "dependency/inputs/firmware.hex"
+        assert data["sha256"] == "sha256:" + hashlib.sha256(b"dependency bytes").hexdigest()
+
+
+def test_real_copyto_same_basename_uses_full_declared_paths(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    _write_runtime_input_project(project)
+    (project / "other").mkdir()
+    (project / "other/firmware.hex").write_bytes(b"second bytes")
+    core = project / "runtime_input.core"
+    core.write_text(
+        core.read_text()
+        .replace("copyto: firmware.hex", "copyto: first.hex")
+        .replace(
+            "targets:\n",
+            "      - other/firmware.hex: {file_type: user, copyto: second.hex}\ntargets:\n",
+        )
+    )
+    fake_bin = _write_fake_icarus_tools(tmp_path)
+    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
+    handle = TargetCatalog.build(project).select("sim", for_flow="sim")
+    execution = SimulationExecution(
+        invoke=_subprocess_invoker(project), options=SimulationOptions(timeout_ms=30_000)
+    )
+    with execution.ordinary_group(handle, ()) as group:
+        entries = {entry["path"]: entry for entry in group.prepared_source_entries()}
+        assert entries["first.hex"]["source_path"] == "data/firmware.hex"
+        assert entries["second.hex"]["source_path"] == "other/firmware.hex"
+        assert entries["first.hex"]["sha256"] != entries["second.hex"]["sha256"]

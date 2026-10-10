@@ -167,8 +167,19 @@ def _manifest_document(
     prerequisite_documents,
     work_items,
 ):
-    # Default runs keep writing v1; only the raw-coverage member needs v2.
+    # Legacy-shaped runs retain v1/v2; proof-bearing source mappings require v3.
     schema_version = "v2" if workload.get("no_waivers") is True else "v1"
+    if any(
+        disclosure["planner"] == "fusesoc_setup"
+        and disclosure["tool_provenance"]["contract_version"] == "2"
+        for disclosure in planning_disclosures
+    ) or any(
+        "source_path" in entry
+        for disclosure in planning_disclosures
+        for field in ("generated_files", "scratch_inputs")
+        for entry in disclosure[field]
+    ):
+        schema_version = "v3"
     return finalize_manifest(
         {
             "$schema": f"booley.simulation-campaign-manifest/{schema_version}",

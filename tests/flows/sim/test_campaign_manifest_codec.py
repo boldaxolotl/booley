@@ -1843,3 +1843,95 @@ def test_projected_root_membership_does_not_scan_ordered_output():
     assert diagnostic.mismatch_summary == (*expected, fallback, fallback)
     assert projection.root_lines == set(diagnostic.mismatch_summary)
     assert diagnostic.mismatches == (finding, finding)
+
+
+@pytest.mark.parametrize("schema", ["v1", "v2", "v3"])
+@pytest.mark.parametrize("mapping", [False, True])
+def test_source_mapping_schema_grammar(schema, mapping):
+    document = _manifest()
+    document.pop("fingerprints")
+    document["$schema"] = "booley.simulation-campaign-manifest/" + schema
+    if schema == "v2":
+        document["workload"]["coverage"] = True
+        document["workload"]["no_waivers"] = True
+        workload = document["workload"]
+        from booley.flows.sim.campaign.flow_planning import _variant_document, _work_items
+
+        variant = _variant_document(workload, [], False)
+        variants, items = (
+            [variant],
+            _work_items([()], document["target"], variant, "run", "literal", kind="ordinary_hdl"),
+        )
+        document["build_variants"], document["work_items"] = variants, items
+    entry = {
+        "path": "staged.hex",
+        "bytes": 1,
+        "sha256": "sha256:" + "a" * 64,
+        "kind": "generated_input",
+    }
+    if mapping:
+        entry["source_path"] = "data/source.hex"
+    document["planning_disclosures"] = [_prepared_disclosure([entry])]
+    if mapping and schema != "v3":
+        with pytest.raises(SimulationCampaignIntegrityError, match="exact fields"):
+            finalize_manifest(document)
+    else:
+        manifest = finalize_manifest(document)
+        assert (
+            decode_simulation_campaign_manifest(encode_simulation_campaign_manifest(manifest))
+            == manifest
+        )
+
+
+@pytest.mark.parametrize("field,value", [("source_path", "../outside.hex"), ("unknown", "x")])
+def test_source_mapping_rejects_unsafe_or_unknown_disclosure_fields(field, value):
+    document = _manifest()
+    document.pop("fingerprints")
+    document["$schema"] = "booley.simulation-campaign-manifest/v3"
+    document["planning_disclosures"] = [
+        _prepared_disclosure(
+            [
+                {
+                    "path": "staged.hex",
+                    "bytes": 1,
+                    "sha256": "sha256:" + "a" * 64,
+                    "kind": "generated_input",
+                    field: value,
+                }
+            ]
+        )
+    ]
+    with pytest.raises(SimulationCampaignIntegrityError):
+        finalize_manifest(document)
+
+
+def test_source_mapping_does_not_relax_source_recipe():
+    document = _diagnostic_document(
+        sources=[{**_diagnostic_source("data.hex"), "source_path": "other.hex"}]
+    )
+    document["$schema"] = "booley.simulation-campaign-manifest/v3"
+    with pytest.raises(SimulationCampaignIntegrityError, match="exact fields"):
+        finalize_manifest(document)
+
+
+def test_copyto_prepared_digest_diagnostic_uses_declared_source():
+    old, new = _prepared_diagnostic_pair()
+    for document in (old, new):
+        document["$schema"] = "booley.simulation-campaign-manifest/v3"
+        entry = document["planning_disclosures"][0]["generated_files"][0]
+        entry["source_path"] = entry["path"]
+        entry["path"] = "renamed.sv"
+    diagnostic = _project_diagnostics(old, new)
+    assert diagnostic.mismatch_summary == ("source changed: a.sv",)
+    new["planning_disclosures"][0]["generated_files"][0]["source_path"] = "other.sv"
+    assert any("source_path" in line for line in _project_diagnostics(old, new).mismatch_summary)
+
+
+@pytest.mark.parametrize("flag", [False, 1, "true"])
+def test_v3_no_waivers_requires_literal_true(flag):
+    document = _manifest()
+    document.pop("fingerprints")
+    document["$schema"] = "booley.simulation-campaign-manifest/v3"
+    document["workload"]["no_waivers"] = flag
+    with pytest.raises(SimulationCampaignIntegrityError, match="no_waivers is invalid"):
+        finalize_manifest(document)

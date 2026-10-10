@@ -59,9 +59,12 @@ def test_fixture_testbench_runs_under_icarus_with_project_sentinel() -> None:
     assert '$display("ALL TESTS PASSED.");' in testbench
 
 
-def test_validator_preserves_requested_work_item_order(tmp_path: Path) -> None:
+@pytest.mark.parametrize("version", [1, 2, 3])
+def test_validator_preserves_requested_work_item_order(tmp_path: Path, version: int) -> None:
     manifest = tmp_path / "manifest.json"
-    manifest.write_text(json.dumps(_manifest(["tail", "quick"]), sort_keys=True) + "\n")
+    document = _manifest(["tail", "quick"])
+    document["$schema"] = f"booley.simulation-campaign-manifest/v{version}"
+    manifest.write_text(json.dumps(document, sort_keys=True) + "\n")
     result = _validator().validate(manifest, ["tail", "quick"])
     assert result["selection"] == ["tail", "quick"]
     assert result["work_items"] == 2
