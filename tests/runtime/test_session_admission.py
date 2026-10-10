@@ -667,3 +667,12 @@ def test_deleted_root_observed_spelling_is_verified_before_label_acceptance(tmp_
     document["Config"]["Labels"]["booley.project-id"] = hashlib.sha256(b"/unrelated").hexdigest()
     with pytest.raises(session_admission.AdmissionError, match="identity disagrees"):
         session_admission.vscode_sandboxes(project, run=docker)
+
+
+def test_windows_recovery_commands_quote_powershell_metacharacters(monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(session_admission, "os", SimpleNamespace(name="nt"))
+    assert session_admission._command(
+        ["booley", "session", "down", "--project", "C:\\Projects\\A&B's $work"]
+    ) == ("& 'booley' 'session' 'down' '--project' 'C:\\Projects\\A&B''s $work'")

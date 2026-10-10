@@ -355,7 +355,9 @@ def _valid_identity(item: Sandbox, root: str) -> bool:
 
 
 def _command(argv: list[str]) -> str:
-    return subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
+    if os.name == "nt":
+        return "& " + " ".join("'" + arg.replace("'", "''") + "'" for arg in argv)
+    return shlex.join(argv)
 
 
 def _identity_recovery(item: Sandbox, root: str) -> str:
@@ -364,7 +366,8 @@ def _identity_recovery(item: Sandbox, root: str) -> str:
     down = _command(["booley", "session", "down", "--project", root])
     return (
         f"Sandbox {item.name} ({item.container_id}) Project identity disagrees with {root}. "
-        f"Stop it with `{stop}`, remove it with `{remove}`, then run `{down}` to release "
+        f"{'In PowerShell, s' if os.name == 'nt' else 'S'}top it with `{stop}`, "
+        f"remove it with `{remove}`, then run `{down}` to release "
         "its pending claim. Recreate its VS Code container from the issued configuration and retry."
     )
 
@@ -505,7 +508,7 @@ def _refusal(
     roots = sorted({item.project_root for item in live} | {claim.project_root for claim in claims})
     for root in roots:
         argv = ["booley", "session", "down", "--project", root]
-        command = subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
+        command = _command(argv)
         lines.append(f"Free capacity with `{command}`.")
     lines.extend(diagnostics)
     lines.append(f"Or raise [sandbox].max_sessions in {host_config_path()}.")
