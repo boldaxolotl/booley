@@ -109,8 +109,9 @@ Try:
 - Probe a missing relative baseline Target and missing spec separately.
   A missing candidate Target only warns and remains unmet. Preserve each
   diagnostic and restore that probe's owned inputs.
-- Add and commit a disposable `default.md`. Entry without an include-or-skip
-  decision refuses; explicit skip needs the operator's instruction and reason.
+- Add and commit a disposable `default.md` in the primary checkout's Project
+  `goalsets/`. Entry without an include-or-skip decision refuses; explicit skip
+  needs the operator's instruction and reason.
   Include it on a control entry. Abandon probes, then remove `default.md` and
   commit that removal so later entries do not inherit the probe.
 Look for: branch collisions on rerun, collapsed Project/worktree identity,
@@ -330,6 +331,9 @@ installations, images, and Sessions untouched. Record the final pin state. Nothi
 - Use unique worktree names and Goal slugs: an existing same-day Goal Branch refuses entry.
 - Integrate every printed branch before cutting the next worktree. When a paired
   checkout was printed, a clean outer tree alone does not prove its branch is current.
+- Entry reads `default.md` only from the primary checkout's Project `goalsets/`. With a copy
+  committed only in a worktree's paired Project checkout, entry does not ask for an include-or-skip
+  decision.
 - A regrant alone leaves the Session spec stale. Reissue it before any Doctor, FPGA, or mount check.
 - Exit 125 from `booley session enter --` means your argv is missing the executable. It's not a lint
   verdict.

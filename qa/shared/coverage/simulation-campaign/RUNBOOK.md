@@ -33,10 +33,11 @@ timeline, or immutable product artifacts.
 Commit fixture registration and initialized Project files before creating a
 linked worktree. Start a Codex child with `$booley-goal` naming a `sim` Goal on
 `sim_toggle`; use its complete registered suite and pass `work_dir` on every
-MCP call. Goal evidence uses purpose `goal_evidence`, subject `goal` and an
-identity with record ID, Goal keys and spec revisions. Preserve the Goal Record
-and its `logs/acceptance/` evidence. Before execution, archive its Development
-State and evidence ledger.
+MCP call that accepts it (listed in `qa/shared/GOAL-CHILD.md`). Goal evidence
+uses purpose `goal_evidence`, subject `goal` and an identity with record ID,
+Goal keys and spec revisions. Preserve the Goal Record and its
+`logs/acceptance/` evidence. Before execution, archive its Development State
+and evidence ledger.
 
 The Goal state is written by the Flow process that the container's shared HTTP
 MCP server starts, not by the Codex child. The child reaches that server

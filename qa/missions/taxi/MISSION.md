@@ -239,8 +239,9 @@ Look for: child edits to tests/config, unqualified timing changes or stale Goal 
 Intent: separate worktrees isolate Goal evidence and expose operator diagnostics without changing policy.
 Try:
 - Start two Codex children in two clean linked worktrees with distinct slugs
-  and `goals/operations.json`. Every MCP call includes its `work_dir`, including
-  independent calls against the primary checkout. Evidence and artifacts cannot
+  and `goals/operations.json`. Every MCP call that accepts `work_dir` (listed in
+  `qa/shared/GOAL-CHILD.md`) includes it, including independent calls against
+  the primary checkout. Evidence and artifacts cannot
   cross records. Check the Sandbox admission cap and cancellation of waiting jobs.
 - Run `booley session enter -- booley dashboard` and Goal status short/long
   views; sessions, Goals and Jobs agree with each child's durable record.
@@ -255,8 +256,9 @@ Try:
 - Test wrong worktree identity and occupied-worktree entry refusals, fresh evidence
   after relevant edits, unmet mandatory Goal blocking Finish, and explicit abandon
   preserving branch/worktree. Save diagnostics and resolve all records before cleanup.
-Look for: cross-record evidence, missing work_dir accepted during active work,
-auto-abandon or a protected-input edit silently accepted.
+Look for: cross-record evidence, missing work_dir accepted during active work
+by a call that takes it, auto-abandon or a protected-input edit silently
+accepted.
 
 ### 12. campaign — Simulation Campaigns (~25 min)
 Intent: one shared build, capped heavy jobs, isolated attempts, resumable batches.
