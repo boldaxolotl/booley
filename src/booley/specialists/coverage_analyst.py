@@ -47,6 +47,7 @@ from booley.runtime.exception_diagnostics import (
     provider_exception_message,
     write_exception_diagnostic,
 )
+from booley.runtime.sandbox_layout import canonical_project_alias_path
 
 from .coverage_analysis import (
     CoverageAnalysisReport,
@@ -106,7 +107,7 @@ class CoverageAnalystSpecialist(Specialist):
         self, campaign: Path, instruction: str
     ) -> tuple[CoverageAnalysisReport, LoadedCoverageCampaign, Path]:
         campaign = campaign if campaign.is_absolute() else self.args.work_dir / campaign
-        campaign = campaign.absolute()
+        campaign = canonical_project_alias_path(campaign.absolute())
         loaded = read_coverage_campaign(campaign)
         sources = coverage_sources(loaded.campaign, self.args.work_dir)
         report = self._analyze_bound(

@@ -26,6 +26,7 @@ from booley.core.boundary import (
 )
 from booley.flows.progress_lifecycle import validate_progress_shape
 from booley.runtime.file_lock import LockContentionError
+from booley.runtime.sandbox_layout import canonical_project_alias_path
 
 from .campaign import (
     ProjectionTrust,
@@ -129,7 +130,7 @@ def _safe_tree(path: Path) -> None:
 def _invocation(reports_root: Path, invocation: int) -> Path:
     if type(invocation) is not int or invocation < 1:
         raise CampaignRetentionError("Select one exact positive invocation number")
-    root = Path(reports_root).absolute() / "sim" / str(invocation)
+    root = canonical_project_alias_path(Path(reports_root).absolute()) / "sim" / str(invocation)
     _safe_tree(root)
     return root
 

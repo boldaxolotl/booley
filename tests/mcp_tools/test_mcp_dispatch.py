@@ -11,6 +11,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from booley.ticket_board.paths import session_jobs_dir
+from tests.flows.sim.test_verilator_build_reuse_campaign import flow_project
+from tests.runtime.test_sandbox_layout import project_alias
+
+__all__ = ["flow_project", "project_alias"]
 
 # mcp_server.py lives at src/ root, outside the endpoints package
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
@@ -2800,3 +2804,40 @@ def test_endpoint_environment_without_project_uses_runtime_fallback(
         "python-artifacts",
         "bytecode",
     )
+
+
+def test_mcp_simulation_dispatch_reaches_alias_normalization(
+    flow_project, project_alias, monkeypatch
+):
+    import asyncio
+
+    from booley.flows.sim.flow import SimulateFlow
+
+    alias, data = project_alias
+    monkeypatch.chdir(flow_project)
+    results = []
+
+    async def execute(_name, command, _timeout, _jobs, **_kwargs):
+        argv = command[command.index("--work-dir") :]
+        result = SimulateFlow().execute_cli(argv)
+        results.append(result)
+        return mcp_server._dispatch_result([], is_error=bool(result.exit_code))
+
+    monkeypatch.setattr(mcp_server, "_dispatch_async_job", execute)
+    asyncio.run(
+        mcp_server._dispatch_booley_mcp_tool(
+            "sim",
+            {
+                "work_dir": str(flow_project),
+                "report_dir": str(alias / "reports"),
+                "target": "sim",
+                "test": ["first"],
+            },
+            {"module": "sim", "module_path": "booley.flows.sim", "is_flow": True},
+            {},
+            MagicMock(),
+        )
+    )
+    assert len(results) == 1
+    assert results[0].exit_code == 0, results[0].outcome.report_text
+    assert (data / "reports/sim/1/targets/sim/campaign/manifest.json").is_file()

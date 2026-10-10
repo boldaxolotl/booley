@@ -3117,3 +3117,36 @@ def test_coverage_next_stage_keeps_returned_target_and_coverage_flag(tmp_path: P
     final = json.loads(path.read_text())
     assert "active" not in final
     assert final["detail"]["first"]["grade"] == "pass"
+
+
+def test_image_alias_coverage_flow_publishes_authenticated_references(tmp_path, monkeypatch):
+    from booley.flows.sim.coverage_analysis_input import read_coverage_campaign
+    from tests.conftest import require_symlinks, symlink_or_skip
+    from tests.runtime.test_sandbox_layout import configure_project_alias
+
+    require_symlinks(tmp_path)
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    project(tmp_path)
+    data = tmp_path / ".booley_project"
+    data.mkdir()
+    (data / "tests.toml").write_text('[sim_0]\ntests=["reset", "wrap"]\n')
+    alias = tmp_path / "booley-project"
+    symlink_or_skip(alias, data, target_is_directory=True)
+    configure_project_alias(monkeypatch, alias, data)
+    flow = SimulateFlow(coverage_execution=lambda *_args: NativeExecution())
+    result = flow.execute(
+        SimRequest(target="sim_0", work_dir=tmp_path, report_dir=alias / "reports", coverage=True)
+    )
+    assert result.exit_code == 0, result.outcome.report_text
+    path = data / "reports/sim/1/targets/sim_0/coverage.json"
+    loaded = read_coverage_campaign(alias / path.relative_to(data))
+    assert loaded.campaign.target.selector == "sim_0"
+    projection = json.loads(path.with_name("simulation.json").read_text())
+    assert (
+        result.outcome.detail["targets"]["sim_0"]["coverage_campaign"]["path_base"]
+        == "report_invocation"
+    )
+    assert projection["campaign_manifest"]["path"]
+    (data / "linked").symlink_to(data / "reports", target_is_directory=True)
+    with pytest.raises(ValueError, match=r"link|traversal"):
+        read_coverage_campaign(alias / "linked/sim/1/targets/sim_0/coverage.json")

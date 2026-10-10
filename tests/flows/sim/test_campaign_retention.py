@@ -916,3 +916,25 @@ def test_interrupted_collection_owns_only_reserved_declaration_evidence(tmp_path
     assert (root / "declarations/inventory.json").absolute() in owned
     assert (root / "build-evidence/cells.tree.json").absolute() in owned
     assert (root / "build-evidence/unrelated.json").absolute() not in owned
+
+
+def test_image_alias_prunes_only_authenticated_invocation(tmp_path, monkeypatch):
+    from booley.flows.sim.campaign_retention import CampaignRetentionError, prune_invocation
+    from tests.conftest import require_symlinks, symlink_or_skip
+    from tests.runtime.test_sandbox_layout import configure_project_alias
+
+    require_symlinks(tmp_path)
+    campaign(tmp_path)
+    alias = tmp_path / "booley-project"
+    symlink_or_skip(alias, tmp_path / "reports", target_is_directory=True)
+    configure_project_alias(monkeypatch, alias, tmp_path / "reports")
+    neighbor = tmp_path / "reports/sim/2"
+    neighbor.mkdir()
+    (neighbor / "keep").write_text("unrelated")
+    (tmp_path / "reports/linked").symlink_to(tmp_path / "reports", target_is_directory=True)
+    with pytest.raises(CampaignRetentionError, match=r"link|symlink"):
+        prune_invocation(alias / "linked", 1)
+    assert (tmp_path / "reports/sim/1").exists()
+    prune_invocation(alias, 1)
+    assert not (tmp_path / "reports/sim/1").exists()
+    assert (neighbor / "keep").read_text() == "unrelated"

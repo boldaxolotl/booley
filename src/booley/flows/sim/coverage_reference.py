@@ -23,6 +23,7 @@ from booley.flows.sim.coverage_campaign_store import (
     load_coverage_campaign_bytes,
 )
 from booley.runtime.regular_file import open_regular_nofollow
+from booley.runtime.sandbox_layout import canonical_project_alias_path
 
 if TYPE_CHECKING:
     from booley.flows.sim.campaign import CampaignWorkItemEvidence
@@ -120,7 +121,7 @@ def publish_coverage_campaign_reference(
 
 def resolve_coverage_campaign_reference(path: Path) -> ResolvedCoverageCampaign:
     """Load the reference and authenticate only its selected nested campaign."""
-    absolute = path.absolute()
+    absolute = canonical_project_alias_path(path.absolute())
     raw = _read_regular(absolute, "Coverage Campaign reference", MAX_REFERENCE_BYTES)
     return _resolve_coverage_campaign_reference_bytes(absolute, raw)
 
@@ -175,6 +176,7 @@ def resolve_persisted_coverage_campaign_reference(
     reports_root: Path, value: object
 ) -> ResolvedCoverageCampaign:
     """Authenticate an acceptance-state pointer and its selected nested Campaign."""
+    reports_root = canonical_project_alias_path(reports_root.absolute())
     persisted = _exact(
         value,
         {"path_base", "path", "bytes", "sha256", "nested_campaign_sha256"},
