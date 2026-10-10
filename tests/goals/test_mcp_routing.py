@@ -822,3 +822,67 @@ def test_target_less_raw_producer_stamp_is_discarded_without_rewriting(layout, m
     assert (
         "artifact.hex" in changes[0].detail["_source_fingerprint"]["fingerprint"]["rtl"]["files"]
     )
+
+
+@pytest.mark.timeout(120)
+@pytest.mark.parametrize("met", [False, True])
+def test_target_less_legacy_stamp_can_be_invalidated_without_becoming_new_evidence(
+    layout, monkeypatch, met
+):
+    from booley.criteria.evidence_ledger import validated_evidence_records
+    from booley.criteria.state import CriterionChange, DevelopmentState
+    from booley.flows.execution_persistence import EvidenceDiscarded
+    from booley.flows.source_fingerprint import compute_source_fingerprint
+    from booley.goals.recorder import GOAL_SCOPE, GoalEvidenceRecorder
+    from tests.goals.conftest import bind
+
+    endpoint, _, _, _ = _review_artifact(layout, monkeypatch)
+    assert endpoint._run().exit_code == 0
+    recorder = GoalEvidenceRecorder(bind(layout))
+    paths = record_paths(layout.control, layout.record.id)
+    state = DevelopmentState.load(paths.state_file, recorder.state_persistence())
+    key = "review_rtl_bugs_done"
+    state.criteria[key].detail["_source_fingerprint"]["fingerprint"] = compute_source_fingerprint(
+        layout.worktree
+    )
+    detail = json.loads(json.dumps(state.criteria[key].detail))
+    assert state.reset_category("rtl") == [key]
+    entry = state.criteria[key]
+    change = CriterionChange(key, met, "source-invalidated", detail, entry.mandatory, entry.params)
+    if met:
+        with pytest.raises(EvidenceDiscarded, match="includes generated build data"):
+            recorder.record_changes(state, [change], invocation_id="test", producer="coder")
+        return
+    recorder.record_changes(state, [change], invocation_id="test", producer="coder")
+    state.save()
+    stored = DevelopmentState.load(paths.state_file)
+    assert stored.criteria[key].met is False
+    assert stored.criteria[key].detail == detail == change.detail
+    rows = validated_evidence_records(GOAL_SCOPE, paths.logs_dir, stored, {})
+    assert rows[-1]["reason"] == "source-invalidated"
+    assert rows[-1]["met"] is False and rows[-1]["detail"] == detail
+
+
+@pytest.mark.timeout(120)
+@pytest.mark.parametrize("diagnostic_key", ["elab_pass_top", "lint_clean_top"])
+def test_undeclared_endpoint_criterion_does_not_discard_later_goal_evidence(
+    layout, monkeypatch, diagnostic_key
+):
+    from booley.criteria.evidence_ledger import validated_evidence_records
+    from booley.criteria.state import DevelopmentState
+    from booley.goals.recorder import GOAL_SCOPE
+
+    endpoint, provider, _, _ = _review_artifact(layout, monkeypatch)
+    assert endpoint.state.strict_criteria
+    endpoint.set_criterion(diagnostic_key, True, detail={"diagnostic": True}, source_target="top")
+    assert endpoint.evidence_discarded is None
+    assert diagnostic_key not in endpoint.state.criteria
+    assert endpoint._report_criteria.evaluated == {}
+    assert endpoint._run().exit_code == 0 and provider.call_count == 1
+    assert endpoint.evidence_discarded is None
+    paths = record_paths(layout.control, layout.record.id)
+    state = DevelopmentState.load(paths.state_file)
+    assert state.criteria["review_rtl_bugs_done"].met
+    assert diagnostic_key not in state.criteria
+    rows = validated_evidence_records(GOAL_SCOPE, paths.logs_dir, state, {})
+    assert rows and all(row["criterion"] == "review_rtl_bugs_done" for row in rows)

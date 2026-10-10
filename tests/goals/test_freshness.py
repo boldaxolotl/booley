@@ -486,7 +486,8 @@ def test_target_less_ignored_authored_inputs_remain_protected(project, protectio
     assert name in DEFAULT_RESOLVERS.fingerprint(project, target=None)["rtl"]["files"]
 
 
-def test_target_less_tb_and_consumed_campaign_are_filtered(project):
+@pytest.mark.parametrize("alias", [False, True])
+def test_target_less_tb_and_consumed_campaign_are_filtered(project, tmp_path, alias):
     core = project / "top.core"
     core.write_text(
         core.read_text().replace(
@@ -503,12 +504,18 @@ def test_target_less_tb_and_consumed_campaign_are_filtered(project):
     (project / "tb").mkdir()
     (project / "tb/data.hex").write_text("first\n")
     (project / ".gitignore").write_text("tb/data.hex\n.booley_project/tests.toml\n")
-    first = DEFAULT_RESOLVERS.fingerprint(project, target=None)
+    query = project
+    if alias:
+        from tests.conftest import symlink_or_skip
+
+        query = tmp_path / "checkout-alias"
+        symlink_or_skip(query, project, target_is_directory=True)
+    first = DEFAULT_RESOLVERS.fingerprint(query, target=None)
     assert "tb/data.hex" not in first["tb"]["files"]
     assert ".booley_project/tests.toml" not in first["campaign"]["files"]
     (project / "tb/data.hex").write_text("changed\n")
     (project / ".booley_project/tests.toml").write_text("changed\n")
-    assert DEFAULT_RESOLVERS.fingerprint(project, target=None) == first
+    assert DEFAULT_RESOLVERS.fingerprint(query, target=None) == first
 
 
 def test_target_less_unconsumed_ignored_files_remain_authored(project):
@@ -559,9 +566,9 @@ def test_target_less_no_ignored_candidate_does_not_inspect_bad_target(project, m
 def test_target_less_git_classification_failure_is_not_fresh(project, monkeypatch, failure):
     import subprocess
 
-    from booley.goals import generated_artifacts
+    from booley.runtime import git_ignore
 
-    original = generated_artifacts.subprocess.run
+    original = git_ignore.subprocess.run
 
     def broken(command, **kwargs):
         if command[1] != "check-ignore":
@@ -570,12 +577,12 @@ def test_target_less_git_classification_failure_is_not_fresh(project, monkeypatc
             raise subprocess.TimeoutExpired(command, 30)
         return subprocess.CompletedProcess(command, 128, b"", b"Git failure")
 
-    monkeypatch.setattr(generated_artifacts.subprocess, "run", broken)
+    monkeypatch.setattr(git_ignore.subprocess, "run", broken)
     with pytest.raises(OSError, match="classification"):
         DEFAULT_RESOLVERS.fingerprint(project, target=None)
 
 
-@pytest.mark.parametrize("boundary", ["symlink", "nested"])
+@pytest.mark.parametrize("boundary", ["symlink", "nested", "gitlink"])
 def test_target_less_ignored_boundary_never_acquires_exemption(project, boundary):
     from booley.goals.generated_artifacts import generated_artifact_paths
 
@@ -585,6 +592,14 @@ def test_target_less_ignored_boundary_never_acquires_exemption(project, boundary
     artifact.write_text("data\n")
     if boundary == "nested":
         (directory / ".git").mkdir()
+    elif boundary == "gitlink":
+        from tests.goals.conftest import git
+
+        git(project, "add", ".")
+        git(project, "commit", "-qm", "indexed boundary")
+        git(project, "rm", "--cached", "nested/data.hex")
+        head = git(project, "rev-parse", "HEAD")
+        git(project, "update-index", "--add", "--cacheinfo", f"160000,{head},nested")
     else:
         artifact.unlink()
         artifact.symlink_to(project / "top.sdc")

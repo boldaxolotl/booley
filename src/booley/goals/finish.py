@@ -298,6 +298,8 @@ def _build_frozen_package(
     """Keep classification and resolver failures at the Finish lifecycle boundary."""
     try:
         return _build_frozen_package_checked(operation, record, env, selection)
+    except LifecycleError:
+        raise
     except RESOLVER_ERRORS as exc:
         raise LifecycleError(f"completion inputs cannot be resolved: {exc}") from exc
 

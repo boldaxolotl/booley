@@ -3,17 +3,18 @@
 from __future__ import annotations
 
 import os
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
+from booley.core.boundary import as_dict, is_str_list
 from booley.flows.source_fingerprint import (
     campaign_fingerprint,
     compute_source_fingerprint,
     hash_named_files,
 )
 from booley.goals.target_surface import target_surface_fingerprint
+from booley.runtime.git_ignore import ignored_paths as _ignored
 from booley.runtime.pinned_history import tree_rows
 from booley.targets.catalog import TargetCatalog
 from booley.targets.declared_inputs import HDL_SUFFIXES, committed_only_inputs
@@ -61,34 +62,13 @@ def _eligible(root: Path, path: Path) -> bool:
     return True
 
 
-def _ignored(root: Path, paths: list[Path], *, no_index: bool = False) -> set[Path]:
-    if not paths:
-        return set()
-    payload = b"".join(path.relative_to(root).as_posix().encode() + b"\0" for path in paths)
-    try:
-        result = subprocess.run(
-            ["git", "check-ignore", "-z", "--stdin", *(["--no-index"] if no_index else [])],
-            cwd=root,
-            input=payload,
-            capture_output=True,
-            timeout=30,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise OSError("Git ignored-input classification timed out") from exc
-    if result.returncode not in (0, 1):
-        raise OSError(
-            f"Git ignored-input classification failed: {result.stderr.decode(errors='replace')}"
-        )
-    return {(root / name.decode()).resolve() for name in result.stdout.split(b"\0") if name}
-
-
 def project_source(
     root: Path, source: dict[str, Any], excluded: frozenset[Path]
 ) -> dict[str, Any]:
     """Project shared source categories without changing shared caller policy."""
     if not excluded:
         return source
+    root = root.resolve()
     result = dict(source)
     for category in ("rtl", "tb", "workload", "campaign"):
         entry = source.get(category)
@@ -198,12 +178,16 @@ def retained_presentation_inputs(
     }
     for row in observations:
         detail = row["detail"]
-        stamp = detail.get("_source_fingerprint", {})
+        stamp = as_dict(detail.get("_source_fingerprint")) or {}
         if isinstance(stamp.get("target"), str) and stamp["target"]:
             for category in ("rtl", "tb", "workload", "campaign", "target_surface"):
                 for name in stamp.get("fingerprint", {}).get(category, {}).get("files", []):
                     retained.add(_inventory_path(view, name))
-        for name in detail.get("contract", {}).get("scope", detail.get("scope", [])):
+        contract = as_dict(detail.get("contract")) or {}
+        scope = contract.get("scope", detail.get("scope", []))
+        if not is_str_list(scope):
+            raise ValueError("retained evidence scope must be a list of paths")
+        for name in scope:
             retained.add(_inventory_path(view, name))
     return frozenset(retained)
 

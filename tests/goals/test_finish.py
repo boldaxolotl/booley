@@ -420,6 +420,69 @@ def test_presentation_epochs_keep_tracked_history_bound_and_mandatory_proofs(lay
     assert "snapshot.toml" not in omitted
 
 
+def _prepare_pinned_artifact_history(layout, history):
+    artifact = layout.worktree / "history.hex"
+    core = layout.worktree / "history.core"
+    core.write_bytes(
+        b"CAPI=2:\nname: ::history:0\nfilesets:\n"
+        b"  data: {files: [history.hex], file_type: user}\n"
+        b"targets:\n  history: {filesets: [data], toplevel: top}\n"
+    )
+    artifact.write_bytes(b"baseline data\n")
+    git(layout.worktree, "add", "history.core")
+    if history == "tracked-removed":
+        git(layout.worktree, "add", "history.hex")
+    else:
+        (layout.main / ".git/info/exclude").write_text("/.booley_project\nhistory.hex\n")
+    git(layout.worktree, "commit", "-qm", "baseline data target")
+    record = enter_goals(layout, [{"family": "review", "review": "rtl_bugs", "verdict": "done"}])
+    if history == "tracked-removed":
+        git(layout.worktree, "rm", "history.hex")
+        (layout.main / ".git/info/exclude").write_text("/.booley_project\nhistory.hex\n")
+        core.write_bytes(core.read_bytes().replace(b"toplevel: top", b"toplevel: updated_top"))
+        git(layout.worktree, "add", "history.core")
+    else:
+        git(layout.worktree, "rm", "history.core")
+    git(layout.worktree, "commit", "-qm", "remove authored data or consuming target")
+    return record, artifact
+
+
+@pytest.mark.parametrize("history", ["tracked-removed", "removed-target"])
+def test_presentation_epochs_resolve_real_pinned_consumption_history(layout, history):
+    from booley.goals.generated_artifacts import artifact_epoch, presentation_exclusions
+    from booley.goals.input_view import committed_view, select_inputs
+    from booley.goals.target_changes import project_target_changes, resolved_surfaces
+    from booley.targets.goal_diff import semantic_target_changes
+
+    record, artifact = _prepare_pinned_artifact_history(layout, history)
+    selection = select_inputs(record, layout.worktree)
+    with committed_view(selection, record, control_project=layout.control, baseline=True) as view:
+        before = artifact_epoch(view, record, baseline=True)
+        before_surfaces = resolved_surfaces(view.root)
+    with committed_view(selection, record, control_project=layout.control) as view:
+        after = artifact_epoch(view, record, baseline=False)
+        after_surfaces = resolved_surfaces(view.root)
+    labels, omitted = presentation_exclusions(selection.rtl, (before, after), frozenset())
+    assert ("history.hex", artifact.resolve()) in before.inputs
+    assert (artifact.resolve() in before.tracked) == (history == "tracked-removed")
+    assert artifact.resolve() not in after.tracked
+    assert ("history.hex" in labels[0]) == (history == "removed-target")
+    assert labels[1] == (
+        frozenset({"history.hex"}) if history == "tracked-removed" else frozenset()
+    )
+    assert str(artifact.resolve()) in omitted
+    changes = project_target_changes(
+        semantic_target_changes(before_surfaces, after_surfaces), *labels
+    )
+    change = next(row for row in changes if row["target"] == "::history:0#history")
+    if history == "removed-target":
+        assert change["change"] == "removed" and change["before"]["filesets"] == []
+    else:
+        assert change["change"] == "modified"
+        assert [row["path"] for row in change["before"]["filesets"]] == ["history.hex"]
+        assert change["after"]["filesets"] == []
+
+
 @pytest.mark.parametrize("failure", [OSError("git unavailable"), ValueError("bad catalog")])
 def test_presentation_classification_failure_is_lifecycle_error_before_freeze(
     layout, monkeypatch, failure
@@ -437,3 +500,55 @@ def test_presentation_classification_failure_is_lifecycle_error_before_freeze(
         finish_goal(request(layout), environment(layout))
     assert GoalStore(layout.control).load(layout.record.id).state == GoalState.ACTIVE
     assert not list(record_paths(layout.control, layout.record.id).root.rglob("package.json"))
+
+
+def test_existing_completion_lifecycle_refusal_is_preserved(layout, monkeypatch):
+    from booley.goals import finish
+    from tests.goals.test_generated_inputs import _prepare_target_less_generated_record
+
+    _prepare_target_less_generated_record(layout, monkeypatch)
+    refusal = LifecycleError("no committed representation: authored input")
+
+    def unavailable(*args, **kwargs):
+        raise refusal
+
+    monkeypatch.setattr(finish, "artifact_epoch", unavailable)
+    with pytest.raises(LifecycleError) as caught:
+        finish_goal(request(layout), environment(layout))
+    assert caught.value is refusal
+
+
+@pytest.mark.parametrize("scope", [None, [1], "source.v"])
+def test_malformed_retained_scope_fails_at_completion_boundary(layout, monkeypatch, scope):
+    from booley.goals import finish
+    from booley.mcp.goal_completion import completion_environment
+    from tests.goals.test_generated_inputs import _prepare_target_less_generated_record
+
+    _prepare_target_less_generated_record(layout, monkeypatch)
+    monkeypatch.setattr(
+        finish,
+        "presentation_observations",
+        lambda *args: ({"detail": {"contract": {"scope": scope}}},),
+    )
+    with pytest.raises(LifecycleError, match="retained evidence scope"):
+        finish_goal(request(layout), completion_environment(EntryEnvironment(layout.control)))
+    assert GoalStore(layout.control).load(layout.record.id).state == GoalState.ACTIVE
+
+
+def test_non_review_contract_metadata_does_not_break_retained_inputs(layout, monkeypatch):
+    from booley.goals import finish
+    from booley.mcp.goal_completion import completion_environment
+    from tests.goals.test_generated_inputs import _prepare_target_less_generated_record
+
+    _prepare_target_less_generated_record(layout, monkeypatch)
+    monkeypatch.setattr(
+        finish,
+        "presentation_observations",
+        lambda *args: ({"detail": {"contract": None}},),
+    )
+    assert (
+        finish_goal(request(layout), completion_environment(EntryEnvironment(layout.control)))[
+            "status"
+        ]
+        == "finished"
+    )

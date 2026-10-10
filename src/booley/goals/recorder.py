@@ -464,6 +464,8 @@ class GoalEvidenceRecorder:
         self, change: CriterionChange, goal: GoalSpec | None, excluded: frozenset[Path]
     ) -> None:
         """Never recover a failed producer by sampling current bytes at publication."""
+        if not change.met:
+            return
         raw = change.detail.get("_source_fingerprint")
         if change.detail.get("review_detail_version") == 4 and (
             not isinstance(raw, dict)
@@ -484,6 +486,8 @@ class GoalEvidenceRecorder:
                     )
 
     def _prepare_change(self, change: CriterionChange, goal: GoalSpec | None) -> CriterionChange:
+        if not change.met and change.reason == "source-invalidated":
+            return change  # The detail describes old evidence, not this producer's inputs.
         work_dir = self._binding.worktree_root
         resolvers = self._resolvers
         excluded = frozenset()

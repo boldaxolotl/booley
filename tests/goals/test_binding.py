@@ -179,3 +179,32 @@ def test_unresolvable_publication_surface_is_never_unchanged(goal_mode, captured
     changes = state.set_criterion(LINT_KEY, True, detail={"warnings": 0})
     with pytest.raises(EvidenceDiscarded, match="changed during the run"):
         recorder.record_changes(state, changes, invocation_id="test", producer="lint")
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_target_bound_producer_keeps_subdirectory_admission_and_error_behavior(goal_mode, failure):
+    from booley.flows.source_fingerprint import compute_source_fingerprint
+    from booley.goals.flow_execution import GoalFlowExecution
+    from booley.goals.freshness import GoalFreshnessResolvers
+    from tests.goals.conftest import bind
+
+    binding = bind(goal_mode)
+    subdirectory = goal_mode.worktree / "source-subdirectory"
+    subdirectory.mkdir()
+    error = OSError("producer source unavailable")
+
+    def source(root, *, target):
+        assert root == binding.worktree_root
+        if failure:
+            raise error
+        return compute_source_fingerprint(root, target=target)
+
+    adapter = GoalFlowExecution(binding, resolvers=GoalFreshnessResolvers(source=source))
+    if failure:
+        with pytest.raises(OSError) as caught:
+            adapter.criterion_source_fingerprint(LINT_KEY, subdirectory, "top")
+        assert caught.value is error
+    else:
+        assert adapter.criterion_source_fingerprint(LINT_KEY, subdirectory, "top") == (
+            compute_source_fingerprint(binding.worktree_root, target="top")
+        )
