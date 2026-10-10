@@ -31,7 +31,9 @@ class Document:
         if len(source.encode()) > 1024 * 1024:
             raise ValueError("JSONC document exceeds 1 MiB")
         self.source = source
-        self.newline: str = "\r\n" if "\r\n" in source else "\n"
+        crlf = source.count("\r\n")
+        bare_lf = source.count("\n") - crlf
+        self.newline: str = "\r\n" if crlf > bare_lf else "\n"
         self.tokens = self._tokens(source)
         self.index = 0
         self.root = self._value(0)
