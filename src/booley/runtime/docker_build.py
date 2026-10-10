@@ -79,15 +79,16 @@ def _terminate(process: subprocess.Popen[str]) -> None:
         process.wait()
 
 
-def _present_progress(output: TextIO, line: str, *, verbose: bool, last: str) -> tuple[str, bool]:
+def _present_progress(output: TextIO, line: str, *, verbose: bool, seen: set[str]) -> bool:
     if verbose:
-        return line, _emit(output, line)
+        return _emit(output, line)
     if ">>>" not in line:
-        return last, False
+        return False
     progress = line[line.index(">>>") :].strip().split('"', 1)[0].rstrip(" \\")
-    if progress and progress != last:
-        return progress, _emit(output, progress)
-    return last, False
+    if progress and progress not in seen:
+        seen.add(progress)
+        return _emit(output, progress)
+    return False
 
 
 def _diagnostics(
@@ -121,7 +122,7 @@ class _ProgressState:
     started: float
     deadline: float
     last_visible: float
-    last_progress: str = ""
+    seen_progress: set[str] = field(default_factory=set)
     storage_exhausted: bool = False
     sequence: int = 0
     tail: deque[tuple[int, str]] = field(default_factory=lambda: deque(maxlen=100))
@@ -135,8 +136,8 @@ class _ProgressState:
         if any(word in line.lower() for word in _SALIENT_WORDS):
             self.salient.append((self.sequence, line))
         self.sequence += 1
-        self.last_progress, emitted = _present_progress(
-            self.output, record, verbose=self.verbose, last=self.last_progress
+        emitted = _present_progress(
+            self.output, record, verbose=self.verbose, seen=self.seen_progress
         )
         if emitted:
             self.last_visible = time.monotonic()
