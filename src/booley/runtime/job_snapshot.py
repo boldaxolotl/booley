@@ -123,6 +123,7 @@ def snapshot_jobs(
 ) -> JobSnapshot:
     """Read files only. Never poll, derive/reconcile status, adopt or invoke a reaper."""
     cache = artifact_cache if artifact_cache is not None else JobArtifactCache()
+    cache.configure_project(project_dir, max_endpoints=MAX_JOBS)
     cache.begin()
     tokens, rows, diagnostics = [], [], []
     catalogs: dict[str, TargetCatalog | None] = {}
@@ -144,6 +145,7 @@ def snapshot_jobs(
             rows.append(_project_job(root, rec, tokens, proc_root, catalogs, cache))
     diagnostics.extend(cache.diagnostics)
     diagnostics.extend(_ambiguous_ids(rows))
+    cache.complete()
     return JobSnapshot(tuple(rows), tuple(diagnostics))
 
 

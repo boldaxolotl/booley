@@ -490,3 +490,121 @@ def test_malformed_job_is_isolated_from_other_records(tmp_path, malformed):
     observed = snapshot_jobs(tmp_path, interactive_root=root)
     assert [job.record.run_id for job in observed.jobs] == ["good"]
     assert "bad.json" in str(observed.diagnostics)
+
+
+def test_snapshot_indexes_reports_and_progress_through_parent_link(tmp_path, monkeypatch):
+    from booley.flows.progress_lifecycle import progress_document
+    from booley.runtime import job_artifacts
+
+    real = tmp_path / "real"
+    project = real / "project"
+    root = project / "logs/.runtime/jobs"
+    job_records.write_record(rec(status="done"), root)
+    directory = root.parent / "flow-reports/sim/1"
+    directory.mkdir(parents=True)
+    (directory / "report.json").write_text(json.dumps({"run_id": "one", "passed": True}))
+    (directory / "progress.json").write_text(
+        json.dumps(
+            progress_document(
+                flow="sim",
+                run_id="one",
+                phase="complete",
+                targets=[],
+                completed_targets=[],
+                detail={},
+                extra={"stage": "simulation"},
+            )
+        )
+    )
+    alias = tmp_path / "alias"
+    alias.symlink_to(real, target_is_directory=True)
+    before = files(real)
+    monkeypatch.setattr(
+        job_artifacts,
+        "read_progress_for_run",
+        lambda *_a, **_k: pytest.fail("indexed progress used fallback"),
+    )
+    cache = job_artifacts.JobArtifactCache()
+    view = snapshot_jobs(
+        alias / "project",
+        interactive_root=alias / "project/logs/.runtime/jobs",
+        artifact_cache=cache,
+    ).jobs[0]
+    assert view.report["passed"] is True
+    assert view.stage == "simulation"
+    assert files(real) == before
+
+
+def test_snapshot_missing_progress_reuses_unrelated_checkpoint(tmp_path, monkeypatch):
+    from booley.flows import progress_lifecycle
+    from booley.runtime.job_artifacts import JobArtifactCache
+
+    root = tmp_path / "jobs"
+    job_records.write_record(rec("absent", status="done"), root)
+    path = root.parent / "flow-reports/sim/1/progress.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(
+            progress_lifecycle.progress_document(
+                flow="sim",
+                run_id="other",
+                phase="complete",
+                targets=[],
+                completed_targets=[],
+                detail={},
+            )
+        )
+    )
+    original = progress_lifecycle._read_json_object_nofollow
+    reads = []
+
+    def read(*args, **kwargs):
+        reads.append(args[0])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(progress_lifecycle, "_read_json_object_nofollow", read)
+    cache = JobArtifactCache()
+    snapshot_jobs(tmp_path, interactive_root=root, artifact_cache=cache)
+    reads.clear()
+    snapshot_jobs(tmp_path, interactive_root=root, artifact_cache=cache)
+    assert reads == []
+
+
+def test_snapshot_shared_artifact_directory_checked_once(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from pathlib import Path
+
+    from booley.runtime.job_artifacts import JobArtifactCache
+
+    root = tmp_path / "logs/.runtime/jobs"
+    for endpoint in ("sim", "lint"):
+        job_records.write_record(replace(rec(endpoint, status="done"), endpoint=endpoint), root)
+        path = root.parent / "flow-reports" / endpoint / "1/report.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"run_id": endpoint, "passed": True}))
+    namespace = root.parent / "flow-reports"
+    original = Path.lstat
+    checks = []
+
+    def lstat(path, *args, **kwargs):
+        if path == namespace:
+            checks.append(path)
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "lstat", lstat)
+    snapshot_jobs(tmp_path, interactive_root=root, artifact_cache=JobArtifactCache())
+    assert checks == [namespace]
+
+
+def test_outside_project_interactive_job_remains_observable_without_artifacts(tmp_path):
+    root = tmp_path / "outside/jobs"
+    project = tmp_path / "project"
+    project.mkdir()
+    job_records.write_record(rec(status="done"), root)
+    directory = root.parent / "flow-reports/sim/1"
+    directory.mkdir(parents=True)
+    (directory / "report.json").write_text(json.dumps({"run_id": "one", "passed": True}))
+    snapshot = snapshot_jobs(project, interactive_root=root)
+    assert len(snapshot.jobs) == 1
+    assert snapshot.jobs[0].report is None
+    assert f"Job artifact root unavailable: {root}" in snapshot.diagnostics
