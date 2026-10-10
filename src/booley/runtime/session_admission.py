@@ -30,6 +30,7 @@ from booley.core.boundary import (
     require_str_value,
 )
 from booley.core.private_store import PrivateStore
+from booley.core.project_identity import matches_project_label
 from booley.core.user_paths import config_dir
 from booley.runtime import devcontainer as dc
 from booley.runtime.platform_paths import host_path_from_docker_mount
@@ -69,6 +70,7 @@ class Sandbox:
     started_at: datetime | None
     running: bool
     vscode: bool
+    observed_root: str | None = None
 
 
 def _run(argv: list[str], *, timeout: int = 30) -> subprocess.CompletedProcess[str]:
@@ -88,15 +90,15 @@ def admit_start(
         _report_recovery_capacity(run)
         return
     root = _canonical_root(project_root)
-    live, claims, _candidates = _admission_snapshot(run)
+    live, claims, _candidates, diagnostics = _admission_snapshot(run, requesting_root=root)
     if any(item.name == target_name for item in live):
         return
     policy = _policy()
     if len(live) + len(claims) >= policy.max_sessions:
-        raise AdmissionError(_refusal(policy, live, claims, now or datetime.now(UTC)))
+        raise AdmissionError(_refusal(policy, live, claims, now or datetime.now(UTC), diagnostics))
     # A headless start must not consume its Project's editor reservation.
     if any(_same_project_root(claim.project_root, root) for claim in claims):
-        raise AdmissionError(_refusal(policy, live, claims, now or datetime.now(UTC)))
+        raise AdmissionError(_refusal(policy, live, claims, now or datetime.now(UTC), diagnostics))
 
 
 def claim_vscode_start(
@@ -107,7 +109,9 @@ def claim_vscode_start(
 ) -> bool:
     """Atomically reserve capacity for a later VS Code Docker start."""
     root = _canonical_root(project_root)
-    live, claims, candidates = _admission_snapshot(run, candidate_roots={root})
+    live, claims, candidates, diagnostics = _admission_snapshot(
+        run, requesting_root=root, candidate_roots={root}
+    )
     project_sandboxes = _project_vscode_sandboxes(root, candidates)
     if any(item.running for item in project_sandboxes):
         return False
@@ -116,7 +120,7 @@ def claim_vscode_start(
     policy = _policy()
     instant = now or datetime.now(UTC)
     if len(live) + len(claims) >= policy.max_sessions:
-        raise AdmissionError(_refusal(policy, live, claims, instant))
+        raise AdmissionError(_refusal(policy, live, claims, instant, diagnostics))
     baseline = {item.container_id: _started_token(item) for item in project_sandboxes}
     claim = PendingStartClaim(
         _SCHEMA_VERSION,
@@ -144,7 +148,7 @@ def clear_vscode_claim(project_root: Path) -> bool:
 def has_pending_claim(project_root: Path, *, run: Run = _run) -> bool:
     """Return whether this Project has a validated pending editor start."""
     root = _canonical_root(project_root)
-    _live, claims, _candidates = _admission_snapshot(run)
+    _live, claims, _candidates, _diagnostics = _admission_snapshot(run, requesting_root=root)
     return any(_same_project_root(claim.project_root, root) for claim in claims)
 
 
@@ -249,6 +253,7 @@ def _inspect(container_id: str, listed_name: str, run: Run) -> Sandbox:
         started,
         running,
         _FOLDER_LABEL in labels,
+        labels.get(_FOLDER_LABEL),
     )
 
 
@@ -290,15 +295,19 @@ def _docker_time(value: str, *, allow_zero: bool) -> datetime | None:
 
 
 def _admission_snapshot(
-    run: Run, *, candidate_roots: set[str] | None = None
-) -> tuple[tuple[Sandbox, ...], tuple[PendingStartClaim, ...], tuple[Sandbox, ...]]:
-    """Return strict live inventory, reconciled claims, and relevant editor inventory."""
+    run: Run, *, requesting_root: str, candidate_roots: set[str] | None = None
+) -> tuple[
+    tuple[Sandbox, ...], tuple[PendingStartClaim, ...], tuple[Sandbox, ...], tuple[str, ...]
+]:
+    """Inspect and conservatively reconcile host claims for the requesting Project."""
     live = _inventory(run)
     claims = _claims()
     roots = {claim.project_root for claim in claims}
     roots.update(candidate_roots or ())
     candidates = _merge_sandboxes(live, _vscode_inventory(roots, run))
-    return live, _reconcile_claims(claims, candidates), candidates
+    _project_vscode_sandboxes(requesting_root, candidates)
+    remaining, diagnostics = _reconcile_claims(claims, candidates, requesting_root)
+    return live, remaining, candidates, diagnostics
 
 
 def _merge_sandboxes(*groups: tuple[Sandbox, ...]) -> tuple[Sandbox, ...]:
@@ -309,23 +318,58 @@ def _merge_sandboxes(*groups: tuple[Sandbox, ...]) -> tuple[Sandbox, ...]:
 
 
 def _reconcile_claims(
-    claims: tuple[PendingStartClaim, ...], sandboxes: tuple[Sandbox, ...]
-) -> tuple[PendingStartClaim, ...]:
+    claims: tuple[PendingStartClaim, ...], sandboxes: tuple[Sandbox, ...], requesting_root: str
+) -> tuple[tuple[PendingStartClaim, ...], tuple[str, ...]]:
     remaining = []
+    diagnostics = []
+    consumed = []
     for claim in claims:
-        matched = any(_consumed(claim, item) for item in sandboxes)
-        if matched:
-            (_store().root / _claim_filename(claim.project_root)).unlink()
+        applicable = tuple(
+            item
+            for item in sandboxes
+            if item.vscode and _same_project_root(item.project_root, claim.project_root)
+        )
+        mismatches = tuple(
+            item for item in applicable if not _valid_identity(item, claim.project_root)
+        )
+        for item in mismatches:
+            message = _identity_recovery(item, claim.project_root)
+            if _same_project_root(claim.project_root, requesting_root):
+                raise AdmissionError(message)
+            logger.warning("%s", message)
+            diagnostics.append(message)
+        if not mismatches and any(_consumed(claim, item) for item in applicable):
+            consumed.append(claim)
         else:
             remaining.append(claim)
-    return tuple(remaining)
+    for claim in consumed:
+        (_store().root / _claim_filename(claim.project_root)).unlink()
+    return tuple(remaining), tuple(diagnostics)
+
+
+def _valid_identity(item: Sandbox, root: str) -> bool:
+    roots = [root, item.project_root]
+    if item.observed_root and _same_project_root(item.observed_root, root):
+        roots.append(item.observed_root)
+    return any(matches_project_label(item.project_id, candidate) for candidate in roots)
+
+
+def _command(argv: list[str]) -> str:
+    return subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
+
+
+def _identity_recovery(item: Sandbox, root: str) -> str:
+    stop = _command(["docker", "stop", item.container_id])
+    remove = _command(["docker", "rm", item.container_id])
+    down = _command(["booley", "session", "down", "--project", root])
+    return (
+        f"Sandbox {item.name} ({item.container_id}) Project identity disagrees with {root}. "
+        f"Stop it with `{stop}`, remove it with `{remove}`, then run `{down}` to release "
+        "its pending claim. Recreate its VS Code container from the issued configuration and retry."
+    )
 
 
 def _consumed(claim: PendingStartClaim, item: Sandbox) -> bool:
-    if not item.vscode or not _same_project_root(item.project_root, claim.project_root):
-        return False
-    if item.project_id != _project_id(claim.project_root):
-        raise AdmissionError(f"Sandbox Project identity disagrees with {claim.project_root}")
     missing = object()
     previous = claim.baseline.get(item.container_id, missing)
     return previous is missing or previous != _started_token(item)
@@ -339,9 +383,9 @@ def _project_vscode_sandboxes(
         for item in sandboxes
         if item.vscode and _same_project_root(item.project_root, project_root)
     )
-    expected = _project_id(project_root)
-    if any(item.project_id != expected for item in matched):
-        raise AdmissionError(f"Sandbox Project identity disagrees with {project_root}")
+    for item in matched:
+        if not _valid_identity(item, project_root):
+            raise AdmissionError(_identity_recovery(item, project_root))
     return matched
 
 
@@ -416,11 +460,6 @@ def _canonical_text(value: str) -> str:
     return str(path.resolve(strict=False))
 
 
-def _project_id(project_root: str) -> str:
-    canonical = os.path.normcase(project_root).encode()
-    return hashlib.sha256(canonical).hexdigest()[:32]
-
-
 def _same_project_root(left: str, right: str) -> bool:
     return os.path.normcase(left) == os.path.normcase(right)
 
@@ -455,6 +494,7 @@ def _refusal(
     live: tuple[Sandbox, ...],
     claims: tuple[PendingStartClaim, ...],
     now: datetime,
+    diagnostics: tuple[str, ...] = (),
 ) -> str:
     lines = [f"Sandbox start refused: host is at sandbox.max_sessions={policy.max_sessions}."]
     for item in sorted(live, key=lambda value: (value.project_root, value.name)):
@@ -467,6 +507,7 @@ def _refusal(
         argv = ["booley", "session", "down", "--project", root]
         command = subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
         lines.append(f"Free capacity with `{command}`.")
+    lines.extend(diagnostics)
     lines.append(f"Or raise [sandbox].max_sessions in {host_config_path()}.")
     lines.append(HOST_POLICY_MIGRATION_GUIDANCE)
     return "\n".join(lines)

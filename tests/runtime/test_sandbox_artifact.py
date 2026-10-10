@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -26,7 +27,9 @@ def _inspection(workspace: Path, *, image: str = IMAGE) -> str:
                     "Hostname": CONTAINER[:12],
                     "Labels": {
                         "booley.role": "interactive",
-                        "booley.project-id": "project",
+                        "booley.project-id": hashlib.sha256(
+                            str(workspace.resolve()).encode()
+                        ).hexdigest(),
                         "booley.spec-digest": "issued",
                         "devcontainer.local_folder": str(workspace),
                     },
@@ -39,7 +42,6 @@ def _inspection(workspace: Path, *, image: str = IMAGE) -> str:
 
 def test_host_observes_active_image_without_resolving_selected_tag(tmp_path, monkeypatch):
     monkeypatch.setattr(sr, "session_container_name", lambda _: "sandbox")
-    monkeypatch.setattr(sr.dc, "canonical_project_id", lambda _: "project")
     probe = Mock(return_value=_inspection(tmp_path))
     monkeypatch.setattr(artifact, "_docker_stdout", probe)
     observed = artifact.observe(tmp_path, container="sandbox")
@@ -138,7 +140,6 @@ def test_vscode_observer_waits_for_new_start_and_is_bounded(tmp_path, monkeypatc
 
 
 def test_receipt_writer_uses_inspected_id_and_no_host_authority(tmp_path, monkeypatch):
-    monkeypatch.setattr(sr.dc, "canonical_project_id", lambda _: "project")
     probe = Mock(side_effect=[_inspection(tmp_path), "1.0", ""])
     monkeypatch.setattr(artifact, "_docker_stdout", probe)
     assert artifact.publish_receipt(tmp_path, "editor")
@@ -239,3 +240,14 @@ def test_receipt_writer_runs_without_project_imports_or_startup_hooks(tmp_path):
     assert values["container_id"] == CONTAINER
     assert values["booley_version"] == "1.0"
     assert (root / "receipt.json").stat().st_mode & 0o222 == 0
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_artifact_accepts_root_verified_project_identity(tmp_path, monkeypatch, legacy):
+    data = json.loads(_inspection(tmp_path))[0]
+    if legacy:
+        data["Config"]["Labels"]["booley.project-id"] = sr.dc.canonical_project_id(tmp_path)
+    monkeypatch.setattr(artifact, "_docker_stdout", lambda _: json.dumps([data]))
+    assert artifact.observe(tmp_path, container="editor").image_id == IMAGE
+    data["Config"]["Labels"]["devcontainer.local_folder"] = str(tmp_path / "other")
+    assert artifact.observe(tmp_path, container="editor").image_id is None

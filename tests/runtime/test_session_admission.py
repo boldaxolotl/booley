@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 from datetime import UTC, datetime
@@ -10,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from booley.runtime import devcontainer as dc
-from booley.runtime import session_admission
+from booley.runtime import session_admission, session_issuance
 
 
 def _completed(returncode: int = 0, stdout: str = "", stderr: str = ""):
@@ -517,3 +518,152 @@ def test_runtime_reports_legacy_host_policy_migration(
     assert "preserving all existing settings" in refusal
     assert "instead of adding a second policy table" in refusal
     assert path.read_text() == original
+
+
+def _issued_labels(project: Path) -> dict[str, str]:
+    issuance = session_issuance.Issuance(
+        version=1,
+        project_root=str(project.resolve()),
+        spec_sha256="a" * 64,
+        image="image",
+        image_id="sha256:" + "b" * 64,
+        keeper_image="keeper",
+        policy_revision=1,
+        installation=None,
+        license_profile=None,
+        wrapper_sha256=None,
+        relay_image_id=None,
+        validator_sha256="c" * 64,
+    )
+    return dict(label.split("=", 1) for label in session_issuance.labels(issuance))
+
+
+@pytest.mark.parametrize("foreign", [False, True])
+@pytest.mark.parametrize("running", [False, True])
+def test_admission_accepts_real_issuance_labels(monkeypatch, tmp_path, foreign, running):
+    project = tmp_path / "project"
+    project.mkdir()
+    requester = tmp_path / "requester" if foreign else project
+    requester.mkdir(exist_ok=True)
+    monkeypatch.setattr(
+        session_admission,
+        "load_host_policy",
+        lambda **kw: session_admission.SandboxHostPolicy(max_sessions=4),
+    )
+    docker = _Docker({})
+    assert session_admission.claim_vscode_start(project, run=docker)
+    document = _vscode_inspection(
+        project,
+        running=running,
+        started="2026-09-27T08:00:00Z" if running else "0001-01-01T00:00:00Z",
+    )
+    document["Config"]["Labels"].update(_issued_labels(project))
+    docker.documents["editor-id"] = document
+    session_admission.admit_start(requester, target_name="headless", run=docker)
+    assert not session_admission.has_pending_claim(project, run=docker)
+
+
+@pytest.mark.parametrize("entry", ["claim", "inventory"])
+def test_editor_boundaries_accept_real_issuance_labels(tmp_path, monkeypatch, entry):
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setattr(
+        session_admission,
+        "load_host_policy",
+        lambda **kw: session_admission.SandboxHostPolicy(max_sessions=4),
+    )
+    document = _vscode_inspection(project, running=True, started="2026-09-27T08:00:00Z")
+    labels = _issued_labels(project)
+    assert (
+        labels["booley.project-id"] == hashlib.sha256(str(project.resolve()).encode()).hexdigest()
+    )
+    document["Config"]["Labels"].update(labels)
+    docker = _Docker({"editor-id": document})
+    if entry == "claim":
+        assert not session_admission.claim_vscode_start(project, run=docker)
+    else:
+        assert (
+            session_admission.vscode_sandboxes(project, run=docker)[0].container_id == "editor-id"
+        )
+
+
+@pytest.mark.parametrize("cap", [2, 3])
+@pytest.mark.parametrize("running", [False, True])
+def test_foreign_mismatch_retains_reservation_and_reports_recovery(
+    tmp_path, monkeypatch, caplog, cap, running
+):
+    project = tmp_path / "project space"
+    project.mkdir()
+    requester = tmp_path / "requester"
+    requester.mkdir()
+    monkeypatch.setattr(
+        session_admission,
+        "load_host_policy",
+        lambda **kw: session_admission.SandboxHostPolicy(max_sessions=cap),
+    )
+    docker = _Docker({})
+    assert session_admission.claim_vscode_start(project, run=docker)
+    docker.documents["editor-id"] = _vscode_inspection(
+        project,
+        project_id="wrong",
+        running=running,
+        started="2026-09-27T08:00:00Z" if running else "0001-01-01T00:00:00Z",
+    )
+    if cap == 2 and running:
+        with pytest.raises(session_admission.AdmissionError) as caught:
+            session_admission.admit_start(requester, target_name="headless", run=docker)
+        assert "docker rm editor-id" in str(caught.value)
+    else:
+        session_admission.admit_start(requester, target_name="headless", run=docker)
+    assert "docker stop editor-id" in caplog.text
+    assert "docker rm editor-id" in caplog.text
+    assert "session down --project" in caplog.text
+    assert (
+        session_admission._store().root / session_admission._claim_filename(str(project))
+    ).exists()
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("baseline", [False, True])
+def test_matching_container_cannot_hide_own_mismatch(tmp_path, monkeypatch, reverse, baseline):
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setattr(
+        session_admission,
+        "load_host_policy",
+        lambda **kw: session_admission.SandboxHostPolicy(max_sessions=5),
+    )
+    bad = _vscode_inspection(project, project_id="wrong")
+    docker = _Docker({"bad": bad} if baseline else {})
+    if baseline:
+        # A historical valid baseline later drifts to another Project identity.
+        bad["Config"]["Labels"].update(_issued_labels(project))
+    assert session_admission.claim_vscode_start(project, run=docker)
+    bad["Config"]["Labels"]["booley.project-id"] = "wrong"
+    good = _vscode_inspection(project)
+    good["Config"]["Labels"].update(_issued_labels(project))
+    pairs = [("good", good), ("bad", bad)]
+    docker.documents = dict(reversed(pairs) if reverse else pairs)
+    with pytest.raises(session_admission.AdmissionError, match="docker rm bad"):
+        session_admission.admit_start(project, target_name="headless", run=docker)
+    assert (
+        session_admission._store().root / session_admission._claim_filename(str(project))
+    ).exists()
+
+
+def test_deleted_root_observed_spelling_is_verified_before_label_acceptance(tmp_path, monkeypatch):
+    project = tmp_path / "Project"
+    project.mkdir()
+    observed = str(project).upper()
+    monkeypatch.setattr(session_admission.os.path, "normcase", str.lower)
+    document = _vscode_inspection(project)
+    document["Config"]["Labels"]["devcontainer.local_folder"] = observed
+    document["Config"]["Labels"]["booley.project-id"] = hashlib.sha256(
+        observed.encode()
+    ).hexdigest()
+    docker = _Docker({"editor-id": document})
+    project.rmdir()
+    assert session_admission.vscode_sandboxes(project, run=docker)
+    document["Config"]["Labels"]["booley.project-id"] = hashlib.sha256(b"/unrelated").hexdigest()
+    with pytest.raises(session_admission.AdmissionError, match="identity disagrees"):
+        session_admission.vscode_sandboxes(project, run=docker)

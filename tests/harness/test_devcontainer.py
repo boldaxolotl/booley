@@ -903,3 +903,14 @@ class TestRenderAndWrite:
         dc.write_devcontainer(tmp_path, dc.build_devcontainer_spec(dc.APP_NONE))
         path = dc.write_devcontainer(tmp_path, dc.build_devcontainer_spec(dc.APP_CODEX))
         assert json.loads(path.read_text(encoding="utf-8"))["name"].endswith("(codex)")
+
+
+def test_project_resource_name_identity_bytes_remain_stable(tmp_path):
+    import hashlib
+    import os
+
+    from booley.runtime import devcontainer
+
+    expected = hashlib.sha256(os.path.normcase(str(tmp_path.resolve())).encode()).hexdigest()[:32]
+    assert devcontainer.canonical_project_id(tmp_path) == expected
+    assert expected in devcontainer.state_volume_mount("claude", expected)

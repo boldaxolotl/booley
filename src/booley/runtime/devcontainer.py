@@ -13,13 +13,12 @@ live in the ``booley init`` flow.
 
 from __future__ import annotations
 
-import hashlib
 import json
-import os
 from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
 
 from booley.config.agent import SANDBOX_IMAGE
+from booley.core.project_identity import project_name_id
 from booley.runtime import auth_token
 from booley.runtime.compiler_cache import COMPILER_CACHE_ROOT_ENV, ISSUED_COMPILER_CACHE_ROOT
 from booley.runtime.incontainer_git_identity import (
@@ -319,8 +318,7 @@ def _volume_mount(source: str, target: str) -> str:
 
 def canonical_project_id(project_root: Path) -> str:
     """Stable collision-resistant identity for one canonical Project root."""
-    canonical = os.path.normcase(str(project_root.resolve(strict=True))).encode()
-    return hashlib.sha256(canonical).hexdigest()[:32]
+    return project_name_id(str(project_root.resolve(strict=True)))
 
 
 def state_volume_name(app: str, project_id: str) -> str | None:

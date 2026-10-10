@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 from pathlib import Path
@@ -717,3 +718,19 @@ def test_dockerfile_pins_minimal_base_and_runs_as_numeric_user() -> None:
     assert "HEALTHCHECK" in dockerfile
     assert "--healthcheck" in dockerfile
     assert 'ENTRYPOINT ["python3", "/app/flexnet_relay.py"]' in dockerfile
+
+
+def test_cleanup_identity_uses_only_canonical_full_label():
+    root = "/deleted/Project"
+    calls = []
+
+    def runner(argv, timeout):
+        calls.append(argv)
+        return _result()
+
+    assert flexnet_docker.cleanup_project_resources_for_identity(root, runner=runner) == ()
+    expected = "label=booley.project-id=" + hashlib.sha256(root.encode()).hexdigest()
+    assert calls == [
+        ["container", "ls", "-aq", "--filter", expected],
+        ["network", "ls", "-q", "--filter", expected],
+    ]
