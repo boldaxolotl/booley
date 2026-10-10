@@ -3132,8 +3132,15 @@ def test_tracked_bundle_advisory_absent_without_index_entry(
     reset_cache()
     ctx = InitContext(project_root=root, check_only=True)
     reconcile.step_project_git_hooks(ctx)
-    assert "rm --cached" not in capsys.readouterr().out
-    assert all(result.name != "project_git_hook_tracking" for result in ctx.results)
+    output = capsys.readouterr().out
+    assert "rm --cached" not in output
+    assert "already tracked" not in output
+    tracking = [result for result in ctx.results if result.name == "project_git_hook_tracking"]
+    if tracking:
+        assert location == "external"
+        assert len(tracking) == 1
+        assert tracking[0].status == "skip"
+        assert "Stopping at filesystem boundary" in tracking[0].detail
     assert ctx.results[-1].status == "warn"
     assert not (data / ".managed").exists()
     reset_cache()
@@ -3171,4 +3178,67 @@ def test_tracked_bundle_unexpected_probe_diagnostic_continues(
     assert ctx.results[-2].status == "skip"
     assert ctx.results[-1].status == "ok"
     assert (root / ".booley_project/.managed/project-git-hooks.pyz").is_file()
+    reset_cache()
+
+
+@pytest.mark.parametrize("selectors", ["ceiling", "all"])
+def test_tracked_bundle_advisory_ignores_ambient_git_selectors(
+    tmp_path, monkeypatch, capsys, selectors
+):
+    from booley.harness.setup import project_git_hook_reconcile as reconcile
+    from booley.runtime.project_dir import reset_cache
+
+    root, owner, bundle = _tracked_bundle_fixture(tmp_path, monkeypatch, "nested", False)
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+    _git_init(foreign)
+    overrides = {"GIT_CEILING_DIRECTORIES": str(owner)}
+    if selectors == "all":
+        overrides.update(
+            GIT_DIR=str(foreign / ".git"),
+            GIT_COMMON_DIR=str(foreign / ".git"),
+            GIT_WORK_TREE=str(foreign),
+            GIT_INDEX_FILE=str(foreign / ".git/index"),
+            GIT_OBJECT_DIRECTORY=str(foreign / ".git/objects"),
+            GIT_ALTERNATE_OBJECT_DIRECTORIES=str(foreign / ".git/objects"),
+            GIT_PREFIX="foreign/",
+            GIT_DISCOVERY_ACROSS_FILESYSTEM="0",
+            GIT_ATTR_SOURCE="HEAD",
+        )
+    ctx = InitContext(project_root=root, check_only=True)
+    locations = reconcile._locations(ctx)
+    assert locations is not None
+    capsys.readouterr()
+    with monkeypatch.context() as ambient:
+        for name, value in overrides.items():
+            ambient.setenv(name, value)
+        reconcile._report_bundle_tracking(ctx, locations)
+    output = capsys.readouterr().out
+    command = shlex.join(
+        ["git", "-C", str(owner), "rm", "--cached", "--", bundle.relative_to(owner).as_posix()]
+    )
+    assert command in output
+    assert "Could not inspect" not in output
+    assert ctx.results[-1].name == "project_git_hook_tracking"
+    assert ctx.results[-1].status == "skip"
+    assert _tracking_git(owner, "ls-files", "--error-unmatch", str(bundle))
+    reset_cache()
+
+
+def test_tracked_bundle_broken_gitfile_reports_diagnostic(tmp_path, monkeypatch, capsys):
+    from booley.harness.setup.project_git_hook_reconcile import step_project_git_hooks
+    from booley.runtime.project_dir import reset_cache
+
+    root, owner, bundle = _tracked_bundle_fixture(tmp_path, monkeypatch, "nested", False)
+    (bundle.parent.parent / ".git").write_text(f"gitdir: {tmp_path / 'missing-git-dir'}\n")
+    index = _tracking_git(owner, "ls-files", "--stage", "-z")
+    capsys.readouterr()
+    ctx = InitContext(project_root=root, check_only=True)
+    step_project_git_hooks(ctx)
+    assert "Could not inspect Project Git-hook bundle tracking" in capsys.readouterr().out
+    assert ctx.results[-2].name == "project_git_hook_tracking"
+    assert ctx.results[-2].status == "skip"
+    assert ctx.results[-1].detail == "current"
+    assert _tracking_git(owner, "ls-files", "--stage", "-z") == index
+    assert bundle.is_file()
     reset_cache()

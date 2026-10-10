@@ -530,7 +530,18 @@ def _pending_detail(
 def _tracking_git(directory: Path, *args: str) -> subprocess.CompletedProcess[str]:
     """Inspect the owning repository without ambient repository overrides."""
     env = os.environ.copy()
-    for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_PREFIX"):
+    for name in (
+        "GIT_DIR",
+        "GIT_COMMON_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_PREFIX",
+        "GIT_CEILING_DIRECTORIES",
+        "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+        "GIT_ATTR_SOURCE",
+    ):
         env.pop(name, None)
     env["LC_ALL"] = "C"
     return subprocess.run(
@@ -549,7 +560,10 @@ def _bundle_tracking_detail(locations: _Locations) -> str | None:
     ancestor = next(path for path in (project, *project.parents) if path.is_dir())
     owner_probe = _tracking_git(ancestor, "rev-parse", "--show-toplevel")
     if owner_probe.returncode:
-        if "fatal: not a git repository" in owner_probe.stderr:
+        if (
+            owner_probe.stderr.strip()
+            == "fatal: not a git repository (or any of the parent directories): .git"
+        ):
             return None
         raise RuntimeError(owner_probe.stderr.strip() or "Git owner discovery failed")
     if not owner_probe.stdout.strip():
