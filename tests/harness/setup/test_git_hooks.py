@@ -2793,7 +2793,6 @@ def test_worktree_link_repair_reports_git_listing_failure(tmp_path, monkeypatch,
     assert message == f"could not list worktrees for repair: {failure}"
 
 
-
 _UNSAFE_DETAILS = {
     ObservationCode.AUTOCRLF_UNREADABLE: "autocrlf unreadable",
     ObservationCode.LOCAL_AUTOCRLF_UNREADABLE: "local autocrlf unreadable",
