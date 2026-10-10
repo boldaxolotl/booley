@@ -509,7 +509,8 @@ def _refusal(
     for root in roots:
         argv = ["booley", "session", "down", "--project", root]
         command = _command(argv)
-        lines.append(f"Free capacity with `{command}`.")
+        shell = " in PowerShell" if os.name == "nt" else ""
+        lines.append(f"Free capacity{shell} with `{command}`.")
     lines.extend(diagnostics)
     lines.append(f"Or raise [sandbox].max_sessions in {host_config_path()}.")
     lines.append(HOST_POLICY_MIGRATION_GUIDANCE)

@@ -4295,10 +4295,10 @@ def test_mismatched_editor_stop_remove_down_releases_capacity(tmp_path, monkeypa
     monkeypatch.setattr(sr.idk, "container_exists", lambda name: False)
     monkeypatch.setattr(sr, "_relay_resources", lambda root: None)
     monkeypatch.setattr(sr, "_relay_objects_exist", lambda relay: False)
-    with pytest.raises(sr.SessionError, match="docker rm editor-id"):
+    with pytest.raises(sr.SessionError, match="identity disagrees"):
         sr._down_unlocked(project)
     documents["editor-id"]["State"]["Running"] = False
-    with pytest.raises(sr.SessionError, match="docker rm editor-id"):
+    with pytest.raises(sr.SessionError, match="identity disagrees"):
         sr._down_unlocked(project)
     del documents["editor-id"]
     assert sr._down_unlocked(project).claim_cleared

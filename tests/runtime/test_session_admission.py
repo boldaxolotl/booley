@@ -111,7 +111,7 @@ def test_new_sandbox_at_cap_is_refused_with_live_project_and_age(
     assert "max_sessions=1" in message
     assert f"Project {other}" in message
     assert "age 2h" in message
-    assert "booley session down --project" in message
+    assert session_admission._command(["booley", "session", "down", "--project"]) in message
     assert "existing" in message
 
 
@@ -612,12 +612,12 @@ def test_foreign_mismatch_retains_reservation_and_reports_recovery(
     if cap == 2 and running:
         with pytest.raises(session_admission.AdmissionError) as caught:
             session_admission.admit_start(requester, target_name="headless", run=docker)
-        assert "docker rm editor-id" in str(caught.value)
+        assert session_admission._command(["docker", "rm", "editor-id"]) in str(caught.value)
     else:
         session_admission.admit_start(requester, target_name="headless", run=docker)
-    assert "docker stop editor-id" in caplog.text
-    assert "docker rm editor-id" in caplog.text
-    assert "session down --project" in caplog.text
+    assert session_admission._command(["docker", "stop", "editor-id"]) in caplog.text
+    assert session_admission._command(["docker", "rm", "editor-id"]) in caplog.text
+    assert session_admission._command(["booley", "session", "down", "--project"]) in caplog.text
     assert (
         session_admission._store().root / session_admission._claim_filename(str(project))
     ).exists()
@@ -644,7 +644,7 @@ def test_matching_container_cannot_hide_own_mismatch(tmp_path, monkeypatch, reve
     good["Config"]["Labels"].update(_issued_labels(project))
     pairs = [("good", good), ("bad", bad)]
     docker.documents = dict(reversed(pairs) if reverse else pairs)
-    with pytest.raises(session_admission.AdmissionError, match="docker rm bad"):
+    with pytest.raises(session_admission.AdmissionError, match="identity disagrees"):
         session_admission.admit_start(project, target_name="headless", run=docker)
     assert (
         session_admission._store().root / session_admission._claim_filename(str(project))
@@ -656,6 +656,10 @@ def test_deleted_root_observed_spelling_is_verified_before_label_acceptance(tmp_
     project.mkdir()
     observed = str(project).upper()
     monkeypatch.setattr(session_admission.os.path, "normcase", str.lower)
+    canonical_text = session_admission._canonical_text
+    monkeypatch.setattr(
+        session_admission, "_canonical_text", lambda value: canonical_text(value).lower()
+    )
     document = _vscode_inspection(project)
     document["Config"]["Labels"]["devcontainer.local_folder"] = observed
     document["Config"]["Labels"]["booley.project-id"] = hashlib.sha256(
