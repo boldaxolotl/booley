@@ -26,14 +26,14 @@ file is high leverage: do not auto-write, pad, or invent facts.
 
 - Keep the output concise: only concrete, durable facts that change RTL work,
   using Booley's canonical terms where relevant.
-- Follow the template's two required project/Booley sections exactly. The
-  template's standardized third worktree section is also permitted; keep it
-  verbatim when included and omit it only when worktree guidance is irrelevant.
-- Keep the template's Interactive Mode / VS Code and Sandbox scoping
-  bullets verbatim. The first establishes the editor as a user-visible surface
-  for files and diffs. The repo root's guidance links resolve on the host too,
-  where none of the Booley Flows are registered; the second explains why. Doctor
-  warns if the latter goes missing.
+- Follow the template's two sections exactly. Keep its worktree bullet verbatim;
+  omit it only when worktree guidance is irrelevant.
+- Keep the template's Interactive Mode bullet and its two Sandbox bullets
+  ("Inside the Sandbox…" and "If `booley_status` is absent…") verbatim. The
+  Interactive Mode bullet establishes the editor as a user-visible surface for
+  files and diffs. The repo root's guidance links resolve on the host too, where
+  none of the Booley Flows are registered; the Sandbox bullets explain why.
+  Doctor warns if the "Inside the Sandbox" bullet goes missing.
 - When `booley.toml` selects `booley-sandbox-riscv`, keep the template's RISC-V
   reference-docs bullet verbatim so agents can find the image's offline manuals.
   Remove that conditional bullet for every other sandbox image.
