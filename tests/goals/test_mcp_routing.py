@@ -639,7 +639,9 @@ def test_status_complete_text_and_metadata_unchanged(goal_mode, inside, rules):
     from tests.goals.test_format import baseline_render_status
 
     location = goal_mode.worktree if inside else goal_mode.main
-    expected = baseline_render_status(status_views(GoalStore(goal_mode.control), location))
+    views = status_views(GoalStore(goal_mode.control), location)
+    assert [view.record.id for view in views] == [goal_mode.record.id]
+    expected = baseline_render_status(views)
     if rules:
         expected += "\n\n" + goal_mode_rules()
     result = asyncio.run(

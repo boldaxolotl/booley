@@ -142,8 +142,7 @@ def test_goal_status_complete_bytes(
     from tests.goals.conftest import update_record
     from tests.goals.test_format import baseline_render_status
 
-    if multiple or caller == "abandoned":
-        second_goal(goal_mode, monkeypatch)
+    other = second_goal(goal_mode, monkeypatch) if multiple or caller == "abandoned" else None
     if caller == "abandoned":
         update_record(goal_mode, state=GoalState.ABANDONED)
     location = goal_mode.worktree
@@ -156,6 +155,14 @@ def test_goal_status_complete_bytes(
         location = tmp_path / "outside"
         location.mkdir()
     views = status_views(GoalStore(goal_mode.control), location)
+    expected_ids = [goal_mode.record.id]
+    if caller == "abandoned":
+        assert other is not None
+        expected_ids = [other.record.id]
+    elif caller in {"main", "outside"} and other is not None:
+        expected_ids.append(other.record.id)
+    assert {view.record.id for view in views} == set(expected_ids)
+    assert len(views) == len(expected_ids)
     expected = baseline_render_status(views, short=detail)
     if caller in {"main", "outside", "abandoned"}:
         expected = PREFIX + expected
