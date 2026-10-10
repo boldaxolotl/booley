@@ -230,3 +230,17 @@ def compute_source_fingerprint(
         "workload": _hash_named_files(root, workload_files),
         "campaign": campaign,
     }
+
+
+def hash_named_files(work_dir: Path, names: list[str]) -> dict[str, Any]:
+    """Hash explicit source labels with the shared source encoding."""
+    return _hash_named_files(work_dir, names)
+
+
+def campaign_fingerprint(
+    root: Path, target: str | None, *, excluded: frozenset[Path]
+) -> dict[str, Any]:
+    """Hash campaign configuration using its established encoding."""
+    return _hash_file_entries(
+        [(name, path) for name, path in _campaign_files(root, target) if path not in excluded]
+    )

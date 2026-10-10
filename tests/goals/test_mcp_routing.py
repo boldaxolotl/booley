@@ -629,3 +629,196 @@ def test_goal_status_simulation_contract_explanation(goal_mode, met):
     else:
         assert "complete resolved suite" not in text
         assert "—" not in text
+
+
+def _review_artifact(layout, monkeypatch, *, scope=None):
+    from tests.goals.conftest import enter_goals, git
+
+    layout.record = enter_goals(
+        layout,
+        [{"family": "review", "review": "tb_quality" if scope else "rtl_bugs", "verdict": "done"}],
+    )
+    name = "tb/artifact.py" if scope else "artifact.hex"
+    artifact = layout.worktree / name
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text("print('first')\n")
+    core = layout.worktree / "top.core"
+    core.write_text(
+        core.read_text().replace(
+            "files: [rtl.v]", f"files: [rtl.v, {{{name}: {{file_type: user}}}}]"
+        )
+    )
+    if scope:
+        core.write_text(
+            core.read_text()
+            .replace(f", {{{name}: {{file_type: user}}}}", "")
+            .replace(
+                "targets:",
+                f"  tb: {{files: [{{{name}: {{file_type: user}}}}], tags: [tb]}}\ntargets:",
+            )
+            .replace("filesets: [rtl]", "filesets: [rtl, tb]")
+        )
+    git(layout.worktree, "add", "top.core")
+    git(layout.worktree, "commit", "-qm", "artifact input")
+    exclude = layout.main / ".git/info/exclude"
+    exclude.write_bytes(exclude.read_bytes() + (name + "\n").encode())
+    monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
+    endpoint, provider = _goal_reviewer_endpoint(layout, monkeypatch)
+    if scope:
+        endpoint.args.category = "tb"
+        endpoint.args.focus = "quality"
+        endpoint.args.scope = name
+    return endpoint, provider, artifact, exclude
+
+
+@pytest.mark.timeout(120)
+@pytest.mark.parametrize("mutation", ["bytes", "ignore", "authored"])
+def test_target_less_publication_compares_admission_policy(layout, monkeypatch, mutation):
+    endpoint, provider, artifact, exclude = _review_artifact(layout, monkeypatch)
+    response = provider.return_value
+
+    def invoke(*args, **kwargs):
+        if mutation == "bytes":
+            artifact.write_text("regenerated\n")
+        elif mutation == "ignore":
+            exclude.write_text("/.booley_project\n")
+        else:
+            (layout.worktree / "top.core").write_text(
+                (layout.worktree / "top.core").read_text() + "# authored edit\n"
+            )
+        return response
+
+    provider.side_effect = invoke
+    endpoint._run()
+    state = json.loads(record_paths(layout.control, layout.record.id).state_file.read_text())
+    assert state["criteria"]["review_rtl_bugs_done"]["met"] == (mutation == "bytes")
+    assert (endpoint.evidence_discarded is None) == (mutation == "bytes")
+
+
+@pytest.mark.timeout(120)
+def test_target_less_endpoint_classifier_failure_discards_before_state_report(layout, monkeypatch):
+    from dataclasses import replace
+
+    endpoint, _provider, _, _ = _review_artifact(layout, monkeypatch)
+    adapter = endpoint._acceptance_recorder
+
+    def unavailable(root):
+        raise OSError("bounded Git classification failed")
+
+    adapter._resolvers = replace(adapter._resolvers, artifact_paths=unavailable)
+    before = record_paths(layout.control, layout.record.id).state_file.read_bytes()
+    endpoint._run()
+    assert endpoint.evidence_discarded is not None
+    assert record_paths(layout.control, layout.record.id).state_file.read_bytes() == before
+    assert endpoint._report_criteria.evaluated == {}
+
+
+@pytest.mark.timeout(120)
+def test_target_less_explicit_tb_scope_receipt_still_tracks_artifact(layout, monkeypatch):
+    from booley.goals.status import build_status
+
+    endpoint, _, artifact, _ = _review_artifact(layout, monkeypatch, scope=True)
+    assert endpoint._run().exit_code == 0
+    assert build_status(GoalStore(layout.control), layout.record).goals[0].status == "met"
+    artifact.write_text("print('regenerated')\n")
+    assert build_status(GoalStore(layout.control), layout.record).goals[0].status == "stale"
+
+
+@pytest.mark.timeout(120)
+def test_target_less_endpoint_receipt_identity_survives_goal_publication(layout, monkeypatch):
+    from booley.criteria.evidence_ledger import validated_evidence_records
+    from booley.criteria.state import DevelopmentState
+    from booley.goals.recorder import GOAL_SCOPE
+
+    endpoint, _, _, _ = _review_artifact(layout, monkeypatch)
+    emitted = []
+    original = endpoint._stamp_source_fingerprint
+
+    def capture(*args, **kwargs):
+        detail = original(*args, **kwargs)
+        emitted.append(json.loads(json.dumps(detail)))
+        return detail
+
+    monkeypatch.setattr(endpoint, "_stamp_source_fingerprint", capture)
+    assert endpoint._run().exit_code == 0
+    paths = record_paths(layout.control, layout.record.id)
+    state = DevelopmentState.load(paths.state_file)
+    stored = state.criteria["review_rtl_bugs_done"].detail
+    rows = validated_evidence_records(GOAL_SCOPE, paths.logs_dir, state, {})
+    receipt = emitted[-1]["receipt_id"]
+    assert stored["receipt_id"] == receipt == rows[-1]["detail"]["receipt_id"]
+    assert "artifact.hex" not in json.dumps(emitted[-1]["_source_fingerprint"])
+    assert (
+        stored["_source_fingerprint"]["fingerprint"]["rtl"]
+        == emitted[-1]["_source_fingerprint"]["fingerprint"]["rtl"]
+    )
+
+
+@pytest.mark.timeout(120)
+def test_target_less_receiptless_v4_cannot_be_resampled_at_publication(layout, monkeypatch):
+    from booley.criteria.state import DevelopmentState
+    from booley.flows.execution_persistence import EvidenceDiscarded
+    from booley.goals.recorder import GoalEvidenceRecorder
+    from tests.goals.conftest import bind
+
+    _review_artifact(layout, monkeypatch)
+    recorder = GoalEvidenceRecorder(bind(layout))
+    paths = record_paths(layout.control, layout.record.id)
+    before = paths.state_file.read_bytes()
+    state = DevelopmentState.load(paths.state_file, recorder.state_persistence())
+    changes = state.set_criterion(
+        "review_rtl_bugs_done", True, detail={"review_detail_version": 4}
+    )
+    with pytest.raises(EvidenceDiscarded, match="no valid producer receipt"):
+        recorder.record_changes(state, changes, invocation_id="test", producer="reviewer")
+    assert paths.state_file.read_bytes() == before
+
+
+@pytest.mark.timeout(120)
+def test_target_less_legacy_artifact_stamp_stales_once_and_rerun_clears(layout, monkeypatch):
+    from booley.flows.source_fingerprint import compute_source_fingerprint
+    from booley.goals.status import build_status
+    from booley.goals.target_surface import target_surface_fingerprint
+
+    endpoint, _, _, _ = _review_artifact(layout, monkeypatch)
+    assert endpoint._run().exit_code == 0
+    paths = record_paths(layout.control, layout.record.id)
+    value = json.loads(paths.state_file.read_text())
+    previous = value["criteria"]["review_rtl_bugs_done"]["detail"]["_source_fingerprint"]
+    previous["fingerprint"] = compute_source_fingerprint(layout.worktree)
+    previous["fingerprint"]["target_surface"] = target_surface_fingerprint(layout.worktree, None)
+    paths.state_file.write_text(json.dumps(value))
+    assert build_status(GoalStore(layout.control), layout.record).goals[0].status == "stale"
+    rerun, provider = _goal_reviewer_endpoint(layout, monkeypatch)
+    assert rerun._run().exit_code == 0
+    assert provider.call_count >= 1
+    assert build_status(GoalStore(layout.control), layout.record).goals[0].status == "met"
+
+
+@pytest.mark.timeout(120)
+def test_target_less_raw_producer_stamp_is_discarded_without_rewriting(layout, monkeypatch):
+    from booley.criteria.state import DevelopmentState
+    from booley.flows.execution_persistence import EvidenceDiscarded
+    from booley.flows.source_fingerprint import compute_source_fingerprint
+    from booley.goals.recorder import GoalEvidenceRecorder
+    from tests.goals.conftest import bind
+
+    _review_artifact(layout, monkeypatch)
+    recorder = GoalEvidenceRecorder(bind(layout))
+    paths = record_paths(layout.control, layout.record.id)
+    before = paths.state_file.read_bytes()
+    state = DevelopmentState.load(paths.state_file, recorder.state_persistence())
+    detail = {
+        "_source_fingerprint": {
+            "target": None,
+            "categories": ["rtl"],
+            "fingerprint": compute_source_fingerprint(layout.worktree),
+        }
+    }
+    changes = state.set_criterion("review_rtl_bugs_done", True, detail=detail)
+    with pytest.raises(EvidenceDiscarded, match="includes generated build data"):
+        recorder.record_changes(state, changes, invocation_id="test", producer="reviewer")
+    assert paths.state_file.read_bytes() == before
+    assert (
+        "artifact.hex" in changes[0].detail["_source_fingerprint"]["fingerprint"]["rtl"]["files"]
+    )

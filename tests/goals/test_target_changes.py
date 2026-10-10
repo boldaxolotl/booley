@@ -68,3 +68,31 @@ def test_constraints_and_resolved_target_modifications_are_frozen_in_completion(
     assert {row["path"] for row in facts["constraint_edits"]} == {"rtl/timing.sdc", "rtl/pins.xdc"}
     assert facts["goals"][0]["modified_target"]
     assert "FEATURE" in facts["target_changes"][0]["after"]["defines"]
+
+
+@pytest.mark.parametrize("kind", ["added", "removed", "modified"])
+def test_artifact_projection_preserves_authored_delta_and_epoch_membership(kind):
+    from copy import deepcopy
+
+    from booley.goals.target_changes import project_target_changes
+
+    surface = {
+        "filesets": [{"path": "other.vmem", "type": "user"}, {"path": "kept.hex", "type": "user"}],
+        "parameters": {"message": "other.vmem", "width": True},
+    }
+    row = {
+        "target": "target",
+        "change": kind,
+        "fields": ["filesets", "parameters"],
+        "before": None if kind == "added" else deepcopy(surface),
+        "after": None if kind == "removed" else deepcopy(surface),
+    }
+    original = deepcopy(row)
+    projected = project_target_changes([row], frozenset(), frozenset({"other.vmem"}))[0]
+    assert row == original
+    assert projected["change"] == kind and projected["fields"] == row["fields"]
+    assert projected["before"] == row["before"]
+    if projected["after"] is not None:
+        assert projected["after"]["filesets"] == [{"path": "kept.hex", "type": "user"}]
+        assert projected["after"]["parameters"] == surface["parameters"]
+    assert project_target_changes([row], frozenset(), frozenset()) == [row]

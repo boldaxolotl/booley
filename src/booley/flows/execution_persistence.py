@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from booley.criteria.state import CriterionChange, DevelopmentState, StatePersistence
 from booley.evidence.acceptance import ResolvedFlowAcceptance
 from booley.flows.request import FlowRequest
+from booley.flows.source_fingerprint import compute_source_fingerprint
 from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
 
 
@@ -73,6 +75,24 @@ def criterion_source_target_for(
     if isinstance(recorder, CriterionSourceTarget):
         return recorder.criterion_source_target(key, fallback)
     return fallback
+
+
+@runtime_checkable
+class CriterionSourceFingerprint(Protocol):
+    """Optional producer source sampling policy supplied by acceptance."""
+
+    def criterion_source_fingerprint(
+        self, key: str, root: Path, target: str | None
+    ) -> dict[str, Any]: ...
+
+
+def criterion_source_fingerprint_for(
+    recorder: AcceptanceRecorder, key: str, root: Path, *, target: str | None
+) -> dict[str, Any]:
+    """Sample through acceptance policy, retaining shared standalone semantics."""
+    if isinstance(recorder, CriterionSourceFingerprint):
+        return recorder.criterion_source_fingerprint(key, root, target)
+    return compute_source_fingerprint(root, target=target)
 
 
 @runtime_checkable

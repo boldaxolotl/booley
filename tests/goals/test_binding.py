@@ -155,3 +155,27 @@ def test_corrupt_record_is_refused(goal_mode: SimpleNamespace) -> None:
 def test_missing_invocation_id_is_refused(goal_mode: SimpleNamespace) -> None:
     with pytest.raises(GoalBindingError, match="invocation id"):
         bind_run(_store(goal_mode), goal_mode.worktree, "")
+
+
+@pytest.mark.parametrize("captured", [None, "digest"])
+def test_unresolvable_publication_surface_is_never_unchanged(goal_mode, captured):
+    from booley.criteria.state import DevelopmentState
+    from booley.flows.execution_persistence import EvidenceDiscarded
+    from booley.goals.freshness import GoalFreshnessResolvers
+    from booley.goals.recorder import GoalEvidenceRecorder
+    from tests.goals.conftest import bind
+
+    binding = replace(bind(goal_mode), start_surfaces=(("top", captured),))
+    recorder = GoalEvidenceRecorder(
+        binding,
+        resolvers=GoalFreshnessResolvers(
+            target_surface=lambda root, target: {"error": "unresolvable"}
+        ),
+    )
+    state = DevelopmentState.load(
+        record_paths(goal_mode.control, goal_mode.record.id).state_file,
+        recorder.state_persistence(),
+    )
+    changes = state.set_criterion(LINT_KEY, True, detail={"warnings": 0})
+    with pytest.raises(EvidenceDiscarded, match="changed during the run"):
+        recorder.record_changes(state, changes, invocation_id="test", producer="lint")

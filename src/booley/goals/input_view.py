@@ -22,6 +22,7 @@ from booley.goals.committed_export import (
     tracked_matches_pin,
 )
 from booley.goals.freshness import GoalFreshnessResolvers, evaluate_goal_freshness
+from booley.goals.generated_artifacts import goal_target_surface
 from booley.goals.input_identity import (
     InputIdentityError,
     capture_roots,
@@ -47,6 +48,7 @@ from booley.runtime.project_dir import (
 )
 from booley.runtime.project_repositories import RepositoryCheckoutError, paired_project_repository
 from booley.targets.catalog import TargetCatalog
+from booley.targets.declared_inputs import HDL_SUFFIXES
 
 
 @dataclass(frozen=True)
@@ -517,11 +519,18 @@ def _capture_policy(view: CommittedView) -> None:
         )
 
 
-def _logical_surface(view: CommittedView, root: Path, target: str | None) -> dict[str, Any]:
+def _logical_surface(
+    view: CommittedView,
+    root: Path,
+    target: str | None,
+    *,
+    artifact_paths: frozenset[Path] = frozenset(),
+) -> dict[str, Any]:
     """Preserve logical labels in the conservative declaration hash."""
     return target_surface_fingerprint(
         root,
         target,
+        artifact_paths=artifact_paths,
         logical_roots={new: _entry_label(view, old) for old, new in view.mappings},
         logical_tests=None if view.saved_roots is None else tests_label(view.saved_roots),
     )
@@ -552,9 +561,15 @@ def alias_resolvers(
     saved = record.input_paths
     mappings = logical_roots(saved, capture_path_roots(selection.rtl, control_project))
 
-    def surface(root: Path, target: str | None) -> dict[str, Any]:
+    def surface(
+        root: Path, target: str | None, *, artifact_paths: frozenset[Path] = frozenset()
+    ) -> dict[str, Any]:
         return target_surface_fingerprint(
-            root, target, logical_roots=mappings, logical_tests=tests_label(saved)
+            root,
+            target,
+            logical_roots=mappings,
+            logical_tests=tests_label(saved),
+            artifact_paths=artifact_paths,
         )
 
     def waiver(root: Path) -> dict[str, Any]:
@@ -576,9 +591,9 @@ def alias_resolvers(
 
     return replace(
         live,
-        target_surface=surface
-        if live.target_surface is target_surface_fingerprint
-        else live.target_surface,
+        policy_surface=surface
+        if live.target_surface in (target_surface_fingerprint, goal_target_surface)
+        else live.policy_surface,
         waiver_policy=waiver,
     )
 
@@ -600,7 +615,7 @@ def _role_waiver_label(
 
 
 def committed_resolvers(
-    view: CommittedView, live: GoalFreshnessResolvers
+    view: CommittedView, live: GoalFreshnessResolvers, excluded: frozenset[Path] = frozenset()
 ) -> GoalFreshnessResolvers:
     """Same freshness rules, with a proven waiver-root mapping and no live readers."""
 
@@ -624,7 +639,10 @@ def committed_resolvers(
         return value
 
     return GoalFreshnessResolvers(
-        target_surface=lambda root, target: _logical_surface(view, root, target),
+        policy_surface=lambda root, target, **kwargs: _logical_surface(
+            view, root, target, **kwargs
+        ),
+        artifact_paths=lambda root: frozenset(view.mapped(path).resolve() for path in excluded),
         waiver_policy=waiver,
         waiver_semantics=live.waiver_semantics,
     )
@@ -638,10 +656,16 @@ def validate_committed(
     generated: tuple[GeneratedBuildInput, ...] = (),
 ) -> None:
     """Prove consumed design files exist in the committed representation, then freshness."""
-    resolvers = committed_resolvers(view, live)
+    excluded = (
+        live.artifact_paths(view.selection.rtl)
+        if any(goal.spec.target is None for goal in record.goals)
+        else frozenset()
+    )
+    operation = replace(live, artifact_paths=lambda root: excluded)
+    resolvers = committed_resolvers(view, live, excluded)
     for goal in record.goals:
         target = goal.spec.target
-        current = live.fingerprint(view.selection.rtl, target=target)
+        current = operation.fingerprint(view.selection.rtl, target=target)
         for category in ("rtl", "tb", "target_surface", "workload"):
             for name in current.get(category, {}).get("files", []):
                 path = Path(name)
@@ -679,13 +703,7 @@ def _require_materialized_target(view: CommittedView, target: str | None) -> Non
 
 def is_always_committed_input(path: Path) -> bool:
     """HDL, declarations, and executable inputs require committed proof."""
-    return path.suffix.lower() in {
-        ".v",
-        ".sv",
-        ".vh",
-        ".svh",
-        ".vhd",
-        ".vhdl",
+    return path.suffix.lower() in HDL_SUFFIXES | {
         ".core",
         ".toml",
         ".py",

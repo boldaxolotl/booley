@@ -23,6 +23,9 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ### Upgrade notes
 
+- Review Goal evidence recorded before this change becomes stale once in Projects
+  with Generated Build Artifacts; re-running the Reviewer clears it.
+
 - Ticket Mode commands `booley run` and `booley board` are removed from the
   public command surface. Each prints a pointer to `/booley-goal` and exits 2.
   The Ticket creation and triage skills are replaced by `/booley-goal`.

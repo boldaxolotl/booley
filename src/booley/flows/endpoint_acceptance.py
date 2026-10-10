@@ -19,7 +19,7 @@ from booley.flows.endpoint_events import (
     _emit_criteria_update,
 )
 from booley.flows.endpoint_session import PreparedExecution
-from booley.flows.execution_persistence import EvidenceDiscarded
+from booley.flows.execution_persistence import EvidenceDiscarded, criterion_source_fingerprint_for
 from booley.fusesoc.fusesoc_registry import FuseSocError
 from booley.runtime.endpoint_execution import (
     EXIT_CANCELLED,
@@ -49,12 +49,16 @@ def set_criterion(
         logger.info("Diagnostic run: not recording criterion %s", key)
         return
     key = endpoint._criterion_key_for_source(key, source_target)
-    stamped_detail = endpoint._stamp_source_fingerprint(
-        key,
-        met,
-        detail,
-        source_target=source_target,
-    )
+    try:
+        stamped_detail = endpoint._stamp_source_fingerprint(
+            key,
+            met,
+            detail,
+            source_target=source_target,
+        )
+    except EvidenceDiscarded as exc:
+        endpoint.discard_evidence(exc)
+        return
     changes = endpoint.state.set_criterion(key, met, detail=stamped_detail)
     endpoint.record_report_criteria(changes)
     if endpoint.state.file_path is None or endpoint.evidence_discarded is not None:
@@ -119,6 +123,9 @@ def _stamp_source_fingerprint(
             Path(endpoint.args.work_dir),
             target=source_target,
             categories=categories,
+            fingerprint_provider=lambda root, *, target: criterion_source_fingerprint_for(
+                endpoint._acceptance_recorder, key, root, target=target
+            ),
         )
     except (OSError, FuseSocError) as exc:
         logger.warning(

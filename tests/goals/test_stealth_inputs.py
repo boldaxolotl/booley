@@ -136,3 +136,44 @@ def test_projected_core_programs_never_receive_a_generated_exemption(stealth_pro
 
     assert (root / "scripts/prepare.sh").resolve() in committed_only
     assert (root / "scripts/generate.py").resolve() in committed_only
+
+
+def test_target_less_parent_ignore_does_not_hide_paired_constraint(stealth):
+    from booley.goals.freshness import DEFAULT_RESOLVERS
+    from booley.goals.generated_artifacts import generated_artifact_paths
+
+    constraint = stealth.worktree / ".booley_project/cores/constraints/top.sdc"
+    assert constraint.resolve() not in generated_artifact_paths(stealth.worktree)
+    before = DEFAULT_RESOLVERS.fingerprint(stealth.worktree, target=None)
+    constraint.write_text("create_clock -period 20 [get_ports clk]\n")
+    assert DEFAULT_RESOLVERS.fingerprint(stealth.worktree, target=None)["rtl"] != before["rtl"]
+
+
+def test_target_less_nonversioned_hidden_constraint_follows_literal_definition(layout):
+    from booley.goals.freshness import DEFAULT_RESOLVERS
+    from booley.goals.generated_artifacts import generated_artifact_paths
+    from booley.goals.input_view import is_always_committed_input
+    from tests.goals.conftest import enter_goals
+
+    layout.record = enter_goals(
+        layout, [{"family": "review", "review": "rtl_bugs", "verdict": "done"}]
+    )
+    constraint = layout.worktree / ".booley_project/top.sdc"
+    constraint.write_text("constraint first\n")
+    core = layout.worktree / "top.core"
+    core.write_text(
+        core.read_text().replace(
+            "files: [rtl.v]", "files: [rtl.v, {.booley_project/top.sdc: {file_type: user}}]"
+        )
+    )
+    git(layout.worktree, "add", "top.core")
+    git(layout.worktree, "commit", "-qm", "hidden nonversioned constraint")
+    assert constraint.resolve() in generated_artifact_paths(layout.worktree)
+    before = DEFAULT_RESOLVERS.fingerprint(layout.worktree, target=None)
+    constraint.write_text("constraint second\n")
+    assert DEFAULT_RESOLVERS.fingerprint(layout.worktree, target=None) == before
+    assert is_always_committed_input(constraint)
+    assert (
+        ".booley_project/top.sdc"
+        in DEFAULT_RESOLVERS.fingerprint(layout.worktree, target="top")["rtl"]["files"]
+    )

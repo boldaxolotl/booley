@@ -29,6 +29,7 @@ from booley.core.boundary import (
 )
 from booley.goals.apply_barrier import require_no_apply
 from booley.goals.checkout import CheckoutError, GoalCheckout, branch_ref
+from booley.goals.generated_artifacts import goal_target_surface
 from booley.goals.model import GoalRecord, GoalRecordFormatError, GoalState, WorktreeIdentity
 from booley.goals.paths import GoalIdError, record_paths, validate_goal_id
 from booley.goals.proposals import ProposalError
@@ -40,7 +41,7 @@ from booley.goals.protected_inputs import (
     snapshot_protected_inputs,
 )
 from booley.goals.store import GoalStore, GoalStoreError
-from booley.goals.target_surface import TargetSurfaceError, target_surface_fingerprint
+from booley.goals.target_surface import TargetSurfaceError
 from booley.targets.domain import FuseSocError
 
 BINDING_SCHEMA = "booley.goal-run-binding/v1"
@@ -225,7 +226,7 @@ def bind_run(
     work_dir: Path,
     invocation_id: str,
     *,
-    surface: SurfaceResolver = target_surface_fingerprint,
+    surface: SurfaceResolver = goal_target_surface,
 ) -> GoalRunBinding:
     """Bind run *invocation_id* in *work_dir* to the worktree's active Goal Mode.
 

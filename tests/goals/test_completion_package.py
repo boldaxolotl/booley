@@ -363,3 +363,182 @@ def test_all_goal_family_package_metrics(layout, monkeypatch, family, key, detai
         facts["goals"][0]["metric"] == format_met_goal_metric(key, state.criteria[key]) == expected
     )
     assert GoalCompletionPackage.from_json(facts).to_json() == facts
+
+
+def test_historical_inventory_body_omission_preserves_original_digest_and_references(tmp_path):
+    import hashlib
+    from types import SimpleNamespace
+
+    from booley.goals.review_package import _transactions
+
+    logs = tmp_path
+    directory = logs / "acceptance/transactions"
+    directory.mkdir(parents=True)
+    old = {
+        "changes": [
+            {
+                "detail": {
+                    "_source_fingerprint": {
+                        "fingerprint": {"target_surface": {"files": ["other.vmem"]}}
+                    }
+                }
+            }
+        ]
+    }
+    selected = {
+        "changes": [
+            {"detail": {"_source_fingerprint": {"fingerprint": {"rtl": {"files": ["rtl.v"]}}}}}
+        ]
+    }
+    for identity, manifest in (("old", old), ("selected", selected)):
+        (directory / (identity + ".json")).write_text(json.dumps(manifest))
+    indexed = {
+        1: {"sequence": 1, "transaction_id": "old"},
+        2: {"sequence": 2, "transaction_id": "selected"},
+    }
+    before = {path: path.read_bytes() for path in directory.iterdir()}
+    facts = _transactions(
+        logs,
+        SimpleNamespace(acceptance_transactions=["old", "selected"]),
+        indexed,
+        omitted_inputs=frozenset({"other.vmem"}),
+    )
+    original_digest = hashlib.sha256(
+        json.dumps(old, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    ).hexdigest()
+    assert facts[0]["manifest"] is None
+    assert facts[0]["manifest_sha256"] == original_digest
+    assert facts[0]["observations"][0]["sequence"] == 1
+    assert facts[1]["manifest"] == selected and facts[1]["manifest_sha256"]
+    assert before == {path: path.read_bytes() for path in directory.iterdir()}
+
+
+def _publish_current_base_simulation(layout):
+    from booley.criteria.state import DevelopmentState
+    from booley.flows.sim.campaign.codec import encode_simulation_campaign_manifest
+    from booley.flows.sim.campaign.planning import finalize_manifest, manifest_digest
+    from booley.goals.paths import record_paths
+    from booley.goals.recorder import GoalEvidenceRecorder
+    from tests.flows.sim.test_campaign_manifest_codec import _manifest_components, _manifest_work
+    from tests.goals.conftest import bind, campaign_facts
+
+    target, recipe, build, workload, suite = _manifest_components()
+    target.update(vlnv="::base:0", name="base", selector="base", revision="abc123")
+    variants, items = _manifest_work(target, recipe, build, workload)
+    manifest = finalize_manifest(
+        {
+            "$schema": "booley.simulation-campaign-manifest/v1",
+            "campaign_id": str(uuid4()),
+            "created_at": "2026-10-07T10:00:00Z",
+            "origin": {"execution_id": "b" * 32, "invocation_id": 8},
+            "target": target,
+            "workload": workload,
+            "required_suite": suite,
+            "build_variants": variants,
+            "planning_disclosures": [],
+            "prerequisites": [],
+            "work_items": items,
+        }
+    )
+    paths = record_paths(layout.control, layout.record.id)
+    path = paths.runtime_dir / "flow-reports/sim/8/targets/base/campaign/manifest.json"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(encode_simulation_campaign_manifest(manifest))
+    facts = campaign_facts()
+    facts.update(
+        campaign_id=manifest.document["campaign_id"],
+        manifest_sha256=manifest_digest(manifest),
+        origin={"execution_id": "b" * 32, "invocation_id": 8},
+        target={"identity": "::base:0#base", "selector": "base"},
+        required_suite={"names": [], "default_invocation": True},
+    )
+    recorder = GoalEvidenceRecorder(bind(layout))
+    state = DevelopmentState.load(paths.state_file, recorder.state_persistence())
+    shadow = DevelopmentState.from_json_object(state.to_dict())
+    changes = shadow.set_criterion(
+        "sim_pass_base", True, detail={"required_tests": ["default"], "passed_tests": ["default"]}
+    )
+    transaction = recorder.record_or_verify_transaction(
+        state, changes, acceptance_facts=facts, ticket_identity={}
+    )
+    return transaction
+
+
+def test_obsolete_simulation_after_approved_retarget_omits_inventory_without_rewriting_ledger(
+    layout, monkeypatch
+):
+    from booley.goals.apply import ChangeEnvironment
+    from booley.goals.change_service import create_proposal
+    from booley.goals.entry import EntryEnvironment
+    from tests.goals.conftest import SIM_KEY, git
+    from tests.goals.test_generated_inputs import classified
+    from tests.goals.test_proposals import approve
+
+    _source, _old_manifest, old_transaction = classified(
+        layout,
+        goals=[
+            {"family": "sim", "target": "top"},
+            {"family": "review", "review": "rtl_bugs", "verdict": "clean"},
+        ],
+        criterion=SIM_KEY,
+        criterion_detail={"required_tests": ["smoke"], "passed_tests": ["smoke"]},
+    )
+    (layout.worktree / "base.core").write_bytes(
+        b"CAPI=2:\nname: ::base:0\nfilesets:\n  rtl: {files: [rtl.v], file_type: verilogSource}\n"
+        b"targets:\n  base: {filesets: [rtl], toplevel: top}\n"
+    )
+    git(layout.worktree, "add", "base.core")
+    git(layout.worktree, "commit", "-qm", "add replacement target")
+    env = ChangeEnvironment(EntryEnvironment(layout.control))
+    proposal = create_proposal(
+        env,
+        layout.record.id,
+        {
+            "kind": "retarget",
+            "goal_key": SIM_KEY,
+            "after": {"family": "sim", "target": "base"},
+            "rationale": "validate replacement target",
+        },
+        session_key="test-session",
+    )
+    approve(layout, env, proposal.proposal.id)
+    current = _publish_current_base_simulation(layout)
+    monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
+    endpoint, _provider = _goal_reviewer_endpoint(layout, monkeypatch)
+    assert endpoint._run().exit_code == 0
+    _assert_retargeted_simulation_package(layout, old_transaction, current)
+
+
+def _assert_retargeted_simulation_package(layout, old_transaction, current):
+    from booley.goals.paths import record_paths
+    from tests.goals.test_finish import request
+
+    logs = record_paths(layout.control, layout.record.id).logs_dir
+    ledger = {path: path.read_bytes() for path in logs.rglob("*") if path.is_file()}
+    result = finish_goal(request(layout, explain_html=True), environment(layout))
+    facts = json.loads(Path(result["package"]).read_bytes())
+    transactions = {row["transaction_id"]: row for row in facts["evidence_transactions"]}
+    assert transactions[old_transaction.transaction_id]["manifest"] is None
+    import hashlib
+
+    from booley.goals.review_package import canonical_json
+    from booley.review.goal_package import render_goal_briefing
+    from booley.review.goal_presentation_v1 import render_goal_html
+
+    old_path = logs / "acceptance/transactions" / (old_transaction.transaction_id + ".json")
+    assert (
+        transactions[old_transaction.transaction_id]["manifest_sha256"]
+        == hashlib.sha256(canonical_json(json.loads(ledger[old_path]))).hexdigest()
+    )
+    assert transactions[current.transaction_id]["manifest"] is not None
+    assert "prepared.vmem" not in Path(result["package"]).read_text()
+    package = GoalCompletionPackage.from_json(facts)
+    assert package.to_json() == facts
+    for rendered in (
+        Path(result["html"]).read_text(),
+        render_goal_briefing(package),
+        render_goal_html(package),
+        Path(result["summary"]).read_text(),
+    ):
+        assert "prepared.vmem" not in rendered
+    assert all(path.read_bytes() == content for path, content in ledger.items())

@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import tomllib
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, cast
@@ -13,7 +12,6 @@ from typing import Any, cast
 from booley.criteria.evidence_ledger import validated_evidence_records
 from booley.criteria.state import DevelopmentState
 from booley.flows.sim.campaign.codec import MANIFEST_MAX_BYTES, decode_simulation_campaign_manifest
-from booley.fusesoc.fusesoc_registry import core_files_root, read_core
 from booley.goals.derivation import selected_observations
 from booley.goals.input_view import GeneratedBuildInput, is_always_committed_input
 from booley.goals.lifecycle import LifecycleError
@@ -21,10 +19,9 @@ from booley.goals.model import GoalRecord
 from booley.goals.paths import record_paths
 from booley.goals.recorder import GOAL_SCOPE
 from booley.goals.review_package import original_observations
-from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.runtime.regular_file import open_regular_nofollow
 from booley.targets.catalog import TargetCatalog
-from booley.targets.declared_inputs import core_program_paths, project_config_program_paths
+from booley.targets.declared_inputs import committed_only_inputs
 
 
 def generated_inputs(
@@ -141,27 +138,5 @@ def _disclosed_inputs(
 
 
 def _committed_only_inputs(root: Path, catalog: TargetCatalog, target: str) -> frozenset[Path]:
-    """Runtime HDL types and declared planner programs never acquire a generated exemption."""
-    handle = catalog.select(target)
-    paths = {
-        (root / item.path).resolve()
-        for item in catalog.inspect(handle).inputs
-        if item.file_type.startswith(("verilogSource", "systemVerilogSource", "vhdlSource"))
-    }
-    for core in catalog.core_closure((handle,)) or ():
-        paths.update(
-            core_program_paths(
-                read_core(core),
-                core_file=core,
-                project_root=root,
-                files_root=core_files_root(core, root),
-            )
-        )
-    config = resolve_checkout_project_dir(root) / "booley.toml"
-    if config.is_file():
-        paths.update(
-            project_config_program_paths(
-                tomllib.loads(config.read_text(encoding="utf-8")), project_root=root
-            )
-        )
-    return frozenset(paths)
+    """Compatibility adapter retaining selected producer membership."""
+    return committed_only_inputs(root, catalog, target)

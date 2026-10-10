@@ -386,3 +386,54 @@ def test_recovery_refuses_substituted_immutable_publication_proof(layout, tamper
     with pytest.raises(LifecycleError, match=r"(substituted|differs)"):
         finish_goal(call, environment(complete))
     assert git(complete.worktree, "rev-parse", "HEAD") == before
+
+
+def test_presentation_epochs_keep_tracked_history_bound_and_mandatory_proofs(layout):
+    from booley.goals.generated_artifacts import ArtifactEpoch, presentation_exclusions
+
+    root = layout.worktree.resolve()
+    names = ["removed.hex", "obsolete.hex", "bound.hex", "snapshot.toml", "alias.hex"]
+    (layout.main / ".git/info/exclude").write_text("/.booley_project\n*.hex\n*.toml\n")
+    paths = {name: root / name for name in names}
+    before = ArtifactEpoch(
+        tuple((name, path) for name, path in paths.items()),
+        frozenset(paths.values()),
+        frozenset(),
+        frozenset({paths["removed.hex"]}),
+        frozenset({paths["bound.hex"]}),
+    )
+    after = ArtifactEpoch(
+        (("literal/obsolete.hex", paths["obsolete.hex"]), ("alias.hex", paths["alias.hex"])),
+        frozenset({paths["obsolete.hex"], paths["alias.hex"]}),
+        frozenset(),
+        frozenset(),
+        frozenset(),
+    )
+    labels, omitted = presentation_exclusions(
+        root, (before, after), frozenset({paths["snapshot.toml"]})
+    )
+    assert labels == (
+        frozenset({"obsolete.hex", "alias.hex"}),
+        frozenset({"literal/obsolete.hex", "alias.hex"}),
+    )
+    assert "removed.hex" not in omitted and "bound.hex" not in omitted
+    assert "snapshot.toml" not in omitted
+
+
+@pytest.mark.parametrize("failure", [OSError("git unavailable"), ValueError("bad catalog")])
+def test_presentation_classification_failure_is_lifecycle_error_before_freeze(
+    layout, monkeypatch, failure
+):
+    from booley.goals import finish
+    from tests.goals.test_generated_inputs import _prepare_target_less_generated_record
+
+    _prepare_target_less_generated_record(layout, monkeypatch)
+
+    def unavailable(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(finish, "artifact_epoch", unavailable)
+    with pytest.raises(LifecycleError, match="completion inputs cannot be resolved"):
+        finish_goal(request(layout), environment(layout))
+    assert GoalStore(layout.control).load(layout.record.id).state == GoalState.ACTIVE
+    assert not list(record_paths(layout.control, layout.record.id).root.rglob("package.json"))

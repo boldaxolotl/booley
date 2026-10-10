@@ -121,3 +121,38 @@ def test_workload_fingerprint_tracks_pre_sim_program_not_its_arguments(tmp_path)
     workload = compute_source_fingerprint(tmp_path, target="sim")["workload"]
 
     assert workload["files"] == ["hooks/build.py", "rtl/dut.sv"]
+
+
+# Captured from unchanged main 399e40a29 before the Goal policy implementation.
+_GOLDEN_1337 = '{"selected":{"algorithm":"sha256","campaign":{"digest":"3c0a30d894f8bbd131fe56f8e988ca1b9ec88c0e55f5c5f8d744c9117fe7ef98","files":["design.core"]},"rtl":{"digest":"23a11f8393229e2945923aab32a010401bd5c5c4a5d9b6b40884e2ec6d8d5036","files":["data.hex","dut.v"]},"rtl_dirs":["."],"target":"top","tb":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","files":[]},"tb_dirs":[],"work_dir":"<ROOT>","workload":{"digest":"23a11f8393229e2945923aab32a010401bd5c5c4a5d9b6b40884e2ec6d8d5036","files":["data.hex","dut.v"]}},"selected_goal":{"algorithm":"sha256","campaign":{"digest":"3c0a30d894f8bbd131fe56f8e988ca1b9ec88c0e55f5c5f8d744c9117fe7ef98","files":["design.core"]},"rtl":{"digest":"23a11f8393229e2945923aab32a010401bd5c5c4a5d9b6b40884e2ec6d8d5036","files":["data.hex","dut.v"]},"rtl_dirs":["."],"target":"top","target_surface":{"digest":"5e63da6bb2ad52090b08e0a7c2687edec0a1fbb880aa39e8eb6e08c15c1d349a","files":["design.core","data.hex"]},"tb":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","files":[]},"tb_dirs":[],"work_dir":"<ROOT>","workload":{"digest":"23a11f8393229e2945923aab32a010401bd5c5c4a5d9b6b40884e2ec6d8d5036","files":["data.hex","dut.v"]}},"selected_protection":["dut.v"],"shared":{"algorithm":"sha256","campaign":{"digest":"3c0a30d894f8bbd131fe56f8e988ca1b9ec88c0e55f5c5f8d744c9117fe7ef98","files":["design.core"]},"rtl":{"digest":"23a11f8393229e2945923aab32a010401bd5c5c4a5d9b6b40884e2ec6d8d5036","files":["data.hex","dut.v"]},"rtl_dirs":["."],"target":null,"tb":{"digest":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","files":[]},"tb_dirs":[],"work_dir":"<ROOT>","workload":{"digest":"23a11f8393229e2945923aab32a010401bd5c5c4a5d9b6b40884e2ec6d8d5036","files":["data.hex","dut.v"]}},"surface":{"digest":"a8da294042202b56c6f9e09c28b031909b3709a536e74ea74bb08fb87a53b4dd","files":["design.core","data.hex"]}}'
+
+
+def test_shared_and_selected_fingerprints_match_prechange_golden(tmp_path):
+    import json
+
+    from booley.goals.freshness import DEFAULT_RESOLVERS
+    from booley.goals.target_surface import target_surface_fingerprint
+    from booley.mcp.goal_generated_inputs import _committed_only_inputs
+    from booley.targets.catalog import TargetCatalog
+
+    (tmp_path / ".booley_project").mkdir()
+    (tmp_path / ".booley_project/booley.toml").write_bytes(b"")
+    (tmp_path / "design.core").write_bytes(
+        b"CAPI=2:\nname: ::design:0\nfilesets:\n  rtl: {files: [dut.v, {data.hex: {file_type: user}}], file_type: verilogSource}\ntargets:\n  top: {filesets: [rtl], toplevel: dut}\n"
+    )
+    (tmp_path / "dut.v").write_bytes(b"module dut; endmodule\n")
+    (tmp_path / "data.hex").write_bytes(b"0011\n")
+    rows = {}
+    for label, target in (("shared", None), ("selected", "top")):
+        value = compute_source_fingerprint(tmp_path, target=target)
+        value["work_dir"] = "<ROOT>"
+        rows[label] = value
+    rows["selected_goal"] = DEFAULT_RESOLVERS.fingerprint(tmp_path, target="top")
+    rows["selected_goal"]["work_dir"] = "<ROOT>"
+    rows["surface"] = target_surface_fingerprint(tmp_path, None)
+    rows["selected_protection"] = sorted(
+        str(path.relative_to(tmp_path))
+        for path in _committed_only_inputs(tmp_path, TargetCatalog.build(tmp_path), "top")
+    )
+    assert rows == json.loads(_GOLDEN_1337)
+    assert json.dumps(rows, sort_keys=True, separators=(",", ":")) == _GOLDEN_1337

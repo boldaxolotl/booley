@@ -1,5 +1,6 @@
 """Goal completion composes runtime-resolved semantic Target input views."""
 
+import copy
 from pathlib import Path
 from typing import Any
 
@@ -58,3 +59,18 @@ def resolved_surfaces(root: Path) -> dict[str, Any]:
             "tool_options": dict(inspection.tool_options),
         }
     return surfaces
+
+
+def project_target_changes(
+    changes: list[dict[str, Any]], before_excluded: frozenset[str], after_excluded: frozenset[str]
+) -> list[dict[str, Any]]:
+    """Omit unproved artifact inventories while preserving authored semantic deltas."""
+    result = copy.deepcopy(changes)
+    for row in result:
+        for side, excluded in (("before", before_excluded), ("after", after_excluded)):
+            surface = row.get(side)
+            if isinstance(surface, dict) and isinstance(surface.get("filesets"), list):
+                surface["filesets"] = [
+                    item for item in surface["filesets"] if item["path"] not in excluded
+                ]
+    return result
