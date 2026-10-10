@@ -300,6 +300,8 @@ def test_nonstealth_finish_ignores_foreign_repository_selectors(layout, tmp_path
     layout = publication_layout(layout)
     managed = managed_attributes(layout.worktree).read_bytes()
     foreign = repository(tmp_path / "foreign")
+    git(foreign, "config", "maintenance.auto", "false")
+    git(foreign, "config", "gc.auto", "0")
     (foreign / "README").write_bytes(b"foreign\n")
     git(foreign, "add", "README")
     git(foreign, "commit", "-qm", "foreign")
@@ -425,4 +427,5 @@ def test_init_and_pinned_history_use_shared_inherited_environment(tmp_path, monk
     monkeypatch.setenv("BOOLEY_TEST_PRESERVED", "yes")
     assert inherited_git_environment()["BOOLEY_TEST_PRESERVED"] == "yes"
     assert not REPOSITORY_SELECTION_VARIABLES.intersection(_read_only_git_env())
-    assert raw_git(root, "rev-parse", "--show-toplevel").strip() == os.fsencode(root)
+    observed = Path(os.fsdecode(raw_git(root, "rev-parse", "--show-toplevel").strip()))
+    assert observed.samefile(root)
