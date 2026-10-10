@@ -194,6 +194,16 @@ _FAILED_ACTION_DETAILS = {
 }
 
 _OBSERVATION_RESULT_DETAILS = (
+    (LineEndingObservationCode.LEAKED_ROOT_POLICY, "untracked legacy .gitattributes"),
+    (
+        LineEndingObservationCode.LOCAL_POLICY_CONFLICT,
+        "repository-local line-ending policy conflict",
+    ),
+    (
+        LineEndingObservationCode.LOCAL_POLICY_MISSING,
+        "repository-local line-ending policy missing",
+    ),
+    (LineEndingObservationCode.CANDIDATE_UNSAFE, "candidate unsafe"),
     (LineEndingObservationCode.CRLF_MISMATCH, "CRLF working tree"),
     (LineEndingObservationCode.AUTOCRLF_EFFECTIVE_TRUE, "autocrlf policy unsafe"),
     (LineEndingObservationCode.AUTOCRLF_NOT_PINNED, "autocrlf policy unsafe"),
@@ -269,49 +279,64 @@ def _unreadable_line_ending_detail(
     return None
 
 
+def _unsafe_line_ending_observation_detail(report: RepositoryLineEndingReport) -> str | None:
+    observations = {
+        observation.code: observation
+        for observation in report.observations
+        if observation.code is not LineEndingObservationCode.UPSTREAM_POLICY
+    }
+    for code, detail in _OBSERVATION_RESULT_DETAILS:
+        if code in observations:
+            if code is LineEndingObservationCode.CANDIDATE_UNSAFE:
+                return observations[code].detail or detail
+            return detail
+    if report.status is LineEndingStatus.UNSAFE and observations:
+        observation = next(iter(observations.values()))
+        return observation.detail or observation.code.value
+    return None
+
+
 def _line_ending_result_detail(report: RepositoryLineEndingReport) -> str:
     codes = {observation.code for observation in report.observations}
     unreadable = _unreadable_line_ending_detail(report, codes)
+    if unreadable is not None:
+        return unreadable
     failed = next(
         (action for action in report.actions if action.state is LineEndingActionState.FAILED),
         None,
     )
+    if failed:
+        return _FAILED_ACTION_DETAILS[failed.kind]
     refused = next(
         (action for action in report.actions if action.state is LineEndingActionState.REFUSED),
         None,
     )
-    if unreadable is not None:
-        detail = unreadable
-    elif failed:
-        detail = _FAILED_ACTION_DETAILS[failed.kind]
-    elif refused and refused.kind is LineEndingActionKind.NORMALIZE_FILES:
-        detail = refused.detail or "candidate unsafe"
-        detail = "dirty tree" if detail.startswith("working tree has") else detail
-    elif report.actions:
-        observation_detail = next(
-            (detail for code, detail in _OBSERVATION_RESULT_DETAILS if code in codes),
-            None,
+    if refused:
+        detail = refused.detail or (
+            "candidate unsafe"
+            if refused.kind is LineEndingActionKind.NORMALIZE_FILES
+            else f"{refused.kind.value} refused"
         )
-        completed = {
-            action.kind
-            for action in report.actions
-            if action.state is LineEndingActionState.COMPLETED
-        }
-        completed_detail = next(
-            (detail for kind, detail in _COMPLETED_ACTION_DETAILS if kind in completed),
-            None,
-        )
-        detail = (
-            observation_detail
-            or completed_detail
-            or "+".join(action.kind.value for action in report.actions)
-        )
-    else:
-        detail = next(
-            (detail for code, detail in _OBSERVATION_RESULT_DETAILS if code in codes),
-            "no CRLF",
-        )
-    return detail
+        if refused.kind is LineEndingActionKind.NORMALIZE_FILES and detail.startswith(
+            "working tree has"
+        ):
+            detail = "dirty tree"
+        return detail
+    observation_detail = _unsafe_line_ending_observation_detail(report)
+    if observation_detail:
+        return observation_detail
+    if report.status is LineEndingStatus.UNSAFE:
+        return "unsafe line-ending state"
+    completed = {
+        action.kind for action in report.actions if action.state is LineEndingActionState.COMPLETED
+    }
+    completed_detail = next(
+        (detail for kind, detail in _COMPLETED_ACTION_DETAILS if kind in completed),
+        None,
+    )
+    return (
+        completed_detail or "+".join(action.kind.value for action in report.actions) or "no CRLF"
+    )
 
 
 def _step_line_endings(
