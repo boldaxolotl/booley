@@ -32,6 +32,9 @@ from booley.flows.sim.coverage_campaign_store import (
     read_coverage_summary,
 )
 from tests.flows.sim.test_coverage_campaign import _valid_document
+from tests.runtime.test_sandbox_layout import project_alias
+
+__all__ = ["project_alias"]
 
 TARGET = DurableTargetIdentity("acme:demo:counter:1.0#sim_counter")
 
@@ -634,3 +637,27 @@ def test_large_campaign_keeps_manifest_and_summary_work_constant(tmp_path: Path)
     assert summary.point_store is not None
     assert summary.point_store.point_count == 40_000
     assert large.points.stat().st_size < summary.point_store.uncompressed_bytes
+
+
+def test_image_alias_store_readers_and_suffix_links(project_alias):
+    from booley.flows.sim.coverage_campaign_store import load_coverage_campaign_bytes
+
+    alias, target = project_alias
+    published = publish_coverage_campaign(target / "campaign", _campaign())
+    path = alias / "campaign/coverage.json"
+    assert (
+        load_coverage_campaign(path).campaign
+        == load_coverage_campaign(published.campaign).campaign
+    )
+    assert read_coverage_summary(path, TARGET) == read_coverage_summary(published.campaign, TARGET)
+    assert (
+        load_coverage_campaign_bytes(path, published.campaign.read_bytes()).campaign == _campaign()
+    )
+    (target / "linked").symlink_to(target / "campaign", target_is_directory=True)
+    for read in (
+        load_coverage_campaign,
+        lambda p: read_coverage_summary(p, TARGET),
+        lambda p: load_coverage_campaign_bytes(p, published.campaign.read_bytes()),
+    ):
+        with pytest.raises((ValueError, OSError), match=r"link|regular|unsafe"):
+            read(alias / "linked/coverage.json")

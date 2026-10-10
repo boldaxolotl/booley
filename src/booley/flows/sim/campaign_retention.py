@@ -26,6 +26,7 @@ from booley.core.boundary import (
 )
 from booley.flows.progress_lifecycle import validate_progress_shape
 from booley.runtime.file_lock import LockContentionError
+from booley.runtime.sandbox_layout import canonical_project_alias_path
 
 from .campaign import (
     ProjectionTrust,
@@ -126,10 +127,17 @@ def _safe_tree(path: Path) -> None:
                 raise CampaignRetentionError(f"Unsafe artifact: {child}")
 
 
+def _canonical_retention_path(path: Path) -> Path:
+    try:
+        return canonical_project_alias_path(Path(path).absolute())
+    except ValueError as exc:
+        raise CampaignRetentionError(str(exc)) from exc
+
+
 def _invocation(reports_root: Path, invocation: int) -> Path:
     if type(invocation) is not int or invocation < 1:
         raise CampaignRetentionError("Select one exact positive invocation number")
-    root = Path(reports_root).absolute() / "sim" / str(invocation)
+    root = _canonical_retention_path(reports_root) / "sim" / str(invocation)
     _safe_tree(root)
     return root
 
@@ -269,6 +277,8 @@ def prune_invocation(
     include_dependents: bool = False,
 ) -> None:
     """Remove one invocation, optionally including authenticated resume dependents."""
+    if project_data is not None:
+        project_data = _canonical_retention_path(project_data)
     root = _invocation(reports_root, invocation)
     with _retention_invocation_lock(root):
         if _completed_tombstone(root):

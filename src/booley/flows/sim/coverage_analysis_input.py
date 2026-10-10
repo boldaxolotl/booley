@@ -33,6 +33,7 @@ from booley.flows.sim.coverage_reference import (
     authenticate_coverage_campaign_owner,
     resolve_coverage_campaign_reference,
 )
+from booley.runtime.sandbox_layout import canonical_project_alias_path
 
 if TYPE_CHECKING:
     from booley.flows.sim.campaign import CampaignWorkItemEvidence
@@ -52,8 +53,8 @@ class CoverageSourceClosure:
 
 def read_coverage_campaign(path: Path) -> LoadedCoverageCampaign:
     """Require an exact canonical path and a matching completed Target projection."""
-    path = path.absolute()
     try:
+        path = canonical_project_alias_path(path.absolute())
         _safe_path(path)
         if path.name != "coverage.json" or path.parent.parent.name != "targets":
             raise CoverageAnalysisError("Supply the exact canonical Target coverage.json path")

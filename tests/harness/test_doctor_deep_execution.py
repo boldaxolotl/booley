@@ -14,9 +14,101 @@ import booley
 from booley.harness import doctor
 from booley.harness import doctor_deep as deep
 from booley.runtime import runtime_context, sandbox_artifact
+from tests.flows.sim.test_verilator_build_reuse_campaign import flow_project
 from tests.harness.test_doctor import _write_project
 
+__all__ = ["flow_project"]
+
 IMAGE = "sha256:" + "a" * 64
+
+
+def _alias_doctor_project(flow_project, tmp_path, monkeypatch, host):
+    import shutil
+    import tomllib
+
+    from booley.harness.setup.readiness import ProjectAudit
+    from tests.conftest import require_symlinks, symlink_or_skip
+    from tests.harness.test_doctor import _git_init
+
+    require_symlinks(tmp_path)
+    data = tmp_path / "external-project-data"
+    shutil.copytree(flow_project / ".booley_project", data)
+    alias = tmp_path / "booley-project"
+    symlink_or_skip(alias, data, target_is_directory=True)
+    config = data / "booley.toml"
+    config.write_text(
+        "[flows.sim]\nenabled=true\n[flows.lint]\nenabled=false\n"
+        "[flows.synth]\nenabled=false\n[flows.fpga]\nenabled=false\n"
+    )
+    core = flow_project / "demo.core"
+    core.write_text(
+        core.read_text().replace(
+            "      tool: verilator", "      tool: verilator\n      booley: {doctor: [sim]}"
+        )
+    )
+    bad = data / "selftest/sim/bad-overlay/src/acme_lib_demo_1/rtl"
+    bad.mkdir(parents=True)
+    (bad / "tb.sv").write_text("module tb; // BAD\nendmodule\n")
+    shutil.copytree(data, flow_project / ".booley_project", dirs_exist_ok=True)
+    _git_init(flow_project)
+    _git_init(data)
+    audit = ProjectAudit(flow_project, data, tomllib.loads(config.read_text()), {}, "sim")
+    monkeypatch.setattr(doctor.dc, "PROJECT_DIR_TARGET", str(alias))
+    from tests.runtime.test_sandbox_layout import configure_project_alias
+
+    configure_project_alias(monkeypatch, alias, data)
+    monkeypatch.setattr(doctor._DoctorFlowRuntime, "inside", property(lambda _self: not host))
+    monkeypatch.setattr(doctor._DoctorFlowRuntime, "command", lambda _self, inner, **_kw: inner)
+    return audit, data, alias
+
+
+@pytest.mark.parametrize("host", [True, False])
+def test_project_alias_doctor_executes_real_simulation(flow_project, tmp_path, monkeypatch, host):
+    from pathlib import Path
+
+    from booley.flows.sim.flow import SimulateFlow
+
+    audit, data, alias = _alias_doctor_project(flow_project, tmp_path, monkeypatch, host)
+    real_run = subprocess.run
+    executions = []
+
+    def run(argv, **kwargs):
+        if "booley.flows.sim" not in argv:
+            return real_run(argv, **kwargs)
+        values = list(argv[argv.index("booley.flows.sim") + 1 :])
+        emitted = Path(values[values.index("--report-dir") + 1])
+        assert emitted.is_relative_to(alias if host else data)
+        values[values.index("--work-dir") + 1] = str(flow_project)
+        with monkeypatch.context() as scoped:
+            for name, value in kwargs.get("env", {}).items():
+                scoped.setenv(name, value)
+            flow = SimulateFlow()
+            outcome = flow.execute_cli(values).outcome
+        executions.append(outcome)
+        return subprocess.CompletedProcess(argv, outcome.exit_code, outcome.report_text, "")
+
+    monkeypatch.setattr(doctor.subprocess, "run", run)
+    reporter, tracker = doctor._Reporter.create(), deep.DeepCheckTracker()
+    doctor._run_deep_checks(
+        audit,
+        doctor._DoctorFlowRuntime(flow_project, "docker"),
+        False,
+        reporter.pass_,
+        reporter.warn_,
+        reporter.skip_,
+        reporter.fail_,
+        completeness=tracker,
+    )
+    assert len(executions) == 3
+    for outcome in executions:
+        if outcome.exit_code == 2:
+            assert "Invocation lock paths must not contain symlinks" in outcome.report_text
+    assert [item.exit_code for item in executions] == [0, 0, 1]
+    assert tracker.missing == ()
+    assert reporter.result(0).clean
+    reports = data / doctor._DOCTOR_TMP / "flow-reports"
+    assert len(list(reports.glob("sim/*/targets/sim/campaign/manifest.json"))) == 3
+    assert len(list(reports.glob("sim/*/progress.json"))) == 3
 
 
 def _project(root):

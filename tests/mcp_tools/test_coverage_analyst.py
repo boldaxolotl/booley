@@ -7,6 +7,10 @@ from pathlib import Path
 import pytest
 from claude_agent_sdk import ClaudeSDKError
 
+from tests.runtime.test_sandbox_layout import project_alias
+
+__all__ = ["project_alias"]
+
 try:
     from claude_agent_sdk._errors import ResultError
 except ModuleNotFoundError:
@@ -894,3 +898,33 @@ def test_in_memory_composition_stages_v2_evidence_for_the_scoped_tool(monkeypatc
 
     assert report["$schema"] == "booley.coverage-analysis/v2"
     assert staged_paths and not staged_paths[0].exists()
+
+
+def test_image_alias_analyst_binds_canonical_campaign(project_alias, monkeypatch):
+    alias, root = project_alias
+    path = persist_campaign(root)
+    specialist = CoverageAnalystSpecialist(model=Model())
+    specialist._args = specialist.parse_args(["--work-dir", str(root), "--campaign", str(path)])
+    seen = []
+    sentinel = object()
+    monkeypatch.setattr(
+        specialist,
+        "_analyze_bound",
+        lambda _campaign, _sources, _instruction, bound, **_kwargs: seen.append(bound) or sentinel,
+    )
+    report, loaded, bound = specialist._analyze_path(alias / path.relative_to(root), "explain")
+    assert report is sentinel
+    assert bound == path and seen == [path]
+    assert loaded.campaign.target.selector == "sim_counter"
+    (root / "linked").symlink_to(root, target_is_directory=True)
+    with pytest.raises(ValueError, match=r"link|traversal"):
+        specialist._analyze_path(alias / "linked" / path.relative_to(root), "explain")
+
+
+def test_image_alias_analyst_traversal_uses_domain_error(project_alias) -> None:
+    from booley.flows.sim.coverage_analysis_input import CoverageAnalysisError
+
+    alias, _data = project_alias
+    analyst = CoverageAnalystSpecialist()
+    with pytest.raises(CoverageAnalysisError, match="traversal"):
+        analyst.coverage_analyst(alias / "child/../coverage.json")

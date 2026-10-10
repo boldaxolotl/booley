@@ -45,6 +45,9 @@ from booley.flows.sim.campaign.store import CampaignStore
 from booley.flows.sim.execution.contract import SimulationTargetOutcome, SimulationTestOutcome
 from booley.flows.sim.flow import SimulateFlow, _unfinished_coverage_work
 from booley.targets.catalog import TargetCatalog
+from tests.runtime.test_sandbox_layout import project_alias
+
+__all__ = ["project_alias"]
 
 
 def _sha(value: object) -> str:
@@ -1935,3 +1938,32 @@ def test_v3_no_waivers_requires_literal_true(flag):
     document["workload"]["no_waivers"] = flag
     with pytest.raises(SimulationCampaignIntegrityError, match="no_waivers is invalid"):
         finalize_manifest(document)
+
+
+def test_image_alias_resume_returns_canonical_manifest(project_alias, monkeypatch):
+    alias, root = project_alias
+    manifest = decode_simulation_campaign_manifest(canonical_json_bytes(_manifest()))
+    store = CampaignStore(root / "sim/1/targets/sim/campaign")
+    store.publish_manifest(manifest)
+    target = manifest.document["target"]
+    monkeypatch.setattr(
+        "booley.flows.sim.campaign.resume.git_full_sha", lambda *_args: target["revision"]
+    )
+    monkeypatch.setattr(
+        TargetCatalog,
+        "build",
+        lambda selected: SimpleNamespace(
+            select=lambda *_args, **_kwargs: SimpleNamespace(
+                identity=f"{target['vlnv']}#{target['name']}", project_root=selected
+            )
+        ),
+    )
+    validated = validate_resume_manifest(
+        alias / store.manifest_path.relative_to(root), project_root=root
+    )
+    assert validated.candidate.path == store.manifest_path
+    (root / "linked").symlink_to(root, target_is_directory=True)
+    with pytest.raises(SimulationCampaignIntegrityError, match=r"link|regular"):
+        validate_resume_manifest(
+            alias / "linked" / store.manifest_path.relative_to(root), project_root=root
+        )

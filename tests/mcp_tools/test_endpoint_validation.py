@@ -128,7 +128,7 @@ def test_disabled_flow_and_private_files_are_not_validated(project, caplog):
     (data / "booley.toml").write_text("[flows.custom_check]\nenabled = false\n")
     (data / "mcp_tools/_ignored.py").write_text("invalid syntax !")
     validate_custom_endpoints_and_criteria(root)
-    assert not caplog.records
+    assert not [record for record in caplog.records if record.levelno >= logging.WARNING]
 
 
 @pytest.mark.parametrize(

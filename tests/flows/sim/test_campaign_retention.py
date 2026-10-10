@@ -17,6 +17,9 @@ from booley.flows.sim.coverage_progress import CoverageProgress
 from booley.flows.sim.coverage_transaction import run_coverage_target
 from tests.flows.sim.test_coverage_invocation import project
 from tests.flows.sim.test_coverage_transaction import NativeExecution
+from tests.runtime.test_sandbox_layout import project_alias
+
+__all__ = ["project_alias"]
 
 
 def campaign(tmp_path):
@@ -916,3 +919,45 @@ def test_interrupted_collection_owns_only_reserved_declaration_evidence(tmp_path
     assert (root / "declarations/inventory.json").absolute() in owned
     assert (root / "build-evidence/cells.tree.json").absolute() in owned
     assert (root / "build-evidence/unrelated.json").absolute() not in owned
+
+
+def test_image_alias_prunes_only_authenticated_invocation(tmp_path, monkeypatch):
+    from booley.flows.sim.campaign_retention import CampaignRetentionError, prune_invocation
+    from tests.conftest import require_symlinks, symlink_or_skip
+    from tests.runtime.test_sandbox_layout import configure_project_alias
+
+    require_symlinks(tmp_path)
+    campaign(tmp_path)
+    alias = tmp_path / "booley-project"
+    symlink_or_skip(alias, tmp_path / "reports", target_is_directory=True)
+    configure_project_alias(monkeypatch, alias, tmp_path / "reports")
+    neighbor = tmp_path / "reports/sim/2"
+    neighbor.mkdir()
+    (neighbor / "keep").write_text("unrelated")
+    (tmp_path / "reports/linked").symlink_to(tmp_path / "reports", target_is_directory=True)
+    with pytest.raises(CampaignRetentionError, match=r"link|symlink"):
+        prune_invocation(alias / "linked", 1)
+    assert (tmp_path / "reports/sim/1").exists()
+    prune_invocation(alias, 1)
+    assert not (tmp_path / "reports/sim/1").exists()
+    assert (neighbor / "keep").read_text() == "unrelated"
+
+
+def test_prune_canonicalizes_explicit_project_data(project_alias, monkeypatch) -> None:
+    from contextlib import nullcontext
+
+    from booley.flows.sim import campaign_retention as retention
+
+    alias, data = project_alias
+    root = data / "reports/sim/1"
+    root.mkdir(parents=True)
+    received = []
+    monkeypatch.setattr(retention, "_retention_invocation_lock", lambda *_: nullcontext())
+    monkeypatch.setattr(retention, "_completed_tombstone", lambda *_: False)
+    monkeypatch.setattr(retention, "_read_prune_batch", lambda *_: None)
+    monkeypatch.setattr(retention, "_dependent_invocations", lambda *_: ())
+    monkeypatch.setattr(
+        retention, "_prune_invocation", lambda root, *, project_data: received.append(project_data)
+    )
+    retention.prune_invocation(data / "reports", 1, project_data=alias)
+    assert received == [data]

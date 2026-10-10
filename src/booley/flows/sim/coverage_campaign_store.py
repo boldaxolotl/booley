@@ -23,6 +23,7 @@ from booley.core.boundary import (
     require_str,
 )
 from booley.runtime.regular_file import open_regular_nofollow
+from booley.runtime.sandbox_layout import canonical_project_alias_path
 
 from .campaign_reports import is_report_link
 from .coverage_campaign import (
@@ -635,10 +636,18 @@ def _read_document(path: Path) -> tuple[dict[str, object], str]:
         os.close(descriptor)
 
 
+def _canonical_campaign_path(path: Path) -> Path:
+    try:
+        return canonical_project_alias_path(path.absolute())
+    except ValueError as exc:
+        raise CoverageCampaignStoreError("COV_PATH_UNSAFE", str(exc)) from exc
+
+
 def read_coverage_summary(
     path: Path, expected_target: DurableTargetIdentity
 ) -> CoverageCampaignSummary:
     """Read V3/V4 manifest facts without opening Coverage Point storage."""
+    path = _canonical_campaign_path(path)
     try:
         document, digest = _read_document(path)
         schema = document.get("$schema")
@@ -803,6 +812,7 @@ def load_coverage_campaign(
     path: Path, expected_target: DurableTargetIdentity | None = None
 ) -> LoadedCoverageCampaign:
     """Deep-load one V3/V4 Campaign and accept no point evidence before validation."""
+    path = _canonical_campaign_path(path)
     try:
         document, digest = _read_document(path)
         schema = document.get("$schema")
@@ -831,6 +841,7 @@ def load_coverage_campaign_bytes(
     expected_target: DurableTargetIdentity | None = None,
 ) -> LoadedCoverageCampaign:
     """Deep-load a V3/V4 Campaign from exact manifest bytes already authenticated."""
+    path = _canonical_campaign_path(path)
     try:
         if not raw or len(raw) > MAX_MANIFEST_BYTES:
             raise CoverageCampaignStoreError(

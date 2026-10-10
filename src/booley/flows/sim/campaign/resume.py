@@ -11,6 +11,7 @@ from typing import cast
 
 from booley.flows.baseline_worktree import git_full_sha
 from booley.runtime.regular_file import open_regular_nofollow
+from booley.runtime.sandbox_layout import canonical_project_alias_path
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
 
@@ -94,7 +95,10 @@ def validate_resume_manifest(
     revision_root: Callable[[Mapping[str, str]], Path] | None = None,
 ) -> ValidatedResumeManifest:
     """Decode one manifest exactly once and traverse only authenticated links."""
-    canonical = manifest_path.absolute()
+    try:
+        canonical = canonical_project_alias_path(manifest_path.absolute())
+    except ValueError as exc:
+        raise SimulationCampaignIntegrityError(str(exc)) from exc
     if canonical.name != "manifest.json" or canonical.parent.name != "campaign":
         raise SimulationCampaignIntegrityError(
             "--resume-from must name one exact campaign/manifest.json"

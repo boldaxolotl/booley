@@ -37,6 +37,9 @@ from tests.flows.sim.coverage_campaign_test_support import (
     corrupt_v3_campaign_with_duplicate_negative_point,
 )
 from tests.flows.sim.test_coverage_campaign import _valid_document
+from tests.runtime.test_sandbox_layout import project_alias
+
+__all__ = ["project_alias"]
 
 _SIMULATION_CAMPAIGN_ID = "12345678-1234-4234-9234-123456789abc"
 _SIMULATION_ATTEMPT_ID = "87654321-4321-4432-a234-cba987654321"
@@ -495,3 +498,20 @@ def test_resolver_rejects_attempt_identity_as_unrelated_path_substring(tmp_path:
 
     with pytest.raises(CoverageCampaignReferenceError, match="Attempt identity"):
         resolve_coverage_campaign_reference(path)
+
+
+def test_image_alias_public_and_persisted_references(project_alias):
+    alias, target = project_alias
+    origin = target / "sim/12/targets/sim_counter"
+    nested = _nested_campaign(origin)
+    reference = _reference(origin, nested)
+    public = origin / "coverage.json"
+    publish_coverage_campaign_reference(public, reference)
+    resolved = resolve_coverage_campaign_reference(alias / public.relative_to(target))
+    assert resolved.reference_path == public
+    assert resolved.campaign_path == nested
+    persisted = _persisted_reference(target, public, reference)
+    assert resolve_persisted_coverage_campaign_reference(alias, persisted) == resolved
+    (target / "linked").symlink_to(target, target_is_directory=True)
+    with pytest.raises((ValueError, OSError), match=r"link|regular"):
+        resolve_coverage_campaign_reference(alias / "linked" / public.relative_to(target))

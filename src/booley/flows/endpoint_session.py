@@ -23,6 +23,7 @@ from booley.runtime.exception_diagnostics import (
     exception_report_text,
     write_exception_diagnostic,
 )
+from booley.runtime.sandbox_layout import canonical_project_alias_path
 
 if TYPE_CHECKING:
     from booley.flows.endpoint_state import EndpointState
@@ -75,6 +76,27 @@ def _apply_default_endpoint_report_root(endpoint: EndpointState) -> EndpointOutc
     return None
 
 
+def _canonicalize_simulation_report_root(endpoint: EndpointState) -> EndpointOutcome | None:
+    """Normalize the image's authenticated Project alias before side effects."""
+    if endpoint.endpoint_kind != "flow" or endpoint.name != "sim":
+        return None
+    try:
+        endpoint.args.report_dir = canonical_project_alias_path(
+            Path(endpoint.args.report_dir).absolute()
+        )
+    except ValueError as exc:
+        result = EndpointOutcome(exit_code=EXIT_ERROR, report_text=str(exc))
+        endpoint._publish_console_report(result)
+        return result
+    return None
+
+
+def _prepare_endpoint_report_root(endpoint: EndpointState) -> EndpointOutcome | None:
+    """Select the default root and canonicalize Simulation report inputs."""
+    result = _apply_default_endpoint_report_root(endpoint)
+    return result if result is not None else _canonicalize_simulation_report_root(endpoint)
+
+
 def prepare_execution(
     endpoint: EndpointState,
 ) -> PreparedExecution | EndpointOutcome:
@@ -89,7 +111,7 @@ def prepare_execution(
         if endpoint.endpoint_kind in {"flow", "specialist"}:
             endpoint._report_criteria.project(early_outcome)
         return early_outcome
-    if (early_outcome := _apply_default_endpoint_report_root(endpoint)) is not None:
+    if (early_outcome := _prepare_endpoint_report_root(endpoint)) is not None:
         if endpoint.endpoint_kind in {"flow", "specialist"}:
             endpoint._report_criteria.project(early_outcome)
         return early_outcome

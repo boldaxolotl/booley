@@ -6,6 +6,43 @@ from pathlib import Path
 import pytest
 
 from booley.flows.sim import campaign_reports
+from tests.flows.sim.test_verilator_build_reuse_campaign import flow_project
+from tests.runtime.test_sandbox_layout import project_alias
+
+__all__ = ["flow_project", "project_alias"]
+
+
+@pytest.mark.parametrize("relative", [False, True])
+def test_project_alias_simulation_executes_campaign(flow_project, tmp_path, monkeypatch, relative):
+    from booley.flows.sim.flow import SimulateFlow
+    from booley.flows.sim.request import SimRequest
+    from booley.harness import doctor
+    from tests.conftest import require_symlinks, symlink_or_skip
+
+    require_symlinks(tmp_path)
+    data = tmp_path / "external-project-data"
+    data.mkdir()
+    alias = tmp_path / "booley-project"
+    symlink_or_skip(alias, data, target_is_directory=True)
+    monkeypatch.setattr(doctor.dc, "PROJECT_DIR_TARGET", str(alias))
+    from tests.runtime.test_sandbox_layout import configure_project_alias
+
+    configure_project_alias(monkeypatch, alias, data)
+    if relative:
+        monkeypatch.chdir(tmp_path)
+    result = SimulateFlow().execute(
+        SimRequest(
+            target="sim",
+            work_dir=flow_project,
+            report_dir=Path("booley-project/reports") if relative else alias / "reports",
+            test=("first",),
+            timeout_ms=30_000,
+        )
+    )
+    if result.exit_code:
+        assert "Invocation lock paths must not contain symlinks" in result.outcome.report_text
+    assert result.exit_code == 0, result.outcome.report_text
+    assert list((data / "reports").glob("sim/*/targets/sim/campaign/manifest.json"))
 
 
 def test_compatibility_projection_stays_incomplete_until_acceptance_commits(
@@ -1037,3 +1074,70 @@ def test_prior_firing_reauthentication_rejects_byte_identical_symlink_attempt(
     assert firing.path.read_bytes() == sidecar_bytes
     with pytest.raises(SimulationCampaignIntegrityError):
         SimulationCampaign.reauthenticate_pre_sim_firings((firing,))
+
+
+@pytest.mark.parametrize("defect", ["root", "descendant", "lock", "target_link"])
+def test_alias_keeps_user_report_links_strict(flow_project, project_alias, defect):
+    from booley.flows.sim.flow import SimulateFlow
+    from booley.flows.sim.request import SimRequest
+
+    alias, data = project_alias
+    reports = data / "reports"
+    reports.mkdir()
+    if defect == "root":
+        user = data / "user"
+        user.symlink_to(reports, target_is_directory=True)
+        report_dir = user
+    elif defect == "target_link":
+        (data / "linked").symlink_to(data, target_is_directory=True)
+        report_dir = alias / "linked/reports"
+    else:
+        (reports / "sim").mkdir()
+        if defect == "descendant":
+            (reports / "sim").rmdir()
+            (reports / "sim").symlink_to(data, target_is_directory=True)
+        else:
+            (reports / "sim/.invocation-1.lock").symlink_to(data / "outside")
+        report_dir = alias / "reports"
+    result = SimulateFlow().execute(
+        SimRequest(
+            target="sim",
+            work_dir=flow_project,
+            report_dir=report_dir,
+            test=("first",),
+            timeout_ms=30_000,
+        )
+    )
+    assert result.exit_code == 2
+    assert "Invocation lock paths must not contain symlinks" in result.outcome.report_text
+    assert not list(reports.rglob("manifest.json"))
+
+
+@pytest.mark.parametrize("selection", ["default", "dry_run", "elab"])
+def test_alias_normalization_precedes_simulation_preparation(
+    flow_project, project_alias, monkeypatch, selection
+):
+    from booley.flows.sim.flow import SimulateFlow
+    from booley.flows.sim.mode import SimulationMode
+    from booley.flows.sim.request import SimRequest
+
+    alias, data = project_alias
+    monkeypatch.setattr(
+        "booley.runtime.project_dir.resolve_checkout_project_dir", lambda _root: alias
+    )
+    flow = SimulateFlow()
+    result = flow.execute(
+        SimRequest(
+            target="sim",
+            work_dir=flow_project,
+            report_dir=None if selection == "default" else alias / "reports",
+            dry_run=selection == "dry_run",
+            mode=SimulationMode.ELAB_ONLY if selection == "elab" else None,
+            test=None if selection == "elab" else ("first",),
+            timeout_ms=30_000,
+        )
+    )
+    assert result.exit_code == 0, result.outcome.report_text
+    assert flow.context.args.report_dir == data / (
+        "flow-reports" if selection == "default" else "reports"
+    )
