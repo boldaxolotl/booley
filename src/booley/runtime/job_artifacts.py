@@ -6,6 +6,7 @@ import json
 import os
 import stat
 from collections import OrderedDict
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -39,6 +40,8 @@ class JobArtifactCache:
     64 GiB source bytes, not Python heap bytes. Exact progress beyond the scan
     bound keeps the released complete lookup. No history is repaired or deleted.
     Standalone callers define a fresh safety-check boundary with begin().
+    Their released complete progress fallback stays fresh without begin();
+    configured fallback results retain at most the endpoint capacity per refresh.
     """
 
     def __init__(self) -> None:
@@ -51,6 +54,7 @@ class JobArtifactCache:
         self._shared_directories: dict[Path, bool] = {}
         self._touched: set[ShardKey] = set()
         self._completed: set[ShardKey] | None = None
+        self._expected: set[ShardKey] = set()
         self._active: _Shard | None = None
         self._local_directories: tuple[Path, ...] = ()
         self.diagnostics: list[str] = []
@@ -69,6 +73,7 @@ class JobArtifactCache:
             self._fallbacks.clear()
             self._touched.clear()
             self._active = None
+            self._expected.clear()
         self._project, self._max_endpoints = project, max_endpoints
 
     def begin(self) -> None:
@@ -84,7 +89,15 @@ class JobArtifactCache:
         self._fallbacks.clear()
         self._shared_directories.clear()
         self._touched.clear()
+        self._expected.clear()
         self.diagnostics.clear()
+
+    def prepare_endpoints(self, endpoints: Iterable[ShardKey]) -> None:
+        """Protect the bounded current projection from eviction by newly admitted shards."""
+        expected = {(_absolute(root), endpoint) for root, endpoint in endpoints}
+        if len(expected) > self._max_endpoints:
+            raise ValueError("Job artifact projection exceeds endpoint capacity")
+        self._expected = expected
 
     def complete(self) -> None:
         """Commit the touch generation only after a successful snapshot projection."""
@@ -106,32 +119,38 @@ class JobArtifactCache:
             self._indexes[key] = self._index(root, endpoint)
             self._trim_shards()
         found = self._indexes[key].get((kind, run_id))
-        if (
-            found is None
-            and kind == "progress"
-            and (self._project is None or key in self._truncated)
-        ):
-            fallback_key = key, run_id
-            if fallback_key not in self._fallbacks:
-                self._active = self._shards.get(key)
-                roots = (root.parent / "flow-reports", root.parent / "mcp-tool-reports")
-                progress = read_progress_for_run(
-                    roots,
-                    endpoint,
-                    run_id,
-                    trusted_path_validator=self._validate if self._project is not None else None,
-                )
-                self._fallbacks[fallback_key] = (
-                    None if progress is None else (progress[1], progress[0])
-                )
-            found = self._fallbacks[fallback_key]
+        if found is None and kind == "progress":
+            if self._project is None:
+                return self._progress_fallback(root, endpoint, run_id)
+            if key in self._truncated:
+                fallback_key = key, run_id
+                if fallback_key not in self._fallbacks:
+                    self._active = self._shards.get(key)
+                    self._fallbacks[fallback_key] = self._progress_fallback(root, endpoint, run_id)
+                    if len(self._fallbacks) > self._max_endpoints:
+                        del self._fallbacks[next(iter(self._fallbacks))]
+                found = self._fallbacks[fallback_key]
         return found
+
+    def _progress_fallback(self, root: Path, endpoint: str, run_id: str) -> Artifact | None:
+        roots = (root.parent / "flow-reports", root.parent / "mcp-tool-reports")
+        progress = read_progress_for_run(
+            roots,
+            endpoint,
+            run_id,
+            trusted_path_validator=self._validate if self._project is not None else None,
+        )
+        return None if progress is None else (progress[1], progress[0])
 
     def _trim_shards(self) -> None:
         if len(self._shards) <= self._max_endpoints:
             return
         while len(self._shards) > self._max_endpoints:
-            key, _ = self._shards.popitem(last=False)
+            key = next(
+                (key for key in self._shards if key not in self._expected),
+                next(iter(self._shards)),
+            )
+            del self._shards[key]
             self._indexes.pop(key, None)
             self._truncated.discard(key)
             self._touched.discard(key)

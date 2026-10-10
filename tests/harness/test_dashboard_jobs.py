@@ -608,3 +608,34 @@ def test_outside_project_interactive_job_remains_observable_without_artifacts(tm
     assert len(snapshot.jobs) == 1
     assert snapshot.jobs[0].report is None
     assert f"Job artifact root unavailable: {root}" in snapshot.diagnostics
+
+
+def test_capacity_replacement_only_parses_new_endpoint_history(tmp_path, monkeypatch):
+    from booley.runtime import job_artifacts, job_snapshot
+
+    roots = [tmp_path / str(number) / "jobs" for number in range(3)]
+    reports = []
+    for number, root in enumerate(roots):
+        job_records.write_record(rec(str(number), status="done"), root)
+        path = root.parent / "flow-reports/sim/1/report.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"run_id": str(number), "passed": True}))
+        reports.append(path)
+    monkeypatch.setattr(job_snapshot, "MAX_JOBS", 2)
+    current = roots[:2]
+    monkeypatch.setattr(job_snapshot, "retained_job_roots", lambda *_a, **_k: tuple(current))
+    cache = job_artifacts.JobArtifactCache()
+    snapshot_jobs(tmp_path, artifact_cache=cache)
+    original = job_artifacts.JobArtifactCache._read
+    reads = []
+
+    def read(self, path):
+        reads.append(path)
+        return original(self, path)
+
+    monkeypatch.setattr(job_artifacts.JobArtifactCache, "_read", read)
+    current[:] = [roots[2], roots[0]]
+    snapshot = snapshot_jobs(tmp_path, artifact_cache=cache)
+    assert len(snapshot.jobs) == 2
+    assert all(job.report is not None for job in snapshot.jobs)
+    assert reads == [reports[2]]

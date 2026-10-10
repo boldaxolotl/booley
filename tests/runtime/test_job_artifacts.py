@@ -440,3 +440,90 @@ def test_complete_fallback_memo_is_ephemeral_and_directory_memory_bounded(tmp_pa
     cache.begin()
     assert cache.find(root, "sim", "0", "progress") is not None
     assert len(calls) == 3
+
+
+def test_standalone_progress_fallback_stays_fresh_and_unmemoized(tmp_path):
+    real = tmp_path / "real"
+    root = real / "project/jobs"
+    root.parent.mkdir(parents=True)
+    cache = JobArtifactCache()
+    assert cache.find(root, "sim", "1", "progress") is None
+    path = report(root, "sim", 1).with_name("progress.json")
+    path.write_text(
+        json.dumps(
+            progress_document(
+                flow="sim",
+                run_id="1",
+                phase="complete",
+                targets=[],
+                completed_targets=[],
+                detail={},
+            )
+        )
+    )
+    assert cache.find(root, "sim", "1", "progress") is not None
+    for number in range(20):
+        cache.find(root, "sim", f"missing-{number}", "progress")
+    assert cache._fallbacks == {}
+
+
+def test_configured_fallback_memo_bounded_without_begin(tmp_path, monkeypatch):
+    root = tmp_path / "jobs"
+    report(root, "sim", 1)
+    monkeypatch.setattr(job_artifacts, "MAX_ARTIFACTS", 0)
+    cache = JobArtifactCache()
+    cache.configure_project(tmp_path, max_endpoints=2)
+    for number in range(20):
+        cache.find(root, "sim", f"missing-{number}", "progress")
+        assert len(cache._fallbacks) <= 2
+
+
+def test_endpoint_replacement_preserves_other_current_shards(tmp_path, monkeypatch):
+    roots = [tmp_path / str(number) / "jobs" for number in range(3)]
+    paths = [report(root, "sim", 1) for root in roots]
+    cache = JobArtifactCache()
+    cache.configure_project(tmp_path, max_endpoints=2)
+    cache.begin()
+    for root in roots[:2]:
+        cache.find(root, "sim", "1", "report")
+    cache.complete()
+    original = Path.read_bytes
+    reads = []
+
+    def read(path):
+        reads.append(path)
+        return original(path)
+
+    monkeypatch.setattr(Path, "read_bytes", read)
+    cache.begin()
+    cache.prepare_endpoints(((roots[2], "sim"), (roots[0], "sim")))
+    assert cache.find(roots[2], "sim", "1", "report") is not None
+    assert cache.find(roots[0], "sim", "1", "report") is not None
+    assert reads == [paths[2]]
+    assert len(cache._shards) == 2
+
+
+def test_shared_refuse_symlinks_keeps_whole_ancestor_guard(tmp_path):
+    from booley.runtime.safe_storage import refuse_symlinks
+
+    real = tmp_path / "real"
+    root = real / "project/jobs"
+    path = report(root, "sim", 1)
+    alias = tmp_path / "alias"
+    alias.symlink_to(real, target_is_directory=True)
+    with pytest.raises(OSError):
+        refuse_symlinks(alias / path.relative_to(real))
+
+
+@pytest.mark.parametrize("component", ["endpoint", "run"])
+def test_indexed_report_rejects_linked_directories(tmp_path, component):
+    root = tmp_path / "jobs"
+    path = report(root, "sim", 1)
+    directory = path.parent if component == "run" else path.parents[1]
+    moved = tmp_path / "moved"
+    directory.rename(moved)
+    directory.symlink_to(moved, target_is_directory=True)
+    cache = JobArtifactCache()
+    cache.configure_project(tmp_path)
+    cache.begin()
+    assert cache.find(root, "sim", "1", "report") is None
