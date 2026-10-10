@@ -478,3 +478,32 @@ def test_returning_to_a_ref_never_overwrites_an_ignored_file(layout: SimpleNames
         GoalCheckout(worktree).checkout_ref("refs/heads/tracks-it")
 
     assert (worktree / "local.cfg").read_text(encoding="utf-8") == "precious local work\n"
+
+
+@pytest.mark.parametrize("paired", [False, True])
+@pytest.mark.parametrize("where", ["worktree", "main"])
+def test_ignored_existing_bundle_mutation_is_protected(layout, tmp_path, paired, where):
+    from booley.harness.setup.project_git_hook_bundle import build_project_git_hook_bundle
+    from booley.runtime.project_gitignore import PROJECT_GITIGNORE
+
+    if paired:
+        install_paired_project(layout, tmp_path)
+    root = layout.worktree if where == "worktree" else layout.main
+    data = root / ".booley_project"
+    ignore = data / ".gitignore"
+    ignore.write_text(PROJECT_GITIGNORE)
+    if paired and where == "worktree":
+        git(data, "add", ".gitignore")
+        git(data, "commit", "-qm", "authored ignore policy")
+    bundle = data / ".managed/project-git-hooks.pyz"
+    bundle.parent.mkdir(parents=True)
+    original = build_project_git_hook_bundle().content
+    bundle.write_bytes(original)
+    assert git(data, "check-ignore", "--no-index", str(bundle))
+    _enter(layout)
+    before = git(root, "status", "--porcelain", "--untracked-files=all")
+    bundle.write_bytes(original + b"edited")
+    assert git(root, "status", "--porcelain", "--untracked-files=all") == before
+    assert _violations(layout) == [WORKING]
+    bundle.write_bytes(original)
+    assert _violations(layout) == []
