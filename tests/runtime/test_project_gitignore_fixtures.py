@@ -37,7 +37,11 @@ def test_every_reinclude_follows_the_pattern_it_overrides() -> None:
 
 @pytest.fixture
 def verbose_ignore(tmp_path, isolated_git_attributes):
+    import shutil
     import subprocess
+
+    if shutil.which("git") is None:
+        pytest.skip("needs git for the canonical ignore oracle")
 
     empty = tmp_path / "empty-excludes"
     empty.write_text("", encoding="utf-8")

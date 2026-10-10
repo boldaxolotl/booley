@@ -1154,6 +1154,8 @@ def test_tracked_bundle_manual_remedy_preserves_copy_and_allows_pairing(
 
 @pytest.fixture
 def per_path_project(isolated_git_attributes, request, tmp_path):
+    if shutil.which("git") is None or os.name == "nt":
+        pytest.skip("needs git and a POSIX shell")
     root = request.getfixturevalue("versioned_project")
     empty = tmp_path / "empty-excludes"
     empty.write_text("", encoding="utf-8")
@@ -1218,6 +1220,7 @@ def test_unrelated_missing_pattern_preserves_per_path_input_group(per_path_proje
         ("logs/authored.txt", "flow-reports/", "!/logs/\n!/logs/**\n", False, "!/logs/**"),
         ("cores/logs/authored.txt", "flow-reports/", "", False, None),
         ("logs/authored.txt", None, "!/logs/\n!/logs/**\n", False, "!/logs/**"),
+        ("logs/tmp/state.json", "tmp/", "!/logs/\n!/logs/**\n", False, "!/logs/**"),
         ("cores/runtime/state.json", "runtime/", "", True, None),
         ("goals/history/kept.md", "flow-reports/", "", False, None),
         ("goals/history/tmp/state.json", "tmp/", "", True, None),
