@@ -106,3 +106,124 @@ def test_goal_status_simulation_contract_explanation(goal_mode, monkeypatch, cap
     else:
         assert "complete resolved suite" not in text
         assert "—" not in text
+
+
+PREFIX = "No Goal Mode is active here. Active Goal Modes in this Project:\n"
+
+
+def second_goal(mode, monkeypatch):
+    from tests.goals.conftest import enter_goals, git, write_project_files
+
+    second = mode.control / "worktrees" / "other"
+    git(mode.main, "worktree", "add", "-q", "-b", "other", str(second))
+    write_project_files(second / ".booley_project")
+    other = SimpleNamespace(main=mode.main, control=mode.control, worktree=second)
+    with monkeypatch.context() as context:
+        context.setattr("booley.goals.entry.compact_utc_now", lambda: "20261007T120000Z")
+        other.record = enter_goals(other)
+    return other
+
+
+@pytest.mark.parametrize("detail", [None, True, False])
+@pytest.mark.parametrize("caller", ["occupant", "nested", "main", "outside", "abandoned"])
+@pytest.mark.parametrize("multiple", [False, True])
+def test_goal_status_complete_bytes(
+    goal_mode,  # noqa: F811 — shared fixture
+    tmp_path,
+    monkeypatch,
+    capsys,
+    detail,
+    caller,
+    multiple,
+):
+    from booley.goals.model import GoalState
+    from booley.goals.status import status_views
+    from booley.goals.store import GoalStore
+    from tests.goals.conftest import update_record
+    from tests.goals.test_format import baseline_render_status
+
+    if multiple or caller == "abandoned":
+        second_goal(goal_mode, monkeypatch)
+    if caller == "abandoned":
+        update_record(goal_mode, state=GoalState.ABANDONED)
+    location = goal_mode.worktree
+    if caller == "nested":
+        location = location / "nested"
+        location.mkdir()
+    elif caller == "main":
+        location = goal_mode.main
+    elif caller == "outside":
+        location = tmp_path / "outside"
+        location.mkdir()
+    views = status_views(GoalStore(goal_mode.control), location)
+    expected = baseline_render_status(views, short=detail)
+    if caller in {"main", "outside", "abandoned"}:
+        expected = PREFIX + expected
+    monkeypatch.chdir(location)
+    args = Namespace(goal_command="status", short=detail is True, long=detail is False)
+    assert _cmd_goal(args, goal_mode.main) == 0
+    captured = capsys.readouterr()
+    assert captured.out == expected + "\n"
+    assert captured.err == ""
+
+
+@pytest.mark.parametrize("detail", [None, True, False])
+@pytest.mark.parametrize("state", ["abandoned", "finished", "failed"])
+@pytest.mark.parametrize("caller", ["occupant", "main", "outside"])
+def test_no_occupying_goal_bytes(
+    goal_mode,  # noqa: F811 — shared fixture
+    tmp_path,
+    monkeypatch,
+    capsys,
+    detail,
+    state,
+    caller,
+):
+    from booley.goals.model import GoalState
+    from tests.goals.conftest import update_record
+
+    if state == "finished":
+        update_record(goal_mode, state=GoalState.FINISHING)
+    update_record(goal_mode, state=GoalState(state))
+    location = goal_mode.worktree if caller == "occupant" else goal_mode.main
+    if caller == "outside":
+        location = tmp_path / "outside"
+        location.mkdir()
+    monkeypatch.chdir(location)
+    assert (
+        _cmd_goal(
+            Namespace(goal_command="status", short=detail is True, long=detail is False),
+            goal_mode.main,
+        )
+        == 0
+    )
+    captured = capsys.readouterr()
+    assert (captured.out, captured.err) == ("No active Goal Mode.\n", "")
+
+
+@pytest.mark.parametrize("error", ["corrupt", "identity", "unrelated"])
+def test_goal_status_error_bytes(goal_mode, tmp_path, monkeypatch, capsys, error):  # noqa: F811 — shared fixture
+    from booley.goals.paths import record_paths
+    from booley.goals.status import status_views
+    from booley.goals.store import REPOSITORY_ID_FILE, GoalStore, GoalStoreError
+    from tests.goals.conftest import git
+
+    location = goal_mode.worktree
+    if error == "corrupt":
+        record_paths(goal_mode.control, goal_mode.record.id).record_file.write_bytes(b"{bad")
+    elif error == "identity":
+        (goal_mode.main / ".git" / REPOSITORY_ID_FILE).unlink()
+    else:
+        location = tmp_path / "unrelated"
+        location.mkdir()
+        git(location, "init", "-q")
+        location = location / "nested"
+        location.mkdir()
+    with pytest.raises(GoalStoreError) as failure:
+        status_views(GoalStore(goal_mode.control), location)
+    monkeypatch.chdir(location)
+    assert (
+        _cmd_goal(Namespace(goal_command="status", short=False, long=False), goal_mode.main) == 2
+    )
+    captured = capsys.readouterr()
+    assert (captured.out, captured.err) == ("", f"ERROR: {failure.value}\n")

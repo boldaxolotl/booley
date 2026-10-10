@@ -137,3 +137,26 @@ def test_nonexistent_short_project_option_is_rejected(monkeypatch, capsys):
         cli._parse_cli()
     assert caught.value.code == 2
     assert "/booley-goal" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("command", [["goal", "--help"], ["goal", "status", "--help"]])
+def test_goal_help_describes_both_selection_cases(command, capsys):
+    with pytest.raises(SystemExit) as caught:
+        cli._build_parser().parse_args(command)
+    assert caught.value.code == 0
+    text = " ".join(capsys.readouterr().out.split())
+    assert "this worktree" in text
+    assert "every active Goal Mode in the Project" in text
+    assert "when this worktree hosts none" in text
+
+
+def test_usage_status_describes_both_selection_cases():
+    from pathlib import Path
+
+    usage = Path(__file__).parents[2] / "docs/user/USAGE.md"
+    line = next(
+        line for line in usage.read_text().splitlines() if line.startswith("booley goal status ")
+    )
+    assert "this worktree" in line
+    assert "every active Goal Mode in the Project" in line
+    assert "when this worktree hosts none" in line
