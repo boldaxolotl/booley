@@ -853,7 +853,9 @@ def test_windows_capture_does_not_require_nonblocking_pipe_support(tmp_path, mon
 
 def test_real_fast_tool_keeps_complete_transcript(tmp_path):
     sink = observer(tmp_path)
-    with sink.installed():
+    # Freeze the writer to test real pipe backlog retention independently of
+    # the advisory worker shutdown deadline and loaded-runner disk throughput.
+    with sink.installed(), patch.object(sink, "_run"):
         sink.begin_command()
         with subprocess.Popen(
             [sys.executable, "-c", "import os; os.write(1,b'line\\n'*6000000)"],
@@ -862,7 +864,10 @@ def test_real_fast_tool_keeps_complete_transcript(tmp_path):
             text=True,
             start_new_session=True,
         ) as process:
-            stdout, stderr, timed_out = communicate_observed(process, sink, timeout=5)
+            stdout, stderr, timed_out = communicate_observed(
+                process, sink, timeout=BOUNDARY_HANG_GUARD_S
+            )
+        sink._drain_end()
     assert stderr == ""
     assert not timed_out
     assert sink.log_path is not None
