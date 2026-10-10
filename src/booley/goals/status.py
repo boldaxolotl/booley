@@ -11,7 +11,7 @@ from booley.criteria.evidence_ledger import validated_evidence_records
 from booley.goals.apply_barrier import pending_applies
 from booley.goals.change_policy import conflict
 from booley.goals.checkout import CheckoutError, GoalCheckout, branch_ref
-from booley.goals.format import format_criterion_metric
+from booley.goals.format import format_criterion_metric, format_met_goal_metric
 from booley.goals.freshness import (
     DEFAULT_RESOLVERS,
     GoalFreshnessResolvers,
@@ -181,7 +181,7 @@ def _goal_status(
         ).reason
     if reason:
         return GoalStatus(key, "stale", "evidence is stale", reason)
-    return GoalStatus(key, "met", format_criterion_metric(key, entry) or "evidence recorded")
+    return GoalStatus(key, "met", format_met_goal_metric(key, entry))
 
 
 def _projection_violation(entry: Any, evidence: dict[str, Any] | None) -> str:

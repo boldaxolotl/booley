@@ -124,3 +124,22 @@ def test_detailed_unmet_reason_and_compact_output(goal_mode, status, reason):
     assert "1/1 tests" not in compact
     if reason:
         assert reason not in compact
+
+
+@pytest.mark.parametrize("key", ["elab_pass", "elab_pass_top"])
+@pytest.mark.parametrize(
+    ("met", "stale", "expected"),
+    [(True, False, "elaborated"), (True, True, "?"), (False, False, ""), (False, True, "")],
+)
+def test_elaboration_metric_requires_met_evidence(key, met, stale, expected):
+    entry = SimpleNamespace(detail={}, params={}, met=met, stale=stale)
+    assert format_criterion_metric(key, entry) == ticket_metric(key, entry) == expected
+
+
+@pytest.mark.parametrize("key", ["elab_passenger", "custom_gate", "lint_clean_top"])
+def test_met_metric_fallback_preserves_raw_empty_output(key):
+    from booley.goals.format import format_met_goal_metric
+
+    entry = SimpleNamespace(detail={}, params={}, met=True, stale=False)
+    assert format_criterion_metric(key, entry) == ""
+    assert format_met_goal_metric(key, entry) == "evidence recorded"
