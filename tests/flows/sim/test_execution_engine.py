@@ -3265,11 +3265,13 @@ def test_actual_engine_ascii_cycle_records(tmp_path, record, expected):
 
 
 @pytest.mark.parametrize("copyto", ["firmware.hex", "data/firmware.hex", None])
-def test_real_copyto_prepared_source_entries(tmp_path, monkeypatch, copyto):
+@pytest.mark.parametrize("source_bytes", [b"00000013\n", b"00000013\r\n"])
+def test_real_copyto_prepared_source_entries(tmp_path, monkeypatch, copyto, source_bytes):
     importlib.import_module("fusesoc")
     importlib.import_module("edalize")
     project = tmp_path / "project"
     _write_runtime_input_project(project)
+    (project / "data/firmware.hex").write_bytes(source_bytes)
     core = project / "runtime_input.core"
     core.write_text(
         core.read_text().replace(
@@ -3287,7 +3289,7 @@ def test_real_copyto_prepared_source_entries(tmp_path, monkeypatch, copyto):
         data = next(entry for entry in entries if str(entry["path"]).endswith("firmware.hex"))
         assert data["source_path"] == "data/firmware.hex"
         assert data["path"] == (copyto or "src/acme_lib_runtime_input_1/data/firmware.hex")
-        assert data["sha256"] == "sha256:" + hashlib.sha256(b"00000013\n").hexdigest()
+        assert data["sha256"] == "sha256:" + hashlib.sha256(source_bytes).hexdigest()
         (group.build_root / data["path"]).write_bytes(b"prepared bytes changed")
         changed = next(
             entry
@@ -3297,7 +3299,7 @@ def test_real_copyto_prepared_source_entries(tmp_path, monkeypatch, copyto):
         assert (
             changed["sha256"] == "sha256:" + hashlib.sha256(b"prepared bytes changed").hexdigest()
         )
-        assert (project / "data/firmware.hex").read_bytes() == b"00000013\n"
+        assert (project / "data/firmware.hex").read_bytes() == source_bytes
 
 
 @pytest.mark.parametrize(
