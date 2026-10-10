@@ -246,6 +246,7 @@ def _locations(ctx: InitContext) -> _Locations | None:
             text=True,
             timeout=10,
             check=False,
+            env=inherited_git_environment(),
         )
     except subprocess.TimeoutExpired:
         skip("could not resolve Git hooks path within 10 seconds")

@@ -162,7 +162,9 @@ def _comparison_attributes(
         destination.write_bytes(raw_git(repository, "cat-file", "blob", oid.decode("ascii")))
     tracked = set(raw_git(repository, "ls-files", "-z").split(b"\0"))
     for path in _attribute_ancestors(names):
-        if os.fsencode(path.as_posix()) in tracked:
+        if any(
+            os.fsencode(candidate.as_posix()) in tracked for candidate in (path, *path.parents)
+        ):
             continue
         content = _untracked_attribute_bytes(repository, path)
         if content is not None:
@@ -176,12 +178,14 @@ def _untracked_attribute_bytes(repository: Path, relative: Path) -> bytes | None
     try:
         source = repository / relative
         for parent in relative.parents:
+            if parent == Path():
+                continue
             candidate = repository / parent
             if candidate.is_symlink() or getattr(candidate, "is_junction", lambda: False)():
                 raise LifecycleError(AMBIENT_ATTRIBUTES_ERROR)
         try:
             mode = source.lstat().st_mode
-        except FileNotFoundError:
+        except (FileNotFoundError, NotADirectoryError):
             return None
         if stat.S_ISLNK(mode):
             return None  # Git ignores symlink attribute files.

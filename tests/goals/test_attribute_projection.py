@@ -139,6 +139,18 @@ def test_legacy_literal_four_attribute_digest_revalidates_with_six_name_safety(t
         materializations_unchanged(proof, roots)
 
 
+def test_legacy_nondefault_four_attribute_digest_revalidates(tmp_path):
+    root, pin, scratch = source(tmp_path, rule="text eol=crlf")
+    rows = export(root, pin, scratch)
+    rows[0]["policy"].pop("checkout_attributes")
+    # Original canonical four-name payload with text=set and eol=crlf for rtl.txt.
+    rows[0]["attributes_digest"] = (
+        "179b11f4aafdf7a633da9adcb46731d47d1f01df796aef6096c1ad5107f94575"
+    )
+    proof, roots = capture(root, rows)
+    assert materializations_unchanged(proof, roots)
+
+
 def test_unknown_marker_fails_closed(tmp_path):
     root, pin, scratch = source(tmp_path)
     rows = export(root, pin, scratch)
@@ -189,6 +201,36 @@ def test_baseline_uses_its_own_tracked_attributes_at_final_head(tmp_path, change
     assert (scratch / "final" / name).read_bytes() == final_bytes
 
 
+@pytest.mark.parametrize("replacement", ["file", "symlink"])
+def test_baseline_nested_directory_replaced_at_final_head(tmp_path, replacement):
+    root, base, scratch = source(
+        tmp_path, rule="ident", name="nested/rtl.txt", attribute_path="nested/.gitattributes"
+    )
+    expected = (root / "nested/rtl.txt").read_bytes()
+    git(root, "rm", "-r", "nested")
+    if replacement == "file":
+        (root / "nested").write_bytes(b"replacement\n")
+    else:
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / ".gitattributes").write_bytes(b"*.txt text eol=crlf\n")
+        symlink_or_skip(root / "nested", outside)
+    git(root, "add", "nested")
+    git(root, "commit", "-qm", "replace pinned directory")
+    rows = export(root, base, scratch)
+    assert (scratch / "view/nested/rtl.txt").read_bytes() == expected
+    proof, roots = capture(root, rows)
+    assert materializations_unchanged(proof, roots)
+
+
+def test_repository_root_symlink_does_not_count_as_attribute_ancestor(tmp_path):
+    root, pin, scratch = source(tmp_path)
+    linked = tmp_path / "linked-source"
+    symlink_or_skip(linked, root)
+    assert export(linked, pin, scratch)
+    assert (scratch / "view/rtl.txt").read_bytes() == b"$Id$\n"
+
+
 def test_worktree_symlink_attributes_are_ignored(tmp_path):
     root, pin, scratch = source(tmp_path)
     target = tmp_path / "external.attributes"
@@ -230,7 +272,12 @@ def test_finish_committed_ident(layout):
     (layout.worktree / ".gitattributes").write_bytes(b"identifier.txt ident\n")
     git(layout.worktree, "add", "identifier.txt", ".gitattributes")
     git(layout.worktree, "commit", "-qm", "identifier")
+    (layout.worktree / "identifier.txt").unlink()
     git(layout.worktree, "checkout-index", "--all", "--force")
+    oid = git(layout.worktree, "rev-parse", "HEAD:identifier.txt")
+    assert (layout.worktree / "identifier.txt").read_bytes() == f"$Id: {oid} $\n".encode()
+    git(layout.worktree, "add", "identifier.txt")
+    assert git(layout.worktree, "rev-parse", ":identifier.txt") == oid
     layout.record = enter_goals(layout, [{"family": "lint", "target": "top"}])
     publish(layout)
     assert finish_goal(request(layout), environment(layout))["status"] == "finished"
@@ -372,6 +419,7 @@ def test_init_and_pinned_history_use_shared_inherited_environment(tmp_path, monk
     from booley.runtime.pinned_history import raw_git
 
     root, _, _ = source(tmp_path)
+    assert "GIT_ATTR_SOURCE" in REPOSITORY_SELECTION_VARIABLES
     for name in REPOSITORY_SELECTION_VARIABLES:
         monkeypatch.setenv(name, "poison")
     monkeypatch.setenv("BOOLEY_TEST_PRESERVED", "yes")
