@@ -460,7 +460,10 @@ def test_snapshot_omits_canonical_transient_paths(project):
         "logs/log.txt",
         ".baseline-wt-stale/result",
     ]
+    from tests.runtime.test_project_runtime_gitignore import NEW_RUNTIME_PATHS
+
     preserved = [
+        *NEW_RUNTIME_PATHS,
         "runtime/doctor_stamp.json",
         "runtime/developer_probe.json",
         "runtime/upgrade_review.json",
@@ -539,8 +542,11 @@ def test_static_snapshot_additions_are_canonical_transient_patterns(versioned_pr
 
 def test_canonical_transient_classifier_matches_git_including_reincludes(versioned_project):
     from booley.runtime.project_gitignore import is_project_transient_path
+    from tests.runtime.test_project_runtime_gitignore import NEW_RUNTIME_PATHS
 
     paths = [
+        *NEW_RUNTIME_PATHS,
+        *(f"{prefix}/{path}" for prefix in ("cores", "selftest") for path in NEW_RUNTIME_PATHS),
         "goals/g1/record.json",
         "goals/history/kept.md",
         "goals/history/tmp/state.json",
@@ -564,8 +570,20 @@ def test_canonical_transient_classifier_matches_git_including_reincludes(version
 
 
 @pytest.mark.parametrize("mixed", [False, True])
+@pytest.mark.parametrize(
+    "evidence_path",
+    [
+        None,
+        "reviewer-evidence/audit.json",
+        "findings.jsonl",
+        "findings.jsonl.tmp",
+        "BOOLEY-FEEDBACK.md",
+        "setup-evidence/attachments/log.txt",
+        "PARITY-REPORT.md",
+    ],
+)
 def test_stale_ignore_diagnoses_transient_and_input_groups(
-    versioned_project, monkeypatch, capsys, mixed
+    versioned_project, monkeypatch, capsys, mixed, evidence_path
 ):
     from tests.goals.conftest import git
 
@@ -577,6 +595,8 @@ def test_stale_ignore_diagnoses_transient_and_input_groups(
     git(source, "commit", "-qm", "old ignore policy")
     _write(source / "goals/g1/record.json", "transient\n")
     _write(source / "flow-reports/report.json", "transient\n")
+    if evidence_path:
+        _write(source / evidence_path, "local evidence\n")
     if mixed:
         _write(source / "cores/top.core", "design edit\n")
 
@@ -589,6 +609,8 @@ def test_stale_ignore_diagnoses_transient_and_input_groups(
     assert "Project .gitignore is missing current Booley patterns" in error
     assert "run `booley init` from a host terminal" in error
     assert "goals/g1/record.json" in error and "flow-reports/report.json" in error
+    if evidence_path:
+        assert evidence_path in error
     if mixed:
         assert "inputs: cores/top.core; commit them in `.booley_project` first" in error
     else:
