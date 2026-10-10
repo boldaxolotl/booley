@@ -45,6 +45,8 @@ def report_decode_spy(monkeypatch):
     return decodes
 
 
+# Real filesystem history: 36.84 s on Windows CI and >60 s under coverage.
+@pytest.mark.timeout(180)
 def test_real_combined_history_reuses_6000_reports(tmp_path, monkeypatch):
     roots = [tmp_path / str(index) / "jobs" for index in range(3)]
     paths = [
@@ -97,7 +99,9 @@ def test_real_combined_history_reuses_6000_reports(tmp_path, monkeypatch):
             assert reads == decodes == []
             assert progress_reads == []
             info = paths[0].stat()
-            os.utime(paths[0], ns=(info.st_atime_ns, info.st_mtime_ns + 1))
+            # NTFS timestamps have 100 ns resolution; guarantee a real change.
+            os.utime(paths[0], ns=(info.st_atime_ns, info.st_mtime_ns + 1_000_000_000))
+            assert paths[0].stat().st_mtime_ns != info.st_mtime_ns
         else:
             assert reads == [paths[0]]
             assert len(decodes) == 1
