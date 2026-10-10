@@ -848,10 +848,11 @@ def test_hidden_chatter_does_not_postpone_redirected_heartbeat(
     assert not worker.is_alive()
 
 
-def test_tty_non_verbose_preserves_progress_order_without_consecutive_duplicates() -> None:
+def test_tty_non_verbose_preserves_first_seen_progress_order() -> None:
     child = (
         "print('>>> first', flush=True); print('>>> first', flush=True); "
-        "print('hidden chatter', flush=True); print('>>> second', flush=True)"
+        "print('hidden chatter', flush=True); print('>>> second', flush=True); "
+        "print('>>> first', flush=True)"
     )
     output = _RecordingOutput(tty=True)
 
@@ -901,3 +902,110 @@ def test_redirected_verbose_failure_streams_complete_output_once() -> None:
     assert result.returncode == 1
     assert output.text.splitlines() == ["build detail", "ERROR: compile failed"]
     assert result.diagnostics == ()
+
+
+_PARALLEL_PROGRESS_RECORDS = (
+    '#7 [yosys 1/1] RUN echo ">>> Building Yosys v0.69..." \\\n',
+    '#11 [runtime 1/1] RUN echo ">>> Installing runtime..." \\\n',
+    "#7 0.1 >>> Building Yosys v0.69...\n",
+    "#11 0.1 >>> Installing runtime...\n",
+)
+
+
+@pytest.mark.parametrize("tty", [False, True])
+def test_progress_state_deduplicates_parallel_stage_announcements(monkeypatch, tty) -> None:
+    monkeypatch.setattr(docker_build.time, "monotonic", lambda: 0.0)
+    output = _RecordingOutput(tty=tty)
+    state = docker_build._ProgressState("image", False, output, 0.0, 1000.0, 0.0)
+    records = (
+        *_PARALLEL_PROGRESS_RECORDS,
+        *_PARALLEL_PROGRESS_RECORDS[:2],
+        "hidden compiler chatter\n",
+        ">>> third\n",
+        *_PARALLEL_PROGRESS_RECORDS,
+        ">>> fourth\n",
+        # Unresolved shell headers remain distinct from resolved announcements.
+        '#7 RUN echo ">>> Building Yosys ${YOSYS_VERSION}..." \\\n',
+        '#7 RUN echo ">>> Building Yosys ${YOSYS_VERSION}..." \\\n',
+    )
+    for record in records:
+        state.accept(record)
+
+    assert output.text.splitlines() == [
+        ">>> Building Yosys v0.69...",
+        ">>> Installing runtime...",
+        ">>> third",
+        ">>> fourth",
+        ">>> Building Yosys ${YOSYS_VERSION}...",
+    ]
+
+
+@pytest.mark.parametrize("tty", [False, True])
+def test_progress_state_seen_announcements_are_isolated_per_build(monkeypatch, tty) -> None:
+    monkeypatch.setattr(docker_build.time, "monotonic", lambda: 0.0)
+    for _ in range(2):
+        output = _RecordingOutput(tty=tty)
+        state = docker_build._ProgressState("image", False, output, 0.0, 1000.0, 0.0)
+        for record in _PARALLEL_PROGRESS_RECORDS:
+            state.accept(record)
+        assert output.text.splitlines() == [
+            ">>> Building Yosys v0.69...",
+            ">>> Installing runtime...",
+        ]
+
+
+@pytest.mark.parametrize("tty", [False, True])
+def test_progress_state_verbose_preserves_all_parallel_records(monkeypatch, tty) -> None:
+    monkeypatch.setattr(docker_build.time, "monotonic", lambda: 0.0)
+    output = _RecordingOutput(tty=tty)
+    state = docker_build._ProgressState("image", True, output, 0.0, 1000.0, 0.0)
+    records = (*_PARALLEL_PROGRESS_RECORDS, "hidden chatter\n", *_PARALLEL_PROGRESS_RECORDS)
+    for record in records:
+        state.accept(record)
+    assert output.text == "".join(records)
+
+
+@pytest.mark.parametrize("tty", [False, True])
+def test_progress_state_duplicates_do_not_postpone_heartbeat(monkeypatch, tty) -> None:
+    now = 0.0
+    monkeypatch.setattr(docker_build.time, "monotonic", lambda: now)
+    output = _RecordingOutput(tty=tty)
+    state = docker_build._ProgressState("image", False, output, 0.0, 1000.0, 0.0)
+    for record in _PARALLEL_PROGRESS_RECORDS:
+        state.accept(record)
+    announcements = output.text
+    for duplicate_time in (30.0, 59.0):
+        now = duplicate_time
+        for record in _PARALLEL_PROGRESS_RECORDS[:2]:
+            state.accept(record)
+    state.heartbeat(59.0)
+    assert output.text == announcements
+    state.heartbeat(60.0)
+    assert output.text == announcements + "  * [image build] elapsed: 60.0s\n"
+    now = 100.0
+    state.accept(">>> third\n")
+    visible = output.text
+    state.heartbeat(159.0)
+    assert output.text == visible
+    state.heartbeat(160.0)
+    assert output.text == visible + "  * [image build] elapsed: 160.0s\n"
+
+
+class _CountingBrokenOutput(_BrokenOutput):
+    def __init__(self) -> None:
+        self.attempts = 0
+
+    def write(self, text: str) -> int:
+        self.attempts += 1
+        return super().write(text)
+
+
+def test_progress_state_failed_announcement_is_attempted_once(monkeypatch) -> None:
+    monkeypatch.setattr(docker_build.time, "monotonic", lambda: 30.0)
+    output = _CountingBrokenOutput()
+    state = docker_build._ProgressState("image", False, output, 0.0, 1000.0, 0.0)
+    for _ in range(3):
+        state.accept(_PARALLEL_PROGRESS_RECORDS[0])
+        state.accept(_PARALLEL_PROGRESS_RECORDS[2])
+    assert output.attempts == 1
+    assert state.last_visible == 0.0
