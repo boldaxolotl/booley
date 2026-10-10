@@ -597,3 +597,107 @@ def test_git_tracking_failure_refuses_task_mutation(project, monkeypatch, failur
     assert not plan.pending
     assert "could not inspect Dashboard task Git tracking" in plan.diagnostics[0]
     assert not project.file.exists()
+
+
+_NEWLINE_CASES = [
+    pytest.param("/* café\n\n\n\r\n */", "\n", id="lf-majority"),
+    pytest.param("/* café\r\n\r\n\r\n\n */", "\r\n", id="crlf-majority"),
+    pytest.param("/* café\n\n */", "\n", id="lf"),
+    pytest.param("/* café\r\n\r\n */", "\r\n", id="crlf"),
+    pytest.param("/* café\n\r\n */", "\n", id="tie"),
+    pytest.param("/* café */", "\n", id="no-breaks"),
+]
+
+
+@pytest.mark.parametrize(
+    "comment,newline",
+    [
+        *_NEWLINE_CASES,
+        pytest.param("/* café\r\r */", "\n", id="lone-cr"),
+        pytest.param("/* café\r\r\n\n */", "\n", id="lone-cr-tie"),
+    ],
+)
+def test_jsonc_document_uses_dominant_newline(comment, newline):
+    source = comment + '{"escaped":"\\n", "tasks":[]}'
+    document = Document(source)
+    assert document.newline == newline
+    assert document.source == source
+
+
+@pytest.mark.parametrize("comment,newline", _NEWLINE_CASES)
+@pytest.mark.parametrize("layout", ["empty", "user", "missing"])
+def test_dominant_newline_task_enable_disable_restores_exact_bytes(
+    project, comment, newline, layout
+):
+    prefix = (comment + '{"escaped":"\\n",').encode()
+    if layout == "missing":
+        prefix += b'"other":42'
+        suffix = b"}"
+    else:
+        prefix += b'"tasks":['
+        if layout == "user":
+            prefix += b'{"label":"user"}'
+        suffix = b"]}"
+    original = prefix + suffix
+    project.file.parent.mkdir()
+    project.file.write_bytes(original)
+    exclude = project.exclude.read_bytes()
+    assert tasks.reconcile(project.root, project.data).applied
+    rendered = project.file.read_bytes()
+    assert rendered.startswith(prefix) and rendered.endswith(suffix)
+    insertion = rendered[len(prefix) : -len(suffix)]
+    assert rendered == prefix + insertion + suffix
+    _assert_inserted_newlines(insertion, newline)
+    assert Document(rendered.decode()).root.value["tasks"][-1] == tasks.TASK
+    assert not tasks.reconcile(project.root, project.data).applied
+    (project.data / "booley.toml").write_bytes(b"[sandbox]\ndashboard = false\n")
+    tasks.reconcile(project.root, project.data)
+    assert project.file.read_bytes() == original
+    assert project.exclude.read_bytes() == exclude
+
+
+def _assert_inserted_newlines(insertion, newline):
+    assert b"\n" in insertion
+    if newline == "\r\n":
+        assert b"\n" not in insertion.replace(b"\r\n", b"")
+    else:
+        assert b"\r\n" not in insertion
+
+
+@pytest.mark.parametrize("layout", ["user", "missing"])
+def test_dominant_newline_legacy_task_update_restores_exact_bytes(project, monkeypatch, layout):
+    comment = "/* café" + "\n" * 40 + "\r\n */"
+    content = '{"tasks":[{"label":"user"}]}' if layout == "user" else '{"other":42}'
+    original = (comment + content).encode()
+    project.file.parent.mkdir()
+    project.file.write_bytes(original)
+    exclude = project.exclude.read_bytes()
+
+    class LegacyDocument(Document):
+        def __init__(self, source):
+            super().__init__(source)
+            self.newline = "\r\n"
+
+    with monkeypatch.context() as legacy:
+        legacy.setattr(tasks, "Document", LegacyDocument)
+        assert tasks.reconcile(project.root, project.data).applied
+    enabled = project.file.read_bytes()
+    old = Document(enabled.decode()).root.members["tasks"].children[-1]
+    # UTF-8 spans are character offsets; slice before encoding the original body.
+    old_body = enabled.decode()[old.start : old.end].encode()
+    assert b"\r\n" in old_body
+    upgraded = {**tasks.TASK, "presentation": {**tasks.TASK["presentation"], "clear": True}}
+    monkeypatch.setattr(tasks, "TASK", upgraded)
+    assert tasks.reconcile(project.root, project.data).applied
+    updated = project.file.read_bytes()
+    parsed = Document(updated.decode())
+    node = parsed.root.members["tasks"].children[-1]
+    new_body = updated.decode()[node.start : node.end].encode()
+    _assert_inserted_newlines(new_body, "\n")
+    assert updated == enabled.replace(old_body, new_body, 1)
+    assert parsed.root.value["tasks"][-1] == upgraded
+    assert not tasks.reconcile(project.root, project.data).applied
+    (project.data / "booley.toml").write_bytes(b"[sandbox]\ndashboard = false\n")
+    tasks.reconcile(project.root, project.data)
+    assert project.file.read_bytes() == original
+    assert project.exclude.read_bytes() == exclude
