@@ -7,6 +7,9 @@ Write it to canonical `<project_dir>/AGENTS.md`; the RTL repo root normally gets
 generated links. An explicitly selected hybrid port/integration footprint instead
 tracks a content-identical root `AGENTS.md` (see `steps/3-agents-md.md`, Step 3).
 
+The stealth, RISC-V, and worktree bullets are conditional; `steps/3-agents-md.md`
+says when to keep each.
+
 ```markdown
 # AGENTS.md
 
@@ -14,27 +17,17 @@ tracks a content-identical root `AGENTS.md` (see `steps/3-agents-md.md`, Step 3)
 
 - Project purpose: <one sentence describing what this Project builds.>
 - Source ownership: <which paths are primary source, derived source, tests, specs, read-only dependencies, or submodules.>
-- Project gotchas: <human-provided rules a future assistant would otherwise miss. Do not infer gotchas automatically.>
+- Project gotchas: <human-provided rules a future assistant would otherwise miss.>
 
 ## Booley-Specific Instructions
 
-- Project-specific Booley data lives in `.booley_project/`.
-- This repo is operating in stealth mode. No changes to `.booley_project/` may be visible in the main repo. `.booley_project/` is a separate Git repository with its own history; commit its contents there, not in the main repo. (Keep only for `[stealth].enabled = true`.)
-- Doctor during task work: verify RTL, testbench, firmware, and documentation changes with the relevant Booley Flows (for example `sim` or `lint`) and, at most, plain `booley doctor`. `booley doctor --deep` belongs to Project Setup, `/booley-heal`, and Booley version changes; do not run it for task work or handoffs. Report Doctor findings your change did not cause (pre-existing, host-owned, or Sandbox provisioning) in the handoff instead of fixing them. Never edit `booley.toml`, `.core` files, `doctor-waivers.toml`, or Goal Records to silence such a finding. When the task itself changes project configuration, Targets, dependencies, or the Sandbox, fix the plain Doctor findings that change caused, or add a narrow, reviewed `doctor-waivers.toml` entry for a deliberate constraint, and state in the handoff that deep verification (`/booley-heal`) is due.
-- Keep handoffs and plans under `.booley_project/` (e.g. `.booley_project/plans/`, `.booley_project/handoffs/`), never in the RTL repo. They are agent working notes, not project source, and do not belong in source history.
-- In Interactive Mode, the editor extension uses the user's shared VS Code window attached to this Project's Sandbox (devcontainer). Use it as the human-facing surface: when useful, open files with `code --goto <path>[:<line>]` and side-by-side diffs with `code --diff <left> <right>` instead of only printing paths.
-- Inside the Sandbox, use registered Booley MCP tools for EDA work: choose enabled Flows from `booley.toml` (typically `sim`, `lint`, `synth`, or `fpga`; use `sim --mode elab-only` for an Elaboration Check), and call `booley_status` or `booley targets` for exact wiring. Discover these MCP tools in the tool list—not through `$PATH` or `--help`; if code mode hides them, search `ALL_TOOLS` for `mcp__booley__booley_status`. Run a raw EDA or analysis command inside the Sandbox only when the user explicitly requests a one-off with no matching Flow, and identify it as outside Booley's run-report contract.
-- Only if `booley_status` is absent from that MCP tool list are you on the host, where the tools were never registered and nothing is broken. Point the user to "Reopen in Container" (or `booley session up && booley session enter`); do not substitute raw EDA commands.
-- At the start of an Interactive Mode tab, call `booley_status` and display its returned status block.
-- RISC-V reference docs (keep only for `[sandbox].image = "booley-sandbox-riscv"`) live at `$BOOLEY_RISCV_DOCS` (`/opt/riscv-docs`): unprivileged ISA (`riscv-isa-unprivileged.{html,pdf}`), privileged ISA (`riscv-isa-privileged.{html,pdf}`), debug specification, and ELF psABI. Start with `$BOOLEY_RISCV_DOCS/INDEX.md`; search HTML directly or extract PDFs with `pdftotext <file.pdf> -`.
-- Use Booley Specialists for deeper RTL work: `coverage_analyst`, `reviewer`, and `mutation_tester` when requested or useful.
-
-## Working on Another Branch or Commit (git worktrees)
-
-- To build or simulate another branch/commit without touching the workspace, do not run plain `git worktree add`, use an arbitrary path, or manually copy/symlink `.booley_project/`. A bare checkout lacks Booley state; the live state contains machine-specific runtime data.
-- Inside the Sandbox, run `booley worktree new <name>` from the workspace root to create `.booley_project/worktrees/<name>` with a paired Project checkout on `booley-worktree/<name>` when `.booley_project` is its own Git repository, or a clean snapshot when it is non-versioned. Commit Project changes first; ignored state stays behind. It prints the worktree path and refuses a name whose destination already exists.
-  (a `<branch>--<description>` name checks out `<branch>`; otherwise the worktree is a detached HEAD at the current commit).
-- Follow the printed absolute-path removal steps: `git -C <absolute-project-dir> worktree remove <absolute-worktree>/.booley_project`, then `git -C <absolute-workspace-root> worktree remove <absolute-worktree>`. To reuse the name, preserve any needed Project commits, then run `git -C <absolute-project-dir> branch -D booley-worktree/<name>`.
-- Pass `work_dir=<worktree path>` to a Flow (`sim`, `lint`, `synth`, ...) to use that checkout; omit it for the normal workspace. Either way, project config comes from the canonical project dir.
-- For synthesis/implementation QoR against a past commit, prefer `synth`/`fpga`'s built-in `--baseline <git ref>` over a manual worktree.
+- Project-specific Booley data lives in `.booley_project/`. Keep handoffs and plans there too (`.booley_project/plans/`, `.booley_project/handoffs/`), never in the RTL repo: they are working notes, not project source.
+- Stealth mode: `.booley_project/` is a separate Git repository. Commit its contents there; none of them may be visible in the main repo.
+- Inside the Sandbox, use the registered Booley MCP tools for EDA work. Flows this Project disables are not registered (the usual set is `sim`, `lint`, `synth`, and `fpga`; `sim --mode elab-only` is an Elaboration Check); call `booley_status` or `booley targets` for exact wiring. Find the tools in your MCP tool list, not through `$PATH` or `--help`; if code mode hides them, search `ALL_TOOLS` for `mcp__booley__booley_status`.
+- If `booley_status` is absent from the MCP tool list, you are on the host and nothing is broken. Point the user to "Reopen in Container" (or `booley session up && booley session enter`); do not substitute raw EDA commands.
+- Interactive Mode: at the start of a tab, call `booley_status` and display its status block. The user shares a VS Code window attached to the Sandbox, so show files with `code --goto <path>[:<line>]` and diffs with `code --diff <left> <right>` when useful.
+- Doctor during task work: verify changes with the relevant Booley Flows and, at most, plain `booley doctor`. `booley doctor --deep` belongs to Project Setup, `/booley-heal`, and Booley version changes; do not run it for task work or handoffs. Report findings your change did not cause (pre-existing, host-owned, or Sandbox provisioning) in the handoff instead of fixing them. Never edit `booley.toml`, `.core` files, `doctor-waivers.toml`, or Goal Records to silence such a finding. If the task itself changes project configuration, Targets, dependencies, or the Sandbox, fix the findings it caused or add a narrow, reviewed waiver for a deliberate constraint, and state that deep verification (`/booley-heal`) is due.
+- RISC-V reference docs (ISA, debug specification, ELF psABI) live at `$BOOLEY_RISCV_DOCS`; start with `INDEX.md` there.
+- Booley Specialists for deeper RTL work: `coverage_analyst`, `reviewer`, `mutation_tester`.
+- Another branch or commit: never use plain `git worktree add` or copy `.booley_project/`. Commit Project changes, then run `booley worktree new <name>` inside the Sandbox from the workspace root (`--help` explains naming). Pass `work_dir=<worktree path>` to a Flow to use that checkout; project config still comes from the canonical project dir. To remove a worktree, follow the steps the command printed; when it printed none, run `git worktree remove <worktree path>`. For QoR against a past commit, prefer `synth`/`fpga` `--baseline <git ref>`.
 ```
