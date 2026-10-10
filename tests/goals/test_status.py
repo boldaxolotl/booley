@@ -173,3 +173,58 @@ def test_projection_conflict_reason_precedes_contract_reason(goal_mode):
     goal = lint_status(goal_mode)
     assert goal.status == "unmet"
     assert goal.reason == "Goal state differs from its selected immutable producer observation"
+
+
+@pytest.mark.parametrize("state", ["entering", "active", "finishing"])
+def test_scoped_selection_retains_occupying_states(goal_mode, tmp_path, state):
+    from booley.goals.status import select_status
+
+    path = record_paths(goal_mode.control, goal_mode.record.id).record_file
+    raw = json.loads(path.read_text())
+    raw["state"] = state
+    path.write_text(json.dumps(raw))
+    store = GoalStore(goal_mode.control)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    occupant = select_status(store, goal_mode.worktree)
+    assert occupant.project_wide is False
+    assert occupant.views == status_views(store, goal_mode.worktree)
+    for caller in (goal_mode.main, outside):
+        fallback = select_status(store, caller)
+        assert fallback.project_wide is True
+        assert fallback.views == occupant.views == status_views(store, caller)
+
+
+def test_scoped_selection_empty_and_errors(layout, tmp_path):
+    from booley.goals.status import select_status
+    from booley.goals.store import GoalStoreError
+    from tests.goals.conftest import git
+
+    store = GoalStore(layout.control)
+    unrelated = tmp_path / "unrelated"
+    unrelated.mkdir()
+    git(unrelated, "init", "-q")
+    for caller in (layout.worktree, layout.main, unrelated, tmp_path):
+        result = select_status(store, caller)
+        assert result.project_wide is True
+        assert result.views == status_views(store, caller) == ()
+    with pytest.raises(GoalStoreError, match="missing or unavailable"):
+        select_status(store, tmp_path / "absent")
+
+
+def test_same_path_with_replacement_identity_uses_project_fallback(goal_mode):
+    from booley.goals.status import select_status
+    from tests.goals.conftest import git
+
+    old_identity = goal_mode.record.worktree
+    worktree = goal_mode.worktree
+    git(goal_mode.main, "worktree", "remove", "--force", str(worktree))
+    replacement = worktree.parent / "replacement"
+    git(goal_mode.main, "worktree", "add", "-q", "-b", "replacement", str(replacement))
+    git(goal_mode.main, "worktree", "move", str(replacement), str(worktree))
+    store = GoalStore(goal_mode.control)
+    assert store.identify_worktree(worktree) != old_identity
+    selection = select_status(store, worktree)
+    assert selection.project_wide is True
+    assert [view.record.id for view in selection.views] == [goal_mode.record.id]
+    assert selection.views == status_views(store, worktree)

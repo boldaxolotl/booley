@@ -4,6 +4,8 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
+from rich.console import Console
+from rich.table import Table
 
 from booley.goals.format import format_criterion_metric, render_status
 from booley.goals.status import GoalStatus, GoalStatusView
@@ -143,3 +145,60 @@ def test_met_metric_fallback_preserves_raw_empty_output(key):
     entry = SimpleNamespace(detail={}, params={}, met=True, stale=False)
     assert format_criterion_metric(key, entry) == ""
     assert format_met_goal_metric(key, entry) == "evidence recorded"
+
+
+# Frozen verbatim from 9da903961; independent of the production renderer.
+def baseline_render_status(views: tuple[GoalStatusView, ...], *, short: bool | None = None) -> str:
+    """Render long detail for one Goal Mode, short rows for several by default."""
+    import io
+
+    stream = io.StringIO()
+    console = Console(file=stream, color_system=None, width=120, markup=False)
+    compact = len(views) != 1 if short is None else short
+    for view in views:
+        console.print(
+            f"{view.record.id} ({view.record.state.value}) · {view.met}/{len(view.goals)} met"
+        )
+        if view.warning:
+            console.print(view.warning)
+        if not compact:
+            console.print(f"Worktree: {view.record.worktree_path}")
+            console.print(f"Branch: {view.record.branch}")
+            table = Table("Goal", "Status", "Evidence", box=None, padding=(0, 1))
+            for goal in view.goals:
+                evidence = goal.evidence_summary
+                if goal.status == "unmet" and goal.reason:
+                    evidence += f" — {goal.reason}"
+                table.add_row(goal.key, goal.status, evidence)
+            console.print(table)
+            console.print(f"Pending proposals: {view.pending_proposals}")
+            conflicts = dict(view.proposal_conflicts)
+            for proposal_view in view.proposals:
+                proposal = proposal_view.proposal
+                console.print(
+                    f"Proposal {proposal.id}: {proposal_view.state} · {proposal.kind.value} {proposal.goal_key} · {proposal.rationale}"
+                )
+                if proposal.id in conflicts:
+                    console.print(f"  Conflict: {conflicts[proposal.id]}")
+                if proposal_view.decision is not None:
+                    console.print(
+                        f"  {proposal_view.decision.source.value}: {proposal_view.decision.reason}"
+                    )
+            if view.interrupted_applies:
+                console.print("Interrupted applies: " + ", ".join(view.interrupted_applies))
+    return stream.getvalue().rstrip()
+
+
+@pytest.mark.parametrize("short", [None, True, False])
+@pytest.mark.parametrize("count", [0, 1, 2])
+@pytest.mark.parametrize("long_path", [False, True])
+def test_project_wide_prefix_preserves_baseline(goal_mode, short, count, long_path):
+    record = replace(
+        goal_mode.record,
+        worktree_path=goal_mode.record.worktree_path + "/directory" * (20 if long_path else 0),
+    )
+    views = tuple(GoalStatusView(replace(record, id=f"mode-{i}"), (), "", 0) for i in range(count))
+    expected = baseline_render_status(views, short=short)
+    assert render_status(views, short=short) == expected
+    prefix = "No Goal Mode is active here. Active Goal Modes in this Project:\n" if count else ""
+    assert render_status(views, short=short, project_wide=True) == prefix + expected
