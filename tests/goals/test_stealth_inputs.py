@@ -81,6 +81,7 @@ def test_user_pairing_pins_project_head_at_goal_entry(stealth):
     )
 
 
+@pytest.mark.timeout(120)
 def test_finish_consumes_committed_projected_rtl_and_sibling_constraint(stealth):
     publish(stealth)
     assert finish_goal(request(stealth), environment(stealth))["status"] == "finished"
