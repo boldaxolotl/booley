@@ -1,6 +1,7 @@
 """Independent Project identity and naming compatibility checks."""
 
 import hashlib
+import os
 
 import pytest
 
@@ -11,7 +12,10 @@ def test_identity_bytes_and_deleted_roots(monkeypatch):
     root = "/deleted/Project"
     full = hashlib.sha256(root.encode()).hexdigest()
     assert identity.project_label_id(root) == full
-    assert identity.project_name_id(root) == full[:32]
+    assert (
+        identity.project_name_id(root)
+        == hashlib.sha256(os.path.normcase(root).encode()).hexdigest()[:32]
+    )
     monkeypatch.setattr(identity.os.path, "normcase", str.lower)
     short = hashlib.sha256(root.lower().encode()).hexdigest()[:32]
     assert identity.project_name_id(root) == short

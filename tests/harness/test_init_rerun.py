@@ -667,6 +667,7 @@ class TestWindowsProjectDataLineEndings:
             assert canonical.stat().st_nlink == 3
         assert _check_only(repo) == 0
 
+    @pytest.mark.timeout(120)
     def test_clean_windows_init_writes_lf_project_data_and_passes_check_only(
         self, repo: Path, force_hardlink_fallback: bool
     ) -> None:
