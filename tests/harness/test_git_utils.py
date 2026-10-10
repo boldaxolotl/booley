@@ -427,3 +427,51 @@ class TestAddGitExcludes:
     def test_non_git_dir_is_noop(self, tmp_path):
         # Best-effort: no .git, no crash, reports no modification.
         assert add_git_excludes(tmp_path, [".devcontainer"]) is False
+
+
+def test_git_helpers_resolve_intended_linked_worktree_with_foreign_selectors(
+    tmp_path, monkeypatch
+):
+    from booley.runtime.git import _git_dir_for_worktree
+    from tests.goals.test_attribute_projection import hostile
+
+    main = _init_repo(tmp_path / "main")
+    linked = _make_worktree(main, tmp_path / "linked")
+    foreign = _init_repo(tmp_path / "foreign")
+    expected_admin = _git_dir_for_worktree(linked)
+    before = {
+        str(p.relative_to(foreign)): p.read_bytes() for p in foreign.rglob("*") if p.is_file()
+    }
+    for key, value in hostile(foreign).items():
+        monkeypatch.setenv(key, value)
+    assert _git_dir_for_worktree(linked) == expected_admin
+    assert _git_common_dir(linked) == main / ".git"
+    assert git_run(linked, ["symbolic-ref", "--short", "HEAD"]).stdout.strip() == "test-branch"
+    assert before == {
+        str(p.relative_to(foreign)): p.read_bytes() for p in foreign.rglob("*") if p.is_file()
+    }
+
+
+def test_git_run_stale_lock_retry_keeps_intended_repository(tmp_path, monkeypatch):
+    from booley.runtime import git as git_module
+    from tests.goals.test_attribute_projection import hostile
+
+    main = _init_repo(tmp_path / "main")
+    linked = _make_worktree(main, tmp_path / "linked")
+    foreign = _init_repo(tmp_path / "foreign")
+    admin = git_module._git_dir_for_worktree(linked)
+    assert admin is not None
+    lock = admin / "index.lock"
+    lock.write_bytes(b"stale fixture")
+    before = {
+        str(p.relative_to(foreign)): p.read_bytes() for p in foreign.rglob("*") if p.is_file()
+    }
+    monkeypatch.setattr(git_module, "_git_process_owns_worktree", lambda *args: False)
+    for key, value in hostile(foreign).items():
+        monkeypatch.setenv(key, value)
+    result = git_run(linked, ["add", "init.txt"])
+    assert result.returncode == 0, result.stderr
+    assert not lock.exists()
+    assert before == {
+        str(p.relative_to(foreign)): p.read_bytes() for p in foreign.rglob("*") if p.is_file()
+    }

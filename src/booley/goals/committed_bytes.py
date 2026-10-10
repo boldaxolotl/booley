@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import stat
 import subprocess
 import tempfile
 from collections.abc import Generator
@@ -22,13 +23,17 @@ from booley.runtime.git_attributes_policy import (
     system_attributes_disabled,
 )
 from booley.runtime.history_commit import FileCommitError
-from booley.runtime.pinned_history import raw_git
+from booley.runtime.pinned_history import raw_git, tree_rows
 
 AMBIENT_ATTRIBUTES_ERROR = (
     "unsupported ambient input attributes; Finish accepts Booley's managed info/attributes "
     "rule from booley init. Remove other local/user/system attributes or commit equivalent "
     ".gitattributes policy before finish"
 )
+
+
+CHECKOUT_ATTRIBUTES = ("text", "eol", "filter", "working-tree-encoding", "ident", "crlf")
+CHECKOUT_ATTRIBUTES_MARKER = ",".join(CHECKOUT_ATTRIBUTES)
 
 
 ATTRIBUTES_CHANGED_ERROR = "unsupported ambient input attributes changed during finish"
@@ -44,6 +49,7 @@ class BytePolicy:
 
     def record(self) -> dict[str, str]:
         return {
+            "checkout_attributes": CHECKOUT_ATTRIBUTES_MARKER,
             "autocrlf": self.autocrlf,
             "eol": self.eol,
             "managed_rule": GITATTRIBUTES_RULE if self.info_attributes else "",
@@ -81,9 +87,9 @@ def shadow_repository(
             "GIT_CONFIG_COUNT": "0",
             "GIT_CONFIG_PARAMETERS": "",
             "GIT_NO_LAZY_FETCH": "1",
+            "GIT_ATTR_NOSYSTEM": "1",
         }
         if info_attributes:
-            env["GIT_ATTR_NOSYSTEM"] = "1"
             info = shadow / ".git/info"
             info.mkdir()
             (info / "attributes").write_bytes(info_attributes)
@@ -98,46 +104,92 @@ def attributes(
     ambient: bool = False,
     policy: BytePolicy,
 ) -> dict[bytes, dict[str, str]]:
-    """Pinned index attributes, optionally compared with effective external policy."""
-    with shadow_repository(repository, policy.info_attributes) as (
-        shadow,
-        env,
-    ):
+    """Pinned attributes, or external policy over the pin's own tracked attributes."""
+    with shadow_repository(repository, policy.info_attributes) as (shadow, env):
         raw_git(shadow, "read-tree", commit, env=env)
-        args = (
-            "check-attr",
-            "--cached",
-            "-z",
-            "--stdin",
-            "text",
-            "eol",
-            "filter",
-            "working-tree-encoding",
-        )
         paths = b"".join(name + b"\0" for name in names)
-        result = (
-            raw_git(
+        args = ("check-attr", "-z", "--stdin", *CHECKOUT_ATTRIBUTES)
+        if ambient:
+            comparison = shadow.parent / "ambient"
+            comparison.mkdir()
+            _comparison_attributes(repository, commit, names, comparison)
+            result = raw_git(
                 repository,
                 *args,
-                env={"GIT_INDEX_FILE": str(shadow / ".git/index")},
+                env={
+                    "GIT_INDEX_FILE": str(shadow / ".git/index"),
+                    "GIT_WORK_TREE": str(comparison),
+                },
                 input_bytes=paths,
             )
-            if ambient
-            else raw_git(
+        else:
+            result = raw_git(
                 shadow,
                 "-c",
                 "core.attributesFile=" + os.devnull,
                 *args,
+                "--cached",
                 env=env,
                 input_bytes=paths,
             )
-        )
     fields = result.rstrip(b"\0").split(b"\0") if result else []
     values: dict[bytes, dict[str, str]] = {}
     for i in range(0, len(fields), 3):
         name, key, value = fields[i : i + 3]
         values.setdefault(name, {})[key.decode("ascii")] = value.decode("utf-8")
     return values
+
+
+def _attribute_ancestors(names: list[bytes]) -> set[Path]:
+    ancestors = {Path(".gitattributes")}
+    for name in names:
+        parent = Path(os.fsdecode(name)).parent
+        ancestors.update(path / ".gitattributes" for path in (parent, *parent.parents))
+    return ancestors
+
+
+def _comparison_attributes(
+    repository: Path, commit: str, names: list[bytes], target: Path
+) -> None:
+    """Keep baseline tracked rules; overlay only current-index-untracked ancestor rules."""
+    for name, metadata in tree_rows(repository, commit).items():
+        mode, kind, oid = metadata.split()
+        path = Path(os.fsdecode(name))
+        if path.name != ".gitattributes" or kind != b"blob" or mode not in {b"100644", b"100755"}:
+            continue
+        destination = target / path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(raw_git(repository, "cat-file", "blob", oid.decode("ascii")))
+    tracked = set(raw_git(repository, "ls-files", "-z").split(b"\0"))
+    for path in _attribute_ancestors(names):
+        if os.fsencode(path.as_posix()) in tracked:
+            continue
+        content = _untracked_attribute_bytes(repository, path)
+        if content is not None:
+            destination = target / path
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(content)
+
+
+def _untracked_attribute_bytes(repository: Path, relative: Path) -> bytes | None:
+    """Native literal lookup preserves case behavior and never follows attribute links."""
+    try:
+        source = repository / relative
+        for parent in relative.parents:
+            candidate = repository / parent
+            if candidate.is_symlink() or getattr(candidate, "is_junction", lambda: False)():
+                raise LifecycleError(AMBIENT_ATTRIBUTES_ERROR)
+        try:
+            mode = source.lstat().st_mode
+        except FileNotFoundError:
+            return None
+        if stat.S_ISLNK(mode):
+            return None  # Git ignores symlink attribute files.
+        if not stat.S_ISREG(mode):
+            raise LifecycleError(AMBIENT_ATTRIBUTES_ERROR)
+        return source.read_bytes()
+    except OSError as exc:
+        raise LifecycleError(AMBIENT_ATTRIBUTES_ERROR) from exc
 
 
 def projected_blobs(

@@ -11,6 +11,7 @@ from pathlib import Path
 
 from booley.commit_policy import validate_message
 from booley.core import scope_matching
+from booley.runtime.git_environment import inherited_git_environment
 
 from .agent_errors import BlockingError
 
@@ -29,6 +30,7 @@ def git_run(wt: Path, args: list[str], timeout: int = 30) -> subprocess.Complete
     result = subprocess.run(
         ["git", *args],
         cwd=str(wt),
+        env=inherited_git_environment(),
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -41,6 +43,7 @@ def git_run(wt: Path, args: list[str], timeout: int = 30) -> subprocess.Complete
         result = subprocess.run(
             ["git", *args],
             cwd=str(wt),
+            env=inherited_git_environment(),
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -69,6 +72,7 @@ def _git_dir_for_worktree(wt: Path) -> Path | None:
         result = subprocess.run(
             ["git", "rev-parse", "--git-dir"],
             cwd=str(wt),
+            env=inherited_git_environment(),
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -106,6 +110,7 @@ def _git_common_dir(wt: Path) -> Path | None:
         result = subprocess.run(
             ["git", "rev-parse", "--git-common-dir"],
             cwd=str(wt),
+            env=inherited_git_environment(),
             capture_output=True,
             text=True,
             encoding="utf-8",

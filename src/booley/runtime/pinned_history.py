@@ -10,6 +10,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
+from booley.runtime.git_environment import inherited_git_environment
 from booley.runtime.history_commit import FileCommitError
 from booley.runtime.publication_ownership import PublicationOwnership
 
@@ -31,14 +32,13 @@ def raw_git(
     env: dict[str, str] | None = None,
     input_bytes: bytes | None = None,
 ) -> bytes:
-    """Read Git without newline translation, replacement objects or ambient index selection."""
+    """Run explicit-repository Git with raw bytes and caller-owned environment overrides."""
     environment = {
-        **os.environ,
+        **inherited_git_environment(),
         "GIT_NO_REPLACE_OBJECTS": "1",
         "GIT_OPTIONAL_LOCKS": "0",
         "GIT_NO_LAZY_FETCH": "1",
     }
-    environment.pop("GIT_INDEX_FILE", None)
     environment.update(env or {})
     try:
         result = subprocess.run(

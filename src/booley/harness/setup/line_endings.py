@@ -29,6 +29,7 @@ from booley.runtime.git_attributes_policy import (
     native_attribute_path,
     system_attributes_disabled,
 )
+from booley.runtime.git_environment import inherited_git_environment
 
 LineEndingRole = Literal["project-checkout", "project-data"]
 
@@ -229,26 +230,8 @@ def line_ending_repository_display(role: LineEndingRole, root: Path) -> str:
 
 
 def _read_only_git_env() -> dict[str, str]:
-    """Prevent observational Git commands from opportunistically locking the index."""
-    return {
-        **{
-            key: value
-            for key, value in os.environ.items()
-            if key
-            not in {
-                "GIT_DIR",
-                "GIT_COMMON_DIR",
-                "GIT_WORK_TREE",
-                "GIT_INDEX_FILE",
-                "GIT_OBJECT_DIRECTORY",
-                "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-                "GIT_PREFIX",
-                "GIT_CEILING_DIRECTORIES",
-                "GIT_DISCOVERY_ACROSS_FILESYSTEM",
-            }
-        },
-        "GIT_OPTIONAL_LOCKS": "0",
-    }
+    """Keep explicit-checkout observations independent of inherited Git selectors."""
+    return {**inherited_git_environment(), "GIT_OPTIONAL_LOCKS": "0"}
 
 
 def _output_bytes(output: bytes | str | None) -> bytes:
