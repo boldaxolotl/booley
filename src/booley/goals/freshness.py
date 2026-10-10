@@ -27,7 +27,7 @@ from __future__ import annotations
 import copy
 import tomllib
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -35,6 +35,11 @@ from booley.criteria.categories import verification_fingerprint_categories
 from booley.criteria.freshness import VerificationFreshness, evaluate_verification_freshness
 from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
 from booley.flows.source_fingerprint import compute_source_fingerprint
+from booley.goals.generated_artifacts import (
+    generated_artifact_paths,
+    goal_target_surface,
+    project_source,
+)
 from booley.goals.model import GoalFamily, GoalSpec
 from booley.goals.simulation import GOAL_SUITE_DETAIL_KEY, resolved_simulation_suite
 from booley.goals.target_surface import (
@@ -60,15 +65,56 @@ class GoalFreshnessResolvers:
     """How the current inputs are resolved; replaceable for tests."""
 
     source: Callable[..., dict[str, Any]] = compute_source_fingerprint
-    target_surface: Callable[[Path, str | None], dict[str, Any]] = target_surface_fingerprint
+    target_surface: Callable[[Path, str | None], dict[str, Any]] = goal_target_surface
     simulation_suite: Callable[[Path, str], tuple[str, ...]] = resolved_simulation_suite
     waiver_policy: Callable[[Path], dict[str, Any]] = waiver_policy_fingerprint
     waiver_semantics: Callable[[Path], str] | None = None
 
+    artifact_paths: Callable[[Path], frozenset[Path]] = generated_artifact_paths
+    policy_surface: Callable[..., dict[str, Any]] | None = None
+
+    def source_fingerprint(
+        self, work_dir: Path, *, target: str | None, excluded: frozenset[Path] | None = None
+    ) -> dict[str, Any]:
+        """Sample producer sources once at the Goal freshness boundary."""
+        current = dict(self.source(work_dir, target=target))
+        if target is None and self.source is compute_source_fingerprint:
+            selected = self.artifact_paths(work_dir) if excluded is None else excluded
+            return project_source(work_dir, current, selected)
+        return current
+
+    def surface_fingerprint(
+        self, work_dir: Path, target: str | None, excluded: frozenset[Path] | None = None
+    ) -> dict[str, Any]:
+        """Resolve a surface using the same immutable operation selection."""
+        if self.policy_surface is not None or self.target_surface in (
+            goal_target_surface,
+            target_surface_fingerprint,
+        ):
+            selected = (
+                (self.artifact_paths(work_dir) if target is None else frozenset())
+                if excluded is None
+                else excluded
+            )
+            provider = self.policy_surface or target_surface_fingerprint
+            return provider(work_dir, target, artifact_paths=selected)
+        return self.target_surface(work_dir, target)
+
+    def select_artifacts(self, work_dir: Path, target: str | None) -> frozenset[Path]:
+        """Select once only for production providers; custom providers own their values."""
+        if target is None and (
+            self.source is compute_source_fingerprint
+            or self.target_surface in (goal_target_surface, target_surface_fingerprint)
+            or self.policy_surface is not None
+        ):
+            return self.artifact_paths(work_dir)
+        return frozenset()
+
     def fingerprint(self, work_dir: Path, *, target: str | None) -> dict[str, Any]:
         """The current source fingerprint plus the ``target_surface`` entry."""
-        current = dict(self.source(work_dir, target=target))
-        current[TARGET_SURFACE_CATEGORY] = self.target_surface(work_dir, target)
+        excluded = self.select_artifacts(work_dir, target)
+        current = self.source_fingerprint(work_dir, target=target, excluded=excluded)
+        current[TARGET_SURFACE_CATEGORY] = self.surface_fingerprint(work_dir, target, excluded)
         return current
 
 
@@ -87,7 +133,7 @@ def _is_simulation(key: str, goal: GoalSpec | None) -> bool:
 
 def _stamp_target(stamp: Mapping[str, Any], goal: GoalSpec | None) -> str | None:
     """The Target a stamp describes: the Goal's own when known, else the stamp's."""
-    if goal is not None and goal.target is not None:
+    if goal is not None:
         return goal.target
     target = stamp.get("target")
     return target if isinstance(target, str) and target else None
@@ -107,15 +153,10 @@ def stamp_goal_detail(
     resolvers: GoalFreshnessResolvers = DEFAULT_RESOLVERS,
     target_surface: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """*detail* with its source stamp completed by ``target_surface`` (D6).
+    """Complete *detail* with the Goal surface, preserving producer digests (D6).
 
-    An existing stamp keeps its categories and digests and gains
-    ``target_surface``; a detail without one gets a whole stamp. A resolver
-    that fails records the error instead of a digest, so the evidence reads
-    as stale rather than fresh. A caller that already resolved and checked
-    the surface passes it as *target_surface*: stamping must describe the
-    declaration the result was validated against, not a second read that a
-    concurrent edit could have changed in between.
+    Resolver failures stamp an error and read stale. A supplied *target_surface*
+    describes the already validated declaration and avoids another read.
     """
     stamped = copy.deepcopy(dict(detail))
     if key.startswith("coverage_"):
@@ -128,6 +169,12 @@ def stamp_goal_detail(
     raw = stamped.get(SOURCE_FINGERPRINT_DETAIL_KEY)
     stamp: dict[str, Any] = cast("dict[str, Any]", raw) if isinstance(raw, dict) else {}
     target = _stamp_target(stamp, goal)
+    stamp["target"] = target
+    if target is None:
+        resolvers, error = _frozen_resolvers(resolvers, work_dir)
+        if error is not None:
+            stamp.setdefault("fingerprint", error)
+            target_surface = error
     if not isinstance(stamp.get("fingerprint"), dict):
         stamp = {
             "target": target,
@@ -144,6 +191,17 @@ def stamp_goal_detail(
         fingerprint[TARGET_SURFACE_CATEGORY] = resolve_target_surface(resolvers, work_dir, target)
     stamped[SOURCE_FINGERPRINT_DETAIL_KEY] = stamp
     return stamped
+
+
+def _frozen_resolvers(
+    resolvers: GoalFreshnessResolvers, root: Path
+) -> tuple[GoalFreshnessResolvers, dict[str, Any] | None]:
+    """Freeze one classification for source/surface stamping without resampling."""
+    try:
+        excluded = resolvers.select_artifacts(root, None)
+        return replace(resolvers, artifact_paths=lambda root: excluded), None
+    except RESOLVER_ERRORS as exc:
+        return resolvers, {"error": str(exc)}
 
 
 def _producer_waiver_policy(
@@ -170,7 +228,7 @@ def resolve_target_surface(
 ) -> dict[str, Any]:
     """The ``target_surface`` fingerprint of *target*, or ``{"error": ...}`` when unresolvable."""
     try:
-        return dict(resolvers.target_surface(work_dir, target))
+        return dict(resolvers.surface_fingerprint(work_dir, target))
     except RESOLVER_ERRORS as exc:
         return {"error": str(exc)}
 
@@ -179,7 +237,7 @@ def _source_or_error(
     resolvers: GoalFreshnessResolvers, work_dir: Path, target: str | None
 ) -> dict[str, Any]:
     try:
-        return dict(resolvers.source(work_dir, target=target))
+        return dict(resolvers.source_fingerprint(work_dir, target=target))
     except RESOLVER_ERRORS as exc:
         return {"error": str(exc)}
 

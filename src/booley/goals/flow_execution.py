@@ -21,10 +21,12 @@ from typing import Any
 from booley.criteria.evidence_ledger import AcceptanceTransaction
 from booley.criteria.state import CriterionChange, DevelopmentState, StatePersistence
 from booley.evidence.acceptance import PairedProjectBaseline, ResolvedFlowAcceptance
+from booley.flows.execution_persistence import EvidenceDiscarded
 from booley.flows.request import FlowRequest
+from booley.flows.source_fingerprint import compute_source_fingerprint
 from booley.goals.binding import GoalRunBinding
 from booley.goals.checkout import CheckoutError, GoalCheckout
-from booley.goals.freshness import DEFAULT_RESOLVERS, GoalFreshnessResolvers
+from booley.goals.freshness import DEFAULT_RESOLVERS, RESOLVER_ERRORS, GoalFreshnessResolvers
 from booley.goals.paths import record_paths
 from booley.goals.recorder import GoalEvidenceRecorder
 from booley.goals.store import GoalStore, GoalStoreError
@@ -98,6 +100,31 @@ class GoalFlowExecution:
             if goal.spec.key == key and goal.spec_revision == self._binding.spec_revision(key):
                 return goal.spec.target
         return fallback
+
+    def criterion_source_fingerprint(
+        self, key: str, root: Path, target: str | None
+    ) -> dict[str, Any]:
+        """Freeze the Goal producer stamp before receipt finalization."""
+        try:
+            found = GoalCheckout(root).containing_repository()
+            if found is None or found[0].resolve() != self._binding.worktree_root.resolve():
+                raise EvidenceDiscarded("producer is outside its admitted Goal worktree")
+            record = GoalStore(self._binding.project_dir).load(self._binding.record_id)
+        except (CheckoutError, GoalStoreError) as exc:
+            raise EvidenceDiscarded(f"Goal producer binding cannot be resolved: {exc}") from exc
+        goal = next((item for item in record.goals if item.spec.key == key), None)
+        if goal is None:
+            return compute_source_fingerprint(self._binding.worktree_root, target=target)
+        if goal.spec_revision != self._binding.spec_revision(key):
+            raise EvidenceDiscarded("producer Goal specification changed; re-run")
+        try:
+            return self._resolvers.source_fingerprint(
+                self._binding.worktree_root, target=goal.spec.target
+            )
+        except RESOLVER_ERRORS as exc:
+            if goal.spec.target is not None:
+                raise
+            raise EvidenceDiscarded(f"Goal producer inputs cannot be resolved: {exc}") from exc
 
     def criterion_is_current(self, state: DevelopmentState, key: str) -> bool:
         """Validate the exact receipt a caller intends to replay, without state writes."""

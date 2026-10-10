@@ -49,13 +49,12 @@ from booley.fusesoc.fusesoc_registry import (
 )
 from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.targets.catalog import TargetCatalog
-from booley.targets.declared_inputs import core_program_paths
+from booley.targets.declared_inputs import HDL_SUFFIXES, core_program_paths
 from booley.targets.domain import FuseSocError
 
 TARGET_SURFACE_CATEGORY = "target_surface"
 _DIGEST_FORMAT = "booley-goal-target-surface/1"
 _HDL_FILE_TYPES = ("verilogSource", "systemVerilogSource", "vhdlSource")
-_HDL_SUFFIXES = frozenset({".v", ".vh", ".sv", ".svh", ".vhd", ".vhdl"})
 # A CAPI2 conditional list item: ``flag ? (item)`` or ``!flag ? (item)``.
 _CONDITIONAL = re.compile(r"\s*!?[^\s?()]+\s*\?\s*\((?P<item>.*)\)\s*")
 
@@ -70,12 +69,9 @@ def target_surface_fingerprint(
     *,
     logical_roots: Mapping[Path, Path] | None = None,
     logical_tests: str | None = None,
+    artifact_paths: frozenset[Path] = frozenset(),
 ) -> dict[str, Any]:
-    """The ``target_surface`` fingerprint entry: ``{"digest", "files"}`` (module docstring).
-
-    Raises :class:`TargetSurfaceError` when the Target or one of its cores
-    cannot be resolved or read.
-    """
+    """Hash declaration files; unresolved Targets raise :class:`TargetSurfaceError`."""
     root = work_dir.resolve()
     try:
         cores = _cores(root, target)
@@ -105,6 +101,7 @@ def target_surface_fingerprint(
             "sha256": _content_digest(path),
         }
         for (kind, label), path in sorted(files.items())
+        if path.resolve() not in artifact_paths
     ]
     payload = json.dumps(
         {"format": _DIGEST_FORMAT, "target": target, "files": entries},
@@ -179,7 +176,7 @@ def _file_items(item: object, default_type: object) -> Iterator[tuple[str, objec
 def _is_hdl(text: str, file_type: object) -> bool:
     if isinstance(file_type, str) and file_type:
         return file_type.startswith(_HDL_FILE_TYPES)
-    return PurePosixPath(text).suffix.casefold() in _HDL_SUFFIXES
+    return PurePosixPath(text).suffix.casefold() in HDL_SUFFIXES
 
 
 def _label(path: Path, root: Path) -> str:

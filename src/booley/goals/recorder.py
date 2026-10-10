@@ -67,6 +67,7 @@ from booley.goals.apply_barrier import require_no_apply
 from booley.goals.binding import GoalRunBinding
 from booley.goals.freshness import (
     DEFAULT_RESOLVERS,
+    RESOLVER_ERRORS,
     GoalFreshnessResolvers,
     resolve_target_surface,
     stamp_goal_detail,
@@ -430,7 +431,9 @@ class GoalEvidenceRecorder:
         with self._gate.publishing(keys) as record:
             yield identity, self._prepare(record, changes)
 
-    def _require_unchanged_target(self, goal: GoalSpec) -> dict[str, Any]:
+    def _require_unchanged_target(
+        self, goal: GoalSpec, resolvers: GoalFreshnessResolvers
+    ) -> dict[str, Any]:
         """Refuse a result whose Target declaration changed after the run was admitted (D6).
 
         Returns the surface fingerprint that passed the comparison; the stamp
@@ -440,10 +443,14 @@ class GoalEvidenceRecorder:
         captured = dict(self._binding.start_surfaces)
         if goal.target not in captured:
             raise EvidenceDiscarded(f"{_target_label(goal.target)} was not captured at admission")
-        surface = resolve_target_surface(self._resolvers, self._binding.worktree_root, goal.target)
+        surface = resolve_target_surface(resolvers, self._binding.worktree_root, goal.target)
         digest = surface.get("digest")
         now = digest if isinstance(digest, str) else None
-        if now != captured[goal.target]:
+        if (
+            now is None
+            or not isinstance(captured[goal.target], str)
+            or now != captured[goal.target]
+        ):
             raise EvidenceDiscarded(f"{_target_label(goal.target)} changed during the run")
         return surface
 
@@ -453,15 +460,51 @@ class GoalEvidenceRecorder:
         goals = {goal.spec.key: goal.spec for goal in record.goals}
         return [self._prepare_change(change, goals.get(change.key)) for change in changes]
 
+    def _require_producer_stamp(
+        self, change: CriterionChange, goal: GoalSpec | None, excluded: frozenset[Path]
+    ) -> None:
+        """Never recover a failed producer by sampling current bytes at publication."""
+        if not change.met:
+            return
+        raw = change.detail.get("_source_fingerprint")
+        if change.detail.get("review_detail_version") == 4 and (
+            not isinstance(raw, dict)
+            or not isinstance(raw.get("fingerprint"), dict)
+            or not isinstance(change.detail.get("receipt_id"), str)
+        ):
+            raise EvidenceDiscarded("Reviewer has no valid producer receipt; re-run Reviewer")
+        if goal is None or goal.target is not None or not isinstance(raw, dict):
+            return
+        fingerprint = raw.get("fingerprint")
+        if not isinstance(fingerprint, dict):
+            return
+        for category in ("rtl", "tb", "workload", "campaign"):
+            for name in fingerprint.get(category, {}).get("files", []):
+                if (self._binding.worktree_root / name).resolve() in excluded:
+                    raise EvidenceDiscarded(
+                        "producer stamp includes generated build data; re-run Reviewer"
+                    )
+
     def _prepare_change(self, change: CriterionChange, goal: GoalSpec | None) -> CriterionChange:
+        if not change.met and change.reason == "source-invalidated":
+            return change  # The detail describes old evidence, not this producer's inputs.
         work_dir = self._binding.worktree_root
-        surface = None if goal is None else self._require_unchanged_target(goal)
+        resolvers = self._resolvers
+        excluded = frozenset()
+        if goal is not None and goal.target is None:
+            try:
+                excluded = resolvers.select_artifacts(work_dir, goal.target)
+            except RESOLVER_ERRORS as exc:
+                raise EvidenceDiscarded(f"Goal inputs cannot be resolved: {exc}") from exc
+            resolvers = replace(resolvers, artifact_paths=lambda root: excluded)
+        surface = None if goal is None else self._require_unchanged_target(goal, resolvers)
+        self._require_producer_stamp(change, goal, excluded)
         detail = stamp_goal_detail(
             change.key,
             change.detail,
             work_dir=work_dir,
             goal=goal,
-            resolvers=self._resolvers,
+            resolvers=resolvers,
             target_surface=surface,
         )
         if goal is None or goal.family is not GoalFamily.SIM or goal.target is None:

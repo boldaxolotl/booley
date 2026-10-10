@@ -4,11 +4,17 @@ from __future__ import annotations
 
 import re
 import shlex
+import tomllib
 from collections.abc import Iterable, Iterator, Mapping
 from pathlib import Path, PurePosixPath
 from typing import cast
 
 from booley.core.boundary import as_dict
+from booley.fusesoc.fusesoc_registry import core_files_root, discover_cores, read_core
+from booley.runtime.project_dir import resolve_checkout_project_dir
+from booley.targets.catalog import TargetCatalog
+
+HDL_SUFFIXES = frozenset({".v", ".vh", ".sv", ".svh", ".vhd", ".vhdl"})
 
 _PROGRAM_SUFFIXES = frozenset({".bash", ".js", ".pl", ".py", ".rb", ".sh", ".tcl"})
 _PROGRAM_BASENAMES = frozenset({"makefile", "gnumakefile"})
@@ -43,6 +49,7 @@ def core_program_paths(
     core_file: Path,
     project_root: Path,
     strict: bool = False,
+    include_missing: bool = False,
     files_root: Path | None = None,
 ) -> tuple[Path, ...]:
     """Return programs from FuseSoC ``scripts.cmd`` and generator commands.
@@ -53,12 +60,13 @@ def core_program_paths(
     against *files_root* — the core's effective fileset root, which differs from
     its directory for projected Stealth cores — defaulting to the core directory.
     """
-    candidates = _core_program_candidates(doc, strict=strict)
+    candidates = _core_program_candidates(doc, strict=strict or include_missing)
     return _resolve_program_paths(
         candidates,
         search_root=core_file.parent if files_root is None else files_root,
         project_root=project_root,
         strict=strict,
+        include_missing=include_missing,
     )
 
 
@@ -119,6 +127,7 @@ def project_config_program_paths(
     *,
     project_root: Path,
     strict: bool = False,
+    include_missing: bool = False,
 ) -> tuple[Path, ...]:
     """Return programs invoked by configured Pre-Sim Commands."""
     candidates: list[str] = []
@@ -132,12 +141,15 @@ def project_config_program_paths(
             if commands is None:
                 continue
             for command in commands:
-                candidates.extend(_shell_program_candidates(command, strict=strict))
+                candidates.extend(
+                    _shell_program_candidates(command, strict=strict or include_missing)
+                )
     return _resolve_program_paths(
         candidates,
         search_root=project_root,
         project_root=project_root,
         strict=strict,
+        include_missing=include_missing,
     )
 
 
@@ -262,6 +274,7 @@ def _resolve_program_paths(
     search_root: Path,
     project_root: Path,
     strict: bool,
+    include_missing: bool = False,
 ) -> tuple[Path, ...]:
     root = project_root.resolve()
     base = search_root.resolve()
@@ -280,6 +293,9 @@ def _resolve_program_paths(
             paths.update(_redirecting_entries(root, lexical))
         elif strict:
             raise ValueError(f"referenced program is unavailable: {candidate}")
+        elif include_missing and not resolved.is_dir():
+            paths.add(resolved)
+            paths.update(_redirecting_entries(root, lexical))
     return tuple(sorted(paths))
 
 
@@ -299,3 +315,37 @@ def _looks_like_program_path(path: PurePosixPath, token: str) -> bool:
         or "/" in token
         or "\\" in token
     )
+
+
+def committed_only_inputs(
+    root: Path, catalog: TargetCatalog, target: str | None, *, include_missing: bool = False
+) -> frozenset[Path]:
+    """Runtime HDL and declared programs never acquire a generated exemption."""
+    handles = catalog.list() if target is None else (catalog.select(target),)
+    paths = {
+        (root / item.path).resolve()
+        for handle in handles
+        for item in catalog.inspect(handle).inputs
+        if item.file_type.startswith(("verilogSource", "systemVerilogSource", "vhdlSource"))
+    }
+    cores = discover_cores(root) if target is None else catalog.core_closure(handles) or ()
+    for core in cores:
+        paths.update(
+            core_program_paths(
+                read_core(core),
+                core_file=core,
+                project_root=root,
+                files_root=core_files_root(core, root),
+                include_missing=include_missing,
+            )
+        )
+    config = resolve_checkout_project_dir(root) / "booley.toml"
+    if config.is_file():
+        paths.update(
+            project_config_program_paths(
+                tomllib.loads(config.read_text(encoding="utf-8")),
+                project_root=root,
+                include_missing=include_missing,
+            )
+        )
+    return frozenset(paths)

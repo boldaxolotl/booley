@@ -22,7 +22,12 @@ from booley.goals.completion_history import (
     validate_canonical_ownership,
 )
 from booley.goals.finish_presentation import freeze_presentation, frozen_response, html_bytes
-from booley.goals.freshness import DEFAULT_RESOLVERS, GoalFreshnessResolvers
+from booley.goals.freshness import DEFAULT_RESOLVERS, RESOLVER_ERRORS, GoalFreshnessResolvers
+from booley.goals.generated_artifacts import (
+    artifact_epoch,
+    presentation_exclusions,
+    retained_presentation_inputs,
+)
 from booley.goals.input_identity import InputIdentityError, directory_identity, require_bindings
 from booley.goals.input_view import (
     CommittedView,
@@ -50,10 +55,18 @@ from booley.goals.paths import record_paths
 from booley.goals.proposals import digest, encode
 from booley.goals.protected_inputs import ProtectedInputRoots, protected_input_violations
 from booley.goals.publication_destination import require_destination as _require_destination
-from booley.goals.review_package import build_goal_package, completion_authority_digest
+from booley.goals.review_package import (
+    build_goal_package,
+    completion_authority_digest,
+    presentation_observations,
+)
 from booley.goals.state_store import load_goal_state
 from booley.goals.status import build_status
-from booley.goals.target_changes import resolved_goal_targets, resolved_surfaces
+from booley.goals.target_changes import (
+    project_target_changes,
+    resolved_goal_targets,
+    resolved_surfaces,
+)
 from booley.review.goal_package import (
     GoalCompletionPackage,
     GoalReviewContext,
@@ -282,23 +295,46 @@ def _build_frozen_package(
     env: FinishEnvironment,
     selection: InputSelection,
 ) -> tuple[GoalCompletionPackage, dict[str, Any]]:
+    """Keep classification and resolver failures at the Finish lifecycle boundary."""
+    try:
+        return _build_frozen_package_checked(operation, record, env, selection)
+    except LifecycleError:
+        raise
+    except RESOLVER_ERRORS as exc:
+        raise LifecycleError(f"completion inputs cannot be resolved: {exc}") from exc
+
+
+def _build_frozen_package_checked(
+    operation: LifecycleOperation,
+    record: GoalRecord,
+    env: FinishEnvironment,
+    selection: InputSelection,
+) -> tuple[GoalCompletionPackage, dict[str, Any]]:
     state = load_goal_state(operation.store, record)
     generated = (
         () if env.generated_inputs is None else env.generated_inputs(record, state, operation.root)
     )
+    policy = any(goal.spec.target is None for goal in record.goals)
+    resolvers = alias_resolvers(record, selection, operation.store.project_dir, env.resolvers)
+    excluded = resolvers.select_artifacts(selection.rtl, None) if policy else frozenset()
+    resolvers = replace(resolvers, artifact_paths=lambda root: excluded)
     with committed_view(
         selection, record, control_project=operation.store.project_dir, baseline=True
     ) as base:
         before = resolved_surfaces(base.root)
+        before_epoch = artifact_epoch(base, record, baseline=True) if policy else None
     with committed_view(selection, record, control_project=operation.store.project_dir) as final:
         validate_committed(
             final,
             record,
             state.criteria,
-            alias_resolvers(record, selection, operation.store.project_dir, env.resolvers),
+            resolvers,
             generated,
         )
         target_changes = semantic_target_changes(before, resolved_surfaces(final.root))
+        target_changes, omitted = _project_completion_changes(
+            operation, record, state, final, before_epoch, target_changes
+        )
         proof = _input_proof(selection, record, final)
         context = GoalReviewContext(
             record.to_json(),
@@ -312,10 +348,25 @@ def _build_frozen_package(
             _participant_diff(selection),
             resolved_goal_targets(final.root, record),
         )
-        package = build_goal_package(context, record, state, operation.store.project_dir)
+        package = build_goal_package(
+            context, record, state, operation.store.project_dir, omitted_inputs=omitted
+        )
     return GoalCompletionPackage.from_json(
         {**package.to_json(), "earlier_attempts": earlier_attempt_facts(operation)}
     ), proof
+
+
+def _project_completion_changes(operation, record, state, final, before_epoch, changes):
+    """Apply Goal presentation policy only after resolving the raw semantic delta."""
+    if before_epoch is None:
+        return changes, frozenset()
+    after_epoch = artifact_epoch(final, record, baseline=False)
+    observations = presentation_observations(record, state, operation.store.project_dir)
+    retained = retained_presentation_inputs(final, observations)
+    labels, omitted = presentation_exclusions(
+        final.selection.rtl, (before_epoch, after_epoch), retained
+    )
+    return project_target_changes(changes, *labels), omitted
 
 
 def _input_proof(

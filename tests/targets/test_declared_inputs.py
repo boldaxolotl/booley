@@ -381,3 +381,31 @@ def test_core_program_paths_omit_missing_program_when_not_strict(tmp_path: Path)
         )
         == ()
     )
+
+
+@pytest.mark.parametrize("program", ["./missing", "missing.py"])
+def test_missing_declared_program_opt_in_preserves_default_and_strict(tmp_path, program):
+    path = tmp_path / program
+    document = {"scripts": {"run": {"cmd": [program]}}}
+    options = {"core_file": tmp_path / "top.core", "project_root": tmp_path}
+    assert core_program_paths(document, **options) == ()
+    assert core_program_paths(document, **options, include_missing=True) == (path.resolve(),)
+    with pytest.raises(ValueError, match="unavailable"):
+        core_program_paths(document, **options, strict=True, include_missing=True)
+
+
+def test_missing_generator_bare_program_is_protected(tmp_path):
+    document = {"generators": {"gen": {"command": "missing"}}}
+    assert core_program_paths(
+        document, core_file=tmp_path / "top.core", project_root=tmp_path, include_missing=True
+    ) == (tmp_path / "missing",)
+
+
+def test_missing_program_keeps_redirecting_parent(tmp_path):
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    (nested / ".git").mkdir()
+    document = {"generators": {"gen": {"command": "nested/missing"}}}
+    assert core_program_paths(
+        document, core_file=tmp_path / "top.core", project_root=tmp_path, include_missing=True
+    ) == (nested, nested / "missing")
