@@ -149,8 +149,34 @@ class TestOutstandingSteps:
         assert len(init_cmd._outstanding_setup_steps(project)) == len(init_cmd._SETUP_STEP_LINES)
 
 
+PUBLISHED_ORIGIN = "https://github.com/boldaxolotl/booley-prj-picorv32.git"
+
+
+def _git(repo: Path, *args: str) -> None:
+    identity = ["-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+    subprocess.run(["git", "-C", str(repo), *identity, *args], check=True, capture_output=True)
+
+
+def _publish(project: Path, origin: str, toml: str, *, fetched: bool = True) -> None:
+    """Make the Project state look like a fresh clone of *origin*.
+
+    ``update-ref`` stands in for the fetch a real clone performs, so the
+    tests need neither the network nor a second repository.
+    """
+    _write(project, toml)
+    state_dir = project / ".booley_project"
+    (state_dir / "scripts").mkdir()
+    (state_dir / "scripts" / "build.sh").write_text("exit 0\n", encoding="utf-8")
+    _git(state_dir, "init", "-q", "-b", "main")
+    _git(state_dir, "remote", "add", "origin", origin)
+    _git(state_dir, "add", "-A")
+    _git(state_dir, "commit", "-q", "-m", "published project")
+    if fetched:
+        _git(state_dir, "update-ref", "refs/remotes/origin/main", "HEAD")
+
+
 class TestAdvisorySendOff:
-    def test_demo_probe_reports_git_execution_failure(self, project, monkeypatch, capsys):
+    def test_published_probe_reports_git_execution_failure(self, project, monkeypatch, capsys):
         _write(project, CONFIGURED_TOML)
 
         def fail_git(*_args, **_kwargs):
@@ -158,41 +184,141 @@ class TestAdvisorySendOff:
 
         monkeypatch.setattr(init_cmd.subprocess, "run", fail_git)
 
-        assert init_cmd._is_demo_project(project) is False
+        assert init_cmd._is_published_project(project) is False
 
         out = capsys.readouterr().out
-        assert "could not inspect PicoRV32 demo origin" in out
+        assert "could not inspect published Project state" in out
         assert "timed out" in out
 
-    def test_demo_gets_demo_next_steps_instead_of_setup_skill(self, project, capsys):
-        _write(project, init_cmd.BOOLEY_TOML_SKELETON, agents=False)
-        state_dir = project / ".booley_project"
-        subprocess.run(["git", "init", "-q", str(state_dir)], check=True)
-        subprocess.run(
-            [
-                "git",
-                "-C",
-                str(state_dir),
-                "remote",
-                "add",
-                "origin",
-                "https://github.com/boldaxolotl/booley-prj-picorv32.git",
-            ],
-            check=True,
-        )
+    @pytest.mark.parametrize(
+        "origin",
+        [
+            "https://github.com/boldaxolotl/booley-prj-picorv32.git",
+            "git@github.com:boldaxolotl/booley-prj-caliptra",
+            "ssh://git@github.com/boldaxolotl/booley-prj-future-ip.git",
+        ],
+    )
+    def test_published_project_gets_runtime_steps_instead_of_setup_skill(
+        self, project, capsys, origin
+    ):
+        """Any maintainer-published Project qualifies, not one hardcoded repository.
+
+        The published toml leaves FPGA unconfigured, which the per-step probe
+        would otherwise report as an outstanding booley-setup step.
+        """
+        _publish(project, origin, CONFIGURED_TOML.replace("[flows.fpga]\nenabled = false\n", ""))
         ctx = InitContext(project_root=project)
 
         init_cmd._step_advisories(ctx)
         assert init_cmd._print_summary(ctx) == 0
 
         out = capsys.readouterr().out
-        assert "Booley demo setup complete" in out
+        assert "preconfigured demo_cpu Project" in out
+        assert "the booley-setup skill does not apply" in out
+        assert "this preconfigured Project is ready" in out
+        assert "open the proj folder" in out
         assert "popup notification" in out
         assert "F1" in out
         assert "Ctrl+Shift+P" in out
         assert '"Dev Containers: Reopen in Container"' in out
         assert "Run the booley-setup skill" not in out
-        assert ctx.results[-1].detail == "demo"
+        assert "Step 2 (fpga)" not in out
+        assert ctx.results[-1].detail == "published"
+
+    def test_post_setup_hook_is_named_only_when_the_project_ships_one(self, project, capsys):
+        _publish(project, PUBLISHED_ORIGIN, CONFIGURED_TOML)
+        ctx = InitContext(project_root=project)
+
+        init_cmd._step_advisories(ctx)
+        assert "hooks/post-setup.sh" not in capsys.readouterr().out
+
+        hook = project / ".booley_project" / "hooks" / "post-setup.sh"
+        hook.parent.mkdir()
+        hook.write_text("#!/bin/sh\n", encoding="utf-8")
+        init_cmd._step_advisories(InitContext(project_root=project))
+        assert "bash .booley_project/hooks/post-setup.sh" in capsys.readouterr().out
+
+    @pytest.mark.parametrize(
+        "origin",
+        [
+            "https://github.com/someone-else/booley-prj-picorv32.git",
+            "https://github.com/boldaxolotl/booley.git",
+            "https://github.com/boldaxolotl/booley-prj-.git",
+            "https://example.com/github.com/boldaxolotl/booley-prj-picorv32.git",
+        ],
+    )
+    def test_other_origins_are_not_published_projects(self, project, origin):
+        _publish(project, origin, CONFIGURED_TOML)
+
+        assert init_cmd._is_published_project(project) is False
+
+    def test_init_owned_changes_keep_the_checkout_published(self, project):
+        """Init appends to .gitignore and writes untracked state on every run;
+        a re-run must not flip the send-off because of init's own writes."""
+        _publish(project, PUBLISHED_ORIGIN, CONFIGURED_TOML)
+        state_dir = project / ".booley_project"
+        (state_dir / ".gitignore").write_text("goals/*/\n", encoding="utf-8")
+        (state_dir / ".managed").mkdir()
+        (state_dir / ".managed" / "project-git-hooks.pyz").write_bytes(b"")
+
+        assert init_cmd._is_published_project(project) is True
+
+    def test_recorded_agent_choice_keeps_the_checkout_published(self, project):
+        """Init records the provider/auth choice in booley.toml when the
+        published file leaves it open; that is init's write, not a user edit."""
+        _publish(project, PUBLISHED_ORIGIN, CONFIGURED_TOML)
+        toml = project / ".booley_project" / "booley.toml"
+        toml.write_text(
+            init_cmd._insert_agent_fields(
+                toml.read_text(encoding="utf-8"),
+                ['provider = "claude"\n', 'auth = "subscription"\n'],
+            ),
+            encoding="utf-8",
+        )
+        assert "[agent]" in toml.read_text(encoding="utf-8")
+
+        assert init_cmd._is_published_project(project) is True
+
+    @pytest.mark.parametrize(
+        "change", ["edit-toml", "break-toml", "add-core", "delete-agents", "edit-script", "commit"]
+    )
+    def test_locally_changed_project_is_no_longer_published(self, project, capsys, change):
+        """A user who changed the published files owns them; the per-step probe decides."""
+        _publish(project, PUBLISHED_ORIGIN, CONFIGURED_TOML)
+        state_dir = project / ".booley_project"
+        if change == "edit-toml":
+            with (state_dir / "booley.toml").open("a", encoding="utf-8") as stream:
+                stream.write("\n[flows.formal]\n")
+        elif change == "break-toml":
+            (state_dir / "booley.toml").write_text("[project\n", encoding="utf-8")
+        elif change == "add-core":
+            (state_dir / "cores").mkdir()
+            (state_dir / "cores" / "extra.core").write_text("CAPI=2:\n", encoding="utf-8")
+        elif change == "delete-agents":
+            (state_dir / "AGENTS.md").unlink()
+        elif change == "edit-script":
+            # Any tracked published file counts, not only the config files.
+            (state_dir / "scripts" / "build.sh").write_text("exit 1\n", encoding="utf-8")
+        else:
+            (state_dir / "notes.md").write_text("mine\n", encoding="utf-8")
+            _git(state_dir, "add", "notes.md")
+            _git(state_dir, "commit", "-q", "-m", "local work")
+
+        assert init_cmd._is_published_project(project) is False
+        assert capsys.readouterr().out == ""
+
+    def test_untracked_files_outside_the_setup_keep_the_checkout_published(self, project):
+        """Reports and notes left by ordinary use are not setup changes."""
+        _publish(project, PUBLISHED_ORIGIN, CONFIGURED_TOML)
+        (project / ".booley_project" / "SETUP-NOTES.md").write_text("x\n", encoding="utf-8")
+
+        assert init_cmd._is_published_project(project) is True
+
+    def test_unfetched_origin_is_not_published(self, project):
+        """Without a remote-tracking ref nothing proves HEAD matches the origin."""
+        _publish(project, PUBLISHED_ORIGIN, CONFIGURED_TOML, fetched=False)
+
+        assert init_cmd._is_published_project(project) is False
 
     def test_configured_project_is_not_told_to_finish_setup(self, project, capsys):
         _write(project, CONFIGURED_TOML)
