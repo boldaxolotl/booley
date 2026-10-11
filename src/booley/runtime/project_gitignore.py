@@ -130,15 +130,17 @@ def _reincludes_after(keys: list[str], reinclude: str, overridden_pattern: str) 
     return last_reinclude > max(overridden_positions)
 
 
-def is_project_transient_path(path: str) -> bool:
-    """Match a file and its ancestors against Booley's canonical ignore policy.
+def project_transient_pattern(path: str) -> str | None:
+    """Return the canonical rule responsible for excluding a file or ancestor.
 
     This handles the fixed directory/basename patterns and ordered re-includes
     in PROJECT_GITIGNORE_PATTERNS, independently of a Project's stale ignore file.
+    The first excluded ancestor wins; its last matching positive rule is
+    responsible because Git cannot re-include a child of an excluded directory.
     """
     parts = path.split("/")
     for end in range(1, len(parts) + 1):
-        ignored = False
+        responsible = None
         for pattern in PROJECT_GITIGNORE_PATTERNS:
             body = pattern.lstrip("!").strip("/")
             if pattern.endswith("/") and end == len(parts):
@@ -152,7 +154,12 @@ def is_project_transient_path(path: str) -> bool:
             if len(candidate) == len(expected) and all(
                 fnmatchcase(value, glob) for value, glob in zip(candidate, expected, strict=True)
             ):
-                ignored = not pattern.startswith("!")
-        if ignored:
-            return True
-    return False
+                responsible = None if pattern.startswith("!") else pattern
+        if responsible is not None:
+            return responsible
+    return None
+
+
+def is_project_transient_path(path: str) -> bool:
+    """Whether Booley's canonical ignore policy excludes a file or ancestor."""
+    return project_transient_pattern(path) is not None
