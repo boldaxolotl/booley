@@ -59,8 +59,18 @@
       },
       "timeout_ms": {
         "type": "integer",
-        "description": "Active-time budget in milliseconds for each Flow work unit. Overrides [flows.<name>].timeout_ms.",
-        "minimum": 1
+        "minimum": 1,
+        "description": "Active-time budget in milliseconds for each Flow work unit. Overrides [flows.<name>].timeout_ms."
+      },
+      "coverage": {
+        "type": "boolean",
+        "default": false,
+        "description": "Collect a native Verilator Coverage Campaign for each selected Target"
+      },
+      "no_waivers": {
+        "type": "boolean",
+        "default": false,
+        "description": "With --coverage, report raw coverage without applying approved waivers; with a Coverage Criterion also requires --diagnostic"
       },
       "mode": {
         "type": "string",
@@ -77,9 +87,34 @@
           "type": "string",
           "minLength": 1
         },
-        "description": "Select exact registered tests (coverage: deterministic sorted order; plain: input order; CLI: repeat; MCP: array)",
+        "description": "Select Test Runs: test, test+variant, test@seed, test+variant@seed, or test[+variant]@xN for N drawn seeds; a bare test means its default Test Variant (coverage: deterministic sorted order; plain: input order; CLI: repeat; MCP: array)",
         "minItems": 1,
         "uniqueItems": true
+      },
+      "seed": {
+        "description": "Seed for every selected Test Run (1..2147483647), or 'random' to draw one seed per Test Run",
+        "oneOf": [
+          {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647
+          },
+          {
+            "type": "string",
+            "enum": [
+              "random"
+            ]
+          }
+        ]
+      },
+      "resume_from": {
+        "type": "string",
+        "description": "Resume one exact Simulation Campaign manifest.json"
+      },
+      "verbose": {
+        "type": "boolean",
+        "default": false,
+        "description": "Include full Simulation Campaign resume mismatch pointers and values"
       },
       "trace": {
         "type": "boolean",
@@ -99,25 +134,6 @@
         "type": "boolean",
         "default": false,
         "description": "Skip zombie process cleanup"
-      },
-      "resume_from": {
-        "type": "string",
-        "description": "Resume one exact Simulation Campaign manifest.json"
-      },
-      "coverage": {
-        "type": "boolean",
-        "default": false,
-        "description": "Collect a native Verilator Coverage Campaign for each selected Target"
-      },
-      "no_waivers": {
-        "type": "boolean",
-        "default": false,
-        "description": "With --coverage, report raw coverage without applying approved waivers; with a Coverage Criterion also requires --diagnostic"
-      },
-      "verbose": {
-        "type": "boolean",
-        "default": false,
-        "description": "Include full Simulation Campaign resume mismatch pointers and values"
       }
     },
     "additionalProperties": false

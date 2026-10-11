@@ -82,6 +82,7 @@ from booley.flows.sim.result import parse_summary_line
 from booley.flows.sim.run_guard import DEFAULT_SIM_TIME_GRACE_S
 from booley.flows.sim.verilator_coverage import SimulationExecutionPort
 from booley.flows.target_test_plan import TargetTestPlan
+from booley.flows.test_runs import TestRun, parse_test_selector
 from booley.fusesoc import fusesoc_registry
 from booley.runtime import job_slots
 from booley.runtime.endpoint_execution import (
@@ -186,6 +187,7 @@ from .coverage_source_gaps import source_gap_report_lines
 from .execution import (
     DefaultSelection,
     NamedTests,
+    SelectedTestRuns,
     SimulationArtifactEvidence,
     SimulationExecution,
     SimulationOptions,
@@ -2412,7 +2414,37 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             return error
         if (error := self._validate_test_plans(targets)) is not None:
             return error
+        if (error := self._refuse_uncarried_test_runs(targets, test_names_map)) is not None:
+            return error
         return self._validate_runnable_tests(targets, test_names_map)
+
+    def _refuse_uncarried_test_runs(
+        self, targets: list[str], test_names_map: dict[str, list[str]]
+    ) -> EndpointOutcome | None:
+        """Refuse a Simulation Campaign of Test Runs its manifest cannot carry yet.
+
+        A campaign work item names Tests only, so it would run the default
+        Test Variant at the Default Seed whatever was asked. Until the
+        manifest records each Test Run, anything else is refused, never run
+        as something it is not.
+        """
+        for target in targets:
+            try:
+                plan = self._registered_test_plan(target, test_names_map)
+                runs = self._resolve_test_runs(target, test_names_map)
+            except (fusesoc_registry.FuseSocError, ValueError):
+                continue
+            other = [run.name for run in runs if not plan.is_default_run(run)]
+            if other:
+                return EndpointOutcome(
+                    exit_code=EXIT_ERROR,
+                    report_text=(
+                        f"sim: Target {target!r}: a Simulation Campaign cannot yet run "
+                        f"Test Runs other than the default Test Variant at the Default "
+                        f"Seed ({', '.join(other[:8])})"
+                    ),
+                )
+        return None
 
     def run_prepared_simulation(
         self,
@@ -2823,19 +2855,26 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         units: list[WorkUnitPlan] = []
         errors: list[str] = []
         execution = self._simulation_execution()
+        planned: dict[tuple[str, str], tuple[tuple[TestRun, ...], ...]] = self.__dict__.setdefault(
+            "_planned_run_groups", {}
+        )
         for target in targets:
-            tests = self._resolve_tests_to_run(target, test_names_map)
             try:
                 preview = execution.preview(
                     self._target_handle(target),
-                    self._execution_selection(tests),
+                    self._test_run_selection(target, test_names_map),
                 )
             except (fusesoc_registry.FuseSocError, OSError, ValueError) as exc:
                 errors.append(f"{target}: {exc}")
                 continue
-            for group, command in zip(preview.groups, preview.commands, strict=True):
+            planned[(role, target)] = preview.run_groups
+            for group, runs, command in zip(
+                preview.groups, preview.run_groups, preview.commands, strict=True
+            ):
                 units.append(
-                    self._simulation_work_unit(target, preview, group, command, role, revision)
+                    self._simulation_work_unit(
+                        target, preview, group, command, role, revision, runs
+                    )
                 )
         return units, errors
 
@@ -2847,6 +2886,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         command: tuple[str, ...],
         role: WorkUnitRole,
         revision: str | None,
+        runs: tuple[TestRun, ...] = (),
     ) -> WorkUnitPlan:
         """Normalize one resolved Simulation command into the shared plan model."""
         build_root = preview_generation_root(
@@ -2866,7 +2906,13 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             "trace": self.args.trace,
         }
         return WorkUnitPlan(
-            unit_id=stable_unit_id("sim", target, group, role=role, revision=revision),
+            unit_id=stable_unit_id(
+                "sim",
+                target,
+                self._unit_scope(target, group, runs),
+                role=role,
+                revision=revision,
+            ),
             role=role,
             revision=revision,
             selector=target,
@@ -2883,6 +2929,25 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 normalize_plan_path(build_root / RUN_LOG_NAME, self.args.work_dir),
             ),
         )
+
+    def _unit_scope(
+        self, target: str, group: tuple[str, ...], runs: tuple[TestRun, ...]
+    ) -> tuple[str, ...]:
+        """What identifies one work unit of *target*: its Test Run names.
+
+        A unit of default Test Runs keeps its bare Test names, so it is the
+        same unit whether or not the Target is seeded. Any other unit is named
+        by its Test Runs: ``test@xN`` plans N units of one Test.
+        """
+        if not runs:
+            return group
+        try:
+            plan = self._target_test_plan(target)
+        except (fusesoc_registry.FuseSocError, ValueError):
+            return group
+        if all(plan.is_default_run(run) or run.test is None for run in runs):
+            return group
+        return tuple(run.name for run in runs)
 
     def _redact_plan_environment(
         self,
@@ -4663,13 +4728,13 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
     def _ordinary_campaign_inputs(self, target, test_names_map, handle, selected_override):
         inspection = TargetCatalog.build(handle.project_root).inspect(handle)
-        selected = (
-            list(selected_override)
+        selection = (
+            self._execution_selection(list(selected_override))
             if selected_override is not None
-            else self._resolve_tests_to_run(target, test_names_map)
+            else self._test_run_selection(target, test_names_map)
         )
         execution = self._simulation_execution()
-        preview = execution.preview(handle, self._execution_selection(selected))
+        preview = execution.preview(handle, selection)
         disclosures = tuple(
             execution.plan_campaign_group(handle, group) for group in preview.groups
         )
@@ -5972,9 +6037,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             test_names_map = getattr(self, "_test_names_map", None) or _get_test_names(
                 self.args.work_dir
             )
-            tests = self._resolve_tests_to_run(target, test_names_map)
             preview = self._simulation_execution().preview(
-                self._target_handle(target), self._execution_selection(tests)
+                self._target_handle(target), self._test_run_selection(target, test_names_map)
             )
             scripts = [item[2] for item in preview.commands if item[:2] == ("sh", "-c")]
             command = "\n".join(scripts) or None
@@ -6082,11 +6146,10 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     ) -> TargetResult:
         """Execute one selected Target through the deep Simulation boundary."""
         del tb_top
-        tests_to_run = self._resolve_tests_to_run(target, test_names_map)
         skipped = self._skipped_tests(target, test_names_map)
         if skipped:
             output_lines.append(f"  (skipped {len(skipped)}: {', '.join(skipped)})")
-        selection = self._execution_selection(tests_to_run)
+        selection = self._test_run_selection(target, test_names_map)
         artifact_root = self._simulation_artifact_root(plan_role)
         execution = self._simulation_execution(artifact_root=artifact_root)
         planned_groups = self._planned_simulation_groups(target, plan_role)
@@ -6094,6 +6157,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             self._target_handle(target),
             selection,
             planned_groups=planned_groups,
+            planned_runs=self._planned_test_runs(target, plan_role, planned_groups),
         )
         from .execution.pre_sim_reporting import pre_sim_document
 
@@ -6140,6 +6204,22 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             label = role or "candidate"
             raise RuntimeError(f"Simulation plan has no {label} work for {target!r}")
         return groups
+
+    def _planned_test_runs(
+        self,
+        target: str,
+        role: WorkUnitRole | None,
+        groups: tuple[tuple[str, ...], ...],
+    ) -> tuple[tuple[TestRun, ...], ...] | None:
+        """The Test Runs the FlowPlan froze for *target*'s groups, when it has them."""
+        planned: dict[tuple[str, str], tuple[tuple[TestRun, ...], ...]] = getattr(
+            self, "_planned_run_groups", {}
+        )
+        for key in (role,) if role is not None else ("ordinary", "candidate"):
+            runs = planned.get((key, target))
+            if runs is not None and len(runs) == len(groups):
+                return runs
+        return None
 
     def _simulation_execution(self, *, artifact_root: Path | None = None) -> SimulationExecution:
         """Compose the execution boundary with the Flow's process transport."""
@@ -6298,7 +6378,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                         "to have a registered test catalog"
                     ),
                 )
-            unknown = [name for name in selectors if name not in available]
+            unknown = [
+                name for name in selectors if parse_test_selector(name).test not in available
+            ]
             if unknown:
                 return EndpointOutcome(
                     exit_code=EXIT_ERROR,
@@ -6352,9 +6434,10 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         overrides a Target plusarg, arguments or a ``seed`` template on a
         Cocotb Target, and ``default_seed`` on a Target that cannot be seeded.
         """
+        test_names_map = _get_test_names(self.args.work_dir)
         for target in targets:
             try:
-                self._target_test_plan(target)
+                self._resolve_test_runs(target, test_names_map)
             except fusesoc_registry.FuseSocError:
                 # Target resolution reports its own error on the run path.
                 continue
@@ -6403,16 +6486,75 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         known test is skipped, pre-run validation rejects the Target rather
         than passing vacuously or executing known-hanging tests.
         """
+        try:
+            runs = self._resolve_test_runs(target, test_names_map)
+        except fusesoc_registry.FuseSocError:
+            # The Target does not resolve; the run path reports that. Name the
+            # registered Tests so plans and labels still describe the request.
+            return self._registered_tests_to_run(target, test_names_map)
+        return list(dict.fromkeys(run.test for run in runs))
+
+    def _registered_tests_to_run(
+        self, target: str, test_names_map: Mapping[str, list[str]]
+    ) -> list[str | None]:
+        """Selected Test names from the registry alone, without the ``.core`` Target."""
         if self.args.test:
-            available_tests = lookup_target_section(test_names_map, target) or []
-            matched = _filter_tests(available_tests, self.args.test)
-            return cast(list[str | None], matched)
+            available = lookup_target_section(test_names_map, target) or []
+            wanted = [parse_test_selector(text).test for text in self.args.test]
+            return cast(list[str | None], _filter_tests(available, wanted))
         suite = resolve_target_test_suite(
             target,
-            test_names=test_names_map,
+            test_names=dict(test_names_map),
             test_skips=_get_test_skips(self.args.work_dir),
         )
         return list(suite.tests)
+
+    def _resolve_test_runs(
+        self,
+        target: str,
+        test_names_map: Mapping[str, list[str]],
+    ) -> tuple[TestRun, ...]:
+        """The concrete Test Runs this invocation runs on *target* (ADR 0072).
+
+        Resolved once per checkout and Target, before any plan or manifest is
+        built: a seed drawn for ``--seed random`` or ``test@xN`` is concrete
+        from then on and is never drawn again. Raises ``ValueError`` (the Test
+        Run error types) for a request this Target cannot run.
+        """
+        cache: dict[tuple[str, str], tuple[TestRun, ...]] = self.__dict__.setdefault(
+            "_resolved_test_runs", {}
+        )
+        key = (str(Path(self.args.work_dir)), target)
+        if key not in cache:
+            plan = self._registered_test_plan(target, test_names_map)
+            cache[key] = plan.resolve(
+                tuple(self.args.test) if self.args.test else None,
+                seed=getattr(self.args, "seed", None),
+            )
+        return cache[key]
+
+    def _registered_test_plan(
+        self, target: str, test_names_map: Mapping[str, list[str]]
+    ) -> TargetTestPlan:
+        """*target*'s Test Run plan over the registry this invocation resolved."""
+        plan = self._target_test_plan(target)
+        registered = tuple(lookup_target_section(test_names_map, target) or ())
+        skipped = tuple(name for name in registered if name in self._effective_skips(target))
+        if (registered, skipped) == (plan.tests, plan.skipped):
+            return plan
+        return replace(plan, tests=registered, skipped=skipped)
+
+    def _test_run_selection(
+        self, target: str, test_names_map: Mapping[str, list[str]]
+    ) -> SelectedTestRuns | NamedTests | DefaultSelection:
+        """The execution selection of *target*: its resolved Test Runs."""
+        try:
+            runs = self._resolve_test_runs(target, test_names_map)
+        except fusesoc_registry.FuseSocError:
+            return self._execution_selection(self._registered_tests_to_run(target, test_names_map))
+        if not runs:
+            return DefaultSelection()
+        return SelectedTestRuns(runs)
 
     def _skipped_tests(
         self,

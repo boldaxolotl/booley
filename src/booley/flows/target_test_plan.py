@@ -38,8 +38,11 @@ from booley.config.tests_toml_rules import (
     parse_test_variants,
 )
 from booley.flows.test_runs import (
+    RANDOM_SEED,
+    SEED_WITH_SEEDED_SELECTOR,
     PinnedSeed,
     SeedCount,
+    SeedRequest,
     TestRun,
     TestRunLimitError,
     TestRunNameError,
@@ -53,9 +56,7 @@ from booley.flows.test_runs import (
 
 __all__ = [
     "MAX_TEST_RUNS_PER_REQUEST",
-    "RANDOM_SEED",
     "SeedMechanism",
-    "SeedRequest",
     "TargetTestPlan",
     "TestRunLaunch",
     "UnknownTestError",
@@ -68,12 +69,6 @@ __all__ = [
 #: Most Test Runs one request may ask of one Target (the Simulation Campaign
 #: work-item limit: an ordinary HDL Test Run is one work item).
 MAX_TEST_RUNS_PER_REQUEST = 1000
-
-#: The ``--seed`` value that asks Booley to draw a seed for each Test Run.
-RANDOM_SEED: Literal["random"] = "random"
-
-#: What a request says about seeds: nothing, one seed, or "draw them".
-SeedRequest = int | Literal["random"] | None
 
 #: Draws distinct seeds; :func:`booley.flows.test_runs.draw_seeds` by default.
 SeedDraw = Callable[..., tuple[int, ...]]
@@ -276,10 +271,7 @@ class TargetTestPlan:
         if seed is not None and any(
             not isinstance(item.seed_form, UnpinnedSeed) for item in parsed
         ):
-            raise TestRunNameError(
-                "--seed cannot be combined with a --test that names a seed "
-                "(test@seed or test@xN); name the seed in one place"
-            )
+            raise TestRunNameError(SEED_WITH_SEEDED_SELECTOR)
         if seed is not None and not self.mechanism.seeded:
             raise UnseededTargetError(self.unseeded_reason())
         runs: list[TestRun] = []

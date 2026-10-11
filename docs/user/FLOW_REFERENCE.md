@@ -234,6 +234,7 @@ booley flow sim --target sim_soc --test irq --coverage    # collect coverage (Ve
 | Option | Effect |
 |---|---|
 | `--test <name>` | Run one registered test by exact name. Repeat for more. |
+| `--seed <N\|random>` | Use seed `N` (1..2147483647) for every selected Test Run, or `random` to draw one seed per Test Run. Cannot be combined with a `--test` that names a seed (`test@seed`, `test@xN`). |
 | `--tests-file <path>` | Read exact test names from a file, one per line (blank lines and `#` comments ignored). Cannot be combined with `--test`. |
 | `--mode <simulate\|elab-only\|elab-only-standalone>` | Run tests (default), or only elaborate (see [Elaboration checks](#elaboration-checks)). |
 | `--trace` | Capture a waveform. Use it to debug a failure, not for pass/fail checks. |

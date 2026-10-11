@@ -5,6 +5,15 @@ from pathlib import Path
 
 from booley.core.boundary import require_bool_value
 from booley.flows.request import FlowRequest
+from booley.flows.test_runs import (
+    SEED_WITH_SEEDED_SELECTOR,
+    SeedRequest,
+    TestRunLimitError,
+    TestRunNameError,
+    UnpinnedSeed,
+    parse_seed_request,
+    parse_test_selector,
+)
 
 from .mode import SimulationMode
 
@@ -24,6 +33,9 @@ class SimRequest(FlowRequest):
     # selector must name at least one test.
     test: tuple[str, ...] | None = None
     tests_file: Path | None = None
+    # One seed for every selected Test Run, or ``"random"`` to draw one per
+    # Test Run (ADR 0072). ``None`` means each run's own or the Default Seed.
+    seed: SeedRequest = None
     resume_from: Path | None = None
     verbose: bool = False
     trace: bool = False
@@ -45,6 +57,7 @@ class SimRequest(FlowRequest):
         self._normalize_test_selection()
         self._validate_resume_shape()
         self._consume_tests_file()
+        self._validate_test_run_selection()
         if self.result_verbosity not in ("compact", "full"):
             raise ValueError("result_verbosity must be compact or full")
 
@@ -91,6 +104,21 @@ class SimRequest(FlowRequest):
         self.test = names
         self.tests_file = None
 
+    def _validate_test_run_selection(self) -> None:
+        """Apply the Test Run grammar once, for the CLI and the MCP tool alike."""
+        try:
+            if self.seed is not None:
+                self.seed = parse_seed_request(self.seed)
+            selectors = [parse_test_selector(text) for text in self.test or ()]
+        except (TestRunNameError, TestRunLimitError) as exc:
+            raise ValueError(str(exc)) from exc
+        if self.seed is not None and any(
+            not isinstance(selector.seed_form, UnpinnedSeed) for selector in selectors
+        ):
+            raise ValueError(SEED_WITH_SEEDED_SELECTOR)
+        if self.seed is not None and self.mode is not None and self.mode.elaborates_only:
+            raise ValueError("seed applies to simulation, not to an elaboration mode")
+
     def _validate_resume_shape(self) -> None:
         if self.resume_from is not None:
             conflicts = [
@@ -99,6 +127,7 @@ class SimRequest(FlowRequest):
                     (bool(self.target), "target"),
                     (self.test is not None, "test"),
                     (self.tests_file is not None, "tests_file"),
+                    (self.seed is not None, "seed"),
                     (self.mode is not None, "mode"),
                     (self.coverage, "coverage"),
                     (self.no_waivers, "no_waivers"),

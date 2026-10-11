@@ -76,7 +76,9 @@ def _use_legacy_build_transport_for_canned_flow_tests():
     with patch.object(
         SimulationExecution,
         "_run_groups_with_session",
-        lambda self, handle, groups: [self._run_group(handle, group) for group in groups],
+        lambda self, handle, groups, **planned: self._run_planned_groups(
+            handle, groups, **planned
+        ),
     ):
         yield
 

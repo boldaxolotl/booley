@@ -24,6 +24,7 @@ import secrets
 import shlex
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
+from typing import Literal
 
 from booley.config.tests_toml_rules import (
     DEFAULT_SEED,
@@ -45,10 +46,13 @@ __all__ = [
     "DEFAULT_SEED",
     "MAX_MULTI_SEED_COUNT",
     "MAX_SEED",
+    "RANDOM_SEED",
+    "SEED_WITH_SEEDED_SELECTOR",
     "UNNAMED_TEST_DISPLAY",
     "PinnedSeed",
     "SeedCount",
     "SeedForm",
+    "SeedRequest",
     "TestRun",
     "TestRunLimitError",
     "TestSelector",
@@ -61,6 +65,7 @@ __all__ = [
     "build_test_run",
     "declared_inputs_fingerprint",
     "draw_seeds",
+    "parse_seed_request",
     "parse_test_selector",
     "parse_test_variants",
     "rerun_command",
@@ -68,6 +73,16 @@ __all__ = [
 
 #: Largest N of a multi-seed selector ``test@xN`` and of one seed draw.
 MAX_MULTI_SEED_COUNT = 1000
+
+#: The ``--seed`` value that asks Booley to draw a seed for each Test Run.
+RANDOM_SEED: Literal["random"] = "random"
+#: What a request says about seeds: nothing, one seed, or "draw them".
+SeedRequest = int | Literal["random"] | None
+#: Why ``--seed`` and a seeded ``--test`` selector cannot be combined.
+SEED_WITH_SEEDED_SELECTOR = (
+    "--seed cannot be combined with a --test that names a seed "
+    "(test@seed or test@xN); name the seed in one place"
+)
 
 #: How the invocation of a Target without registered Tests is displayed.
 UNNAMED_TEST_DISPLAY = "<default>"
@@ -228,6 +243,26 @@ def parse_test_selector(text: str) -> TestSelector:
         raise TestRunNameError(f"Test Run selector {text!r}: {exc}") from exc
     seed_form = _parse_seed_form(seed_parts[0], text) if seed_parts else UnpinnedSeed()
     return TestSelector(test=test, variant=variant, seed_form=seed_form)
+
+
+def parse_seed_request(value: object) -> int | Literal["random"]:
+    """Parse a ``--seed`` value: a seed in ``1..MAX_SEED`` or ``random``.
+
+    Accepts the integer the MCP tool sends and the text the CLI sends; text
+    obeys the selector's seed spelling (decimal, no sign, no leading zeros).
+    Raises :class:`TestRunNameError`.
+    """
+    if value == RANDOM_SEED:
+        return RANDOM_SEED
+    if isinstance(value, str):
+        seed = _parse_bounded_number(value, what="seed", selector=f"--seed {value}")
+        if not 1 <= seed <= MAX_SEED:
+            raise TestRunNameError(f"--seed {value} is out of range 1..{MAX_SEED}")
+        return seed
+    try:
+        return validate_seed(value, where="--seed")
+    except SeedConfigurationError as exc:
+        raise TestRunNameError(f"{exc}; write a seed in 1..{MAX_SEED} or 'random'") from exc
 
 
 def declared_inputs_fingerprint(args: tuple[str, ...], env: Mapping[str, str]) -> str:

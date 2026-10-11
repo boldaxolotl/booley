@@ -888,18 +888,28 @@ class SimulationExecution:
         planned_runs: tuple[tuple[TestRun, ...], ...] | None = None,
     ) -> list[SimulationTargetOutcome]:
         """Hold the Target lease through every group and artifact capture."""
-        runs = planned_runs if planned_runs is not None else (None,) * len(groups)
         with SimulationBuildSession(handle, _build_policy(self._options.trace).variant) as session:
             self._build_session = session
             try:
-                return [
-                    self._run_group(handle, names)
-                    if group_runs is None
-                    else self._run_group(handle, names, group_runs)
-                    for names, group_runs in zip(groups, runs, strict=True)
-                ]
+                return self._run_planned_groups(handle, groups, planned_runs=planned_runs)
             finally:
                 self._build_session = None
+
+    def _run_planned_groups(
+        self,
+        handle: TargetHandle,
+        groups: tuple[tuple[str, ...], ...],
+        *,
+        planned_runs: tuple[tuple[TestRun, ...], ...] | None = None,
+    ) -> list[SimulationTargetOutcome]:
+        """Run each group in order, with its concrete Test Runs when planned."""
+        runs = planned_runs if planned_runs is not None else (None,) * len(groups)
+        return [
+            self._run_group(handle, names)
+            if group_runs is None
+            else self._run_group(handle, names, group_runs)
+            for names, group_runs in zip(groups, runs, strict=True)
+        ]
 
     def preview(
         self,
