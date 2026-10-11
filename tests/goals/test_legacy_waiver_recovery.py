@@ -3,9 +3,10 @@
 import base64
 import hashlib
 import json
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
-from booley.goals.apply import ChangeEnvironment, recover
+from booley.goals import apply_effects
+from booley.goals.apply import ApplyTransaction, ChangeEnvironment, recover
 from booley.goals.entry import EntryEnvironment
 from booley.goals.paths import record_paths
 from booley.goals.proposals import load_proposal
@@ -34,7 +35,7 @@ def relocate(value, replacements):
     return value
 
 
-def relocated_snapshot(tmp_path):
+def relocated_snapshot(tmp_path, path_type=Path):
     payload = json.loads((FIXTURE / "payload.json").read_bytes())
     state = json.loads((FIXTURE / "state.json").read_bytes())
     transaction = json.loads((FIXTURE / "apply.json").read_bytes())
@@ -48,6 +49,8 @@ def relocated_snapshot(tmp_path):
     replacements.append((old_ledger, new_ledger))
     transaction = relocate(transaction, replacements)
     for effect in transaction["effects"]:
+        # Match the native path spelling used by the captured-effect loader.
+        effect["path"] = str(path_type(effect["path"]))
         for image in ("before", "after"):
             if effect[image] is None:
                 continue
@@ -58,6 +61,15 @@ def relocated_snapshot(tmp_path):
             effect[image] = base64.b64encode(content).decode()
     state["transaction_digest"] = legacy_digest(transaction)
     return payload, state, transaction
+
+
+def test_relocated_windows_transaction_preserves_digest_when_loaded(monkeypatch):
+    monkeypatch.setattr(apply_effects, "Path", PureWindowsPath)
+    _, state, transaction = relocated_snapshot(
+        PureWindowsPath("D:/fixture-replay"), path_type=PureWindowsPath
+    )
+    loaded = ApplyTransaction.from_json(transaction)
+    assert state["transaction_digest"] == legacy_digest(loaded.to_json())
 
 
 def install_snapshot(tmp_path):
