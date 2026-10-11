@@ -62,8 +62,7 @@ from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.request import SimRequest
 from booley.runtime.endpoint_execution import EXIT_CANCELLED, EXIT_ERROR, EndpointOutcome
 from booley.runtime.execution_records import ExecutionId, atomic_write_json, execution_paths
-from booley.ticket_board.criteria_acceptance import check_criteria_acceptance
-from booley.ticket_board.flow_execution import TicketAcceptanceRecorder
+from tests.criteria.ledger_support import FixtureRecorder
 from tests.flows.sim.test_campaign_codec_golden import _simulation_result
 from tests.flows.sim.test_campaign_phase3_adversarial import _completed
 from tests.flows.sim.test_campaign_phase3_integrity import _admission, _manifest_for
@@ -800,7 +799,7 @@ def test_public_campaign_outcome_replays_exact_acceptance_transaction(
     state.save()
     archived = state_path.read_bytes()
     identity = {"generation": "d" * 32, "authored_sha256": "e" * 64}
-    recorder = TicketAcceptanceRecorder(log_dir=tmp_path / "logs", ticket_identity=identity)
+    recorder = FixtureRecorder(log_dir=tmp_path / "logs", identity=identity)
 
     record_campaign_acceptance(_acceptance_endpoint(state, recorder, invocation), (outcome,))
     first_state = DevelopmentState.load(state_path)
@@ -848,7 +847,7 @@ def test_campaign_acceptance_reads_identity_through_the_public_recorder_method(
             return None
 
         def record_or_verify_transaction(self, _state, _changes, **kwargs):
-            received.append(kwargs["ticket_identity"])
+            received.append(kwargs["identity"])
             return SimpleNamespace(transaction_id="a" * 64)
 
     endpoint = _acceptance_endpoint(state, PublicIdentityRecorder(), invocation)
@@ -862,7 +861,7 @@ def test_campaign_projection_error_tail_rejects_malformed_detail(tmp_path: Path)
     malformed_observation = dict(outcome.observations[0], detail=[])
     malformed = replace(outcome, observations=(malformed_observation,))
     state = DevelopmentState.load(tmp_path / "state.json")
-    recorder = TicketAcceptanceRecorder(log_dir=tmp_path / "logs", ticket_identity={})
+    recorder = FixtureRecorder(log_dir=tmp_path / "logs", identity={})
 
     with pytest.raises(SimulationCampaignIntegrityError, match="detail"):
         record_campaign_acceptance(_acceptance_endpoint(state, recorder, invocation), (malformed,))
@@ -913,7 +912,7 @@ def _named_campaign_state(tmp_path: Path):
     state.set_criterion("_report_submitted", True)
     state.save()
     identity = {"generation": "d" * 32, "authored_sha256": "e" * 64}
-    recorder = TicketAcceptanceRecorder(log_dir=tmp_path / "logs", ticket_identity=identity)
+    recorder = FixtureRecorder(log_dir=tmp_path / "logs", identity=identity)
     return state_path, state, key, recorder
 
 
@@ -937,14 +936,6 @@ def test_named_campaign_acceptance_persists_criterion_and_timeline(
     assert persisted.criteria[key].met is True
     assert persisted.criteria[key].detail["selected_tests"] == ["half"]
     assert persisted.timeline[-1]["criteria_set"] == [key]
-    assert (
-        check_criteria_acceptance(
-            state_path,
-            log_dir=tmp_path / "logs",
-            ticket_identity={"generation": "d" * 32, "authored_sha256": "e" * 64},
-        ).passed
-        is True
-    )
 
 
 def _retained_invocation(

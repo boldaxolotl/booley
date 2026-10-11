@@ -3,8 +3,7 @@
 Two transports (``--transport``, or ``BOOLEY_MCP_TRANSPORT``):
 
 - ``stdio`` (default) — spawned by the agent app / SDK as a child process
-  inside Docker. Used by Ticket Mode, where the harness owns the child and
-  restarts it together with the run.
+  inside the Sandbox. The agent client owns the child process lifetime.
 - ``http`` — a streamable-HTTP server on ``127.0.0.1``. Used by
   Interactive Mode (ADR 0023): the devcontainer ``postStartCommand`` starts it
   on every container start (including resume), and the agent app *connects*
@@ -154,17 +153,11 @@ _DEFAULT_MAX_STDERR_BYTES = 4_000
 # MCP tools used only by autonomous development. Interactive Mode is driven by
 # the outer client, so exposing these just adds noise and invites the wrong
 # workflow. Keeping the reason next to the name is not decoration: these MCP tools
-# are discovered for Ticket Mode but intentionally absent from Interactive
-# Mode, so a human diffing the two surfaces deserves an answer instead of
-# "Unknown MCP tool".
+# are filtered from the outer client so discovery explains the available surface.
 _INTERACTIVE_HIDDEN_REASONS = {
     "tb_coder": (
         "it writes testbench code for autonomous development — "
         "interactively, edit the testbench directly"
-    ),
-    "submit_run_report": (
-        "it writes an autonomous development report — in a Goal session, "
-        "provide the Session Summary to goal_finish"
     ),
 }
 _INTERACTIVE_MCP_EXCLUDED = frozenset(_INTERACTIVE_HIDDEN_REASONS)
@@ -370,9 +363,8 @@ class _McpLifetime:
         remains the resource backstop.
         """
         if os.environ.get("BOOLEY_MCP_MODE") != "interactive":
-            # Ticket Mode stdio server: the client owns the process lifetime
-            # (no self-exit), but MCP tool activity still feeds the container
-            # reaper heartbeat so an active ticket never reads as idle
+            # Client-owned server lifetime: no self-exit, but MCP activity feeds
+            # the Sandbox reaper heartbeat so active work does not read as idle
             # (ADR 0028 Decision 11).
             return cls(None, None, heartbeat_path=_MCP_HEARTBEAT_PATH)
         if not self_exit:
@@ -643,8 +635,7 @@ def _poll_mcp_tool_visible() -> bool:
     Always on. The poll MCP tool is the transport-level completion of async
     dispatch (ADR 0027): any server that can dispatch a heavy endpoint can hand back
     a run_id, so the caller must always be able to poll it — in EVERY mode,
-    including the Ticket-Mode developer (Q1: modes must not differ, unlike
-    ``booley_report`` which is Interactive/opt-in). It reads job status only —
+    including nested clients (``booley_report`` is Interactive/opt-in). It reads job status only —
     it cannot invoke an endpoint or recurse — so it is exempt from the
     recursion-safety allowlists that gate real endpoints.
     """
@@ -656,8 +647,7 @@ def _targets_mcp_tool_visible() -> bool:
 
     Always on, like poll: it only reads ``.core`` YAML and booley.toml — no
     subprocess, no recursion — so the recursion-safety allowlists that gate
-    real endpoints do not apply, and every mode's agent (interactive tab, ticket
-    developer, nested specialist) needs to know what ``target`` values exist.
+    real endpoints do not apply, and every agent client (Interactive session or nested Specialist) needs to know what ``target`` values exist.
     """
     return not _coverage_evidence_mode()
 
@@ -3666,7 +3656,7 @@ def _endpoint_command(
         )
         argv.extend(["--transcript-dir", str(transcript_dir)])
     module = definition["module"]
-    runner = select_flow_execution(context.ticket_file, binding=context.binding).flow_runner_module
+    runner = select_flow_execution(binding=context.binding).flow_runner_module
     if definition.get("is_flow") and runner is not None:
         cmd = ["python", "-m", runner]
         if definition.get("is_custom") and definition.get("custom_path"):
@@ -3752,7 +3742,6 @@ async def _dispatch_booley_mcp_tool(
         result = await _dispatch_async_job(name, cmd, mcp_tool_timeout, jobs, context=context)
         return _goal_warning_result(result, context.binding, context.session_key)
 
-    report_attempt = uuid.uuid4().hex if name == "submit_run_report" else None
     exit_code, stdout, stderr, _timed_out = await _run_inline_endpoint(
         name,
         cmd,
@@ -3760,7 +3749,6 @@ async def _dispatch_booley_mcp_tool(
         jobs,
         context=context,
         publish_activity=bool(mcp_tool_def.get("is_flow") or mcp_tool_def.get("is_specialist")),
-        invocation_id=report_attempt,
     )
     skip_report = bool(arguments.get("dry_run")) and bool(
         mcp_tool_def.get("non_persisting_dry_run")
@@ -3770,9 +3758,6 @@ async def _dispatch_booley_mcp_tool(
         if skip_report
         else (_latest_report(context=context) if context.binding else _try_read_report())
     )
-    report, stdout, stderr, exit_code = _report_completion(
-        report_attempt, report, stdout, stderr, exit_code
-    )
     content = [
         TextContent(type="text", text=_format_mcp_tool_result(exit_code, stdout, stderr, report))
     ]
@@ -3780,76 +3765,6 @@ async def _dispatch_booley_mcp_tool(
     return _goal_warning_result(
         _dispatch_result(rendered, is_error=exit_code != 0), context.binding, context.session_key
     )
-
-
-def _report_completion(report_attempt, report, stdout, stderr, exit_code):
-    if report_attempt is not None:
-        report, diagnosis = _committed_submission_report(report, report_attempt, exit_code)
-        if diagnosis:
-            stderr = "\n".join(part for part in (stderr, diagnosis) if part)
-            stdout = ""
-            if report is None and exit_code == 0:
-                exit_code = 2
-    return report, stdout, stderr, exit_code
-
-
-def _current_report_met(log_dir: Path, identity: dict[str, Any]) -> bool:
-    from booley.criteria.state import DevelopmentState
-    from booley.ticket_board.acceptance_ledger import project_report_state
-    from booley.ticket_board.paths import existing_ticket_runtime_file
-
-    state = DevelopmentState.load(existing_ticket_runtime_file(log_dir, "booley_state.json"))
-    project_report_state(state, log_dir, identity=identity)
-    entry = state.criteria.get("_report_submitted")
-    return entry is not None and entry.met
-
-
-def _committed_submission_report(report, submission_id, exit_code):
-    from booley.ticket_board import report_submission as submission
-
-    logs = os.environ.get("BOOLEY_LOGS_DIR")
-    try:
-        receipt = submission.read_receipt(Path(logs)) if logs else None
-    except submission.ReportSubmissionError as exc:
-        return None, f"Report submission completion could not be verified: {exc}"
-    if (
-        not receipt
-        or receipt["submission_id"] != submission_id
-        or receipt["status"] != "completed"
-    ):
-        return (
-            None,
-            "Report submission did not complete before commit; resolve the reported error before retrying.",
-        )
-    try:
-        from booley.ticket_board.flow_execution import TicketAcceptanceRecorder
-
-        identity = TicketAcceptanceRecorder().acceptance_identity()
-        if not submission.effective_met(
-            Path(logs),
-            True,
-            {submission.ID_KEY: submission_id, submission.DIGEST_KEY: receipt["report_sha256"]},
-            identity=identity,
-        ):
-            return None, "Committed report no longer matches current Ticket identity or digest."
-        met = _current_report_met(Path(logs), identity)
-    except (submission.ReportSubmissionError, RuntimeError, OSError) as exc:
-        return None, f"Report submission completion outcome could not be verified: {exc}"
-    if report and report.get("detail", {}).get("report_submission_id") != submission_id:
-        report = None
-    committed = dict(report or {})
-    committed.update(criterion_key="_report_submitted", criterion_met=met)
-    committed["report_text"] = "Report submission committed."
-    committed["detail"] = {**committed.get("detail", {}), "report_submission_status": "completed"}
-    diagnoses = []
-    if exit_code:
-        diagnoses.append("Report committed, but process completion was abnormal.")
-    if not met:
-        diagnoses.append(
-            "Report committed, but current report evidence was invalidated or is unavailable."
-        )
-    diagnosis = " ".join(diagnoses)
-    return committed, diagnosis
 
 
 def _sim_mcp_tool_timeout_seconds(
@@ -3919,7 +3834,7 @@ def _sim_planned_timeout_seconds(
         runs_s = work_units * (run_s + DEFAULT_TIMEOUT_S + _TRACE_CLEANUP_MARGIN_S)
         targets_s = target_count * (build_s + 30 + DEFAULT_TIMEOUT_S)
         return runs_s + targets_s + 30
-    baseline_scale = 2 if _ticket_baseline_required("cycle_count_", state_path) else 1
+    baseline_scale = 2 if _baseline_required("cycle_count_", state_path) else 1
     run_units = work_units * baseline_scale
     build_units = target_count * baseline_scale
     planned_s = build_units * build_s + run_units * (DEFAULT_TIMEOUT_S + run_s)
@@ -3949,7 +3864,7 @@ def _implementation_budget_plan(
         requested_timeout_ms(arguments),
     )
     criterion_prefix = "synthesis_ok_" if name == "synth" else "fpga_impl_ok_"
-    has_baseline = bool(arguments.get("baseline")) or _ticket_baseline_required(
+    has_baseline = bool(arguments.get("baseline")) or _baseline_required(
         criterion_prefix, context.state_path
     )
     work_units = _target_count(arguments) * (2 if has_baseline else 1)
@@ -4017,7 +3932,7 @@ def _mcp_tool_timeout_seconds(
     return _sim_mcp_tool_timeout_seconds(arguments, default, context)
 
 
-def _ticket_baseline_required(criterion_prefix: str, state_path: Path | None) -> bool:
+def _baseline_required(criterion_prefix: str, state_path: Path | None) -> bool:
     """Whether criteria persisted at *state_path* will auto-enable an implementation baseline."""
     from booley.evidence.fields import BASELINE_REF_PARAM
 
@@ -4463,11 +4378,11 @@ def _maybe_configure_interactive_logs_dir() -> None:
 
     Without this, transcripts and ``display.jsonl`` from MCP-driven endpoint
     calls land in an OS tempdir (see ``_resolve_transcript_dir``), which
-    disappears on container exit.  In Ticket Mode the harness sets
-    ``BOOLEY_LOGS_DIR`` explicitly, so this is a no-op.
+    disappears on container exit. An explicitly configured ``BOOLEY_LOGS_DIR``
+    takes precedence over this default.
 
     Interactive Mode is detected by:
-      - ``BOOLEY_LOGS_DIR`` not already set (harness sets it in Ticket Mode);
+      - ``BOOLEY_LOGS_DIR`` not already set;
       - ``.booley_project/`` present in CWD (the project root the outer agent
         bind-mounted into the container at ``/work``).
 
@@ -4493,9 +4408,8 @@ def _maybe_configure_interactive_logs_dir() -> None:
 def _load_agent_settings_from_toml() -> None:
     """Honor ``[agent]``/``[sandbox]``/``[models]`` from the project's booley.toml.
 
-    Interactive Mode has no developer to preload configuration. Loading here
-    makes the server honor booley.toml exactly like Ticket Mode
-    (the developer) and ``booley doctor`` already do. (Specialist endpoint
+    Loading configuration here makes the server honor booley.toml consistently
+    with ``booley doctor``. (Specialist endpoint
     subprocesses resolve the provider independently — ``get_backend_config()``
     reads ``BOOLEY_PROJECT_DIR/booley.toml`` when the env hand-off is absent —
     so they no longer silently fall back to a default provider either.)
@@ -4607,7 +4521,7 @@ def main() -> None:
         raise SystemExit(2)
 
     # Codex REPLACES the MCP child env per config.toml [env] (see
-    # harness.mcp_config), so a config that doesn't forward the proxy vars
+    # runtime.mcp_config), so a config that doesn't forward the proxy vars
     # leaves this server — and every endpoint subprocess under it — with no
     # egress path. Self-heal here so the whole endpoint subprocess tree inherits it.
     if runtime_context.ensure_proxy_env():

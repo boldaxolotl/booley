@@ -13,7 +13,7 @@ from booley.goals.binding import GoalBindingError
 from booley.goals.flow_execution import GoalFlowExecution
 from booley.mcp.call_context import binding_from_environment
 from booley.mcp.goal_freshness import GOAL_FRESHNESS_RESOLVERS
-from booley.ticket_board.flow_runner import TicketFlowLoadError, load_project_flow
+from booley.mcp.project_flow_loader import ProjectFlowLoadError, load_project_flow
 
 _FLOW_TYPES = {
     "fpga": FpgaImplFlow,
@@ -43,7 +43,7 @@ def main(argv: list[str] | None = None) -> int:
         flow = load_project_flow(custom_path, name)
         flow.configure_flow_execution(adapter)
         return flow.main(args)
-    except (GoalBindingError, TicketFlowLoadError, OSError) as exc:
+    except (GoalBindingError, ProjectFlowLoadError, OSError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
 

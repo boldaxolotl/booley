@@ -170,11 +170,10 @@ commands are never dispatched.
 
 ### Goal baselines and editable design inputs
 
-The internal [Criteria](../../src/booley/ticket_board/GLOSSARY.md#execution-and-evidence)
+The internal [Criteria](../GLOSSARY.md#execution-and-evidence)
 names below are the policy and evidence keys used to evaluate declared Goals.
-This vocabulary remains live in `ticket_board/`, `criteria/`, and `evidence/`;
-Phase 9a relocates shared Ticket-owned implementations before deleting the
-package and its glossary. Ordinary CLI Flow calls remain diagnostic; Goal
+This vocabulary belongs to shared `criteria/` and `evidence/` policy.
+Ordinary CLI Flow calls remain diagnostic; Goal
 verification uses the MCP-bound execution adapter.
 
 Goal entry pins the clean linked worktree's HEAD as its base and creates a Goal
@@ -204,56 +203,7 @@ repository, and files in a nested Git repository are never left out. A Goal
 bound to a Target still needs a selected Simulation producer for each
 uncommitted generated input.
 
-### Ticket baselines
-
-This section describes Ticket baseline policy retained until Phase 9a removes it.
-The Ticket workflow is unreachable through the public `booley run` / `booley board` CLI, which
-prints a Goal Mode pointer and exits 2. Its baseline protections do not define
-Goal Mode policy. `booley flow` still has a `BOOLEY_TICKET_FILE` adapter, and
-shared `ticket_board/` dependencies remain live until they are relocated.
-
-The retired Ticket Mode treats the Target recipe as acceptance input, not implementation
-work. `create-file` opens a Ticket Workspace before enqueue, so new or changed
-Targets are authored on Ticket-owned branches without changing the Project's
-destination branches or making Doctor observe a half-configured Target. Enqueue
-records schema 1 metadata in the Ticket's reserved `machine` section: its
-generation, authored-content digest, and exact outer and optional project-data
-baseline commits and refs. Each Criterion's directed baseline/candidate Target
-binding is derived from the authored Ticket and those pinned commits. Earlier
-executable Ticket formats are beyond the hard cutoff and must be recreated.
-
-The protected-path policy covers FuseSoC-selected Target declarations, the test
-registry, Target-selecting Flow configuration, selected SDC/XDC, referenced hooks,
-discovery sentinels, Project routing, and the configured
-[Approved Waiver Set](../../src/booley/flows/sim/GLOSSARY.md) together with every
-proof artifact referenced by an approval. This project-wide approval
-policy is protected for every sealed Ticket, including a Ticket without a
-Coverage Criterion. Review-time waiver promotion (ADR 0066) does not break
-this: it commits only in the Acceptance Journal's merge candidate, never on the
-Ticket branch. Exact Git
-comparisons intentionally block formatting-only control changes. RTL and testbench
-contents remain editable when Scope permits them.
-
-Ticket baseline metadata is published only after every repository validates and
-commits. Worktrees can then be discarded and reconstructed from the recorded
-refs. Execution starts from those commits, and intake, each Flow, the commit
-guard, review handoff, and final acceptance reject drift as
-`acceptance-input-change-required`.
-For relative synth/FPGA Criteria, a plain Target name uses that frozen Target at
-both revisions. An explicit `{baseline, candidate}` binding runs the
-baseline Target at the outer participant's authoring commit and the candidate
-Target at the ticket head. The baseline must fully resolve at enqueue; a
-distinct candidate may defer only missing RTL/TB sources declared Scope
-`[new]`. Both Targets remain immutable, and their measurement basis
-(technology/part, Flow methodology, top, and constraints) must match. A future
-non-relative Target may likewise omit only sources declared Scope `[new]`.
-
-`return-to-draft` preserves the old identity and evidence, then starts fresh
-Ticket authoring from committed destination refs.
-Legacy executable Tickets are rejected after the hard cutoff. Recreate them as a new
-Ticket draft so enqueue can publish a Ticket baseline before execution. The
-only automatic replacement is a baseline refresh for an untouched waiting Ticket after its
-dependencies are accepted; drift still requires `return-to-draft`.
+Goal adapters resolve pinned acceptance inputs before execution. Shared Flow execution consumes resolved Target identities and baselines through its evidence protocols; it does not load workflow documents.
 
 ### Shared run logs and artifacts
 
@@ -767,8 +717,6 @@ of a bare "no metrics".
 
 Goal Mode's base commit and editable Target policy are defined in
 [Goal baselines and editable design inputs](#goal-baselines-and-editable-design-inputs).
-Retained Ticket recipe invariants are documented separately under
-[Ticket baselines](#ticket-baselines) until Phase 9a removes that code.
 
 ### Reports and Criteria detail
 
@@ -1002,8 +950,6 @@ violations, and critical design conditions are design failures.
 
 Goal Mode's base commit and editable Target policy are defined in
 [Goal baselines and editable design inputs](#goal-baselines-and-editable-design-inputs).
-Retained Ticket recipe invariants are documented separately under
-[Ticket baselines](#ticket-baselines) until Phase 9a removes that code.
 
 ### Reports and Criteria detail
 
@@ -1077,41 +1023,6 @@ updates the Approved Waiver Set, recomputes strict coverage, and records the
 change in the Goal Change Log. Candidate, Campaign, source, and policy identities
 are revalidated before application. External waiver-policy changes invalidate
 old coverage evidence; they are not an implicit Goal approval.
-
-#### Retained Ticket waiver promotion
-
-The following sealed-input and review-time promotion path is retained until
-Phase 9a removes it. Public `booley board` invocations return a Goal Mode pointer
-and exit 2; Goal Mode does not use the Acceptance Journal or Ticket generations.
-
-Once a Ticket is sealed, hand-editing, adding, deleting, or replacing an approval file or
-one of its referenced proof artifacts requires `return-to-draft`; the new
-Ticket generation records a fresh protected-input baseline.
-
-The other approval path is review-time promotion (ADR 0066). In Ticket Mode the
-Coverage Analyst's wrapper records screened Waiver Candidates in the ignored
-`tickets/waiver-candidates/<slug>.json`. Gated evaluation computes the strict
-verdict and a Provisional Coverage Verdict that also counts candidates; a Ticket
-whose unmet mandatory Coverage Criteria are all met provisionally is handed to
-`review` as an unaccepted inspection (`logs/<slug>/review/provisional-handoff.json`,
-bound to the execution id), never to `done`. Briefing and approve re-derive every
-candidate from Campaign and point-store digests, Target, zero-hit point, and source
-SHA-256 at the approved head; mismatches are stale or invalid and not offered.
-`board approve --accept-waivers/--reject-waivers` requires a decision for every
-offered candidate, predicts the strict verdict before any change, and on failure
-records only rejections and exits non-zero with the Ticket still in review. On
-success the Acceptance Journal commits `chore(<slug>): approve coverage waivers`
-in its merge candidate (appends to `<source>.toml`, writes `proofs/<id>.md` with
-`proof.kind = "review"` for `unreachable`) before the destination fast-forwards.
-Approval keeps the package's original capture and records its post-decision
-live-input fingerprint separately in
-`review/approval-captures/<inspection-generation>.json`. Publication recovery
-checks that live fingerprint while verifying the immutable package against its
-original capture; completion retries reuse the same binding. Changes outside
-approval still make the review inputs stale.
-Rejections, keyed by Target, point, and source SHA-256, filter later proposals and
-survive return-to-draft and `board reset`, which clear only candidates; closing the
-Ticket discards the record.
 
 #### Coverage Campaign artifacts
 

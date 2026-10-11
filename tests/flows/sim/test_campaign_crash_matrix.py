@@ -33,9 +33,9 @@ from booley.flows.sim.execution.contract import (
     SimulationTargetOutcome,
     SimulationTestOutcome,
 )
-from booley.ticket_board import acceptance_ledger
+from tests.criteria import ledger_support as acceptance_ledger
+from tests.criteria.test_evidence_ledger import _campaign_facts, _transaction_state
 from tests.flows.sim.test_campaign_manifest_codec import _manifest
-from tests.ticket_board.test_acceptance_ledger import _campaign_facts, _transaction_state
 
 _DURABLE_BOUNDARIES = (
     "manifest_commit",
@@ -316,7 +316,7 @@ def test_acceptance_publication_boundary_retry_is_idempotent(
             state,
             changes,
             acceptance_facts=_campaign_facts(),
-            ticket_identity=identity,
+            identity=identity,
             publication_checkpoint=crash,
         )
 
@@ -325,7 +325,7 @@ def test_acceptance_publication_boundary_retry_is_idempotent(
         state,
         changes,
         acceptance_facts=_campaign_facts(),
-        ticket_identity=identity,
+        identity=identity,
         publication_checkpoint=crash,
     )
     assert state.acceptance_transactions == [transaction.transaction_id]

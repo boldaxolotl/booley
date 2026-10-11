@@ -4,7 +4,7 @@ ADR 0066 promotes each human-accepted Waiver Candidate into an Approved Waiver:
 one ``[[approval]]`` record appended to ``<source>.toml`` in the approval
 directory and, for ``unreachable`` records, one ``review`` proof file at
 ``proofs/<waiver-id>.md``.  This module renders those bytes and nothing else:
-it performs no filesystem, Git, or Ticket Board work, so the approve operation
+it performs no filesystem or Git work, so the approve operation
 owns every I/O policy and can re-render identical bytes during crash recovery.
 
 Every rendered document is re-parsed with :mod:`tomllib` before it is

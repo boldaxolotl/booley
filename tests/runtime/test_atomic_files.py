@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from booley.runtime import atomic_files
-from booley.ticket_board import persistence
+from booley.runtime import atomic_files as persistence
 
 
 def test_ticket_persistence_reexports_the_shared_primitives() -> None:

@@ -23,13 +23,6 @@ def worktree_state_dir(project_root: Path, *, project_dir: Path | None = None) -
     return selected
 
 
-def ticket_workspace_path(project_root: Path, slug: str) -> Path:
-    """Return the outer Ticket Workspace under its selected state directory."""
-    if not slug or Path(slug).name != slug or slug in {".", ".."}:
-        raise ValueError(f"invalid Ticket Workspace name: {slug!r}")
-    return worktree_state_dir(project_root) / "worktrees" / slug
-
-
 def relative_worktree_paths(project_root: Path) -> bool:
     """Whether this layout can carry relative links between host and Sandbox."""
     root = project_root.resolve()

@@ -1,21 +1,15 @@
 """Ephemeral git worktree for baseline (delta) synthesis / implementation runs.
 
 Both :mod:`asic_synthesize` and :mod:`fpga_impl` accept ``--baseline <git ref>``:
-re-run the flow at a past commit and diff the QoR metrics. The original
-implementation checked the baseline ref out *in place* (``git checkout``), which
-clobbers the caller's working tree — so it was gated to Ticket Mode, where
-the developer provides a disposable per-ticket worktree. Interactive Mode has
-no such sandbox, so ``--baseline`` was simply refused there (ADR 0012).
-
-This module materializes the baseline ref in a **throwaway ``git worktree``**
-instead of mutating the current tree, so the caller's working tree is never
-touched and delta mode works identically in both modes. The worktree lives under
+re-run the Flow at a past commit and compare QoR metrics. This module creates
+a throwaway ``git worktree`` at the baseline ref and preserves the caller's
+working tree in Interactive and Goal Mode. The worktree lives under
 ``<project>/.booley_project/`` — git-ignored (never pollutes ``git status``) and
 inside the Sandbox workspace. It is force-removed on context exit,
 even if the body raises.
 
-For Ticket Mode's paired ``.booley_project`` repository, the outer baseline
-worktree receives a nested detached worktree at the ticket branch's fork point.
+For a paired ``.booley_project`` repository, the outer baseline
+worktree receives a nested detached worktree at the branch's fork point.
 That preserves the baseline revision's Target definitions and recipe instead of
 mirroring live project data into both comparisons.
 """
@@ -83,7 +77,7 @@ def resolve_ticket_baseline(
     project_root: Path,
     flow_name: str,
 ) -> tuple[str | None, str | None, str | None]:
-    """Resolve and enforce one immutable ticket baseline across selected Targets."""
+    """Resolve and enforce one immutable Criterion baseline across selected Targets."""
     matched_params: list[dict[Any, Any]] = []
     for target in targets:
         names = {

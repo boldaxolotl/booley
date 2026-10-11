@@ -113,8 +113,8 @@ Specialist names, including Flow names or direct MCP endpoints placed under
 `[specialists]`. Malformed or unreadable configuration stops endpoint discovery
 and Project checks rather than enabling every capability by default.
 
-Protocol utility endpoints such as `submit_run_report` have no Project
-`enabled` switch; execution mode and MCP server filters control their visibility.
+Protocol utility endpoints such as `booley_poll` have no Project
+`enabled` switch; MCP server filters control their visibility.
 Custom direct `McpTool` subclasses also have no Project enable switch. To
 disable discovery, prefix the implementation filename with `_`, for example
 rename `mcp_tools/project_check.py` to `mcp_tools/_project_check.py`. Custom
@@ -1051,7 +1051,7 @@ are rejected before publication. After upgrading or configuring this tier,
 run Project Setup or Doctor to reconcile installed Git-hook bundles.
 
 Project Initialization keeps `.booley_project/hooks/` for Project-authored
-`post-setup` and `post-developer` lifecycle hooks. Booley-managed commit and
+`post-setup` lifecycle hooks. Booley-managed commit and
 push policy lives in the deterministic
 `.booley_project/.managed/project-git-hooks.pyz` bundle, reached by the small
 `commit-msg` and `pre-push` adapters under `.git/hooks/`.

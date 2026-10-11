@@ -320,7 +320,7 @@ class TestEnsureHttpServer:
     def test_explicit_interactive_mode_controls_spawned_server_surface(
         self, tmp_path, monkeypatch
     ):
-        from booley.mcp.server import _mcp_tool_visible, _status_mcp_tool_visible
+        from booley.mcp.server import _status_mcp_tool_visible
 
         states = iter([False, True])
         monkeypatch.setattr(reg, "_port_is_serving", lambda port, **kw: next(states))
@@ -355,7 +355,6 @@ class TestEnsureHttpServer:
         assert "BOOLEY_MCP_TOOLS" not in child_env
 
         with patch.dict(os.environ, child_env, clear=True):
-            assert not _mcp_tool_visible("submit_run_report")
             assert _status_mcp_tool_visible()
 
     def test_starts_and_waits_for_port(self, tmp_path, monkeypatch):

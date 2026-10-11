@@ -886,3 +886,34 @@ def test_undeclared_endpoint_criterion_does_not_discard_later_goal_evidence(
     assert diagnostic_key not in state.criteria
     rows = validated_evidence_records(GOAL_SCOPE, paths.logs_dir, state, {})
     assert rows and all(row["criterion"] == "review_rtl_bugs_done" for row in rows)
+
+
+@pytest.mark.parametrize("inside", [False, True])
+@pytest.mark.parametrize("rules", [False, True])
+def test_status_complete_text_and_metadata_unchanged(goal_mode, inside, rules):
+    from booley.goals.rules import goal_mode_rules
+    from booley.goals.status import status_views
+    from tests.goals.test_format import baseline_render_status
+
+    location = goal_mode.worktree if inside else goal_mode.main
+    views = status_views(GoalStore(goal_mode.control), location)
+    assert [view.record.id for view in views] == [goal_mode.record.id]
+    expected = baseline_render_status(views)
+    if rules:
+        expected += "\n\n" + goal_mode_rules()
+    result = asyncio.run(
+        dispatch_goal_tool(
+            "goal_status",
+            {"work_dir": str(location), "rules": rules},
+            project_dir=goal_mode.control,
+        )
+    )
+    assert result.is_error is False
+    assert result.goal_aware is inside
+    assert len(result.value) == 1
+    assert result.value[0].model_dump() == {
+        "type": "text",
+        "text": expected,
+        "annotations": None,
+        "meta": None,
+    }

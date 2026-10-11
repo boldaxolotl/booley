@@ -398,14 +398,14 @@ class GoalEvidenceRecorder:
         changes: list[CriterionChange],
         *,
         acceptance_facts: Mapping[str, Any],
-        ticket_identity: Mapping[str, Any],
+        identity: Mapping[str, Any],
     ) -> AcceptanceTransaction:
         """V2: record or recover one Simulation Campaign transaction as Goal evidence.
 
-        *ticket_identity* is ignored: a Goal transaction's identity is the
+        *identity* is ignored: a Goal transaction's identity is the
         group of the Goals its changes affect (module docstring).
         """
-        with self._publication(state, changes) as (identity, stamped):
+        with self._publication(state, changes) as (publication_identity, stamped):
             try:
                 return evidence_ledger.record_or_verify_transaction(
                     self.log_dir,
@@ -414,7 +414,7 @@ class GoalEvidenceRecorder:
                     scope=GOAL_SCOPE,
                     projection=self.projection(),
                     acceptance_facts=acceptance_facts,
-                    identity=identity,
+                    identity=publication_identity,
                     publication_checkpoint=self._checkpoint,
                 )
             except AcceptanceLedgerError as exc:

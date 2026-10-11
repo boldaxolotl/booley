@@ -1,4 +1,4 @@
-"""The Goal counterpart of the Ticket Flow execution adapter (ADR 0067 D5, B8).
+"""Execution adapter for one bound Goal run (ADR 0067 D5, B8).
 
 :class:`GoalFlowExecution` is the
 :class:`~booley.flows.execution_persistence.FlowExecutionAdapter` of one
@@ -8,7 +8,7 @@ the record's ``booley_state.json``, and records evidence through
 it also supplies. Custom MCP tools and Specialists receive the same adapter as
 their recorder, so every endpoint of a Goal run publishes through one gate.
 
-It imports no concrete Flow, MCP, harness, Specialist, or Ticket Board code
+It imports no concrete Flow, MCP, harness, or Specialist code
 (contract rule D35); the MCP entry point composes it with a runner.
 """
 
@@ -186,11 +186,11 @@ class GoalFlowExecution:
         changes: list[CriterionChange],
         *,
         acceptance_facts: Mapping[str, Any],
-        ticket_identity: Mapping[str, Any],
+        identity: Mapping[str, Any],
     ) -> AcceptanceTransaction:
         """Record or recover a Simulation Campaign transaction (V2) as Goal evidence."""
         return self._recorder.record_or_verify_transaction(
-            state, changes, acceptance_facts=acceptance_facts, ticket_identity=ticket_identity
+            state, changes, acceptance_facts=acceptance_facts, identity=identity
         )
 
 

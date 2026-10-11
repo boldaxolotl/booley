@@ -180,27 +180,11 @@ def test_uninitialized_flow_fails_before_state_or_execution(runtime, monkeypatch
 
 
 @pytest.mark.parametrize("flow_type", FLOWS)
-def test_typed_request_runs_ticket_gate_before_state_or_admission(flow_type, runtime, monkeypatch):
-    flow = flow_type()
-    monkeypatch.setenv("BOOLEY_TICKET_FILE", str(runtime / "missing-ticket.md"))
-    monkeypatch.setattr(
-        FlowSession, "read_state", lambda self: pytest.fail("loaded mutable state")
-    )
-    monkeypatch.setattr(
-        FlowSession, "_acquire_job_slot", lambda self: pytest.fail("admitted rejected request")
-    )
-    monkeypatch.setattr(flow, "_run", lambda: pytest.fail("ran rejected request"))
-    result = flow.execute(flow.request_type(target="demo", work_dir=runtime))
-    assert result.exit_code == 2
-    assert "BLOCKED" in result.outcome.report_text
-
-
-@pytest.mark.parametrize("flow_type", FLOWS)
 def test_structured_and_cli_paths_preserve_acceptance_before_save(flow_type, runtime, monkeypatch):
     from booley.criteria.state import DevelopmentState
     from booley.runtime.endpoint_execution import EndpointOutcome
-    from booley.ticket_board import acceptance_ledger
-    from booley.ticket_board.flow_execution import TicketAcceptanceRecorder
+    from tests.criteria import ledger_support as acceptance_ledger
+    from tests.criteria.ledger_support import FixtureRecorder
 
     key = f"{flow_type.satisfies[0]}_demo"
     state_path = runtime / "state.json"
@@ -225,7 +209,7 @@ def test_structured_and_cli_paths_preserve_acceptance_before_save(flow_type, run
     monkeypatch.setattr(acceptance_ledger, "record_changes", record_changes)
     monkeypatch.setattr(DevelopmentState, "save", save_state)
     outcomes = []
-    recorder = TicketAcceptanceRecorder(log_dir=runtime / "logs")
+    recorder = FixtureRecorder(log_dir=runtime / "logs")
 
     for direct in (False, True):
         # Reset the input before comparing the two paths.
@@ -485,108 +469,6 @@ class ProjectEndpoint(BASE):
     else:
         expected["report_dir"] = None
     assert result.outcome.detail == expected
-
-
-def test_ticket_runner_executes_project_local_flow(runtime, monkeypatch):
-    from booley.evidence.acceptance import ResolvedFlowAcceptance
-    from booley.flows.execution_persistence import NoAcceptanceRecorder
-    from booley.runtime import runtime_context
-    from booley.ticket_board import flow_runner
-
-    class AllowedTicketExecution(NoAcceptanceRecorder):
-        def validate_and_resolve(self, request):
-            return ResolvedFlowAcceptance(ticket_backed=True)
-
-    extension = runtime / "project_flow.py"
-    extension.write_text(
-        """from booley.flows.base import BooleyFlow
-from booley.runtime.endpoint_execution import EndpointOutcome
-
-class ProjectFlow(BooleyFlow):
-    name = "project_probe"
-    description = "Project-local Flow"
-
-    def _add_args(self, parser):
-        pass
-
-    def _run(self):
-        return EndpointOutcome(report_text="project Flow ran")
-""",
-        encoding="utf-8",
-    )
-    ticket = runtime / "ticket.md"
-    ticket.write_text("ticket\n", encoding="utf-8")
-    monkeypatch.setenv("BOOLEY_TICKET_FILE", str(ticket))
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
-    monkeypatch.setattr(flow_runner, "TicketBoardFlowExecution", AllowedTicketExecution)
-
-    assert (
-        flow_runner.main(
-            [
-                "--custom-path",
-                str(extension),
-                "project_probe",
-                "--target",
-                "demo",
-                "--work-dir",
-                str(runtime),
-            ]
-        )
-        == 0
-    )
-
-
-def test_ticket_mcp_routes_project_local_flow_through_ticket_composition(
-    runtime,
-    monkeypatch,
-):
-    import asyncio
-    from unittest.mock import Mock
-
-    from booley.flows.base import BooleyFlow
-    from booley.mcp import server
-
-    class ProjectFlow(BooleyFlow):
-        name = "project_probe"
-
-    custom_path = runtime / "project_flow.py"
-    definition = server._mcp_tool_def_from_class(
-        ProjectFlow,
-        {"type": "object", "properties": {}},
-        "project_probe",
-        is_custom=True,
-        custom_path=str(custom_path),
-    )
-    commands = []
-
-    async def run_subprocess(command, **_kwargs):
-        commands.append(command)
-        return 0, "", "", False
-
-    monkeypatch.setenv("BOOLEY_TICKET_FILE", str(runtime / "ticket.md"))
-    monkeypatch.setattr(server, "_run_subprocess", run_subprocess)
-    monkeypatch.setattr(server, "_try_read_report", lambda: None)
-
-    asyncio.run(
-        server._dispatch_booley_mcp_tool(
-            "project_probe",
-            {},
-            definition,
-            {},
-            server._JobManager(Mock()),
-        )
-    )
-
-    assert commands == [
-        [
-            "python",
-            "-m",
-            "booley.ticket_board.flow_runner",
-            "--custom-path",
-            str(custom_path),
-            "project_probe",
-        ]
-    ]
 
 
 def test_repeated_typed_calls_get_fresh_invocation_metadata(runtime, monkeypatch):

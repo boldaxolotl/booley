@@ -83,8 +83,6 @@ if "claude_agent_sdk" not in sys.modules:
     _sdk.query = AsyncMock()
     sys.modules["claude_agent_sdk"] = _sdk
 
-from booley.harness.models import TicketContext
-
 
 @pytest.fixture(autouse=True)
 def _set_project_dir(tmp_path, monkeypatch):
@@ -111,64 +109,3 @@ def project_root(tmp_path: Path) -> Path:
     # Create .git marker
     (tmp_path / ".git").write_text("gitdir: fake", encoding="utf-8")
     return tmp_path
-
-
-@pytest.fixture
-def sample_ticket(project_root: Path) -> Path:
-    """Create a sample queued ticket .md file with its state record."""
-    from booley.ticket_board.board_layout import StateRecord, write_state_record
-    from booley.ticket_board.lifecycle import TicketState
-
-    write_state_record(
-        project_root / TICKETS_REL, "fix-fsm-counter", StateRecord.fresh(TicketState.QUEUED)
-    )
-    ticket_path = project_root / TICKETS_REL / "board" / "fix-fsm-counter.md"
-    ticket_path.write_text(
-        "---\n"
-        "summary: Fix FSM counter overflow\n"
-        "type: bugfix\n"
-        "branch: master\n"
-        "scope:\n"
-        "  - rtl/my_module.sv\n"
-        "  - tb/my_module_tb.sv\n"
-        "criteria:\n"
-        "  mandatory:\n"
-        "    sim_pass:\n"
-        "      - tb/my_module_tb.sv @ config_a @ all @ fail -> pass\n"
-        "      - tb/my_module_tb.sv @ config_b @ all @ pass -> pass\n"
-        "on_success:\n"
-        "  destination: review\n"
-        "  merge: true\n"
-        "  cleanup: true\n"
-        "priority: high\n"
-        "---\n"
-        "## Bug Description\n"
-        "FSM counter wraps at boundary.\n",
-        encoding="utf-8",
-    )
-    return ticket_path
-
-
-@pytest.fixture
-def sample_ctx(project_root: Path) -> TicketContext:
-    """Create a sample TicketContext."""
-    return TicketContext(
-        slug="fix-fsm-counter",
-        ticket_path=project_root / TICKETS_REL / "board" / "fix-fsm-counter.md",
-        ticket_type="bugfix",
-        branch="master",
-        summary="Fix FSM counter overflow",
-        scope_raw=["rtl/my_module.sv", "tb/my_module_tb.sv"],
-        criteria={
-            "mandatory": {
-                "sim_pass": [
-                    "tb/my_module_tb.sv @ config_a @ all @ fail -> pass",
-                    "tb/my_module_tb.sv @ config_b @ all @ pass -> pass",
-                ],
-            },
-        },
-        priority="high",
-        feature_branch="fix-fsm-counter",
-        worktree_path=project_root / ".booley" / "worktrees" / "fix-fsm-counter",
-        project_root=project_root,
-    )

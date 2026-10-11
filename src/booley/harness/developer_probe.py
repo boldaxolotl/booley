@@ -1,13 +1,13 @@
 """Doctor's developer memory probe (ADR 0028 Decision 12).
 
 The container memory invariant needs a real number for "how much memory does
-one ticket's Developer Agent cost?" — hardcoding it would drift with every agent
+an agent call cost?" — hardcoding it would drift with every agent
 CLI/SDK release. ``booley doctor --deep`` therefore spawns the cheapest real
 agent call (light-tier model, one turn, no MCP tools) and records the child
 process's peak RSS into project runtime state at
 ``<project_dir>/runtime/developer_probe.json``. The invariant check reads
 that file on every subsequent doctor run and multiplies it by the
-``[jobs] max_tickets`` cap; until a measurement exists it uses a conservative
+model-call admission cap; until a measurement exists it uses a conservative
 1 GiB fallback.
 
 The probe is fail-soft by contract: no agent backend, no auth, or a timeout
@@ -25,11 +25,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from booley.core.boundary import as_positive_int
+from booley.runtime.agent_execution import configure_agent_call
 from booley.runtime.timefmt import utc_now_rfc3339
-from booley.ticket_board.agent_execution import configure_agent_call
 
 if TYPE_CHECKING:
-    from booley.harness.models import AgentResult
+    from booley.core.models import AgentResult
 
 try:
     import resource  # POSIX-only; no Windows equivalent for RUSAGE_CHILDREN
@@ -42,7 +42,7 @@ _RUSAGE_CHILDREN = resource.RUSAGE_CHILDREN if resource is not None else -1
 
 PROBE_FILENAME = "developer_probe.json"
 
-# Developer Agent memory term used until `doctor --deep` has measured (ADR 0028
+# Agent memory estimate used until `doctor --deep` has measured (ADR 0028
 # Decision 12: "1g fallback until measured").
 FALLBACK_BYTES = 1024**3
 
@@ -85,8 +85,8 @@ class ProbeError(RuntimeError):
     """The probe agent could not run or produced no measurable child RSS.
 
     ``agent_failure`` distinguishes "the AGENT CALL itself failed" (auth
-    failure, dead backend — a real project defect: every ticket's developer
-    would fail the same way at launch) from environment limitations of the
+    failure, dead backend — a real project defect: other agent calls
+    would fail for the same reason) from environment limitations of the
     probe (no process accounting, no RSS reading). Doctor reports the former
     loud and degrades only the latter to a SKIP.
 
@@ -170,7 +170,7 @@ def measure_developer_rss(
     """
     import asyncio
 
-    from booley.harness.models import AgentCallParams
+    from booley.core.models import AgentCallParams
     from booley.runtime import agent as agent_mod
     from booley.runtime import agent_config as config_mod
 
@@ -200,12 +200,12 @@ def measure_developer_rss(
         result = asyncio.run(agent_mod.call_agent(configure_agent_call(params)))
     except Exception as exc:
         # The agent call itself died — auth failure, dead backend. This is not
-        # a probe limitation: every ticket's developer launch would fail the
-        # same way (2026-07-23: expired seeded OAuth creds crashed every run
+        # a probe limitation: other agent calls would fail for the
+        # same reason (2026-07-23: expired seeded OAuth creds crashed every run
         # while doctor stayed green because this path degraded to SKIP).
         # A hit usage cap is the one agent-side error that is NOT a project
         # defect — it stays a SKIP.
-        from booley.harness.blocking import UsageLimitError
+        from booley.runtime.agent_errors import UsageLimitError
 
         raise ProbeError(
             f"probe agent failed: {exc}",

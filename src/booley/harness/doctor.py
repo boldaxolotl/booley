@@ -162,7 +162,7 @@ _SELFTEST_FLOWS = ("sim", "lint")
 _LINT_SELFTEST_BAD_TARGET = "lint_selftest_bad"
 
 
-_TICKET_CONTEXT_ENV = frozenset(
+_PROJECT_CONTEXT_ENV = frozenset(
     {
         "BOOLEY_AGENT_ROLE",
         "BOOLEY_CONTROL_PROJECT_ROOT",
@@ -1097,7 +1097,7 @@ def _deep_identity_reasons(
 
 #: ``.core`` security violations whose verdict depends on the agent's write
 #: Scope. doctor only has a synthetic project-wide Scope, so these are
-#: advisory there; the per-ticket Scope check at commit time is the real gate.
+#: advisory there; the execution Scope check at commit time is the real gate.
 #: Everything else (``fpga_hook``, ``expr_param``) is a property of the
 #: ``.core`` itself and stays a hard FAIL.
 _SCOPE_DEPENDENT_VIOLATIONS = frozenset({"in_scope_script", "unconfinable_script"})
@@ -1344,7 +1344,7 @@ def _check_worktree_core_shadow_guard(
 ) -> None:
     """Ensure ``.booley_project/FUSESOC_IGNORE`` keeps worktree cores out of scan.
 
-    Per-ticket / baseline git worktrees under ``.booley_project/`` are full
+    Goal / baseline git worktrees under ``.booley_project/`` are full
     checkouts carrying COPIES of the project's ``.core`` files (same VLNV). A
     stale copy shadows the repo-root source in FuseSoC's recursive
     ``--cores-root`` scan — silently building the worktree's RTL, not ``/work``'s.
@@ -1454,7 +1454,7 @@ def _check_memory_invariant(
 ) -> None:
     """ADR 0028 Decision 12 (advisory): the one container fits its caps.
 
-    Container-only means every ticket's Developer Agent and every HEAVY EDA job
+    Agent calls and every HEAVY EDA job
     share one cgroup — a limit sized below what the ``[jobs]`` caps admit is
     an OOM waiting to take the whole session down. WARN, never FAIL: the
     budget terms are estimates, and an over-committed container still works
@@ -1498,8 +1498,8 @@ def _check_memory_invariant(
     requirement = resource_policy.memory_requirement(
         max_heavy=caps.max_heavy,
         heavy_job_bytes=reservation.bytes,
-        max_tickets=1,
-        developer_bytes=orch,
+        agent_count=1,
+        agent_bytes=orch,
     )
     fmt = resource_policy.format_memory
     arithmetic = (
@@ -1656,12 +1656,11 @@ def _run_developer_probe(
     """ADR 0028 Decision 12: measure the invariant's developer term.
 
     ``--deep``-only and in-container-only: the number that matters is the
-    agent CLI's footprint *inside* the Sandbox, where tickets actually
-    run. Fail-soft for probe LIMITATIONS (no process accounting, no RSS
+    agent CLI's footprint *inside* the Sandbox. Fail-soft for probe LIMITATIONS (no process accounting, no RSS
     reading, hit usage cap) — those degrade to a SKIP and the invariant keeps
     its 1 GiB fallback. But a failure of the agent CALL itself (auth, dead
-    backend) is a real project defect — every ticket's developer would crash
-    the same way at launch — and is reported as a FAIL, not hidden in a SKIP
+    backend) is a real project defect — other agent calls would fail
+    for the same reason — and is reported as a FAIL, not hidden in a SKIP
     (the 2026-07-23 expired-creds incident sailed through a green doctor
     exactly this way). Doctor must never crash on the probe.
 
@@ -4972,7 +4971,7 @@ def _check_sim_run_cwd(project: ProjectAudit, _pass: Check, _warn: Check) -> Non
     """Warn when a literal ``[flows.sim].run_cwd`` will be missing at run time.
 
     Booley never creates a literal ``run_cwd`` (docs/user/CONFIG.md), so it must
-    exist in every checkout and Ticket worktree. That means a real directory that
+    exist in every checkout and Goal worktree. That means a real directory that
     holds at least one *committed* file: an empty directory, a gitignored one, or
     one whose placeholder is only staged vanishes in a fresh checkout. Unset,
     ``.``, and templated values (Booley-owned) are not checked.
@@ -5059,7 +5058,7 @@ def _check_readmemh_targets_tracked(
 def _project_write_scope(root: Path) -> list[str]:
     """The agent's project-wide writable Scope as glob patterns (category dirs).
 
-    doctor has no ticket Scope, so the ``.core`` security audit treats the union
+    Doctor has no Goal-specific Scope, so the ``.core`` security audit treats the union
     of the writable category dirs (``rtl/``, ``tb/``, …) as the agent's Scope: an
     imperative ``.core`` script under one of them is agent-mutable, hence not
     confined (decision 21). A script under, say, ``scripts/`` is out-of-Scope and
@@ -5983,8 +5982,8 @@ def _prepare_selftest_invocation(
 
 
 def _doctor_subprocess_env(project: ProjectAudit) -> dict[str, str]:
-    """Return a diagnostic environment with Ticket context removed."""
-    env = {key: value for key, value in os.environ.items() if key not in _TICKET_CONTEXT_ENV}
+    """Return a diagnostic environment with execution context removed."""
+    env = {key: value for key, value in os.environ.items() if key not in _PROJECT_CONTEXT_ENV}
     from booley.flows.cli_selection import INVOCATION_ORIGIN_ENV
 
     env["BOOLEY_PROJECT_DIR"] = str(project.project_dir)
@@ -6705,7 +6704,7 @@ def _flow_command(
     ]
     from booley.flows.cli_selection import INVOCATION_ORIGIN_ENV
 
-    command_env = dict.fromkeys(_TICKET_CONTEXT_ENV, "")
+    command_env = dict.fromkeys(_PROJECT_CONTEXT_ENV, "")
     command_env[INVOCATION_ORIGIN_ENV] = "transport"
     if doctor_selftest_kind is not None:
         command_env[selftest_overlay.INTERNAL_KIND_ENV] = doctor_selftest_kind

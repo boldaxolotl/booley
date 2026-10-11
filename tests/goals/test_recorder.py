@@ -32,7 +32,7 @@ from booley.goals.recorder import (
 from booley.goals.simulation import GOAL_SUITE_DETAIL_KEY
 from booley.goals.status import build_status
 from booley.goals.store import GoalStore
-from booley.ticket_board.acceptance_ledger import TicketIdentity
+from tests.criteria.ledger_support import FixtureIdentity
 from tests.goals.conftest import (
     LINT_KEY,
     SIM_KEY,
@@ -101,7 +101,7 @@ def _v2(
         *shadow.set_criterion(LINT_KEY, True, detail={"warnings": 0}),
     ]
     transaction = recorder.record_or_verify_transaction(
-        state, changes, acceptance_facts=campaign_facts(), ticket_identity={}
+        state, changes, acceptance_facts=campaign_facts(), identity={}
     )
     return state, transaction
 
@@ -253,7 +253,7 @@ def test_goal_and_ticket_codecs_reject_each_other() -> None:
     with pytest.raises(AcceptanceLedgerError):
         GoalIdentity().lookup_identity({"generation": "d" * 32})
     with pytest.raises(AcceptanceLedgerError, match="ticket generation"):
-        TicketIdentity().lookup_identity(_VALID)
+        FixtureIdentity().lookup_identity(_VALID)
     with pytest.raises(AcceptanceLedgerError, match="another Goal Record"):
         GoalIdentity().validate_observation_identity(
             _VALID, {**_VALID, "record_id": "other-20261006T120000Z"}
@@ -317,7 +317,7 @@ def test_intent_whose_envelope_names_an_older_spec_is_rejected(
 
 
 def test_ticket_intent_cross_check_rejects_a_mismatched_envelope(tmp_path: Path) -> None:
-    from booley.ticket_board import acceptance_ledger as ticket_ledger
+    from tests.criteria import ledger_support as fixture_ledger
 
     state = DevelopmentState.load(tmp_path / "state.json")
     state.slug = "fix-uart"
@@ -325,12 +325,12 @@ def test_ticket_intent_cross_check_rejects_a_mismatched_envelope(tmp_path: Path)
     changes = state.set_criterion("lint_clean", True, detail={})
     identity = {"generation": "d" * 32}
     with pytest.raises(_InterruptedError):
-        ticket_ledger.record_or_verify_transaction(
+        fixture_ledger.record_or_verify_transaction(
             tmp_path,
             state,
             changes,
             acceptance_facts=campaign_facts(),
-            ticket_identity=identity,
+            identity=identity,
             publication_checkpoint=_interrupt("after:acceptance_intent"),
         )
     (intent_path,) = (tmp_path / "acceptance" / "intents").iterdir()
@@ -340,8 +340,8 @@ def test_ticket_intent_cross_check_rejects_a_mismatched_envelope(tmp_path: Path)
     intent_path.write_bytes(canonical_json(intent) + b"\n")
 
     with pytest.raises(AcceptanceLedgerError, match="envelope does not match its lookup key"):
-        ticket_ledger.record_or_verify_transaction(
-            tmp_path, state, changes, acceptance_facts=campaign_facts(), ticket_identity=identity
+        fixture_ledger.record_or_verify_transaction(
+            tmp_path, state, changes, acceptance_facts=campaign_facts(), identity=identity
         )
 
 
@@ -500,7 +500,7 @@ def test_recovery_from_a_stale_instance_keeps_a_concurrently_selected_observatio
     shadow = DevelopmentState.from_json_object(other.to_dict())
     changes = shadow.set_criterion(LINT_KEY, False, detail={"warnings": 9})
     second = concurrent.record_or_verify_transaction(
-        other, changes, acceptance_facts=campaign_facts(), ticket_identity={}
+        other, changes, acceptance_facts=campaign_facts(), identity={}
     )
     assert _disk_state(goal_mode)["acceptance_transactions"] == [second.transaction_id]
 
@@ -572,7 +572,7 @@ def test_v2_partial_simulation_reason_survives_projection(goal_mode):
         },
     )
     recorder.record_or_verify_transaction(
-        state, changes, acceptance_facts=campaign_facts(), ticket_identity={}
+        state, changes, acceptance_facts=campaign_facts(), identity={}
     )
     goal = next(
         g

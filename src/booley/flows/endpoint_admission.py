@@ -95,11 +95,7 @@ class AdmissionGate:
                 raise AdmissionIdentityError(
                     f"managed Job Slot execution identity disagrees with {RUNTIME_EXECUTION_ENV}"
                 )
-            role = (
-                job_slots.ROLE_TICKET
-                if os.environ.get("BOOLEY_AGENT_ROLE") == "ticket"
-                else job_slots.ROLE_INTERACTIVE
-            )
+            role = job_slots.ROLE_INTERACTIVE
             timeout = _slot_timeout_seconds()
             max_heavy = store.caps.max_heavy if store is not None else 1
             yield AdmissionContext(
@@ -260,11 +256,7 @@ def _acquire_job_slot(endpoint: EndpointState) -> tuple[job_slots.SlotStore | No
     # (slots_dir → resolve_project_dir), never from work_dir: a linked
     # worktree can carry a diverged booley.toml.
     caps = parse_caps(load_job_budget_config())
-    role = (
-        job_slots.ROLE_TICKET
-        if os.environ.get("BOOLEY_AGENT_ROLE") == "ticket"
-        else job_slots.ROLE_INTERACTIVE
-    )
+    role = job_slots.ROLE_INTERACTIVE
     # Claim identity is this live process: record the argv exactly as
     # /proc reports it so the ghost guards can match it later.
     pid = os.getpid()

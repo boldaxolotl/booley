@@ -18,6 +18,7 @@ from typing import Any, Literal, cast
 
 from booley.core.file_lock import release_file_lock, wait_for_file_lock
 from booley.criteria.state import CriterionEntry, DevelopmentState
+from booley.flows.sim import waiver_candidates as candidates
 from booley.flows.sim.coverage_campaign import DurableTargetIdentity, encode_coverage_campaign
 from booley.flows.sim.coverage_policy import (
     CoverageThreshold,
@@ -64,7 +65,6 @@ from booley.goals.waiver_policy import (
 )
 from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.targets.catalog import TargetCatalog
-from booley.ticket_board import waiver_candidates as candidates
 
 
 class GoalWaiverService:
@@ -149,7 +149,7 @@ class GoalWaiverService:
         }
 
     def _candidate(self, candidate_id: str) -> candidates.WaiverCandidate:
-        record = candidates.load(self.paths.root, self.record.id, directory=self.paths.root)
+        record = candidates.load(self.paths.root, self.record.id)
         found = [item for item in record.candidates.values() if item.candidate_id == candidate_id]
         if len(found) != 1:
             raise ProposalError(
@@ -316,7 +316,7 @@ class GoalWaiverService:
         """Persist exact candidate rejection, even if the proposal otherwise conflicts."""
         assert proposal.waiver is not None
         item = proposal.waiver["candidate"]
-        record = candidates.load(self.paths.root, self.record.id, directory=self.paths.root)
+        record = candidates.load(self.paths.root, self.record.id)
         rejection = candidates.Rejection(
             str(item["target_identity"]),
             str(item["point_id"]),

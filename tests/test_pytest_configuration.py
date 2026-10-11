@@ -637,43 +637,6 @@ def test_full_cartesian_matrix_remains_scheduled_and_manual() -> None:
     )
 
 
-def test_exhaustive_recovery_marker_retains_a_pr_subset() -> None:
-    paths = [
-        "tests/ticket_board/test_acceptance_journal_recovery.py",
-        "tests/ticket_board/test_completion.py",
-    ]
-
-    def collect(expression: str) -> set[str]:
-        env = os.environ.copy()
-        # A nested pytest process must not impersonate its parent xdist worker:
-        # tests/conftest.py would otherwise delete the parent's private temp
-        # root when the nested collection session exits.
-        env.pop("PYTEST_XDIST_WORKER", None)
-        env.pop("PYTEST_XDIST_TESTRUNUID", None)
-        result = subprocess.run(
-            [sys.executable, "-m", "pytest", "--collect-only", "-q", "-m", expression, *paths],
-            cwd=REPOSITORY_ROOT,
-            capture_output=True,
-            env=env,
-            text=True,
-            check=False,
-        )
-        assert result.returncode == 0, result.stderr
-        return {line for line in result.stdout.splitlines() if line.startswith("tests/")}
-
-    exhaustive = collect("exhaustive_recovery")
-    representative = collect("not exhaustive_recovery")
-
-    assert len(exhaustive) == 32
-    assert "test_retry_survives_every_semantic_checkpoint[before-normalized]" in "\n".join(
-        representative
-    )
-    assert (
-        "test_retry_survives_each_repository_boundary[before-project-candidate-preparation-False]"
-        in "\n".join(representative)
-    )
-
-
 def test_lint_job_uses_quality_only_dependencies() -> None:
     """The fast lint job does not install test or mutation dependencies."""
     workflow = _test_workflow()

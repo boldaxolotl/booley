@@ -12,8 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from booley.harness.blocking import AgentTimeoutError, TransientAPIError
-from booley.harness.models import AgentCallParams
+from booley.core.models import AgentCallParams
 from booley.runtime._codex_backend import (
     _codex_resolve_structured,
     _codex_run_subprocess,
@@ -25,6 +24,7 @@ from booley.runtime.agent import (
     call_agent,
     extract_json,
 )
+from booley.runtime.agent_errors import AgentTimeoutError, TransientAPIError
 
 
 def test_agent_notice_names_role_and_purpose_on_stderr(capsys):
@@ -396,7 +396,7 @@ class TestCodexBackend:
 
     @pytest.mark.asyncio
     async def test_transient_failure_is_still_retried(self, tmp_path: Path):
-        from booley.harness.models import AgentResult
+        from booley.core.models import AgentResult
 
         backend = CodexBackend()
         params = AgentCallParams(prompt="task", model="gpt-5", cwd=tmp_path)
@@ -465,7 +465,7 @@ class TestCodexMarkdownTranscript:
             },
         ]
 
-        from booley.ticket_board.agent_execution import resolve_agent_artifacts
+        from booley.runtime.agent_execution import resolve_agent_artifacts
 
         _codex_write_markdown(
             events,

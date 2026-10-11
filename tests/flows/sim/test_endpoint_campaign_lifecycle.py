@@ -1129,7 +1129,7 @@ def _public_cycle_campaign(tmp_path, monkeypatch):
 
 def _cycle_ticket(tmp_path):
     from booley.criteria.state import DevelopmentState
-    from booley.ticket_board.flow_execution import TicketAcceptanceRecorder
+    from tests.criteria.ledger_support import FixtureRecorder
 
     path = tmp_path / "state.json"
     state = DevelopmentState.load(path)
@@ -1144,9 +1144,9 @@ def _cycle_ticket(tmp_path):
     }
     state.init_criteria({key: True}, criterion_params={key: params}, strict=True)
     state.save()
-    recorder = TicketAcceptanceRecorder(
+    recorder = FixtureRecorder(
         log_dir=tmp_path / "logs",
-        ticket_identity={"generation": "d" * 32, "authored_sha256": "e" * 64},
+        identity={"generation": "d" * 32, "authored_sha256": "e" * 64},
     )
     return path, state, key, recorder
 
@@ -1694,7 +1694,7 @@ def test_actual_hook_fires_once_for_two_test_cocotb_batch(tmp_path, monkeypatch)
 def _public_ticket_hook_adapter(tmp_path, project):
     from booley.criteria.state import DevelopmentState
     from booley.evidence.acceptance import ResolvedFlowAcceptance
-    from booley.ticket_board.flow_execution import TicketAcceptanceRecorder
+    from tests.criteria.ledger_support import FixtureRecorder
 
     log_dir = tmp_path / "logs/ticket"
     state_path = log_dir / ".runtime/booley_state.json"
@@ -1704,7 +1704,7 @@ def _public_ticket_hook_adapter(tmp_path, project):
     state.work_dir = str(project)
     state.save()
 
-    class PreparedTicketRecorder(TicketAcceptanceRecorder):
+    class PreparedTicketRecorder(FixtureRecorder):
         def validate_and_resolve(self, request):
             # Ticket admission is a fixture; recording uses the actual ledger owner.
             request.state_file = state_path
@@ -1713,7 +1713,7 @@ def _public_ticket_hook_adapter(tmp_path, project):
 
     recorder = PreparedTicketRecorder(
         log_dir=log_dir,
-        ticket_identity={"generation": "d" * 32, "authored_sha256": "e" * 64},
+        identity={"generation": "d" * 32, "authored_sha256": "e" * 64},
     )
     return recorder, state_path, log_dir
 

@@ -15,8 +15,7 @@ checks Ticket Board layout, committed Ticket History, or board orphans. It warns
 about non-empty leftover board directories and old Ticket guidance, suggesting
 deletion or migration into a Goalset; `tickets/history/` is left inert and silent.
 
-The Ticket Preflight and Developer Agent modules are retained until Phase 9a
-removes them. Active `booley.harness` diagnostic and setup modules remain current.
+Active `booley.harness` diagnostic and setup modules remain current.
 The dated dependency measurements and validation records below describe their
 original revisions.
 

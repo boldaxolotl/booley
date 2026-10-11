@@ -459,7 +459,7 @@ def _publish_current_base_simulation(layout):
         "sim_pass_base", True, detail={"required_tests": ["default"], "passed_tests": ["default"]}
     )
     transaction = recorder.record_or_verify_transaction(
-        state, changes, acceptance_facts=facts, ticket_identity={}
+        state, changes, acceptance_facts=facts, identity={}
     )
     return transaction
 

@@ -11,7 +11,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from booley.core.boundary import BoundaryError, as_positive_int, is_str_list, require_dict
+from booley.core.boundary import BoundaryError, is_str_list, require_dict
 from booley.core.config_paths import resolve_booley_toml
 
 logger = logging.getLogger(__name__)
@@ -135,63 +135,6 @@ from .host_config import (
 from .host_config import (  # noqa: F401 - compatibility re-export
     DEFAULT_MAX_SESSIONS as DEFAULT_INTERACTIVE_MAX_SESSIONS,
 )
-from .host_config import SandboxHostPolicy as InteractiveConfig
-from .host_config import load_host_policy
-
-
-def load_interactive_config(project_root: Path | None = None) -> InteractiveConfig:
-    """Load global policy; *project_root* is ignored for compatibility."""
-    del project_root
-    return load_host_policy(on_deprecation=logger.warning)
-
-
-# --- [developer.limits] config ---
-
-DEFAULT_DEVELOPER_ACTIVE_TIMEOUT_S = 30 * 60
-DEFAULT_DEVELOPER_WALL_TIMEOUT_S = 12 * 60 * 60
-
-
-@dataclass(frozen=True)
-class DeveloperLimitsConfig:
-    """Developer Agent budgets resolved from ``[developer.limits]``."""
-
-    active_timeout_seconds: int = DEFAULT_DEVELOPER_ACTIVE_TIMEOUT_S
-    wall_timeout_seconds: int = DEFAULT_DEVELOPER_WALL_TIMEOUT_S
-
-
-def _developer_limit(raw: object, default: int, field_name: str) -> int:
-    value = as_positive_int(raw, default)
-    if value is raw:
-        return value
-    if raw is not None:
-        logger.warning(
-            "[developer.limits] %s=%r must be a positive integer; using %d",
-            field_name,
-            raw,
-            default,
-        )
-    return value
-
-
-def load_developer_limits_config(project_root: Path) -> DeveloperLimitsConfig:
-    """Load validated Developer Agent active and wall-clock budgets."""
-    developer = _load_booley_toml(project_root).get("developer", {})
-    if not isinstance(developer, dict):
-        logger.warning("[developer] is not a table; using limit defaults")
-        developer = {}
-    section = developer.get("limits", {})
-    if not isinstance(section, dict):
-        logger.warning("[developer.limits] is not a table; using defaults")
-        section = {}
-
-    active = _developer_limit(
-        section.get("active_timeout_seconds"),
-        DEFAULT_DEVELOPER_ACTIVE_TIMEOUT_S,
-        "active_timeout_seconds",
-    )
-    wall = _developer_limit(
-        section.get("wall_timeout_seconds"),
-        DEFAULT_DEVELOPER_WALL_TIMEOUT_S,
-        "wall_timeout_seconds",
-    )
-    return DeveloperLimitsConfig(active_timeout_seconds=active, wall_timeout_seconds=wall)
+from .host_config import (
+    SandboxHostPolicy as InteractiveConfig,  # noqa: F401 - compatibility re-export
+)

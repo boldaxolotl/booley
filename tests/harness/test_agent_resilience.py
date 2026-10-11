@@ -10,7 +10,7 @@ Tests cover:
 
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -62,11 +62,11 @@ if not hasattr(_sdk, "_enriched_by_resilience"):
 
     _agent_mod.ProcessError = _EnrichedProcessError
 
-from booley.harness.blocking import TransientAPIError
 from booley.runtime.agent import (
     _is_transient_error,
     _transcript_path_for_attempt,
 )
+from booley.runtime.agent_errors import TransientAPIError
 
 # ---------------------------------------------------------------------------
 # _is_transient_error
@@ -261,30 +261,6 @@ class TestHandleRateLimitEvent:
             mock_anyio.sleep = AsyncMock()
             await _handle_rate_limit_event(event)
             mock_anyio.sleep.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_rejected_wait_pauses_developer_active_budget(self):
-        from booley.runtime.agent_backend import _handle_rate_limit_event
-
-        info = _MockRateLimitInfo(status="rejected", resets_at=None, rate_limit_type="seven_day")
-        event = _sdk.RateLimitEvent(rate_limit_info=info)
-        budget = MagicMock()
-
-        async def complete_wait(awaitable, _budget):
-            await awaitable
-
-        with (
-            patch("booley.runtime._claude_backend.anyio.sleep", new_callable=AsyncMock),
-            patch(
-                "booley.runtime._claude_backend.run_with_developer_budget",
-                side_effect=complete_wait,
-            ),
-            pytest.raises(TransientAPIError),
-        ):
-            await _handle_rate_limit_event(event, budget)
-
-        budget.pause.assert_called_once_with("claude-rate-limit", "provider rate limit")
-        budget.resume.assert_called_once_with("claude-rate-limit")
 
 
 # ---------------------------------------------------------------------------

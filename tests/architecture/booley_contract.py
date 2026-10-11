@@ -25,10 +25,7 @@ _D3_REASON = (
 _D4_REASON = "MCP infrastructure is independent of capabilities composed by its server"
 _D5_REASON = "Sandbox mechanisms must remain usable without agent-facing mechanisms"
 _D6_REASON = "shared Sandbox mechanisms must not acquire Harness knowledge"
-_D7_REASON = (
-    "shared Target/Criteria policy is independent of presentation, agent exposure, and "
-    "Ticket Board persistence"
-)
+_D7_REASON = "shared Target/Criteria policy is independent of presentation and agent exposure"
 _D8_REASON = (
     "each built-in Booley Flow owns its tool-specific implementation and cannot couple "
     "to a sibling Flow"
@@ -47,15 +44,7 @@ _D13_REASON = "FuseSoC mechanics remain reusable beneath concrete Flow implement
 _D16_REASON = (
     "Criteria evaluates shared evidence without depending on Flow production or execution"
 )
-_D17_REASON = (
-    "deterministic Flow execution consumes resolved acceptance inputs and records through "
-    "composition without knowing Ticket Board persistence"
-)
-_D21_REASON = (
-    "Review renders artifacts from resolved evidence without knowing Ticket Board "
-    "lifecycle or Harness orchestration"
-)
-_D22_REASON = "Ticket Board composes Review only through its exact artifact-generation entry point"
+_D21_REASON = "Review renders artifacts from resolved evidence without Harness orchestration"
 
 _FLOW_PREFIXES = tuple(prefix(f"booley.flows.{name}") for name in ("sim", "synth", "fpga", "lint"))
 _D8_RULES = tuple(
@@ -97,12 +86,10 @@ DIRECTION_RULES = (
             prefix("booley.harness"),
             prefix("booley.mcp"),
             prefix("booley.specialists"),
-            prefix("booley.ticket_board"),
             *_FLOW_PREFIXES,
         ),
         "Goal Mode policy and records are composed by MCP and command entry points; they do "
-        "not depend on those entry points, Specialists, concrete Flows, or Ticket Board "
-        "persistence",
+        "not depend on those entry points, Specialists, or concrete Flows",
     ),
     DirectionRule(
         "D34",
@@ -141,13 +128,6 @@ DIRECTION_RULES = (
         (prefix("booley.bwave"),),
         (prefix("booley.flows"),),
         "B-Wave owns reusable waveform mechanics without Flow execution or evidence policy",
-    ),
-    DirectionRule(
-        "D30",
-        (prefix("booley.criteria"),),
-        (prefix("booley.ticket_board"),),
-        "generic Criteria policy and state evaluation must not depend on Ticket document, "
-        "persistence, or lifecycle ownership",
     ),
     DirectionRule(
         "D27",
@@ -203,7 +183,6 @@ DIRECTION_RULES = (
                 "runtime",
                 "specialists",
                 "targets",
-                "ticket_board",
             )
         ),
         "Shared private storage, locking, and package resources do not own caller policy",
@@ -221,15 +200,9 @@ DIRECTION_RULES = (
         "diagnostic owners return observations without command orchestration or rendering",
     ),
     DirectionRule(
-        "D22",
-        (prefix("booley.ticket_board"),),
-        (prefix("booley.review"),),
-        _D22_REASON,
-    ),
-    DirectionRule(
         "D21",
         (prefix("booley.review"),),
-        (prefix("booley.ticket_board"), prefix("booley.harness")),
+        (prefix("booley.harness"),),
         _D21_REASON,
     ),
     DirectionRule(
@@ -254,12 +227,6 @@ DIRECTION_RULES = (
         "configuration returns validated values and does not own Runtime construction or setup",
     ),
     DirectionRule(
-        "D14",
-        (prefix("booley.runtime"),),
-        (prefix("booley.ticket_board"),),
-        "shared Runtime mechanics accept artifact locations and policy from execution callers",
-    ),
-    DirectionRule(
         "D15",
         (prefix("booley.flows"),),
         (prefix("booley.mcp"),),
@@ -270,12 +237,6 @@ DIRECTION_RULES = (
         (prefix("booley.criteria"),),
         (prefix("booley.flows"),),
         _D16_REASON,
-    ),
-    DirectionRule(
-        "D17",
-        (prefix("booley.flows"),),
-        (prefix("booley.ticket_board"),),
-        _D17_REASON,
     ),
     DirectionRule(
         "D1",
@@ -326,7 +287,7 @@ DIRECTION_RULES = (
                 "booley.flows.target_test_suite",
             )
         ),
-        tuple(prefix(name) for name in ("booley.harness", "booley.mcp", "booley.ticket_board")),
+        tuple(prefix(name) for name in ("booley.harness", "booley.mcp")),
         _D7_REASON,
     ),
     *_D8_RULES,
@@ -426,13 +387,6 @@ COMPOSITION_PERMISSIONS = (
         "The Campaign package facade publishes the storage-backed read capabilities.",
     ),
     CompositionPermission(
-        "C9",
-        "D22",
-        "booley.ticket_board.review_preparation",
-        "booley.review.generation",
-        "Ticket Board supplies resolved immutable inputs to the Review artifact generator.",
-    ),
-    CompositionPermission(
         "C1",
         "D4",
         "booley.mcp.server",
@@ -474,7 +428,6 @@ APPROVED_LEGACY_SCCS = (
             "mcp",
             "runtime",
             "specialists",
-            "ticket_board",
         )
     ),
     frozenset(("booley.fusesoc", "booley.targets")),

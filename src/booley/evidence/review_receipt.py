@@ -35,7 +35,6 @@ class ReviewInvocation:
     scope: tuple[str, ...]
     mode: str
     spec_path: Path | None = None
-    ticket_spec_path: Path | None = None
     steering: str = ""
     tb_policy_digest: str = ""
 
@@ -89,7 +88,7 @@ def build_review_contract_detail(invocation: ReviewInvocation) -> dict[str, Any]
     """Build the canonical persisted identity for a Reviewer invocation."""
     ticket = _ticket_path(invocation.work_dir)
     spec = _resolved(
-        invocation.ticket_spec_path if ticket else invocation.spec_path,
+        invocation.spec_path,
         invocation.work_dir,
     )
     decisions = _decisions_path(invocation.work_dir, ticket)

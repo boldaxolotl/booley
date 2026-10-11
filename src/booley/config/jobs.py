@@ -9,7 +9,6 @@ logger = logging.getLogger(__name__)
 
 _CLASS_HEAVY = "heavy"
 _CLASS_LIGHT = "light"
-_CLASS_TICKET = "ticket"
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,7 +17,6 @@ class SlotCaps:
 
     max_heavy: int = 1
     max_light: int = 3
-    max_tickets: int = 2
     queue_max: int = 8
 
     def cap_for(self, job_class: str) -> int:
@@ -26,7 +24,6 @@ class SlotCaps:
         caps = {
             _CLASS_HEAVY: self.max_heavy,
             _CLASS_LIGHT: self.max_light,
-            _CLASS_TICKET: self.max_tickets,
         }
         if job_class not in caps:
             raise ValueError(f"Unknown job class: {job_class!r}")
@@ -47,10 +44,9 @@ def parse_caps(data: dict) -> SlotCaps:
     values = {
         "max_heavy": defaults.max_heavy,
         "max_light": defaults.max_light,
-        "max_tickets": defaults.max_tickets,
         "queue_max": defaults.queue_max,
     }
-    non_cap_keys = {"heavy_memory"}
+    non_cap_keys = {"heavy_memory", "max_tickets"}
     for key, default in tuple(values.items()):
         if key not in section:
             continue

@@ -151,12 +151,12 @@ class TestAgentSessionApp:
 
 class TestContainerOnlyError:
     def test_none_inside_container(self, container_env):
-        assert runtime_context.container_only_error("booley run") is None
+        assert runtime_context.container_only_error("booley flow") is None
 
     def test_message_on_host(self, host):
-        msg = runtime_context.container_only_error("booley run")
+        msg = runtime_context.container_only_error("booley flow")
         assert msg is not None
-        assert msg.startswith("ERROR: `booley run` runs inside the Booley Sandbox")
+        assert msg.startswith("ERROR: `booley flow` runs inside the Booley Sandbox")
 
     def test_message_names_command_and_fix(self, host):
         """Refusal must name the offending command AND how to fix it."""
@@ -184,7 +184,7 @@ class TestHostOnlyError:
 
 
 def test_host_refusal_points_to_location_source(host):
-    message = runtime_context.container_only_error("booley run")
+    message = runtime_context.container_only_error("booley flow")
     assert "`booley --help`" in message
     assert "Only `booley init`" not in message
 
@@ -205,7 +205,7 @@ def test_venue_refusal_has_no_drifting_command_list(guard, inside, monkeypatch):
     from booley.harness.booley import COMMAND_LOCATIONS, CommandLocation
 
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: inside)
-    message = guard("booley run")
+    message = guard("booley flow")
     instructions = "\n".join(message.splitlines()[1:])
     named_commands = set(re.findall(r"`booley ([a-z]+)`", instructions))
     if named_commands:

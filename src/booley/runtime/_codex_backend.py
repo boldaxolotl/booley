@@ -46,7 +46,6 @@ from .agent_errors import (
     is_context_exhausted,
     is_usage_limit,
 )
-from .developer_budget import DeveloperBudget, run_with_developer_budget
 from .prompt_artifacts import adjacent_artifact_paths, write_prompt_artifacts
 
 logger = logging.getLogger(__name__)
@@ -254,7 +253,6 @@ class CodexBackend:
         **kwargs: Any,
     ) -> AgentResult:
         on_event = kwargs.pop("on_event", None)
-        budget: DeveloperBudget | None = kwargs.pop("developer_budget", None)
         tag = self._log_start(params)
         full_prompt = _codex_build_prompt(
             params.prompt,
@@ -273,7 +271,6 @@ class CodexBackend:
                         attempt,
                     ),
                     on_event=on_event,
-                    budget=budget,
                 )
                 logger.info(
                     "%sCodex agent done (%s)",
@@ -300,17 +297,7 @@ class CodexBackend:
                     exc,
                     backoff,
                 )
-                if budget is not None:
-                    budget.resume_prefix("codex-mcp:")
-                    budget.pause("codex-retry-backoff", "transient retry")
-                try:
-                    if budget is None:
-                        await anyio.sleep(backoff)
-                    else:
-                        await run_with_developer_budget(anyio.sleep(backoff), budget)
-                finally:
-                    if budget is not None:
-                        budget.resume("codex-retry-backoff")
+                await anyio.sleep(backoff)
 
         raise last_exc or AgentProviderError("Codex agent exhausted retries", provider="codex")
 
@@ -321,7 +308,6 @@ class CodexBackend:
         full_prompt: str,
         transcript_path: Path | None,
         on_event: Any = None,
-        budget: DeveloperBudget | None = None,
     ) -> AgentResult:
         """Single Codex CLI invocation."""
         source = transcript_path_for_label(transcript_path, params.label)
@@ -339,7 +325,6 @@ class CodexBackend:
                 full_prompt=full_prompt,
                 on_event=on_event,
                 auth_mode=self._auth_mode,
-                budget=budget,
             )
             output, in_tok, out_tok, cached_tok, error_msg, events = _codex_parse_events(
                 raw_output
@@ -562,47 +547,6 @@ def _ensure_nested_codex_home(
     return _NESTED_HOMES[cache_key]
 
 
-def _ensure_developer_codex_home(
-    slug_label: str,
-    enabled_mcp_tools: list[str],
-) -> str:
-    """Create a per-ticket HOME dir for an DEVELOPER-level Codex agent.
-
-    ADR 0028: the developer launches as a native in-container Codex
-    session. Codex REPLACES the MCP server's environment when [env] is
-    present, so the developer's BOOLEY_* env (slug, logs dir, state file,
-    project dir, agent role — already exported into ``os.environ`` by
-    ``_launch_developer_agent``) must be baked into a config.toml.
-
-    Structure mirrors ``_ensure_nested_codex_home`` but with developer
-    semantics: the MCP allowlist rides in ``BOOLEY_MCP_TOOLS`` (an
-    MCP-exposure filter) and the nested-agent markers (BOOLEY_NESTED_AGENT /
-    BOOLEY_NESTED_MCP_TOOLS) are deliberately absent — setting them would
-    hide the Specialists from the very agent that drives them.
-
-    No caching: the config bakes per-ticket env, and one Runner process
-    serves exactly one ticket, so regenerating on each (retry) spawn is
-    cheap and always current.
-    """
-    import os
-
-    booley_env = {k: v for k, v in os.environ.items() if k.startswith("BOOLEY_")}
-    # Belt-and-braces: never leak nested markers into the developer server.
-    booley_env.pop("BOOLEY_NESTED_AGENT", None)
-    booley_env.pop("BOOLEY_NESTED_MCP_TOOLS", None)
-
-    safe_label = "".join(
-        c if c.isalnum() or c in "-_" else "_" for c in (slug_label or "developer")
-    )[:40]
-    home = Path(f"/tmp/codex-developer-home-{_ticket_home_scope()}-{safe_label}")
-    codex_dir = home / ".codex"
-    codex_dir.mkdir(parents=True, exist_ok=True)
-
-    _populate_private_codex_home(codex_dir, booley_env, enabled_mcp_tools)
-
-    return str(home)
-
-
 async def _codex_spawn(
     cmd: list[str],
     params: AgentCallParams,
@@ -610,35 +554,18 @@ async def _codex_spawn(
 ) -> tuple[asyncio.subprocess.Process, Path]:
     """Spawn the codex subprocess with piped I/O.
 
-    Inside a container the HOME redirect depends on the call level:
-
-    * Developer Agent launch (``params.developer_mcp_tools`` set, ADR 0028):
-      per-ticket HOME whose config.toml bakes the exported BOOLEY_* env and
-      the MCP allowlist, no nested markers. See
-      ``_ensure_developer_codex_home``.
-    * Everything else is a nested agent: per-parent HOME whose config.toml
-      exposes only the recursion-safe MCP tools in
-      ``params.nested_mcp_tools``. See ``_ensure_nested_codex_home``.
-
-    When ``params.label`` is None on the nested path the caller didn't
-    identify itself — we fall back to "_anonymous" with an empty allowlist
-    so recursion is still blocked (matches the pre-refactor empty-config
-    behavior).
+    Inside a container, a private HOME exposes the recursion-safe MCP tools
+    in ``params.nested_mcp_tools`` and carries the scoped MCP environment.
+    An unlabeled caller uses "_anonymous" with an empty allowlist.
     """
     env = None
     if _inside_container() and not params.text_only:
         env = dict(os.environ)
-        if params.developer_mcp_tools is not None:
-            env["HOME"] = _ensure_developer_codex_home(
-                params.label or "developer",
-                params.developer_mcp_tools,
-            )
-        else:
-            env["HOME"] = _ensure_nested_codex_home(
-                params.label or "_anonymous",
-                params.nested_mcp_tools,
-                params.nested_mcp_env,
-            )
+        env["HOME"] = _ensure_nested_codex_home(
+            params.label or "_anonymous",
+            params.nested_mcp_tools,
+            params.nested_mcp_env,
+        )
 
     if auth_mode == "subscription":
         # [agent] auth = "subscription": drop the API key so Codex bills the
@@ -679,7 +606,6 @@ async def _codex_run_subprocess(
     full_prompt: str,
     on_event: Any,
     auth_mode: str = "auto",
-    budget: DeveloperBudget | None = None,
 ) -> tuple[str, str, int]:
     """Spawn codex exec, stream I/O, return (stdout, stderr, returncode)."""
     proc, session_root = await _codex_spawn(cmd, params, auth_mode)
@@ -705,7 +631,7 @@ async def _codex_run_subprocess(
         stderr_task = asyncio.create_task(_drain_stderr())
         try:
             assert proc.stdout is not None
-            await _read_stdout(proc.stdout, stdout_buf, on_event, live_usage, budget)
+            await _read_stdout(proc.stdout, stdout_buf, on_event, live_usage)
             await proc.wait()
         finally:
             await live_usage.close()
@@ -717,7 +643,6 @@ async def _codex_run_subprocess(
         _stream_and_drain(),
         proc,
         timeout_seconds=params.timeout_seconds,
-        budget=budget,
     )
 
     return (
@@ -739,18 +664,10 @@ async def _run_codex_work(
     proc: asyncio.subprocess.Process,
     *,
     timeout_seconds: int,
-    budget: DeveloperBudget | None,
 ) -> None:
     """Run streamed Codex work and always terminate its process on cancellation."""
     try:
-        if budget is None:
-            await asyncio.wait_for(work, timeout=timeout_seconds)
-        else:
-            await run_with_developer_budget(
-                work,
-                budget,
-                on_exhausted=lambda _kind: _terminate_process(proc),
-            )
+        await asyncio.wait_for(work, timeout=timeout_seconds)
     except TimeoutError as err:
         await _terminate_process(proc)
         raise AgentTimeoutError(f"Codex timed out after {timeout_seconds}s") from err
@@ -764,10 +681,9 @@ async def _read_stdout(
     buf: bytearray,
     on_event: Any,
     live_usage: CodexLiveUsage | None = None,
-    budget: DeveloperBudget | None = None,
 ) -> None:
     """Read stdout, optionally dispatching on_event for agent messages."""
-    if on_event is not None or budget is not None:
+    if on_event is not None:
         async for raw_line in stdout:
             buf.extend(raw_line)
             decoded = raw_line.decode("utf-8", errors="replace").strip()
@@ -777,7 +693,7 @@ async def _read_stdout(
                 ev = json.loads(decoded)
                 if not isinstance(ev, dict):
                     continue
-                _dispatch_stdout_event(ev, on_event, live_usage, budget)
+                _dispatch_stdout_event(ev, on_event, live_usage)
             except Exception:  # noqa: BLE001 — tolerate malformed/partial JSON lines in the event stream
                 pass
     else:
@@ -792,13 +708,10 @@ def _dispatch_stdout_event(
     event: dict,
     on_event: Any,
     live_usage: CodexLiveUsage | None,
-    budget: DeveloperBudget | None = None,
 ) -> None:
     """Route one validated ``codex exec --json`` record."""
     etype = event.get("type")
     item = event.get("item", {})
-    if budget is not None and isinstance(item, dict):
-        _update_budget_for_mcp_event(etype, item, budget)
     if etype == "thread.started" and live_usage is not None:
         thread_id = event.get("thread_id")
         if isinstance(thread_id, str) and thread_id:
@@ -825,25 +738,6 @@ def _dispatch_stdout_event(
                 ],
             }
         )
-
-
-def _update_budget_for_mcp_event(
-    event_type: object,
-    item: dict[str, Any],
-    budget: DeveloperBudget,
-) -> None:
-    """Pause active time across synchronous calls to the Booley MCP server."""
-    if item.get("type") != "mcp_tool_call" or item.get("server") != "booley":
-        return
-    call_id = item.get("id")
-    if not isinstance(call_id, str) or not call_id:
-        return
-    key = f"codex-mcp:{call_id}"
-    if event_type == "item.started":
-        tool = item.get("tool")
-        budget.pause(key, f"waiting for {tool}" if isinstance(tool, str) else "Booley tool wait")
-    elif event_type in {"item.completed", "item.failed"}:
-        budget.resume(key)
 
 
 def _codex_check_errors(
