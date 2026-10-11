@@ -148,9 +148,9 @@ Booley includes a mutation testing framework to validate test quality, which mat
 
 The biggest issue with lint EDA tools is signal-to-noise ratio: dangerous warnings get buried under tons of false positives, and engineers respond by ignoring lint altogether. Working through every message is exactly the tedium automation can afford and a human can't; delegating lint-output triage is what makes lint useful in practice. The `lint` Booley Flow runs the linter selected by each lint Target, normalizes its findings, and deduplicates them across Targets so the same issue isn't reported many times. Built-in support currently covers Verilator for structural and semantic checks and Verible for style and naming rules; the same lint contract is designed to accommodate other EDA tools, including licensed programs such as SpyGlass, in the future. Waivers remain native to the selected linter (`.vlt` waiver lines for Verilator, rule configuration and waiver files for Verible). During autonomous development, the Developer decides, per finding, whether to fix the RTL, add a justified waiver, or leave it for human attention. The result is a clean lint report instead of noise. See the [supported EDA tools matrix](SUPPORTED-EDA-TOOLS.md#built-in-flows) for the current engines.
 
-For waiver declarations on Targets, see the
+To attach waivers to a lint Target, see the
 [Verilator](CONFIG.md#verilator-lint-target) and
-[Verible](CONFIG.md#verible-lint-target) lint recipes.
+[Verible](CONFIG.md#verible-lint-target) recipes.
 
 ## LLM Backend Selection
 

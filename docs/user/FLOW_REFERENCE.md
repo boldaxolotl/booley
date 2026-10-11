@@ -609,11 +609,10 @@ and select both.
 booley flow lint --target lint_soc,lint_style --scope rtl/fifo.sv
 ```
 
-See [Verilator lint Target](CONFIG.md#verilator-lint-target) for a `.vlt`
-waiver recipe using `file_type: vlt`, and
-[Verible lint Target](CONFIG.md#verible-lint-target) for style rules and
-waivers. [Target authoring](CONFIG.md#target-authoring) states EDA-tool
-compatibility policy.
+For Target recipes, see [Verilator lint Target](CONFIG.md#verilator-lint-target)
+(`.vlt` waivers with `file_type: vlt`) and
+[Verible lint Target](CONFIG.md#verible-lint-target) (style rules and waivers).
+[Target authoring](CONFIG.md#target-authoring) covers EDA-tool compatibility.
 
 - `--scope <file,...>` limits reported findings to the listed files.
 - `[flows.lint].warnings_as_errors` decides whether warnings fail the exit code.

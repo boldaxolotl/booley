@@ -1503,44 +1503,47 @@ A few conventions worth calling out in that example:
 
 ### Fileset file types
 
-Declare `file_type` on a fileset as the default for its files, or on an
-individual file entry to override that default. For lint and simulation,
-FuseSoC passes the declared type to the selected EDA tool. Booley treats
-untyped files as `user` inputs. A `.vlt` suffix alone does not attach a Verilator
-waiver: declare `file_type: vlt` and select its fileset on the Target.
+Set `file_type` on a fileset as the default for its files, or on a file entry
+to override it. Booley treats untyped files as `user`.
 
-Use these canonical spellings for the built-in Flows:
+The built-in Flows consume these types. Spell them exactly as shown:
 
-| `file_type` | Input and consumer |
+| `file_type` | Use for |
 | --- | --- |
-| `verilogSource` | Verilog RTL or testbench sources for lint and sim; non-testbench RTL for synth and fpga. |
-| `systemVerilogSource` | SystemVerilog RTL or testbench sources for the same Flows. Mark `.vh`/`.svh` headers with `is_include_file: true` so they supply include paths instead of compiling separately. |
-| `vlt` | Verilator control/waiver files for lint and Target-based Verilator simulation builds. See the [lint recipe](#verilator-lint-target). |
-| `cSource`, `cppSource` | C/C++ sources for a Verilator simulation harness; mark headers with `is_include_file: true`. |
-| `veribleLintRules` | Verible lint rules configuration; select at most one rules file. |
-| `veribleLintWaiver` | Verible lint waiver files; select any needed waiver files. See the [Verible recipe](#verible-lint-target). |
-| `SDC` | Target-owned ASIC timing constraints for physical synth. Use uppercase `SDC` and keep these files outside testbench-tagged filesets; see [ASIC synthesis](#asic-synthesis-flowssynth). |
-| `xdc` | Target-owned Vivado FPGA constraints. Use `.xdc` filenames outside testbench-tagged filesets; see [FPGA implementation](#fpga-implementation-flowsfpga). |
-| `user` | Non-RTL inputs, including firmware, vectors, and cocotb Python modules. `copyto:` declares their staged paths; see the examples above and [Cocotb Targets](#cocotb-targets-python-testbenches). |
+| `verilogSource` | Verilog RTL and testbenches for lint and sim; non-testbench RTL for synth and fpga. |
+| `systemVerilogSource` | SystemVerilog RTL and testbenches for the same Flows. |
+| `vlt` | Verilator control (waiver) files for lint and Target-based Verilator simulation builds. See the [Verilator recipe](#verilator-lint-target). |
+| `cSource`, `cppSource` | C/C++ sources of a Verilator simulation harness. |
+| `veribleLintRules` | Verible rules file; select at most one. |
+| `veribleLintWaiver` | Verible waiver files; select any number. See the [Verible recipe](#verible-lint-target). |
+| `SDC` | ASIC timing constraints for physical synth; the type is uppercase. See [ASIC synthesis](#asic-synthesis-flowssynth). |
+| `xdc` | Vivado FPGA constraints; name the file `*.xdc`. See [FPGA implementation](#fpga-implementation-flowsfpga). |
+| `user` | Non-RTL inputs such as firmware, vectors, and cocotb Python modules. `copyto:` sets the staged path; see the example above and [Cocotb Targets](#cocotb-targets-python-testbenches). |
 
-For FPGA RTL, use lowercase `.v` or `.sv` suffixes: the declared type does not
-control RTL selection. The FPGA Flow selects RTL by suffix and rebuilds file
-types from filenames. XDC declarations are matched case-insensitively, but
-their filenames must also have an XDC suffix to retain that type; use `.xdc`.
-Other Flows preserve
-declared types. Some HDL consumers accept version-suffixed type names, while
-simulation reuse and coverage helpers match the unversioned names exactly;
-use `verilogSource` and `systemVerilogSource` consistently.
+- Give headers the same type as their sources and mark them
+  `is_include_file: true`. HDL headers (`.vh`/`.svh`) then supply include
+  paths instead of compiling separately.
+- Keep `SDC` and `xdc` files outside testbench-tagged filesets.
+- Use the unversioned names `verilogSource` and `systemVerilogSource`. Some
+  consumers accept version-suffixed names, but simulation reuse and coverage
+  helpers match the unversioned names exactly.
 
-Additional recognized types have narrower scope. The pinned Edalize Verilator
-node recognizes `systemCSource` and `uhdm` inputs passed through FuseSoC; this
-does not establish supported SystemC or UHDM execution in Booley's
-[EDA-tool matrix](SUPPORTED-EDA-TOOLS.md). `tclSource` is recognized by the
-shared `.tcl` suffix mapping, but the built-in synth and FPGA recipes do not
-provide a general Tcl fileset hook. `vhdlSource` and `vhdlSource-2008` are
-recognized by simulation coverage source classification, but Booley has no
-supported VHDL simulation path. Upstream Edalize support for a file type alone
-does not make it an input to every Booley Flow.
+Every Flow except fpga keeps declared types; for lint and simulation, FuseSoC
+passes them to the selected EDA tool. The fpga Flow rebuilds file types from
+filenames and selects RTL by suffix alone, so give FPGA RTL a lowercase `.v`
+or `.sv` suffix. The `xdc` type is matched case-insensitively, but a file
+keeps it only if its name also has an XDC suffix.
+
+Edalize support alone does not make a type an input to every Booley Flow.
+These types are recognized only in narrow places:
+
+- `systemCSource`, `uhdm`: the pinned Edalize Verilator node accepts them, but
+  that alone does not make SystemC or UHDM execution supported; see the
+  [EDA-tool matrix](SUPPORTED-EDA-TOOLS.md).
+- `tclSource`: mapped from the `.tcl` suffix, but the built-in synth and FPGA
+  recipes have no general Tcl fileset hook.
+- `vhdlSource`, `vhdlSource-2008`: classified as sources by simulation
+  coverage, but Booley has no supported VHDL simulation path.
 
 ### Target authoring
 
@@ -1569,8 +1572,13 @@ Explicit lint Targets require `verilator`, `verible`, or `veriblelint` in
 
 #### Verilator lint Target
 
-Select a `.vlt` control file with `file_type: vlt` in the lint Target's
-filesets. For example, place this core beside the `rtl/` and `lint/` directories:
+To waive Verilator warnings, declare a `.vlt` control file with
+`file_type: vlt` and select its fileset on the lint Target. The type must be
+exactly `vlt`: an untyped `.vlt` file, or a guessed type such as
+`verilatorConfig`, does not apply the waiver.
+
+This core sits beside the `rtl/` and `lint/` directories; file paths are
+relative to the `.core` file:
 
 ```yaml
 CAPI=2:
@@ -1592,10 +1600,11 @@ targets:
     toplevel: top
 ```
 
-`-Wall` is optional: it enables additional lint warnings independently of
-the waiver. Omit it to keep Verilator's default warning set. Create
-`lint/waivers.vlt` with the required control-file directive and the specific
-warning to waive:
+`-Wall` is optional: it adds lint warnings to Verilator's default set and is
+independent of the waiver.
+
+`lint/waivers.vlt` holds the required control-file directive, then the warning
+to waive:
 
 ```text
 `verilator_config
@@ -1603,24 +1612,23 @@ lint_off -rule WIDTHTRUNC -file "*top.sv"
 ```
 
 This waives `WIDTHTRUNC` in source paths ending in `top.sv`, including the
-FuseSoC build-tree copy; other warning classes remain enabled. Choose a
-pattern specific to the intended source files. Verilator also supports
-`-lines` to narrow a waiver; see its [control-file reference](https://verilator.org/guide/latest/control.html).
-The `vlt` type makes Edalize place the control file before HDL inputs, so
-file-specific rules apply when those inputs are read.
+FuseSoC build-tree copy; other warning classes stay enabled. Make the pattern
+specific to your sources; `-lines` narrows a waiver further (see Verilator's
+[control-file reference](https://verilator.org/guide/latest/control.html)).
 
-Both file paths in the core are relative to that core. Keep `lint_config`
-selected on the lint Target; add it to other Verilator Targets only when the
-same waiver is intended there. Use exactly `vlt`, rather than a guessed type
-such as `verilatorConfig`, which does not apply the waiver. Run inside the
-Sandbox:
+Run inside the Sandbox:
 
 ```bash
 booley flow lint --target lint_structural
 ```
 
-Standalone elaboration probes use their own HDL-only inputs and do not consume
-Target waiver filesets.
+- Edalize places `vlt` files before HDL inputs, so file-specific rules apply
+  when those inputs are read.
+- Add `lint_config` to other Verilator Targets only where the same waiver is
+  intended.
+- `--mode elab-only-standalone` probes (see
+  [Elaboration Check](#elaboration-check-flowssim)) use their own HDL-only
+  inputs and ignore Target waiver filesets.
 
 #### Verible lint Target
 

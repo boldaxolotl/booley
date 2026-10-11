@@ -483,10 +483,10 @@ holds execution policy, including whether warnings affect the process exit.
 [CONFIG.md](../user/CONFIG.md#lint-flowslint) owns the exact keys and defaults.
 
 Lint *policy*, which rules fire and what is waived, is design description,
-not Booley config, so it lives on the Target: a `.vlt` file declared with
-`file_type: vlt` in its selected filesets for Verilator,
+not Booley config, so it lives on the Target. For Verilator, that is a `.vlt`
+file declared with `file_type: vlt` in a selected fileset; for Verible,
 `veribleLintRules` / `veribleLintWaiver` filesets (and the `ruleset` / `rules`
-flow options) for Verible. Booley adds no severity tiers and no waiver
+flow options). Booley adds no severity tiers and no waiver
 machinery of its own: every finding counts against the Criterion, and a waiver
 edit lands in the diff like any other design-input change, where the
 Review Package and Reviewer Specialist ([GLOSSARY.md](../GLOSSARY.md)) expose it
