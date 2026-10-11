@@ -280,6 +280,21 @@ Goalsets are Project-owned Markdown files under `.booley_project/goalsets/`.
 express your project's rules. The agent translates them into concrete Goals;
 Booley validates the arguments, not the prose. Each Goal records its origin.
 
+At entry, read all selected Goalsets from the **main checkout's shared Project
+directory**, including `default.md`. In the Sandbox, `BOOLEY_PROJECT_DIR`
+selects that directory, including when the Project data lives outside the main
+checkout. Use its `goalsets/` for the agent's named Goalset reads and the entry
+check for the default. A paired Project checkout or snapshot in the Goal
+worktree supplies no Goalsets at entry; a `default.md` present only in that
+copy does not apply.
+
+`work_dir` selects the code worktree; it does not select Goalset storage. Entry
+checks the default in the MCP session's selected Project directory. Without
+`BOOLEY_PROJECT_DIR`, configured paths or discovery from the session's working
+directory can select a worktree copy. Establish the shared main-checkout Project
+selection for the session before reading Goalsets or entering Goal Mode; entry
+refuses a control Project directory inside the requested Goal worktree.
+
 An optional `default.md` applies to every entry. Skipping it requires your
 explicit instruction and reason. Setup can create this file; initialization
 does not seed it. You can also add Goals for this particular change. Duplicate

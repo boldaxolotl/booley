@@ -67,9 +67,11 @@ Specialist evidence at the current code.
 Pass `work_dir` on every Booley call. Resume saved proposal and Finish IDs
 rather than editing records. Protected Input changes block Finish until
 reverted. Open `done` review findings remain visible; Finish does not merge.
-Project-owned Goalsets live under `goalsets/`; `default.md` applies unless the
-human explicitly skips it with a reason. Initialization seeds four create-only
-Goalsets and preserves edits.
+Read Project-owned Goalsets from the main checkout's shared Project directory
+(`BOOLEY_PROJECT_DIR` in the Sandbox), under `goalsets/`, using the same selection
+as the MCP session. Paired worktree copies and snapshots do not supply Goalsets
+at entry. The shared `default.md` applies unless the human explicitly skips it
+with a reason. Initialization seeds four create-only Goalsets and preserves edits.
 
 ### Booley Flows
 

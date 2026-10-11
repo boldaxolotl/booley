@@ -796,6 +796,11 @@ approved config is on disk.
 
 ## Goalsets
 
+Goal entry uses the main checkout's shared Project directory selected by
+`BOOLEY_PROJECT_DIR` in the Sandbox, including external Project data. A Goalset
+edited only in a paired worktree copy or snapshot is not used at entry;
+`/booley-goal` reads the shared copy.
+
 Read the seeded `goalsets/{feature,bugfix,refactor,verification}.md` files and
 adapt their Goals to the Project's supported Targets and verification intent.
 Preserve existing Project edits. Offer to create `goalsets/default.md` for rules
