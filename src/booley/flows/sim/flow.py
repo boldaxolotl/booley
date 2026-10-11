@@ -2435,7 +2435,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             return error
         if (error := self._validate_cocotb_targets(targets)) is not None:
             return error
-        if (error := self._validate_test_plans(targets)) is not None:
+        if (error := self._validate_test_plans(targets, test_names_map)) is not None:
             return error
         if getattr(self.args, "coverage", False) and (
             error := self._refuse_uncarried_test_runs(targets, test_names_map)
@@ -2486,7 +2486,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             else self._run_selected_mode(prepared=prepared, admission=admission)
         )
         result.detail["mode"] = self._mode.value
-        return self._attach_published_pre_sim(result)
+        return self._attach_published_pre_sim(self._with_test_run_guard_note(result))
 
     def _record_pre_sim_firing(self, key: tuple[str, str, str, int]) -> None:
         """Record only authenticated firings durably published by this execution."""
@@ -2820,7 +2820,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         if cocotb_error is not None:
             return cocotb_error
 
-        plan_error = self._validate_test_plans(targets)
+        plan_error = self._validate_test_plans(targets, test_names_map)
         if plan_error is not None:
             return plan_error
 
@@ -3036,7 +3036,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             else self._run_selected_mode()
         )
         result.detail["mode"] = self._mode.value
-        return result
+        return self._with_test_run_guard_note(result)
 
     def _run_campaign_resume(
         self, validated: ValidatedResumeManifest, admission: object | None
@@ -6458,7 +6458,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         adapter = simulation_adapter_kind(inspection.eda_tool, inspection.flow_options)
         return target_test_plan(handle, adapter, inspection.parameters)
 
-    def _validate_test_plans(self, targets: list[str]) -> EndpointOutcome | None:
+    def _validate_test_plans(
+        self, targets: list[str], test_names_map: Mapping[str, list[str]] | None = None
+    ) -> EndpointOutcome | None:
         """Reject a tests.toml declaration its resolved Target cannot apply.
 
         The loader cannot see the ``.core`` Target, so the checks that need it
@@ -6466,7 +6468,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         overrides a Target plusarg, arguments or a ``seed`` template on a
         Cocotb Target, and ``default_seed`` on a Target that cannot be seeded.
         """
-        test_names_map = _get_test_names(self.args.work_dir)
+        if test_names_map is None:
+            test_names_map = _get_test_names(self.args.work_dir)
         for target in targets:
             try:
                 self._resolve_test_runs(target, test_names_map)
@@ -6475,7 +6478,53 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 continue
             except ValueError as exc:
                 return EndpointOutcome(exit_code=EXIT_ERROR, report_text=f"sim: {exc}")
+        self._apply_interim_goal_guard(targets, test_names_map)
         return None
+
+    def _apply_interim_goal_guard(
+        self, targets: list[str], test_names_map: Mapping[str, list[str]]
+    ) -> None:
+        """Keep Test Runs that no Goal can name yet from recording Goal evidence.
+
+        INTERIM (#1233 stage S2; removed by stage S3). Goals cannot name a Test
+        Variant or a seed until S3, so evidence matching is still by bare Test
+        name. An invocation that contains any Test Run other than the default
+        Test Variant at the Target's Default Seed is therefore diagnostic as a
+        whole: it records no evidence for any simulation, Coverage or Cycle
+        Count Goal, and its report says so. An invocation of default Test Runs
+        only keeps today's evidence, with ``--test`` reduced to the bare Test
+        names every evidence consumer already matches on.
+        """
+        other: list[str] = []
+        tests: list[str] = []
+        for target in targets:
+            try:
+                plan = self._registered_test_plan(target, test_names_map)
+                runs = self._resolve_test_runs(target, test_names_map)
+            except (fusesoc_registry.FuseSocError, ValueError):
+                continue
+            other.extend(f"{target}: {run.name}" for run in runs if not plan.is_default_run(run))
+            tests.extend(run.test for run in runs if run.test is not None)
+        if other:
+            self._test_run_guard_names = tuple(other)
+            self.args.diagnostic = True
+        elif self.args.test:
+            self.args.test = tuple(dict.fromkeys(tests))
+            self.args.seed = None
+
+    def _with_test_run_guard_note(self, result: EndpointOutcome) -> EndpointOutcome:
+        """Say in the report that the interim Goal guard made the run diagnostic."""
+        names: tuple[str, ...] = getattr(self, "_test_run_guard_names", ())
+        if not names:
+            return result
+        shown = ", ".join(names[:8]) + (f", and {len(names) - 8} more" if len(names) > 8 else "")
+        result.detail["test_run_goal_guard"] = {"diagnostic": True, "test_runs": list(names)}
+        note = (
+            "Diagnostic: this run includes Test Runs other than the default Test Variant "
+            f"at the Default Seed ({shown}); it records no Goal evidence."
+        )
+        result.report_text = f"{result.report_text}\n{note}" if result.report_text else note
+        return result
 
     def _validate_runnable_tests(
         self,
