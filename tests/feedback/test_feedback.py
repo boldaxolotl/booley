@@ -51,6 +51,14 @@ def test_feedback_docs_explain_shared_storage_and_checkout_context(relative_path
     assert "does not move that shared log" in text
     assert "BOOLEY_PROJECT_DIR" in text
     assert "may use a separate log" in text
+    if relative_path.endswith("/SKILL.md"):
+        assert (
+            "Configured names and `[feedback]` / `[stealth]` redaction settings come from "
+            "`booley.toml` in the feedback storage directory"
+        ) in text
+        assert "Run `report` without `--user-report-path`" in text
+        assert "parent directory is the feedback storage directory" in text
+        assert "regardless of `BOOLEY_PROJECT_DIR`" in text
 
 
 @pytest.mark.parametrize("relative_path", PUBLIC_FEEDBACK_DOCS)

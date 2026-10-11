@@ -54,10 +54,10 @@ def add_subparser(sub: argparse._SubParsersAction) -> None:
             "log or the default report. For redaction, repository identifiers come "
             "from the selected checkout; configured names and redaction settings "
             "come from booley.toml in the feedback storage directory. "
-            "BOOLEY_PROJECT_DIR selects shared storage, as in the Sandbox. Without "
-            "it, storage discovery starts from the selected checkout and may find "
-            "a separate log. Booley source checkouts share feedback in Git's shared "
-            "metadata directory."
+            "For Projects, BOOLEY_PROJECT_DIR selects shared storage, as in the Sandbox. "
+            "Without it, storage discovery starts from the selected checkout and may find "
+            "a separate log. Booley source checkouts always share feedback in Git's "
+            "shared metadata directory, regardless of BOOLEY_PROJECT_DIR."
         ),
     )
     fb = parser.add_subparsers(dest="feedback_command")
@@ -243,7 +243,7 @@ def _add_reporting_subcommands(fb: argparse._SubParsersAction) -> None:
     export_p.add_argument(
         "--output",
         metavar="PATH",
-        help="Write here instead of the feedback state directory",
+        help="Write here instead of the feedback storage directory",
     )
 
     redact_p = fb.add_parser("redact", help="Scrub project identifiers out of a file or stdin")

@@ -19,11 +19,11 @@ In the Sandbox, each Project has one Findings Log shared by all of its worktrees
 The log and default local report stay in the shared Project directory, even
 when the selected worktree has its own paired Project checkout. `-C` / `--project`
 selects the checkout used for context; it does not move that shared log or the
-default report. `BOOLEY_PROJECT_DIR` selects shared storage. Without that
-override outside the Sandbox, storage is discovered from the selected checkout
-and may use a separate log. Booley source checkouts share feedback in Git's
-shared metadata directory. Attachment paths remain as supplied and are not
-rebased by `-C`.
+default report. For Projects, `BOOLEY_PROJECT_DIR` selects shared storage.
+Without that override outside the Sandbox, storage is discovered from the
+selected checkout and may use a separate log. Booley source checkouts always
+share feedback in Git's shared metadata directory, regardless of `BOOLEY_PROJECT_DIR`.
+Attachment paths remain as supplied and are not rebased by `-C`.
 
 For `report`, `export`, and `redact`, the selected checkout supplies repository
 identifiers for redaction: paths, remotes, committer identity, and `.core` names.

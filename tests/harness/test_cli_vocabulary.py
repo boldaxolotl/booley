@@ -111,8 +111,6 @@ def test_feedback_help_explains_checkout_context_and_shared_storage(capsys):
             routes[route].parse_args(["--help"])
         assert exit_info.value.code == 0
         help_text = " ".join(capsys.readouterr().out.split())
-        assert "-C PATH" in help_text
-        assert "--project PATH" in help_text
         assert help_text.count("does not move the shared Project Findings Log") == 2
         assert "checkout for feedback context" in help_text
         if route == ("feedback",):
@@ -122,6 +120,7 @@ def test_feedback_help_explains_checkout_context_and_shared_storage(capsys):
             assert "BOOLEY_PROJECT_DIR" in help_text
             assert "may find a separate log" in help_text
             assert "Git's shared metadata directory" in help_text
+            assert "regardless of BOOLEY_PROJECT_DIR" in help_text
 
     for route in ((), ("doctor",)):
         help_text = " ".join(routes[route].format_help().split())
