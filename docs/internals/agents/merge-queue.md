@@ -46,6 +46,21 @@ leave its queue state unchanged and coordinate a handoff. An unexpected queue
 or dequeue comment is evidence of another owner: pause state-changing commands
 until ownership is clear.
 
+Ownership is passive while the PR waits: the owner holds the authority to
+queue or dequeue, runs the watcher below, and changes nothing. Waiting for CI
+or the queue needs no review or test capacity, so an orchestrated run may
+schedule other work meanwhile. The authority stays with the owner until one of
+these is recorded in the owning task:
+
+- **Handoff.** A living owner names its successor, the successor acknowledges,
+  and only then does the successor act.
+- **Replacement.** The owner's session is proven to have ended, and every
+  state-changing command it started has finished. A session that stops
+  answering is not proof, and no elapsed time authorizes a takeover.
+
+When neither can be established, report an ownership incident and wait for the
+maintainer to confirm that the old session and its processes have stopped.
+
 After Mergify accepts the queue command, observe that PR once using the
 watcher below or, when observing manually, read its status once:
 
@@ -56,9 +71,22 @@ gh pr view <number> --json state,mergedAt,labels,statusCheckRollup,comments
 ## Run one read-only watcher
 
 Establish queue ownership before starting a watcher. The watcher is an observer,
-not an ownership lock: use one foreground process for the selected PR, and have
-any second agent coordinate with the owner. It reads only; it never queues,
-dequeues, reruns, pushes, merges, comments, or cleans up.
+not an ownership lock: run one watcher for the selected PR, and have any second
+agent coordinate with the owner. It reads only; it never queues, dequeues,
+reruns, pushes, merges, comments, or cleans up.
+
+Run the watcher in the foreground of the owner's session, or as the foreground
+child of a finite supervisor: a process that starts this one watcher, saves its
+startup line and final JSON summary to files, records the watcher's exit
+status separately, and exits with it. A supervisor lets the watcher outlive a
+single tool wait and lets a resumed owner adopt it from those files instead of
+starting a second one. It is not a daemon and does not restart the watcher.
+
+A live watcher is the only GitHub observer for its PR. Restart a watcher that
+died only after confirming that it and its child `gh` reads are gone. First
+read the control comments posted since the last comment it observed, because a
+new watcher's baseline would hide a foreign queue or dequeue command posted in
+between. Keep the original overall deadline.
 
 For ordinary PR CI, capture the selected PR head and use a deadline that covers
 the documented cold-cache validation time:
@@ -80,9 +108,9 @@ python3 .github/scripts/watch_pr.py \
 ```
 
 The process prints one startup line and one final JSON summary. Resume its
-existing session while it waits. Keep surrounding agent-tool waits at 60 seconds
-or less, report elapsed time from the last summary, and issue no parallel GitHub
-status queries. The watcher polls CI every 60 seconds and queue state every ten
+existing session, or read its saved output, while it waits. Keep surrounding
+agent-tool waits at 60 seconds or less, report elapsed time from the last
+summary, and issue no parallel GitHub status queries. The watcher polls CI every 60 seconds and queue state every ten
 minutes. An expired deadline is unresolved observation, not failure; choose a
 new deadline explicitly instead of restarting automatically.
 
@@ -206,6 +234,33 @@ python3 .github/scripts/confidential_content_guard.py --repo . publish-pr commen
 After Mergify confirms the dequeue, push the change, wait for ordinary PR CI to
 pass, then use the queue command above. Agents never reorder entries manually;
 the configured labels are the only priority mechanism.
+
+Guard each queue or dequeue command the owner posts:
+
+1. Stop the watcher and confirm that it and its child reads have exited.
+2. Read the PR's control comments and queue labels once. Stop if they show a
+   command this owner did not post.
+3. Record the intended command in the owning task, then post it unchanged
+   through the publisher.
+4. Record the returned comment ID, then start a new watcher. Its baseline now
+   includes that comment.
+
+If the response is lost and the comment ID is unknown, an identical comment
+under a shared login cannot be attributed to this owner. Treat it as an
+ownership incident: keep observing read-only, post no further command, and ask
+the maintainer to decide.
+
+## Tell a stale base from a conflict
+
+A PR that is only behind `main` is ready to queue: `main_protection` does not
+require an up-to-date branch, and Mergify validates the PR on top of `main` and
+its queue predecessors. Leave such a branch as it is, and keep the local
+verification tied to its tree. Rebase or merge `main` only for a real conflict
+or for a change the PR depends on, then verify the new tree again.
+
+Check the live ruleset read-only before relying on this. If the setting is
+unreadable or requires an up-to-date branch, update the branch before queueing.
+Agents never change the live setting.
 
 ## Recover a dequeued PR
 
