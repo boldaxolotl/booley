@@ -949,8 +949,8 @@ def _pr_write_reference(gh_stdout: bytes) -> str | None:
     Callers need the returned identifier to tell their own write from a later
     identical one. Any other output stays suppressed.
     """
-    lines = gh_stdout.decode("utf-8", errors="replace").split()
-    matches = [line for line in lines if _PR_WRITE_URL_RE.fullmatch(line)]
+    words = gh_stdout.decode("utf-8", errors="replace").split()
+    matches = [word for word in words if _PR_WRITE_URL_RE.fullmatch(word)]
     return matches[-1] if matches else None
 
 

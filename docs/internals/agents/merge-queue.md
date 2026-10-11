@@ -110,9 +110,10 @@ python3 .github/scripts/watch_pr.py \
 The process prints one startup line and one final JSON summary. Resume its
 existing session, or read its saved output, while it waits. Keep surrounding
 agent-tool waits at 60 seconds or less, report elapsed time from the last
-summary, and issue no parallel GitHub status queries. The watcher polls CI every 60 seconds and queue state every ten
-minutes. An expired deadline is unresolved observation, not failure; choose a
-new deadline explicitly instead of restarting automatically.
+summary, and issue no parallel GitHub status queries. The watcher polls CI
+every 60 seconds and queue state every ten minutes. An expired deadline is
+unresolved observation, not failure; choose a new deadline explicitly instead
+of restarting automatically.
 
 CI outcomes are `ci_passed` (exit 0), `check_failed`, `closed`, `head_changed`,
 or `required_checks_missing` (exit 1), `timeout` (exit 124), and
