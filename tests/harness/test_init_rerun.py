@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -810,3 +811,246 @@ def test_reconcile_all_fixed_local_evidence_patterns(tmp_path, stale):
         assert first.decode().splitlines()[: len(custom_lines)] == custom_lines
     init_cmd._backfill_project_gitignore(tmp_path, InitContext(project_root=tmp_path))
     assert ignore.read_bytes() == first
+
+
+def _complete_snapshot(root: Path) -> dict[Path, tuple[bytes | None, int]]:
+    return {
+        path.relative_to(root): (
+            path.read_bytes() if path.is_file() else None,
+            stat.S_IMODE(path.stat().st_mode),
+        )
+        for path in [root, *root.rglob("*")]
+    }
+
+
+def _set_project_mode(target: Path, mode: int) -> None:
+    target.chmod(mode)
+    if stat.S_IMODE(target.stat().st_mode) != mode:
+        pytest.skip("filesystem cannot represent POSIX directory permissions")
+
+
+def _stale_project(root: Path) -> Path:
+    target = root / ".booley_project"
+    target.mkdir()
+    (target / ".gitignore").write_bytes(b"# custom ignore\ntmp/\n")
+    return target
+
+
+def _assert_backfill_report(output: str, missing: list[str]) -> None:
+    assert "would add 2 config skeleton file(s)" in output
+    assert (
+        f"would add {len(missing)} missing ignore pattern(s) to .gitignore: {', '.join(missing)}"
+        in output
+    )
+    assert "would add FUSESOC_IGNORE" in output
+    assert "would `git init -b" in output
+
+
+def _assert_applied_backfills(repo: Path, target: Path, missing: list[str]) -> None:
+    from booley.runtime.project_gitignore import missing_gitignore_patterns
+
+    assert stat.S_IMODE(target.stat().st_mode) == 0o700
+    assert (target / "booley.toml").read_bytes() == init_cmd.BOOLEY_TOML_SKELETON.encode()
+    assert (target / "tests.toml").read_bytes() == init_cmd.TESTS_TOML_SKELETON.encode()
+    assert (target / "FUSESOC_IGNORE").read_bytes() == init_cmd.FUSESOC_IGNORE_BODY.encode()
+    ignore = (target / ".gitignore").read_text()
+    assert ignore.startswith("# custom ignore\ntmp/\n")
+    assert missing_gitignore_patterns(ignore) == []
+    assert set(ignore.splitlines()) - set("# custom ignore\ntmp/\n".splitlines()) == set(
+        missing
+    ) | {"", "# Added by booley init — transient Booley state."}
+    assert {p.name for p in target.iterdir()} == {
+        ".git",
+        ".gitignore",
+        "booley.toml",
+        "tests.toml",
+        "FUSESOC_IGNORE",
+    }
+    outer = subprocess.check_output(["git", "-C", str(repo), "symbolic-ref", "HEAD"])
+    assert subprocess.check_output(["git", "-C", str(target), "symbolic-ref", "HEAD"]) == outer
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission repair")
+def test_project_dir_check_reports_all_backfills_and_converges(repo, capsys):
+    from booley.runtime.project_gitignore import missing_gitignore_patterns
+
+    target = _stale_project(repo)
+    _set_project_mode(target, 0o755)
+    missing = missing_gitignore_patterns((target / ".gitignore").read_text())
+    before = _complete_snapshot(repo)
+    ctx = InitContext(project_root=repo, check_only=True)
+    init_cmd._step_project_dir(ctx)
+    output = capsys.readouterr().out
+    _assert_backfill_report(output, missing)
+    assert "would secure project directory permissions" in output
+    assert [(r.name, r.status, r.detail) for r in ctx.results] == [
+        ("project_dir", "warn", "permissions need 0700")
+    ]
+    assert _complete_snapshot(repo) == before
+    init_cmd._step_project_dir(InitContext(project_root=repo))
+    _assert_applied_backfills(repo, target, missing)
+    capsys.readouterr()
+    ctx = InitContext(project_root=repo, check_only=True)
+    init_cmd._step_project_dir(ctx)
+    assert "would" not in capsys.readouterr().out
+    assert [(r.status, r.detail) for r in ctx.results] == [("skip", "already present")]
+
+
+def test_project_dir_check_correct_permissions_keeps_skip(repo, capsys):
+    from booley.runtime.project_gitignore import missing_gitignore_patterns
+
+    target = _stale_project(repo)
+    if os.name != "nt":
+        _set_project_mode(target, 0o700)
+    missing = missing_gitignore_patterns((target / ".gitignore").read_text())
+    before = _complete_snapshot(repo)
+    ctx = InitContext(project_root=repo, check_only=True)
+    init_cmd._step_project_dir(ctx)
+    output = capsys.readouterr().out
+    _assert_backfill_report(output, missing)
+    assert "project directory found at" in output
+    assert "permissions" not in output
+    assert [(r.status, r.detail) for r in ctx.results] == [("skip", "already present")]
+    assert _complete_snapshot(repo) == before
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory search permissions")
+def test_project_dir_check_inaccessible_reports_incomplete(repo, capsys):
+    target = _stale_project(repo)
+    for name in ("booley.toml", "tests.toml", "FUSESOC_IGNORE"):
+        (target / name).write_bytes(b"# custom\n")
+    before = _complete_snapshot(repo)
+    _set_project_mode(target, 0o600)
+    try:
+        if os.access(target, os.R_OK | os.X_OK):
+            pytest.skip("privileges bypass directory search permissions")
+        ctx = InitContext(project_root=repo, check_only=True)
+        init_cmd._step_project_dir(ctx)
+        output = capsys.readouterr().out
+        assert "would secure project directory permissions" in output
+        assert "backfill report is incomplete" in output
+        assert "cannot inspect" in output
+        assert "would add" not in output
+        assert len(ctx.results) == 1 and ctx.results[0].status == "warn"
+        assert stat.S_IMODE(target.stat().st_mode) == 0o600
+    finally:
+        target.chmod(0o700)
+    before[Path(".booley_project")] = (None, 0o700)
+    assert _complete_snapshot(repo) == before
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission repair")
+@pytest.mark.timeout(120)
+def test_project_dir_check_full_init_reports_backfills_without_mutation(repo, monkeypatch, capsys):
+    from booley.runtime.project_gitignore import missing_gitignore_patterns
+
+    _stub_current_host(monkeypatch)
+    assert _run_full_init(repo) == 0
+    target = repo / ".booley_project"
+    (target / "tests.toml").unlink()
+    (target / "FUSESOC_IGNORE").unlink()
+    (target / ".gitignore").write_bytes(b"# custom ignore\ntmp/\n")
+    _set_project_mode(target, 0o755)
+    missing = missing_gitignore_patterns((target / ".gitignore").read_text())
+    before = _complete_snapshot(repo)
+    capsys.readouterr()
+    assert _check_only(repo) == 1
+    output = capsys.readouterr().out
+    assert "would add 1 config skeleton file(s)" in output
+    assert "would add FUSESOC_IGNORE" in output
+    assert f"would add {len(missing)} missing ignore pattern(s)" in output
+    assert "would secure project directory permissions" in output
+    assert _complete_snapshot(repo) == before
+    assert _run_full_init(repo) == 0
+    after = _complete_snapshot(repo)
+    changed = {p for p in before.keys() | after.keys() if before.get(p) != after.get(p)}
+    assert changed == {
+        Path(".booley_project"),
+        Path(".booley_project/tests.toml"),
+        Path(".booley_project/FUSESOC_IGNORE"),
+        Path(".booley_project/.gitignore"),
+    }
+    assert (target / "tests.toml").read_bytes() == init_cmd.TESTS_TOML_SKELETON.encode()
+    assert (target / "FUSESOC_IGNORE").read_bytes() == init_cmd.FUSESOC_IGNORE_BODY.encode()
+    assert missing_gitignore_patterns((target / ".gitignore").read_text()) == []
+    capsys.readouterr()
+    before = _complete_snapshot(repo)
+    assert _check_only(repo) == 0
+    assert "would" not in capsys.readouterr().out
+    assert _complete_snapshot(repo) == before
+
+
+def _managed_git(root: Path, *args: str) -> bytes:
+    return subprocess.run(
+        ["git", "-C", str(root), *args], capture_output=True, check=True, timeout=10
+    ).stdout
+
+
+def test_initial_authored_scaffolding_remains_uncommitted(repo):
+    before = _managed_git(repo, "ls-files", "--stage", "-z")
+    assert _run_full_init(repo) == 0
+    data = repo / ".booley_project"
+    assert (data / "booley.toml").is_file()
+    assert _managed_git(repo, "ls-files", "--stage", "-z") == before
+    assert not _managed_git(data, "ls-files", "--stage", "-z")
+    assert b"booley.toml" in _managed_git(data, "status", "--porcelain", "--untracked-files=all")
+
+
+@pytest.mark.parametrize("topology", ["standalone", "nested"])
+def test_managed_bundle_publication_leaves_versioned_project_clean(repo, topology):
+    if topology == "nested":
+        initial = repo / ".booley_project"
+        initial.mkdir(mode=0o700)
+        (initial / "booley.toml").write_text("[stealth]\nenabled=false\n")
+    assert _run_full_init(repo) == 0
+    data = repo / ".booley_project"
+    owner = data if topology == "standalone" else repo
+    for repository in {repo, owner}:
+        _managed_git(repository, "config", "user.name", "Fixture")
+        _managed_git(repository, "config", "user.email", "fixture@example.invalid")
+    # The user's authored baseline is committed between first scaffolding and
+    # runtime initialization. The generated bundle is never included in it.
+    bundle = data / ".managed/project-git-hooks.pyz"
+    bundle.unlink()
+    _managed_git(owner, "add", ".")
+    _managed_git(owner, "commit", "-qm", "prepared authored Project")
+    if topology == "standalone":
+        (repo / "rtl.v").write_text("module top; endmodule\n")
+        _managed_git(repo, "add", ".")
+        _managed_git(repo, "commit", "-qm", "prepared RTL")
+    index = _managed_git(owner, "ls-files", "--stage", "-z")
+    assert _run_full_init(repo) == 0
+    assert bundle.is_file()
+    assert _managed_git(data, "check-ignore", "--no-index", str(bundle))
+    assert _managed_git(owner, "status", "--porcelain", "--untracked-files=all") == b""
+    assert _managed_git(owner, "ls-files", "--stage", "-z") == index
+
+
+def test_managed_bundle_ignore_backfill_and_check(repo, capsys):
+    assert _run_full_init(repo) == 0
+    data = repo / ".booley_project"
+    ignore = data / ".gitignore"
+    stale = ignore.read_text().replace(".managed/\n", "") + "# custom policy\ncustom/\n"
+    ignore.write_text(stale)
+    _managed_git(data, "config", "user.name", "Fixture")
+    _managed_git(data, "config", "user.email", "fixture@example.invalid")
+    _managed_git(data, "add", ".gitignore")
+    _managed_git(data, "commit", "-qm", "stale authored policy")
+    before = _managed_git(data, "ls-files", "--stage", "-z")
+    capsys.readouterr()
+    ctx = InitContext(project_root=repo, check_only=True)
+    init_cmd._step_project_dir(ctx)
+    assert (
+        "would add 1 missing ignore pattern(s) to .gitignore: .managed/" in capsys.readouterr().out
+    )
+    assert ignore.read_text() == stale
+    assert _managed_git(data, "ls-files", "--stage", "-z") == before
+    init_cmd._step_project_dir(InitContext(project_root=repo))
+    repaired = ignore.read_text()
+    assert repaired.startswith(stale)
+    assert repaired.count(".managed/\n") == 1
+    assert b".managed" not in _managed_git(data, "status", "--porcelain", "--untracked-files=all")
+    assert b" M .gitignore" in _managed_git(data, "status", "--porcelain")
+    init_cmd._step_project_dir(InitContext(project_root=repo))
+    assert ignore.read_text() == repaired
+    assert _managed_git(data, "ls-files", "--stage", "-z") == before

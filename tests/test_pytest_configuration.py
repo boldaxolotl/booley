@@ -686,6 +686,47 @@ def test_lint_job_uses_quality_only_dependencies() -> None:
     assert install_step["run"] == 'pip install -e ".[quality]"'
 
 
+def test_scheduled_worktree_mounts_requires_real_docker_execution() -> None:
+    workflow = _deep_tests_workflow()
+    assert set(workflow.get("on", workflow.get(True))) == {"schedule", "workflow_dispatch"}
+    job = workflow["jobs"]["worktree-mounts"]
+    assert job["runs-on"] == "ubuntu-latest"
+    assert job["timeout-minutes"] == 180
+    assert job["env"]["BUILDX_BUILDER"] == "default"
+    producer = _named_step(job, "Build canonical Sandbox Image")["run"]
+    assert "bash src/booley/data/docker/build.sh" in producer
+    assert 'PYTHON="$(command -v python)"\nexport PYTHON' in producer
+    assert "set -o pipefail" in producer
+    assert not any("setup-buildx-action" in item.get("uses", "") for item in job["steps"])
+    assert "if" not in job
+    step = _named_step(job, "Run required worktree mount cases")
+    assert "if" not in step
+    names = [item.get("name") for item in job["steps"]]
+    assert names.index("Build canonical Sandbox Image") < names.index(step["name"])
+    upload = _named_step(job, "Upload worktree execution evidence")
+    assert upload["if"] == "always()"
+    assert upload["with"]["if-no-files-found"] == "error"
+    assert step["env"]["BOOLEY_REQUIRE_WORKTREE_DOCKER"] == "1"
+    assert step["env"]["BOOLEY_WORKTREE_DOCKER_IMAGE"] == "booley-sandbox:latest"
+    command = step["run"]
+    assert "python -m pytest tests/docker/test_worktree_mount_paths_e2e.py" in command
+    assert '--junitxml="${RUNNER_TEMP}/worktree-mounts.xml"' in command
+    assert "--timeout=300" in command
+    assert " -m " not in command.replace("python -m pytest", "pytest")
+    assert " -n " not in command
+    evidence = _named_step(job, "Assert worktree execution evidence")
+    assert evidence["if"] == "always()"
+    assert 'assert_junit.py "${RUNNER_TEMP}/worktree-mounts.xml"' in evidence["run"]
+    assert "--min-tests 8 --max-skips 0" in evidence["run"]
+    for item in [job, *job["steps"]]:
+        assert not item.get("continue-on-error", False)
+        assert "|| true" not in item.get("run", "")
+    for filename in ("test.yml", "full-python-matrix.yml"):
+        assert "BOOLEY_REQUIRE_WORKTREE_DOCKER" not in (
+            REPOSITORY_ROOT / ".github/workflows" / filename
+        ).read_text(encoding="utf-8")
+
+
 def test_scheduled_mutation_campaign_treats_its_time_budget_as_success() -> None:
     """A bounded scheduled campaign reports incomplete mutants without failing."""
     job = _deep_tests_workflow()["jobs"]["mutation"]

@@ -322,3 +322,101 @@ def test_containing_root_skips_unrelated_roots_and_rejects_outside_path(
 
     with pytest.raises(ValueError, match="outside configured report roots"):
         progress_module._containing_root(progress, (tmp_path / "unrelated",))
+
+
+def test_read_progress_optional_validator_guards_endpoint_and_candidate(tmp_path):
+    from booley.flows.progress_lifecycle import read_progress_document, read_progress_for_run
+
+    root = tmp_path / "reports"
+    path = root / "sim/1/progress.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(
+            progress_document(
+                flow="sim",
+                run_id="one",
+                phase="complete",
+                targets=[],
+                completed_targets=[],
+                detail={},
+            )
+        )
+    )
+    checked = []
+
+    def validate(candidate):
+        checked.append(candidate)
+
+    assert read_progress_for_run((root,), "sim", "one", trusted_path_validator=validate)[0] == path
+    assert root / "sim" in checked and path in checked
+
+    def deny_candidate(candidate):
+        if candidate == path:
+            raise OSError("denied checkpoint")
+
+    assert (
+        read_progress_for_run((root,), "sim", "one", trusted_path_validator=deny_candidate) is None
+    )
+
+    def deny(candidate):
+        raise OSError(f"denied {candidate}")
+
+    assert read_progress_for_run((root,), "sim", "one", trusted_path_validator=deny) is None
+    assert read_progress_document(path, (root,), trusted_path_validator=deny) is None
+    with pytest.raises(OSError, match="denied"):
+        read_progress_document(path, (root,), trusted_path_validator=deny, raise_io_errors=True)
+
+
+def test_default_progress_reader_refuses_links_above_report_root(tmp_path):
+    from booley.flows.progress_lifecycle import read_progress_document
+
+    real = tmp_path / "real"
+    path = real / "project/reports/sim/1/progress.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(
+            progress_document(
+                flow="sim",
+                run_id="one",
+                phase="complete",
+                targets=[],
+                completed_targets=[],
+                detail={},
+            )
+        )
+    )
+    alias = tmp_path / "alias"
+    alias.symlink_to(real, target_is_directory=True)
+    assert (
+        read_progress_document(
+            alias / "project/reports/sim/1/progress.json", (alias / "project/reports",)
+        )
+        is None
+    )
+
+
+def test_trusted_progress_open_refuses_nonregular_file_and_final_link(tmp_path):
+    from booley.flows.progress_lifecycle import read_progress_document
+
+    root = tmp_path / "reports"
+    directory = root / "sim/1"
+    directory.mkdir(parents=True)
+    document = directory / "valid.json"
+    document.write_text(
+        json.dumps(
+            progress_document(
+                flow="sim",
+                run_id="one",
+                phase="complete",
+                targets=[],
+                completed_targets=[],
+                detail={},
+            )
+        )
+    )
+    link = directory / "progress.json"
+    link.symlink_to(document)
+    assert read_progress_document(link, (root,), trusted_path_validator=lambda _: None) is None
+    assert (
+        read_progress_document(directory, (root,), trusted_path_validator=lambda _: None) is None
+    )

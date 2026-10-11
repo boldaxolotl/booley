@@ -1079,3 +1079,74 @@ def test_failed_outer_rollback_is_reported_and_noted(
 
     assert "outer rollback failed: worktree busy" in capsys.readouterr().err
     assert failure.__notes__ == ["outer rollback failed: worktree busy"]
+
+
+def test_worktree_new_after_managed_bundle_runtime_init(tmp_path, monkeypatch, python_outer):
+    from tests.harness.test_init_rerun import _managed_git, _run_full_init
+    from tests.harness.test_init_rerun import repo as init_repo
+
+    # Reuse host-provisioning isolation only: all authored init writers and
+    # managed hook publication remain real on both invocations.
+    root = init_repo.__wrapped__(tmp_path, monkeypatch)
+    assert _run_full_init(root) == 0
+    data = root / ".booley_project"
+    for owner in (root, data):
+        _managed_git(owner, "config", "user.name", "Fixture")
+        _managed_git(owner, "config", "user.email", "fixture@example.invalid")
+    bundle = data / ".managed/project-git-hooks.pyz"
+    bundle.unlink()
+    _managed_git(data, "add", ".")
+    _managed_git(data, "commit", "-qm", "prepared authored Project")
+    (root / "rtl.v").write_text("module top; endmodule\n")
+    _managed_git(root, "add", ".")
+    _managed_git(root, "commit", "-qm", "prepared RTL")
+    baseline = _managed_git(data, "rev-parse", "HEAD")
+    assert _run_full_init(root) == 0
+    assert _new("runtime-init", root) == 0
+    paired = worktree_cmd.worktree_path(root, "runtime-init") / ".booley_project"
+    assert bundle.is_file()
+    assert not (paired / ".managed/project-git-hooks.pyz").exists()
+    assert _managed_git(data, "rev-parse", "HEAD") == baseline
+
+
+def test_tracked_bundle_manual_remedy_preserves_copy_and_allows_pairing(
+    versioned_project, python_outer, capsys, monkeypatch
+):
+    import shlex
+
+    from booley.harness.init_cmd import InitContext, _step_project_dir
+    from booley.harness.setup.project_git_hook_reconcile import step_project_git_hooks
+    from booley.runtime.project_dir import reset_cache
+    from tests.harness.test_init_rerun import _managed_git
+
+    root = versioned_project
+    data = root / ".booley_project"
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(data))
+    for owner in (root, data):
+        _managed_git(owner, "config", "user.name", "Fixture")
+        _managed_git(owner, "config", "user.email", "fixture@example.invalid")
+    reset_cache()
+    _step_project_dir(InitContext(project_root=root))
+    step_project_git_hooks(InitContext(project_root=root))
+    bundle = data / ".managed/project-git-hooks.pyz"
+    _managed_git(data, "add", ".")
+    _managed_git(data, "add", "-f", str(bundle))
+    _managed_git(data, "commit", "-qm", "legacy tracked bundle")
+    capsys.readouterr()
+    before = _managed_git(data, "ls-files", "--stage", "-z")
+    step_project_git_hooks(InitContext(project_root=root))
+    command = shlex.join(
+        ["git", "-C", str(data), "rm", "--cached", "--", ".managed/project-git-hooks.pyz"]
+    )
+    assert command in capsys.readouterr().out
+    assert _managed_git(data, "ls-files", "--stage", "-z") == before
+    subprocess.run(shlex.split(command), check=True, capture_output=True, timeout=10)
+    assert bundle.is_file()
+    _managed_git(data, "commit", "-qm", "intentional generated bundle removal")
+    _step_project_dir(InitContext(project_root=root))
+    step_project_git_hooks(InitContext(project_root=root))
+    assert _new("manual-remedy", root) == 0
+    paired = worktree_cmd.worktree_path(root, "manual-remedy") / ".booley_project"
+    assert bundle.is_file()
+    assert not (paired / ".managed/project-git-hooks.pyz").exists()
+    reset_cache()

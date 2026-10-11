@@ -185,3 +185,40 @@ def test_reviewer_invokes_agent_in_snapshot(tmp_path: Path) -> None:
     assert (repo / "rtl" / "dut.sv").is_file()
     assert (repo / "tb" / "tb.sv").is_file()
     assert str(repo / "tracked.sv") in result.output
+
+
+def test_snapshot_omits_ignored_managed_bundle_and_retains_authored_inputs(tmp_path):
+    from booley.harness.setup.project_git_hook_bundle import build_project_git_hook_bundle
+    from booley.runtime.project_gitignore import PROJECT_GITIGNORE
+
+    repo = _repo(tmp_path)
+    data = repo / ".booley_project"
+    (data / "hooks").mkdir(parents=True)
+    (data / ".gitignore").write_text(PROJECT_GITIGNORE)
+    (data / "booley.toml").write_text("[project]\nname='fixture'\n")
+    (data / "hooks/check.py").write_text("# authored lifecycle hook\n")
+    bundle = data / ".managed/project-git-hooks.pyz"
+    bundle.parent.mkdir()
+    bundle.write_bytes(build_project_git_hook_bundle().content)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "add",
+            "-f",
+            ".booley_project/.gitignore",
+            ".booley_project/booley.toml",
+            ".booley_project/hooks/check.py",
+        ],
+        check=True,
+        capture_output=True,
+        timeout=10,
+    )
+    params = AgentCallParams(prompt="review", model="test", cwd=repo)
+    with isolated_agent_workspace(params, "read_only") as (isolated, _snapshot):
+        copied = Path(isolated.cwd) / ".booley_project"
+        assert not (copied / ".managed/project-git-hooks.pyz").exists()
+        assert (copied / "booley.toml").read_bytes() == (data / "booley.toml").read_bytes()
+        assert (copied / "hooks/check.py").read_bytes() == (data / "hooks/check.py").read_bytes()
+    assert bundle.is_file()

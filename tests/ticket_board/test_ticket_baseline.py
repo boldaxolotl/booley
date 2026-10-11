@@ -2777,3 +2777,108 @@ def test_missing_full_ref_does_not_resolve_decoy(tmp_path, adapter, decoy_prefix
     else:
         with pytest.raises(workspace_ops.TicketBaselineOperationError, match="ref is unavailable"):
             workspace_ops._verified_basis_commit(root, ref)
+
+
+@pytest.mark.parametrize("ignored", [False, True])
+@pytest.mark.parametrize("difference", ["same", "changed", "reference-only"])
+def test_managed_bundle_generated_baseline_preserves_both_buckets(tmp_path, ignored, difference):
+    from booley.harness.setup.project_git_hook_bundle import build_project_git_hook_bundle
+    from booley.runtime.project_gitignore import PROJECT_GITIGNORE
+
+    roots = [tmp_path / "live", tmp_path / "reference"]
+    for root in roots:
+        root.mkdir()
+        _git(root, "init", "-q")
+        (root / ".gitignore").write_text(PROJECT_GITIGNORE if ignored else "")
+        _git(root, "add", ".gitignore")
+        _git(
+            root,
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=f@test.invalid",
+            "commit",
+            "-qm",
+            "authored",
+        )
+        bundle = root / ".managed/project-git-hooks.pyz"
+        bundle.parent.mkdir()
+        bundle.write_bytes(build_project_git_hook_bundle().content)
+    live, reference = roots
+    relative = ".managed/project-git-hooks.pyz"
+    if difference == "changed":
+        (live / relative).write_bytes(b"edited")
+    elif difference == "reference-only":
+        (live / relative).unlink()
+    changed = ticket_baseline_module._generated_changed_paths(
+        live,
+        git_owner=None,
+        generated_reference=reference,
+        generated_checkout_root=None,
+        include_reference_only_generated=True,
+    )
+    assert changed == (set() if difference == "same" else {relative})
+
+
+def _managed_baseline_participant(root, *, project):
+    from booley.runtime.project_gitignore import PROJECT_GITIGNORE
+
+    root.mkdir(parents=True)
+    _git(root, "init", "-q", "-b", "main")
+    (root / ".gitignore").write_text(PROJECT_GITIGNORE if project else "/.booley_project/\n")
+    if project:
+        (root / "booley.toml").write_text("[project]\nname='fixture'\n")
+    _git(root, "add", ".")
+    _git(
+        root,
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=f@test.invalid",
+        "commit",
+        "-qm",
+        "authored inputs",
+    )
+    return _git(root, "rev-parse", "HEAD")
+
+
+@pytest.mark.parametrize("difference", ["changed", "reference-only"])
+def test_managed_bundle_versioned_participants_keep_inner_protection(tmp_path, difference):
+    from booley.harness.setup.project_git_hook_bundle import build_project_git_hook_bundle
+
+    live, reference = tmp_path / "live", tmp_path / "reference"
+    commits = {}
+    for root in (live, reference):
+        commits[root] = (
+            _managed_baseline_participant(root, project=False),
+            _managed_baseline_participant(root / ".booley_project", project=True),
+        )
+        bundle = root / ".booley_project/.managed/project-git-hooks.pyz"
+        bundle.parent.mkdir()
+        bundle.write_bytes(build_project_git_hook_bundle().content)
+    outer_sha, project_sha = commits[live]
+    basis = TicketBaseline(
+        (
+            replace(_participant("outer"), authoring_sha=outer_sha, destination_sha=outer_sha),
+            replace(
+                _participant("project"), authoring_sha=project_sha, destination_sha=project_sha
+            ),
+        )
+    )
+    assert_inputs_unchanged(basis, live, generated_reference=reference)
+    bundle = live / ".booley_project/.managed/project-git-hooks.pyz"
+    if difference == "changed":
+        bundle.write_bytes(b"changed protected input")
+    else:
+        bundle.unlink()
+    outer_changed = ticket_baseline_module._repository_changed_paths(
+        live,
+        outer_sha,
+        git_owner=None,
+        generated_reference=reference,
+        generated_checkout_root=None,
+        excluded_prefixes=(".booley_project",),
+    )
+    assert not outer_changed
+    with pytest.raises(TicketBaselineError, match="protected path"):
+        assert_inputs_unchanged(basis, live, generated_reference=reference)

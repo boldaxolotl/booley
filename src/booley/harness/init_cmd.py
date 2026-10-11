@@ -332,19 +332,30 @@ def _step_project_dir(ctx: InitContext) -> None:
     target = project_dir_for_init(ctx.project_root)
 
     if target.is_dir():
+        permissions_pending = False
         if os.name != "nt" and stat.S_IMODE(target.stat().st_mode) != 0o700:
             if ctx.check_only:
                 warn(f"would secure project directory permissions on {target} to 0700")
-                ctx.record("project_dir", "warn", "permissions need 0700")
-                return
-            target.chmod(0o700)
-            ok(f"secured project directory permissions on {target} to 0700")
+                permissions_pending = True
+                if not os.access(target, os.R_OK | os.X_OK):
+                    warn(
+                        f"backfill report is incomplete: cannot inspect {target} "
+                        "without changing directory permissions"
+                    )
+                    ctx.record("project_dir", "warn", "permissions need 0700")
+                    return
+            else:
+                target.chmod(0o700)
+                ok(f"secured project directory permissions on {target} to 0700")
         skip(f"project directory found at {target}")
         _backfill_config_skeletons(target, ctx)
         _backfill_project_gitignore(target, ctx)
         _backfill_fusesoc_ignore(target, ctx)
         _init_project_git_repo(target, ctx)  # self-heal an older stealth setup
-        ctx.record("project_dir", "skip", "already present")
+        if permissions_pending:
+            ctx.record("project_dir", "warn", "permissions need 0700")
+        else:
+            ctx.record("project_dir", "skip", "already present")
         return
 
     if ctx.check_only:
