@@ -8,14 +8,11 @@ production code.
 from __future__ import annotations
 
 import contextlib
-import io
 import json
-import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from booley.criteria.state import DevelopmentState
-from booley.mcp.submit_run_report import SubmitRunReportMcpTool
 from booley.specialists.reviewer import ReviewerSpecialist
 
 
@@ -62,61 +59,6 @@ def _run_review(argv: list[str]):
     reviewer.parse_args(argv)
     reviewer.read_state()
     return reviewer._run()
-
-
-def _commit_all(repo: Path) -> None:
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    subprocess.run(["git", "add", "."], cwd=repo, check=True)
-    subprocess.run(
-        [
-            "git",
-            "-c",
-            "user.email=test@example.invalid",
-            "-c",
-            "user.name=Booley Test",
-            "commit",
-            "-qm",
-            "test: commit reviewed source",
-        ],
-        cwd=repo,
-        check=True,
-    )
-
-
-def _submit_report(work_dir: Path, monkeypatch):
-    monkeypatch.setenv("BOOLEY_TICKET_TYPE", "bugfix")
-    changed = subprocess.run(
-        ["git", "diff", "--name-only", "-z", "report-base", "HEAD"],
-        cwd=work_dir,
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=10,
-    ).stdout.split("\0")
-    justifications = {
-        path: "Record the reviewed UART source and fixture state." for path in changed if path
-    }
-    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(work_dir.parent / "report-logs"))
-    report = SubmitRunReportMcpTool()
-    output = io.StringIO()
-    with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
-        exit_code = report.main(
-            [
-                "--work-dir",
-                str(work_dir),
-                "--file-justifications",
-                json.dumps(justifications),
-                "--summary",
-                "Changed UART.",
-                "--root-cause",
-                "Test reproduction.",
-                "--uncertainties",
-                "None.",
-            ]
-        )
-    from booley.mcp.base import McpToolResult
-
-    return McpToolResult(exit_code=exit_code, report_text=output.getvalue())
 
 
 def test_cocotb_target_retains_agent_sim_result_requirement(tmp_path, monkeypatch):
@@ -168,125 +110,6 @@ def test_cocotb_target_retains_agent_sim_result_requirement(tmp_path, monkeypatc
 
     assert result.detail["issues"] == 1, result.report_text
     assert result.criterion_met is True
-
-
-def test_ticket_deferred_work_cannot_be_critical(tmp_path, monkeypatch):
-    """Campaign context must not override the staged Ticket slice."""
-    from booley.ticket_board.ticket_document import (
-        TicketAuthoringView,
-        TicketConversionContext,
-        convert_ticket_document,
-    )
-
-    rtl = tmp_path / "rtl" / "uart.sv"
-    rtl.parent.mkdir()
-    rtl.write_text("module uart; endmodule\n")
-    logs = tmp_path / "logs"
-    logs.mkdir()
-    (logs / "ticket.md").write_text(
-        "---\nsummary: host registers\ntype: feature\nbranch: main\n"
-        "scope: [rtl/uart.sv]\non_success: [review]\n"
-        "CRITERIA_MANDATORY: {REVIEW: {rtl: {bugs: done}}}\n"
-        "---\n\n## Description\nRequired now: implement host-visible registers.\n\n"
-        "## Deferred\n\nDeferred to later tickets: FIFOs and interrupt generation.\n"
-    )
-
-    def converted_ticket():
-        path = logs / "ticket.md"
-        view = TicketAuthoringView(lambda selector, _flow: selector, lambda _target: ())
-        converted = convert_ticket_document(
-            path.read_text(encoding="utf-8"),
-            TicketConversionContext("draft", lambda _generated: view),
-        )
-        assert converted.document is not None, converted.diagnostics
-        return converted.document, str(path)
-
-    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(logs))
-    _state(tmp_path, monkeypatch, "review_rtl_bugs_done")
-    leaked = _issue("bugs", "rtl/uart.sv", "FIFO and interrupt behavior is not implemented")
-    leaked["ticket_clause"] = "Deferred to later tickets: FIFOs and interrupt generation."
-    leaked["disposition"] = "deferred"
-
-    with (
-        patch("booley.specialists.reviewer._load_ticket_document", converted_ticket),
-        patch("booley.specialists.specialist.isolated_agent_workspace", _passthrough_workspace),
-        patch(
-            "booley.specialists.specialist._call_agent_sync",
-            return_value=_agent_result(leaked),
-        ),
-    ):
-        result = _run_review(
-            [
-                "--work-dir",
-                str(tmp_path),
-                "--scope",
-                "rtl/uart.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "bugs",
-            ]
-        )
-
-    assert result.detail["issues"] == 0, result.report_text
-
-
-def test_source_edit_has_one_freshness_verdict(tmp_path, monkeypatch):
-    """Reviewer and report submission must agree whether a review is current."""
-    rtl = tmp_path / "rtl" / "uart.sv"
-    rtl.parent.mkdir()
-    rtl.write_text("module uart; endmodule\n")
-    state_file = _state(
-        tmp_path,
-        monkeypatch,
-        "review_rtl_bugs_done",
-        "_report_submitted",
-    )
-    _commit_all(tmp_path)
-    subprocess.run(["git", "branch", "report-base"], cwd=tmp_path, check=True, timeout=10)
-    subprocess.run(
-        ["git", "branch", "--set-upstream-to=report-base"],
-        cwd=tmp_path,
-        check=True,
-        timeout=10,
-    )
-    common = [
-        "--work-dir",
-        str(tmp_path),
-        "--scope",
-        "rtl/uart.sv",
-        "--category",
-        "rtl",
-        "--focus",
-        "bugs",
-    ]
-
-    with (
-        patch("booley.specialists.specialist.isolated_agent_workspace", _passthrough_workspace),
-        patch(
-            "booley.specialists.specialist._call_agent_sync",
-            return_value=_agent_result(),
-        ) as agent,
-    ):
-        first = _run_review(common)
-        assert first.criterion_met is True
-        rtl.write_text("module uart; wire changed; endmodule\n")
-        second = _run_review(common)
-
-    _commit_all(tmp_path)
-    report_result = _submit_report(tmp_path, monkeypatch)
-    refreshed = DevelopmentState.load(state_file)
-
-    observed = (
-        agent.call_count,
-        "current source" in second.report_text,
-        report_result.exit_code,
-        refreshed.criteria["review_rtl_bugs_done"].stale,
-    )
-    assert observed == (2, False, 0, False), (
-        f"reviewer/report freshness disagreement: {observed}; "
-        f"reviewer said: {second.report_text!r}; report said: {report_result.report_text!r}"
-    )
 
 
 def test_corrective_findings_do_not_complete_terminal_done_review(tmp_path, monkeypatch):
@@ -450,3 +273,43 @@ def test_clean_verify_preserves_superseded_observations(tmp_path, monkeypatch):
     assert len(detail["observations"]) == 1
     assert detail["observations"][0]["summary"] == advisory["summary"]
     assert detail["observations"][0]["status"] == "superseded"
+
+
+def test_source_edit_has_one_freshness_verdict(tmp_path, monkeypatch):
+    """A source edit forces a second real review."""
+    rtl = tmp_path / "rtl" / "uart.sv"
+    rtl.parent.mkdir()
+    rtl.write_text("module uart; endmodule\n")
+    state_file = _state(
+        tmp_path,
+        monkeypatch,
+        "review_rtl_bugs_done",
+        "_report_submitted",
+    )
+    common = [
+        "--work-dir",
+        str(tmp_path),
+        "--scope",
+        "rtl/uart.sv",
+        "--category",
+        "rtl",
+        "--focus",
+        "bugs",
+    ]
+
+    with (
+        patch("booley.specialists.specialist.isolated_agent_workspace", _passthrough_workspace),
+        patch(
+            "booley.specialists.specialist._call_agent_sync",
+            return_value=_agent_result(),
+        ) as agent,
+    ):
+        first = _run_review(common)
+        assert first.criterion_met is True
+        rtl.write_text("module uart; wire changed; endmodule\n")
+        second = _run_review(common)
+
+    assert agent.call_count == 2
+    assert second.criterion_met is True
+    assert "current source" not in second.report_text
+    assert not DevelopmentState.load(state_file).criteria["review_rtl_bugs_done"].stale

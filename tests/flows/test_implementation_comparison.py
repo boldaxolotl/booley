@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -17,8 +18,20 @@ from booley.flows.implementation_comparison import (
 )
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.targets.catalog import TargetCatalog
-from booley.ticket_board.acceptance_targets import AcceptanceTargetBinding
-from booley.ticket_board.ticket_baseline import BasisParticipant, TicketBaseline
+
+
+@dataclass(frozen=True)
+class ResolvedTargetBinding:
+    flow: str
+    criterion: str
+    baseline: str
+    candidate: str
+    baseline_selector: str = ""
+    candidate_selector: str = ""
+
+    @property
+    def criterion_key(self):
+        return self.criterion.rsplit(".", 1)[-1]
 
 
 def select_target(project_root, token, *, for_flow=None):
@@ -49,7 +62,7 @@ def test_invalid_persisted_baseline_fails_closed() -> None:
         target_pairs_for_candidates(criteria, "synthesis_ok_", ["synth_after"])
 
 
-def _basis_project(tmp_path: Path, *, schema: int = 5) -> TicketBaseline:
+def _basis_project(tmp_path: Path, *, schema: int = 5) -> SimpleNamespace:
     assert schema == 5
     (tmp_path / "toy.core").write_text(
         """CAPI=2:
@@ -67,9 +80,9 @@ targets:
 """,
         encoding="utf-8",
     )
-    return TicketBaseline(
+    return SimpleNamespace(
         bindings=(
-            AcceptanceTargetBinding(
+            ResolvedTargetBinding(
                 flow="synth",
                 criterion="criteria.mandatory.synthesis_ok",
                 baseline="acme:lib:toy:1.0#synth_before",
@@ -78,15 +91,7 @@ targets:
                 candidate_selector="synth_after",
             ),
         ),
-        participants=(
-            BasisParticipant(
-                "outer",
-                "a" * 40,
-                "refs/heads/ticket",
-                "refs/heads/main",
-                "c" * 40,
-            ),
-        ),
+        participants=(SimpleNamespace(role="outer", authoring_sha="a" * 40),),
     )
 
 
@@ -113,7 +118,7 @@ def test_basis_executes_selector_verified_against_recorded_pair(tmp_path: Path) 
 def test_basis_accepts_multiple_parameters_for_one_candidate(tmp_path: Path) -> None:
     original = _basis_project(tmp_path)
     bindings = tuple(
-        AcceptanceTargetBinding(
+        ResolvedTargetBinding(
             flow="synth",
             criterion=f"criteria.mandatory.synthesis_ok_{parameter}",
             baseline="acme:lib:toy:1.0#synth_before",
@@ -123,7 +128,7 @@ def test_basis_accepts_multiple_parameters_for_one_candidate(tmp_path: Path) -> 
         )
         for parameter in ("area", "frequency")
     )
-    basis = TicketBaseline(bindings=bindings, participants=original.participants)
+    basis = SimpleNamespace(bindings=bindings, participants=original.participants)
     candidate = select_target(tmp_path, "synth_after", for_flow="synth")
     criteria = {
         f"synthesis_ok_{parameter}": SimpleNamespace(
@@ -193,7 +198,7 @@ def test_synth_and_fpga_share_current_schema_pair_plan_contract(
 ) -> None:
     basis = _basis_project(tmp_path, schema=5)
     vlnv = "acme:lib:toy:1.0"
-    binding = AcceptanceTargetBinding(
+    binding = ResolvedTargetBinding(
         flow=flow,
         criterion=f"criteria.mandatory.{criterion}",
         baseline=f"{vlnv}#{baseline_name}",
@@ -238,7 +243,7 @@ def test_current_schema_finds_authored_criterion_and_keeps_sealed_selector(
         "  synth_after: {flow: generic, flow_options: {tool: yosys}}\n",
         encoding="utf-8",
     )
-    binding = AcceptanceTargetBinding(
+    binding = ResolvedTargetBinding(
         flow="synth",
         criterion="criteria.mandatory.synthesis_ok",
         baseline="acme:lib:toy:1.0#synth_before",
@@ -337,10 +342,10 @@ def test_multiple_synth_parameters_can_share_one_target(
 
 
 def _basis_with_binding(
-    basis: TicketBaseline,
-    binding: AcceptanceTargetBinding,
-) -> TicketBaseline:
-    return TicketBaseline(
+    basis: SimpleNamespace,
+    binding: ResolvedTargetBinding,
+) -> SimpleNamespace:
+    return SimpleNamespace(
         bindings=(binding,),
         participants=basis.participants,
     )
@@ -353,7 +358,7 @@ def test_plan_has_no_public_authority_constructor() -> None:
 
 def test_current_schema_rejects_empty_callable_selector(tmp_path: Path) -> None:
     basis = _basis_project(tmp_path, schema=5)
-    empty_selector_binding = AcceptanceTargetBinding(
+    empty_selector_binding = ResolvedTargetBinding(
         flow="synth",
         criterion="criteria.mandatory.synthesis_ok",
         baseline="acme:lib:toy:1.0#synth_before",
@@ -361,7 +366,7 @@ def test_current_schema_rejects_empty_callable_selector(tmp_path: Path) -> None:
         baseline_selector="",
         candidate_selector="synth_after",
     )
-    basis = TicketBaseline(
+    basis = SimpleNamespace(
         bindings=(empty_selector_binding,),
         participants=basis.participants,
     )
@@ -382,7 +387,7 @@ def test_current_schema_rejects_empty_callable_selector(tmp_path: Path) -> None:
 
 def test_sealed_plan_requires_exactly_one_binding(tmp_path: Path) -> None:
     basis = _basis_project(tmp_path, schema=5)
-    basis = TicketBaseline(
+    basis = SimpleNamespace(
         bindings=(*basis.bindings, *basis.bindings),
         participants=basis.participants,
     )
@@ -403,7 +408,7 @@ def test_sealed_plan_requires_exactly_one_binding(tmp_path: Path) -> None:
 
 def test_sealed_plan_rejects_missing_binding(tmp_path: Path) -> None:
     basis = _basis_project(tmp_path, schema=5)
-    basis = TicketBaseline(
+    basis = SimpleNamespace(
         bindings=(),
         participants=basis.participants,
     )
@@ -546,7 +551,7 @@ def test_doctor_private_candidate_cannot_enter_sealed_plan(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     basis = _basis_project(tmp_path, schema=5)
-    binding = AcceptanceTargetBinding(
+    binding = ResolvedTargetBinding(
         flow="synth",
         criterion="criteria.mandatory.synthesis_ok",
         baseline="acme:lib:toy:1.0#synth_before",

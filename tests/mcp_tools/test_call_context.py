@@ -48,7 +48,7 @@ class _Lifetime:
 
 
 def _old_state_path() -> Path | None:
-    """The read ``_ticket_baseline_required`` made before the call context."""
+    """The read ``_baseline_required`` made before the call context."""
     raw = os.environ.get("BOOLEY_STATE_FILE")
     return Path(raw) if raw else None
 
@@ -224,9 +224,9 @@ class TestServerConsumers:
         monkeypatch.setenv("BOOLEY_STATE_FILE", str(state))
         state_path = resolve_call_context({}).state_path
 
-        assert mcp_server._ticket_baseline_required("synthesis_ok_", state_path) is True
-        assert mcp_server._ticket_baseline_required("fpga_impl_ok_", state_path) is False
-        assert mcp_server._ticket_baseline_required("synthesis_ok_", None) is False
+        assert mcp_server._baseline_required("synthesis_ok_", state_path) is True
+        assert mcp_server._baseline_required("fpga_impl_ok_", state_path) is False
+        assert mcp_server._baseline_required("synthesis_ok_", None) is False
 
     def test_subprocess_env_layers_context_then_per_run_overrides(
         self, bare_env: Path, monkeypatch: pytest.MonkeyPatch
@@ -242,7 +242,6 @@ class TestServerConsumers:
             subprocess_env_overrides=MappingProxyType(
                 {"BOOLEY_R1_PROBE": "context", "BOOLEY_R1_ONLY": "context"}
             ),
-            ticket_file=base.ticket_file,
         )
 
         plain = mcp_server._endpoint_subprocess_env(base)

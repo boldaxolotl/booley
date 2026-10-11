@@ -35,6 +35,8 @@ Packaged release history starts at 0.2.7. For older changes, see
   it. Logical synthesis is unchanged. An SDC that switches analysis mode or
   reloads the design now stops physical synthesis before repair.
 
+- Removed retired Ticket workflow internals and Console implementation. Shared Flow loading, agent execution, verification freshness, and waiver candidate storage now live with their active owners. External extensions importing `booley.ticket_board` must update their imports; the package has been removed. Goal Mode and Interactive recording keep their persisted formats.
+
 - Ticket Mode commands `booley run` and `booley board` are removed from the
   public command surface. Each prints a pointer to `/booley-goal` and exits 2.
   The Ticket creation and triage skills are replaced by `/booley-goal`.

@@ -40,13 +40,6 @@ from booley.runtime import (
 from booley.runtime import devcontainer as dc
 from booley.runtime.project_dir import reset_cache
 from booley.targets.catalog import TargetCatalog
-from booley.ticket_board.board_layout import (
-    StateRecord,
-    required_board_directories,
-    ticket_document_path,
-    write_state_record,
-)
-from booley.ticket_board.lifecycle import TicketState
 from tests.diagnostic_helpers import (
     _issued_runtime_state,
     _Rec,
@@ -182,7 +175,7 @@ tests = ["full"]
 
 def _write_tickets_tree(project_dir: Path) -> None:
     tickets_dir = project_dir / "tickets"
-    for directory in required_board_directories(tickets_dir):
+    for directory in [tickets_dir / "board", tickets_dir / "state"]:
         directory.mkdir(parents=True, exist_ok=True)
     (tickets_dir / "logs").mkdir(parents=True, exist_ok=True)
     (tickets_dir / "locks").mkdir(parents=True, exist_ok=True)
@@ -307,9 +300,10 @@ def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixtu
             return subprocess.CompletedProcess(cmd, 0, stdout=str(root / ".git"), stderr="")
         if cmd[:2] == ["git", "--version"]:
             return subprocess.CompletedProcess(cmd, 0, stdout="git version 2.53.0\n", stderr="")
-        if cmd[:3] == [sys.executable, "-c", "import booley.ticket_board"]:
+        if cmd[:3] == [sys.executable, "-c", "import booley.runtime"]:
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         if cmd[1:3] == ["ps", "-aq"]:
+            # Live Sandbox inventory must see an empty container list.
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         if cmd[:2] == ["git", "ls-files"]:
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
@@ -2160,8 +2154,6 @@ def test_doctor_fails_when_interactive_logs_tracked(tmp_path, monkeypatch, capsy
     base_run = doctor.subprocess.run
 
     def run_with_tracked_logs(cmd, **kwargs):
-        if cmd[1:3] == ["ps", "-aq"]:
-            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         if cmd[:2] == ["git", "ls-files"]:
             return subprocess.CompletedProcess(
                 cmd,
@@ -5131,7 +5123,7 @@ class TestWorktreeCoreShadowGuard:
 def _seed_board(tmp_path: Path) -> Path:
     """Create a minimal tickets tree; return the tickets dir."""
     tickets = tmp_path / "tickets"
-    for directory in required_board_directories(tickets):
+    for directory in [tickets / "board", tickets / "state"]:
         directory.mkdir(parents=True, exist_ok=True)
     (tickets / "logs").mkdir(parents=True, exist_ok=True)
     return tickets
@@ -5139,11 +5131,11 @@ def _seed_board(tmp_path: Path) -> Path:
 
 def _seed_active_ticket(tickets: Path, slug: str = "stuck") -> None:
     """Place a running Ticket (board document + running state record) with a lock."""
-    ticket_document_path(tickets, slug).write_text(
+    (tickets / "board" / f"{slug}.md").write_text(
         "---\nsummary: Stuck ticket\n---\n",
         encoding="utf-8",
     )
-    write_state_record(tickets, slug, StateRecord.fresh(TicketState.RUNNING))
+    (tickets / "state" / f"{slug}.json").write_text(json.dumps({"schema": 1, "state": "running"}))
     lock_dir = tickets / "logs" / slug
     lock_dir.mkdir(parents=True, exist_ok=True)
     (lock_dir / "ticket.lock").write_text("99999", encoding="utf-8")
@@ -5899,7 +5891,7 @@ class TestDeveloperProbe:
 
     @pytest.mark.parametrize("site", ["call", "rusage", "timeout", "no_rss"])
     def test_measure_post_call_errors_carry_usage(self, tmp_path, monkeypatch, site):
-        from booley.harness.models import AgentResult
+        from booley.core.models import AgentResult
         from booley.runtime import agent as agent_mod
         from booley.runtime import agent_config as config_mod
 
@@ -6000,7 +5992,7 @@ class TestDeveloperProbe:
         assert doctor._run_developer_probe(_adr28_project(tmp_path), rec.p, rec.s, rec.f) is None
 
     def test_measure_uses_child_rusage(self, tmp_path, monkeypatch):
-        from booley.harness.models import AgentResult
+        from booley.core.models import AgentResult
         from booley.runtime import agent as agent_mod
         from booley.runtime import agent_config as config_mod
 
@@ -6042,7 +6034,7 @@ class TestDeveloperProbe:
         assert seen[0].allowed_agent_capabilities == []
 
     def test_measure_flags_upper_bound_without_delta(self, tmp_path, monkeypatch):
-        from booley.harness.models import AgentResult
+        from booley.core.models import AgentResult
         from booley.runtime import agent as agent_mod
         from booley.runtime import agent_config as config_mod
 

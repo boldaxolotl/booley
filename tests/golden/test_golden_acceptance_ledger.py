@@ -1,28 +1,4 @@
-"""Differential golden for the Ticket acceptance ledger's on-disk evidence tree.
-
-The scenario drives only the public Ticket API
-(``booley.ticket_board.acceptance_ledger``): V1 ``record_changes`` appends, a
-V2 ``record_or_verify_transaction`` interrupted at a publication checkpoint,
-a crash-left complete temporary record that recovery must promote, a replay
-of the committed transaction, a re-selection into a state that lost it, a
-frozen Criteria Satisfaction Record, and two rejected identities.
-
-A second, parametrized scenario interrupts a V2 transaction once at every
-publication checkpoint boundary, recovers it, and replays it; its declared
-Criteria include the report-fenced ``_report_submitted``, so replay and the
-projection check run Ticket report fencing.
-
-Each golden snapshots every ledger file beneath the Ticket log directory byte
-for byte, the checkpoint boundaries in order, the returned references, and
-rejection messages. Two files are rendered platform-neutrally on purpose:
-lock files show presence only (Windows lock acquisition writes a NUL byte),
-and the text-mode ``booley_state.json`` is shown with LF line endings
-(Windows text mode writes CRLF). The expected files were generated on main
-before the ledger moved to ``booley.criteria.evidence_ledger``, so any drift
-in canonical bytes, transaction hashes, paths, checkpoints, projection, or
-error text shows up as a diff (see ``tests/golden/conftest.py`` for the
-regeneration convention).
-"""
+"""Golden bytes for generic V1 appends and V2 recovery with test owner policy."""
 
 from __future__ import annotations
 
@@ -36,17 +12,16 @@ from typing import Any
 import pytest
 
 from booley.criteria.state import DevelopmentState
-from booley.ticket_board.acceptance_ledger import (
+from tests.criteria.ledger_support import (
     AcceptanceLedgerError,
     current_evidence_records,
-    freeze_acceptance,
     record_changes,
     record_or_verify_transaction,
 )
 
 from .conftest import assert_matches_golden, normalize_work_dir
 
-GOLDEN = "acceptance_ledger/ticket_evidence_tree.txt"
+GOLDEN = "acceptance_ledger/generic_evidence_tree.txt"
 IDENTITY = {"generation": "d" * 32, "authored_sha256": "e" * 64}
 FIXED_NOW = "2026-09-21T08:00:00Z"
 CAMPAIGN_ID = "12345678-1234-4234-9234-123456789abc"
@@ -96,7 +71,7 @@ def _transact(log_dir: Path, state: DevelopmentState, changes: list, checkpoint)
         state,
         changes,
         acceptance_facts=_campaign_facts(),
-        ticket_identity=IDENTITY,
+        identity=IDENTITY,
         publication_checkpoint=checkpoint,
     )
 
@@ -117,7 +92,7 @@ def _v1_appends(log_dir: Path, state: DevelopmentState) -> list[dict[str, Any]]:
         invocation_id="lint-1",
         producer="lint",
         execution_id="b" * 32,
-        ticket_identity=IDENTITY,
+        identity=IDENTITY,
         recorded_at="2026-09-21T09:00:00Z",
     )
     red = record_changes(
@@ -127,7 +102,7 @@ def _v1_appends(log_dir: Path, state: DevelopmentState) -> list[dict[str, Any]]:
         invocation_id="sim-red",
         producer="sim",
         execution_id="b" * 32,
-        ticket_identity=IDENTITY,
+        identity=IDENTITY,
         recorded_at="2026-09-21T09:30:00Z",
     )
     return [asdict(ref) for ref in (*lint, *red)]
@@ -168,7 +143,7 @@ def _rejection(log_dir: Path, state: DevelopmentState, identity: dict[str, Any])
             state,
             [],
             acceptance_facts=_campaign_facts(),
-            ticket_identity=identity,
+            identity=identity,
         )
     return str(caught.value)
 
@@ -218,15 +193,6 @@ def _run_scenario(root: Path) -> dict[str, Any]:
     result["reselected_equal"] = reselected == recovered
 
     result["current_records"] = current_evidence_records(log_dir, lost, IDENTITY)
-    frozen = freeze_acceptance(
-        log_dir,
-        lost,
-        execution_id="b" * 32,
-        ticket_identity=IDENTITY,
-        participant_heads={"outer": "a" * 40},
-        accepted_at="2026-09-21T11:00:00Z",
-    )
-    result["frozen_digest"] = frozen.digest
     result["rejections"] = [
         _rejection(log_dir, lost, {"generation": "xyz"}),
         _rejection(log_dir, lost, {"generation": "d" * 32, "bad": b"not json"}),
@@ -258,7 +224,7 @@ def _render_tree(log_dir: Path) -> str:
     return "\n".join(lines)
 
 
-def test_ticket_evidence_tree_matches_golden(tmp_path: Path, monkeypatch) -> None:
+def test_generic_evidence_tree_matches_golden(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr("booley.criteria.state.utc_now_rfc3339", lambda: FIXED_NOW)
     result = _run_scenario(tmp_path)
     rendered = (
@@ -298,7 +264,7 @@ def _report_fenced_state(log_dir: Path) -> tuple[DevelopmentState, list[Any]]:
         invocation_id="lint-1",
         producer="lint",
         execution_id="b" * 32,
-        ticket_identity=IDENTITY,
+        identity=IDENTITY,
         recorded_at="2026-09-21T09:00:00Z",
     )
     changes = [
@@ -352,3 +318,14 @@ def test_interrupted_transaction_recovers_to_golden(
     )
     golden = f"acceptance_ledger/interrupt_{boundary.replace(':', '_')}.txt"
     assert_matches_golden(golden, normalize_work_dir(rendered, tmp_path))
+
+
+@pytest.fixture(autouse=True)
+def isolated_owner(tmp_path, monkeypatch):
+    import os
+
+    from booley.runtime.project_dir import reset_cache
+
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path))
+    reset_cache()

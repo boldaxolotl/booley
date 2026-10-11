@@ -1,9 +1,9 @@
-"""Record a Coverage Analyst run's screened Waiver Candidates for its Ticket (ADR 0066).
+"""Record a Coverage Analyst run's screened Waiver Candidates for its Goal Record (ADR 0066).
 
 The Analyst's model never writes. After the deterministic screen, this adapter
 binds each ``ready_for_human_review`` candidate to the exact persisted Campaign
-and records it in the Ticket's candidate store. It then reports the strict and
-Provisional Coverage Verdicts for that Campaign, so the Developer sees both.
+and records it in the Goal Record's candidate store. It then reports the strict and
+Provisional Coverage Verdicts for that Campaign, so the Developer Agent sees both.
 
 Recording is best-effort: a store failure is reported, never raised, because
 the advisory analysis itself succeeded.
@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from booley.core.boundary import BoundaryError
+from booley.flows.sim import waiver_candidates as store
 from booley.flows.sim.coverage_campaign import CoverageCampaign
 from booley.flows.sim.coverage_campaign_store import (
     CAMPAIGN_SCHEMA_V3,
@@ -29,24 +30,21 @@ from booley.flows.sim.coverage_provisional import (
     evaluate_provisional_coverage,
 )
 from booley.runtime.sandbox_layout import canonical_project_alias_path
-from booley.ticket_board import waiver_candidates as store
-from booley.ticket_board.helpers import tickets_dir_from_project_root
 
 
 @dataclass(frozen=True)
-class TicketCandidateContext:
-    """Where one Ticket's candidates live and how Campaign paths are anchored."""
+class GoalCandidateContext:
+    """Where one Goal Record's candidates live and how Campaign paths are anchored."""
 
     slug: str
-    tickets_dir: Path
     flow_reports_root: Path
-    record_dir: Path | None = None
+    record_dir: Path
 
     @classmethod
     def from_environment(
         cls, slug: str, environment: Mapping[str, str]
-    ) -> TicketCandidateContext | None:
-        """Return the Ticket context, or None outside Ticket Mode."""
+    ) -> GoalCandidateContext | None:
+        """Return the Goal Record context, or None outside Goal Mode."""
         goal_file = environment.get("BOOLEY_GOAL_FILE", "")
         if goal_file:
             import json
@@ -62,19 +60,10 @@ class TicketCandidateContext:
             paths = record_paths(binding.project_dir, binding.record_id)
             return cls(
                 binding.record_id,
-                binding.project_dir,
                 paths.runtime_dir / "flow-reports",
                 paths.root,
             )
-        control_root = environment.get("BOOLEY_CONTROL_PROJECT_ROOT", "")
-        runtime_dir = environment.get("BOOLEY_RUNTIME_DIR", "")
-        if not slug or not control_root or not runtime_dir:
-            return None
-        return cls(
-            slug,
-            tickets_dir_from_project_root(control_root),
-            Path(runtime_dir) / "flow-reports",
-        )
+        return None
 
 
 def _binding(
@@ -91,7 +80,9 @@ def _binding(
             canonical_project_alias_path(flow_reports_root.absolute())
         )
     except ValueError as exc:
-        raise ValueError("Campaign is not under this Ticket's flow-reports directory") from exc
+        raise ValueError(
+            "Campaign is not under this Goal Record's flow-reports directory"
+        ) from exc
     return store.CampaignBinding(
         campaign_id=campaign.campaign_id,
         manifest_sha256=summary.manifest_sha256,
@@ -153,8 +144,8 @@ def _provisional_block(
     }
 
 
-def record_ticket_candidates(
-    context: TicketCandidateContext,
+def record_goal_candidates(
+    context: GoalCandidateContext,
     campaign: CoverageCampaign,
     summary: CoverageCampaignSummary | None,
     campaign_path: Path,
@@ -167,15 +158,14 @@ def record_ticket_candidates(
     try:
         binding = _binding(campaign, summary, campaign_path, context.flow_reports_root)
         outcome = store.record_proposals(
-            context.tickets_dir,
+            context.record_dir,
             context.slug,
             binding,
             _proposals(screened, campaign),
             invocation_id=invocation_id,
             now=now or datetime.now(UTC),
-            directory=context.record_dir,
         )
-        record = store.load(context.tickets_dir, context.slug, directory=context.record_dir)
+        record = store.load(context.record_dir, context.slug)
         verdicts = _provisional_block(campaign, binding, record)
     except (
         OSError,
@@ -196,7 +186,7 @@ def record_ticket_candidates(
 
 
 def candidate_summary_line(section: Mapping[str, object]) -> str:
-    """One Console line describing the candidate section."""
+    """One summary line describing the candidate section."""
     if section.get("status") != "recorded":
         return f"Waiver Candidates not recorded: {section.get('reason', 'unknown reason')}"
     verdicts = section["verdicts"]

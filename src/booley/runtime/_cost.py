@@ -1,7 +1,7 @@
 """Cost estimation and usage formatting for agent backends.
 
-Prices live in :mod:`booley.config.pricing` — the one table shared with the
-ticket-board reports. This module is the harness-facing wrapper.
+Prices live in :mod:`booley.config.pricing`. This module formats agent usage
+and estimates its cost.
 """
 
 from __future__ import annotations

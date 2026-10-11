@@ -17,7 +17,6 @@ from booley.runtime.project_dir import (
     resolve_checkout_project_dir,
     resolve_project_dir,
 )
-from booley.ticket_board.helpers import detect_project_root
 
 
 @pytest.fixture(autouse=True)
@@ -83,45 +82,6 @@ class TestEnvVarOverride:
         sibling.mkdir()
         result = resolve_project_dir()
         assert result == env_dir.resolve()
-
-    def test_detect_project_root_uses_project_dir_parent(self, tmp_path: Path, monkeypatch):
-        project_dir = tmp_path / ".booley_project"
-        project_dir.mkdir()
-        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project_dir))
-
-        assert detect_project_root() == tmp_path.resolve()
-
-    def test_detect_project_root_prefers_ticket_control_plane(self, tmp_path, monkeypatch):
-        control_root = tmp_path / "control"
-        monkeypatch.setenv("BOOLEY_CONTROL_PROJECT_ROOT", str(control_root))
-        monkeypatch.setenv("PROJECT_ROOT", str(tmp_path / "test-override"))
-        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path / "authored-project"))
-
-        assert detect_project_root() == control_root
-
-    def test_detect_project_root_recovers_control_plane_from_runtime_ticket(
-        self, tmp_path, monkeypatch
-    ):
-        control_root = tmp_path / "control"
-        runtime_ticket = (
-            control_root / ".booley_project" / "tickets" / "logs" / "ticket-a" / "ticket.md"
-        )
-        misleading_worktree = control_root / ".booley_project" / "worktrees" / "ticket-a"
-        monkeypatch.delenv("BOOLEY_CONTROL_PROJECT_ROOT", raising=False)
-        monkeypatch.setenv("BOOLEY_TICKET_FILE", str(runtime_ticket))
-        monkeypatch.setenv("PROJECT_ROOT", str(misleading_worktree))
-        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(misleading_worktree / ".booley_project"))
-
-        assert detect_project_root() == control_root
-
-    def test_detect_project_root_rejects_unrelated_tickets_path(self, tmp_path, monkeypatch):
-        fallback = tmp_path / "fallback"
-        unrelated = tmp_path / "example" / "tickets" / "logs" / "ticket-a" / "ticket.md"
-        monkeypatch.delenv("BOOLEY_CONTROL_PROJECT_ROOT", raising=False)
-        monkeypatch.setenv("BOOLEY_TICKET_FILE", str(unrelated))
-        monkeypatch.setenv("PROJECT_ROOT", str(fallback))
-
-        assert detect_project_root() == fallback
 
     def test_checkout_local_snapshot_overrides_session_global_dir(self, tmp_path, monkeypatch):
         session_dir = tmp_path / "session-project"

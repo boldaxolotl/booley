@@ -179,11 +179,7 @@ def _private_codex_destination(tmp_path, monkeypatch, kind):
             )
             return Path(env["CODEX_HOME"])
     else:
-        writer = (
-            cb._ensure_developer_codex_home
-            if kind == "developer"
-            else cb._ensure_nested_codex_home
-        )
+        writer = cb._ensure_nested_codex_home
 
         def create():
             return Path(writer("test", ["lint"])) / ".codex"
@@ -191,7 +187,7 @@ def _private_codex_destination(tmp_path, monkeypatch, kind):
     return create, create() / "config.toml"
 
 
-@pytest.mark.parametrize("kind", ["developer", "nested", "text-only"])
+@pytest.mark.parametrize("kind", ["nested", "text-only"])
 @pytest.mark.parametrize("failure", ["missing", "stale", "broken-import", "nonbool"])
 def test_private_writer_invalid_or_incompatible_config_preserves_destination(
     tmp_path, monkeypatch, caplog, kind, failure

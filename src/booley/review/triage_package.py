@@ -1,4 +1,4 @@
-"""Deterministic facts and rendering for precomputed ticket-triage packages."""
+"""Deterministic facts and rendering for precomputed review packages."""
 
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ CoverageReportResolver = Callable[[Path, object], Path | None]
 
 @dataclass(frozen=True)
 class ResolvedReviewEvidence:
-    """Immutable Ticket Board snapshot consumed by review generation."""
+    """Immutable caller-resolved snapshot consumed by review generation."""
 
     state_json: str
     scope_json: str
@@ -63,7 +63,7 @@ class ResolvedReviewEvidence:
         developer_crashes: list[str],
         missing_evidence: list[str],
     ) -> ResolvedReviewEvidence:
-        """Freeze caller-resolved evidence at the Ticket Board seam."""
+        """Freeze caller-resolved evidence at the review-generation seam."""
         return cls(
             state_json=json.dumps(state, sort_keys=True, separators=(",", ":")),
             scope_json=json.dumps(scope, sort_keys=True, separators=(",", ":")),
@@ -250,7 +250,7 @@ def _criterion_report_path(
     log_dir: Path,
     coverage_report_resolver: CoverageReportResolver,
 ) -> str | None:
-    """Resolve a trusted ticket artifact that should open from a criterion."""
+    """Resolve a trusted review artifact that should open from a criterion."""
     if name.startswith("coverage_"):
         return _coverage_report_path(entry, log_dir, coverage_report_resolver)
     if not (name == "mutation_score" or name.startswith("mutation_score_")):
@@ -926,7 +926,7 @@ def build_review_facts(
     run_economics: str = "unavailable",
     waiver_candidates: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
-    """Build artifacts from Ticket Board-resolved evidence and immutable heads.
+    """Build artifacts from caller-resolved evidence and immutable heads.
 
     The caller must project report completion authority before capturing evidence;
     this renderer trusts the resolved report gate and performs no lifecycle I/O.

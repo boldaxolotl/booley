@@ -13,11 +13,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
-import pytest
-
 from booley.core.models import AgentArtifactPaths, AgentCallParams
 from booley.runtime import _claude_backend as claude
-from booley.runtime.agent_errors import TransientAPIError
 from booley.runtime.prompt_artifacts import write_prompt_artifacts
 
 
@@ -108,23 +105,6 @@ def test_public_claude_call_retries_with_injected_policy(tmp_path, monkeypatch):
             == "work"
         )
         assert (tmp_path / "human" / f"{name}.md").exists()
-
-
-@pytest.mark.parametrize("cancelled", [False, True])
-def test_rate_limit_budget_resumes_on_completion_or_cancellation(monkeypatch, cancelled):
-    budget = Mock()
-    sleep = AsyncMock(side_effect=asyncio.CancelledError if cancelled else None)
-
-    async def wait(awaitable, _budget):
-        await awaitable
-
-    monkeypatch.setattr(claude.anyio, "sleep", sleep)
-    monkeypatch.setattr(claude, "run_with_developer_budget", wait)
-    event = _RateLimit(SimpleNamespace(status="rejected", resets_at=None, rate_limit_type=None))
-    with pytest.raises(asyncio.CancelledError if cancelled else TransientAPIError):
-        asyncio.run(claude._handle_rate_limit_event(event, budget))
-    budget.pause.assert_called_once_with("claude-rate-limit", "provider rate limit")
-    budget.resume.assert_called_once_with("claude-rate-limit")
 
 
 def test_runtime_import_and_artifact_use_never_load_ticket_board(tmp_path):

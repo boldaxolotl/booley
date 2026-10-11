@@ -129,7 +129,7 @@ def snapshot_jobs(
     catalogs: dict[str, TargetCatalog | None] = {}
     if slots_root is not None:
         store = job_slots.SlotStore(slots_root)
-        for kind in ("heavy", "light", "ticket"):
+        for kind in ("heavy", "light"):
             holders, waiters = store.observe(kind)
             tokens.extend((*holders, *waiters))
     records, record_diagnostics = _snapshot_records(project_dir, interactive_root)

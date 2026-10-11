@@ -54,14 +54,12 @@ PROXY_URL = f"http://{PROXY_HOST}:{PROXY_PORT}"
 INTERACTIVE_ROLE_LABEL = "booley.role=interactive"
 
 # Process cap for the whole Sandbox (fork-bomb ceiling, not a tuning
-# knob). Sized far above the retired per-Flow sandbox's 512 because this one
-# container hosts the VS Code server, the agent CLI, the in-container
-# developer, and up to ``[jobs] max_tickets`` concurrent tickets each
-# spawning EDA tools (ADR 0028). Its only job is to bound a hijacked agent's
+# knob). The container hosts the editor, agent clients, and concurrent EDA
+# tools (ADR 0028). The cap bounds a hijacked agent's
 # fork bomb; legitimate peak process counts stay well under this.
 SESSION_PIDS_LIMIT = 4096
 
-# --- Container-side paths (must match the booley-sandbox image / developer) ---
+# --- Container-side paths (must match the booley-sandbox image) ---
 # PROJECT_DIR_TARGET (imported above from ``sandbox_layout``) is where
 # ``.booley_project`` mounts; it is re-exported here for existing callers.
 AGENT_HOME = "/home/agent"  # non-root ``agent`` user (see data/docker/Dockerfile)
@@ -190,7 +188,7 @@ _CLAUDE_CONFIG_SEED_TARGET = f"{AGENT_HOME}/.claude-config-seed.json"
 #     with one; a ChatGPT-subscription login stores refreshing OAuth tokens in
 #     the same file, and Codex rewrites it too.
 # Binding the host file read-only directly onto that path makes the in-container
-# refresh write FAIL — and in a headless ticket container nothing on the host
+# refresh write FAIL — and in a headless Sandbox nothing on the host
 # refreshes on its behalf — so the session 401s the moment the mounted token
 # expires. Instead we bind the host credential read-only at a sidecar *seed* path
 # (outside the app's state dir, to dodge state-volume nesting) and copy it onto
@@ -563,7 +561,7 @@ def mask_paths_error(value: object) -> str | None:
     path and a ``..`` segment would walk the mask outside the workspace mount —
     either turns a privacy knob into a container-layout editor. Masking
     ``.booley_project`` itself is rejected too: the session reads its config,
-    tickets, and worktrees through that mount (``BOOLEY_PROJECT_DIR``), so
+    Goal Records, and worktrees through that mount (``BOOLEY_PROJECT_DIR``), so
     hiding the whole dir bricks the runtime — mask *subtrees* of it instead.
     """
     if value is None:
@@ -823,8 +821,7 @@ def _build_creds_seed_command(
     and the host CLI rewrites credentials via atomic rename — so the seed goes
     stale the moment the host refreshes, and every later copy re-seeds that
     stale snapshot (whose refresh token the host rotation has revoked).
-    Recreating the container re-binds the current inode. This is why ticket
-    agents must not depend on the seeded file at all: the rotation-free
+    Recreating the container re-binds the current inode. Agent calls must not depend on the seeded file at all: the rotation-free
     ``booley auth`` token (injected via ``_build_sdk_options`` ``options.env``)
     is the credential that survives host refreshes.
 
@@ -1008,7 +1005,7 @@ def build_devcontainer_spec(
             "--project",
             "${localWorkspaceFolder}",
         ],
-        # Survive window close (ADR 0028 Decision 11): tickets may still be
+        # Survive window close (ADR 0028 Decision 11): Jobs may still be
         # running when the last VS Code window disconnects, so VS Code must
         # never stop the container itself — the idle reaper is the sole
         # lifecycle owner for idle shutdown; admission enforces the host cap
@@ -1081,7 +1078,7 @@ def build_devcontainer_spec(
     # fixes both in the installed manifest — attach is the first lifecycle point
     # where that manifest exists on disk. Unconditional: viewing traces is not
     # tied to which agent app is attached, and the hook only fires when a UI
-    # client attaches, so headless ticket containers skip it for free.
+    # client attaches, so headless Sandboxs skip it for free.
     spec["postAttachCommand"] = post_attach_command()
 
     return spec

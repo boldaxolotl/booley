@@ -90,24 +90,6 @@ def test_pid_liveness_primitives_stay_in_runtime_pid_module() -> None:
     assert offenders == []
 
 
-def test_pid_liveness_consumers_import_the_runtime_module() -> None:
-    compatibility_module = _SOURCE_ROOT / "ticket_board" / "helpers.py"
-    offenders = []
-    for path, tree in _sources():
-        if path == compatibility_module:
-            continue
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.ImportFrom):
-                continue
-            if any(alias.name == "is_pid_alive" for alias in node.names) and (
-                node.module == "booley.ticket_board.helpers"
-                or (node.level == 1 and node.module == "helpers")
-            ):
-                offenders.append(_relative(path, node.lineno))
-
-    assert offenders == []
-
-
 def test_owned_process_group_primitives_stay_in_runtime_module() -> None:
     allowed_calls = {
         _SOURCE_ROOT / "runtime" / "process_group.py",
@@ -139,29 +121,5 @@ def test_owned_process_group_primitives_stay_in_runtime_module() -> None:
             elif isinstance(node, ast.Constant):
                 if path not in allowed_calls and node.value == "taskkill":
                     offenders.append(_relative(path, node.lineno))
-
-    assert offenders == []
-
-
-def test_ticket_workspace_consumers_do_not_bypass_the_runtime_boundary() -> None:
-    consumers = (
-        _SOURCE_ROOT / "harness" / "developer.py",
-        _SOURCE_ROOT / "ticket_board" / "operations.py",
-        _SOURCE_ROOT / "ticket_board" / "archive.py",
-    )
-    bypass_names = {
-        "project_repositories",
-        "merge_project_ticket_branch",
-        "cleanup_project_ticket_branch",
-    }
-    offenders = []
-    for path in consumers:
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.ImportFrom):
-                continue
-            imported = bypass_names.intersection(alias.name for alias in node.names)
-            if imported:
-                offenders.append(f"{_relative(path, node.lineno)}: {', '.join(sorted(imported))}")
 
     assert offenders == []

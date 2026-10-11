@@ -24,8 +24,6 @@ no parser or schema. `SimRequest`, `SynthRequest` and `FpgaRequest` live beside 
 implementations. Requests are copied for execution because preparation and
 baseline work may change the working inputs. The Goal binding and state-file
 location are environment-derived preparation fields, excluded from constructors.
-The legacy Ticket identity fields and adapters are retained until Phase 9a
-removes them.
 
 ## Ownership
 
@@ -65,9 +63,6 @@ and specification revisions plus Protected Inputs; publication rechecks it
 before appending evidence or merging mutable state. Failed publication binding
 discards the evidence rather than assigning it to another Goal Record.
 
-The retained Ticket adapter additionally validates its sealed acceptance surface
-before loading mutable state; that path is retained until Phase 9a removes it.
-
 The admitted claim remains held through invocation, final acceptance, mutable
 completion persistence and reporting, then is released.
 
@@ -101,13 +96,12 @@ without exemptions. D5/D6/D9 remain unchanged. Criteria action and reference
 rendering consume an immutable endpoint catalog assembled outside Criteria; the
 former W1/W2 discovery waivers were retired by #284.
 
-`tests/flows/test_transport_contract.py` captures all four pre-refactor schemas,
-exercises direct typed and CLI calls, checks retained Ticket gates and acceptance
-ordering, distinguishes acceptance failures, runs a real lint child through MCP with a fake
-EDA executable, and checks Project-local constructor/schema/loader compatibility.
-The Flow/backend, MCP, Goal/evidence, Criteria, and architecture suites cover
-current execution and persistence behavior; retained Ticket suites characterize
-compatibility code until Phase 9a removes it.
+`tests/flows/test_transport_contract.py` exercises direct typed and CLI calls,
+distinguishes acceptance failures, runs a real lint child through MCP with a
+fake EDA executable, and checks transport schemas. Project-local constructor
+and loader compatibility is covered by the Goal Flow runner tests. The
+Flow/backend, MCP, Goal/evidence, Criteria, and architecture suites cover
+current execution and persistence behavior.
 
 ### Verilator compiler cache ownership
 
@@ -127,8 +121,7 @@ fails preparation.
 
 Sandbox Issuance fixes `BOOLEY_COMPILER_CACHE_ROOT` under the existing Project
 mount in both container and remote environments. Goal-bound and review
-subprocesses inherit it; retained Ticket subprocesses also inherit it when
-repointing `BOOLEY_PROJECT_DIR` to checkout-local authored data.
+subprocesses inherit it.
 Its presence/value participates in spec validation, digest/drift detection, and
 refresh; no new mount is introduced. Non-issued development resolves ownership
 through `resolve_project_dir` and selected configuration through

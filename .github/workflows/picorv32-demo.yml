@@ -46,7 +46,6 @@ on:
       - "src/booley/runtime/**"
       - "src/booley/specialists/**"
       - "src/booley/targets/**"
-      - "src/booley/ticket_board/**"
   push:
     branches: [main]
   merge_group:

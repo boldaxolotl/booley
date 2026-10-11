@@ -62,7 +62,7 @@ _Avoid_: ticket branch, work branch
 
 **Goal**:
 A named, mandatory boolean condition held by a session in Goal Mode, met only by Booley Flow or Specialist evidence at the session's current code. The agent may ask to relax a Goal; only a human may approve it.
-The internal [Criterion](../src/booley/ticket_board/GLOSSARY.md#execution-and-evidence) vocabulary remains in shared evaluation code; use Goal for the public success condition.
+The internal [Criterion](#execution-and-evidence) vocabulary remains in shared evaluation code; use Goal for the public success condition.
 _Avoid_: Criterion, acceptance criterion, optional criterion, check, gate
 
 **Goalset**:
@@ -106,7 +106,7 @@ The diagnostic command for Booley's build and execution machinery in a **Project
 _Avoid_: design verification, Ticket Preflight, acceptance gate
 
 **Workflow Region**:
-An advisory cluster of agent activity, useful Specialists, Booley Flows, and intended outcomes. The three Workflow Regions are `pre_sim`, `core_loop`, and `post_sim`; each internal [Criterion](../src/booley/ticket_board/GLOSSARY.md#execution-and-evidence) declares its region via the `workflow_region` key in criteria.toml, which drives advisory ordering only. Workflow Regions organize capability guidance without imposing mandatory order, mandatory Flow use, or hidden completion gates in Goal Mode.
+An advisory cluster of agent activity, useful Specialists, Booley Flows, and intended outcomes. The three Workflow Regions are `pre_sim`, `core_loop`, and `post_sim`; each internal [Criterion](#execution-and-evidence) declares its region via the `workflow_region` key in criteria.toml, which drives advisory ordering only. Workflow Regions organize capability guidance without imposing mandatory order, mandatory Flow use, or hidden completion gates in Goal Mode.
 _Avoid_: stage, phase, pipeline step
 
 **Sandbox Policy**:
@@ -138,7 +138,7 @@ A background run of a Booley Flow or Specialist, tracked by a `run_id` through t
 _Avoid_: task, process, async call
 
 **Job Class**:
-The admission category of a Job, determined by which scarce resource it consumes: EDA work inside the Sandbox (`heavy`) or model-API-bound Specialist work (`light`). Each class has a configurable concurrency cap; excess work queues without preempting running work, and a full queue refuses admission. Queue priority comes from the requester role, independently of class: `interactive` sorts ahead of `ticket`, which is also the fallback priority for an unknown role. The legacy `ticket` class exists only for retained Ticket execution code until Phase 9a removes it; agent sessions in Goal Mode do not consume it.
+The admission category of a Job, determined by which scarce resource it consumes: EDA work inside the Sandbox (`heavy`) or model-API-bound Specialist work (`light`). Each class has a configurable concurrency cap; excess work queues without preempting running work, and a full queue refuses admission. Queue priority comes from the requester role, independently of class: `interactive` sorts ahead of other requester roles; unknown persisted roles retain a fallback priority.
 _Avoid_: tier, weight, pool, semaphore
 
 ### Configuration
@@ -265,15 +265,28 @@ _Avoid_: regex, marker, exit-code-only verdict
 The read-only terminal view, one per Sandbox, of agent sessions, Goals, Booley Flow Jobs, and health signals in that Sandbox.
 _Avoid_: control room, console, monitor
 
+## Execution and evidence
+
+**Criterion**:
+A named boolean condition bound to the evidence and subject it evaluates.
+_Avoid_: check, gate, acceptance test
+
+**Cycle Count Criterion**:
+A Criterion requiring one named test to pass on one Target and its reported cycle count to meet one declared threshold.
+_Avoid_: cycle budget, synthesis criterion, benchmark score
+
+**Escalation**:
+A signal that a decision exceeds the current authority level and must move from Specialist to Developer Agent to Human.
+_Avoid_: spec gap, blocker, impediment
+
 ## Retired and ambiguous terminology
 
 You will not need these unless you are reading older work records, code, or docs; they are terms that were renamed or removed. Skim now, refer back when you hit one.
 
-- **Ticket Mode** → **Goal Mode**: Retired ticket-driven workflow. `booley run` and `booley board` now print a migration pointer and exit 2; the Ticket loop and Board implementation are retained until Phase 9a removes them.
+- **Ticket Mode** → **Goal Mode**: Retired ticket-driven workflow. `booley run` and `booley board` now print a migration pointer and exit 2.
 - **Ticket Preflight** → **Goal entry refusals** and **Doctor** "Project checks": The old Ticket-intake gate is retired; entry enforces Goal worktree and input requirements, while Doctor diagnoses shared Project machinery. They are separate checks, not a one-for-one reproduction of Ticket Preflight.
-- **Harness** → **none**: Retired name for Ticket lifecycle orchestration. Name the Goal Record, evidence machinery, or Sandbox capability concerned. The `booley.harness` package still contains active CLI, Doctor, and setup code; its Ticket loop is retained until Phase 9a removes it.
-- **Developer Agent** → **the agent session in Goal Mode**: The session's agent chooses capabilities and authors code; there is no separate Ticket-execution agent in the public workflow.
-- **Console** → **Booley Dashboard** for the live view; **none** for the old single-Ticket display: The Dashboard shows sessions, Goals, Jobs, and health across the Sandbox. Ticket Console implementation is retained until Phase 9a removes it.
+- **Harness** → **none**: Retired name for Ticket lifecycle orchestration. Name the Goal Record, evidence machinery, or Sandbox capability concerned. The `booley.harness` package still contains active CLI, Doctor, and setup code.
+- **Console** → **Booley Dashboard** for the live view; **none** for the old single-Ticket display: The Dashboard shows sessions, Goals, Jobs, and health across the Sandbox.
 
 - **"tool"**: Overloaded across Booley, agent clients, MCP, and EDA. Never use the bare word in Booley prose or identifiers: say **Booley Flow** for deterministic orchestration, **EDA tool** for the external program a Flow drives, and **MCP tool** only for the protocol-level invocation mechanism.
 - **"agent"**: Overloaded across Booley (Specialist), Claude Code (the outer agent), and the LLM industry generally. Use **Specialist** for Booley's LLM-powered sub-agents and **the agent session in Goal Mode** for the session driving Goal-bound work.

@@ -14,7 +14,6 @@ import pytest
 from booley.flows.sim import campaign_retention
 from booley.harness.booley import _build_parser
 from booley.mcp.registry import discover_mcp_tools
-from booley.ticket_board.cli import build_parser
 
 ROOT = Path(__file__).resolve().parents[2]
 COMMAND = re.compile(r"(?<![\w./-])(?:python -m booley\.[\w.]+|booley)(?=\s|$)")
@@ -25,11 +24,6 @@ HIDDEN_COMMAND_ALLOWLIST: set[tuple[str, ...]] = set()
 @cache
 def _public_parser() -> argparse.ArgumentParser:
     return _build_parser()
-
-
-@cache
-def _ticket_parser() -> argparse.ArgumentParser:
-    return build_parser()
 
 
 @cache
@@ -124,8 +118,6 @@ def _command_error(tokens: list[str]) -> str | None:
     module = tokens[2]
     if module in _specialist_modules():
         return None
-    if module == "booley.ticket_board":
-        return _subcommand_error(_ticket_parser(), tokens[3:])
     if module == "booley.flows.sim.campaign_retention":
         # Capture its real parser before parsing or pruning can happen.
         with (
@@ -173,29 +165,21 @@ def test_documented_command_paths_are_registered_and_public() -> None:
         ("booley session prepare", "hidden subcommand session prepare"),
         ("booley board prepare-review", "unknown subcommand board"),
         ("booley flow coverage_analyst --campaign coverage.json", "unknown Flow coverage_analyst"),
-        ("python -m booley.ticket_board not-a-command", "unknown subcommand not-a-command"),
     ],
 )
 def test_invalid_documented_commands_fail(command: str, error: str) -> None:
     assert _command_error(shlex.split(command)) == error
 
 
-def test_amendment_example_is_accepted_by_real_parser() -> None:
-    args = build_parser().parse_args(
-        ["amend", "slug", "--changes-file", "changes.json", "--preview"]
-    )
-    assert args.command == "amend"
-
-
 def test_extracts_inline_fenced_and_substitution_commands() -> None:
     text = """Run `booley board amend "$SLUG" --preview` now.
   booley shell -- echo hi
-CLASSIFIED=$(python -m booley.ticket_board classify)
+CLASSIFIED=$(python -m booley.flows.sim.campaign_retention --help)
 """
     assert [tokens[:3] for _, tokens in _commands(text)] == [
         ["booley", "board", "amend"],
         ["booley", "shell", "--"],
-        ["python", "-m", "booley.ticket_board"],
+        ["python", "-m", "booley.flows.sim.campaign_retention"],
     ]
 
 
@@ -204,8 +188,6 @@ CLASSIFIED=$(python -m booley.ticket_board classify)
     [
         "booley eda grant add /project --kind vivado",
         "booley eda installation list",
-        "python -m booley.ticket_board show slug",
-        "python -m booley.ticket_board amend slug --changes-file file --apply --expected-preview digest",
     ],
 )
 def test_registered_documented_commands_pass(command: str) -> None:

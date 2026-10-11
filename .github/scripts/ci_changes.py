@@ -28,7 +28,6 @@ CATEGORIES = (
     "stable_base",
     "packaging",
     "workflow",
-    "exhaustive_recovery",
     "release",
     "full",
 )
@@ -85,7 +84,18 @@ _RELEASE_SENSITIVE_PREFIXES = (
     "src/booley/goals/",
     "tests/goals/",
     "src/booley/review/",
-    "src/booley/ticket_board/",
+    "src/booley/criteria/unbound_ledger.py",
+    "src/booley/mcp/unbound_recorder.py",
+    "src/booley/mcp/project_flow_loader.py",
+    "src/booley/runtime/agent_execution.py",
+    "src/booley/specialists/verification_freshness.py",
+    "src/booley/flows/sim/waiver_candidates.py",
+    "tests/criteria/test_evidence_ledger",
+    "tests/criteria/ledger_support.py",
+    "tests/golden/test_golden_acceptance_ledger.py",
+    "tests/mcp_tools/test_unbound",
+    "tests/runtime/test_agent_execution.py",
+    "tests/flows/sim/test_waiver_candidates.py",
     "tests/eda/provisioning/",
     "tests/docker/",
     "tests/flows/sim/",
@@ -121,20 +131,6 @@ _SIDECAR_FILES = {
     "tests/docker/test_reaper_image_e2e.py",
     "tests/docker/test_sidecar_image_helpers.py",
 }
-_EXHAUSTIVE_RECOVERY_PREFIXES = (
-    ".github/ci/",
-    ".github/scripts/",
-    ".github/workflows/",
-    "src/booley/ticket_board/",
-    "tests/ticket_board/",
-)
-_EXHAUSTIVE_RECOVERY_FILES = {
-    "pyproject.toml",
-    "src/booley/flows/baseline_worktree.py",
-    "src/booley/runtime/git.py",
-    "src/booley/core/scope_matching.py",
-    "tests/conftest.py",
-}
 
 
 def _sidecar_categories(path: str) -> tuple[str, ...]:
@@ -156,12 +152,6 @@ def _release_image_categories(path: str) -> tuple[str, ...]:
     if path.startswith(_STANDARD_IMAGE_PREFIXES) or path in _STANDARD_IMAGE_FILES:
         categories.append("standard_image")
     return tuple(categories)
-
-
-def _recovery_categories(path: str) -> tuple[str, ...]:
-    if path.startswith(_EXHAUSTIVE_RECOVERY_PREFIXES) or path in _EXHAUSTIVE_RECOVERY_FILES:
-        return ("exhaustive_recovery",)
-    return ()
 
 
 def _boolean(value: str) -> bool:
@@ -207,7 +197,6 @@ def _path_categories(path: str) -> set[str]:
         categories.add("image_tests")
     categories.update(_release_image_categories(path))
     categories.update(_riscv_image_categories(path))
-    categories.update(_recovery_categories(path))
     if path.startswith(_NATIVE_BWAVE_PREFIXES) or path in _NATIVE_BWAVE_FILES:
         categories.add("native_bwave")
     categories.update(_sidecar_categories(path))
@@ -249,8 +238,6 @@ def classify(
         categories.update(path_categories)
     if not categories:
         categories.add("full")
-    if "full" in categories:
-        categories.add("exhaustive_recovery")
     if force_all:
         # Main/manual runs execute every conditional job, but only rebuild the
         # 57-minute runtime base or its 9-minute RISC-V extension when their

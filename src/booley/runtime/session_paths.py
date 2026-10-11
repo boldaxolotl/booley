@@ -2,7 +2,7 @@
 
 A session's human-facing log root holds a ``.runtime/`` directory for
 machine-owned state, and Job records live in ``<runtime root>/jobs``. Interactive
-Mode, Ticket Mode, and Goal Mode all share that layout; they differ only in
+and Goal Mode all share that layout; they differ only in
 which root they pass. :func:`session_jobs_dir` with no argument reads the root
 the execution caller configured in this process's environment, and with an
 explicit *root* it names that root's Job records directly, so a caller that

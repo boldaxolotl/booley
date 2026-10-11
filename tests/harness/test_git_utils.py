@@ -16,7 +16,7 @@ from unittest.mock import patch
 import pytest
 
 from booley.core.scope_matching import has_glob_chars
-from booley.harness.blocking import BlockingError
+from booley.runtime.agent_errors import BlockingError
 from booley.runtime.git import (
     BOOLEY_EXCLUDE_HEADER,
     _git_common_dir,

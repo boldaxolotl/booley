@@ -10,8 +10,6 @@ import pytest
 
 from booley.criteria.state import DevelopmentState
 from booley.evidence.acceptance import ResolvedFlowAcceptance
-from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
-from booley.flows.sim.acceptance import record_campaign_acceptance
 from booley.flows.sim.campaign import SimulationCampaign, resolve_report_artifact_reference
 from booley.flows.sim.coverage_campaign_store import load_coverage_campaign
 from booley.flows.sim.coverage_reference import (
@@ -23,19 +21,12 @@ from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.request import SimRequest
 from booley.flows.sim.verilator_coverage import SimulationRunResult
 from booley.mcp.flow_adapter import flow_schema
-from booley.ticket_board.criteria_acceptance import check_criteria_acceptance
-from booley.ticket_board.criteria_projection import project_ticket_criteria
-from booley.ticket_board.flow_execution import TicketAcceptanceRecorder
-from booley.ticket_board.ticket_document import (
-    TicketAuthoringView,
-    TicketConversionContext,
-    convert_ticket_document,
-)
+from tests.criteria.ledger_support import FixtureRecorder
 from tests.flows.sim.test_coverage_invocation import project
 from tests.flows.sim.test_coverage_transaction import NativeExecution
 
 
-class _AcceptanceAdapter(TicketAcceptanceRecorder):
+class _AcceptanceAdapter(FixtureRecorder):
     def validate_and_resolve(self, _request: SimRequest) -> ResolvedFlowAcceptance:
         return ResolvedFlowAcceptance(ticket_backed=True)
 
@@ -239,24 +230,22 @@ def _assert_ungated_report(result, tmp_path: Path) -> None:
 
 
 def _atomic_coverage_projection():
-    text = (
-        "---\nsummary: Close coverage gap\ntype: verification\nbranch: main\n"
-        "scope: [rtl/counter.sv]\non_success: []\nCRITERIA_MANDATORY:\n"
-        "  COVERAGE:\n    sim_custom:\n      tests: [gap]\n"
-        "      metrics: {line: {min_pct: 70}, expression: {min_pct: 66}}\n"
-        "CRITERIA_OPTIONAL:\n  COVERAGE:\n    sim_custom:\n      tests: [gap]\n"
-        "      metrics: {branch: {min_pct: 51}}\n"
-        "---\n\n## Description\n\nClose the coverage gap.\n"
+    # Resolved criteria are inputs to Flow grading; Ticket authoring is retired.
+    metrics = {"line": 70, "expression": 66, "branch": 51}
+    keys = {metric: f"coverage_sim_custom_{metric}" for metric in metrics}
+    return SimpleNamespace(
+        required={keys[m]: m != "branch" for m in metrics},
+        params={
+            keys[m]: {
+                "target": "acme:demo:counter:1#sim_custom",
+                "_target_selector": "sim_custom",
+                "tests": ["gap"],
+                "metrics": {m: {"min_pct": floor}},
+            }
+            for m, floor in metrics.items()
+        },
+        aliases={"coverage_sim_custom": list(keys.values())},
     )
-    view = TicketAuthoringView(
-        lambda selector, _flow: f"acme:demo:counter:1#{selector}",
-        lambda _target: ("gap",),
-    )
-    converted = convert_ticket_document(
-        text, TicketConversionContext("draft", lambda _generated: view)
-    )
-    assert converted.document is not None, converted.diagnostics
-    return project_ticket_criteria(converted.document.spec)
 
 
 def _ledger_json(log_dir: Path) -> dict[Path, bytes]:
@@ -266,7 +255,7 @@ def _ledger_json(log_dir: Path) -> dict[Path, bytes]:
     }
 
 
-def _prepare_atomic_coverage_ticket(
+def _prepare_atomic_coverage_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> tuple[Path, bytes]:
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
@@ -877,7 +866,7 @@ def test_shared_execution_failure_terminalizes_without_losing_completed_reports(
 
 
 def test_gated_shared_execution_failure_preserves_blocked_evaluation(tmp_path, monkeypatch):
-    _state_path, _before = _prepare_atomic_coverage_ticket(tmp_path, monkeypatch)
+    _state_path, _before = _prepare_atomic_coverage_state(tmp_path, monkeypatch)
 
     class Unavailable(NativeExecution):
         def build(self, request):
@@ -917,7 +906,7 @@ def test_pre_outcome_coverage_failure_uses_prepared_policy(
     tmp_path, monkeypatch, gated, target, expected
 ):
     if gated:
-        _prepare_atomic_coverage_ticket(tmp_path, monkeypatch)
+        _prepare_atomic_coverage_state(tmp_path, monkeypatch)
     else:
         monkeypatch.setenv("BOOLEY_CONTAINER", "1")
         project(tmp_path)
@@ -943,7 +932,7 @@ def test_pre_outcome_coverage_failure_uses_prepared_policy(
 
 
 def test_nested_coverage_publication_failure_preserves_simulation_truth(tmp_path, monkeypatch):
-    _prepare_atomic_coverage_ticket(tmp_path, monkeypatch)
+    _prepare_atomic_coverage_state(tmp_path, monkeypatch)
 
     def checkpoint(boundary):
         if boundary == "before:coverage_campaign":
@@ -1053,9 +1042,9 @@ def test_interactive_coverage_criterion_does_not_mutate_or_save_state(tmp_path, 
 def test_projection_publication_failure_returns_structured_report_with_target_facts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    state_path, initial_state = _prepare_atomic_coverage_ticket(tmp_path, monkeypatch)
+    state_path, initial_state = _prepare_atomic_coverage_state(tmp_path, monkeypatch)
     identity = {"generation": "d" * 32, "authored_sha256": "e" * 64}
-    adapter = _AcceptanceAdapter(log_dir=tmp_path / "logs", ticket_identity=identity)
+    adapter = _AcceptanceAdapter(log_dir=tmp_path / "logs", identity=identity)
 
     def fail_projection(*_args, **_kwargs) -> None:
         raise OSError(5, "injected projection publication failure")
@@ -1092,142 +1081,8 @@ def test_projection_publication_failure_returns_structured_report_with_target_fa
     assert "Traceback" not in capsys.readouterr().err
 
 
-def _acceptance_log_context(tmp_path, monkeypatch, authority_context):
-    log_dir = tmp_path / "logs"
-    if authority_context == "environment":
-        monkeypatch.setenv("BOOLEY_LOGS_DIR", str(log_dir))
-        return None
-    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "unrelated-logs"))
-    return log_dir
-
-
-@pytest.mark.parametrize("authority_context", ["explicit", "environment"])
-def test_ticket_campaign_acceptance_preserves_atomic_coverage_verdicts(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, authority_context: str
-) -> None:
-    state_path, initial_state = _prepare_atomic_coverage_ticket(tmp_path, monkeypatch)
-
-    identity = {"generation": "d" * 32, "authored_sha256": "e" * 64}
-    adapter = _AcceptanceAdapter(log_dir=tmp_path / "logs", ticket_identity=identity)
-    flow = SimulateFlow(
-        coverage_execution=lambda _handle, _options, _commands, _access: _SplitMetricsExecution()
-    )
-    result = flow.execute(
-        SimRequest(
-            target="sim_custom",
-            work_dir=tmp_path,
-            coverage=True,
-            report_dir=tmp_path / "reports",
-        ),
-        adapter=adapter,
-    )
-
-    assert result.exit_code == 0
-    assert result.outcome.criterion_key == ""
-    assert result.outcome.criterion_met is None
-    progress = json.loads((tmp_path / "reports/sim/1/progress.json").read_text())
-    assert progress["detail"]["sim_custom"]["exit_code"] == 0
-    campaign_id = result.outcome.detail["campaigns"]["sim_custom"]["campaign_id"]
-    headline = _target_headline(result.outcome.report_text, "sim_custom")
-    assert headline == (
-        "sim_custom: simulation PASS · coverage collection COMPLETE · evaluation FAIL "
-        "(branch: observed 0/1 points; displayed 0%; minimum 51%) "
-        f"(Simulation Campaign {campaign_id})"
-    )
-    assert (
-        f"sim_custom: PASS (Simulation Campaign {campaign_id})" not in result.outcome.report_text
-    )
-    saved = DevelopmentState.load(state_path)
-    verdicts = {
-        next(iter(entry.params["metrics"])): entry.met
-        for key, entry in saved.criteria.items()
-        if key.startswith("coverage_")
-    }
-    assert verdicts == {"line": True, "expression": True, "branch": False}
-    branch = next(
-        entry for entry in saved.criteria.values() if "branch" in entry.params["metrics"]
-    )
-    assert branch.mandatory is False
-    assert len(saved.acceptance_transactions) == 1
-    mandatory = [
-        entry
-        for key, entry in saved.criteria.items()
-        if key.startswith("coverage_") and entry.mandatory
-    ]
-    assert all(SOURCE_FINGERPRINT_DETAIL_KEY in entry.detail for entry in mandatory)
-
-    evidence = sorted((tmp_path / "logs/acceptance/evidence").rglob("record.json"))
-    records = [json.loads(path.read_text()) for path in evidence]
-    assert {
-        record["detail"]["criterion_metric"]: (record["met"], record["mandatory"])
-        for record in records
-    } == {
-        "line": (True, True),
-        "expression": (True, True),
-        "branch": (False, False),
-    }
-
-    ledger = _ledger_json(tmp_path / "logs")
-    state_path.write_bytes(initial_state)
-    flow.context._state = DevelopmentState.load(state_path)
-    record_campaign_acceptance(flow.context, flow.context._simulation_campaign_outcomes)
-    replayed = DevelopmentState.load(state_path)
-    assert replayed.acceptance_transactions == saved.acceptance_transactions
-    assert _ledger_json(tmp_path / "logs") == ledger
-
-    branch_key = next(
-        key
-        for key, entry in replayed.criteria.items()
-        if "branch" in entry.params.get("metrics", {})
-    )
-    replayed.set_criterion(
-        "_report_submitted",
-        True,
-        detail={"unmet_optional_criteria": [branch_key]},
-    )
-    replayed.save()
-    explicit_log_dir = _acceptance_log_context(tmp_path, monkeypatch, authority_context)
-    verdict = check_criteria_acceptance(
-        state_path, work_dir=tmp_path, log_dir=explicit_log_dir, ticket_identity=identity
-    )
-    assert verdict.disposition == "review"
-    assert verdict.unmet_mandatory == []
-
-
-def test_arbitrary_state_and_recorder_paths_allow_report_absent_legacy_flow(tmp_path, monkeypatch):
-    state_path, _initial = _prepare_atomic_coverage_ticket(tmp_path, monkeypatch)
-    state = DevelopmentState.load(state_path)
-    state.criteria.pop("_report_submitted")
-    branch_key = next(
-        key for key, entry in state.criteria.items() if "branch" in entry.params.get("metrics", {})
-    )
-    state.criteria.pop(branch_key)
-    state.save()
-    monkeypatch.setattr("booley.config.project_config.is_run_report_enabled", lambda: False)
-    identity = {"generation": "d" * 32, "authored_sha256": "e" * 64}
-    log_dir = tmp_path / "independent-evidence"
-    result = SimulateFlow(
-        coverage_execution=lambda _handle, _options, _commands, _access: _SplitMetricsExecution()
-    ).execute(
-        SimRequest(
-            target="sim_custom", work_dir=tmp_path, coverage=True, report_dir=tmp_path / "reports"
-        ),
-        adapter=_AcceptanceAdapter(log_dir=log_dir, ticket_identity=identity),
-    )
-    assert result.exit_code == 0
-    assert list((log_dir / "acceptance/evidence").rglob("record.json"))
-    assert (
-        check_criteria_acceptance(
-            state_path, work_dir=tmp_path, log_dir=log_dir, ticket_identity=identity
-        ).disposition
-        == "review"
-    )
-    assert "_report_submitted" not in DevelopmentState.load(state_path).criteria
-    assert not (log_dir / ".runtime/report-submission.json").exists()
-
-
 def test_gated_passing_coverage_headline_reports_evaluation_pass(tmp_path, monkeypatch):
-    _prepare_atomic_coverage_ticket(tmp_path, monkeypatch)
+    _prepare_atomic_coverage_state(tmp_path, monkeypatch)
     result = SimulateFlow(
         coverage_execution=lambda _handle, _options, _commands, _access: (
             _PassingSplitMetricsExecution()
@@ -1250,7 +1105,7 @@ def test_gated_passing_coverage_headline_reports_evaluation_pass(tmp_path, monke
 
 
 def test_gated_suite_mismatch_headline_attaches_diagnostic_to_evaluation(tmp_path, monkeypatch):
-    _prepare_atomic_coverage_ticket(tmp_path, monkeypatch)
+    _prepare_atomic_coverage_state(tmp_path, monkeypatch)
     tests_path = tmp_path / ".booley_project/tests.toml"
     tests_path.write_text('[sim_custom]\ntests = ["gap", "other"]\n')
     result = SimulateFlow(
@@ -2441,7 +2296,7 @@ def test_interactive_collection_keeps_criteria_unchanged_across_verdicts(
     assert saved.criteria["sim_pass_sim_0"].met is False
 
 
-def _run_gap_ticket_coverage(
+def _run_gap_coverage(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -2452,7 +2307,7 @@ def _run_gap_ticket_coverage(
     ticket: bool = True,
 ):
     """Run sim_custom coverage against a Criterion listing *criterion_tests*."""
-    state_path, _initial = _prepare_atomic_coverage_ticket(tmp_path, monkeypatch)
+    state_path, _initial = _prepare_atomic_coverage_state(tmp_path, monkeypatch)
     listing = ", ".join(f'"{name}"' for name in registered)
     skipped = ", ".join(f'"{name}"' for name in skip)
     skipping = f"skip = [{skipped}]\n" if skip else ""
@@ -2487,7 +2342,7 @@ def _coverage_evaluation(tmp_path: Path) -> dict[str, object]:
 
 
 def test_criterion_test_list_does_not_select_coverage_tests(tmp_path, monkeypatch):
-    result, ran = _run_gap_ticket_coverage(tmp_path, monkeypatch, registered=("gap", "other"))
+    result, ran = _run_gap_coverage(tmp_path, monkeypatch, registered=("gap", "other"))
 
     assert sorted(ran) == ["gap", "other"]
     assert result.exit_code == 2
@@ -2498,7 +2353,7 @@ def test_criterion_test_list_does_not_select_coverage_tests(tmp_path, monkeypatc
 
 
 def test_criterion_test_list_is_satisfied_by_explicit_tests(tmp_path, monkeypatch):
-    result, ran = _run_gap_ticket_coverage(
+    result, ran = _run_gap_coverage(
         tmp_path, monkeypatch, registered=("gap", "other"), tests=("gap",)
     )
 
@@ -2511,7 +2366,7 @@ def test_criterion_test_list_is_satisfied_by_explicit_tests(tmp_path, monkeypatc
 
 
 def test_default_coverage_selection_applies_skips_with_a_criterion(tmp_path, monkeypatch):
-    result, ran = _run_gap_ticket_coverage(
+    result, ran = _run_gap_coverage(
         tmp_path,
         monkeypatch,
         registered=("gap", "other"),
@@ -2526,14 +2381,12 @@ def test_default_coverage_selection_applies_skips_with_a_criterion(tmp_path, mon
     assert evaluation["suite"]["status"] == "mismatch"
 
 
-def test_ticket_and_interactive_coverage_select_the_same_tests(tmp_path_factory, monkeypatch):
+def test_bound_and_interactive_coverage_select_the_same_tests(tmp_path_factory, monkeypatch):
     ticket = tmp_path_factory.mktemp("ticket")
     interactive = tmp_path_factory.mktemp("interactive")
 
-    _result, ticket_ran = _run_gap_ticket_coverage(
-        ticket, monkeypatch, registered=("gap", "other")
-    )
-    _result, interactive_ran = _run_gap_ticket_coverage(
+    _result, ticket_ran = _run_gap_coverage(ticket, monkeypatch, registered=("gap", "other"))
+    _result, interactive_ran = _run_gap_coverage(
         interactive, monkeypatch, registered=("gap", "other"), ticket=False
     )
 
@@ -2588,7 +2441,7 @@ def _workload(reports: Path, selector: str) -> dict[str, object]:
 
 @pytest.mark.parametrize("dry_run", [False, True])
 def test_gated_no_waivers_is_refused_before_any_build(tmp_path, monkeypatch, dry_run):
-    state_path, initial_state = _prepare_atomic_coverage_ticket(tmp_path, monkeypatch)
+    state_path, initial_state = _prepare_atomic_coverage_state(tmp_path, monkeypatch)
     _configure_missing_waiver_directory(tmp_path)
     factory_calls = []
 
@@ -2616,10 +2469,10 @@ def test_gated_no_waivers_is_refused_before_any_build(tmp_path, monkeypatch, dry
 
 
 def test_gated_no_waivers_diagnostic_reports_raw_and_records_nothing(tmp_path, monkeypatch):
-    state_path, _initial_state = _prepare_atomic_coverage_ticket(tmp_path, monkeypatch)
+    state_path, _initial_state = _prepare_atomic_coverage_state(tmp_path, monkeypatch)
     _configure_missing_waiver_directory(tmp_path)
     identity = {"generation": "d" * 32, "authored_sha256": "e" * 64}
-    adapter = _AcceptanceAdapter(log_dir=tmp_path / "logs", ticket_identity=identity)
+    adapter = _AcceptanceAdapter(log_dir=tmp_path / "logs", identity=identity)
 
     def run(name: str, **options):
         SimulateFlow(coverage_execution=lambda *_args: _PassingSplitMetricsExecution()).execute(
@@ -2860,7 +2713,7 @@ def test_public_coverage_campaign_headline_fresh_and_resume(
         adapter = (
             _AcceptanceAdapter(
                 log_dir=tmp_path / "logs",
-                ticket_identity={"generation": "d" * 32, "authored_sha256": "e" * 64},
+                identity={"generation": "d" * 32, "authored_sha256": "e" * 64},
             )
             if ticket in {"coverage", "coverage_only"}
             else None

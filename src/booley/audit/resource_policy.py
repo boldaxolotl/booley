@@ -45,8 +45,8 @@ class MemoryRequirement:
 
     max_heavy: int
     heavy_job_bytes: int
-    max_tickets: int
-    developer_bytes: int
+    agent_count: int
+    agent_bytes: int
     headroom_bytes: int = MEMORY_HEADROOM_BYTES
 
     @property
@@ -54,7 +54,7 @@ class MemoryRequirement:
         """Total memory required when every admitted workload coincides."""
         return (
             self.max_heavy * self.heavy_job_bytes
-            + self.max_tickets * self.developer_bytes
+            + self.agent_count * self.agent_bytes
             + self.headroom_bytes
         )
 
@@ -177,8 +177,8 @@ def memory_requirement(
     *,
     max_heavy: int,
     heavy_job_bytes: int,
-    max_tickets: int,
-    developer_bytes: int,
+    agent_count: int,
+    agent_bytes: int,
 ) -> MemoryRequirement:
     """Build the typed arithmetic behind Doctor's memory admission check."""
-    return MemoryRequirement(max_heavy, heavy_job_bytes, max_tickets, developer_bytes)
+    return MemoryRequirement(max_heavy, heavy_job_bytes, agent_count, agent_bytes)
