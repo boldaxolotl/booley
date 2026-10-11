@@ -86,16 +86,23 @@ def test_all_skipped_suite_resolves_to_no_runs(tmp_path, monkeypatch):
     "argv",
     [("--test", "stress+soak"), ("--test", "stress@7"), ("--seed", "7"), ("--test", "stress@x2")],
 )
-def test_campaign_refuses_test_runs_it_cannot_carry(tmp_path, monkeypatch, argv):
-    flow = _flow(tmp_path, monkeypatch, *argv)
-    outcome = flow._refuse_uncarried_test_runs(["sim"], _MAP)
-    assert outcome is not None
-    assert "cannot yet run Test Runs other than the default" in outcome.report_text
+def test_coverage_of_other_test_runs_is_diagnostic_until_goals_name_them(
+    tmp_path, monkeypatch, argv
+):
+    flow = _flow(tmp_path, monkeypatch, "--coverage", *argv)
+    assert flow._validate_test_plans(["sim"], _MAP) is None
+    # Interim Goal guard: such a campaign runs, and records no Goal evidence.
+    assert flow.args.diagnostic is True
+    assert all(name.startswith("sim: stress") for name in flow._test_run_guard_names)
 
 
 @pytest.mark.parametrize(
     "argv", [(), ("--test", "stress"), ("--test", "stress+short@1"), ("--seed", "1")]
 )
-def test_campaign_accepts_default_test_runs_however_they_are_written(tmp_path, monkeypatch, argv):
-    flow = _flow(tmp_path, monkeypatch, *argv)
-    assert flow._refuse_uncarried_test_runs(["sim"], _MAP) is None
+def test_coverage_of_default_test_runs_keeps_its_goal_evidence(tmp_path, monkeypatch, argv):
+    flow = _flow(tmp_path, monkeypatch, "--coverage", *argv)
+    assert flow._validate_test_plans(["sim"], _MAP) is None
+    assert flow.args.diagnostic is False
+    assert not getattr(flow, "_test_run_guard_names", ())
+    assert tuple(flow.args.test or ()) in {(), ("stress",)}
+    assert flow.args.seed is None or not flow.args.test

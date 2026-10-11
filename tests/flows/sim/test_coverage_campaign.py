@@ -7,6 +7,7 @@ from dataclasses import FrozenInstanceError
 import pytest
 
 from booley.flows.sim.coverage_campaign import (
+    NO_DECLARED_INPUTS_FINGERPRINT,
     CoverageCampaignValidationError,
     CoverageFinding,
     DurableTargetIdentity,
@@ -87,6 +88,8 @@ def _valid_tests() -> dict[str, object]:
             {
                 "id": "run:reset",
                 "test": "reset",
+                "test_run": "reset",
+                "fingerprint": NO_DECLARED_INPUTS_FINGERPRINT,
                 "simulation_verdict": "pass",
                 "collection": "included",
                 "raw_artifact": "artifact:raw-reset",
@@ -967,7 +970,7 @@ def test_decoder_rejects_duplicate_run_artifact_and_capability_identities() -> N
 
     assert [(finding.code, finding.pointer) for finding in caught.value.findings] == [
         ("COV_RUN_ID_DUPLICATE", "/tests/runs/1/id"),
-        ("COV_SELECTED_TEST_RUN_CARDINALITY", "/tests/selected/0"),
+        ("COV_TEST_RUN_DUPLICATE", "/tests/runs/1/test_run"),
         ("COV_ARTIFACT_ID_DUPLICATE", "/artifacts/2/id"),
         ("COV_CAPABILITY_DUPLICATE", "/collector/capabilities/1/record_class"),
     ]
@@ -1034,3 +1037,88 @@ def test_campaign_rejects_unknown_collection_status() -> None:
     assert ("COV_COLLECTION_STATUS_INVALID", "/collection/status") in {
         (finding.code, finding.pointer) for finding in caught.value.findings
     }
+
+
+_TARGET = DurableTargetIdentity("acme:demo:counter:1.0#sim_counter")
+
+
+def _with_second_run(document: dict[str, object], test_run: str) -> dict[str, object]:
+    """Add a second included run of Test ``reset`` named *test_run*."""
+    run = copy.deepcopy(document["tests"]["runs"][0])
+    run.update(id="run:reset-2", test_run=test_run, raw_artifact="artifact:raw-reset-2")
+    document["tests"]["runs"].append(run)
+    artifact = copy.deepcopy(document["artifacts"][0])
+    artifact.update(
+        id="artifact:raw-reset-2", owner_run="run:reset-2", path="native/raw/reset-2.dat"
+    )
+    document["artifacts"].insert(1, artifact)
+    return document
+
+
+def _codes(document: dict[str, object]) -> list[tuple[str, str]]:
+    with pytest.raises(CoverageCampaignValidationError) as caught:
+        decode_coverage_campaign(document, _TARGET)
+    return [(finding.code, finding.pointer) for finding in caught.value.findings]
+
+
+def test_one_test_may_have_several_distinct_test_runs() -> None:
+    document = _valid_document()
+    document["tests"]["runs"][0]["test_run"] = "reset+short@1"
+    _with_second_run(document, "reset+soak@7")
+
+    campaign = decode_coverage_campaign(document, _TARGET)
+
+    assert campaign.selected_tests == ("reset",)
+    assert [(run.test, run.test_run) for run in campaign.runs] == [
+        ("reset", "reset+short@1"),
+        ("reset", "reset+soak@7"),
+    ]
+    assert encode_coverage_campaign(campaign) == document
+
+
+def test_two_runs_of_one_test_run_are_refused() -> None:
+    document = _with_second_run(_valid_document(), "reset")
+
+    assert _codes(document) == [("COV_TEST_RUN_DUPLICATE", "/tests/runs/1/test_run")]
+
+
+def test_every_selected_test_needs_at_least_one_run() -> None:
+    document = _valid_document()
+    document["tests"]["declared"].append("wrap")
+    document["tests"]["selected"].append("wrap")
+
+    assert ("COV_SELECTED_TEST_RUN_CARDINALITY", "/tests/selected/1") in _codes(document)
+
+
+def test_a_test_run_must_be_a_run_of_its_test() -> None:
+    for name in ("wrap@1", "resets", "reset.x"):
+        document = _valid_document()
+        document["tests"]["runs"][0]["test_run"] = name
+
+        assert _codes(document) == [("COV_TEST_RUN_TEST_MISMATCH", "/tests/runs/0/test_run")]
+
+
+def test_a_run_records_test_run_and_fingerprint_together() -> None:
+    document = _valid_document()
+    del document["tests"]["runs"][0]["fingerprint"]
+
+    assert _codes(document) == [("COV_TEST_RUN_IDENTITY_INCOMPLETE", "/tests/runs/0")]
+
+
+def test_a_run_recorded_before_test_runs_is_the_bare_test() -> None:
+    document = _valid_document()
+    del document["tests"]["runs"][0]["test_run"]
+    del document["tests"]["runs"][0]["fingerprint"]
+
+    run = decode_coverage_campaign(document, _TARGET).runs[0]
+
+    assert (run.test_run, run.fingerprint) == ("reset", NO_DECLARED_INPUTS_FINGERPRINT)
+
+
+def test_two_unnamed_runs_of_one_test_recorded_before_test_runs_are_refused() -> None:
+    document = _with_second_run(_valid_document(), "ignored")
+    for run in document["tests"]["runs"]:
+        del run["test_run"]
+        del run["fingerprint"]
+
+    assert _codes(document) == [("COV_TEST_RUN_DUPLICATE", "/tests/runs/1/test_run")]

@@ -108,7 +108,7 @@ def fixture_campaign(source, service, *, covered=1, total=2):
     document["invocation"]["id"] = 1
     document["target"] = {"identity": str(IDENTITY), "selector": "top"}
     document["tests"]["declared"] = document["tests"]["selected"] = ["smoke"]
-    document["tests"]["runs"][0]["test"] = "smoke"
+    document["tests"]["runs"][0].update(test="smoke", test_run="smoke")
     seed = copy.deepcopy(document["points"][0])
     document["points"] = [
         fixture_point(seed, index, hit=0 < index <= covered) for index in range(total)

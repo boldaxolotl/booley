@@ -56,6 +56,7 @@ from booley.flows.sim.flow import (
 from booley.flows.sim.verilator_coverage import SimulationBuildResult, SimulationRunResult
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle, TargetInput, TargetInspection
+from tests.flows.sim.coverage_campaign_test_support import rewrite_manifest_as_older_schema
 from tests.flows.sim.test_campaign_crash_matrix import (
     _build_execution,
     _CrashOnce,
@@ -481,9 +482,8 @@ def _run_coverage_campaign(
 
 def _rewrite_nested_coverage_v3(path: Path, *, invalid_scores: bool = False) -> None:
     document = json.loads(path.read_text())
-    if document["$schema"] == "booley.coverage-campaign/v4":
-        document["$schema"] = "booley.coverage-campaign/v3"
-        del document["scoring"]
+    if document["$schema"] == "booley.coverage-campaign/v5":
+        rewrite_manifest_as_older_schema(document, 3)
     if invalid_scores:
         document["collection"]["status"] = "collector_error"
         document["normalization"]["status"] = "partial"

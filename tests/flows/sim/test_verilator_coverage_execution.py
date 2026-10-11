@@ -50,6 +50,7 @@ from booley.flows.sim.verilator_coverage_execution import (
     VerilatorCoverageExecution,
     prepare_coverage_collection,
 )
+from booley.flows.target_test_plan import load_target_test_plan
 from booley.fusesoc.fusesoc_registry import core_target_coverage_errors
 from booley.targets.catalog import TargetCatalog
 from tests.flows.sim.test_campaign_crash_matrix import _admission
@@ -202,6 +203,84 @@ def test_execution_uses_simulation_build_and_authenticated_run_adapters(
     assert captured["work"].plusargs[-1] == f"+verilator+coverage+file+{raw_path}"
     assert "BOOLEY_COVERAGE_RUN_ID=run:001:wrap" in captured["run_script"]
     assert run.verdict == "pass"
+
+
+_VARIANT_TESTS_TOML = (
+    '[sim]\ntests = ["wrap"]\n\n[sim.variants.wrap]\ndefault = "short"\nshort = []\n'
+    'soak = { args = ["+iters=9"], env = { SOAK = "1" } }\n'
+)
+
+
+def _declare_variants(root: Path) -> None:
+    data = root / ".booley_project"
+    data.mkdir()
+    (data / "tests.toml").write_text(_VARIANT_TESTS_TOML, encoding="utf-8")
+
+
+def test_execution_launches_the_test_run_with_its_variant_and_seed(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _declare_variants(tmp_path)
+    execution, target, raw_path, captured = _execution_fixture(tmp_path, monkeypatch)
+    run = load_target_test_plan(tmp_path, "sim", adapter="verilator").run("wrap", "soak", 7)
+    _build_coverage(execution, target)
+
+    result = execution.run(
+        replace(_run_request(target, raw_path), test=SelectedCoverageTest("wrap", run))
+    )
+
+    assert result.verdict == "pass"
+    # select, then the Variant's arguments, then the seed, then coverage's own.
+    # (The shared launch path stores its own plusargs without their ``+``.)
+    assert captured["work"].plusargs[-3:] == (
+        "iters=9",
+        "verilator+seed+7",
+        f"+verilator+coverage+file+{raw_path}",
+    )
+    assert captured["work"].test_runs == (run,)
+    assert "export SOAK=1\n" in captured["run_script"]
+
+
+def test_prepare_collection_gives_every_selected_test_its_default_test_run(
+    tmp_path: Path,
+) -> None:
+    _write_target(tmp_path)
+    _declare_variants(tmp_path)
+    handle = TargetCatalog.build(tmp_path).select("sim", for_flow="sim")
+
+    request = prepare_coverage_collection(
+        handle, selected_tests=("wrap",), artifact_root=tmp_path / "coverage"
+    )
+
+    assert [item.run_name for item in request.selected_tests] == ["wrap+short@1"]
+
+
+def test_prepare_collection_keeps_several_test_runs_of_one_test(tmp_path: Path) -> None:
+    _write_target(tmp_path)
+    _declare_variants(tmp_path)
+    handle = TargetCatalog.build(tmp_path).select("sim", for_flow="sim")
+    plan = load_target_test_plan(tmp_path, "sim", adapter="verilator")
+    runs = (plan.run("wrap", "soak", 7), plan.run("wrap"))
+
+    request = prepare_coverage_collection(
+        handle, selected_tests=("wrap",), artifact_root=tmp_path / "coverage", test_runs=runs
+    )
+
+    assert [(item.name, item.run) for item in request.selected_tests] == [
+        ("wrap", runs[0]),
+        ("wrap", runs[1]),
+    ]
+    with pytest.raises(ValueError, match="distinct runs of exactly the selected Tests"):
+        prepare_coverage_collection(
+            handle,
+            selected_tests=("wrap",),
+            artifact_root=tmp_path / "coverage",
+            test_runs=(runs[0], runs[0]),
+        )
+    with pytest.raises(ValueError, match="distinct runs of exactly the selected Tests"):
+        prepare_coverage_collection(
+            handle, selected_tests=("reset",), artifact_root=tmp_path / "coverage", test_runs=runs
+        )
 
 
 def test_coverage_runs_pre_sim_commands_before_the_adapter(tmp_path: Path, monkeypatch) -> None:

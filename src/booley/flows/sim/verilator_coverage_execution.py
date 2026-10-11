@@ -58,7 +58,9 @@ from booley.flows.sim.execution.contract import (
 from booley.flows.sim.execution.engine import (
     launch_environment,
     prepare_simulation_work,
+    simulation_adapter_kind,
     simulation_target_environment,
+    target_test_plan,
 )
 from booley.flows.sim.execution.freshness import ArtifactStamp, snapshot_artifact
 from booley.flows.sim.execution.pre_sim import run_pre_sim_commands
@@ -390,6 +392,9 @@ class VerilatorCoverageExecution:
             trace=request.trace,
             trace_mode=self._trace_mode,
             plusargs_suffix=request.argv_suffix,
+            # The run's Test Variant arguments, environment and seed are
+            # rendered by the launch path every Simulation shares.
+            test_runs=None if request.test.run is None else (request.test.run,),
         )
         return replace(work, run_cwd=str(self._attempt_run_cwd)) if self._attempt_run_cwd else work
 
@@ -435,7 +440,7 @@ class VerilatorCoverageExecution:
             evidence_root=prepared.build_root,
             attempt_token=transport.attempt_token,
             initialize_log=True,
-            tests=(request.test.name,),
+            tests=(request.test.run_name,),
         )
         try:
             executed = execute_adapter_attempt(
@@ -546,8 +551,17 @@ def prepare_coverage_collection(
     selected_tests: tuple[str, ...],
     artifact_root: Path,
     trace: bool = False,
+    test_runs: tuple[TestRun, ...] | None = None,
 ) -> CoverageCollectionRequest:
-    """Project one resolved Target into the collector's policy-free request."""
+    """Project one resolved Target into the collector's policy-free request.
+
+    *test_runs* are the concrete Test Runs to collect, one simulator process
+    each; several may be runs of one selected Test. Without them every
+    selected Test runs its default Test Variant at the Default Seed.
+
+    Raises :class:`ValueError` for a Target coverage cannot collect, and for
+    Test Runs that are not exactly runs of *selected_tests*.
+    """
     coverage_errors = core_target_coverage_errors(handle.core_file, handle.name)
     if coverage_errors:
         raise ValueError("; ".join(coverage_errors))
@@ -570,11 +584,34 @@ def prepare_coverage_collection(
             sources=tuple(_coverage_source(item) for item in inspection.inputs if _is_hdl(item)),
             custom_main_hooks=hooks,
         ),
-        selected_tests=tuple(SelectedCoverageTest(name) for name in selected_tests),
+        selected_tests=_selected_runs(handle, inspection, selected_tests, test_runs),
         artifact_root=artifact_root,
         trace=trace,
         reset_included=reset_included,
     )
+
+
+def _selected_runs(
+    handle: TargetHandle,
+    inspection: TargetInspection,
+    selected_tests: tuple[str, ...],
+    test_runs: tuple[TestRun, ...] | None,
+) -> tuple[SelectedCoverageTest, ...]:
+    """One collector process per Test Run, in the order the campaign records them."""
+    if test_runs is None and not selected_tests:
+        return ()
+    if test_runs is None:
+        adapter = simulation_adapter_kind(inspection.eda_tool, inspection.flow_options)
+        plan = target_test_plan(handle, adapter, inspection.parameters)
+        test_runs = plan.default_runs_for(selected_tests)
+    names = [run.name for run in test_runs]
+    tests = tuple(dict.fromkeys(run.test for run in test_runs))
+    if len(set(names)) != len(names) or set(tests) != set(selected_tests) or None in tests:
+        raise ValueError(
+            f"coverage Test Runs of {handle.selector} must be distinct runs of exactly "
+            "the selected Tests"
+        )
+    return tuple(SelectedCoverageTest(str(run.test), run) for run in test_runs)
 
 
 def collect_target_coverage(

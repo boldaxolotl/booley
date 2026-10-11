@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Protocol, cast
 
 from booley.flows.execution_persistence import AcceptanceRecordingError
+from booley.flows.test_runs import PinnedSeed, parse_test_selector
 from booley.runtime.timefmt import utc_now_rfc3339
 
 from .campaign_reports import target_report_directory, write_campaign_json
@@ -13,6 +14,7 @@ from .coverage_campaign import (
     CoverageCampaign,
     CoverageCampaignValidationError,
     CoverageCollector,
+    CoverageRun,
     CoverageTarget,
     FrozenJson,
     derive_coverage_rollups,
@@ -427,9 +429,28 @@ def _public_collection_status(
     return campaign.collection["status"]
 
 
-def _coverage_test_projection(run) -> dict[str, object]:
+def _variant_and_seed(run: CoverageRun) -> tuple[str | None, int | None]:
+    """The Test Variant and seed a run's Test Run name states.
+
+    A Test named before names were validated may not parse; it has neither.
+    """
+    try:
+        selector = parse_test_selector(run.test_run)
+    except ValueError:
+        return None, None
+    form = selector.seed_form
+    return selector.variant, form.seed if isinstance(form, PinnedSeed) else None
+
+
+def _coverage_test_projection(run: CoverageRun) -> dict[str, object]:
+    """One per-run row: the bare Test, its Test Run, Test Variant, seed and verdict."""
+    variant, seed = _variant_and_seed(run)
     entry: dict[str, object] = {
         "name": run.test,
+        "test_run": run.test_run,
+        "variant": variant,
+        "seed": seed,
+        "fingerprint": run.fingerprint,
         "verdict": run.simulation_verdict,
         "passed": run.simulation_verdict == "pass",
         "collection": run.collection,

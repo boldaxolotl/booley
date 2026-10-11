@@ -250,7 +250,10 @@ Test selection rules:
 - Coverage selections use deterministic sorted test-name order, regardless of
   the `--test` or `--tests-file` input order. This stabilizes Campaign identity
   and run numbering: `--test gap --test full --coverage` assigns
-  `run:001:full`, then `run:002:gap`.
+  `run:001:full@1`, then `run:002:gap@1`. A run id ends in its Test Run name.
+  Several Test Runs of one Test (two Test Variants, or `test@xN`) stay
+  together in the order you named them, each in its own simulator process;
+  the merged coverage is the union over all of them.
 - Plain selections preserve explicit input order; an unfiltered suite follows
   the registry order in `tests.toml`. HDL tests are scheduled in that order.
   cocotb batches filter the selected set within one simulator process; cocotb
@@ -536,7 +539,7 @@ numbered report directory (qualified Target selectors are percent-encoded):
     work-items/<item>/attempts/<attempt>/coverage-campaign/
       coverage.json          current Coverage Campaign manifest
       coverage-points.jsonl.gz
-      native/raw/            per-test Verilator databases
+      native/raw/            one Verilator database per Test Run
       native/merged/         merged Verilator database
       hooks/                 hook evidence, when collected
 ```

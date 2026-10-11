@@ -68,6 +68,7 @@ from booley.flows.sim.config import (
 )
 from booley.flows.sim.coverage_campaign import (
     CoverageCampaign,
+    CoverageRun,
     FrozenJson,
     coverage_mapping_document,
 )
@@ -665,13 +666,23 @@ def _campaign_base_report_lines(
     return lines
 
 
+def _coverage_run_label(campaign: CoverageCampaign, run: CoverageRun) -> str:
+    """Name a run by its Test, or by its Test Run when the Test ran more than once."""
+    several = sum(other.test == run.test for other in campaign.runs) > 1
+    return run.test_run if several else run.test
+
+
 def _coverage_pre_sim_lines(selector: str, campaign: CoverageCampaign) -> list[str]:
     lines: list[str] = []
     for run in campaign.runs:
         evidence = run.attributes.get("pre_sim")
         if not isinstance(evidence, Mapping):
             continue
-        lines.append(_pre_sim_report_line(selector, run.test, coverage_mapping_document(evidence)))
+        lines.append(
+            _pre_sim_report_line(
+                selector, _coverage_run_label(campaign, run), coverage_mapping_document(evidence)
+            )
+        )
     return lines
 
 
@@ -2540,38 +2551,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             return error
         if (error := self._validate_test_plans(targets, test_names_map)) is not None:
             return error
-        if getattr(self.args, "coverage", False) and (
-            error := self._refuse_uncarried_test_runs(targets, test_names_map)
-        ):
-            return error
         return self._validate_runnable_tests(targets, test_names_map)
-
-    def _refuse_uncarried_test_runs(
-        self, targets: list[str], test_names_map: dict[str, list[str]]
-    ) -> EndpointOutcome | None:
-        """Refuse a coverage campaign of Test Runs it cannot collect yet.
-
-        Coverage collection runs each selected Test once, as its default
-        Test Variant at the Default Seed. Until it launches concrete Test
-        Runs, anything else is refused, never run as something it is not.
-        """
-        for target in targets:
-            try:
-                plan = self._registered_test_plan(target, test_names_map)
-                runs = self._resolve_test_runs(target, test_names_map)
-            except (fusesoc_registry.FuseSocError, ValueError):
-                continue
-            other = [run.name for run in runs if not plan.is_default_run(run)]
-            if other:
-                return EndpointOutcome(
-                    exit_code=EXIT_ERROR,
-                    report_text=(
-                        f"sim: Target {target!r}: a coverage campaign cannot yet run "
-                        f"Test Runs other than the default Test Variant at the Default "
-                        f"Seed ({', '.join(other[:8])})"
-                    ),
-                )
-        return None
 
     def run_prepared_simulation(
         self,
@@ -3610,10 +3590,20 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             if self.args.state_file
             else DevelopmentState(),
         )
+        runs = (
+            tuple(
+                test_run_from_document(entry)
+                for entry in cast(tuple[object, ...], items[0]["test_runs"])
+            )
+            if "test_runs" in items[0]
+            else None
+        )
         prepared = prepare_coverage_invocation(
             CoverageInvocationRequest(
                 (target["selector"],),
                 tests=names,
+                # A v4 manifest froze its Test Runs: resume never resolves again.
+                test_runs={} if runs is None else {target["selector"]: runs},
                 trace=cast(bool, workload["trace"]),
                 no_waivers=_manifest_no_waivers(manifest),
                 diagnostic=self.args.diagnostic,
@@ -3693,6 +3683,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 CoverageInvocationRequest(
                     tuple(self._requested_targets()),
                     tests=self.args.test or None,
+                    test_runs=self._coverage_test_runs(selection.handles),
                     trace=self.args.trace,
                     no_waivers=self.args.no_waivers,
                     diagnostic=self.args.diagnostic,
@@ -3707,6 +3698,26 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         self._coverage_prepared = prepared.plan
         self._coverage_context = context
         return None
+
+    def _coverage_test_runs(
+        self, handles: Sequence[TargetHandle]
+    ) -> dict[str, tuple[TestRun, ...]]:
+        """The Test Runs this invocation resolved for each coverage Target.
+
+        Every selector form is collected: several Test Variants of one Test,
+        pinned seeds and ``test@xN``. A Target whose runs cannot be resolved
+        has no entry; coverage preflight reports its error.
+        """
+        test_names_map = _get_test_names(self.args.work_dir)
+        resolved: dict[str, tuple[TestRun, ...]] = {}
+        for handle in handles:
+            try:
+                runs = self._resolve_test_runs(handle.selector, test_names_map)
+            except (fusesoc_registry.FuseSocError, ValueError):
+                continue
+            if all(run.test is not None for run in runs):
+                resolved[handle.selector] = runs
+        return resolved
 
     def _run_coverage(self) -> EndpointOutcome:
         error = self._prepare_coverage()
@@ -3953,12 +3964,10 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     ) -> SimulationCampaignPlan:
         inspection = TargetCatalog.build(plan.handle.project_root).inspect(plan.handle)
         execution = self._simulation_execution()
-        preview = execution.preview(plan.handle, NamedTests(plan.selected_tests))
-        preview = replace(
-            preview,
-            groups=(plan.selected_tests,),
-            run_groups=(tuple(run for group in preview.run_groups for run in group),),
-        )
+        # One aggregate work item records every Test Run the plan collects,
+        # in collection order, so each observation binds to its own run.
+        preview = execution.preview(plan.handle, SelectedTestRuns(plan.test_runs))
+        preview = replace(preview, groups=(plan.selected_tests,), run_groups=(plan.test_runs,))
         return plan_coarse_simulation_campaign(
             handle=plan.handle,
             inspection=inspection,
@@ -4071,10 +4080,18 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 pre_sim = test.get("pre_sim")
                 if not isinstance(pre_sim, Mapping):
                     continue
+                # Several Test Runs of one Test are told apart by their names.
+                several = (
+                    sum(
+                        isinstance(other, Mapping) and other.get("name") == test.get("name")
+                        for other in cast(list[object], tests)
+                    )
+                    > 1
+                )
                 lines.append(
                     _pre_sim_report_line(
                         outcome.target,
-                        test.get("name"),
+                        test.get("test_run") if several else test.get("name"),
                         cast(Mapping[str, object], pre_sim),
                     )
                 )

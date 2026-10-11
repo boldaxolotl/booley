@@ -1,4 +1,4 @@
-"""Durable V4 Coverage Campaign persistence behind one filesystem seam."""
+"""Durable V5 Coverage Campaign persistence behind one filesystem seam."""
 
 from __future__ import annotations
 
@@ -47,6 +47,14 @@ CAMPAIGN_SCHEMA_V1 = "booley.coverage-campaign/v1"
 CAMPAIGN_SCHEMA_V2 = "booley.coverage-campaign/v2"
 CAMPAIGN_SCHEMA_V3 = "booley.coverage-campaign/v3"
 CAMPAIGN_SCHEMA_V4 = "booley.coverage-campaign/v4"
+#: v5: every run names its Test Run and declared-inputs fingerprint (ADR 0072),
+#: and one selected Test may have several runs. Booley writes only v5.
+CAMPAIGN_SCHEMA_V5 = "booley.coverage-campaign/v5"
+#: Every manifest version that keeps its points in a point store. v3 and v4
+#: stay readable; their runs name a bare Test.
+POINT_STORE_CAMPAIGN_SCHEMAS = frozenset(
+    {CAMPAIGN_SCHEMA_V3, CAMPAIGN_SCHEMA_V4, CAMPAIGN_SCHEMA_V5}
+)
 POINT_STORE_SCHEMA_V1 = "booley.coverage-points/v1"
 POINT_STORE_NAME = "coverage-points.jsonl.gz"
 MAX_COMPRESSED_BYTES = 256 * 1024 * 1024
@@ -268,7 +276,7 @@ def _manifest(
     campaign: CoverageCampaign, reference: CoveragePointStoreReference
 ) -> dict[str, object]:
     document = encode_coverage_campaign(campaign)
-    document["$schema"] = CAMPAIGN_SCHEMA_V4
+    document["$schema"] = CAMPAIGN_SCHEMA_V5
     del document["points"]
     document["point_store"] = _point_store_document(reference)
     scoring = _expected_scoring(campaign.collection)
@@ -315,7 +323,7 @@ def _write_manifest(path: Path, data: bytes) -> None:
 
 
 def publish_coverage_campaign(target_dir: Path, campaign: CoverageCampaign) -> CampaignPaths:
-    """Publish a complete V4 Campaign without replacing existing final files."""
+    """Publish a complete V5 Campaign without replacing existing final files."""
     if _contains_link(target_dir):
         raise CoverageCampaignStoreError("Coverage Campaign path contains a link")
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -562,6 +570,30 @@ def _validate_scoring_rollups(
     _validate_source_reconciliation(source_rollups, rollups)
 
 
+def _validate_run_identity(document: Mapping[str, object], schema: str) -> None:
+    """Require what a v5 run records, and refuse it in the versions before.
+
+    A v3 or v4 manifest was written before runs named their Test Run; one
+    that carries the fields was not written by the Booley version it claims.
+    Malformed sections are left to the Campaign validator.
+    """
+    tests = document.get("tests")
+    runs = tests.get("runs") if isinstance(tests, Mapping) else None
+    if not isinstance(runs, list):
+        return
+    expected = schema == CAMPAIGN_SCHEMA_V5
+    for run in runs:
+        if isinstance(run, Mapping) and any(
+            (field in run) != expected for field in ("test_run", "fingerprint")
+        ):
+            raise CoverageCampaignStoreError(
+                "COV_MANIFEST_FORMAT",
+                f"{schema} Coverage Campaign runs "
+                + ("must" if expected else "cannot")
+                + " record test_run and fingerprint",
+            )
+
+
 def _summary(
     document: Mapping[str, object],
     expected_target: DurableTargetIdentity,
@@ -575,6 +607,7 @@ def _summary(
         raise CoverageCampaignStoreError(
             "COV_MANIFEST_FORMAT", f"Malformed {schema} Coverage Campaign manifest"
         )
+    _validate_run_identity(document, str(schema))
     probe = dict(document)
     source_rollup_values = probe.pop("source_rollups")
     scoring_value = probe.pop("scoring", None)
@@ -583,7 +616,7 @@ def _summary(
     expected_scoring = _expected_scoring(fields.collection)
     scoring = (
         _decode_scoring(scoring_value, fields.collection)
-        if schema == CAMPAIGN_SCHEMA_V4
+        if schema != CAMPAIGN_SCHEMA_V3
         else freeze_coverage_mapping(expected_scoring)
     )
     _validate_scoring_rollups(scoring, fields.rollups, source_rollups)
@@ -646,12 +679,12 @@ def _canonical_campaign_path(path: Path) -> Path:
 def read_coverage_summary(
     path: Path, expected_target: DurableTargetIdentity
 ) -> CoverageCampaignSummary:
-    """Read V3/V4 manifest facts without opening Coverage Point storage."""
+    """Read V3-V5 manifest facts without opening Coverage Point storage."""
     path = _canonical_campaign_path(path)
     try:
         document, digest = _read_document(path)
         schema = document.get("$schema")
-        if schema in {CAMPAIGN_SCHEMA_V3, CAMPAIGN_SCHEMA_V4}:
+        if schema in POINT_STORE_CAMPAIGN_SCHEMAS:
             return _summary(document, expected_target, digest)
         raise CoverageCampaignStoreError(
             "COV_SCHEMA_VERSION_UNSUPPORTED",
@@ -811,12 +844,12 @@ def _load_current(
 def load_coverage_campaign(
     path: Path, expected_target: DurableTargetIdentity | None = None
 ) -> LoadedCoverageCampaign:
-    """Deep-load one V3/V4 Campaign and accept no point evidence before validation."""
+    """Deep-load one V3-V5 Campaign and accept no point evidence before validation."""
     path = _canonical_campaign_path(path)
     try:
         document, digest = _read_document(path)
         schema = document.get("$schema")
-        if schema not in {CAMPAIGN_SCHEMA_V3, CAMPAIGN_SCHEMA_V4}:
+        if schema not in POINT_STORE_CAMPAIGN_SCHEMAS:
             raise CoverageCampaignStoreError(
                 "COV_SCHEMA_VERSION_UNSUPPORTED",
                 "Unsupported Coverage Campaign schema; recollect coverage with this Booley version",
@@ -840,7 +873,7 @@ def load_coverage_campaign_bytes(
     raw: bytes,
     expected_target: DurableTargetIdentity | None = None,
 ) -> LoadedCoverageCampaign:
-    """Deep-load a V3/V4 Campaign from exact manifest bytes already authenticated."""
+    """Deep-load a V3-V5 Campaign from exact manifest bytes already authenticated."""
     path = _canonical_campaign_path(path)
     try:
         if not raw or len(raw) > MAX_MANIFEST_BYTES:
@@ -848,7 +881,7 @@ def load_coverage_campaign_bytes(
                 "COV_MANIFEST_LIMIT", "Coverage Campaign manifest exceeds V4 limit"
             )
         document = dict(require_dict(json.loads(raw)))
-        if document.get("$schema") not in {CAMPAIGN_SCHEMA_V3, CAMPAIGN_SCHEMA_V4}:
+        if document.get("$schema") not in POINT_STORE_CAMPAIGN_SCHEMAS:
             raise CoverageCampaignStoreError(
                 "COV_SCHEMA_VERSION_UNSUPPORTED",
                 "Unsupported Coverage Campaign schema; recollect coverage with this Booley version",

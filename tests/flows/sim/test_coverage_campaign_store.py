@@ -25,12 +25,14 @@ from booley.flows.sim.coverage_campaign import (
 from booley.flows.sim.coverage_campaign_store import (
     CAMPAIGN_SCHEMA_V3,
     CAMPAIGN_SCHEMA_V4,
+    CAMPAIGN_SCHEMA_V5,
     MAX_COMPRESSED_BYTES,
     CoverageCampaignStoreError,
     load_coverage_campaign,
     publish_coverage_campaign,
     read_coverage_summary,
 )
+from tests.flows.sim.coverage_campaign_test_support import rewrite_manifest_as_older_schema
 from tests.flows.sim.test_coverage_campaign import _valid_document
 from tests.runtime.test_sandbox_layout import project_alias
 
@@ -272,7 +274,7 @@ def test_publish_separates_summary_from_lossless_points(tmp_path: Path) -> None:
     paths = publish_coverage_campaign(tmp_path, _campaign())
 
     manifest = json.loads(paths.campaign.read_text(encoding="utf-8"))
-    assert manifest["$schema"] == CAMPAIGN_SCHEMA_V4
+    assert manifest["$schema"] == CAMPAIGN_SCHEMA_V5
     assert manifest["scoring"] == {"status": "valid", "reason": None}
     assert "points" not in manifest
     assert manifest["rollups"][0]["percent"] == 100.0
@@ -351,8 +353,7 @@ def test_v4_rejects_scores_smuggled_behind_invalid_state(tmp_path: Path, invento
 def test_valid_v3_remains_readable(tmp_path: Path) -> None:
     paths = publish_coverage_campaign(tmp_path, _campaign())
     manifest = json.loads(paths.campaign.read_text(encoding="utf-8"))
-    manifest["$schema"] = CAMPAIGN_SCHEMA_V3
-    del manifest["scoring"]
+    rewrite_manifest_as_older_schema(manifest, 3)
     paths.campaign.write_text(json.dumps(manifest), encoding="utf-8")
 
     summary = read_coverage_summary(paths.campaign, TARGET)
@@ -363,11 +364,55 @@ def test_valid_v3_remains_readable(tmp_path: Path) -> None:
     assert loaded.campaign == _campaign()
 
 
+def test_valid_v4_remains_readable_with_runs_named_by_their_test(tmp_path: Path) -> None:
+    paths = publish_coverage_campaign(tmp_path, _campaign())
+    manifest = json.loads(paths.campaign.read_text(encoding="utf-8"))
+    rewrite_manifest_as_older_schema(manifest, 4)
+    paths.campaign.write_text(json.dumps(manifest), encoding="utf-8")
+
+    summary = read_coverage_summary(paths.campaign, TARGET)
+    loaded = load_coverage_campaign(paths.campaign, TARGET)
+
+    assert summary.source_schema == CAMPAIGN_SCHEMA_V4
+    assert [(run.test, run.test_run) for run in loaded.campaign.runs] == [("reset", "reset")]
+    assert loaded.campaign == _campaign()
+
+
+def test_v5_run_without_its_test_run_is_rejected(tmp_path: Path) -> None:
+    paths = publish_coverage_campaign(tmp_path, _campaign())
+    manifest = json.loads(paths.campaign.read_text(encoding="utf-8"))
+    for run in manifest["tests"]["runs"]:
+        del run["test_run"]
+        del run["fingerprint"]
+    paths.campaign.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(CoverageCampaignStoreError) as error:
+        read_coverage_summary(paths.campaign, TARGET)
+
+    assert error.value.code == "COV_MANIFEST_FORMAT"
+    assert "must record test_run" in str(error.value)
+
+
+@pytest.mark.parametrize("version", [3, 4])
+def test_older_manifest_that_names_test_runs_is_rejected(tmp_path: Path, version: int) -> None:
+    paths = publish_coverage_campaign(tmp_path, _campaign())
+    manifest = json.loads(paths.campaign.read_text(encoding="utf-8"))
+    runs = json.loads(json.dumps(manifest["tests"]["runs"]))
+    rewrite_manifest_as_older_schema(manifest, version)
+    manifest["tests"]["runs"] = runs
+    paths.campaign.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(CoverageCampaignStoreError) as error:
+        load_coverage_campaign(paths.campaign, TARGET)
+
+    assert error.value.code == "COV_MANIFEST_FORMAT"
+    assert "cannot record test_run" in str(error.value)
+
+
 def test_score_bearing_invalid_v3_is_rejected(tmp_path: Path) -> None:
     paths = publish_coverage_campaign(tmp_path, _campaign())
     manifest = json.loads(paths.campaign.read_text(encoding="utf-8"))
-    manifest["$schema"] = CAMPAIGN_SCHEMA_V3
-    del manifest["scoring"]
+    rewrite_manifest_as_older_schema(manifest, 3)
     manifest["collection"]["status"] = "collector_error"
     manifest["normalization"]["status"] = "partial"
     paths.campaign.write_text(json.dumps(manifest), encoding="utf-8")

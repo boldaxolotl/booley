@@ -209,7 +209,7 @@ A coverage run publishes this reference and nested evidence:
   campaign/work-items/<item>/attempts/<attempt>/coverage-campaign/
     coverage.json            current Coverage Campaign manifest
     coverage-points.jsonl.gz  every coverage point and which runs hit it
-    native/raw/              one Verilator database per test
+    native/raw/              one Verilator database per Test Run
     native/merged/           the merged database
     hooks/                   hook evidence, when collected
 ```

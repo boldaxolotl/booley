@@ -13,18 +13,22 @@ from types import MappingProxyType
 from typing import Literal, Protocol
 
 from booley.core.boundary import as_positive_int
+from booley.flows.test_runs import TestRun
 
 from .backends.shared import RunTerminationKind, SimulationFailureKind
 from .coverage_campaign import (
+    NO_DECLARED_INPUTS_FINGERPRINT,
     CoverageArtifact,
     CoverageCapability,
     CoverageFinding,
     CoveragePoint,
     CoveragePointIdentity,
     CoverageRun,
+    CoverageRunCollectionState,
     FrozenJson,
     SimulationVerdict,
 )
+from .execution.artifacts import artifact_path_component
 from .execution.contract import PreSimEvidence, pre_sim_failure_message
 from .execution.freshness import (
     ArtifactStamp,
@@ -116,9 +120,31 @@ class CoverageTarget:
 
 @dataclass(frozen=True)
 class SelectedCoverageTest:
-    """One registered test selected for an independent simulator process."""
+    """One Test Run selected for an independent simulator process.
+
+    ``name`` is the bare Test. ``run`` is the concrete Test Run (ADR 0072):
+    its Test Variant's arguments and environment and its seed. Without one
+    the process runs the bare Test with no declared inputs.
+    """
 
     name: str
+    run: TestRun | None = None
+
+    def __post_init__(self) -> None:
+        if self.run is not None and self.run.test != self.name:
+            raise ValueError(
+                f"Test Run {self.run.name!r} is not a run of selected Test {self.name!r}"
+            )
+
+    @property
+    def run_name(self) -> str:
+        """The resolved Test Run name; the bare Test without a Test Run."""
+        return self.name if self.run is None else self.run.name
+
+    @property
+    def fingerprint(self) -> str:
+        """The fingerprint of the Test Run's declared arguments and environment."""
+        return NO_DECLARED_INPUTS_FINGERPRINT if self.run is None else self.run.fingerprint
 
 
 @dataclass(frozen=True)
@@ -320,9 +346,39 @@ class _RunContext:
     hook_before: ArtifactStamp | None
 
 
-def _path_component(name: str) -> str:
-    value = re.sub(r"[^A-Za-z0-9_.-]+", "_", name).strip("._")
-    return value or "test"
+def _run_stem(index: int, selected: SelectedCoverageTest) -> str:
+    """The unique file-name stem of one run: its ordinal and Test Run name.
+
+    The name part is one safe path component on POSIX and Windows; a name
+    outside the safe set is replaced by its digest, never altered lossily.
+    """
+    return f"{index:03d}-{artifact_path_component(selected.run_name)}"
+
+
+def _run_id(index: int, selected: SelectedCoverageTest) -> str:
+    """The Campaign-unique id of one run: its ordinal and Test Run name."""
+    return f"run:{index:03d}:{artifact_path_component(selected.run_name)}"
+
+
+def _coverage_run(
+    index: int,
+    selected: SelectedCoverageTest,
+    verdict: SimulationVerdict,
+    collection: CoverageRunCollectionState,
+    raw_artifact: str | None,
+    attributes: Mapping[str, FrozenJson],
+) -> CoverageRun:
+    """Build the Campaign record of the *index*-th run, named by its Test Run."""
+    return CoverageRun(
+        id=_run_id(index, selected),
+        test=selected.name,
+        simulation_verdict=verdict,
+        collection=collection,
+        raw_artifact=raw_artifact,
+        attributes=attributes,
+        test_run=selected.run_name,
+        fingerprint=selected.fingerprint,
+    )
 
 
 def _parse_attributes(identity: str) -> Mapping[str, str]:
@@ -605,15 +661,11 @@ def _prepare_run(
     index: int,
     selected: SelectedCoverageTest,
 ) -> _RunContext:
-    run_id = f"run:{index:03d}:{_path_component(selected.name)}"
-    raw_path = (
-        request.artifact_root
-        / "native"
-        / "raw"
-        / f"{index:03d}-{_path_component(selected.name)}.dat"
-    )
+    run_id = _run_id(index, selected)
+    stem = _run_stem(index, selected)
+    raw_path = request.artifact_root / "native" / "raw" / f"{stem}.dat"
     hook_path = (
-        request.artifact_root / "hooks" / f"{index:03d}-{_path_component(selected.name)}.json"
+        request.artifact_root / "hooks" / f"{stem}.json"
         if not request.reset_included or request.target.harness == "custom_main"
         else None
     )
@@ -665,7 +717,7 @@ def _read_raw_artifact(
             context,
             verdict,
             code="COV_RAW_FILE_MISSING" if missing else "COV_RAW_FILE_STALE",
-            message=_raw_freshness_message(context.test.name, missing),
+            message=_raw_freshness_message(context.test.run_name, missing),
             state=None if missing else "stale",
         )
     try:
@@ -676,7 +728,7 @@ def _read_raw_artifact(
             context,
             verdict,
             code="COV_NATIVE_FORMAT_INCOMPATIBLE",
-            message=f"Test {context.test.name!r} produced an incompatible native database.",
+            message=f"Test {context.test.run_name!r} produced an incompatible native database.",
             state="incompatible",
         )
     except _NativeRecordError:
@@ -685,7 +737,7 @@ def _read_raw_artifact(
             context,
             verdict,
             code="COV_RAW_NOT_QUERYABLE",
-            message=f"Test {context.test.name!r} produced an unqueryable native database.",
+            message=f"Test {context.test.run_name!r} produced an unqueryable native database.",
             state="unqueryable",
         )
     artifact = _artifact(
@@ -714,13 +766,13 @@ def _finish_run(
     pre_sim: PreSimEvidence | None = None,
 ) -> _CollectedRun:
     return _CollectedRun(
-        run=CoverageRun(
-            id=context.run_id,
-            test=context.test.name,
-            simulation_verdict=verdict,
-            collection="included",
-            raw_artifact=raw_artifact.id,
-            attributes=_pre_sim_attributes(pre_sim),
+        run=_coverage_run(
+            context.index,
+            context.test,
+            verdict,
+            "included",
+            raw_artifact.id,
+            _pre_sim_attributes(pre_sim),
         ),
         artifact=raw_artifact,
         records=records,
@@ -752,9 +804,9 @@ def _run_failure(
             run_id=context.run_id,
             state=state,
         )
-    run = CoverageRun(
-        context.run_id,
-        context.test.name,
+    run = _coverage_run(
+        context.index,
+        context.test,
         verdict,
         "collector_error",
         artifact.id if artifact is not None else None,
@@ -1178,14 +1230,7 @@ def _build_error_result(
     output: str,
 ) -> CoverageCollectionResult:
     runs = tuple(
-        CoverageRun(
-            id=f"run:{index:03d}:{_path_component(selected.name)}",
-            test=selected.name,
-            simulation_verdict="elab_error",
-            collection="collector_error",
-            raw_artifact=None,
-            attributes=MappingProxyType({}),
-        )
+        _coverage_run(index, selected, "elab_error", "collector_error", None, MappingProxyType({}))
         for index, selected in enumerate(request.selected_tests, start=1)
     )
     finding = CoverageFinding(
@@ -1451,13 +1496,13 @@ def _infrastructure_failure(
     for index, selected in enumerate(request.selected_tests[len(completed) :], len(completed) + 1):
         collected.append(
             _CollectedRun(
-                CoverageRun(
-                    id=f"run:{index:03d}:{_path_component(selected.name)}",
-                    test=selected.name,
-                    simulation_verdict="inconclusive",
-                    collection="collector_error",
-                    raw_artifact=None,
-                    attributes=MappingProxyType(
+                _coverage_run(
+                    index,
+                    selected,
+                    "inconclusive",
+                    "collector_error",
+                    None,
+                    MappingProxyType(
                         {
                             "execution": "not_run",
                             "failure_kind": "infrastructure",

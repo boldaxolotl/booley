@@ -18,6 +18,7 @@ from fractions import Fraction
 from types import MappingProxyType
 from typing import Literal, NewType, TypeAlias, cast
 
+from booley.config.tests_toml_rules import SEED_SEPARATOR, VARIANT_SEPARATOR
 from booley.core.boundary import (
     BoundaryError,
     as_dict,
@@ -28,6 +29,7 @@ from booley.core.boundary import (
     require_list,
     require_str,
 )
+from booley.flows.test_runs import declared_inputs_fingerprint
 from booley.runtime.timefmt import parse_timestamp, rfc3339_from_epoch
 
 DurableTargetIdentity = NewType("DurableTargetIdentity", str)
@@ -59,6 +61,9 @@ _METRIC_SEMANTICS = {
     "cover_property": "One user-authored cover-property point; covered when count is greater than zero.",
 }
 _WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
+#: Fingerprint of a run that records no Test Variant: no declared arguments or
+#: environment. It is what a run of a document older than storage v5 had.
+NO_DECLARED_INPUTS_FINGERPRINT = declared_inputs_fingerprint((), {})
 _TOP_LEVEL_FIELDS = (
     ("$schema", "string"),
     ("campaign_id", "string"),
@@ -134,7 +139,14 @@ class CoverageCollector:
 
 @dataclass(frozen=True)
 class CoverageRun:
-    """Independent simulation and collection truth for one selected test."""
+    """Independent simulation and collection truth for one Test Run.
+
+    ``test`` is the bare Test; ``test_run`` is the resolved Test Run name
+    (``test[+variant][@seed]``, ADR 0072) and ``fingerprint`` covers the Test
+    Variant's declared arguments and environment. A run built without them is
+    the bare Test with no declared inputs, which is what every run recorded
+    before storage v5 was.
+    """
 
     id: str
     test: str
@@ -142,6 +154,14 @@ class CoverageRun:
     collection: CoverageRunCollectionState
     raw_artifact: str | None
     attributes: Mapping[str, FrozenJson]
+    test_run: str = ""
+    fingerprint: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.test_run:
+            object.__setattr__(self, "test_run", self.test)
+        if not self.fingerprint:
+            object.__setattr__(self, "fingerprint", NO_DECLARED_INPUTS_FINGERPRINT)
 
 
 @dataclass(frozen=True)
@@ -542,6 +562,24 @@ def _validate_run_shapes(runs: list[object], findings: list[CoverageFinding]) ->
             )
         if "raw_artifact" in run:
             _check_field(run, "raw_artifact", "string", pointer, findings)
+        _validate_run_identity_shape(run, pointer, findings)
+
+
+def _validate_run_identity_shape(
+    run: Mapping[str, object], pointer: str, findings: list[CoverageFinding]
+) -> None:
+    """A run names its Test Run and fingerprint together, or neither (before v5)."""
+    present = [field for field in ("test_run", "fingerprint") if field in run]
+    for field in present:
+        _check_field(run, field, "string", pointer, findings)
+    if len(present) == 1:
+        findings.append(
+            _error(
+                "COV_TEST_RUN_IDENTITY_INCOMPLETE",
+                pointer,
+                "A run must record test_run and fingerprint together.",
+            )
+        )
 
 
 def _validate_tests_shape(tests: Mapping[str, object], findings: list[CoverageFinding]) -> None:
@@ -908,15 +946,15 @@ def _validate_tests(document: Mapping[str, object]) -> tuple[list[CoverageFindin
                     f"Selected test {test!r} is not declared by the Target.",
                 )
             )
-        matching_runs = [run for run in runs if str(run["test"]) == str(test)]
-        if len(matching_runs) != 1:
+        if not any(str(run["test"]) == str(test) for run in runs):
             findings.append(
                 _error(
                     "COV_SELECTED_TEST_RUN_CARDINALITY",
                     f"/tests/selected/{index}",
-                    f"Selected test {test!r} must have exactly one simulator run.",
+                    f"Selected test {test!r} must have at least one simulator run.",
                 )
             )
+    findings.extend(_test_run_identity_findings(runs))
     for index, run in enumerate(runs):
         if str(run["test"]) not in selected_set:
             findings.append(
@@ -928,6 +966,39 @@ def _validate_tests(document: Mapping[str, object]) -> tuple[list[CoverageFindin
             )
     run_ids = {str(run["id"]) for run in runs}
     return findings, run_ids
+
+
+def _test_run_of(run: Mapping[str, object]) -> str:
+    """The Test Run a run document records; the bare Test before storage v5."""
+    return str(run.get("test_run", run["test"]))
+
+
+def _test_run_identity_findings(runs: list[object]) -> list[CoverageFinding]:
+    """Refuse two runs of one Test Run, and a Test Run of another Test."""
+    findings: list[CoverageFinding] = []
+    seen: set[str] = set()
+    for index, run in enumerate(runs):
+        assert isinstance(run, Mapping)
+        name = _test_run_of(run)
+        pointer = f"/tests/runs/{index}/test_run"
+        if name in seen:
+            findings.append(
+                _error("COV_TEST_RUN_DUPLICATE", pointer, f"Duplicate Test Run {name!r}.")
+            )
+        seen.add(name)
+        test = str(run["test"])
+        rest = name.removeprefix(test)
+        if "test_run" in run and (
+            not name.startswith(test) or rest[:1] not in {"", VARIANT_SEPARATOR, SEED_SEPARATOR}
+        ):
+            findings.append(
+                _error(
+                    "COV_TEST_RUN_TEST_MISMATCH",
+                    pointer,
+                    f"Test Run {name!r} is not a run of Test {test!r}.",
+                )
+            )
+    return findings
 
 
 def _validate_artifacts(document: Mapping[str, object]) -> list[CoverageFinding]:
@@ -1583,7 +1654,15 @@ def _decode_capability(document: Mapping[str, object]) -> CoverageCapability:
 
 
 def _decode_run(document: Mapping[str, object]) -> CoverageRun:
-    known = {"id", "test", "simulation_verdict", "collection", "raw_artifact"}
+    known = {
+        "id",
+        "test",
+        "simulation_verdict",
+        "collection",
+        "raw_artifact",
+        "test_run",
+        "fingerprint",
+    }
     return CoverageRun(
         id=str(document["id"]),
         test=str(document["test"]),
@@ -1593,6 +1672,8 @@ def _decode_run(document: Mapping[str, object]) -> CoverageRun:
         attributes=_freeze_mapping(
             {key: value for key, value in document.items() if key not in known}
         ),
+        test_run=str(document.get("test_run", "")),
+        fingerprint=str(document.get("fingerprint", "")),
     )
 
 
@@ -1814,6 +1895,8 @@ def _encode_run(run: CoverageRun) -> dict[str, object]:
     document: dict[str, object] = {
         "id": run.id,
         "test": run.test,
+        "test_run": run.test_run,
+        "fingerprint": run.fingerprint,
         "simulation_verdict": run.simulation_verdict,
         "collection": run.collection,
     }
