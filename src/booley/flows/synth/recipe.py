@@ -177,7 +177,7 @@ def synthesis_recipe_snapshot(
     synth_mode = resolve_synth_mode(resolved.flow_options, target=target)
     liberty, _found = resolve_liberty_lenient(None)
     return {
-        "schema": 4,
+        "schema": 5 if synth_mode.runs_openroad else 4,
         "flow": "synth",
         "target": target,
         "vlnv": resolved.vlnv,
@@ -188,6 +188,7 @@ def synthesis_recipe_snapshot(
         "technology": {
             "liberty": liberty.as_posix(),
             "physical_pdk": "nangate45" if synth_mode == SynthMode.PHYSICAL else None,
+            **({"physical_fanout_policy": "native-point-v1"} if synth_mode.runs_openroad else {}),
         },
     }
 
