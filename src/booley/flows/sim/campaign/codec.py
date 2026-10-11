@@ -115,6 +115,14 @@ _MANIFEST_SCHEMAS = frozenset(
 # declare source identities without the v1/v2 restrictions.
 _OPEN_GRAMMAR_SCHEMAS = frozenset({_MANIFEST_V3_SCHEMA, _MANIFEST_V4_SCHEMA})
 
+_RESULT_V2_SCHEMA = "booley.simulation-result/v2"
+# v3 = v2 plus the required ``test_run`` of every observation: the resolved
+# name of the Test Run it observed (ADR 0072). Observations are then unique by
+# Test Run instead of by Test. A result of a work item that records Test Runs
+# is written as v3; v1 and v2 stay readable.
+RESULT_SCHEMA = "booley.simulation-result/v3"
+_RESULT_SCHEMAS = frozenset({_RESULT_V2_SCHEMA, RESULT_SCHEMA})
+
 _MANIFEST_FIELDS = frozenset(
     {
         "$schema",
@@ -569,7 +577,11 @@ def _validate_simulation_result(value: Mapping[str, object]) -> None:
         raise SimulationCampaignIntegrityError("invalid strict grade")
     _validate_result_state(value, build_result)
     _validate_runtime_inputs(value["runtime_inputs"], blocked=state == "blocked_by_build")
-    observations = _validate_observations(value["observations"], cast(str, state))
+    observations = _validate_observations(
+        value["observations"],
+        cast(str, state),
+        names_test_runs=value["$schema"] == RESULT_SCHEMA,
+    )
     _validate_result_grade(value["grade"], observations)
     _validate_diagnostics(value["diagnostics"])
     _validate_evidence_list(value["evidence"], "evidence")
@@ -852,15 +864,19 @@ def _validate_runtime_inputs(value: object, *, blocked: bool) -> None:
         raise SimulationCampaignIntegrityError("runtime input identities must be unique")
 
 
-def _validate_observations(value: object, state: str) -> list[Mapping[str, object]]:
+def _validate_observations(
+    value: object, state: str, *, names_test_runs: bool = False
+) -> list[Mapping[str, object]]:
     observations = _exact_list(value, "observations", MAX_OBSERVATIONS)
     if not observations:
         raise SimulationCampaignIntegrityError("result observations must be nonempty")
     tests: list[object] = []
     decoded: list[Mapping[str, object]] = []
     for index, item in enumerate(observations):
-        observation = _validate_observation(item, index)
-        tests.append(observation["test"])
+        observation = _validate_observation(item, index, names_test_runs=names_test_runs)
+        # A v3 result is unique by Test Run: one Test may be observed under
+        # several Test Variants or seeds.
+        tests.append(observation["test_run"] if names_test_runs else observation["test"])
         decoded.append(observation)
         if state == "completed" and observation["execution"] != "completed":
             raise SimulationCampaignIntegrityError(
@@ -911,10 +927,13 @@ def _validate_result_grade(value: object, observations: list[Mapping[str, object
         raise SimulationCampaignIntegrityError("result grade disagrees with observations")
 
 
-def _validate_observation(value: object, index: int) -> Mapping[str, object]:
+def _validate_observation(
+    value: object, index: int, *, names_test_runs: bool = False
+) -> Mapping[str, object]:
     observation = _exact_object(
         value,
-        {
+        ({"test_run"} if names_test_runs else set())
+        | {
             "test",
             "execution",
             "failure_class",
@@ -926,6 +945,8 @@ def _validate_observation(value: object, index: int) -> Mapping[str, object]:
         },
         f"observations[{index}]",
     )
+    if names_test_runs:
+        _bounded_string(observation["test_run"], f"observations[{index}].test_run")
     if observation["execution"] not in {
         "completed",
         "timeout",
@@ -1690,7 +1711,7 @@ _DOCUMENT_SPECS: dict[
         _validate_build_result,
     ),
     SimulationResult: (
-        "booley.simulation-result/v2",
+        _RESULT_V2_SCHEMA,
         _RESULT_FIELDS,
         RECORD_MAX_BYTES,
         _validate_simulation_result,
@@ -1712,11 +1733,16 @@ _DOCUMENT_VALIDATORS = {spec[0]: spec[3] for spec in _DOCUMENT_SPECS.values()}
 _DOCUMENT_VALIDATORS[_MANIFEST_V2_SCHEMA] = _validate_manifest
 _DOCUMENT_VALIDATORS[_MANIFEST_V3_SCHEMA] = _validate_manifest
 _DOCUMENT_VALIDATORS[_MANIFEST_V4_SCHEMA] = _validate_manifest
+_DOCUMENT_VALIDATORS[RESULT_SCHEMA] = _validate_simulation_result
 
 
 def _decode_registered(raw: bytes, value_type: type[T]) -> T:
     schema, fields, limit, _ = _DOCUMENT_SPECS[value_type]
-    allowed = _MANIFEST_SCHEMAS if value_type is SimulationCampaignManifest else schema
+    allowed: str | frozenset[str] = schema
+    if value_type is SimulationCampaignManifest:
+        allowed = _MANIFEST_SCHEMAS
+    elif value_type is SimulationResult:
+        allowed = _RESULT_SCHEMAS
     return _decode(raw, schema=allowed, fields=fields, limit=limit, value_type=value_type)
 
 
@@ -1745,7 +1771,7 @@ def decode_simulation_result(raw: bytes) -> SimulationResult:
     except (UnicodeError, json.JSONDecodeError):
         document = None
     if isinstance(document, dict) and document.get("$schema") == "booley.simulation-result/v1":
-        document["$schema"] = "booley.simulation-result/v2"
+        document["$schema"] = _RESULT_V2_SCHEMA
         raw = canonical_json_bytes(document)
     return _decode_registered(raw, SimulationResult)
 

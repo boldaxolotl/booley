@@ -11,9 +11,11 @@ from types import MappingProxyType
 from .codec import SimulationCampaignIntegrityError, canonical_json_bytes
 
 _SCHEMA_V1 = "booley.simulation-acceptance-facts/v1"
-# v2 = v1 plus the required ``test_run`` of every observation: the resolved
-# name of the Test Run it observed (ADR 0072). Observations are then unique
-# by Test Run, so several Test Variants or seeds of one Test can coexist.
+# v2 = v1 plus the required ``test_run`` and ``test_run_fingerprint`` of every
+# observation: the resolved name of the Test Run it observed and the
+# fingerprint of that run's declared arguments and environment (ADR 0072).
+# Evidence matches a Goal on both. Observations are then unique by Test Run,
+# so several Test Variants or seeds of one Test can coexist.
 # Facts of a campaign whose manifest records Test Runs are written as v2; v1
 # stays readable.
 ACCEPTANCE_FACTS_SCHEMA = "booley.simulation-acceptance-facts/v2"
@@ -215,7 +217,7 @@ def _validate_consumed(value: object, index: int) -> None:
 def _validate_observation(value: object, index: int, *, names_test_runs: bool = False) -> None:
     item = _exact(
         value,
-        ({"test_run"} if names_test_runs else set())
+        ({"test_run", "test_run_fingerprint"} if names_test_runs else set())
         | {
             "work_item_id",
             "role",
@@ -240,6 +242,8 @@ def _validate_observation(value: object, index: int, *, names_test_runs: bool = 
         or len(item["test_run"].encode()) > 1024
     ):
         raise SimulationCampaignIntegrityError("observation test_run is invalid")
+    if names_test_runs:
+        _digest(item["test_run_fingerprint"], "observation test_run_fingerprint")
     if item["test"] is not None and (
         not isinstance(item["test"], str) or len(item["test"].encode()) > 512
     ):

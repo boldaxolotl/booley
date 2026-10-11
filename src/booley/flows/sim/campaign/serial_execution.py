@@ -65,6 +65,7 @@ from ..build import build_output_tail
 from .codec import (
     MAX_DETAIL_BYTES,
     RECORD_MAX_BYTES,
+    RESULT_SCHEMA,
     SimulationCampaignIntegrityError,
     canonical_json_bytes,
     decode_bundle_build_attempt,
@@ -97,6 +98,7 @@ from .model import (
 from .planning import manifest_digest
 from .pre_sim_evidence import publish_pre_sim_firing
 from .run_directory import RunDirectory, claimed_run_directory, expand_run_directory
+from .test_run_binding import observation_test_runs
 
 
 @dataclass(frozen=True, slots=True)
@@ -1543,8 +1545,14 @@ def _result(
     runtime_inputs: list[dict[str, object]] | None = None,
     diagnostics: tuple[str, ...] = (),
 ) -> SimulationResult:
+    bound = observation_test_runs(request.work_item, observations)
+    if bound is not None:
+        observations = [
+            {**observation, "test_run": name}
+            for observation, (name, _fingerprint) in zip(observations, bound, strict=True)
+        ]
     document = {
-        "$schema": "booley.simulation-result/v2",
+        "$schema": RESULT_SCHEMA if bound is not None else "booley.simulation-result/v2",
         **_common(request),
         "attempt_id": request.attempt_id,
         "attempt_ordinal": request.attempt_ordinal,

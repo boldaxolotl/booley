@@ -75,6 +75,7 @@ from .model import (
 )
 from .planning import manifest_digest
 from .pre_sim_evidence import PreSimFiring, PreSimFiringDecoder, _reference
+from .test_run_binding import observation_test_runs
 
 _T = TypeVar("_T", bound=SimulationCampaignDocument)
 _SUMMARY_SCHEMA = "booley.simulation-campaign-summary/v1"
@@ -1052,6 +1053,22 @@ def _aggregate_grade(grades: tuple[str, ...], *, complete: bool) -> str:
     return "pass"
 
 
+def _validate_result_test_runs(
+    work_item: Mapping[str, object], observations: tuple[Mapping[str, object], ...]
+) -> None:
+    """A result that names Test Runs must name the ones its work item recorded."""
+    named = ["test_run" in observation for observation in observations]
+    if not any(named):
+        return
+    bound = observation_test_runs(work_item, observations)
+    if bound is None or [observation["test_run"] for observation in observations] != [
+        name for name, _fingerprint in bound
+    ]:
+        raise SimulationCampaignIntegrityError(
+            "result observations name Test Runs their work item does not record"
+        )
+
+
 def _validate_result_selection(
     work_item: Mapping[str, object],
     result: SimulationResult,
@@ -1065,10 +1082,15 @@ def _validate_result_selection(
     observations = cast(tuple[Mapping[str, object], ...], result.document["observations"])
     observed = tuple(item["test"] for item in observations)
     kind = cast(str, work_item["kind"])
-    if selection["kind"] == "named" and observed != names:
+    recorded = cast("tuple[Mapping[str, object], ...] | None", work_item.get("test_runs"))
+    # One observation per recorded Test Run, in order; a manifest before v4
+    # names Tests only, one observation each.
+    expected = names if recorded is None else tuple(run["test"] for run in recorded)
+    if selection["kind"] == "named" and observed != expected:
         raise SimulationCampaignIntegrityError(
             "result observations disagree with named work-item selection"
         )
+    _validate_result_test_runs(work_item, observations)
     if selection["kind"] == "unfiltered":
         unnamed_failure = observed == (None,) and result.document["state"] in {
             "blocked_by_build",
@@ -1269,7 +1291,13 @@ def _validate_cocotb_transport(
         or document["source_bytes"] < 1
         or not isinstance(document["source_sha256"], str)
         or not re.fullmatch(r"sha256:[0-9a-f]{64}", document["source_sha256"])
-        or transported != [dict(item) for item in observations]
+        # The transport records what the adapter observed; the Test Run name
+        # is added by the campaign from the work item and authenticated there.
+        or transported
+        != [
+            {key: value for key, value in item.items() if key != "test_run"}
+            for item in observations
+        ]
     ):
         raise SimulationCampaignIntegrityError(
             "Cocotb transport observations disagree with Simulation Result"

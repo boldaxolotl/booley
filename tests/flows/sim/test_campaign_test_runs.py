@@ -329,6 +329,10 @@ def test_three_seeds_and_two_variants_of_one_test_reach_acceptance_facts(tmp_pat
     assert len({item["work_item_id"] for item in observations}) == 5
     assert len(document["consumed_results"]) == 5
     assert [item["test_run"] for item in outcome.observations] == [run.name for run in runs]
+    # Name and fingerprint come from one authenticated document.
+    assert [item["test_run_fingerprint"] for item in observations] == [
+        run.fingerprint for run in runs
+    ]
 
 
 def test_unnamed_invocation_observation_is_named_by_its_test_run(tmp_path: Path):
@@ -338,24 +342,31 @@ def test_unnamed_invocation_observation_is_named_by_its_test_run(tmp_path: Path)
 
 
 def test_tests_an_unfiltered_cocotb_batch_discovered_carry_its_seed():
-    from booley.flows.sim.campaign.coordinator import _observation_test_runs
+    from booley.flows.sim.campaign.test_run_binding import observation_test_runs
 
     item = {"test_runs": (test_run_document(build_test_run(None, seed=9)),)}
     observed = ({"test": "found_b"}, {"test": "found_a"})
-    assert _observation_test_runs(item, observed) == ("found_b@9", "found_a@9")
+    fingerprint = build_test_run(None).fingerprint
+    assert observation_test_runs(item, observed) == (
+        ("found_b@9", fingerprint),
+        ("found_a@9", fingerprint),
+    )
     unseeded = {"test_runs": (test_run_document(build_test_run(None)),)}
-    assert _observation_test_runs(unseeded, observed) == ("found_b", "found_a")
-    assert _observation_test_runs({}, observed) is None
+    assert [name for name, _ in observation_test_runs(unseeded, observed)] == [
+        "found_b",
+        "found_a",
+    ]
+    assert observation_test_runs({}, observed) is None
 
 
 def test_an_observation_without_a_test_run_in_its_work_item_is_refused():
-    from booley.flows.sim.campaign.coordinator import _observation_test_runs
+    from booley.flows.sim.campaign.test_run_binding import observation_test_runs
 
     item = {"test_runs": (test_run_document(_SOAK),)}
     with pytest.raises(SimulationCampaignIntegrityError, match="has no Test Run"):
-        _observation_test_runs(item, ({"test": "reset"},))
+        observation_test_runs(item, ({"test": "reset"},))
     with pytest.raises(SimulationCampaignIntegrityError, match="has no Test Run"):
-        _observation_test_runs(item, ({"test": "count"}, {"test": "count"}))
+        observation_test_runs(item, ({"test": "count"}, {"test": "count"}))
 
 
 def test_acceptance_indexes_by_test_run_and_never_lets_one_run_stand_for_another(
@@ -390,3 +401,115 @@ def test_acceptance_keeps_indexing_one_test_run_per_test_by_test(tmp_path: Path)
     outcome = _run_campaign(tmp_path, _hdl_plan(tmp_path, tuple((run,) for run in runs)))
     indexed = _candidate_simulation_observations(outcome.acceptance_facts.document, outcome.target)
     assert list(indexed) == ["reset", "count"]
+
+
+def _stored_result(tmp_path: Path):
+    """Run a Cocotb batch campaign through the real result writer."""
+    from booley.flows.sim.campaign import CampaignPolicy, NewCampaignRunRequest, SimulationCampaign
+    from booley.flows.sim.campaign.serial_execution import OrdinaryHdlSerialExecutor
+    from booley.flows.sim.campaign.store import CampaignStore
+    from tests.flows.sim.test_campaign_characterization import _NoVerdictExecution
+    from tests.flows.sim.test_campaign_phase5_adversarial import _plan, _unmanaged
+
+    plan = _plan(tmp_path, kind="cocotb_batch", cocotb=True)
+    execution = _NoVerdictExecution(eda_tool="verilator", cocotb=True)
+    executor = OrdinaryHdlSerialExecutor(
+        invoke=lambda *_args, **_kwargs: None, execution_factory=lambda _options: execution
+    )
+    invocation = tmp_path / "reports/1"
+    invocation.mkdir(parents=True)
+    outcome = SimulationCampaign(executor).run(
+        NewCampaignRunRequest(
+            plan, tmp_path, invocation.parent, CampaignPolicy(), invocation, _unmanaged()
+        )
+    )
+    store = CampaignStore(invocation / "targets/sim/campaign")
+    return outcome, [item.result for item in store.scan().items]
+
+
+def test_written_results_are_v3_and_name_their_test_run(tmp_path: Path):
+    outcome, results = _stored_result(tmp_path)
+    assert [result.document["$schema"] for result in results] == ["booley.simulation-result/v3"]
+    observations = results[0].document["observations"]
+    assert [(item["test"], item["test_run"]) for item in observations] == [
+        ("count", "count"),
+        ("reset", "reset"),
+    ]
+    # Facts copy the name the result itself carries.
+    assert [item["test_run"] for item in outcome.acceptance_facts.document["observations"]] == [
+        "count",
+        "reset",
+    ]
+
+
+def _result_document(tmp_path: Path) -> dict:
+    from booley.flows.sim.campaign.codec import encode_simulation_result
+
+    _outcome, results = _stored_result(tmp_path)
+    return json.loads(encode_simulation_result(results[0]))
+
+
+def test_result_v3_round_trips_and_previous_versions_still_decode(tmp_path: Path):
+    from booley.flows.sim.campaign.codec import (
+        canonical_json_bytes,
+        decode_simulation_result,
+        encode_simulation_result,
+    )
+
+    document = _result_document(tmp_path)
+    raw = canonical_json_bytes(document)
+    assert encode_simulation_result(decode_simulation_result(raw)) == raw
+
+    for version in ("v2", "v1"):
+        older = copy.deepcopy(document)
+        older["$schema"] = f"booley.simulation-result/{version}"
+        for observation in older["observations"]:
+            del observation["test_run"]
+        decoded = decode_simulation_result(canonical_json_bytes(older))
+        # v1 is read as v2; neither names Test Runs.
+        assert decoded.document["$schema"] == "booley.simulation-result/v2"
+        assert all("test_run" not in item for item in decoded.document["observations"])
+
+
+@pytest.mark.parametrize(
+    ("alter", "message"),
+    [
+        (lambda document: document["observations"][0].pop("test_run"), "exact fields"),
+        (lambda document: document["observations"][0].update(test_run=""), "test_run"),
+        (lambda document: document["observations"][0].update(test_run=7), "test_run"),
+        (
+            lambda document: document["observations"].append(
+                copy.deepcopy(document["observations"][0])
+            ),
+            "observation test names must be unique",
+        ),
+        (lambda document: document.update({"$schema": "booley.simulation-result/v4"}), "schema"),
+    ],
+)
+def test_result_v3_refusals(tmp_path: Path, alter, message):
+    from booley.flows.sim.campaign.codec import canonical_json_bytes, decode_simulation_result
+
+    document = _result_document(tmp_path)
+    alter(document)
+    with pytest.raises(SimulationCampaignIntegrityError, match=message):
+        decode_simulation_result(canonical_json_bytes(document))
+
+
+def test_a_v2_result_may_not_name_test_runs(tmp_path: Path):
+    from booley.flows.sim.campaign.codec import canonical_json_bytes, decode_simulation_result
+
+    document = _result_document(tmp_path)
+    document["$schema"] = "booley.simulation-result/v2"
+    with pytest.raises(SimulationCampaignIntegrityError, match="exact fields"):
+        decode_simulation_result(canonical_json_bytes(document))
+
+
+def test_a_result_naming_a_test_run_its_work_item_does_not_record_is_refused(tmp_path: Path):
+    from booley.flows.sim.campaign.store import _validate_result_test_runs
+
+    plan = _hdl_plan(tmp_path, ((_SOAK,),))
+    item = plan.manifest.document["work_items"][0]
+    _validate_result_test_runs(item, ({"test": "count", "test_run": "count+soak@42"},))
+    _validate_result_test_runs(item, ({"test": "count"},))  # a result before v3
+    with pytest.raises(SimulationCampaignIntegrityError, match="does not record"):
+        _validate_result_test_runs(item, ({"test": "count", "test_run": "count+soak@43"},))

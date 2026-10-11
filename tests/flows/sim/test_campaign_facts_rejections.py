@@ -198,6 +198,7 @@ def _v2_facts(*test_runs: tuple[str | None, object]) -> dict[str, object]:
         observation = _observation()
         observation["test"] = test
         observation["test_run"] = test_run
+        observation["test_run_fingerprint"] = "sha256:" + "9" * 64
         observations.append(observation)
     document["observations"] = observations
     return document
@@ -246,5 +247,20 @@ def test_v1_facts_still_decode_and_may_not_name_test_runs() -> None:
     assert "test_run" not in decoded.document["observations"][0]
 
     first["test_run"] = "smoke@1"
+    with pytest.raises(SimulationCampaignIntegrityError, match="exact fields"):
+        facts.decode_acceptance_facts(canonical_json_bytes(document))
+
+
+@pytest.mark.parametrize("fingerprint", [None, "", "sha256:short", "9" * 64])
+def test_v2_facts_reject_an_invalid_test_run_fingerprint(fingerprint: object) -> None:
+    document = _v2_facts(("stress", "stress@7"))
+    document["observations"][0]["test_run_fingerprint"] = fingerprint  # type: ignore[index]
+    with pytest.raises(SimulationCampaignIntegrityError):
+        facts.decode_acceptance_facts(canonical_json_bytes(document))
+
+
+def test_v2_facts_require_the_fingerprint_of_every_test_run() -> None:
+    document = _v2_facts(("stress", "stress@7"))
+    del document["observations"][0]["test_run_fingerprint"]  # type: ignore[index]
     with pytest.raises(SimulationCampaignIntegrityError, match="exact fields"):
         facts.decode_acceptance_facts(canonical_json_bytes(document))
