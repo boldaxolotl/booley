@@ -14,6 +14,7 @@ from booley.core.config_paths import resolve_booley_toml
 from booley.goals.baseline_objects import baseline_repository, cached_administration
 from booley.goals.committed_bytes import (
     ATTRIBUTES_CHANGED_ERROR,
+    CHECKOUT_ATTRIBUTES_MARKER,
     BytePolicy,
     attributes,
     byte_policy,
@@ -233,7 +234,21 @@ def materializations_unchanged(proof: dict[str, Any], current_roots: dict[str, A
         if attributes(path, row["pin"], names, ambient=True, policy=policy) != pinned:
             raise LifecycleError(ATTRIBUTES_CHANGED_ERROR)
         recorded = {"managed_rule": "", "info_attributes_sha256": "", **row["policy"]}
-        if policy.record() != recorded or digest(attrs_json(pinned)) != row["attributes_digest"]:
+        current = policy.record()
+        marker = recorded.get("checkout_attributes")
+        if marker is None:
+            current.pop("checkout_attributes")
+            pinned = {
+                name: {
+                    key: value
+                    for key, value in values.items()
+                    if key in {"text", "eol", "filter", "working-tree-encoding"}
+                }
+                for name, values in pinned.items()
+            }
+        elif marker != CHECKOUT_ATTRIBUTES_MARKER:
+            return False
+        if current != recorded or digest(attrs_json(pinned)) != row["attributes_digest"]:
             return False
     return True
 

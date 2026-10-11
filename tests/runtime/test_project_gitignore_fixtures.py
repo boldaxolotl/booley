@@ -33,3 +33,90 @@ def test_every_reinclude_follows_the_pattern_it_overrides() -> None:
             reinclude
         )
     assert missing_gitignore_patterns(PROJECT_GITIGNORE) == []
+
+
+@pytest.fixture
+def verbose_ignore(tmp_path, isolated_git_attributes):
+    import shutil
+    import subprocess
+
+    if shutil.which("git") is None:
+        pytest.skip("needs git for the canonical ignore oracle")
+
+    empty = tmp_path / "empty-excludes"
+    empty.write_text("", encoding="utf-8")
+
+    def git(*args):
+        return subprocess.run(
+            ["git", "-c", f"core.excludesFile={empty}", *args],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+        )
+
+    assert git("init", "-q").returncode == 0
+
+    def observe(patterns, path):
+        (tmp_path / ".gitignore").write_text("".join(f"{p}\n" for p in patterns), encoding="utf-8")
+        file = tmp_path / path
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_text("state\n", encoding="utf-8")
+        result = git("check-ignore", "--no-index", "-v", path)
+        assert result.returncode in {0, 1}
+        if not result.stdout:
+            return None
+        metadata, observed = result.stdout.rstrip("\n").split("\t")
+        assert observed == path
+        return metadata.split(":", 2)[2]
+
+    return observe
+
+
+@pytest.mark.parametrize(
+    ("path", "responsible"),
+    [
+        ("logs/authored.txt", "/logs/"),
+        ("cores/logs/authored.txt", None),
+        ("goals/g1/record.json", "goals/*/"),
+        ("goals/history/kept.md", None),
+        ("goals/history/tmp/state.json", "tmp/"),
+        ("foo/__pycache__/a.pyc", "__pycache__/"),
+        ("foo/a.pyc", "*.pyc"),
+        ("cores/runtime/state.json", "runtime/"),
+        ("cores/.managed/bundle.zip", ".managed/"),
+    ],
+)
+def test_responsible_canonical_pattern(path, responsible, verbose_ignore):
+    from booley.runtime.project_gitignore import (
+        is_project_transient_path,
+        project_transient_pattern,
+    )
+
+    assert verbose_ignore(PROJECT_GITIGNORE_PATTERNS, path) == responsible
+    assert project_transient_pattern(path) == responsible
+    assert is_project_transient_path(path) == (responsible is not None)
+
+
+@pytest.mark.parametrize(
+    ("patterns", "path", "responsible", "git_pattern"),
+    [
+        (("tmp/", "/tmp/"), "tmp/state.json", "/tmp/", "/tmp/"),
+        (("/tmp/", "tmp/"), "tmp/state.json", "tmp/", "tmp/"),
+        (("tmp/", "!tmp/"), "tmp/state.json", None, None),
+        (("!tmp/", "tmp/"), "tmp/state.json", "tmp/", "tmp/"),
+        (("tmp/", "!tmp/keep.json"), "tmp/keep.json", "tmp/", "tmp/"),
+        (("tmp/", "!tmp/", "*.json"), "tmp/state.json", "*.json", "*.json"),
+        (("*.json", "!*.json"), "state.json", None, "!*.json"),
+    ],
+)
+def test_responsible_order_matches_verbose_git(
+    patterns, path, responsible, git_pattern, monkeypatch, verbose_ignore
+):
+    from booley.runtime import project_gitignore as policy
+
+    monkeypatch.setattr(policy, "PROJECT_GITIGNORE_PATTERNS", patterns)
+    assert verbose_ignore(patterns, path) == git_pattern
+    assert policy.project_transient_pattern(path) == responsible
+    assert policy.is_project_transient_path(path) == (responsible is not None)
