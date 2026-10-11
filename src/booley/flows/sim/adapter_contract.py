@@ -20,6 +20,10 @@ class PreparedSimulationWork:
     eda_tool: str = ""
     max_rundir_bytes: int = 0
     plusargs: tuple[str, ...] = ()
+    #: Environment of this launch only (a Test Variant's ``env``); never a build input.
+    environment: tuple[tuple[str, str], ...] = ()
+    #: Seed the Cocotb adapter exports through cocotb's own seed variable.
+    cocotb_seed: int | None = None
     trace: bool = False
     trace_mode: str = "vcd_fifo"
     trace_scope: str = ""

@@ -81,6 +81,7 @@ from booley.flows.sim.request import SimRequest
 from booley.flows.sim.result import parse_summary_line
 from booley.flows.sim.run_guard import DEFAULT_SIM_TIME_GRACE_S
 from booley.flows.sim.verilator_coverage import SimulationExecutionPort
+from booley.flows.target_test_plan import TargetTestPlan
 from booley.fusesoc import fusesoc_registry
 from booley.runtime import job_slots
 from booley.runtime.endpoint_execution import (
@@ -192,6 +193,7 @@ from .execution import (
     SimulationTargetOutcome,
 )
 from .execution.artifacts import artifact_path_component as _artifact_path_component
+from .execution.engine import simulation_adapter_kind, target_test_plan
 from .mode import SimulationMode, normalize_simulation_mode
 from .standalone import StandaloneMixin, _StandaloneOutcome, _StandalonePlanRecipe
 from .target_tests import (
@@ -2408,6 +2410,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             return error
         if (error := self._validate_cocotb_targets(targets)) is not None:
             return error
+        if (error := self._validate_test_plans(targets)) is not None:
+            return error
         return self._validate_runnable_tests(targets, test_names_map)
 
     def run_prepared_simulation(
@@ -2759,6 +2763,10 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         cocotb_error = self._validate_cocotb_targets(targets)
         if cocotb_error is not None:
             return cocotb_error
+
+        plan_error = self._validate_test_plans(targets)
+        if plan_error is not None:
+            return plan_error
 
         runnable_error = self._validate_runnable_tests(targets, test_names_map)
         if runnable_error is not None:
@@ -6327,6 +6335,31 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                         "the `tests` list — remove the `select` key."
                     ),
                 )
+        return None
+
+    def _target_test_plan(self, target: str) -> TargetTestPlan:
+        """The Test Run plan of *target*, checked against its resolved ``.core``."""
+        handle = self._target_handle(target)
+        inspection = TargetCatalog.build(handle.project_root).inspect(handle)
+        adapter = simulation_adapter_kind(inspection.eda_tool, inspection.flow_options)
+        return target_test_plan(handle, adapter, inspection.parameters)
+
+    def _validate_test_plans(self, targets: list[str]) -> EndpointOutcome | None:
+        """Reject a tests.toml declaration its resolved Target cannot apply.
+
+        The loader cannot see the ``.core`` Target, so the checks that need it
+        (ADR 0072) run here before anything is built: a Test Variant that
+        overrides a Target plusarg, arguments or a ``seed`` template on a
+        Cocotb Target, and ``default_seed`` on a Target that cannot be seeded.
+        """
+        for target in targets:
+            try:
+                self._target_test_plan(target)
+            except fusesoc_registry.FuseSocError:
+                # Target resolution reports its own error on the run path.
+                continue
+            except ValueError as exc:
+                return EndpointOutcome(exit_code=EXIT_ERROR, report_text=f"sim: {exc}")
         return None
 
     def _validate_runnable_tests(

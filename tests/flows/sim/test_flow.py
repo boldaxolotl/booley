@@ -612,8 +612,8 @@ class _BoundaryHarness(SimulationExecution):
         )
         return prepared, TraceMode.VCD_FIFO
 
-    def _prepare_attempt(self, handle, test_names):
-        attempt = super()._prepare_attempt(handle, test_names)
+    def _prepare_attempt(self, handle, test_names, **kwargs):
+        attempt = super()._prepare_attempt(handle, test_names, **kwargs)
         self._attempt = attempt
         return attempt
 

@@ -24,18 +24,22 @@ import secrets
 import shlex
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
-from typing import cast
 
 from booley.config.tests_toml_rules import (
-    DEFAULT_VARIANT_KEY,
+    DEFAULT_SEED,
+    MAX_SEED,
     SEED_SEPARATOR,
     VARIANT_SEPARATOR,
-    EnvTableError,
+    SeedConfigurationError,
     TestRunNameError,
-    validate_env_table,
+    TestVariant,
+    TestVariantError,
+    TestVariantTable,
+    UnknownVariantError,
+    parse_test_variants,
+    validate_seed,
     validate_test_or_variant_name,
 )
-from booley.core.boundary import BoundaryError, as_dict, is_str_list, require_int
 
 __all__ = [
     "DEFAULT_SEED",
@@ -62,11 +66,6 @@ __all__ = [
     "rerun_command",
 ]
 
-#: The seed a Test Run uses when none is named. Never ``0``: Verilator reads
-#: ``+verilator+seed+0`` as "pick a seed at startup".
-DEFAULT_SEED = 1
-#: Largest seed Booley accepts or draws (a positive signed 32-bit value).
-MAX_SEED = 2**31 - 1
 #: Largest N of a multi-seed selector ``test@xN`` and of one seed draw.
 MAX_MULTI_SEED_COUNT = 1000
 
@@ -82,21 +81,8 @@ _MAX_NUMBER_DIGITS = 10
 _DRAW_ATTEMPTS_PER_SEED = 8
 _DRAW_ATTEMPTS_FLOOR = 64
 
-_VARIANT_TABLE_KEYS = ("args", "env")
-_ARGUMENT_PREFIXES = ("+", "-")
-
 # Every ``Test…`` class below sets ``__test__ = False``: "Test" is the domain
 # noun here, and pytest must not try to collect these when a test imports them.
-
-
-class TestVariantError(ValueError):
-    """One Test's Variant table in ``tests.toml`` is malformed."""
-
-    __test__ = False
-
-
-class UnknownVariantError(ValueError):
-    """A name refers to a Variant that the Test does not declare."""
 
 
 class UnseededTargetError(ValueError):
@@ -140,29 +126,6 @@ class TestSelector:
     test: str
     variant: str | None
     seed_form: SeedForm
-
-
-@dataclass(frozen=True)
-class TestVariant:
-    """One declared Variant: its run-time arguments and environment."""
-
-    __test__ = False
-
-    name: str
-    args: tuple[str, ...] = ()
-    #: ``(name, value)`` pairs sorted by name.
-    env: tuple[tuple[str, str], ...] = ()
-
-
-@dataclass(frozen=True)
-class TestVariantTable:
-    """The Variants one Test declares, in declaration order, and its default."""
-
-    __test__ = False
-
-    test: str
-    default: str
-    variants: tuple[TestVariant, ...]
 
 
 @dataclass(frozen=True)
@@ -290,12 +253,9 @@ def declared_inputs_fingerprint(args: tuple[str, ...], env: Mapping[str, str]) -
 def _require_seed(seed: object) -> int:
     """Return *seed* when it is a strict integer in ``1..MAX_SEED``."""
     try:
-        value = require_int(seed, field="seed")
-    except BoundaryError as exc:
+        return validate_seed(seed, where="seed")
+    except SeedConfigurationError as exc:
         raise TestRunNameError(str(exc)) from exc
-    if not 1 <= value <= MAX_SEED:
-        raise TestRunNameError(f"seed {value} is out of range 1..{MAX_SEED}")
-    return value
 
 
 def build_test_run(
@@ -330,93 +290,6 @@ def build_test_run(
         env=tuple(sorted(environment.items())),
         fingerprint=declared_inputs_fingerprint(tuple(args), environment),
     )
-
-
-def _parse_variant_args(raw: object, where: str) -> tuple[str, ...]:
-    """Validate a Variant's argument list: one option token per entry."""
-    if not is_str_list(raw):
-        raise TestVariantError(f"{where} arguments must be a list of strings")
-    arguments = cast(list[str], raw)
-    for argument in arguments:
-        if not argument.startswith(_ARGUMENT_PREFIXES):
-            raise TestVariantError(f"{where} argument {argument!r} must start with '+' or '-'")
-        if "\0" in argument or any(character.isspace() for character in argument):
-            raise TestVariantError(
-                f"{where} argument {argument!r} must be one token without "
-                "whitespace or NUL; declare each argument as its own list entry"
-            )
-    return tuple(arguments)
-
-
-def _parse_variant_env(raw: object, where: str) -> tuple[tuple[str, str], ...]:
-    """Validate a Test Variant's environment table of ``NAME = "value"`` pairs."""
-    try:
-        env = validate_env_table(raw, where=f"{where}.env")
-    except EnvTableError as exc:
-        raise TestVariantError(str(exc)) from exc
-    return tuple(sorted(env.items()))
-
-
-def _parse_variant(name: str, raw: object, where: str) -> TestVariant:
-    """Parse one Variant value: an argument list, or an ``args``/``env`` table."""
-    table = as_dict(raw)
-    if table is not None:
-        unknown = sorted(str(key) for key in table if key not in _VARIANT_TABLE_KEYS)
-        if unknown:
-            raise TestVariantError(
-                f"{where} has unknown key {unknown[0]!r}; a Test Variant table holds only args and env"
-            )
-        return TestVariant(
-            name=name,
-            args=_parse_variant_args(table.get("args", []), where),
-            env=_parse_variant_env(table.get("env", {}), where),
-        )
-    if isinstance(raw, list):
-        return TestVariant(name=name, args=_parse_variant_args(cast(list[object], raw), where))
-    raise TestVariantError(
-        f"{where} must be a list of arguments or a table with args and env, "
-        f"got {type(raw).__name__}"
-    )
-
-
-def parse_test_variants(test: str, raw: object, *, where: str | None = None) -> TestVariantTable:
-    """Parse and validate the Variant table of one Test.
-
-    *raw* is the TOML table: ``default = "<variant>"`` plus one entry per
-    Variant. *where* prefixes every message with the table's location (the
-    loader passes ``tests.toml [<target>].variants.<test>``).
-
-    Raises :class:`TestVariantError` for a malformed table,
-    :class:`TestRunNameError` for an invalid Variant name, and
-    :class:`UnknownVariantError` when ``default`` names no declared Variant.
-    """
-    where = where or f"variants.{test}"
-    table = as_dict(raw)
-    if table is None:
-        raise TestVariantError(f"{where} must be a table of Test Variants")
-    if DEFAULT_VARIANT_KEY not in table:
-        raise TestVariantError(
-            f'{where} must name its default Test Variant: add default = "<variant>"'
-        )
-    default = table[DEFAULT_VARIANT_KEY]
-    if not isinstance(default, str):
-        raise TestVariantError(f"{where}.default must be the name of a Test Variant (a string)")
-    variants: list[TestVariant] = []
-    for key, value in table.items():
-        if key == DEFAULT_VARIANT_KEY:
-            continue
-        try:
-            name = validate_test_or_variant_name(key, kind="Test Variant")
-        except TestRunNameError as exc:
-            raise TestRunNameError(f"{where}: {exc}") from exc
-        variants.append(_parse_variant(name, value, f"{where}.{name}"))
-    declared = [variant.name for variant in variants]
-    if default not in declared:
-        raise UnknownVariantError(
-            f"{where}.default names {default!r}, which is not a declared Test Variant "
-            f"(declared: {', '.join(declared) or 'none'})"
-        )
-    return TestVariantTable(test=test, default=default, variants=tuple(variants))
 
 
 def draw_seeds(

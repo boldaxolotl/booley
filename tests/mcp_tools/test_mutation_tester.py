@@ -89,6 +89,14 @@ def _write_dut_top(tmp_path: Path, top: str = "design_top") -> Path:
     return f
 
 
+def _write_tests_toml(root: Path, text: str) -> None:
+    """Give the checkout at *root* a Project directory with this ``tests.toml``."""
+    project = root / ".booley_project"
+    project.mkdir(exist_ok=True)
+    (project / "booley.toml").write_text('[project]\nname = "demo"\n', encoding="utf-8")
+    (project / "tests.toml").write_text(text, encoding="utf-8")
+
+
 def _make_endpoint(
     tmp_path: Path,
     monkeypatch=None,
@@ -871,13 +879,9 @@ def test_sim_runs_every_configured_test_selector(tmp_path: Path, monkeypatch):
         "booley.specialists.mutation_tester.subprocess.run",
         _fake_run,
     )
-    monkeypatch.setattr(
-        "booley.specialists.mutation_tester.project_config.TEST_NAMES",
-        {"default": ["coremark.elf", "smoke.elf"]},
-    )
-    monkeypatch.setattr(
-        "booley.specialists.mutation_tester.project_config.render_test_selector",
-        lambda target, index, name: f"--meminit=ram,{name}",
+    _write_tests_toml(
+        tmp_path,
+        '[default]\ntests = ["coremark.elf", "smoke.elf"]\nselect = "--meminit=ram,{name}"\n',
     )
 
     endpoint = _make_endpoint(tmp_path, monkeypatch)
@@ -890,6 +894,62 @@ def test_sim_runs_every_configured_test_selector(tmp_path: Path, monkeypatch):
     assert [run.test_name for run in runs] == ["coremark.elf", "smoke.elf"]
     assert "--plusarg=--meminit=ram,coremark.elf" in sim_cmds[0]
     assert "--plusarg=--meminit=ram,smoke.elf" in sim_cmds[1]
+
+
+def _mutation_sim_runs(tmp_path: Path, monkeypatch, tests_toml: str, eda_tool: str | None = None):
+    """Run the declared suite of ``default`` once; return ``(argv, env)`` per sim."""
+    captured: list[tuple[list[str], dict[str, str]]] = []
+
+    def _fake_run(cmd, *args, **kwargs):
+        captured.append((list(cmd), dict(kwargs.get("env") or {})))
+        return _fake_proc(rc=0, stdout="[ok]", stderr="")
+
+    _patch_resolve_target(monkeypatch)
+    monkeypatch.setattr("booley.specialists.mutation_tester.subprocess.run", _fake_run)
+    _write_tests_toml(tmp_path, tests_toml)
+    endpoint = _make_endpoint(tmp_path, monkeypatch)
+    if eda_tool is not None:
+        monkeypatch.setattr(endpoint, "target_eda_tool", lambda *_args, **_kwargs: eda_tool)
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+    endpoint._run_elab("default", tmp_path, build_dir)
+    endpoint._run_target_test_suite("default", tmp_path, build_dir, "tb")
+    return captured[1:]
+
+
+_MUTATION_VARIANTS = """
+[default]
+tests = ["reset", "stress"]
+select = "+test={name}"
+default_seed = 7
+
+[default.variants.stress]
+default = "short"
+short = { args = ["+iters=1000"], env = { STRESS_MODE = "short" } }
+soak = ["+iters=100000"]
+"""
+
+
+def test_sim_runs_the_default_variant_at_the_default_seed(tmp_path: Path, monkeypatch):
+    """A mutant is graded by the same Test Runs a plain Simulation Flow run uses."""
+    monkeypatch.delenv("STRESS_MODE", raising=False)
+    runs = _mutation_sim_runs(tmp_path, monkeypatch, _MUTATION_VARIANTS, "verilator")
+
+    plusargs = [[word for word in cmd if word.startswith("--plusarg=")] for cmd, _env in runs]
+    assert plusargs == [
+        ["--plusarg=test=reset", "--plusarg=verilator+seed+7"],
+        ["--plusarg=test=stress", "--plusarg=iters=1000", "--plusarg=verilator+seed+7"],
+    ]
+    assert [env.get("STRESS_MODE") for _cmd, env in runs] == [None, "short"]
+
+
+def test_sim_on_an_unseeded_target_passes_no_seed(tmp_path: Path, monkeypatch):
+    runs = _mutation_sim_runs(
+        tmp_path, monkeypatch, '[default]\ntests = ["reset"]\nselect = "+test={name}"\n', "icarus"
+    )
+    assert [word for word in runs[0][0] if word.startswith("--plusarg=")] == [
+        "--plusarg=test=reset"
+    ]
 
 
 def test_sim_selector_resolves_vlnv_qualified_target(tmp_path: Path, monkeypatch):
@@ -911,13 +971,9 @@ def test_sim_selector_resolves_vlnv_qualified_target(tmp_path: Path, monkeypatch
         "booley.specialists.mutation_tester.subprocess.run",
         _fake_run,
     )
-    monkeypatch.setattr(
-        "booley.specialists.mutation_tester.project_config.TEST_NAMES",
-        {"default": ["coremark.elf", "smoke.elf"]},
-    )
-    monkeypatch.setattr(
-        "booley.specialists.mutation_tester.project_config.render_test_selector",
-        lambda target, index, name: f"--meminit=ram,{name}",
+    _write_tests_toml(
+        tmp_path,
+        '[default]\ntests = ["coremark.elf", "smoke.elf"]\nselect = "--meminit=ram,{name}"\n',
     )
 
     endpoint = _make_endpoint(tmp_path, monkeypatch)
@@ -932,10 +988,7 @@ def test_sim_selector_resolves_vlnv_qualified_target(tmp_path: Path, monkeypatch
 
 
 def test_target_suite_accepts_vlnv_qualified_target(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr(
-        "booley.specialists.mutation_tester.project_config.TEST_NAMES",
-        {"default": ["test_a", "test_b"]},
-    )
+    _write_tests_toml(tmp_path, '[default]\ntests = ["test_a", "test_b"]\n')
     endpoint = _make_endpoint(tmp_path, monkeypatch)
     assert endpoint._target_test_suite("lib:ip:core#default").tests == (
         "test_a",
@@ -1652,10 +1705,7 @@ class TestCocotbSimDispatch:
         )
         _patch_resolve_target(monkeypatch)
         _patch_cocotb_target(monkeypatch, module="tb.test_noc")
-        monkeypatch.setattr(
-            "booley.specialists.mutation_tester.project_config.TEST_NAMES",
-            {"default": ["test_a", "test_b"]},
-        )
+        _write_tests_toml(tmp_path, '[default]\ntests = ["test_a", "test_b"]\n')
 
         endpoint = _make_endpoint(tmp_path, monkeypatch)
         build_dir = tmp_path / "build"

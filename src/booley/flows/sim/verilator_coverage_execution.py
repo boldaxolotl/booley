@@ -56,6 +56,7 @@ from booley.flows.sim.execution.contract import (
     pre_sim_failure_message,
 )
 from booley.flows.sim.execution.engine import (
+    launch_environment,
     prepare_simulation_work,
     simulation_target_environment,
 )
@@ -416,7 +417,10 @@ class VerilatorCoverageExecution:
         pre_sim: PreSimEvidence | None,
     ) -> SimulationRunResult:
         invocation = prepare_adapter_invocation(work)
-        environment = {**simulation_target_environment(self._handle), **request.environment}
+        environment = {
+            **launch_environment(simulation_target_environment(self._handle), work),
+            **request.environment,
+        }
         script = _environment_script(environment, invocation)
         script = _in_directory_script(self._handle.project_root, script)
         observe_stage(
