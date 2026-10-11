@@ -20,3 +20,21 @@ def test_rules_do_not_claim_red_first_is_enforced() -> None:
     rules = goal_mode_rules()
     assert "needs a recorded failing run" not in rules
     assert "fail -> pass" not in rules
+
+
+def test_rules_distinguish_routed_calls_from_tools_without_work_dir() -> None:
+    rules = goal_mode_rules()
+    assert "every Booley call" not in rules
+    assert "`booley_targets`" in rules
+    assert "`booley_report`" in rules
+    for name in (
+        "booley_status",
+        "booley_poll",
+        "booley_cancel",
+        "booley_sleep",
+        "coverage_evidence",
+        "bwave",
+    ):
+        assert f"`{name}`" in rules
+    assert "accept no `work_dir`" in rules
+    assert "Project-defined endpoints" in rules

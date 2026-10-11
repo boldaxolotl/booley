@@ -285,8 +285,13 @@ Each test gets one verdict:
   reported as not observed.
 
 Goal Mode translates Goals into evidence keys. Ordinary Interactive Mode runs
-report verdicts without a Goal Record. In an active Goal worktree, pass
-`work_dir` on every MCP call so Booley can bind evidence to that record.
+report verdicts without a Goal Record. In an active Goal worktree, pass its
+absolute root as `work_dir` to Booley Flows, Specialists, Goal tools,
+`booley_targets`, and `booley_report` so calls select that worktree.
+`booley_status`, `booley_poll`, `booley_cancel`, `booley_sleep`,
+`coverage_evidence`, and `bwave` accept no `work_dir`. See
+[worktree routing](USAGE.md#working-with-evidence) for the built-in inventory
+and the explicit-routing requirement, including Project-defined endpoints.
 
 - `sim_pass_<target>` requires the Target's full registered simulation suite.
   Passing a hand-picked subset does not meet this Goal.

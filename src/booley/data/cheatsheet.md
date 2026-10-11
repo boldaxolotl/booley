@@ -64,7 +64,14 @@ Specialist evidence at the current code.
 | `booley goal status` | Inspect local records |
 | `booley dashboard` | Sessions, Goals, and Jobs inside the Sandbox |
 
-Pass `work_dir` on every Booley call. Resume saved proposal and Finish IDs
+Pass the absolute worktree root as `work_dir` to Booley Flows, Specialists,
+Goal tools, `booley_targets`, and `booley_report`. `booley_status`,
+`booley_poll`, `booley_cancel`, `booley_sleep`, `coverage_evidence`, and
+`bwave` accept no `work_dir`. While a Goal Record occupies the Project,
+endpoint dispatch (including Project-defined endpoints), `booley_report`,
+and Goal tools require it; `booley_targets` accepts it but does not require it.
+A Project-defined endpoint whose schema lacks `work_dir` cannot run under
+that condition. Resume saved proposal and Finish IDs
 rather than editing records. Protected Input changes block Finish until
 reverted. Open `done` review findings remain visible; Finish does not merge.
 Project-owned Goalsets live under `goalsets/`; `default.md` applies unless the

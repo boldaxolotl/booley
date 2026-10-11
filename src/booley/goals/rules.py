@@ -11,14 +11,23 @@ from __future__ import annotations
 
 from booley.goals.protected_inputs import PROTECTED_INPUT_NAMES
 
+WORK_DIR_GUIDANCE = (
+    "Pass `work_dir` (the absolute worktree root) to Booley Flows, Specialists, "
+    "Goal tools, `booley_targets`, and `booley_report`. "
+    "`booley_status`, `booley_poll`, `booley_cancel`, `booley_sleep`, "
+    "`coverage_evidence`, and `bwave` accept no `work_dir`."
+)
+
 
 def goal_mode_rules() -> str:
     """The Goal Mode rules as Markdown bullets, ending with a newline."""
     protected = ", ".join(f"`{name}`" for name in PROTECTED_INPUT_NAMES)
     bullets = (
-        "Pass `work_dir` (this worktree's root) on every Booley call. While any Goal "
-        "Mode is active, a Booley Flow, Specialist, or Goal call without `work_dir` is "
-        "refused.",
+        WORK_DIR_GUIDANCE + " While any Goal Record occupies the Project, endpoint "
+        "dispatch (including Project-defined endpoints), `booley_report`, and Goal "
+        "tools require explicit `work_dir`. A Project-defined endpoint whose schema "
+        "lacks `work_dir` cannot run under that condition. `booley_targets` accepts "
+        "`work_dir` but does not require it.",
         "Only Booley Flows and Specialists produce evidence. Nothing you write or "
         "report meets a Goal.",
         f"Protected inputs: {protected}. Editing one blocks Finish until it is "
