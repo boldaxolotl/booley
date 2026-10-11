@@ -14,7 +14,8 @@ from booley.mcp.project_flow_loader import ProjectFlowLoadError, load_project_fl
 def test_failed_load_removes_module_and_restores_search_path(
     tmp_path: Path, scenario: str
 ) -> None:
-    path = tmp_path / "project_flow.py"
+    # Unique stem: other tests in the same worker keep a loaded ``project_flow`` module.
+    path = tmp_path / "loader_failure_case.py"
     source = "from booley.flows.base import BooleyFlow\n"
     if scenario in {"two", "mismatch", "constructor"}:
         source += "class First(BooleyFlow):\n    name = 'chosen'\n    def _add_args(self, parser): pass\n"
@@ -26,7 +27,7 @@ def test_failed_load_removes_module_and_restores_search_path(
         source += "    def __init__(self):\n        raise RuntimeError('constructor failed')\n"
     if scenario != "missing":
         path.write_text(source)
-    module_name = "_booley_ticket_flow_project_flow"
+    module_name = "_booley_ticket_flow_loader_failure_case"
     before = list(sys.path)
     with pytest.raises(
         RuntimeError if scenario in {"execution", "constructor"} else ProjectFlowLoadError
