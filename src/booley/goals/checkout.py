@@ -13,6 +13,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from booley.runtime.git_environment import inherited_git_environment
+
 # Generous for checkout in a large repository, still bounded.
 GIT_TIMEOUT_S = 120
 _BRANCH_REF_PREFIX = "refs/heads/"
@@ -42,6 +44,7 @@ class GoalCheckout:
             result = subprocess.run(
                 ["git", *args],
                 cwd=self.root,
+                env=inherited_git_environment(),
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -100,6 +103,7 @@ class GoalCheckout:
             result = subprocess.run(
                 ["git", *args],
                 cwd=self.root,
+                env=inherited_git_environment(),
                 capture_output=True,
                 timeout=GIT_TIMEOUT_S,
                 check=False,

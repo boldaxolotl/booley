@@ -30,6 +30,7 @@ from booley.harness.setup.project_git_hook_bundle import (
     _source_package_root,
     build_project_git_hook_bundle,
 )
+from booley.runtime.git_environment import inherited_git_environment
 from booley.runtime.project_dir import resolve_project_dir
 
 _LEGACY_MANAGED_HOOKS = (
@@ -245,6 +246,7 @@ def _locations(ctx: InitContext) -> _Locations | None:
             text=True,
             timeout=10,
             check=False,
+            env=inherited_git_environment(),
         )
     except subprocess.TimeoutExpired:
         skip("could not resolve Git hooks path within 10 seconds")
@@ -529,20 +531,7 @@ def _pending_detail(
 
 def _tracking_git(directory: Path, *args: str) -> subprocess.CompletedProcess[str]:
     """Inspect the owning repository without ambient repository overrides."""
-    env = os.environ.copy()
-    for name in (
-        "GIT_DIR",
-        "GIT_COMMON_DIR",
-        "GIT_WORK_TREE",
-        "GIT_INDEX_FILE",
-        "GIT_OBJECT_DIRECTORY",
-        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-        "GIT_PREFIX",
-        "GIT_CEILING_DIRECTORIES",
-        "GIT_DISCOVERY_ACROSS_FILESYSTEM",
-        "GIT_ATTR_SOURCE",
-    ):
-        env.pop(name, None)
+    env = inherited_git_environment()
     env["LC_ALL"] = "C"
     return subprocess.run(
         ["git", "-C", str(directory), "--literal-pathspecs", *args],

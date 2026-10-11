@@ -1407,3 +1407,29 @@ def test_old_git_unexpanded_attribute_paths_are_refused(tmp_path, monkeypatch, v
         report = reconcile_project_line_endings(root, data, mode=LineEndingMode.REPAIR)
     assert report.status is LineEndingStatus.UNSAFE
     assert not (root / ".git/info/attributes").exists()
+
+
+def test_init_repair_attribute_queries_ignore_attribute_source_oid(tmp_path, monkeypatch):
+    root = _crlf_repo(tmp_path / "root")
+    pin = _git(root, "rev-parse", "HEAD").stdout.strip().decode()
+    _commit_file(root, ".gitattributes", b"a.v ident\n")
+    poison = _git(root, "rev-parse", "HEAD^{tree}").stdout.strip().decode()
+    assert _git(root, "reset", "--hard", pin).returncode == 0
+    (root / "a.v").unlink()
+    assert _git(root, "checkout", "--", "a.v").returncode == 0
+    expected, error = line_endings._candidate_git_state(root, "a.v")
+    assert error is None
+    observed = []
+    original = line_endings._candidate_git_state
+
+    def inspect(repository, name):
+        state, error = original(repository, name)
+        observed.append(state)
+        return state, error
+
+    monkeypatch.setattr(line_endings, "_candidate_git_state", inspect)
+    monkeypatch.setenv("GIT_ATTR_SOURCE", poison)
+    report = reconcile_project_line_endings(root, None, mode=LineEndingMode.REPAIR)
+    assert report.status is LineEndingStatus.SAFE
+    assert observed and all(state[1] == expected[1] for state in observed)
+    assert (root / "a.v").read_bytes() == b"module a;\nendmodule\n"

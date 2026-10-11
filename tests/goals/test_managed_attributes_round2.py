@@ -1,4 +1,4 @@
-"""System policy symmetry, Init ownership, and content-free Finish proofs."""
+"""System policy isolation, Init ownership, and content-free Finish proofs."""
 
 import hashlib
 import json
@@ -93,31 +93,34 @@ def test_shadow_system_switch_preserves_live_environment(tmp_path, monkeypatch, 
     monkeypatch.delenv("GIT_ATTR_NOSYSTEM", raising=False)
     content = GITATTRIBUTES_RULE.encode() + b"\n" if managed else b""
     with shadow_repository(root, content) as (_, env):
-        assert env.get("GIT_ATTR_NOSYSTEM") == ("1" if managed else None)
+        assert env["GIT_ATTR_NOSYSTEM"] == "1"
 
 
-def test_no_managed_policy_projects_real_system_attributes_and_recovers_old_proof(
-    tmp_path, system_attributes
-):
+@pytest.mark.parametrize("rule", ["text eol=crlf", "text eol=lf", "ident", "crlf"])
+def test_no_managed_policy_refuses_real_system_attributes(tmp_path, system_attributes, rule):
     root, scratch = captured(tmp_path)
-    system_attributes.write_bytes(b"* text eol=crlf\n")
-    (root / "rtl.v").unlink()
-    git(root, "checkout-index", "--all", "--force")
+    system_attributes.write_text("* " + rule + "\n")
+    with pytest.raises(LifecycleError, match="unsupported ambient input attributes;"):
+        export(root, scratch)
+
+
+def test_legacy_system_checkout_policy_fails_closed(tmp_path, system_attributes):
+    root, scratch = captured(tmp_path)
     rows = export(root, scratch)
-    assert (scratch / "view/rtl.v").read_bytes() == (root / "rtl.v").read_bytes() == b"design\r\n"
-    del rows[0]["policy"]["managed_rule"]
-    del rows[0]["policy"]["info_attributes_sha256"]
+    rows[0]["policy"].pop("checkout_attributes")
+    old_attrs = {
+        "rtl.v": dict.fromkeys(("text", "eol", "filter", "working-tree-encoding"), "unspecified")
+    }
+    from booley.goals.proposals import digest
+
+    old_attrs["rtl.v"].update(text="set", eol="crlf")
+    rows[0]["attributes_digest"] = digest(old_attrs)
+    system_attributes.write_bytes(b"* text eol=crlf\n")
     roots = root_bindings({"rtl": root, "project": root})
-    assert materializations_unchanged(
-        {"committed_materializations": rows, "path_roots": roots}, roots
-    )
-
-
-def test_no_managed_policy_finish_accepts_real_system_attributes(layout, system_attributes):
-    layout.record = enter_goals(layout, [{"family": "lint", "target": "top"}])
-    publish(layout)
-    system_attributes.write_bytes(b"* text eol=lf\n")
-    assert finish_goal(request(layout), environment(layout))["status"] == "finished"
+    with pytest.raises(LifecycleError, match="attributes changed during finish"):
+        materializations_unchanged(
+            {"committed_materializations": rows, "path_roots": roots}, roots
+        )
 
 
 @pytest.mark.parametrize("content", [None, b"", b"# only a comment\n\t\r\n", b"* text eol=crlf\n"])
@@ -252,7 +255,13 @@ def test_proof_omits_local_comments_but_detects_their_drift(tmp_path):
     assert rows[0]["policy"]["managed_rule"] == GITATTRIBUTES_RULE
     assert rows[0]["policy"]["info_attributes_sha256"] == hashlib.sha256(content).hexdigest()
     assert "private local context" not in json.dumps(rows)
-    assert set(rows[0]["policy"]) == {"autocrlf", "eol", "managed_rule", "info_attributes_sha256"}
+    assert set(rows[0]["policy"]) == {
+        "autocrlf",
+        "eol",
+        "managed_rule",
+        "info_attributes_sha256",
+        "checkout_attributes",
+    }
     info.write_bytes(content.replace(b"private local context", b"another local comment"))
     roots = root_bindings({"rtl": root, "project": root})
     assert not materializations_unchanged(

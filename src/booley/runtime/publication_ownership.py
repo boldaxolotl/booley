@@ -11,6 +11,7 @@ from typing import Any
 from uuid import uuid4
 
 from booley.runtime.atomic_files import fsync_directory
+from booley.runtime.git_environment import inherited_git_environment
 from booley.runtime.history_commit import FileCommitError
 
 
@@ -77,7 +78,7 @@ class PublicationOwnership:
         result = subprocess.run(
             ["git", "check-ignore", "--no-index", "-q", "--", relative],
             cwd=root,
-            env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+            env={**inherited_git_environment(), "GIT_OPTIONAL_LOCKS": "0"},
             capture_output=True,
             timeout=60,
             check=False,

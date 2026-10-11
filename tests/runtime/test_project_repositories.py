@@ -169,3 +169,20 @@ def test_paired_identity_filesystem_error_has_typed_repository_context(tmp_path,
     monkeypatch.setattr(Path, "samefile", unavailable)
     with pytest.raises(RepositoryCheckoutError, match=r"cannot be resolved.*identity unavailable"):
         paired_project_repository(outer)
+
+
+def test_repository_inspection_ignores_foreign_selectors(tmp_path, monkeypatch):
+    from tests.goals.test_attribute_projection import hostile
+
+    from booley.runtime.project_repositories import git_directories, run_git
+
+    intended = _repository(tmp_path)
+    parent = tmp_path / "foreign-parent"
+    parent.mkdir()
+    foreign = _repository(parent, branch="foreign")
+    before = git_directories(intended)
+    for key, value in hostile(foreign).items():
+        monkeypatch.setenv(key, value)
+    assert inspect_symbolic_branch(intended).branch == "release/next"
+    assert git_directories(intended) == before
+    assert Path(run_git(intended, "rev-parse", "--show-toplevel").stdout.strip()) == intended
