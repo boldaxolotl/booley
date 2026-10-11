@@ -13,6 +13,7 @@ from booley.criteria.evidence_ledger import validated_evidence_records
 from booley.criteria.state import DevelopmentState
 from booley.flows.sim.campaign.codec import MANIFEST_MAX_BYTES, decode_simulation_campaign_manifest
 from booley.goals.derivation import selected_observations
+from booley.goals.generated_artifacts import committed_only_inputs
 from booley.goals.input_view import GeneratedBuildInput, is_always_committed_input
 from booley.goals.lifecycle import LifecycleError
 from booley.goals.model import GoalRecord
@@ -21,7 +22,6 @@ from booley.goals.recorder import GOAL_SCOPE
 from booley.goals.review_package import original_observations
 from booley.runtime.regular_file import open_regular_nofollow
 from booley.targets.catalog import TargetCatalog
-from booley.targets.declared_inputs import committed_only_inputs
 
 
 def generated_inputs(

@@ -132,18 +132,19 @@ def _compatibility_fixture(tmp_path):
     from tests.goals.conftest import git
 
     git(tmp_path, "init", "-q")
+    # The golden digests cover these bytes, so no platform newline translation.
     (tmp_path / ".git/info/exclude").write_text("data.hex\n")
     (tmp_path / ".booley_project").mkdir()
-    (tmp_path / ".booley_project/booley.toml").write_text(
-        '[flows.sim]\npre_run_commands = ["python3 build.py"]\n'
+    (tmp_path / ".booley_project/booley.toml").write_bytes(
+        b'[flows.sim]\npre_run_commands = ["python3 build.py"]\n'
     )
-    (tmp_path / ".booley_project/tests.toml").write_text('[top]\ntests = ["smoke"]\n')
-    (tmp_path / "design.core").write_text(
-        "CAPI=2:\nname: ::design:0\nfilesets:\n"
-        "  rtl: {files: [dut.v, {data.hex: {file_type: user}}], file_type: verilogSource}\n"
-        "  tb: {files: [tb.py], file_type: user, tags: [tb]}\n"
-        "targets:\n  top: {filesets: [rtl, tb], toplevel: dut}\n"
-        "scripts:\n  prepare: {cmd: [python3, build.py]}\n"
+    (tmp_path / ".booley_project/tests.toml").write_bytes(b'[top]\ntests = ["smoke"]\n')
+    (tmp_path / "design.core").write_bytes(
+        b"CAPI=2:\nname: ::design:0\nfilesets:\n"
+        b"  rtl: {files: [dut.v, {data.hex: {file_type: user}}], file_type: verilogSource}\n"
+        b"  tb: {files: [tb.py], file_type: user, tags: [tb]}\n"
+        b"targets:\n  top: {filesets: [rtl, tb], toplevel: dut}\n"
+        b"scripts:\n  prepare: {cmd: [python3, build.py]}\n"
     )
     (tmp_path / "dut.v").write_bytes(b"module dut; endmodule\n")
     (tmp_path / "data.hex").write_bytes(b"0011\n")

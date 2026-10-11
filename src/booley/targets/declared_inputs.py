@@ -4,15 +4,11 @@ from __future__ import annotations
 
 import re
 import shlex
-import tomllib
 from collections.abc import Iterable, Iterator, Mapping
 from pathlib import Path, PurePosixPath
 from typing import cast
 
 from booley.core.boundary import as_dict
-from booley.fusesoc.fusesoc_registry import core_files_root, discover_cores, read_core
-from booley.runtime.project_dir import resolve_checkout_project_dir
-from booley.targets.catalog import TargetCatalog
 
 HDL_SUFFIXES = frozenset({".v", ".vh", ".sv", ".svh", ".vhd", ".vhdl"})
 
@@ -315,37 +311,3 @@ def _looks_like_program_path(path: PurePosixPath, token: str) -> bool:
         or "/" in token
         or "\\" in token
     )
-
-
-def committed_only_inputs(
-    root: Path, catalog: TargetCatalog, target: str | None, *, include_missing: bool = False
-) -> frozenset[Path]:
-    """Runtime HDL and declared programs never acquire a generated exemption."""
-    handles = catalog.list() if target is None else (catalog.select(target),)
-    paths = {
-        (root / item.path).resolve()
-        for handle in handles
-        for item in catalog.inspect(handle).inputs
-        if item.file_type.startswith(("verilogSource", "systemVerilogSource", "vhdlSource"))
-    }
-    cores = discover_cores(root) if target is None else catalog.core_closure(handles) or ()
-    for core in cores:
-        paths.update(
-            core_program_paths(
-                read_core(core),
-                core_file=core,
-                project_root=root,
-                files_root=core_files_root(core, root),
-                include_missing=include_missing,
-            )
-        )
-    config = resolve_checkout_project_dir(root) / "booley.toml"
-    if config.is_file():
-        paths.update(
-            project_config_program_paths(
-                tomllib.loads(config.read_text(encoding="utf-8")),
-                project_root=root,
-                include_missing=include_missing,
-            )
-        )
-    return frozenset(paths)

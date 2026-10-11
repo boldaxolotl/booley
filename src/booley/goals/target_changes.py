@@ -2,7 +2,7 @@
 
 import copy
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from booley.config.project_config import load_test_configuration, lookup_target_section
 from booley.goals.model import GoalRecord
@@ -69,8 +69,10 @@ def project_target_changes(
     for row in result:
         for side, excluded in (("before", before_excluded), ("after", after_excluded)):
             surface = row.get(side)
-            if isinstance(surface, dict) and isinstance(surface.get("filesets"), list):
-                surface["filesets"] = [
-                    item for item in surface["filesets"] if item["path"] not in excluded
-                ]
+            if not isinstance(surface, dict):
+                continue
+            document = cast("dict[str, Any]", surface)
+            if isinstance(document.get("filesets"), list):
+                filesets = cast("list[Any]", document["filesets"])
+                document["filesets"] = [item for item in filesets if item["path"] not in excluded]
     return result

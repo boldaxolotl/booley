@@ -5,13 +5,14 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from booley.criteria.evidence_ledger import canonical_json, validated_evidence_records
 from booley.criteria.state import DevelopmentState
 from booley.goals.changes import read_change_log
 from booley.goals.derivation import selected_observations
 from booley.goals.format import format_met_goal_metric
+from booley.goals.generated_artifacts import inventory_files
 from booley.goals.lifecycle import LifecycleError
 from booley.goals.model import GoalRecord
 from booley.goals.paths import record_paths
@@ -230,13 +231,14 @@ def _contains_omitted_inventory(value: Any, omitted: frozenset[str]) -> bool:
     if not omitted:
         return False
     if isinstance(value, dict):
-        stamp = value.get("_source_fingerprint")
+        document = cast("dict[str, Any]", value)
+        stamp: Any = document.get("_source_fingerprint")
         if isinstance(stamp, dict):
+            fingerprint: Any = cast("dict[str, Any]", stamp).get("fingerprint", {})
             for category in ("rtl", "tb", "workload", "campaign", "target_surface"):
-                files = stamp.get("fingerprint", {}).get(category, {}).get("files", [])
-                if any(name in omitted for name in files):
+                if any(name in omitted for name in inventory_files(fingerprint, category)):
                     return True
-        return any(_contains_omitted_inventory(item, omitted) for item in value.values())
+        return any(_contains_omitted_inventory(item, omitted) for item in document.values())
     if isinstance(value, list):
-        return any(_contains_omitted_inventory(item, omitted) for item in value)
+        return any(_contains_omitted_inventory(item, omitted) for item in cast("list[Any]", value))
     return False

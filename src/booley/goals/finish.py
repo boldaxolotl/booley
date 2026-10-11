@@ -24,6 +24,7 @@ from booley.goals.completion_history import (
 from booley.goals.finish_presentation import freeze_presentation, frozen_response, html_bytes
 from booley.goals.freshness import DEFAULT_RESOLVERS, RESOLVER_ERRORS, GoalFreshnessResolvers
 from booley.goals.generated_artifacts import (
+    ArtifactEpoch,
     artifact_epoch,
     presentation_exclusions,
     retained_presentation_inputs,
@@ -316,8 +317,10 @@ def _build_frozen_package_checked(
     )
     policy = any(goal.spec.target is None for goal in record.goals)
     resolvers = alias_resolvers(record, selection, operation.store.project_dir, env.resolvers)
-    excluded = resolvers.select_artifacts(selection.rtl, None) if policy else frozenset()
-    resolvers = replace(resolvers, artifact_paths=lambda root: excluded)
+    excluded: frozenset[Path] = (
+        resolvers.select_artifacts(selection.rtl, None) if policy else frozenset()
+    )
+    resolvers = resolvers.with_artifacts(excluded)
     with committed_view(
         selection, record, control_project=operation.store.project_dir, baseline=True
     ) as base:
@@ -356,7 +359,14 @@ def _build_frozen_package_checked(
     ), proof
 
 
-def _project_completion_changes(operation, record, state, final, before_epoch, changes):
+def _project_completion_changes(
+    operation: LifecycleOperation,
+    record: GoalRecord,
+    state: DevelopmentState,
+    final: CommittedView,
+    before_epoch: ArtifactEpoch | None,
+    changes: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], frozenset[str]]:
     """Apply Goal presentation policy only after resolving the raw semantic delta."""
     if before_epoch is None:
         return changes, frozenset()

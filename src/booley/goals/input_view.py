@@ -638,11 +638,17 @@ def committed_resolvers(
                     break
         return value
 
+    def surface(
+        root: Path, target: str | None, *, artifact_paths: frozenset[Path] = frozenset()
+    ) -> dict[str, Any]:
+        return _logical_surface(view, root, target, artifact_paths=artifact_paths)
+
+    def artifacts(root: Path) -> frozenset[Path]:
+        return frozenset(view.mapped(path).resolve() for path in excluded)
+
     return GoalFreshnessResolvers(
-        policy_surface=lambda root, target, **kwargs: _logical_surface(
-            view, root, target, **kwargs
-        ),
-        artifact_paths=lambda root: frozenset(view.mapped(path).resolve() for path in excluded),
+        policy_surface=surface,
+        artifact_paths=artifacts,
         waiver_policy=waiver,
         waiver_semantics=live.waiver_semantics,
     )
@@ -656,12 +662,12 @@ def validate_committed(
     generated: tuple[GeneratedBuildInput, ...] = (),
 ) -> None:
     """Prove consumed design files exist in the committed representation, then freshness."""
-    excluded = (
+    excluded: frozenset[Path] = (
         live.artifact_paths(view.selection.rtl)
         if any(goal.spec.target is None for goal in record.goals)
         else frozenset()
     )
-    operation = replace(live, artifact_paths=lambda root: excluded)
+    operation = live.with_artifacts(excluded)
     resolvers = committed_resolvers(view, live, excluded)
     for goal in record.goals:
         target = goal.spec.target

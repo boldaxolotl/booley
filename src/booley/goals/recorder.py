@@ -72,6 +72,7 @@ from booley.goals.freshness import (
     resolve_target_surface,
     stamp_goal_detail,
 )
+from booley.goals.generated_artifacts import inventory_files
 from booley.goals.model import GoalFamily, GoalRecord, GoalSpec
 from booley.goals.paths import GOAL_ID_PATTERN, record_paths
 from booley.goals.proposals import ProposalError
@@ -469,17 +470,17 @@ class GoalEvidenceRecorder:
         raw = change.detail.get("_source_fingerprint")
         if change.detail.get("review_detail_version") == 4 and (
             not isinstance(raw, dict)
-            or not isinstance(raw.get("fingerprint"), dict)
+            or not isinstance(cast("dict[str, Any]", raw).get("fingerprint"), dict)
             or not isinstance(change.detail.get("receipt_id"), str)
         ):
             raise EvidenceDiscarded("Reviewer has no valid producer receipt; re-run Reviewer")
         if goal is None or goal.target is not None or not isinstance(raw, dict):
             return
-        fingerprint = raw.get("fingerprint")
+        fingerprint = cast("dict[str, Any]", raw).get("fingerprint")
         if not isinstance(fingerprint, dict):
             return
         for category in ("rtl", "tb", "workload", "campaign"):
-            for name in fingerprint.get(category, {}).get("files", []):
+            for name in inventory_files(cast("dict[str, Any]", fingerprint), category):
                 if (self._binding.worktree_root / name).resolve() in excluded:
                     raise EvidenceDiscarded(
                         "producer stamp includes generated build data; re-run Reviewer"
@@ -490,13 +491,13 @@ class GoalEvidenceRecorder:
             return change  # The detail describes old evidence, not this producer's inputs.
         work_dir = self._binding.worktree_root
         resolvers = self._resolvers
-        excluded = frozenset()
+        excluded: frozenset[Path] = frozenset()
         if goal is not None and goal.target is None:
             try:
                 excluded = resolvers.select_artifacts(work_dir, goal.target)
             except RESOLVER_ERRORS as exc:
                 raise EvidenceDiscarded(f"Goal inputs cannot be resolved: {exc}") from exc
-            resolvers = replace(resolvers, artifact_paths=lambda root: excluded)
+            resolvers = resolvers.with_artifacts(excluded)
         surface = None if goal is None else self._require_unchanged_target(goal, resolvers)
         self._require_producer_stamp(change, goal, excluded)
         detail = stamp_goal_detail(

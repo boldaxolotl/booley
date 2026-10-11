@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import os
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from booley.core.boundary import as_dict, is_str_list
 from booley.flows.source_fingerprint import (
@@ -13,16 +14,56 @@ from booley.flows.source_fingerprint import (
     compute_source_fingerprint,
     hash_named_files,
 )
+from booley.fusesoc.fusesoc_registry import core_files_root, discover_cores, read_core
 from booley.goals.target_surface import target_surface_fingerprint
 from booley.runtime.git_ignore import ignored_paths as _ignored
 from booley.runtime.pinned_history import tree_rows
+from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.targets.catalog import TargetCatalog
-from booley.targets.declared_inputs import HDL_SUFFIXES, committed_only_inputs
+from booley.targets.declared_inputs import (
+    HDL_SUFFIXES,
+    core_program_paths,
+    project_config_program_paths,
+)
 from booley.targets.domain import UnknownTargetError
 
 if TYPE_CHECKING:
     from booley.goals.input_view import CommittedView
     from booley.goals.model import GoalRecord
+
+
+def committed_only_inputs(
+    root: Path, catalog: TargetCatalog, target: str | None, *, include_missing: bool = False
+) -> frozenset[Path]:
+    """Runtime HDL and declared programs never acquire a generated exemption."""
+    handles = catalog.list() if target is None else (catalog.select(target),)
+    paths = {
+        (root / item.path).resolve()
+        for handle in handles
+        for item in catalog.inspect(handle).inputs
+        if item.file_type.startswith(("verilogSource", "systemVerilogSource", "vhdlSource"))
+    }
+    cores = discover_cores(root) if target is None else catalog.core_closure(handles) or ()
+    for core in cores:
+        paths.update(
+            core_program_paths(
+                read_core(core),
+                core_file=core,
+                project_root=root,
+                files_root=core_files_root(core, root),
+                include_missing=include_missing,
+            )
+        )
+    config = resolve_checkout_project_dir(root) / "booley.toml"
+    if config.is_file():
+        paths.update(
+            project_config_program_paths(
+                tomllib.loads(config.read_text(encoding="utf-8")),
+                project_root=root,
+                include_missing=include_missing,
+            )
+        )
+    return frozenset(paths)
 
 
 def generated_artifact_paths(root: Path) -> frozenset[Path]:
@@ -71,11 +112,12 @@ def project_source(
     root = root.resolve()
     result = dict(source)
     for category in ("rtl", "tb", "workload", "campaign"):
-        entry = source.get(category)
-        if not isinstance(entry, dict) or not isinstance(entry.get("files"), list):
+        entry = as_dict(source.get(category))
+        if entry is None or not isinstance(entry.get("files"), list):
             continue
-        names = [name for name in entry["files"] if (root / name).resolve() not in excluded]
-        if names == entry["files"]:
+        files = cast("list[str]", entry["files"])
+        names = [name for name in files if (root / name).resolve() not in excluded]
+        if names == files:
             continue
         result[category] = (
             campaign_fingerprint(root, None, excluded=excluded)
@@ -89,9 +131,16 @@ def project_source(
     return result
 
 
+def inventory_files(fingerprint: Any, category: str) -> list[Any]:
+    """The file inventory one category of a stored source fingerprint lists."""
+    entry: Any = fingerprint.get(category, {})
+    files: list[Any] = entry.get("files", [])
+    return files
+
+
 def goal_target_surface(root: Path, target: str | None) -> dict[str, Any]:
     """Resolve a Goal surface under its authored-input policy."""
-    excluded = generated_artifact_paths(root) if target is None else frozenset()
+    excluded: frozenset[Path] = generated_artifact_paths(root) if target is None else frozenset()
     return target_surface_fingerprint(root, target, artifact_paths=excluded)
 
 
@@ -206,7 +255,7 @@ def presentation_exclusions(
     candidates = tuple(
         epoch.eligible - epoch.protected - epoch.tracked - bound - retained for epoch in epochs
     )
-    ignored = _ignored(root, sorted(set().union(*candidates)), no_index=True)
+    ignored = _ignored(root, sorted(set[Path]().union(*candidates)), no_index=True)
     labels = tuple(
         frozenset(label for label, path in epoch.inputs if path in candidate & ignored)
         for epoch, candidate in zip(epochs, candidates, strict=True)

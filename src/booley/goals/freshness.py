@@ -60,6 +60,9 @@ RESOLVER_ERRORS: tuple[type[Exception], ...] = (
 )
 
 
+_NO_ARTIFACTS: frozenset[Path] = frozenset()
+
+
 @dataclass(frozen=True)
 class GoalFreshnessResolvers:
     """How the current inputs are resolved; replaceable for tests."""
@@ -91,14 +94,20 @@ class GoalFreshnessResolvers:
             goal_target_surface,
             target_surface_fingerprint,
         ):
-            selected = (
-                (self.artifact_paths(work_dir) if target is None else frozenset())
-                if excluded is None
-                else excluded
-            )
+            selected = excluded
+            if selected is None:
+                selected = self.artifact_paths(work_dir) if target is None else _NO_ARTIFACTS
             provider = self.policy_surface or target_surface_fingerprint
             return provider(work_dir, target, artifact_paths=selected)
         return self.target_surface(work_dir, target)
+
+    def with_artifacts(self, excluded: frozenset[Path]) -> GoalFreshnessResolvers:
+        """Pin one artifact classification so later reads cannot resample it."""
+
+        def pinned(root: Path) -> frozenset[Path]:
+            return excluded
+
+        return replace(self, artifact_paths=pinned)
 
     def select_artifacts(self, work_dir: Path, target: str | None) -> frozenset[Path]:
         """Select once only for production providers; custom providers own their values."""
@@ -199,7 +208,7 @@ def _frozen_resolvers(
     """Freeze one classification for source/surface stamping without resampling."""
     try:
         excluded = resolvers.select_artifacts(root, None)
-        return replace(resolvers, artifact_paths=lambda root: excluded), None
+        return resolvers.with_artifacts(excluded), None
     except RESOLVER_ERRORS as exc:
         return resolvers, {"error": str(exc)}
 
