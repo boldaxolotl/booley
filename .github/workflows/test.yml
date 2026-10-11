@@ -1164,6 +1164,7 @@ jobs:
                 .github/scripts/verify_riscv_image_contract.sh \
                 "${evidence}" booley-riscv-test booley-standard-substrate:ci \
                 "${RUNNER_TEMP}/docker-build-evidence/standard-package-inventory.json"
+              touch "${evidence}/goal-readiness-started"
               python .github/scripts/riscv_phase_metrics.py timed-run \
                 --record "${records}/picorv32-runtime.json" \
                 --name picorv32_runtime_demo --topology nested -- \
@@ -1432,8 +1433,16 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      - name: Upload Goal readiness evidence
+      - name: Read Goal readiness attempt marker
+        id: goal-readiness
         if: always() && needs.changes.outputs.riscv_image == 'true'
+        run: |
+          if test -f "${RUNNER_TEMP}/riscv-image-evidence/goal-readiness-started"; then
+            echo "started=true" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Upload Goal readiness evidence
+        if: always() && steps.goal-readiness.outputs.started == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: goal-readiness-${{ github.run_id }}-${{ github.run_attempt }}

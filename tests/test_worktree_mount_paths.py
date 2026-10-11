@@ -1,5 +1,6 @@
 """Selected worktree storage and Git metadata capability checks."""
 
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -8,11 +9,12 @@ from booley.runtime.project_dir import reset_cache
 
 
 @pytest.fixture(autouse=True)
-def _fresh_project_dir_cache():
-    """Keep each test's Project selection independent of earlier tests in the worker."""
+def isolated_project_cache() -> Iterator[None]:
     reset_cache()
-    yield
-    reset_cache()
+    try:
+        yield
+    finally:
+        reset_cache()
 
 
 def test_old_git_repair_omits_unsupported_mode_flags(monkeypatch):

@@ -219,9 +219,9 @@ def _summary(view: ProposalView) -> str:
         "rationale": proposal.rationale,
     }
     if proposal.waiver is not None:
-        value["waiver"] = proposal.waiver
+        value["waiver"] = proposal.waiver.to_json()
         value["commit_files"] = "Commit the installed approval/proof files under " + str(
-            proposal.waiver["approval_root"]
+            proposal.waiver.approval_root
         )
     if view.decision is not None:
         value["decision"] = view.decision.to_json()

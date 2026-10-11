@@ -101,6 +101,33 @@ def walk(parser, route=()):
                 yield from walk(child, (*route, name))
 
 
+def test_feedback_help_explains_checkout_context_and_shared_storage(capsys):
+    routes = dict(walk(cli._build_parser()))
+    feedback_routes = [route for route in routes if route and route[0] == "feedback"]
+    assert ("feedback",) in feedback_routes
+
+    for route in feedback_routes:
+        with pytest.raises(SystemExit) as exit_info:
+            routes[route].parse_args(["--help"])
+        assert exit_info.value.code == 0
+        help_text = " ".join(capsys.readouterr().out.split())
+        assert help_text.count("does not move the shared Project Findings Log") == 2
+        assert "checkout for feedback context" in help_text
+        if route == ("feedback",):
+            assert "worktrees share one Findings Log" in help_text
+            assert "configured names and redaction settings" in help_text
+            assert "booley.toml in the feedback storage directory" in help_text
+            assert "BOOLEY_PROJECT_DIR" in help_text
+            assert "may find a separate log" in help_text
+            assert "Git's shared metadata directory" in help_text
+            assert "regardless of BOOLEY_PROJECT_DIR" in help_text
+
+    for route in ((), ("doctor",)):
+        help_text = " ".join(routes[route].format_help().split())
+        assert "Select the Project checkout (default: discover from cwd)" in help_text
+        assert "shared Project Findings Log" not in help_text
+
+
 def assert_controls(parser, *, timeout=False):
     controls = parser._option_string_actions
     assert not {"--directory", "--time-limit"} & controls.keys()

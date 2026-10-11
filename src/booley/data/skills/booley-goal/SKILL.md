@@ -15,8 +15,12 @@ Use it for human-steered or unattended work inside the Sandbox.
    `booley worktree new <name>` in the Sandbox. Goal Mode cannot enter in the
    main checkout. Preserve existing edits; obtain the human's direction before
    committing or stashing work that is not yours.
-2. Remember the absolute worktree root as `work_dir`. Pass `work_dir` on
-   every Booley call, including Flow, Specialist, and Goal calls.
+2. Remember the absolute worktree root as `work_dir`. Pass it to Booley Flows,
+   Specialists, Goal tools, `booley_targets`, and `booley_report`. While a
+   Goal Record occupies the Project, calls without it are refused (only
+   `booley_targets` may omit it), and Project-defined endpoints must declare
+   `work_dir` to run. `booley_status`, `booley_poll`, `booley_cancel`,
+   `booley_sleep`, `coverage_evidence`, and `bwave` accept no `work_dir`.
 3. Read the selected `*.md` Goalsets under the resolved Project directory's
    `goalsets/`. Initialization seeds `feature`, `bugfix`, `refactor`, and
    `verification` create-only. The Project owns their prose and may add others.
