@@ -97,3 +97,42 @@ def test_a_guarded_invocation_records_no_criterion_and_needs_no_bound_goal(tmp_p
 
     assert recorded == []
     assert refusal is None
+
+
+def test_failing_runs_of_a_guarded_invocation_are_listed_as_diagnostic_failures(
+    tmp_path, monkeypatch
+):
+    flow = _flow(tmp_path, monkeypatch, "--test", "stress+soak@3", "--test", "stress")
+    flow._validate_test_plans(["sim"], _MAP)
+    rows = [
+        {"name": "stress+soak@3", "grade": "fail"},
+        {"name": "stress+short@1", "grade": "pass"},
+        {"name": "reset@1", "grade": "fail"},
+    ]
+    result = EndpointOutcome(
+        report_text="sim: FAIL", detail={"campaigns": {"sim": {"test_runs": rows}}}
+    )
+
+    lines = flow._with_test_run_guard_note(result).report_text.splitlines()
+
+    assert lines[0] == "sim: FAIL"
+    assert lines[1].startswith("Diagnostic: this run includes Test Runs other than")
+    assert lines[2:] == [
+        "Diagnostic failures (recorded as no Goal evidence):",
+        "  sim: stress+soak@3",
+        "  sim: reset@1",
+    ]
+    assert result.detail["test_run_goal_guard"]["diagnostic_failures"] == [
+        "sim: stress+soak@3",
+        "sim: reset@1",
+    ]
+
+
+def test_a_default_invocation_has_no_diagnostic_failures_heading(tmp_path, monkeypatch):
+    flow = _flow(tmp_path, monkeypatch)
+    flow._validate_test_plans(["sim"], _MAP)
+    rows = [{"name": "stress+short@1", "grade": "fail"}]
+    result = EndpointOutcome(
+        report_text="sim: FAIL", detail={"campaigns": {"sim": {"test_runs": rows}}}
+    )
+    assert flow._with_test_run_guard_note(result).report_text == "sim: FAIL"

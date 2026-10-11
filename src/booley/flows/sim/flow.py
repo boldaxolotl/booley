@@ -943,6 +943,22 @@ def _campaign_report_detail(
     return detail
 
 
+def _diagnostic_failures(detail: Mapping[str, object]) -> list[str]:
+    """Failed Test Runs of every campaign in *detail*, as ``target: test run``."""
+    campaigns = detail.get("campaigns")
+    if not isinstance(campaigns, Mapping):
+        return []
+    failures: list[str] = []
+    for selector, campaign in campaigns.items():
+        rows = campaign.get("test_runs", ()) if isinstance(campaign, Mapping) else ()
+        failures.extend(
+            f"{selector}: {row['name']}"
+            for row in rows
+            if isinstance(row, Mapping) and row.get("grade") == "fail"
+        )
+    return failures
+
+
 def _campaign_test_runs(outcome: CampaignOutcome) -> list[dict[str, object]]:
     """Per-Test-Run rows of *outcome*; empty for an object that has no manifest."""
     if not isinstance(getattr(outcome, "manifest_path", None), Path):
@@ -6646,6 +6662,22 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             "Diagnostic: this run includes Test Runs other than the default Test Variant "
             f"at the Default Seed ({shown}); it records no Goal evidence."
         )
+        failures = _diagnostic_failures(result.detail)
+        if failures:
+            # These failures block no Goal: say so apart from the Target lines.
+            result.detail["test_run_goal_guard"]["diagnostic_failures"] = failures
+            note = "\n".join(
+                [
+                    note,
+                    "Diagnostic failures (recorded as no Goal evidence):",
+                    *(f"  {name}" for name in failures[:TEST_RUN_ROW_LIMIT]),
+                    *(
+                        [f"  ... and {len(failures) - TEST_RUN_ROW_LIMIT} more"]
+                        if len(failures) > TEST_RUN_ROW_LIMIT
+                        else []
+                    ),
+                ]
+            )
         result.report_text = f"{result.report_text}\n{note}" if result.report_text else note
         return result
 
