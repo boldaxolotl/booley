@@ -30,6 +30,9 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ### Upgrade notes
 
+- Existing Review Goal evidence may need to be refreshed once after upgrading;
+  re-run the Reviewer if it is reported stale.
+
 - Physical synthesis results can differ from 0.3.0, and earlier physical
   recipe evidence is no longer accepted: rerun physical synthesis to refresh
   it. Logical synthesis is unchanged. An SDC that switches analysis mode or

@@ -1,7 +1,8 @@
 """Goal completion composes runtime-resolved semantic Target input views."""
 
+import copy
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from booley.config.project_config import load_test_configuration, lookup_target_section
 from booley.goals.model import GoalRecord
@@ -58,3 +59,20 @@ def resolved_surfaces(root: Path) -> dict[str, Any]:
             "tool_options": dict(inspection.tool_options),
         }
     return surfaces
+
+
+def project_target_changes(
+    changes: list[dict[str, Any]], before_excluded: frozenset[str], after_excluded: frozenset[str]
+) -> list[dict[str, Any]]:
+    """Omit unproved artifact inventories while preserving authored semantic deltas."""
+    result = copy.deepcopy(changes)
+    for row in result:
+        for side, excluded in (("before", before_excluded), ("after", after_excluded)):
+            surface = row.get(side)
+            if not isinstance(surface, dict):
+                continue
+            document = cast("dict[str, Any]", surface)
+            if isinstance(document.get("filesets"), list):
+                filesets = cast("list[Any]", document["filesets"])
+                document["filesets"] = [item for item in filesets if item["path"] not in excluded]
+    return result

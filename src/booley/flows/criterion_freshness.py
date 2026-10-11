@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -32,9 +32,10 @@ def build_criterion_freshness(
     *,
     target: str | None,
     categories: Sequence[str],
+    fingerprint_provider: Callable[..., dict[str, Any]] = compute_source_fingerprint,
 ) -> CriterionFreshness:
     """Build freshness evidence for targeted and project-wide criteria."""
-    fingerprint = compute_source_fingerprint(work_dir, target=target)
+    fingerprint = fingerprint_provider(work_dir, target=target)
     return CriterionFreshness(
         target=target,
         categories=tuple(sorted(set(categories))),

@@ -5,13 +5,14 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from booley.criteria.evidence_ledger import canonical_json, validated_evidence_records
 from booley.criteria.state import DevelopmentState
 from booley.goals.changes import read_change_log
 from booley.goals.derivation import selected_observations
 from booley.goals.format import format_met_goal_metric
+from booley.goals.generated_artifacts import inventory_files
 from booley.goals.lifecycle import LifecycleError
 from booley.goals.model import GoalRecord
 from booley.goals.paths import record_paths
@@ -35,7 +36,12 @@ def completion_authority_digest(record: GoalRecord, state: DevelopmentState, pro
 
 
 def build_goal_package(
-    context: GoalReviewContext, record: GoalRecord, state: DevelopmentState, project_dir: Path
+    context: GoalReviewContext,
+    record: GoalRecord,
+    state: DevelopmentState,
+    project_dir: Path,
+    *,
+    omitted_inputs: frozenset[str] = frozenset(),
 ) -> GoalCompletionPackage:
     """Freeze exact selected rows, linked originals and all proposal decisions."""
     paths = record_paths(project_dir, record.id)
@@ -43,7 +49,9 @@ def build_goal_package(
     records = validated_evidence_records(GOAL_SCOPE, Path(context.log_dir), state, {})
     indexed = {row["sequence"]: row for row in records}
     rows = _package_rows(context, record, state, selected, indexed)
-    transactions = _transactions(Path(context.log_dir), state, indexed)
+    transactions = _transactions(
+        Path(context.log_dir), state, indexed, omitted_inputs=omitted_inputs
+    )
     for row in rows:
         row["selected_transaction"] = _selected_transaction(
             row["selected_observation"], transactions
@@ -157,7 +165,11 @@ def original_observations(
 
 
 def _transactions(
-    logs: Path, state: DevelopmentState, indexed: dict[int, dict[str, Any]]
+    logs: Path,
+    state: DevelopmentState,
+    indexed: dict[int, dict[str, Any]],
+    *,
+    omitted_inputs: frozenset[str] = frozenset(),
 ) -> list[dict[str, Any]]:
     """Validated readers already proved the manifests or legacy transaction rows."""
     result: list[dict[str, Any]] = []
@@ -172,11 +184,13 @@ def _transactions(
                 logs / "acceptance" / "evidence" / f"{sequence:09d}.tx.{identity}" / "record.json"
             ).is_file()
         ]
+        manifest_sha256 = None if manifest is None else _row_digest(manifest)
+        inline = None if _contains_omitted_inventory(manifest, omitted_inputs) else manifest
         result.append(
             {
                 "transaction_id": identity,
-                "manifest": manifest,
-                "manifest_sha256": None if manifest is None else _row_digest(manifest),
+                "manifest": inline,
+                "manifest_sha256": manifest_sha256,
                 "observations": [
                     {"sequence": row["sequence"], "sha256": _row_digest(row)} for row in rows
                 ],
@@ -195,3 +209,36 @@ def _selected_transaction(
                 "manifest_sha256": transaction["manifest_sha256"],
             }
     return None
+
+
+def presentation_observations(
+    record: GoalRecord, state: DevelopmentState, project: Path
+) -> tuple[dict[str, Any], ...]:
+    """Exact selected/original observations whose independent input proof is retained."""
+    paths = record_paths(project, record.id)
+    rows = validated_evidence_records(GOAL_SCOPE, paths.logs_dir, state, {})
+    indexed = {row["sequence"]: row for row in rows}
+    selected = selected_observations(record, state, project)
+    return tuple(
+        row
+        for value in selected.values()
+        for row in (value, *original_observations(value, indexed))
+    )
+
+
+def _contains_omitted_inventory(value: Any, omitted: frozenset[str]) -> bool:
+    """Recognize source inventory fields, preserving every authenticated manifest byte."""
+    if not omitted:
+        return False
+    if isinstance(value, dict):
+        document = cast("dict[str, Any]", value)
+        stamp: Any = document.get("_source_fingerprint")
+        if isinstance(stamp, dict):
+            fingerprint: Any = cast("dict[str, Any]", stamp).get("fingerprint", {})
+            for category in ("rtl", "tb", "workload", "campaign", "target_surface"):
+                if any(name in omitted for name in inventory_files(fingerprint, category)):
+                    return True
+        return any(_contains_omitted_inventory(item, omitted) for item in document.values())
+    if isinstance(value, list):
+        return any(_contains_omitted_inventory(item, omitted) for item in cast("list[Any]", value))
+    return False

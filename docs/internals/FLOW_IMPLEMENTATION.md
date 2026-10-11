@@ -195,6 +195,14 @@ Run admission and publication bind evidence to the Goal Record, specification
 revisions, source fingerprints, and Target surface. Approved coverage-policy
 changes use the Goal proposal-and-approval transaction described below.
 
+A Goal without a bound Target is checked against authored sources only.
+Generated Build Artifacts are left out of its fingerprints and of the
+committed-input check at Finish, so regenerating one does not stale the Goal
+unless the Reviewer's explicit scope names it. Symlinks, paths outside the
+repository, and files in a nested Git repository are never left out. A Goal
+bound to a Target still needs a selected Simulation producer for each
+uncommitted generated input.
+
 Goal adapters resolve pinned acceptance inputs before execution. Shared Flow execution consumes resolved Target identities and baselines through its evidence protocols; it does not load workflow documents.
 
 ### Shared run logs and artifacts

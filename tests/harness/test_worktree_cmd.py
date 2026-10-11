@@ -1081,6 +1081,7 @@ def test_failed_outer_rollback_is_reported_and_noted(
     assert failure.__notes__ == ["outer rollback failed: worktree busy"]
 
 
+@pytest.mark.timeout(120)  # Windows runs both init paths; see the headroom guard (#1202).
 def test_worktree_new_after_managed_bundle_runtime_init(tmp_path, monkeypatch, python_outer):
     from tests.harness.test_init_rerun import _managed_git, _run_full_init
     from tests.harness.test_init_rerun import repo as init_repo

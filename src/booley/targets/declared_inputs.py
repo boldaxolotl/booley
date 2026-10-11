@@ -10,6 +10,8 @@ from typing import cast
 
 from booley.core.boundary import as_dict
 
+HDL_SUFFIXES = frozenset({".v", ".vh", ".sv", ".svh", ".vhd", ".vhdl"})
+
 _PROGRAM_SUFFIXES = frozenset({".bash", ".js", ".pl", ".py", ".rb", ".sh", ".tcl"})
 _PROGRAM_BASENAMES = frozenset({"makefile", "gnumakefile"})
 _TARGET_COMMAND_KEYS = frozenset({"pre_run"})
@@ -43,6 +45,7 @@ def core_program_paths(
     core_file: Path,
     project_root: Path,
     strict: bool = False,
+    include_missing: bool = False,
     files_root: Path | None = None,
 ) -> tuple[Path, ...]:
     """Return programs from FuseSoC ``scripts.cmd`` and generator commands.
@@ -53,12 +56,13 @@ def core_program_paths(
     against *files_root* — the core's effective fileset root, which differs from
     its directory for projected Stealth cores — defaulting to the core directory.
     """
-    candidates = _core_program_candidates(doc, strict=strict)
+    candidates = _core_program_candidates(doc, strict=strict or include_missing)
     return _resolve_program_paths(
         candidates,
         search_root=core_file.parent if files_root is None else files_root,
         project_root=project_root,
         strict=strict,
+        include_missing=include_missing,
     )
 
 
@@ -119,6 +123,7 @@ def project_config_program_paths(
     *,
     project_root: Path,
     strict: bool = False,
+    include_missing: bool = False,
 ) -> tuple[Path, ...]:
     """Return programs invoked by configured Pre-Sim Commands."""
     candidates: list[str] = []
@@ -132,12 +137,15 @@ def project_config_program_paths(
             if commands is None:
                 continue
             for command in commands:
-                candidates.extend(_shell_program_candidates(command, strict=strict))
+                candidates.extend(
+                    _shell_program_candidates(command, strict=strict or include_missing)
+                )
     return _resolve_program_paths(
         candidates,
         search_root=project_root,
         project_root=project_root,
         strict=strict,
+        include_missing=include_missing,
     )
 
 
@@ -262,6 +270,7 @@ def _resolve_program_paths(
     search_root: Path,
     project_root: Path,
     strict: bool,
+    include_missing: bool = False,
 ) -> tuple[Path, ...]:
     root = project_root.resolve()
     base = search_root.resolve()
@@ -280,6 +289,9 @@ def _resolve_program_paths(
             paths.update(_redirecting_entries(root, lexical))
         elif strict:
             raise ValueError(f"referenced program is unavailable: {candidate}")
+        elif include_missing and not resolved.is_dir():
+            paths.add(resolved)
+            paths.update(_redirecting_entries(root, lexical))
     return tuple(sorted(paths))
 
 
