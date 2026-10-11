@@ -389,7 +389,26 @@ Relative comparisons report an **observed Cycle Count change**. When declared wo
 
 ### Working with evidence
 
-The agent passes the absolute worktree root as `work_dir` on every Booley call.
+The agent passes the absolute worktree root as `work_dir` to every tool that
+accepts it.
+
+Built-in MCP worktree routing:
+
+| Accepts `work_dir` | Does not accept `work_dir` |
+| --- | --- |
+| `sim`, `lint`, `synth`, `fpga` | `booley_status` |
+| `reviewer`, `mutation_tester`, `coverage_analyst` | `booley_poll`, `booley_cancel` |
+| `goal_enter`, `goal_status`, `goal_propose_change`, `goal_finish` | `booley_sleep`, `coverage_evidence` |
+| `booley_targets`, `booley_report` | `bwave` |
+
+`booley_sleep` appears only when diagnostic tools are enabled, and
+`coverage_evidence` only in the Coverage Analyst's nested server.
+
+While any Goal Record occupies the Project, Booley Flows, Specialists, Goal
+tools, and `booley_report` refuse a call without `work_dir`, even a diagnostic
+call outside that worktree; `booley_targets` may omit it. Project-defined
+endpoints must declare `work_dir` to run.
+
 Only Booley Flows and Specialists meet Goals. Shell output or the agent saying
 "done" does not. `goal_status` shows each Goal's current evidence and freshness;
 code changes can require another run. For a bugfix, reproduce the reported bug
