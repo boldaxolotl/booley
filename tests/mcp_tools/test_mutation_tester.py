@@ -762,7 +762,9 @@ def test_elab_uses_shared_preparer_and_its_exact_command(tmp_path: Path, monkeyp
 
     result = endpoint._run_elab("default", tmp_path, build_dir)
 
-    prepare.assert_called_once_with(handle, build_root=build_dir, lane_kind="unreserved")
+    prepare.assert_called_once_with(
+        handle, build_root=build_dir, lane_kind="unreserved", environment={}
+    )
     assert captured == [["custom-build", "--exact-command"]]
     assert result.returncode == 0
 
@@ -941,6 +943,50 @@ def test_sim_runs_the_default_variant_at_the_default_seed(tmp_path: Path, monkey
         ["--plusarg=test=stress", "--plusarg=iters=1000", "--plusarg=verilator+seed+7"],
     ]
     assert [env.get("STRESS_MODE") for _cmd, env in runs] == [None, "short"]
+
+
+def test_mutant_builds_and_runs_under_the_target_environment(tmp_path: Path, monkeypatch):
+    """Regression: the Target's tests.toml env table never reached a mutant.
+
+    The Simulation Flow builds and launches under that table, so a mutant
+    graded without it runs a different testbench configuration.
+    """
+    monkeypatch.delenv("FLAVOR", raising=False)
+    monkeypatch.delenv("STRESS_MODE", raising=False)
+    import booley.specialists.mutation_tester as mutation_tester_module
+
+    prepared_with: list[dict[str, str]] = []
+
+    tests_toml = _MUTATION_VARIANTS.replace(
+        "default_seed = 7", 'default_seed = 7\nenv = { FLAVOR = "wide" }'
+    )
+    _patch_resolve_target(monkeypatch)
+    patched = mutation_tester_module.prepare_simulation_build
+
+    def recording_prepare(handle, **kwargs):
+        prepared_with.append(dict(kwargs.get("environment") or {}))
+        return patched(handle, **kwargs)
+
+    monkeypatch.setattr(mutation_tester_module, "prepare_simulation_build", recording_prepare)
+    captured: list[dict[str, str]] = []
+
+    def _fake_run(cmd, *args, **kwargs):
+        captured.append(dict(kwargs.get("env") or {}))
+        return _fake_proc(rc=0, stdout="[ok]", stderr="")
+
+    monkeypatch.setattr("booley.specialists.mutation_tester.subprocess.run", _fake_run)
+    _write_tests_toml(tmp_path, tests_toml)
+    endpoint = _make_endpoint(tmp_path, monkeypatch)
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+    endpoint._run_elab("default", tmp_path, build_dir)
+    endpoint._run_target_test_suite("default", tmp_path, build_dir, "tb")
+
+    assert prepared_with and all(env == {"FLAVOR": "wide"} for env in prepared_with)
+    runs = captured[1:]
+    assert [env.get("FLAVOR") for env in runs] == ["wide", "wide"]
+    # The Test Variant's variable is added on top, for its own run only.
+    assert [env.get("STRESS_MODE") for env in runs] == [None, "short"]
 
 
 def test_sim_on_an_unseeded_target_passes_no_seed(tmp_path: Path, monkeypatch):

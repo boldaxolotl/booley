@@ -41,7 +41,7 @@ from typing import Any, ClassVar
 from urllib.parse import quote
 
 from booley.agent_workspace.isolation import hide_opposite_sources
-from booley.config.project_config import load_test_configuration_field
+from booley.config.project_config import load_test_configuration_field, lookup_target_section
 from booley.core.boundary import BoundaryError, as_int, as_str, require_int, require_str
 from booley.core.models import AgentCallParams
 from booley.dev_support import mutation_lock as lock_mod
@@ -92,6 +92,14 @@ from booley.targets.catalog import TargetCatalog
 from .specialist import Specialist
 
 _SIM_RUN_HALVES = SIM_RUN_HALVES
+
+
+def _target_environment(work_dir: Path, target: str) -> dict[str, str]:
+    """The ``tests.toml`` env table of *target* in the checkout at *work_dir*."""
+    sections = load_test_configuration_field(work_dir, "env")
+    return dict(lookup_target_section(sections, target) or {})
+
+
 _resolve_sim_sentinels = resolve_sim_sentinels
 
 logger = logging.getLogger(__name__)
@@ -1716,6 +1724,9 @@ replacement must differ, and every proposal must remain a single source edit.
             handle,
             build_root=build_path,
             lane_kind="unreserved",
+            # The Target's env table is a build input of the Simulation Flow;
+            # a mutant must build and run under the same one.
+            environment=_target_environment(work_dir, target),
         )
         return handle, prepared
 
@@ -2074,8 +2085,13 @@ replacement must differ, and every proposal must remain a single source edit.
             cmd,
             cwd=work_dir,
             env=relocate_python_artifacts(
-                # The Test Variant's environment reaches this launch only.
-                {**os.environ, **dict(launch.environment)},
+                # The Simulation Flow's launch environment: the Target's env
+                # table, then the Test Variant's (this launch only).
+                {
+                    **os.environ,
+                    **_target_environment(work_dir, target),
+                    **dict(launch.environment),
+                },
                 python_artifact_root(os.environ, build_path / "python-artifacts"),
                 pytest_scope=f"mutation-run:{build_path.resolve()}",
             ),
