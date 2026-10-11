@@ -25,11 +25,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from booley.core.boundary import as_positive_int
+from booley.runtime.agent_execution import configure_agent_call
 from booley.runtime.timefmt import utc_now_rfc3339
-from booley.ticket_board.agent_execution import configure_agent_call
 
 if TYPE_CHECKING:
-    from booley.harness.models import AgentResult
+    from booley.core.models import AgentResult
 
 try:
     import resource  # POSIX-only; no Windows equivalent for RUSAGE_CHILDREN
@@ -170,7 +170,7 @@ def measure_developer_rss(
     """
     import asyncio
 
-    from booley.harness.models import AgentCallParams
+    from booley.core.models import AgentCallParams
     from booley.runtime import agent as agent_mod
     from booley.runtime import agent_config as config_mod
 
@@ -205,7 +205,7 @@ def measure_developer_rss(
         # while doctor stayed green because this path degraded to SKIP).
         # A hit usage cap is the one agent-side error that is NOT a project
         # defect — it stays a SKIP.
-        from booley.harness.blocking import UsageLimitError
+        from booley.runtime.agent_errors import UsageLimitError
 
         raise ProbeError(
             f"probe agent failed: {exc}",

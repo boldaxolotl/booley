@@ -27,9 +27,9 @@ from booley.agent_workspace.isolation import (
 )
 from booley.core.boundary import as_dict, as_str_list
 from booley.core.models import AgentCallParams
+from booley.criteria.freshness import review_policy_digest
 from booley.evidence.review_receipt import (
     REVIEW_DETAIL_VERSION,
-    ReviewContextError,
     ReviewInvocation,
     build_review_contract_detail,
     review_invocation_changed,
@@ -54,9 +54,8 @@ from booley.runtime.exception_diagnostics import exception_report_text, log_exce
 from booley.runtime.execution_records import atomic_write_json
 from booley.runtime.paths import refs_dir
 from booley.runtime.project_dir import resolve_project_dir
+from booley.specialists.verification_freshness import refresh_verification_freshness
 from booley.targets.flow_names import config_section
-from booley.ticket_board.criteria_acceptance import refresh_verification_freshness
-from booley.ticket_board.review_policy import review_policy_digest
 
 from .review_contract import ReviewContractError, ReviewScopeContract, resolve_review_scope
 from .specialist import Specialist
@@ -228,21 +227,11 @@ _STYLE_OVERLAYS = {
 # demanding brand-new stimulus classes at MAJOR/CRITICAL made those two
 # instructions unsatisfiable at once. False-pass checks are NOT relaxed — a
 # broken sentinel or a dead comparison is wrong regardless of ticket type.
-_TB_COVERAGE_POLICY = {
-    "bugfix": (
-        "the developer is instructed to minimize changes and touch only what the defect requires"
-    ),
-    "refactor": ("the developer is instructed to preserve behavior and add no new test scenarios"),
-}
 
 # TB checklist items that demand *new* stimulus rather than sound checking of
 # the stimulus already present. Only these are demoted for the types above.
 # Named, not numbered: the SV and cocotb guides number their checklists
 # independently, so numbers would silently point at the wrong rows.
-_TB_COVERAGE_EXPANSION_CHECKS = (
-    '"no edge-case vectors", "no randomized vectors", '
-    '"insufficient stimulus diversity", "no reset-mid-operation test"'
-)
 
 
 @dataclass(frozen=True)
@@ -293,43 +282,6 @@ _ASSUMPTIONS_MAX_SIZE = 8_000
 _ASSUMPTIONS_FILENAME = "answered_questions.md"
 
 
-def _load_ticket_text() -> tuple[str, str]:
-    """Load the sealed Ticket Mode snapshot, when present.
-
-    Returns (ticket_text, source_path); ("", "") outside Ticket Mode.
-    """
-    if os.environ.get("BOOLEY_GOAL_FILE"):
-        return "", ""
-    logs_dir = os.environ.get("BOOLEY_LOGS_DIR", "")
-    if logs_dir:
-        ticket_path = Path(logs_dir) / "ticket.md"
-        if ticket_path.is_file():
-            return ticket_path.read_text(encoding="utf-8", errors="replace"), str(ticket_path)
-
-    return "", ""
-
-
-def _load_ticket_document():
-    """Resolve the sealed runtime copy through Ticket Board authority."""
-    from booley.ticket_board.helpers import (
-        detect_project_root,
-        resolve_runtime_ticket_slug,
-        tickets_dir_from_project_root,
-    )
-    from booley.ticket_board.io import TicketIO
-
-    text, source = _load_ticket_text()
-    if not text:
-        return None, ""
-    ticket = Path(source)
-    root = detect_project_root()
-    slug = resolve_runtime_ticket_slug(ticket)
-    document = TicketIO(tickets_dir_from_project_root(root), project_root=root).load_document(
-        slug, runtime_ticket_path=ticket
-    )
-    return document, source
-
-
 def _truncate_spec(content: str, *, label: str = "") -> str:
     """Truncate content to _SPEC_MAX_SIZE with a warning if needed."""
     if len(content) <= _SPEC_MAX_SIZE:
@@ -343,62 +295,16 @@ def resolve_spec_content(
     spec_arg: str | None,
     work_dir: str | Path | None = None,
 ) -> tuple[str | None, str]:
-    """Resolve the spec text the spec-focus review checks the RTL against.
-
-    Priority:
-      1. Ticket Mode's ``spec:`` frontmatter field (path to an external spec,
-         relative to the project root / work_dir)
-      2. Ticket Mode's ticket description body
-      3. standalone ``--spec`` content, read verbatim
-
-    Returns (spec_text, source_description), or (None, "") when no ticket
-    is available or it carries neither a spec file nor a body.
-    """
-    document, ticket_source = (
-        (None, "") if os.environ.get("BOOLEY_GOAL_FILE") else _load_ticket_document()
-    )
-    if document is None:
-        if not spec_arg:
-            return None, ""
-        spec_path = Path(spec_arg)
-        if not spec_path.is_absolute() and work_dir:
-            spec_path = Path(work_dir) / spec_path
-        if not spec_path.is_file():
-            raise OSError(f"Specification file not found: {spec_path}")
-        content = spec_path.read_text(encoding="utf-8", errors="replace")
-        return _truncate_spec(content, label=str(spec_path)), f"spec file: {spec_path}"
-
-    fields, body = document.spec.fields, document.spec.body
-
-    spec_field = fields.get("spec")
-    if isinstance(spec_field, str) and spec_field.strip():
-        base_dir = Path(work_dir) if work_dir else Path.cwd()
-        spec_path = base_dir / spec_field.strip()
-        if spec_path.is_file():
-            content = spec_path.read_text(encoding="utf-8", errors="replace")
-            return _truncate_spec(
-                content, label=str(spec_path)
-            ), f"spec file: {spec_field.strip()}"
-        logger.warning("ticket spec: field points to missing file: %s", spec_path)
-
-    if body.strip():
-        return _truncate_spec(body.strip()), f"ticket body ({ticket_source})"
-
-    return None, ""
-
-
-def resolve_ticket_type() -> str:
-    """Return the ticket's ``type:`` frontmatter field, lowercased.
-
-    Returns "" when no ticket is reachable or it declares no type — callers
-    treat that as "no type-specific policy", i.e. the full checklist applies.
-    """
-    document, _ = _load_ticket_document()
-    if document is None:
-        return ""
-
-    ticket_type = document.spec.fields.get("type")
-    return ticket_type.strip().lower() if isinstance(ticket_type, str) else ""
+    """Read the explicit specification relative to the selected worktree."""
+    if not spec_arg:
+        return None, ""
+    spec_path = Path(spec_arg)
+    if not spec_path.is_absolute() and work_dir:
+        spec_path = Path(work_dir) / spec_path
+    if not spec_path.is_file():
+        raise OSError(f"Specification file not found: {spec_path}")
+    content = spec_path.read_text(encoding="utf-8", errors="replace")
+    return _truncate_spec(content, label=str(spec_path)), f"spec file: {spec_path}"
 
 
 def resolve_documented_assumptions() -> tuple[str, str]:
@@ -1158,11 +1064,6 @@ class ReviewerSpecialist(Specialist):
 
     def _review_contract_detail(self) -> dict[str, Any]:
         spec_arg = getattr(self.args, "spec", None)
-        try:
-            document, _source = _load_ticket_document()
-        except (OSError, RuntimeError, ValueError) as exc:
-            raise ReviewContextError(f"Could not convert persisted Ticket: {exc}") from exc
-        ticket_spec = document.spec.fields.get("spec") if document is not None else None
         return build_review_contract_detail(
             ReviewInvocation(
                 work_dir=Path(self.args.work_dir),
@@ -1171,7 +1072,6 @@ class ReviewerSpecialist(Specialist):
                 scope=tuple(self._parse_scope()),
                 mode="clean" if self._is_clean_mode() else "done",
                 spec_path=Path(spec_arg) if spec_arg else None,
-                ticket_spec_path=Path(ticket_spec) if ticket_spec else None,
                 steering=self.steering_text(),
                 tb_policy_digest=review_policy_digest(
                     Path(self.args.work_dir), self.args.category
@@ -1365,10 +1265,6 @@ match the strength of the evidence.
         sections.append(f"## Focus: {focus_header}")
         sections.append("")
 
-        ticket_section = self._build_ticket_scope_section()
-        if ticket_section:
-            sections.append(ticket_section)
-
         # Inline the spec for spec focus (ADR 0038, guarded in _run) and for
         # every TB review: the TB checklist asks whether the testbench encodes
         # the spec's own numbers and whether its expected-value model is
@@ -1389,10 +1285,6 @@ match the strength of the evidence.
         # Ticket-type severity policy (TB only — the RTL guides carry no
         # coverage-expansion checks to relax).
         if self.args.category == "tb":
-            policy_section = self._build_ticket_type_policy_section()
-            if policy_section:
-                sections.append(policy_section)
-
             project_policy = self._build_tb_project_policy_section()
             if project_policy:
                 sections.append(project_policy)
@@ -1403,21 +1295,6 @@ match the strength of the evidence.
             sections.append(f"## Developer Agent Context\n{steer_text}\n")
 
         return "\n".join(sections)
-
-    def _build_ticket_scope_section(self) -> str:
-        """Inline the complete staged Ticket for every review focus."""
-        ticket_text, source = _load_ticket_text()
-        if not ticket_text:
-            return ""
-        return (
-            f"## Staged Ticket (binding scope; source: {source})\n\n"
-            "Review only behavior required by this Ticket and the accepted "
-            "decisions below. Preserve explicitly deferred, future, and "
-            "out-of-scope work. Cite a relevant Ticket or accepted-decision clause "
-            "and explain its relation to the finding. Choose the disposition "
-            "deliberately; headings do not override it.\n\n"
-            f"{_truncate_spec(ticket_text, label=source)}\n"
-        )
 
     def _build_spec_section(self) -> str:
         """Build the inlined ``## Specification`` section for spec-focus prompts.
@@ -1447,31 +1324,6 @@ match the strength of the evidence.
             "call, not an unexplained invention: report it only if the "
             "reasoning contradicts spec text, and then quote the text it "
             f"contradicts.\n\n{content}\n"
-        )
-
-    def _build_ticket_type_policy_section(self) -> str:
-        """Build the TB severity policy implied by the ticket's type.
-
-        Returns an empty string for types with no coverage-expansion relief
-        (``feature``, ``verification``, or an unknown/absent type), where the
-        checklist applies at full strength.
-        """
-        ticket_type = resolve_ticket_type()
-        rationale = _TB_COVERAGE_POLICY.get(ticket_type)
-        if not rationale:
-            return ""
-        return (
-            f"## Ticket Type: {ticket_type}\n\n"
-            f"This ticket is a **{ticket_type}** — {rationale}. Coverage-"
-            f"expansion checks ({_TB_COVERAGE_EXPANSION_CHECKS}) are therefore "
-            "**MINOR at most** here, and worth reporting only when the missing "
-            "stimulus bears directly on the change under review. This "
-            "overrides the severity the review guide states for those checks.\n\n"
-            "Every other check keeps its stated severity. False-pass risks, "
-            "dead or missing comparisons, broken sentinels, ignored error "
-            "counters, sampling races, and simulator-compatibility traps are "
-            "about whether the existing checks work at all — no ticket type "
-            "excuses those.\n"
         )
 
     def _build_tb_project_policy_section(self) -> str:

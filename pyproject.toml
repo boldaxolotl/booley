@@ -135,13 +135,11 @@ booley = [
     "data/**/*",
     # Runtime resources resolved relative to the installed package (__file__),
     # not just present in the dev tree — omitting these ships a wheel/image that
-    # blocks at runtime: runtime/worktree_create.sh (Ticket setup and
+    # blocks at runtime: runtime/worktree_create.sh (Goal setup and
     # `booley worktree new`), pre-commit-ruff.sh (git hook), and console.tcss
     # (Console TUI).
     "dev_support/*.sh",
     "runtime/*.sh",
-    "harness/console/*.tcss",
-    "ticket_board/explain-diff-prompt.md",
 ]
 
 [tool.setuptools.exclude-package-data]
@@ -244,7 +242,6 @@ known-first-party = ["booley"]
 "src/booley/mcp/base.py" = ["B027"]
 "src/booley/specialists/reviewer.py" = ["PLR0912"]
 "src/booley/harness/developer.py" = ["PLR0915"]
-"src/booley/harness/tui/links.py" = ["PLR0911"]
 "src/booley/bwave/cli.py" = ["PLR0911", "PLR0912", "PLR0915"]
 "src/booley/harness/init_cmd.py" = ["PLR0915", "F401"]
 "src/booley/flows/synth/backends/openroad/timing.py" = ["PLR0911"]
@@ -264,7 +261,6 @@ asyncio_mode = "strict"
 strict_config = true
 strict_markers = true
 markers = [
-    "exhaustive_recovery: exhaustive real-Git interruption and recovery permutations",
     "native_bwave: tests that execute the compiled native B-Wave binary",
     "slow: marks slow-running tests (deselect with '-m \"not slow\"')",
 ]

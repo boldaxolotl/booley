@@ -25,7 +25,6 @@ from booley.flows.cli_selection import human_parser
 from booley.flows.sim import campaign_retention
 from booley.harness.booley import _build_parser, _load_mcp_tool_class
 from booley.mcp.registry import discover_mcp_tools
-from booley.ticket_board.cli import build_parser as ticket_parser
 
 ROOT = Path(__file__).resolve().parents[2]
 HISTORY_POLICY = json.loads(
@@ -164,7 +163,6 @@ def parser_help(parser: argparse.ArgumentParser, command: str) -> dict[str, str]
 def cli_help() -> dict[str, str]:
     """Render public commands, Flow/Specialist parsers, and non-argparse help."""
     rendered = parser_help(_build_parser(), "booley")
-    rendered.update(parser_help(ticket_parser(), "python -m booley.ticket_board"))
     for info in discover_mcp_tools():
         if info.kind not in {"flow", "specialist"}:
             continue

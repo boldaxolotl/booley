@@ -50,7 +50,6 @@ def reviewer(tmp_path, monkeypatch):
     state.save()
     monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
     monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
-    monkeypatch.setattr("booley.specialists.reviewer._load_ticket_document", lambda: (None, ""))
     endpoint = ReviewerSpecialist()
     endpoint.parse_args(
         [
@@ -152,10 +151,9 @@ def test_source_only_audit_is_non_gating_and_surfaces_in_mcp(reviewer, monkeypat
 
 @pytest.mark.parametrize("disposition", ["current", "advisory", "deferred", "out_of_scope"])
 def test_explicit_disposition_survives_deferred_headings(reviewer, monkeypatch, disposition):
-    monkeypatch.setattr(
-        "booley.specialists.reviewer._load_ticket_text",
-        lambda: ("## Deferred\n- Paraphrased requirement", "ticket"),
-    )
+    spec = Path(reviewer.args.work_dir) / "requirements.md"
+    spec.write_text("## Deferred\n- Paraphrased requirement", encoding="utf-8")
+    reviewer.args.spec = str(spec)
     output(reviewer, monkeypatch, {"issues": [proposal(disposition=disposition)]})
     result = reviewer._run()
     assert result.criterion_met == (disposition != "current")

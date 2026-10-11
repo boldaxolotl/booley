@@ -98,45 +98,6 @@ subprocess.run(['git', '-C', '/work', 'config', 'extensions.relativeWorktrees', 
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("duplicate", [True, False], ids=["legacy-bind", "canonical-alias"])
-def test_ticket_worktree_real_mount_portability(
-    tmp_path: Path, docker_image: tuple[str, str], duplicate: bool
-):
-    root, state = _repository(tmp_path)
-    script = """
-import subprocess
-from pathlib import Path
-from booley.core.project_dir import resolve_project_dir
-from booley.ticket_board.workspace_ops import _attach_worktree
-root = Path('/work')
-subprocess.run(['git', '-C', str(root), 'config', 'worktree.useRelativePaths', 'true'], check=True)
-_attach_worktree(root, resolve_project_dir(root) / 'worktrees' / 'demo', 'ticket/demo', 'HEAD')
-for path in ['/work/.booley_project/worktrees/demo', '/booley-project/worktrees/demo']:
-    result = subprocess.run(['git', '-C', path, 'status', '--porcelain'], capture_output=True, text=True)
-    assert result.returncode == 0, result.stderr
-"""
-    image = docker_image[0] if duplicate else docker_image[1]
-    if duplicate:
-        script = script.replace(
-            "_attach_worktree(root, resolve_project_dir(root) / 'worktrees' / 'demo', 'ticket/demo', 'HEAD')",
-            "subprocess.run(['git', '-C', '/work', 'worktree', 'add', '-b', 'ticket/demo', '/booley-project/worktrees/demo'], check=True)",
-        )
-        before_status = script.index("for path in")
-        script = script[:before_status] + _LEGACY_RELATIVE_METADATA + script[before_status:]
-    result = _container(image, root, state, script, duplicate=duplicate)
-    if duplicate:
-        assert result.returncode != 0, "legacy duplicate bind must reproduce broken relative links"
-        assert "not a git repository" in result.stderr, result.stderr
-        return
-    assert result.returncode == 0, result.stderr
-    host = _run(["git", "-C", str(state / "worktrees/demo"), "status", "--porcelain"])
-    assert host.returncode == 0, host.stderr
-    listing = _run(["git", "-C", str(root), "worktree", "list", "--porcelain"])
-    assert "prunable" not in listing.stdout
-    assert "work/" not in (state / "worktrees/demo/.git").read_text()
-
-
-@pytest.mark.slow
 def test_external_directory_layout_uses_actual_guarded_builder(
     tmp_path: Path, docker_image, monkeypatch
 ):
@@ -250,99 +211,6 @@ for path in [str(checkout), '/booley-project/worktrees/demo']:
     )
 
 
-@pytest.mark.slow
-def test_blocked_board_review_and_show_repair_actual_legacy_checkout(tmp_path: Path, docker_image):
-    root, state = _repository(tmp_path)
-    produce = _container(
-        docker_image[0],
-        root,
-        state,
-        _LEGACY_BLOCKED_SETUP,
-        duplicate=True,
-    )
-    assert produce.returncode == 0, produce.stderr
-    result = _container(
-        docker_image[1],
-        root,
-        state,
-        _BLOCKED_REVIEW_SHOW,
-        duplicate=False,
-    )
-    assert result.returncode == 0, result.stderr
-    assert "fixture failure" in result.stdout
-    host = _run(["git", "-C", str(state / "worktrees/demo"), "status", "--porcelain"])
-    assert host.returncode == 0, host.stderr
-
-
-_BLOCKED_SETUP = """
-import subprocess
-from pathlib import Path
-from booley.ticket_board.io import TicketIO
-from booley.ticket_board.board_layout import read_state_record, write_state_record
-from booley.ticket_board.lifecycle import TicketState
-root, state = Path('/work'), Path('/booley-project')
-def git(*args):
-    subprocess.run(['git', '-C', str(root), *args], check=True)
-git('branch', '-M', 'main')
-(state / 'tickets/board').mkdir(parents=True)
-(state / '.gitignore').write_text('/worktrees/\\n/.runtime/\\n/hooks/\\n')
-(state / 'booley.toml').write_text('[flows]\\n')
-(root / 'README.md').write_text('fixture source\\n')
-git('add', '-A')
-git('add', '-f', '.booley_project')
-git('commit', '-m', 'fixture sources')
-tio = TicketIO(state / 'tickets', project_root=root)
-created = tio.create_ticket_document('demo', '''---
-summary: Fixture blocked diagnosis
-type: feature
-branch: main
-scope: [README.md]
-on_success: [review]
-CRITERIA_MANDATORY: {REVIEW: {rtl: {bugs: clean}}}
----
-## Description
-Exercise blocked recovery.
-''')
-assert created is not None
-assert tio.enqueue_ticket('demo')
-record = read_state_record(tio.tickets_dir, 'demo')
-assert record is not None
-write_state_record(tio.tickets_dir, 'demo', record.with_state(TicketState.BLOCKED))
-
-"""
-
-_LEGACY_BLOCKED_SETUP = (
-    _BLOCKED_SETUP
-    + _LEGACY_RELATIVE_METADATA
-    + """
-assert '../../../work/.git/' in (state / 'worktrees/demo/.git').read_text()
-"""
-)
-
-_BLOCKED_REVIEW_SHOW = """
-from pathlib import Path
-from types import SimpleNamespace
-from booley.core.models import AgentResult
-from booley.harness import blocked_prep
-from booley.ticket_board.review_lifecycle import review_command
-import asyncio
-async def bounded_fixture_agent(_ctx, _evidence):
-    return AgentResult(structured={
-        'classification': 'ticket-code', 'board_reason': 'fixture blocked',
-        'blocked_stage': 'developer',
-        'blockers': [{'name': 'fixture', 'reason': 'fixture failure', 'evidence': 'state'}],
-        'passing_non_blocking': [], 'developer_questions': [],
-        'recommended_action': 'retry after fixing fixture', 'findings': [],
-    })
-blocked_prep._invoke = bounded_fixture_agent
-args = SimpleNamespace(slug='demo', request=False, reason='', force=False, repair=False, no_open_diffs=True)
-assert asyncio.run(review_command(Path('/work'), 'demo')).ready
-rendered = blocked_prep.render_blocked_dossier(Path('/work'), 'demo')
-assert rendered.ready
-print(rendered.message)
-"""
-
-
 def _canonical_alias_recipe() -> str:
     recipe_root = Path(__file__).resolve().parents[2] / "src/booley/data/docker"
     wheel = (recipe_root / "Dockerfile.wheel").read_text()
@@ -451,47 +319,6 @@ def _external_container(image: str, root: Path, external: Path, script: str):
             script,
         ]
     )
-
-
-@pytest.mark.slow
-def test_external_absolute_fallback_supports_blocked_review_and_show(
-    tmp_path: Path, docker_image, monkeypatch
-):
-    root, local = _repository(tmp_path)
-    setup = _BLOCKED_SETUP
-    setup += "\ngit('worktree', 'remove', '--force', '/work/.booley_project/worktrees/demo')\n"
-    produced = _container(docker_image[0], root, local, setup, duplicate=True)
-    assert produced.returncode == 0, produced.stderr
-    external = tmp_path / "external"
-    local.rename(external)
-    create = """
-import subprocess
-from pathlib import Path
-from booley.ticket_board.io import TicketIO
-tio = TicketIO(Path('/booley-project/tickets'), project_root=Path('/work'))
-branch = tio._load_basis_unlocked('demo').participant('outer').ticket_ref.removeprefix('refs/heads/')
-subprocess.run(['git', '-C', '/work', '-c', 'worktree.useRelativePaths=false',
-                'worktree', 'add', '/booley-project/worktrees/demo', branch], check=True)
-assert Path('/booley-project/worktrees/demo/.git').read_text().startswith('gitdir: /work/')
-"""
-    from booley.core.project_dir import reset_cache
-    from booley.harness import image_lifecycle as harness
-    from booley.runtime import project_image
-
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(external))
-    reset_cache()
-    parent_id = docker_image[1]
-    node = _layout_fixture_node(root, parent_id, project_image.inspect_layout_image(parent_id))
-    adapter = harness._IncrementalBuildAdapter(root, harness._docker_adapter(), verbose=True)
-    try:
-        adapter.prepare(node, candidate_reference=node.reference, parent_reference=parent_id)
-        result = _external_container(node.reference, root, external, create + _BLOCKED_REVIEW_SHOW)
-    finally:
-        _run(["docker", "image", "rm", node.reference])
-        reset_cache()
-    assert result.returncode == 0, result.stderr
-    assert "fixture failure" in result.stdout
-    assert not (root / ".booley_project").exists()
 
 
 @pytest.mark.slow

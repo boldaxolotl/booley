@@ -1,9 +1,7 @@
 """Stale-triggered, one-shot automatic Doctor runs.
 
 Automatic health checks are lifecycle work, not a scheduler: Sandbox
-startup launches one detached attempt, and ``booley run`` performs the same
-check synchronously as a fallback. A file lock makes those entry points
-single-flight. Every attempt writes a structured report and transcript; the
+startup launches one detached attempt. A file lock makes health checks single-flight. Every attempt writes a structured report and transcript; the
 separate clean stamp remains Doctor's durable "last blessed" record.
 """
 

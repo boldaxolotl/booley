@@ -5,10 +5,7 @@ stable rules leave other edges unclassified; the current package graph is not a
 universal allowlist. The test-only analyzer records source knowledge without adding
 a production abstraction layer.
 
-Current measurements include the integrated #530, #531, and #532 changes.
-Historical snapshots retain their original revisions and dates. Goal Mode is
-the only public workflow; Ticket modules and their dependency rules are retained
-until Phase 9a removes them. Package names such as `booley.harness` below identify
+Current measurements reflect Phase 9a. Historical snapshots retain their original revisions and dates. Goal Mode is the public development workflow. Package names such as `booley.harness` below identify
 source owners, not an active execution mode. Direction rules
 are normative; dated graph snapshots are diagnostic evidence.
 
@@ -27,9 +24,7 @@ The package layout maps to the canonical concepts indexed by the
 | Criteria | `booley.criteria` | Define and evaluate reusable acceptance policy independently of its producing endpoint; `criteria.endpoint_catalog` owns the immutable relationship interface supplied by composition roots. |
 | Criterion evidence values | `booley.evidence` | Own persisted evidence field names, deterministic recipe identity/comparison, reviewer receipts/dispositions, and per-clock timing values shared by Criteria and evidence-producing Flows. |
 | Specialist | `booley.specialists` | Run a scoped LLM sub-agent and return structured evidence. |
-| Retired Harness | `booley.harness.developer`, `booley.harness.developer_guardrails` | Retained Ticket execution loop until Phase 9a removes it; unreachable through the public CLI. |
 | Goal Mode | `booley.goals` | Translate Goals into Criteria and own Goal Records, their locks and revisions, worktree identity, and the Change Log. |
-| Retired Ticket Board | `booley.ticket_board` | The Ticket workflow is retired, but Goal Mode and Specialists still depend on shared Flow loading, agent execution, waiver, and review modules; unbound MCP calls use `TicketAcceptanceRecorder`, and `booley flow` retains its `BOOLEY_TICKET_FILE` adapter. Phase 9a relocates shared dependencies to `evidence/` or `goals/` and removes Ticket-only adapters before deleting the package. |
 | MCP | `booley.mcp` | Expose Flows and Specialists to calling agents. |
 | B-Wave | `booley.bwave` | Inspect, convert, discover, and query waveform stores; own the B-Wave half of streaming and control human viewing. |
 
@@ -58,9 +53,6 @@ Feedback from importing Harness in any static import location.
 
 ## Runtime execution boundary
 
-Runtime does not import Ticket Board, including under `TYPE_CHECKING` or inside
-functions. D14 has no waiver or composition exception.
-
 - `runtime.job_records` stores records at an explicit jobs root. MCP composition
   resolves `runtime.session_paths.session_jobs_dir` after Interactive logging setup;
   the job manager retains each run's root from submission through completion,
@@ -70,23 +62,12 @@ functions. D14 has no waiver or composition exception.
   Standalone readers resolve the same session location. Explicit `None` disables persistence.
 - `core.models.AgentArtifactPaths` carries resolved output paths. An optional
   per-call resolver receives the final labeled/retry transcript path; Booley
-  callers bind `ticket_board.agent_execution` to preserve fallback prompt names
+  callers bind `runtime.agent_execution` to preserve fallback prompt names
   and the `.runtime`/`human-logs` layout. Runtime writers and renderers accept
   resolved locations; standalone calls use adjacent transcript sidecars.
 - Claude Runtime owns provider rate-limit detection, wait/retry, and budget
   pause/resume without importing Ticket Board policy.
-- Retained until Phase 9a removes it, `ticket_board.ticket_repositories` owns
-  Ticket Workspace requests, Scope routing,
-  branch handoff, Board-change protection and cleanup. Authoring callers invoke
-  `ticket_board.workspace_ops` directly, without a reverse workspace import.
-  `runtime.project_repositories` owns generic repository discovery, coordinate
-  translation, status parsing and bounded Git inspection. Project preparation and
-  composite submodule materialization reuse these mechanics without Ticket policy;
-  materialization preserves separate rollback for each repository selection.
-
-The Runtime-to-Ticket-Board dependency separation is tracked by
-[#423](https://github.com/boldaxolotl/booley/issues/423); the rules below retain
-that boundary as an executable repository contract.
+- `runtime.project_repositories` owns generic repository discovery, coordinate translation, status parsing, and bounded Git inspection. Goal worktrees and composite submodule materialization reuse these mechanics.
 
 ## Config and Runtime boundary
 
@@ -256,35 +237,31 @@ as tracked by [#281](https://github.com/boldaxolotl/booley/issues/281).
 | D4 | Prefix `booley.mcp` | Prefixes `booley.harness`, `booley.specialists` | Forbid, subject only to C1-C2 | MCP infrastructure is independent of the capabilities composed by its server. |
 | D5 | Prefix `booley.runtime` | Prefixes `booley.mcp`, `booley.specialists` | Forbid | Sandbox mechanisms must remain usable without agent-facing mechanisms. |
 | D6 | Prefix `booley.runtime` | Prefix `booley.harness` | Forbid, subject only to C8 | Shared Sandbox mechanisms must not acquire Harness knowledge; exact entry-point composition remains explicit. |
-| D7 | Exact modules `booley.flows.target_campaign`, `booley.flows.target_criteria`, `booley.flows.target_test_suite` | Prefixes `booley.harness`, `booley.mcp`, `booley.ticket_board` | Forbid | Shared Target/Criteria policy is independent of presentation, agent exposure, and Ticket Board persistence. |
+| D7 | Exact modules `booley.flows.target_campaign`, `booley.flows.target_criteria`, `booley.flows.target_test_suite` | Prefixes `booley.harness`, `booley.mcp` | Forbid | Shared Target/Criteria policy is independent of presentation, agent exposure, . |
 | D8 | Each prefix in `booley.flows.{sim,synth,fpga,lint}` | The other three prefixes in that set | Forbid | Each built-in Booley Flow owns its tool-specific implementation and cannot couple to a sibling Flow. |
 | D9 | Root module and direct file-module children of `booley.flows` (not child package initializers) | Prefixes `booley.flows.{sim,synth,fpga,lint}` | Forbid | Flow-neutral policy and evidence modules cannot select a concrete Flow implementation. |
 | D10 | One exact adapter selector set S1-S5 below | The other selector sets for the same Flow (S1-S3 or S4-S5) | Forbid | An EDA adapter satisfies its Flow's internal seam without knowing a sibling adapter. |
 | D11 | Prefixes `booley.flows.synth.backends.yosys`, `booley.flows.synth.backends.openroad` | Exact module `booley.flows.synth.flow` and the sibling backend prefix | Forbid | Leaf synthesis adapters do not orchestrate their Flow or one another. |
 | D12 | Exact modules `booley.targets.domain` and `booley.targets.selection`; prefix `booley.fusesoc` | For the exact target modules: prefix `booley.fusesoc`, prefixes `booley.flows.{sim,synth,fpga,lint}`, and exact modules `booley.targets.catalog` and `booley.targets.target_surface`. For FuseSoC: the exact catalog and target-surface modules. | Forbid | Target domain values and selector policy stay independent of FuseSoC, concrete Flows, catalog orchestration, and presentation; FuseSoC adapters do not depend back on catalog orchestration or presentation. |
 | D13 | Prefix `booley.fusesoc` | Prefixes `booley.flows.{sim,synth,fpga,lint}` | Forbid | FuseSoC mechanics remain reusable beneath concrete Flow implementations. |
-| D14 | Prefix `booley.runtime` | Prefix `booley.ticket_board` | Forbid | Shared Runtime accepts artifact locations from execution callers; Ticket Board owns Ticket Workspace handoff policy. |
 | D15 | Prefix `booley.flows` | Prefix `booley.mcp` | Forbid | Deterministic Flow execution and its shared services are independent of MCP exposure; schemas and compatibility adaptation belong to MCP. |
 | D16 | Prefix `booley.criteria` | Prefix `booley.flows` | Forbid | Criteria evaluates shared evidence without depending on Flow production, source scanning, or execution. |
-| D17 | Prefix `booley.flows` | Prefix `booley.ticket_board` | Forbid | Deterministic Flow execution consumes resolved acceptance inputs and records through composition without knowing Ticket Board persistence. |
 | D18 | Prefix `booley.config` | Prefix `booley.runtime` | Forbid | Configuration returns validated values; Runtime and Project Initialization own backend construction, execution state, and setup mechanisms. |
 | D19 | Prefix `booley.eda` | Prefix `booley.flows` | Forbid | EDA consumes declarative enablement without depending on Flow execution. |
 | D20 | Prefix `booley.eda` | Exact modules `booley.runtime.session_issuance`, `booley.runtime.issuance_invalidation` | Forbid | EDA supplies provisioning facts without knowing Runtime issuance, persistence, or invalidation. |
-| D21 | Prefix `booley.review` | Prefixes `booley.ticket_board`, `booley.harness` | Forbid | Review renders artifacts from resolved evidence without knowing Ticket Board lifecycle or Harness orchestration. |
-| D22 | Prefix `booley.ticket_board` | Prefix `booley.review` | Forbid, subject only to C9 | Ticket Board composes Review only through its exact artifact-generation entry point. |
+| D21 | Prefix `booley.review` | Prefixes `booley.harness` | Forbid | Review renders artifacts from resolved evidence without knowing Harness orchestration. |
 | D23 | Prefix `booley.config` | Prefix `booley.eda` | Forbid | Config owns declarative requests without depending on EDA provisioning policy. |
 | D24 | Prefix `booley.eda` | Prefix `booley.runtime` | Forbid | EDA uses neutral host mechanisms without depending on Runtime execution or issuance. |
-| D25 | Exact modules `booley.core.private_store`, `booley.core.file_lock`, `booley.core.resources` | Prefixes `booley.agent_workspace`, `booley.audit`, `booley.bwave`, `booley.commit_policy`, `booley.config`, `booley.criteria`, `booley.dev_support`, `booley.docker`, `booley.eda`, `booley.evidence`, `booley.feedback`, `booley.flows`, `booley.fusesoc`, `booley.goals`, `booley.harness`, `booley.mcp`, `booley.presentation`, `booley.projects`, `booley.review`, `booley.runtime`, `booley.specialists`, `booley.targets`, `booley.ticket_board` | Forbid | Shared private storage, locking, and package resources do not own caller policy. |
+| D25 | Exact modules `booley.core.private_store`, `booley.core.file_lock`, `booley.core.resources` | Prefixes `booley.agent_workspace`, `booley.audit`, `booley.bwave`, `booley.commit_policy`, `booley.config`, `booley.criteria`, `booley.dev_support`, `booley.docker`, `booley.eda`, `booley.evidence`, `booley.feedback`, `booley.flows`, `booley.fusesoc`, `booley.goals`, `booley.harness`, `booley.mcp`, `booley.presentation`, `booley.projects`, `booley.review`, `booley.runtime`, `booley.specialists`, `booley.targets` | Forbid | Shared private storage, locking, and package resources do not own caller policy. |
 | D26 | Exact modules `booley.harness.host_diagnostics`, `booley.harness.setup.readiness` | Exact modules `booley.harness.doctor`, `booley.harness.init_cmd`, `booley.harness.booley`, `booley.harness.colors`, `booley.harness.setup.common` | Forbid | Diagnostic owners return complete observations without depending on command orchestration or rendering. |
 | D27 | Prefix `booley.targets` | Prefixes `booley.flows`, `booley.runtime` | Forbid | Target inspection uses shared build identity without Flow execution or Runtime. |
 | D28 | Prefix `booley.fusesoc` | Prefix `booley.runtime` | Forbid | FuseSoC provenance consumes pure Scope matching without Runtime or Git execution. |
 | D29 | Prefix `booley.bwave` | Prefix `booley.flows` | Forbid | B-Wave owns reusable waveform mechanics without Flow execution or Simulation evidence policy. |
-| D30 | Prefix `booley.criteria` | Prefix `booley.ticket_board` | Forbid | Generic Criteria policy and state evaluation must not depend on Ticket document, persistence, or lifecycle ownership. |
 | D31 | Prefix `booley` | Exact modules `booley.flows.sim.campaign.store`, `booley.flows.sim.campaign.inspection` | Forbid, subject only to C10-C13 | Simulation Campaign durable storage is private implementation behind the public Campaign interface. |
 | D32 | Prefix `booley.runtime` | Prefix `booley.dev_support` | Forbid | Packaged execution consumes commit policy through its shared owner; development commands do not own Runtime behavior. |
 | D33 | Prefix `booley.feedback` | Prefix `booley.harness` | Forbid | Feedback consumes resolved environment observations and owns report rendering without command or Ticket Mode composition. |
 | D34 | Prefix `booley.commit_policy` | Prefixes `booley.runtime`, `booley.harness`, `booley.dev_support` | Forbid | Shared commit policy stays independent of execution composition and script adapters. |
-| D35 | Prefix `booley.goals` | Prefixes `booley.harness`, `booley.mcp`, `booley.specialists`, `booley.ticket_board`, `booley.flows.{sim,synth,fpga,lint}` | Forbid | Goal Mode policy and records are composed by MCP and command entry points; they do not depend on those entry points, Specialists, concrete Flows, or Ticket Board persistence. |
+| D35 | Prefix `booley.goals` | Prefixes `booley.harness`, `booley.mcp`, `booley.specialists`, `booley.flows.{sim,synth,fpga,lint}` | Forbid | Goal Mode policy and records are composed by MCP and command entry points; they do not depend on those entry points, Specialists, concrete Flows. |
 
 ## Simulation Campaign storage boundary
 
@@ -306,26 +283,6 @@ Tests, arbitrary dynamic-name access, and dynamic-import expressions remain
 outside this production static gate. A live-edge ratchet requires every C10-C13
 permission to correspond to a current exact production edge.
 
-## Ticket review lifecycle boundary
-
-This lifecycle facade is retained until Phase 9a removes it. It is a public
-Python interface inside the retained package, not an exposed product workflow;
-`booley board` now prints a Goal Mode pointer and exits 2.
-
-`ticket_board.review_lifecycle` is the deep public facade for automatic handoff,
-requested review, refresh, regeneration, finalization, briefing, and review-bound
-endpoint execution. Ticket Board owns admission, captured inspection identity,
-job/operation fencing, publication, and interrupted-publication recovery.
-
-`review.generation` is the sole reverse composition seam. It accepts the resolved
-context and immutable participant heads selected by Ticket Board and returns review
-packages and render outcomes. It does not inspect Ticket Board state or perform
-lifecycle transitions. Generic detached-job waiting and execution-lease identity live
-in Runtime; `ticket_board.ticket_jobs` adapts generic job discovery to a Ticket,
-while Ticket Board issues the generic execution lease consumed by Flow publication.
-Reviewer receipts and dispositions live in `booley.evidence`
-because both Specialists and acceptance policy consume them.
-
 ## Criterion evidence ownership
 
 `booley.evidence` is the dependency-neutral owner of values that cross from an
@@ -343,20 +300,9 @@ scanning or execution responsibility out of Flows.
 `flows.execution_persistence` defines the execution and recording interface,
 including `AcceptanceRecorder.acceptance_identity()`, the public read of the
 identity evidence is recorded under. `goals.flow_execution.GoalFlowExecution`
-supplies the bound Goal adapter and recorder; `ticket_board.flow_execution`
-supplies both the legacy Ticket adapter and `TicketAcceptanceRecorder` used by
-unbound MCP calls. These adapters remain live until Phase 9a removes or relocates them. Goal
-binding and Ticket baseline lookup stay outside deterministic Flow execution
-under their respective composition contracts.
+supplies the bound Goal adapter and recorder. `mcp.unbound_recorder` supplies V1 Interactive recording, with empty identity, no freshness policy, and no V2 transaction authority. Goal binding stays outside deterministic Flow execution.
 
-`criteria.evidence_ledger` owns durable Criterion evidence storage: V1 appends,
-V2 Simulation Campaign transactions, their lock, recovery, and publication
-checkpoints. Callers pass an `EvidenceScope` (a purpose plus an
-`EvidenceIdentityCodec`) and, for V2, an `EvidenceProjection`.
-Retained until Phase 9a removes its compatibility facade,
-`ticket_board.acceptance_ledger` composes it for Tickets: the
-`ticket_acceptance` purpose, the `TicketIdentity` codec, and report-submission
-fencing. The dependency points from `ticket_board` to `criteria` only (D30).
+`criteria.evidence_ledger` owns durable Criterion evidence storage: V1 appends, V2 Simulation Campaign transactions, their lock, recovery, and publication checkpoints. Callers pass an `EvidenceScope` and, for V2, an `EvidenceProjection`. `criteria.unbound_ledger` preserves the existing V1 record purpose and fields and rejects V2 authority.
 `goals.recorder` composes it for Goal Mode: the `goal_evidence` purpose, the
 `GoalIdentity` codec (one transaction records one identity group of Goal keys
 and their specification revisions), and a projection that refuses evidence
@@ -404,7 +350,6 @@ named rule and gives no source module a blanket exemption.
 | C1 | D4 | `booley.mcp.server -> booley.harness.auto_doctor` | The MCP server composes the Doctor endpoint at the agent-facing entry point. |
 | C2 | D4 | `booley.mcp.server -> booley.specialists.specialist` | The MCP server classifies and composes Specialist endpoints. |
 | C8 | D6 | `booley.runtime.incontainer_register -> booley.harness.incontainer_register` | The former module path remains an exact compatibility entry point. |
-| C9 | D22 | `booley.ticket_board.review_preparation -> booley.review.generation` | Ticket Board supplies resolved immutable inputs to the Review artifact generator. |
 | C10 | D31 | `booley.flows.sim.campaign.coordinator -> booley.flows.sim.campaign.store` | Campaign execution composes durable transaction, recovery, and publication. |
 | C11 | D31 | `booley.flows.sim.campaign.child_protocol -> booley.flows.sim.campaign.store` | Campaign-owned child linkage validates and publishes durable Campaign paths. |
 | C12 | D31 | `booley.flows.sim.campaign.inspection -> booley.flows.sim.campaign.store` | Public read capabilities inspect storage through the private Campaign store. |
@@ -428,7 +373,7 @@ proofs define that limit:
 | `booley.harness.setup.project_git_hook_bundle` | Builds the explicit nine-module flat source inventory, including the shared policy and validator under collision-resistant names, and a zip-root launcher for the standalone Project Git-hook bundle. | `tests/harness/setup/test_project_git_hook_bundle.py` proves deterministic bytes, normalized sources, isolated execution, and command dispatch. |
 | `booley.mcp.server` | Imports discovered built-in `booley.mcp.*` endpoint modules and Project-local MCP files. | MCP server and registry discovery tests prove built-in and custom endpoint loading. |
 | `booley.harness.booley` | Imports a registry-selected built-in `booley.*` MCP tool class or a Project-local MCP file for diagnostic commands. | `tests/harness/test_booley.py` proves built-in and Project-local loading. |
-| `booley.ticket_board.flow_runner` | Loads a named Project-local `BooleyFlow` from an explicit file and supplies Ticket Board execution composition. | `tests/flows/test_transport_contract.py` proves Project-local Flow loading and Ticket adapter composition. |
+| `booley.mcp.project_flow_loader` | Loads a named Project-local `BooleyFlow` from an explicit file for MCP execution composition. | `tests/flows/test_transport_contract.py` proves Project-local Flow loading. |
 
 Uses of `importlib.metadata`, `importlib.resources`, and `importlib.util.find_spec`
 that inspect distributions, resources, or module availability create no hidden
@@ -874,7 +819,7 @@ python3 tests/architecture/compare_report.py \
 
 `booley.goals` owns immutable Run Bindings, publication gates, state merging,
 freshness policy, status views, and neutral evidence metrics. D35 continues to
-forbid imports of concrete Flows, MCP, Harness, Specialists, and Ticket Board.
+forbid imports of concrete Flows, MCP, Harness, and Specialists.
 `mcp.call_context` resolves the Worktree Identity and binds an active record once,
 before endpoint admission. `mcp.goal_flow_runner` selects concrete Flows and
 composes them with `goals.flow_execution.GoalFlowExecution`; custom MCP endpoints
@@ -882,14 +827,12 @@ receive the same serialized binding through `mcp.base`. Both reach the Goal
 persistence strategy through the acceptance recorder at `EndpointState.read_state`.
 The optional `CriterionSourceTarget` recorder capability supplies a declared Goal
 Target before an endpoint samples source fingerprints; publication preserves that
-sample instead of recapturing source digests. Ticket recorders retain their existing
-producer-supplied Target policy until Phase 9a removes them. The optional
+sample instead of recapturing source digests. The optional
 `CriterionFreshness` capability reads
 Goal status for the exact in-memory Reviewer receipt, checked against a locked
 disk snapshot and its bound specification identity. Replayed Goal receipts do
 not write state, so their audit cannot replace a concurrently completed review.
-Retained Ticket Reviewers use the existing persistent freshness refresh until
-Phase 9a removes that path.
+Unbound Reviewers refresh persistent verification evidence through `specialists.verification_freshness`.
 
 Status resolves a supplied worktree subdirectory to its containing Git root, then
 enumerates the record's declared Goals, with absent evidence unmet and
@@ -900,3 +843,23 @@ Target surface, Reviewer receipt, and simulation-suite freshness. Status perform
 no persistence or re-binding. The Phase 2 audit key is now a Worktree Identity key;
 the Phase 6 Session Registry now supplies session discovery and shared-worktree
 warnings. It is presentational and never selects a Goal Record.
+
+## Current snapshot: 11 OCT 2026 — shared execution owners
+
+Phase 9a removes the retired execution package and its sole-consumer modules.
+The surviving recorder, project Flow loader, verification freshness, agent
+execution, and simulation waiver store live under their existing architectural
+owners. No direction permission or SCC member is added.
+
+Measured with `python3 tests/architecture/report.py --top 10`:
+
+```text
+Parsed Python modules: 600
+Normalized dependency facts: 3009
+Unique normalized edges: 2651
+
+Cyclic top-level package groups:
+- booley.agent_workspace, booley.bwave, booley.criteria, booley.dev_support, booley.feedback, booley.flows, booley.goals, booley.harness, booley.mcp, booley.runtime, booley.specialists
+- booley.fusesoc, booley.targets
+
+```

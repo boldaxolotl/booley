@@ -28,7 +28,7 @@ HeartbeatRenderer = Callable[[str, str, str], None]
 
 # Epoch-seconds file the idle reaper (booley.docker.reaper) reads via
 # ``docker exec`` to decide whether the Sandbox container is idle.
-# Touched by MCP servers, the ``booley run`` loop, and supervised Sandbox
+# Touched by MCP servers and supervised Sandbox
 # Attachments while protected work is active.
 REAPER_HEARTBEAT_PATH = "/tmp/booley_mcp_heartbeat"
 

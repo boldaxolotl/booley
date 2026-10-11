@@ -32,7 +32,7 @@ from booley.goals.recorder import (
 from booley.goals.simulation import GOAL_SUITE_DETAIL_KEY
 from booley.goals.status import build_status
 from booley.goals.store import GoalStore
-from booley.ticket_board.acceptance_ledger import TicketIdentity
+from tests.criteria.ledger_support import FixtureIdentity
 from tests.goals.conftest import (
     LINT_KEY,
     SIM_KEY,
@@ -253,7 +253,7 @@ def test_goal_and_ticket_codecs_reject_each_other() -> None:
     with pytest.raises(AcceptanceLedgerError):
         GoalIdentity().lookup_identity({"generation": "d" * 32})
     with pytest.raises(AcceptanceLedgerError, match="ticket generation"):
-        TicketIdentity().lookup_identity(_VALID)
+        FixtureIdentity().lookup_identity(_VALID)
     with pytest.raises(AcceptanceLedgerError, match="another Goal Record"):
         GoalIdentity().validate_observation_identity(
             _VALID, {**_VALID, "record_id": "other-20261006T120000Z"}
@@ -317,7 +317,7 @@ def test_intent_whose_envelope_names_an_older_spec_is_rejected(
 
 
 def test_ticket_intent_cross_check_rejects_a_mismatched_envelope(tmp_path: Path) -> None:
-    from booley.ticket_board import acceptance_ledger as ticket_ledger
+    from tests.criteria import ledger_support as fixture_ledger
 
     state = DevelopmentState.load(tmp_path / "state.json")
     state.slug = "fix-uart"
@@ -325,7 +325,7 @@ def test_ticket_intent_cross_check_rejects_a_mismatched_envelope(tmp_path: Path)
     changes = state.set_criterion("lint_clean", True, detail={})
     identity = {"generation": "d" * 32}
     with pytest.raises(_InterruptedError):
-        ticket_ledger.record_or_verify_transaction(
+        fixture_ledger.record_or_verify_transaction(
             tmp_path,
             state,
             changes,
@@ -340,7 +340,7 @@ def test_ticket_intent_cross_check_rejects_a_mismatched_envelope(tmp_path: Path)
     intent_path.write_bytes(canonical_json(intent) + b"\n")
 
     with pytest.raises(AcceptanceLedgerError, match="envelope does not match its lookup key"):
-        ticket_ledger.record_or_verify_transaction(
+        fixture_ledger.record_or_verify_transaction(
             tmp_path, state, changes, acceptance_facts=campaign_facts(), ticket_identity=identity
         )
 

@@ -45,8 +45,6 @@ _LAZY_NAMES = frozenset(
     {
         "PROJECT_NAME",
         "ENV_PREFIX",
-        "HUMAN_IN_THE_LOOP",
-        "RUN_REPORT",
         "TEST_NAMES",
         "TEST_SELECT",
         "TEST_SKIP",
@@ -105,19 +103,6 @@ def _load_config() -> dict[str, Any]:
         # [project]
         "PROJECT_NAME": project_name,
         "ENV_PREFIX": f"BOOLEY_{project_name.upper().replace('-', '_')}",
-        # [developer] — whether a human operator is available to unblock the
-        # agent. When True (default), the Developer Agent blocks on
-        # missing/ambiguous spec and spec reviewers enforce strict grounding.
-        # When False (benchmarks / unattended runs), the Developer Agent
-        # resolves spec-silent points itself and reviewers tolerate
-        # documented readings.
-        "HUMAN_IN_THE_LOOP": bool(toml.get("developer", {}).get("human_in_the_loop", True)),
-        # [developer] — whether ticket runs must end with a structured run
-        # report (REPORT.md via submit_run_report). True (default) keeps the
-        # report as a hard exit condition for the Developer Agent. False lets
-        # projects that don't consume the reports (benchmarks, bulk unattended
-        # runs) skip the report step and its per-run token cost entirely.
-        "RUN_REPORT": bool(toml.get("developer", {}).get("run_report", True)),
         # tests.toml verification-intent (decision 16): {target: [test_names]}
         # and {target: select_template}. Single mutable dict instances so that
         # tests may ``monkeypatch.setitem`` them.
@@ -185,48 +170,6 @@ def project_name(work_dir: Path | None = None) -> str:
         return "rtl_project"
     project = as_dict(document.get("project"), default={}) or {}
     return as_str(project.get("name"), "rtl_project") or "rtl_project"
-
-
-def is_human_in_loop(work_dir: Path | None = None) -> bool:
-    """Return the human_in_the_loop policy, resolved from booley.toml.
-
-    Args:
-        work_dir: Optional override for project discovery. When provided,
-            looks for ``work_dir/.booley_project/booley.toml`` (and falls
-            back to legacy ``pipeline.toml``). When ``None``, returns the
-            value lazily loaded from the resolved project.
-
-    Returns:
-        True (default) when the flag is absent or unreadable -- safe-by-
-        default behavior preserves the human-in-the-loop assumption.
-    """
-    if work_dir is None:
-        return _get("HUMAN_IN_THE_LOOP")
-
-    for candidate in (".booley_project/booley.toml", ".booley_project/pipeline.toml"):
-        toml_path = work_dir / candidate
-        if not toml_path.is_file():
-            continue
-        try:
-            with toml_path.open("rb") as f:
-                cfg = tomllib.load(f)
-            return bool(cfg.get("developer", {}).get("human_in_the_loop", True))
-        except (OSError, tomllib.TOMLDecodeError, TypeError):
-            break
-    # Caller explicitly scoped to work_dir; don't leak the module-cached value
-    # loaded from CWD (which may belong to an entirely different project).
-    return True
-
-
-def is_run_report_enabled() -> bool:
-    """Return the run_report policy, resolved from booley.toml.
-
-    Returns:
-        True (default) when the flag is absent or unreadable -- the run
-        report stays a mandatory exit condition unless a project opts out
-        with ``[developer] run_report = false``.
-    """
-    return _get("RUN_REPORT")
 
 
 # ---------------------------------------------------------------------------

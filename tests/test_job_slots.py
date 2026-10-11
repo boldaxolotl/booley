@@ -29,12 +29,11 @@ from booley.runtime.execution_records import (
 from booley.runtime.job_slots import (
     CLASS_HEAVY,
     CLASS_LIGHT,
-    CLASS_TICKET,
     HOLDING,
     LOST,
     QUEUED,
+    ROLE_BACKGROUND,
     ROLE_INTERACTIVE,
-    ROLE_TICKET,
     QueueFullError,
     SlotCaps,
     SlotStore,
@@ -328,9 +327,9 @@ class TestSingleProcess:
         spawn(world, 100)
         store = make_store(root, world)
         heavy = store.submit(CLASS_HEAVY, pid=100)
-        ticket = store.submit(CLASS_TICKET, pid=100)
+        light = store.submit(CLASS_LIGHT, pid=100)
         assert store.refresh(heavy).state == HOLDING
-        assert store.refresh(ticket).state == HOLDING
+        assert store.refresh(light).state == HOLDING
 
 
 def test_same_store_interleaved_submission_preserves_exact_entry_number(root, world, monkeypatch):
@@ -1093,11 +1092,11 @@ class TestSnapshot:
         store = make_store(root, world, SlotCaps(max_heavy=1))
         holder = store.submit(CLASS_HEAVY, pid=100, argv=["sim"])
         assert store.refresh(holder).state == HOLDING
-        store.submit(CLASS_HEAVY, pid=100, argv=["synth"], role=ROLE_TICKET)
+        store.submit(CLASS_HEAVY, pid=100, argv=["synth"], role=ROLE_BACKGROUND)
         holders, waiters = store.snapshot(CLASS_HEAVY)
         assert [t.argv for t in holders] == [["sim"]]
         assert [t.argv for t in waiters] == [["synth"]]
-        assert waiters[0].role == ROLE_TICKET
+        assert waiters[0].role == ROLE_BACKGROUND
 
     def test_snapshot_of_empty_class(self, root, world):
         store = make_store(root, world)
@@ -1109,7 +1108,6 @@ class TestSlotCaps:
         caps = SlotCaps()
         assert caps.cap_for(CLASS_HEAVY) == 1
         assert caps.cap_for(CLASS_LIGHT) == 3
-        assert caps.cap_for(CLASS_TICKET) == 2
         assert caps.queue_max == 8
 
     def test_zero_cap_is_clamped_to_one(self):
@@ -1163,7 +1161,7 @@ class TestJobsConfigParsing:
                 }
             }
         )
-        assert caps == SlotCaps(max_heavy=2, max_light=5, max_tickets=4, queue_max=16)
+        assert caps == SlotCaps(max_heavy=2, max_light=5, queue_max=16)
 
     def test_invalid_values_keep_defaults(self):
         from booley.config.agent import _parse_jobs_config
@@ -1318,3 +1316,53 @@ class TestSlotsDir:
         monkeypatch.setenv("BOOLEY_SLOTS_DIR", str(tmp_path / "elsewhere"))
         job_slots.slots_dir()
         assert not (tmp_path / "elsewhere").exists()
+
+
+def test_retired_class_directory_is_untouched_by_live_classes(tmp_path, world):
+    """Old claims are outside the heavy/light admission and cancellation surface."""
+    roots = [tmp_path / "clean" / "slots", tmp_path / "legacy" / "slots"]
+    legacy = roots[1] / "ticket"
+    legacy.mkdir(parents=True)
+    (legacy / "H-000-00001-100-0.json").write_bytes(b'{"role":"ticket","pid":100}\n')
+    (legacy / "opaque.bin").write_bytes(b"\x00legacy claim\xff")
+    before = {p.relative_to(legacy): p.read_bytes() for p in legacy.rglob("*") if p.is_file()}
+    for pid in (100, 200, 300):
+        spawn(world, pid)
+    results = []
+    for root in roots:
+        store = make_store(root, world, SlotCaps(max_heavy=1, max_light=1))
+        heavy = store.submit(CLASS_HEAVY, pid=100)
+        light = store.submit(CLASS_LIGHT, pid=200)
+        states = [store.refresh(heavy).state, store.refresh(light).state]
+        waiter = store.submit(CLASS_HEAVY, pid=300)
+        reloaded = make_store(root, world)
+        holders, waiting = reloaded.snapshot(CLASS_HEAVY)
+        states += [(t.pid, t.role) for t in holders + waiting]
+        states += [
+            reloaded.state_for_pid(100),
+            reloaded.state_for_pid(200),
+            reloaded.state_for_pid(300),
+        ]
+        states += [reloaded.cancel_waiter(300), reloaded.refresh(waiter).state]
+        results.append(states)
+    assert results[0] == results[1]
+    assert {
+        p.relative_to(legacy): p.read_bytes() for p in legacy.rglob("*") if p.is_file()
+    } == before
+
+
+def test_persisted_legacy_role_reloads_behind_interactive(root, world):
+    for pid in (100, 200, 300):
+        spawn(world, pid)
+    store = make_store(root, world, SlotCaps(max_heavy=1))
+    holder = store.submit(CLASS_HEAVY, pid=100)
+    assert store.refresh(holder).state == HOLDING
+    legacy = store.submit(CLASS_HEAVY, pid=200, role="ticket")
+    interactive = store.submit(CLASS_HEAVY, pid=300, role=ROLE_INTERACTIVE)
+    reloaded = make_store(root, world)
+    holders, waiting = reloaded.snapshot(CLASS_HEAVY)
+    assert [t.pid for t in holders] == [100]
+    assert [(t.pid, t.role) for t in waiting] == [
+        (interactive.pid, ROLE_INTERACTIVE),
+        (legacy.pid, "ticket"),
+    ]

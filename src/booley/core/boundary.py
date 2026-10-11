@@ -8,7 +8,7 @@ tree had each hand-rolled with their own ``isinstance``/``float()``/try-except.
 
 WHY stdlib-only: this lives in ``booley.core``, the dependency-free bottom of
 the import graph (see ``core/__init__.py``). It must not import from
-``harness``/``mcp_tools``/``ticket_board``, and it deliberately does NOT reach for
+``harness``/``mcp_tools``, and it deliberately does NOT reach for
 ``pydantic``/``jsonschema`` (both project deps) — those model whole documents,
 whereas this guards individual raw scalars at the boundary.
 

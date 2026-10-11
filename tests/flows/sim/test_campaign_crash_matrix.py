@@ -33,9 +33,9 @@ from booley.flows.sim.execution.contract import (
     SimulationTargetOutcome,
     SimulationTestOutcome,
 )
-from booley.ticket_board import acceptance_ledger
+from tests.criteria import ledger_support as acceptance_ledger
+from tests.criteria.test_evidence_ledger import _campaign_facts, _transaction_state
 from tests.flows.sim.test_campaign_manifest_codec import _manifest
-from tests.ticket_board.test_acceptance_ledger import _campaign_facts, _transaction_state
 
 _DURABLE_BOUNDARIES = (
     "manifest_commit",

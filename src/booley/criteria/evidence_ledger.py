@@ -17,8 +17,8 @@ key, and an :class:`EvidenceIdentityCodec` that validates and canonicalises
 the identity, names it inside lookup keys, envelopes, and records, and
 judges stored observations. V2 additionally takes an
 :class:`EvidenceProjection` that applies the caller's completion fencing to
-replayed state and to the projection check. Ticket Mode composes these in
-``booley.ticket_board.acceptance_ledger``, Goal Mode in
+replayed state and to the projection check. Interactive V1 calls compose the ledger in
+``booley.criteria.unbound_ledger``, Goal Mode in
 ``booley.goals.recorder``.
 
 A V2 intent is read back only when its envelope names the very identity its

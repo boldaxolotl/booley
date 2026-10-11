@@ -28,7 +28,7 @@ SPECIALISTS_END_MARKER = "<!-- END GENERATED: specialists -->"
 # Direct MCP endpoints that are developer-internal plumbing, not a user-facing
 # capability, are omitted from the human reference. The staleness test forbids
 # silently dropping anything else.
-EXCLUDED_MCP_TOOLS = frozenset({"submit_run_report"})
+EXCLUDED_MCP_TOOLS = frozenset()
 
 
 # Backstop on the Purpose cell: a full multi-sentence description produced a

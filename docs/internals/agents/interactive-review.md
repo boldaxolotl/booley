@@ -55,13 +55,3 @@ intent on retry; changed or corrupt captured inputs fail closed. After an agent
 crash, a session in the same worktree may resume with `goal_status(rules=true)`.
 The human may abandon from that worktree with `booley goal abandon`; the work,
 branch, and abandoned record remain available for inspection.
-
-## Retained Ticket review implementation
-
-The former requested-review workflow, its `board review` / `validate` / `approve`
-handlers, immutable inspections, and Acceptance Journal are retained until
-Phase 9a removes them. They are not a public workflow: `booley board` prints a
-Goal Mode migration pointer and exits 2. Their source lives under
-`src/booley/ticket_board/`; the [Ticket Board glossary](../../../src/booley/ticket_board/GLOSSARY.md)
-describes those retained concepts. Historical Ticket packages remain evidence,
-not instructions to invoke the retired CLI.

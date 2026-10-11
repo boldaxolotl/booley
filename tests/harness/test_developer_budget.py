@@ -7,9 +7,12 @@ import json
 
 import pytest
 
-from booley.config.settings import DeveloperLimitsConfig
-from booley.harness.blocking import AgentTimeoutError
-from booley.runtime.developer_budget import DeveloperBudget, run_with_developer_budget
+from booley.runtime.agent_errors import AgentTimeoutError
+from booley.runtime.developer_budget import (
+    AgentBudgetLimits,
+    DeveloperBudget,
+    run_with_developer_budget,
+)
 
 
 class _Clock:
@@ -25,7 +28,7 @@ class _Clock:
 
 def _budget(tmp_path, clock: _Clock) -> DeveloperBudget:
     return DeveloperBudget(
-        DeveloperLimitsConfig(active_timeout_seconds=30, wall_timeout_seconds=120),
+        AgentBudgetLimits(active_timeout_seconds=30, wall_timeout_seconds=120),
         persist_path=tmp_path / "budget.json",
         clock=clock,
     )
@@ -68,7 +71,7 @@ def test_budget_persists_live_snapshot(tmp_path) -> None:
 @pytest.mark.asyncio
 async def test_active_deadline_is_non_transient(tmp_path) -> None:
     budget = DeveloperBudget(
-        DeveloperLimitsConfig(active_timeout_seconds=1, wall_timeout_seconds=10),
+        AgentBudgetLimits(active_timeout_seconds=1, wall_timeout_seconds=10),
         persist_path=tmp_path / "budget.json",
     )
     budget.start(1)
@@ -95,7 +98,7 @@ async def test_wall_deadline_still_expires_during_excluded_wait(tmp_path) -> Non
 @pytest.mark.asyncio
 async def test_cancelling_wrapper_cleans_up_work_and_budget_tasks(tmp_path) -> None:
     budget = DeveloperBudget(
-        DeveloperLimitsConfig(active_timeout_seconds=30, wall_timeout_seconds=120),
+        AgentBudgetLimits(active_timeout_seconds=30, wall_timeout_seconds=120),
         persist_path=tmp_path / "budget.json",
     )
     budget.start(1)

@@ -41,7 +41,6 @@ def test_report_prints_deterministic_graph_diagnostics(tmp_path: Path) -> None:
         "- booley.harness.doctor: 1\n"
         "- booley.harness.booley: 0\n"
         "- booley.harness.init_cmd: 0\n"
-        "- booley.harness.developer: 0\n"
         "- booley.flows.sim.flow: 0\n"
         "- booley.flows.synth.flow: 0\n"
         "- booley.mcp.server: 0\n"

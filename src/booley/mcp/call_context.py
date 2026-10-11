@@ -13,7 +13,7 @@ process's own ``BOOLEY_*`` variables. ``subprocess_env_overrides`` is empty.
 An explicit worktree selects its active Goal Record and
 freezes one Run Binding. All evidence paths and subprocess overrides follow that
 record; an omitted worktree is refused while any occupying record exists.
-``ticket_file`` feeds :func:`~booley.mcp.flow_execution_selection.select_flow_execution`.
+The Run Binding feeds :func:`~booley.mcp.flow_execution_selection.select_flow_execution`.
 """
 
 from __future__ import annotations
@@ -32,7 +32,6 @@ from booley.goals.paths import record_paths
 from booley.goals.protected_inputs import ProtectedInputRoots
 from booley.goals.session_key import session_key
 from booley.goals.store import GoalRecordCorruptError, GoalStore, WorktreeIdentityError
-from booley.mcp.flow_execution_selection import configured_ticket_file
 from booley.runtime.job_records import make_run_id
 from booley.runtime.project_dir import resolve_project_dir
 from booley.runtime.session_paths import session_jobs_dir
@@ -49,8 +48,7 @@ class CallContext:
     ``state_path``, ``logs_dir``, and ``runtime_dir`` are ``None`` when the
     server environment leaves them unset, exactly as the reads they replaced
     returned nothing. ``runtime_dir`` is the explicit ``BOOLEY_RUNTIME_DIR``
-    value, not the logs-derived fallback. ``ticket_file`` is the server's
-    ``BOOLEY_TICKET_FILE``, or ``None`` when unset or empty.
+    value, not the logs-derived fallback.
     """
 
     explicit_work_dir: Path | None
@@ -59,7 +57,6 @@ class CallContext:
     logs_dir: Path | None
     runtime_dir: Path | None
     subprocess_env_overrides: Mapping[str, str]
-    ticket_file: Path | None
     binding: GoalRunBinding | None = None
     session_key: str | None = None
 
@@ -111,7 +108,6 @@ def resolve_call_context(arguments: Mapping[str, Any]) -> CallContext:
         logs_dir=_env_path("BOOLEY_LOGS_DIR"),
         runtime_dir=_env_path("BOOLEY_RUNTIME_DIR"),
         subprocess_env_overrides=MappingProxyType({}),
-        ticket_file=configured_ticket_file(),
     )
 
 
@@ -181,7 +177,6 @@ def _goal_call_context(arguments: Mapping[str, Any], explicit: Path | None) -> C
         paths.logs_dir,
         paths.runtime_dir,
         MappingProxyType(overrides),
-        None,
         binding,
         session_key(store, explicit),
     )

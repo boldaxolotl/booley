@@ -56,9 +56,9 @@ from .coverage_analysis import (
 )
 from .coverage_analysis_schema import coverage_analysis_model_schema
 from .coverage_candidate_recording import (
-    TicketCandidateContext,
+    GoalCandidateContext,
     candidate_summary_line,
-    record_ticket_candidates,
+    record_goal_candidates,
 )
 from .specialist import Specialist
 
@@ -126,13 +126,11 @@ class CoverageAnalystSpecialist(Specialist):
         self, document: dict[str, object], loaded: LoadedCoverageCampaign, campaign: Path
     ) -> str | None:
         """ADR 0066: record screened candidates for the Ticket; return a Console line."""
-        context = TicketCandidateContext.from_environment(
-            getattr(self.args, "slug", ""), os.environ
-        )
+        context = GoalCandidateContext.from_environment(getattr(self.args, "slug", ""), os.environ)
         if context is None:
             return None
         screened = cast(list[dict[str, object]], document["waiver_candidates"])
-        section = record_ticket_candidates(
+        section = record_goal_candidates(
             context,
             loaded.campaign,
             loaded.summary,

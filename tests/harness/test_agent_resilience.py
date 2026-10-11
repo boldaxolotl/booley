@@ -62,11 +62,11 @@ if not hasattr(_sdk, "_enriched_by_resilience"):
 
     _agent_mod.ProcessError = _EnrichedProcessError
 
-from booley.harness.blocking import TransientAPIError
 from booley.runtime.agent import (
     _is_transient_error,
     _transcript_path_for_attempt,
 )
+from booley.runtime.agent_errors import TransientAPIError
 
 # ---------------------------------------------------------------------------
 # _is_transient_error

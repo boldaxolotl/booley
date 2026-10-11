@@ -29,10 +29,10 @@ EXPLORATORY_SETTINGS = settings(
     stateful_step_count=50,
 )
 
-_CLASSES = (job_slots.CLASS_HEAVY, job_slots.CLASS_LIGHT, job_slots.CLASS_TICKET)
+_CLASSES = (job_slots.CLASS_HEAVY, job_slots.CLASS_LIGHT)
 _PIDS = (101, 102, 103, 104)
-_PRIORITY = {job_slots.ROLE_INTERACTIVE: 0, job_slots.ROLE_TICKET: 1}
-_CAPS = SlotCaps(max_heavy=1, max_light=2, max_tickets=2, queue_max=4)
+_PRIORITY = {job_slots.ROLE_INTERACTIVE: 0, job_slots.ROLE_BACKGROUND: 1}
+_CAPS = SlotCaps(max_heavy=1, max_light=2, queue_max=4)
 
 
 class FakeProcessWorld:
@@ -176,7 +176,7 @@ class JobSlotStateMachine(RuleBasedStateMachine):
         target=claims,
         pid=st.sampled_from(_PIDS),
         job_class=st.sampled_from(_CLASSES),
-        role=st.sampled_from((job_slots.ROLE_INTERACTIVE, job_slots.ROLE_TICKET)),
+        role=st.sampled_from((job_slots.ROLE_INTERACTIVE, job_slots.ROLE_BACKGROUND)),
     )
     def submit_claim(self, pid: int, job_class: str, role: str) -> object:
         if pid not in self.world.alive:

@@ -62,7 +62,7 @@ adapters. Product configuration and documentation still call the external
 program an **EDA tool**, and `eda/provisioning/` separately owns host installation
 and licensing policy.
 
-All sessions share the runtime's resources. Admission control treats each Flow or Specialist run as a Job in a separately capped Job Class (`heavy` for EDA work, `light` for model-bound Specialist work). Excess work queues without preempting running Jobs. Queue priority comes from requester role, independently of Job Class: `interactive` sorts ahead of `ticket`; unknown roles get the `ticket` priority. Goal Mode uses the session's agent rather than launching a separately admitted Developer Agent. The legacy `ticket` class is retained until Phase 9a removes the Ticket execution code. Configuration belongs under [`[jobs]`](../user/CONFIG.md#jobs--concurrency-jobs).
+All sessions share the runtime's resources. Admission control treats each Flow or Specialist run as a Job in a separately capped Job Class (`heavy` for EDA work, `light` for model-bound Specialist work). Excess work queues without preempting running Jobs. Queue priority comes from requester role, independently of Job Class: `interactive` sorts ahead of other requester roles. Goal Mode uses the session's agent rather than launching a separately admitted Developer Agent. Configuration belongs under [`[jobs]`](../user/CONFIG.md#jobs--concurrency-jobs).
 
 The runtime is network-restricted by default. Deterministic compile and simulation work receives no egress; LLM-backed work receives only provider access. Approved host EDA installations may be mounted read-only, but their tools still execute inside the runtime. This keeps dispatch, configuration, execution, and result interpretation on the container side of the trust boundary.
 
@@ -80,11 +80,9 @@ The agent cannot meet a Goal by assertion: only structured Booley Flow or Specia
 
 `booley goal` provides status and abandonment, and `booley dashboard` is the read-only Sandbox view. See [USAGE.md](../user/USAGE.md#goal-mode), [ADR 0067](../adr/0067-replace-ticket-mode-with-goal-mode.md), and the [Goal Mode glossary](../../src/booley/goals/GLOSSARY.md).
 
-### Retained Ticket implementation
+### Shared execution and evidence
 
-Ticket Mode is retired: `booley run` and `booley board` print a Goal Mode pointer and exit 2. The Ticket workflow, including the `harness/developer.py` loop, Developer Agent, Ticket Preflight, and Ticket Console, is unreachable through the public CLI and retained until Phase 9a removes it.
-
-The `ticket_board/` package still contains live shared dependencies: Goal Flow loading uses `flow_runner.load_project_flow`; Specialists use `agent_execution`, `waiver_candidates`, and `criteria_acceptance`/`review_policy`; Goal waiver handling also uses `waiver_candidates`. Unbound MCP calls construct `TicketAcceptanceRecorder`, and `booley flow` retains its `BOOLEY_TICKET_FILE` execution adapter. Phase 9a relocates shared execution/evidence dependencies to `evidence/` or `goals/` and removes Ticket-only adapters before deleting the package. The [Ticket Board glossary](../../src/booley/ticket_board/GLOSSARY.md) documents that retained vocabulary. The `booley.harness` package also owns active CLI, setup, and Doctor modules and is not itself retired.
+MCP loads Project Flows through `mcp.project_flow_loader`. Specialists and Doctor use `runtime.agent_execution`; Goal waiver handling and coverage analysis use `flows.sim.waiver_candidates`. Specialists refresh verification evidence through `specialists.verification_freshness` and shared Criteria freshness policy. Unbound MCP calls use `mcp.unbound_recorder` for V1 evidence; bound Goal runs use their Goal adapter. The shared [Criterion vocabulary](../GLOSSARY.md#execution-and-evidence) describes internal evaluation.
 
 ## B-Wave
 

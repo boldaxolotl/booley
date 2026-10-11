@@ -40,7 +40,7 @@ Interactive Mode is not optional; it's inevitable. Hardware work is full of task
 
 Goal Mode supplies **mandatory machine-checked Goals** for work that should reach a reviewable result. Only Booley Flow or Specialist evidence can meet them; code changes require fresh evidence, and a human must approve any Goal relaxation. The agent may work unattended until it needs a decision. Finish presents evidence and a Session Summary without a human completion override or an automatic merge.
 
-The cost is durable Goal state, Run Bindings, freshness checks, and an approval log. That state makes long-running work inspectable without maintaining a second acceptance system. ADR 0067 replaces Ticket Mode outright; the Ticket Board and Developer Agent loop are retained until Phase 9a removes them, and `booley run` / `booley board` already return migration pointers with exit 2.
+The cost is durable Goal state, Run Bindings, freshness checks, and an approval log. That state makes long-running work inspectable without maintaining a second acceptance system. Goal Mode uses the session’s Developer Agent and one durable acceptance system (ADR 0067).
 
 ## Why FuseSoC
 

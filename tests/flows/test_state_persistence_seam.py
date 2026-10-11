@@ -23,7 +23,7 @@ from booley.flows.execution_persistence import (
     StandaloneFlowExecution,
     state_persistence_for,
 )
-from booley.ticket_board.flow_execution import TicketAcceptanceRecorder, TicketBoardFlowExecution
+from booley.mcp.unbound_recorder import UnboundAcceptanceRecorder
 from tests.mcp_tools.test_base import ConcreteMcpTool, SimLikeMcpTool, _env_with_state
 
 
@@ -43,8 +43,8 @@ class RecordingPersistence(AtomicStateFile):
         super().save(state)
 
 
-class PersistingRecorder(TicketAcceptanceRecorder):
-    """Ticket recorder that also supplies a state persistence strategy."""
+class PersistingRecorder(UnboundAcceptanceRecorder):
+    """Unbound recorder that also supplies a state persistence strategy."""
 
     def __init__(self, persistence: RecordingPersistence) -> None:
         super().__init__()
@@ -64,8 +64,7 @@ def _with_recorder(endpoint: ConcreteMcpTool, persistence: RecordingPersistence)
     [
         NoAcceptanceRecorder(),
         StandaloneFlowExecution(),
-        TicketAcceptanceRecorder(),
-        TicketBoardFlowExecution(),
+        UnboundAcceptanceRecorder(),
     ],
     ids=lambda recorder: type(recorder).__name__,
 )

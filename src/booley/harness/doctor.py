@@ -1498,8 +1498,8 @@ def _check_memory_invariant(
     requirement = resource_policy.memory_requirement(
         max_heavy=caps.max_heavy,
         heavy_job_bytes=reservation.bytes,
-        max_tickets=1,
-        developer_bytes=orch,
+        agent_count=1,
+        agent_bytes=orch,
     )
     fmt = resource_policy.format_memory
     arithmetic = (

@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from booley.ticket_board.paths import session_jobs_dir
+from booley.runtime.session_paths import session_jobs_dir
 from tests.flows.sim.test_verilator_build_reuse_campaign import flow_project
 from tests.runtime.test_sandbox_layout import project_alias
 

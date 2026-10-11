@@ -5,17 +5,11 @@ from pathlib import Path
 import pytest
 
 from booley.audit.project_schema import audit_known_tables
-from booley.harness.developer import _load_endpoint_config as developer_config
 from booley.harness.setup import readiness
 from booley.mcp.endpoint_config import get_endpoint_config
+from booley.mcp.endpoint_config import get_endpoint_config as developer_config
 from booley.mcp.endpoint_validation import _load_endpoint_config as endpoint_config
 from booley.mcp.registry import discover_mcp_tools
-from booley.ticket_board.validation import (
-    _read_endpoint_config as ticket_config,
-)
-from booley.ticket_board.validation import (
-    _validate_known_mandatory_criteria,
-)
 
 
 @pytest.mark.parametrize("loader", [get_endpoint_config, developer_config, endpoint_config])
@@ -34,8 +28,7 @@ def test_specialist_visibility_is_shared_across_execution_modes(tmp_path, monkey
 
     assert "coverage_analyst" not in names
     assert "lint" not in names
-    assert {"sim", "reviewer", "submit_run_report"} <= names
-    assert ticket_config(project / "booley.toml") == (specialists, flows)
+    assert {"sim", "reviewer"} <= names
 
 
 @pytest.mark.parametrize("table", ["mcp_tools", "tools"])
@@ -49,7 +42,7 @@ def test_retired_visibility_tables_fail_with_migration_guidance(
     config = project / "booley.toml"
     config.write_text(f"[{table}.reviewer]\nenabled = false\n", encoding="utf-8")
 
-    for read in (lambda: loader(tmp_path), lambda: ticket_config(config)):
+    for read in (lambda: loader(tmp_path),):
         with pytest.raises(ValueError, match=r"\[specialists\.\*\]"):
             read()
 
@@ -87,17 +80,6 @@ def test_readiness_does_not_accept_retired_endpoint_configuration(tmp_path, monk
     assert any("[mcp_tools] is retired" in finding.message for finding in loaded.report.findings)
 
 
-def test_ticket_validation_returns_retirement_as_an_error(tmp_path):
-    project = tmp_path / ".booley_project"
-    project.mkdir()
-    (project / "booley.toml").write_text("[mcp_tools.reviewer]\nenabled = false\n")
-
-    errors = _validate_known_mandatory_criteria({"mandatory": {}}, tmp_path)
-
-    assert len(errors) == 1
-    assert "[specialists.*]" in errors[0]
-
-
 @pytest.mark.parametrize(
     "config",
     [
@@ -127,7 +109,7 @@ def test_malformed_toml_fails_closed_in_every_endpoint_loader(tmp_path, monkeypa
     config = project / "booley.toml"
     config.write_text("[specialists.reviewer\nenabled = false\n")
 
-    for read in (lambda: loader(tmp_path), lambda: ticket_config(config)):
+    for read in (lambda: loader(tmp_path),):
         with pytest.raises(ValueError, match=r"booley\.toml"):
             read()
 
@@ -169,26 +151,6 @@ def test_cli_renders_retirement_error_without_traceback(tmp_path, monkeypatch, c
     output = capsys.readouterr().err
     assert "[specialists.*]" in output
     assert "Traceback" not in output
-
-
-@pytest.mark.parametrize(
-    "config",
-    ["[mcp_tools.reviewer]\nenabled = false\n", "[specialists.reveiwer]\nenabled = false\n"],
-)
-def test_preflight_renders_configuration_as_preflight_failure(tmp_path, monkeypatch, config):
-    from booley.harness import ticket_preflight as preflight
-    from booley.ticket_board.helpers import tickets_dir_from_project_root
-
-    project = tmp_path / ".booley_project"
-    project.mkdir()
-    (project / "booley.toml").write_text(config)
-    tickets_dir_from_project_root(tmp_path).mkdir(parents=True)
-    monkeypatch.setattr(preflight, "_check_inside_container", lambda: None)
-    for check in ("_check_git", "_check_ticket_board", "_check_core_setup_hazards"):
-        monkeypatch.setattr(preflight, check, lambda _root: [])
-
-    with pytest.raises(preflight.TicketPreflightError, match="specialists"):
-        preflight.run_ticket_preflight(tmp_path)
 
 
 def test_retired_table_cannot_be_masked_by_new_settings(tmp_path, monkeypatch):

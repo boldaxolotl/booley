@@ -13,8 +13,6 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal, TypeVar
 
-from booley.config.settings import DeveloperLimitsConfig
-
 from .agent_errors import AgentTimeoutError
 from .timefmt import utc_now_rfc3339 as now_iso
 
@@ -24,6 +22,14 @@ T = TypeVar("T")
 _PERSIST_INTERVAL_SECONDS = 10.0
 _TICK_SECONDS = 1.0
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class AgentBudgetLimits:
+    """Explicit limits for a caller-supplied agent budget."""
+
+    active_timeout_seconds: int = 30 * 60
+    wall_timeout_seconds: int = 12 * 60 * 60
 
 
 @dataclass(frozen=True)
@@ -43,7 +49,7 @@ class DeveloperBudget:
 
     def __init__(
         self,
-        limits: DeveloperLimitsConfig,
+        limits: AgentBudgetLimits,
         *,
         persist_path: Path,
         on_event: Callable[[dict[str, Any]], None] | None = None,
@@ -64,7 +70,7 @@ class DeveloperBudget:
         self._changed = asyncio.Event()
 
     def start(self, run_index: int) -> None:
-        """Start both clocks for one ticket execution run."""
+        """Start both clocks for one agent execution run."""
         if self._running:
             raise RuntimeError("Developer budget already started")
         now = self._clock()
@@ -76,7 +82,7 @@ class DeveloperBudget:
         self._publish(force_persist=True)
 
     def set_on_event(self, on_event: Callable[[dict[str, Any]], None] | None) -> None:
-        """Attach the live display callback once the Console watcher exists."""
+        """Attach the live display callback for the caller."""
         self._on_event = on_event
         if self._running:
             self._publish(force_persist=True)
@@ -175,7 +181,7 @@ class DeveloperBudget:
         label = "active-time" if kind == "active" else "wall-clock"
         return AgentTimeoutError(
             f"Developer Agent {label} limit reached "
-            f"({elapsed:.0f}s elapsed, {limit}s limit from [developer.limits])"
+            f"({elapsed:.0f}s elapsed, {limit}s configured limit)"
         )
 
     def _accrue_active(self) -> None:

@@ -267,58 +267,6 @@ def test_recorded_paired_metadata_missing_blocks_outer_repair(linked_ticket):
     assert (checkout / ".git").read_bytes() == original
 
 
-def test_draft_ticket_does_not_load_executable_basis_during_init(tmp_path, monkeypatch):
-    from types import SimpleNamespace
-
-    from booley.harness.setup.git_hooks import _repair_recorded_ticket
-    from booley.ticket_board import scanner
-
-    def unexpected(*_args):
-        raise AssertionError("drafts have no executable basis")
-
-    tio = SimpleNamespace(tickets_dir=tmp_path, inspect_ticket=unexpected)
-    monkeypatch.setattr(
-        scanner, "find_ticket_file", lambda *_args, **_kwargs: (tmp_path / "draft.md", "draft")
-    )
-    assert _repair_recorded_ticket(tmp_path, tio, "draft", tmp_path, []) == set()
-
-
-def test_pending_amendment_reports_one_deferred_reason_not_false_missing_owner(
-    tmp_path, monkeypatch
-):
-    from types import SimpleNamespace
-
-    from booley.harness.setup import git_hooks
-    from booley.runtime import worktree_paths
-    from booley.ticket_board import io
-
-    data = tmp_path / ".booley_project"
-    checkout = data / "worktrees/demo"
-    checkout.mkdir(parents=True)
-    (checkout / ".git").write_text("gitdir: known\n")
-    tickets = data / "tickets"
-    tickets.mkdir()
-    (tickets / "demo.md").write_text("pending amendment\n")
-    monkeypatch.setattr(worktree_paths, "relative_worktree_paths", lambda _root: True)
-    monkeypatch.setattr(
-        io, "TicketIO", lambda *_args, **_kwargs: SimpleNamespace(tickets_dir=tickets)
-    )
-
-    def pending(*_args):
-        raise ValueError("amendment publication is pending; execution is not ready")
-
-    from booley.runtime.worktrees import WorktreeEntry
-
-    monkeypatch.setattr(
-        git_hooks,
-        "list_worktrees",
-        lambda _: (WorktreeEntry(checkout, branch="refs/heads/booley-generation/demo/1"),),
-    )
-    monkeypatch.setattr(git_hooks, "_repair_recorded_ticket", pending)
-    result = git_hooks._repair_live_ticket_worktrees(SimpleNamespace(project_root=tmp_path))
-    assert result == ["demo: amendment publication is pending; execution is not ready"]
-
-
 @pytest.mark.parametrize("slug", ["", ".", "..", "a/b"])
 def test_ticket_workspace_rejects_invalid_names(tmp_path: Path, slug: str) -> None:
     from booley.runtime.worktree_paths import ticket_workspace_path

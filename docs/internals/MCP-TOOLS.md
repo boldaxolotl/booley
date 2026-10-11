@@ -146,7 +146,7 @@ enabled = false                 # remove one discovered Specialist MCP tool
 - Custom Flows and MCP tools are scanned from `.booley_project/mcp_tools/*.py`.
 - `[flows.<name>].enabled = false` disables a Flow; `[specialists.<name>].enabled = false` disables a Specialist. Protocol utilities have no Project enable switch.
 - Interactive, non-nested servers list `goal_enter`, `goal_status`, `goal_propose_change`, and `goal_finish` without a rollout switch. These Goal tools bypass `BOOLEY_MCP_TOOLS`; default and nested servers do not list them.
-- For regular discovered tools, nested allowlists take precedence, followed by `BOOLEY_MCP_TOOLS`, then the `BOOLEY_MCP_MODE=interactive` filter. That interactive filter hides the retired `submit_run_report`; default servers can still expose it, and explicit allowlists can override the interactive filter. Its implementation is retained until Phase 9a removes it. `tb_coder` is currently de-registered in all modes. These environment filters are separate from Project registration.
+- For regular discovered tools, nested allowlists take precedence, followed by `BOOLEY_MCP_TOOLS`, then the `BOOLEY_MCP_MODE=interactive` filter. `tb_coder` is currently de-registered in all modes. These environment filters are separate from Project registration.
 - `booley flow` is the human diagnostic entry point for Booley Flows; the MCP tool diagnostic surface covers Specialists and non-Flow endpoints.
 
 ### Execution Boundary
@@ -296,10 +296,6 @@ The shared `code_modifying` and `satisfies` attributes are explained below.
 #### Direct `McpTool` Subclasses
 
 A direct subclass implements `_run()` and returns a `McpToolResult`.
-The retired `submit_run_report` uses this shape to write Ticket execution state;
-the `BOOLEY_MCP_MODE=interactive` filter hides it, while default servers can still
-expose it and nested or explicit allowlists take precedence over that filter.
-It is a built-in protocol utility in `booley.mcp`, retained until Phase 9a removes it.
 Goal Mode receives its Session Summary through `goal_finish`. A deterministic
 custom subprocess normally remains a `BooleyFlow` so it inherits the common in-runtime lifecycle.
 
@@ -606,9 +602,6 @@ caller supplies another report destination. Exit codes retain
 their normal meaning: 0 = criterion met, 1 = ran and failed, 2 = unable to reach
 a verdict.
 
-The retained `BOOLEY_TICKET_FILE` environment adapter can still select Ticket
-execution for `booley flow`; Phase 9a removes this compatibility path.
-
 #### Make a Specialist Read-Only
 
 Declare the workspace policy once, independently of the selected provider:
@@ -657,11 +650,8 @@ Specialist evidence can meet them; Finish checks current evidence for every Goal
 (see [USAGE.md](../user/USAGE.md#working-with-evidence)). The implementation
 translates Goals into shared Criteria definitions and evidence keys, then routes
 producer `set_criterion()` updates to the declared Goals.
-[Criterion](../../src/booley/ticket_board/GLOSSARY.md#execution-and-evidence)
-remains live internal policy/evaluation vocabulary in `ticket_board/`,
-`criteria/`, and `evidence/`, including the shared code used by Goal Mode and
-Specialists. Phase 9a relocates the shared Ticket-owned implementations before
-deleting `ticket_board/` and its glossary; Criteria do not define a second public workflow.
+[Criterion](../GLOSSARY.md#execution-and-evidence) is the internal policy/evaluation vocabulary in shared Criteria and evidence code used by Goal Mode and Specialists.
+
 
 Entry accepts the fixed families in `goals.model.GoalFamily`: `lint`, `sim`,
 `elab`, `synth`, `fpga`, `cycle_count`, `coverage`, `mutation`, and `review`.
@@ -829,8 +819,6 @@ The Criterion collision in check 6 is a hard validation failure reported by Doct
 
 Run `booley doctor` for shared Project, custom endpoint, and Criteria validation. It reports aggregate health; per-file validation diagnostics use the shared validator's logging. Use `booley cheat --criteria` to inspect the live Criteria catalog. Goal entry refusals cover clean linked-worktree requirements, occupied records, Goal shapes, and bound inputs; they do not reproduce Ticket Preflight.
 
-The Ticket Preflight wrapper is retained until Phase 9a removes it. `booley run` prints a Goal Mode pointer and exits 2 rather than starting intake or Preflight.
-
 For built-in Booley Flows, use `booley doctor` to catch unavailable dependencies or incompatible project Targets, then invoke the Flow directly when diagnosing its arguments or EDA integration. The per-Flow evidence and artifact contracts are documented in [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md).
 
 ### Extending It: Validate a Custom Flow
@@ -936,9 +924,7 @@ for the ordered persistence and Criterion-evidence transaction.
 
 Reviewer runs in both Interactive Mode and Goal Mode. Findings use the supplied
 specification, steering, or concrete code behavior as their scope anchor; a
-spec-review Goal names its specification file explicitly. Retained Ticket-bound
-reviews still use their staged Ticket and accepted decisions until Phase 9a
-removes that path. The shared Reviewer prompt owns
+spec-review Goal names its specification file explicitly. The shared Reviewer prompt owns
 disposition and output instructions; category guides contain review checklists.
 
 ### Validation and dispositions
@@ -951,9 +937,7 @@ remain observations. A `_done` Criterion completes review regardless of
 dispositions and preserves findings. In Goal Mode, a `done` Goal may Finish
 with open findings exposed in the Review Package; those findings do not create
 a human completion gate. A `clean` Goal requires current findings to be verified
-fixed or explicitly waived with user-visible justification. The retained Ticket
-review path still requires explicit approval of current findings before its
-acceptance or completion, until Phase 9a removes it. Merging a Goal Branch is
+fixed or explicitly waived with user-visible justification. Merging a Goal Branch is
 ordinary Git outside Goal completion.
 
 Filtered source proposals and malformed canonical, `ReportFindings` mirror,
@@ -1000,8 +984,7 @@ Goal Record's `waiver-candidates.json`, adds a
 `Waiver Candidates recorded N (filtered by rejection M); coverage strict X ·
 provisional Y`. A recording failure reports `status: failed` without failing the
 analysis. Outside a bound Goal Mode, ordinary Interactive analysis records no
-candidates. The Ticket candidate-recording path is retained until Phase 9a
-removes it; its store implementation is also reused by Goal Mode until relocation.
+candidates. The candidate store is owned by `flows.sim.waiver_candidates`.
 Invalid input or
 malformed/model-incomplete output is an execution error; a valid advisory report
 succeeds even when its Campaign records simulation failure or a coverage miss.

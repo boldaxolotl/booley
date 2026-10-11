@@ -235,7 +235,6 @@ def test_review_findings_outside_explicit_source_scope_are_dropped(
     output_lines: list[str] = []
 
     with (
-        patch("booley.specialists.reviewer._load_ticket_text", return_value=(None, None)),
         patch(
             "booley.specialists.reviewer.resolve_documented_assumptions",
             return_value=(None, None),
@@ -3649,51 +3648,6 @@ def _tb_args(scope: str = "verif/mod_a_tb.sv") -> list[str]:
     return ["--scope", scope, "--category", "tb", "--focus", "quality"]
 
 
-@pytest.fixture()
-def ticket_logs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A logs dir with a mounted ticket snapshot, as Ticket Mode provides."""
-    from booley.ticket_board.ticket_document import (
-        TicketAuthoringView,
-        TicketConversionContext,
-        convert_ticket_document,
-    )
-
-    logs = tmp_path / "logs"
-    logs.mkdir()
-    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(logs))
-
-    def converted_ticket():
-        path = logs / "ticket.md"
-        if not path.is_file():
-            return None, ""
-        view = TicketAuthoringView(lambda selector, _flow: selector, lambda _target: ())
-        result = convert_ticket_document(
-            path.read_text(encoding="utf-8"),
-            TicketConversionContext("draft", lambda _generated: view),
-        )
-        assert result.document is not None, result.diagnostics
-        return result.document, str(path)
-
-    monkeypatch.setattr("booley.specialists.reviewer._load_ticket_document", converted_ticket)
-    return logs
-
-
-def _write_ticket(
-    logs: Path, ticket_type: str = "feature", body: str = "Latency is 3 cycles."
-) -> None:
-    (logs / "ticket.md").write_text(
-        "---\n"
-        "summary: t\n"
-        f"type: {ticket_type}\n"
-        "branch: main\n"
-        "scope: []\n"
-        "on_success: [review]\n"
-        "CRITERIA_MANDATORY: {REVIEW: {tb: {quality: clean}}}\n"
-        f"---\n\n## Description\n{body}\n",
-        encoding="utf-8",
-    )
-
-
 class TestTbReviewGetsTheSpec:
     """A TB reviewer graded on spec traceability needs the spec in hand.
 
@@ -3701,10 +3655,11 @@ class TestTbReviewGetsTheSpec:
     unanswerable: the spec was inlined for RTL spec-focus reviews only.
     """
 
-    def test_tb_prompt_inlines_the_specification(self, ticket_logs: Path, state_file: Path):
-        _write_ticket(ticket_logs, body="The output latency is 3 cycles.")
+    def test_tb_prompt_inlines_the_specification(self, review_logs: Path, state_file: Path):
+        spec = review_logs / "spec.md"
+        spec.write_text("The output latency is 3 cycles.")
         endpoint = ReviewerSpecialist()
-        endpoint.parse_args(_tb_args())
+        endpoint.parse_args([*_tb_args(), "--spec", str(spec)])
 
         prompt = endpoint._build_prompt()
 
@@ -3725,9 +3680,8 @@ class TestTbReviewGetsTheSpec:
 class TestDocumentedAssumptions:
     """A recorded judgement call must not read to the reviewer as an invention."""
 
-    def test_assumptions_are_inlined_when_present(self, ticket_logs: Path, state_file: Path):
-        _write_ticket(ticket_logs)
-        (ticket_logs / "answered_questions.md").write_text(
+    def test_assumptions_are_inlined_when_present(self, review_logs: Path, state_file: Path):
+        (review_logs / "answered_questions.md").write_text(
             "- Spec is silent on rate=0; treated as RMAX.\n", encoding="utf-8"
         )
         endpoint = ReviewerSpecialist()
@@ -3739,50 +3693,11 @@ class TestDocumentedAssumptions:
         assert "rate=0" in prompt
         assert "not an unexplained invention" in prompt
 
-    def test_no_section_without_the_file(self, ticket_logs: Path, state_file: Path):
-        _write_ticket(ticket_logs)
+    def test_no_section_without_the_file(self, review_logs: Path, state_file: Path):
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(["--scope", "rtl/mod_a.sv", "--category", "rtl", "--focus", "spec"])
 
         assert "## Documented Assumptions" not in endpoint._build_prompt()
-
-
-class TestTicketTypeCoveragePolicy:
-    """bugfix/refactor are told to minimize change; the TB gate demanded new scenarios."""
-
-    @pytest.mark.parametrize("ticket_type", ["bugfix", "refactor"])
-    def test_coverage_checks_are_demoted(
-        self, ticket_type: str, ticket_logs: Path, state_file: Path
-    ):
-        _write_ticket(ticket_logs, ticket_type=ticket_type)
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(_tb_args())
-
-        prompt = endpoint._build_prompt()
-
-        assert f"## Ticket Type: {ticket_type}" in prompt
-        assert "MINOR at most" in prompt
-        assert "no randomized vectors" in prompt
-        # False-pass checks are never relaxed.
-        assert "no ticket type excuses those" in prompt.lower()
-
-    @pytest.mark.parametrize("ticket_type", ["feature", "verification"])
-    def test_full_strength_for_authoring_types(
-        self, ticket_type: str, ticket_logs: Path, state_file: Path
-    ):
-        _write_ticket(ticket_logs, ticket_type=ticket_type)
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(_tb_args())
-
-        assert "## Ticket Type" not in endpoint._build_prompt()
-
-    def test_rtl_reviews_carry_no_coverage_policy(self, ticket_logs: Path, state_file: Path):
-        """The RTL guides have no coverage-expansion checks to relax."""
-        _write_ticket(ticket_logs, ticket_type="bugfix")
-        endpoint = ReviewerSpecialist()
-        endpoint.parse_args(["--scope", "rtl/mod_a.sv", "--category", "rtl", "--focus", "spec"])
-
-        assert "## Ticket Type" not in endpoint._build_prompt()
 
 
 class TestSchemaExampleMatchesCategory:
@@ -4019,3 +3934,11 @@ def test_goal_spec_arg_ignores_ticket_document(tmp_path, monkeypatch):
     assert resolve_spec_content(None, tmp_path) == (None, "")
     assert _ticket_path(tmp_path) is None
     assert _decisions_path(tmp_path, None) is not None
+
+
+@pytest.fixture
+def review_logs(tmp_path, monkeypatch):
+    logs = tmp_path / "review-logs"
+    logs.mkdir()
+    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(logs))
+    return logs

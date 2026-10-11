@@ -120,7 +120,7 @@ def test_campaign_aggregation_cannot_pass_vacuously() -> None:
 
 def test_campaign_domain_does_not_import_presentation_layers() -> None:
     flows_dir = Path(__file__).parents[2] / "src" / "booley" / "flows"
-    forbidden = ("booley.harness", "booley.mcp", "booley.ticket_board")
+    forbidden = ("booley.harness", "booley.mcp")
     for filename in ("target_campaign.py", "target_criteria.py", "target_test_suite.py"):
         source = flows_dir / filename
         tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))

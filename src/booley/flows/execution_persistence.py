@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import os
 from collections.abc import Mapping
 from typing import Any, Protocol, runtime_checkable
 
 from booley.criteria.state import CriterionChange, DevelopmentState, StatePersistence
 from booley.evidence.acceptance import ResolvedFlowAcceptance
 from booley.flows.request import FlowRequest
-from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
+from booley.runtime.endpoint_execution import EndpointOutcome
 
 
 class AcceptanceRecorder(Protocol):
@@ -173,12 +172,4 @@ class StandaloneFlowExecution(NoAcceptanceRecorder):
         self,
         request: FlowRequest,
     ) -> ResolvedFlowAcceptance | EndpointOutcome:
-        if os.environ.get("BOOLEY_TICKET_FILE"):
-            return EndpointOutcome(
-                exit_code=EXIT_ERROR,
-                report_text=(
-                    "BLOCKED: ticket-backed Flow execution requires Ticket Board "
-                    "composition; run it through `booley flow` or the MCP endpoint"
-                ),
-            )
         return ResolvedFlowAcceptance()

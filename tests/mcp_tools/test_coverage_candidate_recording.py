@@ -1,4 +1,4 @@
-"""The Coverage Analyst records screened Waiver Candidates for its Ticket (ADR 0066)."""
+"""The Coverage Analyst records screened Waiver Candidates for its Goal Record (ADR 0066)."""
 
 from __future__ import annotations
 
@@ -11,16 +11,16 @@ from types import MappingProxyType
 import pytest
 
 from booley.core.models import AgentResult
+from booley.flows.sim import waiver_candidates as store
 from booley.flows.sim.coverage_analysis_input import read_coverage_campaign
 from booley.flows.sim.coverage_campaign import CoverageCampaign
 from booley.specialists import coverage_analyst as analyst_module
 from booley.specialists.coverage_analyst import CoverageAnalystSpecialist
 from booley.specialists.coverage_candidate_recording import (
-    TicketCandidateContext,
+    GoalCandidateContext,
     candidate_summary_line,
-    record_ticket_candidates,
+    record_goal_candidates,
 )
-from booley.ticket_board import waiver_candidates as store
 from tests.mcp_tools.test_coverage_analyst import source_project
 
 _NOW = datetime(2026, 9, 30, 12, 0, tzinfo=UTC)
@@ -59,7 +59,7 @@ def _screened(point_id: str, source_sha256: str, screening: str = "ready_for_hum
 def ticket(tmp_path: Path):
     path = source_project(tmp_path)
     loaded = read_coverage_campaign(path)
-    context = TicketCandidateContext("t-1", tmp_path / "tickets", tmp_path / "reports")
+    context = GoalCandidateContext("t-1", tmp_path / "tickets", tmp_path / "reports")
     campaign = _strict_failure(loaded.campaign)
     source_sha256 = str(campaign.source_closure["rtl"][0]["sha256"])
     return context, loaded, campaign, path, source_sha256
@@ -69,7 +69,7 @@ def test_ready_candidates_are_recorded_and_rescue_the_strict_verdict(ticket) -> 
     context, loaded, campaign, path, sha = ticket
     point_id = campaign.points[0].id
 
-    section = record_ticket_candidates(
+    section = record_goal_candidates(
         context,
         campaign,
         loaded.summary,
@@ -85,7 +85,7 @@ def test_ready_candidates_are_recorded_and_rescue_the_strict_verdict(ticket) -> 
     assert section["verdicts"]["provisional"] == "pass"
     (candidate,) = section["verdicts"]["candidates"]
     assert candidate["status"] == "offered" and candidate["needed"] is True
-    record = store.load(context.tickets_dir, "t-1")
+    record = store.load(context.store_root, "t-1")
     (stored,) = record.candidates.values()
     assert stored.binding.campaign_path == "sim/12/targets/sim_counter/coverage.json"
     assert stored.binding.manifest_sha256 == loaded.summary.manifest_sha256
@@ -96,7 +96,7 @@ def test_ready_candidates_are_recorded_and_rescue_the_strict_verdict(ticket) -> 
 def test_investigate_candidates_are_not_recorded(ticket) -> None:
     context, loaded, campaign, path, sha = ticket
 
-    section = record_ticket_candidates(
+    section = record_goal_candidates(
         context,
         campaign,
         loaded.summary,
@@ -108,19 +108,19 @@ def test_investigate_candidates_are_not_recorded(ticket) -> None:
 
     assert section["recorded"] == 0
     assert section["verdicts"]["provisional"] == "fail"
-    assert store.load(context.tickets_dir, "t-1").is_empty
+    assert store.load(context.store_root, "t-1").is_empty
 
 
 def test_rejected_point_is_filtered_from_later_proposals(ticket) -> None:
     context, loaded, campaign, path, sha = ticket
     point_id = campaign.points[0].id
     store.record_rejections(
-        context.tickets_dir,
+        context.store_root,
         "t-1",
         [store.Rejection(campaign.target.identity, point_id, sha, "2026-09-30T11:00:00Z", "A.R.")],
     )
 
-    section = record_ticket_candidates(
+    section = record_goal_candidates(
         context, campaign, loaded.summary, path, _screened(point_id, sha), invocation_id="7"
     )
 
@@ -131,7 +131,7 @@ def test_campaign_outside_the_ticket_flow_reports_is_refused(ticket, tmp_path: P
     context, loaded, campaign, path, sha = ticket
     elsewhere = replace(context, flow_reports_root=tmp_path / "other")
 
-    section = record_ticket_candidates(
+    section = record_goal_candidates(
         elsewhere,
         campaign,
         loaded.summary,
@@ -148,7 +148,7 @@ def test_campaign_outside_the_ticket_flow_reports_is_refused(ticket, tmp_path: P
 def test_legacy_campaign_without_point_store_is_refused(ticket) -> None:
     context, _loaded, campaign, path, sha = ticket
 
-    section = record_ticket_candidates(
+    section = record_goal_candidates(
         context, campaign, None, path, _screened(campaign.points[0].id, sha), invocation_id="7"
     )
 
@@ -158,11 +158,11 @@ def test_legacy_campaign_without_point_store_is_refused(ticket) -> None:
 
 def test_corrupt_candidate_record_is_reported_not_raised(ticket) -> None:
     context, loaded, campaign, path, sha = ticket
-    record_path = context.tickets_dir / "waiver-candidates" / "t-1.json"
+    record_path = context.store_root / "waiver-candidates" / "t-1.json"
     record_path.parent.mkdir(parents=True)
     record_path.write_text("{not json", encoding="utf-8")
 
-    section = record_ticket_candidates(
+    section = record_goal_candidates(
         context,
         campaign,
         loaded.summary,
@@ -176,8 +176,8 @@ def test_corrupt_candidate_record_is_reported_not_raised(ticket) -> None:
 
 
 def test_interactive_mode_has_no_ticket_context() -> None:
-    assert TicketCandidateContext.from_environment("", {}) is None
-    assert TicketCandidateContext.from_environment("t-1", {"BOOLEY_RUNTIME_DIR": "/r"}) is None
+    assert GoalCandidateContext.from_environment("", {}) is None
+    assert GoalCandidateContext.from_environment("t-1", {"BOOLEY_RUNTIME_DIR": "/r"}) is None
 
 
 def _unreachable_model(monkeypatch):
@@ -206,11 +206,11 @@ def _unreachable_model(monkeypatch):
     return model
 
 
-def test_run_records_candidates_in_ticket_mode(tmp_path: Path, monkeypatch) -> None:
+def test_run_records_candidates_in_goal_mode(tmp_path: Path, monkeypatch) -> None:
     path = source_project(tmp_path)
-    context = TicketCandidateContext("t-1", tmp_path / "tickets", tmp_path / "reports")
+    context = GoalCandidateContext("t-1", tmp_path / "tickets", tmp_path / "reports")
     monkeypatch.setattr(
-        analyst_module.TicketCandidateContext, "from_environment", lambda *_: context
+        analyst_module.GoalCandidateContext, "from_environment", lambda *_: context
     )
     analyst = CoverageAnalystSpecialist(model=_unreachable_model(monkeypatch))
     analyst.parse_args(["--work-dir", str(tmp_path), "--campaign", str(path)])
@@ -225,7 +225,7 @@ def test_run_records_candidates_in_ticket_mode(tmp_path: Path, monkeypatch) -> N
     json.dumps(result.detail)  # the MCP detail stays JSON-serializable
 
 
-def test_run_outside_ticket_mode_records_nothing(tmp_path: Path, monkeypatch) -> None:
+def test_run_outside_goal_mode_records_nothing(tmp_path: Path, monkeypatch) -> None:
     path = source_project(tmp_path)
     monkeypatch.delenv("BOOLEY_CONTROL_PROJECT_ROOT", raising=False)
     analyst = CoverageAnalystSpecialist(model=_unreachable_model(monkeypatch))
@@ -241,7 +241,7 @@ def test_goal_record_directory_parameter_keeps_candidates_out_of_ticket_store(ti
     context, loaded, campaign, path, sha = ticket
     goal_dir = tmp_path / "goals" / "evidence-20261007T100000Z"
     context = replace(context, slug=goal_dir.name, record_dir=goal_dir)
-    section = record_ticket_candidates(
+    section = record_goal_candidates(
         context,
         campaign,
         loaded.summary,
@@ -252,8 +252,8 @@ def test_goal_record_directory_parameter_keeps_candidates_out_of_ticket_store(ti
     )
     assert section["status"] == "recorded"
     assert (goal_dir / "waiver-candidates.json").is_file()
-    assert not (context.tickets_dir / "waiver-candidates").exists()
-    assert not store.load(context.tickets_dir, context.slug, directory=goal_dir).is_empty
+    assert not (context.store_root / "waiver-candidates").exists()
+    assert not store.load(context.store_root, context.slug, directory=goal_dir).is_empty
 
 
 def test_image_alias_reports_root_records_canonical_campaign(
@@ -268,7 +268,7 @@ def test_image_alias_reports_root_records_canonical_campaign(
     symlink_or_skip(alias, tmp_path / "reports", target_is_directory=True)
     configure_project_alias(monkeypatch, alias, tmp_path / "reports")
     context = replace(context, flow_reports_root=alias)
-    section = record_ticket_candidates(
+    section = record_goal_candidates(
         context,
         campaign,
         loaded.summary,
@@ -278,7 +278,7 @@ def test_image_alias_reports_root_records_canonical_campaign(
         now=_NOW,
     )
     assert section["status"] == "recorded", section
-    record = store.load(context.tickets_dir, "t-1")
+    record = store.load(context.store_root, "t-1")
     assert (
         next(iter(record.candidates.values())).binding.campaign_path
         == "sim/12/targets/sim_counter/coverage.json"

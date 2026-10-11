@@ -15,8 +15,6 @@ import pytest
 from booley.criteria.templates import cycle_count_criterion_key
 from booley.flows.base import BooleyFlow, SubprocessResult
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
-from booley.ticket_board.flow_execution import TicketBoardFlowExecution
-from booley.ticket_board.ticket_baseline import BasisParticipant, TicketBaseline
 
 
 def _env_with_state(state_file: Path, slug: str = "test") -> dict[str, str]:
@@ -24,21 +22,6 @@ def _env_with_state(state_file: Path, slug: str = "test") -> dict[str, str]:
     env["BOOLEY_SLUG"] = slug
     env["BOOLEY_STATE_FILE"] = str(state_file)
     return env
-
-
-def _flow_ticket_baseline() -> TicketBaseline:
-    return TicketBaseline(
-        participants=(
-            BasisParticipant(
-                "outer",
-                "a" * 40,
-                "refs/heads/booley-generation/1234567890abcdef/ticket",
-                "refs/heads/main",
-                "b" * 40,
-            ),
-        ),
-        machine={"generation": "1" * 32},
-    )
 
 
 class EchoFlow(BooleyFlow):
@@ -167,170 +150,6 @@ class TestBooleyFlowExecution:
         flow.read_state()
         result = flow._run()
         assert result.exit_code == EXIT_ERROR
-
-    def test_ticket_baseline_is_checked_before_flow_entry(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from booley.runtime import runtime_context
-        from booley.ticket_board.frontmatter import format_frontmatter
-        from booley.ticket_board.ticket_baseline import TicketBaselineError
-
-        basis = _flow_ticket_baseline()
-        ticket = tmp_path / "ticket.md"
-        ticket.write_text(
-            format_frontmatter({"machine": basis.ticket_identity()}, "ticket"),
-            encoding="utf-8",
-        )
-        monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
-        monkeypatch.setattr(
-            "booley.ticket_board.flow_execution.detect_project_root", lambda: tmp_path
-        )
-        loaded_slugs = []
-
-        def load_basis(_tio, slug, **_kwargs):
-            loaded_slugs.append(slug)
-            return basis
-
-        monkeypatch.setattr(
-            "booley.ticket_board.flow_execution.TicketIO.load_basis",
-            load_basis,
-        )
-        monkeypatch.setattr(
-            "booley.ticket_board.flow_execution.assert_ticket_worktree_inputs_unchanged",
-            lambda *_args, **_kwargs: None,
-        )
-        monkeypatch.setenv("BOOLEY_TICKET_FILE", str(ticket))
-        monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path / "runtime"))
-        monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "logs"))
-        monkeypatch.setenv("BOOLEY_SLUG", "actual-ticket")
-        flow = EchoFlow()
-        flow.execution_adapter = TicketBoardFlowExecution()
-        flow.parse_args(["--target", "test", "--work-dir", str(tmp_path)])
-        assert flow._pre_state_gate() is None
-        assert flow.flow_acceptance.ticket_backed
-        assert loaded_slugs == ["actual-ticket"]
-
-        def reject_change(*_args, **_kwargs):
-            raise TicketBaselineError("acceptance-input-change-required: protected path changed")
-
-        monkeypatch.setattr(
-            "booley.ticket_board.flow_execution.assert_ticket_worktree_inputs_unchanged",
-            reject_change,
-        )
-        rejected = flow._pre_state_gate()
-
-        assert rejected is not None
-        assert rejected.exit_code == EXIT_ERROR
-        assert "acceptance-input-change-required" in rejected.report_text
-        assert rejected.report_text.count("acceptance-input-change-required") == 1
-
-    def test_ticket_baseline_uses_nonblank_runtime_ticket_slug(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from booley.runtime import runtime_context
-
-        ticket = tmp_path / "ticket.md"
-        ticket.write_text("ticket\n", encoding="utf-8")
-        loaded_slugs = []
-        basis = _flow_ticket_baseline()
-        monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
-        monkeypatch.setattr(
-            "booley.ticket_board.flow_execution.detect_project_root", lambda: tmp_path
-        )
-
-        def load_basis(_tio, slug, **_kwargs):
-            loaded_slugs.append(slug)
-            return basis
-
-        monkeypatch.setattr(
-            "booley.ticket_board.flow_execution.TicketIO.load_basis",
-            load_basis,
-        )
-        monkeypatch.setattr(
-            "booley.ticket_board.flow_execution.assert_ticket_worktree_inputs_unchanged",
-            lambda *_args, **_kwargs: None,
-        )
-        monkeypatch.setenv("BOOLEY_TICKET_FILE", str(ticket))
-        monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path / "runtime"))
-        monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "logs"))
-        monkeypatch.setenv("BOOLEY_SLUG", "   ")
-        monkeypatch.setenv("BOOLEY_TICKET_SLUG", "actual-ticket")
-
-        flow = EchoFlow()
-        flow.execution_adapter = TicketBoardFlowExecution()
-        flow.parse_args(["--target", "test", "--work-dir", str(tmp_path)])
-
-        assert flow._pre_state_gate() is None
-        assert loaded_slugs == ["actual-ticket"]
-
-    def test_ticket_baseline_uses_control_plane_ticket_board(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from booley.runtime import runtime_context
-
-        control_root = tmp_path / "control"
-        control_tickets = control_root / ".booley_project" / "tickets"
-        ticket = tmp_path / "runtime" / "ticket.md"
-        ticket.parent.mkdir()
-        ticket.write_text("ticket\n", encoding="utf-8")
-        basis = _flow_ticket_baseline()
-        constructed = []
-
-        class FakeTicketIO:
-            def __init__(self, tickets_dir, *, project_root):
-                constructed.append((tickets_dir, project_root))
-
-            def load_basis(self, _slug, **_kwargs):
-                return basis
-
-        monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
-        monkeypatch.setattr(
-            "booley.ticket_board.flow_execution.detect_project_root", lambda: control_root
-        )
-        monkeypatch.setattr(
-            "booley.ticket_board.flow_execution.resolve_checkout_project_dir",
-            lambda root: root / ".booley_project",
-        )
-        monkeypatch.setattr("booley.ticket_board.flow_execution.TicketIO", FakeTicketIO)
-        monkeypatch.setattr(
-            "booley.ticket_board.flow_execution.assert_ticket_worktree_inputs_unchanged",
-            lambda *_args, **_kwargs: None,
-        )
-        monkeypatch.setenv("BOOLEY_TICKET_FILE", str(ticket))
-        monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path / "runtime"))
-        monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "logs"))
-        monkeypatch.setenv("BOOLEY_SLUG", "actual-ticket")
-
-        flow = EchoFlow()
-        flow.execution_adapter = TicketBoardFlowExecution()
-        flow.parse_args(["--target", "test", "--work-dir", str(tmp_path)])
-
-        assert flow._pre_state_gate() is None
-        assert constructed == [(control_tickets, control_root)]
-
-    def test_ticket_baseline_rejects_unsafe_runtime_ticket_slug_before_loading(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from booley.runtime import runtime_context
-
-        ticket = tmp_path / "ticket.md"
-        ticket.write_text("ticket\n", encoding="utf-8")
-        monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
-        load_basis = patch("booley.ticket_board.flow_execution.TicketIO.load_basis")
-        monkeypatch.setenv("BOOLEY_TICKET_FILE", str(ticket))
-        monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path / "runtime"))
-        monkeypatch.setenv("BOOLEY_SLUG", "../../outside")
-
-        flow = EchoFlow()
-        flow.execution_adapter = TicketBoardFlowExecution()
-        flow.parse_args(["--target", "test", "--work-dir", str(tmp_path)])
-        with load_basis as load:
-            rejected = flow._pre_state_gate()
-
-        assert rejected is not None
-        assert rejected.exit_code == EXIT_ERROR
-        assert "unsafe ticket slug" in rejected.report_text
-        load.assert_not_called()
 
     def test_empty_command(self, tmp_path: Path):
         state_file = tmp_path / "state.json"

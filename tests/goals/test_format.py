@@ -1,4 +1,4 @@
-"""Canonical evidence metrics stay compatible across Goal and Ticket renderers."""
+"""Canonical evidence metrics stay compatible in Goal rendering."""
 
 from dataclasses import replace
 from types import SimpleNamespace
@@ -9,7 +9,6 @@ from rich.table import Table
 
 from booley.goals.format import format_criterion_metric, render_status
 from booley.goals.status import GoalStatus, GoalStatusView
-from booley.ticket_board.criteria_summary_format import format_criterion_metric as ticket_metric
 
 
 @pytest.mark.parametrize(
@@ -84,7 +83,6 @@ from booley.ticket_board.criteria_summary_format import format_criterion_metric 
 def test_shared_metric_has_canonical_output(key, detail, stale, expected):
     entry = SimpleNamespace(detail=detail, params={}, stale=stale)
     assert format_criterion_metric(key, entry) == expected
-    assert ticket_metric(key, entry) == expected
 
 
 def test_status_defaults_to_summary_for_multiple_modes_and_preserves_warnings(goal_mode):
@@ -135,7 +133,7 @@ def test_detailed_unmet_reason_and_compact_output(goal_mode, status, reason):
 )
 def test_elaboration_metric_requires_met_evidence(key, met, stale, expected):
     entry = SimpleNamespace(detail={}, params={}, met=met, stale=stale)
-    assert format_criterion_metric(key, entry) == ticket_metric(key, entry) == expected
+    assert format_criterion_metric(key, entry) == expected
 
 
 @pytest.mark.parametrize("key", ["elab_passenger", "custom_gate", "lint_clean_top"])

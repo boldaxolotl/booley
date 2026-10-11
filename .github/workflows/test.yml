@@ -64,7 +64,6 @@ jobs:
       stable_base: ${{ steps.classify.outputs.stable_base }}
       packaging: ${{ steps.classify.outputs.packaging }}
       workflow: ${{ steps.classify.outputs.workflow }}
-      exhaustive_recovery: ${{ steps.classify.outputs.exhaustive_recovery }}
       release: ${{ steps.classify.outputs.release }}
       full: ${{ steps.classify.outputs.full }}
       jobs: ${{ steps.classify.outputs.jobs }}
@@ -270,9 +269,7 @@ jobs:
     timeout-minutes: ${{ matrix.mode == 'full' && 20 || 15 }}
     env:
       PYTHONFAULTHANDLER: "1"
-      TEST_MARK_EXPRESSION: >-
-        ${{ needs.changes.outputs.exhaustive_recovery == 'true' &&
-        'not native_bwave' || 'not native_bwave and not exhaustive_recovery' }}
+      TEST_MARK_EXPRESSION: 'not native_bwave'
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.changes.outputs.test_matrix) }}
@@ -344,9 +341,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      TEST_MARK_EXPRESSION: >-
-        ${{ needs.changes.outputs.exhaustive_recovery == 'true' &&
-        'not native_bwave' || 'not native_bwave and not exhaustive_recovery' }}
+      TEST_MARK_EXPRESSION: 'not native_bwave'
     strategy:
       fail-fast: false
       matrix:

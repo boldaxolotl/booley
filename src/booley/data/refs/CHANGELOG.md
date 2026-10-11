@@ -9,6 +9,9 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## 0.3.1 - 05 OCT 2026
 
+- Removed retired Ticket workflow internals and Console implementation. Shared Flow loading, agent execution, verification freshness, and waiver candidate storage now live with their active owners. External extensions importing `booley.ticket_board` must update their imports; the package has been removed. Goal Mode and Interactive recording keep their persisted formats.
+
+
 ### Major features
 
 - **Goal Mode is the workflow for evidence-backed RTL work.** Open an agent

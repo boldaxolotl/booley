@@ -38,6 +38,7 @@ from booley.dev_support.commit_git_io import (
 from booley.dev_support.commit_message_format import _auto_format_commit_message
 from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS, McpTool, McpToolResult
 from booley.runtime import job_slots
+from booley.runtime.agent_execution import configure_agent_call
 from booley.runtime.exception_diagnostics import (
     exception_report_text,
     log_exception,
@@ -45,7 +46,6 @@ from booley.runtime.exception_diagnostics import (
 )
 from booley.runtime.nested_mcp_capabilities import nested_mcp_tools_for
 from booley.runtime.process_tree import descendant_pids as _descendant_pids
-from booley.ticket_board.agent_execution import configure_agent_call
 
 from .specialist_workspace import (
     WorkspaceAccess,
@@ -779,7 +779,7 @@ class Specialist(McpTool):
 # Killing the client of a `docker exec`/`booley session enter` run does NOT
 # kill what it started: the in-container Specialist and its agent kept running
 # detached, burning tokens with nobody reading the answer. Nothing else in
-# the codebase watches for this — orphan_handler and ticket_board reconcile
+# the codebase watches for this — execution observers reconcile
 # *tickets* after the fact, from the outside; run_guard watches disk. So the
 # The Specialist watches its own parent: when the launching process dies, it is
 # reparented (PID 1 in a container), which is cheap to poll and unambiguous.

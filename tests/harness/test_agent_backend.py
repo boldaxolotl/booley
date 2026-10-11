@@ -638,7 +638,7 @@ async def test_codex_usage_limit_propagates_without_retry(
     from booley.core.models import AgentCallParams
     from booley.runtime import _codex_backend as cb
     from booley.runtime.agent_errors import UsageLimitError
-    from booley.ticket_board.agent_execution import configure_agent_call
+    from booley.runtime.agent_execution import configure_agent_call
 
     events = []
     if partial_output:
@@ -961,7 +961,7 @@ class TestCodexMultiMessage:
 
 class TestBuildSdkOptionsResume:
     def test_resume_fields_mapped(self, tmp_path):
-        from booley.harness.models import AgentCallParams
+        from booley.core.models import AgentCallParams
         from booley.runtime._claude_backend import _build_sdk_options
 
         params = AgentCallParams(
@@ -976,7 +976,7 @@ class TestBuildSdkOptionsResume:
         assert options.continue_conversation is True
 
     def test_defaults_produce_no_resume_fields(self, tmp_path):
-        from booley.harness.models import AgentCallParams
+        from booley.core.models import AgentCallParams
         from booley.runtime._claude_backend import _build_sdk_options
 
         params = AgentCallParams(
@@ -996,7 +996,7 @@ class TestBuildSdkOptionsResume:
 
 class TestBuildSdkOptionsMcp:
     def _options(self, tmp_path, **kwargs):
-        from booley.harness.models import AgentCallParams
+        from booley.core.models import AgentCallParams
         from booley.runtime._claude_backend import _build_sdk_options
 
         params = AgentCallParams(

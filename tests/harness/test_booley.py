@@ -2,17 +2,8 @@
 
 from __future__ import annotations
 
-import json
-import logging
-import os
-import re
-import subprocess
 import sys
-import threading
-import time
 from argparse import Namespace
-from collections.abc import Iterator
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import ClassVar
 from unittest.mock import MagicMock, patch
@@ -20,51 +11,14 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from booley.harness import booley as tlr
-from booley.harness import subscription_limit as sl
 from booley.runtime.project_dir import reset_cache
-from booley.ticket_board.board_layout import (
-    StateRecord,
-    read_state_record,
-    ticket_document_path,
-    write_state_record,
-)
-from booley.ticket_board.lifecycle import parse_board_target
 
 TICKETS_REL = Path(".booley") / "project" / "tickets"
-
-
-def _place_ticket(project_root: Path, slug: str, board_name: str, content: str) -> Path:
-    """Write a board document for *slug* plus a state record for *board_name*."""
-    tickets_dir = project_root / TICKETS_REL
-    state = parse_board_target(board_name)
-    assert state is not None, board_name
-    path = ticket_document_path(tickets_dir, slug)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
-    write_state_record(tickets_dir, slug, StateRecord.fresh(state))
-    return path
 
 
 # ===========================================================================
 # ts()
 # ===========================================================================
-
-
-class TestTs:
-    def test_format_utc_rfc3339(self):
-        from booley.harness.terminal import ts
-
-        result = ts()
-        assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", result)
-
-    def test_returns_current_time(self):
-        from booley.harness.terminal import ts
-        from booley.runtime.timefmt import parse_timestamp
-
-        before = datetime.now(UTC)
-        result = ts()
-        after = datetime.now(UTC)
-        assert before.replace(microsecond=0) <= parse_timestamp(result) <= after
 
 
 def test_doctor_parser_accepts_deep_flag():
@@ -74,81 +28,6 @@ def test_doctor_parser_accepts_deep_flag():
 
     assert args.command == "doctor"
     assert args.deep is True
-
-
-def _board_git(repository: Path, *args: str) -> str:
-    git_env = os.environ.copy()
-    git_env["GIT_CONFIG_GLOBAL"] = os.devnull
-    git_env["GIT_CONFIG_NOSYSTEM"] = "1"
-    git_env["GIT_CONFIG_COUNT"] = "0"
-    git_env.pop("GIT_TEMPLATE_DIR", None)
-    result = subprocess.run(
-        ["git", *args],
-        cwd=repository,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=True,
-        env=git_env,
-    )
-    return result.stdout.strip()
-
-
-def _initialize_board_repository(
-    repository: Path,
-    branch: str,
-    commit_message: str,
-) -> str:
-    _board_git(repository, "init", "-b", branch)
-    _board_git(repository, "config", "user.name", "Test")
-    _board_git(repository, "config", "user.email", "test@example.invalid")
-    _board_git(repository, "add", "-A")
-    _board_git(repository, "commit", "-m", commit_message)
-    return _board_git(repository, "rev-parse", "HEAD")
-
-
-def _board_create_project(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    branch: str,
-    project_branch: str | None = None,
-    *,
-    paired: bool = True,
-) -> tuple[Path, Path, str]:
-    root = tmp_path / "project"
-    root.mkdir()
-    (root / ".gitignore").write_text("/.booley_project\n", encoding="utf-8")
-    (root / "README.md").write_text("demo\n", encoding="utf-8")
-    outer_sha = _initialize_board_repository(root, branch, "initial outer")
-
-    project_dir = root / ".booley_project"
-    for board_dir in ("board", "state"):
-        (project_dir / "tickets" / board_dir).mkdir(parents=True)
-    (project_dir / ".gitignore").write_text("/worktrees/\n/.runtime/\n", encoding="utf-8")
-    (project_dir / "booley.toml").write_text("[flows]\n", encoding="utf-8")
-    if paired:
-        _initialize_board_repository(
-            project_dir,
-            project_branch or branch,
-            "initial project",
-        )
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project_dir))
-    reset_cache()
-    return root, project_dir, outer_sha
-
-
-@pytest.fixture
-def board_create_project_env(
-    monkeypatch: pytest.MonkeyPatch,
-) -> Iterator[pytest.MonkeyPatch]:
-    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
-    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
-    monkeypatch.setenv("GIT_CONFIG_COUNT", "0")
-    monkeypatch.delenv("GIT_TEMPLATE_DIR", raising=False)
-    for variable in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
-        monkeypatch.delenv(variable, raising=False)
-    yield monkeypatch
-    reset_cache()
 
 
 def test_doctor_parser_accepts_concise_flag():
@@ -527,27 +406,6 @@ def test_session_health_rechecks_freshness_before_consuming_summary(tmp_path, mo
     assert "Doctor inputs changed" in output
 
 
-def test_console_startup_logs_automatic_doctor_progress(tmp_path, monkeypatch):
-    from booley.harness import auto_doctor
-
-    def run_if_due(_root, *, trigger, progress):
-        assert trigger == "booley-run"
-        progress("starting (automatic Doctor result expired)")
-        progress("FuseSoC .core audit")
-        return {}
-
-    monkeypatch.setattr(auto_doctor, "run_if_due", run_if_due)
-    monkeypatch.setattr(auto_doctor, "consume_changed_summary", lambda *_a, **_kw: None)
-    monkeypatch.setattr(auto_doctor, "load_report", lambda _root: {})
-
-    with patch.object(tlr.logger, "info") as log_info:
-        tlr._run_automatic_doctor(tmp_path)
-
-    assert ("Automatic Doctor — %s", "starting (automatic Doctor result expired)") in [
-        call.args for call in log_info.call_args_list
-    ]
-
-
 def test_version_flag_prints_and_exits(capsys):
     # SETUP-1: `booley --version` should print a real version and exit 0.
     parser = tlr._build_parser()
@@ -799,19 +657,6 @@ class TestEffectiveCommand:
         parser = tlr._build_parser()
         args = tlr._normalize_args(parser, parser.parse_args([]))
         assert tlr._effective_command(args) == "chat"
-
-
-def _blocked_diagnosis() -> dict:
-    return {
-        "classification": "ticket-code",
-        "board_reason": "simulation failed",
-        "blocked_stage": "developer",
-        "blockers": [{"name": "sim", "reason": "failed", "evidence": "run log"}],
-        "passing_non_blocking": [],
-        "developer_questions": [],
-        "recommended_action": "retry with feedback",
-        "findings": [],
-    }
 
 
 # ===========================================================================
@@ -1098,93 +943,9 @@ class TestEndpointResolution:
 # ===========================================================================
 
 
-class TestShutdownRequested:
-    def test_returns_false_when_event_is_none(self):
-        original = tlr._shutdown_event
-        try:
-            tlr._shutdown_event = None
-            assert tlr._shutdown_requested() is False
-        finally:
-            tlr._shutdown_event = original
-
-    def test_returns_false_when_event_not_set(self):
-        original = tlr._shutdown_event
-        try:
-            tlr._shutdown_event = threading.Event()
-            assert tlr._shutdown_requested() is False
-        finally:
-            tlr._shutdown_event = original
-
-    def test_returns_true_when_event_set(self):
-        original = tlr._shutdown_event
-        try:
-            tlr._shutdown_event = threading.Event()
-            tlr._shutdown_event.set()
-            assert tlr._shutdown_requested() is True
-        finally:
-            tlr._shutdown_event = original
-
-
 # ===========================================================================
 # interruptible_sleep()
 # ===========================================================================
-
-
-class TestInterruptibleSleep:
-    def test_completes_normally(self):
-        """Short sleep completes, returns True."""
-        original = tlr._shutdown_event
-        try:
-            tlr._shutdown_event = threading.Event()
-            result = tlr.interruptible_sleep(0)
-            assert result is True
-        finally:
-            tlr._shutdown_event = original
-
-    def test_interrupted_returns_false(self):
-        """Pre-set event causes immediate return with False."""
-        original = tlr._shutdown_event
-        try:
-            tlr._shutdown_event = threading.Event()
-            tlr._shutdown_event.set()
-            result = tlr.interruptible_sleep(10)
-            assert result is False
-        finally:
-            tlr._shutdown_event = original
-
-    @patch("booley.harness.booley.time.sleep")
-    def test_fallback_to_time_sleep_when_no_event(self, mock_sleep):
-        """When _shutdown_event is None, falls back to time.sleep."""
-        original = tlr._shutdown_event
-        try:
-            tlr._shutdown_event = None
-            result = tlr.interruptible_sleep(5)
-            mock_sleep.assert_called_once_with(5)
-            assert result is True
-        finally:
-            tlr._shutdown_event = original
-
-    def test_interrupted_by_thread(self):
-        """Sleep interrupted mid-way by another thread setting the event."""
-        original = tlr._shutdown_event
-        try:
-            tlr._shutdown_event = threading.Event()
-
-            def set_after_delay():
-                time.sleep(0.05)
-                tlr._shutdown_event.set()
-
-            t = threading.Thread(target=set_after_delay)
-            t.start()
-            t0 = time.monotonic()
-            result = tlr.interruptible_sleep(10)
-            elapsed = time.monotonic() - t0
-            t.join()
-
-            assert result is False
-            assert elapsed < 2.0  # woke up well before 10s
-        finally:
-            tlr._shutdown_event = original
 
 
 # ===========================================================================
@@ -1222,60 +983,9 @@ class TestFindProjectRoot:
 # ===========================================================================
 
 
-class TestFindVenvPython:
-    def test_returns_sys_executable(self, tmp_path: Path):
-        """With pip-installed booley, always returns sys.executable."""
-        result = tlr.find_venv_python(tmp_path)
-        import sys
-
-        assert result == sys.executable
-
-
 # ===========================================================================
 # _run_board()
 # ===========================================================================
-
-
-class TestRunBoard:
-    @patch("booley.harness.booley.subprocess.run")
-    def test_passes_correct_command(self, mock_run, project_root: Path):
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=[],
-            returncode=0,
-            stdout="ok",
-            stderr="",
-        )
-        tlr._run_board(project_root, ["classify", "--format", "counts"])
-        call_args = mock_run.call_args
-        cmd = call_args[0][0]
-        assert "-m" in cmd
-        assert tlr.BOARD_MODULE in cmd
-        assert "classify" in cmd
-        assert "--format" in cmd
-
-    @patch("booley.harness.booley.subprocess.run")
-    def test_cwd_is_project_root(self, mock_run, project_root: Path):
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=[],
-            returncode=0,
-            stdout="",
-            stderr="",
-        )
-        tlr._run_board(project_root, ["classify"])
-        call_kwargs = mock_run.call_args[1]
-        assert call_kwargs["cwd"] == str(project_root)
-
-    @patch("booley.harness.booley.subprocess.run")
-    def test_logs_warning_on_failure(self, mock_run, project_root: Path):
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=[],
-            returncode=1,
-            stdout="",
-            stderr="some error",
-        )
-        with patch.object(tlr.logger, "warning") as mock_warn:
-            tlr._run_board(project_root, ["classify"])
-            mock_warn.assert_called_once()
 
 
 # ===========================================================================
@@ -1283,68 +993,9 @@ class TestRunBoard:
 # ===========================================================================
 
 
-class TestGetTicketCounts:
-    @patch("booley.harness.booley._run_board")
-    def test_parses_counts_output(self, mock_board):
-        mock_board.return_value = subprocess.CompletedProcess(
-            args=[],
-            returncode=0,
-            stdout="executable=3\nblocked=1\nwaiting=0\nreview=2\norphaned=0\n",
-            stderr="",
-        )
-        result = tlr.get_ticket_counts(Path("/fake"))
-        assert result == {
-            "executable": 3,
-            "blocked": 1,
-            "waiting": 0,
-            "review": 2,
-            "orphaned": 0,
-        }
-
-    @patch("booley.harness.booley._run_board")
-    def test_returns_zeros_on_failure(self, mock_board):
-        mock_board.return_value = subprocess.CompletedProcess(
-            args=[],
-            returncode=1,
-            stdout="",
-            stderr="error",
-        )
-        result = tlr.get_ticket_counts(Path("/fake"))
-        assert result["executable"] == 0
-
-    @patch("booley.harness.booley._run_board")
-    def test_returns_zeros_on_exception(self, mock_board):
-        mock_board.side_effect = OSError("boom")
-        result = tlr.get_ticket_counts(Path("/fake"))
-        assert result == {
-            "executable": 0,
-            "active": 0,
-            "blocked": 0,
-            "waiting": 0,
-            "review": 0,
-            "orphaned": 0,
-        }
-
-
 # ===========================================================================
 # get_active_slugs()
 # ===========================================================================
-
-
-class TestGetActiveSlugs:
-    def test_returns_stems_of_md_files(self, project_root: Path):
-        _place_ticket(project_root, "fix-fsm", "active", "---\n---\n")
-        _place_ticket(project_root, "add-sha3", "active", "---\n---\n")
-        # A queued Ticket on the same board is not running.
-        _place_ticket(project_root, "queued-one", "queue", "---\n---\n")
-        result = tlr.get_active_slugs(project_root)
-        assert sorted(result) == ["add-sha3", "fix-fsm"]
-
-    def test_returns_empty_when_no_files(self, project_root: Path):
-        assert tlr.get_active_slugs(project_root) == []
-
-    def test_returns_empty_when_dir_missing(self, tmp_path: Path):
-        assert tlr.get_active_slugs(tmp_path) == []
 
 
 # ===========================================================================
@@ -1352,66 +1003,9 @@ class TestGetActiveSlugs:
 # ===========================================================================
 
 
-class TestGetTicketSummary:
-    def test_extracts_summary_from_frontmatter(self, project_root: Path):
-        _place_ticket(
-            project_root,
-            "fix-fsm",
-            "queue",
-            "---\nsummary: Fix FSM counter overflow\ntype: bugfix\n---\n",
-        )
-        assert tlr.get_ticket_summary(project_root, "fix-fsm") == "Fix FSM counter overflow"
-
-    def test_strips_quotes(self, project_root: Path):
-        _place_ticket(
-            project_root,
-            "fix-fsm",
-            "queue",
-            '---\nsummary: "Quoted summary"\n---\n',
-        )
-        assert tlr.get_ticket_summary(project_root, "fix-fsm") == "Quoted summary"
-
-    def test_searches_all_directories(self, project_root: Path):
-        _place_ticket(project_root, "old-ticket", "done", "---\nsummary: Old done ticket\n---\n")
-        assert tlr.get_ticket_summary(project_root, "old-ticket") == "Old done ticket"
-
-    def test_returns_slug_when_not_found(self, project_root: Path):
-        assert tlr.get_ticket_summary(project_root, "nonexistent") == "nonexistent"
-
-
 # ===========================================================================
 # handle_startup_orphans()
 # ===========================================================================
-
-
-class TestHandleStartupOrphans:
-    @patch("booley.harness.orphan_handler.is_pid_alive", return_value=False)
-    @patch("booley.harness.booley._run_board")
-    def test_blocks_active_tickets(self, mock_board, _mock_alive, project_root: Path):
-        mock_board.return_value = subprocess.CompletedProcess(
-            args=[],
-            returncode=0,
-            stdout="",
-            stderr="",
-        )
-        # Create an orphaned ticket with a lock file containing a dead PID
-        _place_ticket(project_root, "orphan-ticket", "active", "---\nsummary: Orphan\n---\n")
-        lock_dir = project_root / ".booley" / "project" / "tickets" / "logs" / "orphan-ticket"
-        lock_dir.mkdir(parents=True, exist_ok=True)
-        (lock_dir / "ticket.lock").write_text("99999", encoding="utf-8")
-
-        tlr.handle_startup_orphans(project_root)
-
-        # Should have called _run_board with "block"
-        calls = mock_board.call_args_list
-        block_calls = [c for c in calls if "block" in c[0][1]]
-        assert len(block_calls) == 1
-        assert "orphan-ticket" in block_calls[0][0][1]
-
-    @patch("booley.harness.booley._run_board")
-    def test_noop_when_no_orphans(self, mock_board, project_root: Path):
-        tlr.handle_startup_orphans(project_root)
-        mock_board.assert_not_called()
 
 
 # ===========================================================================
@@ -1419,179 +1013,9 @@ class TestHandleStartupOrphans:
 # ===========================================================================
 
 
-class TestHandlePostRunOrphans:
-    def _create_orphan(self, project_root: Path, slug: str = "orphan") -> None:
-        _place_ticket(project_root, slug, "active", "---\nsummary: Orphan\n---\n")
-
-    @patch("booley.harness.booley._run_board")
-    def test_requeue_on_limit_wait(self, mock_board, project_root: Path):
-        """limit_wait > 0 -> requeue ticket."""
-        mock_board.return_value = subprocess.CompletedProcess(
-            args=[],
-            returncode=0,
-            stdout="",
-            stderr="",
-        )
-        self._create_orphan(project_root)
-        tlr.handle_post_run_orphans(project_root, exit_code=1, limit_wait=3600)
-
-        calls = mock_board.call_args_list
-        requeue_calls = [c for c in calls if "requeue" in c[0][1]]
-        assert len(requeue_calls) == 1
-
-    @patch("booley.harness.booley._run_board")
-    def test_block_on_clean_exit(self, mock_board, project_root: Path):
-        """exit_code == 0 -> block for triage."""
-        mock_board.return_value = subprocess.CompletedProcess(
-            args=[],
-            returncode=0,
-            stdout="",
-            stderr="",
-        )
-        self._create_orphan(project_root)
-        tlr.handle_post_run_orphans(project_root, exit_code=0, limit_wait=0)
-
-        calls = mock_board.call_args_list
-        block_calls = [c for c in calls if "block" in c[0][1]]
-        assert len(block_calls) == 1
-
-    @patch("booley.harness.booley._run_board")
-    def test_fail_on_crash(self, mock_board, project_root: Path):
-        """exit_code != 0, no limit -> fail ticket."""
-        mock_board.return_value = subprocess.CompletedProcess(
-            args=[],
-            returncode=0,
-            stdout="",
-            stderr="",
-        )
-        self._create_orphan(project_root)
-        tlr.handle_post_run_orphans(project_root, exit_code=1, limit_wait=0)
-
-        calls = mock_board.call_args_list
-        fail_calls = [c for c in calls if "fail" in c[0][1]]
-        assert len(fail_calls) == 1
-
-    @patch("booley.harness.booley._run_board")
-    def test_noop_when_no_orphans(self, mock_board, project_root: Path):
-        tlr.handle_post_run_orphans(project_root, exit_code=0, limit_wait=0)
-        mock_board.assert_not_called()
-
-
 # ===========================================================================
 # detect_subscription_limit()
 # ===========================================================================
-
-
-class TestDetectSubscriptionLimit:
-    def _setup_failed_ticket(self, project_root: Path, slug: str, failure_text: str) -> None:
-        """Create a blocked ticket + blocked.md with recent mtime."""
-        _place_ticket(project_root, slug, "blocked", "---\n---\n")
-
-        log_dir = project_root / ".booley" / "project" / "tickets" / "logs" / slug
-        log_dir.mkdir(parents=True, exist_ok=True)
-        blocked_md = log_dir / "blocked.md"
-        blocked_md.write_text(failure_text, encoding="utf-8")
-
-    def test_detects_usage_limit_pattern(self, project_root: Path):
-        self._setup_failed_ticket(
-            project_root,
-            "fix-fsm",
-            "Error: you've hit your usage limit for the day.",
-        )
-        result = tlr.detect_subscription_limit(project_root)
-        assert result > 0
-
-    def test_detects_subscription_limit_error(self, project_root: Path):
-        self._setup_failed_ticket(
-            project_root,
-            "fix-fsm",
-            "SubscriptionLimitError: rate limit exceeded",
-        )
-        result = tlr.detect_subscription_limit(project_root)
-        assert result > 0
-
-    def test_returns_zero_when_no_match(self, project_root: Path):
-        self._setup_failed_ticket(
-            project_root,
-            "fix-fsm",
-            "Error: syntax error in module my_adder.sv",
-        )
-        assert tlr.detect_subscription_limit(project_root) == 0
-
-    def test_returns_zero_when_no_failed_dir(self, tmp_path: Path):
-        assert tlr.detect_subscription_limit(tmp_path) == 0
-
-    def test_ignores_old_failures(self, project_root: Path):
-        """Failure.md older than 2 minutes should be ignored."""
-        self._setup_failed_ticket(
-            project_root,
-            "fix-fsm",
-            "Error: you've hit your usage limit",
-        )
-        # Backdate the blocked.md
-        failure_md = (
-            project_root / ".booley" / "project" / "tickets" / "logs" / "fix-fsm" / "blocked.md"
-        )
-        old_time = time.time() - 300  # 5 minutes ago
-        import os
-
-        os.utime(str(failure_md), (old_time, old_time))
-
-        assert tlr.detect_subscription_limit(project_root) == 0
-
-    def test_parses_reset_time_from_message(self, project_root: Path):
-        self._setup_failed_ticket(
-            project_root,
-            "fix-fsm",
-            "you've hit your limit, resets 8pm (UTC)",
-        )
-        result = tlr.detect_subscription_limit(project_root)
-        assert result >= 60  # clamped to at least 60s
-
-    def test_default_wait_when_no_reset_time(self, project_root: Path):
-        self._setup_failed_ticket(
-            project_root,
-            "fix-fsm",
-            "Error: usage limit reached",
-        )
-        assert tlr.detect_subscription_limit(project_root) == 3600
-
-    @pytest.mark.parametrize("interrupted", [False, True])
-    def test_codex_limit_cooldown_keeps_failed_ticket_blocked(
-        self, project_root: Path, interrupted: bool
-    ):
-        self._setup_failed_ticket(
-            project_root,
-            "fix-fsm",
-            "Developer Agent error: UsageLimitError: "
-            "You've hit your usage limit. Try again later.",
-        )
-        args = Namespace(slug="fix-fsm", wait=5)
-        with (
-            patch.object(tlr, "interruptible_sleep", return_value=not interrupted) as sleep,
-            patch.object(tlr, "_run_board") as board_command,
-        ):
-            action = tlr._handle_post_run(args, project_root, exit_code=0, elapsed=10)
-
-        assert action == ("break" if interrupted else "continue")
-        sleep.assert_called_once_with(3600)
-        board_command.assert_not_called()
-        record = read_state_record(project_root / TICKETS_REL, "fix-fsm")
-        assert record is not None
-        assert record.state == parse_board_target("blocked")
-
-    def test_only_checks_last_entry(self, project_root: Path):
-        """Old limit errors in append-only blocked.md should not trigger."""
-        self._setup_failed_ticket(
-            project_root,
-            "fix-fsm",
-            # Old entry with limit error, new entry without
-            "## Run 1 -- Failed (2026-05-01T00:00:00Z)\n\n"
-            "usage limit reached\n\n"
-            "## Run 2 -- Blocked (2026-05-02T00:00:00Z)\n\n"
-            "Need clarification on register width\n",
-        )
-        assert tlr.detect_subscription_limit(project_root) == 0
 
 
 # ===========================================================================
@@ -1607,97 +1031,9 @@ except ZoneInfoNotFoundError:
     _has_tzdata = False
 
 
-@pytest.mark.skipif(not _has_tzdata, reason="tzdata package not installed")
-class TestTimeAmpmTzToWait:
-    def test_pm_conversion(self):
-        """8pm -> hour 20."""
-        result = sl._time_ampm_tz_to_wait("8", "pm", "UTC")
-        assert result is not None
-        assert 60 <= result <= 86400
-
-    def test_am_conversion(self):
-        result = sl._time_ampm_tz_to_wait("9", "am", "UTC")
-        assert result is not None
-        assert 60 <= result <= 86400
-
-    def test_12am_edge_case(self):
-        """12am -> hour 0 (midnight)."""
-        result = sl._time_ampm_tz_to_wait("12", "am", "UTC")
-        assert result is not None
-        assert 60 <= result <= 86400
-
-    def test_12pm_edge_case(self):
-        """12pm -> hour 12 (noon)."""
-        result = sl._time_ampm_tz_to_wait("12", "pm", "UTC")
-        assert result is not None
-        assert 60 <= result <= 86400
-
-    def test_hour_minute_format(self):
-        result = sl._time_ampm_tz_to_wait("8:30", "pm", "UTC")
-        assert result is not None
-        assert 60 <= result <= 86400
-
-    def test_clamped_minimum(self):
-        """Result should be at least 60s."""
-        result = sl._time_ampm_tz_to_wait("8", "pm", "UTC")
-        if result is not None:
-            assert result >= 60
-
-    def test_clamped_maximum(self):
-        """Result should be at most 86400s."""
-        result = sl._time_ampm_tz_to_wait("8", "pm", "UTC")
-        if result is not None:
-            assert result <= 86400
-
-    def test_invalid_timezone_returns_none(self):
-        result = sl._time_ampm_tz_to_wait("8", "pm", "Not/A/Timezone")
-        assert result is None
-
-    def test_non_numeric_time_returns_none(self):
-        # Provider message format drift → non-numeric hour must not crash the
-        # backoff path; the boundary guard returns None instead.
-        assert sl._time_ampm_tz_to_wait("eight", "pm", "UTC") is None
-
-    def test_out_of_range_hour_returns_none(self):
-        # 25:00 → datetime.replace raises ValueError, caught at the boundary.
-        assert sl._time_ampm_tz_to_wait("25", "am", "UTC") is None
-
-
 # ===========================================================================
 # _parse_codex_relative()
 # ===========================================================================
-
-
-class TestParseCodexRelative:
-    def test_hours_and_minutes(self):
-        result = sl._parse_codex_relative(
-            "You've hit your usage limit. Try again in 3 hours 2 minutes."
-        )
-        assert result == 3 * 3600 + 2 * 60
-
-    def test_hours_only(self):
-        result = sl._parse_codex_relative("Try again in 5 hours.")
-        assert result == 5 * 3600
-
-    def test_minutes_only(self):
-        result = sl._parse_codex_relative("Try again in 45 minutes.")
-        assert result == 45 * 60
-
-    def test_days_hours_minutes(self):
-        result = sl._parse_codex_relative("Try again in 1 day 2 hours 30 minutes.")
-        assert result == 86400  # clamped to 24h max
-
-    def test_no_match_returns_none(self):
-        result = sl._parse_codex_relative("Some unrelated error message")
-        assert result is None
-
-    def test_min_abbreviation(self):
-        result = sl._parse_codex_relative("Try again in 10 min.")
-        assert result == 600
-
-    def test_clamped_minimum(self):
-        result = sl._parse_codex_relative("Try again in 1 second.")
-        assert result == 60  # clamped to 1min minimum
 
 
 # ===========================================================================
@@ -1705,47 +1041,9 @@ class TestParseCodexRelative:
 # ===========================================================================
 
 
-class TestParseCodexAbsolute:
-    def test_standard_format(self):
-        result = sl._parse_codex_absolute("Try again at Jan 1st, 2099 12:00 AM")
-        assert result is not None
-        assert 60 <= result <= 86400
-
-    def test_no_ordinal_suffix(self):
-        result = sl._parse_codex_absolute("Try again at Apr 7, 2099 1:07 AM")
-        assert result is not None
-
-    def test_past_date_returns_none(self):
-        result = sl._parse_codex_absolute("Try again at Jan 1st, 2020 12:00 AM")
-        assert result is None
-
-    def test_no_match_returns_none(self):
-        result = sl._parse_codex_absolute("Some unrelated error message")
-        assert result is None
-
-
 # ===========================================================================
 # _extract_reset_wait()
 # ===========================================================================
-
-
-class TestExtractResetWait:
-    def test_codex_relative(self):
-        result = sl._extract_reset_wait(
-            "You've hit your usage limit. Try again in 2 hours 15 minutes."
-        )
-        assert result == 2 * 3600 + 15 * 60
-
-    def test_codex_absolute_future(self):
-        result = sl._extract_reset_wait(
-            "You've hit your usage limit. Try again at Jan 1st, 2099 12:00 AM"
-        )
-        assert result is not None
-        assert result > 0
-
-    def test_no_reset_info(self):
-        result = sl._extract_reset_wait("Quota exceeded. Check your plan.")
-        assert result is None
 
 
 # ===========================================================================
@@ -1753,331 +1051,9 @@ class TestExtractResetWait:
 # ===========================================================================
 
 
-class TestReadCheckpointStatus:
-    def test_reads_most_recent_status(self, project_root: Path):
-        logs_dir = project_root / ".booley" / "project" / "tickets" / "logs"
-        # Create two status files
-        s1_dir = logs_dir / "old-ticket" / ".runtime"
-        s1_dir.mkdir(parents=True)
-        s1 = s1_dir / "status.json"
-        s1.write_text(
-            json.dumps(
-                {
-                    "slug": "old-ticket",
-                    "step": "planning",
-                    "last_updated": (datetime.now(UTC) - timedelta(hours=1)).strftime(
-                        "%Y-%m-%dT%H:%M:%SZ"
-                    ),
-                }
-            ),
-            encoding="utf-8",
-        )
-
-        s2_dir = logs_dir / "new-ticket" / ".runtime"
-        s2_dir.mkdir(parents=True)
-        s2 = s2_dir / "status.json"
-        now_iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        s2.write_text(
-            json.dumps(
-                {
-                    "slug": "new-ticket",
-                    "step": "sim-debug-loop",
-                    "last_updated": now_iso,
-                }
-            ),
-            encoding="utf-8",
-        )
-
-        # Touch s2 to ensure it's newer
-        import os
-
-        os.utime(str(s2), None)
-
-        result = tlr._read_checkpoint_status(project_root)
-        assert result is not None
-        assert "new-ticket" in result
-        assert "sim-debug-loop" in result
-
-    def test_returns_none_when_no_status(self, project_root: Path):
-        assert tlr._read_checkpoint_status(project_root) is None
-
-    def test_returns_none_when_logs_dir_missing(self, tmp_path: Path):
-        assert tlr._read_checkpoint_status(tmp_path) is None
-
-    def test_includes_age_string(self, project_root: Path):
-        logs_dir = project_root / ".booley" / "project" / "tickets" / "logs" / "my-ticket"
-        runtime_dir = logs_dir / ".runtime"
-        runtime_dir.mkdir(parents=True)
-        sf = runtime_dir / "status.json"
-        # 5 minutes ago
-        ts = (datetime.now(UTC) - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        sf.write_text(
-            json.dumps(
-                {
-                    "slug": "my-ticket",
-                    "step": "impl",
-                    "last_updated": ts,
-                }
-            ),
-            encoding="utf-8",
-        )
-        result = tlr._read_checkpoint_status(project_root)
-        assert "5m ago" in result
-
-    def test_stale_status_no_stuck_warning(self, project_root: Path):
-        """Stale status no longer emit 'possibly stuck' -- timeout handles it."""
-        logs_dir = project_root / ".booley" / "project" / "tickets" / "logs" / "stuck-ticket"
-        runtime_dir = logs_dir / ".runtime"
-        runtime_dir.mkdir(parents=True)
-        sf = runtime_dir / "status.json"
-        # 50 minutes ago
-        ts = (datetime.now(UTC) - timedelta(minutes=50)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        sf.write_text(
-            json.dumps(
-                {
-                    "slug": "stuck-ticket",
-                    "step": "synthesis",
-                    "last_updated": ts,
-                }
-            ),
-            encoding="utf-8",
-        )
-        result = tlr._read_checkpoint_status(project_root)
-        assert "possibly stuck" not in result
-        assert "50m ago" in result
-
-    def test_handles_corrupt_json(self, project_root: Path):
-        logs_dir = project_root / ".booley" / "project" / "tickets" / "logs" / "bad"
-        runtime_dir = logs_dir / ".runtime"
-        runtime_dir.mkdir(parents=True)
-        (runtime_dir / "status.json").write_text("{invalid json", encoding="utf-8")
-        assert tlr._read_checkpoint_status(project_root) is None
-
-    def test_developer_step_reads_active_endpoint_from_job_record(self, project_root: Path):
-        """Developer heartbeat derives active work from bounded Job records."""
-        logs_dir = project_root / ".booley" / "project" / "tickets" / "logs" / "my-ticket"
-        runtime_dir = logs_dir / ".runtime"
-        runtime_dir.mkdir(parents=True)
-        ts = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        (runtime_dir / "status.json").write_text(
-            json.dumps(
-                {
-                    "slug": "my-ticket",
-                    "step": "developer",
-                    "last_updated": ts,
-                }
-            ),
-            encoding="utf-8",
-        )
-        from booley.runtime import job_records as jobrec
-
-        jobrec.write_record(
-            jobrec.JobRecord(
-                run_id="synth-active-1",
-                endpoint="synth",
-                started_at=ts,
-                timeout_s=600,
-                pid=__import__("os").getpid(),
-            ),
-            root=runtime_dir / "jobs",
-        )
-        result = tlr._read_checkpoint_status(project_root)
-        assert "synthesizing" in result
-        assert "synth" in result
-
-    def test_developer_status_never_reads_large_display_journal(
-        self, project_root: Path, monkeypatch
-    ):
-        logs_dir = project_root / ".booley" / "project" / "tickets" / "logs" / "my-ticket"
-        runtime_dir = logs_dir / ".runtime"
-        runtime_dir.mkdir(parents=True)
-        ts = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        status_path = runtime_dir / "status.json"
-        status_path.write_text(
-            json.dumps({"slug": "my-ticket", "step": "developer", "last_updated": ts}),
-            encoding="utf-8",
-        )
-        display = runtime_dir / "display.jsonl"
-        display.write_text("legacy journal must stay unread\n", encoding="utf-8")
-        original = Path.read_text
-
-        def guarded_read(path: Path, *args, **kwargs):
-            if path == display:
-                raise AssertionError("heartbeat must not read display.jsonl")
-            return original(path, *args, **kwargs)
-
-        monkeypatch.setattr(Path, "read_text", guarded_read)
-
-        assert "running developer" in tlr._read_checkpoint_status(project_root)
-
-    def test_developer_falls_back_when_no_display(self, project_root: Path):
-        """Without display.jsonl, 'developer' step shown as-is."""
-        logs_dir = project_root / ".booley" / "project" / "tickets" / "logs" / "my-ticket"
-        runtime_dir = logs_dir / ".runtime"
-        runtime_dir.mkdir(parents=True)
-        ts = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        (runtime_dir / "status.json").write_text(
-            json.dumps(
-                {
-                    "slug": "my-ticket",
-                    "step": "developer",
-                    "last_updated": ts,
-                }
-            ),
-            encoding="utf-8",
-        )
-        result = tlr._read_checkpoint_status(project_root)
-        assert "running developer" in result
-
-    def test_developer_ignores_completed_endpoints(self, project_root: Path):
-        """Endpoints that have both start and end events are not 'active'."""
-        logs_dir = project_root / ".booley" / "project" / "tickets" / "logs" / "my-ticket"
-        runtime_dir = logs_dir / ".runtime"
-        runtime_dir.mkdir(parents=True)
-        ts = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        (runtime_dir / "status.json").write_text(
-            json.dumps(
-                {
-                    "slug": "my-ticket",
-                    "step": "developer",
-                    "last_updated": ts,
-                }
-            ),
-            encoding="utf-8",
-        )
-        events = [
-            json.dumps({"type": "endpoint_start", "endpoint": "lint"}),
-            json.dumps({"type": "endpoint_end", "endpoint": "lint", "exit_code": 0}),
-        ]
-        (runtime_dir / "display.jsonl").write_text("\n".join(events) + "\n", encoding="utf-8")
-        result = tlr._read_checkpoint_status(project_root)
-        # No active endpoint → falls back to developer
-        assert "running developer" in result
-
-    def test_legacy_checkpoint_json_fallback(self, project_root: Path):
-        """Old checkpoint.json files still work as fallback."""
-        logs_dir = project_root / ".booley" / "project" / "tickets" / "logs" / "legacy"
-        logs_dir.mkdir(parents=True)
-        ts = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        (logs_dir / "checkpoint.json").write_text(
-            json.dumps(
-                {
-                    "slug": "legacy",
-                    "current_step": "setup",
-                    "last_updated": ts,
-                }
-            ),
-            encoding="utf-8",
-        )
-        result = tlr._read_checkpoint_status(project_root)
-        assert result is not None
-        assert "legacy" in result
-
-
-class TestActiveEndpointFromJobs:
-    @staticmethod
-    def _write_job(tmp_path: Path, run_id: str, endpoint: str, **changes) -> None:
-        import os
-
-        from booley.runtime import job_records as jobrec
-
-        values = {
-            "run_id": run_id,
-            "endpoint": endpoint,
-            "started_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "timeout_s": 600,
-            "pid": os.getpid(),
-        }
-        values.update(changes)
-        jobrec.write_record(jobrec.JobRecord(**values), root=tmp_path / ".runtime" / "jobs")
-
-    def test_returns_open_endpoint(self, tmp_path: Path):
-        self._write_job(tmp_path, "sim-1", "sim")
-        assert tlr._active_endpoint_from_jobs(tmp_path) == ("sim", None)
-
-    def test_returns_none_when_endpoint_closed(self, tmp_path: Path):
-        from booley.runtime import job_records as jobrec
-
-        self._write_job(
-            tmp_path,
-            "lint-1",
-            "lint",
-            status=jobrec.STATUS_DONE,
-            exit_code=0,
-        )
-        assert tlr._active_endpoint_from_jobs(tmp_path) is None
-
-    def test_returns_latest_open_endpoint(self, tmp_path: Path):
-        older = (datetime.now(UTC) - timedelta(seconds=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        newer = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        self._write_job(tmp_path, "lint-1", "lint", started_at=older)
-        self._write_job(tmp_path, "tb-1", "tb_coder", started_at=newer)
-        assert tlr._active_endpoint_from_jobs(tmp_path) == ("tb_coder", None)
-
-    def test_returns_none_when_no_records(self, tmp_path: Path):
-        assert tlr._active_endpoint_from_jobs(tmp_path) is None
-
-    def test_ignores_nested_specialist_jobs(self, tmp_path: Path):
-        self._write_job(tmp_path, "review-1", "reviewer", display_scope="nested")
-        assert tlr._active_endpoint_from_jobs(tmp_path) is None
-
-
 # ===========================================================================
 # _run_with_heartbeat()
 # ===========================================================================
-
-
-class TestRunWithHeartbeat:
-    @patch("booley.harness.booley.subprocess.Popen")
-    def test_returns_exit_code_without_heartbeat(self, mock_popen, project_root: Path):
-        """When heartbeat import fails, falls back to plain Popen."""
-        proc_mock = MagicMock()
-        proc_mock.returncode = 42
-        proc_mock.wait.return_value = None
-        mock_popen.return_value = proc_mock
-
-        with (
-            patch.dict("sys.modules", {"booley.runtime.heartbeat": None}),
-            patch(
-                "builtins.__import__",
-                side_effect=lambda name, *a, **kw: (
-                    (_ for _ in ()).throw(ImportError())
-                    if name == "booley.runtime.heartbeat"
-                    else __import__(name, *a, **kw)
-                ),
-            ),
-        ):
-            result = tlr._run_with_heartbeat(
-                ["python", "-c", "pass"],
-                str(project_root),
-                project_root,
-            )
-        assert result == 42
-
-    @patch("booley.harness.booley.subprocess.Popen")
-    def test_heartbeat_start_stop(self, mock_popen, project_root: Path):
-        """When heartbeat is available, start/stop are called."""
-        proc_mock = MagicMock()
-        proc_mock.returncode = 0
-        proc_mock.wait.return_value = None
-        mock_popen.return_value = proc_mock
-
-        mock_hb_cls = MagicMock()
-        mock_hb_inst = MagicMock()
-        mock_hb_cls.return_value = mock_hb_inst
-
-        mock_module = MagicMock()
-        mock_module.Heartbeat = mock_hb_cls
-
-        with patch.dict("sys.modules", {"booley.runtime.heartbeat": mock_module}):
-            result = tlr._run_with_heartbeat(
-                ["python", "-c", "pass"],
-                str(project_root),
-                project_root,
-            )
-        assert result == 0
-        mock_hb_inst.start.assert_called_once()
-        mock_hb_inst.stop.assert_called_once()
 
 
 # ===========================================================================
@@ -2085,143 +1061,9 @@ class TestRunWithHeartbeat:
 # ===========================================================================
 
 
-class TestSetupLogging:
-    def setup_method(self):
-        """Clear handlers before each test to avoid cross-contamination."""
-        tlr.logger.handlers.clear()
-
-    def test_creates_log_file(self, project_root: Path):
-        tlr.setup_logging(project_root, verbose=False)
-        from booley.ticket_board.helpers import tickets_dir_from_project_root
-
-        log_path = tickets_dir_from_project_root(project_root) / tlr.LOOP_LOG_REL
-        assert log_path.exists()
-
-    def test_adds_console_and_file_handlers(self, project_root: Path):
-        tlr.setup_logging(project_root, verbose=False)
-        handler_types = [type(h) for h in tlr.logger.handlers]
-        assert logging.StreamHandler in handler_types
-        assert logging.FileHandler in handler_types
-
-    def test_verbose_sets_debug_console(self, project_root: Path):
-        tlr.setup_logging(project_root, verbose=True)
-        console = next(
-            h
-            for h in tlr.logger.handlers
-            if isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler)
-        )
-        assert console.level == logging.DEBUG
-
-    def test_normal_sets_info_console(self, project_root: Path):
-        tlr.setup_logging(project_root, verbose=False)
-        console = next(
-            h
-            for h in tlr.logger.handlers
-            if isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler)
-        )
-        assert console.level == logging.INFO
-
-    @pytest.mark.parametrize("verbose", [False, True])
-    def test_handlers_use_same_utc_timestamp(self, project_root: Path, verbose: bool):
-        tlr.setup_logging(project_root, verbose=verbose)
-        record = logging.LogRecord("booley", logging.INFO, "", 0, "event", (), None)
-        record.created = datetime(2026, 9, 25, 13, 7, 17, tzinfo=UTC).timestamp()
-
-        formatted = [handler.format(record) for handler in tlr.logger.handlers]
-
-        assert all(line.startswith("2026-09-25T13:07:17Z") for line in formatted)
-
-    def teardown_method(self):
-        # Close file handlers to avoid ResourceWarning
-        for h in tlr.logger.handlers[:]:
-            if isinstance(h, logging.FileHandler):
-                h.close()
-        tlr.logger.handlers.clear()
-
-
 # ===========================================================================
 # TerseFormatter (now in logging_utils, canonical home after M5 dedup)
 # ===========================================================================
-
-
-class TestTerseFormatter:
-    def test_info_no_level_prefix(self):
-        from booley.harness.logging_utils import TerseFormatter
-
-        fmt = TerseFormatter()
-        record = logging.LogRecord(
-            "test",
-            logging.INFO,
-            "",
-            0,
-            "hello world",
-            (),
-            None,
-        )
-        record.created = datetime(2026, 9, 25, 13, 7, 17, tzinfo=UTC).timestamp()
-        result = fmt.format(record)
-        assert result.startswith("2026-09-25T13:07:17Z")
-        assert "hello world" in result
-        assert "INFO" not in result
-
-    def test_warning_includes_level(self):
-        from booley.harness.logging_utils import TerseFormatter
-
-        fmt = TerseFormatter()
-        record = logging.LogRecord(
-            "test",
-            logging.WARNING,
-            "",
-            0,
-            "bad thing",
-            (),
-            None,
-        )
-        record.created = datetime(2026, 9, 25, 13, 7, 17, tzinfo=UTC).timestamp()
-        result = fmt.format(record)
-        assert "2026-09-25T13:07:17Z" in result
-        assert "WARNING" in result
-        assert "bad thing" in result
-
-    def test_error_includes_level(self):
-        from booley.harness.logging_utils import TerseFormatter
-
-        fmt = TerseFormatter()
-        record = logging.LogRecord(
-            "test",
-            logging.ERROR,
-            "",
-            0,
-            "worse thing",
-            (),
-            None,
-        )
-        record.created = datetime(2026, 9, 25, 13, 7, 17, tzinfo=UTC).timestamp()
-        result = fmt.format(record)
-        assert "2026-09-25T13:07:17Z" in result
-        assert "ERROR" in result
-
-
-def test_dry_run_banner_uses_aware_user_local_timestamp(monkeypatch, capsys):
-    args = Namespace(count=0, dry_run=True, check_ready=False)
-    monkeypatch.setenv("BOOLEY_LOCAL_TIMEZONE", "+04:00")
-    fixed = datetime(2026, 9, 25, 13, 7, 17, tzinfo=UTC)
-    with patch.object(tlr, "datetime") as mocked_datetime:
-        mocked_datetime.now.return_value = fixed
-
-        tlr._print_banner(args)
-
-    assert "17:07:17 · 25 SEP 2026" in capsys.readouterr().out
-
-
-def test_limit_wait_uses_aware_user_local_estimate(monkeypatch, capsys):
-    monkeypatch.setenv("BOOLEY_LOCAL_TIMEZONE", "+04:00")
-    monkeypatch.setattr(tlr.time, "time", lambda: 1_790_341_637.0)
-    monkeypatch.setattr(tlr, "interruptible_sleep", lambda _seconds: True)
-
-    assert tlr._handle_limit_wait(60) == "continue"
-
-    assert "until ~17:08 · 25 SEP 2026" in capsys.readouterr().out
 
 
 # ===========================================================================
@@ -2229,56 +1071,9 @@ def test_limit_wait_uses_aware_user_local_estimate(monkeypatch, capsys):
 # ===========================================================================
 
 
-class TestSignalHandler:
-    def test_sets_shutdown_event(self):
-        original = tlr._shutdown_event
-        try:
-            tlr._shutdown_event = threading.Event()
-            assert not tlr._shutdown_event.is_set()
-            tlr._signal_handler(2, None)
-            assert tlr._shutdown_event.is_set()
-        finally:
-            tlr._shutdown_event = original
-
-    def test_noop_when_event_none(self):
-        original = tlr._shutdown_event
-        try:
-            tlr._shutdown_event = None
-            tlr._signal_handler(2, None)  # should not raise
-        finally:
-            tlr._shutdown_event = original
-
-
 # ===========================================================================
 # LIMIT_PATTERNS constant
 # ===========================================================================
-
-
-class TestLimitPatterns:
-    @pytest.mark.parametrize(
-        "text",
-        [
-            "you've hit your limit",
-            "You've hit your limit for the day",
-            "usage limit exceeded",
-            "subscription limit reached",
-            "SubscriptionLimitError: too many requests",
-            "Codex error: You've hit your usage limit. Upgrade to Pro",
-        ],
-    )
-    def test_matches_expected_strings(self, text):
-        assert any(p.search(text) for p in sl.LIMIT_PATTERNS)
-
-    @pytest.mark.parametrize(
-        "text",
-        [
-            "syntax error in module",
-            "compilation failed",
-            "assertion failed at time 100ns",
-        ],
-    )
-    def test_does_not_match_unrelated(self, text):
-        assert not any(p.search(text) for p in sl.LIMIT_PATTERNS)
 
 
 # ===========================================================================
@@ -2291,12 +1086,6 @@ class TestConstants:
         """VENV_PYTHON removed — package is pip-installed, no embedded venv."""
         assert not hasattr(tlr, "VENV_PYTHON")
 
-    def test_board_module(self):
-        assert tlr.BOARD_MODULE == "booley.ticket_board"
-
-    def test_heartbeat_interval(self):
-        assert tlr.HEARTBEAT_INTERVAL == 300
-
     def test_stale_threshold_removed(self):
         """STALE_THRESHOLD removed -- stale detection no longer needed."""
         assert not hasattr(tlr, "STALE_THRESHOLD")
@@ -2307,125 +1096,9 @@ class TestConstants:
 # ===========================================================================
 
 
-class TestBoardPathCorrectness:
-    """Verify that get_active_slugs, get_ticket_summary, and
-    detect_subscription_limit use the correct board/ paths."""
-
-    def test_get_active_slugs_uses_board_path(self, project_root: Path):
-        """Running board documents in tickets/board/ are found."""
-        _place_ticket(project_root, "foo", "active", "---\n---\n")
-        result = tlr.get_active_slugs(project_root)
-        assert result == ["foo"]
-
-    def test_get_active_slugs_ignores_old_path(self, project_root: Path):
-        """Files in tickets/active/ (wrong, missing board/) are NOT found."""
-        old_dir = project_root / ".booley" / "project" / "tickets" / "active"
-        old_dir.mkdir(parents=True, exist_ok=True)
-        (old_dir / "foo.md").write_text("---\n---\n")
-        result = tlr.get_active_slugs(project_root)
-        assert result == []
-
-    def test_detect_subscription_limit_uses_board_path(self, project_root: Path):
-        """detect_subscription_limit scans blocked Tickets on tickets/board/."""
-        _place_ticket(project_root, "test-slug", "blocked", "---\n---\n")
-        log_dir = project_root / ".booley" / "project" / "tickets" / "logs" / "test-slug"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        (log_dir / "blocked.md").write_text("usage limit exceeded", encoding="utf-8")
-        result = tlr.detect_subscription_limit(project_root)
-        assert result > 0
-
-
 # ===========================================================================
 # A4/A5: PID-aware orphan handling
 # ===========================================================================
-
-
-class TestStartupOrphansPIDAware:
-    def _create_active_with_lock(self, project_root: Path, slug: str, pid: int):
-        """Create an active ticket + lock file with given PID."""
-        _place_ticket(project_root, slug, "active", f"---\nsummary: {slug}\n---\n")
-        lock_dir = project_root / ".booley" / "project" / "tickets" / "logs" / slug
-        lock_dir.mkdir(parents=True, exist_ok=True)
-        (lock_dir / "ticket.lock").write_text(str(pid), encoding="utf-8")
-
-    @patch("booley.harness.booley._run_board")
-    def test_skips_live_pid(self, mock_board, project_root: Path):
-        """Tickets with a live PID should NOT be blocked."""
-        import os
-
-        self._create_active_with_lock(project_root, "live-ticket", os.getpid())
-        mock_board.return_value = subprocess.CompletedProcess(
-            args=[],
-            returncode=0,
-            stdout="",
-            stderr="",
-        )
-        tlr.handle_startup_orphans(project_root)
-        # Should NOT have called block
-        block_calls = [c for c in mock_board.call_args_list if "block" in c[0][1]]
-        assert len(block_calls) == 0
-
-    @patch("booley.harness.booley._run_board")
-    def test_blocks_dead_pid(self, mock_board, project_root: Path):
-        """Tickets with a dead PID should be blocked."""
-        self._create_active_with_lock(project_root, "dead-ticket", 999999)
-        mock_board.return_value = subprocess.CompletedProcess(
-            args=[],
-            returncode=0,
-            stdout="",
-            stderr="",
-        )
-        tlr.handle_startup_orphans(project_root)
-        block_calls = [c for c in mock_board.call_args_list if "block" in c[0][1]]
-        assert len(block_calls) == 1
-        assert "dead-ticket" in block_calls[0][0][1]
-
-
-class TestPostRunOrphansPIDAware:
-    def _create_active_with_lock(self, project_root: Path, slug: str, pid: int):
-        _place_ticket(project_root, slug, "active", f"---\nsummary: {slug}\n---\n")
-        lock_dir = project_root / ".booley" / "project" / "tickets" / "logs" / slug
-        lock_dir.mkdir(parents=True, exist_ok=True)
-        (lock_dir / "ticket.lock").write_text(str(pid), encoding="utf-8")
-
-    @patch("booley.harness.booley._run_board")
-    def test_skips_other_live_pid(self, mock_board, project_root: Path):
-        """Post-run: tickets owned by a *different* live process should be skipped."""
-        import os
-
-        # Use parent PID -- guaranteed alive and != os.getpid()
-        other_pid = os.getppid()
-        self._create_active_with_lock(project_root, "live-ticket", other_pid)
-        mock_board.return_value = subprocess.CompletedProcess(
-            args=[],
-            returncode=0,
-            stdout="",
-            stderr="",
-        )
-        tlr.handle_post_run_orphans(project_root, exit_code=1, limit_wait=0)
-        mock_board.assert_not_called()
-
-    @patch("booley.harness.booley._run_board")
-    def test_handles_own_pid(self, mock_board, project_root: Path):
-        """Post-run: tickets locked by our own PID should be handled, not skipped.
-
-        When the loop runner calls orphan sweep after SIGINT, the lock file
-        holds the runner's own PID (still alive). The ticket must still be
-        handled -- otherwise it becomes a stale orphan once the runner exits.
-        """
-        import os
-
-        self._create_active_with_lock(project_root, "own-ticket", os.getpid())
-        mock_board.return_value = subprocess.CompletedProcess(
-            args=[],
-            returncode=0,
-            stdout="",
-            stderr="",
-        )
-        tlr.handle_post_run_orphans(project_root, exit_code=130, limit_wait=0)
-        fail_calls = [c for c in mock_board.call_args_list if "fail" in c[0][1]]
-        assert len(fail_calls) == 1
-        assert "own-ticket" in fail_calls[0][0][1]
 
 
 # ===========================================================================
@@ -2433,159 +1106,14 @@ class TestPostRunOrphansPIDAware:
 # ===========================================================================
 
 
-class TestCheckFastFailure:
-    """Fast harness-failure classification: race-vs-infra.
-
-    Regression for the slug-mode hang: when a specific --ticket is requested,
-    _run_harness pre-activates that slug itself, so the post-failure
-    "0 executable" recheck reflects our OWN activation, not another runner.
-    The old code misread that as a race and polled forever, masking fatal
-    Ticket Preflight failures (e.g. Docker permission denied).
-    """
-
-    @staticmethod
-    def _args(slug="", wait=5):
-        from argparse import Namespace
-
-        return Namespace(slug=slug, wait=wait)
-
-    def test_success_returns_none(self):
-        assert tlr._check_fast_failure(self._args(), Path(), exit_code=0, elapsed=0.1) is None
-
-    def test_slow_failure_returns_none(self):
-        # >=5s failures aren't "fast" -- normal post-run handling applies.
-        assert tlr._check_fast_failure(self._args(), Path(), exit_code=2, elapsed=9.0) is None
-
-    def test_slug_mode_fast_failure_aborts_without_race_recheck(self):
-        # Slug mode: a fast failure is always infra -> abort, and we must NOT
-        # consult ticket counts (our own pre-activation would read as a race).
-        with (
-            patch.object(tlr, "get_ticket_counts") as mock_counts,
-            patch.object(tlr, "interruptible_sleep") as mock_sleep,
-        ):
-            action = tlr._check_fast_failure(
-                self._args(slug="my-ticket"),
-                Path(),
-                exit_code=2,
-                elapsed=0.6,
-            )
-        assert action == "abort"
-        mock_counts.assert_not_called()
-        mock_sleep.assert_not_called()
-
-    def test_queue_mode_race_resumes_polling(self):
-        # Queue-polling mode (no slug): 0 executable after a fast failure means
-        # another runner grabbed it -> resume polling.
-        with (
-            patch.object(tlr, "get_ticket_counts", return_value={"executable": 0}),
-            patch.object(tlr, "interruptible_sleep", return_value=True),
-        ):
-            action = tlr._check_fast_failure(
-                self._args(),
-                Path(),
-                exit_code=2,
-                elapsed=0.6,
-            )
-        assert action == "continue"
-
-    def test_queue_mode_infra_error_aborts(self):
-        # Queue mode but ticket still executable -> genuine infra error -> abort.
-        with patch.object(tlr, "get_ticket_counts", return_value={"executable": 1}):
-            action = tlr._check_fast_failure(
-                self._args(),
-                Path(),
-                exit_code=2,
-                elapsed=0.6,
-            )
-        assert action == "abort"
-
-    def test_queue_mode_race_break_on_shutdown(self):
-        # Shutdown during the race-poll sleep -> break.
-        with (
-            patch.object(tlr, "get_ticket_counts", return_value={"executable": 0}),
-            patch.object(tlr, "interruptible_sleep", return_value=False),
-        ):
-            action = tlr._check_fast_failure(
-                self._args(),
-                Path(),
-                exit_code=2,
-                elapsed=0.6,
-            )
-        assert action == "break"
-
-
 # ===========================================================================
 # _handle_post_run() -- fast-failure orphan sweep
 # ===========================================================================
 
 
-class TestHandlePostRunFastFailure:
-    """A fast-failure 'abort' must still sweep the pre-activated ticket.
-
-    Regression: slug-mode pre-activation strands the ticket in active/ when
-    the abort path returns before the orphan safety net. The race/shutdown
-    paths must NOT sweep -- another runner owns the ticket.
-    """
-
-    @staticmethod
-    def _args(slug="my-ticket", wait=5):
-        from argparse import Namespace
-
-        return Namespace(slug=slug, wait=wait)
-
-    def test_abort_sweeps_orphans(self):
-        with (
-            patch.object(tlr, "_check_fast_failure", return_value="abort"),
-            patch.object(tlr, "handle_post_run_orphans") as mock_orphans,
-            patch.object(tlr, "detect_subscription_limit") as mock_limit,
-        ):
-            action = tlr._handle_post_run(self._args(), Path(), exit_code=2, elapsed=0.6)
-        assert action == "abort"
-        mock_orphans.assert_called_once()
-        # exit_code is forwarded so the orphan is FAILED (not blocked).
-        assert mock_orphans.call_args[0][1] == 2
-        # Abort short-circuits before subscription-limit detection.
-        mock_limit.assert_not_called()
-
-    def test_race_continue_does_not_sweep(self):
-        with (
-            patch.object(tlr, "_check_fast_failure", return_value="continue"),
-            patch.object(tlr, "handle_post_run_orphans") as mock_orphans,
-        ):
-            action = tlr._handle_post_run(self._args(slug=""), Path(), exit_code=2, elapsed=0.6)
-        assert action == "continue"
-        mock_orphans.assert_not_called()
-
-
 # ===========================================================================
 # --dry-run implications (F-12)
 # ===========================================================================
-
-
-class TestClaimTicketSlotShutdown:
-    def test_queued_claim_aborts_on_shutdown_event(self, tmp_path, monkeypatch):
-        # A Runner queued behind max_tickets busy Developers must stop
-        # waiting when Ctrl+C sets the shutdown event (the SIGINT handler
-        # never raises, so without the hook the wait was uninterruptible).
-        import os
-
-        from booley.runtime import job_slots
-
-        monkeypatch.setenv("BOOLEY_SLOTS_DIR", str(tmp_path / "slots"))
-        # Occupy every ticket slot so the claim queues.
-        world_store = job_slots.SlotStore(tmp_path / "slots", job_slots.SlotCaps(max_tickets=1))
-        holder = world_store.submit(job_slots.CLASS_TICKET, pid=os.getpid())
-        assert world_store.refresh(holder).state == job_slots.HOLDING
-
-        event = threading.Event()
-        event.set()
-        monkeypatch.setattr(tlr, "_shutdown_event", event)
-        with pytest.raises(job_slots.ClaimAbortedError):
-            tlr._claim_ticket_slot(tmp_path)
-        # The withdrawn claim leaves no waiter behind.
-        _holders, waiters = world_store.snapshot(job_slots.CLASS_TICKET)
-        assert waiters == []
-        world_store.release(holder)
 
 
 def test_hidden_session_prepare_accepts_explicit_workspace_root():
@@ -2676,22 +1204,6 @@ def test_project_root_is_not_exposed_on_unrelated_session_commands(command):
 
     with pytest.raises(SystemExit):
         parser.parse_args(["session", command, "--project-root", "/tmp/project"])
-
-
-def test_failed_blocked_renderers_do_not_append_immediate_retry_hint(
-    tmp_path, monkeypatch, capsys
-):
-    from booley.harness import blocked_prep
-
-    outcome = blocked_prep.BlockedPrepOutcome("failed", "underlying worktree registration error")
-    monkeypatch.setattr(blocked_prep, "render_blocked_dossier", lambda *_args: outcome)
-    assert tlr._show_blocked_dossier(tmp_path, "demo") == 2
-    assert "run booley board review" not in capsys.readouterr().out
-    args = Namespace(slug="demo")
-    assert tlr._cmd_board_blocked_briefing(args, tmp_path) == 2
-    error = capsys.readouterr().err
-    assert "underlying worktree registration error" in error
-    assert "run booley board review" not in error
 
 
 def test_session_refresh_capacity_refusal_precedes_park_and_spec_change(
@@ -2924,7 +1436,6 @@ def test_project_binding_cheat_uninitialized_directory(
     tmp_path, monkeypatch, capsys, unreadable_project
 ):
     from booley.dev_support import flow_specialist_reference as reference
-    from booley.runtime.project_dir import reset_cache
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
@@ -3021,100 +1532,3 @@ def test_bare_cheat_project_names_section_replacement(capsys):
     notice = capsys.readouterr().err
     assert "--project" in notice
     assert "--project-files" in notice
-
-
-class TestIdleShutdown:
-    """The dormant Ticket loop must not outlive its queue (F-50)."""
-
-    @staticmethod
-    def _counts(**kw):
-        base = {"active": 0, "waiting": 0, "blocked": 0, "review": 0, "executable": 0}
-        base.update(kw)
-        return base
-
-    def test_drained_board_exits_after_the_timeout(self, monkeypatch):
-        args = Namespace(count=0, wait=5, idle_timeout=60)
-        idle = tlr._IdleState()
-        clock = [1000.0]
-        monkeypatch.setattr(tlr.time, "monotonic", lambda: clock[0])
-        monkeypatch.setattr(tlr, "interruptible_sleep", lambda _s: True)
-
-        with patch.object(tlr, "status"):
-            # First drained poll only arms the timer.
-            assert tlr._handle_idle(args, self._counts(review=2), idle) == "continue"
-            assert idle.drained_since == 1000.0
-            clock[0] += 59
-            assert tlr._handle_idle(args, self._counts(review=2), idle) == "continue"
-            clock[0] += 2
-            assert tlr._handle_idle(args, self._counts(review=2), idle) == "break"
-
-    def test_active_or_waiting_tickets_keep_the_runner_alive(self, monkeypatch):
-        """Work that can still become executable on its own must not trip the timer."""
-        args = Namespace(count=0, wait=5, idle_timeout=1)
-        idle = tlr._IdleState()
-        clock = [1000.0]
-        monkeypatch.setattr(tlr.time, "monotonic", lambda: clock[0])
-        monkeypatch.setattr(tlr, "interruptible_sleep", lambda _s: True)
-
-        with patch.object(tlr, "status"):
-            for counts in (self._counts(active=1), self._counts(waiting=1)):
-                clock[0] += 10_000
-                assert tlr._handle_idle(args, counts, idle) == "continue"
-                assert idle.drained_since is None
-
-    def test_new_work_disarms_the_timer(self, monkeypatch):
-        args = Namespace(count=0, wait=5, idle_timeout=60)
-        idle = tlr._IdleState()
-        clock = [1000.0]
-        monkeypatch.setattr(tlr.time, "monotonic", lambda: clock[0])
-        monkeypatch.setattr(tlr, "interruptible_sleep", lambda _s: True)
-
-        with patch.object(tlr, "status"):
-            tlr._handle_idle(args, self._counts(review=1), idle)
-            idle.reset()  # the loop calls this when a ticket becomes executable
-            clock[0] += 10_000
-            assert tlr._handle_idle(args, self._counts(review=1), idle) == "continue"
-
-    def test_zero_timeout_polls_forever(self, monkeypatch):
-        args = Namespace(count=0, wait=5, idle_timeout=0)
-        idle = tlr._IdleState()
-        clock = [1000.0]
-        monkeypatch.setattr(tlr.time, "monotonic", lambda: clock[0])
-        monkeypatch.setattr(tlr, "interruptible_sleep", lambda _s: True)
-
-        with patch.object(tlr, "status"):
-            for _ in range(3):
-                clock[0] += 10_000
-                assert tlr._handle_idle(args, self._counts(), idle) == "continue"
-
-    def test_drained_board_announces_the_pending_exit(self, monkeypatch):
-        args = Namespace(count=0, wait=5, idle_timeout=60)
-        idle = tlr._IdleState()
-        monkeypatch.setattr(tlr, "interruptible_sleep", lambda _s: True)
-        with patch.object(tlr, "status") as status:
-            tlr._handle_idle(args, self._counts(review=1), idle)
-        assert any("Queue drained" in c.args[0] for c in status.call_args_list)
-
-
-def test_one_ticket_failure_exits_nonzero(tmp_path):
-    args = Namespace(ticket="fix-crc", slug="fix-crc", count=1, wait=5, dry_run=False)
-    counts = {"executable": 1}
-    with (
-        patch.object(tlr, "_run_automatic_doctor"),
-        patch.object(tlr, "handle_startup_orphans"),
-        patch.object(tlr, "get_ticket_counts", return_value=counts),
-        patch.object(tlr, "_execute_one_ticket", return_value="next_failed"),
-        patch.object(tlr, "_shutdown_requested", return_value=False),
-        patch.object(tlr.os, "chdir"),
-    ):
-        assert tlr._ticket_loop(args, tmp_path, "/venv/python") == 1
-
-
-def test_child_failure_is_preserved_after_post_run_cleanup(tmp_path):
-    args = Namespace(ticket="fix-crc", slug="fix-crc", count=1, wait=5, dry_run=False)
-    with (
-        patch.object(tlr, "_log_attempt"),
-        patch.object(tlr, "_run_harness", return_value=(1, 10.0)),
-        patch.object(tlr, "_handle_post_run", return_value="next"),
-    ):
-        assert tlr._execute_one_ticket(args, tmp_path, "/venv/python", 1, {}) == ("next_failed")

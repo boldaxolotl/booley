@@ -1,7 +1,7 @@
 """Single source of truth for model prices and context-window sizes.
 
 Both the live agent backends (``booley.runtime._cost``) and the ticket-board
-reports (``booley.ticket_board.analytics``) used to carry their own price
+reports share a single price
 tables, which disagreed: the harness table had no cache-*write* rate at all
 and billed cache creation at the plain input price, and the two tables
 disagreed on unknown-model fallback (one returned $0.00, the other silently

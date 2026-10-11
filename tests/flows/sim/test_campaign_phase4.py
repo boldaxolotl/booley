@@ -60,8 +60,8 @@ from booley.runtime.job_slots import (
     CLASS_HEAVY,
     HOLDING,
     QUEUED,
+    ROLE_BACKGROUND,
     ROLE_INTERACTIVE,
-    ROLE_TICKET,
     ClaimAbortedError,
     ClaimLostError,
     SlotStore,
@@ -354,8 +354,8 @@ def test_real_slot_store_preserves_interactive_priority_and_peer_fifo(
 ) -> None:
     store = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=1))
     holder = store.acquire(CLASS_HEAVY, pid=os.getpid())
-    first_ticket = store.submit(CLASS_HEAVY, pid=os.getpid(), role=ROLE_TICKET)
-    second_ticket = store.submit(CLASS_HEAVY, pid=os.getpid(), role=ROLE_TICKET)
+    first_ticket = store.submit(CLASS_HEAVY, pid=os.getpid(), role=ROLE_BACKGROUND)
+    second_ticket = store.submit(CLASS_HEAVY, pid=os.getpid(), role=ROLE_BACKGROUND)
     interactive = store.submit(CLASS_HEAVY, pid=os.getpid(), role=ROLE_INTERACTIVE)
     try:
         holders, waiters = store.snapshot(CLASS_HEAVY)

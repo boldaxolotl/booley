@@ -86,14 +86,13 @@ logger = logging.getLogger(__name__)
 # Job classes (ADR 0028 Decision 5), resolved by workload type.
 CLASS_HEAVY = "heavy"  # in-container EDA subprocesses (sim/synth)
 CLASS_LIGHT = "light"  # Specialists — model-API-bound, ~no local footprint
-CLASS_TICKET = "ticket"  # Developer Agent processes, claimed by the Runner
-JOB_CLASSES = (CLASS_HEAVY, CLASS_LIGHT, CLASS_TICKET)
+JOB_CLASSES = (CLASS_HEAVY, CLASS_LIGHT)
 
 # Requester roles → queue priority (lower sorts first). Interactive work
 # jumps ahead of queued ticket work; holders are never displaced.
 ROLE_INTERACTIVE = "interactive"
-ROLE_TICKET = "ticket"
-_ROLE_PRIORITY = {ROLE_INTERACTIVE: 0, ROLE_TICKET: 1}
+ROLE_BACKGROUND = "background"
+_ROLE_PRIORITY = {ROLE_INTERACTIVE: 0, ROLE_BACKGROUND: 1}
 
 # Entry-name state prefixes. 'h' < 'w' lexicographically, so holders always
 # rank ahead of every waiter regardless of priority — that ordering is what
@@ -419,7 +418,7 @@ class SlotStore:
         if len(self._live_entry_names(job_class)) >= cap + self.caps.queue_max:
             raise QueueFullError(f"{job_class} queue is full ({self.caps.queue_max} waiting)")
 
-        priority = _ROLE_PRIORITY.get(role, _ROLE_PRIORITY[ROLE_TICKET])
+        priority = _ROLE_PRIORITY.get(role, _ROLE_PRIORITY[ROLE_BACKGROUND])
         created = self._now()
         if execution_id is not None:
             linked_execution = ExecutionId(execution_id)

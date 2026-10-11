@@ -172,9 +172,7 @@ def test_unreadable_persisted_decisions_raises_context_error(tmp_path: Path, mon
         review_receipt_drift(detail, tmp_path)
 
 
-def test_converted_ticket_spec_is_tracked_without_ticket_board_dependency(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_explicit_spec_is_tracked_in_review_receipt(tmp_path: Path, monkeypatch) -> None:
     logs = tmp_path / "logs"
     logs.mkdir()
     spec = tmp_path / "spec.md"
@@ -200,9 +198,7 @@ def test_converted_ticket_spec_is_tracked_without_ticket_board_dependency(
     assert contract["spec_digest"]
 
 
-def test_ticket_board_policy_digest_controls_receipt_freshness(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_review_policy_digest_controls_receipt_freshness(tmp_path: Path, monkeypatch) -> None:
     (tmp_path / "rtl").mkdir()
     contract = build_review_contract_detail(
         ReviewInvocation(

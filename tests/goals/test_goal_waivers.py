@@ -30,6 +30,12 @@ from booley.flows.sim.coverage_reference import (
     publish_coverage_campaign_reference,
 )
 from booley.flows.sim.coverage_waiver_application import evaluation_json, strict_reevaluation
+from booley.flows.sim.waiver_candidates import (
+    CampaignBinding,
+    WaiverProposal,
+    load,
+    record_proposals,
+)
 from booley.goals.apply import ChangeEnvironment, recover
 from booley.goals.binding import bind_run
 from booley.goals.change_service import create_proposal
@@ -43,12 +49,6 @@ from booley.goals.status import build_status
 from booley.goals.store import GoalStore
 from booley.mcp.goal_freshness import GOAL_FRESHNESS_RESOLVERS
 from booley.mcp.goal_waivers import GoalWaiverService
-from booley.ticket_board.waiver_candidates import (
-    CampaignBinding,
-    WaiverProposal,
-    load,
-    record_proposals,
-)
 from tests.flows.sim.test_coverage_campaign import _POINT_ID, _valid_document
 from tests.goals.conftest import enter_goals, git
 from tests.goals.test_proposals import Crash, approve, interrupted_transaction

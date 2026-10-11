@@ -56,8 +56,7 @@ INTERACTIVE_ROLE_LABEL = "booley.role=interactive"
 # Process cap for the whole Sandbox (fork-bomb ceiling, not a tuning
 # knob). Sized far above the retired per-Flow sandbox's 512 because this one
 # container hosts the VS Code server, the agent CLI, the in-container
-# developer, and up to ``[jobs] max_tickets`` concurrent tickets each
-# spawning EDA tools (ADR 0028). Its only job is to bound a hijacked agent's
+# agent, and concurrent EDA tools (ADR 0028). Its only job is to bound a hijacked agent's
 # fork bomb; legitimate peak process counts stay well under this.
 SESSION_PIDS_LIMIT = 4096
 

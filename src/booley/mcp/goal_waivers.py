@@ -18,6 +18,7 @@ from typing import Any, Literal, cast
 
 from booley.core.file_lock import release_file_lock, wait_for_file_lock
 from booley.criteria.state import CriterionEntry, DevelopmentState
+from booley.flows.sim import waiver_candidates as candidates
 from booley.flows.sim.coverage_campaign import DurableTargetIdentity, encode_coverage_campaign
 from booley.flows.sim.coverage_policy import (
     CoverageThreshold,
@@ -64,7 +65,6 @@ from booley.goals.waiver_policy import (
 )
 from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.targets.catalog import TargetCatalog
-from booley.ticket_board import waiver_candidates as candidates
 
 
 class GoalWaiverService:

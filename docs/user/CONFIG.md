@@ -1051,7 +1051,7 @@ are rejected before publication. After upgrading or configuring this tier,
 run Project Setup or Doctor to reconcile installed Git-hook bundles.
 
 Project Initialization keeps `.booley_project/hooks/` for Project-authored
-`post-setup` and `post-developer` lifecycle hooks. Booley-managed commit and
+`post-setup` lifecycle hooks. Booley-managed commit and
 push policy lives in the deterministic
 `.booley_project/.managed/project-git-hooks.pyz` bundle, reached by the small
 `commit-msg` and `pre-push` adapters under `.git/hooks/`.
