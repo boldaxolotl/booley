@@ -397,7 +397,7 @@ Campaign manifest at
 Append-only attempts/results and the ordered `summary.json` remain beside that
 manifest across exact resume. The replaceable compatibility report at
 `<runtime>/flow-reports/sim/<N>/targets/<encoded-target>/simulation.json` uses
-`booley.simulation-projection/v2` and carries typed, digest-bound
+`booley.simulation-projection/v3` and carries typed, digest-bound
 `origin_target` references to the immutable manifest and optional public Coverage
 reference. Legacy producer-absolute strings are compatibility hints only; local
 Simulation Campaign authentication is authoritative. The projection also carries

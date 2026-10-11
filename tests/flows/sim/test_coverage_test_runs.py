@@ -301,6 +301,21 @@ def test_coverage_of_non_default_runs_records_no_goal_evidence(tmp_path, monkeyp
     assert all(entry.met is not True for entry in saved.criteria.values())
 
 
+def test_ticket_coverage_of_several_runs_of_one_test_is_diagnostic_not_an_error(
+    tmp_path, monkeypatch
+):
+    """The interim guard keeps the per-Test acceptance refusal unreachable."""
+    result, state_path, _initial = _ticket_coverage_result(tmp_path, monkeypatch, "gap", "gap@7")
+
+    # Both runs simulated (this fixture's canned merge covers one run only, so
+    # its collection verdict is not the subject here).
+    rows = result.outcome.detail["campaigns"]["sim_custom"]["test_runs"]
+    assert [(row["name"], row["grade"]) for row in rows] == [("gap@1", "pass"), ("gap@7", "pass")]
+    assert result.outcome.detail["test_run_goal_guard"]["test_runs"] == ["sim_custom: gap@7"]
+    assert "several Test Runs" not in result.outcome.report_text
+    assert not DevelopmentState.load(state_path).acceptance_transactions
+
+
 def test_flow_fails_when_one_of_several_runs_of_a_test_fails(tmp_path, monkeypatch):
     _project(tmp_path, monkeypatch)
 

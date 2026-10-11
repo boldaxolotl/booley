@@ -152,6 +152,9 @@ class SimulationTestOutcome:
     workload_snapshot: Mapping[str, Any] | None = None
     phase_timings_s: Mapping[str, float] = field(default_factory=dict)
     resources: Mapping[str, float | int | None] = field(default_factory=dict)
+    #: The Test Run this result observed; ``None`` when setup failed before
+    #: the Target's Test Runs were known.
+    test_run: TestRun | None = None
 
 
 @dataclass(frozen=True)

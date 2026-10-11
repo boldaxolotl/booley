@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -14,11 +14,12 @@ from booley.criteria.state import CriterionChange, CriterionEntry, DevelopmentSt
 from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
 from booley.flows.criterion_freshness import build_criterion_freshness
 from booley.flows.execution_persistence import AcceptanceRecorder, EvidenceDiscarded
+from booley.flows.test_runs import TestRun, build_test_run, test_run_document
 
 from .coverage_projection import project_coverage_criterion
 
 if TYPE_CHECKING:
-    from .coverage_campaign import CoverageCampaign
+    from .coverage_campaign import CoverageCampaign, CoverageRun
     from .coverage_invocation import CoverageTargetPlan
 
 
@@ -144,6 +145,44 @@ def _apply_coverage_aliases(
     return changes
 
 
+def coverage_test_run_rows(
+    test_runs: Sequence[TestRun], runs: Sequence[CoverageRun]
+) -> list[dict[str, object]]:
+    """One row per collected run: the Test Run it is, and how it ended.
+
+    *test_runs* are the Test Runs the invocation froze before collection; a
+    row takes its Test Variant, seed, arguments and environment from there,
+    never from the current ``tests.toml``. A run collected without frozen
+    Test Runs is the bare Test with no declared inputs. A run whose recorded
+    fingerprint is not the frozen Test Run's has no row.
+    """
+    frozen = {run.name: run for run in test_runs}
+    rows: list[dict[str, object]] = []
+    for run in runs:
+        test_run = frozen.get(run.test_run) or _bare_test_run(run)
+        if test_run is None or test_run.fingerprint != run.fingerprint:
+            continue
+        rows.append({**test_run_document(test_run), "grade": _run_grade(run)})
+    return rows
+
+
+def _bare_test_run(run: CoverageRun) -> TestRun | None:
+    """The Test Run of a run that names only its Test, when that is a Test name."""
+    if run.test_run != run.test:
+        return None
+    try:
+        return build_test_run(run.test)
+    except ValueError:
+        return None
+
+
+def _run_grade(run: CoverageRun) -> str:
+    """One word for how a run ended, as a Simulation Campaign grades it."""
+    if run.simulation_verdict in {"pass", "inconclusive"}:
+        return run.simulation_verdict
+    return "error" if run.attributes.get("failure_kind") == "infrastructure" else "fail"
+
+
 def _simulation_detail(
     plan: CoverageTargetPlan, campaign: CoverageCampaign, path: Path
 ) -> dict[str, Any]:
@@ -167,6 +206,7 @@ def _simulation_detail(
         "failed_tests": failed,
         "tests_passed": len(passed),
         "tests_total": len(passed) + len(failed),
+        "test_runs": coverage_test_run_rows(plan.test_runs, campaign.runs),
     }
 
 

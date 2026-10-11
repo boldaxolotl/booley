@@ -21,9 +21,20 @@ from booley.flows.test_runs import (
     test_run_from_document,
 )
 
-from .codec import SimulationCampaignIntegrityError, decode_simulation_campaign_manifest
+from .codec import (
+    SimulationCampaignIntegrityError,
+    SimulationCampaignManifest,
+    decode_simulation_campaign_manifest,
+)
+from .planning import manifest_digest
 
-__all__ = ["ROW_LIMIT", "campaign_test_run_rows", "test_run_report_lines"]
+__all__ = [
+    "ROW_LIMIT",
+    "campaign_test_run_rows",
+    "evidence_test_run_rows",
+    "informative_test_run_lines",
+    "test_run_report_lines",
+]
 
 #: Most rows (and most rerun commands) one Target's report shows.
 ROW_LIMIT = 32
@@ -53,11 +64,16 @@ def _grade(observation: Mapping[str, object]) -> str:
 
 
 def _recorded_test_runs(manifest_path: Path) -> dict[tuple[object, str], TestRun]:
-    """Every Test Run the manifest records, by work item and Test Run name."""
+    """Every Test Run the manifest at *manifest_path* records; none if unreadable."""
     try:
         manifest = decode_simulation_campaign_manifest(manifest_path.read_bytes())
     except (OSError, SimulationCampaignIntegrityError):
         return {}
+    return _manifest_test_runs(manifest)
+
+
+def _manifest_test_runs(manifest: SimulationCampaignManifest) -> dict[tuple[object, str], TestRun]:
+    """Every Test Run *manifest* records, by work item and Test Run name."""
     recorded: dict[tuple[object, str], TestRun] = {}
     items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
     for item in items:
@@ -106,6 +122,78 @@ def campaign_test_run_rows(outcome: _Outcome) -> list[dict[str, object]]:
         if run is not None:
             rows.append({**test_run_document(run), "grade": _grade(observation)})
     return rows
+
+
+class _EvidenceOutcome(_Outcome, Protocol):
+    @property
+    def acceptance_facts(self) -> _Facts: ...
+
+
+class _Facts(Protocol):
+    @property
+    def document(self) -> Mapping[str, object]: ...
+
+
+def evidence_test_run_rows(outcome: _EvidenceOutcome) -> list[dict[str, object]]:
+    """The rows of :func:`campaign_test_run_rows`, authenticated for evidence.
+
+    A record that later matches Goal evidence on a Test Run's ``name`` and
+    ``fingerprint`` must not take them from a file that merely sits where the
+    manifest should be. The manifest read here must be the one the acceptance
+    facts name by digest, and every row must carry the fingerprint its
+    observation recorded. Facts that do not name Test Runs (written before
+    they were recorded) have no rows.
+
+    Raises :class:`SimulationCampaignIntegrityError` when the manifest is
+    missing or is not the campaign's, or when an observation has no recorded
+    Test Run with its fingerprint.
+    """
+    facts = outcome.acceptance_facts.document
+    observations = cast(tuple[Mapping[str, object], ...], facts["observations"])
+    if any("test_run" not in observation for observation in observations):
+        return []
+    try:
+        manifest = decode_simulation_campaign_manifest(outcome.manifest_path.read_bytes())
+    except OSError as exc:
+        raise SimulationCampaignIntegrityError(
+            f"Simulation Campaign manifest cannot be read for its Test Runs: {exc}"
+        ) from exc
+    if manifest_digest(manifest) != facts["manifest_sha256"]:
+        raise SimulationCampaignIntegrityError(
+            "Simulation Campaign manifest is not the one its acceptance facts name"
+        )
+    recorded = _manifest_test_runs(manifest)
+    rows: list[dict[str, object]] = []
+    for observation in observations:
+        run = _observed_run(observation, recorded)
+        if run is None or run.fingerprint != observation["test_run_fingerprint"]:
+            raise SimulationCampaignIntegrityError(
+                f"observation of Test Run {observation['test_run']!r} has no recorded "
+                "Test Run with its fingerprint in the Simulation Campaign manifest"
+            )
+        rows.append({**test_run_document(run), "grade": _grade(observation)})
+    return rows
+
+
+def informative_test_run_lines(
+    selector: str, rows: Sequence[Mapping[str, object]], *, default_seed: int | None
+) -> list[str]:
+    """Report rows only where they say more than the Target's own line.
+
+    One passing Test Run per Test at the Default Seed is what the Target line
+    already reports. The rows appear when a Test Run did not pass (a failure
+    with its rerun command), or when the Target ran a Test more than once or
+    under a name other than its own.
+    """
+    tests = [row["test"] for row in rows]
+    informative = (
+        any(row["grade"] != "pass" for row in rows)
+        or len(set(tests)) != len(tests)
+        or any(
+            row["variant"] is not None or row["seed"] not in {None, default_seed} for row in rows
+        )
+    )
+    return test_run_report_lines(selector, rows) if informative else []
 
 
 def test_run_report_lines(

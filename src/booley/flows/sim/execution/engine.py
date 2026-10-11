@@ -84,7 +84,7 @@ from booley.flows.target_test_plan import (
     load_target_test_plan,
 )
 from booley.flows.terminal_progress import announce_unit
-from booley.flows.test_runs import TestRun
+from booley.flows.test_runs import TestRun, build_test_run
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.runtime.project_dir import resolve_checkout_project_dir, resolve_project_dir
 from booley.runtime.supervised_execution import current_supervised_execution
@@ -968,11 +968,12 @@ class SimulationExecution:
         attempt = self._prepare_attempt(handle, test_names, test_runs=test_runs)
         try:
             with self._runtime_view(handle, attempt):
-                return self._run_group_body(
+                outcome = self._run_group_body(
                     handle, attempt, compile_surface, sources_before, started
                 )
         except selftest_overlay.SelftestOverlayError as exc:
             raise SimulationBuildSlotError(str(exc)) from exc
+        return _with_test_runs(outcome, handle, attempt.work.test_runs)
 
     def _run_group_body(
         self,
@@ -1571,6 +1572,42 @@ def _selection_run_groups(
         raise TypeError(f"unsupported Simulation selection: {type(selection).__name__}")
     runs = group_test_runs(plan, selection.names, None)
     return batch_test_runs(runs, one_process_per_run=not cocotb)
+
+
+def _with_test_runs(
+    outcome: SimulationTargetOutcome, handle: TargetHandle, runs: tuple[TestRun, ...]
+) -> SimulationTargetOutcome:
+    """Name the Test Run each result of one simulator process observed."""
+    if not runs:
+        return outcome
+    tests = tuple(
+        replace(test, test_run=_observed_test_run(test.name, handle, runs))
+        for test in outcome.tests
+    )
+    return replace(outcome, tests=tests)
+
+
+def _observed_test_run(name: str, handle: TargetHandle, runs: tuple[TestRun, ...]) -> TestRun:
+    """The Test Run of *runs* that the result called *name* observed.
+
+    A process runs each Test at most once, so a result is bound by its Test
+    name. A result that is not named after a selected Test stands for the
+    process as a whole (the unnamed invocation, or a failure before any Test
+    reported) and takes the first Test Run. A Test that an unfiltered Cocotb
+    batch discovered ran under the batch's unnamed invocation: it is that
+    Test at the batch's seed and environment.
+    """
+    by_test = {run.test: run for run in runs}
+    if name in by_test:
+        return by_test[name]
+    first = runs[0]
+    if first.test is not None or name in {"", handle.selector}:
+        return first
+    try:
+        return build_test_run(name, seed=first.seed, env=dict(first.env))
+    except ValueError:
+        # A discovered name outside the Test name rules has no Test Run name.
+        return first
 
 
 def simulation_target_environment(handle: TargetHandle) -> dict[str, str]:

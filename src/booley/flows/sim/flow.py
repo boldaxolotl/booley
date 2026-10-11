@@ -57,7 +57,7 @@ from booley.flows.run_log import RUN_LOG_NAME, run_log_is_current, write_run_log
 from booley.flows.sim.campaign.test_run_report import ROW_LIMIT as TEST_RUN_ROW_LIMIT
 from booley.flows.sim.campaign.test_run_report import (
     campaign_test_run_rows,
-    test_run_report_lines,
+    informative_test_run_lines,
 )
 from booley.flows.sim.campaign_reports import target_report_directory
 from booley.flows.sim.cli import SimArguments
@@ -93,6 +93,7 @@ from booley.flows.test_runs import (
     SeedCount,
     TestRun,
     parse_test_selector,
+    test_run_document,
     test_run_from_document,
 )
 from booley.fusesoc import fusesoc_registry
@@ -378,6 +379,9 @@ class TestResult:
     build_outcome: BuildOutcome | None = None
     phase_timings_s: dict[str, float] = field(default_factory=dict)
     resources: dict[str, float | int | None] = field(default_factory=dict)
+    # The Test Run this result observed (ADR 0072). ``None`` only when setup
+    # failed before the Target's Test Runs were known.
+    test_run: TestRun | None = None
 
 
 @dataclass
@@ -670,6 +674,14 @@ def _coverage_run_label(campaign: CoverageCampaign, run: CoverageRun) -> str:
     """Name a run by its Test, or by its Test Run when the Test ran more than once."""
     several = sum(other.test == run.test for other in campaign.runs) > 1
     return run.test_run if several else run.test
+
+
+def _coverage_test_run_lines(selector: str, rows: object) -> list[str]:
+    """The Test Run rows of a directly collected Target, with rerun commands."""
+    if not isinstance(rows, list):
+        return []
+    typed = [row for row in cast("list[object]", rows) if isinstance(row, Mapping)]
+    return informative_test_run_lines(selector, typed, default_seed=DEFAULT_SEED)
 
 
 def _coverage_pre_sim_lines(selector: str, campaign: CoverageCampaign) -> list[str]:
@@ -978,23 +990,10 @@ def _campaign_test_runs(outcome: CampaignOutcome) -> list[dict[str, object]]:
 
 
 def _campaign_test_run_lines(selector: str, outcome: CampaignOutcome) -> list[str]:
-    """Report rows only where they say more than the Target's own line.
-
-    One passing Test Run per Test at the Default Seed is what the Target line
-    already reports. The rows appear when a Test Run failed (with its rerun
-    command), or when the Target ran a Test more than once or under a name
-    other than its own.
-    """
-    rows = _campaign_test_runs(outcome)
-    tests = [row["test"] for row in rows]
-    informative = (
-        any(row["grade"] != "pass" for row in rows)
-        or len(set(tests)) != len(tests)
-        or any(
-            row["variant"] is not None or row["seed"] not in {None, DEFAULT_SEED} for row in rows
-        )
+    """Report rows only where they say more than the Target's own line."""
+    return informative_test_run_lines(
+        selector, _campaign_test_runs(outcome), default_seed=DEFAULT_SEED
     )
-    return test_run_report_lines(selector, rows) if informative else []
 
 
 def _campaign_test_run_detail(outcome: CampaignOutcome) -> dict[str, object]:
@@ -2078,6 +2077,12 @@ def _test_report_entry(test: TestResult) -> dict[str, Any]:
         "phase_timings_s": dict(test.phase_timings_s),
         "resources": dict(test.resources),
     }
+    if test.test_run is not None:
+        # The keys the coverage and campaign reports use for the same facts.
+        entry["test_run"] = test.test_run.name
+        entry["variant"] = test.test_run.variant
+        entry["seed"] = test.test_run.seed
+        entry["fingerprint"] = test.test_run.fingerprint
     if test.trace_path:
         entry["trace_path"] = test.trace_path
         entry["trace_bytes"] = test.trace_bytes
@@ -2091,6 +2096,24 @@ def _test_report_entry(test: TestResult) -> dict[str, Any]:
     if not test.test_validated:
         entry["validation_note"] = "test name was not validated against configs.toml"
     return entry
+
+
+def _test_run_grade(test: TestResult) -> str:
+    """One word for how a Test Run ended, as a Simulation Campaign grades it."""
+    if test.passed:
+        return "pass"
+    if test.inconclusive:
+        return "inconclusive"
+    return "error" if test.failure_kind == "infrastructure" else "fail"
+
+
+def _test_run_rows(tests: Sequence[TestResult]) -> list[dict[str, object]]:
+    """One row per result that names its Test Run: what it is and how it ended."""
+    return [
+        {**test_run_document(test.test_run), "grade": _test_run_grade(test)}
+        for test in tests
+        if test.test_run is not None
+    ]
 
 
 def _test_verdict(test: TestResult) -> str:
@@ -4073,6 +4096,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 campaign = load_coverage_campaign(outcome.campaign_path).campaign
                 lines.extend(_waiver_block_hint_lines(campaign))
                 lines.extend(source_gap_report_lines(campaign))
+            lines.extend(_coverage_test_run_lines(outcome.target, detail.get("test_runs")))
             tests = detail.get("tests")
             for test in tests if isinstance(tests, list) else ():
                 if not isinstance(test, Mapping):
@@ -5948,6 +5972,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 "passed_tests": passed_tests,
                 "failed_tests": failed_tests,
                 "skipped_tests": skipped_tests,
+                "test_runs": _test_run_rows(target_result.tests),
             },
         )
 
@@ -5991,6 +6016,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 "baseline_workload_snapshot": (
                     baseline.workload_snapshot if baseline is not None else None
                 ),
+                "test_runs": _test_run_rows([current] if current is not None else []),
             }
             if reason:
                 detail["reason"] = reason
@@ -6363,6 +6389,11 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         if len(result.tests) > 1:
             passed = sum(1 for test in result.tests if test.passed)
             output_lines.append(f"  --- {passed}/{len(result.tests)} passed ---")
+        output_lines.extend(
+            informative_test_run_lines(
+                target, _test_run_rows(result.tests), default_seed=DEFAULT_SEED
+            )
+        )
         return result
 
     def _simulation_artifact_root(self, role: WorkUnitRole | None) -> Path | None:
@@ -6506,6 +6537,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             build_outcome=outcome.build,
             phase_timings_s=dict(outcome.phase_timings_s),
             resources=dict(outcome.resources),
+            test_run=outcome.test_run,
         )
 
     def _record_execution_artifacts(self, outcome: SimulationTargetOutcome) -> None:
@@ -6872,6 +6904,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             "passed": result.passed,
             "complete": complete,
             "tests": [_test_report_entry(t) for t in result.tests],
+            "test_runs": _test_run_rows(result.tests),
         }
         build_stage = [_build_outcome_entry(test.build_outcome) for test in result.tests]
         if any(entry is not None for entry in build_stage):

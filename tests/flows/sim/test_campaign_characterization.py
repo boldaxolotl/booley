@@ -209,8 +209,19 @@ def _assert_projection_shapes(report, outcome) -> None:
         "target",
         "target_identity",
         "tb_top",
+        "test_runs",
         "tests",
         "timestamp",
+    }
+    assert set(report["test_runs"][0]) == {
+        "args",
+        "env",
+        "fingerprint",
+        "grade",
+        "name",
+        "seed",
+        "test",
+        "variant",
     }
     assert set(report["tests"][0]) == {
         "artifacts",
@@ -223,11 +234,15 @@ def _assert_projection_shapes(report, outcome) -> None:
         "name",
         "passed",
         "phase_timings_s",
+        "fingerprint",
         "resources",
+        "seed",
         "sva_errors",
+        "test_run",
         "test_validated",
         "timed_out",
         "termination",
+        "variant",
         "verdict",
         "workload_fingerprint",
     }

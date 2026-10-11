@@ -10,6 +10,7 @@ from booley.flows.test_runs import PinnedSeed, parse_test_selector
 from booley.runtime.timefmt import utc_now_rfc3339
 
 from .campaign_reports import target_report_directory, write_campaign_json
+from .coverage_acceptance import coverage_test_run_rows
 from .coverage_campaign import (
     CoverageCampaign,
     CoverageCampaignValidationError,
@@ -406,6 +407,7 @@ def _simulation_projection(
         "simulation": _simulation_status(result) if passed is not None else "not_run",
         "abort_remaining": result.infrastructure_error,
         "tests": tests,
+        "test_runs": coverage_test_run_rows(plan.test_runs, result.runs),
         "collection": _public_collection_status(campaign, result),
         "evaluation": campaign.evaluation["status"],
         "coverage_campaign": "coverage.json",

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -33,6 +33,7 @@ from booley.flows.sim.campaign import (
     encode_artifact_reference,
 )
 from booley.flows.sim.campaign.codec import MANIFEST_MAX_BYTES, SimulationCampaignIntegrityError
+from booley.flows.sim.campaign.test_run_report import evidence_test_run_rows
 from booley.flows.sim.campaign_reports import (
     write_compatibility_projection,
 )
@@ -74,6 +75,32 @@ class AcceptanceOutcome:
     transaction_id: str | None
     changes: tuple[CriterionChange, ...]
     reason: str
+
+
+class SeveralTestRunsOfOneTestError(SimulationCampaignIntegrityError):
+    """A Criterion names a Test that the campaign ran as several Test Runs.
+
+    A Criterion names a bare Test until Goals can name Test Runs (#1233 stage
+    S3), so it cannot be judged from several Test Runs of that Test. The
+    Simulation Flow keeps such a campaign diagnostic, which records no
+    Criteria; reaching this error means a caller reconciled it anyway.
+    """
+
+
+class _TestRunRows:
+    """The authenticated Test Run rows of one outcome, read on first use."""
+
+    def __init__(self, outcome: CampaignOutcome) -> None:
+        self._outcome = outcome
+        self._rows: dict[object, dict[str, object]] | None = None
+
+    def of(self, observations: Iterable[Mapping[str, object] | None]) -> list[dict[str, object]]:
+        """The row of each of *observations* that names a Test Run, in order."""
+        if self._rows is None:
+            rows = evidence_test_run_rows(self._outcome)
+            self._rows = {row["name"]: row for row in rows}
+        named = (item.get("test_run") for item in observations if item is not None)
+        return [dict(self._rows[name]) for name in named if name in self._rows]
 
 
 class SimulationAcceptanceCoordinator:
@@ -123,9 +150,10 @@ class SimulationAcceptanceCoordinator:
             raise TypeError("campaign acceptance Target is not a mapping")
         target_name = str(target["name"])
         shadow = deepcopy(state)
-        changes = _cycle_changes(outcome, shadow, target)
-        changes.extend(_coverage_changes(outcome, shadow, target))
-        changes.extend(_simulation_changes(outcome, shadow, target, target_name))
+        rows = _TestRunRows(outcome)
+        changes = _cycle_changes(outcome, shadow, target, rows)
+        changes.extend(_coverage_changes(outcome, shadow, target, rows))
+        changes.extend(_simulation_changes(outcome, shadow, target, target_name, rows))
         return changes
 
 
@@ -134,6 +162,7 @@ def _simulation_changes(
     shadow: DevelopmentState,
     target: Mapping[str, object],
     target_name: str,
+    rows: _TestRunRows,
 ) -> list[CriterionChange]:
     if not outcome.complete or target["role"] != "candidate":
         return []
@@ -163,6 +192,7 @@ def _simulation_changes(
             continue
         met = _simulation_criterion_met(outcome, contract, relevant)
         detail = _simulation_detail(outcome, contract, registered, relevant)
+        detail["test_runs"] = rows.of(relevant)
         changes.extend(shadow.set_criterion(key, met, detail=detail))
     return changes
 
@@ -243,13 +273,15 @@ def _candidate_simulation_observations(
     when the campaign ran one Test Run of that Test. Several Test Runs of one
     Test are refused rather than letting one stand in for the others; judging
     them needs Goals that name Test Runs (#1233 stage S3).
+
+    Raises :class:`SeveralTestRunsOfOneTestError`.
     """
     indexed: dict[object, Mapping[str, object]] = {}
     names: dict[object, str] = {}
     for name, item in _candidate_observations(facts, target).items():
         test = item["test"]
         if test in indexed:
-            raise SimulationCampaignIntegrityError(
+            raise SeveralTestRunsOfOneTestError(
                 f"Test {test!r} has several Test Runs in this campaign "
                 f"({names[test]}, {name}); a Criterion that names the Test cannot "
                 "choose between them"
@@ -407,7 +439,11 @@ def _record_standalone_campaign(endpoint: EndpointState, outcome: CampaignOutcom
         f"sim_pass_{outcome.target['name']}",
         outcome.aggregate_grade == "pass",
         source_target=str(outcome.target["selector"]),
-        detail={"mode": "simulate", "selected_tests": [_test_name(name) for name in observations]},
+        detail={
+            "mode": "simulate",
+            "selected_tests": [_test_name(name) for name in observations],
+            "test_runs": _TestRunRows(outcome).of(observations.values()),
+        },
     )
 
 
@@ -415,6 +451,7 @@ def _campaign_projection(outcome: CampaignOutcome) -> dict[str, object]:
     facts = outcome.acceptance_facts.document
     campaign_id = str(facts["campaign_id"])
     target_directory = outcome.manifest_path.parents[1]
+    test_runs = evidence_test_run_rows(outcome)
     projection = {
         "$schema": SIMULATION_PROJECTION_SCHEMA,
         "flow": "sim",
@@ -423,7 +460,8 @@ def _campaign_projection(outcome: CampaignOutcome) -> dict[str, object]:
         "target_identity": f"{outcome.target['vlnv']}#{outcome.target['name']}",
         "passed": outcome.aggregate_grade == "pass",
         "inconclusive": outcome.aggregate_grade == "inconclusive",
-        "tests": _campaign_test_projections(outcome),
+        "tests": _campaign_test_projections(outcome, test_runs),
+        "test_runs": test_runs,
         "campaign_id": campaign_id,
         "campaign_manifest": _artifact_document(
             outcome.manifest_path,
@@ -438,10 +476,21 @@ def _campaign_projection(outcome: CampaignOutcome) -> dict[str, object]:
     return projection
 
 
-def _campaign_test_projections(outcome: CampaignOutcome) -> list[dict[str, object]]:
+def _campaign_test_projections(
+    outcome: CampaignOutcome, test_runs: list[dict[str, object]]
+) -> list[dict[str, object]]:
+    """One row per observation, with the Test Run it observed when recorded.
+
+    *test_runs* is either empty (facts that name no Test Runs) or aligned
+    with the observations.
+    """
+    runs: list[dict[str, object] | None] = (
+        list(test_runs) if test_runs else [None] * len(outcome.observations)
+    )
     return [
         {
             "name": observation["test"] or "default",
+            **_test_run_fields(run),
             "passed": _observation_passed(observation),
             "cycles": observation["cycle_count"],
             "sva_errors": observation["assertion_count"],
@@ -450,8 +499,20 @@ def _campaign_test_projections(outcome: CampaignOutcome) -> list[dict[str, objec
             "failure_kind": observation["failure_class"] or "",
             "error_tail": _observation_error_tail(observation),
         }
-        for observation in outcome.observations
+        for observation, run in zip(outcome.observations, runs, strict=True)
     ]
+
+
+def _test_run_fields(run: Mapping[str, object] | None) -> dict[str, object]:
+    """What a per-Test row says about its Test Run (the coverage rows' keys)."""
+    if run is None:
+        return {}
+    return {
+        "test_run": run["name"],
+        "variant": run["variant"],
+        "seed": run["seed"],
+        "fingerprint": run["fingerprint"],
+    }
 
 
 def _observation_error_tail(observation: Mapping[str, object]) -> str:
@@ -501,6 +562,7 @@ def _coverage_changes(
     outcome: CampaignOutcome,
     shadow: DevelopmentState,
     target: Mapping[str, object],
+    rows: _TestRunRows,
 ) -> list[CriterionChange]:
     """Bind nested Coverage Campaign evaluation into the joint transaction."""
     if outcome.coverage_reference is None:
@@ -524,6 +586,7 @@ def _coverage_changes(
     if not keys:
         return []
     detail = _coverage_detail(outcome, resolved, public_path)
+    detail["test_runs"] = rows.of(outcome.observations)
     evaluation = campaign.evaluation
     changes: list[CriterionChange] = []
     for key in keys:
@@ -609,6 +672,7 @@ def _cycle_changes(
     outcome: CampaignOutcome,
     shadow: DevelopmentState,
     target: Mapping[str, object],
+    rows: _TestRunRows,
 ) -> list[CriterionChange]:
     identity = f"{target['vlnv']}#{target['name']}"
     selector = str(target["selector"])
@@ -646,6 +710,7 @@ def _cycle_changes(
             baseline_state,
             checks,
         )
+        detail["test_runs"] = rows.of((current,))
         changes.extend(shadow.set_criterion(key, met, detail=detail))
     return changes
 
@@ -746,6 +811,7 @@ def _cycle_detail(
 __all__ = [
     "AcceptanceContext",
     "AcceptanceOutcome",
+    "SeveralTestRunsOfOneTestError",
     "SimulationAcceptanceCoordinator",
     "record_campaign_acceptance",
 ]

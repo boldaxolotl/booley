@@ -136,3 +136,62 @@ def test_a_default_invocation_has_no_diagnostic_failures_heading(tmp_path, monke
         report_text="sim: FAIL", detail={"campaigns": {"sim": {"test_runs": rows}}}
     )
     assert flow._with_test_run_guard_note(result).report_text == "sim: FAIL"
+
+
+@pytest.mark.parametrize("mode", [(), ("--coverage",)])
+@pytest.mark.parametrize(
+    "tests",
+    [("stress", "stress+soak"), ("stress@x2",), ("stress@1", "stress@2"), ("stress+soak@x3",)],
+)
+def test_several_test_runs_of_one_test_always_make_the_invocation_diagnostic(
+    tmp_path, monkeypatch, mode, tests
+):
+    """At most one Test Run of a Test is its default, so the guard always fires.
+
+    Criteria name bare Tests, and acceptance refuses to judge a Test from
+    several of its Test Runs (``SeveralTestRunsOfOneTestError``). The guard is
+    what keeps that refusal unreachable for simulation, Coverage and Cycle
+    Count requests alike: Cycle Count Criteria are judged from the same
+    invocation, so they have no request form of their own.
+    """
+    argv = [word for test in tests for word in ("--test", test)]
+    flow = _flow(tmp_path, monkeypatch, *mode, *argv)
+
+    assert flow._validate_test_plans(["sim"], _MAP) is None
+
+    runs = flow._resolve_test_runs("sim", _MAP)
+    assert len(runs) > len({run.test for run in runs})
+    assert flow.args.diagnostic is True
+
+
+def test_a_diagnostic_campaign_is_never_judged_per_test(tmp_path):
+    """Simulation, Coverage and Cycle Count Criteria all sit behind one gate."""
+    from booley.flows.sim.acceptance import (
+        AcceptanceContext,
+        SeveralTestRunsOfOneTestError,
+        SimulationAcceptanceCoordinator,
+    )
+    from tests.flows.sim.test_campaign_test_runs import _FAULT, _SOAK
+    from tests.flows.sim.test_test_run_evidence_rows import _outcome, _state
+
+    outcome = _outcome(tmp_path, _SOAK, _FAULT)
+    state = _state(tmp_path, outcome, cycle_test="count")
+    state.save()
+
+    def context(diagnostic: bool) -> AcceptanceContext:
+        recorder = SimpleNamespace()
+        return AcceptanceContext(
+            "ticket",
+            {},
+            "0" * 32,
+            state,
+            recorder,
+            "1",
+            diagnostic=diagnostic,  # type: ignore[arg-type]
+        )
+
+    guarded = SimulationAcceptanceCoordinator().reconcile(outcome, context(True))
+    assert (guarded.committed, guarded.changes, guarded.reason) == (False, (), "no_criteria")
+    # Without the guard the same campaign is refused with the typed error.
+    with pytest.raises(SeveralTestRunsOfOneTestError):
+        SimulationAcceptanceCoordinator().reconcile(outcome, context(False))
