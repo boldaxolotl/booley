@@ -48,6 +48,7 @@ from booley.goals.proposals import (
 from booley.goals.recorder import GOAL_SCOPE, goal_identity
 from booley.goals.state_store import load_goal_state, review_categories
 from booley.goals.store import GoalStore, RecordLock
+from booley.goals.waiver_binding import WaiverBinding
 from booley.runtime.atomic_files import atomic_write_once
 from booley.runtime.timefmt import utc_now_rfc3339
 
@@ -55,8 +56,8 @@ from booley.runtime.timefmt import utc_now_rfc3339
 class WaiverPort(Protocol):
     """Composition supplies concrete coverage/candidate policy, never Goal imports."""
 
-    def bind(self, record: GoalRecord, goal_key: str, candidate_id: str) -> dict[str, Any]: ...
-    def locking(self, binding: Mapping[str, Any]) -> AbstractContextManager[None]: ...
+    def bind(self, record: GoalRecord, goal_key: str, candidate_id: str) -> WaiverBinding: ...
+    def locking(self, binding: WaiverBinding) -> AbstractContextManager[None]: ...
     def prepare(
         self, proposal: Proposal, decision: Decision, state: DevelopmentState
     ) -> tuple[tuple[FileEffect, ...], CoverageEvaluation]: ...
@@ -64,7 +65,7 @@ class WaiverPort(Protocol):
     def evaluate(
         self, goal: GoalSpec, detail: Mapping[str, Any]
     ) -> tuple[bool, dict[str, Any]]: ...
-    def validate_effect(self, binding: Mapping[str, Any], effect: FileEffect) -> None: ...
+    def validate_effect(self, binding: WaiverBinding, effect: FileEffect) -> None: ...
 
 
 @dataclass(frozen=True)
