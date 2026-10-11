@@ -1,11 +1,7 @@
 """Single source of truth for model prices and context-window sizes.
 
-Both the live agent backends (``booley.runtime._cost``) and the ticket-board
-reports share a single price
-tables, which disagreed: the harness table had no cache-*write* rate at all
-and billed cache creation at the plain input price, and the two tables
-disagreed on unknown-model fallback (one returned $0.00, the other silently
-assumed Sonnet). Everything now resolves through :func:`resolve`.
+Agent backends and usage reports share the prices and unknown-model fallback
+provided by :func:`resolve`.
 
 Rates are USD per million tokens, taken from Anthropic/OpenAI list pricing.
 Cache reads bill at ~0.1x input, cache writes at 1.25x input for the default

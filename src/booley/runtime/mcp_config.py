@@ -51,12 +51,9 @@ _BASELINE_ENV: dict[str, str] = {
 
 # Env vars forwarded from this process into the Codex-spawned MCP server when
 # set (Codex REPLACES the env, so anything not listed here is lost).
-# BOOLEY_AGENT_ROLE carries the ADR 0028 admission role (ticket vs
-# interactive) from the Developer Agent down to every MCP endpoint subprocess.
 # The proxy vars carry the sandbox's sole egress path (booley-proxy) — without
 # them every nested agent/API call under the MCP server dies on direct DNS.
 _FORWARDED_ENV_VARS = (
-    "BOOLEY_AGENT_ROLE",
     "HTTP_PROXY",
     "HTTPS_PROXY",
     "http_proxy",

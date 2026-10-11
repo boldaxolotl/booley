@@ -33,7 +33,7 @@ _PIPELINE_DIR = _SCRIPT_DIR.parent
 # Config is loaded on *first access*, never at import time, so that importing
 # any Flow, MCP-tool, or harness module performs zero filesystem I/O. Import-time I/O here
 # was the root cause that forced ~265 defensive function-local imports across
-# the repo. Derived constants (PROJECT_NAME, ENV_PREFIX, HUMAN_IN_THE_LOOP,
+# the repo. Derived constants (PROJECT_NAME, ENV_PREFIX,
 # TEST_NAMES, TEST_SELECT) are memoized in ``_CONFIG_CACHE`` and surfaced as
 # module attributes via PEP 562 ``__getattr__``.
 

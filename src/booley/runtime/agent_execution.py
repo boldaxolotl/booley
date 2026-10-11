@@ -1,4 +1,4 @@
-"""Compose agent artifact layout for Booley execution."""
+"""Compose transcript, log, and prompt artifact paths for agent calls."""
 
 from __future__ import annotations
 

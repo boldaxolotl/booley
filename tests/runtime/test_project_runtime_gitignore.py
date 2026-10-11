@@ -468,3 +468,26 @@ def test_dashboard_task_runtime_ownership_keeps_project_clean(versioned_project)
     assert (data / "runtime/dashboard-task.json").is_file()
     assert (data / "runtime/dashboard-task.lock").is_file()
     assert_clean(repo)
+
+
+def test_retained_ticket_storage_families_keep_project_clean(versioned_project):
+    from tests.flows.sim.test_waiver_candidates import _rejection
+
+    from booley.flows.sim.waiver_candidates import (
+        record_rejections,
+        waiver_candidates_lock_path,
+        waiver_candidates_path,
+    )
+    from booley.runtime.atomic_files import atomic_write_once
+
+    _root, data, repo = versioned_project
+    board = data / "tickets/board/audit.md"
+    board.parent.mkdir(parents=True)
+    assert atomic_write_once(board, b"runtime ticket record\n", mode=0o644)
+    assert board.is_file()
+    assert_clean(repo)
+    record_dir = data / "tickets/waiver-candidates/audit"
+    assert record_rejections(record_dir, "audit", [_rejection()]) == 1
+    assert waiver_candidates_path(record_dir, "audit").is_file()
+    assert waiver_candidates_lock_path(record_dir, "audit").is_file()
+    assert_clean(repo)

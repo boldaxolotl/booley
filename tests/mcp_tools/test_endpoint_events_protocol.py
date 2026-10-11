@@ -11,7 +11,7 @@ from booley.mcp.base import McpToolResult, _endpoint_end_event, _endpoint_start_
 from booley.runtime.display_identity import DisplayIdentity, DisplayScope
 
 # ===========================================================================
-# Phase 0a: summary field in endpoint_end
+# Summary field in endpoint_end
 # ===========================================================================
 
 

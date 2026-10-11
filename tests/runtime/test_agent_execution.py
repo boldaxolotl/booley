@@ -1,4 +1,4 @@
-"""Execution composition retains existing layout in both modes."""
+"""Interactive execution composition retains the log layout."""
 
 from pathlib import Path
 
@@ -9,12 +9,9 @@ from booley.runtime.agent_execution import configure_agent_call, resolve_agent_a
 from booley.runtime.session_paths import session_jobs_dir
 
 
-@pytest.mark.parametrize("mode", ["ticket", "interactive"])
 @pytest.mark.parametrize("explicit_runtime", [False, True])
-def test_session_paths_follow_environment_precedence(
-    tmp_path, monkeypatch, mode, explicit_runtime
-):
-    logs = tmp_path / ("tickets/logs/slug" if mode == "ticket" else ".interactive_logs/session")
+def test_session_paths_follow_environment_precedence(tmp_path, monkeypatch, explicit_runtime):
+    logs = tmp_path / ".interactive_logs/session"
     monkeypatch.setenv("BOOLEY_LOGS_DIR", str(logs))
     monkeypatch.delenv("BOOLEY_RUNTIME_DIR", raising=False)
     runtime = logs / ".runtime"

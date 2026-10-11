@@ -303,6 +303,7 @@ def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixtu
         if cmd[:3] == [sys.executable, "-c", "import booley.runtime"]:
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         if cmd[1:3] == ["ps", "-aq"]:
+            # Live Sandbox inventory must see an empty container list.
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         if cmd[:2] == ["git", "ls-files"]:
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
@@ -2153,8 +2154,6 @@ def test_doctor_fails_when_interactive_logs_tracked(tmp_path, monkeypatch, capsy
     base_run = doctor.subprocess.run
 
     def run_with_tracked_logs(cmd, **kwargs):
-        if cmd[1:3] == ["ps", "-aq"]:
-            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         if cmd[:2] == ["git", "ls-files"]:
             return subprocess.CompletedProcess(
                 cmd,

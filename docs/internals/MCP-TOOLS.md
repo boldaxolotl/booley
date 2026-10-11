@@ -56,7 +56,7 @@ Booley has three agent-facing implementation families:
 |--------|-------------------|----------------|
 | `BuiltinFlow` | `sim`, `lint`, `synth`, `fpga` | Run deterministic work and normalize its evidence; these are Booley Flows in Booley's controlled vocabulary |
 | `Specialist` | `reviewer`, `mutation_tester` | Run a focused LLM agent with a purpose-built prompt and interpret its response |
-| Direct `McpTool` subclass | Retained `submit_run_report` | Implement orchestration that is neither a deterministic Flow nor a Specialist; Project-local custom tools can use the same contract |
+| Direct `McpTool` subclass | Project-local custom endpoint | Implement orchestration that is neither a deterministic Flow nor a Specialist; Project-local custom tools can use the same contract |
 
 Built-in and custom MCP tools share the same base interfaces and MCP surface. Their source differs, but the calling model does not. Every agent-facing MCP tool and every subprocess it launches runs inside the Sandbox. A supported host-provisioned EDA installation changes where immutable tool files originate, not where the command executes.
 
@@ -218,7 +218,7 @@ Criteria themselves are defined and expanded.
 | `BuiltinFlow` | Execute typed requests through a composed Flow session | `sim`, `lint`, `synth`, `fpga` |
 | `BooleyFlow` | Preserve the Custom Flow CLI/subprocess extension contract | Project-local Flows |
 | `Specialist` | Build a focused prompt, run an LLM agent loop, and interpret its output | `reviewer`, `mutation_tester` |
-| `McpTool` | Implement orchestration directly when neither higher-level contract fits; also available to Project-local custom tools | Retained `submit_run_report` |
+| `McpTool` | Implement orchestration directly when neither higher-level contract fits; also available to Project-local custom tools | Project-local custom endpoint |
 
 Import `McpTool` / `McpToolResult` from `booley.mcp.base`, `Specialist`
 from `booley.specialists.specialist`, and `BooleyFlow` from

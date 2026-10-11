@@ -452,3 +452,49 @@ def test_cleanup_staging_lock_ownership_on_timeout(tmp_path, monkeypatch, preexi
         assert nested.read_text() == "another writer"
     else:
         assert not nested.exists()
+
+
+def test_sandbox_identity_preserves_host_and_waiver_guard(tmp_path, monkeypatch):
+    from booley.runtime.devcontainer import build_devcontainer_spec, git_identity_command
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    project = workspace / ".booley_project"
+    project.mkdir()
+    (project / "booley.toml").write_text('[agent.git]\nname="Dev"\nemail="dev@localhost"\n')
+    _git(workspace, "init", "-q")
+    _git(workspace, "config", "user.name", "Human")
+    _git(workspace, "config", "user.email", "human@example.invalid")
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env.update(
+        BOOLEY_PROJECT_DIR=str(project),
+        PYTHONPATH=str(Path(identity_setup.__file__).resolve().parents[2]),
+    )
+    spec = build_devcontainer_spec(app="codex", image="test", project_dir_source=str(project))
+    sandbox = {**env, **spec["containerEnv"]}
+    subprocess.run(
+        [sys.executable, *git_identity_command().split()[1:]],
+        cwd=workspace,
+        env=sandbox,
+        check=True,
+        timeout=10,
+    )
+    assert _git(workspace, "config", "user.name", env=env) == "Human"
+    for commit_env, expected in (
+        (env, "Human <human@example.invalid>"),
+        (sandbox, "Dev <dev@localhost>"),
+    ):
+        _git(
+            workspace,
+            "-c",
+            "commit.gpgSign=false",
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "identity",
+            env=commit_env,
+        )
+        assert (
+            _git(workspace, "show", "-s", "--format=%an <%ae>|%cn <%ce>", "HEAD", env=commit_env)
+            == f"{expected}|{expected}"
+        )

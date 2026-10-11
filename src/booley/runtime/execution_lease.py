@@ -195,8 +195,8 @@ def _parse_absent_paths(value: Any) -> tuple[ExecutionLeaseAbsentPath, ...]:
 class ExecutionLeaseEnvironment:
     """Typed process-boundary representation of one execution lease.
 
-    Ticket Board resolves Ticket-specific policy into generic path and identity
-    constraints. Runtime validates them without rediscovering Ticket state.
+    The execution owner resolves policy into generic path and identity
+    constraints. Runtime validates those constraints at process boundaries.
     """
 
     schema: int

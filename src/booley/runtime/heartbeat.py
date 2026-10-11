@@ -2,8 +2,7 @@
 
 Used by simulator run-halves and the harness to print periodic progress updates
 so the terminal does not appear stuck. Each tick also refreshes the Sandbox
-activity heartbeat, so interactive long-running Booley Flows count as activity
-just like ticket-driven runs.
+activity heartbeat, so long-running Booley Flows count as session activity.
 """
 
 from __future__ import annotations
@@ -37,7 +36,7 @@ def touch_reaper_heartbeat(path: str | None = REAPER_HEARTBEAT_PATH) -> None:
     """Best-effort atomic publication of wall-clock epoch seconds.
 
     The heartbeat is advisory: any OSError is swallowed so a full disk or a
-    read-only ``/tmp`` never breaks the caller (MCP server, ticket runner).
+    read-only ``/tmp`` never breaks the caller (MCP server or Flow).
     ``path=None`` disables the touch (used by lifetimes without a heartbeat).
     """
     if not path:

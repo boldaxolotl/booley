@@ -63,18 +63,8 @@ class UnboundAcceptanceRecorder:
         changes: list[CriterionChange],
         *,
         acceptance_facts: Mapping[str, Any],
-        ticket_identity: Mapping[str, Any],
+        identity: Mapping[str, Any],
     ) -> None:
-        log_dir = self._logs()
-        if log_dir is None:
-            return
-        try:
-            unbound_ledger.record_or_verify_transaction(
-                log_dir,
-                state,
-                changes,
-                acceptance_facts=acceptance_facts,
-                ticket_identity=ticket_identity,
-            )
-        except unbound_ledger.AcceptanceLedgerError as exc:
-            raise AcceptanceRecordingError(str(exc)) from exc
+        raise AcceptanceRecordingError(
+            "unbound Interactive recording cannot record a Simulation Campaign transaction"
+        )

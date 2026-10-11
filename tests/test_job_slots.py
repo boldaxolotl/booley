@@ -32,7 +32,6 @@ from booley.runtime.job_slots import (
     HOLDING,
     LOST,
     QUEUED,
-    ROLE_BACKGROUND,
     ROLE_INTERACTIVE,
     QueueFullError,
     SlotCaps,
@@ -1092,11 +1091,11 @@ class TestSnapshot:
         store = make_store(root, world, SlotCaps(max_heavy=1))
         holder = store.submit(CLASS_HEAVY, pid=100, argv=["sim"])
         assert store.refresh(holder).state == HOLDING
-        store.submit(CLASS_HEAVY, pid=100, argv=["synth"], role=ROLE_BACKGROUND)
+        store.submit(CLASS_HEAVY, pid=100, argv=["synth"], role="background")
         holders, waiters = store.snapshot(CLASS_HEAVY)
         assert [t.argv for t in holders] == [["sim"]]
         assert [t.argv for t in waiters] == [["synth"]]
-        assert waiters[0].role == ROLE_BACKGROUND
+        assert waiters[0].role == "background"
 
     def test_snapshot_of_empty_class(self, root, world):
         store = make_store(root, world)

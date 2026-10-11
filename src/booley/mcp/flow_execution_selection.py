@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 
 def _unbound_acceptance_recorder() -> AcceptanceRecorder:
     # Construct on demand alongside the Goal recorder.
+    # Goal-bound calls do not need to initialize the Interactive ledger composition.
     from booley.mcp.unbound_recorder import UnboundAcceptanceRecorder
 
     return UnboundAcceptanceRecorder()

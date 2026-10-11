@@ -5,7 +5,7 @@ stable rules leave other edges unclassified; the current package graph is not a
 universal allowlist. The test-only analyzer records source knowledge without adding
 a production abstraction layer.
 
-Current measurements reflect Phase 9a. Historical snapshots retain their original revisions and dates. Goal Mode is the public development workflow. Package names such as `booley.harness` below identify
+Current measurements are dated 2026-10-11. Historical snapshots retain their original revisions and dates. Goal Mode is the public development workflow. Package names such as `booley.harness` below identify
 source owners, not an active execution mode. Direction rules
 are normative; dated graph snapshots are diagnostic evidence.
 
@@ -237,7 +237,7 @@ as tracked by [#281](https://github.com/boldaxolotl/booley/issues/281).
 | D4 | Prefix `booley.mcp` | Prefixes `booley.harness`, `booley.specialists` | Forbid, subject only to C1-C2 | MCP infrastructure is independent of the capabilities composed by its server. |
 | D5 | Prefix `booley.runtime` | Prefixes `booley.mcp`, `booley.specialists` | Forbid | Sandbox mechanisms must remain usable without agent-facing mechanisms. |
 | D6 | Prefix `booley.runtime` | Prefix `booley.harness` | Forbid, subject only to C8 | Shared Sandbox mechanisms must not acquire Harness knowledge; exact entry-point composition remains explicit. |
-| D7 | Exact modules `booley.flows.target_campaign`, `booley.flows.target_criteria`, `booley.flows.target_test_suite` | Prefixes `booley.harness`, `booley.mcp` | Forbid | Shared Target/Criteria policy is independent of presentation, agent exposure, . |
+| D7 | Exact modules `booley.flows.target_campaign`, `booley.flows.target_criteria`, `booley.flows.target_test_suite` | Prefixes `booley.harness`, `booley.mcp` | Forbid | shared Target/Criteria policy is independent of presentation and agent exposure |
 | D8 | Each prefix in `booley.flows.{sim,synth,fpga,lint}` | The other three prefixes in that set | Forbid | Each built-in Booley Flow owns its tool-specific implementation and cannot couple to a sibling Flow. |
 | D9 | Root module and direct file-module children of `booley.flows` (not child package initializers) | Prefixes `booley.flows.{sim,synth,fpga,lint}` | Forbid | Flow-neutral policy and evidence modules cannot select a concrete Flow implementation. |
 | D10 | One exact adapter selector set S1-S5 below | The other selector sets for the same Flow (S1-S3 or S4-S5) | Forbid | An EDA adapter satisfies its Flow's internal seam without knowing a sibling adapter. |
@@ -261,7 +261,7 @@ as tracked by [#281](https://github.com/boldaxolotl/booley/issues/281).
 | D32 | Prefix `booley.runtime` | Prefix `booley.dev_support` | Forbid | Packaged execution consumes commit policy through its shared owner; development commands do not own Runtime behavior. |
 | D33 | Prefix `booley.feedback` | Prefix `booley.harness` | Forbid | Feedback consumes resolved environment observations and owns report rendering without command or Ticket Mode composition. |
 | D34 | Prefix `booley.commit_policy` | Prefixes `booley.runtime`, `booley.harness`, `booley.dev_support` | Forbid | Shared commit policy stays independent of execution composition and script adapters. |
-| D35 | Prefix `booley.goals` | Prefixes `booley.harness`, `booley.mcp`, `booley.specialists`, `booley.flows.{sim,synth,fpga,lint}` | Forbid | Goal Mode policy and records are composed by MCP and command entry points; they do not depend on those entry points, Specialists, concrete Flows. |
+| D35 | Prefix `booley.goals` | Prefixes `booley.harness`, `booley.mcp`, `booley.specialists`, `booley.flows.{sim,synth,fpga,lint}` | Forbid | Goal Mode policy and records are composed by MCP and command entry points; they do not depend on those entry points, Specialists, or concrete Flows |
 
 ## Simulation Campaign storage boundary
 

@@ -9,6 +9,7 @@ from booley.criteria.freshness import (
     evaluate_verification_freshness,
     verification_freshness_eligible,
 )
+from booley.criteria.state import CriterionEntry, DevelopmentState
 from booley.flows.source_fingerprint import compute_source_fingerprint
 from booley.runtime.timefmt import utc_now_rfc3339
 
@@ -18,7 +19,7 @@ _REPORT_CRITERION = "_report_submitted"
 
 def _refresh_verification_entry(
     key: str,
-    entry,
+    entry: CriterionEntry,
     *,
     work_dir: Path,
     fingerprints: dict[str | None, dict],
@@ -48,11 +49,11 @@ def _refresh_verification_entry(
 
 
 def refresh_verification_freshness(
-    state, *, work_dir: Path | None, persist: bool = True
+    state: DevelopmentState, *, work_dir: Path | None, persist: bool = True
 ) -> list[str]:
     """Persistently invalidate passing checks whose source fingerprint drifted."""
     resolved_work_dir = work_dir
-    if resolved_work_dir is None and getattr(state, "work_dir", ""):
+    if resolved_work_dir is None and state.work_dir:
         resolved_work_dir = Path(state.work_dir)
     if resolved_work_dir is None:
         return []
@@ -88,7 +89,7 @@ def refresh_verification_freshness(
     return stale_keys
 
 
-def _invalidate_submitted_report(state, *, now: str) -> None:
+def _invalidate_submitted_report(state: DevelopmentState, *, now: str) -> None:
     """Require a new report after newly discovered stale verification evidence."""
     report_entry = state.criteria.get(_REPORT_CRITERION)
     if report_entry is None or not report_entry.met or report_entry.locked:
@@ -103,7 +104,7 @@ def _invalidate_submitted_report(state, *, now: str) -> None:
 
 
 def _mark_verification_stale(
-    entry,
+    entry: CriterionEntry,
     *,
     now: str,
     reason: str,

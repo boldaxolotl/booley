@@ -166,7 +166,7 @@ class _CampaignProbe(McpTool):
         shadow = DevelopmentState.from_json_object(self.state.to_dict())
         changes = shadow.set_criterion(LINT_KEY, True, detail={"warnings": 0})
         self._acceptance_recorder.record_or_verify_transaction(
-            self.state, changes, acceptance_facts=campaign_facts(), ticket_identity={}
+            self.state, changes, acceptance_facts=campaign_facts(), identity={}
         )
 
 

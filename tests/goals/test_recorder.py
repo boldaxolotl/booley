@@ -101,7 +101,7 @@ def _v2(
         *shadow.set_criterion(LINT_KEY, True, detail={"warnings": 0}),
     ]
     transaction = recorder.record_or_verify_transaction(
-        state, changes, acceptance_facts=campaign_facts(), ticket_identity={}
+        state, changes, acceptance_facts=campaign_facts(), identity={}
     )
     return state, transaction
 
@@ -330,7 +330,7 @@ def test_ticket_intent_cross_check_rejects_a_mismatched_envelope(tmp_path: Path)
             state,
             changes,
             acceptance_facts=campaign_facts(),
-            ticket_identity=identity,
+            identity=identity,
             publication_checkpoint=_interrupt("after:acceptance_intent"),
         )
     (intent_path,) = (tmp_path / "acceptance" / "intents").iterdir()
@@ -341,7 +341,7 @@ def test_ticket_intent_cross_check_rejects_a_mismatched_envelope(tmp_path: Path)
 
     with pytest.raises(AcceptanceLedgerError, match="envelope does not match its lookup key"):
         fixture_ledger.record_or_verify_transaction(
-            tmp_path, state, changes, acceptance_facts=campaign_facts(), ticket_identity=identity
+            tmp_path, state, changes, acceptance_facts=campaign_facts(), identity=identity
         )
 
 
@@ -500,7 +500,7 @@ def test_recovery_from_a_stale_instance_keeps_a_concurrently_selected_observatio
     shadow = DevelopmentState.from_json_object(other.to_dict())
     changes = shadow.set_criterion(LINT_KEY, False, detail={"warnings": 9})
     second = concurrent.record_or_verify_transaction(
-        other, changes, acceptance_facts=campaign_facts(), ticket_identity={}
+        other, changes, acceptance_facts=campaign_facts(), identity={}
     )
     assert _disk_state(goal_mode)["acceptance_transactions"] == [second.transaction_id]
 
@@ -572,7 +572,7 @@ def test_v2_partial_simulation_reason_survives_projection(goal_mode):
         },
     )
     recorder.record_or_verify_transaction(
-        state, changes, acceptance_facts=campaign_facts(), ticket_identity={}
+        state, changes, acceptance_facts=campaign_facts(), identity={}
     )
     goal = next(
         g

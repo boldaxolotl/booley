@@ -135,11 +135,6 @@ from .host_config import (
 from .host_config import (  # noqa: F401 - compatibility re-export
     DEFAULT_MAX_SESSIONS as DEFAULT_INTERACTIVE_MAX_SESSIONS,
 )
-from .host_config import SandboxHostPolicy as InteractiveConfig
-from .host_config import load_host_policy
-
-
-def load_interactive_config(project_root: Path | None = None) -> InteractiveConfig:
-    """Load global policy; *project_root* is ignored for compatibility."""
-    del project_root
-    return load_host_policy(on_deprecation=logger.warning)
+from .host_config import (
+    SandboxHostPolicy as InteractiveConfig,  # noqa: F401 - compatibility re-export
+)

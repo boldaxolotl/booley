@@ -1,4 +1,4 @@
-"""Characterize Interactive recording before removing Ticket composition."""
+"""Interactive recording preserves V1 evidence and refuses V2 transactions."""
 
 from __future__ import annotations
 
@@ -23,7 +23,6 @@ from tests.mcp_tools.test_base import ConcreteMcpTool
 @pytest.fixture(autouse=True)
 def unbound_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     for key in (
-        "BOOLEY_TICKET_FILE",
         "BOOLEY_LOGS_DIR",
         "BOOLEY_STATE_FILE",
         "BOOLEY_RUN_ID",
@@ -84,32 +83,20 @@ def test_unbound_recording_without_logs_is_a_noop(tmp_path: Path) -> None:
     changes = state.set_criterion("sim_pass_uart", True)
     recorder = UnboundAcceptanceRecorder()
     recorder.record_changes(state, changes, invocation_id="1", producer="sim")
-    assert (
-        recorder.record_or_verify_transaction(
-            state, changes, acceptance_facts={}, ticket_identity={}
-        )
-        is None
-    )
+    with pytest.raises(AcceptanceRecordingError, match="unbound Interactive recording"):
+        recorder.record_or_verify_transaction(state, changes, acceptance_facts={}, identity={})
     assert list(tmp_path.iterdir()) == []
 
 
-@pytest.mark.parametrize("operation", ["record_changes", "record_or_verify_transaction"])
-def test_unbound_ledger_error_translation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
-) -> None:
+def test_unbound_ledger_error_translation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     def fail(*_args: object, **_kwargs: object) -> None:
         raise acceptance_ledger.AcceptanceLedgerError("ledger failed")
 
-    monkeypatch.setattr(acceptance_ledger, operation, fail)
+    monkeypatch.setattr(acceptance_ledger, "record_changes", fail)
     recorder = UnboundAcceptanceRecorder(log_dir=tmp_path)
     state = DevelopmentState()
     with pytest.raises(AcceptanceRecordingError, match="ledger failed") as caught:
-        if operation == "record_changes":
-            recorder.record_changes(state, [], invocation_id="1", producer="sim")
-        else:
-            recorder.record_or_verify_transaction(
-                state, [], acceptance_facts={}, ticket_identity={}
-            )
+        recorder.record_changes(state, [], invocation_id="1", producer="sim")
     assert isinstance(caught.value.__cause__, acceptance_ledger.AcceptanceLedgerError)
 
 
@@ -131,20 +118,26 @@ def test_unbound_v2_empty_identity_is_rejected(tmp_path: Path) -> None:
         "coverage_reference": None,
     }
     recorder = UnboundAcceptanceRecorder(log_dir=tmp_path)
-    with pytest.raises(AcceptanceRecordingError, match="generation must match"):
+    with pytest.raises(
+        AcceptanceRecordingError,
+        match="unbound Interactive recording cannot record a Simulation Campaign transaction",
+    ):
         recorder.record_or_verify_transaction(
-            DevelopmentState(), [], acceptance_facts=facts, ticket_identity={}
+            DevelopmentState(), [], acceptance_facts=facts, identity={}
         )
     assert list(tmp_path.iterdir()) == []
 
 
 def test_unbound_v2_nonempty_identity_is_rejected_without_writes(tmp_path):
     recorder = UnboundAcceptanceRecorder(log_dir=tmp_path)
-    with pytest.raises(AcceptanceRecordingError, match="cannot authorize a V2 transaction"):
+    with pytest.raises(
+        AcceptanceRecordingError,
+        match="unbound Interactive recording cannot record a Simulation Campaign transaction",
+    ):
         recorder.record_or_verify_transaction(
             DevelopmentState(),
             [],
             acceptance_facts={},
-            ticket_identity={"generation": "d" * 32, "authored_sha256": "e" * 64},
+            identity={"generation": "d" * 32, "authored_sha256": "e" * 64},
         )
     assert list(tmp_path.iterdir()) == []

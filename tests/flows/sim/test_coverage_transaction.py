@@ -1109,3 +1109,101 @@ def test_coverage_ledger_failure_retains_evaluated_final_report(tmp_path):
     assert (report["criterion_key"], report["criterion_met"]) == ("coverage_sim_0", True)
     assert report["passed"] is False
     assert state_path.read_bytes() == before
+
+
+def test_failed_state_commit_keeps_prior_acceptance_usable(tmp_path, monkeypatch):
+    from booley.criteria.state import CriterionEntry, DevelopmentState
+    from booley.flows.sim.coverage_acceptance import CoverageAcceptance
+    from booley.mcp.unbound_recorder import UnboundAcceptanceRecorder
+
+    context = project(tmp_path)
+    state_path = tmp_path / "state.json"
+    state = DevelopmentState.load(state_path)
+    state.strict_criteria = True
+    state.criteria = {"sim_pass_sim_0": CriterionEntry(met=True, detail={"prior": "valid"})}
+    state.save()
+    before = state_path.read_bytes()
+    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("sim_0",)), context)
+    plan = replace(
+        prepared.plan.targets[0],
+        invocation_dir=tmp_path / "reports/sim/1",
+        acceptance=CoverageAcceptance(
+            state,
+            UnboundAcceptanceRecorder(log_dir=tmp_path / "logs"),
+        ),
+    )
+    original = Path.replace
+
+    def fail_state(source, destination):
+        if destination == state_path:
+            raise OSError("injected state commit failure")
+        return original(source, destination)
+
+    # Fault the filesystem boundary, leaving every Booley collaborator real.
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "replace", fail_state)
+        outcome = run_coverage_target(plan, NativeExecution(verdict="fail"), Progress())
+    assert outcome.exit_code == 2
+    assert state_path.read_bytes() == before
+    saved = DevelopmentState.load(state_path)
+    assert saved.criteria["sim_pass_sim_0"].met
+    assert saved.criteria["sim_pass_sim_0"].detail == {"prior": "valid"}
+    assert saved.acceptance_transactions == []
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        "point_store",
+        "campaign",
+        "simulation",
+        "first_evidence",
+        "second_evidence",
+        "state",
+        "progress",
+    ],
+)
+def test_persistence_boundaries_preserve_a_trustworthy_acceptance_projection(
+    tmp_path, monkeypatch, boundary
+):
+    import os
+
+    from booley.criteria.state import DevelopmentState
+    from booley.flows.sim import coverage_campaign_store
+    from booley.flows.sim.coverage_progress import CoverageProgress
+
+    plan, state, state_path = gated_ticket_plan(tmp_path)
+    prior = run_coverage_target(plan, NativeExecution(), Progress())
+    assert prior.exit_code == 0
+    invocation = tmp_path / "reports/sim/2"
+    plan = replace(plan, invocation_dir=invocation)
+    replace_file, link_file, commit_file = persistence_fault(boundary)
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "replace", replace_file)
+        patch.setattr(os, "link", link_file)
+        patch.setattr(coverage_campaign_store, "_commit_new", commit_file)
+        outcome = run_coverage_target(
+            plan, NativeExecution(verdict="fail", hits=0), CoverageProgress(invocation, ("sim_0",))
+        )
+    assert outcome.exit_code == 2
+    assert outcome.abort_remaining
+    saved = DevelopmentState.load(state_path)
+    committed = boundary == "progress"
+    assert {entry.met for entry in saved.criteria.values()} == {not committed}
+    from booley.criteria import evidence_ledger
+    from tests.criteria.ledger_support import FIXTURE_SCOPE
+
+    records = evidence_ledger.read_evidence_records(FIXTURE_SCOPE, tmp_path / "logs", saved, {})
+    assert len(records) == (4 if committed else 2)
+    assert {entry.met for entry in state.criteria.values()} == {not committed}
+    assert outcome.campaign_path.exists() == (boundary not in {"point_store", "campaign"})
+    assert outcome.simulation_path.exists() == (
+        boundary not in {"point_store", "campaign", "simulation"}
+    )
+    expected_evaluation = "blocked" if boundary in {"point_store", "campaign"} else "fail"
+    assert outcome.detail["evaluation"] == expected_evaluation
+    assert outcome.detail["simulation"] == "fail"
+    assert outcome.detail["passed"] is False
+    assert outcome.detail["collection"] == (
+        "infrastructure_error" if boundary in {"point_store", "campaign"} else "complete"
+    )

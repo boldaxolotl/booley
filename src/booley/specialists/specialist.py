@@ -392,15 +392,10 @@ class Specialist(McpTool):
     def _session_file_path(self, key: str) -> Path | None:
         """Return the path for a session_id persistence file, or ``None``.
 
-        Ticket Mode's ``BOOLEY_LOGS_DIR`` is the first choice. Outside a ticket
-        that variable is never set, and returning ``None`` there meant every
-        retry round cold-started the agent instead of resuming it with its own
-        context — the resume-with-failure-log design silently disabled, at full
-        re-prompt cost (SETUP-F-42). Standalone runs therefore fall back to the
-        project's own persistent runtime tree, the same anchor
-        ``mutation_lock.lock_dir`` uses so a lock and its creator session live
-        together. ``None`` only when no project is discoverable at all (direct
-        test callers with no project on disk).
+        ``BOOLEY_LOGS_DIR`` is the first choice when it names an existing
+        directory. Otherwise, use the Project's persistent runtime sessions
+        directory, shared with mutation-lock session tracking. Return ``None``
+        when no Project is discoverable.
         """
         logs_dir = os.environ.get("BOOLEY_LOGS_DIR")
         if logs_dir and Path(logs_dir).is_dir():
@@ -779,8 +774,7 @@ class Specialist(McpTool):
 # Killing the client of a `docker exec`/`booley session enter` run does NOT
 # kill what it started: the in-container Specialist and its agent kept running
 # detached, burning tokens with nobody reading the answer. Nothing else in
-# the codebase watches for this — execution observers reconcile
-# *tickets* after the fact, from the outside; run_guard watches disk. So the
+# the codebase watches this process relationship; run_guard watches disk.
 # The Specialist watches its own parent: when the launching process dies, it is
 # reparented (PID 1 in a container), which is cheap to poll and unambiguous.
 
@@ -883,7 +877,7 @@ def _call_agent_sync(
     params: AgentCallParams,
     on_event: Any = None,
 ) -> Any:
-    """Synchronous wrapper around harness.agent.call_agent().
+    """Synchronous wrapper around runtime.agent.call_agent().
 
     Runs the async call_agent in an event loop. Returns AgentResult.
     """

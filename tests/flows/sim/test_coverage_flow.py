@@ -1044,7 +1044,7 @@ def test_projection_publication_failure_returns_structured_report_with_target_fa
 ) -> None:
     state_path, initial_state = _prepare_atomic_coverage_state(tmp_path, monkeypatch)
     identity = {"generation": "d" * 32, "authored_sha256": "e" * 64}
-    adapter = _AcceptanceAdapter(log_dir=tmp_path / "logs", ticket_identity=identity)
+    adapter = _AcceptanceAdapter(log_dir=tmp_path / "logs", identity=identity)
 
     def fail_projection(*_args, **_kwargs) -> None:
         raise OSError(5, "injected projection publication failure")
@@ -2472,7 +2472,7 @@ def test_gated_no_waivers_diagnostic_reports_raw_and_records_nothing(tmp_path, m
     state_path, _initial_state = _prepare_atomic_coverage_state(tmp_path, monkeypatch)
     _configure_missing_waiver_directory(tmp_path)
     identity = {"generation": "d" * 32, "authored_sha256": "e" * 64}
-    adapter = _AcceptanceAdapter(log_dir=tmp_path / "logs", ticket_identity=identity)
+    adapter = _AcceptanceAdapter(log_dir=tmp_path / "logs", identity=identity)
 
     def run(name: str, **options):
         SimulateFlow(coverage_execution=lambda *_args: _PassingSplitMetricsExecution()).execute(
@@ -2713,7 +2713,7 @@ def test_public_coverage_campaign_headline_fresh_and_resume(
         adapter = (
             _AcceptanceAdapter(
                 log_dir=tmp_path / "logs",
-                ticket_identity={"generation": "d" * 32, "authored_sha256": "e" * 64},
+                identity={"generation": "d" * 32, "authored_sha256": "e" * 64},
             )
             if ticket in {"coverage", "coverage_only"}
             else None

@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from booley.criteria import evidence_ledger
 from booley.criteria.evidence_ledger import (
@@ -90,43 +90,8 @@ class FixtureIdentity:
         return {"ticket": state.slug, "ticket_identity": dict(identity or {})}
 
     def validate_observation_identity(self, value: object, current: Mapping[str, Any]) -> None:
-        _validate_observation_identity(value, current)
-
-
-def _validate_observation_identity(value: object, current: Mapping[str, Any]) -> None:
-    if not current:
         if not isinstance(value, dict):
-            raise AcceptanceLedgerError("Criterion evidence has malformed Ticket identity")
-        return
-    if not isinstance(value, dict) or not value:
-        raise AcceptanceLedgerError(
-            "Criterion evidence names another Ticket identity: missing identity"
-        )
-    _validate_stored_identity(cast("dict[str, Any]", value), current)
-
-
-def _validate_stored_identity(value: dict[str, Any], current: Mapping[str, Any]) -> None:
-    _identity(value, value.get("generation"))
-    authored = value.get("authored_sha256")
-    if authored is not None and (
-        not isinstance(authored, str) or re.fullmatch(r"[0-9a-f]{64}", authored) is None
-    ):
-        raise AcceptanceLedgerError("Criterion evidence has malformed authored identity")
-    baseline = value.get("baseline")
-    if baseline is not None:
-        if not isinstance(baseline, dict) or not baseline:
-            raise AcceptanceLedgerError("Criterion evidence has malformed baseline identity")
-        for participant in cast("dict[str, Any]", baseline).values():
-            commit = (
-                cast("dict[str, Any]", participant).get("commit")
-                if isinstance(participant, dict)
-                else None
-            )
-            if not isinstance(commit, str) or re.fullmatch(r"[0-9a-f]{40}", commit) is None:
-                raise AcceptanceLedgerError("Criterion evidence has malformed baseline identity")
-    for key in ("authored_sha256", "baseline"):
-        if key in current and (key not in value or not isinstance(value[key], type(current[key]))):
-            raise AcceptanceLedgerError("Criterion evidence has malformed Ticket identity")
+            raise AcceptanceLedgerError("observation identity must be an object")
 
 
 def record_changes(
@@ -137,7 +102,7 @@ def record_changes(
     invocation_id: str,
     producer: str,
     execution_id: str,
-    ticket_identity: Mapping[str, Any] | None = None,
+    identity: Mapping[str, Any] | None = None,
     recorded_at: str | None = None,
     transaction_id: str = "",
 ) -> tuple[EvidenceRef, ...]:
@@ -150,7 +115,7 @@ def record_changes(
         invocation_id=invocation_id,
         producer=producer,
         execution_id=execution_id,
-        identity=ticket_identity,
+        identity=identity,
         recorded_at=recorded_at,
         transaction_id=transaction_id,
     )
@@ -162,7 +127,7 @@ def record_or_verify_transaction(
     changes: list[CriterionChange],
     *,
     acceptance_facts: Mapping[str, Any],
-    ticket_identity: Mapping[str, Any],
+    identity: Mapping[str, Any],
     publication_checkpoint: Callable[[str], None] | None = None,
 ) -> AcceptanceTransaction:
     """Record or verify one intent-frozen Simulation Campaign transaction."""
@@ -173,16 +138,16 @@ def record_or_verify_transaction(
         scope=FIXTURE_SCOPE,
         projection=FIXTURE_PROJECTION,
         acceptance_facts=acceptance_facts,
-        identity=ticket_identity,
+        identity=identity,
         publication_checkpoint=publication_checkpoint,
     )
 
 
 def current_evidence_records(
-    log_dir: Path, state: DevelopmentState, ticket_identity: Mapping[str, Any]
+    log_dir: Path, state: DevelopmentState, identity: Mapping[str, Any]
 ) -> list[dict[str, Any]]:
     """Read validated observations for one identity without replaying history."""
-    return read_evidence_records(FIXTURE_SCOPE, log_dir, state, ticket_identity)
+    return read_evidence_records(FIXTURE_SCOPE, log_dir, state, identity)
 
 
 class CompletionFence:
@@ -207,9 +172,9 @@ FIXTURE_PROJECTION = CompletionFence()
 class FixtureRecorder:
     """Test owner supplying V2 identity to generic Flow recording seams."""
 
-    def __init__(self, *, log_dir=None, ticket_identity=None, execution_id=None):
+    def __init__(self, *, log_dir=None, identity=None, execution_id=None):
         self.log_dir = log_dir
-        self.identity = ticket_identity or {}
+        self.identity = identity or {}
         self.execution_id = execution_id
 
     def acceptance_identity(self):
@@ -234,7 +199,7 @@ class FixtureRecorder:
             invocation_id=invocation_id,
             producer=producer,
             execution_id=self.execution_id,
-            ticket_identity=self.identity,
+            identity=self.identity,
             transaction_id=transaction_id,
         )
 

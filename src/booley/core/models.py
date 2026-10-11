@@ -69,17 +69,6 @@ class AgentCallParams:
     # the agent process environment itself.
     nested_mcp_env: dict[str, str] | None = None
 
-    # ADR 0028 (container-only Ticket Mode): marks an DEVELOPER-level
-    # in-container call and carries its MCP-exposure allowlist.
-    # None  -> not an developer launch (nested_mcp_tools semantics apply).
-    # [...] -> Codex routes the call through a per-ticket HOME whose
-    #          config.toml bakes the current BOOLEY_* env and exposes exactly
-    #          these MCP tools (BOOLEY_MCP_TOOLS), WITHOUT the nested-agent
-    #          markers — the developer must see the Specialist MCP tools.
-    #          Claude ignores this field: its stdio MCP server inherits the
-    #          parent env, where the harness already exported BOOLEY_MCP_TOOLS.
-    developer_mcp_tools: list[str] | None = None
-
     # Text-only calls expose no built-in execution or filesystem capabilities.
     # A non-empty nested_mcp_tools list may expose an explicitly scoped read-only tool.
     text_only: bool = False

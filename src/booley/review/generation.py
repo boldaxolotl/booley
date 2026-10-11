@@ -1,8 +1,7 @@
 """Pure review-artifact generation surface.
 
-Ticket lifecycle code resolves and freezes the inputs.  This module is the one
-documented composition seam through which Ticket Board asks Review to render
-artifacts; it does not admit, move, fence, or recover tickets.
+The lifecycle owner resolves and freezes the inputs. This composition seam
+renders review artifacts from those inputs without changing lifecycle state.
 """
 
 from __future__ import annotations

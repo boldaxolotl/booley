@@ -8,6 +8,7 @@ import logging
 import pytest
 
 from booley.mcp.endpoint_validation import (
+    EndpointValidationError,
     validate_custom_endpoints_and_criteria,
 )
 
@@ -156,3 +157,53 @@ def test_doctor_source_checkout_validation_is_failure_not_traceback():
     )
     assert len(outcomes) == 1
     assert "Source Checkout cannot be initialized or used as a Project" in outcomes[0]
+
+
+@pytest.mark.parametrize(
+    "validator,error",
+    [
+        (validate_custom_endpoints_and_criteria, EndpointValidationError),
+    ],
+)
+def test_base_criterion_conflict_refuses_endpoint_scan(project, validator, error):
+    root, data = project
+    (data / "criteria.toml").write_text('[lint_clean]\ndescription = "Override"\n')
+    (data / "mcp_tools/broken.py").write_text("invalid syntax !")
+    with pytest.raises(error, match="CRITERIA CONFLICT") as caught:
+        validator(root)
+    assert caught.value.failures == [
+        "CRITERIA CONFLICT: Project criterion 'lint_clean' conflicts with base criterion"
+    ]
+
+
+@pytest.mark.parametrize("conflict", [False, True])
+def test_external_project_directory_has_doctor_preflight_parity(tmp_path, monkeypatch, conflict):
+    from booley.harness import doctor
+    from booley.runtime.project_dir import reset_cache
+
+    root = tmp_path / "design"
+    root.mkdir()
+    external = tmp_path / "external-project-data"
+    (external / "mcp_tools").mkdir(parents=True)
+    (external / "criteria.toml").write_text(
+        '[lint_clean]\ndescription = "Conflict"\n'
+        if conflict
+        else '[custom_gate]\ndescription = "Custom"\n'
+    )
+    _endpoint(external, satisfies="['custom_gate']")
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(external))
+    reset_cache()
+    outcomes = []
+    doctor._check_custom_endpoints_and_criteria(
+        root,
+        lambda message: outcomes.append(("pass", message)),
+        lambda message, fix="": outcomes.append(("fail", message)),
+    )
+    if conflict:
+        with pytest.raises(EndpointValidationError, match="CRITERIA CONFLICT"):
+            validate_custom_endpoints_and_criteria(root)
+        assert outcomes == [("fail", "custom endpoint/Criteria validation failed")]
+    else:
+        validate_custom_endpoints_and_criteria(root)
+        assert outcomes == [("pass", "custom endpoints and Criteria validated")]
+    assert not (root / ".booley_project").exists()

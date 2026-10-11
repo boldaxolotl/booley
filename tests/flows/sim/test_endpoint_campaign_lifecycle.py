@@ -1146,7 +1146,7 @@ def _cycle_ticket(tmp_path):
     state.save()
     recorder = FixtureRecorder(
         log_dir=tmp_path / "logs",
-        ticket_identity={"generation": "d" * 32, "authored_sha256": "e" * 64},
+        identity={"generation": "d" * 32, "authored_sha256": "e" * 64},
     )
     return path, state, key, recorder
 
@@ -1713,7 +1713,7 @@ def _public_ticket_hook_adapter(tmp_path, project):
 
     recorder = PreparedTicketRecorder(
         log_dir=log_dir,
-        ticket_identity={"generation": "d" * 32, "authored_sha256": "e" * 64},
+        identity={"generation": "d" * 32, "authored_sha256": "e" * 64},
     )
     return recorder, state_path, log_dir
 

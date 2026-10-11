@@ -27,7 +27,6 @@ from booley.flows.sim.waiver_candidates import (
     candidate_id,
     waiver_candidates_lock_path,
     waiver_candidates_path,
-    waiver_candidates_root,
 )
 
 SLUG = "t1"
@@ -93,7 +92,7 @@ def test_missing_record_is_empty(tmp_path: Path) -> None:
     record = store.load(tmp_path, SLUG)
     assert record == CandidateRecord(SLUG)
     assert record.is_empty
-    assert not waiver_candidates_root(tmp_path).exists()
+    assert not waiver_candidates_path(tmp_path, SLUG).exists()
 
 
 def test_first_proposal_creates_the_record_lazily(tmp_path: Path) -> None:
@@ -226,42 +225,9 @@ def test_rejection_of_another_source_keeps_the_candidate(tmp_path: Path) -> None
     assert len(store.load(tmp_path, SLUG).candidates) == 1
 
 
-# Clear and discard ------------------------------------------------------------
-
-
-def test_clear_candidates_keeps_rejections(tmp_path: Path) -> None:
-    _record(tmp_path, _proposal(OTHER_POINT))
-    store.record_rejections(tmp_path, SLUG, [_rejection()])
-
-    store.clear_candidates(tmp_path, SLUG)
-
-    record = store.load(tmp_path, SLUG)
-    assert record.candidates == {}
-    assert record.rejections == (_rejection(),)
-
-
-def test_clear_candidates_without_rejections_removes_the_file(tmp_path: Path) -> None:
+def test_records_are_per_directory(tmp_path: Path) -> None:
     _record(tmp_path)
-    store.clear_candidates(tmp_path, SLUG)
-    assert not waiver_candidates_path(tmp_path, SLUG).exists()
-    store.clear_candidates(tmp_path, SLUG)  # idempotent on an absent record
-
-
-def test_discard_deletes_the_record_even_when_corrupt(tmp_path: Path) -> None:
-    _record(tmp_path)
-    store.record_rejections(tmp_path, SLUG, [_rejection(OTHER_POINT)])
-    assert store.discard(tmp_path, SLUG) is True
-    assert store.load(tmp_path, SLUG).is_empty
-
-    path = waiver_candidates_path(tmp_path, SLUG)
-    path.write_text("{not json", encoding="utf-8")
-    assert store.discard(tmp_path, SLUG) is True
-    assert store.discard(tmp_path, SLUG) is False
-
-
-def test_records_are_per_ticket(tmp_path: Path) -> None:
-    _record(tmp_path)
-    assert store.load(tmp_path, "t2").is_empty
+    assert store.load(tmp_path / "another-record", "t2").is_empty
 
 
 # Encoding and fail-closed parsing ----------------------------------------------
@@ -326,7 +292,7 @@ def test_invalid_record_fails_closed(tmp_path: Path, name: str) -> None:
     with pytest.raises(WaiverCandidateRecordError):
         _record(tmp_path)
     with pytest.raises(WaiverCandidateRecordError):
-        store.clear_candidates(tmp_path, SLUG)
+        store.record_rejections(tmp_path, SLUG, [_rejection()])
     assert path.read_bytes() == before
 
 
@@ -337,7 +303,7 @@ def test_invalid_record_fails_closed(tmp_path: Path, name: str) -> None:
 )
 def test_undecodable_record_fails_closed(tmp_path: Path, raw: bytes) -> None:
     path = waiver_candidates_path(tmp_path, SLUG)
-    path.parent.mkdir(parents=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(raw)
     with pytest.raises(WaiverCandidateRecordError, match="not valid JSON"):
         store.load(tmp_path, SLUG)
@@ -357,7 +323,7 @@ def test_moved_candidate_under_another_id_fails_closed(tmp_path: Path) -> None:
 def test_lock_wait_is_bounded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(store, "LOCK_TIMEOUT_SECONDS", 0.2)
     lock = waiver_candidates_lock_path(tmp_path, SLUG)
-    lock.parent.mkdir(parents=True)
+    lock.parent.mkdir(parents=True, exist_ok=True)
     with lock.open("a+", encoding="utf-8") as handle:
         acquire_file_lock(handle)
         try:
@@ -389,7 +355,10 @@ def test_crash_mid_publish_keeps_the_old_record(
             _record(tmp_path, _proposal(OTHER_POINT))
 
     assert path.read_bytes() == before
-    assert [entry.name for entry in path.parent.iterdir()] == [path.name]
+    assert {entry.name for entry in path.parent.iterdir()} == {
+        path.name,
+        waiver_candidates_lock_path(tmp_path, SLUG).name,
+    }
     assert _record(tmp_path, _proposal(OTHER_POINT)).recorded == 1
 
 
@@ -399,7 +368,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from booley.flows.sim import waiver_candidates as store
 
-tickets, name, rounds, shared = Path(sys.argv[1]), sys.argv[2], int(sys.argv[3]), sys.argv[4]
+directory, name, rounds, shared = Path(sys.argv[1]), sys.argv[2], int(sys.argv[3]), sys.argv[4]
 binding = store.CampaignBinding(
     "camp-1", "sha256:" + "a" * 64, "sha256:" + "a" * 64,
     "sim/1/core/camp-1/coverage.json", "vlnv:acme:ip:core:1.0#sim_core", "sim_core",
@@ -411,7 +380,7 @@ for index in range(rounds):
         for point in (shared, own)
     ]
     store.record_proposals(
-        tickets, "t1", binding, proposals,
+        directory, "t1", binding, proposals,
         invocation_id=f"{name}-{index}", now=datetime.now(UTC),
     )
 """

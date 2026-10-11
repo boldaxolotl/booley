@@ -1,14 +1,10 @@
 """Shared on-disk slot store for Job admission (ADR 0028).
 
-Container-only Booley runs *everything* — the interactive session, every
-concurrent ticket's Developer Agent, and each Flow/MCP-tool subprocess — inside the one
-Sandbox, so admission ("may this Job run now, or must it wait?") can
-no longer live in any single process the way ADR 0027's in-process
-single-flight did.  This module is the replacement: a filesystem-coordinated store of
+Sessions and Flow/Specialist subprocesses share one Sandbox. Admission
+("may this Job run now, or must it wait?") uses a filesystem-coordinated store of
 claim files under ``<runtime>/jobs/slots/`` that every process shares.
 Container-only guarantees one PID namespace, so PID liveness and ``/proc``
-argv identity are trustworthy here — the exact rationale that made a shared
-store unsound in the former split-runtime world no longer applies.
+argv identity can be checked against the process that owns each claim.
 
 Every admission request is one **entry file** in the requesting Job's class
 directory.  The scheme is bakery-style — create your own uniquely-named
@@ -17,8 +13,8 @@ except to reap a provably-stale one:
 
 * Entry names sort in scheduling order: ``h-`` holders (running) before
   ``w-`` waiters, then priority, sequence and PID, with the filename suffix breaking ties. Priority 0 is
-  Interactive, 1 is Ticket — a later interactive request overtakes queued
-  ticket work, but *never* a holder: promotion renames only one's **own**
+  Interactive; other requester roles use priority 1. A later Interactive
+  request overtakes queued lower-priority work, but *never* a holder: promotion renames only one's **own**
   ``w-`` entry to ``h-``, and only when its rank is within the class cap, so
   running work cannot be preempted (ADR 0028 Decision 6).
 * Because the ordering is total and each process promotes only itself under a
@@ -36,7 +32,7 @@ guards it reuses): PID liveness, ``/proc`` reads, the clock, and sleep are
 all injectable, so scheduling behavior is unit-testable without processes.
 This module is mechanism only — *enforcement* (claim on entry, release in
 ``finally``) lives at the endpoint-process entry point, ``McpTool.main``,
-with the Runner claiming TICKET slots at Developer Agent launch.
+and Specialist entry points.
 """
 
 from __future__ import annotations
@@ -89,10 +85,11 @@ CLASS_LIGHT = "light"  # Specialists — model-API-bound, ~no local footprint
 JOB_CLASSES = (CLASS_HEAVY, CLASS_LIGHT)
 
 # Requester roles → queue priority (lower sorts first). Interactive work
-# jumps ahead of queued ticket work; holders are never displaced.
+# jumps ahead of other queued work; holders are never displaced.
 ROLE_INTERACTIVE = "interactive"
-ROLE_BACKGROUND = "background"
-_ROLE_PRIORITY = {ROLE_INTERACTIVE: 0, ROLE_BACKGROUND: 1}
+# Only orders claims written by older versions.
+_ROLE_BACKGROUND = "background"
+_ROLE_PRIORITY = {ROLE_INTERACTIVE: 0, _ROLE_BACKGROUND: 1}
 
 # Entry-name state prefixes. 'h' < 'w' lexicographically, so holders always
 # rank ahead of every waiter regardless of priority — that ordering is what
@@ -124,7 +121,7 @@ _ENTRY_CREATE_ATTEMPTS = 20
 _PROMOTION_GATE_NAME = ".promotion.lock"
 
 # Versioned holder identity + renewable recovery lease. Work budgets remain a
-# separate field: a Developer Agent may legitimately have no work timeout, but
+# separate field: an endpoint may legitimately have no work timeout, but
 # every new holder must still be recoverable after its owner stops renewing.
 SLOT_SCHEMA_VERSION = 2
 LEASE_ACTIVE = "active"
@@ -234,11 +231,9 @@ class _WaiterRequest:
 def slots_dir(project_dir: Path | None = None) -> Path | None:
     """Root of the shared slot store, or None when no project is resolvable.
 
-    PROJECT-scoped (``.booley_project/runtime/jobs/slots/``), deliberately
-    NOT the per-ticket ``jobs/`` tree the JobRecords live in: admission must
-    arbitrate across every workload in the one container — the interactive
-    session and all concurrent tickets — so their claims must land in one
-    directory. ``BOOLEY_SLOTS_DIR`` overrides for tests and doctor probes.
+    Project-scoped (``.booley_project/runtime/jobs/slots/``): admission
+    arbitrates across every workload in the Sandbox, so claims share one
+    directory independently of each execution's Job records. ``BOOLEY_SLOTS_DIR`` overrides for tests and doctor probes.
     """
     env = os.environ.get("BOOLEY_SLOTS_DIR", "")
     if env:
@@ -418,7 +413,7 @@ class SlotStore:
         if len(self._live_entry_names(job_class)) >= cap + self.caps.queue_max:
             raise QueueFullError(f"{job_class} queue is full ({self.caps.queue_max} waiting)")
 
-        priority = _ROLE_PRIORITY.get(role, _ROLE_PRIORITY[ROLE_BACKGROUND])
+        priority = _ROLE_PRIORITY.get(role, _ROLE_PRIORITY[_ROLE_BACKGROUND])
         created = self._now()
         if execution_id is not None:
             linked_execution = ExecutionId(execution_id)

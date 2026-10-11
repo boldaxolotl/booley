@@ -171,46 +171,6 @@ assert not Path('/.git').exists()
     assert not (root / "replaced-state").exists()
 
 
-@pytest.mark.slow
-def test_legacy_links_repair_through_actual_canonical_mount(tmp_path: Path, docker_image):
-    root, state = _repository(tmp_path)
-    created = _container(
-        docker_image[0],
-        root,
-        state,
-        """
-import subprocess
-subprocess.run(['git', '-C', '/work', 'config', 'worktree.useRelativePaths', 'true'], check=True)
-subprocess.run(['git', '-C', '/work', 'worktree', 'add', '-b', 'ticket/demo', '/booley-project/worktrees/demo'], check=True)
-"""
-        + _LEGACY_RELATIVE_METADATA,
-        duplicate=True,
-    )
-    assert created.returncode == 0, created.stderr
-    result = _container(
-        docker_image[1],
-        root,
-        state,
-        """
-from pathlib import Path
-import subprocess
-from booley.runtime.worktree_repair import repair_ticket_workspace
-root, checkout = Path('/work'), Path('/work/.booley_project/worktrees/demo')
-repair_ticket_workspace(root, checkout, 'refs/heads/ticket/demo')
-repair_ticket_workspace(root, checkout, 'refs/heads/ticket/demo')
-for path in [str(checkout), '/booley-project/worktrees/demo']:
-    subprocess.run(['git', '-C', path, 'status', '--porcelain'], check=True)
-""",
-        duplicate=False,
-    )
-    assert result.returncode == 0, result.stderr
-    host = _run(["git", "-C", str(state / "worktrees/demo"), "status", "--porcelain"])
-    assert host.returncode == 0, host.stderr
-    assert (
-        "prunable" not in _run(["git", "-C", str(root), "worktree", "list", "--porcelain"]).stdout
-    )
-
-
 def _canonical_alias_recipe() -> str:
     recipe_root = Path(__file__).resolve().parents[2] / "src/booley/data/docker"
     wheel = (recipe_root / "Dockerfile.wheel").read_text()

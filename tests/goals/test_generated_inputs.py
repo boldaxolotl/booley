@@ -138,7 +138,7 @@ def classified(
     shadow = DevelopmentState.from_json_object(state.to_dict())
     changes = shadow.set_criterion(LINT_KEY, True, detail={"warnings": 0})
     transaction = recorder.record_or_verify_transaction(
-        state, changes, acceptance_facts=facts, ticket_identity={}
+        state, changes, acceptance_facts=facts, identity={}
     )
     return source, path, transaction
 

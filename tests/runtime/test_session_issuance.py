@@ -2512,3 +2512,57 @@ def test_project_label_preserves_exact_full_digest_for_deleted_root():
     labels = dict(label.split("=", 1) for label in runtime_spec.labels(stamp))
     assert labels["booley.project-id"] == hashlib.sha256(b"/deleted/Project").hexdigest()
     assert labels["booley.spec-digest"] == "a" * 64
+
+
+def test_real_git_issued_environment_preserves_host_identity(issued, monkeypatch):
+    import sys
+
+    assert _HOST_GIT is not None, "real Git is required for the identity regression"
+    project, spec, _path, stamp = issued
+    environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    environment.update(
+        PATH=_HOST_PATH,
+        HOME=str(project.parent),
+        GIT_CONFIG_GLOBAL=str(project.parent / "global.gitconfig"),
+        GIT_CONFIG_NOSYSTEM="1",
+        PYTHONPATH=str(Path(dc.__file__).resolve().parents[2]),
+    )
+
+    def git(*args, env=environment):
+        return subprocess.run(
+            [_HOST_GIT, "-C", str(project), *args],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        ).stdout.strip()
+
+    git("init", "-q")
+    git("config", "--global", "user.name", "Human Global")
+    git("config", "--global", "user.email", "global@example.invalid")
+    git("config", "user.name", "Human")
+    git("config", "user.email", "human@example.invalid")
+    sandbox = {
+        **environment,
+        **spec["containerEnv"],
+        "BOOLEY_PROJECT_DIR": stamp.project_data_source,
+        "BOOLEY_MCP_MODE": "interactive",
+    }
+    subprocess.run(
+        [sys.executable, *dc.git_identity_command().split()[1:]],
+        cwd=project,
+        env=sandbox,
+        check=True,
+        timeout=10,
+    )
+    for env, expected in (
+        (environment, "Human <human@example.invalid>"),
+        (sandbox, "Dev <dev@localhost>"),
+    ):
+        git("-c", "commit.gpgSign=false", "commit", "--allow-empty", "-qm", "identity", env=env)
+        assert (
+            git("show", "-s", "--format=%an <%ae>|%cn <%ce>", env=env) == f"{expected}|{expected}"
+        )
+    assert git("config", "user.name") == "Human"
+    assert git("config", "--global", "user.name") == "Human Global"

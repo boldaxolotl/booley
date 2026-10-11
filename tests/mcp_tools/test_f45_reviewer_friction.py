@@ -273,3 +273,43 @@ def test_clean_verify_preserves_superseded_observations(tmp_path, monkeypatch):
     assert len(detail["observations"]) == 1
     assert detail["observations"][0]["summary"] == advisory["summary"]
     assert detail["observations"][0]["status"] == "superseded"
+
+
+def test_source_edit_has_one_freshness_verdict(tmp_path, monkeypatch):
+    """A source edit forces a second real review."""
+    rtl = tmp_path / "rtl" / "uart.sv"
+    rtl.parent.mkdir()
+    rtl.write_text("module uart; endmodule\n")
+    state_file = _state(
+        tmp_path,
+        monkeypatch,
+        "review_rtl_bugs_done",
+        "_report_submitted",
+    )
+    common = [
+        "--work-dir",
+        str(tmp_path),
+        "--scope",
+        "rtl/uart.sv",
+        "--category",
+        "rtl",
+        "--focus",
+        "bugs",
+    ]
+
+    with (
+        patch("booley.specialists.specialist.isolated_agent_workspace", _passthrough_workspace),
+        patch(
+            "booley.specialists.specialist._call_agent_sync",
+            return_value=_agent_result(),
+        ) as agent,
+    ):
+        first = _run_review(common)
+        assert first.criterion_met is True
+        rtl.write_text("module uart; wire changed; endmodule\n")
+        second = _run_review(common)
+
+    assert agent.call_count == 2
+    assert second.criterion_met is True
+    assert "current source" not in second.report_text
+    assert not DevelopmentState.load(state_file).criteria["review_rtl_bugs_done"].stale

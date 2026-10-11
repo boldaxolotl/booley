@@ -91,6 +91,8 @@ _RELEASE_SENSITIVE_PREFIXES = (
     "src/booley/specialists/verification_freshness.py",
     "src/booley/flows/sim/waiver_candidates.py",
     "tests/criteria/test_evidence_ledger",
+    "tests/criteria/ledger_support.py",
+    "tests/golden/test_golden_acceptance_ledger.py",
     "tests/mcp_tools/test_unbound",
     "tests/runtime/test_agent_execution.py",
     "tests/flows/sim/test_waiver_candidates.py",

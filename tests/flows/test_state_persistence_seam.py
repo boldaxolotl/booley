@@ -227,3 +227,8 @@ def test_optional_done_approval_policy_accepts_neutral_recorders():
 
     assert not done_findings_require_approval_for(IndependentRecorder())
     assert done_findings_require_approval_for(NoAcceptanceRecorder())
+
+
+def test_recorders_without_durable_state_have_no_acceptance_identity() -> None:
+    assert NoAcceptanceRecorder().acceptance_identity() is None
+    assert StandaloneFlowExecution().acceptance_identity() is None

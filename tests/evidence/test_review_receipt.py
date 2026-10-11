@@ -107,13 +107,13 @@ def test_scoped_source_edits_preserve_invocation_identity(tmp_path: Path, monkey
     assert review_invocation_changed(previous, changed_scope) is True
 
 
-def test_ticket_mode_context_is_authoritative(tmp_path: Path, monkeypatch) -> None:
+def test_persisted_context_and_explicit_spec_are_tracked(tmp_path: Path, monkeypatch) -> None:
     logs = tmp_path / "logs"
     logs.mkdir()
     (logs / "ticket.md").write_text("Implement UART registers.\n", encoding="utf-8")
     (logs / "answered_questions.md").write_text("Use active-low reset.\n", encoding="utf-8")
     explicit = tmp_path / "explicit.md"
-    explicit.write_text("This must not override Ticket Mode.\n", encoding="utf-8")
+    explicit.write_text("Explicit review specification.\n", encoding="utf-8")
     monkeypatch.setenv("BOOLEY_LOGS_DIR", str(logs))
     contract = build_review_contract_detail(
         ReviewInvocation(
@@ -128,7 +128,7 @@ def test_ticket_mode_context_is_authoritative(tmp_path: Path, monkeypatch) -> No
     detail = {"review_detail_version": REVIEW_DETAIL_VERSION, "contract": contract}
 
     assert contract["ticket_source"] == str((logs / "ticket.md").resolve())
-    assert contract["spec_source"] == ""
+    assert contract["spec_source"] == str(explicit.resolve())
     assert review_receipt_drift(detail, tmp_path) == []
     (logs / "answered_questions.md").write_text("Use synchronous reset.\n", encoding="utf-8")
     assert review_receipt_drift(detail, tmp_path) == ["decisions"]
@@ -190,7 +190,7 @@ def test_explicit_spec_is_tracked_in_review_receipt(tmp_path: Path, monkeypatch)
             focus="spec",
             scope=(),
             mode="done",
-            ticket_spec_path=spec,
+            spec_path=spec,
         )
     )
 

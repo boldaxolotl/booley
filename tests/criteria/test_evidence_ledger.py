@@ -1,6 +1,7 @@
 """Generic Criterion evidence recording and transaction recovery."""
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -130,7 +131,7 @@ def test_campaign_transaction_recovers_uncommitted_canonical_prefix(tmp_path: Pa
         state,
         changes,
         acceptance_facts=_campaign_facts(),
-        ticket_identity=identity,
+        identity=identity,
     )
 
     assert recovered.transaction_id == transaction_id
@@ -160,7 +161,7 @@ def test_campaign_transaction_removes_truncated_current_temp_and_republishes(
         state,
         changes,
         acceptance_facts=_campaign_facts(),
-        ticket_identity=identity,
+        identity=identity,
     )
 
     assert recovered.transaction_id == transaction_id
@@ -195,7 +196,7 @@ def test_selecting_committed_transaction_replays_later_plain_evidence(tmp_path: 
         invocation_id="later-sim",
         producer="sim",
         execution_id="e" * 32,
-        ticket_identity=identity,
+        identity=identity,
     )
 
     selected = record_or_verify_transaction(
@@ -203,7 +204,7 @@ def test_selecting_committed_transaction_replays_later_plain_evidence(tmp_path: 
         state,
         changes,
         acceptance_facts=_campaign_facts(),
-        ticket_identity=identity,
+        identity=identity,
     )
 
     assert selected.transaction_id == transaction_id
@@ -237,10 +238,10 @@ def test_current_generation_filters_valid_historical_records(
     second = state.set_criterion("sim_pass_uart", True)
     if encoding == "v2":
         record_or_verify_transaction(
-            log, state, first, acceptance_facts=_campaign_facts(), ticket_identity=old
+            log, state, first, acceptance_facts=_campaign_facts(), identity=old
         )
         record_or_verify_transaction(
-            log, state, second, acceptance_facts=_campaign_facts(), ticket_identity=current
+            log, state, second, acceptance_facts=_campaign_facts(), identity=current
         )
     else:
         transaction = "e" * 64 if encoding == "v1" else ""
@@ -252,7 +253,7 @@ def test_current_generation_filters_valid_historical_records(
                 invocation_id="campaign",
                 producer="sim",
                 execution_id="execution",
-                ticket_identity=identity,
+                identity=identity,
                 transaction_id=transaction,
             )
         if transaction:
@@ -266,38 +267,13 @@ def test_foreign_v2_manifest_corruption_is_still_fatal(tmp_path: Path) -> None:
     identity = {"generation": "a" * 32}
     log, state, changes = _transaction_state(tmp_path)
     record_or_verify_transaction(
-        log, state, changes, acceptance_facts=_campaign_facts(), ticket_identity=identity
+        log, state, changes, acceptance_facts=_campaign_facts(), identity=identity
     )
     path = next((log / "acceptance/evidence").glob("*/record.json"))
     row = json.loads(path.read_text())
     row["met"] = False
     path.write_bytes(evidence_ledger.canonical_json(row) + b"\n")
     with pytest.raises(AcceptanceLedgerError, match="does not bind"):
-        evidence_ledger.read_evidence_records(FIXTURE_SCOPE, log, state, {"generation": "b" * 32})
-
-
-@pytest.mark.parametrize(
-    "malformed",
-    [
-        {},
-        {"generation": "bad"},
-        {"generation": "a" * 32, "baseline": {"outer": {"commit": "bad"}}},
-    ],
-)
-def test_malformed_foreign_identity_is_not_silently_ignored(
-    tmp_path: Path, malformed: dict
-) -> None:
-    log, state, changes = _transaction_state(tmp_path)
-    record_changes(
-        log,
-        state,
-        changes,
-        invocation_id="old",
-        producer="sim",
-        execution_id="old",
-        ticket_identity=malformed,
-    )
-    with pytest.raises(AcceptanceLedgerError):
         evidence_ledger.read_evidence_records(FIXTURE_SCOPE, log, state, {"generation": "b" * 32})
 
 
@@ -310,3 +286,157 @@ def isolated_owner(tmp_path, monkeypatch):
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
     monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path))
     reset_cache()
+
+
+def test_concurrent_observations_receive_unique_completion_sequences(tmp_path):
+    log_dir = tmp_path / "logs" / "fix-uart"
+
+    def record(index: int) -> int:
+        state = DevelopmentState()
+        state.slug = "fix-uart"
+        state.init_criteria({f"criterion_{index}": True})
+        changes = state.set_criterion(f"criterion_{index}", True)
+        return record_changes(
+            log_dir,
+            state,
+            changes,
+            invocation_id=f"run-{index}",
+            producer="test",
+            execution_id="generation-1",
+        )[0].sequence
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        sequences = list(executor.map(record, range(24)))
+
+    assert sorted(sequences) == list(range(1, 25))
+
+
+def test_campaign_transaction_commits_before_selecting_mutable_state(tmp_path: Path) -> None:
+    log_dir, state, changes = _transaction_state(tmp_path)
+    identity = {"generation": "d" * 32, "authored_sha256": "e" * 64}
+
+    transaction = record_or_verify_transaction(
+        log_dir,
+        state,
+        changes,
+        acceptance_facts=_campaign_facts(),
+        identity=identity,
+    )
+
+    assert state.acceptance_transactions == [transaction.transaction_id]
+    assert [reference.sequence for reference in transaction.evidence] == [1]
+    commit = json.loads(
+        (
+            log_dir / "acceptance" / "transactions" / f"{transaction.transaction_id}.json"
+        ).read_text()
+    )
+    assert commit["$schema"] == "booley.acceptance-transaction/v1"
+    assert commit["records"][0]["sequence"] == 1
+    record_path = (
+        log_dir
+        / "acceptance"
+        / "evidence"
+        / f"000000001.tx.{transaction.transaction_id}"
+        / "record.json"
+    )
+    assert json.loads(record_path.read_text())["$schema"] == "booley.acceptance-record/v2"
+    persisted = DevelopmentState.load(log_dir / ".runtime" / "booley_state.json")
+    assert persisted.acceptance_transactions == [transaction.transaction_id]
+    assert persisted.criteria["sim_pass_uart"].met is True
+
+
+def test_campaign_replay_preserves_fail_to_pass_transition_once(tmp_path: Path) -> None:
+    log_dir = tmp_path / "logs" / "fix-uart"
+    state = DevelopmentState.load(log_dir / ".runtime" / "booley_state.json")
+    state.slug = "fix-uart"
+    params = {"from_state": "fail", "target": "sim_uart"}
+    state.init_criteria(
+        {"sim_pass_uart": True}, criterion_params={"sim_pass_uart": params}, strict=True
+    )
+    identity = {"generation": "d" * 32, "authored_sha256": "e" * 64}
+
+    _record_campaign_transition(log_dir, state, identity, met=False)
+    green_facts = _campaign_facts(
+        finished_at="2026-09-21T10:01:00Z",
+        campaign_id="22345678-1234-4234-9234-123456789abc",
+    )
+    green_shadow = deepcopy(state)
+    green = green_shadow.set_criterion("sim_pass_uart", True, detail={"passed_tests": ["tx"]})
+    transaction = record_or_verify_transaction(
+        log_dir,
+        state,
+        green,
+        acceptance_facts=green_facts,
+        identity=identity,
+    )
+    state_bytes = state._file_path.read_bytes()  # type: ignore[union-attr]
+
+    retried = record_or_verify_transaction(
+        log_dir,
+        state,
+        green,
+        acceptance_facts=green_facts,
+        identity=identity,
+    )
+
+    assert retried == transaction
+    assert state._file_path.read_bytes() == state_bytes  # type: ignore[union-attr]
+    assert state.criteria["sim_pass_uart"].transition_evidence == _transition_evidence()
+
+
+def _record_campaign_transition(log_dir, state, identity, *, met: bool) -> None:
+    detail = {"passed_tests" if met else "failed_tests": ["tx"]}
+    shadow = deepcopy(state)
+    changes = shadow.set_criterion("sim_pass_uart", met, detail=detail)
+    record_or_verify_transaction(
+        log_dir,
+        state,
+        changes,
+        acceptance_facts=_campaign_facts(finished_at="2026-09-21T10:00:00Z"),
+        identity=identity,
+    )
+
+
+def _transition_evidence() -> list[dict[str, object]]:
+    return [
+        {
+            "met": False,
+            "recorded_at": "2026-09-21T10:00:00Z",
+            "detail": {"failed_tests": ["tx"], "checks": []},
+        },
+        {
+            "met": True,
+            "recorded_at": "2026-09-21T10:01:00Z",
+            "detail": {"passed_tests": ["tx"], "checks": []},
+        },
+    ]
+
+
+def test_campaign_transaction_retry_uses_frozen_intent_after_mutable_drift(tmp_path: Path) -> None:
+    log_dir, state, changes = _transaction_state(tmp_path)
+    identity = {"generation": "d" * 32, "authored_sha256": "e" * 64}
+    first = record_or_verify_transaction(
+        log_dir,
+        state,
+        changes,
+        acceptance_facts=_campaign_facts(),
+        identity=identity,
+    )
+    state.slug = ""
+    drifted = [replace(changes[0], met=False, detail={"drifted": True})] * 4_001
+
+    retried = record_or_verify_transaction(
+        log_dir,
+        state,
+        drifted,
+        acceptance_facts=_campaign_facts(),
+        identity=identity,
+    )
+
+    assert retried == first
+    assert state.criteria["sim_pass_uart"].met is True
+    assert len(list((log_dir / "acceptance" / "transactions").glob("*.json"))) == 1
+
+
+from copy import deepcopy
+from dataclasses import replace

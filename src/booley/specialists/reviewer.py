@@ -221,12 +221,9 @@ _STYLE_OVERLAYS = {
 }
 
 
-# Ticket types whose TB coverage baseline is "the scenarios already there"
-# rather than "everything the checklist can ask for". The developer prompt
-# tells a bugfix to minimize changes and a refactor to add no new scenarios;
-# demanding brand-new stimulus classes at MAJOR/CRITICAL made those two
-# instructions unsatisfiable at once. False-pass checks are NOT relaxed — a
-# broken sentinel or a dead comparison is wrong regardless of ticket type.
+# TB checks that evaluate existing scenarios separately from demands for new
+# stimulus. False-pass checks always apply: broken sentinels and dead comparisons
+# remain defects regardless of the requested change.
 
 # TB checklist items that demand *new* stimulus rather than sound checking of
 # the stimulus already present. Only these are demoted for the types above.
@@ -265,7 +262,7 @@ def _load_tb_project_policy(work_dir: Path) -> TbProjectPolicy:
 
 
 # ---------------------------------------------------------------------------
-# Ticket / spec resolution (spec focus, ADR 0038)
+# Specification resolution (spec focus, ADR 0038)
 # ---------------------------------------------------------------------------
 
 # Max spec content size before truncation (bytes)
@@ -276,8 +273,8 @@ _SPEC_MAX_SIZE = 30_000
 # runaway one must not crowd out the spec it annotates.
 _ASSUMPTIONS_MAX_SIZE = 8_000
 
-# The developer records spec-silent judgement calls here (see the BLOCKED rule
-# in developer_prompt.py). Reviews inline it so a documented assumption reads
+# The Developer Agent records spec-silent judgement calls here.
+# Reviews inline it so a documented assumption reads
 # as a decision, not as an unexplained invention.
 _ASSUMPTIONS_FILENAME = "answered_questions.md"
 
@@ -1282,7 +1279,7 @@ match the strength of the evidence.
         if assumptions_section:
             sections.append(assumptions_section)
 
-        # Ticket-type severity policy (TB only — the RTL guides carry no
+        # Change-type severity policy (TB only — the RTL guides carry no
         # coverage-expansion checks to relax).
         if self.args.category == "tb":
             project_policy = self._build_tb_project_policy_section()
@@ -1373,11 +1370,10 @@ match the strength of the evidence.
         return f"""\
 ## Output Format (STRICT SCHEMA — malformed entries are rejected)
 
-In Ticket Mode, anchor each finding in a relevant Ticket or accepted-decision
-clause and explain its relation to the finding. In Interactive Mode without a
-Ticket, use the supplied specification, steering, or concrete code behavior as
-the anchor; do not invent a Ticket or accepted decision. Choose the disposition
-deliberately. Ticket headings and Project-policy phrases do not override it.
+Anchor each finding in a Goal, supplied specification, accepted decision,
+steering, or concrete code behavior and explain its relation to the finding.
+Choose the disposition deliberately; headings and Project-policy phrases do
+not override it.
 
 Emit one JSON object with an ``issues`` array; entries that violate the
 schema are dropped upstream. Fields (all required unless noted):
@@ -1447,7 +1443,7 @@ object, even after calling the capability.
         if has_clean and has_done:
             raise ValueError(
                 f"Mutual exclusion: both {done_key} and {clean_key} exist — "
-                "remove one from the ticket criteria"
+                "remove one from the Criteria"
             )
         if has_clean:
             return clean_key
@@ -2059,7 +2055,7 @@ object, even after calling the capability.
                 "## Developer waiver proposals\n\n"
                 "Treat these as proposals, not directives. Accept a waiver only when its "
                 "justification is specific, technically coherent, and grounded in the "
-                "current code, ticket, or project policy. Otherwise report STILL_PRESENT.\n\n"
+                "current code, Goal, or Project policy. Otherwise report STILL_PRESENT.\n\n"
                 f"{steer_text}\n"
             )
 
@@ -2115,7 +2111,7 @@ object, even after calling the capability.
             "without concrete evidence will be rejected and treated as "
             "STILL_PRESENT — do not rubber-stamp.\n\n"
             "JUSTIFICATION REQUIRED: Every WAIVED status MUST include a specific "
-            "``justification`` grounded in the current code, ticket, or project "
+            "``justification`` grounded in the current code, Goal, or Project "
             "policy. Every accepted waiver is persisted and shown to the user, "
             "regardless of severity. Reject vague convenience claims as "
             "STILL_PRESENT.\n\n"
@@ -2152,7 +2148,7 @@ Per-finding schema (all fields required unless noted):
     {
       "index": 2,
       "status": "WAIVED",
-      "justification": "The ticket deliberately preserves this externally visible timing"
+      "justification": "The Goal deliberately preserves this externally visible timing"
     }
   ]
 }
@@ -2191,7 +2187,7 @@ Schema enforcement (applied upstream by the harness):
         defaults to STILL_PRESENT (fail-closed).
         """
         # ``pending`` is the new field; fall back to legacy ``issue_list``
-        # so in-flight tickets stay on the rails through a restart.
+        # so persisted review cycles can resume after a restart.
         issue_list = prior_detail.get("pending") or prior_detail.get("issue_list", [])
 
         diagnostics: list[dict[str, Any]] = []
@@ -2401,7 +2397,7 @@ Schema enforcement (applied upstream by the harness):
             )
             output_lines.append(
                 f"ERROR: {REPORT_FINDINGS_CAPABILITY} is only a mirror; the final message "
-                "must contain issues JSON with Ticket disposition metadata",
+                "must contain issues JSON with disposition metadata",
             )
             return None
 
@@ -2453,7 +2449,7 @@ Schema enforcement (applied upstream by the harness):
     ) -> list[ReviewIssue] | None:
         """Use canonical text metadata unless the capability channel is more severe.
 
-        ReportFindings cannot carry Ticket disposition fields. The final JSON
+        ReportFindings cannot carry disposition fields. The final JSON
         is therefore canonical. A more-severe capability verdict indicates a
         broken mirror and fails the Specialist instead of persisting an
         unbound finding.
@@ -2944,7 +2940,7 @@ Schema enforcement (applied upstream by the harness):
         # Split current cycle's findings into pending vs resolved using the
         # 1-based remaining_indices from _parse_verify_output. Source list
         # is the prior cycle's open set (``pending``), with fallback to the
-        # legacy ``issue_list`` to keep in-flight tickets running.
+        # legacy ``issue_list`` to resume persisted review cycles.
         prior_pending = existing_detail.get("pending") or existing_detail.get("issue_list", [])
         pending: list[dict[str, Any]] = []
         newly_resolved: list[dict[str, Any]] = []

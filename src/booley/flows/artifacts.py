@@ -40,9 +40,9 @@ Two rules keep a pointer trustworthy:
   nothing inside the Sandbox. Relative to the work dir it resolves in
   both views, which is the same reason the Boundary Command Contract passes
   ``make -C`` a relative path. Note this is relative to the *work dir*, not to
-  the project root: in Ticket Mode the work dir is a worktree while the report
-  and lock dirs live under ``tickets/logs/<slug>/``, so those keys legitimately
-  come out as ``../../...``. They still resolve, because the whole project root
+  the project root: a Goal work dir can be a worktree while report and lock
+  directories live under the record's runtime root, so those keys can come out
+  as ``../../...``. They still resolve, because the whole project root
   is what gets mounted — not just the worktree.
 
 A multi-target Flow nests one block per target: ``artifacts[target][key]``.

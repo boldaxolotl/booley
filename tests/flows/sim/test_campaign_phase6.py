@@ -799,7 +799,7 @@ def test_public_campaign_outcome_replays_exact_acceptance_transaction(
     state.save()
     archived = state_path.read_bytes()
     identity = {"generation": "d" * 32, "authored_sha256": "e" * 64}
-    recorder = FixtureRecorder(log_dir=tmp_path / "logs", ticket_identity=identity)
+    recorder = FixtureRecorder(log_dir=tmp_path / "logs", identity=identity)
 
     record_campaign_acceptance(_acceptance_endpoint(state, recorder, invocation), (outcome,))
     first_state = DevelopmentState.load(state_path)
@@ -847,7 +847,7 @@ def test_campaign_acceptance_reads_identity_through_the_public_recorder_method(
             return None
 
         def record_or_verify_transaction(self, _state, _changes, **kwargs):
-            received.append(kwargs["ticket_identity"])
+            received.append(kwargs["identity"])
             return SimpleNamespace(transaction_id="a" * 64)
 
     endpoint = _acceptance_endpoint(state, PublicIdentityRecorder(), invocation)
@@ -861,7 +861,7 @@ def test_campaign_projection_error_tail_rejects_malformed_detail(tmp_path: Path)
     malformed_observation = dict(outcome.observations[0], detail=[])
     malformed = replace(outcome, observations=(malformed_observation,))
     state = DevelopmentState.load(tmp_path / "state.json")
-    recorder = FixtureRecorder(log_dir=tmp_path / "logs", ticket_identity={})
+    recorder = FixtureRecorder(log_dir=tmp_path / "logs", identity={})
 
     with pytest.raises(SimulationCampaignIntegrityError, match="detail"):
         record_campaign_acceptance(_acceptance_endpoint(state, recorder, invocation), (malformed,))
@@ -912,7 +912,7 @@ def _named_campaign_state(tmp_path: Path):
     state.set_criterion("_report_submitted", True)
     state.save()
     identity = {"generation": "d" * 32, "authored_sha256": "e" * 64}
-    recorder = FixtureRecorder(log_dir=tmp_path / "logs", ticket_identity=identity)
+    recorder = FixtureRecorder(log_dir=tmp_path / "logs", identity=identity)
     return state_path, state, key, recorder
 
 

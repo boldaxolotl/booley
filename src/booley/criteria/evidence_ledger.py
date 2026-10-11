@@ -79,7 +79,15 @@ class AcceptanceTransaction:
     evidence: tuple[EvidenceRef, ...]
 
 
-class EvidenceIdentityCodec(Protocol):
+class EvidenceAppendCodec(Protocol):
+    """Identity fields included in an appended V1 observation."""
+
+    def append_subject(
+        self, state: DevelopmentState, identity: Mapping[str, Any] | None
+    ) -> dict[str, Any]: ...
+
+
+class EvidenceIdentityCodec(EvidenceAppendCodec, Protocol):
     """Per-purpose rules for the identity evidence is recorded under.
 
     The codec owns everything identity-shaped the ledger persists: the
@@ -175,7 +183,15 @@ class EvidenceProjection(Protocol):
 
 
 @dataclass(frozen=True)
-class EvidenceScope:
+class EvidenceAppendScope:
+    """The purpose and identity fields of V1 appended evidence."""
+
+    purpose: str
+    codec: EvidenceAppendCodec
+
+
+@dataclass(frozen=True)
+class EvidenceScope(EvidenceAppendScope):
     """The purpose evidence is recorded for and the codec of its identity."""
 
     purpose: str
@@ -1289,7 +1305,7 @@ def record_changes(
     state: DevelopmentState,
     changes: list[CriterionChange],
     *,
-    scope: EvidenceScope,
+    scope: EvidenceAppendScope,
     invocation_id: str,
     producer: str,
     execution_id: str,

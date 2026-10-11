@@ -2,9 +2,8 @@
 """booley -- CLI entry point for the Booley RTL development harness.
 
 Subcommands:
-    run       Persistent ticket execution loop
+    goal      Work with Goal Records and evidence
     chat      Open the Project's configured agent CLI
-    board     Print the ticket board
     worktree  Create a linked worktree with paired or snapshot Project inputs
     cheat     Print quick-reference cheatsheet
     doctor    Run environment health checks
@@ -54,15 +53,6 @@ if TYPE_CHECKING:
     from booley.mcp.registry import McpToolInfo
 
 # --- Constants ---
-
-# Graceful shutdown: use threading.Event for thread-safe signaling.
-# Avoid a separate boolean flag -- signal handlers and the main thread
-# would race on it without synchronization.
-
-# and exiting. Without this an unattended runner sits in the poll loop forever
-# after the last ticket goes terminal (F-50). Short enough that a finished
-# overnight batch does not leave a live process behind; long enough to ride out
-# a board that is momentarily empty between tickets. 0 disables (daemon mode).
 
 
 class CommandLocation(Enum):
@@ -201,8 +191,6 @@ def find_project_root() -> Path:
 # ---------------------------------------------------------------------------
 # Heartbeat-aware execution
 # ---------------------------------------------------------------------------
-
-# How often the heartbeat prints status while harness runs (seconds)
 
 
 # ---------------------------------------------------------------------------
@@ -415,11 +403,8 @@ def _decorate_command_help(subparsers: argparse._SubParsersAction) -> None:
 def _project_root_parent() -> argparse.ArgumentParser:
     """A reusable ``--project-root`` option for subcommands that accept one.
 
-    ``default=SUPPRESS`` is load-bearing: the option is attached to BOTH the
-    ``board`` parser and each of its subparsers so it works on either side of
-    the subcommand word, and subparsers write into the same namespace. With a
-    normal default the subparser would overwrite the value the parent just
-    parsed, so ``booley board -p X show`` would silently lose ``X``.
+    ``default=SUPPRESS`` lets parent parsers and subparsers share the option
+    without a subparser default overwriting a value already parsed.
     """
     parent = argparse.ArgumentParser(add_help=False)
     parent.add_argument(
@@ -1442,7 +1427,7 @@ def _select_endpoint(args, endpoints: list[McpToolInfo], kind: str) -> McpToolIn
 
 
 def _dispatch_endpoint(args, info: McpToolInfo, *, flow: bool) -> int:
-    """Forward to existing execution, attaching Ticket adapters only to Flows."""
+    """Dispatch a Flow or Specialist through its execution adapter."""
     try:
         endpoint_cls = _load_mcp_tool_class(info)
     except Exception as exc:  # noqa: BLE001 — report failures at the Project plugin boundary
@@ -1782,7 +1767,7 @@ def _selected_project_root(
 
 
 def _dispatch_main() -> int:
-    """Parse CLI, handle early exits, set up runtime, and run the ticket loop."""
+    """Parse CLI, handle early exits, and dispatch the selected command."""
     args = _parse_cli()
     command = _effective_command(args)
 

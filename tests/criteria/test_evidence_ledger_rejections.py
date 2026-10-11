@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 
 from booley.criteria import evidence_ledger as ledger
-from tests.criteria import ledger_support as fixture_ledger
 from tests.criteria.ledger_support import FIXTURE_SCOPE
 
 
@@ -65,10 +64,6 @@ def test_campaign_id_must_be_lowercase_uuid4(value: object) -> None:
 def test_scalar_identity_fields_are_authenticated() -> None:
     with pytest.raises(ledger.AcceptanceLedgerError, match="SHA-256"):
         ledger._sha256_field("bad", "digest")
-    with pytest.raises(ledger.AcceptanceLedgerError, match="identity"):
-        fixture_ledger._identity([], "a" * 32)
-    with pytest.raises(ledger.AcceptanceLedgerError, match="generation"):
-        fixture_ledger._identity(_identity(), "b" * 32)
 
 
 @pytest.mark.parametrize(

@@ -316,7 +316,7 @@ def test_acceptance_publication_boundary_retry_is_idempotent(
             state,
             changes,
             acceptance_facts=_campaign_facts(),
-            ticket_identity=identity,
+            identity=identity,
             publication_checkpoint=crash,
         )
 
@@ -325,7 +325,7 @@ def test_acceptance_publication_boundary_retry_is_idempotent(
         state,
         changes,
         acceptance_facts=_campaign_facts(),
-        ticket_identity=identity,
+        identity=identity,
         publication_checkpoint=crash,
     )
     assert state.acceptance_transactions == [transaction.transaction_id]

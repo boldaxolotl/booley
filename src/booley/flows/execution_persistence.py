@@ -30,7 +30,7 @@ class AcceptanceRecorder(Protocol):
         changes: list[CriterionChange],
         *,
         acceptance_facts: Mapping[str, Any],
-        ticket_identity: Mapping[str, Any],
+        identity: Mapping[str, Any],
     ) -> object | None: ...
 
     def acceptance_identity(self) -> Mapping[str, Any] | None:
@@ -157,7 +157,7 @@ class NoAcceptanceRecorder:
         changes: list[CriterionChange],
         *,
         acceptance_facts: Mapping[str, Any],
-        ticket_identity: Mapping[str, Any],
+        identity: Mapping[str, Any],
     ) -> object | None:
         return None
 

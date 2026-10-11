@@ -1,8 +1,8 @@
 """Stale-triggered, one-shot automatic Doctor runs.
 
-Automatic health checks are lifecycle work, not a scheduler: Sandbox
-startup launches one detached attempt. A file lock makes health checks single-flight. Every attempt writes a structured report and transcript; the
-separate clean stamp remains Doctor's durable "last blessed" record.
+Sandbox startup launches one detached health-check attempt. A file lock
+serializes checks. Each attempt writes a structured report and transcript;
+the separate clean stamp records Doctor's last successful audit.
 """
 
 from __future__ import annotations
@@ -360,7 +360,7 @@ def run_if_due(
                 progress=emit_progress,
             )
         return report
-    except Exception:  # noqa: BLE001 — lifecycle advisory must never block a session or ticket sweep
+    except Exception:  # noqa: BLE001 — lifecycle advisory must never block a session startup
         return None
 
 

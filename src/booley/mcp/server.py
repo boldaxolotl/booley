@@ -3,8 +3,7 @@
 Two transports (``--transport``, or ``BOOLEY_MCP_TRANSPORT``):
 
 - ``stdio`` (default) — spawned by the agent app / SDK as a child process
-  inside Docker. Used by Ticket Mode, where the harness owns the child and
-  restarts it together with the run.
+  inside the Sandbox. The agent client owns the child process lifetime.
 - ``http`` — a streamable-HTTP server on ``127.0.0.1``. Used by
   Interactive Mode (ADR 0023): the devcontainer ``postStartCommand`` starts it
   on every container start (including resume), and the agent app *connects*
@@ -154,9 +153,7 @@ _DEFAULT_MAX_STDERR_BYTES = 4_000
 # MCP tools used only by autonomous development. Interactive Mode is driven by
 # the outer client, so exposing these just adds noise and invites the wrong
 # workflow. Keeping the reason next to the name is not decoration: these MCP tools
-# are discovered for Ticket Mode but intentionally absent from Interactive
-# Mode, so a human diffing the two surfaces deserves an answer instead of
-# "Unknown MCP tool".
+# are filtered from the outer client so discovery explains the available surface.
 _INTERACTIVE_HIDDEN_REASONS = {
     "tb_coder": (
         "it writes testbench code for autonomous development — "
@@ -366,9 +363,8 @@ class _McpLifetime:
         remains the resource backstop.
         """
         if os.environ.get("BOOLEY_MCP_MODE") != "interactive":
-            # Ticket Mode stdio server: the client owns the process lifetime
-            # (no self-exit), but MCP tool activity still feeds the container
-            # reaper heartbeat so an active ticket never reads as idle
+            # Client-owned server lifetime: no self-exit, but MCP activity feeds
+            # the Sandbox reaper heartbeat so active work does not read as idle
             # (ADR 0028 Decision 11).
             return cls(None, None, heartbeat_path=_MCP_HEARTBEAT_PATH)
         if not self_exit:
@@ -639,8 +635,7 @@ def _poll_mcp_tool_visible() -> bool:
     Always on. The poll MCP tool is the transport-level completion of async
     dispatch (ADR 0027): any server that can dispatch a heavy endpoint can hand back
     a run_id, so the caller must always be able to poll it — in EVERY mode,
-    including the Ticket-Mode developer (Q1: modes must not differ, unlike
-    ``booley_report`` which is Interactive/opt-in). It reads job status only —
+    including nested clients (``booley_report`` is Interactive/opt-in). It reads job status only —
     it cannot invoke an endpoint or recurse — so it is exempt from the
     recursion-safety allowlists that gate real endpoints.
     """
@@ -652,8 +647,7 @@ def _targets_mcp_tool_visible() -> bool:
 
     Always on, like poll: it only reads ``.core`` YAML and booley.toml — no
     subprocess, no recursion — so the recursion-safety allowlists that gate
-    real endpoints do not apply, and every mode's agent (interactive tab, ticket
-    developer, nested specialist) needs to know what ``target`` values exist.
+    real endpoints do not apply, and every agent client (Interactive session or nested Specialist) needs to know what ``target`` values exist.
     """
     return not _coverage_evidence_mode()
 
@@ -4384,11 +4378,11 @@ def _maybe_configure_interactive_logs_dir() -> None:
 
     Without this, transcripts and ``display.jsonl`` from MCP-driven endpoint
     calls land in an OS tempdir (see ``_resolve_transcript_dir``), which
-    disappears on container exit.  In Ticket Mode the harness sets
-    ``BOOLEY_LOGS_DIR`` explicitly, so this is a no-op.
+    disappears on container exit. An explicitly configured ``BOOLEY_LOGS_DIR``
+    takes precedence over this default.
 
     Interactive Mode is detected by:
-      - ``BOOLEY_LOGS_DIR`` not already set (harness sets it in Ticket Mode);
+      - ``BOOLEY_LOGS_DIR`` not already set;
       - ``.booley_project/`` present in CWD (the project root the outer agent
         bind-mounted into the container at ``/work``).
 
@@ -4414,9 +4408,8 @@ def _maybe_configure_interactive_logs_dir() -> None:
 def _load_agent_settings_from_toml() -> None:
     """Honor ``[agent]``/``[sandbox]``/``[models]`` from the project's booley.toml.
 
-    Interactive Mode has no developer to preload configuration. Loading here
-    makes the server honor booley.toml exactly like Ticket Mode
-    (the developer) and ``booley doctor`` already do. (Specialist endpoint
+    Loading configuration here makes the server honor booley.toml consistently
+    with ``booley doctor``. (Specialist endpoint
     subprocesses resolve the provider independently — ``get_backend_config()``
     reads ``BOOLEY_PROJECT_DIR/booley.toml`` when the env hand-off is absent —
     so they no longer silently fall back to a default provider either.)
@@ -4528,7 +4521,7 @@ def main() -> None:
         raise SystemExit(2)
 
     # Codex REPLACES the MCP child env per config.toml [env] (see
-    # harness.mcp_config), so a config that doesn't forward the proxy vars
+    # runtime.mcp_config), so a config that doesn't forward the proxy vars
     # leaves this server — and every endpoint subprocess under it — with no
     # egress path. Self-heal here so the whole endpoint subprocess tree inherits it.
     if runtime_context.ensure_proxy_env():

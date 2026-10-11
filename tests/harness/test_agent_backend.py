@@ -771,42 +771,6 @@ class TestCodexEventParsing:
 
         assert events == [{"type": "file_change", "paths": ["rtl/top.sv", "tb/top_tb.sv"]}]
 
-    def test_booley_mcp_events_pause_and_resume_developer_budget(self):
-        from booley.runtime import _codex_backend as cb
-
-        budget = MagicMock()
-        item = {
-            "id": "call-1",
-            "type": "mcp_tool_call",
-            "server": "booley",
-            "tool": "simulate",
-        }
-        cb._dispatch_stdout_event({"type": "item.started", "item": item}, None, None, budget)
-        cb._dispatch_stdout_event({"type": "item.completed", "item": item}, None, None, budget)
-
-        budget.pause.assert_called_once_with("codex-mcp:call-1", "waiting for simulate")
-        budget.resume.assert_called_once_with("codex-mcp:call-1")
-
-    def test_non_booley_mcp_does_not_pause_developer_budget(self):
-        from booley.runtime import _codex_backend as cb
-
-        budget = MagicMock()
-        cb._dispatch_stdout_event(
-            {
-                "type": "item.started",
-                "item": {
-                    "id": "call-1",
-                    "type": "mcp_tool_call",
-                    "server": "other",
-                    "tool": "lookup",
-                },
-            },
-            None,
-            None,
-            budget,
-        )
-        budget.pause.assert_not_called()
-
     def test_parse_usage(self):
         events_jsonl = json.dumps(
             {
@@ -1109,45 +1073,11 @@ class TestIdleStreamTimeout:
             )
 
 
-class TestClaudeDeveloperBudgetEvents:
-    def test_booley_tool_use_pauses_until_matching_result(self):
-        from claude_agent_sdk import AssistantMessage, UserMessage
-
-        from booley.runtime import _claude_backend as cb
-
-        budget = MagicMock()
-        started = MagicMock(
-            spec=AssistantMessage,
-            content=[SimpleNamespace(id="tool-1", name="mcp__booley__asic_synthesize", input={})],
-        )
-        completed = MagicMock(spec=UserMessage, content=[SimpleNamespace(tool_use_id="tool-1")])
-
-        cb._update_budget_for_claude_message(started, budget)
-        cb._update_budget_for_claude_message(completed, budget)
-
-        budget.pause.assert_called_once_with("claude-mcp:tool-1", "waiting for asic_synthesize")
-        budget.resume.assert_called_once_with("claude-mcp:tool-1")
-
-    def test_builtin_tool_does_not_pause(self):
-        from claude_agent_sdk import AssistantMessage
-
-        from booley.runtime import _claude_backend as cb
-
-        budget = MagicMock()
-        message = MagicMock(
-            spec=AssistantMessage,
-            content=[SimpleNamespace(id="tool-1", name="Bash", input={})],
-        )
-        cb._update_budget_for_claude_message(message, budget)
-        budget.pause.assert_not_called()
-
-
 class TestCallOnceTimeoutResultSalvage:
     """A ResultMessage captured before an SDK teardown stall must not be lost."""
 
     @staticmethod
     def _options():
-        from types import SimpleNamespace
 
         return SimpleNamespace(model="claude-opus-4-8", system_prompt=None)
 
@@ -1215,13 +1145,11 @@ class TestToolCallCapture:
 
     @staticmethod
     def _msg(blocks):
-        from types import SimpleNamespace
 
         return SimpleNamespace(content=blocks, usage=None)
 
     @staticmethod
     def _tool_block(name, inp):
-        from types import SimpleNamespace
 
         return SimpleNamespace(name=name, input=inp)
 
@@ -1267,12 +1195,10 @@ class TestToolCallCapture:
 class TestClaudeFileChangeEvents:
     @staticmethod
     def _block(**fields):
-        from types import SimpleNamespace
 
         return SimpleNamespace(**fields)
 
     def test_successful_edit_emits_path_after_tool_result(self):
-        from types import SimpleNamespace
 
         from booley.runtime import _claude_backend as cb
 
@@ -1296,7 +1222,6 @@ class TestClaudeFileChangeEvents:
         assert state.pending_file_edits == {}
 
     def test_failed_edit_does_not_emit(self):
-        from types import SimpleNamespace
 
         from booley.runtime import _claude_backend as cb
 
@@ -1310,7 +1235,6 @@ class TestClaudeFileChangeEvents:
         assert state.pending_file_edits == {}
 
     def test_callback_failure_never_escapes(self):
-        from types import SimpleNamespace
 
         from booley.runtime import _claude_backend as cb
 
@@ -1324,7 +1248,6 @@ class TestClaudeFileChangeEvents:
 
 class TestClaudeDisplayEvents:
     def test_callback_failure_never_escapes(self):
-        from types import SimpleNamespace
 
         from booley.runtime import _claude_backend as cb
 
@@ -1344,7 +1267,6 @@ class TestLiveUsageDeltas:
 
     @staticmethod
     def _msg(usage):
-        from types import SimpleNamespace
 
         return SimpleNamespace(content=[], usage=usage)
 
@@ -1377,7 +1299,6 @@ class TestLiveUsageDeltas:
 
     def test_result_cost_supersedes_the_estimate(self):
         """The billed figure replaces the price-table estimate, dip and all."""
-        from types import SimpleNamespace
 
         from booley.runtime import _claude_backend as cb
 
@@ -1448,7 +1369,6 @@ class TestDispatchUsage:
 
     @staticmethod
     def _counters_with(tokens):
-        from types import SimpleNamespace
 
         from booley.runtime import _claude_backend as cb
 

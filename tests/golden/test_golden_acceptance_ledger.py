@@ -71,7 +71,7 @@ def _transact(log_dir: Path, state: DevelopmentState, changes: list, checkpoint)
         state,
         changes,
         acceptance_facts=_campaign_facts(),
-        ticket_identity=IDENTITY,
+        identity=IDENTITY,
         publication_checkpoint=checkpoint,
     )
 
@@ -92,7 +92,7 @@ def _v1_appends(log_dir: Path, state: DevelopmentState) -> list[dict[str, Any]]:
         invocation_id="lint-1",
         producer="lint",
         execution_id="b" * 32,
-        ticket_identity=IDENTITY,
+        identity=IDENTITY,
         recorded_at="2026-09-21T09:00:00Z",
     )
     red = record_changes(
@@ -102,7 +102,7 @@ def _v1_appends(log_dir: Path, state: DevelopmentState) -> list[dict[str, Any]]:
         invocation_id="sim-red",
         producer="sim",
         execution_id="b" * 32,
-        ticket_identity=IDENTITY,
+        identity=IDENTITY,
         recorded_at="2026-09-21T09:30:00Z",
     )
     return [asdict(ref) for ref in (*lint, *red)]
@@ -143,7 +143,7 @@ def _rejection(log_dir: Path, state: DevelopmentState, identity: dict[str, Any])
             state,
             [],
             acceptance_facts=_campaign_facts(),
-            ticket_identity=identity,
+            identity=identity,
         )
     return str(caught.value)
 
@@ -264,7 +264,7 @@ def _report_fenced_state(log_dir: Path) -> tuple[DevelopmentState, list[Any]]:
         invocation_id="lint-1",
         producer="lint",
         execution_id="b" * 32,
-        ticket_identity=IDENTITY,
+        identity=IDENTITY,
         recorded_at="2026-09-21T09:00:00Z",
     )
     changes = [

@@ -1,7 +1,7 @@
 """Coverage Analyst for one exact, persisted native Campaign.
 
-The model only reads evidence. In Ticket Mode, host code records the screened
-Waiver Candidates for the Ticket (ADR 0066, amending ADR 0063).
+The model only reads evidence. In Goal Mode, deterministic code records the
+screened Waiver Candidates for the Goal Record (ADR 0066).
 """
 
 from __future__ import annotations
@@ -91,7 +91,7 @@ class CoverageAnalystSpecialist(Specialist):
         super().__init__()
 
     def read_state(self) -> DevelopmentState:
-        """Advisory analysis has no Harness Criteria authority, even in Ticket Mode."""
+        """Advisory analysis records candidates without setting Criteria."""
         self._state = DevelopmentState()
         return self._state
 
@@ -125,7 +125,7 @@ class CoverageAnalystSpecialist(Specialist):
     def _record_candidates(
         self, document: dict[str, object], loaded: LoadedCoverageCampaign, campaign: Path
     ) -> str | None:
-        """ADR 0066: record screened candidates for the Ticket; return a Console line."""
+        """Record screened candidates for the Goal Record; return a summary line."""
         context = GoalCandidateContext.from_environment(getattr(self.args, "slug", ""), os.environ)
         if context is None:
             return None

@@ -168,7 +168,6 @@ def fixture_candidate(paths, campaign, loaded, persisted, source_sha, record_id)
         (item,),
         invocation_id="analyst",
         now=datetime.now(UTC),
-        directory=paths.root,
     )
     return outcome.candidate_ids[0]
 
@@ -505,9 +504,7 @@ def test_rejection_is_terminal_and_written_to_goal_candidate_store(layout):
     env, candidate, root = prepared(layout)
     view = propose(layout, env, candidate)
     approve(layout, env, view.proposal.id, answer="reject")
-    store = load(
-        root, layout.record.id, directory=record_paths(layout.control, layout.record.id).root
-    )
+    store = load(record_paths(layout.control, layout.record.id).root, layout.record.id)
     assert not store.candidates and len(store.rejections) == 1
     assert not list(root.rglob("*.toml"))
 

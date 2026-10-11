@@ -3,7 +3,7 @@
 The Analyst's model never writes. After the deterministic screen, this adapter
 binds each ``ready_for_human_review`` candidate to the exact persisted Campaign
 and records it in the Goal Record's candidate store. It then reports the strict and
-Provisional Coverage Verdicts for that Campaign, so the Developer sees both.
+Provisional Coverage Verdicts for that Campaign, so the Developer Agent sees both.
 
 Recording is best-effort: a store failure is reported, never raised, because
 the advisory analysis itself succeeded.
@@ -37,9 +37,8 @@ class GoalCandidateContext:
     """Where one Goal Record's candidates live and how Campaign paths are anchored."""
 
     slug: str
-    store_root: Path
     flow_reports_root: Path
-    record_dir: Path | None = None
+    record_dir: Path
 
     @classmethod
     def from_environment(
@@ -61,7 +60,6 @@ class GoalCandidateContext:
             paths = record_paths(binding.project_dir, binding.record_id)
             return cls(
                 binding.record_id,
-                binding.project_dir,
                 paths.runtime_dir / "flow-reports",
                 paths.root,
             )
@@ -160,15 +158,14 @@ def record_goal_candidates(
     try:
         binding = _binding(campaign, summary, campaign_path, context.flow_reports_root)
         outcome = store.record_proposals(
-            context.store_root,
+            context.record_dir,
             context.slug,
             binding,
             _proposals(screened, campaign),
             invocation_id=invocation_id,
             now=now or datetime.now(UTC),
-            directory=context.record_dir,
         )
-        record = store.load(context.store_root, context.slug, directory=context.record_dir)
+        record = store.load(context.record_dir, context.slug)
         verdicts = _provisional_block(campaign, binding, record)
     except (
         OSError,
@@ -189,7 +186,7 @@ def record_goal_candidates(
 
 
 def candidate_summary_line(section: Mapping[str, object]) -> str:
-    """One Console line describing the candidate section."""
+    """One summary line describing the candidate section."""
     if section.get("status") != "recorded":
         return f"Waiver Candidates not recorded: {section.get('reason', 'unknown reason')}"
     verdicts = section["verdicts"]

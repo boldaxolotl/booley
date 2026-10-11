@@ -90,8 +90,7 @@ a Booley Flow from agent and autonomous discovery, set
 `[specialists.<name>].enabled = false`. Protocol utilities have no Project
 enable switch.
 
-Interactive Mode hides `submit_run_report`; submit a Goal's Session Summary
-through `goal_finish`. `tb_coder` is de-registered while the session agent
+Submit a Goal's Session Summary through `goal_finish`. `tb_coder` is de-registered while the session agent
 writes testbench code directly. Direct Flow diagnostics can list endpoints
 independently of the project discovery filter. An individual Flow may still
 report its configured flow as disabled when invoked directly.

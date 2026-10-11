@@ -1,8 +1,8 @@
 """Waiver Candidate store (ADR 0066).
 
 The Coverage Analyst's non-model code records the Waiver Candidates it screened
-for one Goal Record in the ignored record ``<store_root>/waiver-candidates/<slug>.json``
- The human accepts
+for one Goal Record in ``<record-directory>/waiver-candidates.json``.
+The human accepts
 or rejects each candidate at review; rejections are remembered so later
 proposals for the same Target, Coverage Point, and source SHA-256 are dropped.
 
@@ -22,7 +22,7 @@ Failure semantics follow ADR 0065 state records:
   an unknown schema, for another slug, or with any invalid field raises
   :class:`WaiverCandidateRecordError` and nothing is changed;
 - every mutation is a read-modify-write under a cross-process lock at
-  ``<store_root>/locks/waiver-candidates-<slug>.lock`` with a bounded wait, and
+  ``<record-directory>/waiver-candidates.lock`` with a bounded wait, and
   publishes the whole record with one atomic replace (or one durable unlink
   once it is empty), so a crash leaves the old or the new record, never a mix.
 """
@@ -441,21 +441,13 @@ def _parse_record(value: Any, slug: str) -> CandidateRecord:
     return CandidateRecord(slug, by_key, rejections)
 
 
-def _candidate_path(store_root: Path, slug: str, directory: Path | None) -> Path:
-    return (
-        waiver_candidates_path(store_root, slug)
-        if directory is None
-        else directory / "waiver-candidates.json"
-    )
-
-
-def load(store_root: Path, slug: str, *, directory: Path | None = None) -> CandidateRecord:
+def load(directory: Path, slug: str) -> CandidateRecord:
     """Return the Waiver Candidate record for *slug*; an absent file is empty.
 
     Raises :class:`WaiverCandidateRecordError` for a record that exists but is
     unreadable, not JSON, of an unknown schema, for another slug, or invalid.
     """
-    path = _candidate_path(store_root, slug, directory)
+    path = waiver_candidates_path(directory, slug)
     try:
         raw = path.read_bytes()
     except FileNotFoundError:
@@ -482,13 +474,9 @@ def load(store_root: Path, slug: str, *, directory: Path | None = None) -> Candi
 
 
 @contextmanager
-def _record_lock(store_root: Path, slug: str, directory: Path | None = None) -> Generator[None]:
+def _record_lock(directory: Path, slug: str) -> Generator[None]:
     """Hold the cross-process lock of *slug*'s record, waiting a bounded time."""
-    path = (
-        waiver_candidates_lock_path(store_root, slug)
-        if directory is None
-        else directory / "waiver-candidates.lock"
-    )
+    path = waiver_candidates_lock_path(directory, slug)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a+", encoding="utf-8") as handle:
         try:
@@ -504,9 +492,9 @@ def _record_lock(store_root: Path, slug: str, directory: Path | None = None) -> 
             release_file_lock(handle)
 
 
-def _publish(store_root: Path, record: CandidateRecord, directory: Path | None = None) -> None:
+def _publish(directory: Path, record: CandidateRecord) -> None:
     """Atomically replace the record, or durably remove it once it is empty."""
-    path = _candidate_path(store_root, record.slug, directory)
+    path = waiver_candidates_path(directory, record.slug)
     if record.is_empty:
         durable_unlink(path)
         return
@@ -514,20 +502,19 @@ def _publish(store_root: Path, record: CandidateRecord, directory: Path | None =
 
 
 def _mutate(
-    store_root: Path,
+    directory: Path,
     slug: str,
     change: Callable[[CandidateRecord], tuple[CandidateRecord, _Result]],
-    directory: Path | None = None,
 ) -> _Result:
     """Read, change, and publish *slug*'s record under its lock; return *change*'s result.
 
     Publishes only when the record changed, so no-op mutations leave the file alone.
     """
-    with _record_lock(store_root, slug, directory):
-        current = load(store_root, slug, directory=directory)
+    with _record_lock(directory, slug):
+        current = load(directory, slug)
         updated, result = change(current)
         if updated != current:
-            _publish(store_root, updated, directory)
+            _publish(directory, updated)
         return result
 
 
@@ -550,14 +537,13 @@ def _accumulate(
 
 
 def record_proposals(
-    store_root: Path,
+    directory: Path,
     slug: str,
     binding: CampaignBinding,
     proposals: Iterable[WaiverProposal],
     *,
     invocation_id: str,
     now: datetime,
-    directory: Path | None = None,
 ) -> RecordOutcome:
     """Record one Analyst run's screened proposals for *slug* against *binding*.
 
@@ -583,12 +569,10 @@ def record_proposals(
         outcome = RecordOutcome(len(recorded), len(batch) - len(recorded), tuple(recorded))
         return replace(record, candidates=candidates), outcome
 
-    return _mutate(store_root, slug, change, directory)
+    return _mutate(directory, slug, change)
 
 
-def record_rejections(
-    store_root: Path, slug: str, rejections: Iterable[Rejection], *, directory: Path | None = None
-) -> int:
+def record_rejections(directory: Path, slug: str, rejections: Iterable[Rejection]) -> int:
     """Remember *rejections* for *slug* and drop the candidates they match.
 
     Idempotent: a rejection already recorded for the same Target, point, and
@@ -600,33 +584,13 @@ def record_rejections(
         updated = rejected_record(record, wanted)
         return updated, len(updated.rejections) - len(record.rejections)
 
-    return _mutate(store_root, slug, change, directory)
-
-
-def clear_candidates(store_root: Path, slug: str) -> None:
-    """Drop every candidate of *slug* but keep its rejections (return-to-draft, reset)."""
-
-    def change(record: CandidateRecord) -> tuple[CandidateRecord, None]:
-        return CandidateRecord(record.slug, {}, record.rejections), None
-
-    _mutate(store_root, slug, change)
-
-
-def discard(store_root: Path, slug: str) -> bool:
-    """Delete *slug*'s record when the record closes; return whether it existed.
-
-    A corrupt record is deleted too: it is disposable state (ADR 0066), and
-    closing must not stall on it. The lock file stays, because unlinking a lock
-    others may be waiting on would let two writers hold different inodes.
-    """
-    with _record_lock(store_root, slug):
-        return durable_unlink(waiver_candidates_path(store_root, slug))
+    return _mutate(directory, slug, change)
 
 
 @contextmanager
 def candidate_lock(directory: Path, record_id: str) -> Generator[None]:
     """Directory-owned neutral storage lock; callers acquire their record/storage lock first."""
-    with _record_lock(directory, record_id, directory):
+    with _record_lock(directory, record_id):
         yield
 
 
@@ -648,16 +612,13 @@ def _require_slug(slug: str) -> str:
     return slug
 
 
-def waiver_candidates_root(store_root: Path) -> Path:
-    """Return ``<store_root>/waiver-candidates``, the Waiver Candidate records."""
-    return Path(store_root) / "waiver-candidates"
-
-
-def waiver_candidates_path(store_root: Path, slug: str) -> Path:
+def waiver_candidates_path(directory: Path, slug: str) -> Path:
     """Return the path of the Waiver Candidate record for *slug*."""
-    return waiver_candidates_root(store_root) / f"{_require_slug(slug)}.json"
+    _require_slug(slug)
+    return Path(directory) / "waiver-candidates.json"
 
 
-def waiver_candidates_lock_path(store_root: Path, slug: str) -> Path:
+def waiver_candidates_lock_path(directory: Path, slug: str) -> Path:
     """Return the lock serializing writers of the Waiver Candidate record for *slug*."""
-    return Path(store_root) / "locks" / f"waiver-candidates-{_require_slug(slug)}.lock"
+    _require_slug(slug)
+    return Path(directory) / "waiver-candidates.lock"
