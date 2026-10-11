@@ -15,15 +15,21 @@ manual submission.
 Check the installed CLI with `booley feedback --help`; run its commands for the
 user rather than asking them to choose subcommands.
 
-Each Project has one Findings Log. In the Sandbox, its worktrees share that log
-and the default local report in the shared Project directory, even when the
-selected worktree has its own paired Project checkout. `-C` / `--project` selects
-the checkout used for context: Project discovery, and redaction for `report`,
-`export`, and `redact`. It does not move that shared log or the default report.
-Outside the Sandbox, without a shared Project directory override, storage is
-discovered from the selected checkout. Booley source checkouts share feedback
-in Git's shared metadata directory. Use the storage and report paths printed
-by the CLI; attachment paths remain as supplied and are not rebased by `-C`.
+In the Sandbox, each Project has one Findings Log shared by all of its worktrees.
+The log and default local report stay in the shared Project directory, even
+when the selected worktree has its own paired Project checkout. `-C` / `--project`
+selects the checkout used for context; it does not move that shared log or the
+default report. `BOOLEY_PROJECT_DIR` selects shared storage. Without that
+override outside the Sandbox, storage is discovered from the selected checkout
+and may use a separate log. Booley source checkouts share feedback in Git's
+shared metadata directory. Attachment paths remain as supplied and are not
+rebased by `-C`.
+
+For `report`, `export`, and `redact`, the selected checkout supplies repository
+identifiers for redaction: paths, remotes, committer identity, and `.core` names.
+Configured names and `[feedback]` / `[stealth]` redaction settings come from
+`booley.toml` in the feedback storage directory, which is the shared Project
+directory in the Sandbox; selecting a paired checkout does not select its settings.
 
 ## 1. Capture and classify
 
@@ -141,10 +147,10 @@ booley feedback list
 ```
 
 The local unredacted report is `SETUP-REPORT.md` for a setup-origin log or
-`FEEDBACK-REPORT.md` otherwise. Use the paths printed by the CLI: for a Project,
-the default storage directory is resolved by `booley.runtime.project_dir`; for
-a Booley source checkout, it is in Git's shared metadata directory. Keep reports
-and reproducer scratch work outside the RTL repository's tracked tree.
+`FEEDBACK-REPORT.md` otherwise. Run `report` without `--user-report-path` and use
+its printed report path: the parent directory is the feedback storage directory
+for this interaction. Keep reports and reproducer scratch work outside the RTL
+repository's tracked tree.
 
 Stop here unless the user explicitly requested a sanitized file or a report for
 manual submission. For that request, export exactly this interaction's safe IDs;

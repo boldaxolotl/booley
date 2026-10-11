@@ -34,6 +34,25 @@ PUBLIC_FEEDBACK_DOCS = (
 )
 
 
+@pytest.mark.parametrize(
+    "relative_path",
+    (
+        "docs/user/USAGE.md",
+        "src/booley/data/skills/booley-feedback/SKILL.md",
+    ),
+)
+def test_feedback_docs_explain_shared_storage_and_checkout_context(relative_path):
+    root = Path(__file__).parents[2]
+    text = " ".join((root / relative_path).read_text(encoding="utf-8").split())
+
+    assert "each Project has one Findings Log shared by all of its worktrees" in text
+    assert "shared Project directory" in text
+    assert "`-C` / `--project`" in text
+    assert "does not move that shared log" in text
+    assert "BOOLEY_PROJECT_DIR" in text
+    assert "may use a separate log" in text
+
+
 @pytest.mark.parametrize("relative_path", PUBLIC_FEEDBACK_DOCS)
 def test_public_docs_route_feedback_through_the_skill(relative_path):
     root = Path(__file__).parents[2]

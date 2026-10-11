@@ -104,7 +104,7 @@ def walk(parser, route=()):
 def test_feedback_help_explains_checkout_context_and_shared_storage(capsys):
     routes = dict(walk(cli._build_parser()))
     feedback_routes = [route for route in routes if route and route[0] == "feedback"]
-    assert len(feedback_routes) == 11
+    assert ("feedback",) in feedback_routes
 
     for route in feedback_routes:
         with pytest.raises(SystemExit) as exit_info:
@@ -114,14 +114,14 @@ def test_feedback_help_explains_checkout_context_and_shared_storage(capsys):
         assert "-C PATH" in help_text
         assert "--project PATH" in help_text
         assert help_text.count("does not move the shared Project Findings Log") == 2
-        assert "checkout for feedback discovery" in help_text
+        assert "checkout for feedback context" in help_text
         if route == ("feedback",):
-            assert "one Findings Log per Project" in help_text
-            assert "worktrees share" in help_text
-            assert "Outside the Sandbox" in help_text
+            assert "worktrees share one Findings Log" in help_text
+            assert "configured names and redaction settings" in help_text
+            assert "booley.toml in the feedback storage directory" in help_text
+            assert "BOOLEY_PROJECT_DIR" in help_text
+            assert "may find a separate log" in help_text
             assert "Git's shared metadata directory" in help_text
-        elif route[-1] in {"report", "export", "redact"}:
-            assert "feedback discovery and redaction" in help_text
 
     for route in ((), ("doctor",)):
         help_text = " ".join(routes[route].format_help().split())

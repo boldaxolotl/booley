@@ -264,13 +264,10 @@ def _install_project_options(parser: argparse.ArgumentParser) -> None:
                     replacement.default = argparse.SUPPRESS
         add_project_option(node, dest, cheat=route == ("cheat",))
         if route and route[0] == "feedback":
-            context = "feedback discovery"
-            if len(route) == 1 or route[-1] in {"report", "export", "redact"}:
-                context += " and redaction"
             for option in ("-C", "--project"):
                 default = " (default: discover from cwd)" if option == "-C" else ""
                 node._option_string_actions[option].help = (
-                    f"Select the checkout for {context}{default}; in the Sandbox, "
+                    f"Select the checkout for feedback context{default}; in the Sandbox, "
                     "this does not move the shared Project Findings Log"
                 )
         for action in node._actions:
