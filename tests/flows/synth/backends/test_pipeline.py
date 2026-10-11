@@ -656,6 +656,8 @@ def test_authenticated_empty_required_yosys_output_is_missing(tmp_path, empty):
         ("reports/timing/overall.rpt", "openroad"),
         ("reports/timing/overall.csv.rpt", "openroad"),
         ("openroad_dut.v", "openroad"),
+        ("reports/fanout/policy.json", "openroad"),
+        ("reports/fanout/worst.rpt", "openroad"),
     ],
 )
 @pytest.mark.parametrize("state", ["missing", "stale", "empty"])
@@ -670,18 +672,24 @@ def test_all_authenticated_required_artifacts(tmp_path, subject, stage, state):
         "reports/timing/overall.rpt",
         "reports/timing/overall.csv.rpt",
         "openroad_dut.v",
+        "reports/fanout/policy.json",
+        "reports/fanout/worst.rpt",
     ]
     for name in names:
         path = plan.build_dir / name
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("Found and reported 0 problems.\n")
+        path.write_text(
+            '{"configured_max_fanout":null,"suppression_reason":null,"design_rule":{"scope":"current_design","max_fanout":null,"source":"booley_default"},"status":"no_applicable_driver","worst_check":null}'
+            if name.endswith("policy.json")
+            else "Found and reported 0 problems.\n"
+        )
     path = plan.build_dir / subject
     if state == "missing":
         path.unlink()
     elif state == "empty":
         path.write_text("")
     outcome = syn_make.boundary_output(plan, 0, is_stale=lambda p: state == "stale" and p == path)
-    if state == "empty" and subject.endswith(".csv.rpt"):
+    if state == "empty" and (subject.endswith(".csv.rpt") or subject.endswith("worst.rpt")):
         assert "kind=missing_output" not in outcome.text
     else:
         assert f"kind=missing_output stage={stage} subject={subject}" in outcome.text

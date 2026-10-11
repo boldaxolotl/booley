@@ -91,6 +91,7 @@ def test_openroad_script_golden(
         work_dir=tmp_path,
         config=config,
         target="synth_dut",
+        fanout_report_dir=tmp_path / "reports" / "fanout",
         source_sdc_paths=(tmp_path / "target.sdc",),
     )
     script = normalize_work_dir(script_path.read_text(encoding="utf-8"), tmp_path)

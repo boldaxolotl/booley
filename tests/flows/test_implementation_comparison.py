@@ -62,8 +62,8 @@ def test_invalid_persisted_baseline_fails_closed() -> None:
         target_pairs_for_candidates(criteria, "synthesis_ok_", ["synth_after"])
 
 
-def _basis_project(tmp_path: Path, *, schema: int = 4) -> SimpleNamespace:
-    assert schema == 4
+def _basis_project(tmp_path: Path, *, schema: int = 5) -> SimpleNamespace:
+    assert schema == 5
     (tmp_path / "toy.core").write_text(
         """CAPI=2:
 name: acme:lib:toy:1.0
@@ -163,7 +163,7 @@ def test_basis_accepts_multiple_parameters_for_one_candidate(tmp_path: Path) -> 
 
 
 def test_current_schema_executes_exact_sealed_selectors(tmp_path: Path) -> None:
-    basis = _basis_project(tmp_path, schema=4)
+    basis = _basis_project(tmp_path, schema=5)
     criteria = {
         "synthesis_ok_synth_after": SimpleNamespace(params={BASELINE_TARGET_PARAM: "synth_before"})
     }
@@ -196,7 +196,7 @@ def test_synth_and_fpga_share_current_schema_pair_plan_contract(
     baseline_name: str,
     candidate_name: str,
 ) -> None:
-    basis = _basis_project(tmp_path, schema=4)
+    basis = _basis_project(tmp_path, schema=5)
     vlnv = "acme:lib:toy:1.0"
     binding = ResolvedTargetBinding(
         flow=flow,
@@ -235,7 +235,7 @@ def test_current_schema_finds_authored_criterion_and_keeps_sealed_selector(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    basis = _basis_project(tmp_path, schema=4)
+    basis = _basis_project(tmp_path, schema=5)
     (tmp_path / "other.core").write_text(
         "CAPI=2:\n"
         "name: other:lib:other:1.0\n"
@@ -286,7 +286,7 @@ def test_authored_criterion_metadata_supplies_ticket_baseline_ref(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _basis_project(tmp_path, schema=4)
+    _basis_project(tmp_path, schema=5)
     candidate = select_target(tmp_path, "synth_after", for_flow="synth")
     criteria = {
         "synthesis_ok_authored-spelling": SimpleNamespace(
@@ -318,7 +318,7 @@ def test_multiple_synth_parameters_can_share_one_target(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _basis_project(tmp_path, schema=4)
+    _basis_project(tmp_path, schema=5)
     candidate = select_target(tmp_path, "synth_after", for_flow="synth")
     criteria = {
         f"synthesis_ok_{parameter}": SimpleNamespace(
@@ -357,7 +357,7 @@ def test_plan_has_no_public_authority_constructor() -> None:
 
 
 def test_current_schema_rejects_empty_callable_selector(tmp_path: Path) -> None:
-    basis = _basis_project(tmp_path, schema=4)
+    basis = _basis_project(tmp_path, schema=5)
     empty_selector_binding = ResolvedTargetBinding(
         flow="synth",
         criterion="criteria.mandatory.synthesis_ok",
@@ -386,7 +386,7 @@ def test_current_schema_rejects_empty_callable_selector(tmp_path: Path) -> None:
 
 
 def test_sealed_plan_requires_exactly_one_binding(tmp_path: Path) -> None:
-    basis = _basis_project(tmp_path, schema=4)
+    basis = _basis_project(tmp_path, schema=5)
     basis = SimpleNamespace(
         bindings=(*basis.bindings, *basis.bindings),
         participants=basis.participants,
@@ -407,7 +407,7 @@ def test_sealed_plan_requires_exactly_one_binding(tmp_path: Path) -> None:
 
 
 def test_sealed_plan_rejects_missing_binding(tmp_path: Path) -> None:
-    basis = _basis_project(tmp_path, schema=4)
+    basis = _basis_project(tmp_path, schema=5)
     basis = SimpleNamespace(
         bindings=(),
         participants=basis.participants,
@@ -500,7 +500,7 @@ def test_baseline_flow_mismatch_is_rejected_before_setup(
 
 
 def test_baseline_checkout_missing_target_is_rejected(tmp_path: Path) -> None:
-    basis = _basis_project(tmp_path, schema=4)
+    basis = _basis_project(tmp_path, schema=5)
     criteria = {
         "synthesis_ok_synth_after": SimpleNamespace(params={BASELINE_TARGET_PARAM: "synth_before"})
     }
@@ -520,7 +520,7 @@ def test_baseline_checkout_missing_target_is_rejected(tmp_path: Path) -> None:
 
 
 def test_baseline_checkout_identity_change_is_rejected(tmp_path: Path) -> None:
-    basis = _basis_project(tmp_path, schema=4)
+    basis = _basis_project(tmp_path, schema=5)
     criteria = {
         "synthesis_ok_synth_after": SimpleNamespace(params={BASELINE_TARGET_PARAM: "synth_before"})
     }
@@ -550,7 +550,7 @@ def test_doctor_private_candidate_cannot_enter_sealed_plan(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    basis = _basis_project(tmp_path, schema=4)
+    basis = _basis_project(tmp_path, schema=5)
     binding = ResolvedTargetBinding(
         flow="synth",
         criterion="criteria.mandatory.synthesis_ok",

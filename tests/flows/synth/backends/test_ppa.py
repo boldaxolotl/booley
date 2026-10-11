@@ -48,3 +48,28 @@ def test_raw_script_and_named_recipe_are_mutually_exclusive():
 def test_raw_abc_script_must_not_be_empty():
     with pytest.raises(BoundaryError, match="non-empty"):
         ppa.validate_abc_script("+")
+
+
+def test_fanout_resolved_default_and_override_preserve_authored_integer():
+    original = openroad_ppa.openroad_profile("balanced")
+    assert original.max_fanout is None
+    configured = openroad_ppa.with_openroad_overrides(original, max_fanout=16777217)
+    assert configured.max_fanout == 16777217
+    assert original.max_fanout is None
+
+
+def test_logical_target_fanout_rejected_before_backend_transport():
+    import argparse
+
+    from booley.flows.synth.mode import SynthMode
+    from booley.flows.synth.ppa_config import append_ppa_args
+
+    command = []
+    with pytest.raises(BoundaryError, match="cannot be set when synth_mode is logical"):
+        append_ppa_args(
+            command,
+            {"advanced_settings_openroad": {"max_fanout": 50}},
+            argparse.Namespace(ppa_profile="compact"),
+            synth_mode=SynthMode.LOGICAL,
+        )
+    assert command == []
