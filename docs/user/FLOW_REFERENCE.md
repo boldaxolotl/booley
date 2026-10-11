@@ -633,10 +633,9 @@ booley flow synth --target synth_soc --baseline main   # compare with another re
 
 **Constraints.** Physical synthesis (the Target's `synth_mode`) needs a
 `file_type: SDC` fileset in the Target that creates at least one clock; Booley
-adds no timing constraints of its own. It supplies only a fanout design rule;
-see [CONFIG](CONFIG.md#asic-synthesis-flowssynth) for the default, Target setting,
-representative native reporting scope and supported singleton-mode/context/limit
-restriction. Logical synthesis skips STA and needs no
+adds no timing constraints of its own; its one generated design rule is the
+fanout limit ([`max_fanout`](CONFIG.md#asic-synthesis-flowssynth)). Logical
+synthesis skips STA and needs no
 SDC. Synthesis mode is Target-owned: there is no per-call `--synth-mode` option.
 
 Everyday options:
@@ -644,7 +643,7 @@ Everyday options:
 | Option | Effect |
 |---|---|
 | `--baseline <git-ref>` | Compare with the baseline Target at another revision (the two Targets may differ). |
-| `--ppa-profile <compact\|balanced\|max_frequency>` | Use a clean built-in PPA profile for this call. It replaces the Target's advanced backend settings except Target-owned `max_fanout`; expert flags below still apply on top. |
+| `--ppa-profile <compact\|balanced\|max_frequency>` | Use a clean built-in PPA profile for this call. It replaces the Target's advanced backend settings except `max_fanout`; expert flags below still apply on top. |
 | `--flatten` / `--no-flatten` | Override the Target's hierarchy flattening. |
 | `--frontend <sv2v\|slang>` | Override the Target's RTL frontend, mainly for diagnosis. |
 

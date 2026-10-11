@@ -23,22 +23,17 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ### Bug fixes
 
-- Restore deliberate physical fanout repair policy: the default applies a finite
-  high design rule, with authored SDC and tighter library limits preserved.
-  Target-owned `advanced_settings_openroad.max_fanout` survives PPA profile
-  overrides. Reports identify the exact native minimum-slack driver/value/source.
+- Physical synthesis no longer repairs to OpenROAD's implicit fanout of 50.
+  Fanout is limited only by the SDC, the library, or the new Target setting
+  `advanced_settings_openroad.max_fanout`, which a per-call PPA profile keeps.
+  The report's `fanout_policy` names the limit that applied and its source.
 
 ### Upgrade notes
 
-- Physical fanout results can differ from 0.3.0. Establish fresh physical recipe
-  evidence: legacy physical methodology fails closed; logical identity remains
-  unchanged. Exact fanout reporting currently supports one unchanged default
-  native mode. Mode transitions, attempted destructive native context calls,
-  TOP/effective native-INF limits and unsafe weighted-load/int conversions stop
-  before repair. Destructive calls are refused before C++ mutation. Target values
-  must fit positive finite native float32 below INF and are validated before EDA.
-  Supported `clear_sta` invalidates prior records and restores only a missing
-  fallback, preserving subsequent authored top/scoped assignments.
+- Physical synthesis results can differ from 0.3.0, and earlier physical
+  recipe evidence is no longer accepted: rerun physical synthesis to refresh
+  it. Logical synthesis is unchanged. An SDC that switches analysis mode or
+  reloads the design now stops physical synthesis before repair.
 
 - Ticket Mode commands `booley run` and `booley board` are removed from the
   public command surface. Each prints a pointer to `/booley-goal` and exits 2.

@@ -732,33 +732,15 @@ liberty-aware ABC pass. `--ppa-profile` and `--flatten`/`--no-flatten` override
 the Target defaults for one MCP tool call. Expert per-call flags override one
 backend setting after the profile is selected. An explicit per-call profile
 starts from that clean built-in profile (it does not inherit Target-level
-advanced-setting overrides); per-call expert flags can then refine it. The
-Target-owned `advanced_settings_openroad.max_fanout` design rule survives this
-profile override.
+advanced-setting overrides); per-call expert flags can then refine it.
 
-`advanced_settings_openroad.max_fanout` is optional and physical-only. It accepts
-strictly positive integers representable as positive finite native float32 below
-OpenSTA INF (approximately `1e30`); booleans, floats, strings and out-of-range
-integers fail before EDA. Valid integers above `1e20` remain supported. The
-configured integer is retained separately from the effective native value.
-Any surviving authored SDC fanout assignment suppresses the setting globally,
-even an unused scope. Scoped SDC remains intact and Liberty minima are never
-loosened. Otherwise Booley applies the setting, or a finite `1e20` fallback to
-restore default fanout repair off where no tighter native rule applies.
-
-The physical report names the native minimum-slack driver and its exact
-float32 value/source; it does not inventory every net. Native earlier design
-and scoped candidates win exact ties; a strictly tighter effective limit is
-attributed to the library. See [the report contract](../internals/FLOW_REPORTS.md#synth).
-Exact evidence currently requires one unchanged default native mode: authored
-mode transitions, multiple modes, stale scenes, attempted destructive engine
-or design context calls, and TOP/effective limits at native INF fail before
-repair. Destructive calls are refused before native mutation, even when caught
-in SDC. Supported `clear_sta` invalidates recorded rules and restores a missing
-fallback without replacing surviving authored top/scoped assignments. Unsafe
-weighted-load violations with effective limits at least `2^31` also fail before
-native integer repair. Positive fractional authored SDC remains supported with
-the native algorithm's existing fanout units and integer truncation.
+`advanced_settings_openroad.max_fanout` is the exception: it is a design rule,
+not a PPA setting, so a per-call profile keeps it. It is an optional positive
+integer that limits fanout during physical repair. An SDC that sets its own
+fanout limit replaces the setting, and tighter library limits always apply.
+With no limit from any of the three, Booley repairs no fanout. The report's
+[`fanout_policy`](../internals/FLOW_REPORTS.md#synth) names the limit that
+applied and where it came from.
 
 `balanced` is the default. Select a profile explicitly for stable PPA.
 `compact` uses default liberty mapping and 40%/0.65 controls. Every profile uses

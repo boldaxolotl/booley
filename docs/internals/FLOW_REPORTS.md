@@ -310,7 +310,7 @@ a hash suffix):
 | `yosys_complete`, `timing_complete`, `structural_checks_complete`, `ppa_complete`, `peak_rss_mb` | Which stages finished, and peak memory. |
 | `area_um2`, `area_source`, `area_kge`, `cells` | Area and cell count. |
 | `per_clock`, `wns_ns`, `whs_ns`, `reg2reg_slack_ns`, `reg2reg_fmax_mhz` | Physical-mode timing. Each `per_clock` entry has `period_ns`, `wns_ns`, `whs_ns`, `critical_path_ps`, and `fmax_mhz`. Logical mode reports `estimated_fmax_mhz` instead. |
-| `fanout_policy` | Physical-only exact native fanout point evidence; omitted until available. |
+| `fanout_policy` | Physical mode only: the fanout limit that repair used (below). |
 | `conditions` | `latches`, `expected_latches`, `unexpected_latches`, `comb_loops`, `multi_driven`, and the combined `has_critical`. |
 | `total_warnings`, `warning_summary` | Warning count, plus `unique_warnings` and counts grouped by tool, category, and disposition, with a few sample messages. |
 | `baseline`, `delta_pct`, `timing_delta_pct` | With `--baseline`: the baseline's metrics and the deltas. `baseline.ref` is the compared revision. |
@@ -320,31 +320,18 @@ a hash suffix):
 | `failure_output`, `io_bound_critical` | A failure excerpt, and whether the critical path runs through I/O. |
 | `artifacts` | The report, run log, build directory, and timing directory. |
 
-`fanout_policy` contains `configured_max_fanout` (Target integer or null),
-`suppression_reason` (`authored_sdc_fanout` or null), `design_rule`, `status`, and
-`worst_check`. `design_rule` always describes the actual native top-design
-candidate with `scope: current_design`, `max_fanout`, and `source`; it is not each
-driver's final limit. Only generated fallback has a null limit and source
-`booley_default`. `status: no_applicable_driver` instead has `worst_check: null`;
-missing or malformed evidence never means default-off.
+`fanout_policy` fields:
 
-An observed `worst_check` names `selection: minimum_slack`, guard-verified
-`analysis_mode: default`, the literal `pin`, its `max_fanout`, `source`
-(`sdc`, `library`, `setting`, or `booley_default`). When reporting and artifact
-publication succeed, `native_check_artifact` names its candidate/baseline role
-directory within the invocation-owned bundle containing the native report and
-exact metadata. Disabled reporting or copy failure retains point metrics and
-omits that pointer.
-Values are native float32 widened to JSON numbers: `20.1` becomes
-`20.100000381469727`. The native report rounds unitless fanout columns, so raw
-`26` can accompany exact `25.5`. Attribution compares complete applicable
-traced/generated non-library candidates: strictly tighter effective values imply
-library authority; exact ties retain the native earlier candidate. Library
-attribution is by elimination, not a Liberty property getter. At the fallback,
-float32 slack cancellation can tie every check; native pin ordering selects the
-point, which need not have greatest load. This point makes no independent
-all-driver coverage/off assertion and exposes no `repair_enabled` aggregate.
-The private complete rounded report serves only pre-repair integer/load safety.
+| Field | Meaning |
+|---|---|
+| `configured_max_fanout` | The Target's `max_fanout`, or null. |
+| `suppression_reason` | `authored_sdc_fanout` when an SDC fanout limit replaced the setting, else null. |
+| `design_rule` | The design-wide limit: `scope` (`current_design`), `max_fanout`, and `source` (`sdc`, `setting`, or `booley_default`). `booley_default` has a null `max_fanout`: no limit. |
+| `status` | `observed`, or `no_applicable_driver` when the design has no fanout check. |
+| `worst_check` | The driver with the least fanout slack: `pin`, `max_fanout`, `source` (as above, plus `library`), `selection` (`minimum_slack`), and `analysis_mode` (`default`). Null with `no_applicable_driver`. `native_check_artifact`, when present, is the directory holding OpenROAD's `worst.rpt` and `policy.json` for this run. |
+
+`worst_check` describes one driver, not every net. Limits are OpenROAD's
+single-precision values, so an SDC limit of `20.1` reads `20.100000381469727`.
 
 Actionable warnings set `grade: "warn"` but keep `passed: true`. Known-benign
 warnings are still counted, with a rationale. `artifacts.log` has every raw
