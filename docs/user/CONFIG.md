@@ -1260,7 +1260,16 @@ conventional Target as the bad case.
 Booley keeps an append-only log of what went wrong, what was merely annoying, and
 what you think of Booley — `.booley_project/findings.jsonl`. Setup fills it as
 it runs; afterwards, tell the **`/booley-feedback`** skill from any normal
-working session. The skill decides how to classify and record what you said:
+working session.
+
+The paths in this section refer to the resolved Project directory. In the
+Sandbox, that directory holds one Findings Log shared by all the Project's
+worktrees, including those with paired Project checkouts; see
+[feedback storage and checkout selection](USAGE.md#when-booley-itself-misbehaves).
+Booley source checkouts instead keep feedback in Git's shared metadata
+directory. Use the paths provided by the skill.
+
+The skill decides how to classify and record what you said:
 
 | Feedback | For | What the skill needs |
 | --- | --- | --- |

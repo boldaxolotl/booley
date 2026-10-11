@@ -47,6 +47,15 @@ def add_subparser(sub: argparse._SubParsersAction) -> None:
         "feedback",
         help="Log setup/port findings, say what you think of Booley, render the "
         "reports, optionally report a bug",
+        description=(
+            "Keep one Findings Log per Project. In the Sandbox, its worktrees share "
+            "that log and the default local report in the shared Project directory. "
+            "-C/--project selects the checkout for Project discovery and redaction; "
+            "it does not relocate that shared log or the default report. "
+            "Outside the Sandbox, without a shared Project directory override, "
+            "storage is discovered from the selected checkout. Booley source "
+            "checkouts share feedback in Git's shared metadata directory."
+        ),
     )
     fb = parser.add_subparsers(dest="feedback_command")
     _add_logging_subcommands(fb)
@@ -222,7 +231,7 @@ def _add_reporting_subcommands(fb: argparse._SubParsersAction) -> None:
     report_p.add_argument(
         "--user-report-path",
         metavar="PATH",
-        help="Write the user report here instead of the project dir "
+        help="Write the user report here instead of the default feedback storage directory "
         "(maintainer dogfood runs only — a real project keeps it out of the tracked tree)",
     )
 

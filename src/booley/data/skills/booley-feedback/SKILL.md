@@ -15,6 +15,16 @@ manual submission.
 Check the installed CLI with `booley feedback --help`; run its commands for the
 user rather than asking them to choose subcommands.
 
+Each Project has one Findings Log. In the Sandbox, its worktrees share that log
+and the default local report in the shared Project directory, even when the
+selected worktree has its own paired Project checkout. `-C` / `--project` selects
+the checkout used for context: Project discovery, and redaction for `report`,
+`export`, and `redact`. It does not move that shared log or the default report.
+Outside the Sandbox, without a shared Project directory override, storage is
+discovered from the selected checkout. Booley source checkouts share feedback
+in Git's shared metadata directory. Use the storage and report paths printed
+by the CLI; attachment paths remain as supplied and are not rebased by `-C`.
+
 ## 1. Capture and classify
 
 Capture perishable evidence first: the command, exit status, diagnostic output,
@@ -131,9 +141,10 @@ booley feedback list
 ```
 
 The local unredacted report is `SETUP-REPORT.md` for a setup-origin log or
-`FEEDBACK-REPORT.md` otherwise. Use the paths printed by the CLI in the directory
-resolved by `booley.runtime.project_dir`; keep reports and reproducer scratch
-work outside the RTL repository's tracked tree.
+`FEEDBACK-REPORT.md` otherwise. Use the paths printed by the CLI: for a Project,
+the default storage directory is resolved by `booley.runtime.project_dir`; for
+a Booley source checkout, it is in Git's shared metadata directory. Keep reports
+and reproducer scratch work outside the RTL repository's tracked tree.
 
 Stop here unless the user explicitly requested a sanitized file or a report for
 manual submission. For that request, export exactly this interaction's safe IDs;
@@ -154,9 +165,10 @@ Call synthetic evidence synthetic and sanitized, never guaranteed anonymous.
 The CLI withholds `unknown`, `project`, and findings missing required evidence;
 explain omissions without inventing evidence or changing ownership to pass export.
 If nothing exports or a useful unresolved observation is withheld, write a separate
-sanitized Markdown report in the resolved project data directory. Label it manually
-prepared; include only reviewed facts, expectations, available versions, workaround
-status, and explicit unknowns, with no private reproduction. Inspect it as above.
+sanitized Markdown report in the feedback storage directory described above.
+Label it manually prepared; include only reviewed facts, expectations, available
+versions, workaround status, and explicit unknowns, with no private reproduction.
+Inspect it as above.
 Project-only configuration mistakes stay local unless there is distinct Booley
 feedback to send.
 
