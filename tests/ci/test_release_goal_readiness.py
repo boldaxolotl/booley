@@ -39,7 +39,9 @@ def _evidence() -> dict:
     }
 
 
-def _run(tmp_path: Path, document: object, contract: Path = CONTRACT):
+def _run(
+    tmp_path: Path, document: object, contract: Path = CONTRACT
+) -> subprocess.CompletedProcess[str]:
     path = tmp_path / "goal-readiness.json"
     if document is not None:
         path.write_text(document if isinstance(document, str) else json.dumps(document))
@@ -61,7 +63,7 @@ def _run(tmp_path: Path, document: object, contract: Path = CONTRACT):
     )
 
 
-def test_release_accepts_successful_readiness_with_unmet_goals(tmp_path):
+def test_release_accepts_successful_readiness_with_unmet_goals(tmp_path: Path) -> None:
     result = _run(tmp_path, _evidence())
     assert result.returncode == 0, result.stderr
     assert "Goal readiness evidence passed" in result.stdout
@@ -71,7 +73,9 @@ def test_release_accepts_successful_readiness_with_unmet_goals(tmp_path):
     "document,message",
     [(None, "cannot read Goal readiness"), ("{", "malformed JSON"), ([], "must be a mapping")],
 )
-def test_release_rejects_missing_or_malformed_readiness(tmp_path, document, message):
+def test_release_rejects_missing_or_malformed_readiness(
+    tmp_path: Path, document: object, message: str
+) -> None:
     result = _run(tmp_path, document)
     assert result.returncode == 2
     assert message in result.stderr
@@ -89,7 +93,9 @@ def test_release_rejects_missing_or_malformed_readiness(tmp_path, document, mess
         ("resolved_targets", [], "resolved_targets must be a mapping"),
     ],
 )
-def test_release_rejects_invalid_readiness_boundary(tmp_path, field, value, message):
+def test_release_rejects_invalid_readiness_boundary(
+    tmp_path: Path, field: str, value: object, message: str
+) -> None:
     document = _evidence()
     document[field] = value
     result = _run(tmp_path, document)
@@ -99,7 +105,9 @@ def test_release_rejects_invalid_readiness_boundary(tmp_path, field, value, mess
 
 @pytest.mark.parametrize("operation", ["goal_enter", "goal_status"])
 @pytest.mark.parametrize("change", ["missing", "failed", "empty-response"])
-def test_release_requires_each_successful_operation(tmp_path, operation, change):
+def test_release_requires_each_successful_operation(
+    tmp_path: Path, operation: str, change: str
+) -> None:
     document = _evidence()
     if change == "missing":
         del document["steps"][operation]
@@ -113,7 +121,7 @@ def test_release_requires_each_successful_operation(tmp_path, operation, change)
 
 
 @pytest.mark.parametrize("change", ["missing", "invalid-status", "missing-target", "empty-target"])
-def test_release_names_goal_without_readiness_proof(tmp_path, change):
+def test_release_names_goal_without_readiness_proof(tmp_path: Path, change: str) -> None:
     document = _evidence()
     key = next(iter(document["goals"]))
     if change == "missing":
@@ -129,7 +137,7 @@ def test_release_names_goal_without_readiness_proof(tmp_path, change):
     assert key in result.stderr
 
 
-def test_release_rejects_mismatched_entry_record(tmp_path):
+def test_release_rejects_mismatched_entry_record(tmp_path: Path) -> None:
     document = _evidence()
     document["steps"]["goal_enter"]["record_id"] = "other"
     result = _run(tmp_path, document)
@@ -137,7 +145,7 @@ def test_release_rejects_mismatched_entry_record(tmp_path):
     assert "record_id" in result.stderr
 
 
-def test_release_derives_required_goals_from_supplied_contract(tmp_path):
+def test_release_derives_required_goals_from_supplied_contract(tmp_path: Path) -> None:
     contract = tmp_path / "demo.toml"
     contract.write_text(
         CONTRACT.read_text() + '\n[[required_goal]]\nfamily = "sim"\ntarget = "sim_dhry"\n'
@@ -157,7 +165,9 @@ def test_release_derives_required_goals_from_supplied_contract(tmp_path):
         "ci:demo:fixture:0##lint_core",
     ],
 )
-def test_release_rejects_malformed_or_mismatched_target_identity(tmp_path, identity):
+def test_release_rejects_malformed_or_mismatched_target_identity(
+    tmp_path: Path, identity: str
+) -> None:
     document = _evidence()
     document["resolved_targets"]["lint_clean_lint_core"] = identity
     result = _run(tmp_path, document)
@@ -167,7 +177,9 @@ def test_release_rejects_malformed_or_mismatched_target_identity(tmp_path, ident
 
 @pytest.mark.skipif(sys.platform == "win32", reason="release step runs under bash on Linux")
 @pytest.mark.parametrize("valid", [True, False])
-def test_release_summary_is_written_only_after_valid_readiness(tmp_path, valid):
+def test_release_summary_is_written_only_after_valid_readiness(
+    tmp_path: Path, valid: bool
+) -> None:
     directory = tmp_path / "picorv32-evidence"
     directory.mkdir()
     document = _evidence()

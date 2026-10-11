@@ -385,7 +385,9 @@ def test_measurement_arms_agree_across_workflow_classifier_and_evidence() -> Non
         (None, True),
     ],
 )
-def test_readiness_upload_marker_tracks_demo_attempt(tmp_path, failure, started):
+def test_readiness_upload_marker_tracks_demo_attempt(
+    tmp_path: Path, failure: str | None, started: bool
+) -> None:
     env = {"TOOLING_SOURCE": "local", "TOOLING_CONTEXT": ""}
     if failure:
         env[failure] = "1"

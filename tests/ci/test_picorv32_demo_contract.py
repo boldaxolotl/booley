@@ -230,7 +230,9 @@ def test_goal_readiness_evidence_is_mounted_and_retained(path, directory) -> Non
         (TEST_WORKFLOW, "Run RISC-V candidate image contract", "Upload Goal readiness evidence"),
     ],
 )
-def test_readiness_upload_requires_its_producer_to_run(path, producer_name, upload_name):
+def test_readiness_upload_requires_its_producer_to_run(
+    path: Path, producer_name: str, upload_name: str
+) -> None:
     workflow = yaml.safe_load(path.read_text())
     job = "demo-contract" if path == WORKFLOW else "bwave-smoke"
     steps = workflow["jobs"][job]["steps"]
@@ -252,7 +254,7 @@ def test_readiness_upload_requires_its_producer_to_run(path, producer_name, uplo
         assert upload["if"] == ("always() && steps.goal-readiness.outputs.started == 'true'")
 
 
-def test_release_goal_ready_validates_readiness_before_recording_check():
+def test_release_goal_ready_validates_readiness_before_recording_check() -> None:
     workflow = yaml.safe_load(PUBLISH_WORKFLOW.read_text())
     steps = [step for job in workflow["jobs"].values() for step in job["steps"]]
     records = [step for step in steps if "--check picorv32.goal-ready" in step.get("run", "")]
