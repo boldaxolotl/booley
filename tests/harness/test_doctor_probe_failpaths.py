@@ -317,6 +317,94 @@ class TestAuditTestsTomlTargets:
 
 
 # ---------------------------------------------------------------------------
+# _audit_tests_toml — Test Run name rules and the closed section key set
+# ---------------------------------------------------------------------------
+
+
+class TestAuditTestsTomlRules:
+    """Loader refusals (ADR 0072) reach the user as one Doctor FAIL with a fix."""
+
+    def _run(self, tmp_path: Path, text: str | None) -> tuple[_Rec, list[str]]:
+        project = _mk_audit(tmp_path)
+        if text is not None:
+            (project.project_dir / "tests.toml").write_text(text, encoding="utf-8")
+        rec = _Rec()
+        fixes: list[str] = []
+
+        def fail(message: str, fix: str = "") -> None:
+            rec.f(message)
+            fixes.append(fix)
+
+        doctor._audit_tests_toml(project, rec.p, rec.s, fail)
+        return rec, fixes
+
+    @pytest.mark.parametrize(
+        ("text", "finding"),
+        [
+            (
+                '[sim_fast]\ntests = ["reset", "smoke+fast"]\n',
+                "tests.toml invalid: tests.toml [sim_fast].tests: Test name "
+                "'smoke+fast' is invalid: must not contain '+'",
+            ),
+            (
+                '[sim_fast]\ntests = ["default"]\n',
+                "tests.toml invalid: tests.toml [sim_fast].tests: Test name "
+                "'default' is invalid: 'default' is reserved",
+            ),
+            (
+                '[sim_fast]\ntests = ["reset"]\nskip = ["my test"]\n',
+                "tests.toml invalid: tests.toml [sim_fast].skip: Test name "
+                "'my test' is invalid: must not contain whitespace",
+            ),
+            (
+                '[sim_fast]\ntests = ["reset", "reset"]\n',
+                "tests.toml invalid: tests.toml [sim_fast].tests registers Test "
+                "'reset' more than once",
+            ),
+        ],
+    )
+    def test_name_refusal_fails_with_a_fix_hint(self, tmp_path, text, finding):
+        rec, fixes = self._run(tmp_path, text)
+        assert [level for level, _ in rec.events] == ["fail"]
+        assert rec.fails()[0].startswith(finding)
+        assert "a Test name has no whitespace, '+', '@', quotes or backslash" in fixes[0]
+        assert "is not 'default'" in fixes[0]
+
+    @pytest.mark.parametrize("key", ["variants", "seed", "default_seed", "plusargs"])
+    def test_unknown_section_key_fails_with_a_fix_hint(self, tmp_path, key):
+        value = "{ stress = { default = 'a', a = [] } }" if key == "variants" else "1"
+        rec, fixes = self._run(tmp_path, f'[sim_fast]\ntests = ["stress"]\n{key} = {value}\n')
+        assert [level for level, _ in rec.events] == ["fail"]
+        assert rec.fails()[0] == (
+            f"tests.toml invalid: tests.toml [sim_fast] has unknown key {key!r}; "
+            "a Target section holds only: tests, test_list, skip, select, env"
+        )
+        assert "a Target section holds only tests, test_list, skip, select, env" in fixes[0]
+
+    def test_valid_file_passes(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            doctor.TargetCatalog,
+            "build",
+            classmethod(lambda _cls, _root: SimpleNamespace(list=lambda: ())),
+        )
+        text = '[sim_fast]\ntests = ["reset", "slow-first"]\nselect = "+test={name}"\n'
+        rec, fixes = self._run(tmp_path, text)
+        assert rec.events == [
+            (
+                "pass",
+                "tests.toml valid (section keys, Test names and select templates well-formed)",
+            )
+        ]
+        assert fixes == []
+
+    def test_absent_file_skips_without_naming_a_fallback_file(self, tmp_path):
+        rec, _fixes = self._run(tmp_path, None)
+        assert rec.events == [
+            ("skip", "tests.toml not present (each sim Target runs its testbench's default test)")
+        ]
+
+
+# ---------------------------------------------------------------------------
 # _check_custom_endpoints_and_criteria — both FAIL branches
 # ---------------------------------------------------------------------------
 

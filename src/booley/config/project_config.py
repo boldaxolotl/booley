@@ -10,12 +10,16 @@ from __future__ import annotations
 # Load booley.toml (project dir first, fallback to .booley/ root)
 # ---------------------------------------------------------------------------
 import logging as _logging
-import re
 import tomllib
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from booley.config.test_name_rules import (
+    ENV_NAME_PATTERN,
+    TestRunNameError,
+    validate_test_run_name_part,
+)
 from booley.core.boundary import as_dict, as_str, is_str_list
 from booley.core.checkout_role import SourceCheckoutProjectError
 from booley.core.config_paths import resolve_toml
@@ -296,10 +300,16 @@ def normalize_tests_toml(raw: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     option template, an optional ``skip = [...]`` known-hang exclusion list, and an
     optional ``env = { NAME = "value" }`` table injected into the simulator
     process. ``[test_lists]`` is a reserved top-level table.
+
+    A section holds only those keys, and every Test name obeys the Test Run
+    name rules (ADR 0072); anything else raises ``ValueError`` naming the
+    section, so no declared configuration is silently ignored.
     """
     if not isinstance(raw, Mapping):
         raise ValueError("tests.toml must contain TOML tables")
     test_lists = _normalize_test_lists(raw.get(TEST_LISTS_TABLE, {}), source="tests.toml")
+    for list_name, names in test_lists.items():
+        _validate_test_names(f"[{TEST_LISTS_TABLE}].{list_name}", names)
     return {
         target: _normalize_tests_section(target, section, test_lists)
         for target, section in raw.items()
@@ -363,6 +373,42 @@ def load_test_configuration_field(
     }
 
 
+# Every key a Target section of tests.toml may hold. The set is closed: a key
+# the Simulation Flow would not apply must fail to load rather than be ignored.
+TESTS_SECTION_KEYS = ("tests", "test_list", "skip", "select", "env")
+
+
+def _validate_test_names(where: str, names: list[str]) -> None:
+    """Refuse a Test name that breaks the Test Run name rules (ADR 0072)."""
+    for name in names:
+        try:
+            validate_test_run_name_part(name, kind="Test")
+        except TestRunNameError as exc:
+            raise ValueError(f"tests.toml {where}: {exc}") from exc
+
+
+def _validate_tests_section_keys(target: str, section: Mapping[str, Any]) -> None:
+    """Refuse a Target section key outside :data:`TESTS_SECTION_KEYS`."""
+    for key in section:
+        if key not in TESTS_SECTION_KEYS:
+            raise ValueError(
+                f"tests.toml [{target}] has unknown key {key!r}; a Target section "
+                f"holds only: {', '.join(TESTS_SECTION_KEYS)}"
+            )
+
+
+def _validate_unique_tests(target: str, tests: list[str]) -> None:
+    """Refuse a Test registered twice for one Target."""
+    seen: set[str] = set()
+    for name in tests:
+        if name in seen:
+            raise ValueError(
+                f"tests.toml [{target}].tests registers Test {name!r} more than "
+                "once; each Test name must be unique within a Target"
+            )
+        seen.add(name)
+
+
 def _normalize_tests_section(
     target: str,
     section: Any,
@@ -370,6 +416,7 @@ def _normalize_tests_section(
 ) -> dict[str, Any]:
     if not isinstance(section, Mapping):
         raise ValueError(f"tests.toml [{target}] must be a table")
+    _validate_tests_section_keys(target, section)
     normalized = dict(section)
 
     list_ref = normalized.pop("test_list", None)
@@ -388,6 +435,11 @@ def _normalize_tests_section(
         raise ValueError(f"tests.toml [{target}].tests must be list[str]")
     if "skip" in normalized and not is_str_list(normalized["skip"]):
         raise ValueError(f"tests.toml [{target}].skip must be list[str]")
+    if "tests" in normalized:
+        _validate_test_names(f"[{target}].tests", normalized["tests"])
+        _validate_unique_tests(target, normalized["tests"])
+    if "skip" in normalized:
+        _validate_test_names(f"[{target}].skip", normalized["skip"])
     if "select" in normalized:
         normalized["select"] = _validate_select_template(target, normalized["select"])
     if "env" in normalized:
@@ -398,7 +450,7 @@ def _normalize_tests_section(
 # Environment variable names are conventionally ``[A-Za-z_][A-Za-z0-9_]*``;
 # anything else cannot be exported by a POSIX shell, so reject it at the config
 # boundary rather than emitting a shell line that silently fails to parse.
-_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# The rule (``ENV_NAME_PATTERN``) is shared with Test Variant environment tables.
 
 
 def _validate_env_table(target: str, raw: Any) -> dict[str, str]:
@@ -415,7 +467,7 @@ def _validate_env_table(target: str, raw: Any) -> dict[str, str]:
         raise ValueError(f'tests.toml [{target}].env must be a table of NAME = "value" pairs')
     env: dict[str, str] = {}
     for name, value in raw.items():
-        if not isinstance(name, str) or not _ENV_NAME_RE.match(name):
+        if not isinstance(name, str) or not ENV_NAME_PATTERN.match(name):
             raise ValueError(
                 f"tests.toml [{target}].env key {name!r} is not a valid environment "
                 "variable name ([A-Za-z_][A-Za-z0-9_]*)"
