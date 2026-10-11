@@ -4494,6 +4494,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             )
         )
         requests: list[NewCampaignRunRequest] = []
+        self._freeze_baseline_test_runs(requirements, test_names_map)
         self.args.work_dir = worktree
         try:
             for target in baseline_targets:
@@ -4697,6 +4698,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             baseline_ref,
             paired_project=self._paired_project_baseline,
         ) as worktree:
+            self._freeze_baseline_test_runs(requirements, test_names_map)
             self.args.work_dir = worktree
             try:
                 for target in baseline_targets:
@@ -4801,7 +4803,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     def _ordinary_campaign_inputs(self, target, test_names_map, handle, selected_override):
         inspection = TargetCatalog.build(handle.project_root).inspect(handle)
         selection = (
-            self._execution_selection(list(selected_override))
+            self._baseline_selection(target, tuple(selected_override))
             if selected_override is not None
             else self._test_run_selection(target, test_names_map)
         )
@@ -4818,6 +4820,40 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         required = tuple(name for name in suite.tests if name is not None)
         catalog_backed = bool(lookup_target_section(test_names_map, target) or [])
         return inspection, preview, disclosures, required, catalog_backed
+
+    def _freeze_baseline_test_runs(
+        self,
+        requirements: Sequence[tuple[str, str, str]],
+        test_names_map: Mapping[str, list[str]],
+    ) -> None:
+        """Remember the candidate's Test Run of every Cycle Count baseline Test.
+
+        A relative Cycle Count compares one Test Run on two revisions. The
+        baseline therefore runs the candidate's concrete Test Run (the same
+        Test Variant arguments, environment and seed), not whatever the
+        baseline checkout's own ``tests.toml`` would resolve. Call this in the
+        candidate checkout, before planning moves to the baseline worktree.
+        """
+        frozen: dict[tuple[str, str], TestRun] = {}
+        for candidate, baseline, test in requirements:
+            try:
+                runs = self._resolve_test_runs(candidate, test_names_map)
+            except (fusesoc_registry.FuseSocError, ValueError):
+                continue
+            run = next((item for item in runs if item.test == test), None)
+            if run is not None:
+                frozen.setdefault((baseline, test), run)
+        self._baseline_test_runs = frozen
+
+    def _baseline_selection(
+        self, target: str, tests: tuple[str, ...]
+    ) -> SelectedTestRuns | NamedTests | DefaultSelection:
+        """Select baseline *tests* as the candidate's Test Runs where it runs them."""
+        frozen: dict[tuple[str, str], TestRun] = getattr(self, "_baseline_test_runs", {})
+        runs = tuple(frozen.get((target, test)) for test in tests)
+        if tests and all(run is not None for run in runs):
+            return SelectedTestRuns(cast(tuple[TestRun, ...], runs))
+        return self._execution_selection(list(tests))
 
     def _cocotb_campaign_plan(
         self,

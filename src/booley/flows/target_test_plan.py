@@ -340,6 +340,20 @@ class TargetTestPlan:
             for test in tests
         )
 
+    def require_applicable(self, run: TestRun) -> None:
+        """Refuse a Test Run resolved elsewhere whose seed this Target cannot apply.
+
+        A Test Run can be carried to another checkout of the Target: a
+        resumed campaign, or the baseline revision of a Cycle Count
+        comparison. If the Target is unseeded there, the recorded seed would
+        be dropped silently and the record would be false. Raises
+        :class:`UnseededTargetError`.
+        """
+        if run.seed is not None and not self.mechanism.seeded:
+            raise UnseededTargetError(
+                f"Test Run {run.name!r} has a seed, but {self.unseeded_reason()}"
+            )
+
     def launch(self, runs: Sequence[TestRun]) -> TestRunLaunch:
         """What one simulator process needs to run *runs*.
 

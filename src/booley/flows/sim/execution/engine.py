@@ -1635,6 +1635,8 @@ def group_test_runs(
         return plan.default_runs_for(test_names)
     if _group_names(test_runs) != test_names:
         raise ValueError("Simulation Test Runs disagree with the group's Test names")
+    for run in test_runs:
+        plan.require_applicable(run)
     return test_runs
 
 
