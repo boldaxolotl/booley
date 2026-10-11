@@ -701,8 +701,11 @@ Both modes expose the same canonical area fields: `area_um2` and
 
 Beyond the parsed metrics, [`artifacts.dirs`](#shared-run-logs-and-artifacts) names the two
 directories holding everything the run wrote. Successful physical runs also
-preserve `fanout/worst.rpt` and `policy.json` in the invocation-owned artifact
-directory named by `fanout_policy.worst_check.native_check_artifact`:
+preserve `worst.rpt` and `policy.json` in distinct candidate/baseline role
+directories within the invocation-owned fanout bundle. The published directory
+is named by `fanout_policy.worst_check.native_check_artifact` only after both
+files are copied; disabled reporting or copy failure retains exact point metrics
+without that pointer:
 
 - **`timing`** — physical-mode STA reports: `overall.rpt` and its
   machine-readable `overall.csv.rpt` twin plus `reg2reg.rpt`. List it for the

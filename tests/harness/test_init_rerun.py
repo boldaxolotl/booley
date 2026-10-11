@@ -340,6 +340,8 @@ class TestFullInitRerun:
         )
         assert "project-git-hooks.pyz" in (hooks_dir / "commit-msg").read_text(encoding="utf-8")
 
+    # Windows CI measured 35.8s; 120s preserves the required timeout headroom.
+    @pytest.mark.timeout(120)
     def test_gitignore_selfheal_restores_deleted_booley_pattern(self, repo: Path):
         assert _run_full_init(repo) in (0, 2)
         gitignore = repo / ".booley_project" / ".gitignore"

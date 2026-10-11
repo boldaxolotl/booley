@@ -330,8 +330,11 @@ missing or malformed evidence never means default-off.
 
 An observed `worst_check` names `selection: minimum_slack`, guard-verified
 `analysis_mode: default`, the literal `pin`, its `max_fanout`, `source`
-(`sdc`, `library`, `setting`, or `booley_default`), and an invocation-owned
-`native_check_artifact` directory containing the native report and exact metadata.
+(`sdc`, `library`, `setting`, or `booley_default`). When reporting and artifact
+publication succeed, `native_check_artifact` names its candidate/baseline role
+directory within the invocation-owned bundle containing the native report and
+exact metadata. Disabled reporting or copy failure retains point metrics and
+omits that pointer.
 Values are native float32 widened to JSON numbers: `20.1` becomes
 `20.100000381469727`. The native report rounds unitless fanout columns, so raw
 `26` can accompany exact `25.5`. Attribution compares complete applicable

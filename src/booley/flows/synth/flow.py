@@ -584,6 +584,19 @@ def _detect_critical_conditions(output: str) -> tuple[int, int, int]:
     return latches, comb_loops, multi_driven
 
 
+def _parse_fanout_policy(output: str) -> tuple[dict[str, Any] | None, str]:
+    """Keep malformed external metadata within the boundary failure report."""
+    from booley.flows.synth.backends.openroad.fanout import parse_policy
+
+    policies = re.findall(r"^OPENROAD_FANOUT_POLICY: (.+)$", output, re.MULTILINE)
+    if not policies:
+        return None, ""
+    try:
+        return parse_policy(policies[-1]), ""
+    except (ValueError, TypeError):
+        return None, "malformed native fanout policy"
+
+
 def _parse_synth_output(
     output: str,
     elapsed_s: float,
@@ -609,14 +622,12 @@ def _parse_synth_output(
     latches, comb_loops, multi_driven = _detect_critical_conditions(output)
     peak_matches = re.findall(r"Peak RSS:\s*([\d.]+)\s*MB", output, re.IGNORECASE)
     fanout_policy = None
+    infra_error = ""
     if mode.runs_openroad:
-        from booley.flows.synth.backends.openroad.fanout import parse_policy
-
-        policies = re.findall(r"^OPENROAD_FANOUT_POLICY: (.+)$", output, re.MULTILINE)
-        if policies:
-            fanout_policy = parse_policy(policies[-1])
+        fanout_policy, infra_error = _parse_fanout_policy(output)
     return SynthMetrics(
         fanout_policy=fanout_policy,
+        infra_error=infra_error,
         area_um2=area_um2,
         area_source=area_source,
         area_kge=area_kge,
@@ -1597,6 +1608,8 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         """Interpret a boundary result from its freshness-gated artifacts."""
         outcome, output = self._read_boundary_output(plan, proc_result)
         metrics = _parse_synth_output(output, elapsed, plan.spec.timing.mode)
+        if metrics.infra_error:
+            output += "\nBOOLEY_INPUT_ERROR: " + metrics.infra_error
         self._apply_boundary_completion(metrics, outcome, proc_result, output)
         self._record_boundary_diagnostics(target, metrics, proc_result, elapsed, output)
         if metrics.fanout_policy is not None and metrics.ppa_complete:
@@ -1606,23 +1619,37 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
 
     def _preserve_fanout(self, target: str, build_dir: Path, metrics: SynthMetrics) -> None:
         """Publish only complete invocation-owned native point evidence."""
-        invocation = self.reserve_invocation_dir()
-        assert invocation is not None
-        names = ("worst.rpt", "policy.json")
-        for name in names:
-            artifacts.publish_file(
-                invocation,
-                ("artifacts", f"synth_{synth_target_report_slug(target)}", "fanout", name),
-                build_dir / "reports" / "fanout" / name,
-                work_dir=self.args.work_dir,
-            )
         assert metrics.fanout_policy is not None
         worst = metrics.fanout_policy.get("worst_check")
         if worst is not None:
-            worst["native_check_artifact"] = posix_relpath(
-                invocation / "artifacts" / f"synth_{synth_target_report_slug(target)}" / "fanout",
-                self.args.work_dir,
+            worst.pop("native_check_artifact", None)
+        destination = None
+        created = False
+        try:
+            invocation = self.reserve_invocation_dir()
+            if invocation is None:
+                return
+            root = Path(getattr(self, "_project_root", None) or self.args.work_dir)
+            role = getattr(self, "_execution_role", "candidate")
+            components = ("artifacts", f"synth_{synth_target_report_slug(target)}", "fanout", role)
+            destination = invocation.joinpath(*components)
+            created = not destination.exists()
+            for name in ("worst.rpt", "policy.json"):
+                artifacts.publish_file(
+                    invocation,
+                    (*components, name),
+                    build_dir / "reports" / "fanout" / name,
+                    work_dir=root,
+                )
+        except (OSError, ValueError):
+            if created and destination is not None:
+                shutil.rmtree(destination, ignore_errors=True)
+            logger.warning(
+                "could not publish numbered synth fanout evidence for %s", target, exc_info=True
             )
+            return
+        if worst is not None:
+            worst["native_check_artifact"] = posix_relpath(destination, root)
 
     def _artifact_dirs(self, target: str, synth_mode: SynthMode | None) -> dict[str, str]:
         """The directories holding *target*'s synth artifacts, by role.

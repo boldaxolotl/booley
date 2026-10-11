@@ -715,7 +715,7 @@ Criteria are defined in `criteria.toml`, where custom tools can add their own.
 
 ```bash
 # Goal inspection and Dashboard (Sandbox)
-booley goal status                # status for this worktree
+booley goal status                # this worktree's Goal Mode, or every active Goal Mode in the Project when this worktree hosts none
 booley dashboard                  # sessions, Goals, and Jobs
 
 # Worktrees (container)

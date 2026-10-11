@@ -430,7 +430,7 @@ def _check_policy_inputs(value: dict[str, Any]) -> None:
 
 
 def _check_policy_rule(rule: object, *, design: bool = False) -> None:
-    import math
+    from booley.core.boundary import BoundaryError, require_finite_number_value
 
     sources = {"sdc", "setting", "booley_default"}
     if not design:
@@ -443,9 +443,10 @@ def _check_policy_rule(rule: object, *, design: bool = False) -> None:
     if rule["source"] == "booley_default":
         if limit is not None:
             raise ValueError("default native fanout must have a null public value")
-    elif (
-        isinstance(limit, bool)
-        or not isinstance(limit, (int, float))
-        or not (0 < limit < 1.0000000150474662e30 and math.isfinite(limit))
-    ):
-        raise ValueError("invalid effective native fanout value")
+    else:
+        try:
+            limit = require_finite_number_value(limit, field="effective native fanout")
+        except BoundaryError:
+            raise ValueError("invalid effective native fanout value") from None
+        if not 0 < limit < 1.0000000150474662e30:
+            raise ValueError("invalid effective native fanout value")

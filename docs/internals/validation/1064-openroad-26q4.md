@@ -274,14 +274,15 @@ rejected even when the selected minimum-slack point has a safe library limit.
 The buffer-only huge weighted fixture separately exercises actual repeater
 insertion without extending the initial-driver safety claim to new repeaters.
 
-The final actual 100,000 independent-driver diagnostic measured 7.685 s, after native
+The review follow-up 100,000 independent-driver diagnostic measured 6.384 s, after native
 stage profiling removed redundant private-row canonical lookups and introduced
 a bounded two-entry cache of byte-identical parsed row bodies. Every row still
 checks framing, unique literal identity, count, status, unsafe integer/default
 bounds and first-row pairing. Eleven native malformed/cache controls cover
 those obligations. The private report is 38,466,949 bytes within its
 108,355,560-byte driver/name budget; public evidence is 461 bytes and peak RSS
-is 1,328,812 KiB. The private rounded report proves safety, not exact all-driver
+is 1,329,912 KiB, measured for the native child with `/usr/bin/time` under a
+120 s process-group timeout. The private rounded report proves safety, not exact all-driver
 limits or uniform authority. A supplemental full 10,000-load case with native
 load units of 2 and setting50 inserted 292 buffers but retained 206 native
 fanout violations. Its original zero-violation assertion failed; the completed

@@ -10,6 +10,7 @@ from typing import Any
 
 from booley.core.boundary import (
     BoundaryError,
+    as_positive_int,
     require_bool,
     require_dict,
     require_finite_number,
@@ -275,8 +276,10 @@ def _append_cli_bool(cmd: list[str], args: SynthRequest | argparse.Namespace, na
 
 def validate_max_fanout(value: object, *, field: str) -> int:
     """Validate a Target integer against the native OpenSTA float range."""
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+    validated = as_positive_int(value, 0)
+    if validated == 0:
         raise BoundaryError(f"{field} must be a strictly positive integer")
+    value = validated
     try:
         native = struct.unpack("f", struct.pack("f", float(value)))[0]
     except (OverflowError, struct.error):

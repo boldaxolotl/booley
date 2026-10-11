@@ -6,14 +6,19 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import shutil
+import signal
 import subprocess
 import time
 from pathlib import Path
 
 from booley.flows.synth.backends.openroad.timing import OpenRoadPdk, write_openroad_script
 from booley.flows.synth.timing import StaTimingConfig
+
+BENCHMARK_TIMEOUT_S = 120
+BENCHMARK_TIMER = "/usr/bin/time"
 
 
 def fixture(path: Path, count: int) -> tuple[Path, Path]:
@@ -206,6 +211,7 @@ def run_case(
     library_pin_cell: str = "INV_X1",
     fanout_load: float | None = None,
     port_driver: bool = False,
+    expected_limit: float | None = None,
 ) -> dict:
     """Check point source and real physical execution for one workload."""
     script = generate(
@@ -232,11 +238,22 @@ def run_case(
         else "booley_default"
     )
     selected = "reset_i" if port_driver else "driver/ZN"
-    return check_physical_arm(path, result, expected, selected, fanout_load)
+    if not sdc_rule:
+        expected_limit = library_pin_limit if library_pin_limit is not None else library_limit
+        if expected_limit is None:
+            expected_limit = setting
+    elif expected_limit is None:
+        raise RuntimeError("authored physical fixture lacks its expected exact limit")
+    return check_physical_arm(path, result, expected, selected, fanout_load, expected_limit)
 
 
 def check_physical_arm(
-    path: Path, result: dict, expected: str, selected: str, fanout_load: float | None
+    path: Path,
+    result: dict,
+    expected: str,
+    selected: str,
+    fanout_load: float | None,
+    expected_limit: float | None,
 ) -> dict:
     """Require completed physical stages, exact provenance and actual fanout repair."""
     policy = json.loads((path / "reports/fanout/policy.json").read_text(encoding="utf-8"))
@@ -254,6 +271,8 @@ def check_physical_arm(
         raise RuntimeError("native policy arm emitted an input error or warning")
     if policy["worst_check"]["source"] != expected:
         raise RuntimeError(f"native source {policy} differs from {expected}")
+    if policy["worst_check"]["max_fanout"] != expected_limit:
+        raise RuntimeError(f"native exact limit {policy} differs from {expected_limit}")
     if expected != "booley_default" and policy["worst_check"]["pin"] != selected:
         raise RuntimeError("native fixture did not select constrained reset driver")
     remaining = re.findall(r"POST_REPAIR_FANOUT_VIOLATIONS: (\d+)", text)
@@ -877,6 +896,28 @@ def independent_fixture(path: Path, count: int) -> None:
     (path / "dut.v").write_text("\n".join([*lines, "endmodule"]) + "\n", encoding="utf-8")
 
 
+def benchmark_native(script: Path) -> int:
+    """Bound the entire native process group and record this child's peak RSS."""
+    rss = script.parent / "native-rss-kib.txt"
+    with (script.parent / "native.log").open("w", encoding="utf-8") as stream:
+        process = subprocess.Popen(
+            [BENCHMARK_TIMER, "-f", "%M", "-o", str(rss), "openroad", "-exit", str(script)],
+            cwd=script.parent,
+            stdout=stream,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+        try:
+            process.communicate(timeout=BENCHMARK_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.communicate()
+            raise
+    if process.returncode:
+        raise RuntimeError(f"native diagnostic benchmark failed: {script.parent}")
+    return int(rss.read_text(encoding="utf-8").strip())
+
+
 def benchmark(path: Path, pdk: Path, count: int) -> dict:
     """Measure every native evidence pass on actual independent drivers."""
     script = generate(path, pdk, count, setting=None, sdc_rule="", library_limit=None, setup=False)
@@ -889,19 +930,10 @@ def benchmark(path: Path, pdk: Path, count: int) -> dict:
     text += "\nset started [clock milliseconds]\nbooley_fanout::checkpoint\n" + boundary_end
     text += 'puts "DIAGNOSTIC_MS: [expr {[clock milliseconds]-$started}]"\n'
     script.write_text(text, encoding="utf-8")
-    import resource
-
-    with (path / "native.log").open("w", encoding="utf-8") as stream:
-        process = subprocess.run(
-            ["openroad", "-exit", str(script)],
-            cwd=path,
-            stdout=stream,
-            stderr=subprocess.STDOUT,
-            check=False,
-        )
+    peak_rss = benchmark_native(script)
     output = (path / "native.log").read_text(encoding="utf-8")
     measured = re.findall(r"DIAGNOSTIC_MS: (\d+)", output)
-    if process.returncode or len(measured) != 1:
+    if len(measured) != 1:
         raise RuntimeError(f"native diagnostic benchmark failed: {path}")
     seconds = int(measured[0]) / 1000
     private_bytes = (path / "reports/fanout/safety.rpt").stat().st_size
@@ -914,7 +946,7 @@ def benchmark(path: Path, pdk: Path, count: int) -> dict:
         "diagnostic_s": seconds,
         "private_bytes": private_bytes,
         "private_budget_bytes": budget,
-        "peak_rss_kib": resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss,
+        "peak_rss_kib": peak_rss,
         "public_bytes": sum(
             (path / "reports/fanout" / name).stat().st_size
             for name in ("policy.json", "worst.rpt")
@@ -953,13 +985,21 @@ def full_variants(path: Path, pdk: Path) -> dict:
     """Require full physical10k design/port/pin/load-unit variants."""
     results = {}
     for name, options in (
-        ("design100", {"setting": 50, "sdc_rule": "set_max_fanout 100 [current_design]\n"}),
+        (
+            "design100",
+            {
+                "setting": 50,
+                "sdc_rule": "set_max_fanout 100 [current_design]\n",
+                "expected_limit": 100,
+            },
+        ),
         (
             "port100",
             {
                 "setting": 50,
                 "port_driver": True,
                 "sdc_rule": "set_max_fanout 100 [get_ports reset_i]\n",
+                "expected_limit": 100,
             },
         ),
         ("library_pin25", {"library_pin_limit": 25}),
@@ -982,7 +1022,7 @@ def main() -> None:
     results = {
         "default": run_case(args.work_dir / "default", args.pdk_root, 10000, executable=executable)
     }
-    if args.standalone and results["default"]["repair_s"] > args.repair_timeout_s:
+    if results["default"]["repair_s"] > args.repair_timeout_s:
         raise RuntimeError("actual10k repair exceeded the fixed15s acceptance bound")
     count = 10000 if args.standalone else 200
     for name, options in (
@@ -992,6 +1032,7 @@ def main() -> None:
             {
                 "setting": 50,
                 "sdc_rule": "set_max_fanout 100 [sta::Instance_cell [get_cells driver]]\n",
+                "expected_limit": 100,
             },
         ),
         ("library25", {"library_limit": 25}),

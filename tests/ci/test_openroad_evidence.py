@@ -177,3 +177,60 @@ def test_successful_openroad_probe_requires_all_export_groups(tmp_path: Path) ->
     result, _ = _run_staged_probe(tmp_path, "missing-export", False)
     assert result.returncode == 1, result.stdout + result.stderr
     assert "Could not retain all OpenROAD runtime evidence" in result.stderr
+
+
+@pytest.fixture
+def fanout_helper():
+    import importlib.util
+
+    specification = importlib.util.spec_from_file_location(
+        "reviewed_fanout_helper", _ROOT / ".github/scripts/verify_openroad_fanout.py"
+    )
+    assert specification is not None and specification.loader is not None
+    helper = importlib.util.module_from_spec(specification)
+    specification.loader.exec_module(helper)
+    return helper
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX native process group benchmark")
+def test_stalled_native_benchmark_is_bounded_and_retains_partial_log(
+    tmp_path, monkeypatch, fanout_helper
+):
+    engine = tmp_path / "openroad"
+    engine.write_text("#!/bin/sh\necho partial-native-diagnostic\nsleep 30\n")
+    engine.chmod(0o755)
+    script = tmp_path / "run.tcl"
+    script.touch()
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    timer = tmp_path / "test-timer"
+    timer.write_text('#!/bin/sh\nshift 4\nexec "$@"\n')
+    timer.chmod(0o755)
+    monkeypatch.setattr(fanout_helper, "BENCHMARK_TIMER", str(timer))
+    monkeypatch.setattr(fanout_helper, "BENCHMARK_TIMEOUT_S", 0.1)
+    with pytest.raises(subprocess.TimeoutExpired):
+        fanout_helper.benchmark_native(script)
+    assert "partial-native-diagnostic" in (tmp_path / "native.log").read_text()
+
+
+def test_native_physical_arm_checks_exact_value_not_only_source(tmp_path, fanout_helper):
+    policy_dir = tmp_path / "reports/fanout"
+    policy_dir.mkdir(parents=True)
+    (policy_dir / "policy.json").write_text(
+        '{"worst_check":{"source":"setting","pin":"driver/ZN","max_fanout":51}}'
+    )
+    stages = ("floorplan", "global_placement", "repair_design", "detailed_placement", "sta_report")
+    (tmp_path / "native.log").write_text("\n".join(f"BOOLEY_STAGE: {stage}" for stage in stages))
+    with pytest.raises(RuntimeError, match="native exact limit"):
+        fanout_helper.check_physical_arm(tmp_path, {}, "setting", "driver/ZN", 2, 50)
+
+
+def test_shared_ci_default_repair_bound_rejects_regression(tmp_path, monkeypatch, fanout_helper):
+    from types import SimpleNamespace
+
+    arguments = SimpleNamespace(
+        work_dir=tmp_path, pdk_root=tmp_path, standalone=False, repair_timeout_s=15
+    )
+    monkeypatch.setattr(fanout_helper, "native_arguments", lambda: (arguments, "openroad"))
+    monkeypatch.setattr(fanout_helper, "run_case", lambda *args, **kwargs: {"repair_s": 30})
+    with pytest.raises(RuntimeError, match="repair exceeded"):
+        fanout_helper.main()
