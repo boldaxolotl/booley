@@ -756,6 +756,9 @@ jobs:
         env:
           IMAGE_DIGEST: ${{ needs.build-and-push-riscv.outputs.image-digest }}
         run: |
+          python .github/scripts/release_validation/goal_readiness.py \
+            --contract .github/contracts/picorv32-demo.toml \
+            --readiness "${RUNNER_TEMP}/picorv32-evidence/goal-readiness.json"
           python .github/scripts/release_validation/evidence.py \
             --candidate-sha "${GITHUB_SHA}" --image "riscv=${IMAGE_DIGEST}" \
             --check picorv32.goal-ready --check picorv32.contract \

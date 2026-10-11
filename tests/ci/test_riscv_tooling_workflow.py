@@ -42,6 +42,8 @@ case "$*" in
   *"riscv_tooling.py checks"*) echo true ;;
   *"riscv_tooling.py resolve"*) exit "${RESOLVE_STATUS:-0}" ;;
   *"--name riscv_tooling_compat"*) exit "${COMPAT_STATUS:-0}" ;;
+  *"--name image_contract_size_resources"*) exit "${IMAGE_CONTRACT_STATUS:-0}" ;;
+  *"--name picorv32_runtime_demo"*) exit "${DEMO_STATUS:-0}" ;;
 esac
 exit 0
 """
@@ -372,3 +374,27 @@ def test_measurement_arms_agree_across_workflow_classifier_and_evidence() -> Non
 
     assert tuple(dispatch) == ci_changes.RISCV_MEASUREMENT_ARMS
     assert get_args(riscv_phase_metrics.MeasurementArm) == ci_changes.RISCV_MEASUREMENT_ARMS
+
+
+@pytest.mark.parametrize(
+    "failure,started",
+    [
+        ("LOCAL_BUILD_STATUS", False),
+        ("IMAGE_CONTRACT_STATUS", False),
+        ("DEMO_STATUS", True),
+        (None, True),
+    ],
+)
+def test_readiness_upload_marker_tracks_demo_attempt(tmp_path, failure, started):
+    env = {"TOOLING_SOURCE": "local", "TOOLING_CONTEXT": ""}
+    if failure:
+        env[failure] = "1"
+    result, calls = _run(tmp_path, _step("Run RISC-V candidate image contract"), env)
+    assert result.returncode == (1 if failure else 0), result.stderr
+    marker = tmp_path / "runner/riscv-image-evidence/goal-readiness-started"
+    assert marker.exists() == started
+    collected, _ = _run(tmp_path, _step("Read Goal readiness attempt marker"), {})
+    assert collected.returncode == 0, collected.stderr
+    output = tmp_path / "github-output"
+    assert (output.exists() and "started=true" in output.read_text()) == started
+    assert any("--name picorv32_runtime_demo" in call for call in calls) == started

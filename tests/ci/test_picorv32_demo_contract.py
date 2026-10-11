@@ -200,7 +200,7 @@ def test_goal_readiness_evidence_is_mounted_and_retained(path, directory) -> Non
         upload = next(
             step for step in steps if step.get("name") == "Upload Goal readiness evidence"
         )
-        assert upload["if"] == "always() && needs.changes.outputs.riscv_image == 'true'"
+        assert upload["if"] == ("always() && steps.goal-readiness.outputs.started == 'true'")
         assert (
             upload["with"]["path"]
             == "${{ runner.temp }}/riscv-image-evidence/goal-readiness/goal-readiness.json"
@@ -217,6 +217,56 @@ def test_goal_readiness_evidence_is_mounted_and_retained(path, directory) -> Non
         step.get("if") == "always()" and f"/{directory}/" in step["with"]["path"]
         for step in uploads
     )
+
+
+@pytest.mark.parametrize(
+    "path,producer_name,upload_name",
+    [
+        (
+            WORKFLOW,
+            "Verify public demo contract with current Booley source",
+            "Retain Goal readiness evidence",
+        ),
+        (TEST_WORKFLOW, "Run RISC-V candidate image contract", "Upload Goal readiness evidence"),
+    ],
+)
+def test_readiness_upload_requires_its_producer_to_run(path, producer_name, upload_name):
+    workflow = yaml.safe_load(path.read_text())
+    job = "demo-contract" if path == WORKFLOW else "bwave-smoke"
+    steps = workflow["jobs"][job]["steps"]
+    all_steps = [child for step in steps for child in step.get("parallel", [step])]
+    producer = next(step for step in all_steps if step.get("name") == producer_name)
+    upload = next(step for step in steps if step.get("name") == upload_name)
+    assert upload["with"]["if-no-files-found"] == "error"
+    if path == WORKFLOW:
+        assert producer["id"] == "goal-readiness"
+        assert upload["if"] == (
+            "always() && (steps.goal-readiness.outcome == 'success' || "
+            "steps.goal-readiness.outcome == 'failure')"
+        )
+    else:
+        marker = next(step for step in steps if step.get("id") == "goal-readiness")
+        assert marker["name"] == "Read Goal readiness attempt marker"
+        assert "goal-readiness-started" in producer["run"]
+        assert steps.index(marker) < steps.index(upload)
+        assert upload["if"] == ("always() && steps.goal-readiness.outputs.started == 'true'")
+
+
+def test_release_goal_ready_validates_readiness_before_recording_check():
+    workflow = yaml.safe_load(PUBLISH_WORKFLOW.read_text())
+    steps = [step for job in workflow["jobs"].values() for step in job["steps"]]
+    records = [step for step in steps if "--check picorv32.goal-ready" in step.get("run", "")]
+    assert len(records) == 1
+    command = records[0]["run"]
+    validator = "python .github/scripts/release_validation/goal_readiness.py"
+    assert validator in command
+    assert command.index(validator) < command.index(
+        "python .github/scripts/release_validation/evidence.py"
+    )
+    validation = command[: command.index("python .github/scripts/release_validation/evidence.py")]
+    assert "--contract .github/contracts/picorv32-demo.toml" in validation
+    assert '--readiness "${RUNNER_TEMP}/picorv32-evidence/goal-readiness.json"' in validation
+    assert "||" not in validation
 
 
 def test_contract_rejects_scalar_required_targets(tmp_path: Path) -> None:
