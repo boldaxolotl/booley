@@ -1,0 +1,115 @@
+{
+  "after": {
+    "family": "coverage",
+    "key": "coverage_top",
+    "origins": [
+      "ad-hoc"
+    ],
+    "params": {
+      "metrics": {
+        "line": {
+          "min_pct": 100
+        }
+      },
+      "target": "top",
+      "tests": "all"
+    },
+    "target": "top"
+  },
+  "after_arg": null,
+  "before": {
+    "family": "coverage",
+    "key": "coverage_top",
+    "origins": [
+      "ad-hoc"
+    ],
+    "params": {
+      "metrics": {
+        "line": {
+          "min_pct": 100
+        }
+      },
+      "target": "top",
+      "tests": "all"
+    },
+    "target": "top"
+  },
+  "created_at": "2026-10-11T16:09:34Z",
+  "goal_key": "coverage_top",
+  "id": "b591fffc-24a9-47a1-ac19-396c34e7dac6",
+  "kind": "waiver",
+  "rationale": "approve this exact measured point",
+  "record_id": "evidence-20261006T120000Z",
+  "record_revision": 4,
+  "runtime_params": {
+    "metrics": {
+      "line": {
+        "min_pct": 100
+      }
+    },
+    "target": "top",
+    "tests": "all"
+  },
+  "schema": "booley.goal-proposal/v1",
+  "session_key": null,
+  "waiver": {
+    "anchor": "rtl_repository",
+    "anchor_root": "/tmp/booley-1304-baseline/test_capture0/main/.booley_project/worktrees/wt",
+    "approval_root": "/tmp/booley-1304-baseline/test_capture0/main/.booley_project/worktrees/wt/approvals",
+    "campaign_reference": {
+      "bytes": 819,
+      "nested_campaign_sha256": "sha256:6430125a930ab43a103e64cd379eeb1dd3a57b5be391d38209e2e7628a7b651e",
+      "path": "sim/1/targets/top/coverage.json",
+      "path_base": "reports_root",
+      "sha256": "sha256:85a8afe8d2616747d60d975d557d35ac001ef6970963b7a4f4d79bb40842e7ec"
+    },
+    "candidate": {
+      "campaign_id": "campaign:sim_counter:2026-09-01T10:30:00Z",
+      "campaign_path": "sim/1/targets/top/coverage.json",
+      "candidate_id": "wc-168339e91793",
+      "evidence_refs": [
+        "rtl/counter.sv:10"
+      ],
+      "first_recorded_at": "2026-10-11T16:09:34Z",
+      "justification": "Reviewed fixture exclusion",
+      "last_invocation_id": "analyst",
+      "last_recorded_at": "2026-10-11T16:09:34Z",
+      "manifest_sha256": "sha256:6430125a930ab43a103e64cd379eeb1dd3a57b5be391d38209e2e7628a7b651e",
+      "point_id": "cp1:eyJjb2xsZWN0b3IiOnsibmF0aXZlX2tleSI6IjEwOmJhc2ljLWJsb2NrLTAiLCJyZWNvcmRfdHlwZSI6InZfbGluZSJ9LCJoaWVyYXJjaHkiOiJUT1AuY291bnRlciIsImxvY2F0aW9uIjp7ImVuZCI6eyJjb2x1bW4iOjI4LCJsaW5lIjoxMH0sInNvdXJjZSI6InJ0bC9jb3VudGVyLnN2Iiwic3RhcnQiOnsiY29sdW1uIjozLCJsaW5lIjoxMH19LCJtZXRyaWMiOiJsaW5lIiwic3ViamVjdCI6eyJiYXNpY19ibG9jayI6MH19",
+      "point_store_sha256": "sha256:2b529c18d382828938fc6df6dde54e9227ad35048ab81e714df1319deeddb1e4",
+      "proof_reference": "",
+      "proposal_count": 1,
+      "reason": "unreachable",
+      "source": "rtl/counter.sv",
+      "source_sha256": "sha256:bc3ff1435b5f77923d2dc27891f85bce29bacdfd0fd9107dea0066141ecb736e",
+      "target_identity": "::top:0#top",
+      "target_selector": "top"
+    },
+    "candidate_digest": "11839b38063d873d936ff161f083504726d906aad4e751d8dc3b59a422567489",
+    "candidate_id": "wc-168339e91793",
+    "candidate_root": "/tmp/booley-1304-baseline/test_capture0/main/.booley_project/goals/evidence-20261006T120000Z",
+    "directory": "approvals",
+    "goal_key": "coverage_top",
+    "policy": {
+      "config": {
+        "anchor": "rtl_repository",
+        "directory": "approvals"
+      },
+      "digest": "7103b359753f59c2f124470cdc28ed81bf7a20b075b2fcab730ccdc82c2ae2d8",
+      "files": {},
+      "root": "/tmp/booley-1304-baseline/test_capture0/main/.booley_project/worktrees/wt/approvals"
+    },
+    "record_id": "evidence-20261006T120000Z",
+    "target_surface": {
+      "digest": "2f081f0c227d1cacd1bd260011bb30d8fd24d40fe08b901172b02743ef40987d",
+      "files": [
+        "top.core",
+        ".booley_project/tests.toml"
+      ]
+    }
+  },
+  "worktree": {
+    "checkout": "worktrees/wt",
+    "repository": "fb09a581-8436-4d97-b8c0-3ccd08f5943e"
+  }
+}
