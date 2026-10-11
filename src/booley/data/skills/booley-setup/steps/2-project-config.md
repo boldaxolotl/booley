@@ -630,6 +630,18 @@ Per-Target test lists plus an optional run-time selector.
 
 What goes here:
 
+- **Additional Protected Inputs — preserve agreed declarations.** When a hook
+  or generator invokes a build recipe, propose the tracked recipe and the
+  stimulus sources it consumes as `[project].protected_inputs`. Explain that
+  Goal Mode freezes their file set, contents, type, and executable bit, and
+  that restoring them clears a violation. Resolve the proposed paths relative
+  to the Project Root and inspect their tracking and generated-output locations.
+  Prefer focused source globs such as `firmware/**/*.c` when compilation writes
+  outputs into `firmware/`. Save additions only after human agreement; agreement
+  already recorded in the setup plan covers the write. If discovered during
+  drafting, record and obtain approval for this decision-level deviation before
+  adding declarations. Preserve existing declarations. See CONFIG.md →
+  "Additional Protected Inputs" for matching and entry refusals.
 - **Stealth mode — always write what rows 16 and 20 settled.** Step 0 row 16
   owns the merged git-history policy. Write the plan's `[stealth]` values
   exactly, including hand-set values, volunteered exceptions, and unattended

@@ -3,6 +3,9 @@
 
 [project]
 name = "<project>"
+# Additional evaluation recipes/stimulus sources, only after human agreement.
+# Paths are relative to the Project Root; keep generated outputs outside patterns.
+# protected_inputs = ["Makefile", "firmware/**/*.c"]
 
 # Optional identity for agent-authored commits in Interactive and Goal Mode.
 # Values are applied to each checkout at worktree scope. Missing fields use the

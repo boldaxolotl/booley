@@ -23,6 +23,7 @@ def protected_warnings(record: GoalRecord, project_dir: Path, work_dir: Path) ->
                 record.protected_digest or "",
                 record.protected_head_digest,
                 ProtectedInputRoots(work_dir, project_dir).with_input_paths(record.input_paths),
+                record.declared_protected_inputs,
             )
         )
     except (ProtectedInputError, OSError, ValueError) as exc:

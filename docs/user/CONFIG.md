@@ -79,11 +79,53 @@ canceling the editor operation.
 Project identity, Flow selection, and agent configuration live in
 `.booley_project/booley.toml`. A per-knob reference follows, section by section.
 
-`[project]` carries the project `name` and `preflight_checks` — see
+`[project]` carries the project `name`, `protected_inputs`, and `preflight_checks` — see
 [Per-Target environment](#per-target-environment-env) for the last one, which is
 about testbench file-existence checks rather than identity. Everything else is
 detailed below, starting with the shared `enabled`
 setting for Booley Flows and Specialists.
+
+### Additional Protected Inputs: `[project].protected_inputs`
+
+Declare tracked files that determine how Goals are evaluated, such as a Makefile
+invoked by a protected hook, firmware stimulus sources, or authoritative fixtures:
+
+```toml
+[project]
+name = "example"
+protected_inputs = ["Makefile", "firmware/**/*.c", "vectors/"]
+```
+
+Booley reads the effective configuration selected for the Goal worktree. Paths
+are relative to that worktree's Project Root, even when its configuration lives
+elsewhere. An omitted key or an empty list adds no protection.
+
+Each nonempty string names an exact file, a glob, or a directory with a trailing
+slash. `*` and `?` match within one path component; `**` as a whole component
+matches zero or more components. Dotfiles are included. `firmware/` and
+`firmware/**` select the same files. A directory named as `firmware` is refused
+with a suggestion to add `/`.
+
+Goal entry shows the resolved files. Every declaration must match at least one
+file, and every match must be tracked by the design repository. Untracked or
+ignored matches refuse entry, as do matches inside nested repositories or
+submodules. Use `/` on all hosts. Absolute paths, parent segments, backslashes,
+bracket/brace patterns, Git administrative paths, and Goal Record storage are
+refused. A file symlink must resolve to a tracked file inside the Project Root;
+directory symlinks and dangling or escaping links are refused.
+
+During Goal Mode the declarations, matched path set, contents, file type, and
+executable bit are frozen. Added, removed, renamed, or edited matches warn and
+block Finish, including committed changes hidden by restored working files.
+Diagnostics name the declaration and affected path. Restoring the protected
+properties clears the violation. An approved Goal Change cannot release this
+protection; changing the declaration list requires abandon and re-entry.
+Overlapping declarations and built-in protections report an affected file once.
+
+Choose source and recipe patterns that exclude generated outputs: a build that
+writes into a protected directory creates a violation. Booley does not infer
+dependencies from scripts or Makefiles. Checks retain the built-in before/after
+semantics; an edit reverted during a running Flow is not detected.
 
 ### Flow and Specialist availability: `enabled`
 

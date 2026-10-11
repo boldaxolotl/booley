@@ -96,6 +96,9 @@ def _load_booley_toml(project_root: Path) -> dict:
     if migration:
         raise EdaConfigError(migration)
     parse_eda_config(data.get("eda"))
+    from booley.config.protected_inputs import parse_protected_inputs
+
+    parse_protected_inputs(data)
     return data
 
 

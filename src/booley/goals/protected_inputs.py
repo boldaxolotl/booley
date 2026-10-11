@@ -83,6 +83,18 @@ Encoding rules:
   tracked symlink's target is read through the HEAD view as well.
 - A directory that cannot be listed fails the snapshot; it is never digested
   as empty.
+
+Project declarations
+====================
+
+``[project].protected_inputs`` adds tracked files relative to the Goal worktree.
+Entry validates declarations and eligibility; later snapshots retain violations
+instead of applying entry-only eligibility checks. Their versioned capture has
+independent disk and HEAD membership and includes executable state. This catches
+committed additions absent on disk and committed mode edits with restored working
+modes. Matched files join the ordinary protected paths, deduplicating coverage by
+built-ins. Digest format 3 includes the declaration capture; an omitted or empty
+list keeps the existing format 2 bytes unchanged.
 """
 
 from __future__ import annotations
@@ -96,8 +108,17 @@ from enum import StrEnum
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from booley.config.protected_inputs import protected_input_declarations
 from booley.core.project_dir import PROJECT_DIR_NAME, resolve_checkout_project_dir
-from booley.goals.checkout import CheckoutError, GoalCheckout
+from booley.goals.checkout import CheckoutError, GoalCheckout, TreeEntry
+from booley.goals.declared_inputs import (
+    DeclaredCapture,
+    DeclaredFile,
+    capture_violations,
+    head_matches,
+    validate_entry_matches,
+    working_matches,
+)
 from booley.goals.input_identity import capture_roots, require_bindings
 from booley.runtime.git import git_common_dir
 
@@ -217,6 +238,7 @@ class ProtectedSnapshot:
     paths: tuple[ProtectedPath, ...]
     working_digest: str
     head_digest: str
+    declared: DeclaredCapture | None = None
 
     @property
     def encoded_paths(self) -> tuple[str, ...]:
@@ -231,6 +253,12 @@ class ProtectedSnapshot:
 
 def resolve_protected_inputs(roots: ProtectedInputRoots) -> tuple[ProtectedPath, ...]:
     """Every candidate a consumer could read for the protected set (module docstring)."""
+    paths = _builtin_inputs(roots)
+    declared = _declared_capture(roots)
+    return _with_declared_paths(paths, declared, roots)
+
+
+def _builtin_inputs(roots: ProtectedInputRoots) -> tuple[ProtectedPath, ...]:
     worktree, project, main = RootKind.WORKTREE, RootKind.PROJECT, RootKind.MAIN
     config_dirs = [
         (project, ""),
@@ -315,13 +343,17 @@ def _join(directory: str, name: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def snapshot_protected_inputs(roots: ProtectedInputRoots) -> ProtectedSnapshot:
+def snapshot_protected_inputs(
+    roots: ProtectedInputRoots, *, entering: bool = False
+) -> ProtectedSnapshot:
     """Resolve the protected set and digest both views as a run would read it now."""
-    paths = resolve_protected_inputs(roots)
+    declared = _declared_capture(roots, entering=entering)
+    paths = _with_declared_paths(_builtin_inputs(roots), declared, roots)
     return ProtectedSnapshot(
         paths,
-        digest_protected_inputs(paths, roots, head=False),
-        digest_protected_inputs(paths, roots, head=True),
+        _digest_inputs(paths, roots, head=False, declared=declared),
+        _digest_inputs(paths, roots, head=True, declared=declared),
+        declared,
     )
 
 
@@ -329,6 +361,16 @@ def digest_protected_inputs(
     paths: Sequence[ProtectedPath], roots: ProtectedInputRoots, *, head: bool
 ) -> str:
     """One ``sha256:`` digest over *paths*: the working view, or with *head* the HEAD view."""
+    return _digest_inputs(paths, roots, head=head, declared=_declared_capture(roots))
+
+
+def _digest_inputs(
+    paths: Sequence[ProtectedPath],
+    roots: ProtectedInputRoots,
+    *,
+    head: bool,
+    declared: DeclaredCapture | None,
+) -> str:
     main = roots.main_checkout()
     head_view = _HeadView() if head else None
     entries: list[Entry] = []
@@ -338,8 +380,12 @@ def digest_protected_inputs(
         if head_view is not None and path.root is RootKind.WORKTREE and location is not None:
             tree = head_view.committed_tree(location, tree, frozenset())
         entries.append({"path": path.encode(), "tree": tree})
+    value: dict[str, Any] = {"format": _DIGEST_FORMAT, "head": head, "inputs": entries}
+    if declared is not None:
+        value["format"] = "booley-protected-inputs/3"
+        value["declared"] = declared.view_json(head=head)
     payload = json.dumps(
-        {"format": _DIGEST_FORMAT, "head": head, "inputs": entries},
+        value,
         sort_keys=True,
         separators=(",", ":"),
     )
@@ -351,6 +397,7 @@ def protected_input_violations(
     working_digest: str,
     head_digest: str | None,
     roots: ProtectedInputRoots,
+    declared: DeclaredCapture | None = None,
 ) -> list[str]:
     """Why the protected inputs no longer match the entry snapshot; empty when they do.
 
@@ -359,18 +406,110 @@ def protected_input_violations(
     view equals the HEAD view at entry.
     """
     recorded = tuple(ProtectedPath.decode(text) for text in recorded_paths)
-    current = resolve_protected_inputs(roots)
+    if declared is not None:
+        try:
+            current_rules = _declared_rules(roots)
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise ProtectedInputError(f"cannot inspect declared protected inputs: {exc}") from exc
+        if current_rules != declared.declarations:
+            return capture_violations(declared, None)
+    snapshot = snapshot_protected_inputs(roots)
+    if declared is not None:
+        detailed = capture_violations(declared, snapshot.declared)
+        if detailed:
+            return detailed
+    current = snapshot.paths
     if current != recorded:
         changed = sorted({p.encode() for p in current} ^ {p.encode() for p in recorded})
         return [f"protected inputs now resolve to different files: {', '.join(changed)}"]
-    if digest_protected_inputs(current, roots, head=False) != working_digest:
+    if snapshot.working_digest != working_digest:
         return ["a protected input differs from its state at entry"]
-    if (
-        head_digest is not None
-        and digest_protected_inputs(current, roots, head=True) != head_digest
-    ):
+    if head_digest is not None and snapshot.head_digest != head_digest:
         return ["a protected input differs from its state at entry in HEAD"]
     return []
+
+
+def _declared_rules(roots: ProtectedInputRoots) -> tuple[str, ...]:
+    kind, relative = _checkout_project_dir(roots)
+    selected = roots.absolute(ProtectedPath(kind, relative), roots.main_checkout())
+    return protected_input_declarations(roots.worktree, selected)
+
+
+def _declared_capture(
+    roots: ProtectedInputRoots, *, entering: bool = False
+) -> DeclaredCapture | None:
+    try:
+        kind, relative = _checkout_project_dir(roots)
+        selected = roots.absolute(ProtectedPath(kind, relative), roots.main_checkout())
+        declarations = protected_input_declarations(roots.worktree, selected)
+        if not declarations:
+            return None
+        storage = (
+            (roots.project_dir / "goals", selected / "goals")
+            if selected
+            else (roots.project_dir / "goals",)
+        )
+        matched = working_matches(roots.worktree, declarations, storage)
+        rows = GoalCheckout(roots.worktree).head_tree(".")
+        if entering:
+            validate_entry_matches(roots.worktree, declarations, matched, rows)
+        working = tuple(_declared_working_file(roots.worktree, path) for path in matched)
+        reader = _HeadView(include_mode=True)
+        head = tuple(
+            _declared_head_file(roots.worktree, row, reader)
+            for row in head_matches(roots.worktree, rows, declarations, storage)
+        )
+        return DeclaredCapture(declarations, working, head)
+    except (OSError, ValueError, RuntimeError) as exc:
+        raise ProtectedInputError(f"cannot inspect declared protected inputs: {exc}") from exc
+
+
+def _with_declared_paths(
+    paths: tuple[ProtectedPath, ...], declared: DeclaredCapture | None, roots: ProtectedInputRoots
+) -> tuple[ProtectedPath, ...]:
+    if declared is None:
+        return paths
+    main = roots.main_checkout()
+    covered = tuple(roots.absolute(path, main) for path in paths)
+    extra = (
+        ProtectedPath(RootKind.WORKTREE, row.path)
+        for row in declared.working
+        if not any(
+            base is not None and (roots.worktree / row.path).is_relative_to(base)
+            for base in covered
+        )
+    )
+    return tuple(dict.fromkeys((*paths, *extra)))
+
+
+def _declared_working_file(root: Path, relative: str) -> DeclaredFile:
+    location = root / relative
+    tree = _disk_tree(location)
+    redirects = {
+        path.relative_to(root).as_posix(): str(path.readlink())
+        for path in location.parents
+        if path != root and path.is_relative_to(root) and path.is_symlink()
+    }
+    value = {"tree": tree, "redirects": redirects}
+    executable = location.is_file() and bool(location.stat().st_mode & 0o111)
+    return DeclaredFile(
+        relative,
+        str(tree.get(".", {}).get("kind", "absent")),
+        "sha256:" + _content_hash(json.dumps(value, sort_keys=True).encode()),
+        executable,
+    )
+
+
+def _declared_head_file(root: Path, row: TreeEntry, reader: _HeadView) -> DeclaredFile:
+    entry = reader._entry(
+        GoalCheckout(root), row.mode, row.object_id, root / row.path, frozenset()
+    )
+    return DeclaredFile(
+        row.path,
+        str(entry["kind"]),
+        "sha256:" + _content_hash(json.dumps(entry, sort_keys=True).encode()),
+        row.mode == "100755",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -462,6 +601,9 @@ class _HeadView:
     it: the Goal worktree's, or a paired Project checkout nested inside it.
     """
 
+    def __init__(self, *, include_mode: bool = False) -> None:
+        self.include_mode = include_mode
+
     def committed_tree(self, location: Path, disk: Tree, seen: frozenset[str]) -> Tree:
         """*disk* with each entry marked tracked or not, tracked ones as HEAD holds them."""
         tracked = self._tracked(location, seen)
@@ -511,7 +653,10 @@ class _HeadView:
             target = content.decode("utf-8", "surrogateescape")
             resolves = self._follow_committed(location.parent / target, seen)
             return {"kind": "symlink", "target": target, "resolves": resolves, "tracked": True}
-        return {"kind": "file", "sha256": _content_hash(content), "tracked": True}
+        entry: Entry = {"kind": "file", "sha256": _content_hash(content), "tracked": True}
+        if self.include_mode:
+            entry["executable"] = mode == "100755"
+        return entry
 
     def _follow_committed(self, target: Path, seen: frozenset[str]) -> Entry:
         """What a committed symlink target holds in the HEAD view.
