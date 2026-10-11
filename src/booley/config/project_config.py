@@ -15,10 +15,10 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from booley.config.test_name_rules import (
-    ENV_NAME_PATTERN,
+from booley.config.tests_toml_rules import (
     TestRunNameError,
-    validate_test_run_name_part,
+    validate_env_table,
+    validate_test_or_variant_name,
 )
 from booley.core.boundary import as_dict, as_str, is_str_list
 from booley.core.checkout_role import SourceCheckoutProjectError
@@ -382,7 +382,7 @@ def _validate_test_names(where: str, names: list[str]) -> None:
     """Refuse a Test name that breaks the Test Run name rules (ADR 0072)."""
     for name in names:
         try:
-            validate_test_run_name_part(name, kind="Test")
+            validate_test_or_variant_name(name, kind="Test")
         except TestRunNameError as exc:
             raise ValueError(f"tests.toml {where}: {exc}") from exc
 
@@ -397,16 +397,37 @@ def _validate_tests_section_keys(target: str, section: Mapping[str, Any]) -> Non
             )
 
 
-def _validate_unique_tests(target: str, tests: list[str]) -> None:
-    """Refuse a Test registered twice for one Target."""
+def _validate_unique_tests(where: str, names: list[str]) -> None:
+    """Refuse a Test named twice in one Target's ``tests`` or ``skip`` list."""
     seen: set[str] = set()
-    for name in tests:
+    for name in names:
         if name in seen:
             raise ValueError(
-                f"tests.toml [{target}].tests registers Test {name!r} more than "
-                "once; each Test name must be unique within a Target"
+                f"tests.toml {where} names Test {name!r} more than once; each "
+                "Test name must be unique within a Target"
             )
         seen.add(name)
+
+
+def _resolve_test_list(
+    target: str,
+    normalized: dict[str, Any],
+    test_lists: Mapping[str, list[str]],
+) -> str | None:
+    """Replace ``test_list`` by the shared list's ``tests``; return the list name."""
+    list_ref = normalized.pop("test_list", None)
+    if list_ref is None:
+        return None
+    if "tests" in normalized:
+        raise ValueError(f"tests.toml [{target}] must not set both tests and test_list")
+    if not isinstance(list_ref, str) or not list_ref.strip():
+        raise ValueError(f"tests.toml [{target}].test_list must be a non-empty string")
+    if list_ref not in test_lists:
+        raise ValueError(
+            f"tests.toml [{target}].test_list references unknown test list '{list_ref}'"
+        )
+    normalized["tests"] = list(test_lists[list_ref])
+    return list_ref
 
 
 def _normalize_tests_section(
@@ -418,67 +439,34 @@ def _normalize_tests_section(
         raise ValueError(f"tests.toml [{target}] must be a table")
     _validate_tests_section_keys(target, section)
     normalized = dict(section)
-
-    list_ref = normalized.pop("test_list", None)
-    if list_ref is not None:
-        if "tests" in normalized:
-            raise ValueError(f"tests.toml [{target}] must not set both tests and test_list")
-        if not isinstance(list_ref, str) or not list_ref.strip():
-            raise ValueError(f"tests.toml [{target}].test_list must be a non-empty string")
-        if list_ref not in test_lists:
-            raise ValueError(
-                f"tests.toml [{target}].test_list references unknown test list '{list_ref}'"
-            )
-        normalized["tests"] = list(test_lists[list_ref])
+    list_ref = _resolve_test_list(target, normalized, test_lists)
+    # Say where a Test name was written: a shared list is not the section's own key.
+    tests_where = (
+        f"[{target}].tests"
+        if list_ref is None
+        else f"[{target}].test_list = {list_ref!r} ([{TEST_LISTS_TABLE}].{list_ref})"
+    )
 
     if "tests" in normalized and not is_str_list(normalized["tests"]):
         raise ValueError(f"tests.toml [{target}].tests must be list[str]")
     if "skip" in normalized and not is_str_list(normalized["skip"]):
         raise ValueError(f"tests.toml [{target}].skip must be list[str]")
     if "tests" in normalized:
-        _validate_test_names(f"[{target}].tests", normalized["tests"])
-        _validate_unique_tests(target, normalized["tests"])
+        _validate_test_names(tests_where, normalized["tests"])
+        _validate_unique_tests(tests_where, normalized["tests"])
     if "skip" in normalized:
         _validate_test_names(f"[{target}].skip", normalized["skip"])
+        _validate_unique_tests(f"[{target}].skip", normalized["skip"])
     if "select" in normalized:
         normalized["select"] = _validate_select_template(target, normalized["select"])
     if "env" in normalized:
-        normalized["env"] = _validate_env_table(target, normalized["env"])
+        # Verification-intent, like ``select``: an env-parameterized testbench
+        # (a cocotb module reading ``os.getenv("FLAVOR")``) declares here what
+        # the simulator process must see. ``EnvTableError`` is a ``ValueError``.
+        normalized["env"] = validate_env_table(
+            normalized["env"], where=f"tests.toml [{target}].env"
+        )
     return normalized
-
-
-# Environment variable names are conventionally ``[A-Za-z_][A-Za-z0-9_]*``;
-# anything else cannot be exported by a POSIX shell, so reject it at the config
-# boundary rather than emitting a shell line that silently fails to parse.
-# The rule (``ENV_NAME_PATTERN``) is shared with Test Variant environment tables.
-
-
-def _validate_env_table(target: str, raw: Any) -> dict[str, str]:
-    """Validate a tests.toml ``env`` table — the per-Target simulator env.
-
-    Verification-intent, like ``select``: an env-parameterized testbench (a
-    cocotb module reading ``os.getenv("FLAVOR")``) declares here what the
-    simulator process must see, instead of the port being forced to rewrite a
-    testbench it does not own. Values must be strings — a TOML integer would
-    invite ``FLAVOR = 1`` to mean something different from ``"1"`` on the shell
-    side — and names must be shell-exportable identifiers.
-    """
-    if not isinstance(raw, Mapping):
-        raise ValueError(f'tests.toml [{target}].env must be a table of NAME = "value" pairs')
-    env: dict[str, str] = {}
-    for name, value in raw.items():
-        if not isinstance(name, str) or not ENV_NAME_PATTERN.match(name):
-            raise ValueError(
-                f"tests.toml [{target}].env key {name!r} is not a valid environment "
-                "variable name ([A-Za-z_][A-Za-z0-9_]*)"
-            )
-        if not isinstance(value, str):
-            raise ValueError(
-                f"tests.toml [{target}].env.{name} must be a string — quote the "
-                f"value (got {type(value).__name__})"
-            )
-        env[name] = value
-    return env
 
 
 # ---------------------------------------------------------------------------

@@ -2,15 +2,16 @@
 
 A **Test Run** is one Test Variant simulated with one seed, written
 ``test[+variant][@seed]``. This module owns the grammar of those names, the
-rules a Test or Variant name must obey, the shape of one Test's Variant table
-in ``tests.toml``, the fingerprint of a Variant's declared inputs, random seed
-draws, and the command that reruns one Test Run.
+shape of one Test's Variant table in ``tests.toml``, the fingerprint of a Test
+Variant's declared inputs, random seed draws, and the command that reruns one
+Test Run.
 
 It is pure domain policy: it reads no files, starts no process, and imports
-nothing from the CLI, the Sandbox or the Simulation Flow. The rules for one
-Test or Variant name live in ``booley.config.test_name_rules`` because the
-``tests.toml`` loader applies them and configuration must not import Flows;
-they are re-exported here so callers have one place to look.
+nothing from the CLI, the Sandbox or the Simulation Flow. The rule for one
+Test or Test Variant name, its error type (``TestRunNameError``) and the
+environment-table rule are defined in ``booley.config.tests_toml_rules``,
+because the ``tests.toml`` loader applies them and configuration must not
+import Flows; import them from there.
 """
 
 from __future__ import annotations
@@ -25,35 +26,33 @@ from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from typing import cast
 
-from booley.config.test_name_rules import (
-    ENV_NAME_PATTERN,
-    RESERVED_NAME,
+from booley.config.tests_toml_rules import (
+    DEFAULT_VARIANT_KEY,
     SEED_SEPARATOR,
     VARIANT_SEPARATOR,
+    EnvTableError,
     TestRunNameError,
-    validate_test_run_name_part,
+    validate_env_table,
+    validate_test_or_variant_name,
 )
-from booley.core.boundary import as_dict, is_str_list
+from booley.core.boundary import BoundaryError, as_dict, is_str_list, require_int
 
 __all__ = [
     "DEFAULT_SEED",
-    "ENV_NAME_PATTERN",
     "MAX_MULTI_SEED_COUNT",
     "MAX_SEED",
-    "RESERVED_NAME",
     "UNNAMED_TEST_DISPLAY",
-    "Count",
-    "Pinned",
+    "PinnedSeed",
+    "SeedCount",
     "SeedForm",
     "TestRun",
     "TestRunLimitError",
-    "TestRunNameError",
     "TestSelector",
     "TestVariant",
     "TestVariantError",
     "TestVariantTable",
     "UnknownVariantError",
-    "Unpinned",
+    "UnpinnedSeed",
     "UnseededTargetError",
     "build_test_run",
     "declared_inputs_fingerprint",
@@ -61,7 +60,6 @@ __all__ = [
     "parse_test_selector",
     "parse_test_variants",
     "rerun_command",
-    "validate_test_run_name_part",
 ]
 
 #: The seed a Test Run uses when none is named. Never ``0``: Verilator reads
@@ -112,25 +110,25 @@ class TestRunLimitError(ValueError):
 
 
 @dataclass(frozen=True)
-class Unpinned:
+class UnpinnedSeed:
     """A selector that names no seed: the Test Run uses the Default Seed."""
 
 
 @dataclass(frozen=True)
-class Pinned:
+class PinnedSeed:
     """A selector written ``…@seed``: exactly that seed."""
 
     seed: int
 
 
 @dataclass(frozen=True)
-class Count:
+class SeedCount:
     """A selector written ``…@xN``: N Test Runs, each with a different seed."""
 
     count: int
 
 
-SeedForm = Unpinned | Pinned | Count
+SeedForm = UnpinnedSeed | PinnedSeed | SeedCount
 
 
 @dataclass(frozen=True)
@@ -225,7 +223,7 @@ def _parse_seed_form(text: str, selector: str) -> SeedForm:
             raise TestRunNameError(
                 f"Test Run selector {selector!r}: seed {text} is out of range 1..{MAX_SEED}"
             )
-        return Pinned(seed)
+        return PinnedSeed(seed)
     digits = text[len(_COUNT_PREFIX) :]
     count = _parse_bounded_number(digits, what="seed count", selector=selector)
     if count < 1:
@@ -235,7 +233,7 @@ def _parse_seed_form(text: str, selector: str) -> SeedForm:
             f"Test Run selector {selector!r}: seed count {digits} exceeds the "
             f"limit of {MAX_MULTI_SEED_COUNT}"
         )
-    return Count(count)
+    return SeedCount(count)
 
 
 def parse_test_selector(text: str) -> TestSelector:
@@ -254,18 +252,18 @@ def parse_test_selector(text: str) -> TestSelector:
     if len(variant_parts) > 1:
         raise TestRunNameError(
             f"Test Run selector {text!r} has more than one '+'; a Test Run names "
-            "one Variant (test+variant)"
+            "one Test Variant (test+variant)"
         )
     try:
-        validate_test_run_name_part(test, kind="Test")
+        validate_test_or_variant_name(test, kind="Test")
         variant = (
-            validate_test_run_name_part(variant_parts[0], kind="Variant")
+            validate_test_or_variant_name(variant_parts[0], kind="Test Variant")
             if variant_parts
             else None
         )
     except TestRunNameError as exc:
         raise TestRunNameError(f"Test Run selector {text!r}: {exc}") from exc
-    seed_form = _parse_seed_form(seed_parts[0], text) if seed_parts else Unpinned()
+    seed_form = _parse_seed_form(seed_parts[0], text) if seed_parts else UnpinnedSeed()
     return TestSelector(test=test, variant=variant, seed_form=seed_form)
 
 
@@ -289,6 +287,17 @@ def declared_inputs_fingerprint(args: tuple[str, ...], env: Mapping[str, str]) -
     return "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _require_seed(seed: object) -> int:
+    """Return *seed* when it is a strict integer in ``1..MAX_SEED``."""
+    try:
+        value = require_int(seed, field="seed")
+    except BoundaryError as exc:
+        raise TestRunNameError(str(exc)) from exc
+    if not 1 <= value <= MAX_SEED:
+        raise TestRunNameError(f"seed {value} is out of range 1..{MAX_SEED}")
+    return value
+
+
 def build_test_run(
     test: str | None,
     *,
@@ -299,17 +308,19 @@ def build_test_run(
 ) -> TestRun:
     """Build a :class:`TestRun` and fingerprint its declared inputs.
 
-    Raises :class:`TestRunNameError` for an invalid name, a Variant on the
-    unnamed invocation, or a seed outside ``1..MAX_SEED``.
+    Raises :class:`TestRunNameError` for an invalid name, a Test Variant on the
+    unnamed invocation, or a seed that is not an integer in ``1..MAX_SEED``.
     """
     if test is None and variant is not None:
-        raise TestRunNameError(f"the unnamed invocation has no Variants, got Variant {variant!r}")
+        raise TestRunNameError(
+            f"the unnamed invocation has no Test Variants, got Test Variant {variant!r}"
+        )
     if test is not None:
-        validate_test_run_name_part(test, kind="Test")
+        validate_test_or_variant_name(test, kind="Test")
     if variant is not None:
-        validate_test_run_name_part(variant, kind="Variant")
-    if seed is not None and (isinstance(seed, bool) or not 1 <= seed <= MAX_SEED):
-        raise TestRunNameError(f"seed {seed!r} is out of range 1..{MAX_SEED}")
+        validate_test_or_variant_name(variant, kind="Test Variant")
+    if seed is not None:
+        _require_seed(seed)
     environment = dict(env or {})
     return TestRun(
         test=test,
@@ -338,22 +349,11 @@ def _parse_variant_args(raw: object, where: str) -> tuple[str, ...]:
 
 
 def _parse_variant_env(raw: object, where: str) -> tuple[tuple[str, str], ...]:
-    """Validate a Variant's environment table of ``NAME = "value"`` pairs."""
-    table = as_dict(raw)
-    if table is None:
-        raise TestVariantError(f'{where}.env must be a table of NAME = "value" pairs')
-    env: dict[str, str] = {}
-    for name, value in table.items():
-        if not isinstance(name, str) or not ENV_NAME_PATTERN.match(name):
-            raise TestVariantError(
-                f"{where}.env key {name!r} is not a valid environment variable "
-                "name ([A-Za-z_][A-Za-z0-9_]*)"
-            )
-        if not isinstance(value, str):
-            raise TestVariantError(
-                f"{where}.env.{name} must be a string, got {type(value).__name__}; quote the value"
-            )
-        env[name] = value
+    """Validate a Test Variant's environment table of ``NAME = "value"`` pairs."""
+    try:
+        env = validate_env_table(raw, where=f"{where}.env")
+    except EnvTableError as exc:
+        raise TestVariantError(str(exc)) from exc
     return tuple(sorted(env.items()))
 
 
@@ -364,7 +364,7 @@ def _parse_variant(name: str, raw: object, where: str) -> TestVariant:
         unknown = sorted(str(key) for key in table if key not in _VARIANT_TABLE_KEYS)
         if unknown:
             raise TestVariantError(
-                f"{where} has unknown key {unknown[0]!r}; a Variant table holds only args and env"
+                f"{where} has unknown key {unknown[0]!r}; a Test Variant table holds only args and env"
             )
         return TestVariant(
             name=name,
@@ -393,25 +393,27 @@ def parse_test_variants(test: str, raw: object, *, where: str | None = None) -> 
     where = where or f"variants.{test}"
     table = as_dict(raw)
     if table is None:
-        raise TestVariantError(f"{where} must be a table of Variants")
-    if RESERVED_NAME not in table:
-        raise TestVariantError(f'{where} must name its default Variant: add default = "<variant>"')
-    default = table[RESERVED_NAME]
+        raise TestVariantError(f"{where} must be a table of Test Variants")
+    if DEFAULT_VARIANT_KEY not in table:
+        raise TestVariantError(
+            f'{where} must name its default Test Variant: add default = "<variant>"'
+        )
+    default = table[DEFAULT_VARIANT_KEY]
     if not isinstance(default, str):
-        raise TestVariantError(f"{where}.default must be the name of a Variant (a string)")
+        raise TestVariantError(f"{where}.default must be the name of a Test Variant (a string)")
     variants: list[TestVariant] = []
     for key, value in table.items():
-        if key == RESERVED_NAME:
+        if key == DEFAULT_VARIANT_KEY:
             continue
         try:
-            name = validate_test_run_name_part(key, kind="Variant")
+            name = validate_test_or_variant_name(key, kind="Test Variant")
         except TestRunNameError as exc:
             raise TestRunNameError(f"{where}: {exc}") from exc
         variants.append(_parse_variant(name, value, f"{where}.{name}"))
     declared = [variant.name for variant in variants]
     if default not in declared:
         raise UnknownVariantError(
-            f"{where}.default names {default!r}, which is not a declared Variant "
+            f"{where}.default names {default!r}, which is not a declared Test Variant "
             f"(declared: {', '.join(declared) or 'none'})"
         )
     return TestVariantTable(test=test, default=default, variants=tuple(variants))
@@ -462,7 +464,8 @@ def rerun_command(target: str, run: TestRun) -> str:
     """
     argv = ["booley", "flow", "sim", "--target", target]
     if run.test is not None:
-        argv += ["--test", run.name]
+        # One token: the option and its value cannot be separated or reordered.
+        argv.append(f"--test={run.name}")
     elif run.seed is not None:
         argv += ["--seed", str(run.seed)]
     return shlex.join(argv)

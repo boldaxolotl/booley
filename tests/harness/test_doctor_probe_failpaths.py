@@ -25,6 +25,7 @@ import pytest
 
 import booley
 from booley.audit import host_environment
+from booley.config.tests_toml_rules import TEST_NAME_RULES
 from booley.fusesoc import fusesoc_registry
 from booley.harness import doctor
 from booley.runtime import agent_config as runtime_agent_config
@@ -344,7 +345,7 @@ class TestAuditTestsTomlRules:
             (
                 '[sim_fast]\ntests = ["reset", "smoke+fast"]\n',
                 "tests.toml invalid: tests.toml [sim_fast].tests: Test name "
-                "'smoke+fast' is invalid: must not contain '+'",
+                "'smoke+fast' is invalid: it contains '+'",
             ),
             (
                 '[sim_fast]\ntests = ["default"]\n',
@@ -352,14 +353,23 @@ class TestAuditTestsTomlRules:
                 "'default' is invalid: 'default' is reserved",
             ),
             (
+                '[sim_fast]\ntests = ["-trace"]\n',
+                "tests.toml invalid: tests.toml [sim_fast].tests: Test name "
+                "'-trace' is invalid: it starts with '-'",
+            ),
+            (
                 '[sim_fast]\ntests = ["reset"]\nskip = ["my test"]\n',
                 "tests.toml invalid: tests.toml [sim_fast].skip: Test name "
-                "'my test' is invalid: must not contain whitespace",
+                "'my test' is invalid: it contains whitespace",
             ),
             (
                 '[sim_fast]\ntests = ["reset", "reset"]\n',
-                "tests.toml invalid: tests.toml [sim_fast].tests registers Test "
+                "tests.toml invalid: tests.toml [sim_fast].tests names Test "
                 "'reset' more than once",
+            ),
+            (
+                '[sim_fast]\ntests = ["reset"]\nskip = ["reset", "reset"]\n',
+                "tests.toml invalid: tests.toml [sim_fast].skip names Test 'reset' more than once",
             ),
         ],
     )
@@ -367,8 +377,16 @@ class TestAuditTestsTomlRules:
         rec, fixes = self._run(tmp_path, text)
         assert [level for level, _ in rec.events] == ["fail"]
         assert rec.fails()[0].startswith(finding)
-        assert "a Test name has no whitespace, '+', '@', quotes or backslash" in fixes[0]
-        assert "is not 'default'" in fixes[0]
+        # The hint quotes the rule sentence the validator itself reports.
+        assert fixes[0] == (
+            "fix the tests.toml entry named above (a Target section holds only "
+            f"tests, test_list, skip, select, env; {TEST_NAME_RULES})"
+        )
+
+    def test_name_refusal_message_and_hint_state_the_same_rule(self, tmp_path):
+        rec, fixes = self._run(tmp_path, '[sim_fast]\ntests = ["a@b"]\n')
+        assert rec.fails()[0].endswith(f"Rule: {TEST_NAME_RULES}")
+        assert TEST_NAME_RULES in fixes[0]
 
     @pytest.mark.parametrize("key", ["variants", "seed", "default_seed", "plusargs"])
     def test_unknown_section_key_fails_with_a_fix_hint(self, tmp_path, key):

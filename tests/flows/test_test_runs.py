@@ -1,4 +1,4 @@
-"""Test Run identity: selector grammar, name rules, Variants, seeds (ADR 0072)."""
+"""Test Run identity: selector grammar, Test Variants, seeds, rerun command (ADR 0072)."""
 
 from __future__ import annotations
 
@@ -6,23 +6,28 @@ import random
 import shlex
 
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
-from booley.config import project_config, test_name_rules
+from booley.config.tests_toml_rules import TestRunNameError
+from booley.flows.builtin_cli import build_parser, parse_request
 from booley.flows.sim.campaign.planning import canonical_sha256
+from booley.flows.sim.flow import SimulateFlow
 from booley.flows.test_runs import (
     DEFAULT_SEED,
     MAX_MULTI_SEED_COUNT,
     MAX_SEED,
-    Count,
-    Pinned,
+    UNNAMED_TEST_DISPLAY,
+    PinnedSeed,
+    SeedCount,
+    TestRun,
     TestRunLimitError,
-    TestRunNameError,
     TestSelector,
     TestVariant,
     TestVariantError,
     TestVariantTable,
     UnknownVariantError,
-    Unpinned,
+    UnpinnedSeed,
     UnseededTargetError,
     build_test_run,
     declared_inputs_fingerprint,
@@ -30,8 +35,10 @@ from booley.flows.test_runs import (
     parse_test_selector,
     parse_test_variants,
     rerun_command,
-    validate_test_run_name_part,
 )
+
+# Deterministic on every run and machine; no example database is written.
+PROPERTY_SETTINGS = settings(derandomize=True, database=None, max_examples=300, deadline=None)
 
 
 def test_constants_match_the_settled_values() -> None:
@@ -51,13 +58,6 @@ def test_every_typed_error_is_a_value_error() -> None:
         assert issubclass(error, ValueError)
 
 
-def test_name_rules_are_the_ones_the_tests_toml_loader_applies() -> None:
-    # One definition: the loader and the selector grammar cannot drift apart.
-    assert validate_test_run_name_part is test_name_rules.validate_test_run_name_part
-    assert TestRunNameError is test_name_rules.TestRunNameError
-    assert project_config.validate_test_run_name_part is validate_test_run_name_part
-
-
 # ---------------------------------------------------------------------------
 # Selector grammar
 # ---------------------------------------------------------------------------
@@ -66,21 +66,21 @@ def test_name_rules_are_the_ones_the_tests_toml_loader_applies() -> None:
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
-        ("stress", TestSelector("stress", None, Unpinned())),
-        ("stress+soak", TestSelector("stress", "soak", Unpinned())),
-        ("stress@1", TestSelector("stress", None, Pinned(1))),
-        ("stress@42", TestSelector("stress", None, Pinned(42))),
-        (f"stress@{MAX_SEED}", TestSelector("stress", None, Pinned(MAX_SEED))),
-        ("stress+soak@7", TestSelector("stress", "soak", Pinned(7))),
-        ("stress@x1", TestSelector("stress", None, Count(1))),
-        ("stress@x1000", TestSelector("stress", None, Count(1000))),
-        ("stress+soak@x25", TestSelector("stress", "soak", Count(25))),
+        ("stress", TestSelector("stress", None, UnpinnedSeed())),
+        ("stress+soak", TestSelector("stress", "soak", UnpinnedSeed())),
+        ("stress@1", TestSelector("stress", None, PinnedSeed(1))),
+        ("stress@42", TestSelector("stress", None, PinnedSeed(42))),
+        (f"stress@{MAX_SEED}", TestSelector("stress", None, PinnedSeed(MAX_SEED))),
+        ("stress+soak@7", TestSelector("stress", "soak", PinnedSeed(7))),
+        ("stress@x1", TestSelector("stress", None, SeedCount(1))),
+        ("stress@x1000", TestSelector("stress", None, SeedCount(1000))),
+        ("stress+soak@x25", TestSelector("stress", "soak", SeedCount(25))),
         # Names keep every character the grammar does not own.
-        ("slow-first", TestSelector("slow-first", None, Unpinned())),
-        ("test_reset.v2", TestSelector("test_reset.v2", None, Unpinned())),
-        ("x5", TestSelector("x5", None, Unpinned())),
-        ("x5+x6@x7", TestSelector("x5", "x6", Count(7))),
-        ("tb/smoke:1", TestSelector("tb/smoke:1", None, Unpinned())),
+        ("slow-first", TestSelector("slow-first", None, UnpinnedSeed())),
+        ("test_reset.v2", TestSelector("test_reset.v2", None, UnpinnedSeed())),
+        ("x5", TestSelector("x5", None, UnpinnedSeed())),
+        ("x5+x6@x7", TestSelector("x5", "x6", SeedCount(7))),
+        ("tb/smoke:1", TestSelector("tb/smoke:1", None, UnpinnedSeed())),
     ],
 )
 def test_valid_selectors_parse(text: str, expected: TestSelector) -> None:
@@ -90,13 +90,13 @@ def test_valid_selectors_parse(text: str, expected: TestSelector) -> None:
 @pytest.mark.parametrize(
     ("text", "reason"),
     [
-        ("", "must not be empty"),
-        ("+soak", "must not be empty"),
-        ("stress+", "must not be empty"),
-        ("@5", "must not be empty"),
+        ("", "Test name '' is invalid: it is empty"),
+        ("+soak", "Test name '' is invalid: it is empty"),
+        ("stress+", "Test Variant name '' is invalid: it is empty"),
+        ("@5", "Test name '' is invalid: it is empty"),
         ("stress@", "must be followed by a seed or xN"),
-        ("stress+@5", "must not be empty"),
-        ("a+b+c", "more than one '+'"),
+        ("stress+@5", "Test Variant name '' is invalid: it is empty"),
+        ("a+b+c", "more than one '+'; a Test Run names one Test Variant"),
         ("stress@x1@2", "more than one '@'"),
         ("stress@1@2", "more than one '@'"),
         ("stress@0", "out of range"),
@@ -111,17 +111,23 @@ def test_valid_selectors_parse(text: str, expected: TestSelector) -> None:
         ("stress@0x10", "decimal number without a sign"),
         ("stress@seed", "decimal number without a sign"),
         ("stress@ 5", "decimal number without a sign"),
-        ("stress@٣", "decimal number without a sign"),
+        ("stress@\u0663", "decimal number without a sign"),
         ("stress@x", "decimal number without a sign"),
         ("stress@x0", "at least 1"),
         ("stress@x01", "leading zeros"),
         ("stress@x-1", "decimal number without a sign"),
         ("stress@X5", "decimal number without a sign"),
         ("stress@xx5", "decimal number without a sign"),
-        ("default", "reserved"),
-        ("stress+default", "reserved"),
-        ("my test", "whitespace"),
-        ("stress+so ak", "whitespace"),
+        ("default", "'default' is reserved"),
+        ("stress+default", "Test Variant name 'default' is invalid"),
+        ("-foo", "it starts with '-'"),
+        ("-foo@1", "it starts with '-'"),
+        ("stress+-v", "Test Variant name '-v' is invalid: it starts with '-'"),
+        ("<default>", "it contains '<'"),
+        ("<default>@1", "it contains '<'"),
+        ("stress+a>b", "it contains '>'"),
+        ("my test", "it contains whitespace"),
+        ("stress+so ak", "it contains whitespace"),
         ("it's", "single quote"),
         ('say"hi', "double quote"),
         ("back\\slash", "backslash"),
@@ -138,50 +144,6 @@ def test_invalid_selectors_name_the_reason(text: str, reason: str) -> None:
 def test_seed_count_above_the_limit_is_a_limit_error(text: str) -> None:
     with pytest.raises(TestRunLimitError, match="exceeds the limit of 1000"):
         parse_test_selector(text)
-
-
-# ---------------------------------------------------------------------------
-# Name rules
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "name",
-    ["reset", "test_reset", "slow-first", "a.b", "tb/smoke", "x1", "Default", "DEFAULT", "é"],
-)
-def test_valid_names_are_returned_unchanged(name: str) -> None:
-    assert validate_test_run_name_part(name) == name
-
-
-@pytest.mark.parametrize(
-    ("name", "reason"),
-    [
-        ("", "must not be empty"),
-        ("default", "reserved"),
-        ("a b", "whitespace"),
-        ("a\tb", "whitespace"),
-        ("a\nb", "whitespace"),
-        ("a\u00a0b", "whitespace"),
-        (" lead", "whitespace"),
-        ("a+b", "'+'"),
-        ("a@b", "'@'"),
-        ("a'b", "single quote"),
-        ('a"b', "double quote"),
-        ("a\\b", "backslash"),
-        ("a\x00b", "control character U+0000"),
-        ("a\x1bb", "control character U+001B"),
-        ("a\x7fb", "control character U+007F"),
-        ("a\u200bb", "control character U+200B"),
-        (7, "must be a string"),
-        (None, "must be a string"),
-    ],
-)
-def test_invalid_names_name_the_reason(name: object, reason: str) -> None:
-    with pytest.raises(TestRunNameError) as excinfo:
-        validate_test_run_name_part(name, kind="Variant")
-    message = str(excinfo.value)
-    assert reason in message
-    assert message.startswith("Variant name ")
 
 
 # ---------------------------------------------------------------------------
@@ -219,17 +181,27 @@ def test_variant_table_accepts_lists_and_tables() -> None:
 @pytest.mark.parametrize(
     ("raw", "error", "reason"),
     [
-        (["+a=1"], TestVariantError, "must be a table of Variants"),
-        ({"short": []}, TestVariantError, "must name its default Variant"),
-        ({"default": 1, "short": []}, TestVariantError, "default must be the name"),
-        ({"default": "short"}, UnknownVariantError, "not a declared Variant (declared: none)"),
+        (["+a=1"], TestVariantError, "must be a table of Test Variants"),
+        ({"short": []}, TestVariantError, "must name its default Test Variant"),
+        (
+            {"default": 1, "short": []},
+            TestVariantError,
+            "default must be the name of a Test Variant",
+        ),
+        (
+            {"default": "short"},
+            UnknownVariantError,
+            "not a declared Test Variant (declared: none)",
+        ),
         (
             {"default": "long", "short": []},
             UnknownVariantError,
-            "names 'long', which is not a declared Variant (declared: short)",
+            "names 'long', which is not a declared Test Variant (declared: short)",
         ),
-        ({"default": "a", "a": [], "b+c": []}, TestRunNameError, "'+'"),
-        ({"default": "a", "a": [], "b c": []}, TestRunNameError, "whitespace"),
+        ({"default": "a", "a": [], "b+c": []}, TestRunNameError, "Test Variant name 'b+c'"),
+        ({"default": "a", "a": [], "b c": []}, TestRunNameError, "it contains whitespace"),
+        ({"default": "a", "a": [], "-b": []}, TestRunNameError, "it starts with '-'"),
+        ({"default": "a", "a": [], "<b>": []}, TestRunNameError, "it contains '<'"),
         ({"default": "a", "a": "+x=1"}, TestVariantError, "must be a list of arguments"),
         ({"default": "a", "a": 5}, TestVariantError, "got int"),
         ({"default": "a", "a": [1]}, TestVariantError, "must be a list of strings"),
@@ -239,12 +211,18 @@ def test_variant_table_accepts_lists_and_tables() -> None:
         ({"default": "a", "a": ["+a=\t1"]}, TestVariantError, "one token"),
         ({"default": "a", "a": ["+a=\x001"]}, TestVariantError, "one token"),
         ({"default": "a", "a": {"args": "+x=1"}}, TestVariantError, "list of strings"),
-        ({"default": "a", "a": {"plusargs": []}}, TestVariantError, "unknown key 'plusargs'"),
+        (
+            {"default": "a", "a": {"plusargs": []}},
+            TestVariantError,
+            "unknown key 'plusargs'; a Test Variant table holds only args and env",
+        ),
         ({"default": "a", "a": {"args": [], "seed": 1}}, TestVariantError, "unknown key 'seed'"),
-        ({"default": "a", "a": {"env": ["X=1"]}}, TestVariantError, "env must be a table"),
+        ({"default": "a", "a": {"env": ["X=1"]}}, TestVariantError, ".a.env must be a table"),
         ({"default": "a", "a": {"env": {"MY-VAR": "1"}}}, TestVariantError, "'MY-VAR'"),
         ({"default": "a", "a": {"env": {"1X": "1"}}}, TestVariantError, "'1X'"),
-        ({"default": "a", "a": {"env": {"N": 1}}}, TestVariantError, "env.N must be a string"),
+        # A trailing newline is not part of an identifier.
+        ({"default": "a", "a": {"env": {"X\n": "1"}}}, TestVariantError, ".a.env key 'X\\n'"),
+        ({"default": "a", "a": {"env": {"N": 1}}}, TestVariantError, ".a.env.N must be a string"),
     ],
 )
 def test_variant_table_refusals(raw: object, error: type[ValueError], reason: str) -> None:
@@ -281,6 +259,7 @@ def test_build_test_run_normalizes_env_and_keeps_args_order() -> None:
     assert run.args == ("+b=2", "+a=1")
     assert run.env == (("A", "2"), ("Z", "1"))
     assert run.fingerprint == declared_inputs_fingerprint(("+b=2", "+a=1"), {"A": "2", "Z": "1"})
+    assert run == build_test_run("stress", args=("+b=2", "+a=1"), env={"A": "2", "Z": "1"})
     assert hash(run) == hash(
         build_test_run("stress", args=("+b=2", "+a=1"), env={"A": "2", "Z": "1"})
     )
@@ -289,14 +268,24 @@ def test_build_test_run_normalizes_env_and_keeps_args_order() -> None:
 @pytest.mark.parametrize(
     ("kwargs", "reason"),
     [
-        ({"test": None, "variant": "soak"}, "unnamed invocation has no Variants"),
+        ({"test": None, "variant": "soak"}, "the unnamed invocation has no Test Variants"),
         ({"test": "default"}, "reserved"),
         ({"test": "a+b"}, "'+'"),
-        ({"test": "a", "variant": "b@c"}, "'@'"),
-        ({"test": "a", "seed": 0}, "out of range"),
+        ({"test": "-foo"}, "it starts with '-'"),
+        ({"test": "<default>"}, "it contains '<'"),
+        ({"test": "a", "variant": "b@c"}, "Test Variant name 'b@c'"),
+        ({"test": "a", "variant": "-b"}, "Test Variant name '-b'"),
+        ({"test": "a", "seed": 0}, "seed 0 is out of range"),
         ({"test": "a", "seed": MAX_SEED + 1}, "out of range"),
-        ({"test": "a", "seed": -1}, "out of range"),
-        ({"test": "a", "seed": True}, "out of range"),
+        ({"test": "a", "seed": -1}, "seed -1 is out of range"),
+        # Only a real integer is a seed: no bool, float or numeric string.
+        ({"test": "a", "seed": True}, "seed must be an integer, got True"),
+        ({"test": "a", "seed": False}, "seed must be an integer, got False"),
+        ({"test": "a", "seed": 1.5}, "seed must be an integer, got 1.5"),
+        ({"test": "a", "seed": 1.0}, "seed must be an integer, got 1.0"),
+        ({"test": "a", "seed": float("nan")}, "seed must be an integer"),
+        ({"test": "a", "seed": "1"}, "seed must be an integer, got '1'"),
+        ({"test": None, "seed": "42"}, "seed must be an integer, got '42'"),
     ],
 )
 def test_build_test_run_refusals(kwargs: dict, reason: str) -> None:
@@ -339,15 +328,111 @@ def test_fingerprint_ignores_name_and_seed() -> None:
     assert build_test_run("stress").fingerprint == declared_inputs_fingerprint((), {})
 
 
-@pytest.mark.parametrize("test", ["stress", "slow-first", "x5", "tb/smoke:1"])
-@pytest.mark.parametrize("variant", [None, "soak", "x9"])
-@pytest.mark.parametrize("seed", [None, 1, 42, MAX_SEED])
-def test_parsing_a_rendered_name_round_trips(
+# ---------------------------------------------------------------------------
+# Properties: names round-trip, the unnamed invocation is never a Test
+# ---------------------------------------------------------------------------
+
+_FORBIDDEN_CHARACTERS = "+@<>'\"\\"
+_VALID_NAMES = st.text(
+    alphabet=st.characters(
+        # No surrogates, controls, invisible format characters or separators.
+        blacklist_categories=("Cs", "Cc", "Cf", "Zs", "Zl", "Zp"),
+        blacklist_characters=_FORBIDDEN_CHARACTERS,
+    ),
+    min_size=1,
+    max_size=24,
+).filter(lambda name: not name.startswith("-") and name != "default")
+_SEEDS = st.integers(min_value=1, max_value=MAX_SEED)
+_OPTIONAL_SEEDS = st.none() | _SEEDS
+
+
+@st.composite
+def _malformed_names(draw: st.DrawFn) -> str:
+    """A valid name broken in exactly one way the rule refuses."""
+    name = draw(_VALID_NAMES)
+    breakage = draw(st.sampled_from(["empty", "reserved", "dash", "character"]))
+    if breakage == "empty":
+        return ""
+    if breakage == "reserved":
+        return "default"
+    if breakage == "dash":
+        return "-" + name
+    bad = draw(
+        st.sampled_from([*_FORBIDDEN_CHARACTERS, " ", "\t", "\n", "\x00", "\x1b", "\u200b"])
+    )
+    position = draw(st.integers(min_value=0, max_value=len(name)))
+    return name[:position] + bad + name[position:]
+
+
+_NOT_SEEDS = st.one_of(
+    st.integers(max_value=0),
+    st.integers(min_value=MAX_SEED + 1),
+    st.booleans(),
+    st.floats(),
+    _SEEDS.map(str),
+    _SEEDS.map(float),
+)
+
+
+@PROPERTY_SETTINGS
+@given(test=_VALID_NAMES, variant=st.none() | _VALID_NAMES, seed=_OPTIONAL_SEEDS)
+def test_a_rendered_name_parses_back_to_the_same_test_run(
     test: str, variant: str | None, seed: int | None
 ) -> None:
     run = build_test_run(test, variant=variant, seed=seed)
-    expected_seed = Unpinned() if seed is None else Pinned(seed)
-    assert parse_test_selector(run.name) == TestSelector(test, variant, expected_seed)
+    seed_form = UnpinnedSeed() if seed is None else PinnedSeed(seed)
+    assert parse_test_selector(run.name) == TestSelector(test, variant, seed_form)
+
+
+@PROPERTY_SETTINGS
+@given(seed=_OPTIONAL_SEEDS)
+def test_the_unnamed_invocation_never_parses_as_a_selector(seed: int | None) -> None:
+    run = build_test_run(None, seed=seed)
+    assert run.name.startswith(UNNAMED_TEST_DISPLAY)
+    with pytest.raises(TestRunNameError):
+        parse_test_selector(run.name)
+
+
+@PROPERTY_SETTINGS
+@given(
+    test=_VALID_NAMES,
+    variant=st.none() | _VALID_NAMES,
+    seed=_OPTIONAL_SEEDS,
+    unnamed_seed=_OPTIONAL_SEEDS,
+)
+def test_a_declared_name_never_renders_like_the_unnamed_invocation(
+    test: str, variant: str | None, seed: int | None, unnamed_seed: int | None
+) -> None:
+    named = build_test_run(test, variant=variant, seed=seed)
+    assert named.name != build_test_run(None, seed=unnamed_seed).name
+    assert UNNAMED_TEST_DISPLAY not in named.name
+
+
+def test_the_unnamed_display_itself_is_not_a_declarable_name() -> None:
+    # Regression: "<default>" used to be a legal Test name and rendered
+    # exactly like the unnamed invocation.
+    with pytest.raises(TestRunNameError, match="it contains '<'"):
+        build_test_run(UNNAMED_TEST_DISPLAY, seed=1)
+
+
+@PROPERTY_SETTINGS
+@given(bad=_malformed_names(), good=_VALID_NAMES, seed=_OPTIONAL_SEEDS)
+def test_the_builder_and_the_parser_refuse_malformed_names(
+    bad: str, good: str, seed: int | None
+) -> None:
+    with pytest.raises(TestRunNameError):
+        build_test_run(bad, seed=seed)
+    with pytest.raises(TestRunNameError):
+        build_test_run(good, variant=bad, seed=seed)
+    with pytest.raises(TestRunNameError):
+        parse_test_selector(bad)
+
+
+@PROPERTY_SETTINGS
+@given(test=st.none() | _VALID_NAMES, seed=_NOT_SEEDS)
+def test_the_builder_refuses_everything_that_is_not_a_seed(test: str | None, seed: object) -> None:
+    with pytest.raises(TestRunNameError):
+        build_test_run(test, seed=seed)  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
@@ -411,41 +496,67 @@ def test_draw_seeds_refuses_an_impossible_count(count: int) -> None:
 _SIM = ["booley", "flow", "sim", "--target"]
 
 
-@pytest.mark.parametrize(
-    ("target", "run", "argv"),
-    [
-        ("sim", build_test_run("stress", seed=42), [*_SIM, "sim", "--test", "stress@42"]),
-        (
-            "sim",
-            build_test_run("stress", variant="soak", seed=7),
-            [*_SIM, "sim", "--test", "stress+soak@7"],
-        ),
-        # An unseeded Target: no @seed and no --seed.
-        ("sim_icarus", build_test_run("stress"), [*_SIM, "sim_icarus", "--test", "stress"]),
-        (
-            "sim_icarus",
-            build_test_run("stress", variant="soak"),
-            [*_SIM, "sim_icarus", "--test", "stress+soak"],
-        ),
-        # The unnamed invocation cannot be named by --test.
-        ("sim", build_test_run(None, seed=1), [*_SIM, "sim", "--seed", "1"]),
-        ("sim", build_test_run(None), [*_SIM, "sim"]),
-        # A VLNV-qualified Target and shell-active name characters stay one token each.
-        (
-            "booley:ibex:port#sim",
-            build_test_run("tb/smoke$1;x", seed=3),
-            [*_SIM, "booley:ibex:port#sim", "--test", "tb/smoke$1;x@3"],
-        ),
-        ("my sim", build_test_run("a|b"), [*_SIM, "my sim", "--test", "a|b"]),
-    ],
-)
-def test_rerun_command_parses_back_to_the_intended_arguments(
-    target: str, run, argv: list[str]
+def _unvalidated_run(test: str, seed: int | None) -> TestRun:
+    """A run whose name skipped validation, to test the renderer on its own."""
+    return TestRun(test, None, seed, (), (), declared_inputs_fingerprint((), {}))
+
+
+_RERUN_CASES = [
+    ("sim", build_test_run("stress", seed=42), [*_SIM, "sim", "--test=stress@42"]),
+    (
+        "sim",
+        build_test_run("stress", variant="soak", seed=7),
+        [*_SIM, "sim", "--test=stress+soak@7"],
+    ),
+    # An unseeded Target: no @seed and no --seed.
+    ("sim_icarus", build_test_run("stress"), [*_SIM, "sim_icarus", "--test=stress"]),
+    (
+        "sim_icarus",
+        build_test_run("stress", variant="soak"),
+        [*_SIM, "sim_icarus", "--test=stress+soak"],
+    ),
+    # The unnamed invocation cannot be named by --test.
+    ("sim", build_test_run(None, seed=1), [*_SIM, "sim", "--seed", "1"]),
+    ("sim", build_test_run(None), [*_SIM, "sim"]),
+    # A VLNV-qualified Target and shell-active name characters stay one token each.
+    (
+        "booley:ibex:port#sim",
+        build_test_run("tb/smoke$1;x", seed=3),
+        [*_SIM, "booley:ibex:port#sim", "--test=tb/smoke$1;x@3"],
+    ),
+    ("my sim", build_test_run("a|b"), [*_SIM, "my sim", "--test=a|b"]),
+    ("sim", build_test_run("a=b", seed=2), [*_SIM, "sim", "--test=a=b@2"]),
+    # Regression: `--test -foo@1` (two tokens) is refused by argparse. Names
+    # can no longer start with '-', and the renderer does not rely on that.
+    ("sim", _unvalidated_run("-foo", 1), [*_SIM, "sim", "--test=-foo@1"]),
+    ("sim", _unvalidated_run("--trace", None), [*_SIM, "sim", "--test=--trace"]),
+]
+
+
+@pytest.mark.parametrize(("target", "run", "argv"), _RERUN_CASES)
+def test_rerun_command_splits_into_the_intended_arguments(
+    target: str, run: TestRun, argv: list[str]
 ) -> None:
-    command = rerun_command(target, run)
-    assert shlex.split(command) == argv
+    assert shlex.split(rerun_command(target, run)) == argv
+
+
+@pytest.mark.parametrize(("target", "run", "_argv"), _RERUN_CASES)
+def test_rerun_command_is_accepted_by_the_real_sim_parser(
+    target: str, run: TestRun, _argv: list[str]
+) -> None:
+    flow = SimulateFlow()
+    argv = shlex.split(rerun_command(target, run))
+    assert argv[:3] == ["booley", "flow", flow.name]
+    if "--seed" in argv and "--seed" not in build_parser(flow).format_help():
+        # `flow sim --seed` is added with seeded Test Runs (ADR 0072, #1233
+        # stage S2). Until the option exists the unnamed seeded rerun command
+        # cannot be parsed; this case runs by itself once it does.
+        pytest.skip("flow sim has no --seed option yet (arrives in #1233 stage S2)")
+    request = parse_request(flow, argv[3:])
+    assert request.target == target
+    assert request.test == (None if run.test is None else (run.name,))
 
 
 def test_rerun_command_is_plain_text_for_ordinary_names() -> None:
     run = build_test_run("stress", variant="soak", seed=42)
-    assert rerun_command("sim", run) == "booley flow sim --target sim --test stress+soak@42"
+    assert rerun_command("sim", run) == "booley flow sim --target sim --test=stress+soak@42"

@@ -345,7 +345,7 @@ include = [
     "src/booley/flows/sim/backends/cocotb_results.py",
     "src/booley/flows/sim/result.py",
     # Test Run names, selectors and seeds: the identity simulation evidence records.
-    "src/booley/config/test_name_rules.py",
+    "src/booley/config/tests_toml_rules.py",
     "src/booley/flows/test_runs.py",
     # Goal Mode records and the Goal argument trust boundary.
     "src/booley/goals",
@@ -368,7 +368,7 @@ strict = [
     # Persisted simulator-result structures and verdict parsing.
     "src/booley/flows/sim/backends/cocotb_results.py",
     "src/booley/flows/sim/result.py",
-    "src/booley/config/test_name_rules.py",
+    "src/booley/config/tests_toml_rules.py",
     "src/booley/flows/test_runs.py",
     "src/booley/goals",
     "src/booley/mcp/goal_changes.py",

@@ -38,6 +38,7 @@ from booley.audit import (
 from booley.audit.diagnostic_results import DiagnosticReport, Severity
 from booley.config.jobs import parse_caps
 from booley.config.project_config import TESTS_SECTION_KEYS, normalize_tests_toml
+from booley.config.tests_toml_rules import TEST_NAME_RULES
 from booley.core.boundary import (
     BoundaryError,
     is_str_list,
@@ -5409,8 +5410,7 @@ def _audit_tests_toml(project: ProjectAudit, _pass: Check, _skip: Check, _fail: 
         _fail(
             f"tests.toml invalid: {exc}",
             "fix the tests.toml entry named above (a Target section holds only "
-            f"{', '.join(TESTS_SECTION_KEYS)}; a Test name has no whitespace, "
-            "'+', '@', quotes or backslash and is not 'default')",
+            f"{', '.join(TESTS_SECTION_KEYS)}; {TEST_NAME_RULES})",
         )
         return
     _pass("tests.toml valid (section keys, Test names and select templates well-formed)")
