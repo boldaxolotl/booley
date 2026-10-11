@@ -23,11 +23,10 @@ def goal_mode_rules() -> str:
     """The Goal Mode rules as Markdown bullets, ending with a newline."""
     protected = ", ".join(f"`{name}`" for name in PROTECTED_INPUT_NAMES)
     bullets = (
-        WORK_DIR_GUIDANCE + " While any Goal Record occupies the Project, endpoint "
-        "dispatch (including Project-defined endpoints), `booley_report`, and Goal "
-        "tools require explicit `work_dir`. A Project-defined endpoint whose schema "
-        "lacks `work_dir` cannot run under that condition. `booley_targets` accepts "
-        "`work_dir` but does not require it.",
+        WORK_DIR_GUIDANCE + " While any Goal Record occupies the Project, Flows, "
+        "Specialists, Goal tools, and `booley_report` refuse a call without "
+        "`work_dir` (`booley_targets` may omit it), and Project-defined endpoints "
+        "must declare `work_dir` to run.",
         "Only Booley Flows and Specialists produce evidence. Nothing you write or "
         "report meets a Goal.",
         f"Protected inputs: {protected}. Editing one blocks Finish until it is "

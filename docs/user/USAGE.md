@@ -389,9 +389,8 @@ Relative comparisons report an **observed Cycle Count change**. When declared wo
 
 ### Working with evidence
 
-The agent passes the absolute worktree root as `work_dir` to Booley Flows,
-Specialists, Goal tools, `booley_targets`, and `booley_report`. Tools in the
-right-hand column below accept no `work_dir`.
+The agent passes the absolute worktree root as `work_dir` to every tool that
+accepts it.
 
 Built-in MCP worktree routing:
 
@@ -402,13 +401,13 @@ Built-in MCP worktree routing:
 | `goal_enter`, `goal_status`, `goal_propose_change`, `goal_finish` | `booley_sleep`, `coverage_evidence` |
 | `booley_targets`, `booley_report` | `bwave` |
 
-`booley_sleep` is exposed only when diagnostic tools are enabled;
-`coverage_evidence` is exposed only in the bound nested Coverage Analyst server.
-While any Goal Record occupies the Project, endpoint dispatch (Booley Flows,
-Specialists, and Project-defined endpoints), `booley_report`, and Goal tools
-require explicit `work_dir`, even for diagnostic calls outside that worktree.
-`booley_targets` accepts it but does not require it. A Project-defined endpoint
-whose advertised schema lacks `work_dir` cannot run under that condition.
+`booley_sleep` appears only when diagnostic tools are enabled, and
+`coverage_evidence` only in the Coverage Analyst's nested server.
+
+While any Goal Record occupies the Project, Booley Flows, Specialists, Goal
+tools, and `booley_report` refuse a call without `work_dir`, even a diagnostic
+call outside that worktree; `booley_targets` may omit it. Project-defined
+endpoints must declare `work_dir` to run.
 
 Only Booley Flows and Specialists meet Goals. Shell output or the agent saying
 "done" does not. `goal_status` shows each Goal's current evidence and freshness;

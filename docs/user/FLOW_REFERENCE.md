@@ -290,8 +290,8 @@ absolute root as `work_dir` to Booley Flows, Specialists, Goal tools,
 `booley_targets`, and `booley_report` so calls select that worktree.
 `booley_status`, `booley_poll`, `booley_cancel`, `booley_sleep`,
 `coverage_evidence`, and `bwave` accept no `work_dir`. See
-[worktree routing](USAGE.md#working-with-evidence) for the built-in inventory
-and the explicit-routing requirement, including Project-defined endpoints.
+[worktree routing](USAGE.md#working-with-evidence) for the full inventory and
+when `work_dir` is required.
 
 - `sim_pass_<target>` requires the Target's full registered simulation suite.
   Passing a hand-picked subset does not meet this Goal.
