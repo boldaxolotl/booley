@@ -4091,7 +4091,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 lines.append(
                     _pre_sim_report_line(
                         outcome.target,
-                        test.get("test_run") if several else test.get("name"),
+                        (several and test.get("test_run")) or test.get("name"),
                         cast(Mapping[str, object], pre_sim),
                     )
                 )

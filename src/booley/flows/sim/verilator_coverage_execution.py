@@ -440,7 +440,7 @@ class VerilatorCoverageExecution:
             evidence_root=prepared.build_root,
             attempt_token=transport.attempt_token,
             initialize_log=True,
-            tests=(request.test.run_name,),
+            tests=(request.test.name,),
         )
         try:
             executed = execute_adapter_attempt(
@@ -621,13 +621,19 @@ def collect_target_coverage(
     artifact_root: Path,
     invoke: ProcessInvoker,
     options: SimulationOptions,
+    test_runs: tuple[TestRun, ...] | None = None,
 ) -> CoverageCollectionResult:
-    """Collect a Target through the same build and adapter stack as Simulation."""
+    """Collect a Target through the same build and adapter stack as Simulation.
+
+    *test_runs* are the concrete Test Runs to collect; without them every
+    selected Test runs its default Test Variant at the Default Seed.
+    """
     request = prepare_coverage_collection(
         handle,
         selected_tests=selected_tests,
         artifact_root=artifact_root,
         trace=options.trace,
+        test_runs=test_runs,
     )
     execution = VerilatorCoverageExecution(handle, invoke=invoke, options=options)
     return collect(request, execution)

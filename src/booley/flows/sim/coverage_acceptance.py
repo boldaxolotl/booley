@@ -149,16 +149,24 @@ def _simulation_detail(
 ) -> dict[str, Any]:
     del path
     selected = list(plan.selected_tests)
+    # Evidence names Tests. A Test passed only when every one of its Test Runs
+    # passed, so one passing run never stands in for a failing run of the Test.
+    failed = list(
+        dict.fromkeys(run.test for run in campaign.runs if run.simulation_verdict != "pass")
+    )
+    passed = [
+        test for test in dict.fromkeys(run.test for run in campaign.runs) if test not in failed
+    ]
     return {
         "campaign_id": getattr(campaign, "campaign_id", "unavailable"),
         "target": plan.handle.identity,
         "selected_tests": selected,
         "registry_tests": list(plan.declared_tests),
         "test_selector": "all" if plan.selected_tests == plan.declared_tests else "partial",
-        "passed_tests": [run.test for run in campaign.runs if run.simulation_verdict == "pass"],
-        "failed_tests": [run.test for run in campaign.runs if run.simulation_verdict != "pass"],
-        "tests_passed": sum(run.simulation_verdict == "pass" for run in campaign.runs),
-        "tests_total": len(campaign.runs),
+        "passed_tests": passed,
+        "failed_tests": failed,
+        "tests_passed": len(passed),
+        "tests_total": len(passed) + len(failed),
     }
 
 

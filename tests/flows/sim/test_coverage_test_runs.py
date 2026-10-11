@@ -160,6 +160,21 @@ def test_one_failing_run_fails_the_coverage_campaign(tmp_path, monkeypatch):
     ]
 
 
+def test_evidence_counts_a_test_as_passed_only_when_every_run_of_it_passed(tmp_path, monkeypatch):
+    from booley.flows.sim.coverage_acceptance import _simulation_detail
+
+    context = _project(tmp_path, monkeypatch)
+    plan = _target_plan(tmp_path, context, _runs(tmp_path, "reset", "reset+soak", "wrap"))
+    outcome = run_coverage_target(plan, _FailingRun("reset+soak@1"), Progress())
+    campaign = load_coverage_campaign(outcome.campaign_path).campaign
+
+    detail = _simulation_detail(plan, campaign, outcome.campaign_path)
+
+    assert detail["selected_tests"] == ["reset", "wrap"]
+    assert (detail["passed_tests"], detail["failed_tests"]) == (["wrap"], ["reset"])
+    assert (detail["tests_passed"], detail["tests_total"]) == (1, 2)
+
+
 def test_a_run_name_outside_the_safe_set_becomes_a_digest_not_a_lossy_name(tmp_path):
     from booley.flows.sim.verilator_coverage import _run_id, _run_stem
 

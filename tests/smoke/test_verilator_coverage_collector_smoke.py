@@ -318,7 +318,7 @@ def test_real_custom_main_collects_through_packaged_window_hooks(tmp_path: Path)
 
 def test_real_custom_main_retains_failed_write_hook_evidence(tmp_path: Path) -> None:
     _write_custom_target(tmp_path)
-    raw_destination = tmp_path / "campaign/native/raw/001-custom.dat"
+    raw_destination = tmp_path / "campaign/native/raw/001-custom@1.dat"
     raw_destination.mkdir(parents=True)
 
     result = _collect_target(tmp_path, "custom")
