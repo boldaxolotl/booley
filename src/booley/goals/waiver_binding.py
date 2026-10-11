@@ -8,13 +8,13 @@ trimmed, coerced or reconstructed from mutable producer files during recovery.
 from __future__ import annotations
 
 import json
-import math
 from dataclasses import dataclass
 from typing import Any, cast
 
 from booley.core.boundary import (
     BoundaryError,
     require_dict,
+    require_finite_number_value,
     require_list,
     require_positive_int,
     require_str_value,
@@ -68,32 +68,28 @@ def _json_value(value: object, where: str) -> None:
     elif isinstance(value, list):
         for index, item in enumerate(cast("list[object]", value)):
             _json_value(item, f"{where}[{index}]")
-    elif isinstance(value, float) and not math.isfinite(value):
-        raise ProposalError(f"{where} must be finite")
+    elif isinstance(value, (int, float)) and not isinstance(value, bool):
+        try:
+            require_finite_number_value(value, field=where)
+        except BoundaryError as exc:
+            raise ProposalError(str(exc)) from exc
     elif value is not None and not isinstance(value, (str, bool, int, float)):
         raise ProposalError(f"{where} must be a JSON value")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class JsonSnapshot:
     """Opaque fingerprint facts stored without mutable aliases or normalization."""
 
     _encoded: bytes
 
-    def __post_init__(self) -> None:
-        _require_type(self._encoded, bytes, "snapshot")
-        try:
-            raw = json.loads(self._encoded)
-        except (ValueError, UnicodeError) as exc:
-            raise ProposalError("snapshot must contain valid JSON") from exc
-        _json_value(_object(raw, "snapshot"), "snapshot")
-
-    @classmethod
-    def from_json(cls, value: object, *, where: str) -> JsonSnapshot:
-        """Freeze an object; neither callers nor JSON consumers retain an alias."""
+    def __init__(self, value: object, *, where: str) -> None:
+        """Validate and freeze JSON once, retaining field-specific diagnostics."""
         raw = _object(value, where)
         _json_value(raw, where)
-        return cls(json.dumps(raw, sort_keys=True, allow_nan=False).encode())
+        object.__setattr__(
+            self, "_encoded", json.dumps(raw, sort_keys=True, allow_nan=False).encode()
+        )
 
     def to_json(self) -> dict[str, Any]:
         """Return a detached copy for the owning adapter or public display."""
@@ -253,11 +249,11 @@ class WaiverBinding:
             WaiverCandidateSnapshot.from_json(raw["candidate"]),
             raw["candidate_digest"],
             raw["goal_key"],
-            JsonSnapshot.from_json(raw["campaign_reference"], where="waiver.campaign_reference"),
+            JsonSnapshot(raw["campaign_reference"], where="waiver.campaign_reference"),
             None
             if raw["target_surface"] is None
-            else JsonSnapshot.from_json(raw["target_surface"], where="waiver.target_surface"),
-            JsonSnapshot.from_json(raw["policy"], where="waiver.policy"),
+            else JsonSnapshot(raw["target_surface"], where="waiver.target_surface"),
+            JsonSnapshot(raw["policy"], where="waiver.policy"),
             raw["approval_root"],
             raw["anchor_root"],
             raw["anchor"],

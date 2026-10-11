@@ -149,7 +149,7 @@ def test_binding_constructors_validate_before_publication():
     with pytest.raises(ProposalError, match=r"candidate\.evidence_refs"):
         replace(proposal.waiver.candidate, evidence_refs=["mutable"])
     with pytest.raises(ProposalError, match=r"waiver\.policy\.config"):
-        replace(proposal.waiver, policy=JsonSnapshot.from_json({}, where="policy"))
+        replace(proposal.waiver, policy=JsonSnapshot({}, where="policy"))
     with pytest.raises(ProposalError, match="WaiverBinding"):
         replace(proposal, waiver=legacy_payload()["waiver"])
 
@@ -206,3 +206,27 @@ def test_mcp_summary_keeps_legacy_waiver_shape(tmp_path):
         summary["commit_files"]
         == "Commit the installed approval/proof files under " + raw["waiver"]["approval_root"]
     )
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf")])
+def test_nonfinite_snapshot_number_names_nested_field(value):
+    raw = legacy_payload()
+    raw["waiver"]["policy"]["extension"] = {"items": [value]}
+    with pytest.raises(ProposalError, match=r"waiver\.policy\.extension\.items\[0\]"):
+        Proposal.from_json(raw)
+
+
+def test_snapshot_constructor_validates_and_preserves_authored_json_types():
+    from booley.goals.waiver_binding import JsonSnapshot
+
+    raw = {"values": [10**80, 1.5, True, None]}
+    snapshot = JsonSnapshot(raw, where="waiver.policy")
+    assert snapshot.to_json() == raw
+    assert [type(value) for value in snapshot.to_json()["values"]] == [
+        int,
+        float,
+        bool,
+        type(None),
+    ]
+    with pytest.raises(ProposalError, match=r"waiver\.policy"):
+        JsonSnapshot([], where="waiver.policy")
