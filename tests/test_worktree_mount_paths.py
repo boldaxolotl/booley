@@ -7,6 +7,14 @@ import pytest
 from booley.runtime.project_dir import reset_cache
 
 
+@pytest.fixture(autouse=True)
+def _fresh_project_dir_cache():
+    """Keep each test's Project selection independent of earlier tests in the worker."""
+    reset_cache()
+    yield
+    reset_cache()
+
+
 def test_old_git_repair_omits_unsupported_mode_flags(monkeypatch):
     from booley.runtime import worktree_paths, worktree_repair
 
