@@ -1505,9 +1505,9 @@ A few conventions worth calling out in that example:
 
 Declare `file_type` on a fileset as the default for its files, or on an
 individual file entry to override that default. For lint and simulation,
-FuseSoC passes the declared type to the selected EDA tool; an untyped file
-defaults to `user`. A `.vlt` suffix alone does not attach a Verilator waiver:
-declare `file_type: vlt` and select its fileset on the Target.
+FuseSoC passes the declared type to the selected EDA tool. Booley treats
+untyped files as `user` inputs. A `.vlt` suffix alone does not attach a Verilator
+waiver: declare `file_type: vlt` and select its fileset on the Target.
 
 Use these canonical spellings for the built-in Flows:
 
@@ -1515,7 +1515,7 @@ Use these canonical spellings for the built-in Flows:
 | --- | --- |
 | `verilogSource` | Verilog RTL or testbench sources for lint and sim; non-testbench RTL for synth and fpga. |
 | `systemVerilogSource` | SystemVerilog RTL or testbench sources for the same Flows. Mark `.vh`/`.svh` headers with `is_include_file: true` so they supply include paths instead of compiling separately. |
-| `vlt` | Verilator control/waiver files on lint or Verilator sim Targets. See the [lint recipe](#verilator-lint-target). |
+| `vlt` | Verilator control/waiver files for lint and Target-based Verilator simulation builds. See the [lint recipe](#verilator-lint-target). |
 | `cSource`, `cppSource` | C/C++ sources for a Verilator simulation harness; mark headers with `is_include_file: true`. |
 | `veribleLintRules` | Verible lint rules configuration; select at most one rules file. |
 | `veribleLintWaiver` | Verible lint waiver files; select any needed waiver files. See the [Verible recipe](#verible-lint-target). |
@@ -1523,10 +1523,11 @@ Use these canonical spellings for the built-in Flows:
 | `xdc` | Target-owned Vivado FPGA constraints. Use `.xdc` filenames outside testbench-tagged filesets; see [FPGA implementation](#fpga-implementation-flowsfpga). |
 | `user` | Non-RTL inputs, including firmware, vectors, and cocotb Python modules. `copyto:` declares their staged paths; see the examples above and [Cocotb Targets](#cocotb-targets-python-testbenches). |
 
-For FPGA RTL, use lowercase `.v` or `.sv` suffixes as well as the types above.
-The FPGA Flow selects RTL by `.v`/`.sv` suffix and rebuilds file types from
-filenames. An XDC declaration is matched case-insensitively, but the filename
-must also have an XDC suffix to retain that type; use `.xdc`. Other Flows preserve
+For FPGA RTL, use lowercase `.v` or `.sv` suffixes: the declared type does not
+control RTL selection. The FPGA Flow selects RTL by suffix and rebuilds file
+types from filenames. XDC declarations are matched case-insensitively, but
+their filenames must also have an XDC suffix to retain that type; use `.xdc`.
+Other Flows preserve
 declared types. Some HDL consumers accept version-suffixed type names, while
 simulation reuse and coverage helpers match the unversioned names exactly;
 use `verilogSource` and `systemVerilogSource` consistently.
@@ -1591,8 +1592,10 @@ targets:
     toplevel: top
 ```
 
-`-Wall` enables Verilator's lint warnings. Create `lint/waivers.vlt` with the
-required control-file directive and the specific warning to waive:
+`-Wall` is optional: it enables additional lint warnings independently of
+the waiver. Omit it to keep Verilator's default warning set. Create
+`lint/waivers.vlt` with the required control-file directive and the specific
+warning to waive:
 
 ```text
 `verilator_config
@@ -1615,6 +1618,9 @@ Sandbox:
 ```bash
 booley flow lint --target lint_structural
 ```
+
+Standalone elaboration probes use their own HDL-only inputs and do not consume
+Target waiver filesets.
 
 #### Verible lint Target
 
