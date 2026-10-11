@@ -54,6 +54,14 @@ class GoalStatusView:
         return sum(goal.status == "met" for goal in self.goals)
 
 
+@dataclass(frozen=True)
+class GoalStatusSelection:
+    """Selected views and whether they represent the Project-wide fallback."""
+
+    views: tuple[GoalStatusView, ...]
+    project_wide: bool
+
+
 def checkout_violation(store: GoalStore, record: GoalRecord, work_dir: Path) -> str:
     """Require the Worktree Identity and symbolic Goal Branch recorded at entry."""
     try:
@@ -212,7 +220,7 @@ def _revision_violation(
     return ""
 
 
-def status_views(store: GoalStore, work_dir: Path) -> tuple[GoalStatusView, ...]:
+def select_status(store: GoalStore, work_dir: Path) -> GoalStatusSelection:
     """Show this worktree's occupant, otherwise all occupying records; report corruption."""
     from booley.goals.store import GoalRecordCorruptError
 
@@ -227,6 +235,12 @@ def status_views(store: GoalStore, work_dir: Path) -> tuple[GoalStatusView, ...]
         else None
     )
     records = (record,) if record is not None else scan.records
-    return tuple(
+    views = tuple(
         build_status(store, rec, work_dir=work_dir if rec is record else None) for rec in records
     )
+    return GoalStatusSelection(views, project_wide=record is None)
+
+
+def status_views(store: GoalStore, work_dir: Path) -> tuple[GoalStatusView, ...]:
+    """Retain the tuple-only interface for observational consumers."""
+    return select_status(store, work_dir).views
