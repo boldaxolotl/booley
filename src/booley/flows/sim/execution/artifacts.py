@@ -17,7 +17,10 @@ from .freshness import (
     validate_fresh_artifact,
 )
 
-_SAFE_COMPONENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
+# ``+`` and ``@`` are the separators of a Test Run name (``stress+soak@42``),
+# so a run's evidence directory reads as the run. Both are ordinary file-name
+# characters on POSIX and on Windows.
+_SAFE_COMPONENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.+@-]{0,127}\Z")
 _TRACE_FILE_PATTERNS = ("**/*.fst", "**/*.vcd")
 _COMPATIBILITY_ARTIFACTS = (
     ("result", "result.json"),

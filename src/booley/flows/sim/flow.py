@@ -82,7 +82,12 @@ from booley.flows.sim.result import parse_summary_line
 from booley.flows.sim.run_guard import DEFAULT_SIM_TIME_GRACE_S
 from booley.flows.sim.verilator_coverage import SimulationExecutionPort
 from booley.flows.target_test_plan import TargetTestPlan
-from booley.flows.test_runs import TestRun, parse_test_selector, test_run_from_document
+from booley.flows.test_runs import (
+    SeedCount,
+    TestRun,
+    parse_test_selector,
+    test_run_from_document,
+)
 from booley.fusesoc import fusesoc_registry
 from booley.runtime import job_slots
 from booley.runtime.endpoint_execution import (
@@ -1747,15 +1752,47 @@ def _selected_test_work_units(
     if skip_arg:
         skips.update(item.strip() for item in skip_arg.split(",") if item.strip())
     if test_selector:
-        matched = _filter_tests(available, test_selector)
-        if not matched:
-            return 1
-        selected = [test for test in matched if test not in skips]
-        return len(selected or matched)
+        return max(1, _selector_test_run_count(available, test_selector))
     if not available:
         return 1
     selected = [test for test in available if test not in skips]
     return len(selected or available)
+
+
+def _selector_test_run_count(available: Sequence[str], test_selector: Sequence[str] | str) -> int:
+    """How many Test Runs *test_selector* names among the registered Tests.
+
+    ``test@xN`` counts N. A selector that does not parse, or names an
+    unregistered Test, counts nothing: the Flow itself refuses it.
+    """
+    requested = (test_selector,) if isinstance(test_selector, str) else tuple(test_selector)
+    count = 0
+    for text in requested:
+        try:
+            selector = parse_test_selector(text)
+        except ValueError:
+            continue
+        if selector.test in available:
+            form = selector.seed_form
+            count += form.count if isinstance(form, SeedCount) else 1
+    return count
+
+
+def _cocotb_batch_bound(
+    available: Sequence[str], test_selector: Sequence[str] | str | None
+) -> int:
+    """An upper bound on the Cocotb batches one Target's selection launches.
+
+    Default Test Runs share one batch. A selection that names a Test Variant
+    or a seed may need a batch per Test Run, because batches never mix
+    environments or seeds.
+    """
+    if not test_selector:
+        return 1
+    requested = (test_selector,) if isinstance(test_selector, str) else tuple(test_selector)
+    if all("+" not in text and "@" not in text for text in requested):
+        return 1
+    return max(1, _selector_test_run_count(available, requested))
 
 
 def _resolve_sim_campaign_work_units(
@@ -1767,8 +1804,9 @@ def _resolve_sim_campaign_work_units(
 ) -> int:
     """Count sequential simulator processes selected by one sim invocation.
 
-    Cocotb batches a Target's selected tests into one process. Native HDL
-    Targets launch one process per selected test. This is deliberately a cheap
+    Cocotb batches a Target's selected Test Runs by environment and seed.
+    Native HDL Targets launch one process per selected Test Run, so
+    ``test@xN`` counts N. This is deliberately a cheap
     preflight read used by the outer MCP watchdog; validation remains the
     child Flow's responsibility.
     """
@@ -1785,7 +1823,9 @@ def _resolve_sim_campaign_work_units(
     units = 0
     for target in targets:
         if _target_is_cocotb(work_dir, target):
-            units += 1
+            units += _cocotb_batch_bound(
+                list(lookup_target_section(test_names, target) or []), test_selector
+            )
             continue
         units += _selected_test_work_units(
             target,

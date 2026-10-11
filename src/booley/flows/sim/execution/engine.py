@@ -118,7 +118,7 @@ from .freshness import (
     ArtifactValidationError,
     validate_fresh_artifact,
 )
-from .pre_sim import run_pre_sim_commands
+from .pre_sim import run_pre_sim_commands, test_run_environment
 from .telemetry import parse_build_seconds, parse_run_seconds, process_resources
 
 _DEFAULT_CYCLE_SENTINEL = "[SIM_CYCLES]"
@@ -1374,6 +1374,7 @@ class SimulationExecution:
             simulator_environment=dict(attempt.simulator_environment),
             commands=attempt.pre_sim_commands,
             run_cwd=attempt.work.run_cwd,
+            test_runs=attempt.work.test_runs,
         )
 
     def _completed_group(
@@ -1473,7 +1474,7 @@ class SimulationExecution:
         rel = edam_layer.relpath_for_make(build_root, root)
         work = _preview_work(self, handle, inspection, test_names, cocotb, rel, test_runs)
         steps = [
-            *_preview_exports(handle, test_names, build_root),
+            *_preview_exports(handle, test_names, build_root, work.test_runs),
             shlex.join(setup),
             *resolve_pre_sim_commands(root),
             shlex.join(edam_layer.make_command(rel)),
@@ -1649,6 +1650,24 @@ def _simulation_plusargs(launch: TestRunLaunch, parameters: Mapping[str, Any]) -
     return [value for value in rendered if _plusarg_key(value) not in keys] + arguments
 
 
+def _artifact_group(plan: TargetTestPlan, runs: tuple[TestRun, ...], cocotb: bool) -> str:
+    """Directory name of one process's evidence among its Target's.
+
+    An HDL process is named by its Test Run (``stress+soak@42``), or by the
+    Target for the unnamed invocation. A Cocotb batch of default Test Runs is
+    ``batch``; any other batch adds what sets it apart, its seed and the
+    fingerprint of its environment, so two batches never share a directory.
+    """
+    first = runs[0]
+    if not cocotb:
+        return first.name if first.test is not None else ""
+    if first.seed == plan.default_seed and not first.env:
+        return "batch"
+    seed = "" if first.seed is None else f"@{first.seed}"
+    env = "+" + first.fingerprint.removeprefix("sha256:")[:8] if first.env else ""
+    return f"batch{env}{seed}"
+
+
 def _plusarg_parameter_names(parameters: Mapping[str, Any]) -> tuple[str, ...]:
     """Names of the plusarg parameters the resolved Target declares."""
     return tuple(
@@ -1734,7 +1753,8 @@ def prepare_simulation_work(
         plan = target_test_plan(
             handle, "cocotb" if cocotb else prepared.eda_tool, prepared.resolved.parameters
         )
-        launch = plan.launch(group_test_runs(plan, identity.selected_tests, test_runs))
+        runs = group_test_runs(plan, identity.selected_tests, test_runs)
+        launch = plan.launch(runs)
     except ValueError as exc:
         # A tests.toml declaration this Target cannot apply: nothing may launch.
         raise SimulationBuildPreparationError(str(exc)) from exc
@@ -1755,6 +1775,8 @@ def prepare_simulation_work(
         plusargs=(*plusargs, *plusargs_suffix),
         environment=launch.environment,
         cocotb_seed=launch.seed if cocotb else None,
+        test_runs=runs,
+        artifact_group=_artifact_group(plan, runs, cocotb),
         trace=trace,
         trace_mode=trace_mode,
         trace_scope=prepared.toplevel,
@@ -1794,7 +1816,8 @@ def _preview_work(
         ) from exc
     passes, fails = resolve_sim_sentinels(root)
     plan = target_test_plan(handle, "cocotb" if cocotb else eda_tool, inspection.parameters)
-    launch = plan.launch(group_test_runs(plan, test_names, test_runs))
+    runs = group_test_runs(plan, test_names, test_runs)
+    launch = plan.launch(runs)
     return PreparedSimulationWork(
         adapter="cocotb" if cocotb else eda_tool,
         build_dir=rel,
@@ -1805,6 +1828,8 @@ def _preview_work(
         plusargs=tuple(_simulation_plusargs(launch, inspection.parameters)),
         environment=launch.environment,
         cocotb_seed=launch.seed if cocotb else None,
+        test_runs=runs,
+        artifact_group=_artifact_group(plan, runs, cocotb),
         trace=execution._options.trace,
         trace_scope=inspection.toplevel,
         trace_args=tuple(resolve_trace_args(root)),
@@ -1820,7 +1845,12 @@ def _preview_work(
     )
 
 
-def _preview_exports(handle: TargetHandle, names: tuple[str, ...], build_root: Path) -> list[str]:
+def _preview_exports(
+    handle: TargetHandle,
+    names: tuple[str, ...],
+    build_root: Path,
+    test_runs: tuple[TestRun, ...] = (),
+) -> list[str]:
     root = handle.project_root
     values = {
         **simulation_target_environment(handle),
@@ -1832,6 +1862,7 @@ def _preview_exports(handle: TargetHandle, names: tuple[str, ...], build_root: P
     }
     if len(names) == 1:
         values["BOOLEY_TEST_NAME"] = names[0]
+    values.update(test_run_environment(test_runs))
     return [f"export {name}={shlex.quote(value)}" for name, value in values.items()]
 
 
@@ -2525,7 +2556,7 @@ def _archive_run_logs(
     if attempt.adapter == "cocotb":
         relative = flow_artifacts.publish_bytes(
             artifact_root,
-            (target, "tests", "batch", "run.log"),
+            (target, "tests", _evidence_group(handle, attempt), "run.log"),
             output.encode(),
             work_dir=artifact_root,
         )
@@ -2533,7 +2564,7 @@ def _archive_run_logs(
         return (SimulationArtifactEvidence("run_log", str(path), path.stat().st_size, names),)
     evidence: list[SimulationArtifactEvidence] = []
     for name in names:
-        test = artifact_path_component(name)
+        test = _evidence_group(handle, attempt, name)
         relative = flow_artifacts.publish_bytes(
             artifact_root,
             (target, "tests", test, "run.log"),
@@ -2547,6 +2578,18 @@ def _archive_run_logs(
     return tuple(evidence)
 
 
+def _evidence_group(handle: TargetHandle, attempt: _Attempt, name: str | None = None) -> str:
+    """The evidence directory of *attempt* (of its Test *name*) under its Target.
+
+    The Test Run name where the work resolved one, so ``test@xN`` and two Test
+    Variants of one Test keep separate evidence; otherwise the bare Test name.
+    """
+    if attempt.adapter == "cocotb":
+        return artifact_path_component(attempt.work.artifact_group or "batch")
+    fallback = name or (attempt.test_names or (handle.selector,))[0]
+    return artifact_path_component(attempt.work.artifact_group or fallback)
+
+
 def _archive_file_evidence(
     handle: TargetHandle,
     attempt: _Attempt,
@@ -2557,11 +2600,7 @@ def _archive_file_evidence(
     if artifact_root is None:
         return evidence
     target = artifact_path_component(f"sim_{handle.selector}")
-    group = (
-        "batch"
-        if attempt.adapter == "cocotb"
-        else artifact_path_component((attempt.test_names or (handle.selector,))[0])
-    )
+    group = _evidence_group(handle, attempt)
     archived: list[SimulationArtifactEvidence] = []
     try:
         for item in evidence:

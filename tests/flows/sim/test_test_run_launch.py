@@ -263,3 +263,39 @@ class TestDeclarationsTheTargetCannotApply:
                 ("test_a", "test_b"),
                 (plan.run("test_a"), plan.run("test_b", seed=5)),
             )
+
+
+class TestEvidenceGroups:
+    def test_each_hdl_test_run_has_its_own_evidence_directory(self, tmp_path: Path):
+        root = _project(tmp_path, '[sim]\ntests = ["stress"]\n' + _VARIANTS)
+        plan = target_test_plan(_handle(root), "verilator", {})
+        inspection = _inspection("verilator")
+        groups = [
+            _work(root, inspection, ("stress",), None if run is None else (run,)).artifact_group
+            for run in (None, plan.run("stress", "soak"), plan.run("stress", seed=7))
+        ]
+        assert groups == ["stress+short@1", "stress+soak@1", "stress+short@7"]
+
+    def test_unseeded_default_run_keeps_its_bare_test_directory(self, tmp_path: Path):
+        root = _project(tmp_path, '[sim]\ntests = ["reset"]\n')
+        assert _work(root, _inspection("icarus"), ("reset",)).artifact_group == "reset"
+
+    def test_unnamed_invocation_has_no_group_of_its_own(self, tmp_path: Path):
+        assert _work(tmp_path, _inspection("verilator"), ()).artifact_group == ""
+
+    def test_cocotb_batches_never_share_an_evidence_directory(self, tmp_path: Path):
+        root = _project(tmp_path, _COCOTB_TESTS)
+        inspection = _inspection("icarus", cocotb=True)
+        plan = target_test_plan(_handle(root), "cocotb", {})
+        slow = plan.run("test_c", "slow")
+        groups = [
+            _work(root, inspection, names, runs).artifact_group
+            for names, runs in (
+                (("test_a", "test_b"), None),
+                (("test_b",), (plan.run("test_b", seed=5),)),
+                (("test_c",), (slow,)),
+                (("test_c",), (plan.run("test_c", "slow", 5),)),
+            )
+        ]
+        tag = slow.fingerprint.removeprefix("sha256:")[:8]
+        assert groups == ["batch", "batch@5", f"batch+{tag}@1", f"batch+{tag}@5"]

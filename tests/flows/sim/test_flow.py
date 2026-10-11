@@ -1766,7 +1766,7 @@ class TestReportGeneration:
         """Each HDL process gets durable evidence before the next one starts."""
         flow = _make_flow(tmp_path, config="lite")
         build_root = tmp_path / "build" / "lite"
-        first_path = tmp_path / "reports/sim/1/artifacts/candidate/sim_lite/tests/smoke/run.log"
+        first_path = tmp_path / "reports/sim/1/artifacts/candidate/sim_lite/tests/smoke@1/run.log"
         first_bytes: bytes | None = None
         calls = 0
 
@@ -1804,8 +1804,8 @@ class TestReportGeneration:
         assert [test["name"] for test in report["tests"]] == ["smoke", "stress"]
         pointers = [test["artifacts"]["run_log"] for test in report["tests"]]
         assert pointers == [
-            "reports/sim/1/artifacts/candidate/sim_lite/tests/smoke/run.log",
-            "reports/sim/1/artifacts/candidate/sim_lite/tests/stress/run.log",
+            "reports/sim/1/artifacts/candidate/sim_lite/tests/smoke@1/run.log",
+            "reports/sim/1/artifacts/candidate/sim_lite/tests/stress@1/run.log",
         ]
         smoke_log, stress_log = (tmp_path / pointer for pointer in pointers)
         assert smoke_log.read_bytes() == first_bytes
@@ -1843,7 +1843,7 @@ class TestReportGeneration:
         report = json.loads((tmp_path / "reports/sim/1/targets/lite/simulation.json").read_text())
         assert len(report["tests"]) == 1
         pointer = report["tests"][0]["artifacts"]["run_log"]
-        assert pointer == "reports/sim/1/artifacts/candidate/sim_lite/tests/smoke/run.log"
+        assert pointer == "reports/sim/1/artifacts/candidate/sim_lite/tests/smoke@1/run.log"
         assert "SINGLE_ONLY" in (tmp_path / pointer).read_text()
 
     def test_consecutive_direct_runs_preserve_first_archived_evidence(self, tmp_path: Path):

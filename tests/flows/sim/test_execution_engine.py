@@ -2005,7 +2005,7 @@ def test_pre_sim_commands_have_an_independent_timeout(tmp_path: Path) -> None:
         wrapper_timeout_s=1,
         simulator_environment=(),
         pre_sim_commands=("true",),
-        work=SimpleNamespace(run_cwd="run"),
+        work=SimpleNamespace(run_cwd="run", test_runs=()),
     )
     execution = SimulationExecution(invoke=MagicMock(), options=SimulationOptions(timeout_ms=1000))
 

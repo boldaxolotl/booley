@@ -460,8 +460,10 @@ def test_legacy_mode_builds_and_discloses_each_work_item_privately(
         expose_build_root: bool,
         *,
         commands: tuple[str, ...],
+        test_runs: tuple[object, ...],
     ) -> None:
         assert commands == ()
+        assert test_runs == ()  # this manifest predates recorded Test Runs
         hooks.append((names, expose_build_root, run_cwd))
 
     monkeypatch.setattr(serial_execution, "_run_hook", record_hook)

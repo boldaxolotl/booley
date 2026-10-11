@@ -518,6 +518,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             None,
             True,
             commands=_frozen_hook_commands(request),
+            test_runs=_work_item_test_runs(request.work_item) or (),
         )
         if pre_sim is not None:
             publish_pre_sim_firing(request, pre_sim, checkpoint=self._publication_checkpoint)
@@ -683,6 +684,7 @@ def _immutable_hook_failure(
         run_cwd,
         False,
         commands=_frozen_hook_commands(request),
+        test_runs=_work_item_test_runs(request.work_item) or (),
     )
     if pre_sim is not None:
         publish_pre_sim_firing(request, pre_sim, checkpoint=checkpoint)
@@ -769,6 +771,7 @@ def _run_hook(
     expose_build_root: bool,
     *,
     commands: tuple[str, ...] | None = None,
+    test_runs: tuple[TestRun, ...] = (),
 ):
     return run_pre_sim_commands(
         handle,  # type: ignore[arg-type]
@@ -781,6 +784,7 @@ def _run_hook(
         working_directory=run_cwd,
         expose_build_root=expose_build_root,
         commands=commands,
+        test_runs=test_runs,
     )
 
 

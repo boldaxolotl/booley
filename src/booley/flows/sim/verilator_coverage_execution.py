@@ -64,6 +64,7 @@ from booley.flows.sim.execution.freshness import ArtifactStamp, snapshot_artifac
 from booley.flows.sim.execution.pre_sim import run_pre_sim_commands
 from booley.flows.sim.live_progress import observe_stage
 from booley.flows.terminal_progress import announce_unit
+from booley.flows.test_runs import TestRun
 from booley.fusesoc.fusesoc_registry import (
     FuseSocError,
     core_target_coverage_errors,
@@ -347,7 +348,7 @@ class VerilatorCoverageExecution:
         )
         work = self._prepare_work(request, prepared, transport)
         before = _snapshot_pre_sim_state(self._handle, prepared, request, self._artifact_paths)
-        pre_sim = self._run_pre_sim(prepared, test_names, work.run_cwd)
+        pre_sim = self._run_pre_sim(prepared, test_names, work.run_cwd, work.test_runs)
         sink = getattr(self, "_pre_sim_evidence_sink", None)
         if pre_sim is not None and sink is not None:
             sink(pre_sim)
@@ -393,7 +394,11 @@ class VerilatorCoverageExecution:
         return replace(work, run_cwd=str(self._attempt_run_cwd)) if self._attempt_run_cwd else work
 
     def _run_pre_sim(
-        self, prepared: PreparedSimulationBuild, test_names: tuple[str, ...], run_cwd: str
+        self,
+        prepared: PreparedSimulationBuild,
+        test_names: tuple[str, ...],
+        run_cwd: str,
+        test_runs: tuple[TestRun, ...] = (),
     ) -> PreSimEvidence | None:
         return run_pre_sim_commands(
             self._handle,
@@ -406,6 +411,7 @@ class VerilatorCoverageExecution:
             run_cwd=run_cwd,
             working_directory=self._handle.project_root,
             expose_build_root=False,
+            test_runs=test_runs,
         )
 
     def _execute_run(
