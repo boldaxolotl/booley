@@ -6,6 +6,8 @@ import os
 import subprocess
 from pathlib import Path
 
+from booley.runtime.git_environment import inherited_git_environment
+
 
 def ignored_paths(root: Path, paths: list[Path], *, no_index: bool = False) -> set[Path]:
     """Read bounded, NUL-safe ignore membership outside indexed submodule boundaries."""
@@ -32,6 +34,7 @@ def _git(root: Path, arguments: list[str], payload: bytes | None = None) -> byte
         result = subprocess.run(
             ["git", *arguments],
             cwd=root,
+            env=inherited_git_environment(),
             input=payload,
             capture_output=True,
             timeout=30,

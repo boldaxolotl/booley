@@ -644,3 +644,23 @@ def test_target_less_direct_stamp_uses_one_immutable_selection(project):
     assert calls == [project]
     assert "top.sdc" not in fingerprint["rtl"]["files"]
     assert "top.sdc" not in fingerprint["target_surface"]["files"]
+
+
+@pytest.mark.parametrize("selector", ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"])
+def test_target_less_ignore_query_uses_explicit_checkout(project, tmp_path, monkeypatch, selector):
+    from booley.runtime.git_ignore import ignored_paths
+    from tests.goals.conftest import git
+
+    other = tmp_path / "other-checkout"
+    other.mkdir()
+    git(other, "init")
+    (other / "top.sdc").write_text("authored elsewhere\n")
+    git(other, "add", "top.sdc")
+    (project / ".gitignore").write_text("top.sdc\n")
+    value = {
+        "GIT_DIR": other / ".git",
+        "GIT_WORK_TREE": other,
+        "GIT_INDEX_FILE": other / ".git/index",
+    }[selector]
+    monkeypatch.setenv(selector, str(value))
+    assert ignored_paths(project, [project / "top.sdc"]) == {project / "top.sdc"}
