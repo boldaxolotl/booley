@@ -276,6 +276,10 @@ def test_publication_ignores_inherited_foreign_selection(repo, publication, tmp_
 
     foreign = repository(tmp_path / "foreign")
     (foreign / "README").write_bytes(b"foreign\n")
+    # Detached auto-maintenance after the commit would race the snapshot below
+    # with a transient .git/objects/maintenance.lock.
+    git(foreign, "config", "maintenance.auto", "false")
+    git(foreign, "config", "gc.auto", "0")
     git(foreign, "add", "README")
     git(foreign, "commit", "-qm", "foreign")
     before = {
