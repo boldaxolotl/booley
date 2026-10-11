@@ -142,7 +142,8 @@ def freeze_recipe_family(
 
     *paired_project* selects which revision of a paired Project repository the
     baseline checkout uses; ``None`` keeps :func:`baseline_worktree`'s default
-    (the paired branch's upstream fork point). A caller that recorded the
+    (the recorded creation base's merge-base with HEAD, upstream fallback if
+    absent, or the checked-out commit when detached). A caller that recorded the
     paired revision at its own entry passes it pinned, so the baseline never
     depends on an upstream that may not exist.
 

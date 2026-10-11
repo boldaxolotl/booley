@@ -780,6 +780,17 @@ To reuse the name, preserve any Project commits you need, then delete its branch
 with `git -C <absolute-project-dir> branch -D booley-worktree/<name>`.
 The command prints these steps with absolute paths.
 
+Outside Goal Mode, `--baseline` uses the paired Project branch's recorded
+creation base ahead of its upstream. Pushing, merging or rebasing newer Project
+changes does not update that recorded commit: the Project baseline is its
+merge-base with the current HEAD. Rewriting history can therefore select an
+older common ancestor. A branch without a recorded base falls back to its
+upstream's merge-base with HEAD; a branch with neither refuses. An invalid
+recorded base refuses even when an upstream exists. A detached paired HEAD
+uses its checked-out commit, including during a rebase or bisect. Baseline
+preparation progress names the rule and commit. Goal Mode keeps the exact
+paired Project commit pinned at entry.
+
 `booley projects discover` stops descending at each initialized Project to
 avoid scanning its RTL, vendor, and build trees. Nested Projects are not imported
 by that scan; run `booley projects discover <nested path>` on a nested Project
