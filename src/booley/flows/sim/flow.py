@@ -54,6 +54,11 @@ from booley.flows.progress_lifecycle import (
     supersede_progress,
 )
 from booley.flows.run_log import RUN_LOG_NAME, run_log_is_current, write_run_log
+from booley.flows.sim.campaign.test_run_report import ROW_LIMIT as TEST_RUN_ROW_LIMIT
+from booley.flows.sim.campaign.test_run_report import (
+    campaign_test_run_rows,
+    test_run_report_lines,
+)
 from booley.flows.sim.campaign_reports import target_report_directory
 from booley.flows.sim.cli import SimArguments
 from booley.flows.sim.config import (
@@ -83,6 +88,7 @@ from booley.flows.sim.run_guard import DEFAULT_SIM_TIME_GRACE_S
 from booley.flows.sim.verilator_coverage import SimulationExecutionPort
 from booley.flows.target_test_plan import TargetTestPlan
 from booley.flows.test_runs import (
+    DEFAULT_SEED,
     SeedCount,
     TestRun,
     parse_test_selector,
@@ -646,6 +652,7 @@ def _campaign_base_report_lines(
             f"  manifest: {outcome.manifest_path.resolve()}",
             *([f"  report: {report_path.resolve()}"] if report_path is not None else []),
             *(f"  {reason}" for reason in reasons),
+            *_campaign_test_run_lines(selector, outcome),
         ]
         if cycle_lines is not None:
             report_lines.extend(cycle_lines[index])
@@ -927,12 +934,52 @@ def _campaign_report_detail(
         "complete": outcome.complete,
         "observation_counts": _campaign_observation_counts(outcome.observations),
         **_campaign_observation_preview(outcome.observations),
+        **_campaign_test_run_detail(outcome),
     }
     if report_invocation is None:
         detail["resolved_artifacts"] = {
             name: str(path) for name, (path, _kind, _maximum) in paths.items()
         }
     return detail
+
+
+def _campaign_test_runs(outcome: CampaignOutcome) -> list[dict[str, object]]:
+    """Per-Test-Run rows of *outcome*; empty for an object that has no manifest."""
+    if not isinstance(getattr(outcome, "manifest_path", None), Path):
+        return []
+    return campaign_test_run_rows(outcome)
+
+
+def _campaign_test_run_lines(selector: str, outcome: CampaignOutcome) -> list[str]:
+    """Report rows only where they say more than the Target's own line.
+
+    One passing Test Run per Test at the Default Seed is what the Target line
+    already reports. The rows appear when a Test Run failed (with its rerun
+    command), or when the Target ran a Test more than once or under a name
+    other than its own.
+    """
+    rows = _campaign_test_runs(outcome)
+    tests = [row["test"] for row in rows]
+    informative = (
+        any(row["grade"] != "pass" for row in rows)
+        or len(set(tests)) != len(tests)
+        or any(
+            row["variant"] is not None or row["seed"] not in {None, DEFAULT_SEED} for row in rows
+        )
+    )
+    return test_run_report_lines(selector, rows) if informative else []
+
+
+def _campaign_test_run_detail(outcome: CampaignOutcome) -> dict[str, object]:
+    """The structured rows of every Test Run, bounded like the observations."""
+    rows = _campaign_test_runs(outcome)
+    if not rows:
+        return {}
+    return {
+        "test_runs": rows[:TEST_RUN_ROW_LIMIT],
+        "test_run_total": len(rows),
+        "test_runs_truncated": len(rows) > TEST_RUN_ROW_LIMIT,
+    }
 
 
 def _campaign_artifact_paths(
