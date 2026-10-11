@@ -117,7 +117,7 @@ def test_recipe_compatibility_fails_closed() -> None:
         )
         is None
     )
-    unknown_schema = {**current, "schema": 5}
+    unknown_schema = {**current, "schema": 999}
     assert (
         validated_recipe_compatibility(
             legacy,

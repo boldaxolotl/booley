@@ -651,6 +651,28 @@ requires at least one clock; a clockless SDC is classified as an input/config
 error. The Fmax readout recovers the effective period from the authored SDC or
 the clock OpenROAD reports after evaluating dynamic Tcl.
 
+Fanout is a generated design rule, independent of timing intent and PPA profile.
+Successful native Cell/Port max setters are observed through authored SDC;
+any surviving authored assignment globally suppresses the Target setting.
+Native float32 minima and strict earlier-candidate ties determine provenance.
+Observers remain active through generated/PDK placement and parasitics. Supported
+`clear_sta` invalidates recorded assignments and corner-bundle cache; a missing
+fallback is restored only without surviving authored top assignment. Attempted
+destructive native context commands are refused on ENTER before mutation and
+remain unsupported even when caught. Mode transitions, stale reporting scenes,
+non-OK mutations, lost observers and TOP/effective native-INF limits stop before
+repair. The exact consecutive max-count-one report/getter pair requires a single
+unchanged default native mode.
+
+Immediately before `repair_design`, a private complete native rounded-check scan
+uses an all-pin capacity bound and Tcl bignum arithmetic. It rejects violated
+limits at least `2^31` and proves every fallback-limit row's conservative load
+bound below the sentinel. This is boundary safety for the initial native driver
+set, not an exact public inventory or post-repair all-driver claim. Partial
+point metadata is flushed on failure; only complete physical runs publish
+invocation-owned native point report and exact metadata. See
+[FLOW_REPORTS](FLOW_REPORTS.md#synth) for the point-scoped contract.
+
 **Constrain the clock near the design's realistic target.** Too aggressive a
 clock, say a 4 ns (250 MHz) constraint on a design whose real speed is tens of
 MHz, makes `repair_timing` buffer/upsize thousands of instances chasing an
@@ -678,7 +700,9 @@ Both modes expose the same canonical area fields: `area_um2` and
 `area_source`. There are no parallel mapped/post-optimization area fields.
 
 Beyond the parsed metrics, [`artifacts.dirs`](#shared-run-logs-and-artifacts) names the two
-directories holding everything the run wrote:
+directories holding everything the run wrote. Successful physical runs also
+preserve `fanout/worst.rpt` and `policy.json` in the invocation-owned artifact
+directory named by `fanout_policy.worst_check.native_check_artifact`:
 
 - **`timing`** — physical-mode STA reports: `overall.rpt` and its
   machine-readable `overall.csv.rpt` twin plus `reg2reg.rpt`. List it for the
@@ -797,6 +821,8 @@ The Criteria detail includes:
 - `estimated_fmax_mhz` in logical mode; `per_clock` (per-clock
   `critical_path_ps` / `fmax_mhz` / `wns_ns` /
   `whs_ns`), aggregate `wns_ns` / `whs_ns`, `reg2reg_fmax_mhz`, `reg2reg_slack_ns`
+- Structured physical `fanout_policy`; no numeric Criterion threshold for its
+  representative worst-check or top-design candidate limit
 - `latches`, `expected_latches`, `unexpected_latches`, `comb_loops`,
   `multi_driven`, `process_count`
 - `baseline_metrics`, when `--baseline` is used

@@ -391,7 +391,7 @@ jobs:
             --candidate-sha "${GITHUB_SHA}" \
             --image "sandbox=${{ needs.build-and-push.outputs.image-digest }}" \
             --check openroad.gui-runtime --check openroad.placement \
-            --check openroad.repair-timing --uid 1000 --gid 1000 \
+            --check openroad.repair-timing --check openroad.fanout --uid 1000 --gid 1000 \
             --cleanup container-removed --cleanup temporary-work-removed \
             --evidence "${VALIDATION_TMP}/summary.json"
       - name: Retain OpenROAD evidence

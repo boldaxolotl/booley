@@ -902,3 +902,16 @@ def test_demo_evidence_and_fixture_inputs_select_riscv_validation_without_git(pa
     from ci_changes import classify
 
     assert "riscv_image" in classify([path])
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ".github/scripts/verify_openroad_fanout.py",
+        "tests/docker/openroad_fanout_acceptance.py",
+    ],
+)
+def test_fanout_native_paths_use_existing_release_runtime_prefixes(path):
+    from ci_changes import classify
+
+    assert {"release_sensitive", "standard_image"} <= classify([path])

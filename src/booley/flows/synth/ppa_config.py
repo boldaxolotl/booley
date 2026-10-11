@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import math
+import struct
 from collections.abc import Mapping
 from typing import Any
 
@@ -31,6 +33,7 @@ _YOSYS_KEYS = {
     "abc_delay_ps",
 }
 _OPENROAD_KEYS = {
+    "max_fanout",
     "utilization_pct",
     "placement_density",
     "repair_setup",
@@ -47,7 +50,7 @@ def add_ppa_arguments(parser: argparse.ArgumentParser) -> None:
         "--ppa-profile",
         choices=PPA_PROFILE_CHOICES,
         default=None,
-        help="Override the project PPA profile for this call",
+        help="Override the project PPA profile for this call; Target max_fanout remains active",
     )
     parser.add_argument(
         "--abc-recipe",
@@ -128,6 +131,7 @@ def append_ppa_args(
             openroad_cfg,
             section=f"{field_prefix}.advanced_settings_openroad",
         )
+    _append_target_fanout(cmd, openroad_cfg, field_prefix)
     _append_cli_overrides(cmd, args)
 
 
@@ -267,3 +271,26 @@ def _append_cli_bool(cmd: list[str], args: SynthRequest | argparse.Namespace, na
     if value is not None:
         option = name.replace("_", "-")
         cmd.append(f"--{option}" if value else f"--no-{option}")
+
+
+def validate_max_fanout(value: object, *, field: str) -> int:
+    """Validate a Target integer against the native OpenSTA float range."""
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise BoundaryError(f"{field} must be a strictly positive integer")
+    try:
+        native = struct.unpack("f", struct.pack("f", float(value)))[0]
+    except (OverflowError, struct.error):
+        raise BoundaryError(f"{field} exceeds the native-supported float32 range") from None
+    native_inf = struct.unpack("f", struct.pack("f", 1e30))[0]
+    if not math.isfinite(native) or not 0 < native < native_inf:
+        raise BoundaryError(f"{field} must fit positive finite float32 below OpenSTA INF")
+    return value
+
+
+def _append_target_fanout(cmd: list[str], cfg: Mapping[str, Any], field_prefix: str) -> None:
+    """Retain the Target design rule independently of PPA overrides."""
+    if "max_fanout" in cfg:
+        value = validate_max_fanout(
+            cfg["max_fanout"], field=f"{field_prefix}.advanced_settings_openroad.max_fanout"
+        )
+        cmd.extend(["--max-fanout", str(value)])

@@ -2927,13 +2927,14 @@ class TestBuildSynthCmd:
         with pytest.raises(BoundaryError, match="SDC file is not readable"):
             self._append_sdc_args(flow, resolved, tmp_path)
 
-    def test_recipe_schema_bumps_without_default_clock(self, tmp_path: Path):
+    @pytest.mark.parametrize("mode,schema", [("logical", 4), ("physical", 5)])
+    def test_recipe_schema_bumps_without_default_clock(self, tmp_path: Path, mode, schema):
         snapshot = synthesis_recipe_snapshot(
-            _fake_synth_resolved(tmp_path),
+            dataclasses.replace(_fake_synth_resolved(tmp_path), flow_options={"synth_mode": mode}),
             default_recipe_args(),
             target="lite",
         )
-        assert snapshot["schema"] == 4
+        assert snapshot["schema"] == schema
         assert "default_clock_ps" not in snapshot
 
         previous = {**snapshot, "schema": 3}
@@ -2941,7 +2942,7 @@ class TestBuildSynthCmd:
             synthesis_recipe_snapshot_fingerprint(snapshot)
         )
         assert synthesis_recipe_changes(previous, snapshot) == [
-            {"path": "schema", "before": 3, "after": 4}
+            {"path": "schema", "before": 3, "after": schema}
         ]
 
     def test_default_ppa_profile_forwarded(self, flow_and_state, tmp_path: Path):
@@ -4844,6 +4845,8 @@ def test_captured_mapped_latch_physical_report(flow_and_state, tmp_path, expecte
                 "openroad_dut.v": "module dut; endmodule\n",
                 "reports/timing/overall.rpt": "timing report\n",
                 "reports/timing/overall.csv.rpt": "",
+                "reports/fanout/policy.json": '{"configured_max_fanout":null,"suppression_reason":null,"design_rule":{"scope":"current_design","max_fanout":null,"source":"booley_default"},"status":"no_applicable_driver","worst_check":null}',
+                "reports/fanout/worst.rpt": "",
             },
         },
     )
@@ -5426,3 +5429,34 @@ def test_synth_baseline_materializes_project_topologies(tmp_path, monkeypatch, t
     assert flow.args.work_dir == root
     assert flow._target_handles is candidate_handles
     assert roots and all(not path.exists() for path in roots)
+
+
+def test_fanout_qor_keeps_exact_native_point_and_separate_design_rule():
+    import json
+
+    policy = {
+        "configured_max_fanout": 50,
+        "suppression_reason": "authored_sdc_fanout",
+        "design_rule": {"scope": "current_design", "max_fanout": 26, "source": "sdc"},
+        "status": "observed",
+        "worst_check": {
+            "selection": "minimum_slack",
+            "analysis_mode": "default",
+            "pin": "driver/ZN",
+            "max_fanout": 25.5,
+            "source": "library",
+            "native_check_artifact": "worst.rpt",
+        },
+    }
+    output = "max fanout 26\nOPENROAD_FANOUT_POLICY: " + json.dumps(policy)
+    metrics = _parse_synth_output(output, 1.0, synth_mode="physical")
+    assert metrics.qor_detail()["fanout_policy"] == policy
+    assert metrics.fanout_policy["worst_check"]["max_fanout"] == 25.5
+    logical = _parse_synth_output(output, 1.0, synth_mode="logical")
+    assert "fanout_policy" not in logical.qor_detail()
+
+
+def test_old_fanout_log_is_unknown_instead_of_default_proof():
+    metrics = _parse_synth_output("legacy physical timing output", 1.0, synth_mode="physical")
+    assert metrics.fanout_policy is None
+    assert "fanout_policy" not in metrics.qor_detail()

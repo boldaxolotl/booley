@@ -19,6 +19,7 @@ class OpenRoadPpaSettings:
     gate_cloning: bool = False
     setup_margin_ns: float = 0.0
     repair_tns_percent: float | None = None
+    max_fanout: int | None = None
 
 
 _PROFILES = {

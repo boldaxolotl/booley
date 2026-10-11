@@ -295,6 +295,7 @@ class SynthMetrics:
     recipe_snapshot: dict[str, Any] = field(default_factory=dict)
     recipe_fingerprint: str = ""
     run_evidence: dict[str, Any] = field(default_factory=dict)
+    fanout_policy: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         """Normalize string-compatible construction at the metrics interface."""
@@ -316,6 +317,8 @@ class SynthMetrics:
             "reg2reg_slack_ns": self.reg2reg_slack_ns,
             "reg2reg_fmax_mhz": self.reg2reg_fmax_mhz,
         }
+        if self.fanout_policy is not None and self.synth_mode == SynthMode.PHYSICAL:
+            detail["fanout_policy"] = self.fanout_policy
         if self.estimated_fmax_mhz is not None:
             detail["estimated_fmax_mhz"] = self.estimated_fmax_mhz
         return detail
@@ -605,7 +608,15 @@ def _parse_synth_output(
     process_count = _parse_process_count(output)
     latches, comb_loops, multi_driven = _detect_critical_conditions(output)
     peak_matches = re.findall(r"Peak RSS:\s*([\d.]+)\s*MB", output, re.IGNORECASE)
+    fanout_policy = None
+    if mode.runs_openroad:
+        from booley.flows.synth.backends.openroad.fanout import parse_policy
+
+        policies = re.findall(r"^OPENROAD_FANOUT_POLICY: (.+)$", output, re.MULTILINE)
+        if policies:
+            fanout_policy = parse_policy(policies[-1])
     return SynthMetrics(
+        fanout_policy=fanout_policy,
         area_um2=area_um2,
         area_source=area_source,
         area_kge=area_kge,
@@ -726,6 +737,7 @@ def _first_valid_display(
 
 
 _BASELINE_DETAIL_FIELDS = (
+    "fanout_policy",
     "area_um2",
     "area_source",
     "area_kge",
@@ -735,6 +747,7 @@ _BASELINE_DETAIL_FIELDS = (
     "estimated_fmax_mhz",
 )
 _REPORT_QOR_FIELDS = (
+    "fanout_policy",
     "area_kge",
     "area_um2",
     "area_source",
@@ -748,6 +761,7 @@ _REPORT_QOR_FIELDS = (
     "reg2reg_fmax_mhz",
 )
 _REPORT_BASELINE_FIELDS = (
+    "fanout_policy",
     "area_kge",
     "area_um2",
     "area_source",
@@ -1001,6 +1015,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         "Persistent ppa_profile (compact|balanced|max_frequency), flatten, "
         "frontend, synth_mode, and advanced_settings_yosys/advanced_settings_openroad "
         "recipe knobs belong in the selected .core Target's flow_options. "
+        "Target max_fanout remains active across PPA profile overrides. "
         "Per-call flags can override ppa_profile, flatten, frontend, and expert "
         "backend settings; synth_mode remains Target-owned. [flows.synth] in "
         "booley.toml is only for enablement and verdict "
@@ -1584,8 +1599,30 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         metrics = _parse_synth_output(output, elapsed, plan.spec.timing.mode)
         self._apply_boundary_completion(metrics, outcome, proc_result, output)
         self._record_boundary_diagnostics(target, metrics, proc_result, elapsed, output)
+        if metrics.fanout_policy is not None and metrics.ppa_complete:
+            self._preserve_fanout(target, plan.build_dir, metrics)
 
         return metrics, output
+
+    def _preserve_fanout(self, target: str, build_dir: Path, metrics: SynthMetrics) -> None:
+        """Publish only complete invocation-owned native point evidence."""
+        invocation = self.reserve_invocation_dir()
+        assert invocation is not None
+        names = ("worst.rpt", "policy.json")
+        for name in names:
+            artifacts.publish_file(
+                invocation,
+                ("artifacts", f"synth_{synth_target_report_slug(target)}", "fanout", name),
+                build_dir / "reports" / "fanout" / name,
+                work_dir=self.args.work_dir,
+            )
+        assert metrics.fanout_policy is not None
+        worst = metrics.fanout_policy.get("worst_check")
+        if worst is not None:
+            worst["native_check_artifact"] = posix_relpath(
+                invocation / "artifacts" / f"synth_{synth_target_report_slug(target)}" / "fanout",
+                self.args.work_dir,
+            )
 
     def _artifact_dirs(self, target: str, synth_mode: SynthMode | None) -> dict[str, str]:
         """The directories holding *target*'s synth artifacts, by role.

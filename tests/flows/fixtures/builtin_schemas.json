@@ -172,7 +172,7 @@
           "balanced",
           "max_frequency"
         ],
-        "description": "Override the project PPA profile for this call"
+        "description": "Override the project PPA profile for this call; Target max_fanout remains active"
       },
       "abc_recipe": {
         "type": "string",

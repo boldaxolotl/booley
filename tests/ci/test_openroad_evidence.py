@@ -25,6 +25,14 @@ def test_openroad_failure_exports_partial_logs_and_removes_scratch(
 
 
 _FAKE_PYTHON = r"""#!/usr/bin/env bash
+if [[ "$1" == */verify_openroad_fanout.py ]]; then
+  test "$2" == --pdk-root && test "$4" == --work-dir || exit 23
+  mkdir -p "$5/default"
+  echo 'native fanout diagnostics' > "$5/default/native.log"
+  if [[ "$PROBE_FAILURE" == fanout ]]; then exit 29; fi
+  echo 'openroad.fanout: passed actual10k and setting/SDC/library native arms'
+  exit 0
+fi
 work="$2"
 mkdir -p "$work/abc-control" "$work/collision-preserve" "$work/collision-attribute"
 mkdir -p "$work/repair-off/reports" "$work/repair-on/reports"
@@ -131,7 +139,7 @@ def _run_staged_probe(
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX shell runtime probe")
-@pytest.mark.parametrize("failure,expected", [("synthesis", 1), ("placement", 19)])
+@pytest.mark.parametrize("failure,expected", [("synthesis", 1), ("placement", 19), ("fanout", 29)])
 def test_openroad_later_failures_export_primary_diagnostics(
     tmp_path: Path, failure: str, expected: int
 ) -> None:
@@ -139,6 +147,10 @@ def test_openroad_later_failures_export_primary_diagnostics(
     assert result.returncode == expected, result.stdout + result.stderr
     if failure == "synthesis":
         assert (evidence / "check_dut.txt").read_text() == "primary synthesis diagnostic\n"
+    elif failure == "fanout":
+        assert (
+            evidence / "fanout/default/native.log"
+        ).read_text() == "native fanout diagnostics\n"
     else:
         assert (
             evidence / "repair-off/reports/placement.txt"
@@ -157,6 +169,7 @@ def test_successful_openroad_probe_requires_successful_export(
         assert (evidence / "check_dut_driven.txt").is_file()
         assert (evidence / "check_dut_undriven.txt").is_file()
         assert (evidence / "repair-on/reports/placement.txt").is_file()
+        assert (evidence / "fanout/default/native.log").is_file()
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX shell runtime probe")

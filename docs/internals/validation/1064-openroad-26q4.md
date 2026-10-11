@@ -22,7 +22,9 @@ Reviewing the old/new Resizer Tcl shows additive `repair_design -reroute`,
 restoration of command-entry CRPR state after timing repair. Booley's generated
 `remove_buffers`, `repair_design`, `repair_timing -setup -skip_gate_cloning`,
 `-hold`, `-setup_margin`, and `-repair_tns` calls remain supported. No generated
-script changes are needed. Placement, placement RC estimation, area, and timing
+script changes are needed for the command compatibility and PicoRV32 experiment
+recorded here. The large-fanout follow-up below changes the generated fanout
+policy after a separate regression was found. Placement, placement RC estimation, area, and timing
 reporting are exercised by the physical runs below.
 
 The first full base build rejected the new binary because
@@ -183,3 +185,107 @@ The Docker `.Size` gate fails on both bases on this host, so this check is **not
 fully passing**. Candidate application layers and registry compressed size
 were not measured here. The existing size failure and the limited remaining
 headroom need CI validation; the ceilings have not been relaxed.
+
+
+## Large-fanout follow-up
+
+[Issue #1332](https://github.com/boldaxolotl/booley/issues/1332) adds a separate
+10,000-load physical reset-chain comparison. It preserves the original
+floorplan, placement, slew/cap repair, and authored 20 ns clock. The fixed
+current generator sets a finite default fanout rule before SDC, then captures
+an exact native minimum-slack point and checks every private native fanout row
+immediately before `repair_design`. This restores default fanout behavior while
+retaining tighter authored and library constraints. It does not claim that
+inserted repeaters have fanout checking disabled globally.
+
+All arms used the managed Nangate45 inputs, identical netlist and SDC bytes,
+`--cpus 1`, and `--user 0`. The old immutable image is
+`openroad/ubuntu26.04@sha256:cd2d915156263fb5aad1ad4e43102fbcbf11c524bc7f86d4f3bf68edc94f34b8`,
+reporting `26Q2-2580-ga9147cf3ae`. The current runtime image ID is
+`sha256:276845eff279a9491366dd539f7e05c3fa6d10d34ce12ab59a45252ad3447c0a`,
+reporting `26Q3-2927-gc4d317e4fa`. The old image's initial non-root attempt failed
+on permissions; the measured arms used root consistently. These image and
+runtime differences prevent attributing all elapsed-time differences solely
+to the engine upgrade. The unchanged-current versus fixed-current pair isolates
+the generated policy change.
+
+| Engine and script | Setup repair | `repair_design` (s) | Full script (s) |
+|---|---|---:|---:|
+| Old, unchanged baseline | Disabled | 1.943 | 7.972 |
+| Current, unchanged baseline | Disabled | 32.889 | 61.374 |
+| Current, fixed generator | Disabled | 5.626 | 36.334 |
+| Old, unchanged baseline | Enabled | 1.930 | 8.557 |
+| Current, unchanged baseline | Enabled | 32.610 | 72.504 |
+| Current, fixed generator | Enabled | 6.432 | 49.566 |
+
+Both fixed arms pass the unchanged 15 s default repair bound and finish all
+physical stages with zero native post-repair fanout violations. Their selected
+point has `booley_default` authority and a null public limit. Ordinary slew/cap
+repair still inserts 172 buffers. Setup WNS/hold slack for the old arms are
+19.861942/0.080511 ns; unchanged-current and fixed-current arms report 19.859467/0.080511 ns.
+Retained per-clock markers accompany each complete run, rather than combining
+repair time from one run with full time from another.
+
+The input netlist SHA-256 is
+`e0678155ee95c08580887f567aa2fca9a72d6661c147de956e3f195b65e7736d`;
+the SDC SHA-256 is
+`095a2ac2cdcacb39cd59390416a18c3e60012b610b36cf97a83a1cfbf6cd63b6`.
+Original generated baseline hashes are
+`d00d4e345875c7204391a9ad3daa99b1b491a544001468cea3ff272391e87591`
+(setup disabled) and
+`d84c87823fd6e99f64cc63de95783dee055ea2926e9faff10ecac90498351775`
+(setup enabled). They remain immutable. Comparison copies relocate report
+outputs and add timers; inputs and native controls remain unchanged. Output
+netlist hashes are
+`5735c5e0456673c0e75c4688aedfd39e2032dc1eaa36a3484c277124e2d20d84`
+(old), `2324daddaef8bd307cee54b934758d04c334544ce49c2dce2c45cd93397a0580`
+(unchanged current), and
+`dbf8fe743f811ddd49d6dd163954d0fdc08e581d2a1893b3cb4ba3ec47cee2fc`
+(fixed current), for both setup controls.
+
+Reproduce the fixed native acceptance in the current image, mounting the
+checkout read-only at `/booley-source`, the managed PDK read-only at `/opt/pdk`,
+and durable evidence writable at `/evidence`:
+
+```bash
+PYTHONPATH=/booley-source/src python /booley-source/tests/docker/openroad_fanout_acceptance.py \
+  --pdk-root /opt/pdk --work-dir /evidence/fanout --repair-timeout-s 15
+```
+
+For old/unchanged comparisons, use the retained original baseline Tcl via the
+helper's explicit `--baseline-script` input, with `/OpenROAD/build/bin/openroad`
+on `PATH` in the old image. Preserve the baseline's referenced netlist/SDC
+mounts and its SHA-256 before execution. The helper copies it into a new arm,
+relocates report outputs, and retains script/log/output hashes. The earlier
+PicoRV32 reproduction is historical: do not regenerate its old-engine script
+using the current fanout helper, because the old engine's gain-buffer integer
+conversion is unsafe with the new finite fallback.
+
+Native diagnostics retain fractional SDC 100.5, library 25.5 versus SDC 26,
+exact earlier-candidate ties, widened float32 20.100000381469727, and valid
+Target limits above the default sentinel. The raw native report rounds 25.5 to
+26; exact public metadata comes from the consecutive native getter. Native
+aliases, imports, caught partial mutations, clear/reset, driving-cell order,
+escaped pin identity and multiple scenes sharing one default mode are exercised.
+Mode transitions and every destructive context route fail before repair;
+36 leaves are tested through 108 direct, alias and imported attempts, asserting
+the persistent flag for each attempt. Hidden unsafe weighted-load rows are
+rejected even when the selected minimum-slack point has a safe library limit.
+The buffer-only huge weighted fixture separately exercises actual repeater
+insertion without extending the initial-driver safety claim to new repeaters.
+
+The final actual 100,000 independent-driver diagnostic measured 7.685 s, after native
+stage profiling removed redundant private-row canonical lookups and introduced
+a bounded two-entry cache of byte-identical parsed row bodies. Every row still
+checks framing, unique literal identity, count, status, unsafe integer/default
+bounds and first-row pairing. Eleven native malformed/cache controls cover
+those obligations. The private report is 38,466,949 bytes within its
+108,355,560-byte driver/name budget; public evidence is 461 bytes and peak RSS
+is 1,328,812 KiB. The private rounded report proves safety, not exact all-driver
+limits or uniform authority. A supplemental full 10,000-load case with native
+load units of 2 and setting50 inserted 292 buffers but retained 206 native
+fanout violations. Its original zero-violation assertion failed; the completed
+bounded acceptance records exact point/source, real insertion and that remaining
+count. This is an observed native limitation in the fixed flow, with historical
+provenance unestablished. All seven ordinary-load arms still require zero native
+violations; the point metric makes no all-net repair guarantee.

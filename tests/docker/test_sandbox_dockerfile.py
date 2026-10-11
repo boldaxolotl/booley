@@ -1022,3 +1022,10 @@ def test_riscv_document_install_rejects_wrong_checksums(
         for volume in ("unprivileged", "privileged"):
             assert f"riscv-isa-{volume}.pdf / .html" in index
         assert environment["ISA_MANUAL_RELEASE"] in index
+
+
+def test_openroad_runtime_uses_shared_actual_fanout_probe():
+    from pathlib import Path
+
+    source = (Path(__file__).parents[2] / ".github/scripts/verify_openroad_runtime.sh").read_text()
+    assert "python /booley-source/.github/scripts/verify_openroad_fanout.py" in source
