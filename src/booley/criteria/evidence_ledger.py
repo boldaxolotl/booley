@@ -333,6 +333,16 @@ def _recorded_at(facts: Mapping[str, Any]) -> str:
     return max(timestamps)
 
 
+# v2 adds each observation's Test Run name (ADR 0072); the fields read here
+# are the same in both.
+_ACCEPTANCE_FACTS_SCHEMAS = frozenset(
+    {
+        "booley.simulation-acceptance-facts/v1",
+        "booley.simulation-acceptance-facts/v2",
+    }
+)
+
+
 def _acceptance_fact_identity(
     acceptance_facts: Mapping[str, Any],
 ) -> tuple[dict[str, Any], str, str, dict[str, Any], str]:
@@ -353,7 +363,7 @@ def _acceptance_fact_identity(
         },
         "Simulation acceptance facts",
     )
-    if facts.get("$schema") != "booley.simulation-acceptance-facts/v1":
+    if facts.get("$schema") not in _ACCEPTANCE_FACTS_SCHEMAS:
         raise AcceptanceLedgerError("unsupported Simulation acceptance facts schema")
     campaign_id = _campaign_uuid(facts.get("campaign_id"))
     manifest_sha256 = _sha256_field(facts.get("manifest_sha256"), "manifest_sha256")

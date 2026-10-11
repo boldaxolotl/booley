@@ -10,6 +10,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Protocol, cast, overload
 
+from booley.config.tests_toml_rules import SEED_SEPARATOR
 from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.sim.campaign_reports import target_report_directory
 from booley.flows.sim.coverage_campaign_store import CoverageCampaignStoreError
@@ -29,7 +30,7 @@ from .codec import (
     SimulationCampaignIntegrityError,
     encode_simulation_campaign_manifest,
 )
-from .facts import AcceptanceFacts
+from .facts import ACCEPTANCE_FACTS_SCHEMA, AcceptanceFacts
 from .model import SimulationCampaignManifest, SimulationCampaignPlan, SimulationResult
 from .planning import (
     WorkloadDiagnostic,
@@ -1016,7 +1017,11 @@ def _acceptance_facts(
     suite = cast(Mapping[str, object], manifest.document["required_suite"])
     facts = AcceptanceFacts(
         {
-            "$schema": "booley.simulation-acceptance-facts/v1",
+            "$schema": (
+                ACCEPTANCE_FACTS_SCHEMA
+                if all("test_runs" in item for item in items)
+                else "booley.simulation-acceptance-facts/v1"
+            ),
             "campaign_id": manifest.document["campaign_id"],
             "manifest_sha256": manifest_digest(manifest),
             "origin": manifest.document["origin"],
@@ -1096,7 +1101,9 @@ def _collected_result_facts(
                 "finished_at": document["finished_at"],
             }
         )
-        for observation in cast(tuple[Mapping[str, object], ...], document["observations"]):
+        results = cast(tuple[Mapping[str, object], ...], document["observations"])
+        run_names = _observation_test_runs(item, results)
+        for index, observation in enumerate(results):
             observations.append(
                 {
                     "work_item_id": recovered.work_item_id,
@@ -1105,9 +1112,49 @@ def _collected_result_facts(
                     "target": item["target"],
                     "result_sha256": digest,
                     **dict(observation),
+                    **({} if run_names is None else {"test_run": run_names[index]}),
                 }
             )
     return consumed, observations
+
+
+def _observation_test_runs(
+    item: Mapping[str, object], observations: tuple[Mapping[str, object], ...]
+) -> tuple[str, ...] | None:
+    """The Test Run each of a work item's observations observed, by name.
+
+    A result names Tests, and its work item records the Test Runs it executes
+    (manifest v4). The n-th observation of a Test is the n-th Test Run of that
+    Test in the work item; an observation without a Test is the item as a
+    whole and takes its first Test Run. A Test that an unfiltered Cocotb batch
+    discovered is named with the batch's seed. ``None`` for a manifest before v4.
+    Raises :class:`SimulationCampaignIntegrityError` when an observation has
+    no Test Run in its work item.
+    """
+    documents = item.get("test_runs")
+    if documents is None:
+        return None
+    runs = cast(tuple[Mapping[str, object], ...], documents)
+    unnamed = runs[0] if len(runs) == 1 and runs[0]["test"] is None else None
+    taken: dict[object, int] = {}
+    names: list[str] = []
+    for observation in observations:
+        test = observation["test"]
+        if unnamed is not None and test is not None:
+            # An unfiltered Cocotb batch reports the Tests it discovered; each
+            # ran under the unnamed invocation's seed.
+            seed = unnamed["seed"]
+            names.append(f"{test}" if seed is None else f"{test}{SEED_SEPARATOR}{seed}")
+            continue
+        matching = [run for run in runs if test is None or run["test"] == test]
+        position = taken.get(test, 0)
+        taken[test] = position + 1
+        if position >= len(matching):
+            raise SimulationCampaignIntegrityError(
+                "a result observation has no Test Run in its work item"
+            )
+        names.append(cast(str, matching[position]["name"]))
+    return tuple(names)
 
 
 def _prerequisite_facts(

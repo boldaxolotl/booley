@@ -10,7 +10,14 @@ from types import MappingProxyType
 
 from .codec import SimulationCampaignIntegrityError, canonical_json_bytes
 
-_SCHEMA = "booley.simulation-acceptance-facts/v1"
+_SCHEMA_V1 = "booley.simulation-acceptance-facts/v1"
+# v2 = v1 plus the required ``test_run`` of every observation: the resolved
+# name of the Test Run it observed (ADR 0072). Observations are then unique
+# by Test Run, so several Test Variants or seeds of one Test can coexist.
+# Facts of a campaign whose manifest records Test Runs are written as v2; v1
+# stays readable.
+ACCEPTANCE_FACTS_SCHEMA = "booley.simulation-acceptance-facts/v2"
+ACCEPTANCE_FACTS_SCHEMAS = frozenset({_SCHEMA_V1, ACCEPTANCE_FACTS_SCHEMA})
 _FIELDS = frozenset(
     {
         "$schema",
@@ -81,8 +88,10 @@ def acceptance_facts_sha256(value: AcceptanceFacts) -> str:
 
 
 def _validate_facts(value: Mapping[str, object]) -> None:
-    if value["$schema"] != _SCHEMA:
+    schema = value["$schema"]
+    if schema not in ACCEPTANCE_FACTS_SCHEMAS:
         raise SimulationCampaignIntegrityError("unsupported acceptance facts schema")
+    names_test_runs = schema == ACCEPTANCE_FACTS_SCHEMA
     _uuid(value["campaign_id"], "campaign_id")
     _digest(value["manifest_sha256"], "manifest_sha256")
     _exact(value["origin"], {"execution_id", "invocation_id"}, "origin")
@@ -113,14 +122,19 @@ def _validate_facts(value: Mapping[str, object]) -> None:
     for index, item in enumerate(consumed):
         _validate_consumed(item, index)
     observations = _list(value["observations"], "observations", 4_000)
-    observed_tests: set[object] = set()
+    observed: set[object] = set()
     for index, item in enumerate(observations):
-        _validate_observation(item, index)
+        _validate_observation(item, index, names_test_runs=names_test_runs)
         assert isinstance(item, Mapping)
-        test = item["test"] if item["test"] is not None else "default"
-        if test in observed_tests:
-            raise SimulationCampaignIntegrityError("acceptance facts repeat an observation test")
-        observed_tests.add(test)
+        if names_test_runs:
+            identity, what = item["test_run"], "Test Run"
+        else:
+            identity, what = (item["test"] if item["test"] is not None else "default"), "test"
+        if identity in observed:
+            raise SimulationCampaignIntegrityError(
+                f"acceptance facts repeat an observation {what}"
+            )
+        observed.add(identity)
     coverage = value["coverage_reference"]
     if coverage is not None:
         _validate_coverage_reference(value, coverage)
@@ -198,10 +212,11 @@ def _validate_consumed(value: object, index: int) -> None:
     _evidence(item["result"], "consumed result")
 
 
-def _validate_observation(value: object, index: int) -> None:
+def _validate_observation(value: object, index: int, *, names_test_runs: bool = False) -> None:
     item = _exact(
         value,
-        {
+        ({"test_run"} if names_test_runs else set())
+        | {
             "work_item_id",
             "role",
             "revision",
@@ -219,6 +234,12 @@ def _validate_observation(value: object, index: int) -> None:
         f"observations[{index}]",
     )
     _digest(item["result_sha256"], "observation result_sha256")
+    if names_test_runs and (
+        not isinstance(item["test_run"], str)
+        or not item["test_run"]
+        or len(item["test_run"].encode()) > 1024
+    ):
+        raise SimulationCampaignIntegrityError("observation test_run is invalid")
     if item["test"] is not None and (
         not isinstance(item["test"], str) or len(item["test"].encode()) > 512
     ):

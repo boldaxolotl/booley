@@ -44,6 +44,7 @@ from booley.flows.sim.coverage_reference import (
     encode_coverage_campaign_reference,
     resolve_coverage_campaign_reference,
 )
+from booley.flows.test_runs import UNNAMED_TEST_DISPLAY
 from booley.targets.domain import criterion_matches_target
 
 if TYPE_CHECKING:
@@ -206,10 +207,15 @@ def eligible_simulation_keys(
     return eligible
 
 
-def _candidate_simulation_observations(
+def _candidate_observations(
     facts: Mapping[str, object], target: Mapping[str, object]
-) -> dict[object, Mapping[str, object]]:
-    indexed: dict[object, Mapping[str, object]] = {}
+) -> dict[str, Mapping[str, object]]:
+    """The candidate revision's observations of *target*, by Test Run name.
+
+    Facts before v2 name Tests only; such an observation is keyed by its Test
+    (``<default>`` for the unnamed invocation), which is unique there.
+    """
+    indexed: dict[str, Mapping[str, object]] = {}
     for item in facts["observations"]:  # type: ignore[union-attr]
         if not isinstance(item, Mapping):
             continue
@@ -219,9 +225,37 @@ def _candidate_simulation_observations(
             or item["target"] != target
         ):
             continue
+        name = str(item.get("test_run") or item["test"] or UNNAMED_TEST_DISPLAY)
+        if name in indexed:
+            raise SimulationCampaignIntegrityError(
+                f"validated acceptance facts repeat Test Run {name!r}"
+            )
+        indexed[name] = item
+    return indexed
+
+
+def _candidate_simulation_observations(
+    facts: Mapping[str, object], target: Mapping[str, object]
+) -> dict[object, Mapping[str, object]]:
+    """Candidate observations by Test, for Criteria that name Tests.
+
+    A Criterion names a Test, so it has exactly one observation to judge only
+    when the campaign ran one Test Run of that Test. Several Test Runs of one
+    Test are refused rather than letting one stand in for the others; judging
+    them needs Goals that name Test Runs (#1233 stage S3).
+    """
+    indexed: dict[object, Mapping[str, object]] = {}
+    names: dict[object, str] = {}
+    for name, item in _candidate_observations(facts, target).items():
         test = item["test"]
-        assert test not in indexed, "validated acceptance facts repeat an observation test"
+        if test in indexed:
+            raise SimulationCampaignIntegrityError(
+                f"Test {test!r} has several Test Runs in this campaign "
+                f"({names[test]}, {name}); a Criterion that names the Test cannot "
+                "choose between them"
+            )
         indexed[test] = item
+        names[test] = name
     return indexed
 
 
@@ -619,14 +653,11 @@ def _cycle_changes(
 def _candidate_cycle_observations(
     facts: Mapping[str, object], target: Mapping[str, object]
 ) -> dict[object, Mapping[str, object]]:
+    """Candidate observations of named Tests, by Test (one Test Run each)."""
     return {
-        item["test"]: item
-        for item in facts["observations"]  # type: ignore[union-attr]
-        if isinstance(item, Mapping)
-        and item["test"] is not None
-        and item["role"] == "candidate"
-        and item["revision"] == target["revision"]
-        and item["target"] == target
+        test: item
+        for test, item in _candidate_simulation_observations(facts, target).items()
+        if test is not None
     }
 
 

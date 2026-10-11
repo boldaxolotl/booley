@@ -287,3 +287,106 @@ def _interrupted(root, monkeypatch, fields):
         return resume_support._interrupted_campaign(root, monkeypatch)
     finally:
         monkeypatch.setattr(resume_support, "SimRequest", original)
+
+
+def _run_campaign(tmp_path: Path, plan):
+    """Run *plan* to terminal acceptance facts without any EDA tool."""
+    from booley.flows.sim.campaign import (
+        CampaignPolicy,
+        NewCampaignRunRequest,
+        SimulationCampaign,
+    )
+    from tests.flows.sim.test_campaign_phase6 import _admission, _NoEdaExecutor
+
+    return SimulationCampaign(_NoEdaExecutor()).run(
+        NewCampaignRunRequest(
+            plan=plan,
+            project_root=tmp_path,
+            report_root=None,
+            policy=CampaignPolicy(),
+            invocation_directory=tmp_path / "reports" / "sim" / "1",
+            admission=_admission(),
+        )
+    )
+
+
+def test_three_seeds_and_two_variants_of_one_test_reach_acceptance_facts(tmp_path: Path):
+    """``count@x3`` plus two Test Variants: five results, none overwrites another."""
+    runs = (
+        build_test_run("count", seed=3),
+        build_test_run("count", seed=4),
+        build_test_run("count", seed=5),
+        _SOAK,
+        _FAULT,
+    )
+    outcome = _run_campaign(tmp_path, _hdl_plan(tmp_path, tuple((run,) for run in runs)))
+
+    document = outcome.acceptance_facts.document
+    assert document["$schema"] == "booley.simulation-acceptance-facts/v2"
+    observations = document["observations"]
+    assert [item["test"] for item in observations] == ["count"] * 5
+    assert [item["test_run"] for item in observations] == [run.name for run in runs]
+    assert len({item["work_item_id"] for item in observations}) == 5
+    assert len(document["consumed_results"]) == 5
+    assert [item["test_run"] for item in outcome.observations] == [run.name for run in runs]
+
+
+def test_unnamed_invocation_observation_is_named_by_its_test_run(tmp_path: Path):
+    plan = _hdl_plan(tmp_path, ((build_test_run(None, seed=7),),), ())
+    observations = _run_campaign(tmp_path, plan).acceptance_facts.document["observations"]
+    assert [(item["test"], item["test_run"]) for item in observations] == [(None, "<default>@7")]
+
+
+def test_tests_an_unfiltered_cocotb_batch_discovered_carry_its_seed():
+    from booley.flows.sim.campaign.coordinator import _observation_test_runs
+
+    item = {"test_runs": (test_run_document(build_test_run(None, seed=9)),)}
+    observed = ({"test": "found_b"}, {"test": "found_a"})
+    assert _observation_test_runs(item, observed) == ("found_b@9", "found_a@9")
+    unseeded = {"test_runs": (test_run_document(build_test_run(None)),)}
+    assert _observation_test_runs(unseeded, observed) == ("found_b", "found_a")
+    assert _observation_test_runs({}, observed) is None
+
+
+def test_an_observation_without_a_test_run_in_its_work_item_is_refused():
+    from booley.flows.sim.campaign.coordinator import _observation_test_runs
+
+    item = {"test_runs": (test_run_document(_SOAK),)}
+    with pytest.raises(SimulationCampaignIntegrityError, match="has no Test Run"):
+        _observation_test_runs(item, ({"test": "reset"},))
+    with pytest.raises(SimulationCampaignIntegrityError, match="has no Test Run"):
+        _observation_test_runs(item, ({"test": "count"}, {"test": "count"}))
+
+
+def test_acceptance_indexes_by_test_run_and_never_lets_one_run_stand_for_another(
+    tmp_path: Path,
+):
+    from booley.flows.sim.acceptance import (
+        _candidate_cycle_observations,
+        _candidate_observations,
+        _candidate_simulation_observations,
+    )
+
+    runs = (build_test_run("reset", seed=1), _SOAK, _FAULT)
+    outcome = _run_campaign(tmp_path, _hdl_plan(tmp_path, tuple((run,) for run in runs)))
+    facts = outcome.acceptance_facts.document
+
+    by_run = _candidate_observations(facts, outcome.target)
+    assert list(by_run) == ["reset@1", "count+soak@42", "count+fault@42"]
+    assert [item["test"] for item in by_run.values()] == ["reset", "count", "count"]
+    for indexer in (_candidate_simulation_observations, _candidate_cycle_observations):
+        with pytest.raises(SimulationCampaignIntegrityError) as excinfo:
+            indexer(facts, outcome.target)
+        assert str(excinfo.value) == (
+            "Test 'count' has several Test Runs in this campaign (count+soak@42, "
+            "count+fault@42); a Criterion that names the Test cannot choose between them"
+        )
+
+
+def test_acceptance_keeps_indexing_one_test_run_per_test_by_test(tmp_path: Path):
+    from booley.flows.sim.acceptance import _candidate_simulation_observations
+
+    runs = (build_test_run("reset", seed=1), build_test_run("count", seed=1))
+    outcome = _run_campaign(tmp_path, _hdl_plan(tmp_path, tuple((run,) for run in runs)))
+    indexed = _candidate_simulation_observations(outcome.acceptance_facts.document, outcome.target)
+    assert list(indexed) == ["reset", "count"]
