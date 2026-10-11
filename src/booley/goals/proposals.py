@@ -32,16 +32,14 @@ from booley.goals.model import (
     parse_goal_arg,
     record_timestamp,
 )
+from booley.goals.proposal_errors import ProposalError
 from booley.goals.store import RecordLock
 from booley.goals.translate import translate_goals
+from booley.goals.waiver_binding import WaiverBinding, require_waiver_binding
 from booley.runtime.atomic_files import atomic_replace_bytes, atomic_write_once, fsync_directory
 from booley.runtime.timefmt import utc_now_rfc3339
 
 ProposalState = Literal["pending", "approved", "rejected", "applied"]
-
-
-class ProposalError(ValueError):
-    """A saved request or decision is invalid or no longer applicable."""
 
 
 def encode(value: object) -> bytes:
@@ -79,7 +77,13 @@ class Proposal:
     record_revision: int
     session_key: str | None
     created_at: str
-    waiver: dict[str, Any] | None = None
+    waiver: WaiverBinding | None = None
+
+    def __post_init__(self) -> None:
+        if (self.kind is ChangeKind.WAIVER) != (self.waiver is not None):
+            raise ProposalError("proposal kind disagrees with waiver binding presence")
+        if self.waiver is not None:
+            require_waiver_binding(self.waiver)
 
     def to_json(self) -> dict[str, Any]:
         """The complete immutable payload."""
@@ -98,7 +102,7 @@ class Proposal:
             "record_revision": self.record_revision,
             "session_key": self.session_key,
             "created_at": self.created_at,
-            "waiver": self.waiver,
+            "waiver": None if self.waiver is None else self.waiver.to_json(),
         }
 
     @property
@@ -140,7 +144,7 @@ class Proposal:
             require_positive_int(raw["record_revision"], field="record_revision"),
             None if raw["session_key"] is None else text(raw["session_key"], "session_key"),
             record_timestamp(raw["created_at"], "created_at"),
-            None if raw["waiver"] is None else require_dict(raw["waiver"], field="waiver"),
+            None if raw["waiver"] is None else WaiverBinding.from_json(raw["waiver"]),
         )
 
 

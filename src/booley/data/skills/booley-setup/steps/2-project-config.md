@@ -266,8 +266,9 @@ Authoring rules:
   in the design is wrong; the class was a warning when the code was written.
   The failure tail names the class in its `%Error-<CLASS>` token: copy it into
   `--Wno-<CLASS>` in that Target's `verilator_options` (or waive it in a `.vlt`
-  file in the fileset). Fix per Target, and note the waiver in AGENTS.md so a
-  later reader knows it is an era gap, not a silenced real bug.
+  file declared with `file_type: vlt` in one of that Target's filesets). Fix
+  per Target, and note the waiver in AGENTS.md so a later reader knows it is
+  an era gap, not a silenced real bug.
 - **Optional style lint (offer, never impose).** Only if the
   plan's row 11 says yes: author a **second** lint Target (suggested name
   `lint_style`) with `flow: lint` + `flow_options: {tool: verible}` over the
@@ -796,10 +797,9 @@ approved config is on disk.
 
 ## Goalsets
 
-Goal entry uses the main checkout's shared Project directory selected by
-`BOOLEY_PROJECT_DIR` in the Sandbox, including external Project data. A Goalset
-edited only in a paired worktree copy or snapshot is not used at entry;
-`/booley-goal` reads the shared copy.
+Goal entry reads Goalsets from the main checkout's Project directory
+(`BOOLEY_PROJECT_DIR` in the Sandbox). Edit them there; an edit made only in a
+worktree's paired copy or snapshot is not used.
 
 Read the seeded `goalsets/{feature,bugfix,refactor,verification}.md` files and
 adapt their Goals to the Project's supported Targets and verification intent.

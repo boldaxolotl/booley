@@ -280,20 +280,17 @@ Goalsets are Project-owned Markdown files under `.booley_project/goalsets/`.
 express your project's rules. The agent translates them into concrete Goals;
 Booley validates the arguments, not the prose. Each Goal records its origin.
 
-At entry, read all selected Goalsets from the **main checkout's shared Project
-directory**, including `default.md`. In the Sandbox, `BOOLEY_PROJECT_DIR`
-selects that directory, including when the Project data lives outside the main
-checkout. Use its `goalsets/` for the agent's named Goalset reads and the entry
-check for the default. A paired Project checkout or snapshot in the Goal
-worktree supplies no Goalsets at entry; a `default.md` present only in that
-copy does not apply.
+Goalsets, including `default.md`, come from the **main checkout's Project
+directory**. In the Sandbox that is `BOOLEY_PROJECT_DIR`, even when the Project
+data lives outside the main checkout. A copy inside the Goal worktree (a
+paired Project checkout or a snapshot) is not used: a `default.md` that exists
+only there does not apply. `work_dir` selects the code worktree, not the
+Goalsets.
 
-`work_dir` selects the code worktree; it does not select Goalset storage. Entry
-checks the default in the MCP session's selected Project directory. Without
-`BOOLEY_PROJECT_DIR`, configured paths or discovery from the session's working
-directory can select a worktree copy. Establish the shared main-checkout Project
-selection for the session before reading Goalsets or entering Goal Mode; entry
-refuses a control Project directory inside the requested Goal worktree.
+Without `BOOLEY_PROJECT_DIR`, Booley may discover a worktree's copy instead.
+Set it to the main checkout's Project directory for the session before
+entering Goal Mode; entry refuses a Project directory inside the Goal
+worktree.
 
 An optional `default.md` applies to every entry. Skipping it requires your
 explicit instruction and reason. Setup can create this file; initialization
@@ -404,7 +401,26 @@ Relative comparisons report an **observed Cycle Count change**. When declared wo
 
 ### Working with evidence
 
-The agent passes the absolute worktree root as `work_dir` on every Booley call.
+The agent passes the absolute worktree root as `work_dir` to every tool that
+accepts it.
+
+Built-in MCP worktree routing:
+
+| Accepts `work_dir` | Does not accept `work_dir` |
+| --- | --- |
+| `sim`, `lint`, `synth`, `fpga` | `booley_status` |
+| `reviewer`, `mutation_tester`, `coverage_analyst` | `booley_poll`, `booley_cancel` |
+| `goal_enter`, `goal_status`, `goal_propose_change`, `goal_finish` | `booley_sleep`, `coverage_evidence` |
+| `booley_targets`, `booley_report` | `bwave` |
+
+`booley_sleep` appears only when diagnostic tools are enabled, and
+`coverage_evidence` only in the Coverage Analyst's nested server.
+
+While any Goal Record occupies the Project, Booley Flows, Specialists, Goal
+tools, and `booley_report` refuse a call without `work_dir`, even a diagnostic
+call outside that worktree; `booley_targets` may omit it. Project-defined
+endpoints must declare `work_dir` to run.
+
 Only Booley Flows and Specialists meet Goals. Shell output or the agent saying
 "done" does not. `goal_status` shows each Goal's current evidence and freshness;
 code changes can require another run. For a bugfix, reproduce the reported bug

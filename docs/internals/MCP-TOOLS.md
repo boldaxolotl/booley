@@ -577,7 +577,7 @@ Interactive Mode is the normal way to try a Custom Flow or Specialist. Once the 
 - *"Run `drc_check` on the `variant_a` Target with the signoff rule set."*
 - *"Ask `protocol_reviewer` to check `rtl/axi_slave.sv`."*
 
-The agent selects the arguments and invokes the custom MCP tool. Goal Mode uses the same implementation and registry with an immutable Run Binding; evidence may update the declared Goals when its keys and subject match them. Outside Goal Mode, the verdict is returned to the session without persistent Goal state. While any Goal Record occupies the Project, every endpoint call must pass explicit `work_dir`, including diagnostic calls outside the Goal worktree: “Pass work_dir on every Booley call while Goal Mode is active”. This is enforced across endpoint dispatch, report-fetch, and Goal-tool paths rather than only for evidence-producing calls.
+The agent selects the arguments and invokes the custom MCP tool. Goal Mode uses the same implementation and registry with an immutable Run Binding; evidence may update the declared Goals when its keys and subject match them. Outside Goal Mode, the verdict is returned to the session without persistent Goal state. While any Goal Record occupies the Project, every endpoint, `booley_report`, and Goal tool call must pass explicit `work_dir`, including diagnostic calls outside the Goal worktree, so a custom endpoint must declare `work_dir` to run. `booley_targets` may omit it; the [built-in routing inventory](../user/USAGE.md#working-with-evidence) lists the tools that accept none.
 
 #### Diagnose a Flow Through the Direct CLI
 

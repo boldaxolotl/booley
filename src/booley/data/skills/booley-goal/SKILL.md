@@ -15,19 +15,19 @@ Use it for human-steered or unattended work inside the Sandbox.
    `booley worktree new <name>` in the Sandbox. Goal Mode cannot enter in the
    main checkout. Preserve existing edits; obtain the human's direction before
    committing or stashing work that is not yours.
-2. Remember the absolute worktree root as `work_dir`. Pass `work_dir` on
-   every Booley call, including Flow, Specialist, and Goal calls.
-3. Select the main checkout's shared Project directory for Goalset reads.
-   Use the Sandbox's `BOOLEY_PROJECT_DIR`, including when it selects external
-   Project data, and confirm this is the same shared directory the MCP session
-   uses for entry. If shared selection is missing or points at a worktree copy,
-   establish it for the session before reading Goalsets or calling `goal_enter`;
-   discovery from a linked checkout can otherwise select its local copy.
-   `work_dir` selects code, not Goalset storage. Read the selected `*.md`
-   Goalsets and check for `default.md` in that shared directory's `goalsets/`.
-   A paired Project checkout or snapshot in the Goal worktree is not the source;
-   a default present only there does not apply at entry.
-   Initialization seeds `feature`, `bugfix`, `refactor`, and
+2. Remember the absolute worktree root as `work_dir`. Pass it to Booley Flows,
+   Specialists, Goal tools, `booley_targets`, and `booley_report`. While a
+   Goal Record occupies the Project, calls without it are refused (only
+   `booley_targets` may omit it), and Project-defined endpoints must declare
+   `work_dir` to run. `booley_status`, `booley_poll`, `booley_cancel`,
+   `booley_sleep`, `coverage_evidence`, and `bwave` accept no `work_dir`.
+3. Read the selected `*.md` Goalsets from `goalsets/` in the main checkout's
+   Project directory: `BOOLEY_PROJECT_DIR` in the Sandbox, the same directory
+   where entry checks `default.md`. Never read them from a Project copy or
+   snapshot inside `work_dir`; a `default.md` present only there does not
+   apply. If `BOOLEY_PROJECT_DIR` is unset or points inside a worktree, set it
+   to the main checkout's Project directory for the session before reading
+   Goalsets or calling `goal_enter`. Initialization seeds `feature`, `bugfix`, `refactor`, and
    `verification` create-only. The Project owns their prose and may add others.
    If `default.md` exists, include it unless the human explicitly skips it;
    record `default_skipped=true` and their reason as `skip_reason`. With no
