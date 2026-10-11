@@ -23,9 +23,8 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ### Upgrade notes
 
-- Review Goal evidence recorded before this upgrade can become stale once when
-  a Target consumes Git-ignored data files that are not HDL, `.core`
-  declarations, or declared programs; re-running the Reviewer clears it.
+- Existing Review Goal evidence may need to be refreshed once after upgrading;
+  re-run the Reviewer if it is reported stale.
 - Ticket Mode commands `booley run` and `booley board` are removed from the
   public command surface. Each prints a pointer to `/booley-goal` and exits 2.
   The Ticket creation and triage skills are replaced by `/booley-goal`.
