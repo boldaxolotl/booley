@@ -530,6 +530,15 @@ It doesn't have to be a bug. Confusing behavior, praise, complaints, wishes, or
 "this wasn't worth the setup cost" are all worth one sentence to
 `/booley-feedback`. See [CONFIG.md](CONFIG.md#feedback-feedback).
 
+In the Sandbox, each Project has one Findings Log shared by all of its worktrees.
+The log and default local report stay in the shared Project directory, even
+when a worktree has its own paired Project checkout. When the skill uses the
+feedback CLI, its `-C` / `--project` option selects the checkout used for context;
+it does not move that shared log or the default report. For Projects, the
+`BOOLEY_PROJECT_DIR` environment variable selects shared storage. Outside the
+Sandbox, without that override, storage is discovered from the selected checkout
+and may use a separate log. Use the report paths provided by the skill.
+
 ## Booley Flows & Specialists
 
 This section is reference. You rarely call Flows or Specialists yourself: ask
