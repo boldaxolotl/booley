@@ -14,10 +14,11 @@ from booley.flows.sim.config import (
     resolve_run_cwd,
 )
 from booley.flows.sim.execution.contract import SimulationPreview
+from booley.flows.test_runs import TestRun, test_run_document
 from booley.runtime.timefmt import utc_now_rfc3339
 from booley.targets.domain import TargetHandle, TargetInput, TargetInspection
 
-from .codec import SimulationCampaignIntegrityError
+from .codec import MANIFEST_SCHEMA, SimulationCampaignIntegrityError
 from .model import SimulationCampaignPlan, create_simulation_campaign_plan
 from .planning import (
     canonical_sha256,
@@ -55,6 +56,8 @@ def plan_ordinary_hdl_campaign(
     sources = _source_entries(root, inspection.inputs)
     if len(groups) != len(preview.commands):
         raise SimulationCampaignIntegrityError("planned groups and commands disagree")
+    run_groups = preview.run_groups
+    _require_matching_run_groups(groups, run_groups)
     workload, configured_cwd, run_kind, sources = _workload_document(
         handle, inspection, sources, trace, coverage=False
     )
@@ -62,7 +65,7 @@ def plan_ordinary_hdl_campaign(
     suite = _required_suite(root, required_suite, catalog_backed=required_suite_catalog_backed)
     variant = _variant_document(workload, sources, trace)
     work_items = _work_items(
-        groups, target, variant, configured_cwd, run_kind, kind="ordinary_hdl"
+        run_groups, target, variant, configured_cwd, run_kind, kind="ordinary_hdl"
     )
     manifest = _manifest_document(
         invocation_id,
@@ -94,14 +97,17 @@ def plan_coarse_simulation_campaign(
     required_suite_catalog_backed: bool | None = None,
     no_waivers: bool = False,
 ) -> SimulationCampaignPlan:
-    """Plan one honest coarse Cocotb batch or native coverage aggregate.
+    """Plan honest coarse work: Cocotb batches, or one native coverage aggregate.
 
-    ``no_waivers`` freezes the raw-coverage choice into the workload; only coverage
-    aggregates may carry it.
+    ``preview.run_groups`` holds the Test Runs of each work item: one group per
+    Cocotb batch (Test Runs that share environment and seed), or the single
+    group of every Test Run a coverage aggregate collects. ``no_waivers`` freezes the
+    raw-coverage choice into the workload; only coverage aggregates may carry it.
     """
     if no_waivers and kind != "coverage_aggregate":
         raise SimulationCampaignIntegrityError("no_waivers requires a coverage aggregate")
-    names = _validate_coarse_inputs(handle, inspection, preview, selected_tests, kind)
+    run_groups = preview.run_groups
+    _validate_coarse_inputs(handle, inspection, preview, selected_tests, kind, run_groups)
     root = handle.project_root.resolve()
     sources = _source_entries(root, inspection.inputs)
     workload, configured_cwd, run_kind, sources = _workload_document(
@@ -115,7 +121,7 @@ def plan_coarse_simulation_campaign(
     target = _target_document(handle, root, revision, "candidate")
     suite = _required_suite(root, required_suite, catalog_backed=required_suite_catalog_backed)
     variant = _variant_document(workload, sources, trace)
-    work_items = _work_items((names,), target, variant, configured_cwd, run_kind, kind=kind)
+    work_items = _work_items(run_groups, target, variant, configured_cwd, run_kind, kind=kind)
     manifest = _manifest_document(
         invocation_id,
         execution_id,
@@ -136,7 +142,8 @@ def _validate_coarse_inputs(
     preview: SimulationPreview,
     selected_tests: Sequence[str],
     kind: str,
-) -> tuple[str, ...]:
+    run_groups: Sequence[tuple[TestRun, ...]],
+) -> None:
     if kind not in {"cocotb_batch", "coverage_aggregate"}:
         raise SimulationCampaignIntegrityError("coarse campaign kind is invalid")
     if inspection.handle != handle or preview.target_identity != handle.identity:
@@ -145,15 +152,20 @@ def _validate_coarse_inputs(
     if kind == "cocotb_batch" and not is_cocotb:
         raise SimulationCampaignIntegrityError("coarse campaign kind disagrees with Target")
     names = tuple(selected_tests)
-    if preview.groups != (names,):
+    planned = tuple(_selection_names(group) for group in run_groups)
+    if kind == "coverage_aggregate":
+        # One aggregate collects every selected Test Run, however many of one Test.
+        if len(run_groups) != 1 or planned != (names,) or not names:
+            raise SimulationCampaignIntegrityError(
+                "coverage aggregate requires one group of named Test Runs"
+            )
+    elif preview.groups != planned or tuple(name for group in planned for name in group) != names:
         raise SimulationCampaignIntegrityError(
             "coarse campaign selection disagrees with execution preview"
         )
-    if kind == "coverage_aggregate" and not names:
-        raise SimulationCampaignIntegrityError("coverage aggregate requires named tests")
-    if len(set(names)) != len(names):
-        raise SimulationCampaignIntegrityError("coarse campaign tests must be unique")
-    return names
+    run_names = [run.name for group in run_groups for run in group]
+    if len(set(run_names)) != len(run_names):
+        raise SimulationCampaignIntegrityError("coarse campaign Test Runs must be unique")
 
 
 def _manifest_document(
@@ -167,22 +179,11 @@ def _manifest_document(
     prerequisite_documents,
     work_items,
 ):
-    # Legacy-shaped runs retain v1/v2; proof-bearing source mappings require v3.
-    schema_version = "v2" if workload.get("no_waivers") is True else "v1"
-    if any(
-        disclosure["planner"] == "fusesoc_setup"
-        and disclosure["tool_provenance"]["contract_version"] == "2"
-        for disclosure in planning_disclosures
-    ) or any(
-        "source_path" in entry
-        for disclosure in planning_disclosures
-        for field in ("generated_files", "scratch_inputs")
-        for entry in disclosure[field]
-    ):
-        schema_version = "v3"
+    # v4: every work item records its concrete Test Runs (ADR 0072). Older
+    # manifests name Tests only; they stay readable but are never written.
     return finalize_manifest(
         {
-            "$schema": f"booley.simulation-campaign-manifest/{schema_version}",
+            "$schema": MANIFEST_SCHEMA,
             "campaign_id": str(uuid.uuid4()),
             "created_at": utc_now_rfc3339(),
             "origin": {"execution_id": execution_id, "invocation_id": invocation_id},
@@ -407,8 +408,21 @@ def _required_suite(
     }
 
 
+def _require_matching_run_groups(
+    groups: Sequence[tuple[str, ...]], run_groups: Sequence[tuple[TestRun, ...]]
+) -> None:
+    """The Test Runs of each group must be the group's Tests, in order."""
+    if tuple(groups) != tuple(_selection_names(runs) for runs in run_groups):
+        raise SimulationCampaignIntegrityError("planned groups and Test Runs disagree")
+
+
+def _selection_names(runs: Sequence[TestRun]) -> tuple[str, ...]:
+    """Bare Test names of a work item, each once, in first-run order."""
+    return tuple(dict.fromkeys(run.test for run in runs if run.test is not None))
+
+
 def _work_items(
-    groups: Sequence[tuple[str, ...]],
+    run_groups: Sequence[tuple[TestRun, ...]],
     target: Mapping[str, object],
     variant: Mapping[str, object],
     configured_cwd: str,
@@ -418,9 +432,12 @@ def _work_items(
 ) -> list[dict[str, object]]:
     items = []
     collision = _collision_template(configured_cwd)
-    for ordinal, names in enumerate(groups):
-        if kind == "ordinary_hdl" and len(names) > 1:
-            raise SimulationCampaignIntegrityError("ordinary HDL work item has multiple tests")
+    for ordinal, runs in enumerate(run_groups):
+        names = _selection_names(runs)
+        if kind == "ordinary_hdl" and len(runs) != 1:
+            raise SimulationCampaignIntegrityError(
+                "ordinary HDL work item requires exactly one Test Run"
+            )
         selection_kind = "named" if names else "default"
         if kind == "cocotb_batch" and not names:
             selection_kind = "unfiltered"
@@ -435,6 +452,7 @@ def _work_items(
                 "names": list(names),
             },
             "arguments": list(names),
+            "test_runs": [test_run_document(run) for run in runs],
             "build_variant_id": variant["build_variant_id"],
             "run_directory": {
                 "configured": configured_cwd,

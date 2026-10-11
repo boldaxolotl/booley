@@ -82,7 +82,7 @@ from booley.flows.sim.result import parse_summary_line
 from booley.flows.sim.run_guard import DEFAULT_SIM_TIME_GRACE_S
 from booley.flows.sim.verilator_coverage import SimulationExecutionPort
 from booley.flows.target_test_plan import TargetTestPlan
-from booley.flows.test_runs import TestRun, parse_test_selector
+from booley.flows.test_runs import TestRun, parse_test_selector, test_run_from_document
 from booley.fusesoc import fusesoc_registry
 from booley.runtime import job_slots
 from booley.runtime.endpoint_execution import (
@@ -1015,6 +1015,29 @@ def _campaign_recovery_detail(status: CampaignRecoveryStatus) -> dict[str, objec
         "interrupted": list(status.interrupted),
         "pending": list(status.pending),
     }
+
+
+def _manifest_run_groups(
+    manifest: SimulationCampaignManifest,
+) -> tuple[tuple[TestRun, ...], ...]:
+    """The Test Runs of each work item, exactly as the manifest froze them.
+
+    A manifest older than v4 names Tests only. It cannot be resumed: planning
+    it again would add seeds its work items never had, so it fails closed.
+    """
+    items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
+    if any("test_runs" not in item for item in items):
+        raise SimulationCampaignIntegrityError(
+            "this Simulation Campaign manifest predates recorded Test Runs "
+            f"({manifest.document['$schema']}) and cannot be resumed; "
+            "start a new Simulation Campaign"
+        )
+    return tuple(
+        tuple(
+            test_run_from_document(entry) for entry in cast(tuple[object, ...], item["test_runs"])
+        )
+        for item in items
+    )
 
 
 def _is_coverage_manifest(manifest: SimulationCampaignManifest) -> bool:
@@ -2414,19 +2437,20 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             return error
         if (error := self._validate_test_plans(targets)) is not None:
             return error
-        if (error := self._refuse_uncarried_test_runs(targets, test_names_map)) is not None:
+        if getattr(self.args, "coverage", False) and (
+            error := self._refuse_uncarried_test_runs(targets, test_names_map)
+        ):
             return error
         return self._validate_runnable_tests(targets, test_names_map)
 
     def _refuse_uncarried_test_runs(
         self, targets: list[str], test_names_map: dict[str, list[str]]
     ) -> EndpointOutcome | None:
-        """Refuse a Simulation Campaign of Test Runs its manifest cannot carry yet.
+        """Refuse a coverage campaign of Test Runs it cannot collect yet.
 
-        A campaign work item names Tests only, so it would run the default
-        Test Variant at the Default Seed whatever was asked. Until the
-        manifest records each Test Run, anything else is refused, never run
-        as something it is not.
+        Coverage collection runs each selected Test once, as its default
+        Test Variant at the Default Seed. Until it launches concrete Test
+        Runs, anything else is refused, never run as something it is not.
         """
         for target in targets:
             try:
@@ -2439,7 +2463,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 return EndpointOutcome(
                     exit_code=EXIT_ERROR,
                     report_text=(
-                        f"sim: Target {target!r}: a Simulation Campaign cannot yet run "
+                        f"sim: Target {target!r}: a coverage campaign cannot yet run "
                         f"Test Runs other than the default Test Variant at the Default "
                         f"Seed ({', '.join(other[:8])})"
                     ),
@@ -3345,11 +3369,15 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             for item in items
         )
         names = tuple(name for group in groups for name in group)
+        # Resume runs the manifest's own Test Runs: nothing is resolved from
+        # tests.toml again and no seed is drawn again.
+        run_groups = _manifest_run_groups(manifest)
+        runs = tuple(run for group in run_groups for run in group)
         execution = self._simulation_execution()
-        preview = execution.preview(handle, NamedTests(names) if names else DefaultSelection())
+        preview = execution.preview(handle, SelectedTestRuns(runs))
         is_coverage = _is_coverage_manifest(manifest)
         if is_coverage:
-            preview = replace(preview, groups=(names,))
+            preview = replace(preview, groups=(names,), run_groups=(runs,))
         disclosures = (
             ()
             if is_coverage
@@ -3823,7 +3851,11 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         inspection = TargetCatalog.build(plan.handle.project_root).inspect(plan.handle)
         execution = self._simulation_execution()
         preview = execution.preview(plan.handle, NamedTests(plan.selected_tests))
-        preview = replace(preview, groups=(plan.selected_tests,))
+        preview = replace(
+            preview,
+            groups=(plan.selected_tests,),
+            run_groups=(tuple(run for group in preview.run_groups for run in group),),
+        )
         return plan_coarse_simulation_campaign(
             handle=plan.handle,
             inspection=inspection,

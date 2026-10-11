@@ -57,6 +57,7 @@ from booley.flows.sim.runtime_inputs import (
     RuntimeInputBinding,
     materialize_campaign_runtime_inputs,
 )
+from booley.flows.test_runs import TestRun, test_run_from_document
 from booley.runtime.supervised_execution import current_supervised_execution
 from booley.targets.catalog import TargetCatalog
 
@@ -125,6 +126,8 @@ class _SharedFailure:
 class _GroupInputs:
     handle: object
     names: tuple[str, ...]
+    #: The work item's concrete Test Runs; ``None`` for a manifest older than v4.
+    test_runs: tuple[TestRun, ...] | None
     options: SimulationOptions
     execution: SimulationExecution
     workload: Mapping[str, object]
@@ -309,7 +312,9 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
         self._publication_checkpoint("before:build_attempt")
         request.store.publish_build_attempt(directory, attempt)
         self._publication_checkpoint("after:build_attempt")
-        with execution.ordinary_group(handle, names) as group:
+        with execution.ordinary_group(
+            handle, names, _work_item_test_runs(request.work_item)
+        ) as group:
             _authenticate_planning_disclosure(request, group)
             build = group.compile()
             if not build.passed:
@@ -358,7 +363,9 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
 
     @staticmethod
     def _prepare_shared_launch(request, ready, execution, handle, names):
-        with execution.ordinary_group(handle, names) as group:
+        with execution.ordinary_group(
+            handle, names, _work_item_test_runs(request.work_item)
+        ) as group:
             _authenticate_planning_disclosure(request, group)
             group.bind_authenticated_bundle(ready.build_execution)
         return group
@@ -374,7 +381,9 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
         inputs = self._group_inputs(request)
         handle, names, options = inputs.handle, inputs.names, inputs.options
         execution, workload, access = inputs.execution, inputs.workload, inputs.access
-        with execution.ordinary_group(handle, names) as group:
+        with execution.ordinary_group(
+            handle, names, _work_item_test_runs(request.work_item)
+        ) as group:
             prepared = self._prepare_bundle_artifacts(
                 request,
                 build_directory,
@@ -483,6 +492,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
         return _GroupInputs(
             handle,
             names,
+            _work_item_test_runs(request.work_item),
             options,
             execution,
             workload,
@@ -850,6 +860,23 @@ def _fresh_shared_failure(
         FailureClass.INFRASTRUCTURE if outcome.infrastructure_failure else FailureClass.DESIGN,
         _bounded_reason(detail) if outcome.infrastructure_failure else detail[-1536:],
     )
+
+
+def _work_item_test_runs(work_item: Mapping[str, object]) -> tuple[TestRun, ...] | None:
+    """The concrete Test Runs a work item froze, or ``None`` before manifest v4.
+
+    The manifest codec already validated every record, so a decode failure
+    here means the record was altered after validation.
+    """
+    documents = work_item.get("test_runs")
+    if documents is None:
+        return None
+    try:
+        return tuple(
+            test_run_from_document(entry) for entry in cast(tuple[object, ...], documents)
+        )
+    except ValueError as exc:
+        raise SimulationCampaignIntegrityError(f"work item Test Runs are invalid: {exc}") from exc
 
 
 def _setup_result(

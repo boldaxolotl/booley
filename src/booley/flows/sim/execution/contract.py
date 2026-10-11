@@ -8,7 +8,7 @@ from typing import Any, Literal
 
 from booley.flows.sim.backends.shared import RunTerminationKind, SimulationFailureKind
 from booley.flows.sim.build import BuildOutcome
-from booley.flows.test_runs import TestRun
+from booley.flows.test_runs import TestRun, build_test_run
 
 SimulationVerdict = Literal["pass", "fail", "elab_error", "timeout", "crash", "inconclusive"]
 PreSimStatus = Literal["passed", "failed", "timed_out", "spawn_error"]
@@ -190,6 +190,16 @@ class SimulationPreview:
     flow_options: Mapping[str, object]
     #: The concrete Test Runs of each simulator process, aligned with ``groups``.
     run_groups: tuple[tuple[TestRun, ...], ...] = ()
+
+    def __post_init__(self) -> None:
+        # A preview described by Test names alone stands for unseeded default
+        # Test Runs: one per name, or the unnamed invocation for an empty group.
+        if not self.run_groups and self.groups:
+            derived = tuple(
+                tuple(build_test_run(name) for name in group) or (build_test_run(None),)
+                for group in self.groups
+            )
+            object.__setattr__(self, "run_groups", derived)
 
 
 __all__ = [

@@ -240,7 +240,7 @@ class _Execution:
         self._disclosures = disclosures or {}
 
     @contextmanager
-    def ordinary_group(self, _handle: object, names: tuple[str, ...]):
+    def ordinary_group(self, _handle: object, names: tuple[str, ...], _test_runs=None):
         yield _Group(
             names,
             self._build_root,

@@ -145,7 +145,7 @@ def _facts(
 
 def test_coverage_plan_labels_its_build_variant_as_coverage(tmp_path: Path) -> None:
     handle, inspection, preview = _facts(tmp_path, cocotb=False)
-    preview = replace(preview, groups=(("count", "reset"),))
+    preview = replace(preview, groups=(("count", "reset"),), run_groups=())
     plan = plan_coarse_simulation_campaign(
         handle=handle,
         inspection=inspection,
@@ -206,17 +206,17 @@ def _plan(
     )
 
 
-def test_no_waivers_plan_writes_v2_only_when_requested(tmp_path: Path) -> None:
+def test_no_waivers_is_written_only_when_requested(tmp_path: Path) -> None:
     (tmp_path / "default").mkdir()
     (tmp_path / "raw").mkdir()
     default = _plan(
         tmp_path / "default", kind="coverage_aggregate", cocotb=False
     ).manifest.document
-    assert default["$schema"] == "booley.simulation-campaign-manifest/v1"
+    assert default["$schema"] == "booley.simulation-campaign-manifest/v4"
     assert "no_waivers" not in default["workload"]  # type: ignore[operator]
     raw = _plan(tmp_path / "raw", kind="coverage_aggregate", cocotb=False, no_waivers=True)
     document = raw.manifest.document
-    assert document["$schema"] == "booley.simulation-campaign-manifest/v2"
+    assert document["$schema"] == "booley.simulation-campaign-manifest/v4"
     assert document["workload"]["no_waivers"] is True  # type: ignore[index]
     # Waivers never change the build, so the variant identity must not move.
     assert document["build_variants"] == default["build_variants"]
@@ -758,7 +758,7 @@ class _CocotbHarness:
     transport_reported: tuple[SimulationTestOutcome, ...] | None = None
 
     @contextmanager
-    def ordinary_group(self, _handle, names):
+    def ordinary_group(self, _handle, names, _test_runs=None):
         yield _CocotbGroup(self, names)
 
 

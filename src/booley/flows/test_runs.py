@@ -24,7 +24,7 @@ import secrets
 import shlex
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, cast
 
 from booley.config.tests_toml_rules import (
     DEFAULT_SEED,
@@ -69,6 +69,8 @@ __all__ = [
     "parse_test_selector",
     "parse_test_variants",
     "rerun_command",
+    "test_run_document",
+    "test_run_from_document",
 ]
 
 #: Largest N of a multi-seed selector ``test@xN`` and of one seed draw.
@@ -325,6 +327,94 @@ def build_test_run(
         env=tuple(sorted(environment.items())),
         fingerprint=declared_inputs_fingerprint(tuple(args), environment),
     )
+
+
+_TEST_RUN_DOCUMENT_FIELDS = frozenset(
+    {"name", "test", "variant", "seed", "args", "env", "fingerprint"}
+)
+
+
+def test_run_document(run: TestRun) -> dict[str, object]:
+    """The JSON form of *run* that persisted records carry."""
+    return {
+        "name": run.name,
+        "test": run.test,
+        "variant": run.variant,
+        "seed": run.seed,
+        "args": list(run.args),
+        "env": dict(run.env),
+        "fingerprint": run.fingerprint,
+    }
+
+
+# Not a pytest test, although its name starts with ``test_``.
+test_run_document.__test__ = False  # type: ignore[attr-defined]
+
+
+def _optional_name(value: object, field: str) -> str | None:
+    """A Test Run record's Test or Test Variant: a string or ``None``."""
+    if value is not None and not isinstance(value, str):
+        raise TestRunNameError(f"Test Run record {field} must be a string or null")
+    return value
+
+
+def _record_args(value: object) -> tuple[str, ...]:
+    """A Test Run record's argument list."""
+    if not isinstance(value, (list, tuple)):
+        raise TestRunNameError("Test Run record args must be a list of strings")
+    items = cast("list[object] | tuple[object, ...]", value)
+    args = tuple(item for item in items if isinstance(item, str))
+    if len(args) != len(items):
+        raise TestRunNameError("Test Run record args must be a list of strings")
+    return args
+
+
+def _record_env(value: object) -> dict[str, str]:
+    """A Test Run record's environment table."""
+    if not isinstance(value, Mapping):
+        raise TestRunNameError("Test Run record env must map names to strings")
+    table = cast(Mapping[object, object], value)
+    env = {
+        name: text
+        for name, text in table.items()
+        if isinstance(name, str) and isinstance(text, str)
+    }
+    if len(env) != len(table):
+        raise TestRunNameError("Test Run record env must map names to strings")
+    return env
+
+
+def test_run_from_document(document: object) -> TestRun:
+    """Rebuild a :class:`TestRun` from its persisted form, strictly.
+
+    The document must hold exactly the fields :func:`test_run_document`
+    writes, and its ``name`` and ``fingerprint`` must be the ones the other
+    fields produce: a record cannot name one Test Run and describe another.
+    Raises :class:`TestRunNameError`.
+    """
+    if not isinstance(document, Mapping):
+        raise TestRunNameError("a Test Run record must be an object")
+    record = cast(Mapping[object, object], document)
+    if frozenset(record) != cast(frozenset[object], _TEST_RUN_DOCUMENT_FIELDS):
+        raise TestRunNameError(
+            "a Test Run record must hold exactly: " + ", ".join(sorted(_TEST_RUN_DOCUMENT_FIELDS))
+        )
+    seed = record["seed"]
+    run = build_test_run(
+        _optional_name(record["test"], "test"),
+        variant=_optional_name(record["variant"], "variant"),
+        seed=None if seed is None else _require_seed(seed),
+        args=_record_args(record["args"]),
+        env=_record_env(record["env"]),
+    )
+    if record["name"] != run.name or record["fingerprint"] != run.fingerprint:
+        raise TestRunNameError(
+            f"Test Run record for {run.name!r} disagrees with its own name or fingerprint"
+        )
+    return run
+
+
+test_run_from_document.__test__ = False  # type: ignore[attr-defined]
 
 
 def draw_seeds(

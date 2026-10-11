@@ -79,6 +79,33 @@ def _producer_manifest(runtime: Path, envelope: dict[str, Any]) -> Mapping[str, 
     return matches[0] if matches else None
 
 
+def _declares_source_identities(producer: Mapping[str, object]) -> bool:
+    """Whether a campaign manifest's disclosures map generated files to sources.
+
+    Manifest v3 was written exactly for such campaigns. v4 is written for
+    every campaign, so the same fact is read from its disclosures: a setup
+    planner with contract version 2, or any entry that names a source path.
+    """
+    schema = producer["$schema"]
+    if schema == "booley.simulation-campaign-manifest/v3":
+        return True
+    if schema != "booley.simulation-campaign-manifest/v4":
+        return False
+    disclosures = cast("tuple[Mapping[str, Any], ...]", producer["planning_disclosures"])
+    return any(
+        (
+            disclosure["planner"] == "fusesoc_setup"
+            and disclosure["tool_provenance"]["contract_version"] == "2"
+        )
+        or any(
+            "source_path" in entry
+            for field in ("generated_files", "scratch_inputs")
+            for entry in disclosure[field]
+        )
+        for disclosure in disclosures
+    )
+
+
 def _disclosed_inputs(
     root: Path, producer: Mapping[str, object], row: dict[str, Any], envelope: dict[str, Any]
 ) -> list[GeneratedBuildInput]:
@@ -98,7 +125,7 @@ def _disclosed_inputs(
             if entry["kind"] != "generated_input":
                 continue
             if (
-                producer["$schema"] == "booley.simulation-campaign-manifest/v3"
+                _declares_source_identities(producer)
                 or disclosure["tool_provenance"]["contract_version"] == "2"
             ) and "source_path" not in entry:
                 continue
