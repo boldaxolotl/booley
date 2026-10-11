@@ -629,3 +629,34 @@ def test_goal_status_simulation_contract_explanation(goal_mode, met):
     else:
         assert "complete resolved suite" not in text
         assert "—" not in text
+
+
+@pytest.mark.parametrize("inside", [False, True])
+@pytest.mark.parametrize("rules", [False, True])
+def test_status_complete_text_and_metadata_unchanged(goal_mode, inside, rules):
+    from booley.goals.rules import goal_mode_rules
+    from booley.goals.status import status_views
+    from tests.goals.test_format import baseline_render_status
+
+    location = goal_mode.worktree if inside else goal_mode.main
+    views = status_views(GoalStore(goal_mode.control), location)
+    assert [view.record.id for view in views] == [goal_mode.record.id]
+    expected = baseline_render_status(views)
+    if rules:
+        expected += "\n\n" + goal_mode_rules()
+    result = asyncio.run(
+        dispatch_goal_tool(
+            "goal_status",
+            {"work_dir": str(location), "rules": rules},
+            project_dir=goal_mode.control,
+        )
+    )
+    assert result.is_error is False
+    assert result.goal_aware is inside
+    assert len(result.value) == 1
+    assert result.value[0].model_dump() == {
+        "type": "text",
+        "text": expected,
+        "annotations": None,
+        "meta": None,
+    }
