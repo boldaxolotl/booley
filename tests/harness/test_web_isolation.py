@@ -7,8 +7,8 @@ import tomllib
 from pathlib import Path
 
 import booley
+from booley.core.models import AgentCallParams
 from booley.harness import web_isolation
-from booley.harness.models import AgentCallParams
 from booley.runtime import _claude_backend, _codex_backend, mcp_config
 
 

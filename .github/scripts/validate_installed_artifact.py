@@ -29,7 +29,6 @@ EXPECTED_RESOURCES = {
     "booley/data/docker/stable-base-inputs.txt",
     "booley/data/edalize/verible.py",
     "booley/dev_support/pre-commit-ruff.sh",
-    "booley/harness/console/console.tcss",
     "booley/runtime/worktree_create.sh",
 }
 

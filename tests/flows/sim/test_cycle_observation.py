@@ -17,13 +17,9 @@ from booley.flows.sim.flow import (
 )
 from booley.flows.sim.flow import TestResult as SimTestResult
 from booley.flows.sim.mode import SimulationMode
-from booley.harness.models import TicketContext
-from booley.harness.setup.intake import _apply_basis_selectors
 from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import AmbiguousTargetError
-from booley.ticket_board.acceptance_targets import AcceptanceTargetBinding
-from booley.ticket_board.ticket_baseline import BasisParticipant, TicketBaseline
 
 _TARGET_IDENTITY = "vendor:library:core#sim_core"
 _TARGET_SELECTOR = "sim_core"
@@ -196,30 +192,6 @@ def test_relative_cycle_campaign_defaults_omitted_baseline_to_candidate_target()
     )
 
 
-def _ticket_baseline() -> TicketBaseline:
-    return TicketBaseline(
-        bindings=(
-            AcceptanceTargetBinding(
-                flow="sim",
-                criterion="criteria.mandatory.cycle_count",
-                baseline=_TARGET_IDENTITY,
-                candidate=_TARGET_IDENTITY,
-                baseline_selector=_TARGET_SELECTOR,
-                candidate_selector=_TARGET_SELECTOR,
-            ),
-        ),
-        participants=(
-            BasisParticipant(
-                role="outer",
-                authoring_sha="a" * 40,
-                ticket_ref="refs/heads/ticket",
-                destination_ref="refs/heads/main",
-                destination_sha="c" * 40,
-            ),
-        ),
-    )
-
-
 def _sealed_criterion_flow(*, relative: bool = False) -> tuple[SimulateFlow, str]:
     threshold = {"cycle_count_reduce_at_least": "5%"} if relative else {"cycle_count_max": 100}
     template = CriteriaTemplate.from_yaml(
@@ -231,16 +203,11 @@ def _sealed_criterion_flow(*, relative: bool = False) -> tuple[SimulateFlow, str
     )
     expanded = template.expand([])
     params = template.expand_params([])
-    context = TicketContext(
-        slug="qualified-cycle-target",
-        ticket_path=Path("ticket.md"),
-        ticket_type="bugfix",
-        branch="main",
-        summary="Qualified Cycle Count Target",
-        project_root=Path(),
-        ticket_baseline=_ticket_baseline(),
-    )
-    _apply_basis_selectors(context, expanded, params)
+    from booley.targets.domain import TARGET_IDENTITY_PARAM, TARGET_SELECTOR_PARAM
+
+    for values in params.values():
+        values[TARGET_IDENTITY_PARAM] = _TARGET_IDENTITY
+        values[TARGET_SELECTOR_PARAM] = _TARGET_SELECTOR
     state = DevelopmentState()
     state.init_criteria(expanded, criterion_params=params)
     flow = SimulateFlow()

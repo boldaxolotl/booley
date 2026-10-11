@@ -1878,26 +1878,6 @@ class TestJobSlotAdmission:
         live = list((slots / job_slots.CLASS_HEAVY).glob("*.json"))
         assert len(live) == caps.max_heavy + caps.queue_max
 
-    def test_ticket_role_recorded_on_claim(self, tmp_path: Path, monkeypatch):
-        """BOOLEY_AGENT_ROLE=ticket claims at ticket priority — that role must
-        land in the entry so a later interactive request can overtake it."""
-        slots = self._runtime_env(monkeypatch, tmp_path)
-        monkeypatch.setenv("BOOLEY_AGENT_ROLE", "ticket")
-        seen: dict[str, list] = {}
-
-        class ObservingMcpTool(HeavyMcpTool):
-            def _run(inner) -> McpToolResult:  # noqa: N805 — closure style
-                store = job_slots.SlotStore(slots)
-                holders, _ = store.snapshot(job_slots.CLASS_HEAVY)
-                seen["holders"] = holders
-                return McpToolResult(exit_code=EXIT_SUCCESS)
-
-        endpoint = ObservingMcpTool()
-        assert endpoint.main(["--work-dir", str(tmp_path)]) == EXIT_SUCCESS
-        assert len(seen["holders"]) == 1
-        assert seen["holders"][0].role == job_slots.ROLE_TICKET
-        assert seen["holders"][0].priority == 1  # ticket sorts after interactive
-
 
 class TestMcpToolEventScan:
     """_scan_endpoint_events parses display.jsonl into unmatched starts + last

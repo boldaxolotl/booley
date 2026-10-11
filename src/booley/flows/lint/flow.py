@@ -951,7 +951,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
         don't exist.  Refuse explicitly instead.
         """
         if self._state is not None and self._state._file_path is not None:
-            return None  # Ticket Mode вЂ” existing discovery behaviour applies
+            return None  # Persisted execution state supplies Criterion-based target discovery
         if not getattr(self.args, "target", "").strip():
             return EndpointOutcome(
                 exit_code=EXIT_ERROR,

@@ -57,7 +57,6 @@ from .agent_errors import (
     is_context_exhausted,
     is_usage_limit,
 )
-from .developer_budget import DeveloperBudget, run_with_developer_budget
 from .exception_diagnostics import log_exception, provider_exception_message
 from .prompt_artifacts import adjacent_artifact_paths, write_prompt_artifacts
 
@@ -140,7 +139,6 @@ class ClaudeSDKBackend:
     ) -> AgentResult:
         """Call a Claude agent via the Agent SDK with retry."""
         on_event = kwargs.pop("on_event", None)
-        budget: DeveloperBudget | None = kwargs.pop("developer_budget", None)
 
         options = _build_sdk_options(params, auth_mode=self._auth_mode)
         _log_call_start(params)
@@ -159,7 +157,6 @@ class ClaudeSDKBackend:
                     attempt=attempt,
                     label=params.label,
                     on_event=on_event,
-                    budget=budget,
                 )
             except (UsageLimitError, ContextExhaustedError):
                 raise
@@ -176,17 +173,7 @@ class ClaudeSDKBackend:
                     backoff,
                 )
                 if backoff > 0:
-                    if budget is not None:
-                        budget.resume_prefix("claude-mcp:")
-                        budget.pause("claude-retry-backoff", "transient retry")
-                    try:
-                        if budget is None:
-                            await anyio.sleep(backoff)
-                        else:
-                            await run_with_developer_budget(anyio.sleep(backoff), budget)
-                    finally:
-                        if budget is not None:
-                            budget.resume("claude-retry-backoff")
+                    await anyio.sleep(backoff)
 
         raise RuntimeError("Agent call exhausted all retries without result")
 
@@ -201,7 +188,6 @@ class ClaudeSDKBackend:
         transcript_file: Any,
         on_event: Any,
         state: _StreamState,
-        budget: DeveloperBudget | None = None,
     ) -> None:
         """Stream agent messages, recording progress into ``state``.
 
@@ -209,7 +195,7 @@ class ClaudeSDKBackend:
         values survive when this coroutine raises mid-stream — the caller's
         exception handlers read them for crash diagnostics.
 
-        Without a Developer budget, the timeout is **idle/heartbeat-aware**:
+        The timeout is **idle/heartbeat-aware**:
         ``timeout_seconds`` bounds the gap between consecutive stream events,
         and the deadline is reset every time *any* message arrives. A stream
         that is merely slow — e.g. throttled to a crawl under heavy 7-day
@@ -220,21 +206,6 @@ class ClaudeSDKBackend:
         completed before still completes, and throttled-but-progressing turns
         that used to die mid-stream now survive.
         """
-        if budget is not None:
-            await run_with_developer_budget(
-                _consume_claude_stream(
-                    prompt,
-                    options,
-                    counters,
-                    transcript_file,
-                    on_event,
-                    state,
-                    budget=budget,
-                ),
-                budget,
-            )
-            return
-
         with anyio.fail_after(timeout_seconds) as idle_scope:
             await _consume_claude_stream(
                 prompt,
@@ -261,7 +232,6 @@ class ClaudeSDKBackend:
         attempt: int = 1,
         label: str | None = None,
         on_event: Any = None,
-        budget: DeveloperBudget | None = None,
     ) -> AgentResult:
         """Single attempt to call the agent."""
         source = transcript_path_for_label(transcript_path, label)
@@ -292,7 +262,6 @@ class ClaudeSDKBackend:
                         prompt,
                     )
                 try:
-                    stream_kwargs = {"budget": budget} if budget is not None else {}
                     await self._process_stream(
                         prompt,
                         options,
@@ -301,7 +270,6 @@ class ClaudeSDKBackend:
                         transcript_file,
                         on_event,
                         stream_state,
-                        **stream_kwargs,
                     )
                 except TimeoutError:
                     # A ResultMessage already landed before the stall, so the
@@ -705,15 +673,12 @@ async def _consume_claude_stream(
     on_event: Any,
     state: _StreamState,
     *,
-    budget: DeveloperBudget | None = None,
     on_message: Callable[[], None] | None = None,
 ) -> None:
     """Consume one Claude query stream and route every message."""
     async for message in query(prompt=prompt, options=options):
         if on_message is not None:
             on_message()
-        if budget is not None:
-            _update_budget_for_claude_message(message, budget)
         if isinstance(message, AssistantMessage):
             state.turn_count += 1
             _record_activity(state.last_activity, message)
@@ -731,33 +696,7 @@ async def _consume_claude_stream(
             _dispatch_usage(on_event, counters, options.model)
             state.session_id = getattr(message, "session_id", None)
         elif isinstance(message, RateLimitEvent):
-            await _handle_rate_limit_event(message, budget)
-
-
-def _update_budget_for_claude_message(message: object, budget: DeveloperBudget) -> None:
-    """Pause active time between Claude's Booley tool-use and result blocks."""
-    content = getattr(message, "content", None)
-    blocks = content if isinstance(content, list) else []
-    if isinstance(message, AssistantMessage):
-        for block in blocks:
-            name = getattr(block, "name", None)
-            call_id = getattr(block, "id", None)
-            if not _is_booley_mcp_name(name) or not isinstance(call_id, str):
-                continue
-            budget.pause(f"claude-mcp:{call_id}", f"waiting for {_short_mcp_name(name)}")
-    elif isinstance(message, UserMessage):
-        for block in blocks:
-            call_id = getattr(block, "tool_use_id", None)
-            if isinstance(call_id, str):
-                budget.resume(f"claude-mcp:{call_id}")
-
-
-def _is_booley_mcp_name(name: object) -> bool:
-    return isinstance(name, str) and name.startswith("mcp__booley__")
-
-
-def _short_mcp_name(name: str) -> str:
-    return name.removeprefix("mcp__booley__")
+            await _handle_rate_limit_event(message)
 
 
 _EDIT_PATH_FIELDS = {
@@ -1035,7 +974,6 @@ def _dump_crash_context(
 
 async def _handle_rate_limit_event(
     event: RateLimitEvent,
-    budget: DeveloperBudget | None = None,
 ) -> None:
     """Handle a rate limit event from the SDK stream."""
     info = event.rate_limit_info
@@ -1053,16 +991,7 @@ async def _handle_rate_limit_event(
             rfc3339_from_epoch(info.resets_at) if info.resets_at else "unknown",
             RATE_LIMIT_SLEEP_BUFFER_S,
         )
-        if budget is not None:
-            budget.pause("claude-rate-limit", "provider rate limit")
-        try:
-            if budget is None:
-                await anyio.sleep(sleep_s)
-            else:
-                await run_with_developer_budget(anyio.sleep(sleep_s), budget)
-        finally:
-            if budget is not None:
-                budget.resume("claude-rate-limit")
+        await anyio.sleep(sleep_s)
 
         raise TransientAPIError(
             f"rate limited ({info.rate_limit_type}), slept {sleep_s:.0f}s",

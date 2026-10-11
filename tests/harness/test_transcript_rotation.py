@@ -13,7 +13,6 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from booley.harness.developer import _detect_crash_recovery
 from booley.runtime._retry import transcript_path_for_attempt, transcript_path_for_label
 
 # ---------------------------------------------------------------------------
@@ -77,60 +76,3 @@ def _touch(path: Path, mtime: float) -> Path:
     path.write_text("{}\n", encoding="utf-8")
     os.utime(path, (mtime, mtime))
     return path
-
-
-class TestDetectCrashRecovery:
-    def test_no_prior_transcripts(self, tmp_path: Path):
-        is_recovery, crash, run_index, next_path = _detect_crash_recovery(tmp_path)
-        assert is_recovery is False
-        assert crash is None
-        assert run_index == 1
-        assert next_path.name == "run_001.jsonl"
-
-    def test_retry_variants_count_as_one_run(self, tmp_path: Path):
-        d = _transcript_dir(tmp_path)
-        _touch(d / "developer.run_001.jsonl", 1000)
-        latest = _touch(d / "developer.run_001-retry2.jsonl", 2000)
-
-        is_recovery, crash, run_index, next_path = _detect_crash_recovery(tmp_path)
-
-        assert is_recovery is True
-        assert run_index == 2  # one distinct prior run, not two
-        assert crash == latest  # most recent by mtime
-        assert next_path.name == "run_002.jsonl"
-
-    def test_specialist_transcripts_are_ignored(self, tmp_path: Path):
-        d = _transcript_dir(tmp_path)
-        _touch(d / "developer.run_001.jsonl", 1000)
-        # Specialists writing into this dir must not inflate the run index
-        _touch(d / "mutation_creator_round1.jsonl", 3000)
-        _touch(d / "reviewer.jsonl", 4000)
-
-        is_recovery, crash, run_index, _ = _detect_crash_recovery(tmp_path)
-
-        assert is_recovery is True
-        assert run_index == 2
-        assert crash == d / "developer.run_001.jsonl"
-
-    def test_legacy_namings_still_count(self, tmp_path: Path):
-        d = _transcript_dir(tmp_path)
-        _touch(d / "run_001.jsonl", 1000)  # legacy bare run naming
-        _touch(d / "developer.jsonl", 2000)  # legacy flat label naming
-        latest = _touch(d / "developer-retry2.jsonl", 3000)  # retry of the flat run
-
-        is_recovery, crash, run_index, _ = _detect_crash_recovery(tmp_path)
-
-        assert is_recovery is True
-        # run_001 + developer(+retry collapsed) = 2 distinct prior runs
-        assert run_index == 3
-        assert crash == latest
-
-    def test_crash_transcript_is_latest_by_mtime(self, tmp_path: Path):
-        d = _transcript_dir(tmp_path)
-        latest = _touch(d / "developer.run_001.jsonl", 5000)
-        _touch(d / "developer.run_002.jsonl", 1000)  # older despite higher index
-
-        _, crash, run_index, _ = _detect_crash_recovery(tmp_path)
-
-        assert crash == latest
-        assert run_index == 3

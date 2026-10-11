@@ -52,10 +52,10 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class AcceptanceContext:
-    """Ticket-owned inputs deliberately kept outside the campaign module."""
+    """Execution-owned inputs kept outside the Campaign module."""
 
     ticket_slug: str
-    ticket_identity: dict[str, Any]
+    identity: dict[str, Any]
     ticket_generation: str
     state: DevelopmentState
     recorder: AcceptanceRecorder
@@ -100,7 +100,7 @@ class SimulationAcceptanceCoordinator:
             context.state,
             changes,
             acceptance_facts=outcome.acceptance_facts.document,
-            ticket_identity=context.ticket_identity,
+            identity=context.identity,
         )
         transaction_id = getattr(transaction, "transaction_id", None)
         if transaction is None and isinstance(context.recorder, NoAcceptanceRecorder):
@@ -312,12 +312,12 @@ def record_campaign_acceptance(
         endpoint.state.work_dir = str(Path(work_dir).resolve())
     recorder = endpoint._acceptance_recorder
     recorded_identity = recorder.acceptance_identity()
-    ticket_identity: Mapping[str, Any] = recorded_identity if recorded_identity is not None else {}
+    identity: Mapping[str, Any] = recorded_identity if recorded_identity is not None else {}
     stamp = getattr(endpoint, "_stamp_source_fingerprint", None)
     context = AcceptanceContext(
         endpoint.state.slug,
-        dict(ticket_identity),
-        str(ticket_identity.get("generation", "")),
+        dict(identity),
+        str(identity.get("generation", "")),
         endpoint.state,
         recorder,
         endpoint._invocation_id,

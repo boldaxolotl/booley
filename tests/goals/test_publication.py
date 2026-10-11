@@ -167,7 +167,7 @@ def test_discarded_evidence_leaves_state_and_ledger_byte_identical(
         state.save()
     with pytest.raises(EvidenceDiscarded, match="changed during the run"):
         stale.record_or_verify_transaction(
-            state, changes, acceptance_facts=campaign_facts(), ticket_identity={}
+            state, changes, acceptance_facts=campaign_facts(), identity={}
         )
 
     assert tree_digest(paths.root) == before

@@ -108,8 +108,8 @@ def test_memory_requirement_exposes_typed_admission_arithmetic() -> None:
     requirement = resource_policy.memory_requirement(
         max_heavy=2,
         heavy_job_bytes=4 * _GIB,
-        max_tickets=1,
-        developer_bytes=_GIB,
+        agent_count=1,
+        agent_bytes=_GIB,
     )
 
     assert requirement.required_bytes == 11 * _GIB

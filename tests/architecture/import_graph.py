@@ -11,7 +11,6 @@ NAMED_HOTSPOTS = (
     "booley.harness.doctor",
     "booley.harness.booley",
     "booley.harness.init_cmd",
-    "booley.harness.developer",
     "booley.flows.sim.flow",
     "booley.flows.synth.flow",
     "booley.mcp.server",

@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from claude_agent_sdk import ClaudeSDKError
 
-from booley.harness.models import AgentCallParams
+from booley.core.models import AgentCallParams
 from booley.mcp.base import EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 from booley.specialists.specialist import _DEFAULT_TIER_MODELS, TIER_RANK, VALID_TIERS, Specialist
 

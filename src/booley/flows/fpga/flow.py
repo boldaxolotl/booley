@@ -14,7 +14,7 @@ field controls FuseSoC resolution inputs, not the implementation backend.
 ``--baseline <ref>`` re-implements the design at a past commit in a throwaway
 ``git worktree`` (see :mod:`booley.flows.baseline_worktree`) rather than checking the ref
 out in place, so it never disturbs the caller's tree and works in Interactive
-Mode as well as Ticket Mode (ADR 0012).
+and Goal Mode (ADR 0012).
 """
 
 from __future__ import annotations
@@ -375,7 +375,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         return None
 
     def _apply_ticket_baseline(self, targets: tuple[TargetHandle, ...]) -> str | None:
-        """Default relative ticket criteria to their immutable baseline SHA."""
+        """Default relative Criteria to their immutable baseline SHA."""
         baseline, full_sha, error = resolve_ticket_baseline(
             self.state.criteria,
             "fpga_impl_ok_",

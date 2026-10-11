@@ -589,6 +589,18 @@ def test_riscv_image_input_requests_extended_image_smoke(tmp_path: Path, path: s
         (".github/scripts/image_runtime_resources.py", True),
         # PR #351: synthesis changes must exercise the OpenROAD promotion probe.
         ("src/booley/flows/synth/flow.py", False),
+        ("src/booley/criteria/unbound_ledger.py", False),
+        ("src/booley/mcp/unbound_recorder.py", False),
+        ("src/booley/mcp/project_flow_loader.py", False),
+        ("src/booley/runtime/agent_execution.py", False),
+        ("src/booley/specialists/verification_freshness.py", False),
+        ("src/booley/flows/sim/waiver_candidates.py", False),
+        ("tests/criteria/test_evidence_ledger.py", False),
+        ("tests/criteria/ledger_support.py", False),
+        ("tests/golden/test_golden_acceptance_ledger.py", False),
+        ("tests/runtime/test_agent_execution.py", False),
+        ("tests/flows/sim/test_waiver_candidates.py", False),
+        ("tests/mcp_tools/test_unbound_recording.py", False),
     ],
 )
 def test_release_regression_paths_request_focused_image_smoke(
@@ -661,52 +673,6 @@ def test_coverage_jobs_are_always_selected_and_required_as_a_pair(
 
     assert jobs["coverage-shards"] is jobs["coverage"]
     assert ("coverage-shards" in required) is ("coverage" in required)
-
-
-@pytest.mark.parametrize(
-    "path",
-    [
-        ".github/scripts/ci_test_shards.py",
-        ".github/workflows/test.yml",
-        "pyproject.toml",
-        "src/booley/runtime/git.py",
-        "src/booley/core/scope_matching.py",
-        "src/booley/ticket_board/completion.py",
-        "tests/conftest.py",
-        "tests/ticket_board/test_completion.py",
-    ],
-)
-def test_recovery_sensitive_changes_request_exhaustive_permutations(
-    tmp_path: Path, path: str
-) -> None:
-    repo, base = _repository(tmp_path)
-    _write(repo, path)
-    head = _commit(repo, "recovery-sensitive change")
-
-    outputs = _classify(repo, base, head)
-
-    assert outputs["exhaustive_recovery"] == "true"
-
-
-def test_ordinary_source_change_uses_representative_recovery_subset(tmp_path: Path) -> None:
-    repo, base = _repository(tmp_path)
-    _write(repo, "src/booley/criteria/policy.py")
-    head = _commit(repo, "ordinary source change")
-
-    outputs = _classify(repo, base, head)
-
-    assert outputs["exhaustive_recovery"] == "false"
-
-
-def test_unknown_path_fails_safe_to_exhaustive_recovery(tmp_path: Path) -> None:
-    repo, base = _repository(tmp_path)
-    _write(repo, "unclassified.input")
-    head = _commit(repo, "unknown change")
-
-    outputs = _classify(repo, base, head)
-
-    assert outputs["full"] == "true"
-    assert outputs["exhaustive_recovery"] == "true"
 
 
 @pytest.mark.parametrize(
@@ -810,12 +776,10 @@ def test_workflow_change_and_force_all_require_every_job(tmp_path: Path) -> None
         "bwave-smoke",
     }
     assert workflow["workflow"] == "true"
-    assert workflow["exhaustive_recovery"] == "true"
     assert _required(workflow) == expected
     assert forced["full"] == "true"
     assert forced["stable_base"] == "false"
     assert forced["riscv_image"] == "false"
-    assert forced["exhaustive_recovery"] == "true"
     assert _required(forced) == expected
 
 

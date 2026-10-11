@@ -7,10 +7,6 @@ import logging
 
 import pytest
 
-from booley.harness.ticket_preflight import (
-    TicketPreflightError,
-    _validate_custom_endpoints_and_criteria,
-)
 from booley.mcp.endpoint_validation import (
     EndpointValidationError,
     validate_custom_endpoints_and_criteria,
@@ -43,24 +39,6 @@ def test_project_criteria_extend_known_satisfies_without_importing_code(project,
         validate_custom_endpoints_and_criteria(root)
     assert "validation complete" in caplog.text
     assert not any(record.levelno >= logging.WARNING for record in caplog.records)
-
-
-@pytest.mark.parametrize(
-    "validator,error",
-    [
-        (validate_custom_endpoints_and_criteria, EndpointValidationError),
-        (_validate_custom_endpoints_and_criteria, TicketPreflightError),
-    ],
-)
-def test_base_criterion_conflict_refuses_endpoint_scan(project, validator, error):
-    root, data = project
-    (data / "criteria.toml").write_text('[lint_clean]\ndescription = "Override"\n')
-    (data / "mcp_tools/broken.py").write_text("invalid syntax !")
-    with pytest.raises(error, match="CRITERIA CONFLICT") as caught:
-        validator(root)
-    assert caught.value.failures == [
-        "CRITERIA CONFLICT: Project criterion 'lint_clean' conflicts with base criterion"
-    ]
 
 
 @pytest.mark.parametrize(
@@ -166,6 +144,38 @@ def test_unavailable_validator_dependency_skips_validation(project, monkeypatch,
     assert "validation skipped (imports unavailable)" in caplog.text
 
 
+def test_doctor_source_checkout_validation_is_failure_not_traceback():
+    from pathlib import Path
+
+    from booley.harness import doctor
+
+    outcomes = []
+    doctor._check_custom_endpoints_and_criteria(
+        Path(doctor.__file__).resolve().parents[3],
+        lambda _: pytest.fail("Source Checkout was accepted as a Project"),
+        lambda message, fix="": outcomes.append(message),
+    )
+    assert len(outcomes) == 1
+    assert "Source Checkout cannot be initialized or used as a Project" in outcomes[0]
+
+
+@pytest.mark.parametrize(
+    "validator,error",
+    [
+        (validate_custom_endpoints_and_criteria, EndpointValidationError),
+    ],
+)
+def test_base_criterion_conflict_refuses_endpoint_scan(project, validator, error):
+    root, data = project
+    (data / "criteria.toml").write_text('[lint_clean]\ndescription = "Override"\n')
+    (data / "mcp_tools/broken.py").write_text("invalid syntax !")
+    with pytest.raises(error, match="CRITERIA CONFLICT") as caught:
+        validator(root)
+    assert caught.value.failures == [
+        "CRITERIA CONFLICT: Project criterion 'lint_clean' conflicts with base criterion"
+    ]
+
+
 @pytest.mark.parametrize("conflict", [False, True])
 def test_external_project_directory_has_doctor_preflight_parity(tmp_path, monkeypatch, conflict):
     from booley.harness import doctor
@@ -190,25 +200,10 @@ def test_external_project_directory_has_doctor_preflight_parity(tmp_path, monkey
         lambda message, fix="": outcomes.append(("fail", message)),
     )
     if conflict:
-        with pytest.raises(TicketPreflightError, match="CRITERIA CONFLICT"):
-            _validate_custom_endpoints_and_criteria(root)
+        with pytest.raises(EndpointValidationError, match="CRITERIA CONFLICT"):
+            validate_custom_endpoints_and_criteria(root)
         assert outcomes == [("fail", "custom endpoint/Criteria validation failed")]
     else:
-        _validate_custom_endpoints_and_criteria(root)
+        validate_custom_endpoints_and_criteria(root)
         assert outcomes == [("pass", "custom endpoints and Criteria validated")]
     assert not (root / ".booley_project").exists()
-
-
-def test_doctor_source_checkout_validation_is_failure_not_traceback():
-    from pathlib import Path
-
-    from booley.harness import doctor
-
-    outcomes = []
-    doctor._check_custom_endpoints_and_criteria(
-        Path(doctor.__file__).resolve().parents[3],
-        lambda _: pytest.fail("Source Checkout was accepted as a Project"),
-        lambda message, fix="": outcomes.append(message),
-    )
-    assert len(outcomes) == 1
-    assert "Source Checkout cannot be initialized or used as a Project" in outcomes[0]

@@ -4,11 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from booley.commit_policy import StealthPolicy, policy, validate_message, validation
-from booley.dev_support import commit_msg_utils, validate_commit_msg
-from booley.harness.setup import workspace
-from booley.runtime import git as runtime_git
-from booley.specialists import specialist
+from booley.commit_policy import StealthPolicy, policy, validate_message
 
 
 def _configured_project(tmp_path: Path, stealth: str) -> Path:
@@ -16,15 +12,6 @@ def _configured_project(tmp_path: Path, stealth: str) -> Path:
     project_dir.mkdir()
     (project_dir / "booley.toml").write_text(f"[stealth]\n{stealth}", encoding="utf-8")
     return tmp_path
-
-
-def test_packaged_adapters_and_callers_bind_canonical_owner_objects() -> None:
-    assert commit_msg_utils.StealthPolicy is StealthPolicy is policy.StealthPolicy
-    assert validate_commit_msg.ALLOWED_TYPES is validation.ALLOWED_TYPES
-    assert validate_commit_msg.validate_message is validate_message
-    assert runtime_git.validate_message is validate_message
-    assert workspace.validate_message is validate_message
-    assert specialist.validate_message is validate_message
 
 
 @pytest.mark.parametrize(

@@ -106,7 +106,6 @@ def test_pull_requests_run_demo_only_for_its_real_inputs() -> None:
         "src/booley/projects/**",
         "src/booley/runtime/**",
         "src/booley/targets/**",
-        "src/booley/ticket_board/**",
         "src/booley/goals/**",
         "src/booley/review/**",
         "src/booley/evidence/**",

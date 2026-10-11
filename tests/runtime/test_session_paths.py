@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 
 from booley.runtime import session_paths
-from booley.ticket_board import paths as ticket_paths
 
 
 def test_explicit_root_names_its_jobs_directory_without_reading_the_environment(
@@ -44,9 +43,3 @@ def test_unset_logs_dir_disables_job_persistence(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setenv("BOOLEY_RUNTIME_DIR", "/ignored")
 
     assert session_paths.session_jobs_dir() is None
-
-
-def test_ticket_paths_keep_the_shared_layout(tmp_path: Path) -> None:
-    assert ticket_paths.session_jobs_dir is session_paths.session_jobs_dir
-    assert ticket_paths.RUNTIME_DIR == session_paths.RUNTIME_DIR
-    assert ticket_paths.ticket_runtime_dir(tmp_path) == session_paths.logs_runtime_dir(tmp_path)

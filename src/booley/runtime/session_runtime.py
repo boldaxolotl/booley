@@ -1369,43 +1369,6 @@ def _strict_running_interactive_states() -> list[tuple[str, str]]:
     )
 
 
-def assert_worktree_repair_safe(workspace: Path) -> None:
-    """Refuse host metadata migration while an incompatible Sandbox is active."""
-    from types import SimpleNamespace
-
-    for name, raw in _strict_running_interactive_states():
-        state = _decode_container_inspect(raw)
-        assert state is not None
-        mounts = state.get("Mounts")
-        if not isinstance(mounts, list):
-            raise SessionError(f"cannot inspect mounts of running Sandbox {name!r}")
-        root_mount = next(
-            (row for row in mounts if isinstance(row, dict) and row.get("Destination") == "/work"),
-            None,
-        )
-        if root_mount is None or not isinstance(root_mount.get("Source"), str):
-            raise SessionError(f"cannot identify workspace of running Sandbox {name!r}")
-        source = host_path_from_docker_mount(root_mount["Source"])
-        if source != workspace.resolve():
-            continue
-        if any(
-            isinstance(row, dict) and str(row.get("Destination", "")).startswith("/booley-project")
-            for row in mounts
-        ) or not _project_data_mount_root_is_pinned(
-            raw,
-            workspace,
-            workspace.resolve() / ".booley_project",
-            issuance=SimpleNamespace(
-                project_data_layout="canonical-alias", image_id=state.get("Image")
-            ),
-        ):
-            raise SessionError(
-                f"worktree repair deferred: running Sandbox {name!r} uses an incompatible layout; "
-                "stop the Sandbox before host metadata repair; regenerate and recreate "
-                "a compatible local Sandbox before resuming portable worktree use"
-            )
-
-
 def _strict_all_interactive_states(project_id: str) -> list[tuple[str, str]]:
     """Inspect this Project's running or stopped Interactive Mode containers."""
     return _strict_interactive_states(

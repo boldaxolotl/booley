@@ -1,4 +1,4 @@
-"""Deterministic project preparation shared by every Ticket Mode entry point."""
+"""Deterministic Project preparation before Goal admission."""
 
 from __future__ import annotations
 

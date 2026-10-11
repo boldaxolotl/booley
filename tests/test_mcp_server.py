@@ -1011,7 +1011,7 @@ class TestMcpExposureFiltering:
 
     @pytest.mark.parametrize(
         "mcp_tool_name",
-        ["tb_coder", "submit_run_report"],
+        ["tb_coder"],
     )
     def test_interactive_mode_hides_autonomous_only_tools(
         self,
@@ -1973,7 +1973,7 @@ class TestInteractiveHiddenNote:
         # The set is derived from the reasons — they cannot drift apart.
         assert self._excluded == frozenset(self._reasons)
 
-    @pytest.mark.parametrize("mcp_tool_name", ["submit_run_report", "tb_coder"])
+    @pytest.mark.parametrize("mcp_tool_name", ["tb_coder"])
     def test_hidden_mcp_tool_explains_itself(self, monkeypatch, mcp_tool_name):
         monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
 
@@ -1992,88 +1992,6 @@ class TestInteractiveHiddenNote:
         monkeypatch.delenv("BOOLEY_MCP_MODE", raising=False)
 
         assert self._note("submit_run_report") is None
-
-
-def test_report_timeout_rejects_previous_completed_attempt(tmp_path, monkeypatch):
-    from booley.mcp.server import _committed_submission_report
-    from booley.ticket_board.report_submission import Submission
-
-    old = Submission(tmp_path, "a" * 32, {}, "execution")
-    old.stage(b"report")
-    old.commit()
-    old.close()
-    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path))
-    report, diagnosis = _committed_submission_report({"criterion_met": True}, "b" * 32, 124)
-    assert report is None
-    assert "before commit" in diagnosis
-
-
-@pytest.mark.parametrize("exit_code", [0, 124, 2])
-def test_matching_completed_receipt_preserves_process_outcome(tmp_path, monkeypatch, exit_code):
-    from booley.mcp.server import _committed_submission_report
-    from booley.ticket_board.report_submission import Submission
-
-    attempt = Submission(tmp_path, "a" * 32, {}, "execution")
-    attempt.stage(b"report")
-    attempt.commit()
-    attempt.close()
-    from booley.criteria.state import DevelopmentState
-    from booley.ticket_board.report_submission import DIGEST_KEY, ID_KEY, KEY
-
-    state = DevelopmentState.load(tmp_path / ".runtime/booley_state.json")
-    state.init_criteria({KEY: True})
-    state.set_criterion(
-        KEY, True, detail={ID_KEY: "a" * 32, DIGEST_KEY: attempt.row["report_sha256"]}
-    )
-    state.save()
-    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path))
-    report, diagnosis = _committed_submission_report({}, "a" * 32, exit_code)
-    assert report["criterion_met"] is True
-    assert "again" not in diagnosis
-    assert bool(diagnosis) is bool(exit_code)
-
-
-def test_committed_process_result_preserves_latest_unmet_report(tmp_path, monkeypatch):
-    from booley.criteria.state import DevelopmentState
-    from booley.mcp.server import _committed_submission_report
-    from booley.ticket_board.acceptance_ledger import record_changes
-    from booley.ticket_board.report_submission import DIGEST_KEY, ID_KEY, KEY, Submission
-
-    state = DevelopmentState.load(tmp_path / ".runtime/booley_state.json")
-    state.init_criteria({KEY: True})
-    attempt = Submission(tmp_path, "a" * 32, {}, "execution")
-    attempt.stage(b"report")
-    changes = state.set_criterion(
-        KEY, True, detail={ID_KEY: "a" * 32, DIGEST_KEY: attempt.row["report_sha256"]}
-    )
-    record_changes(
-        tmp_path,
-        state,
-        changes,
-        invocation_id="one",
-        producer="report",
-        execution_id="execution",
-        ticket_identity={},
-    )
-    state.save()
-    attempt.commit()
-    attempt.close()
-    changes = state.set_criterion(KEY, False, detail={"reason": "later invalidation"})
-    record_changes(
-        tmp_path,
-        state,
-        changes,
-        invocation_id="two",
-        producer="review",
-        execution_id="execution",
-        ticket_identity={},
-    )
-    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path))
-    report, diagnosis = _committed_submission_report({}, "a" * 32, 0)
-    assert report["criterion_met"] is False
-    assert report["detail"]["report_submission_status"] == "completed"
-    assert "committed" in diagnosis.lower()
-    assert "invalidated" in diagnosis
 
 
 def test_simulation_count_transport_omits_only_full_mapping():

@@ -64,7 +64,6 @@ from booley.harness.setup.project_git_hook_reconcile import (
     step_project_git_hooks as _managed_step_project_git_hooks,
 )
 from booley.runtime.project_dir import resolve_checkout_project_dir, resolve_project_dir
-from booley.runtime.worktrees import list_worktrees
 
 
 def _step_git_hooks(ctx: InitContext) -> None:
@@ -523,82 +522,6 @@ def _worktree_policy_capable(
     )
 
 
-def _repair_live_ticket_worktrees(ctx: InitContext) -> list[str]:
-    """Reconcile recorded current generations after running-layout safety proof."""
-    from booley.runtime.session_runtime import SessionError, assert_worktree_repair_safe
-    from booley.runtime.worktree_paths import relative_worktree_paths, worktree_state_dir
-    from booley.ticket_board.helpers import tickets_dir_from_project_root
-    from booley.ticket_board.io import TicketIO
-
-    if not relative_worktree_paths(ctx.project_root):
-        return []
-    directory = worktree_state_dir(ctx.project_root) / "worktrees"
-    if not directory.is_dir():
-        return []
-    # Git supplies canonical refs; only the Ticket generation namespace owns
-    # workspaces this compatibility repair can reconcile. The namespace is
-    # defined by ticket_board.ticket_baseline.TICKET_REF_PREFIX.
-    try:
-        linked = [
-            directory / row.path.name
-            for row in list_worktrees(ctx.project_root)
-            if (directory / row.path.name / ".git").is_file()
-            and (row.branch or "").startswith("refs/heads/booley-generation/")
-        ]
-    except (OSError, subprocess.SubprocessError) as exc:
-        return [f"could not list worktrees for repair: {exc}"]
-    if not linked:
-        return []
-    try:
-        assert_worktree_repair_safe(ctx.project_root)
-    except SessionError as exc:
-        return [str(exc)]
-    tio = TicketIO(tickets_dir_from_project_root(ctx.project_root), project_root=ctx.project_root)
-    failures: list[str] = []
-    repaired: set[Path] = set()
-    deferred: set[str] = set()
-    for document in tio.tickets_dir.rglob("*.md"):
-        slug = document.stem
-        try:
-            repaired.update(
-                _repair_recorded_ticket(ctx.project_root, tio, slug, directory, linked)
-            )
-        except (RuntimeError, ValueError, OSError, subprocess.SubprocessError) as exc:
-            failures.append(f"{slug}: {exc}")
-            deferred.add(slug)
-    for checkout in linked:
-        if checkout not in repaired and checkout.name not in deferred:
-            failures.append(
-                f"{checkout}: no recorded current Ticket owner; metadata was not rewritten"
-            )
-    return failures
-
-
-def _repair_recorded_ticket(root, tio, slug, directory, linked) -> set[Path]:
-    from booley.runtime.worktree_repair import repair_ticket_workspace
-    from booley.ticket_board.scanner import find_ticket_file
-
-    _path, status = find_ticket_file(tio.tickets_dir, slug, project_root=root)
-    if status in {None, "draft"} or tio.inspect_ticket(slug) is None:
-        return set()
-    repaired = set()
-    with tio._ticket_lock(slug, review_operation=True):
-        basis = tio._load_basis_unlocked(slug)
-        outer = basis.participant("outer")
-        for entry in list_worktrees(root):
-            candidate = directory / entry.path.name
-            if entry.branch == outer.ticket_ref and candidate in linked:
-                project = next((row for row in basis.participants if row.role == "project"), None)
-                repair_ticket_workspace(
-                    root,
-                    candidate,
-                    outer.ticket_ref,
-                    project.ticket_ref if project is not None else None,
-                )
-                repaired.add(candidate)
-    return repaired
-
-
 def _step_worktree_link_policy(
     ctx: InitContext,
     *,
@@ -620,12 +543,6 @@ def _step_worktree_link_policy(
         )
         ctx.record("worktree_link_policy", "warn", "incompatible Git downgrade")
         return
-
-    if capable and not ctx.check_only:
-        repair_failures = _repair_live_ticket_worktrees(ctx)
-        if repair_failures:
-            warn("worktree repair deferred or failed: " + "; ".join(repair_failures))
-            ctx.record("worktree_repair", "warn", "; ".join(repair_failures))
 
     desired = "true" if capable else "false"
     pending = [

@@ -285,27 +285,3 @@ class TestTouchReaperHeartbeat:
         from booley.docker.reaper import HEARTBEAT_PATH
 
         assert HEARTBEAT_PATH == REAPER_HEARTBEAT_PATH
-
-
-class TestRunnerTouchesReaperHeartbeat:
-    """`booley run` must feed the reaper heartbeat while a ticket is active
-    (ADR 0028 Decision 11) — agent thinking time has no MCP traffic."""
-
-    def test_run_with_heartbeat_touches_reaper(self, monkeypatch, tmp_path):
-        import booley.runtime.heartbeat as hb_mod
-
-        calls: list[object] = []
-        monkeypatch.setattr(
-            hb_mod,
-            "touch_reaper_heartbeat",
-            lambda path=None: calls.append(path),
-        )
-        from booley.harness.booley_status_display import _run_with_heartbeat
-
-        rc = _run_with_heartbeat(
-            [sys.executable, "-c", "pass"],
-            str(tmp_path),
-            tmp_path,
-        )
-        assert rc == 0
-        assert calls  # touched at least once (up-front touch) during the run
