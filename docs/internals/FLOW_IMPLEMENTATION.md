@@ -196,16 +196,13 @@ Run admission and publication bind evidence to the Goal Record, specification
 revisions, source fingerprints, and Target surface. Approved coverage-policy
 changes use the Goal proposal-and-approval transaction described below.
 
-Goals without a bound Target use a separate selection policy for source and
-Target-surface fingerprints and committed-input validation at Finish. It selects
-Target-consumed files ignored by Git in the RTL repository, excluding HDL,
-`.core` declarations, and declared programs (FuseSoC scripts or generator
-commands, or Project `booley.toml` programs). Symlinks, out-of-root paths, and
-nested Git ownership prevent selection. This selection does not prove
-build-produced provenance; Git ignore status alone does not make a file a
-Generated Build Artifact. Target-bound Goals still require a selected Simulation
-producer for uncommitted generated inputs. Mandatory Protected Input checks and
-Project Snapshot captures, and explicit Reviewer scope proofs, still apply.
+A Goal without a bound Target is checked against authored sources only.
+Generated Build Artifacts are left out of its fingerprints and of the
+committed-input check at Finish, so regenerating one does not stale the Goal
+unless the Reviewer's explicit scope names it. Symlinks, paths outside the
+repository, and files in a nested Git repository are never left out. A Goal
+bound to a Target still needs a selected Simulation producer for each
+uncommitted generated input.
 
 ### Ticket baselines
 

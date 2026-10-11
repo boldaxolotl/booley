@@ -202,7 +202,7 @@ Concrete external program driven by a Flow, such as Verilator, Icarus, Verible, 
 _Avoid_: bare tool, Booley Flow, backend
 
 **Generated Build Artifact**:
-A file produced by the build process rather than authored as a build input.
+A file a Target consumes that Git ignores in the RTL repository and that is not HDL, a `.core` declaration, or a declared program.
 
 **MCP tool**:
 Protocol-level mechanism used to invoke a Flow or Specialist. MCP tools are implementation details rather than Booley's product taxonomy: describe the invoked capability as a **Booley Flow** or **Specialist** unless the protocol boundary itself is the subject.
