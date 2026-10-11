@@ -3,7 +3,8 @@
 This is the vocabulary for the inside of one Goal Mode: how its Goals are
 stored, changed, and bound to a worktree. **Goal Mode**, **Goal**,
 **Goalset**, **Goal Branch**, **Goal Record**, **Goal Change Proposal**,
-**Change Log**, **Protected Input**, **Review Package**, and **Session** are
+**Change Log**, **Protected Input**, **Review Package**, **Session**, and
+**Generated Build Artifact** are
 defined in the [shared glossary](../../../docs/GLOSSARY.md); this glossary
 uses them with that meaning. **Waiver Candidate** and **Provisional Coverage
 Verdict** belong to the [Simulation Coverage glossary](../flows/sim/GLOSSARY.md);
@@ -57,8 +58,3 @@ held when the run finished: the Goal Mode stopped being active, an affected
 Goal changed, or a Protected Input differed at the start or the end of the
 run. Nothing of it reaches the Goal state or the ledger.
 _Avoid_: rejected run, failed evidence
-
-**Generated Build Artifact**:
-A file a Target consumes that Git ignores in the RTL repository, that is neither
-HDL nor a `.core` declaration, and that is not a declared program (a FuseSoC
-script or generator command, or a program declared in the Project's `booley.toml`).

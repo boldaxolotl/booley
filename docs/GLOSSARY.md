@@ -201,6 +201,9 @@ _Avoid_: B-Tool, mechanical tool, utility, command
 Concrete external program driven by a Flow, such as Verilator, Icarus, Verible, Yosys, or Vivado. A Target's EDA-selection field participates in FuseSoC resolution and normally selects the program; the FPGA Flow is the fixed-backend exception and always drives Vivado. The Booley Flow owns orchestration, evidence normalization, artifacts, and evidence rather than delegating those responsibilities to the EDA tool.
 _Avoid_: bare tool, Booley Flow, backend
 
+**Generated Build Artifact**:
+A file produced by the build process rather than authored as a build input.
+
 **MCP tool**:
 Protocol-level mechanism used to invoke a Flow or Specialist. MCP tools are implementation details rather than Booley's product taxonomy: describe the invoked capability as a **Booley Flow** or **Specialist** unless the protocol boundary itself is the subject.
 _Avoid_: bare tool, Booley Flow (when referring specifically to the protocol endpoint)
