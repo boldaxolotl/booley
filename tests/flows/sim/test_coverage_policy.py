@@ -82,6 +82,8 @@ def _campaign(*, simulation_verdict: str = "pass") -> CoverageCampaign:
                 attributes=MappingProxyType({}),
                 test_run="smoke",
                 fingerprint=NO_DECLARED_INPUTS_FINGERPRINT,
+                variant=None,
+                seed=None,
             ),
         ),
         artifacts=(),

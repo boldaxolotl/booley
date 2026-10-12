@@ -26,6 +26,8 @@ def test_coverage_per_test_projection_strips_stream_tails_and_preserves_metadata
     run = SimpleNamespace(
         test="smoke",
         test_run="smoke+fast@7",
+        variant="fast",
+        seed=7,
         fingerprint="sha256:" + "0" * 64,
         simulation_verdict="pass",
         collection="complete",

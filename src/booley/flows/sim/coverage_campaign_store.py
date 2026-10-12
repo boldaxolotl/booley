@@ -27,6 +27,7 @@ from booley.runtime.sandbox_layout import canonical_project_alias_path
 
 from .campaign_reports import is_report_link
 from .coverage_campaign import (
+    RUN_IDENTITY_FIELDS,
     CoverageCampaign,
     CoverageCampaignValidationError,
     CoverageRollup,
@@ -584,13 +585,13 @@ def _validate_run_identity(document: Mapping[str, object], schema: str) -> None:
     expected = schema == CAMPAIGN_SCHEMA_V5
     for run in runs:
         if isinstance(run, Mapping) and any(
-            (field in run) != expected for field in ("test_run", "fingerprint")
+            (field in run) != expected for field in RUN_IDENTITY_FIELDS
         ):
             raise CoverageCampaignStoreError(
                 "COV_MANIFEST_FORMAT",
                 f"{schema} Coverage Campaign runs "
                 + ("must" if expected else "cannot")
-                + " record test_run and fingerprint",
+                + " record test_run, variant, seed and fingerprint",
             )
 
 

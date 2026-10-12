@@ -17,8 +17,8 @@ def rewrite_manifest_as_older_schema(manifest: dict, version: int) -> None:
     assert version in {3, 4}
     manifest["$schema"] = f"booley.coverage-campaign/v{version}"
     for run in manifest["tests"]["runs"]:
-        del run["test_run"]
-        del run["fingerprint"]
+        for field in ("test_run", "variant", "seed", "fingerprint"):
+            del run[field]
     if version == 3:
         del manifest["scoring"]
 

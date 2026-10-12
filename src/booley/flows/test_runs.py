@@ -71,7 +71,6 @@ __all__ = [
     "discovered_test_run",
     "draw_seeds",
     "parse_seed_request",
-    "parse_test_run_name",
     "parse_test_selector",
     "parse_test_variants",
     "rerun_command",
@@ -366,20 +365,6 @@ def discovered_test_run(test: str, unnamed: TestRun) -> TestRun:
         return build_test_run(test, seed=unnamed.seed, env=dict(unnamed.env))
     except TestRunNameError:
         return unnamed
-
-
-def parse_test_run_name(name: str) -> tuple[str, str | None, int | None]:
-    """The Test, Test Variant and seed a resolved Test Run name states.
-
-    The inverse of :attr:`TestRun.name` for a named Test Run. Raises
-    :class:`TestRunNameError` for anything else, including a seed count
-    (``test@xN`` names several Test Runs, not one).
-    """
-    selector = parse_test_selector(name)
-    form = selector.seed_form
-    if isinstance(form, SeedCount):
-        raise TestRunNameError(f"Test Run {name!r} names a seed count, not one seed")
-    return selector.test, selector.variant, form.seed if isinstance(form, PinnedSeed) else None
 
 
 _TEST_RUN_DOCUMENT_FIELDS = frozenset(

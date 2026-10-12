@@ -7,7 +7,6 @@ from typing import cast
 
 import pytest
 
-from booley.config.tests_toml_rules import TestRunNameError
 from booley.flows.sim.campaign.test_run_binding import observation_test_runs
 from booley.flows.sim.campaign.test_run_report import (
     TEST_RUN_GRADES,
@@ -19,7 +18,6 @@ from booley.flows.sim.execution.engine import _observed_test_run
 from booley.flows.test_runs import (
     build_test_run,
     discovered_test_run,
-    parse_test_run_name,
     test_run_document,
 )
 from booley.targets.domain import TargetHandle
@@ -90,24 +88,3 @@ def test_direct_results_and_coverage_runs_are_graded_by_the_campaign_table():
 def test_a_row_is_the_test_run_record_plus_its_grade():
     run = build_test_run("stress", variant="soak", seed=7, args=("+iters=9",))
     assert test_run_row(run, "fail") == {**test_run_document(run), "grade": "fail"}
-
-
-@pytest.mark.parametrize(
-    ("name", "parts"),
-    [
-        ("reset", ("reset", None, None)),
-        ("reset@7", ("reset", None, 7)),
-        ("stress+soak", ("stress", "soak", None)),
-        ("stress+soak@2147483647", ("stress", "soak", 2147483647)),
-    ],
-)
-def test_parse_test_run_name_inverts_the_name(name, parts):
-    assert parse_test_run_name(name) == parts
-    test, variant, seed = parts
-    assert build_test_run(test, variant=variant, seed=seed).name == name
-
-
-@pytest.mark.parametrize("name", ["stress@x3", "stress@0", "a+b+c", "", "<default>@1"])
-def test_parse_test_run_name_refuses_what_is_not_one_named_test_run(name):
-    with pytest.raises(TestRunNameError):
-        parse_test_run_name(name)

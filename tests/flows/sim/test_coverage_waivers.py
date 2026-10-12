@@ -258,6 +258,8 @@ def _run() -> CoverageRun:
         attributes=MappingProxyType({}),
         test_run="smoke",
         fingerprint=NO_DECLARED_INPUTS_FINGERPRINT,
+        variant=None,
+        seed=None,
     )
 
 

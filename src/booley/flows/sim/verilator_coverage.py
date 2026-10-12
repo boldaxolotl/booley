@@ -378,6 +378,8 @@ def _coverage_run(
         attributes=attributes,
         test_run=selected.run_name,
         fingerprint=selected.fingerprint,
+        variant=None if selected.run is None else selected.run.variant,
+        seed=None if selected.run is None else selected.run.seed,
     )
 
 

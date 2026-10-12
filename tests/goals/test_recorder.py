@@ -535,7 +535,16 @@ def _coverage_run(test: str, verdict: str) -> object:
     from booley.flows.sim.coverage_campaign import NO_DECLARED_INPUTS_FINGERPRINT, CoverageRun
 
     return CoverageRun(  # type: ignore[arg-type]
-        "001-" + test, test, verdict, "collected", None, {}, test, NO_DECLARED_INPUTS_FINGERPRINT
+        "001-" + test,
+        test,
+        verdict,
+        "collected",
+        None,
+        {},
+        test,
+        NO_DECLARED_INPUTS_FINGERPRINT,
+        None,
+        None,
     )
 
 

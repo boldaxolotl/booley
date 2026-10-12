@@ -382,8 +382,8 @@ def test_v5_run_without_its_test_run_is_rejected(tmp_path: Path) -> None:
     paths = publish_coverage_campaign(tmp_path, _campaign())
     manifest = json.loads(paths.campaign.read_text(encoding="utf-8"))
     for run in manifest["tests"]["runs"]:
-        del run["test_run"]
-        del run["fingerprint"]
+        for field in ("test_run", "variant", "seed", "fingerprint"):
+            del run[field]
     paths.campaign.write_text(json.dumps(manifest), encoding="utf-8")
 
     with pytest.raises(CoverageCampaignStoreError) as error:
@@ -706,3 +706,39 @@ def test_image_alias_store_readers_and_suffix_links(project_alias):
     ):
         with pytest.raises((ValueError, OSError), match=r"link|regular|unsafe"):
             read(alias / "linked/coverage.json")
+
+
+@pytest.mark.parametrize("field", ["variant", "seed"])
+def test_v5_run_without_its_variant_or_seed_is_rejected(tmp_path: Path, field: str) -> None:
+    """v5 records the Test Variant and seed beside the name; readers never re-parse it."""
+    paths = publish_coverage_campaign(tmp_path, _campaign())
+    manifest = json.loads(paths.campaign.read_text(encoding="utf-8"))
+    assert {"test_run", "variant", "seed", "fingerprint"} <= set(manifest["tests"]["runs"][0])
+    for run in manifest["tests"]["runs"]:
+        del run[field]
+    paths.campaign.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(CoverageCampaignStoreError) as error:
+        read_coverage_summary(paths.campaign, TARGET)
+
+    assert error.value.code == "COV_MANIFEST_FORMAT"
+    assert "must record test_run, variant, seed and fingerprint" in str(error.value)
+
+
+def test_the_per_run_projection_takes_variant_and_seed_from_the_run() -> None:
+    from types import SimpleNamespace
+
+    from booley.flows.sim.coverage_transaction import _coverage_test_projection
+
+    run = SimpleNamespace(
+        test="reset",
+        test_run="reset+soak@7",
+        variant="soak",
+        seed=7,
+        fingerprint="sha256:" + "0" * 64,
+        simulation_verdict="pass",
+        collection="included",
+        attributes={},
+    )
+    entry = _coverage_test_projection(run)  # type: ignore[arg-type]
+    assert (entry["test_run"], entry["variant"], entry["seed"]) == ("reset+soak@7", "soak", 7)

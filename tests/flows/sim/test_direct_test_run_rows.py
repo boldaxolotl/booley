@@ -130,6 +130,8 @@ def _coverage_run(test_run, verdict: str, **attributes):
         attributes,
         test_run=test_run.name,
         fingerprint=test_run.fingerprint,
+        variant=test_run.variant,
+        seed=test_run.seed,
     )
 
 

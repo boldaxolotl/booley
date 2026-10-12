@@ -89,6 +89,8 @@ def _valid_tests() -> dict[str, object]:
                 "id": "run:reset",
                 "test": "reset",
                 "test_run": "reset",
+                "variant": None,
+                "seed": None,
                 "fingerprint": NO_DECLARED_INPUTS_FINGERPRINT,
                 "simulation_verdict": "pass",
                 "collection": "included",
@@ -1042,10 +1044,25 @@ def test_campaign_rejects_unknown_collection_status() -> None:
 _TARGET = DurableTargetIdentity("acme:demo:counter:1.0#sim_counter")
 
 
-def _with_second_run(document: dict[str, object], test_run: str) -> dict[str, object]:
-    """Add a second included run of Test ``reset`` named *test_run*."""
+def _name_run(run: dict[str, object], variant: str | None, seed: int | None) -> None:
+    """Record *run* as the Test Run of Test ``reset`` with *variant* and *seed*."""
+    name = "reset" + (f"+{variant}" if variant else "") + (f"@{seed}" if seed else "")
+    run.update(test_run=name, variant=variant, seed=seed)
+
+
+def _strip_identity(run: dict[str, object]) -> None:
+    """Make *run* a run recorded before runs named their Test Run."""
+    for field in ("test_run", "variant", "seed", "fingerprint"):
+        del run[field]
+
+
+def _with_second_run(
+    document: dict[str, object], variant: str | None = None, seed: int | None = None
+) -> dict[str, object]:
+    """Add a second included run of Test ``reset`` with *variant* and *seed*."""
     run = copy.deepcopy(document["tests"]["runs"][0])
-    run.update(id="run:reset-2", test_run=test_run, raw_artifact="artifact:raw-reset-2")
+    run.update(id="run:reset-2", raw_artifact="artifact:raw-reset-2")
+    _name_run(run, variant, seed)
     document["tests"]["runs"].append(run)
     artifact = copy.deepcopy(document["artifacts"][0])
     artifact.update(
@@ -1063,8 +1080,8 @@ def _codes(document: dict[str, object]) -> list[tuple[str, str]]:
 
 def test_one_test_may_have_several_distinct_test_runs() -> None:
     document = _valid_document()
-    document["tests"]["runs"][0]["test_run"] = "reset+short@1"
-    _with_second_run(document, "reset+soak@7")
+    _name_run(document["tests"]["runs"][0], "short", 1)
+    _with_second_run(document, "soak", 7)
 
     campaign = decode_coverage_campaign(document, _TARGET)
 
@@ -1077,7 +1094,7 @@ def test_one_test_may_have_several_distinct_test_runs() -> None:
 
 
 def test_two_runs_of_one_test_run_are_refused() -> None:
-    document = _with_second_run(_valid_document(), "reset")
+    document = _with_second_run(_valid_document())
 
     assert _codes(document) == [("COV_TEST_RUN_DUPLICATE", "/tests/runs/1/test_run")]
 
@@ -1098,28 +1115,28 @@ def test_a_test_run_must_be_a_run_of_its_test() -> None:
         assert _codes(document) == [("COV_TEST_RUN_TEST_MISMATCH", "/tests/runs/0/test_run")]
 
 
-def test_a_run_records_test_run_and_fingerprint_together() -> None:
+@pytest.mark.parametrize("field", ["test_run", "variant", "seed", "fingerprint"])
+def test_a_run_records_its_whole_test_run_identity_together(field: str) -> None:
     document = _valid_document()
-    del document["tests"]["runs"][0]["fingerprint"]
+    del document["tests"]["runs"][0][field]
 
-    assert _codes(document) == [("COV_TEST_RUN_IDENTITY_INCOMPLETE", "/tests/runs/0")]
+    assert ("COV_TEST_RUN_IDENTITY_INCOMPLETE", "/tests/runs/0") in _codes(document)
 
 
 def test_a_run_recorded_before_test_runs_is_the_bare_test() -> None:
     document = _valid_document()
-    del document["tests"]["runs"][0]["test_run"]
-    del document["tests"]["runs"][0]["fingerprint"]
+    _strip_identity(document["tests"]["runs"][0])
 
     run = decode_coverage_campaign(document, _TARGET).runs[0]
 
     assert (run.test_run, run.fingerprint) == ("reset", NO_DECLARED_INPUTS_FINGERPRINT)
+    assert (run.variant, run.seed) == (None, None)
 
 
 def test_two_unnamed_runs_of_one_test_recorded_before_test_runs_are_refused() -> None:
     document = _with_second_run(_valid_document(), "ignored")
     for run in document["tests"]["runs"]:
-        del run["test_run"]
-        del run["fingerprint"]
+        _strip_identity(run)
 
     assert _codes(document) == [("COV_TEST_RUN_DUPLICATE", "/tests/runs/1/test_run")]
 
@@ -1137,12 +1154,45 @@ def test_a_recorded_test_run_obeys_the_test_run_grammar(name: object) -> None:
     assert (code, "/tests/runs/0/test_run") in _codes(document)
 
 
-@pytest.mark.parametrize("name", ["reset", "reset@7", "reset+soak", "reset+soak@2147483647"])
-def test_every_test_run_form_of_the_test_is_accepted(name: str) -> None:
+@pytest.mark.parametrize(
+    ("variant", "seed", "name"),
+    [
+        (None, None, "reset"),
+        (None, 7, "reset@7"),
+        ("soak", None, "reset+soak"),
+        ("soak", 2147483647, "reset+soak@2147483647"),
+    ],
+)
+def test_every_test_run_form_of_the_test_is_accepted(variant, seed, name: str) -> None:
     document = _valid_document()
-    document["tests"]["runs"][0]["test_run"] = name
+    _name_run(document["tests"]["runs"][0], variant, seed)
 
-    assert decode_coverage_campaign(document, _TARGET).runs[0].test_run == name
+    run = decode_coverage_campaign(document, _TARGET).runs[0]
+
+    assert (run.test_run, run.variant, run.seed) == (name, variant, seed)
+    assert encode_coverage_campaign(decode_coverage_campaign(document, _TARGET)) == document
+
+
+@pytest.mark.parametrize(
+    ("variant", "seed"),
+    [
+        ("soak", None),
+        (None, 7),
+        ("soak", 8),
+        ("other", 7),
+        ("default", 7),
+        ("soak", 0),
+        ("soak", True),
+        ("soak", "7"),
+        (5, 7),
+    ],
+)
+def test_the_recorded_variant_and_seed_must_be_the_ones_the_name_states(variant, seed) -> None:
+    """The name is never re-parsed by a reader, so the record must agree with itself."""
+    document = _valid_document()
+    document["tests"]["runs"][0].update(test_run="reset+soak@7", variant=variant, seed=seed)
+
+    assert ("COV_TEST_RUN_TEST_MISMATCH", "/tests/runs/0/test_run") in _codes(document)
 
 
 @pytest.mark.parametrize(
@@ -1171,8 +1221,25 @@ def test_decoding_never_coerces_or_defaults_a_recorded_identity() -> None:
     # Storage older than v5: the bare Test with no declared inputs, set by the decoder.
     legacy = _decode_run(base)
     assert (legacy.test_run, legacy.fingerprint) == ("reset", NO_DECLARED_INPUTS_FINGERPRINT)
-    for bad in ({"test_run": 7}, {"test_run": ""}, {"test_run": "reset", "fingerprint": ""}):
+    assert (legacy.variant, legacy.seed) == (None, None)
+    named = {
+        **base,
+        "test_run": "reset+soak@7",
+        "variant": "soak",
+        "seed": 7,
+        "fingerprint": NO_DECLARED_INPUTS_FINGERPRINT,
+    }
+    assert (_decode_run(named).variant, _decode_run(named).seed) == ("soak", 7)
+    for bad in (
+        {"test_run": 7},
+        {"test_run": ""},
+        {"fingerprint": ""},
+        {"variant": 5},
+        {"variant": ""},
+        {"seed": "7"},
+        {"seed": True},
+    ):
         with pytest.raises(ValueError):
-            _decode_run({**base, "fingerprint": NO_DECLARED_INPUTS_FINGERPRINT, **bad})
+            _decode_run({**named, **bad})
     with pytest.raises(TypeError):
         CoverageRun("run:1", "reset", "pass", "included", None, {})  # type: ignore[call-arg]
