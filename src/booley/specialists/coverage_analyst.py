@@ -20,6 +20,7 @@ from claude_agent_sdk import ClaudeSDKError
 from booley.core.boundary import require_dict
 from booley.core.models import AgentCallParams, AgentResult
 from booley.criteria.state import DevelopmentState
+from booley.flows.cli_help import CliHelp
 from booley.flows.sim.campaign_reports import target_report_directory
 from booley.flows.sim.coverage_analysis_input import (
     CoverageAnalysisError,
@@ -78,6 +79,18 @@ class CoverageAnalystSpecialist(Specialist):
 
     name: str = "coverage_analyst"
     description: str = "Explain one exact coverage.json Campaign and propose advisory next steps"
+    cli_help: ClassVar[CliHelp | None] = CliHelp(
+        summary=(
+            "Explain the results of one Coverage Campaign: which coverage holes remain "
+            "and what to try next. Use it after `booley flow sim --coverage` leaves "
+            "coverage short of where you want it. The suggestions are advisory; no "
+            "files are changed."
+        ),
+        example=(
+            "booley specialist coverage_analyst "
+            "--campaign reports/sim/12/targets/sim_soc/coverage.json"
+        ),
+    )
     code_modifying: bool = False
     accepts_target: bool = False
     config_aware: bool = False

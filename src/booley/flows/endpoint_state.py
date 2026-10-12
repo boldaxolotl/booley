@@ -26,6 +26,7 @@ from booley.flows import (
     endpoint_session,
     execution,
 )
+from booley.flows.cli_help import CliHelp, SurfaceHelp
 from booley.flows.endpoint_report_criteria import ReportCriteria
 from booley.flows.endpoint_session import PreparedExecution
 from booley.flows.execution_persistence import (
@@ -58,6 +59,8 @@ class EndpointState(ABC):
     # --- Class-level metadata (override in subclasses) ---
     name: str = ""
     description: str = ""
+    # Human `--help` wording; ``description`` stays the agent-facing tool text.
+    cli_help: ClassVar[CliHelp | None] = None
     # Does this endpoint modify code? If True, post-run git diff triggers invalidation.
     code_modifying: bool = False
     # Category of code this endpoint modifies (rtl, tb, or None for auto-detect)
@@ -77,10 +80,14 @@ class EndpointState(ABC):
     # Class-overridable because argparse help is also the MCP ``target`` schema
     # description. The default is endpoint-neutral; a Flow that drives a sim
     # sub-loop can override it with narrower wording.
-    target_help: str = (
+    target_help: str = SurfaceHelp(
         "FuseSoC .core Target name(s) this run applies to. The CLI flag may be "
         "repeated or its value comma-separated; MCP accepts one comma-separated string. "
-        "List available Targets with `booley targets`."
+        "List available Targets with `booley targets`.",
+        cli=(
+            "FuseSoC .core Target name(s) to run. Repeat the flag or separate names "
+            "with commas. List available Targets with `booley targets`."
+        ),
     )
     # Criteria this endpoint can satisfy (must match names in criteria.toml)
     satisfies: ClassVar[list[str]] = []

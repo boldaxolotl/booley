@@ -1,10 +1,77 @@
-"""Human-only help projection for the built-in Flow argument adapters."""
+"""Human-only help projection for Flow and Specialist command-line parsers.
+
+Flow and Specialist declarations feed two surfaces: the MCP tool schema an
+agent reads and the ``--help`` a design engineer reads. The declarations here
+carry the human wording so neither audience gets the other's syntax.
+"""
 
 from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
 from functools import partial
+from typing import Any
+
+EXAMPLE_HEADING = "Example:"
+
+
+@dataclass(frozen=True)
+class CliHelp:
+    """What a command does and when to use it, plus one runnable example."""
+
+    summary: str
+    example: str
+
+
+class SurfaceHelp(str):
+    """Argument help for the MCP schema that also carries its ``--help`` wording.
+
+    The string value is the agent-facing text, so schema extraction is
+    unchanged; ``cli`` replaces it when a human parser is presented.
+    """
+
+    cli: str
+
+    def __new__(cls, mcp: str, *, cli: str) -> SurfaceHelp:
+        text = super().__new__(cls, mcp)
+        text.cli = cli
+        return text
+
+    def __getnewargs_ex__(self) -> tuple[tuple[str], dict[str, str]]:
+        """Keep both wordings when argparse parsers are copied."""
+        return (str(self),), {"cli": self.cli}
+
+
+class CommandHelpFormatter(argparse.HelpFormatter):
+    """Wrap prose but keep the example command on its own line."""
+
+    def _fill_text(self, text: str, width: int, indent: str) -> str:
+        blocks = []
+        for block in text.split("\n\n"):
+            if block.startswith(EXAMPLE_HEADING):
+                blocks.append("\n".join(indent + line for line in block.splitlines()))
+            else:
+                blocks.append(super()._fill_text(block, width, indent))
+        return "\n\n".join(blocks)
+
+
+def present_command(parser: argparse.ArgumentParser, endpoint: Any) -> argparse.ArgumentParser:
+    """Give a human parser its full command name and design-engineer wording."""
+    kind = getattr(endpoint, "endpoint_kind", None)
+    name = getattr(endpoint, "name", "")
+    if kind in {"flow", "specialist"} and name:
+        parser.prog = f"booley {kind} {name}"
+    cli_help = getattr(endpoint, "cli_help", None)
+    if cli_help is not None:
+        parser.description = cli_help.summary
+        parser.epilog = f"{EXAMPLE_HEADING}\n  {cli_help.example}"
+        # An extension that chose its own formatter keeps it.
+        if parser.formatter_class is argparse.HelpFormatter:
+            parser.formatter_class = CommandHelpFormatter
+    for action in parser._actions:
+        if isinstance(action.help, SurfaceHelp):
+            action.help = action.help.cli
+    return parser
 
 
 @dataclass(frozen=True)
@@ -41,7 +108,7 @@ PPA_HELP = HelpOption(
 )
 
 
-class FlowHelpFormatter(argparse.HelpFormatter):
+class FlowHelpFormatter(CommandHelpFormatter):
     """Combine only declared boolean pairs in the help body, preserving usage."""
 
     def __init__(self, prog: str, *, pairs: tuple[tuple[str, str], ...], **kwargs: int) -> None:
@@ -73,7 +140,9 @@ def shared_help(flow_name: str, *, target_required: bool) -> tuple[HelpGroup, ..
         HelpGroup(
             "Common",
             (
-                HelpOption("work_dir", "When omitted, discover the Project from cwd."),
+                HelpOption(
+                    "work_dir", "When omitted, discover the Project from the current directory."
+                ),
                 HelpOption("target", target),
                 HelpOption("diagnostic", "Default: off."),
                 HelpOption("dry_run", "Default: off."),

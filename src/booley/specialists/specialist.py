@@ -36,6 +36,7 @@ from booley.dev_support.commit_git_io import (
     _save_files_to_logs,
 )
 from booley.dev_support.commit_message_format import _auto_format_commit_message
+from booley.flows.cli_help import SurfaceHelp
 from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS, McpTool, McpToolResult
 from booley.runtime import job_slots
 from booley.runtime.agent_execution import configure_agent_call
@@ -188,8 +189,9 @@ class Specialist(McpTool):
             "--steer",
             action="append",
             default=None,
-            help=(
-                f"{help_text} Repeatable; over MCP pass an array of strings, not a bare string."
+            help=SurfaceHelp(
+                f"{help_text} Repeatable; over MCP pass an array of strings, not a bare string.",
+                cli=f"{help_text} Repeat the flag to add more.",
             ),
         )
 

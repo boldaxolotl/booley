@@ -46,6 +46,7 @@ from booley.evidence.fields import (
     RECIPE_SNAPSHOT_DETAIL,
 )
 from booley.evidence.timing import per_clock_from_json, worst_clock
+from booley.flows.cli_help import CliHelp
 from booley.flows.eda_failures import EdaFailure, classify_eda_failure
 from booley.flows.fpga.cli import FpgaArguments
 from booley.flows.fpga.request import FpgaRequest
@@ -228,6 +229,14 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
     name: str = "fpga"
     description: str = (
         "Run FPGA implementation for one or more Targets with optional baseline comparison"
+    )
+    cli_help: ClassVar[CliHelp | None] = CliHelp(
+        summary=(
+            "Run FPGA implementation for one or more Targets and report the results. "
+            "Use it to see how the design implements on the Target's FPGA device. "
+            "Add --baseline to compare the results with another git revision."
+        ),
+        example="booley flow fpga --target fpga_soc --baseline main",
     )
     code_modifying: bool = False
     default_timeout: ClassVar[int] = 7200

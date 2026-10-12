@@ -42,6 +42,7 @@ from booley.evidence.review_vocabulary import (
     DISPOSITION_OUT_OF_SCOPE,
     DISPOSITION_SUPERSEDED,
 )
+from booley.flows.cli_help import CliHelp
 from booley.flows.execution_persistence import done_findings_require_approval_for
 from booley.mcp.base import (
     EXIT_ERROR,
@@ -866,6 +867,15 @@ class ReviewerSpecialist(Specialist):
 
     name: str = "reviewer"
     description: str = "Single-focus code review: reports issues by severity"
+    cli_help: ClassVar[CliHelp | None] = CliHelp(
+        summary=(
+            "Have an AI reviewer read the RTL or testbench files in --scope with one "
+            "review focus and list the issues it finds by severity. Use it for a second "
+            "opinion on a change before you merge it. The reviewer reads code and "
+            "never edits it."
+        ),
+        example="booley specialist reviewer --category rtl --focus bugs --scope rtl/fifo.sv",
+    )
     code_modifying: bool = False
     config_aware: bool = False
     accepts_target: bool = False
