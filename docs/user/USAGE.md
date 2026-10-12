@@ -389,7 +389,26 @@ Relative comparisons report an **observed Cycle Count change**. When declared wo
 
 ### Working with evidence
 
-The agent passes the absolute worktree root as `work_dir` on every Booley call.
+The agent passes the absolute worktree root as `work_dir` to every tool that
+accepts it.
+
+Built-in MCP worktree routing:
+
+| Accepts `work_dir` | Does not accept `work_dir` |
+| --- | --- |
+| `sim`, `lint`, `synth`, `fpga` | `booley_status` |
+| `reviewer`, `mutation_tester`, `coverage_analyst` | `booley_poll`, `booley_cancel` |
+| `goal_enter`, `goal_status`, `goal_propose_change`, `goal_finish` | `booley_sleep`, `coverage_evidence` |
+| `booley_targets`, `booley_report` | `bwave` |
+
+`booley_sleep` appears only when diagnostic tools are enabled, and
+`coverage_evidence` only in the Coverage Analyst's nested server.
+
+While any Goal Record occupies the Project, Booley Flows, Specialists, Goal
+tools, and `booley_report` refuse a call without `work_dir`, even a diagnostic
+call outside that worktree; `booley_targets` may omit it. Project-defined
+endpoints must declare `work_dir` to run.
+
 Only Booley Flows and Specialists meet Goals. Shell output or the agent saying
 "done" does not. `goal_status` shows each Goal's current evidence and freshness;
 code changes can require another run. For a bugfix, reproduce the reported bug
@@ -532,6 +551,15 @@ yourself. Booley never sends it anywhere.
 It doesn't have to be a bug. Confusing behavior, praise, complaints, wishes, or
 "this wasn't worth the setup cost" are all worth one sentence to
 `/booley-feedback`. See [CONFIG.md](CONFIG.md#feedback-feedback).
+
+In the Sandbox, each Project has one Findings Log shared by all of its worktrees.
+The log and default local report stay in the shared Project directory, even
+when a worktree has its own paired Project checkout. When the skill uses the
+feedback CLI, its `-C` / `--project` option selects the checkout used for context;
+it does not move that shared log or the default report. For Projects, the
+`BOOLEY_PROJECT_DIR` environment variable selects shared storage. Outside the
+Sandbox, without that override, storage is discovered from the selected checkout
+and may use a separate log. Use the report paths provided by the skill.
 
 ## Booley Flows & Specialists
 
@@ -754,6 +782,17 @@ then run `git -C <absolute-workspace-root> worktree remove <absolute-worktree>`.
 To reuse the name, preserve any Project commits you need, then delete its branch
 with `git -C <absolute-project-dir> branch -D booley-worktree/<name>`.
 The command prints these steps with absolute paths.
+
+Outside Goal Mode, `--baseline` uses the paired Project branch's recorded
+creation base ahead of its upstream. Pushing, merging or rebasing newer Project
+changes does not update that recorded commit: the Project baseline is its
+merge-base with the current HEAD. Rewriting history can therefore select an
+older common ancestor. A branch without a recorded base falls back to its
+upstream's merge-base with HEAD; a branch with neither refuses. An invalid
+recorded base refuses even when an upstream exists. A detached paired HEAD
+uses its checked-out commit, including during a rebase or bisect. Baseline
+preparation progress names the rule and commit. Goal Mode keeps the exact
+paired Project commit pinned at entry.
 
 `booley projects discover` stops descending at each initialized Project to
 avoid scanning its RTL, vendor, and build trees. Nested Projects are not imported

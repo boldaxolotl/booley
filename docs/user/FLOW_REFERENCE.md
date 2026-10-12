@@ -285,8 +285,13 @@ Each test gets one verdict:
   reported as not observed.
 
 Goal Mode translates Goals into evidence keys. Ordinary Interactive Mode runs
-report verdicts without a Goal Record. In an active Goal worktree, pass
-`work_dir` on every MCP call so Booley can bind evidence to that record.
+report verdicts without a Goal Record. In an active Goal worktree, pass its
+absolute root as `work_dir` to Booley Flows, Specialists, Goal tools,
+`booley_targets`, and `booley_report` so calls select that worktree.
+`booley_status`, `booley_poll`, `booley_cancel`, `booley_sleep`,
+`coverage_evidence`, and `bwave` accept no `work_dir`. See
+[worktree routing](USAGE.md#working-with-evidence) for the full inventory and
+when `work_dir` is required.
 
 - `sim_pass_<target>` requires the Target's full registered simulation suite.
   Passing a hand-picked subset does not meet this Goal.
@@ -609,8 +614,10 @@ and select both.
 booley flow lint --target lint_soc,lint_style --scope rtl/fifo.sv
 ```
 
-See [Verible lint Target](CONFIG.md#verible-lint-target) for the Target recipe
-and EDA-tool compatibility policy.
+For Target recipes, see [Verilator lint Target](CONFIG.md#verilator-lint-target)
+(`.vlt` waivers with `file_type: vlt`) and
+[Verible lint Target](CONFIG.md#verible-lint-target) (style rules and waivers).
+[Target authoring](CONFIG.md#target-authoring) covers EDA-tool compatibility.
 
 - `--scope <file,...>` limits reported findings to the listed files.
 - `[flows.lint].warnings_as_errors` decides whether warnings fail the exit code.

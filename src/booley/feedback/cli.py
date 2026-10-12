@@ -47,6 +47,18 @@ def add_subparser(sub: argparse._SubParsersAction) -> None:
         "feedback",
         help="Log setup/port findings, say what you think of Booley, render the "
         "reports, optionally report a bug",
+        description=(
+            "In the Sandbox, a Project's worktrees share one Findings Log and the "
+            "default local report in the shared Project directory. -C/--project "
+            "selects the checkout for context; it does not relocate that shared "
+            "log or the default report. For redaction, repository identifiers come "
+            "from the selected checkout; configured names and redaction settings "
+            "come from booley.toml in the feedback storage directory. "
+            "For Projects, BOOLEY_PROJECT_DIR selects shared storage, as in the Sandbox. "
+            "Without it, storage discovery starts from the selected checkout and may find "
+            "a separate log. Booley source checkouts always share feedback in Git's "
+            "shared metadata directory, regardless of BOOLEY_PROJECT_DIR."
+        ),
     )
     fb = parser.add_subparsers(dest="feedback_command")
     _add_logging_subcommands(fb)
@@ -222,7 +234,7 @@ def _add_reporting_subcommands(fb: argparse._SubParsersAction) -> None:
     report_p.add_argument(
         "--user-report-path",
         metavar="PATH",
-        help="Write the user report here instead of the project dir "
+        help="Write the user report here instead of the default feedback storage directory "
         "(maintainer dogfood runs only — a real project keeps it out of the tracked tree)",
     )
 
@@ -231,7 +243,7 @@ def _add_reporting_subcommands(fb: argparse._SubParsersAction) -> None:
     export_p.add_argument(
         "--output",
         metavar="PATH",
-        help="Write here instead of the feedback state directory",
+        help="Write here instead of the feedback storage directory",
     )
 
     redact_p = fb.add_parser("redact", help="Scrub project identifiers out of a file or stdin")

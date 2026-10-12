@@ -12,6 +12,7 @@ PICORV32_INPUT_FILES = frozenset(
         ".github/scripts/pull_image_identity.py",
         ".github/scripts/verify_picorv32_demo.sh",
         ".github/scripts/run_picorv32_ci_demo.sh",
+        ".github/scripts/release_validation/goal_readiness.py",
         ".github/workflows/picorv32-demo.yml",
         "pyproject.toml",
     }

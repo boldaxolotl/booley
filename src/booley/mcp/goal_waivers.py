@@ -58,6 +58,7 @@ from booley.goals.paths import record_paths
 from booley.goals.proposals import Decision, Proposal, ProposalError, digest
 from booley.goals.state_store import load_goal_state
 from booley.goals.store import GoalStore
+from booley.goals.waiver_binding import WaiverBinding
 from booley.goals.waiver_policy import (
     WAIVER_POLICY_DETAIL_KEY,
     policy_location,
@@ -112,7 +113,7 @@ class GoalWaiverService:
             raise ProposalError("approved waiver policy changed since the producer observation")
         return resolved
 
-    def bind(self, record: GoalRecord, goal_key: str, candidate_id: str) -> dict[str, Any]:
+    def bind(self, record: GoalRecord, goal_key: str, candidate_id: str) -> WaiverBinding:
         """Bind one exact candidate to a selected producer Campaign and current policy."""
         state = load_goal_state(GoalStore(self.project_dir), record)
         row = selected_observations(record, state, self.project_dir).get(goal_key)
@@ -129,24 +130,26 @@ class GoalWaiverService:
             raise ProposalError("[coverage.waivers] is not configured")
         approval_dir = anchor / config.directory
         self._refuse_protected(approval_dir, record)
-        return {
-            "candidate_id": candidate_id,
-            "candidate": item.to_json(),
-            "candidate_digest": digest(item.to_json()),
-            "goal_key": goal_key,
-            "campaign_reference": row["detail"]["coverage_campaign_reference"],
-            "target_surface": row["detail"]
-            .get("_source_fingerprint", {})
-            .get("fingerprint", {})
-            .get("target_surface"),
-            "policy": waiver_policy_fingerprint(self.root),
-            "approval_root": str(approval_dir.absolute()),
-            "anchor_root": str(anchor.absolute()),
-            "anchor": config.anchor,
-            "directory": config.directory,
-            "candidate_root": str(self.paths.root),
-            "record_id": record.id,
-        }
+        return WaiverBinding.from_json(
+            {
+                "candidate_id": candidate_id,
+                "candidate": item.to_json(),
+                "candidate_digest": digest(item.to_json()),
+                "goal_key": goal_key,
+                "campaign_reference": row["detail"]["coverage_campaign_reference"],
+                "target_surface": row["detail"]
+                .get("_source_fingerprint", {})
+                .get("fingerprint", {})
+                .get("target_surface"),
+                "policy": waiver_policy_fingerprint(self.root),
+                "approval_root": str(approval_dir.absolute()),
+                "anchor_root": str(anchor.absolute()),
+                "anchor": config.anchor,
+                "directory": config.directory,
+                "candidate_root": str(self.paths.root),
+                "record_id": record.id,
+            }
+        )
 
     def _candidate(self, candidate_id: str) -> candidates.WaiverCandidate:
         record = candidates.load(self.paths.root, self.record.id)
@@ -200,9 +203,9 @@ class GoalWaiverService:
                 raise ProposalError(f"waiver destination is a protected input: {destination}")
 
     @contextmanager
-    def locking(self, binding: Mapping[str, Any]) -> Generator[None]:
+    def locking(self, binding: WaiverBinding) -> Generator[None]:
         """Global order: Goal record -> shared approval storage -> candidate storage."""
-        approval = Path(str(binding["approval_root"]))
+        approval = Path(binding.approval_root)
         lock_path = approval.parent / f".{approval.name}.booley-approval.lock"
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         with lock_path.open("a+") as handle:
@@ -218,25 +221,26 @@ class GoalWaiverService:
     ) -> tuple[candidates.WaiverCandidate, ResolvedCoverageCampaign, dict[str, Any]]:
         assert proposal.waiver is not None
         binding = proposal.waiver
-        if binding["policy"] != waiver_policy_fingerprint(self.root):
+        if binding.policy.to_json() != waiver_policy_fingerprint(self.root):
             raise ProposalError(
                 "waiver policy changed since proposal creation; create a new proposal"
             )
-        item = self._candidate(str(binding["candidate_id"]))
-        if digest(item.to_json()) != binding["candidate_digest"]:
+        item = self._candidate(binding.candidate_id)
+        if digest(item.to_json()) != binding.candidate_digest:
             raise ProposalError("selected candidate was replaced after proposal creation")
         state = load_goal_state(GoalStore(self.project_dir), self.record)
         row = selected_observations(self.record, state, self.project_dir).get(proposal.goal_key)
         if (
             row is None
-            or row["detail"].get("coverage_campaign_reference") != binding["campaign_reference"]
+            or row["detail"].get("coverage_campaign_reference")
+            != binding.campaign_reference.to_json()
         ):
             raise ProposalError("selected coverage Campaign changed since proposal creation")
         resolved = self._validate_campaign(row["detail"])
         if not fresh_observation(proposal.before or proposal.after, row, state, self.root):
             raise ProposalError("selected coverage producer evidence became stale")
         self._validate_candidate(item, resolved, row["detail"])
-        self._refuse_protected(Path(str(binding["approval_root"])), self.record)
+        self._refuse_protected(Path(binding.approval_root), self.record)
         return item, resolved, row["detail"]
 
     def prepare(
@@ -253,7 +257,7 @@ class GoalWaiverService:
             f"goal:{proposal.record_id}/proposal:{proposal.id}",
         )
         plan = WaiverPromotionPlan(
-            str(proposal.waiver["anchor"]), str(proposal.waiver["directory"]), stamps, (evidence,)
+            proposal.waiver.anchor, proposal.waiver.directory, stamps, (evidence,)
         )
         effects = self._promotion_effects(plan, proposal)
         with tempfile.TemporaryDirectory(prefix="booley-goal-waiver-") as temporary:
@@ -295,7 +299,7 @@ class GoalWaiverService:
         self, plan: WaiverPromotionPlan, proposal: Proposal
     ) -> tuple[FileEffect, ...]:
         assert proposal.waiver is not None
-        root = Path(str(proposal.waiver["approval_root"]))
+        root = Path(proposal.waiver.approval_root)
         item = plan.candidates[0]
         promotion = build_promotion(item, plan.stamps)
         path = root / waiver_file_path(item.source)
@@ -315,12 +319,12 @@ class GoalWaiverService:
     def rejection(self, proposal: Proposal, decision: Decision) -> tuple[FileEffect, ...]:
         """Persist exact candidate rejection, even if the proposal otherwise conflicts."""
         assert proposal.waiver is not None
-        item = proposal.waiver["candidate"]
+        item = proposal.waiver.candidate
         record = candidates.load(self.paths.root, self.record.id)
         rejection = candidates.Rejection(
-            str(item["target_identity"]),
-            str(item["point_id"]),
-            str(item["source_sha256"]),
+            item.target_identity,
+            item.point_id,
+            item.source_sha256,
             decision.at,
             decision.session_key or "unknown",
         )
@@ -328,18 +332,18 @@ class GoalWaiverService:
         path = self.paths.root / "waiver-candidates.json"
         return (FileEffect(path, read_bytes(path), updated.to_bytes(), "candidate"),)
 
-    def validate_effect(self, binding: Mapping[str, Any], effect: FileEffect) -> None:
+    def validate_effect(self, binding: WaiverBinding, effect: FileEffect) -> None:
         """Recovery uses captured anchors; drift does not authorize new destinations."""
         expected = self.paths.root / "waiver-candidates.json"
         if effect.label == "candidate" and effect.path == expected:
             return
-        root = Path(str(binding["approval_root"]))
+        root = Path(binding.approval_root)
         if effect.label != "waiver" or effect.path == root:
             raise ProposalError("invalid captured waiver effect")
-        item = binding["candidate"]
-        allowed = {root / waiver_file_path(str(item["source"]))}
-        if item["reason"] == "unreachable":
-            allowed.add(root / review_proof_path(str(binding["candidate_id"])))
+        item = binding.candidate
+        allowed = {root / waiver_file_path(item.source)}
+        if item.reason == "unreachable":
+            allowed.add(root / review_proof_path(binding.candidate_id))
         if effect.path not in allowed:
             raise ProposalError("waiver effect does not name the bound approval/proof")
         self._refuse_protected(effect.path, self.record)

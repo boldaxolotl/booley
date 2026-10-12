@@ -266,8 +266,9 @@ Authoring rules:
   in the design is wrong; the class was a warning when the code was written.
   The failure tail names the class in its `%Error-<CLASS>` token: copy it into
   `--Wno-<CLASS>` in that Target's `verilator_options` (or waive it in a `.vlt`
-  file in the fileset). Fix per Target, and note the waiver in AGENTS.md so a
-  later reader knows it is an era gap, not a silenced real bug.
+  file declared with `file_type: vlt` in one of that Target's filesets). Fix
+  per Target, and note the waiver in AGENTS.md so a later reader knows it is
+  an era gap, not a silenced real bug.
 - **Optional style lint (offer, never impose).** Only if the
   plan's row 11 says yes: author a **second** lint Target (suggested name
   `lint_style`) with `flow: lint` + `flow_options: {tool: verible}` over the
