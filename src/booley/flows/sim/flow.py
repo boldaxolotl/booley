@@ -92,6 +92,7 @@ from booley.flows.test_runs import (
     DEFAULT_SEED,
     SeedCount,
     TestRun,
+    UnseededTargetError,
     parse_test_selector,
     test_run_document,
     test_run_from_document,
@@ -205,6 +206,7 @@ from .execution import (
     SimulationExecution,
     SimulationOptions,
     SimulationPreview,
+    SimulationSelection,
     SimulationTargetOutcome,
 )
 from .execution.artifacts import artifact_path_component as _artifact_path_component
@@ -1093,6 +1095,35 @@ def _campaign_recovery_detail(status: CampaignRecoveryStatus) -> dict[str, objec
         "interrupted": list(status.interrupted),
         "pending": list(status.pending),
     }
+
+
+def baseline_test_run_refusal(
+    plan: TargetTestPlan, test: str, run: TestRun | None, revision: str
+) -> str | None:
+    """Why the baseline revision cannot run *test* as the candidate's *run*.
+
+    *plan* is the baseline checkout's own plan of the baseline Target.
+    ``None`` when it can. A Cocotb Target without a registry discovers its
+    Tests in the module, so only a registry that omits the Test refuses it.
+    """
+    where = f"baseline revision {revision[:12]}"
+    discovers = plan.adapter == "cocotb" and not plan.tests
+    if test not in plan.tests and not discovers:
+        return f"{where} does not register Test {test!r} on Target {plan.target!r}"
+    if run is None:
+        return None
+    try:
+        plan.require_applicable(run)
+    except UnseededTargetError as exc:
+        return f"{where} cannot apply the seed: {exc}"
+    return None
+
+
+def _runnable_requirements(
+    requirements: tuple[tuple[str, str, str], ...], runnable: Mapping[str, tuple[str, ...]]
+) -> tuple[tuple[str, str, str], ...]:
+    """The candidate/baseline/Test links whose baseline Test Run can run."""
+    return tuple(link for link in requirements if link[2] in runnable.get(link[1], ()))
 
 
 def _manifest_run_groups(
@@ -2446,7 +2477,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         """Own campaign-specific reconciliation behind the generic endpoint hook."""
         from .acceptance import record_campaign_acceptance
 
-        record_campaign_acceptance(self.context, outcomes)
+        record_campaign_acceptance(
+            self.context, outcomes, baseline_refusals=getattr(self, "_baseline_refusals", {})
+        )
 
     def persisted_cycle_counts(self) -> dict[str, list[dict[str, object]]]:
         """Derive complete observational counts without affecting acceptance."""
@@ -2592,7 +2625,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             else self._run_selected_mode(prepared=prepared, admission=admission)
         )
         result.detail["mode"] = self._mode.value
-        return self._attach_published_pre_sim(self._with_test_run_guard_note(result))
+        return self._attach_published_pre_sim(
+            self._with_baseline_refusal_note(self._with_test_run_guard_note(result))
+        )
 
     def _record_pre_sim_firing(self, key: tuple[str, str, str, int]) -> None:
         """Record only authenticated firings durably published by this execution."""
@@ -2980,8 +3015,14 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         *,
         role: WorkUnitRole,
         revision: str | None,
+        selections: Mapping[str, SimulationSelection] | None = None,
     ) -> tuple[list[WorkUnitPlan], list[str]]:
-        """Plan one checkout's selected Simulation Targets."""
+        """Plan one checkout's selected Simulation Targets.
+
+        *selections* gives a Target the exact selection to plan instead of
+        the request's own (a Cycle Count baseline runs the candidate's Test
+        Runs, not what its checkout would resolve).
+        """
         units: list[WorkUnitPlan] = []
         errors: list[str] = []
         execution = self._simulation_execution()
@@ -2992,7 +3033,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             try:
                 preview = execution.preview(
                     self._target_handle(target),
-                    self._test_run_selection(target, test_names_map),
+                    selections[target]
+                    if selections is not None
+                    else self._test_run_selection(target, test_names_map),
                 )
             except (fusesoc_registry.FuseSocError, OSError, ValueError) as exc:
                 errors.append(f"{target}: {exc}")
@@ -3100,7 +3143,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         targets: list[str],
         test_names_map: dict[str, list[str]],
     ) -> tuple[list[WorkUnitPlan], list[str]]:
-        """Plan every baseline Simulation before the candidate can execute."""
+        """Plan the baseline Simulations: the candidate's Test Runs that can run there."""
         baseline_ref, baseline_targets, error = self._cycle_baseline_selection(targets)
         if error is not None:
             return [], [error]
@@ -3109,6 +3152,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         project_root = Path(self.args.work_dir)
         expected = {target: self._target_handle(target).identity for target in baseline_targets}
         baseline_tests = self._cycle_baseline_test_names(test_names_map)
+        requirements = self._campaign_baseline_requirements(targets)
+        self._freeze_baseline_test_runs(requirements, test_names_map)
         try:
             with baseline_worktree(
                 project_root,
@@ -3116,11 +3161,17 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 paired_project=self._paired_project_baseline,
             ) as worktree:
                 self.args.work_dir = worktree
+                runnable = self._runnable_baseline_tests(requirements, baseline_ref)
+                planned = [target for target in baseline_targets if runnable.get(target)]
                 units, errors = self._plan_simulation_targets(
-                    baseline_targets,
+                    planned,
                     baseline_tests,
                     role="baseline",
                     revision=baseline_ref,
+                    selections={
+                        target: self._baseline_selection(target, runnable[target])
+                        for target in planned
+                    },
                 )
                 mismatches = [
                     f"{unit.selector}: baseline resolves to {unit.target_identity!r}, "
@@ -3134,6 +3185,50 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         finally:
             self.args.work_dir = project_root
 
+    def _runnable_baseline_tests(
+        self, requirements: Sequence[tuple[str, str, str]], revision: str
+    ) -> dict[str, tuple[str, ...]]:
+        """The Tests each baseline Target runs; the rest are remembered as refusals.
+
+        Call in the baseline checkout, after the candidate's Test Runs were
+        frozen. The baseline revision cannot run a candidate Test Run when it
+        does not register the Test (it would launch without selecting it) or
+        cannot apply the seed. Such a comparison is inconclusive: the refusal
+        is reported with its reason and nothing is launched for it.
+        """
+        frozen: dict[tuple[str, str], TestRun] = getattr(self, "_baseline_test_runs", {})
+        refusals: dict[tuple[str, str], str] = {}
+        runnable: dict[str, list[str]] = {}
+        for _candidate, baseline, test in requirements:
+            if (baseline, test) in refusals or test in runnable.get(baseline, ()):
+                continue
+            reason = baseline_test_run_refusal(
+                self._target_test_plan(baseline), test, frozen.get((baseline, test)), revision
+            )
+            if reason is None:
+                runnable.setdefault(baseline, []).append(test)
+            else:
+                refusals[(baseline, test)] = reason
+        self._baseline_refusals = refusals
+        self._baseline_runnable = {target: tuple(tests) for target, tests in runnable.items()}
+        return self._baseline_runnable
+
+    def _with_baseline_refusal_note(self, result: EndpointOutcome) -> EndpointOutcome:
+        """Say which Cycle Count comparisons are inconclusive, and why."""
+        refusals: dict[tuple[str, str], str] = getattr(self, "_baseline_refusals", {})
+        if not refusals:
+            return result
+        result.detail["cycle_count_baseline_inconclusive"] = [
+            {"target": target, "test": test, "reason": reason}
+            for (target, test), reason in refusals.items()
+        ]
+        note = "\n".join(
+            f"Cycle Count comparison inconclusive for {target} Test {test}: {reason}"
+            for (target, test), reason in refusals.items()
+        )
+        result.report_text = f"{result.report_text}\n{note}" if result.report_text else note
+        return result
+
     def _run(self) -> EndpointOutcome:
         """Run the selected shape and stamp its canonical mode on every result."""
         result = (
@@ -3142,7 +3237,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             else self._run_selected_mode()
         )
         result.detail["mode"] = self._mode.value
-        return self._with_test_run_guard_note(result)
+        return self._with_baseline_refusal_note(self._with_test_run_guard_note(result))
 
     def _run_campaign_resume(
         self, validated: ValidatedResumeManifest, admission: object | None
@@ -4601,7 +4696,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         self._freeze_baseline_test_runs(requirements, test_names_map)
         self.args.work_dir = worktree
         try:
-            for target in baseline_targets:
+            runnable = self._runnable_baseline_tests(requirements, baseline_ref)
+            requirements = _runnable_requirements(requirements, runnable)
+            for target in (item for item in baseline_targets if runnable.get(item)):
                 request, by_test = self._planned_baseline_request(
                     target,
                     expected[target],
@@ -4805,7 +4902,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             self._freeze_baseline_test_runs(requirements, test_names_map)
             self.args.work_dir = worktree
             try:
-                for target in baseline_targets:
+                runnable = self._runnable_baseline_tests(requirements, baseline_ref)
+                requirements = _runnable_requirements(requirements, runnable)
+                for target in (item for item in baseline_targets if runnable.get(item)):
                     preview, by_test = self._preview_one_campaign_baseline(
                         campaign,
                         target,
@@ -6018,6 +6117,11 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 ),
                 "test_runs": _test_run_rows([current] if current is not None else []),
             }
+            refusal = self._baseline_refusal_for(target_result, params, test_name)
+            if relative and baseline is None and refusal is not None:
+                # The comparison could not be made at all: say why, by name.
+                detail["baseline_observation"] = "inapplicable"
+                met, reason = False, (reason if reason.startswith("current") else refusal)
             if reason:
                 detail["reason"] = reason
             self.set_criterion(
@@ -6026,6 +6130,14 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 source_target=target_result.target,
                 detail=detail,
             )
+
+    def _baseline_refusal_for(
+        self, result: TargetResult, params: Mapping[str, Any], test: object
+    ) -> str | None:
+        """Why the baseline of this Criterion's Test could not run, if it could not."""
+        refusals: dict[tuple[str, str], str] = getattr(self, "_baseline_refusals", {})
+        baseline = params.get(BASELINE_TARGET_PARAM) or result.target
+        return refusals.get((str(baseline), str(test)))
 
     def _baseline_cycle_tests(
         self, result: TargetResult, params: Mapping[str, Any] | None = None
@@ -6363,7 +6475,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         skipped = self._skipped_tests(target, test_names_map)
         if skipped:
             output_lines.append(f"  (skipped {len(skipped)}: {', '.join(skipped)})")
-        selection = self._test_run_selection(target, test_names_map)
+        selection = self._role_selection(target, test_names_map, plan_role)
         artifact_root = self._simulation_artifact_root(plan_role)
         execution = self._simulation_execution(artifact_root=artifact_root)
         planned_groups = self._planned_simulation_groups(target, plan_role)
@@ -6389,12 +6501,18 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         if len(result.tests) > 1:
             passed = sum(1 for test in result.tests if test.passed)
             output_lines.append(f"  --- {passed}/{len(result.tests)} passed ---")
-        output_lines.extend(
-            informative_test_run_lines(
-                target, _test_run_rows(result.tests), default_seed=DEFAULT_SEED
-            )
-        )
+        rows = _test_run_rows(result.tests)
+        output_lines.extend(informative_test_run_lines(target, rows, default_seed=DEFAULT_SEED))
         return result
+
+    def _role_selection(
+        self, target: str, test_names_map: Mapping[str, list[str]], role: WorkUnitRole | None
+    ) -> SimulationSelection:
+        """What *target* runs in *role*: a baseline runs the candidate's Test Runs."""
+        if role != "baseline":
+            return self._test_run_selection(target, test_names_map)
+        runnable: dict[str, tuple[str, ...]] = getattr(self, "_baseline_runnable", {})
+        return self._baseline_selection(target, runnable.get(target, ()))
 
     def _simulation_artifact_root(self, role: WorkUnitRole | None) -> Path | None:
         """Return the authorized direct-run evidence namespace without reserving."""

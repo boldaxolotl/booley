@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Callable, Iterable, Mapping
 from copy import deepcopy
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -63,6 +63,9 @@ class AcceptanceContext:
     recorder: AcceptanceRecorder
     invocation_id: str
     diagnostic: bool = False
+    #: Why a Cycle Count baseline Test Run was not run, by (baseline Target
+    #: selector, Test). The verdict comes from the facts; this names its reason.
+    baseline_refusals: Mapping[tuple[str, str], str] = field(default_factory=dict)
     observer: Callable[[list[CriterionChange]], None] | None = None
     detail_stamper: Callable[[CriterionChange, str], dict[str, Any]] | None = None
 
@@ -113,7 +116,7 @@ class SimulationAcceptanceCoordinator:
     ) -> AcceptanceOutcome:
         if context.diagnostic or context.state._file_path is None:
             return AcceptanceOutcome(False, None, (), "no_criteria")
-        changes = self._derive_changes(outcome, context.state)
+        changes = self._derive_changes(outcome, context.state, context.baseline_refusals)
         if context.detail_stamper is not None:
             selector = str(outcome.target["selector"])
             changes = [
@@ -143,6 +146,7 @@ class SimulationAcceptanceCoordinator:
     def _derive_changes(
         outcome: CampaignOutcome,
         state: DevelopmentState,
+        baseline_refusals: Mapping[tuple[str, str], str] | None = None,
     ) -> list[CriterionChange]:
         facts = outcome.acceptance_facts.document
         target = facts["target"]
@@ -151,7 +155,7 @@ class SimulationAcceptanceCoordinator:
         target_name = str(target["name"])
         shadow = deepcopy(state)
         rows = _TestRunRows(outcome)
-        changes = _cycle_changes(outcome, shadow, target, rows)
+        changes = _cycle_changes(outcome, shadow, target, rows, baseline_refusals or {})
         changes.extend(_coverage_changes(outcome, shadow, target, rows))
         changes.extend(_simulation_changes(outcome, shadow, target, target_name, rows))
         return changes
@@ -371,6 +375,8 @@ def _simulation_detail(
 def record_campaign_acceptance(
     endpoint: EndpointState,
     outcomes: tuple[object, ...],
+    *,
+    baseline_refusals: Mapping[tuple[str, str], str] | None = None,
 ) -> None:
     """Reconcile campaign facts before publishing compatibility projections."""
     work_dir = getattr(endpoint.args, "work_dir", None)
@@ -388,6 +394,7 @@ def record_campaign_acceptance(
         recorder,
         endpoint._invocation_id,
         diagnostic=bool(getattr(endpoint.args, "diagnostic", False)),
+        baseline_refusals=dict(baseline_refusals or {}),
         observer=endpoint.record_report_criteria,
         detail_stamper=(
             lambda change, selector: (
@@ -673,6 +680,7 @@ def _cycle_changes(
     shadow: DevelopmentState,
     target: Mapping[str, object],
     rows: _TestRunRows,
+    refusals: Mapping[tuple[str, str], str],
 ) -> list[CriterionChange]:
     identity = f"{target['vlnv']}#{target['name']}"
     selector = str(target["selector"])
@@ -711,6 +719,8 @@ def _cycle_changes(
             checks,
         )
         detail["test_runs"] = rows.of((current,))
+        if baseline_state == "mismatched":
+            _name_baseline_refusal(detail, refusals.get((str(_baseline_selector(params)), test)))
         changes.extend(shadow.set_criterion(key, met, detail=detail))
     return changes
 
@@ -746,7 +756,7 @@ def _bound_baseline(
 ) -> tuple[Mapping[str, object] | None, str]:
     if not has_relative_threshold(dict(params)):
         return None, "not_required"
-    selector = params.get(BASELINE_TARGET_PARAM, params.get("_target_selector"))
+    selector = _baseline_selector(params)
     revision = params.get(BASELINE_REF_PARAM)
     for item in prerequisites:
         target = item.get("target")
@@ -769,6 +779,21 @@ def _bound_baseline(
         if bound:
             return cycle, "observed"
     return None, "mismatched"
+
+
+def _name_baseline_refusal(detail: dict[str, object], refusal: str | None) -> None:
+    """Say why no baseline ran when its revision could not run the Test Run.
+
+    The comparison is then inconclusive rather than merely unbound.
+    """
+    if refusal is not None:
+        detail["baseline_observation"] = "inapplicable"
+        detail["reason"] = refusal
+
+
+def _baseline_selector(params: Mapping[str, object]) -> object:
+    """The baseline Target a Cycle Count Criterion compares against."""
+    return params.get(BASELINE_TARGET_PARAM, params.get("_target_selector"))
 
 
 def _cycle_threshold_checks(
