@@ -1,4 +1,19 @@
-"""Typed change-kind policy and entry-quality preparation at the original base."""
+"""Typed change-kind policy and entry-quality preparation at the original base.
+
+Goals that name Test Runs (ADR 0072) change through the same kinds:
+
+- adding a Test Goal is an ``add``;
+- pinning a seed, naming another Test Variant, or raising the N of a
+  multi-seed Goal is a ``retarget``: the Goal requires other or more Test
+  Runs. Raising N keeps the frozen seeds and draws the difference;
+- lowering N is a ``relax``: the Goal keeps the first N frozen seeds;
+- a ``retarget`` that leaves the Goal as written freezes its Test Runs again
+  from the Target as it is now: the way out for a Goal whose frozen run is
+  gone or changed.
+
+Every one of them needs the human's approval and gives the Goal a new
+specification revision, so its Test Run outcomes start again.
+"""
 
 from __future__ import annotations
 
@@ -16,7 +31,11 @@ from booley.goals.model import GoalFamily, GoalRecord, GoalSpec, parse_goal_arg
 from booley.goals.proposals import Proposal, ProposalError
 from booley.goals.state_store import goal_criterion_params, load_goal_state
 from booley.goals.store import GoalStore
+from booley.goals.test_run_goals import goal_selectors, names_test_runs, seed_count, variant_text
 from booley.goals.translate import stricter_threshold, translate_goals
+
+# The ordered bound of a multi-seed simulation Goal: how many seeds must pass.
+_SEED_COUNT = "seed_count"
 
 
 def translate_after(raw: Mapping[str, Any]) -> GoalSpec:
@@ -75,11 +94,15 @@ def validate_kind(kind: ChangeKind, before: GoalSpec | None, after: GoalSpec) ->
         _validate_relax(before, after)
     else:
         _validate_retarget(before, after)
-    if before == after:
+    refreeze = kind is ChangeKind.RETARGET and names_test_runs(after)
+    if before == after and not refreeze:
         raise ProposalError("the proposal does not change the Goal")
 
 
 def _ordered_bounds(goal: GoalSpec) -> dict[str, Any]:
+    count = seed_count(goal)
+    if count is not None:
+        return {_SEED_COUNT: count}  # more seeds is stricter
     if goal.family is GoalFamily.COVERAGE:
         return {key: value["min_pct"] for key, value in goal.params["metrics"].items()}
     if goal.family is GoalFamily.MUTATION:
@@ -95,9 +118,14 @@ def _ordered_bounds(goal: GoalSpec) -> dict[str, Any]:
 
 def _fixed(goal: GoalSpec) -> dict[str, Any]:
     bounds = _ordered_bounds(goal)
-    return {
+    fixed = {
         key: value for key, value in goal.params.items() if key not in bounds and key != "metrics"
     }
+    selectors = goal_selectors(goal) if _SEED_COUNT in bounds else None
+    if selectors:
+        # N is the bound; the Test Variant whose seeds are counted is what is fixed.
+        fixed["test"] = variant_text(selectors[0])
+    return fixed
 
 
 def _validate_relax(before: GoalSpec, after: GoalSpec) -> None:
@@ -128,13 +156,17 @@ def _stricter(family: GoalFamily, key: str, candidate: Any, current: Any) -> boo
         raise ProposalError(
             "relaxation cannot order an implicit auto mutation floor; use explicit detection floors"
         )
-    if family in {GoalFamily.COVERAGE, GoalFamily.MUTATION}:
+    if family in {GoalFamily.COVERAGE, GoalFamily.MUTATION} or key == _SEED_COUNT:
         return bool(candidate > current)
     return stricter_threshold(key, candidate, current)
 
 
 def _validate_retarget(before: GoalSpec, after: GoalSpec) -> None:
-    if _ordered_bounds(before) != _ordered_bounds(after):
+    old, new = _ordered_bounds(before), _ordered_bounds(after)
+    old_count, new_count = old.pop(_SEED_COUNT, None), new.pop(_SEED_COUNT, None)
+    if old_count is not None and new_count is not None and new_count < old_count:
+        raise ProposalError("lowering the seed count of a multi-seed Goal is a relaxation")
+    if old != new:
         raise ProposalError("retarget must preserve acceptance bounds")
     if before.family is GoalFamily.REVIEW:
         if before.key != after.key or not before.params.get("spec"):
