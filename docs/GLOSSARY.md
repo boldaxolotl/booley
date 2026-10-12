@@ -272,6 +272,10 @@ _Avoid_: regex, marker, exit-code-only verdict
 The read-only terminal view, one per Sandbox, of agent sessions, Goals, Booley Flow Jobs, and health signals in that Sandbox.
 _Avoid_: control room, console, monitor
 
+**Session activity**:
+What a session's agent client last reported through its lifecycle hooks: working, waiting for tool call, or waiting for user input. Unknown when nothing fresh was reported; never inferred from Booley calls or running Jobs. Presentational only.
+_Avoid_: session status, session state
+
 ## Execution and evidence
 
 **Criterion**:

@@ -24,6 +24,7 @@ from booley.mcp.session_registry import (
     resolve_attribution,
 )
 from booley.runtime.project_dir import resolve_project_dir
+from booley.runtime.session_activity import ActivityStore
 
 logger = logging.getLogger(__name__)
 
@@ -307,13 +308,23 @@ class SessionObserver:
 
     async def maintain(self) -> None:
         """Prune during MCP silence; owned by the server lifespan, never Dashboard reads."""
-        await self._bounded(
-            lambda: self._registry().prune(
-                now=self.now(),
-                namespace=namespace(),
-                worktree_exists=registered_worktree_presence(Path.cwd()),
-            ),
-            maintenance=True,
+        await self._bounded(self._prune, maintenance=True)
+
+    def _prune(self) -> None:
+        """Expire registry rows, then the activity signals of sessions no longer held."""
+        registry = self._registry()
+        registry.prune(
+            now=self.now(),
+            namespace=namespace(),
+            worktree_exists=registered_worktree_presence(Path.cwd()),
+        )
+        held = registry.snapshot()
+        if held.unavailable:
+            return  # An unreadable row may still be a live session; keep its signal.
+        ActivityStore(registry.project_dir).prune(
+            {row.attribution.key for row in held.rows},
+            now=self.now(),
+            quiet_after=registry.quiet_after,
         )
 
     async def maintenance_loop(self) -> None:
