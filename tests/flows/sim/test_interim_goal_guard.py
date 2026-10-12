@@ -195,3 +195,24 @@ def test_a_diagnostic_campaign_is_never_judged_per_test(tmp_path):
     # Without the guard the same campaign is refused with the typed error.
     with pytest.raises(SeveralTestRunsOfOneTestError):
         SimulationAcceptanceCoordinator().reconcile(outcome, context(False))
+
+
+def test_a_resumed_campaign_is_guarded_by_the_test_runs_its_manifest_froze(tmp_path, monkeypatch):
+    """Resume runs no request, so the guard reads the manifest's Test Runs."""
+    from booley.flows.test_runs import build_test_run
+    from tests.flows.sim.test_campaign_test_runs import _hdl_plan
+
+    default = build_test_run("stress", variant="short", seed=1)
+    soak = build_test_run("stress", variant="soak", seed=1, args=("+iters=9",))
+    required = ("reset", "stress")
+
+    flow = _flow(tmp_path, monkeypatch)
+    flow._apply_interim_goal_guard_to_resume(_hdl_plan(tmp_path, ((default,),), required).manifest)
+    assert flow.args.diagnostic is False
+
+    (tmp_path / "other").mkdir()
+    manifest = _hdl_plan(tmp_path / "other", ((default,), (soak,)), required).manifest
+    flow._apply_interim_goal_guard_to_resume(manifest)
+    assert flow.args.diagnostic is True
+    selector = manifest.document["target"]["selector"]
+    assert flow._test_run_guard_names == (f"{selector}: stress+soak@1",)

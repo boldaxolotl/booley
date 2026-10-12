@@ -28,7 +28,7 @@ from booley.flows.sim.verilator_coverage import (
     SimulationRunResult,
 )
 from booley.flows.target_test_plan import MAX_TEST_RUNS_PER_REQUEST, load_target_test_plan
-from booley.flows.test_runs import TestRun, build_test_run
+from booley.flows.test_runs import TestRun, build_test_run, test_run_document
 from tests.flows.sim.test_coverage_flow import (
     _AcceptanceAdapter,
     _prepare_atomic_coverage_state,
@@ -339,3 +339,143 @@ def test_coverage_refuses_more_test_runs_than_one_request_allows(tmp_path, monke
     assert result.exit_code != 0
     assert f"more than {MAX_TEST_RUNS_PER_REQUEST} Test Runs" in result.outcome.report_text
     assert execution.runs == []
+
+
+_MULTI_RUN = ("reset+short", "reset+soak", "wrap@x3")
+
+
+class _InterruptedAfterFirstRun(NativeExecution):
+    """The simulator process dies while the second Test Run is running."""
+
+    def run(self, request):
+        if self.runs:
+            raise KeyboardInterrupt("simulated process interruption")
+        return super().run(request)
+
+
+def _resumable_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The multi-Variant Project at one fixed revision, as resume requires."""
+    revision = "c" * 40
+    monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: revision)
+    monkeypatch.setattr("booley.flows.sim.campaign.resume.git_full_sha", lambda *_args: revision)
+    _project(tmp_path, monkeypatch)
+
+
+def _recorded_runs(manifest: Path) -> list[dict]:
+    (item,) = json.loads(manifest.read_bytes())["work_items"]
+    return item["test_runs"]
+
+
+def _forbid_resolution(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A resumed campaign must never resolve or draw Test Runs again."""
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("a resumed campaign resolved its Test Runs again")
+
+    monkeypatch.setattr(SimulateFlow, "_resolve_test_runs", refuse)
+    monkeypatch.setattr("booley.flows.test_runs.secrets.SystemRandom", refuse)
+
+
+def test_interrupted_multi_run_collection_names_its_frozen_test_runs_for_the_new_run(
+    tmp_path, monkeypatch
+):
+    """A collection cut after its first run is not resumed; its seeds are not lost.
+
+    Resuming an unfinished coverage collection is refused by design (it would
+    re-run every Test Run). The refusal's command names the frozen Test Runs,
+    so the new run repeats the drawn seeds instead of drawing three others.
+    """
+    _resumable_project(tmp_path, monkeypatch)
+    reports = tmp_path / "reports"
+    execution = _InterruptedAfterFirstRun()
+    with pytest.raises(KeyboardInterrupt):
+        SimulateFlow(coverage_execution=lambda *_args: execution).execute(
+            SimRequest(
+                target="sim_0",
+                work_dir=tmp_path,
+                coverage=True,
+                report_dir=reports,
+                test=_MULTI_RUN,
+            )
+        )
+    assert len(execution.runs) == 1
+    manifest = reports / "sim/1/targets/sim_0/campaign/manifest.json"
+    frozen = manifest.read_bytes()
+    names = [run["name"] for run in _recorded_runs(manifest)]
+    assert names[:2] == ["reset+short@1", "reset+soak@1"] and len(set(names)) == 5
+    _forbid_resolution(monkeypatch)
+
+    resumed = SimulateFlow(coverage_execution=lambda *_args: NativeExecution()).execute(
+        SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports)
+    )
+
+    assert resumed.exit_code == 2, resumed.outcome.report_text
+    assert manifest.read_bytes() == frozen
+    command = next(
+        line.strip()
+        for line in resumed.outcome.report_text.splitlines()
+        if line.strip().startswith("booley flow sim")
+    )
+    assert command == (
+        "booley flow sim --target sim_0 "
+        + " ".join(f"--test={name}" for name in names)
+        + " --coverage"
+    )
+    # The named command resolves to exactly the frozen Test Runs: nothing is drawn.
+    replayed = load_target_test_plan(tmp_path, "sim_0", adapter="verilator").resolve(
+        names, draw=lambda *_args, **_kwargs: pytest.fail("a seed was drawn again")
+    )
+    assert json.dumps([test_run_document(run) for run in replayed], sort_keys=True) == (
+        json.dumps(_recorded_runs(manifest), sort_keys=True)
+    )
+
+
+def test_resumed_multi_run_coverage_replays_the_frozen_test_runs_byte_identically(
+    tmp_path, monkeypatch
+):
+    """A collected campaign cut during publication resumes from its own manifest."""
+    _resumable_project(tmp_path, monkeypatch)
+    reports = tmp_path / "reports"
+    execution = NativeExecution()
+    armed = [True]
+
+    def crash(boundary):
+        if armed[0] and boundary == "before:summary_replace":
+            armed[0] = False
+            raise OSError("injected crash before:summary_replace")
+
+    interrupted = SimulateFlow(
+        coverage_execution=lambda *_args: execution, campaign_publication_checkpoint=crash
+    ).execute(
+        SimRequest(
+            target="sim_0", work_dir=tmp_path, coverage=True, report_dir=reports, test=_MULTI_RUN
+        )
+    )
+    assert interrupted.exit_code == 2
+    manifest = reports / "sim/1/targets/sim_0/campaign/manifest.json"
+    frozen = manifest.read_bytes()
+    recorded = _recorded_runs(manifest)
+    names = [run["name"] for run in recorded]
+    launched = [request.test.run_name for request in execution.runs]
+    assert launched == names and len(names) == 5
+    _forbid_resolution(monkeypatch)
+
+    resumed = SimulateFlow(coverage_execution=lambda *_args: execution).execute(
+        SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports)
+    )
+
+    assert resumed.exit_code == 0, resumed.outcome.report_text
+    assert manifest.read_bytes() == frozen
+    # The resumed campaign is as diagnostic as the request that froze it.
+    assert len(resumed.outcome.detail["test_run_goal_guard"]["test_runs"]) == 4
+    assert "it records no Goal evidence" in resumed.outcome.report_text
+    # Nothing ran again, and every published record names the frozen Test Runs.
+    assert [request.test.run_name for request in execution.runs] == launched
+    rows = resumed.outcome.detail["campaigns"]["sim_0"]["test_runs"]
+    assert [{key: row[key] for key in recorded[0]} for row in rows] == recorded
+    nested = json.loads(next(reports.rglob("coverage-campaign/coverage.json")).read_text())
+    assert [(run["test_run"], run["fingerprint"]) for run in nested["tests"]["runs"]] == [
+        (run["name"], run["fingerprint"]) for run in recorded
+    ]
+    projection = json.loads((reports / "sim/1/targets/sim_0/simulation.json").read_text())
+    assert [row["name"] for row in projection["test_runs"]] == names

@@ -2537,6 +2537,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 if selection_error is not None:
                     return selection_error
             else:
+                self._apply_interim_goal_guard_to_resume(resume.manifest)
                 resume_error = self._resume_coverage_preflight_if_coverage(resume)
                 if resume_error is not None:
                     return resume_error
@@ -2584,6 +2585,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         trace = " --trace" if workload["trace"] is True else ""
         # A raw-coverage run of a gated Target is refused without --diagnostic.
         no_waivers = " --no-waivers --diagnostic" if _manifest_no_waivers(manifest) else ""
+        tests = self._frozen_test_run_options(manifest, selector)
         return EndpointOutcome(
             exit_code=EXIT_ERROR,
             report_text=(
@@ -2591,11 +2593,39 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 f"its coverage collection has no recorded result (work item {item_id} is "
                 f"{state}; the run was interrupted or is still running). Resuming would "
                 "rebuild and re-run every test, so start a new run instead:\n"
-                f"  booley flow sim --target {shlex.quote(selector)} --coverage{trace}{no_waivers}\n"
-                "Add the original --test/--tests-file selection if you used one."
+                f"  booley flow sim --target {shlex.quote(selector)}{tests} "
+                f"--coverage{trace}{no_waivers}\n"
+                + (
+                    "The command names the Test Runs this campaign froze, so the new "
+                    "run repeats their Test Variants and seeds."
+                    if tests
+                    else "Add the original --test/--tests-file selection if you used one."
+                )
             ),
             detail=_campaign_recovery_detail(status),
         )
+
+    def _frozen_test_run_options(self, manifest: SimulationCampaignManifest, selector: str) -> str:
+        """``--test`` options that repeat the campaign's Test Runs in a new run.
+
+        Empty when every frozen Test Run is still its Test's default at the
+        Default Seed: the plain selection then resolves to the same runs.
+        Any other campaign (a Test Variant, a pinned or drawn seed, a default
+        that has since changed) is named run by run, so a new run draws and
+        resolves nothing again.
+        """
+        try:
+            runs = [run for group in _manifest_run_groups(manifest) for run in group]
+        except ValueError:
+            return ""
+        try:
+            plan = self._target_test_plan(selector)
+            unchanged = all(plan.is_default_run(run) for run in runs)
+        except (fusesoc_registry.FuseSocError, ValueError):
+            unchanged = False
+        if unchanged or any(run.test is None for run in runs):
+            return ""
+        return "".join(f" {shlex.quote(f'--test={run.name}')}" for run in runs)
 
     def _validate_prepared_selection(
         self, targets: list[str], test_names_map: dict[str, list[str]]
@@ -2617,7 +2647,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         """Run one immutable preflight with its explicitly borrowed admission."""
         self._current_published_pre_sim_keys: set[tuple[str, str, str, int]] = set()
         if prepared.resume is not None:
-            result = self._run_campaign_resume(prepared.resume, admission)
+            result = self._with_test_run_guard_note(
+                self._run_campaign_resume(prepared.resume, admission)
+            )
             return self._attach_published_pre_sim(result, prepared.resume.path)
         result = (
             self._run_coverage_campaigns(admission)
@@ -6098,25 +6130,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             met, reason = _admissible_cycle_evidence(current, "current")
             if met and relative:
                 met, reason = _admissible_cycle_evidence(baseline, "baseline")
-            detail = {
-                "mode": self._mode.value,
-                "target": target_result.target,
-                "target_identity": target_result.target_identity,
-                "test": test_name,
-                "cycles": current.cycles if current is not None else None,
-                "baseline_cycles": baseline.cycles if baseline is not None else None,
-                "cycle_observation": current.cycle_status if current is not None else "missing",
-                "baseline_observation": (
-                    baseline.cycle_status
-                    if baseline is not None
-                    else ("not_required" if not relative else "missing")
-                ),
-                "workload_snapshot": (current.workload_snapshot if current is not None else None),
-                "baseline_workload_snapshot": (
-                    baseline.workload_snapshot if baseline is not None else None
-                ),
-                "test_runs": _test_run_rows([current] if current is not None else []),
-            }
+            detail = self._direct_cycle_detail(target_result, test_name, current, baseline)
+            if baseline is None and not relative:
+                detail["baseline_observation"] = "not_required"
             refusal = self._baseline_refusal_for(target_result, params, test_name)
             if relative and baseline is None and refusal is not None:
                 # The comparison could not be made at all: say why, by name.
@@ -6130,6 +6146,30 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 source_target=target_result.target,
                 detail=detail,
             )
+
+    def _direct_cycle_detail(
+        self,
+        result: TargetResult,
+        test_name: object,
+        current: TestResult | None,
+        baseline: TestResult | None,
+    ) -> dict[str, Any]:
+        """What one Cycle Count Criterion observed on the candidate and its baseline."""
+        return {
+            "mode": self._mode.value,
+            "target": result.target,
+            "target_identity": result.target_identity,
+            "test": test_name,
+            "cycles": current.cycles if current is not None else None,
+            "baseline_cycles": baseline.cycles if baseline is not None else None,
+            "cycle_observation": current.cycle_status if current is not None else "missing",
+            "baseline_observation": baseline.cycle_status if baseline is not None else "missing",
+            "workload_snapshot": current.workload_snapshot if current is not None else None,
+            "baseline_workload_snapshot": (
+                baseline.workload_snapshot if baseline is not None else None
+            ),
+            "test_runs": _test_run_rows([current] if current is not None else []),
+        }
 
     def _baseline_refusal_for(
         self, result: TargetResult, params: Mapping[str, Any], test: object
@@ -6817,6 +6857,29 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         elif self.args.test:
             self.args.test = tuple(dict.fromkeys(tests))
             self.args.seed = None
+
+    def _apply_interim_goal_guard_to_resume(self, manifest: SimulationCampaignManifest) -> None:
+        """Keep a resumed campaign diagnostic when its frozen Test Runs made it so.
+
+        INTERIM (#1233 stage S2; removed by stage S3), with
+        :meth:`_apply_interim_goal_guard`. A resumed campaign runs the Test
+        Runs its manifest froze, not a request, so the guard reads them there.
+        When the Target's plan cannot be built, no run can be shown to be a
+        default and the campaign stays diagnostic.
+        """
+        try:
+            runs = [run for group in _manifest_run_groups(manifest) for run in group]
+        except ValueError:
+            return  # Predates recorded Test Runs; resume refuses it on its own.
+        selector = str(cast(Mapping[str, object], manifest.document["target"])["selector"])
+        try:
+            plan: TargetTestPlan | None = self._target_test_plan(selector)
+        except (fusesoc_registry.FuseSocError, ValueError):
+            plan = None
+        other = [run for run in runs if plan is None or not plan.is_default_run(run)]
+        if other:
+            self._test_run_guard_names = tuple(f"{selector}: {run.name}" for run in other)
+            self.args.diagnostic = True
 
     def _with_test_run_guard_note(self, result: EndpointOutcome) -> EndpointOutcome:
         """Say in the report that the interim Goal guard made the run diagnostic."""
