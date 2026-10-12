@@ -630,6 +630,17 @@ Per-Target test lists plus an optional run-time selector.
 
 What goes here:
 
+- **Additional Protected Inputs — write only what the human agreed to.**
+  `[project].protected_inputs` lists the tracked recipe file a hook or generator
+  invokes and the stimulus sources that recipe consumes. Goal Mode freezes their
+  file set, contents, type, and executable bit; restoring a file clears the
+  violation. Write the entries that plan row 6 records. A candidate you find
+  only now is a decision-level deviation: propose it, explain the freeze, and
+  get approval before adding it. Before writing, confirm that every entry
+  matches tracked files and that no build output lands inside a pattern; prefer
+  `firmware/**/*.c` to `firmware/` when compilation writes into `firmware/`.
+  Keep existing entries. Entry forms and refusals: CONFIG.md → "Additional
+  Protected Inputs".
 - **Stealth mode — always write what rows 16 and 20 settled.** Step 0 row 16
   owns the merged git-history policy. Write the plan's `[stealth]` values
   exactly, including hand-set values, volunteered exceptions, and unattended
