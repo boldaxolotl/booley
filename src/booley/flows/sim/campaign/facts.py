@@ -8,6 +8,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 
+from booley.core.boundary import BoundaryError, require_str_value
+
 from .codec import SimulationCampaignIntegrityError, canonical_json_bytes
 
 _SCHEMA_V1 = "booley.simulation-acceptance-facts/v1"
@@ -204,7 +206,11 @@ def _validate_cycle_observation(value: object, *, names_test_runs: bool) -> None
 
 def _test_run_name(value: object, label: str) -> None:
     """Require a non-empty, bounded Test Run name."""
-    if not isinstance(value, str) or not value or len(value.encode()) > 1024:
+    try:
+        name = require_str_value(value, field=label)
+    except BoundaryError as exc:
+        raise SimulationCampaignIntegrityError(f"{label} is invalid") from exc
+    if len(name.encode()) > 1024:
         raise SimulationCampaignIntegrityError(f"{label} is invalid")
 
 

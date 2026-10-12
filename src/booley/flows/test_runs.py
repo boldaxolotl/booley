@@ -41,6 +41,7 @@ from booley.config.tests_toml_rules import (
     validate_seed,
     validate_test_or_variant_name,
 )
+from booley.core.boundary import BoundaryError, as_dict, is_str_list, require_str_value
 
 __all__ = [
     "DEFAULT_SEED",
@@ -353,35 +354,28 @@ test_run_document.__test__ = False  # type: ignore[attr-defined]
 
 def _optional_name(value: object, field: str) -> str | None:
     """A Test Run record's Test or Test Variant: a string or ``None``."""
-    if value is not None and not isinstance(value, str):
-        raise TestRunNameError(f"Test Run record {field} must be a string or null")
-    return value
+    if value is None:
+        return None
+    try:
+        return require_str_value(value, field=field, allow_empty=True)
+    except BoundaryError as exc:
+        raise TestRunNameError(f"Test Run record {field} must be a string or null") from exc
 
 
 def _record_args(value: object) -> tuple[str, ...]:
-    """A Test Run record's argument list."""
-    if not isinstance(value, (list, tuple)):
+    """A Test Run record's argument list (a tuple once the record is frozen)."""
+    items = list(cast("tuple[object, ...]", value)) if isinstance(value, tuple) else value
+    if not is_str_list(items):
         raise TestRunNameError("Test Run record args must be a list of strings")
-    items = cast("list[object] | tuple[object, ...]", value)
-    args = tuple(item for item in items if isinstance(item, str))
-    if len(args) != len(items):
-        raise TestRunNameError("Test Run record args must be a list of strings")
-    return args
+    return tuple(cast("list[str]", items))
 
 
 def _record_env(value: object) -> dict[str, str]:
     """A Test Run record's environment table."""
-    if not isinstance(value, Mapping):
+    table = as_dict(value)
+    if table is None or not is_str_list([*table.keys(), *table.values()]):
         raise TestRunNameError("Test Run record env must map names to strings")
-    table = cast(Mapping[object, object], value)
-    env = {
-        name: text
-        for name, text in table.items()
-        if isinstance(name, str) and isinstance(text, str)
-    }
-    if len(env) != len(table):
-        raise TestRunNameError("Test Run record env must map names to strings")
-    return env
+    return cast("dict[str, str]", table)
 
 
 def test_run_from_document(document: object) -> TestRun:
@@ -392,10 +386,10 @@ def test_run_from_document(document: object) -> TestRun:
     fields produce: a record cannot name one Test Run and describe another.
     Raises :class:`TestRunNameError`.
     """
-    if not isinstance(document, Mapping):
+    record = as_dict(document)
+    if record is None:
         raise TestRunNameError("a Test Run record must be an object")
-    record = cast(Mapping[object, object], document)
-    if frozenset(record) != cast(frozenset[object], _TEST_RUN_DOCUMENT_FIELDS):
+    if frozenset(record) != _TEST_RUN_DOCUMENT_FIELDS:
         raise TestRunNameError(
             "a Test Run record must hold exactly: " + ", ".join(sorted(_TEST_RUN_DOCUMENT_FIELDS))
         )

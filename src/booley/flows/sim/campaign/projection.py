@@ -6,8 +6,8 @@ import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import cast
 
+from booley.core.boundary import BoundaryError, as_dict, require_list
 from booley.flows.test_runs import test_run_from_document
 
 #: Written today: v2 plus one ``test_runs`` row per observed Test Run (ADR 0072).
@@ -101,12 +101,14 @@ def _validate_common(value: Mapping[str, object]) -> None:
 
 def _validate_test_runs(value: object) -> None:
     """Each row is one Test Run record plus how the run ended."""
-    if not isinstance(value, list):
-        raise ValueError("Simulation projection test_runs must be a list")
-    for row in cast("list[object]", value):
-        if not isinstance(row, dict) or row.get("grade") not in _TEST_RUN_GRADES:
+    try:
+        rows = require_list(value, field="Simulation projection test_runs")
+    except BoundaryError as exc:
+        raise ValueError("Simulation projection test_runs must be a list") from exc
+    for row in rows:
+        record = as_dict(row)
+        if record is None or record.get("grade") not in _TEST_RUN_GRADES:
             raise ValueError("Simulation projection Test Run row has no valid grade")
-        record = cast("dict[object, object]", row)
         # Raises ``TestRunNameError`` (a ``ValueError``) for an inexact record.
         test_run_from_document({key: item for key, item in record.items() if key != "grade"})
 
