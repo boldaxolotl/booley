@@ -48,6 +48,7 @@ from booley.core.boundary import (
 )
 from booley.criteria.templates import FPGA_IMPL_OK_PARAMS, SYNTHESIS_OK_PARAMS
 from booley.criteria.thresholds import CYCLE_COUNT_PARAMS
+from booley.flows.test_runs import SeedCount, parse_test_selector
 from booley.runtime.timefmt import parse_timestamp
 
 # ---------------------------------------------------------------------------
@@ -157,11 +158,18 @@ class GoalRecordFormatError(ValueError):
 
 @dataclass(frozen=True)
 class TargetGoalArg:
-    """A lint, sim, or elab Goal: the named Target passes that Booley Flow."""
+    """A lint, sim, or elab Goal: the named Target passes that Booley Flow.
+
+    A sim Goal may name one Test Run selector in ``test`` (ADR 0072):
+    ``test``, ``test+variant``, either with ``@seed``, or either with ``@xN``
+    for N Test Runs with different seeds. Without ``test`` the Goal is the
+    Target Goal: every Test of the Target, each as its default Test Variant.
+    """
 
     family: Literal[GoalFamily.LINT, GoalFamily.SIM, GoalFamily.ELAB]
     target: str
     origin: str = AD_HOC_ORIGIN
+    test: str | None = None
 
 
 @dataclass(frozen=True)
@@ -182,7 +190,11 @@ class ImplementationGoalArg:
 
 @dataclass(frozen=True)
 class CycleCountGoalArg:
-    """A Cycle Count Goal: one named test of one Target meets every threshold."""
+    """A Cycle Count Goal: one Test Run of one Target meets every threshold.
+
+    ``test`` is a Test Run selector without a seed count: a threshold applies
+    to the Cycle Count of one Test Run.
+    """
 
     target: str
     test: str
@@ -193,7 +205,10 @@ class CycleCountGoalArg:
 
 @dataclass(frozen=True)
 class CoverageGoalArg:
-    """A coverage Goal: per-metric floors (percent) over ``tests`` of one Target."""
+    """A coverage Goal: per-metric floors (percent) over ``tests`` of one Target.
+
+    ``tests`` is ``"all"`` or Test Run selectors, ``test@xN`` included.
+    """
 
     target: str
     metrics: Mapping[str, Any]
@@ -342,10 +357,31 @@ def _origin(raw: Mapping[str, Any], where: str) -> str:
     return _required_text(raw, "origin", where) if "origin" in raw else AD_HOC_ORIGIN
 
 
+def _test_selector(text: str, where: str, *, seed_count: bool) -> str:
+    """One written Test Run selector, checked against the Test Run grammar.
+
+    The text is kept as written: Goal keys come from the written form.
+    """
+    try:
+        selector = parse_test_selector(text)
+    except ValueError as exc:  # TestRunNameError, TestRunLimitError
+        raise GoalArgError(f"{where}: {exc}") from None
+    if not seed_count and isinstance(selector.seed_form, SeedCount):
+        raise GoalArgError(
+            f"{where} {text!r} must name one Test Run: a seed count (@xN) is not accepted here"
+        )
+    return text
+
+
 def _parse_target_goal(raw: Mapping[str, Any], family: GoalFamily, where: str) -> TargetGoalArg:
-    _reject_unknown(raw, frozenset({"family", "target", "origin"}), where)
+    simulation = family is GoalFamily.SIM
+    allowed = ("family", "target", "origin", *(("test",) if simulation else ()))
+    _reject_unknown(raw, frozenset(allowed), where)
     assert family in (GoalFamily.LINT, GoalFamily.SIM, GoalFamily.ELAB)
-    return TargetGoalArg(family, _target_name(raw, "target", where), _origin(raw, where))
+    test = None
+    if "test" in raw:
+        test = _test_selector(_required_text(raw, "test", where), f"{where}.test", seed_count=True)
+    return TargetGoalArg(family, _target_name(raw, "target", where), _origin(raw, where), test)
 
 
 def _parse_implementation_goal(
@@ -377,7 +413,7 @@ def _parse_cycle_count_goal(raw: Mapping[str, Any], where: str) -> CycleCountGoa
     )
     return CycleCountGoalArg(
         _target_name(raw, "target", where),
-        _required_text(raw, "test", where),
+        _test_selector(_required_text(raw, "test", where), f"{where}.test", seed_count=False),
         thresholds,
         _origin(raw, where),
     )
@@ -395,7 +431,10 @@ def _coverage_tests(raw: Mapping[str, Any], where: str) -> Literal["all"] | tupl
         raise GoalArgError(f"{where}.tests must be 'all' or a list of test names") from None
     if not items or not all(isinstance(item, str) and item.strip() for item in items):
         raise GoalArgError(f"{where}.tests must be 'all' or a non-empty list of test names")
-    return tuple(str(item).strip() for item in items)
+    return tuple(
+        _test_selector(str(item).strip(), f"{where}.tests[{index}]", seed_count=True)
+        for index, item in enumerate(items)
+    )
 
 
 def _parse_coverage_goal(raw: Mapping[str, Any], where: str) -> CoverageGoalArg:
@@ -504,6 +543,11 @@ _ORIGIN = {
     "description": f"Goalset the Goal came from, or {AD_HOC_ORIGIN!r} (default).",
 }
 _THRESHOLD_VALUE = {"type": ["number", "string"]}
+_TEST_RUN = (
+    "a Test Run selector: 'test', 'test+variant', or either with '@seed' "
+    "(no seed means the Target's Default Seed)"
+)
+_SEED_COUNT = "; 'test@xN' or 'test+variant@xN' requires N Test Runs with different seeds"
 
 
 def _object(family: GoalFamily, properties: dict[str, Any], required: list[str]) -> dict[str, Any]:
@@ -534,30 +578,51 @@ def _thresholds(params: frozenset[str], *, clock_scoped: bool) -> dict[str, Any]
     }
 
 
-def goal_arg_json_schema() -> dict[str, Any]:
-    """The JSON schema of one Goal argument: a ``oneOf`` tagged by ``family``."""
-    target = {**_STRING, "description": "Target the Goal binds to; it may not exist yet."}
-    variants = [
-        _object(family, {"target": target}, ["target"])
-        for family in (GoalFamily.LINT, GoalFamily.SIM, GoalFamily.ELAB)
+def _target_schema() -> dict[str, Any]:
+    return {**_STRING, "description": "Target the Goal binds to; it may not exist yet."}
+
+
+def _flow_goal_schemas() -> list[dict[str, Any]]:
+    """lint, sim, and elab: a Target, and for sim an optional Test Run selector."""
+    target = _target_schema()
+    sim_test = {
+        **_STRING,
+        "description": (
+            f"Optional: {_TEST_RUN}{_SEED_COUNT}. Without it the Goal covers every "
+            "Test of the Target, each as its default Test Variant."
+        ),
+    }
+    return [
+        _object(GoalFamily.LINT, {"target": target}, ["target"]),
+        _object(GoalFamily.SIM, {"target": target, "test": sim_test}, ["target"]),
+        _object(GoalFamily.ELAB, {"target": target}, ["target"]),
     ]
+
+
+def _implementation_goal_schemas() -> list[dict[str, Any]]:
+    schemas: list[dict[str, Any]] = []
     for family, params in (
         (GoalFamily.SYNTH, SYNTHESIS_OK_PARAMS),
         (GoalFamily.FPGA, FPGA_IMPL_OK_PARAMS),
     ):
         baseline = {**_STRING, "description": "Baseline Target at the base commit."}
         properties = {
-            "target": target,
+            "target": _target_schema(),
             "baseline": baseline,
             "thresholds": _thresholds(params, clock_scoped=True),
         }
-        variants.append(_object(family, properties, ["target"]))
+        schemas.append(_object(family, properties, ["target"]))
+    return schemas
+
+
+def _test_goal_schemas() -> list[dict[str, Any]]:
+    """Cycle Count and coverage: the families that name Test Runs beside thresholds."""
+    target = _target_schema()
     cycle = {
         "target": target,
-        "test": _STRING,
+        "test": {**_STRING, "description": f"One Test Run: {_TEST_RUN}."},
         "thresholds": _thresholds(CYCLE_COUNT_PARAMS, clock_scoped=False),
     }
-    variants.append(_object(GoalFamily.CYCLE_COUNT, cycle, ["target", "test", "thresholds"]))
     metrics = {
         "type": "object",
         "properties": {metric: {"type": "number"} for metric in COVERAGE_METRICS},
@@ -565,11 +630,28 @@ def goal_arg_json_schema() -> dict[str, Any]:
         "minProperties": 1,
         "description": "Coverage metric to minimum percent in (0, 100].",
     }
-    tests = {"oneOf": [{"const": "all"}, {"type": "array", "items": _STRING, "minItems": 1}]}
-    coverage = {"target": target, "metrics": metrics, "tests": tests}
-    variants.append(_object(GoalFamily.COVERAGE, coverage, ["target", "metrics", "tests"]))
-    mutation = {
+    selectors = {
+        "type": "array",
+        "items": _STRING,
+        "minItems": 1,
+        "description": f"Each item is {_TEST_RUN}{_SEED_COUNT}.",
+    }
+    coverage = {
         "target": target,
+        "metrics": metrics,
+        "tests": {"oneOf": [{"const": "all"}, selectors]},
+    }
+    return [
+        _object(GoalFamily.CYCLE_COUNT, cycle, ["target", "test", "thresholds"]),
+        _object(GoalFamily.COVERAGE, coverage, ["target", "metrics", "tests"]),
+    ]
+
+
+def goal_arg_json_schema() -> dict[str, Any]:
+    """The JSON schema of one Goal argument: a ``oneOf`` tagged by ``family``."""
+    variants = [*_flow_goal_schemas(), *_implementation_goal_schemas(), *_test_goal_schemas()]
+    mutation = {
+        "target": _target_schema(),
         "scope": {"type": "array", "items": _STRING, "minItems": 1},
         "min_detected": {"type": "integer", "minimum": 1},
         "total": {"type": "integer", "minimum": 1},
