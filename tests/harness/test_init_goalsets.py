@@ -239,3 +239,22 @@ def test_goalset_step_selects_init_destination_not_parent_project(
         assert ctx.results[-1].status == "ok"
     init_cmd._step_goalsets(ctx)
     assert ctx.results[-1].status == ("warn" if check_only else "skip")
+
+
+def test_goalset_with_a_sim_goal_shows_valid_test_run_goal_examples() -> None:
+    """Every inline example parses, and each form names what the prose says (ADR 0072)."""
+    import re
+
+    from booley.flows.test_runs import PinnedSeed, SeedCount, UnpinnedSeed, parse_test_selector
+
+    markdown = render_goalset("bugfix", TEMPLATE_REGISTRY["bugfix"])
+    assert "## Goals that name Test Runs" in markdown
+    examples = [json.loads(text) for text in re.findall(r"`(\{[^`]*\"test\"[^`]*\})`", markdown)]
+    assert len(examples) == 3
+    goals = parse_goal_args([{**goal, "target": "core"} for goal in examples])
+    assert len(translate_goals(goals).goals) == 3
+    forms = [type(parse_test_selector(goal["test"]).seed_form) for goal in examples]
+    assert forms == [UnpinnedSeed, PinnedSeed, SeedCount]
+    # A Goalset without a simulation Goal has nothing to name Test Runs for.
+    lint_only = render_goalset("lint-only", [CriterionSpec("lint_clean", per_target=True)])
+    assert "Goals that name Test Runs" not in lint_only

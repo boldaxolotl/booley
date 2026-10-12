@@ -16,7 +16,9 @@ Each rendered Goalset carries exactly one fenced ``json`` block: the Goal
 argument list for that Goalset, with ``<target>`` standing for each Target the
 change touches (and ``<spec>`` for a spec review's spec file). Substituting
 those placeholders yields input that :func:`~booley.goals.model.parse_goal_args`
-and :func:`~booley.goals.translate.translate_goals` accept.
+and :func:`~booley.goals.translate.translate_goals` accept. A Goalset with a
+simulation Goal also shows, as inline examples, how to write a Goal that
+names a Test Run (ADR 0072).
 """
 
 from __future__ import annotations
@@ -108,8 +110,36 @@ def render_goalset(name: str, specs: Sequence[CriterionSpec]) -> str:
         *(f"- {_describe(goal)}" for goal in goals),
         "",
         *_arguments_section(goals),
+        *_test_run_examples(goals),
     ]
     return "\n".join(lines) + "\n"
+
+
+def _test_run_examples(goals: Sequence[Mapping[str, Any]]) -> list[str]:
+    """How to write a Goal that names Test Runs, for a Goalset with a simulation Goal.
+
+    Examples only, as inline code: the Goalset's one fenced block stays its
+    Goal argument list.
+    """
+    if not any(goal["family"] == GoalFamily.SIM.value for goal in goals):
+        return []
+    sim = f'{{"family": "sim", "target": "{TARGET_PLACEHOLDER}", "test": '
+    return [
+        "",
+        "## Goals that name Test Runs",
+        "",
+        "A `sim` Goal without `test` covers every Test of its Target, each as its",
+        "default Test Variant at the Target's Default Seed. Add `test` to require",
+        "one configuration instead:",
+        "",
+        f'- `{sim}"stress+soak"}}`: the Test Variant `soak` of the Test `stress`.',
+        f'- `{sim}"stress+soak@7"}}`: that Test Variant with seed 7.',
+        f'- `{sim}"stress@x20"}}`: 20 Test Runs of `stress`, each with a different seed.',
+        "  Booley draws the seeds when Goal Mode is entered and keeps them for the session.",
+        "",
+        "A `cycle_count` Goal accepts the first two forms in `test`, and a `coverage`",
+        "Goal accepts all three in `tests`. Test Variants are declared in `tests.toml`.",
+    ]
 
 
 def _header(name: str) -> list[str]:
