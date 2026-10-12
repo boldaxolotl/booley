@@ -80,7 +80,8 @@ def test_unaffected_goal_spec_change_is_accepted(goal_mode: SimpleNamespace) -> 
 def test_removed_goal_and_unknown_key_are_discarded(goal_mode: SimpleNamespace) -> None:
     binding = bind(goal_mode)
     record = goal_mode.record
-    update_record(goal_mode, goals=tuple(g for g in record.goals if g.spec.key != SIM_KEY))
+    remaining = tuple(g for g in record.goals if g.spec.key != SIM_KEY)
+    update_record(goal_mode, goals=remaining, test_run_resolutions={})
 
     with pytest.raises(EvidenceDiscarded, match="removed during the run"):
         publish(binding, {SIM_KEY})

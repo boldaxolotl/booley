@@ -88,7 +88,11 @@ from booley.flows.target_test_plan import (
     TestRunLaunch,
     batch_test_runs,
 )
-from booley.flows.target_test_plan_loading import load_target_test_plan
+from booley.flows.target_test_plan_loading import (
+    load_target_test_plan,
+    plusarg_parameter_names,
+    simulation_adapter_kind,
+)
 from booley.flows.terminal_progress import announce_unit
 from booley.flows.test_runs import TestRun, discovered_test_run
 from booley.fusesoc import fusesoc_registry, selftest_overlay
@@ -1652,16 +1656,6 @@ def _launch_environment(
     return tuple(launch_environment(dict(target_environment), work.environment).items())
 
 
-def simulation_adapter_kind(eda_tool: str | None, flow_options: Mapping[str, Any]) -> str:
-    """The integration that launches a Target: ``cocotb`` or its simulator family."""
-    if _is_cocotb(flow_options):
-        return "cocotb"
-    try:
-        return sim_edam.normalize_eda_tool(eda_tool)
-    except ValueError:
-        return str(eda_tool or "")
-
-
 def target_test_plan(
     handle: TargetHandle, adapter: str, parameters: Mapping[str, Any]
 ) -> TargetTestPlan:
@@ -1670,7 +1664,7 @@ def target_test_plan(
         handle.project_root,
         handle.selector,
         adapter=adapter,
-        target_plusargs=_plusarg_parameter_names(parameters),
+        target_plusargs=plusarg_parameter_names(parameters),
     )
 
 
@@ -1705,7 +1699,7 @@ def simulation_plusargs(launch: TestRunLaunch, parameters: Mapping[str, Any]) ->
     """
     rendered = _parameter_plusargs(parameters)
     booley_keys = {option_key(argument) for argument in launch.booley_arguments}
-    owned = booley_keys | {option_key(f"+{name}") for name in _plusarg_parameter_names(parameters)}
+    owned = booley_keys | {option_key(f"+{name}") for name in plusarg_parameter_names(parameters)}
     for argument in launch.variant_arguments:
         if option_key(argument) in owned:
             raise TestVariantError(
@@ -1739,15 +1733,6 @@ def _runs_default_variant(plan: TargetTestPlan, run: TestRun) -> bool:
     """Whether *run* is its Test's default Test Variant (or the Test declares none)."""
     table = plan.variants_of(run.test) if run.test is not None else None
     return run.variant is None if table is None else run.variant == table.default
-
-
-def _plusarg_parameter_names(parameters: Mapping[str, Any]) -> tuple[str, ...]:
-    """Names of the plusarg parameters the resolved Target declares."""
-    return tuple(
-        str(name)
-        for name, spec in parameters.items()
-        if isinstance(spec, Mapping) and spec.get("paramtype") == "plusarg"
-    )
 
 
 def _parameter_plusargs(parameters: Mapping[str, Any]) -> list[str]:

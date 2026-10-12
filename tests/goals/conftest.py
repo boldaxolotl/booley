@@ -19,6 +19,8 @@ from typing import Any
 import pytest
 
 from booley.core.project_dir import reset_cache
+from booley.flows import target_test_plan_loading
+from booley.flows.target_test_plan import TargetTestPlan
 from booley.goals import entry as entry_module
 from booley.goals.binding import GoalRunBinding, bind_run
 from booley.goals.store import GoalStore
@@ -49,6 +51,13 @@ def git(cwd: Path, *args: str) -> str:
         timeout=GIT_TIMEOUT_S,
     )
     return result.stdout.strip()
+
+
+def fake_test_plan(work_dir: Path | str, target: str) -> TargetTestPlan:
+    """The Test Run plan of a known Target: its ``tests.toml`` section on Verilator."""
+    if target not in KNOWN_TARGETS:
+        raise UnknownTargetError(target)
+    return target_test_plan_loading.load_target_test_plan(work_dir, target, adapter="verilator")
 
 
 class FakeCatalog:
@@ -85,6 +94,7 @@ def layout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleNa
     write_project_files(worktree / ".booley_project")
     monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(control))
     monkeypatch.setattr(entry_module, "TargetCatalog", FakeCatalog)
+    monkeypatch.setattr(target_test_plan_loading, "load_checkout_target_test_plan", fake_test_plan)
     stamps = iter(f"{DATE}T12{minute:02d}00Z" for minute in range(60))
     monkeypatch.setattr(entry_module, "compact_utc_now", lambda: next(stamps))
     reset_cache()
@@ -140,7 +150,20 @@ LINT_KEY = "lint_clean_top"
 SIM_KEY = "sim_pass_top"
 
 
-def enter_goals(layout: SimpleNamespace, goals: Sequence[Mapping[str, Any]] = GOAL_ARGS) -> Any:
+TESTS_TOML = b'[top]\ntests = ["smoke"]\n'
+
+
+def write_tests_toml(layout: SimpleNamespace, content: bytes) -> None:
+    """Rewrite the worktree's ``tests.toml`` (bytes: digests match on every platform)."""
+    (layout.worktree / ".booley_project" / "tests.toml").write_bytes(content)
+
+
+def enter_goals(
+    layout: SimpleNamespace,
+    goals: Sequence[Mapping[str, Any]] = GOAL_ARGS,
+    *,
+    tests_toml: bytes = TESTS_TOML,
+) -> Any:
     """Commit a ``top`` core and a ``tests.toml`` in the worktree, then enter Goal Mode."""
     from booley.goals.entry import EntryEnvironment, EntryRequest, enter_goal_mode
     from booley.goals.model import parse_goal_args
@@ -150,7 +173,7 @@ def enter_goals(layout: SimpleNamespace, goals: Sequence[Mapping[str, Any]] = GO
     (layout.worktree / "rtl.v").write_bytes(b"module top; endmodule\n")
     git(layout.worktree, "add", "top.core", "rtl.v")
     git(layout.worktree, "commit", "-q", "-m", "top core")
-    (layout.worktree / ".booley_project" / "tests.toml").write_bytes(b'[top]\ntests = ["smoke"]\n')
+    write_tests_toml(layout, tests_toml)
     request = EntryRequest(
         work_dir=layout.worktree, slug="evidence", goals=parse_goal_args(list(goals))
     )

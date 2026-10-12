@@ -48,6 +48,13 @@ from booley.goals.proposals import (
 from booley.goals.recorder import GOAL_SCOPE, goal_identity
 from booley.goals.state_store import load_goal_state, review_categories
 from booley.goals.store import GoalStore, RecordLock
+from booley.goals.test_run_freezing import (
+    GoalResolutionError,
+    ResolutionRequest,
+    refreeze_changed_goal,
+)
+from booley.goals.test_run_goals import names_test_runs
+from booley.goals.test_run_plans import TargetPlans
 from booley.runtime.atomic_files import atomic_write_once
 from booley.runtime.timefmt import utc_now_rfc3339
 
@@ -286,6 +293,7 @@ def _prepare_approved(
 ) -> ApplyTransaction:
     assert decision.transaction_id is not None
     updated = _next_record(record, proposal)
+    updated = _with_frozen_test_runs(record, updated, proposal)
     derivations = derive_changes(proposal, record, state, env.entry.project_dir, coverage=coverage)
     shadow = _state_delta(state, proposal)
     _apply_derivations(shadow, derivations)
@@ -395,8 +403,45 @@ def _next_record(record: GoalRecord, proposal: Proposal) -> GoalRecord:
     )
     if proposal.kind is ChangeKind.ADD:
         goals = (*record.goals, replacement)
-    updated = replace(record, revision=revision, goals=goals)
+    resolutions = {
+        key: value
+        for key, value in record.test_run_resolutions.items()
+        if any(goal.spec.key == key for goal in goals)
+    }
+    updated = replace(record, revision=revision, goals=goals, test_run_resolutions=resolutions)
     return GoalRecord.from_json(updated.to_json())
+
+
+def _with_frozen_test_runs(
+    record: GoalRecord, updated: GoalRecord, proposal: Proposal
+) -> GoalRecord:
+    """*updated* with the changed Goal's Test Runs frozen again (ADR 0072).
+
+    The prepared record carries the exact runs and drawn seeds, so a
+    recovered apply writes the same ones. A relaxation or waiver keeps the
+    frozen runs of every selector the Goal still names; an added or
+    retargeted Goal is resolved from the Target as it is now.
+    """
+    after = next(goal for goal in updated.goals if goal.spec.key == proposal.after.key)
+    resolutions = {
+        key: value
+        for key, value in record.test_run_resolutions.items()
+        if key not in {proposal.goal_key, after.spec.key}
+    }
+    if names_test_runs(after.spec):
+        held = record.test_run_resolution(proposal.goal_key)
+        before = None if proposal.before is None or held is None else (proposal.before, held)
+        try:
+            resolutions[after.spec.key] = refreeze_changed_goal(
+                after,
+                before,
+                TargetPlans(Path(record.worktree_path)),
+                ResolutionRequest("change", utc_now_rfc3339()),
+                keep_frozen=proposal.kind in {ChangeKind.RELAX, ChangeKind.WAIVER},
+            )
+        except GoalResolutionError as exc:
+            raise ProposalError(str(exc)) from exc
+    return GoalRecord.from_json(replace(updated, test_run_resolutions=resolutions).to_json())
 
 
 def _state_delta(state: DevelopmentState, proposal: Proposal) -> DevelopmentState:

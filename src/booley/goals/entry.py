@@ -86,6 +86,9 @@ from booley.goals.rules import goal_mode_rules
 from booley.goals.session_key import worktree_session_key
 from booley.goals.state_store import goal_criterion_params, review_categories
 from booley.goals.store import GoalStore, GoalStoreError
+from booley.goals.test_run_freezing import GoalResolutionError, ResolutionRequest, freeze_goals
+from booley.goals.test_run_plans import TargetPlanError, TargetPlans
+from booley.goals.test_run_resolution import TestRunResolution
 from booley.goals.translate import GoalTranslationError, Translation, translate_goals
 from booley.runtime.atomic_files import fsync_directory
 from booley.runtime.git import is_linked_worktree
@@ -242,7 +245,8 @@ def enter_goal_mode(request: EntryRequest, env: EntryEnvironment) -> EntryResult
     work_dir = _require_linked_worktree_root(request.work_dir)
     project_dir = env.project_dir.absolute()
     _refuse_worktree_copy(project_dir, work_dir)
-    translation = _translate(request.goals)
+    plans = TargetPlans(work_dir)
+    translation = _translate(request.goals, plans)
     checkout = GoalCheckout(work_dir)
     store = GoalStore(project_dir, lock_timeout_s=env.lock_timeout_s)
     try:
@@ -250,7 +254,7 @@ def enter_goal_mode(request: EntryRequest, env: EntryEnvironment) -> EntryResult
         assert identity is not None  # create=True always returns an identity
         with store.worktree_lock(identity) as lock:
             recovered = _recover_occupant(store, identity, checkout)
-            plan = _plan_entry(request, checkout, identity, translation, project_dir)
+            plan = _plan_entry(request, checkout, identity, translation, project_dir, plans)
             created = store.create(lock, plan.record)
             _boundary(env, "created")
             try:
@@ -282,6 +286,7 @@ def _plan_entry(
     identity: WorktreeIdentity,
     translation: Translation,
     project_dir: Path,
+    plans: TargetPlans,
 ) -> _EntryPlan:
     """Validate the checkout and the Goals under the lock; build the new record."""
     base_sha = checkout.head_sha()
@@ -297,6 +302,7 @@ def _plan_entry(
     if checkout.branch_tip(branch) is not None:
         raise GoalEntryError(f"branch {branch} already exists; choose another slug")
     warnings = [*translation.warnings, *check_goal_targets(checkout.root, translation.goals)]
+    goals = tuple(RecordedGoal(goal, 1) for goal in translation.goals)
     record = GoalRecord(
         id=new_goal_id(request.slug, timestamp=timestamp),
         state=GoalState.ENTERING,
@@ -307,7 +313,8 @@ def _plan_entry(
         base_sha=base_sha,
         entered_at=utc_now_rfc3339(),
         session_key=request.session_key or worktree_session_key(identity),
-        goals=tuple(RecordedGoal(goal, 1) for goal in translation.goals),
+        goals=goals,
+        test_run_resolutions=_freeze_test_runs(goals, plans),
         goalsets_used=request.goalsets_used,
         default_skipped=request.default_skipped,
         skip_reason=request.skip_reason,
@@ -398,10 +405,26 @@ def _refuse_worktree_copy(project_dir: Path, work_dir: Path) -> None:
     )
 
 
-def _translate(goals: Sequence[GoalArg]) -> Translation:
+def _translate(goals: Sequence[GoalArg], plans: TargetPlans) -> Translation:
+    """Translate and merge the Goals; Test Run selectors merge by what they resolve to."""
     try:
-        return translate_goals(goals)
-    except GoalTranslationError as exc:
+        return translate_goals(goals, resolver=plans.resolver())
+    except (GoalTranslationError, TargetPlanError) as exc:
+        raise GoalEntryError(str(exc)) from None
+
+
+def _freeze_test_runs(
+    goals: Sequence[RecordedGoal], plans: TargetPlans
+) -> dict[str, TestRunResolution]:
+    """Freeze every Goal's Test Runs (ADR 0072); a Target or Test not there yet stays pending.
+
+    A Goal its Target refuses, for example a seed on a Target that cannot
+    apply seeds, fails the entry.
+    """
+    request = ResolutionRequest("entry", utc_now_rfc3339())
+    try:
+        return freeze_goals(goals, {}, plans, request, strict=True)
+    except GoalResolutionError as exc:
         raise GoalEntryError(str(exc)) from None
 
 

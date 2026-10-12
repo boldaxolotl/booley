@@ -20,7 +20,10 @@ and only as optional fields: a record that lacks one (written by an older
 Booley) loads it as its default, while a record with a field this code does
 not know (written by a newer Booley) is refused with that explanation rather
 than having the field silently dropped on the next save. Required fields stay
-required.
+required. A field that changes what a Goal requires is written by every save,
+its default included, so that an older Booley refuses the record instead of
+judging its Goals by rules it does not know: ``test_run_resolutions`` (the
+Test Runs each Goal is frozen to, ADR 0072) is such a field.
 
 Nothing here touches the filesystem or Git; :mod:`booley.goals.store` owns
 persistence and :mod:`booley.goals.translate` owns GoalArg-to-Goal translation.
@@ -49,6 +52,12 @@ from booley.core.boundary import (
 from booley.criteria.templates import FPGA_IMPL_OK_PARAMS, SYNTHESIS_OK_PARAMS
 from booley.criteria.thresholds import CYCLE_COUNT_PARAMS
 from booley.flows.test_runs import SeedCount, parse_test_selector
+from booley.goals.test_run_resolution import (
+    ResolutionFormatError,
+    TestRunResolution,
+    resolutions_from_json,
+    resolutions_to_json,
+)
 from booley.runtime.timefmt import parse_timestamp
 
 # ---------------------------------------------------------------------------
@@ -807,6 +816,9 @@ class GoalRecord:
     (Stealth's separate ``.booley_project`` repository, checked out inside the
     worktree) was on at entry; baseline checkouts use it instead of guessing
     a fork point. ``None`` when the worktree has no paired Project repository.
+    ``test_run_resolutions`` holds, by Goal key, the Test Runs each Goal that
+    is judged by Test Runs is frozen to (ADR 0072); a Goal without an entry
+    has not been resolved yet.
     """
 
     id: str
@@ -840,6 +852,22 @@ class GoalRecord:
     finish_operation: str | None = None
     end_instruction_quote: str | None = None
     abandon_operation: str | None = None
+    test_run_resolutions: Mapping[str, TestRunResolution] = field(
+        default_factory=dict[str, TestRunResolution]
+    )
+
+    def test_run_resolution(self, key: str) -> TestRunResolution | None:
+        """The frozen Test Runs of Goal *key* at its current specification revision.
+
+        ``None`` when the Goal was never resolved at that revision: a record
+        an older Booley created, or a Goal whose revision moved without a
+        new resolution.
+        """
+        resolution = self.test_run_resolutions.get(key)
+        revisions = {goal.spec.key: goal.spec_revision for goal in self.goals}
+        if resolution is None or revisions.get(key) != resolution.spec_revision:
+            return None
+        return resolution
 
     def to_json(self) -> dict[str, Any]:
         """The JSON form stored in ``record.json``."""
@@ -878,6 +906,7 @@ class GoalRecord:
             "finish_operation": self.finish_operation,
             "end_instruction_quote": self.end_instruction_quote,
             "abandon_operation": self.abandon_operation,
+            "test_run_resolutions": resolutions_to_json(self.test_run_resolutions),
         }
 
     @classmethod
@@ -900,6 +929,9 @@ class GoalRecord:
         stale = [goal.spec.key for goal in record.goals if goal.spec_revision > record.revision]
         if stale:
             raise GoalRecordFormatError(f"record.goals {stale} are newer than the record")
+        orphans = sorted(set(record.test_run_resolutions) - {g.spec.key for g in record.goals})
+        if orphans:
+            raise GoalRecordFormatError(f"test_run_resolutions {orphans} name no Goal")
         return record
 
 
@@ -941,6 +973,7 @@ _RECORD_DEFAULTS: Mapping[str, Any] = MappingProxyType(
         "finish_operation": None,
         "end_instruction_quote": None,
         "abandon_operation": None,
+        "test_run_resolutions": {},
     }
 )
 
@@ -1018,6 +1051,7 @@ def _lifecycle_fields(mapping: dict[str, Any]) -> dict[str, Any]:
         "end_instruction_quote": _record_opt_str(
             mapping["end_instruction_quote"], "end_instruction_quote"
         ),
+        "test_run_resolutions": _record_resolutions(mapping["test_run_resolutions"]),
     }
 
 
@@ -1128,6 +1162,13 @@ def _record_project_snapshot(raw: object) -> dict[str, str | None] | None:
                 raise GoalRecordFormatError("project_snapshot must contain hex bytes") from exc
         result[name] = text
     return result
+
+
+def _record_resolutions(raw: object) -> dict[str, TestRunResolution]:
+    try:
+        return resolutions_from_json(raw)
+    except ResolutionFormatError as exc:
+        raise GoalRecordFormatError(str(exc)) from exc
 
 
 def _record_commit(raw: object, where: str) -> str:

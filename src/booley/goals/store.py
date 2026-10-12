@@ -58,6 +58,7 @@ from booley.goals.paths import (
     validate_goal_id,
     worktree_lock_file,
 )
+from booley.goals.test_run_resolution import resolution_update_violation
 from booley.runtime.atomic_files import (
     WriteOnceConflictError,
     atomic_replace_bytes,
@@ -564,6 +565,9 @@ class GoalStore:
         ]
         if changed:
             raise InvalidRecordUpdateError(f"Goal Record {record.id} cannot change {changed}")
+        frozen = _frozen_run_violation(current, record)
+        if frozen:
+            raise InvalidRecordUpdateError(f"Goal Record {record.id}: {frozen}")
         saved = replace(record, revision=current.revision + 1)
         atomic_replace_bytes(
             record_paths(self.project_dir, record.id).record_file, _validate_encodable(saved)
@@ -620,6 +624,26 @@ def _occupant(records: Sequence[GoalRecord], identity: WorktreeIdentity) -> Goal
         ids = ", ".join(record.id for record in matches)
         raise GoalStoreError(f"several Goal Records occupy one worktree: {ids}")
     return matches[0] if matches else None
+
+
+def _frozen_run_violation(current: GoalRecord, record: GoalRecord) -> str:
+    """Why *record* may not replace *current*'s frozen Test Runs; empty when it may.
+
+    While a Goal keeps its specification revision, its resolution can only
+    fill pending slots (ADR 0072): the Test Runs it is frozen to are fixed.
+    """
+    for goal in current.goals:
+        key = goal.spec.key
+        before = current.test_run_resolution(key)
+        if before is None or goal not in record.goals:
+            continue
+        after = record.test_run_resolution(key)
+        if after is None:
+            return f"the frozen Test Runs of Goal {key} cannot be removed"
+        violation = resolution_update_violation(key, before, after)
+        if violation:
+            return violation
+    return ""
 
 
 def _encode(record: GoalRecord) -> bytes:
