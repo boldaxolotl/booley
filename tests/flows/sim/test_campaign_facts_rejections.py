@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import pytest
 
+from booley.evidence.fields import ACCEPTANCE_FACTS_SCHEMA_V1
 from booley.flows.sim.campaign import facts
 from booley.flows.sim.campaign.codec import SimulationCampaignIntegrityError, canonical_json_bytes
 
 
 def _facts() -> dict[str, object]:
     return {
-        "$schema": facts._SCHEMA_V1,
+        "$schema": ACCEPTANCE_FACTS_SCHEMA_V1,
         "campaign_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
         "manifest_sha256": "sha256:" + "1" * 64,
         "origin": {"execution_id": "e" * 32, "invocation_id": 1},

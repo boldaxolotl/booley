@@ -9,10 +9,13 @@ from dataclasses import dataclass
 from types import MappingProxyType
 
 from booley.core.boundary import BoundaryError, require_str_value
+from booley.evidence.fields import (
+    ACCEPTANCE_FACTS_SCHEMA_V2,
+    ACCEPTANCE_FACTS_SCHEMAS,
+)
 
 from .codec import SimulationCampaignIntegrityError, canonical_json_bytes
 
-_SCHEMA_V1 = "booley.simulation-acceptance-facts/v1"
 # v2 = v1 plus the required ``test_run`` and ``test_run_fingerprint`` of every
 # observation and of every prerequisite's baseline ``cycle_observation``: the
 # resolved name of the Test Run it observed and the fingerprint of that run's
@@ -22,8 +25,7 @@ _SCHEMA_V1 = "booley.simulation-acceptance-facts/v1"
 # so several Test Variants or seeds of one Test can coexist.
 # Facts of a campaign whose manifest records Test Runs are written as v2; v1
 # stays readable.
-ACCEPTANCE_FACTS_SCHEMA = "booley.simulation-acceptance-facts/v2"
-ACCEPTANCE_FACTS_SCHEMAS = frozenset({_SCHEMA_V1, ACCEPTANCE_FACTS_SCHEMA})
+ACCEPTANCE_FACTS_SCHEMA = ACCEPTANCE_FACTS_SCHEMA_V2
 _FIELDS = frozenset(
     {
         "$schema",

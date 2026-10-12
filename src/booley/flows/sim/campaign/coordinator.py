@@ -10,6 +10,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Protocol, cast, overload
 
+from booley.evidence.fields import ACCEPTANCE_FACTS_SCHEMA_V1
 from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.sim.campaign_reports import target_report_directory
 from booley.flows.sim.coverage_campaign_store import CoverageCampaignStoreError
@@ -1019,9 +1020,7 @@ def _acceptance_facts(
     facts = AcceptanceFacts(
         {
             "$schema": (
-                ACCEPTANCE_FACTS_SCHEMA
-                if names_test_runs
-                else "booley.simulation-acceptance-facts/v1"
+                ACCEPTANCE_FACTS_SCHEMA if names_test_runs else ACCEPTANCE_FACTS_SCHEMA_V1
             ),
             "campaign_id": manifest.document["campaign_id"],
             "manifest_sha256": manifest_digest(manifest),

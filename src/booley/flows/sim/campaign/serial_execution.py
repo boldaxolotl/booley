@@ -66,6 +66,7 @@ from .codec import (
     MAX_DETAIL_BYTES,
     RECORD_MAX_BYTES,
     RESULT_SCHEMA,
+    RESULT_V2_SCHEMA,
     SimulationCampaignIntegrityError,
     canonical_json_bytes,
     decode_bundle_build_attempt,
@@ -1552,7 +1553,7 @@ def _result(
             for observation, (name, _fingerprint) in zip(observations, bound, strict=True)
         ]
     document = {
-        "$schema": RESULT_SCHEMA if bound is not None else "booley.simulation-result/v2",
+        "$schema": RESULT_SCHEMA if bound is not None else RESULT_V2_SCHEMA,
         **_common(request),
         "attempt_id": request.attempt_id,
         "attempt_ordinal": request.attempt_ordinal,

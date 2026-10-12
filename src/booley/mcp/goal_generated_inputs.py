@@ -11,7 +11,12 @@ from typing import Any, cast
 
 from booley.criteria.evidence_ledger import validated_evidence_records
 from booley.criteria.state import DevelopmentState
-from booley.flows.sim.campaign.codec import MANIFEST_MAX_BYTES, decode_simulation_campaign_manifest
+from booley.flows.sim.campaign.codec import (
+    MANIFEST_MAX_BYTES,
+    MANIFEST_SCHEMA,
+    MANIFEST_V3_SCHEMA,
+    decode_simulation_campaign_manifest,
+)
 from booley.goals.derivation import selected_observations
 from booley.goals.generated_artifacts import committed_only_inputs
 from booley.goals.input_view import GeneratedBuildInput, is_always_committed_input
@@ -87,9 +92,9 @@ def _declares_source_identities(producer: Mapping[str, object]) -> bool:
     planner with contract version 2, or any entry that names a source path.
     """
     schema = producer["$schema"]
-    if schema == "booley.simulation-campaign-manifest/v3":
+    if schema == MANIFEST_V3_SCHEMA:
         return True
-    if schema != "booley.simulation-campaign-manifest/v4":
+    if schema != MANIFEST_SCHEMA:
         return False
     disclosures = cast("tuple[Mapping[str, Any], ...]", producer["planning_disclosures"])
     return any(

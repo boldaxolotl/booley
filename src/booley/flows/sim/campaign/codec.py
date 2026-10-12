@@ -102,26 +102,26 @@ _MANIFEST_V1_SCHEMA = "booley.simulation-campaign-manifest/v1"
 # v2 = v1 plus the required ``workload.no_waivers: true`` (raw coverage, #992).  v1 is
 # immutable; v3 additionally permits explicit declared source identities in disclosures.
 _MANIFEST_V2_SCHEMA = "booley.simulation-campaign-manifest/v2"
-_MANIFEST_V3_SCHEMA = "booley.simulation-campaign-manifest/v3"
+MANIFEST_V3_SCHEMA = "booley.simulation-campaign-manifest/v3"
 # v4 = v3 plus the required ``test_runs`` of every work item: the concrete
 # Test Runs (Test Variant, seed, declared arguments and environment) the item
 # executes (ADR 0072). It is the only version written; v1-v3 stay readable.
 _MANIFEST_V4_SCHEMA = "booley.simulation-campaign-manifest/v4"
 MANIFEST_SCHEMA = _MANIFEST_V4_SCHEMA
 _MANIFEST_SCHEMAS = frozenset(
-    {_MANIFEST_V1_SCHEMA, _MANIFEST_V2_SCHEMA, _MANIFEST_V3_SCHEMA, _MANIFEST_V4_SCHEMA}
+    {_MANIFEST_V1_SCHEMA, _MANIFEST_V2_SCHEMA, MANIFEST_V3_SCHEMA, _MANIFEST_V4_SCHEMA}
 )
 # Versions whose workload may carry ``no_waivers`` and whose disclosures may
 # declare source identities without the v1/v2 restrictions.
-_OPEN_GRAMMAR_SCHEMAS = frozenset({_MANIFEST_V3_SCHEMA, _MANIFEST_V4_SCHEMA})
+_OPEN_GRAMMAR_SCHEMAS = frozenset({MANIFEST_V3_SCHEMA, _MANIFEST_V4_SCHEMA})
 
-_RESULT_V2_SCHEMA = "booley.simulation-result/v2"
+RESULT_V2_SCHEMA = "booley.simulation-result/v2"
 # v3 = v2 plus the required ``test_run`` of every observation: the resolved
 # name of the Test Run it observed (ADR 0072). Observations are then unique by
 # Test Run instead of by Test. A result of a work item that records Test Runs
 # is written as v3; v1 and v2 stay readable.
 RESULT_SCHEMA = "booley.simulation-result/v3"
-_RESULT_SCHEMAS = frozenset({_RESULT_V2_SCHEMA, RESULT_SCHEMA})
+_RESULT_SCHEMAS = frozenset({RESULT_V2_SCHEMA, RESULT_SCHEMA})
 
 _MANIFEST_FIELDS = frozenset(
     {
@@ -1711,7 +1711,7 @@ _DOCUMENT_SPECS: dict[
         _validate_build_result,
     ),
     SimulationResult: (
-        _RESULT_V2_SCHEMA,
+        RESULT_V2_SCHEMA,
         _RESULT_FIELDS,
         RECORD_MAX_BYTES,
         _validate_simulation_result,
@@ -1731,7 +1731,7 @@ _DOCUMENT_SPECS: dict[
 }
 _DOCUMENT_VALIDATORS = {spec[0]: spec[3] for spec in _DOCUMENT_SPECS.values()}
 _DOCUMENT_VALIDATORS[_MANIFEST_V2_SCHEMA] = _validate_manifest
-_DOCUMENT_VALIDATORS[_MANIFEST_V3_SCHEMA] = _validate_manifest
+_DOCUMENT_VALIDATORS[MANIFEST_V3_SCHEMA] = _validate_manifest
 _DOCUMENT_VALIDATORS[_MANIFEST_V4_SCHEMA] = _validate_manifest
 _DOCUMENT_VALIDATORS[RESULT_SCHEMA] = _validate_simulation_result
 
@@ -1771,7 +1771,7 @@ def decode_simulation_result(raw: bytes) -> SimulationResult:
     except (UnicodeError, json.JSONDecodeError):
         document = None
     if isinstance(document, dict) and document.get("$schema") == "booley.simulation-result/v1":
-        document["$schema"] = _RESULT_V2_SCHEMA
+        document["$schema"] = RESULT_V2_SCHEMA
         raw = canonical_json_bytes(document)
     return _decode_registered(raw, SimulationResult)
 

@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import glob
-import hashlib
 import os
-import re
 from dataclasses import dataclass
 from pathlib import Path
+
+# One rule for a safe path component; a Test Run name (``stress+soak@42``) is one.
+from booley.flows.artifacts import path_component as artifact_path_component
 
 from .freshness import (
     ArtifactEvidence,
@@ -17,10 +18,6 @@ from .freshness import (
     validate_fresh_artifact,
 )
 
-# ``+`` and ``@`` are the separators of a Test Run name (``stress+soak@42``),
-# so a run's evidence directory reads as the run. Both are ordinary file-name
-# characters on POSIX and on Windows.
-_SAFE_COMPONENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.+@-]{0,127}\Z")
 _TRACE_FILE_PATTERNS = ("**/*.fst", "**/*.vcd")
 _COMPATIBILITY_ARTIFACTS = (
     ("result", "result.json"),
@@ -35,14 +32,6 @@ def _without_symlink_escape(path: Path) -> Path | None:
     lexical = Path(os.path.normpath(path.absolute()))
     resolved = path.resolve()
     return resolved if resolved == lexical else None
-
-
-def artifact_path_component(value: str) -> str:
-    """Return one traversal-safe, bounded component representing *value*."""
-    if _SAFE_COMPONENT_RE.fullmatch(value):
-        return value
-    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
-    return f"~sha256-{digest}"
 
 
 @dataclass(frozen=True)
