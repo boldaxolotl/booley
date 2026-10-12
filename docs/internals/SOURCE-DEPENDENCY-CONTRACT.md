@@ -53,6 +53,15 @@ Feedback from importing Harness in any static import location.
 
 ## Runtime execution boundary
 
+MCP application behavior is independent of the external MCP SDK and transport:
+`mcp.job_lifecycle.JobLifecycle` owns submission, duplicate attachment, bounded
+polling, cancellation, and terminal-result resolution. It composes the existing
+Runtime record and slot owners through internal `mcp.job_results` lookup and
+`mcp.endpoint_process` supervision. `mcp.report_encoding.ReportEncoder` owns text
+tails, report deduplication, and the structured-result budget and oversized-result
+fallback. None of these owners depends on `mcp.server`; the server composes their
+results with SDK content, Goal warnings, and the existing health announcements.
+
 - `runtime.job_records` stores records at an explicit jobs root. MCP composition
   resolves `runtime.session_paths.session_jobs_dir` after Interactive logging setup;
   the job manager retains each run's root from submission through completion,

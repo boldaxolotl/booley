@@ -33,6 +33,27 @@ def test_production_source_dependencies_obey_approved_contract() -> None:
     assert not problems, "Source dependency contract failures:\n" + format_problems(problems)
 
 
+def test_job_and_report_owners_have_no_dependency_path_to_mcp_adapter() -> None:
+    dependencies = analyze_imports(_SOURCE_ROOT)
+    edges: dict[str, set[str]] = {}
+    for dependency in dependencies:
+        edges.setdefault(dependency.source, set()).add(dependency.target)
+    for owner in (
+        "booley.mcp.job_lifecycle",
+        "booley.mcp.job_results",
+        "booley.mcp.endpoint_process",
+        "booley.mcp.report_encoding",
+    ):
+        pending, visited = [owner], set()
+        while pending:
+            module = pending.pop()
+            if module in visited:
+                continue
+            assert module != "booley.mcp.server", f"{owner} depends on the MCP adapter"
+            visited.add(module)
+            pending.extend(edges.get(module, set()) - visited)
+
+
 def test_every_campaign_storage_permission_is_a_current_exact_edge() -> None:
     dependencies = analyze_imports(_SOURCE_ROOT)
     edges = {(item.source, item.target) for item in dependencies}
