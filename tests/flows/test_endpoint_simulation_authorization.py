@@ -14,6 +14,7 @@ from booley.evidence.acceptance import AcceptanceTargetBinding, ResolvedFlowAcce
 from booley.flows import endpoint_acceptance
 from booley.flows.endpoint_admission import authorize_simulation_targets
 from booley.flows.sim.flow import PreparedSimulationEndpoint, SimulateFlow, SimulationMode
+from booley.flows.sim.test_run_invocation import EvidenceGuard
 from booley.runtime.endpoint_execution import EndpointOutcome
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
@@ -239,6 +240,7 @@ def test_campaign_preflight_orders_candidate_before_historical_baseline(
     monkeypatch.setattr(flow, "_resolve_requested_targets", lambda: ["sim"])
     monkeypatch.setattr(flow, "_validate_interactive_args", lambda _targets: None)
     monkeypatch.setattr(flow, "_validate_prepared_selection", lambda *_args: None)
+    monkeypatch.setattr(flow, "_request_evidence_guard", lambda *_args: EvidenceGuard())
     monkeypatch.setattr(flow, "_target_handle", lambda _selector: candidate)
     monkeypatch.setattr(
         flow,

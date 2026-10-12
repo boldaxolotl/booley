@@ -16,8 +16,8 @@ import shlex
 import sys
 import time
 from collections import Counter
-from collections.abc import Callable, Mapping, Sequence
-from contextlib import ExitStack, suppress
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from pathlib import Path
@@ -92,7 +92,6 @@ from booley.flows.test_runs import (
     DEFAULT_SEED,
     SeedCount,
     TestRun,
-    UnseededTargetError,
     parse_test_selector,
     test_run_document,
     test_run_from_document,
@@ -217,6 +216,13 @@ from .target_tests import (
     NoRunnableTestsError,
     require_runnable_target_test_suite,
     resolve_target_test_suite,
+)
+from .test_run_invocation import (
+    BaselineLink,
+    BaselineRuns,
+    EvidenceGuard,
+    TestRunInvocation,
+    decide_baseline_runs,
 )
 
 logger = logging.getLogger(__name__)
@@ -1097,33 +1103,33 @@ def _campaign_recovery_detail(status: CampaignRecoveryStatus) -> dict[str, objec
     }
 
 
-def baseline_test_run_refusal(
-    plan: TargetTestPlan, test: str, run: TestRun | None, revision: str
-) -> str | None:
-    """Why the baseline revision cannot run *test* as the candidate's *run*.
-
-    *plan* is the baseline checkout's own plan of the baseline Target.
-    ``None`` when it can. A Cocotb Target without a registry discovers its
-    Tests in the module, so only a registry that omits the Test refuses it.
-    """
-    where = f"baseline revision {revision[:12]}"
-    discovers = plan.adapter == "cocotb" and not plan.tests
-    if test not in plan.tests and not discovers:
-        return f"{where} does not register Test {test!r} on Target {plan.target!r}"
-    if run is None:
-        return None
-    try:
-        plan.require_applicable(run)
-    except UnseededTargetError as exc:
-        return f"{where} cannot apply the seed: {exc}"
-    return None
+def _link_baseline_prerequisites(
+    prerequisites: dict[str, list[Mapping[str, object]]],
+    links: Sequence[BaselineLink],
+    by_run: Mapping[str, Mapping[str, object]],
+) -> None:
+    """Give each candidate the baseline observation of its own Test Run."""
+    for link in links:
+        assert link.run is not None, "an accepted baseline link has a Test Run"
+        prerequisites[link.candidate].append(by_run[link.run.name])
 
 
-def _runnable_requirements(
-    requirements: tuple[tuple[str, str, str], ...], runnable: Mapping[str, tuple[str, ...]]
-) -> tuple[tuple[str, str, str], ...]:
-    """The candidate/baseline/Test links whose baseline Test Run can run."""
-    return tuple(link for link in requirements if link[2] in runnable.get(link[1], ()))
+def _evidence_guard_notes(guard: EvidenceGuard) -> list[str]:
+    """The report lines that say why a guarded invocation records no evidence."""
+    notes: list[str] = []
+    names = guard.other_test_runs
+    if names:
+        shown = ", ".join(names[:8]) + (f", and {len(names) - 8} more" if len(names) > 8 else "")
+        notes.append(
+            "Diagnostic: this run includes Test Runs other than the default Test Variant "
+            f"at the Default Seed ({shown}); it records no Goal evidence."
+        )
+    if guard.unresolved:
+        notes.append(
+            "Diagnostic: the Test Runs of this run could not be resolved "
+            f"({'; '.join(guard.unresolved[:8])}); it records no Goal evidence."
+        )
+    return notes
 
 
 def _manifest_run_groups(
@@ -2424,6 +2430,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         super().__init__()
         self._coverage_execution_factory = coverage_execution
         self._campaign_publication_checkpoint = campaign_publication_checkpoint
+        self._test_runs = TestRunInvocation()
 
     request_type = SimRequest
     argument_adapter = SimArguments
@@ -2478,7 +2485,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         from .acceptance import record_campaign_acceptance
 
         record_campaign_acceptance(
-            self.context, outcomes, baseline_refusals=getattr(self, "_baseline_refusals", {})
+            self.context, outcomes, baseline_refusals=self._test_runs.baseline.refusals
         )
 
     def persisted_cycle_counts(self) -> dict[str, list[dict[str, object]]]:
@@ -2536,8 +2543,11 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 )
                 if selection_error is not None:
                     return selection_error
+                self._enforce_evidence_guard(
+                    self._request_evidence_guard(list(selected_targets), test_names_map)
+                )
             else:
-                self._apply_interim_goal_guard_to_resume(resume.manifest)
+                self._enforce_evidence_guard(self._resume_evidence_guard(resume.manifest))
                 resume_error = self._resume_coverage_preflight_if_coverage(resume)
                 if resume_error is not None:
                     return resume_error
@@ -2996,6 +3006,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         plan_error = self._validate_test_plans(targets, test_names_map)
         if plan_error is not None:
             return plan_error
+        if not campaign_prepared:
+            # The campaign preflight already decided and applied the guard.
+            self._enforce_evidence_guard(self._request_evidence_guard(targets, test_names_map))
 
         runnable_error = self._validate_runnable_tests(targets, test_names_map)
         if runnable_error is not None:
@@ -3058,9 +3071,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         units: list[WorkUnitPlan] = []
         errors: list[str] = []
         execution = self._simulation_execution()
-        planned: dict[tuple[str, str], tuple[tuple[TestRun, ...], ...]] = self.__dict__.setdefault(
-            "_planned_run_groups", {}
-        )
+        planned = self._test_runs.planned_groups
         for target in targets:
             try:
                 preview = execution.preview(
@@ -3181,28 +3192,26 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             return [], [error]
         if baseline_ref is None:
             return [], []
-        project_root = Path(self.args.work_dir)
         expected = {target: self._target_handle(target).identity for target in baseline_targets}
         baseline_tests = self._cycle_baseline_test_names(test_names_map)
-        requirements = self._campaign_baseline_requirements(targets)
-        self._freeze_baseline_test_runs(requirements, test_names_map)
+        links = self._baseline_links(targets, test_names_map)
         try:
-            with baseline_worktree(
-                project_root,
-                baseline_ref,
-                paired_project=self._paired_project_baseline,
-            ) as worktree:
-                self.args.work_dir = worktree
-                runnable = self._runnable_baseline_tests(requirements, baseline_ref)
-                planned = [target for target in baseline_targets if runnable.get(target)]
+            with (
+                baseline_worktree(
+                    Path(self.args.work_dir),
+                    baseline_ref,
+                    paired_project=self._paired_project_baseline,
+                ) as worktree,
+                self._baseline_checkout(worktree, links, baseline_ref) as baseline,
+            ):
+                planned = [target for target in baseline_targets if baseline.runs_of(target)]
                 units, errors = self._plan_simulation_targets(
                     planned,
                     baseline_tests,
                     role="baseline",
                     revision=baseline_ref,
                     selections={
-                        target: self._baseline_selection(target, runnable[target])
-                        for target in planned
+                        target: SelectedTestRuns(baseline.runs_of(target)) for target in planned
                     },
                 )
                 mismatches = [
@@ -3214,40 +3223,62 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 return units, [*errors, *mismatches]
         except (BaselineWorktreeError, fusesoc_registry.FuseSocError, OSError, ValueError) as exc:
             return [], [f"sim: Cycle Count baseline planning failed: {exc}"]
+
+    def _baseline_links(
+        self, targets: Sequence[str], test_names_map: Mapping[str, list[str]]
+    ) -> tuple[BaselineLink, ...]:
+        """Every relative Cycle Count comparison of *targets*, with its Test Run.
+
+        A relative Cycle Count compares one Test Run on two revisions, so each
+        link carries the candidate's concrete Test Run (the same Test Variant
+        arguments, environment and seed) for the baseline to run. Call in the
+        candidate checkout.
+        """
+        return tuple(
+            BaselineLink(
+                candidate,
+                baseline,
+                test,
+                self._candidate_test_run(candidate, test, test_names_map),
+            )
+            for candidate, baseline, test in self._campaign_baseline_requirements(targets)
+        )
+
+    def _candidate_test_run(
+        self, candidate: str, test: str, test_names_map: Mapping[str, list[str]]
+    ) -> TestRun | None:
+        """The Test Run of *test* this invocation runs on *candidate*, if any."""
+        try:
+            runs = self._resolve_test_runs(candidate, test_names_map)
+        except (fusesoc_registry.FuseSocError, ValueError):
+            # Nothing to compare: the link is refused by name and no baseline
+            # runs for it (test_cycle_baseline_test_runs).
+            return None
+        return next((run for run in runs if run.test == test), None)
+
+    @contextmanager
+    def _baseline_checkout(
+        self, worktree: Path, links: Sequence[BaselineLink], revision: str
+    ) -> Iterator[BaselineRuns]:
+        """Work in the baseline checkout with the candidate Test Runs it can run.
+
+        Decides there which comparisons the baseline revision can run, keeps
+        the decision for the rest of the invocation, and restores the
+        candidate checkout on exit.
+        """
+        project_root = Path(self.args.work_dir)
+        self.args.work_dir = worktree
+        try:
+            self._test_runs.baseline = decide_baseline_runs(
+                links, self._target_test_plan, revision
+            )
+            yield self._test_runs.baseline
         finally:
             self.args.work_dir = project_root
 
-    def _runnable_baseline_tests(
-        self, requirements: Sequence[tuple[str, str, str]], revision: str
-    ) -> dict[str, tuple[str, ...]]:
-        """The Tests each baseline Target runs; the rest are remembered as refusals.
-
-        Call in the baseline checkout, after the candidate's Test Runs were
-        frozen. The baseline revision cannot run a candidate Test Run when it
-        does not register the Test (it would launch without selecting it) or
-        cannot apply the seed. Such a comparison is inconclusive: the refusal
-        is reported with its reason and nothing is launched for it.
-        """
-        frozen: dict[tuple[str, str], TestRun] = getattr(self, "_baseline_test_runs", {})
-        refusals: dict[tuple[str, str], str] = {}
-        runnable: dict[str, list[str]] = {}
-        for _candidate, baseline, test in requirements:
-            if (baseline, test) in refusals or test in runnable.get(baseline, ()):
-                continue
-            reason = baseline_test_run_refusal(
-                self._target_test_plan(baseline), test, frozen.get((baseline, test)), revision
-            )
-            if reason is None:
-                runnable.setdefault(baseline, []).append(test)
-            else:
-                refusals[(baseline, test)] = reason
-        self._baseline_refusals = refusals
-        self._baseline_runnable = {target: tuple(tests) for target, tests in runnable.items()}
-        return self._baseline_runnable
-
     def _with_baseline_refusal_note(self, result: EndpointOutcome) -> EndpointOutcome:
         """Say which Cycle Count comparisons are inconclusive, and why."""
-        refusals: dict[tuple[str, str], str] = getattr(self, "_baseline_refusals", {})
+        refusals = self._test_runs.baseline.refusals
         if not refusals:
             return result
         result.detail["cycle_count_baseline_inconclusive"] = [
@@ -3614,7 +3645,10 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         disclosures = (
             ()
             if is_coverage
-            else tuple(execution.plan_campaign_group(handle, group) for group in groups)
+            else tuple(
+                execution.plan_campaign_group(handle, group, group_runs)
+                for group, group_runs in zip(groups, run_groups, strict=True)
+            )
         )
         suite = cast(Mapping[str, object], manifest.document["required_suite"])
         target = cast(Mapping[str, str], manifest.document["target"])
@@ -3870,6 +3904,11 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         return resolved
 
     def _run_coverage(self) -> EndpointOutcome:
+        self._enforce_evidence_guard(
+            self._request_evidence_guard(
+                self._requested_targets(), _get_test_names(self.args.work_dir)
+            )
+        )
         error = self._prepare_coverage()
         if error is not None:
             return error
@@ -4182,7 +4221,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             acceptance=coverage_acceptance(
                 self.state,
                 self.context._acceptance_recorder,
-                diagnostic=self.args.diagnostic,
+                diagnostic=self.context.records_no_evidence,
                 observer=self.context.record_report_criteria,
                 on_discard=self.context.discard_evidence,
             ),
@@ -4712,41 +4751,31 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             raise BaselineWorktreeError(error)
         if baseline_ref is None:
             return [], {}
-        project_root = Path(self.args.work_dir)
-        requirements = self._campaign_baseline_requirements(targets)
+        links = self._baseline_links(targets, test_names_map)
         expected = {target: self._target_handle(target).identity for target in baseline_targets}
         prerequisites: dict[str, list[Mapping[str, object]]] = {target: [] for target in targets}
-        resources = self.context.publication_resources
-        worktree = resources.enter_context(
+        worktree = self.context.publication_resources.enter_context(
             baseline_worktree(
-                project_root,
+                Path(self.args.work_dir),
                 baseline_ref,
                 paired_project=self._paired_project_baseline,
             )
         )
         requests: list[NewCampaignRunRequest] = []
-        self._freeze_baseline_test_runs(requirements, test_names_map)
-        self.args.work_dir = worktree
-        try:
-            runnable = self._runnable_baseline_tests(requirements, baseline_ref)
-            requirements = _runnable_requirements(requirements, runnable)
-            for target in (item for item in baseline_targets if runnable.get(item)):
-                request, by_test = self._planned_baseline_request(
+        with self._baseline_checkout(worktree, links, baseline_ref) as baseline:
+            for target in (item for item in baseline_targets if baseline.runs_of(item)):
+                request, by_run = self._planned_baseline_request(
                     target,
                     expected[target],
                     baseline_ref,
-                    requirements,
+                    baseline.runs_of(target),
                     test_names_map,
                     worktree,
                     invocation,
                     admission,
                 )
                 requests.append(request)
-                for candidate, baseline, test in requirements:
-                    if baseline == target:
-                        prerequisites[candidate].append(by_test[test])
-        finally:
-            self.args.work_dir = project_root
+                _link_baseline_prerequisites(prerequisites, baseline.links_of(target), by_run)
         return requests, prerequisites
 
     def _planned_baseline_request(
@@ -4754,7 +4783,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         target: str,
         expected_identity: str,
         baseline_ref: str,
-        requirements: tuple[tuple[str, str, str], ...],
+        runs: tuple[TestRun, ...],
         test_names_map: dict[str, list[str]],
         worktree: Path,
         invocation: Path,
@@ -4773,11 +4802,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             execution_id=str(admission.execution_id or ""),
             role="cycle_count_baseline",
             revision=baseline_ref,
-            selected_override=tuple(
-                dict.fromkeys(
-                    test for _candidate, baseline, test in requirements if baseline == target
-                )
-            ),
+            baseline_runs=runs,
         )
         request = NewCampaignRunRequest(
             plan,
@@ -4788,11 +4813,12 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             admission,
             pre_sim_firing_published=self._record_pre_sim_firing,
         )
-        return request, self._baseline_prerequisites_by_test(target, plan)
+        return request, self._baseline_prerequisites_by_run(target, plan)
 
-    def _baseline_prerequisites_by_test(
+    def _baseline_prerequisites_by_run(
         self, target: str, plan: SimulationCampaignPlan
     ) -> dict[str, Mapping[str, object]]:
+        """The prerequisite document of each baseline work item, by Test Run name."""
         target_document = cast(Mapping[str, str], plan.manifest.document["target"])
         relative = (
             target_report_directory(
@@ -4804,10 +4830,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         documents = self._campaign_prerequisite_documents(plan, relative)
         items = cast(tuple[Mapping[str, object], ...], plan.manifest.document["work_items"])
         return {
-            cast(tuple[str, ...], cast(Mapping[str, object], item["selection"])["names"])[
-                0
-            ]: document
+            str(run["name"]): document
             for item, document in zip(items, documents, strict=True)
+            for run in cast(Sequence[Mapping[str, object]], item["test_runs"])
         }
 
     def _campaign_baseline_requirements(
@@ -4922,35 +4947,28 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             raise BaselineWorktreeError(error)
         if baseline_ref is None:
             return {}, []
-        project_root = Path(self.args.work_dir)
-        requirements = self._campaign_baseline_requirements(targets)
+        links = self._baseline_links(targets, test_names_map)
         prerequisites: dict[str, list[Mapping[str, object]]] = {target: [] for target in targets}
         previews: list[dict[str, object]] = []
-        with baseline_worktree(
-            project_root,
-            baseline_ref,
-            paired_project=self._paired_project_baseline,
-        ) as worktree:
-            self._freeze_baseline_test_runs(requirements, test_names_map)
-            self.args.work_dir = worktree
-            try:
-                runnable = self._runnable_baseline_tests(requirements, baseline_ref)
-                requirements = _runnable_requirements(requirements, runnable)
-                for target in (item for item in baseline_targets if runnable.get(item)):
-                    preview, by_test = self._preview_one_campaign_baseline(
-                        campaign,
-                        target,
-                        baseline_ref,
-                        requirements,
-                        test_names_map,
-                        worktree,
-                    )
-                    previews.append(preview)
-                    for candidate, baseline, test in requirements:
-                        if baseline == target:
-                            prerequisites[candidate].append(by_test[test])
-            finally:
-                self.args.work_dir = project_root
+        with (
+            baseline_worktree(
+                Path(self.args.work_dir),
+                baseline_ref,
+                paired_project=self._paired_project_baseline,
+            ) as worktree,
+            self._baseline_checkout(worktree, links, baseline_ref) as baseline,
+        ):
+            for target in (item for item in baseline_targets if baseline.runs_of(item)):
+                preview, by_run = self._preview_one_campaign_baseline(
+                    campaign,
+                    target,
+                    baseline_ref,
+                    baseline.runs_of(target),
+                    test_names_map,
+                    worktree,
+                )
+                previews.append(preview)
+                _link_baseline_prerequisites(prerequisites, baseline.links_of(target), by_run)
         return prerequisites, previews
 
     def _preview_one_campaign_baseline(
@@ -4958,15 +4976,10 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         campaign: SimulationCampaign,
         target: str,
         baseline_ref: str,
-        requirements: tuple[tuple[str, str, str], ...],
+        runs: tuple[TestRun, ...],
         test_names_map: dict[str, list[str]],
         worktree: Path,
     ) -> tuple[dict[str, object], dict[str, Mapping[str, object]]]:
-        selected = tuple(
-            dict.fromkeys(
-                test for _candidate, baseline, test in requirements if baseline == target
-            )
-        )
         plan = self._ordinary_campaign_plan(
             target,
             test_names_map,
@@ -4974,7 +4987,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             execution_id="",
             role="cycle_count_baseline",
             revision=baseline_ref,
-            selected_override=selected,
+            baseline_runs=runs,
         )
         preview = campaign.preview(
             NewCampaignPreviewRequest(
@@ -4990,7 +5003,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             "build_variants": len(preview.build_variants),
             "prerequisites": 0,
         }
-        return summary, self._baseline_prerequisites_by_test(target, plan)
+        return summary, self._baseline_prerequisites_by_run(target, plan)
 
     def _ordinary_campaign_plan(
         self,
@@ -5002,11 +5015,15 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         prerequisite_documents: Sequence[Mapping[str, object]] = (),
         role: str = "candidate",
         revision: str | None = None,
-        selected_override: Sequence[str] | None = None,
+        baseline_runs: tuple[TestRun, ...] | None = None,
     ) -> SimulationCampaignPlan:
-        """Resolve one Target into the same exact plan used by preview and run."""
+        """Resolve one Target into the same exact plan used by preview and run.
+
+        *baseline_runs* are the candidate Test Runs a Cycle Count baseline
+        runs instead of the request's own selection.
+        """
         handle = self._target_handle(target)
-        inputs = self._ordinary_campaign_inputs(target, test_names_map, handle, selected_override)
+        inputs = self._ordinary_campaign_inputs(target, test_names_map, handle, baseline_runs)
         if self.is_cocotb_target(target):
             return self._cocotb_campaign_plan(
                 handle,
@@ -5035,17 +5052,19 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             required_suite_catalog_backed=inputs[4],
         )
 
-    def _ordinary_campaign_inputs(self, target, test_names_map, handle, selected_override):
+    def _ordinary_campaign_inputs(self, target, test_names_map, handle, baseline_runs):
         inspection = TargetCatalog.build(handle.project_root).inspect(handle)
         selection = (
-            self._baseline_selection(target, tuple(selected_override))
-            if selected_override is not None
+            SelectedTestRuns(baseline_runs)
+            if baseline_runs is not None
             else self._test_run_selection(target, test_names_map)
         )
         execution = self._simulation_execution()
         preview = execution.preview(handle, selection)
+        # Disclose the build of the Test Runs that launch, not of their Tests' defaults.
         disclosures = tuple(
-            execution.plan_campaign_group(handle, group) for group in preview.groups
+            execution.plan_campaign_group(handle, group, runs)
+            for group, runs in zip(preview.groups, preview.run_groups, strict=True)
         )
         suite = resolve_target_test_suite(
             target,
@@ -5055,40 +5074,6 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         required = tuple(name for name in suite.tests if name is not None)
         catalog_backed = bool(lookup_target_section(test_names_map, target) or [])
         return inspection, preview, disclosures, required, catalog_backed
-
-    def _freeze_baseline_test_runs(
-        self,
-        requirements: Sequence[tuple[str, str, str]],
-        test_names_map: Mapping[str, list[str]],
-    ) -> None:
-        """Remember the candidate's Test Run of every Cycle Count baseline Test.
-
-        A relative Cycle Count compares one Test Run on two revisions. The
-        baseline therefore runs the candidate's concrete Test Run (the same
-        Test Variant arguments, environment and seed), not whatever the
-        baseline checkout's own ``tests.toml`` would resolve. Call this in the
-        candidate checkout, before planning moves to the baseline worktree.
-        """
-        frozen: dict[tuple[str, str], TestRun] = {}
-        for candidate, baseline, test in requirements:
-            try:
-                runs = self._resolve_test_runs(candidate, test_names_map)
-            except (fusesoc_registry.FuseSocError, ValueError):
-                continue
-            run = next((item for item in runs if item.test == test), None)
-            if run is not None:
-                frozen.setdefault((baseline, test), run)
-        self._baseline_test_runs = frozen
-
-    def _baseline_selection(
-        self, target: str, tests: tuple[str, ...]
-    ) -> SelectedTestRuns | NamedTests | DefaultSelection:
-        """Select baseline *tests* as the candidate's Test Runs where it runs them."""
-        frozen: dict[tuple[str, str], TestRun] = getattr(self, "_baseline_test_runs", {})
-        runs = tuple(frozen.get((target, test)) for test in tests)
-        if tests and all(run is not None for run in runs):
-            return SelectedTestRuns(cast(tuple[TestRun, ...], runs))
-        return self._execution_selection(list(tests))
 
     def _cocotb_campaign_plan(
         self,
@@ -5123,7 +5108,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             timeout_seconds=self._effective_timeout_ms() / 1000,
             build_timeout_seconds=self._effective_build_timeout_ms() / 1000,
             no_kill=self.args.no_kill,
-            diagnostic=self.args.diagnostic,
+            diagnostic=self.context.records_no_evidence,
             result_verbosity=self.args.result_verbosity,
         )
 
@@ -6123,9 +6108,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             test_name = params.get("test")
             current = tests.get(test_name) if isinstance(test_name, str) else None
             relative = has_relative_threshold(params)
-            baseline_tests = self._baseline_cycle_tests(target_result, params)
             baseline = (
-                baseline_tests.get(test_name) if relative and isinstance(test_name, str) else None
+                self._baseline_cycle_test(target_result, params, current) if relative else None
             )
             met, reason = _admissible_cycle_evidence(current, "current")
             if met and relative:
@@ -6133,7 +6117,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             detail = self._direct_cycle_detail(target_result, test_name, current, baseline)
             if baseline is None and not relative:
                 detail["baseline_observation"] = "not_required"
-            refusal = self._baseline_refusal_for(target_result, params, test_name)
+            refusal = self._baseline_refusal_for(target_result, test_name)
             if relative and baseline is None and refusal is not None:
                 # The comparison could not be made at all: say why, by name.
                 detail["baseline_observation"] = "inapplicable"
@@ -6171,23 +6155,30 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             "test_runs": _test_run_rows([current] if current is not None else []),
         }
 
-    def _baseline_refusal_for(
-        self, result: TargetResult, params: Mapping[str, Any], test: object
-    ) -> str | None:
+    def _baseline_refusal_for(self, result: TargetResult, test: object) -> str | None:
         """Why the baseline of this Criterion's Test could not run, if it could not."""
-        refusals: dict[tuple[str, str], str] = getattr(self, "_baseline_refusals", {})
-        baseline = params.get(BASELINE_TARGET_PARAM) or result.target
-        return refusals.get((str(baseline), str(test)))
+        return self._test_runs.baseline.refusals.get((result.target, str(test)))
 
-    def _baseline_cycle_tests(
-        self, result: TargetResult, params: Mapping[str, Any] | None = None
-    ) -> dict[str, TestResult]:
-        """Index baseline cycle evidence for the result's durable Target."""
-        key = (params or {}).get(BASELINE_TARGET_PARAM) or result.target_identity or result.target
+    def _baseline_cycle_test(
+        self, result: TargetResult, params: Mapping[str, Any], current: TestResult | None
+    ) -> TestResult | None:
+        """The baseline observation of the Test Run *current* observed, if any.
+
+        Both revisions must have run the same Test Run: a baseline result of
+        the same Test with another Test Variant or seed is not comparable.
+        """
+        key = params.get(BASELINE_TARGET_PARAM) or result.target_identity or result.target
         baseline = getattr(self, "_baseline_results", {}).get(key)
-        if not isinstance(baseline, TargetResult):
-            return {}
-        return {test.name: test for test in baseline.tests}
+        if current is None or not isinstance(baseline, TargetResult):
+            return None
+        return next(
+            (
+                test
+                for test in baseline.tests
+                if test.name == current.name and test.test_run == current.test_run
+            ),
+            None,
+        )
 
     def _remember_resolved_target(self, target: str, resolved: Any) -> None:
         """Keep the resolved EDAM projection long enough to snapshot its inputs."""
@@ -6551,8 +6542,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         """What *target* runs in *role*: a baseline runs the candidate's Test Runs."""
         if role != "baseline":
             return self._test_run_selection(target, test_names_map)
-        runnable: dict[str, tuple[str, ...]] = getattr(self, "_baseline_runnable", {})
-        return self._baseline_selection(target, runnable.get(target, ()))
+        return SelectedTestRuns(self._test_runs.baseline.runs_of(target))
 
     def _simulation_artifact_root(self, role: WorkUnitRole | None) -> Path | None:
         """Return the authorized direct-run evidence namespace without reserving."""
@@ -6589,9 +6579,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         groups: tuple[tuple[str, ...], ...],
     ) -> tuple[tuple[TestRun, ...], ...] | None:
         """The Test Runs the FlowPlan froze for *target*'s groups, when it has them."""
-        planned: dict[tuple[str, str], tuple[tuple[TestRun, ...], ...]] = getattr(
-            self, "_planned_run_groups", {}
-        )
+        planned = self._test_runs.planned_groups
         for key in (role,) if role is not None else ("ordinary", "candidate"):
             runs = planned.get((key, target))
             if runs is not None and len(runs) == len(groups):
@@ -6820,94 +6808,97 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             try:
                 self._resolve_test_runs(target, test_names_map)
             except fusesoc_registry.FuseSocError:
-                # Target resolution reports its own error on the run path.
+                # Target resolution reports its own error on the run path, and
+                # the evidence guard withholds evidence for a Target whose
+                # Test Runs did not resolve (test_interim_goal_guard).
                 continue
             except ValueError as exc:
                 return EndpointOutcome(exit_code=EXIT_ERROR, report_text=f"sim: {exc}")
-        self._apply_interim_goal_guard(targets, test_names_map)
         return None
 
-    def _apply_interim_goal_guard(
-        self, targets: list[str], test_names_map: Mapping[str, list[str]]
-    ) -> None:
-        """Keep Test Runs that no Goal can name yet from recording Goal evidence.
+    def _request_evidence_guard(
+        self, targets: Sequence[str], test_names_map: Mapping[str, list[str]]
+    ) -> EvidenceGuard:
+        """Decide whether this request's Test Runs may record Goal evidence.
 
-        INTERIM (#1233 stage S2; removed by stage S3). Goals cannot name a Test
-        Variant or a seed until S3, so evidence matching is still by bare Test
-        name. An invocation that contains any Test Run other than the default
-        Test Variant at the Target's Default Seed is therefore diagnostic as a
-        whole: it records no evidence for any simulation, Coverage or Cycle
-        Count Goal, and its report says so. An invocation of default Test Runs
-        only keeps today's evidence, with ``--test`` reduced to the bare Test
-        names every evidence consumer already matches on.
+        INTERIM (#1233 stage S2; removed by stage S3); see
+        :class:`EvidenceGuard`. Decides only: nothing is changed here. A
+        Target whose Test Runs do not resolve fails closed, because nothing
+        shows that it runs defaults.
         """
         other: list[str] = []
+        unresolved: list[str] = []
         tests: list[str] = []
         for target in targets:
             try:
                 plan = self._registered_test_plan(target, test_names_map)
                 runs = self._resolve_test_runs(target, test_names_map)
-            except (fusesoc_registry.FuseSocError, ValueError):
+            except (fusesoc_registry.FuseSocError, ValueError) as exc:
+                unresolved.append(f"{target}: {exc}")
                 continue
             other.extend(f"{target}: {run.name}" for run in runs if not plan.is_default_run(run))
             tests.extend(run.test for run in runs if run.test is not None)
-        if other:
-            self._test_run_guard_names = tuple(other)
-            self.args.diagnostic = True
-        elif self.args.test:
-            self.args.test = tuple(dict.fromkeys(tests))
-            self.args.seed = None
+        return EvidenceGuard(tuple(other), tuple(unresolved), tuple(dict.fromkeys(tests)))
 
-    def _apply_interim_goal_guard_to_resume(self, manifest: SimulationCampaignManifest) -> None:
-        """Keep a resumed campaign diagnostic when its frozen Test Runs made it so.
+    def _resume_evidence_guard(self, manifest: SimulationCampaignManifest) -> EvidenceGuard:
+        """Decide whether a resumed campaign's frozen Test Runs may record evidence.
 
         INTERIM (#1233 stage S2; removed by stage S3), with
-        :meth:`_apply_interim_goal_guard`. A resumed campaign runs the Test
+        :meth:`_request_evidence_guard`. A resumed campaign runs the Test
         Runs its manifest froze, not a request, so the guard reads them there.
         When the Target's plan cannot be built, no run can be shown to be a
-        default and the campaign stays diagnostic.
+        default and the campaign records no evidence.
         """
         try:
             runs = [run for group in _manifest_run_groups(manifest) for run in group]
         except ValueError:
-            return  # Predates recorded Test Runs; resume refuses it on its own.
+            # Predates recorded Test Runs. Resume refuses such a manifest on
+            # its own (test_campaign_test_runs), so nothing runs to guard.
+            return EvidenceGuard()
         selector = str(cast(Mapping[str, object], manifest.document["target"])["selector"])
         try:
-            plan: TargetTestPlan | None = self._target_test_plan(selector)
-        except (fusesoc_registry.FuseSocError, ValueError):
-            plan = None
-        other = [run for run in runs if plan is None or not plan.is_default_run(run)]
-        if other:
-            self._test_run_guard_names = tuple(f"{selector}: {run.name}" for run in other)
-            self.args.diagnostic = True
+            plan = self._target_test_plan(selector)
+        except (fusesoc_registry.FuseSocError, ValueError) as exc:
+            return EvidenceGuard(unresolved=(f"{selector}: {exc}",))
+        other = tuple(f"{selector}: {run.name}" for run in runs if not plan.is_default_run(run))
+        return EvidenceGuard(other_test_runs=other)
+
+    def _enforce_evidence_guard(self, guard: EvidenceGuard) -> None:
+        """Apply the guard's decision to this invocation.
+
+        INTERIM (#1233 stage S2; removed by stage S3). A guarded invocation
+        withholds its evidence; that is not ``--diagnostic`` and grants none
+        of its privileges. An invocation of default Test Runs only keeps
+        today's evidence, with ``--test`` reduced to the bare Test names every
+        evidence consumer already matches on.
+        """
+        self._test_runs.guard = guard
+        if guard.withholds_evidence:
+            self.context.withhold_evidence()
+        elif guard.tests and self.args.test:
+            self.args.test = guard.tests
+            self.args.seed = None
 
     def _with_test_run_guard_note(self, result: EndpointOutcome) -> EndpointOutcome:
-        """Say in the report that the interim Goal guard made the run diagnostic."""
-        names: tuple[str, ...] = getattr(self, "_test_run_guard_names", ())
-        if not names:
+        """Say in the report that the interim Goal guard withheld the run's evidence."""
+        guard = self._test_runs.guard
+        if not guard.withholds_evidence:
             return result
-        shown = ", ".join(names[:8]) + (f", and {len(names) - 8} more" if len(names) > 8 else "")
-        result.detail["test_run_goal_guard"] = {"diagnostic": True, "test_runs": list(names)}
-        note = (
-            "Diagnostic: this run includes Test Runs other than the default Test Variant "
-            f"at the Default Seed ({shown}); it records no Goal evidence."
-        )
+        result.detail["test_run_goal_guard"] = {
+            "diagnostic": True,
+            "test_runs": list(guard.other_test_runs),
+            **({"unresolved": list(guard.unresolved)} if guard.unresolved else {}),
+        }
+        notes = _evidence_guard_notes(guard)
         failures = _diagnostic_failures(result.detail)
         if failures:
             # These failures block no Goal: say so apart from the Target lines.
             result.detail["test_run_goal_guard"]["diagnostic_failures"] = failures
-            note = "\n".join(
-                [
-                    note,
-                    "Diagnostic failures (recorded as no Goal evidence):",
-                    *(f"  {name}" for name in failures[:TEST_RUN_ROW_LIMIT]),
-                    *(
-                        [f"  ... and {len(failures) - TEST_RUN_ROW_LIMIT} more"]
-                        if len(failures) > TEST_RUN_ROW_LIMIT
-                        else []
-                    ),
-                ]
-            )
+            notes.append("Diagnostic failures (recorded as no Goal evidence):")
+            notes.extend(f"  {name}" for name in failures[:TEST_RUN_ROW_LIMIT])
+            if len(failures) > TEST_RUN_ROW_LIMIT:
+                notes.append(f"  ... and {len(failures) - TEST_RUN_ROW_LIMIT} more")
+        note = "\n".join(notes)
         result.report_text = f"{result.report_text}\n{note}" if result.report_text else note
         return result
 
@@ -6987,9 +6978,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         from then on and is never drawn again. Raises ``ValueError`` (the Test
         Run error types) for a request this Target cannot run.
         """
-        cache: dict[tuple[str, str], tuple[TestRun, ...]] = self.__dict__.setdefault(
-            "_resolved_test_runs", {}
-        )
+        cache = self._test_runs.resolved
         key = (str(Path(self.args.work_dir)), target)
         if key not in cache:
             plan = self._registered_test_plan(target, test_names_map)

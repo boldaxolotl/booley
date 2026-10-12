@@ -393,7 +393,7 @@ def record_campaign_acceptance(
         endpoint.state,
         recorder,
         endpoint._invocation_id,
-        diagnostic=bool(getattr(endpoint.args, "diagnostic", False)),
+        diagnostic=endpoint.records_no_evidence,
         baseline_refusals=dict(baseline_refusals or {}),
         observer=endpoint.record_report_criteria,
         detail_stamper=(
@@ -702,7 +702,7 @@ def _cycle_changes(
         current = observations.get(test)
         if _unobserved_infrastructure(current):
             continue
-        baseline, baseline_state = _bound_baseline(prerequisites, params, test)
+        baseline, baseline_state = _bound_baseline(prerequisites, params, test, current)
         if _unobserved_infrastructure(baseline):
             continue
         current_cycles = _healthy_cycles(current)
@@ -720,7 +720,7 @@ def _cycle_changes(
         )
         detail["test_runs"] = rows.of((current,))
         if baseline_state == "mismatched":
-            _name_baseline_refusal(detail, refusals.get((str(_baseline_selector(params)), test)))
+            _name_baseline_refusal(detail, refusals.get((selector, test)))
         changes.extend(shadow.set_criterion(key, met, detail=detail))
     return changes
 
@@ -753,7 +753,13 @@ def _bound_baseline(
     prerequisites: tuple[Mapping[str, object], ...],
     params: Mapping[str, object],
     test: object,
+    current: Mapping[str, object] | None,
 ) -> tuple[Mapping[str, object] | None, str]:
+    """The baseline observation a relative Cycle Count Criterion compares with.
+
+    It must be the baseline's observation of the Test Run *current* observed:
+    the same name and the same declared-inputs fingerprint on both revisions.
+    """
     if not has_relative_threshold(dict(params)):
         return None, "not_required"
     selector = _baseline_selector(params)
@@ -771,6 +777,7 @@ def _bound_baseline(
             and target.get("selector") == selector
             and (revision is None or target.get("revision") == revision)
             and cycle.get("test") == test
+            and _same_test_run(cycle, current)
             and isinstance(manifest, Mapping)
             and manifest.get("owner") == item.get("campaign_id")
             and isinstance(result, Mapping)
@@ -779,6 +786,21 @@ def _bound_baseline(
         if bound:
             return cycle, "observed"
     return None, "mismatched"
+
+
+def _same_test_run(cycle: Mapping[str, object], current: Mapping[str, object] | None) -> bool:
+    """Whether a baseline observation is of the Test Run the candidate observed.
+
+    Facts before v2 name Tests only, on both sides; such a baseline
+    observation binds by Test, which is unique there.
+    """
+    if "test_run" not in cycle:
+        return current is None or "test_run" not in current
+    return (
+        current is not None
+        and cycle["test_run"] == current.get("test_run")
+        and cycle["test_run_fingerprint"] == current.get("test_run_fingerprint")
+    )
 
 
 def _name_baseline_refusal(detail: dict[str, object], refusal: str | None) -> None:

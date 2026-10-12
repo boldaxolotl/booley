@@ -264,3 +264,60 @@ def test_v2_facts_require_the_fingerprint_of_every_test_run() -> None:
     del document["observations"][0]["test_run_fingerprint"]  # type: ignore[index]
     with pytest.raises(SimulationCampaignIntegrityError, match="exact fields"):
         facts.decode_acceptance_facts(canonical_json_bytes(document))
+
+
+def _prerequisite(cycle: dict[str, object]) -> dict[str, object]:
+    evidence = {
+        "path_base": "origin_invocation",
+        "path": "record.json",
+        "bytes": 1,
+        "sha256": "sha256:" + "1" * 64,
+        "kind": "record",
+        "owner": "owner",
+    }
+    return {
+        "role": "cycle_count_baseline",
+        "manifest": evidence,
+        "campaign_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+        "target": {},
+        "work_item_id": "item",
+        "result": evidence,
+        "cycle_observation": cycle,
+    }
+
+
+_CYCLE = {"test": "stress", "cycle_count": 9, "unit": "cycles"}
+_NAMED_CYCLE = {
+    **_CYCLE,
+    "test_run": "stress+soak@7",
+    "test_run_fingerprint": "sha256:" + "9" * 64,
+}
+
+
+def test_v2_prerequisite_names_the_test_run_the_baseline_ran() -> None:
+    """Facts show that both revisions ran the same Test Run, not only one Test."""
+    facts._validate_prerequisite(_prerequisite(dict(_NAMED_CYCLE)), 0, names_test_runs=True)
+    with pytest.raises(SimulationCampaignIntegrityError, match="exact fields"):
+        facts._validate_prerequisite(_prerequisite(dict(_CYCLE)), 0, names_test_runs=True)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("test_run", ""),
+        ("test_run", 7),
+        ("test_run", "x" * 1025),
+        ("test_run_fingerprint", "sha256:short"),
+        ("test_run_fingerprint", None),
+    ],
+)
+def test_v2_prerequisite_rejects_an_invalid_baseline_test_run(field: str, value: object) -> None:
+    cycle = {**_NAMED_CYCLE, field: value}
+    with pytest.raises(SimulationCampaignIntegrityError):
+        facts._validate_prerequisite(_prerequisite(cycle), 0, names_test_runs=True)
+
+
+def test_v1_prerequisite_may_not_name_a_test_run() -> None:
+    facts._validate_prerequisite(_prerequisite(dict(_CYCLE)), 0)
+    with pytest.raises(SimulationCampaignIntegrityError, match="exact fields"):
+        facts._validate_prerequisite(_prerequisite(dict(_NAMED_CYCLE)), 0)

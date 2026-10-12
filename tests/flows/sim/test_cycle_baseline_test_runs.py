@@ -76,26 +76,152 @@ def test_baseline_that_cannot_apply_the_seed_refuses_instead_of_dropping_it(tmp_
     )
 
 
-def test_flow_freezes_the_candidates_run_for_each_baseline_test(tmp_path, monkeypatch):
+def _links(flow, monkeypatch, *requirements):
+    monkeypatch.setattr(flow, "_campaign_baseline_requirements", lambda _targets: requirements)
+    return flow._baseline_links(["sim"], _MAP)
+
+
+def test_each_baseline_link_carries_the_candidates_test_run(tmp_path, monkeypatch):
     flow = _flow(tmp_path, monkeypatch, "--test", "stress+soak@9")
 
-    flow._freeze_baseline_test_runs((("sim", "sim_ref", "stress"), ("sim", "sim", "reset")), _MAP)
+    links = _links(flow, monkeypatch, ("sim", "sim_ref", "stress"), ("sim", "sim", "reset"))
 
-    selection = flow._baseline_selection("sim_ref", ("stress",))
-    assert isinstance(selection, SelectedTestRuns)
-    assert [run.name for run in selection.runs] == ["stress+soak@9"]
-    # The candidate does not run "reset" in this invocation: the baseline
-    # checkout resolves that Test itself.
-    assert flow._baseline_selection("sim", ("reset",)) == NamedTests(("reset",))
-    assert flow._baseline_selection("other", ("stress",)) == NamedTests(("stress",))
+    assert [(link.baseline, link.test) for link in links] == [
+        ("sim_ref", "stress"),
+        ("sim", "reset"),
+    ]
+    assert links[0].run is not None and links[0].run.name == "stress+soak@9"
+    # The candidate does not run "reset" in this invocation.
+    assert links[1].run is None
 
 
-def test_default_request_freezes_the_default_test_run(tmp_path, monkeypatch):
+def test_default_request_carries_the_default_test_run(tmp_path, monkeypatch):
     flow = _flow(tmp_path, monkeypatch)
-    flow._freeze_baseline_test_runs((("sim", "sim", "stress"),), _MAP)
-    selection = flow._baseline_selection("sim", ("stress",))
-    assert isinstance(selection, SelectedTestRuns)
-    assert [run.name for run in selection.runs] == ["stress+short@1"]
+    (link,) = _links(flow, monkeypatch, ("sim", "sim", "stress"))
+    assert link.run is not None and link.run.name == "stress+short@1"
+
+
+def test_a_baseline_test_the_candidate_does_not_run_is_never_resolved_from_the_baseline(
+    tmp_path, monkeypatch
+):
+    """A2: with Criteria on two Tests and ``--test stress``, only ``stress`` runs.
+
+    The baseline runs the candidate's Test Run of ``stress``. ``reset`` has no
+    candidate Test Run, so the baseline does not run it from its own
+    ``tests.toml`` defaults; the comparison is refused by name.
+    """
+    flow = _flow(tmp_path, monkeypatch, "--test", "stress+soak@9")
+    links = _links(flow, monkeypatch, ("sim", "sim", "stress"), ("sim", "sim", "reset"))
+
+    with flow._baseline_checkout(tmp_path / "baseline", links, "a" * 40) as baseline:
+        assert Path(flow.args.work_dir) == tmp_path / "baseline"
+        assert [run.name for run in baseline.runs_of("sim")] == ["stress+soak@9"]
+        assert flow._role_selection("sim", _MAP, "baseline") == SelectedTestRuns(
+            baseline.runs_of("sim")
+        )
+
+    assert Path(flow.args.work_dir) == tmp_path
+    assert dict(baseline.refusals) == {
+        ("sim", "reset"): (
+            "this invocation runs no Test Run of Test 'reset' on Target 'sim', "
+            "so there is nothing to compare"
+        )
+    }
+    assert flow._test_runs.baseline is baseline
+
+
+def _variant_plan(target: str, default: str, default_seed: int | None = None):
+    from booley.config.project_config import normalize_tests_toml
+    from booley.flows.target_test_plan import build_target_test_plan
+
+    section = {
+        "tests": ["stress"],
+        "variants": {"stress": {"default": default, "short": ["+iters=1"], "soak": ["+iters=9"]}},
+        **({"default_seed": default_seed} if default_seed is not None else {}),
+    }
+    return build_target_test_plan(
+        target, normalize_tests_toml({target: section})[target], adapter="verilator"
+    )
+
+
+def test_candidates_that_share_a_baseline_each_get_their_own_test_run(tmp_path, monkeypatch):
+    """A1: two candidates with other defaults share one baseline Target.
+
+    The baseline runs both candidates' Test Runs, and each candidate is
+    linked to the baseline observation of its own.
+    """
+    from booley.flows.sim.flow import _link_baseline_prerequisites
+
+    flow = _flow(tmp_path, monkeypatch)
+    plans = {
+        "fast": _variant_plan("fast", "short"),
+        "slow": _variant_plan("slow", "soak", default_seed=7),
+        "ref": _variant_plan("ref", "short"),
+    }
+    monkeypatch.setattr(flow, "_target_test_plan", plans.__getitem__)
+    monkeypatch.setattr(flow, "_effective_skips", lambda _target: set())
+    monkeypatch.setattr(
+        flow,
+        "_campaign_baseline_requirements",
+        lambda _targets: (("fast", "ref", "stress"), ("slow", "ref", "stress")),
+    )
+    names = {"fast": ["stress"], "slow": ["stress"], "ref": ["stress"]}
+
+    links = flow._baseline_links(["fast", "slow"], names)
+    with flow._baseline_checkout(tmp_path / "baseline", links, "a" * 40) as baseline:
+        pass
+
+    assert not baseline.refusals
+    assert [run.name for run in baseline.runs_of("ref")] == ["stress+short@1", "stress+soak@7"]
+    prerequisites: dict[str, list] = {"fast": [], "slow": []}
+    by_run = {"stress+short@1": {"work_item_id": "a"}, "stress+soak@7": {"work_item_id": "b"}}
+    _link_baseline_prerequisites(prerequisites, baseline.links_of("ref"), by_run)
+    assert prerequisites == {
+        "fast": [{"work_item_id": "a"}],
+        "slow": [{"work_item_id": "b"}],
+    }
+
+
+def test_two_test_runs_of_one_name_but_other_inputs_cannot_share_a_baseline():
+    from booley.flows.sim.test_run_invocation import BaselineLink, decide_baseline_runs
+    from booley.flows.test_runs import build_test_run
+
+    first = build_test_run("stress", variant="soak", seed=1, args=("+iters=9",))
+    other = build_test_run("stress", variant="soak", seed=1, args=("+iters=99",))
+    plan = _variant_plan("ref", "short")
+    links = (
+        BaselineLink("fast", "ref", "stress", first),
+        BaselineLink("slow", "ref", "stress", other),
+    )
+
+    baseline = decide_baseline_runs(links, lambda _target: plan, "a" * 40)
+
+    assert baseline.runs_of("ref") == (first,)
+    assert dict(baseline.refusals) == {
+        ("slow", "stress"): (
+            "Test Run 'stress+soak@1' has other declared arguments or environment on "
+            "Target 'slow' than on another candidate compared against baseline Target 'ref'"
+        )
+    }
+
+
+def test_a_baseline_that_owns_an_option_of_the_test_run_refuses_it():
+    from booley.config.project_config import normalize_tests_toml
+    from booley.flows.sim.test_run_invocation import BaselineLink, baseline_link_refusal
+    from booley.flows.target_test_plan import build_target_test_plan
+    from booley.flows.test_runs import build_test_run
+
+    run = build_test_run("stress", variant="soak", seed=1, args=("+iters=9",))
+    section = normalize_tests_toml({"ref": {"tests": ["stress"]}})["ref"]
+    plan = build_target_test_plan("ref", section, adapter="verilator", target_plusargs=("iters",))
+
+    reason = baseline_link_refusal(plan, BaselineLink("sim", "ref", "stress", run), "a" * 40)
+
+    assert reason is not None
+    assert reason.startswith(
+        "baseline revision aaaaaaaaaaaa cannot apply the Test Variant arguments: "
+        "Test Run 'stress+soak@1' of Target 'ref': argument '+iters=9' is not allowed"
+    )
 
 
 def test_campaign_planning_runs_no_baseline_for_a_refused_test_run(tmp_path, monkeypatch):
@@ -128,7 +254,7 @@ def test_campaign_planning_runs_no_baseline_for_a_refused_test_run(tmp_path, mon
         flow.context.publication_resources.close()
 
     assert (requests, prerequisites) == ([], {"sim_core": []})
-    reason = flow._baseline_refusals[("sim_core", "coremark")]
+    reason = flow._test_runs.baseline.refusals[("sim_core", "coremark")]
     assert reason == (
         f"baseline revision {revision[:12]} does not register Test 'coremark' on Target 'sim_core'"
     )
@@ -179,17 +305,83 @@ def test_campaign_criterion_names_why_the_comparison_is_inconclusive(tmp_path: P
 
 
 def test_a_cocotb_baseline_without_a_registry_discovers_the_test():
-    from booley.flows.sim.flow import baseline_test_run_refusal
+    from booley.flows.sim.test_run_invocation import BaselineLink, baseline_link_refusal
     from booley.flows.target_test_plan import build_target_test_plan
     from booley.flows.test_runs import build_test_run
 
-    run = build_test_run("stress", seed=7)
+    link = BaselineLink("sim", "sim", "stress", build_test_run("stress", seed=7))
     discovering = build_target_test_plan("sim", {}, adapter="cocotb")
     registered = build_target_test_plan("sim", {"tests": ["reset"]}, adapter="cocotb")
     hdl = build_target_test_plan("sim", {}, adapter="verilator")
 
-    assert baseline_test_run_refusal(discovering, "stress", run, "a" * 40) is None
+    assert baseline_link_refusal(discovering, link, "a" * 40) is None
     for plan in (registered, hdl):
-        assert baseline_test_run_refusal(plan, "stress", run, "a" * 40) == (
+        assert baseline_link_refusal(plan, link, "a" * 40) == (
             "baseline revision aaaaaaaaaaaa does not register Test 'stress' on Target 'sim'"
         )
+
+
+def _baseline_fact(test_run: str | None, fingerprint: str = "sha256:" + "9" * 64) -> dict:
+    cycle: dict[str, object] = {"test": "stress", "cycle_count": 100, "unit": "cycles"}
+    if test_run is not None:
+        cycle |= {"test_run": test_run, "test_run_fingerprint": fingerprint}
+    return {
+        "role": "cycle_count_baseline",
+        "target": {"role": "cycle_count_baseline", "selector": "ref"},
+        "manifest": {"owner": "campaign"},
+        "campaign_id": "campaign",
+        "result": {},
+        "work_item_id": "item",
+        "cycle_observation": cycle,
+    }
+
+
+def test_a_criterion_binds_only_the_baseline_observation_of_the_candidates_test_run():
+    """A1/A2: the same Test with another Test Variant, seed or inputs does not bind."""
+    from booley.flows.sim.acceptance import _bound_baseline
+
+    params = {"test": "stress", "_baseline_target": "ref", "cycle_count_increase_at_most": 5}
+    fingerprint = "sha256:" + "9" * 64
+    current = {"test": "stress", "test_run": "stress+soak@7", "test_run_fingerprint": fingerprint}
+    other = _baseline_fact("stress+short@1")
+    same = _baseline_fact("stress+soak@7")
+
+    assert _bound_baseline((other, same), params, "stress", current) == (
+        same["cycle_observation"],
+        "observed",
+    )
+    assert _bound_baseline((other,), params, "stress", current) == (None, "mismatched")
+    changed_inputs = _baseline_fact("stress+soak@7", "sha256:" + "8" * 64)
+    assert _bound_baseline((changed_inputs,), params, "stress", current) == (None, "mismatched")
+    # No candidate observation: nothing to compare, so nothing binds.
+    assert _bound_baseline((same,), params, "stress", None) == (None, "mismatched")
+
+
+def test_facts_older_than_test_runs_still_bind_by_test():
+    from booley.flows.sim.acceptance import _bound_baseline
+
+    params = {"test": "stress", "_baseline_target": "ref", "cycle_count_increase_at_most": 5}
+    legacy = _baseline_fact(None)
+    assert _bound_baseline((legacy,), params, "stress", {"test": "stress"})[1] == "observed"
+    # A candidate observation that names its Test Run needs a baseline that does too.
+    named = {
+        "test": "stress",
+        "test_run": "stress@1",
+        "test_run_fingerprint": "sha256:" + "9" * 64,
+    }
+    assert _bound_baseline((legacy,), params, "stress", named) == (None, "mismatched")
+
+
+def test_prerequisite_facts_carry_the_baseline_work_items_test_run():
+    from booley.flows.sim.campaign.codec import SimulationCampaignIntegrityError
+    from booley.flows.sim.campaign.coordinator import _baseline_test_run_facts
+    from booley.flows.test_runs import build_test_run, test_run_document
+
+    run = build_test_run("stress", variant="soak", seed=7, args=("+iters=9",))
+    assert _baseline_test_run_facts(test_run_document(run), names_test_runs=True) == {
+        "test_run": "stress+soak@7",
+        "test_run_fingerprint": run.fingerprint,
+    }
+    assert _baseline_test_run_facts(None, names_test_runs=False) == {}
+    with pytest.raises(SimulationCampaignIntegrityError, match="records no Test Run to compare"):
+        _baseline_test_run_facts(None, names_test_runs=True)

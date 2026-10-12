@@ -943,19 +943,29 @@ class SimulationExecution:
         )
 
     def plan_ordinary_group(
-        self, handle: TargetHandle, test_names: tuple[str, ...]
+        self,
+        handle: TargetHandle,
+        test_names: tuple[str, ...],
+        test_runs: tuple[TestRun, ...] | None = None,
     ) -> dict[str, object]:
-        """Prepare disposable scratch and disclose its exact staged source closure."""
-        with self.ordinary_group(handle, test_names) as group:
+        """Prepare disposable scratch and disclose its exact staged source closure.
+
+        *test_runs* are the concrete Test Runs the group launches; without
+        them each Test is prepared as its default Variant at the Default Seed.
+        """
+        with self.ordinary_group(handle, test_names, test_runs) as group:
             disclosure = group.planning_disclosure()
             group.discard_prepared_generation()
         return disclosure
 
     def plan_campaign_group(
-        self, handle: TargetHandle, test_names: tuple[str, ...]
+        self,
+        handle: TargetHandle,
+        test_names: tuple[str, ...],
+        test_runs: tuple[TestRun, ...] | None = None,
     ) -> dict[str, object]:
         """Disclose one durable ordinary-HDL or Cocotb campaign build."""
-        return self.plan_ordinary_group(handle, test_names)
+        return self.plan_ordinary_group(handle, test_names, test_runs)
 
     def _run_group(
         self,

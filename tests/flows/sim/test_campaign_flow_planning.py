@@ -148,13 +148,13 @@ def test_campaign_baseline_planning_materializes_project_topologies(
         _assert_topology_baseline(worktree, root, target)
         assert identity == handle.identity
         assert ref == revision
-        assert requirements == (("sim_core", "sim_core", "coremark"),)
+        assert [run.name for run in requirements] == ["coremark@1"]
         assert tests == {"sim_core": ["coremark"]}
         assert invocation == tmp_path / "invocation"
         assert admission is None
         assert flow.args.work_dir == worktree
         roots.append(worktree)
-        return request, {"coremark": prerequisite}
+        return request, {"coremark@1": prerequisite}
 
     monkeypatch.setattr(flow, "_planned_baseline_request", plan)
     try:
@@ -196,11 +196,11 @@ def test_campaign_baseline_preview_materializes_project_topologies(
         assert owner is campaign
         _assert_topology_baseline(worktree, root, target)
         assert ref == revision
-        assert requirements == (("sim_core", "sim_core", "coremark"),)
+        assert [run.name for run in requirements] == ["coremark@1"]
         assert tests == {"sim_core": ["coremark"]}
         assert flow.args.work_dir == worktree
         roots.append(worktree)
-        return preview, {"coremark": prerequisite}
+        return preview, {"coremark@1": prerequisite}
 
     monkeypatch.setattr(flow, "_preview_one_campaign_baseline", inspect)
     prerequisites, previews = flow._preview_campaign_baselines(

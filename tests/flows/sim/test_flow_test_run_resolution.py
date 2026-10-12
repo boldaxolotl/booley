@@ -91,9 +91,11 @@ def test_coverage_of_other_test_runs_is_diagnostic_until_goals_name_them(
 ):
     flow = _flow(tmp_path, monkeypatch, "--coverage", *argv)
     assert flow._validate_test_plans(["sim"], _MAP) is None
+    guard = flow._request_evidence_guard(["sim"], _MAP)
+    flow._enforce_evidence_guard(guard)
     # Interim Goal guard: such a campaign runs, and records no Goal evidence.
-    assert flow.args.diagnostic is True
-    assert all(name.startswith("sim: stress") for name in flow._test_run_guard_names)
+    assert flow.context.records_no_evidence is True
+    assert all(name.startswith("sim: stress") for name in guard.other_test_runs)
 
 
 @pytest.mark.parametrize(
@@ -102,7 +104,8 @@ def test_coverage_of_other_test_runs_is_diagnostic_until_goals_name_them(
 def test_coverage_of_default_test_runs_keeps_its_goal_evidence(tmp_path, monkeypatch, argv):
     flow = _flow(tmp_path, monkeypatch, "--coverage", *argv)
     assert flow._validate_test_plans(["sim"], _MAP) is None
-    assert flow.args.diagnostic is False
-    assert not getattr(flow, "_test_run_guard_names", ())
+    flow._enforce_evidence_guard(flow._request_evidence_guard(["sim"], _MAP))
+    assert flow.context.records_no_evidence is False
+    assert not flow._test_runs.guard.withholds_evidence
     assert tuple(flow.args.test or ()) in {(), ("stress",)}
     assert flow.args.seed is None or not flow.args.test

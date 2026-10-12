@@ -49,8 +49,17 @@ _CORE = (
 )
 
 
-def _run(tmp_path: Path, baseline_section: dict, *, baseline_tool: str = "verilator"):
-    """Run ``--test stress`` with a relative Cycle Count Criterion on ``stress``."""
+def _run(
+    tmp_path: Path,
+    baseline_section: dict,
+    *,
+    baseline_tool: str = "verilator",
+    criterion_tests: tuple[str, ...] = ("stress",),
+):
+    """Run ``--test stress`` with a relative Cycle Count Criterion per *criterion_tests*.
+
+    Returns the result, the launches, and the Criterion of ``stress``.
+    """
     candidate = tmp_path / "candidate"
     baseline = tmp_path / "baseline"
     for root in (candidate, baseline):
@@ -61,14 +70,17 @@ def _run(tmp_path: Path, baseline_section: dict, *, baseline_tool: str = "verila
         {
             "mandatory": {
                 "cycle_count": [
-                    {"target": "lite", "test": "stress", "cycle_count_increase_at_most": "50%"}
+                    {"target": "lite", "test": test, "cycle_count_increase_at_most": "50%"}
+                    for test in criterion_tests
                 ]
             }
         }
     )
     flow.state.init_criteria(template.expand([]), criterion_params=template.expand_params([]))
-    (key,) = (name for name in flow.state.criteria if name.startswith("cycle_count_"))
-    flow.state.criteria[key].params["_baseline_ref"] = _REVISION
+    keys = [name for name in flow.state.criteria if name.startswith("cycle_count_")]
+    for name in keys:
+        flow.state.criteria[name].params["_baseline_ref"] = _REVISION
+    (key,) = (name for name in keys if flow.state.criteria[name].params["test"] == "stress")
     sections = {
         candidate.resolve(): normalize_tests_toml({"lite": _CANDIDATE}),
         baseline.resolve(): normalize_tests_toml({"lite": baseline_section}),
@@ -162,3 +174,32 @@ def test_a_baseline_that_cannot_run_the_test_run_makes_the_comparison_inconclusi
     assert f"Cycle Count comparison inconclusive for lite Test stress: {reason}" in (
         result.report_text
     )
+
+
+def test_a_baseline_test_the_candidate_does_not_run_is_not_run_from_baseline_defaults(
+    tmp_path: Path,
+):
+    """Criteria on ``smoke`` and ``stress``, request ``--test stress``.
+
+    The baseline still runs the candidate's Test Run of ``stress`` and
+    nothing else: ``smoke`` is not resolved from the baseline checkout's own
+    defaults, and its comparison is reported as inconclusive by name.
+    """
+    result, launched, criterion = _run(tmp_path, _BASELINE, criterion_tests=("smoke", "stress"))
+
+    assert result.exit_code == EXIT_SUCCESS, result.report_text
+    expected = (["test=stress", "iters=900", "verilator+seed+7"], True)
+    assert [(revision, _launch(script)) for revision, script in launched] == [
+        ("baseline", expected),
+        ("candidate", expected),
+    ]
+    assert criterion.met is True
+    (entry,) = result.detail["cycle_count_baseline_inconclusive"]
+    assert entry == {
+        "target": "lite",
+        "test": "smoke",
+        "reason": (
+            "this invocation runs no Test Run of Test 'smoke' on Target 'lite', "
+            "so there is nothing to compare"
+        ),
+    }

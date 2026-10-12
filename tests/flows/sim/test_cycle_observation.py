@@ -284,10 +284,43 @@ def test_relative_cycle_criterion_uses_declared_baseline_target(monkeypatch) -> 
     observed = SimTestResult(name="coremark", passed=True, cycles=100, cycle_status="observed")
     baseline = TargetResult(target="sim_old", passed=True, tests=[observed])
     flow._baseline_results = {"sim_old": baseline}
-    assert flow._baseline_cycle_tests(
-        TargetResult(target="sim_core", passed=True, tests=[]),
-        flow.state.criteria[key].params,
-    ) == {"coremark": observed}
+    candidate = TargetResult(target="sim_core", passed=True, tests=[])
+    params = flow.state.criteria[key].params
+    current = SimTestResult(name="coremark", passed=True, cycles=120, cycle_status="observed")
+    assert flow._baseline_cycle_test(candidate, params, current) is observed
+    # No candidate observation, nothing to compare.
+    assert flow._baseline_cycle_test(candidate, params, None) is None
+
+
+def test_relative_cycle_baseline_must_be_the_candidates_test_run(monkeypatch) -> None:
+    """A baseline result of the same Test with another seed is not comparable."""
+    from booley.flows.test_runs import build_test_run
+
+    flow, key = _criterion_flow(relative=True)
+    params = flow.state.criteria[key].params
+    seven = build_test_run("coremark", seed=7)
+    other = SimTestResult(
+        name="coremark",
+        passed=True,
+        cycles=90,
+        cycle_status="observed",
+        test_run=build_test_run("coremark", seed=1),
+    )
+    same = SimTestResult(
+        name="coremark", passed=True, cycles=100, cycle_status="observed", test_run=seven
+    )
+    current = SimTestResult(
+        name="coremark", passed=True, cycles=120, cycle_status="observed", test_run=seven
+    )
+    candidate = TargetResult(target="sim_core", passed=True, tests=[current])
+    flow._baseline_results = {
+        "sim_core": TargetResult(target="sim_core", passed=True, tests=[other, same])
+    }
+    assert flow._baseline_cycle_test(candidate, params, current) is same
+    flow._baseline_results = {
+        "sim_core": TargetResult(target="sim_core", passed=True, tests=[other])
+    }
+    assert flow._baseline_cycle_test(candidate, params, current) is None
 
 
 def test_schema_four_relative_cycle_criterion_selects_callable_target(monkeypatch) -> None:
