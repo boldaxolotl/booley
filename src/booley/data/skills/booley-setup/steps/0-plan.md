@@ -619,13 +619,14 @@ separate columns (see "How a row resolves"). The standard checklist:
    firmware compile, vector staging)? — use repo evidence or the defaults
    block; ask when the build recipe is unresolved. If yes, the
    command lines become `[flows.sim].pre_run_commands` and the toolchain
-   they need goes into the sandbox image (row 7). When a hook or generator invokes
-   a recipe, propose its tracked recipe and stimulus sources as additional
-   Protected Inputs. Explain the freeze, inspect generated-output collisions,
-   and record the human's agreement in this row before Step 2 saves
-   `[project].protected_inputs`; see CONFIG.md → "Additional Protected Inputs".
-   Two shape constraints to plan
-   against, both from CONFIG.md: `pre_run_commands` and `run_cwd` live under
+   they need goes into the sandbox image (row 7). When a hook or generator
+   invokes a recipe (for example `make <target>`), propose the tracked recipe
+   file and its stimulus sources as additional Protected Inputs: tell the human
+   that Goal Mode will freeze them, check that no build output lands inside a
+   proposed pattern, and record their agreement in this row. Step 2 writes
+   `[project].protected_inputs` only from that agreement; see CONFIG.md →
+   "Additional Protected Inputs". Two shape constraints to plan against, both
+   from CONFIG.md: `pre_run_commands` and `run_cwd` live under
    `[flows.sim]` and are therefore **global to the Flow — one value shared
    by every sim Target**, not per-Target knobs. Per-Target behavior has to come
    from *inside* the commands, branching on the exported `$BOOLEY_TARGET` (also

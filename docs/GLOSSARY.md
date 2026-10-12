@@ -86,7 +86,7 @@ The append-only record inside a Goal Record of every approved Goal Change Propos
 _Avoid_: audit log, history, journal
 
 **Protected Input**:
-A file that decides how evidence is produced and is therefore digested at Goal Mode entry: Project configuration and checkout-root `booley.toml`, their legacy `pipeline.toml` siblings, `FUSESOC_IGNORE`, the `hooks`, `.managed`, `generators`, and `mcp_tools` directories at their consumer roots, and files the Project declares. The snapshot covers the session Project, worktree, and main-checkout copies that consumers can read (see [Goal baselines](internals/FLOW_IMPLEMENTATION.md#goal-baselines-and-editable-design-inputs)); editing one warns at once and blocks Finish until reverted.
+A file that decides how evidence is produced and is therefore digested at Goal Mode entry: Project configuration and checkout-root `booley.toml`, their legacy `pipeline.toml` siblings, `FUSESOC_IGNORE`, the `hooks`, `.managed`, `generators`, and `mcp_tools` directories at their consumer roots, and files the Project declares in `[project].protected_inputs`. The snapshot covers the session Project, worktree, and main-checkout copies that consumers can read (see [Goal baselines](internals/FLOW_IMPLEMENTATION.md#goal-baselines-and-editable-design-inputs)). Editing one warns at once and blocks Finish until reverted.
 _Avoid_: frozen file, locked config, Scope
 
 **Review Package**:

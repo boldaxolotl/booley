@@ -87,8 +87,9 @@ setting for Booley Flows and Specialists.
 
 ### Additional Protected Inputs: `[project].protected_inputs`
 
-Declare tracked files that determine how Goals are evaluated, such as a Makefile
-invoked by a protected hook, firmware stimulus sources, or authoritative fixtures:
+Goal Mode already freezes Booley's own configuration and hooks. `protected_inputs`
+adds tracked files of yours that decide how a Goal is evaluated, such as a
+Makefile a hook runs, firmware sources, or reference vectors:
 
 ```toml
 [project]
@@ -96,36 +97,45 @@ name = "example"
 protected_inputs = ["Makefile", "firmware/**/*.c", "vectors/"]
 ```
 
-Booley reads the effective configuration selected for the Goal worktree. Paths
-are relative to that worktree's Project Root, even when its configuration lives
-elsewhere. An omitted key or an empty list adds no protection.
+Omitting the key or leaving the list empty protects nothing extra. Booley does
+not infer these files from scripts or Makefiles; list each one.
 
-Each nonempty string names an exact file, a glob, or a directory with a trailing
-slash. `*` and `?` match within one path component; `**` as a whole component
-matches zero or more components. Dotfiles are included. `firmware/` and
-`firmware/**` select the same files. A directory named as `firmware` is refused
-with a suggestion to add `/`.
+Each entry is a path relative to the repo root of the Goal's worktree, wherever
+that worktree's `booley.toml` lives. Write `/` on every host.
 
-Goal entry shows the resolved files. Every declaration must match at least one
-file, and every match must be tracked by the design repository. Untracked or
-ignored matches refuse entry, as do matches inside nested repositories or
-submodules. Use `/` on all hosts. Absolute paths, parent segments, backslashes,
-bracket/brace patterns, Git administrative paths, and Goal Record storage are
-refused. A file symlink must resolve to a tracked file inside the Project Root;
-directory symlinks and dangling or escaping links are refused.
+| Form | Example | Matches |
+|---|---|---|
+| File | `Makefile` | That file. |
+| Glob | `firmware/**/*.c` | `*` and `?` match within one path component; `**` as a whole component matches any number of components, including none. Dotfiles match. |
+| Directory | `vectors/` | Every file below it, the same as `vectors/**`. The trailing slash is required: `vectors` is refused with a hint to add it. |
 
-During Goal Mode the declarations, matched path set, contents, file type, and
-executable bit are frozen. Added, removed, renamed, or edited matches warn and
-block Finish, including committed changes hidden by restored working files.
-Diagnostics name the declaration and affected path. Restoring the protected
-properties clears the violation. An approved Goal Change cannot release this
-protection; changing the declaration list requires abandon and re-entry.
-Overlapping declarations and built-in protections report an affected file once.
+**At Goal entry** Booley lists the matched files. It refuses entry, naming the
+entry at fault, when:
 
-Choose source and recipe patterns that exclude generated outputs: a build that
-writes into a protected directory creates a violation. Booley does not infer
-dependencies from scripts or Makefiles. Checks retain the built-in before/after
-semantics; an edit reverted during a running Flow is not detected.
+- an entry matches no file;
+- a match is untracked or ignored, or sits in a submodule or nested repository;
+- an entry is empty or absolute, or contains `..`, a backslash, brackets,
+  braces, or `**` joined to other characters (`**.c`);
+- an entry reaches into `.git` or Goal Record storage;
+- a matched symlink does not resolve to a tracked file inside the repository.
+  That covers directory symlinks and dangling or escaping links.
+
+**During the Goal** Booley freezes the list itself, the set of matched files,
+and each file's contents, type, and executable bit. Adding, removing, renaming,
+or editing a matched file warns at once and blocks Finish. Committing such a
+change does too, even when the working files are restored afterward. The
+warning names the entry, the file, and the kind of change, once per file however
+many entries or built-in protections cover it. Restoring the file clears the
+violation. An approved Goal Change cannot lift the protection: to change the
+list, abandon the Goal and enter again.
+
+Two limits:
+
+- Keep build outputs out of protected patterns. A build that writes into a
+  protected directory is a violation, so prefer `firmware/**/*.c` to `firmware/`
+  when compilation writes there.
+- As with built-in Protected Inputs, an edit made and reverted while a Flow is
+  running is not detected.
 
 ### Flow and Specialist availability: `enabled`
 

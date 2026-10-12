@@ -191,11 +191,12 @@ and configured Project-directory candidates according to the readers described
 in `goals/protected_inputs.py`; it includes fallback copies as well as the
 currently selected configuration. Goal entry captures working and committed
 input identities; drift warns and blocks Finish until reverted.
-Projects extend this set with `[project].protected_inputs` in the effective
-checkout configuration. Declared paths are rooted in the Goal worktree. Their
-versioned capture includes independent working and HEAD membership, contents,
-type, and executable state; the existing digest format is retained when there
-are no declarations. See [Additional Protected Inputs](../user/CONFIG.md#additional-protected-inputs-projectprotected_inputs).
+A Project adds files to this set with `[project].protected_inputs`, read from
+the Goal worktree's effective configuration and resolved against the worktree
+root. For declared files, Goal entry also stores a versioned per-file capture of
+path, contents, type, and executable bit, separately for the working tree and
+HEAD, so a violation can name the file. Without declarations the stored digest
+is unchanged. See [Additional Protected Inputs](../user/CONFIG.md#additional-protected-inputs-projectprotected_inputs).
 Run admission and publication bind evidence to the Goal Record, specification
 revisions, source fingerprints, and Target surface. Approved coverage-policy
 changes use the Goal proposal-and-approval transaction described below.
