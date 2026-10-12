@@ -156,13 +156,15 @@ class ActivityStore:
         session's next event.
         """
         try:
-            listed = entry.stat(follow_symlinks=False)
+            path = Path(entry.path)
+            # Windows DirEntry.stat() has no inode; use the same API for both reads.
+            listed = path.lstat()
             if listed.st_mtime > cutoff:
                 return False
-            current = Path(entry.path).lstat()
+            current = path.lstat()
             if (current.st_ino, current.st_mtime_ns) != (listed.st_ino, listed.st_mtime_ns):
                 return False
-            Path(entry.path).unlink()
+            path.unlink()
         except OSError:
             return False
         return True

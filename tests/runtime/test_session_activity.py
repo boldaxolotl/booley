@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from tests.conftest import symlink_or_skip, write_activity_signal
@@ -85,6 +87,21 @@ def test_prune_keeps_registered_and_recent_signals_only(tmp_path):
     assert store.read("codex:gone") is None
 
 
+def test_prune_expires_signals_when_directory_entries_have_no_inode(tmp_path, monkeypatch):
+    store = ActivityStore(tmp_path)
+    path = write_activity_signal(tmp_path, "codex:gone", activity.WAITING_USER, STAMP)
+    os.utime(path, (NOW - 100, NOW - 100))
+    metadata = path.lstat()
+    # Windows DirEntry.stat() reports zero for st_ino, unlike Path.lstat().
+    listed = SimpleNamespace(
+        st_ino=0, st_mtime=metadata.st_mtime, st_mtime_ns=metadata.st_mtime_ns
+    )
+    entry = SimpleNamespace(name=path.name, path=str(path), stat=lambda **_: listed)
+    monkeypatch.setattr(store, "_entries", lambda: [entry])
+    assert store.prune(set(), now=NOW, quiet_after=100) == 1
+    assert store.read("codex:gone") is None
+
+
 def test_prune_spares_a_signal_the_hook_replaced_after_it_was_listed(tmp_path, monkeypatch):
     store = ActivityStore(tmp_path)
     path = write_activity_signal(tmp_path, "codex:back", activity.WAITING_USER, STAMP)
@@ -103,6 +120,30 @@ def test_prune_spares_a_signal_the_hook_replaced_after_it_was_listed(tmp_path, m
 
     monkeypatch.setattr(ActivityStore, "_entries", replaced_after_listing)
     assert store.prune(set(), now=NOW, quiet_after=100) == 0
+    assert store.read("codex:back").state == activity.WORKING
+
+
+def test_prune_spares_a_replacement_between_identity_checks(tmp_path, monkeypatch):
+    store = ActivityStore(tmp_path)
+    path = write_activity_signal(tmp_path, "codex:back", activity.WAITING_USER, STAMP)
+    os.utime(path, (NOW - 500, NOW - 500))
+    original_lstat = Path.lstat
+    replaced = False
+
+    def replace_after_first_stat(current):
+        nonlocal replaced
+        metadata = original_lstat(current)
+        if current == path and not replaced:
+            replaced = True
+            fresh = path.with_name(".staged.tmp")
+            fresh.write_bytes(path.read_bytes().replace(b"waiting for user input", b"working"))
+            os.utime(fresh, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+            fresh.replace(path)
+        return metadata
+
+    monkeypatch.setattr(Path, "lstat", replace_after_first_stat)
+    assert store.prune(set(), now=NOW, quiet_after=100) == 0
+    assert replaced
     assert store.read("codex:back").state == activity.WORKING
 
 
