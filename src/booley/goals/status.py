@@ -23,6 +23,7 @@ from booley.goals.proposals import ProposalView, list_proposals
 from booley.goals.recorder import GOAL_SCOPE
 from booley.goals.state_store import load_goal_state
 from booley.goals.store import GoalStore, GoalStoreError
+from booley.goals.test_run_resolving import ensure_test_run_resolutions
 from booley.goals.warnings import goal_warnings, protected_warnings
 
 
@@ -229,11 +230,12 @@ def select_status(store: GoalStore, work_dir: Path) -> GoalStatusSelection:
     scan = store.list_active()
     if scan.corrupt:
         raise GoalRecordCorruptError(scan.corrupt)
-    record = (
-        store.active_for_worktree(work_dir)
-        if GoalCheckout(work_dir).containing_repository() is not None
-        else None
-    )
+    found = GoalCheckout(work_dir).containing_repository()
+    record = store.active_for_worktree(work_dir) if found is not None else None
+    if record is not None and found is not None:
+        # Pending Test Run slots that can be resolved now are frozen first
+        # (ADR 0072), so status shows what a run would be judged against.
+        record = ensure_test_run_resolutions(store, record.id, found[0])
     records = (record,) if record is not None else scan.records
     views = tuple(
         build_status(store, rec, work_dir=work_dir if rec is record else None) for rec in records
