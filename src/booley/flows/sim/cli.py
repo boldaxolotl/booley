@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from booley.flows.cli_arguments import BuiltinArguments
-from booley.flows.cli_help import HelpGroup, HelpOption
+from booley.flows.cli_help import HelpGroup, HelpOption, SurfaceHelp
 
 from .mode import SimulationMode, parse_simulation_mode
 
@@ -82,7 +82,14 @@ class SimArguments(BuiltinArguments):
             action="append",
             default=None,
             metavar="NAME",
-            help="Select exact registered tests (coverage: deterministic sorted order; plain: input order; CLI: repeat; MCP: array)",
+            help=SurfaceHelp(
+                "Select exact registered tests (coverage: deterministic sorted order; "
+                "plain: input order; CLI: repeat; MCP: array)",
+                cli=(
+                    "Run only the named registered tests; repeat the flag for more. "
+                    "With --coverage they run in sorted order, otherwise in the order given"
+                ),
+            ),
         )
         parser.add_argument(
             "--tests-file",

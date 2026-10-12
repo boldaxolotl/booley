@@ -250,7 +250,7 @@ def human_parser(
             action=TimeoutAction,
             default=argparse.SUPPRESS,
             metavar="DURATION",
-            help=f"{scope} Use seconds, 30m, or 1h30m.",
+            help=f"{scope.rstrip('.')}. Use seconds, 30m, or 1h30m.",
         )
     if _selection.get() is not None:
         parser.set_defaults(work_dir=_selection.get(), _cli_seen_project=True)

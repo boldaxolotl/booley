@@ -37,6 +37,7 @@ from booley.evidence.timing import (
     per_clock_to_json,
     worst_clock,
 )
+from booley.flows.cli_help import CliHelp
 from booley.flows.eda_failures import classify_eda_failure
 from booley.flows.plan import (
     CommandPlan,
@@ -1032,6 +1033,16 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         "booley.toml is only for enablement and verdict "
         "policy such as enabled, timeout_ms, expected_latches, and "
         "fail_on_timing_violation."
+    )
+    cli_help: ClassVar[CliHelp | None] = CliHelp(
+        summary=(
+            "Run ASIC synthesis for one or more Targets. Use it for a quick PPA (power, "
+            "performance, area) estimate while optimizing RTL; it is not tape-out "
+            "sign-off. Timing constraints come from the SDC file in the Target's .core "
+            "fileset; a physical Target needs one. The flags below override the "
+            "Target's flow_options for one run."
+        ),
+        example="booley flow synth --target synth_soc --baseline main",
     )
     code_modifying: bool = False
     # Minimum outer MCP kill budget (seconds). mcp_server scales this floor by

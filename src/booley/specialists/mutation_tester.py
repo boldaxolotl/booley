@@ -47,6 +47,7 @@ from booley.core.models import AgentCallParams
 from booley.dev_support import mutation_lock as lock_mod
 from booley.dev_support.mutation_variants import MutationVariantError, MutationVariantPlan
 from booley.flows import artifacts as _artifacts
+from booley.flows.cli_help import CliHelp, SurfaceHelp
 from booley.flows.flow_config import tb_top_for_target
 from booley.flows.sim import edam as sim_edam
 from booley.flows.sim.backends.cocotb_results import (
@@ -658,9 +659,23 @@ class MutationTesterSpecialist(Specialist):
     )
     code_modifying: bool = False
     target_required: bool = True
-    target_help: str = (
+    target_help: str = SurfaceHelp(
         "Exactly one Simulation Target. The CLI accepts one --target value; "
-        "MCP accepts one Target selector string."
+        "MCP accepts one Target selector string.",
+        cli=(
+            "The one Simulation Target whose tests judge each mutation. "
+            "List available Targets with `booley targets`."
+        ),
+    )
+    cli_help: ClassVar[CliHelp | None] = CliHelp(
+        summary=(
+            "Measure how well the testbench catches bugs. Small deliberate faults "
+            "(mutations) are injected into the RTL files in --scope, the Simulation "
+            "Target's tests run against each one, and the report says how many were "
+            "detected. Use it once the tests pass, to find checks the testbench is "
+            "missing. Mutations are built in isolated copies; your sources are not changed."
+        ),
+        example="booley specialist mutation_tester --target sim_soc --scope rtl/fifo.sv",
     )
     non_persisting_dry_run: bool = True
     announce_success_report: bool = True

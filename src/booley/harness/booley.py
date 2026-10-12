@@ -629,20 +629,32 @@ def _add_flow_subparser(sub) -> None:
     flow_p.add_argument(
         "endpoint_name",
         nargs="?",
+        metavar="flow",
         help="Flow to run (omit to list the available Flows)",
     )
     flow_p.add_argument(
         "endpoint_args",
         nargs=argparse.REMAINDER,
-        help="Arguments passed verbatim to the Flow",
+        metavar="args",
+        help="Arguments for the Flow; see `booley flow <flow> --help`",
     )
 
 
 def _add_specialist_subparser(sub) -> None:
     """Add direct Specialist selection and verbatim endpoint arguments."""
     parser = sub.add_parser("specialist", help="Run a Specialist directly inside the Sandbox")
-    parser.add_argument("endpoint_name", nargs="?", help="Specialist to run (omit to list)")
-    parser.add_argument("endpoint_args", nargs=argparse.REMAINDER, help="Specialist arguments")
+    parser.add_argument(
+        "endpoint_name",
+        nargs="?",
+        metavar="specialist",
+        help="Specialist to run (omit to list the available Specialists)",
+    )
+    parser.add_argument(
+        "endpoint_args",
+        nargs=argparse.REMAINDER,
+        metavar="args",
+        help="Arguments for the Specialist; see `booley specialist <specialist> --help`",
+    )
 
 
 def _add_session_subparser(sub) -> None:
