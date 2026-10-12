@@ -2632,6 +2632,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             plan = self._target_test_plan(selector)
             unchanged = all(plan.is_default_run(run) for run in runs)
         except (fusesoc_registry.FuseSocError, ValueError):
+            # Nothing shows the frozen runs are still defaults, so the command
+            # names each of them (test_test_run_resolution_errors).
             unchanged = False
         if unchanged or any(run.test is None for run in runs):
             return ""
@@ -3080,18 +3082,19 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                     if selections is not None
                     else self._test_run_selection(target, test_names_map),
                 )
+                target_units = [
+                    self._simulation_work_unit(
+                        target, preview, group, command, role, revision, runs
+                    )
+                    for group, runs, command in zip(
+                        preview.groups, preview.run_groups, preview.commands, strict=True
+                    )
+                ]
             except (fusesoc_registry.FuseSocError, OSError, ValueError) as exc:
                 errors.append(f"{target}: {exc}")
                 continue
             planned[(role, target)] = preview.run_groups
-            for group, runs, command in zip(
-                preview.groups, preview.run_groups, preview.commands, strict=True
-            ):
-                units.append(
-                    self._simulation_work_unit(
-                        target, preview, group, command, role, revision, runs
-                    )
-                )
+            units.extend(target_units)
         return units, errors
 
     def _simulation_work_unit(
@@ -3157,10 +3160,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         """
         if not runs:
             return group
-        try:
-            plan = self._target_test_plan(target)
-        except (fusesoc_registry.FuseSocError, ValueError):
-            return group
+        plan = self._target_test_plan(target)
         if all(plan.is_default_run(run) or run.test is None for run in runs):
             return group
         return tuple(run.name for run in runs)
@@ -3252,7 +3252,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             runs = self._resolve_test_runs(candidate, test_names_map)
         except (fusesoc_registry.FuseSocError, ValueError):
             # Nothing to compare: the link is refused by name and no baseline
-            # runs for it (test_cycle_baseline_test_runs).
+            # runs for it (test_test_run_resolution_errors).
             return None
         return next((run for run in runs if run.test == test), None)
 
@@ -3889,16 +3889,14 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         """The Test Runs this invocation resolved for each coverage Target.
 
         Every selector form is collected: several Test Variants of one Test,
-        pinned seeds and ``test@xN``. A Target whose runs cannot be resolved
-        has no entry; coverage preflight reports its error.
+        pinned seeds and ``test@xN``. A request the Target cannot run raises
+        (``ValueError`` or ``FuseSocError``), and coverage preflight reports
+        it: collecting the Tests' defaults instead would ignore the request.
         """
         test_names_map = _get_test_names(self.args.work_dir)
         resolved: dict[str, tuple[TestRun, ...]] = {}
         for handle in handles:
-            try:
-                runs = self._resolve_test_runs(handle.selector, test_names_map)
-            except (fusesoc_registry.FuseSocError, ValueError):
-                continue
+            runs = self._resolve_test_runs(handle.selector, test_names_map)
             if all(run.test is not None for run in runs):
                 resolved[handle.selector] = runs
         return resolved
@@ -7002,11 +7000,12 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     def _test_run_selection(
         self, target: str, test_names_map: Mapping[str, list[str]]
     ) -> SelectedTestRuns | NamedTests | DefaultSelection:
-        """The execution selection of *target*: its resolved Test Runs."""
-        try:
-            runs = self._resolve_test_runs(target, test_names_map)
-        except fusesoc_registry.FuseSocError:
-            return self._execution_selection(self._registered_tests_to_run(target, test_names_map))
+        """The execution selection of *target*: its resolved Test Runs.
+
+        Raises ``FuseSocError`` when the Target does not resolve; planning
+        reports it by Target. The Tests' defaults are never selected instead.
+        """
+        runs = self._resolve_test_runs(target, test_names_map)
         if not runs:
             return DefaultSelection()
         return SelectedTestRuns(runs)
