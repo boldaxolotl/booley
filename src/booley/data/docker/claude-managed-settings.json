@@ -4,5 +4,84 @@
       "WebFetch",
       "WebSearch"
     ]
+  },
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -I -S /usr/local/libexec/booley/session_activity_hook.py claude",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -I -S /usr/local/libexec/booley/session_activity_hook.py claude",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -I -S /usr/local/libexec/booley/session_activity_hook.py claude",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -I -S /usr/local/libexec/booley/session_activity_hook.py claude",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -I -S /usr/local/libexec/booley/session_activity_hook.py claude",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -I -S /usr/local/libexec/booley/session_activity_hook.py claude",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -I -S /usr/local/libexec/booley/session_activity_hook.py claude",
+            "timeout": 3
+          }
+        ]
+      }
+    ]
   }
 }

@@ -446,6 +446,9 @@ another agent in another container terminal and invoke `/booley-goal` there.
 Jobs share the Project's [admission caps](CONFIG.md#jobs--concurrency-jobs).
 `booley dashboard` shows sessions, Goals, and Jobs inside the Sandbox; it opens
 on VS Code folder attachment by default. Opt out with `[sandbox].dashboard=false`.
+Each session shows what its agent client last reported: working, waiting for
+tool call, or waiting for user input. Click a report, artifact, or evidence
+path in a detail view to open it in the editor.
 Inspect records with `booley goal status`.
 
 ### Entering the Sandbox without VS Code

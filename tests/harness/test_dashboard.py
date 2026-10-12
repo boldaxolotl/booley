@@ -179,6 +179,48 @@ async def test_pilot_wide_aside_narrow_detail_and_terminal_selection():
         assert "disconnected" in str(app.query_one("#detail", Static).render())
 
 
+def test_reported_activity_is_shown_per_session_and_unknown_is_never_guessed():
+    from booley.harness.dashboard.app import activity_label
+    from booley.runtime.session_activity import (
+        WAITING_TOOL,
+        WAITING_USER,
+        WORKING,
+        Activity,
+    )
+
+    now = 1791454200  # 10:10:00Z, ten minutes after STAMP.
+    assert activity_label(Activity(), now) == "activity unknown"
+    assert activity_label(Activity(WORKING, "2026-10-08T10:09:15Z"), now) == "working · 45s"
+    assert (
+        activity_label(Activity(WAITING_TOOL, STAMP, "mcp__booley__Sim"), now)
+        == "waiting for tool call (mcp__booley__Sim) · 10m"
+    )
+    assert activity_label(Activity(WAITING_TOOL, STAMP), now) == "waiting for tool call · 10m"
+    assert (
+        activity_label(Activity(WAITING_USER, "2026-10-08T07:05:00Z"), now)
+        == "waiting for user input · 3h 5m"
+    )
+    assert activity_label(Activity(WORKING, "not a time"), now) == "working · —"
+
+    app = DashboardApp(snapshot)
+    app.snapshot = replace(
+        snapshot(3),
+        activity={
+            "codex:00": Activity(WAITING_TOOL, STAMP, "mcp__booley__Sim"),
+            "codex:01": Activity(WAITING_USER, STAMP),
+        },
+    )
+    app._assign_shortcuts()
+    rows = [str(row) for row in app._overview()[2]]
+    assert "waiting for tool call (mcp__booley__Sim) · 10m" in rows[0]
+    assert "waiting for user input · 10m" in rows[1]
+    assert "activity unknown" in rows[2]
+    app.navigation = Navigation("session", "codex:00")
+    assert "\nWaiting for tool call (mcp__booley__Sim) · 10m" in app._session()[0]
+    app.navigation = Navigation("session", "codex:02")
+    assert "\nActivity unknown" in app._session()[0]
+
+
 def test_stable_shortcuts_and_unknown_activity_without_client_signals():
     app = DashboardApp(snapshot)
     app.snapshot = snapshot()
@@ -355,3 +397,77 @@ async def test_refresh_failure_is_stale_and_next_read_recovers(monkeypatch, fail
     app.reader = lambda: expected
     await app.refresh_snapshot()
     assert rendered == [expected]
+
+
+@pytest.mark.asyncio
+async def test_published_paths_open_in_editor_on_click_and_report_failures():
+    report = "/fixture/flow-reports/sim/1/report.json"
+    job = JobView(
+        Path("/jobs"),
+        JobRecord("one", "sim", STAMP, 60, status="done"),
+        "completed",
+        report_path=Path(report),
+        artifacts=("/fixture/sim.log",),
+    )
+    current = replace(snapshot(1), jobs=JobSnapshot((job,)))
+    opened, hint = [], [""]
+
+    def opener(path):
+        opened.append(path)
+        return hint[0]
+
+    app = DashboardApp(lambda: current, opener)
+    async with app.run_test(size=(90, 40)) as pilot:
+        await pilot.press("r", "enter")
+        assert app.navigation.view == "job"
+        detail = app.query_one("#detail", Static)
+        lines = str(detail.render()).split("\n")
+        await pilot.click("#detail", offset=(3, lines.index(report)))
+        await pilot.click("#detail", offset=(3, lines.index("/fixture/sim.log")))
+        # Text that is not a published path stays inert.
+        await pilot.click("#detail", offset=(3, 0))
+        assert opened == [report, "/fixture/sim.log"]
+        hint[0] = "No supported editor command on PATH; copy the path instead"
+        await pilot.click("#detail", offset=(3, lines.index(report)))
+        await pilot.pause()
+        assert [note.message for note in app._notifications] == [hint[0]]
+
+
+def test_overview_summarizes_session_and_standalone_running_jobs():
+    current = snapshot(1)
+    standalone = JobView(
+        Path("/jobs"),
+        JobRecord("three", "lint", STAMP, 60, argv=["--target", "lint_top"]),
+        "running",
+    )
+    app = DashboardApp(lambda: current)
+    app.snapshot = replace(current, jobs=JobSnapshot((*current.jobs.jobs, standalone)))
+    elapsed = f"{1791454200 - 1791453600}s"
+    orientation, _, rows = app._overview()
+    assert f"Standalone running Jobs: lint lint_top {elapsed}" in orientation
+    assert f"sim Target — {elapsed}" in str(rows[0])
+    app.snapshot = current
+    assert "Standalone" not in app._overview()[0]
+
+
+def test_recent_results_are_newest_first_and_bounded(monkeypatch):
+    from booley.harness.dashboard import app as dashboard_app
+
+    monkeypatch.setattr(dashboard_app, "RECENT_JOBS", 2)
+    jobs = tuple(
+        JobView(
+            Path("/jobs"),
+            JobRecord(
+                str(hour), "sim", STAMP, 60, status="done", ended_at=f"2026-10-08T1{hour}:00:00Z"
+            ),
+            "completed",
+        )
+        for hour in (1, 3, 2)
+    )
+    app = DashboardApp(snapshot)
+    app.snapshot = replace(snapshot(1), jobs=JobSnapshot(jobs))
+    app.navigation = Navigation("jobs", None, "recent")
+    assert [job.record.run_id for job in app._jobs()] == ["3", "2"]
+    assert "recent (newest 2)" in app._content()[0]
+    app.navigation = Navigation("jobs", None, "all")
+    assert [job.record.run_id for job in app._jobs()] == ["3", "2", "1"]

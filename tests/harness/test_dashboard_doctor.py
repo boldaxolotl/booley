@@ -428,3 +428,43 @@ async def test_partial_registry_reports_unavailable_instead_of_confident_presenc
     assert before == {
         str(path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()
     }
+
+
+def test_reader_joins_each_visible_session_with_its_reported_activity(tmp_path, monkeypatch):
+    import time
+
+    from booley.mcp.session_registry import Attribution, SessionRegistry
+    from booley.runtime.session_activity import (
+        UNKNOWN,
+        WAITING_TOOL,
+        WORKING,
+        ActivitySignal,
+        ActivityStore,
+    )
+    from booley.runtime.timefmt import rfc3339_from_epoch
+
+    monkeypatch.setattr(model, "namespace", lambda: "pid:[17]")
+    now = time.time()
+    registry = SessionRegistry(tmp_path)
+    for thread in ("fresh", "stale", "silent"):
+        registry.upsert(
+            Attribution(f"codex:{thread}", "thread", "/fixture", "repo:w", namespace="pid:[17]"),
+            "sim",
+            "completed",
+            now=now,
+        )
+    store = ActivityStore(tmp_path)
+    store.write(ActivitySignal("codex:fresh", WAITING_TOOL, rfc3339_from_epoch(now - 30), "sim"))
+    # A busy state older than any tool call is no longer evidence of activity.
+    store.write(ActivitySignal("codex:stale", WORKING, rfc3339_from_epoch(now - 3 * 3600)))
+    store.write(ActivitySignal("codex:unregistered", WORKING, rfc3339_from_epoch(now)))
+    before = {str(path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    activity = model.DashboardReader(tmp_path, tmp_path).read().activity
+    assert set(activity) == {"codex:fresh", "codex:stale", "codex:silent"}
+    assert (activity["codex:fresh"].state, activity["codex:fresh"].tool) == (WAITING_TOOL, "sim")
+    assert activity["codex:stale"].state == UNKNOWN
+    assert activity["codex:silent"].state == UNKNOWN
+    # Reading activity is observational: no file is created, changed or removed.
+    assert before == {
+        str(path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()
+    }

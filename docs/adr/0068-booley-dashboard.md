@@ -1,6 +1,6 @@
 # Booley Dashboard replaces the Console
 
-Status: accepted (2026-10-06; proposed 2026-10-03; amended 2026-10-06: session identity, see Amendments)
+Status: accepted (2026-10-06; proposed 2026-10-03; amended 2026-10-06: session identity; amended 2026-10-11: open implementation choices, see Amendments)
 
 The Console showed one Ticket execution at a time. Goal Mode (ADR 0067)
 removes Ticket execution and runs several agent sessions, often unattended,
@@ -151,3 +151,57 @@ Recorded after the Phase 0
 - **Registry is presentational.** It feeds the Dashboard rows and ADR
   0067's shared-worktree warning only. No lifecycle rule reads it, and it
   never selects a Goal record or a `work_dir`.
+
+## Amendments (2026-10-11)
+
+Settles the three "implementation choices still open". The hook findings come
+from spikes on Claude Code 2.1.285/2.1.295 and Codex 0.160.0/0.162.0.
+
+- **Session activity comes from client lifecycle hooks.** The Sandbox Image
+  declares the hooks in the files that already carry its web policy:
+  `/etc/claude-code/managed-settings.json` and `/etc/codex/requirements.toml`.
+  Both clients treat hooks there as managed, so they run without per-user
+  hook trust and survive a fresh state volume. Every hook runs
+  `/usr/local/libexec/booley/session_activity_hook.py <client>`, which stores
+  the session's last event under `runtime/session_activity/` in the Project
+  directory. The client waits for the hook on every prompt and tool call, so
+  it has a 3 s timeout, prints nothing, and always exits 0.
+- **The hook does not import Booley.** It is a standalone standard-library
+  script in the runtime base image. Importing the `booley` package costs
+  about 0.1 s per event, which adds minutes to a long session. The script
+  repeats the event table, the registry key formats and the signal file
+  layout; tests hold it in agreement with the package that reads the signals.
+- **Event mapping.** `UserPromptSubmit`, `PostToolUse` and
+  `PostToolUseFailure` mean working; `PreToolUse` means waiting for a tool
+  call; `PermissionRequest` and `Stop` mean waiting for user input;
+  `SessionEnd` removes the signal. The last event wins. Two consequences are
+  accepted: with parallel tool calls the first to finish shows working, and
+  after an approval the session shows waiting for user input until the tool
+  finishes. Neither client reports a pending question to the user.
+- **Association with the session.** A Claude Code hook is a descendant of the
+  process that owns the session's MCP connections: `CLAUDE_PID` names that
+  process when it is an ancestor of the hook; otherwise the nearest ancestor
+  with a Session Registry row is used. A Codex hook payload carries the
+  thread id the registry keys on (`agent_id` for a subagent thread,
+  otherwise `session_id`). A hook that cannot name a session records nothing.
+  Worktree-fallback sessions therefore always show unknown activity.
+- **Freshness.** Working and waiting for a tool call become unknown after
+  7200 s without a new event, the longest Booley tool call: a client that
+  dies mid-turn sends no closing event. Waiting for user input does not go
+  stale while the session's row lives. Registry maintenance removes a signal
+  once its session has no row and the signal is older than the quiet
+  threshold.
+- **Doctor.** Inside the Sandbox, Doctor warns when either client's hooks
+  are missing from the image; the Dashboard then shows unknown activity.
+- **Job history bounds and retention.** The Dashboard deletes nothing; Job
+  records stay with the interactive session or Goal Record that produced
+  them. One snapshot reads the newest 4096 records by modification time,
+  after examining at most 16384 record files across the newest 64
+  interactive sessions and every Goal Record, and says so when it cut the
+  history. Recent lists the newest 50 results; All lists every record in
+  the snapshot.
+- **File links.** A report, artifact or evidence path on a line of its own
+  opens in the installed VS Code-family editor when clicked, through
+  `code --goto`. OSC 8 `file://` links are not used: VS Code's terminal,
+  where the Dashboard normally runs, does not open them. Without an editor
+  command the Dashboard says so and the path stays copyable.

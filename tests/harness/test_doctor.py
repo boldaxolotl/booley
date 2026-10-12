@@ -7302,10 +7302,11 @@ class TestNoDockerSkipReason:
         assert "Sandbox" not in msg
 
     def test_container_checks_use_the_reason(self, monkeypatch, capsys):
-        from booley.harness import web_isolation
+        from booley.harness import activity_hooks, web_isolation
 
         _set_venue(monkeypatch, True)
         monkeypatch.setattr(web_isolation, "policy_error", lambda: None)
+        monkeypatch.setattr(activity_hooks, "hooks_error", lambda: None)
         rec = _Rec()
 
         doctor._run_container_checks(

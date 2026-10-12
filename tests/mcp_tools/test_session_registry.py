@@ -261,6 +261,42 @@ async def test_maintenance_prunes_during_silence(monkeypatch, registry):
     assert registry.snapshot().rows == ()
 
 
+@pytest.mark.asyncio
+async def test_maintenance_prunes_activity_of_sessions_no_longer_held(monkeypatch, registry):
+    import os
+
+    from booley.mcp import session_observer
+    from booley.runtime.session_activity import WORKING, ActivitySignal, ActivityStore
+
+    store = ActivityStore(registry.project_dir)
+    registry.upsert(facts("codex:held"), "sim", "completed", now=190)
+    for key in ("codex:held", "codex:expired", "codex:not-yet-registered"):
+        store.write(ActivitySignal(key, WORKING, "2026-10-08T10:00:00Z"))
+    # Signals age by file time: only the unregistered one past quiet_after expires.
+    for key, written in (
+        ("codex:held", 10),
+        ("codex:expired", 100),
+        ("codex:not-yet-registered", 195),
+    ):
+        os.utime(store.path(key), (written, written))
+    observer = SessionObserver(now=lambda: 200, budget=1)
+    monkeypatch.setattr(observer, "_registry", lambda: registry)
+    monkeypatch.setattr(session_observer, "namespace", lambda: SCOPE)
+    monkeypatch.setattr(
+        session_observer, "registered_worktree_presence", lambda _: lambda _facts: True
+    )
+    await observer.maintain()
+    assert [row.attribution.key for row in registry.snapshot().rows] == ["codex:held"]
+    assert store.read("codex:held") is not None
+    assert store.read("codex:not-yet-registered") is not None
+    assert store.read("codex:expired") is None
+    # An unreadable row may be a live session: nothing is pruned while one exists.
+    (registry.root / ("0" * 64 + ".json")).write_text("corrupt")
+    os.utime(store.path("codex:not-yet-registered"), (100, 100))
+    await observer.maintain()
+    assert store.read("codex:not-yet-registered") is not None
+
+
 def test_prune_refresh_race_uses_latest_row_under_lock(registry):
     registry.upsert(facts(), "sim", "completed", now=100)
     stale = registry.snapshot().rows[0]

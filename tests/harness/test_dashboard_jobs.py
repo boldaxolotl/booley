@@ -639,3 +639,35 @@ def test_capacity_replacement_only_parses_new_endpoint_history(tmp_path, monkeyp
     assert len(snapshot.jobs) == 2
     assert all(job.report is not None for job in snapshot.jobs)
     assert reads == [reports[2]]
+
+
+def test_job_history_keeps_the_newest_records_and_reports_truncation(tmp_path, monkeypatch):
+    import os
+
+    from booley.runtime import job_snapshot
+
+    roots = [tmp_path / name / "jobs" for name in ("first", "second")]
+    # The oldest records sit in the root that is scanned first.
+    for root, run in (
+        (roots[0], "old"),
+        (roots[0], "older"),
+        (roots[1], "new"),
+        (roots[1], "newest"),
+    ):
+        job_records.write_record(rec(run, status="done"), root)
+    stamps = {"older": 100, "old": 200, "new": 300, "newest": 400}
+    for root in roots:
+        for path in root.glob("*.json"):
+            os.utime(path, (stamps[path.stem], stamps[path.stem]))
+    monkeypatch.setattr(job_snapshot, "retained_job_roots", lambda *_a, **_k: tuple(roots))
+    full = snapshot_jobs(tmp_path)
+    assert len(full.jobs) == 4
+    assert not any("truncated" in line for line in full.diagnostics)
+    monkeypatch.setattr(job_snapshot, "MAX_JOBS", 2)
+    cut = snapshot_jobs(tmp_path)
+    assert {job.record.run_id for job in cut.jobs} == {"new", "newest"}
+    assert "Job history truncated: showing the newest 2 of 4 records" in cut.diagnostics
+    monkeypatch.setattr(job_snapshot, "MAX_SCANNED_JOBS", 3)
+    assert "Job history truncated: showing the newest 2 of 3+ records" in (
+        snapshot_jobs(tmp_path).diagnostics
+    )

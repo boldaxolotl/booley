@@ -24,6 +24,24 @@ Inspect records with `booley goal status`; ask the agent
 for `goal_status(rules=true)` to recover evidence and rules after interruption.
 Read the Review Package and Session Summary when Finish succeeds.
 
+### A session shows `activity unknown`
+
+The Dashboard shows the activity that Claude Code or Codex reports through
+lifecycle hooks in the Sandbox Image. It never guesses, so a session reads
+`activity unknown` when:
+
+- the session has reported nothing since it first called Booley; the next
+  prompt or tool call fills it in;
+- the session has shown working or waiting for tool call for more than two
+  hours without a new event, which usually means the client stopped mid-turn;
+- the Sandbox Image has no activity hooks. `booley doctor` inside the Sandbox
+  warns about this; rebuild the image, then rebuild and reopen the Sandbox;
+- the agent client cannot be told apart from others in its worktree (the
+  Dashboard row says the shared-worktree attribution is unavailable).
+
+After you approve a permission request, the session keeps showing waiting for
+user input until the tool finishes.
+
 ## VS Code says “A mount config is invalid” while reopening the container
 
 Booley validates every host bind in the current generated spec before Docker

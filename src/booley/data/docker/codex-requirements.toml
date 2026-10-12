@@ -2,3 +2,43 @@
 # An empty allowlist means only web_search = "disabled" is permitted, even
 # when Codex runs with danger-full-access inside the outer Docker sandbox.
 allowed_web_search_modes = []
+
+# Report session lifecycle events to the Booley Dashboard (ADR 0068). Hooks
+# declared here are managed: they run without per-user hook trust. The command
+# prints nothing and always exits 0, so it can never block or alter a turn.
+
+[[hooks.UserPromptSubmit]]
+[[hooks.UserPromptSubmit.hooks]]
+type = "command"
+command = "python3 -I -S /usr/local/libexec/booley/session_activity_hook.py codex"
+timeout = 3
+
+[[hooks.PreToolUse]]
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "python3 -I -S /usr/local/libexec/booley/session_activity_hook.py codex"
+timeout = 3
+
+[[hooks.PostToolUse]]
+[[hooks.PostToolUse.hooks]]
+type = "command"
+command = "python3 -I -S /usr/local/libexec/booley/session_activity_hook.py codex"
+timeout = 3
+
+[[hooks.PermissionRequest]]
+[[hooks.PermissionRequest.hooks]]
+type = "command"
+command = "python3 -I -S /usr/local/libexec/booley/session_activity_hook.py codex"
+timeout = 3
+
+[[hooks.Stop]]
+[[hooks.Stop.hooks]]
+type = "command"
+command = "python3 -I -S /usr/local/libexec/booley/session_activity_hook.py codex"
+timeout = 3
+
+[[hooks.SessionEnd]]
+[[hooks.SessionEnd.hooks]]
+type = "command"
+command = "python3 -I -S /usr/local/libexec/booley/session_activity_hook.py codex"
+timeout = 3

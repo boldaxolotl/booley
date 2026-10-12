@@ -2045,6 +2045,20 @@ def _check_current_runtime_web_isolation(_pass: Check, _fail: Fail) -> None:
     _pass("agent provider-side web access disabled")
 
 
+def _check_current_runtime_activity_hooks(_pass: Check, _warn: Check) -> None:
+    """Validate the Dashboard's session-activity hooks from inside the Sandbox."""
+    from booley.harness.activity_hooks import hooks_error
+
+    error = hooks_error()
+    if error:
+        _warn(
+            f"Dashboard session activity will show as unknown: {error}; "
+            "rebuild the sandbox image, then rebuild/reopen the Sandbox"
+        )
+        return
+    _pass("Dashboard session-activity hooks installed")
+
+
 def _check_container_runtime_payload(
     check: Callable[[str, list[str], str], None],
 ) -> None:
@@ -2089,6 +2103,7 @@ def _run_container_checks(
     banner("Container checks")
     if runtime_context.inside_session_runtime():
         _check_current_runtime_web_isolation(_pass, _fail)
+        _check_current_runtime_activity_hooks(_pass, _warn)
         _skip(_no_docker_skip_reason())
         return
     if not docker_exe:
