@@ -248,6 +248,8 @@ def public_change(layout, env, arguments):
     assert json.loads(applied.value[0].text)["state"] == "applied"
 
 
+# Slowest Windows CI duration is 31 s; the headroom rule asks for three times that.
+@pytest.mark.timeout(120)
 def test_public_relax_then_waive_preserves_current_bounds_on_reloaded_campaign(layout):
     env, candidate, _root = prepared(layout, covered=18, total=20)
     public_change(
