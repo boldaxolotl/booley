@@ -79,11 +79,63 @@ canceling the editor operation.
 Project identity, Flow selection, and Developer Agent and Specialist configuration live in
 `.booley_project/booley.toml`. A per-knob reference follows, section by section.
 
-`[project]` carries the project `name` and `preflight_checks` — see
+`[project]` carries the project `name`, `protected_inputs`, and `preflight_checks` — see
 [Per-Target environment](#per-target-environment-env) for the last one, which is
 about testbench file-existence checks rather than identity. Everything else is
 detailed below, starting with the shared `enabled`
 setting for Booley Flows and Specialists.
+
+### Additional Protected Inputs: `[project].protected_inputs`
+
+Goal Mode already freezes Booley's own configuration and hooks. `protected_inputs`
+adds tracked files of yours that decide how a Goal is evaluated, such as a
+Makefile a hook runs, firmware sources, or reference vectors:
+
+```toml
+[project]
+name = "example"
+protected_inputs = ["Makefile", "firmware/**/*.c", "vectors/"]
+```
+
+Omitting the key or leaving the list empty protects nothing extra. Booley does
+not infer these files from scripts or Makefiles; list each one.
+
+Each entry is a path relative to the repo root of the Goal's worktree, wherever
+that worktree's `booley.toml` lives. Write `/` on every host.
+
+| Form | Example | Matches |
+|---|---|---|
+| File | `Makefile` | That file. |
+| Glob | `firmware/**/*.c` | `*` and `?` match within one path component; `**` as a whole component matches any number of components, including none. Dotfiles match. |
+| Directory | `vectors/` | Every file below it, the same as `vectors/**`. The trailing slash is required: `vectors` is refused with a hint to add it. |
+
+**At Goal entry** Booley lists the matched files. It refuses entry, naming the
+entry at fault, when:
+
+- an entry matches no file;
+- a match is untracked or ignored, or sits in a submodule or nested repository;
+- an entry is empty or absolute, or contains `..`, a backslash, brackets,
+  braces, or `**` joined to other characters (`**.c`);
+- an entry reaches into `.git` or Goal Record storage;
+- a matched symlink does not resolve to a tracked file inside the repository.
+  That covers directory symlinks and dangling or escaping links.
+
+**During the Goal** Booley freezes the list itself, the set of matched files,
+and each file's contents, type, and executable bit. Adding, removing, renaming,
+or editing a matched file warns at once and blocks Finish. Committing such a
+change does too, even when the working files are restored afterward. The
+warning names the entry, the file, and the kind of change, once per file however
+many entries or built-in protections cover it. Restoring the file clears the
+violation. An approved Goal Change cannot lift the protection: to change the
+list, abandon the Goal and enter again.
+
+Two limits:
+
+- Keep build outputs out of protected patterns. A build that writes into a
+  protected directory is a violation, so prefer `firmware/**/*.c` to `firmware/`
+  when compilation writes there.
+- As with built-in Protected Inputs, an edit made and reverted while a Flow is
+  running is not detected.
 
 ### Flow and Specialist availability: `enabled`
 

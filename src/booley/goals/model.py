@@ -48,6 +48,7 @@ from booley.core.boundary import (
 )
 from booley.criteria.templates import FPGA_IMPL_OK_PARAMS, SYNTHESIS_OK_PARAMS
 from booley.criteria.thresholds import CYCLE_COUNT_PARAMS
+from booley.goals.declared_inputs import DeclaredCapture
 from booley.runtime.timefmt import parse_timestamp
 
 # ---------------------------------------------------------------------------
@@ -719,6 +720,8 @@ class GoalRecord:
     created it. Finish fields: ``validated_head`` and ``package_digest``.
     ``protected_paths``, ``protected_digest`` (working view), and
     ``protected_head_digest`` (HEAD view) are the D7 snapshot.
+    ``declared_protected_inputs`` retains the Project's optional versioned
+    declarations and per-file working/HEAD properties for diagnostics.
     ``session_key`` is the entering session, an audit field only (D3).
     ``failure`` explains a ``failed`` record, for example a branch left behind.
     ``paired_project_base_sha`` is the commit a paired Project repository
@@ -746,6 +749,7 @@ class GoalRecord:
     protected_digest: str | None = None
     protected_paths: tuple[str, ...] = ()
     protected_head_digest: str | None = None
+    declared_protected_inputs: DeclaredCapture | None = None
     validated_head: str | None = None
     package_digest: str | None = None
     finish_attempt_digest: str | None = None
@@ -782,6 +786,9 @@ class GoalRecord:
             "protected_digest": self.protected_digest,
             "protected_paths": list(self.protected_paths),
             "protected_head_digest": self.protected_head_digest,
+            "declared_protected_inputs": None
+            if self.declared_protected_inputs is None
+            else self.declared_protected_inputs.to_json(),
             "validated_head": self.validated_head,
             "package_digest": self.package_digest,
             "finish_attempt_digest": self.finish_attempt_digest,
@@ -847,6 +854,7 @@ _RECORD_DEFAULTS: Mapping[str, Any] = MappingProxyType(
         "protected_digest": None,
         "protected_paths": [],
         "protected_head_digest": None,
+        "declared_protected_inputs": None,
         "validated_head": None,
         "package_digest": None,
         "finish_attempt_digest": None,
@@ -911,6 +919,7 @@ def _lifecycle_fields(mapping: dict[str, Any]) -> dict[str, Any]:
         "protected_head_digest": _record_opt_digest(
             mapping["protected_head_digest"], "record.protected_head_digest"
         ),
+        "declared_protected_inputs": _record_declared_inputs(mapping["declared_protected_inputs"]),
         "validated_head": (
             None
             if validated_head is None
@@ -937,6 +946,15 @@ def _lifecycle_fields(mapping: dict[str, Any]) -> dict[str, Any]:
             mapping["end_instruction_quote"], "end_instruction_quote"
         ),
     }
+
+
+def _record_declared_inputs(raw: object) -> DeclaredCapture | None:
+    if raw is None:
+        return None
+    try:
+        return DeclaredCapture.from_json(raw)
+    except ValueError as exc:
+        raise GoalRecordFormatError(f"record.declared_protected_inputs: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------
