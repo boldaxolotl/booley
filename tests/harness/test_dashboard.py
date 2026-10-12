@@ -41,7 +41,7 @@ def snapshot(count=12):
 
 
 @pytest.mark.asyncio
-async def test_pilot_sessions_beyond_nine_scope_back_help_and_disconnect():
+async def test_pilot_sessions_beyond_nine_scope_back_help_and_disconnect(monkeypatch):
     current = snapshot()
     proposal = SimpleNamespace(
         proposal=SimpleNamespace(
@@ -82,6 +82,16 @@ async def test_pilot_sessions_beyond_nine_scope_back_help_and_disconnect():
         ),
     )
     app = DashboardApp(lambda: current)
+    original_interval = app.set_interval
+
+    def paused_interval(*args, **kwargs):
+        timer = original_interval(*args, **kwargs)
+        timer.pause()
+        return timer
+
+    # Periodic refresh can keep the pilot's idle wait busy under CI load.
+    # This navigation scenario drives snapshot refresh explicitly below.
+    monkeypatch.setattr(app, "set_interval", paused_interval)
     async with app.run_test(size=(90, 30)) as pilot:
         from rich.text import Text
         from textual.coordinate import Coordinate

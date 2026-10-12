@@ -249,7 +249,7 @@ class JobLifecycle:
         # the lifetime busy independently or the server idle-exits mid-run.
         self._lifetime.mark_mcp_endpoint_start()
         self._tasks[run_id] = asyncio.create_task(
-            self._run_and_record(run_id, name, cmd, timeout, rec, context),
+            self._run_and_record(rec, context),
         )
         return run_id
 
@@ -273,20 +273,7 @@ class JobLifecycle:
         _KNOWN_JOB_ROOTS[rec.run_id] = context.jobs_root
         jobrec.write_record(rec, root=self._write_root(rec))
         try:
-            result = await self._run_process(
-                cmd,
-                timeout=timeout,
-                on_spawn=lambda pid: self._stamp_pid(rec, pid),
-                env=_endpoint_subprocess_env(
-                    context,
-                    pytest_scope=name,
-                    BOOLEY_RUN_ID=rec.run_id,
-                    BOOLEY_DISPLAY_INVOCATION_ID=rec.run_id,
-                    BOOLEY_SLOT_TIMEOUT_S=str(timeout),
-                ),
-                is_queued=lambda: self._child_is_queued(rec),
-                on_first_active=lambda: self._stamp_run_started(rec),
-            )
+            result = await self._execute_record(rec, context, publish_display_identity=True)
         except asyncio.CancelledError:
             self._abort_synchronous(rec)
             raise
@@ -304,49 +291,38 @@ class JobLifecycle:
         self._forget_synchronous(rec)
         return result
 
-    async def _run_and_record(
+    async def _execute_record(
         self,
-        run_id: str,
-        name: str,
-        cmd: list[str],
-        timeout: int,
         rec: jobrec.JobRecord,
         context: CallContext,
-    ) -> None:
+        *,
+        publish_display_identity: bool = False,
+    ) -> tuple[int, str, str, bool]:
+        """Apply one PID, admission, and environment policy to every supervised Job."""
+        overrides = {"BOOLEY_RUN_ID": rec.run_id, "BOOLEY_SLOT_TIMEOUT_S": str(rec.timeout_s)}
+        if publish_display_identity:
+            overrides["BOOLEY_DISPLAY_INVOCATION_ID"] = rec.run_id
+        return await self._run_process(
+            rec.argv,
+            timeout=rec.timeout_s,
+            on_spawn=lambda pid: self._stamp_pid(rec, pid),
+            env=_endpoint_subprocess_env(context, pytest_scope=rec.endpoint, **overrides),
+            is_queued=lambda: self._child_is_queued(rec),
+            on_first_active=lambda: self._stamp_run_started(rec),
+        )
+
+    async def _run_and_record(self, rec: jobrec.JobRecord, context: CallContext) -> None:
         """Run the subprocess to completion and persist the terminal outcome."""
         try:
-            exit_code, stdout, stderr, timed_out = await self._run_process(
-                cmd,
-                timeout=timeout,
-                on_spawn=lambda pid: self._stamp_pid(rec, pid),
-                # BOOLEY_RUN_ID lets the child stamp its report with the job
-                # identity (poll-side attribution); BOOLEY_SLOT_TIMEOUT_S
-                # carries the real watchdog budget to the child's slot claim
-                # so the holder-deadline reap has a sound anchor.
-                env=_endpoint_subprocess_env(
-                    context,
-                    pytest_scope=name,
-                    BOOLEY_RUN_ID=run_id,
-                    BOOLEY_SLOT_TIMEOUT_S=str(timeout),
-                ),
-                is_queued=lambda: self._child_is_queued(rec),
-                on_first_active=lambda: self._stamp_run_started(rec),
-            )
+            exit_code, stdout, stderr, timed_out = await self._execute_record(rec, context)
             if timed_out:
-                self._write_end(
-                    name,
-                    timeout,
-                    identity=self._display_identity(rec),
-                )
-            self._results[run_id] = (exit_code, stdout, stderr, timed_out)
+                self._write_end(rec.endpoint, rec.timeout_s, identity=self._display_identity(rec))
+            self._results[rec.run_id] = (exit_code, stdout, stderr, timed_out)
             self._record_terminal(rec, exit_code, timed_out=timed_out)
         except asyncio.CancelledError:
-            if run_id not in self._cancel_requested:
+            if rec.run_id not in self._cancel_requested:
                 self._write_end(
-                    name,
-                    0,
-                    identity=self._display_identity(rec),
-                    outcome="aborted",
+                    rec.endpoint, 0, identity=self._display_identity(rec), outcome="aborted"
                 )
                 raise
             self._record_user_cancellation(rec)

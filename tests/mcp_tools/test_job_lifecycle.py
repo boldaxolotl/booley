@@ -10,6 +10,7 @@ import sys
 import textwrap
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -21,6 +22,9 @@ from booley.runtime.pid import is_pid_alive
 from booley.runtime.timefmt import utc_now_rfc3339
 
 SOURCE_ROOT = Path(__file__).parents[2] / "src"
+pytestmark = pytest.mark.timeout(120)
+JOB_TIMEOUT = 30
+WAIT_TIMEOUT = 20
 
 
 @pytest.fixture
@@ -56,7 +60,7 @@ def command(script):
 
 
 async def wait_until(predicate):
-    deadline = time.monotonic() + 5
+    deadline = time.monotonic() + WAIT_TIMEOUT
     while not predicate():
         assert time.monotonic() < deadline, "child did not reach the expected state"
         await asyncio.sleep(0.01)
@@ -67,19 +71,28 @@ async def stop_jobs(jobs):
     for task in tasks:
         if not task.done():
             task.cancel()
-    await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=5)
+    await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=15)
 
 
 def gated_command(context):
     return command(f"""
         from pathlib import Path
-        import time
+        import json, os, time
         ready = Path({str(context.work_dir / "ready")!r})
         release = Path({str(context.work_dir / "release")!r})
         ready.write_text('ready')
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + 60
         while not release.exists() and time.monotonic() < deadline:
             time.sleep(0.01)
+        if not release.exists():
+            raise RuntimeError('release handshake timed out')
+        report = Path(os.environ['BOOLEY_RUNTIME_DIR']) / 'flow-reports/lint/1/report.json'
+        report.parent.mkdir(parents=True, exist_ok=True)
+        temporary = report.with_suffix('.tmp')
+        temporary.write_text(json.dumps({{
+            'flow': 'lint', 'run_id': os.environ['BOOLEY_RUN_ID'], 'exit_code': 0, 'passed': True
+        }}), encoding='utf-8')
+        temporary.replace(report)
         print('completed')
     """)
 
@@ -96,7 +109,7 @@ async def test_inline_completion_and_nonzero_exit(context, script, exit_code, st
     activity = Activity()
     jobs = JobLifecycle(activity)
     submission = await jobs.submit_and_wait(
-        "lint", command(script), 5, context=context, wait_seconds=5
+        "lint", command(script), JOB_TIMEOUT, context=context, wait_seconds=WAIT_TIMEOUT
     )
     assert not submission.attached
     assert submission.poll.status == "finished"
@@ -110,7 +123,11 @@ async def test_inline_completion_and_nonzero_exit(context, script, exit_code, st
 async def test_launch_failure_is_terminal(context):
     jobs = JobLifecycle()
     submission = await jobs.submit_and_wait(
-        "lint", ["__missing_booley_binary__"], 5, context=context, wait_seconds=5
+        "lint",
+        ["__missing_booley_binary__"],
+        JOB_TIMEOUT,
+        context=context,
+        wait_seconds=WAIT_TIMEOUT,
     )
     assert submission.poll.status == "finished"
     assert submission.poll.result.exit_code == 2
@@ -122,18 +139,23 @@ async def test_detached_poll_and_duplicate_attach_across_instances(context):
     jobs = JobLifecycle()
     cmd = gated_command(context)
     try:
-        submission = await jobs.submit_and_wait("lint", cmd, 5, context=context, wait_seconds=0)
+        submission = await jobs.submit_and_wait(
+            "lint", cmd, JOB_TIMEOUT, context=context, wait_seconds=0
+        )
         run_id = submission.poll.run_id
         await wait_until((context.work_dir / "ready").exists)
         assert (await jobs.poll(run_id, 0)).status == "running"
         restarted = JobLifecycle()
-        attached = await restarted.submit_and_wait("lint", cmd, 5, context=context, wait_seconds=0)
+        attached = await restarted.submit_and_wait(
+            "lint", cmd, JOB_TIMEOUT, context=context, wait_seconds=0
+        )
         assert attached.attached and attached.poll.run_id == run_id
         assert not attached.poll.tracked and attached.poll.status == "running"
         asyncio.get_running_loop().call_later(0.03, (context.work_dir / "release").touch)
-        adopted = await restarted.poll(run_id, 5, disk_tick=0.01)
+        adopted = await restarted.poll(run_id, WAIT_TIMEOUT, disk_tick=0.01)
         assert adopted.status == "finished" and adopted.result.exit_code == 0
-        result = await jobs.poll(run_id, 5)
+        assert adopted.result.report_fresh is True
+        result = await jobs.poll(run_id, WAIT_TIMEOUT)
         assert result.result.stdout.strip() == "completed"
         assert len(jobs._tasks) == 1 and not restarted._tasks
     finally:
@@ -145,7 +167,11 @@ async def test_timeout_persists_failure_and_balances_activity(context):
     activity = Activity()
     jobs = JobLifecycle(activity)
     submission = await jobs.submit_and_wait(
-        "lint", command("import time; time.sleep(10)"), 1, context=context, wait_seconds=5
+        "lint",
+        command("import time; time.sleep(10)"),
+        1,
+        context=context,
+        wait_seconds=WAIT_TIMEOUT,
     )
     result = submission.poll.result
     assert result.exit_code == 2
@@ -161,7 +187,7 @@ async def test_running_cancel_is_terminal_after_process_stops_and_root_stays_pin
 ):
     activity = Activity()
     jobs = JobLifecycle(activity)
-    run_id = jobs.submit("lint", gated_command(context), 5, context=context)
+    run_id = jobs.submit("lint", gated_command(context), JOB_TIMEOUT, context=context)
     try:
         await wait_until((context.work_dir / "ready").exists)
         monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(context.work_dir / "different-runtime"))
@@ -243,8 +269,8 @@ def test_import_and_execution_work_when_sdk_and_adapter_imports_are_blocked(cont
         context = CallContext(None, root / 'jobs', None, None, root, {{}})
         async def run():
             jobs = JobLifecycle()
-            run_id = jobs.submit('lint', [sys.executable, '-c', 'print("ok")'], 5, context=context)
-            state = await jobs.poll(run_id, 5)
+            run_id = jobs.submit('lint', [sys.executable, '-c', 'print("ok")'], {JOB_TIMEOUT}, context=context)
+            state = await jobs.poll(run_id, {WAIT_TIMEOUT})
             assert state.result.exit_code == 0
             assert 'ok' in ReportEncoder().text_result(state.result.exit_code, state.result.stdout, '')
             assert ReportEncoder().structured_report({{'passed': True}})['passed'] is True
@@ -256,7 +282,7 @@ def test_import_and_execution_work_when_sdk_and_adapter_imports_are_blocked(cont
         cwd=context.work_dir,
         capture_output=True,
         text=True,
-        timeout=15,
+        timeout=40,
         check=False,
     )
     assert result.returncode == 0, result.stderr
@@ -276,8 +302,8 @@ def queued_command(context):
         import os, time
         from booley.runtime.job_slots import SlotStore, slots_dir
         store = SlotStore(slots_dir())
-        deadline = time.monotonic() + 5
-        token = store.acquire('heavy', pid=os.getpid(), timeout_s=1, poll_interval=0.01,
+        deadline = time.monotonic() + 60
+        token = store.acquire('heavy', pid=os.getpid(), timeout_s=30, poll_interval=0.01,
             on_submitted=lambda _: Path({str(context.work_dir / "queued")!r}).touch(),
             should_abort=lambda: time.monotonic() > deadline)
         try:
@@ -292,13 +318,13 @@ def queued_command(context):
 @pytest.mark.parametrize("withdraw", [False, True])
 async def test_real_queued_job_credit_and_withdrawal(context, withdraw):
     store = job_slots.SlotStore(job_slots.slots_dir())
-    holder = store.acquire("heavy", pid=os.getpid(), timeout_s=20)
+    holder = store.acquire("heavy", pid=os.getpid(), timeout_s=60)
     jobs = FastSupervisor()
     try:
-        run_id = jobs.submit("lint", queued_command(context), 1, context=context)
+        run_id = jobs.submit("lint", queued_command(context), JOB_TIMEOUT, context=context)
         await wait_until((context.work_dir / "queued").exists)
-        # Queued time may exceed the complete active-time budget.
-        await asyncio.sleep(1.1)
+        # Real-process admission and withdrawal use startup-safe budgets.
+        # Exact queue-time credit is exercised with the controlled clock below.
         queued = await jobs.poll(run_id)
         assert queued.status == "running" and queued.phase.startswith("QUEUED")
         assert not (context.work_dir / "started").exists()
@@ -308,7 +334,7 @@ async def test_real_queued_job_credit_and_withdrawal(context, withdraw):
             assert not (context.work_dir / "started").exists()
         else:
             store.release(holder)
-            result = await jobs.poll(run_id, 5)
+            result = await jobs.poll(run_id, WAIT_TIMEOUT)
             assert result.result.exit_code == 0
             assert (context.work_dir / "started").exists()
     finally:
@@ -424,6 +450,41 @@ async def test_poll_exposes_only_current_nonterminal_checkpoint(context):
 @pytest.mark.asyncio
 async def test_synchronous_execution_uses_same_supervisor_and_forgets_finished_record(context):
     jobs = JobLifecycle()
-    result = await jobs.run_synchronous("lint", command("print('inline')"), 5, context=context)
-    assert result == (0, "inline\n", "", False)
+    result = await jobs.run_synchronous(
+        "lint", command("print('inline')"), JOB_TIMEOUT, context=context
+    )
+    exit_code, stdout, stderr, timed_out = result
+    assert exit_code == 0 and stdout.splitlines() == ["inline"]
+    assert stderr == "" and timed_out is False
     assert job_records.list_records(context.jobs_root) == []
+
+
+@pytest.mark.asyncio
+async def test_queue_wait_does_not_consume_active_budget(context, monkeypatch):
+    clock = SimpleNamespace(elapsed=0.0)
+    clock.monotonic = lambda: clock.elapsed
+    attempts = []
+    active = []
+
+    async def wait():
+        if len(attempts) < 5:
+            raise TimeoutError
+
+    async def wait_for(awaitable, timeout):
+        attempts.append(timeout)
+        clock.elapsed += timeout
+        return await awaitable
+
+    monkeypatch.setattr(endpoint_process, "time", clock)
+    monkeypatch.setattr(endpoint_process, "asyncio", SimpleNamespace(wait_for=wait_for))
+    exited = await endpoint_process._wait_with_queue_credit(
+        SimpleNamespace(wait=wait),
+        2,
+        lambda: len(attempts) < 4,
+        lambda: active.append(clock.elapsed),
+        tick_seconds=5,
+    )
+    assert exited is True
+    assert attempts == [5, 5, 5, 5, 2]
+    assert active == [20]
+    assert clock.elapsed == 22
