@@ -58,6 +58,8 @@ from booley.flows.sim.campaign.test_run_report import ROW_LIMIT as TEST_RUN_ROW_
 from booley.flows.sim.campaign.test_run_report import (
     campaign_test_run_rows,
     informative_test_run_lines,
+    test_run_grade,
+    test_run_row,
 )
 from booley.flows.sim.campaign_reports import target_report_directory
 from booley.flows.sim.cli import SimArguments
@@ -99,7 +101,6 @@ from booley.flows.test_runs import (
     TestRun,
     parse_seed_request,
     parse_test_selector,
-    test_run_document,
     test_run_from_document,
 )
 from booley.fusesoc import fusesoc_registry
@@ -2212,19 +2213,17 @@ def _test_report_entry(test: TestResult) -> dict[str, Any]:
     return entry
 
 
-def _test_run_grade(test: TestResult) -> str:
-    """One word for how a Test Run ended, as a Simulation Campaign grades it."""
-    if test.passed:
-        return "pass"
-    if test.inconclusive:
-        return "inconclusive"
-    return "error" if test.failure_kind == "infrastructure" else "fail"
-
-
 def _test_run_rows(tests: Sequence[TestResult]) -> list[dict[str, object]]:
     """One row per result that names its Test Run: what it is and how it ended."""
     return [
-        {**test_run_document(test.test_run), "grade": _test_run_grade(test)}
+        test_run_row(
+            test.test_run,
+            test_run_grade(
+                passed=test.passed,
+                infrastructure=test.failure_kind == "infrastructure",
+                inconclusive=test.inconclusive,
+            ),
+        )
         for test in tests
         if test.test_run is not None
     ]

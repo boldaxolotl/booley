@@ -15,7 +15,7 @@ from typing import Protocol, cast
 
 from booley.flows.test_runs import (
     TestRun,
-    build_test_run,
+    discovered_test_run,
     rerun_command,
     test_run_document,
     test_run_from_document,
@@ -30,10 +30,13 @@ from .planning import manifest_digest
 
 __all__ = [
     "ROW_LIMIT",
+    "TEST_RUN_GRADES",
     "campaign_test_run_rows",
     "evidence_test_run_rows",
     "informative_test_run_lines",
+    "test_run_grade",
     "test_run_report_lines",
+    "test_run_row",
 ]
 
 #: Most rows (and most rerun commands) one Target's report shows.
@@ -48,19 +51,50 @@ class _Outcome(Protocol):
     def observations(self) -> tuple[Mapping[str, object], ...]: ...
 
 
-def _grade(observation: Mapping[str, object]) -> str:
-    """One word for how a Test Run ended: pass, fail, error or inconclusive."""
-    if (
-        observation["execution"] == "completed"
-        and observation["functional"] == "pass"
-        and observation["assertions"] != "dirty"
-    ):
+#: How a Test Run ended, in report rows: the one vocabulary, with its wording.
+TEST_RUN_GRADES = {
+    "pass": "passed",
+    "fail": "failed",
+    "error": "error",
+    "inconclusive": "inconclusive",
+}
+
+
+def test_run_grade(*, passed: bool, infrastructure: bool, inconclusive: bool) -> str:
+    """One word for how a Test Run ended: the Simulation Campaign's grade table.
+
+    A run that did not pass because of infrastructure is an ``error`` even
+    when its verdict is also inconclusive. Campaign observations, direct
+    results and coverage runs are all graded here.
+    """
+    if passed:
         return "pass"
-    if observation["failure_class"] == "infrastructure":
+    if infrastructure:
         return "error"
-    if observation["functional"] == "inconclusive":
-        return "inconclusive"
-    return "fail"
+    return "inconclusive" if inconclusive else "fail"
+
+
+def test_run_row(run: TestRun, grade: str) -> dict[str, object]:
+    """One report row: the Test Run's record and how it ended."""
+    return {**test_run_document(run), "grade": grade}
+
+
+# Not pytest tests, although their names start with ``test_``.
+test_run_grade.__test__ = False  # type: ignore[attr-defined]
+test_run_row.__test__ = False  # type: ignore[attr-defined]
+
+
+def _grade(observation: Mapping[str, object]) -> str:
+    """Grade a campaign observation."""
+    return test_run_grade(
+        passed=(
+            observation["execution"] == "completed"
+            and observation["functional"] == "pass"
+            and observation["assertions"] != "dirty"
+        ),
+        infrastructure=observation["failure_class"] == "infrastructure",
+        inconclusive=observation["functional"] == "inconclusive",
+    )
 
 
 def _recorded_test_runs(manifest_path: Path) -> dict[tuple[object, str], TestRun]:
@@ -101,10 +135,7 @@ def _observed_run(
     test = observation["test"]
     if unnamed is None or not isinstance(test, str):
         return None
-    try:
-        return build_test_run(test, seed=unnamed.seed, env=dict(unnamed.env))
-    except ValueError:
-        return None
+    return discovered_test_run(test, unnamed)
 
 
 def campaign_test_run_rows(outcome: _Outcome) -> list[dict[str, object]]:
@@ -120,7 +151,7 @@ def campaign_test_run_rows(outcome: _Outcome) -> list[dict[str, object]]:
     for observation in outcome.observations:
         run = _observed_run(observation, recorded)
         if run is not None:
-            rows.append({**test_run_document(run), "grade": _grade(observation)})
+            rows.append(test_run_row(run, _grade(observation)))
     return rows
 
 
@@ -171,7 +202,7 @@ def evidence_test_run_rows(outcome: _EvidenceOutcome) -> list[dict[str, object]]
                 f"observation of Test Run {observation['test_run']!r} has no recorded "
                 "Test Run with its fingerprint in the Simulation Campaign manifest"
             )
-        rows.append({**test_run_document(run), "grade": _grade(observation)})
+        rows.append(test_run_row(run, _grade(observation)))
     return rows
 
 
@@ -202,8 +233,10 @@ def test_run_report_lines(
     """The Test Run rows of *selector*'s report, and a rerun command per failure."""
     if not rows:
         return []
-    counts = {grade: sum(1 for row in rows if row["grade"] == grade) for grade in _GRADES}
-    summary = ", ".join(f"{count} {_GRADES[grade]}" for grade, count in counts.items() if count)
+    counts = {grade: sum(1 for row in rows if row["grade"] == grade) for grade in TEST_RUN_GRADES}
+    summary = ", ".join(
+        f"{count} {TEST_RUN_GRADES[grade]}" for grade, count in counts.items() if count
+    )
     lines = [f"  Test Runs: {len(rows)} ({summary})"]
     lines += [f"    {str(row['grade']).upper():<12} {row['name']}" for row in rows[:limit]]
     if len(rows) > limit:
@@ -215,9 +248,6 @@ def test_run_report_lines(
         if len(failed) > limit:
             lines.append(f"    ... and {len(failed) - limit} more")
     return lines
-
-
-_GRADES = {"pass": "passed", "fail": "failed", "error": "error", "inconclusive": "inconclusive"}
 
 
 def _rerun(selector: str, row: Mapping[str, object]) -> str:

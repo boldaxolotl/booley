@@ -14,7 +14,8 @@ from booley.criteria.state import CriterionChange, CriterionEntry, DevelopmentSt
 from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
 from booley.flows.criterion_freshness import build_criterion_freshness
 from booley.flows.execution_persistence import AcceptanceRecorder, EvidenceDiscarded
-from booley.flows.test_runs import TestRun, build_test_run, test_run_document
+from booley.flows.sim.campaign.test_run_report import test_run_grade, test_run_row
+from booley.flows.test_runs import TestRun, build_test_run
 
 from .coverage_projection import project_coverage_criterion
 
@@ -162,7 +163,7 @@ def coverage_test_run_rows(
         test_run = frozen.get(run.test_run) or _bare_test_run(run)
         if test_run is None or test_run.fingerprint != run.fingerprint:
             continue
-        rows.append({**test_run_document(test_run), "grade": _run_grade(run)})
+        rows.append(test_run_row(test_run, _run_grade(run)))
     return rows
 
 
@@ -177,10 +178,12 @@ def _bare_test_run(run: CoverageRun) -> TestRun | None:
 
 
 def _run_grade(run: CoverageRun) -> str:
-    """One word for how a run ended, as a Simulation Campaign grades it."""
-    if run.simulation_verdict in {"pass", "inconclusive"}:
-        return run.simulation_verdict
-    return "error" if run.attributes.get("failure_kind") == "infrastructure" else "fail"
+    """Grade a coverage run."""
+    return test_run_grade(
+        passed=run.simulation_verdict == "pass",
+        infrastructure=run.attributes.get("failure_kind") == "infrastructure",
+        inconclusive=run.simulation_verdict == "inconclusive",
+    )
 
 
 def _simulation_detail(

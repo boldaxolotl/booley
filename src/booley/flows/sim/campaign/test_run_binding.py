@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import cast
 
-from booley.config.tests_toml_rules import SEED_SEPARATOR
+from booley.flows.test_runs import discovered_test_run, test_run_from_document
 
 from .codec import SimulationCampaignIntegrityError
 
@@ -43,9 +43,8 @@ def observation_test_runs(
     for observation in observations:
         test = observation["test"]
         if unnamed is not None and test is not None:
-            seed = unnamed["seed"]
-            name = f"{test}" if seed is None else f"{test}{SEED_SEPARATOR}{seed}"
-            bound.append((name, cast(str, unnamed["fingerprint"])))
+            run = discovered_test_run(cast(str, test), test_run_from_document(unnamed))
+            bound.append((run.name, run.fingerprint))
             continue
         matching = [run for run in runs if test is None or run["test"] == test]
         position = taken.get(test, 0)

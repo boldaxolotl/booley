@@ -65,8 +65,10 @@ __all__ = [
     "UnseededTargetError",
     "build_test_run",
     "declared_inputs_fingerprint",
+    "discovered_test_run",
     "draw_seeds",
     "parse_seed_request",
+    "parse_test_run_name",
     "parse_test_selector",
     "parse_test_variants",
     "rerun_command",
@@ -329,6 +331,36 @@ def build_test_run(
         env=tuple(sorted(environment.items())),
         fingerprint=declared_inputs_fingerprint(tuple(args), environment),
     )
+
+
+def discovered_test_run(test: str, unnamed: TestRun) -> TestRun:
+    """The Test Run of a Test that an unfiltered batch discovered under *unnamed*.
+
+    A Target without registered Tests runs as its unnamed invocation, and a
+    Cocotb batch then reports the Tests its module holds. Each of them ran at
+    that invocation's seed and environment, so that is its Test Run. A
+    discovered name outside the Test name rules has no Test Run name of its
+    own and stays under the unnamed invocation. This is the one rule; results,
+    acceptance facts and reports all name a discovered Test through it.
+    """
+    try:
+        return build_test_run(test, seed=unnamed.seed, env=dict(unnamed.env))
+    except TestRunNameError:
+        return unnamed
+
+
+def parse_test_run_name(name: str) -> tuple[str, str | None, int | None]:
+    """The Test, Test Variant and seed a resolved Test Run name states.
+
+    The inverse of :attr:`TestRun.name` for a named Test Run. Raises
+    :class:`TestRunNameError` for anything else, including a seed count
+    (``test@xN`` names several Test Runs, not one).
+    """
+    selector = parse_test_selector(name)
+    form = selector.seed_form
+    if isinstance(form, SeedCount):
+        raise TestRunNameError(f"Test Run {name!r} names a seed count, not one seed")
+    return selector.test, selector.variant, form.seed if isinstance(form, PinnedSeed) else None
 
 
 _TEST_RUN_DOCUMENT_FIELDS = frozenset(

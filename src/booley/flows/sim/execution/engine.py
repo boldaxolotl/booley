@@ -85,7 +85,7 @@ from booley.flows.target_test_plan import (
 )
 from booley.flows.target_test_plan_loading import load_target_test_plan
 from booley.flows.terminal_progress import announce_unit
-from booley.flows.test_runs import TestRun, build_test_run
+from booley.flows.test_runs import TestRun, discovered_test_run
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.runtime.project_dir import resolve_checkout_project_dir, resolve_project_dir
 from booley.runtime.supervised_execution import current_supervised_execution
@@ -1617,11 +1617,7 @@ def _observed_test_run(name: str, handle: TargetHandle, runs: tuple[TestRun, ...
     first = runs[0]
     if first.test is not None or name in {"", handle.selector}:
         return first
-    try:
-        return build_test_run(name, seed=first.seed, env=dict(first.env))
-    except ValueError:
-        # A discovered name outside the Test name rules has no Test Run name.
-        return first
+    return discovered_test_run(name, first)
 
 
 def simulation_target_environment(handle: TargetHandle) -> dict[str, str]:

@@ -30,7 +30,7 @@ from booley.core.boundary import (
     require_str,
     require_str_value,
 )
-from booley.flows.test_runs import SeedCount, declared_inputs_fingerprint, parse_test_selector
+from booley.flows.test_runs import declared_inputs_fingerprint, parse_test_run_name
 from booley.runtime.timefmt import parse_timestamp, rfc3339_from_epoch
 
 DurableTargetIdentity = NewType("DurableTargetIdentity", str)
@@ -977,13 +977,13 @@ def _test_run_identity_problem(run: Mapping[str, object]) -> str:
     """
     name, test = run["test_run"], run["test"]
     try:
-        selector = parse_test_selector(require_str_value(name, field="test_run"))
+        named_test, _variant, _seed = parse_test_run_name(
+            require_str_value(name, field="test_run")
+        )
         require_sha256_digest(run["fingerprint"], field="fingerprint")
     except (BoundaryError, ValueError) as exc:
         return str(exc)
-    if isinstance(selector.seed_form, SeedCount):
-        return f"Test Run {name!r} names a seed count, not one seed."
-    if selector.test != test:
+    if named_test != test:
         return f"Test Run {name!r} is not a run of Test {test!r}."
     return ""
 

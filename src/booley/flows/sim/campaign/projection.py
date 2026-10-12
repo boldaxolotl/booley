@@ -10,11 +10,12 @@ from enum import StrEnum
 from booley.core.boundary import BoundaryError, as_dict, require_list
 from booley.flows.test_runs import test_run_from_document
 
+from .test_run_report import TEST_RUN_GRADES
+
 #: Written today: v2 plus one ``test_runs`` row per observed Test Run (ADR 0072).
 SIMULATION_PROJECTION_SCHEMA = "booley.simulation-projection/v3"
 #: The shape before Test Runs were reported; still decoded.
 _PROJECTION_V2_SCHEMA = "booley.simulation-projection/v2"
-_TEST_RUN_GRADES = frozenset({"pass", "fail", "error", "inconclusive"})
 
 
 class ProjectionTrust(StrEnum):
@@ -107,7 +108,7 @@ def _validate_test_runs(value: object) -> None:
         raise ValueError("Simulation projection test_runs must be a list") from exc
     for row in rows:
         record = as_dict(row)
-        if record is None or record.get("grade") not in _TEST_RUN_GRADES:
+        if record is None or record.get("grade") not in TEST_RUN_GRADES:
             raise ValueError("Simulation projection Test Run row has no valid grade")
         # Raises ``TestRunNameError`` (a ``ValueError``) for an inexact record.
         test_run_from_document({key: item for key, item in record.items() if key != "grade"})

@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Protocol, cast
 
 from booley.flows.execution_persistence import AcceptanceRecordingError
-from booley.flows.test_runs import PinnedSeed, parse_test_selector
+from booley.flows.test_runs import parse_test_run_name
 from booley.runtime.timefmt import utc_now_rfc3339
 
 from .campaign_reports import target_report_directory, write_campaign_json
@@ -434,14 +434,15 @@ def _public_collection_status(
 def _variant_and_seed(run: CoverageRun) -> tuple[str | None, int | None]:
     """The Test Variant and seed a run's Test Run name states.
 
-    A Test named before names were validated may not parse; it has neither.
+    Storage v5 validates the name on decode. A run of older storage is named
+    by its bare Test, which predates the name rules and may not parse; it has
+    neither a Test Variant nor a seed.
     """
     try:
-        selector = parse_test_selector(run.test_run)
+        _test, variant, seed = parse_test_run_name(run.test_run)
     except ValueError:
         return None, None
-    form = selector.seed_form
-    return selector.variant, form.seed if isinstance(form, PinnedSeed) else None
+    return variant, seed
 
 
 def _coverage_test_projection(run: CoverageRun) -> dict[str, object]:
