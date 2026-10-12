@@ -105,7 +105,7 @@ def _run(
 
     with (
         patch(
-            "booley.flows.target_test_plan.load_test_configuration",
+            "booley.flows.target_test_plan_loading.load_test_configuration",
             side_effect=lambda root: sections[Path(root).resolve()],
         ),
         patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["smoke", "stress"]}),

@@ -16,9 +16,9 @@ from booley.flows.target_test_plan import (
     UnknownTestError,
     batch_test_runs,
     build_target_test_plan,
-    load_target_test_plan,
     seed_mechanism,
 )
+from booley.flows.target_test_plan_loading import load_target_test_plan
 from booley.flows.test_runs import (
     DEFAULT_SEED,
     MAX_SEED,
@@ -396,3 +396,26 @@ class TestBatching:
         runs = (plan.run("c", "plain"), build_test_run("c", variant="twin", seed=1))
         batches = batch_test_runs(runs, one_process_per_run=False)
         assert [len(batch) for batch in batches] == [1, 1]
+
+
+def test_the_plan_module_reads_no_file_and_only_its_loader_does():
+    """The module contract: pure policy here, ``tests.toml`` I/O in the loader."""
+    import ast
+    import inspect
+
+    from booley.flows import target_test_plan, target_test_plan_loading
+
+    def imported(module) -> set[str]:
+        names: set[str] = set()
+        for node in ast.walk(ast.parse(inspect.getsource(module))):
+            if isinstance(node, ast.ImportFrom):
+                names.update(alias.name for alias in node.names)
+                names.add(node.module or "")
+            elif isinstance(node, ast.Import):
+                names.update(alias.name for alias in node.names)
+        return names
+
+    pure = imported(target_test_plan)
+    assert not pure & {"load_test_configuration", "pathlib", "Path", "tomllib", "os", "subprocess"}
+    assert "open(" not in inspect.getsource(target_test_plan)
+    assert "load_test_configuration" in imported(target_test_plan_loading)

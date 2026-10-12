@@ -82,8 +82,8 @@ from booley.flows.target_test_plan import (
     TargetTestPlan,
     TestRunLaunch,
     batch_test_runs,
-    load_target_test_plan,
 )
+from booley.flows.target_test_plan_loading import load_target_test_plan
 from booley.flows.terminal_progress import announce_unit
 from booley.flows.test_runs import TestRun, build_test_run
 from booley.fusesoc import fusesoc_registry, selftest_overlay

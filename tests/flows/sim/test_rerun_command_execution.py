@@ -63,7 +63,9 @@ def _invoke(root: Path, target: str, argv: list[str], section: dict | None, tool
     sections = normalize_tests_toml({"lite": section}) if section is not None else {}
     names = {"lite": list(section["tests"])} if section and "tests" in section else {}
     with (
-        patch("booley.flows.target_test_plan.load_test_configuration", return_value=sections),
+        patch(
+            "booley.flows.target_test_plan_loading.load_test_configuration", return_value=sections
+        ),
         patch("booley.flows.sim.flow._get_test_names", return_value=names),
         patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED),
         patch.object(flow, "_execute", side_effect=execute),

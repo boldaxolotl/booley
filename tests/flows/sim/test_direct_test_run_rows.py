@@ -53,7 +53,7 @@ def _run(tmp_path: Path, *argv: str, failing: str = ""):
 
     with (
         patch(
-            "booley.flows.target_test_plan.load_test_configuration",
+            "booley.flows.target_test_plan_loading.load_test_configuration",
             return_value=normalize_tests_toml(_TESTS),
         ),
         patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["smoke", "stress"]}),
@@ -202,7 +202,7 @@ def test_direct_run_at_a_target_default_seed_other_than_one_prints_no_rows(tmp_p
     tests = {"lite": {**_TESTS["lite"], "default_seed": 7}}
     with (
         patch(
-            "booley.flows.target_test_plan.load_test_configuration",
+            "booley.flows.target_test_plan_loading.load_test_configuration",
             return_value=normalize_tests_toml(tests),
         ),
         patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["smoke", "stress"]}),

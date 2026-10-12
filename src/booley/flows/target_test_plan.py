@@ -12,21 +12,18 @@ it and which plusargs it declares. Doctor, the Simulation Flow preflight and
 every launch path build the plan through :func:`build_target_test_plan`, so
 they cannot disagree.
 
-Domain policy only: no CLI, process or Sandbox imports.
+Domain policy only: it reads no file and imports nothing from the CLI, a
+process or the Sandbox. ``booley.flows.target_test_plan_loading`` reads a
+checkout's ``tests.toml`` and builds the plan from it.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
-from pathlib import Path
 from typing import Literal, cast
 
-from booley.config.project_config import (
-    DEFAULT_TEST_SELECT,
-    load_test_configuration,
-    lookup_target_section,
-)
+from booley.config.project_config import DEFAULT_TEST_SELECT
 from booley.config.tests_toml_rules import (
     DEFAULT_SEED,
     VERILATOR_SEED_OPTION,
@@ -63,7 +60,6 @@ __all__ = [
     "UnknownTestError",
     "batch_test_runs",
     "build_target_test_plan",
-    "load_target_test_plan",
     "seed_mechanism",
 ]
 
@@ -555,21 +551,6 @@ def build_target_test_plan(
 def _names(raw: object) -> Sequence[object]:
     """A normalized name list, or empty when the section has none."""
     return cast(list[object], raw) if isinstance(raw, list) else ()
-
-
-def load_target_test_plan(
-    work_dir: Path | str,
-    target: str,
-    *,
-    adapter: str,
-    target_plusargs: Collection[str] = (),
-) -> TargetTestPlan:
-    """Read ``tests.toml`` of the checkout at *work_dir* and build *target*'s plan."""
-    sections = load_test_configuration(work_dir)
-    section = lookup_target_section(sections, target)
-    return build_target_test_plan(
-        target, section, adapter=adapter, target_plusargs=target_plusargs
-    )
 
 
 def batch_test_runs(

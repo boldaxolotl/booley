@@ -50,7 +50,7 @@ from booley.flows.sim.verilator_coverage_execution import (
     VerilatorCoverageExecution,
     prepare_coverage_collection,
 )
-from booley.flows.target_test_plan import load_target_test_plan
+from booley.flows.target_test_plan_loading import load_target_test_plan
 from booley.fusesoc.fusesoc_registry import core_target_coverage_errors
 from booley.targets.catalog import TargetCatalog
 from tests.flows.sim.test_campaign_crash_matrix import _admission

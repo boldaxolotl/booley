@@ -21,7 +21,7 @@ from tests.smoke.test_verilator_coverage_collector_smoke import _invoke, _write_
 
 from booley.flows.sim.execution.contract import SimulationOptions
 from booley.flows.sim.verilator_coverage_execution import collect_target_coverage
-from booley.flows.target_test_plan import load_target_test_plan
+from booley.flows.target_test_plan_loading import load_target_test_plan
 from booley.flows.test_runs import MAX_SEED
 from booley.targets.catalog import TargetCatalog
 

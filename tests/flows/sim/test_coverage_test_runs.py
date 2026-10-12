@@ -27,7 +27,8 @@ from booley.flows.sim.verilator_coverage import (
     SelectedCoverageTest,
     SimulationRunResult,
 )
-from booley.flows.target_test_plan import MAX_TEST_RUNS_PER_REQUEST, load_target_test_plan
+from booley.flows.target_test_plan import MAX_TEST_RUNS_PER_REQUEST
+from booley.flows.target_test_plan_loading import load_target_test_plan
 from booley.flows.test_runs import TestRun, build_test_run, test_run_document
 from tests.flows.sim.test_coverage_flow import (
     _AcceptanceAdapter,

@@ -90,8 +90,8 @@ from booley.flows.sim.verilator_coverage import SimulationExecutionPort
 from booley.flows.target_test_plan import (
     TargetTestPlan,
     batch_test_runs,
-    load_target_test_plan,
 )
+from booley.flows.target_test_plan_loading import load_target_test_plan
 from booley.flows.test_runs import (
     DEFAULT_SEED,
     SeedCount,
