@@ -11,9 +11,10 @@ from unittest.mock import Mock
 import pytest
 
 import booley
+from booley.audit.diagnostic_results import DiagnosticReport
 from booley.harness import doctor
 from booley.harness import doctor_deep as deep
-from booley.runtime import health, health_presentation, runtime_context, sandbox_artifact
+from booley.runtime import health, runtime_context, sandbox_artifact
 from tests.flows.sim.test_verilator_build_reuse_campaign import flow_project
 from tests.harness.test_doctor import _write_project
 
@@ -318,12 +319,12 @@ def test_session_up_reports_deep_once_through_all_health_branches(
     monkeypatch.setattr(
         health, "due_reason", lambda _: "plain expired" if early == "scheduled" else None
     )
+    healthy = health.HealthSnapshot(DiagnosticReport(), "clean", tmp_path / "last.log", None)
     monkeypatch.setattr(
-        health_presentation,
-        "consume_changed_summary",
-        lambda *_args, **_kw: "plain healthy" if early == "changed" else None,
+        health,
+        "consume_changed_snapshot",
+        lambda *_args, **_kw: healthy if early == "changed" else None,
     )
-    monkeypatch.setattr(health, "read_health", lambda _: None)
     observe = Mock(
         return_value=deep.evaluate_deep_status(
             deep.DeepState(), version=booley.__version__, image_id=IMAGE

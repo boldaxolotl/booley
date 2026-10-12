@@ -307,8 +307,11 @@ def test_persisted_reports_include_status_without_scheduling_or_dedup_changes(
     else:
         report = doctor.record_manual_result(tmp_path, result)
     assert report["deep_status"] == result.deep_status.to_document()
+    # Deep status is metadata: changing it leaves the announcement identity alone.
     changed = {**report, "deep_status": {"status": "current"}}
-    assert health._finding_hash(report) == health._finding_hash(changed)
+    del changed["finding_hash"]
+    health.report_path(project_dir).write_text(json.dumps(changed))
+    assert health.read_health(tmp_path).finding_hash == report["finding_hash"]
     assert health.compute_fingerprint(project_dir, tmp_path) == report["fingerprint"]
     assert health.read_health(tmp_path).assessment.clean
     reset_cache()

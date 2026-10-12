@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from booley.harness import booley as tlr
-from booley.runtime import health, health_presentation
+from booley.runtime import health
 from booley.runtime.project_dir import reset_cache
 
 TICKETS_REL = Path(".booley") / "project" / "tickets"
@@ -341,7 +341,7 @@ def test_host_authority_guard_resolves_packaged_skills(monkeypatch, capsys):
 
 
 def test_session_health_reports_scheduled_automatic_check(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(health_presentation, "consume_changed_summary", lambda *_a, **_kw: None)
+    monkeypatch.setattr(health, "consume_changed_snapshot", lambda *_a, **_kw: None)
     monkeypatch.setattr(health, "due_reason", lambda _root: "stale")
 
     tlr._report_session_health(tmp_path)
@@ -373,8 +373,8 @@ def test_due_session_start_does_not_report_persisted_doctor_findings(
     tmp_path, monkeypatch, capsys
 ):
     monkeypatch.setattr(
-        health_presentation,
-        "consume_changed_summary",
+        health,
+        "consume_changed_snapshot",
         lambda *_args, **_kwargs: pytest.fail("stale summary was consumed"),
     )
 
@@ -388,8 +388,8 @@ def test_due_session_start_does_not_report_persisted_doctor_findings(
 def test_session_health_rechecks_freshness_before_consuming_summary(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(health, "due_reason", lambda _root: "Doctor inputs changed")
     monkeypatch.setattr(
-        health_presentation,
-        "consume_changed_summary",
+        health,
+        "consume_changed_snapshot",
         lambda *_args, **_kwargs: pytest.fail("stale summary was consumed"),
     )
 

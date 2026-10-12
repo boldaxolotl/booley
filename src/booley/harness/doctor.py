@@ -35,13 +35,9 @@ from booley.audit import (
     resource_policy,
     target_matrix,
 )
-from booley.audit import (
-    health as health_policy,
-)
 from booley.audit.diagnostic_results import (
     DiagnosticFinding,
     DiagnosticReport,
-    HealthAssessment,
     Severity,
 )
 from booley.audit.doctor_waivers import (
@@ -125,7 +121,6 @@ from booley.runtime.project_dir import (
     PROJECT_DIR_NAME,
     contains,
     resolve_checkout_project_dir,
-    resolve_project_dir,
 )
 from booley.runtime.project_gitignore import missing_gitignore_patterns
 from booley.runtime.timefmt import format_human_datetime
@@ -326,9 +321,6 @@ def _warning_sink(
     return emit
 
 
-DoctorFinding = DiagnosticFinding
-
-
 @dataclass(frozen=True)
 class _DoctorProfile:
     """Policy for one Doctor invocation."""
@@ -355,7 +347,7 @@ class DoctorRunResult:
     """Machine-readable outcome of one Doctor invocation."""
 
     counts: dict[str, int]
-    findings: tuple[DoctorFinding, ...]
+    findings: tuple[DiagnosticFinding, ...]
     exit_code: int
     health_evidence: bool = True
     deep_status: doctor_deep.DeepStatus | None = None
@@ -438,7 +430,7 @@ class _Reporter:
     verbose: bool = False
     concise: bool = False
     _reported_warning_keys: set[tuple[str, str | None, str]] | None = None
-    findings: list[DoctorFinding] | None = None
+    findings: list[DiagnosticFinding] | None = None
     agent_calls: list[_AgentCallRecord] | None = None
 
     @classmethod
@@ -499,8 +491,10 @@ class _Reporter:
     def pass_(self, msg: str) -> None:
         assert self.findings is not None
         self.findings.append(
-            DoctorFinding(
-                "pass", str(msg), check_id=msg.check_id if isinstance(msg, DoctorWarning) else None
+            DiagnosticFinding(
+                Severity.PASS,
+                str(msg),
+                check_id=msg.check_id if isinstance(msg, DoctorWarning) else None,
             )
         )
         if not self.concise:
@@ -509,7 +503,7 @@ class _Reporter:
 
     def note_(self, msg: str, fix: str = "") -> None:
         assert self.findings is not None
-        self.findings.append(DoctorFinding("note", str(msg), fix))
+        self.findings.append(DiagnosticFinding(Severity.NOTE, str(msg), fix))
         note(f"NOTE  {msg}")
         if fix:
             info(f"  fix: {fix}")
@@ -527,11 +521,15 @@ class _Reporter:
         waiver = self.waivers.match(msg)
         if waiver is not None:
             self.waived_(
-                DoctorFinding("waived", str(msg), waiver.reason, msg.check_id, msg.subject)
+                DiagnosticFinding(
+                    Severity.WAIVED, str(msg), waiver.reason, msg.check_id, msg.subject
+                )
             )
             return
         assert self.findings is not None
-        self.findings.append(DoctorFinding("warn", str(msg), fix, msg.check_id, msg.subject))
+        self.findings.append(
+            DiagnosticFinding(Severity.WARN, str(msg), fix, msg.check_id, msg.subject)
+        )
         warn(f"WARN  {msg} {suffix}")
         if fix:
             info(f"  fix: {fix}")
@@ -547,7 +545,7 @@ class _Reporter:
 
     def skip_(self, msg: str) -> None:
         assert self.findings is not None
-        self.findings.append(DoctorFinding("skip", str(msg)))
+        self.findings.append(DiagnosticFinding(Severity.SKIP, str(msg)))
         skip(f"SKIP  {msg}")
         self.counts["skip"] += 1
 
@@ -560,7 +558,7 @@ class _Reporter:
 
     def fail_(self, msg: str, fix: str = "") -> None:
         assert self.findings is not None
-        self.findings.append(DoctorFinding("fail", str(msg), fix))
+        self.findings.append(DiagnosticFinding(Severity.FAIL, str(msg), fix))
         err(f"FAIL  {msg}")
         if fix:
             info(f"  fix: {fix}")
@@ -596,7 +594,8 @@ class _Reporter:
             print(
                 yellow("  Resolve or explicitly waive every warning before calling setup clean.")
             )
-        return HealthAssessment(self.counts["fail"], self.counts["warn"]).exit_code
+        assert self.findings is not None
+        return DiagnosticReport(tuple(self.findings)).health.exit_code
 
     def result(self, exit_code: int) -> DoctorRunResult:
         """Freeze the accumulated findings after :meth:`finish`."""
@@ -653,24 +652,20 @@ def record_manual_result(project_root: Path, result: DoctorRunResult) -> dict[st
     """Make a manual in-Sandbox Doctor result current for interactive reporting."""
     if not result.health_evidence:
         return None
+    transcript = "\n".join(
+        f"{finding.severity.value.upper()}: {finding.message}" for finding in result.findings
+    )
     try:
-        project_dir = resolve_project_dir(project_root)
-        findings = health_policy.finding_documents(result.diagnostics)
-        transcript = "\n".join(
-            f"{finding['severity'].upper()}: {finding['message']}" for finding in findings
-        )
         return health.publish_result(
             project_root,
-            project_dir,
             trigger="manual-doctor",
             duration_s=0,
-            counts=dict(result.counts),
             diagnostics=result.diagnostics,
-            exit_code=int(result.exit_code),
             transcript=transcript + "\n",
             deep_status=result.deep_status.to_document() if result.deep_status else None,
         )
-    except (AttributeError, OSError, TypeError, ValueError):
+    except OSError:
+        # No resolvable Project or unwritable state: there is nowhere to record it.
         return None
 
 

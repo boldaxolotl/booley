@@ -1,7 +1,12 @@
-"""Typed machinery health and freshness policy, independent of execution and storage."""
+"""Typed machinery health, its persisted document shape and freshness policy.
+
+Pure policy over explicit inputs: it neither executes Doctor nor touches the
+filesystem, so every consumer interprets one observation identically.
+"""
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -34,7 +39,7 @@ class HealthSnapshot:
     """One validated observation and freshness decision, detached from the reader."""
 
     diagnostics: DiagnosticReport
-    document: dict[str, Any]
+    finding_hash: str
     transcript: Path
     due: str | None
 
@@ -43,7 +48,7 @@ class HealthSnapshot:
         return self.diagnostics.health
 
 
-def finding_documents(diagnostics: DiagnosticReport) -> list[dict[str, Any]]:
+def finding_documents(findings: Iterable[DiagnosticFinding]) -> list[dict[str, Any]]:
     """Retain the legacy five-field on-disk finding and announcement hash shape."""
     return [
         {
@@ -53,7 +58,7 @@ def finding_documents(diagnostics: DiagnosticReport) -> list[dict[str, Any]]:
             "check_id": f.check_id,
             "subject": f.subject,
         }
-        for f in diagnostics.findings
+        for f in findings
     ]
 
 
@@ -99,21 +104,20 @@ def parse_diagnostics(document: dict[str, Any]) -> DiagnosticReport:
 
 
 def freshness_reason(
-    report: dict[str, Any],
-    fingerprint: dict[str, Any],
-    now: datetime,
+    diagnostics: DiagnosticReport,
     *,
-    assessment: HealthAssessment,
+    inputs_changed: bool,
     checked_at: datetime | None,
+    now: datetime,
 ) -> str | None:
-    """Evaluate age and input drift for a parsed prior report."""
-    if report.get("fingerprint") != fingerprint:
+    """Evaluate input drift, then age, for one validated prior observation."""
+    if inputs_changed:
         return "Doctor inputs changed"
     if checked_at is None:
         return "automatic Doctor timestamp unreadable"
     max_age = (
         _HEALTHY_MAX_AGE
-        if assessment.clean or _has_only_upgrade_review_findings(report)
+        if diagnostics.health.clean or _has_only_upgrade_review_findings(diagnostics)
         else _UNHEALTHY_RETRY_AGE
     )
     if now - checked_at >= max_age:
@@ -121,13 +125,7 @@ def freshness_reason(
     return None
 
 
-def _has_only_upgrade_review_findings(report: dict[str, Any]) -> bool:
+def _has_only_upgrade_review_findings(diagnostics: DiagnosticReport) -> bool:
     """True when rerunning Doctor daily cannot change the active findings."""
-    active = [
-        finding
-        for finding in report.get("findings", [])
-        if isinstance(finding, dict) and finding.get("severity") in {"fail", "warn"}
-    ]
-    return bool(active) and all(
-        finding.get("check_id") in _UPGRADE_ONLY_CHECKS for finding in active
-    )
+    active = diagnostics.active_findings
+    return bool(active) and all(f.check_id in _UPGRADE_ONLY_CHECKS for f in active)

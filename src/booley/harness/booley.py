@@ -1107,11 +1107,10 @@ def _report_session_health(project_root: Path, *, startup_due_reason: str | None
             file=sys.stderr,
         )
         return
-    summary = health_presentation.consume_changed_summary(project_root, channel="session-up")
-    if summary:
-        snapshot = health.read_health(project_root)
-        prefix = "warning: " if snapshot is not None and not snapshot.assessment.clean else ""
-        print(f"{prefix}{summary}", file=sys.stderr)
+    snapshot = health.consume_changed_snapshot(project_root, channel="session-up")
+    if snapshot is not None:
+        prefix = "" if snapshot.assessment.clean else "warning: "
+        print(f"{prefix}{health_presentation.brief_message(snapshot)}", file=sys.stderr)
         return
 
 

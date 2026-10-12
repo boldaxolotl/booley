@@ -465,15 +465,16 @@ def test_shared_health_has_no_transitive_command_or_sdk_dependency() -> None:
         pending.update(edges.get(current, set()) - visited)
 
 
-def test_health_consumers_do_not_import_worker_or_old_stamp_paths() -> None:
+def test_health_consumers_reach_shared_health_without_the_doctor_worker() -> None:
     consumers = {"booley.mcp.server", "booley.harness.dashboard.model"}
-    retired = {
-        "booley.harness.auto_doctor",
-        "booley.harness.doctor_stamp",
-        "booley.harness.doctor_waivers",
-    }
-    assert not [
-        (edge.source, edge.target)
-        for edge in analyze_imports(_SOURCE_ROOT)
-        if edge.source in consumers and edge.target in retired
-    ]
+    shared = {"booley.runtime.health", "booley.runtime.health_presentation"}
+    worker = "booley.harness.auto_doctor"
+    targets: dict[str, set[str]] = {consumer: set() for consumer in consumers}
+    for edge in analyze_imports(_SOURCE_ROOT):
+        if edge.source in consumers:
+            targets[edge.source].add(edge.target)
+    for consumer, imported in targets.items():
+        # Proves the analyzer saw this consumer's health imports, deferred ones included.
+        assert imported & shared, consumer
+        assert worker not in imported, consumer
+    assert (_SOURCE_ROOT / "harness" / "auto_doctor.py").is_file()

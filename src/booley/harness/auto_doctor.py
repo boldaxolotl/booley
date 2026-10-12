@@ -28,15 +28,15 @@ def _ignore_progress(_message: str) -> None:
     """Accept progress when the caller has no visible sink."""
 
 
-def _exception_report(exc: Exception) -> tuple[dict[str, int], DiagnosticReport, int]:
-    counts = {"pass": 0, "fail": 1, "warn": 0, "waived": 0, "note": 0, "skip": 0}
+def _crash_report(exc: Exception, transcript: Path) -> DiagnosticReport:
+    """Record a Doctor crash as one machinery failure."""
     finding = DiagnosticFinding(
         Severity.FAIL,
         f"automatic Doctor crashed: {type(exc).__name__}: {exc}",
-        "run `booley doctor` manually; inspect last.log",
+        f"run `booley doctor` manually; inspect {transcript.name}",
         "automatic.crash",
     )
-    return counts, DiagnosticReport((finding,)), 1
+    return DiagnosticReport((finding,))
 
 
 def _execute(
@@ -61,22 +61,17 @@ def _execute(
                 record_clean=False,
                 progress=progress,
             )
-        counts = result.counts
         diagnostics = result.diagnostics
-        exit_code = result.exit_code
         deep_status = result.deep_status.to_document() if result.deep_status else None
     except Exception as exc:  # noqa: BLE001 — automatic health must record crashes, never break startup
-        counts, diagnostics, exit_code = _exception_report(exc)
+        diagnostics = _crash_report(exc, health.transcript_path(project_dir))
         output.write(f"\n{diagnostics.findings[0].message}\n")
     duration_s = time.monotonic() - started
     report = health.publish_result(
         project_root,
-        project_dir,
         trigger=trigger,
         duration_s=duration_s,
-        counts=counts,
         diagnostics=diagnostics,
-        exit_code=exit_code,
         transcript=output.getvalue(),
         deep_status=deep_status,
     )
@@ -96,7 +91,7 @@ def run_if_due(
     try:
         project_dir = resolve_project_dir(project_root)
         lock_path = health.state_dir(project_dir) / _RUN_LOCK_NAME
-        with health.report_lock(lock_path) as acquired:
+        with health.try_state_lock(lock_path) as acquired:
             if not acquired:
                 return None
             reason = health.due_reason(project_root)

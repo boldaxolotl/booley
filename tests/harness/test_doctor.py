@@ -673,7 +673,7 @@ def test_doctor_fails_when_mcp_probe_does_not_set_interactive_logs(
     assert "MCP interactive log setup failed" in output
 
 
-def _gitignore_probe(project_dir: Path) -> list[doctor.DoctorFinding]:
+def _gitignore_probe(project_dir: Path) -> list[DiagnosticFinding]:
     """Run the Project ``.gitignore`` probe against *project_dir* and return its findings."""
     reporter = doctor._Reporter.create()
     doctor._check_project_gitignore(project_dir, reporter.pass_, reporter.warn_)

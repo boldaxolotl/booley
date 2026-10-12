@@ -2,7 +2,6 @@
 
 from pathlib import Path
 
-from booley.audit.diagnostic_results import Severity
 from booley.runtime import health
 
 
@@ -11,11 +10,7 @@ def brief_message(snapshot: health.HealthSnapshot) -> str:
     assessment = snapshot.assessment
     if assessment.clean:
         return f"Automatic Doctor is clean. Full report: {snapshot.transcript}"
-    findings = [
-        f.message
-        for f in snapshot.diagnostics.findings
-        if f.severity in {Severity.FAIL, Severity.WARN}
-    ]
+    findings = [f.message for f in snapshot.diagnostics.active_findings]
     top = "; ".join(findings[:3])
     extra = f"; {len(findings) - 3} more" if len(findings) > 3 else ""
     return (

@@ -21,7 +21,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from booley.runtime import devcontainer as dc
-from booley.runtime import health, health_presentation, issuance_invalidation, session_spec
+from booley.runtime import health, issuance_invalidation, session_spec
 from booley.runtime import session_issuance as runtime_spec
 from booley.runtime import session_runtime as sr
 from booley.runtime.session_admission import (
@@ -4067,8 +4067,8 @@ class TestSessionRefresh:
         monkeypatch.setattr(sr, "up", lambda *_args, **_kwargs: "session")
         monkeypatch.setattr(health, "due_reason", lambda _root: "Doctor inputs changed")
         monkeypatch.setattr(
-            health_presentation,
-            "consume_changed_summary",
+            health,
+            "consume_changed_snapshot",
             lambda *_args, **_kwargs: pytest.fail("stale Doctor summary was consumed"),
         )
         up_args = _build_parser().parse_args(["session", "up"])

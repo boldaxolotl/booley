@@ -18,6 +18,9 @@ class Severity(StrEnum):
     WAIVED = "waived"
 
 
+_ACTIVE_SEVERITIES = frozenset({Severity.FAIL, Severity.WARN})
+
+
 @dataclass(frozen=True, slots=True)
 class DiagnosticFinding:
     """An observation; every warning has a durable, prose-independent identity."""
@@ -30,7 +33,6 @@ class DiagnosticFinding:
     dedupe: str | None = None
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "severity", Severity(self.severity))
         if self.severity in {Severity.WARN, Severity.WAIVED} and (
             self.check_id is None
             or re.fullmatch(r"[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*", self.check_id) is None
@@ -56,11 +58,17 @@ class DiagnosticReport:
     details: tuple[DiagnosticDetail, ...] = ()
 
     @property
+    def active_findings(self) -> tuple[DiagnosticFinding, ...]:
+        """FAIL and WARN observations: the only ones that make health unclean."""
+        return tuple(f for f in self.findings if f.severity in _ACTIVE_SEVERITIES)
+
+    @property
     def health(self) -> HealthAssessment:
         """Interpret machinery observations after the caller applies waivers."""
+        active = self.active_findings
         return HealthAssessment(
-            sum(f.severity is Severity.FAIL for f in self.findings),
-            sum(f.severity is Severity.WARN for f in self.findings),
+            sum(f.severity is Severity.FAIL for f in active),
+            sum(f.severity is Severity.WARN for f in active),
         )
 
 

@@ -9,16 +9,17 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
-import os
+from collections import Counter
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from booley.audit import health as policy
-from booley.audit.diagnostic_results import DiagnosticReport
+from booley.audit.diagnostic_results import DiagnosticReport, Severity
 from booley.audit.health import HealthSnapshot
 from booley.runtime import doctor_stamp
+from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.file_lock import try_file_lock
 from booley.runtime.project_dir import contains, resolve_project_dir
 from booley.runtime.timefmt import parse_timestamp, utc_now_rfc3339
@@ -124,7 +125,11 @@ def _parse_time(value: object) -> datetime | None:
 
 
 def read_health(project_root: Path, *, now: datetime | None = None) -> HealthSnapshot | None:
-    """Read one report, validate its health interpretation, then assess its freshness."""
+    """Read one report, validate its health interpretation, then assess its freshness.
+
+    Missing, unreadable, malformed and self-contradictory reports are all
+    unavailable: none of them is evidence of health, and each is due for a recheck.
+    """
     try:
         project_dir = resolve_project_dir(project_root)
         document = load_report(project_root)
@@ -132,15 +137,16 @@ def read_health(project_root: Path, *, now: datetime | None = None) -> HealthSna
             return None
         diagnostics = policy.parse_diagnostics(document)
         due = policy.freshness_reason(
-            document,
-            compute_fingerprint(project_dir, project_root),
-            now or datetime.now(tz=UTC),
-            assessment=diagnostics.health,
+            diagnostics,
+            inputs_changed=document.get("fingerprint")
+            != compute_fingerprint(project_dir, project_root),
             checked_at=_parse_time(document.get("checked_at")),
+            now=now or datetime.now(tz=UTC),
         )
-        return HealthSnapshot(diagnostics, document, transcript_path(project_dir), due)
-    except (FileNotFoundError, OSError, ValueError, TypeError):
+    except (OSError, ValueError):
         return None
+    finding_hash = str(document.get("finding_hash") or _finding_hash(diagnostics))
+    return HealthSnapshot(diagnostics, finding_hash, transcript_path(project_dir), due)
 
 
 def due_reason(project_root: Path, *, now: datetime | None = None) -> str | None:
@@ -154,46 +160,49 @@ def due_reason(project_root: Path, *, now: datetime | None = None) -> str | None
 
 
 @contextlib.contextmanager
-def report_lock(path: Path) -> Iterator[bool]:
-    """Yield whether a nonblocking process lock was acquired."""
+def try_state_lock(path: Path) -> Iterator[bool]:
+    """Yield whether a nonblocking process lock on a Doctor state file was acquired."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a+", encoding="utf-8") as handle, try_file_lock(handle) as acquired:
         yield acquired
 
 
 def _atomic_write(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    temporary.write_text(text, encoding="utf-8")
-    temporary.replace(path)
+    # World-readable like the files it replaces: host and Sandbox both read them.
+    atomic_replace_bytes(path, text.encode("utf-8"), mode=0o644)
 
 
-def _finding_hash(report: dict[str, Any]) -> str:
-    findings = [
-        finding
-        for finding in report.get("findings", [])
-        if isinstance(finding, dict) and finding.get("severity") in {"fail", "warn"}
-    ]
-    value: object = findings or "clean"
+def _finding_hash(diagnostics: DiagnosticReport) -> str:
+    """Identify the active findings; every clean observation shares one identity."""
+    value: object = policy.finding_documents(diagnostics.active_findings) or "clean"
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _severity_counts(diagnostics: DiagnosticReport) -> dict[str, int]:
+    """Count every severity, including the ones that did not occur."""
+    seen = Counter(finding.severity for finding in diagnostics.findings)
+    return {severity.value: seen[severity] for severity in Severity}
+
+
 def publish_result(
     project_root: Path,
-    project_dir: Path,
     *,
     trigger: str,
     duration_s: float,
-    counts: dict[str, int],
     diagnostics: DiagnosticReport,
-    exit_code: int,
     transcript: str,
     deep_status: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Atomically persist one already-completed structured Doctor result."""
+    """Atomically persist one already-completed structured Doctor result.
+
+    Counts, cleanliness and exit code are derived from the findings, so a
+    published report can never contradict itself.
+    """
     from booley.runtime import runtime_context
 
+    project_dir = resolve_project_dir(project_root)
+    assessment = diagnostics.health
     payload = {
         "schema": 1,
         "checked_at": utc_now_rfc3339(),
@@ -201,13 +210,13 @@ def publish_result(
         "trigger": trigger,
         "runtime": "session-runtime" if runtime_context.inside_session_runtime() else "host",
         "fingerprint": compute_fingerprint(project_dir, project_root),
-        "counts": counts,
-        "findings": policy.finding_documents(diagnostics),
-        "exit_code": exit_code,
-        "clean": diagnostics.health.clean,
+        "counts": _severity_counts(diagnostics),
+        "findings": policy.finding_documents(diagnostics.findings),
+        "exit_code": assessment.exit_code,
+        "clean": assessment.clean,
         "deep_status": deep_status,
+        "finding_hash": _finding_hash(diagnostics),
     }
-    payload["finding_hash"] = _finding_hash(payload)
     _atomic_write(transcript_path(project_dir), transcript)
     _atomic_write(report_path(project_dir), json.dumps(payload, indent=2) + "\n")
     return payload
@@ -227,26 +236,26 @@ def consume_changed_snapshot(
     channel: str,
     issues_only: bool = False,
 ) -> HealthSnapshot | None:
-    """Return a changed summary once per reporting channel."""
+    """Return a changed observation once per reporting channel.
+
+    An ``issues_only`` channel neither reports nor records clean observations.
+    """
     snapshot = read_health(project_root)
     if snapshot is None:
         return None
-    report = snapshot.document
-    has_issues = not snapshot.assessment.clean
-    if issues_only and not has_issues:
+    if issues_only and snapshot.assessment.clean:
         return None
     try:
         project_dir = resolve_project_dir(project_root)
         directory = state_dir(project_dir)
         announcements_path = directory / _ANNOUNCEMENTS_NAME
-        with report_lock(directory / _ANNOUNCE_LOCK_NAME) as acquired:
+        with try_state_lock(directory / _ANNOUNCE_LOCK_NAME) as acquired:
             if not acquired:
                 return None
             announcements = _load_announcements(announcements_path)
-            finding_hash = str(report.get("finding_hash") or _finding_hash(report))
-            if announcements.get(channel) == finding_hash:
+            if announcements.get(channel) == snapshot.finding_hash:
                 return None
-            announcements[channel] = finding_hash
+            announcements[channel] = snapshot.finding_hash
             _atomic_write(announcements_path, json.dumps(announcements, indent=2) + "\n")
     except (FileNotFoundError, OSError):
         return None

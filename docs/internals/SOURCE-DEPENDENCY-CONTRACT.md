@@ -129,9 +129,9 @@ protects the two new Harness owners, including deferred and type-only imports.
 
 Inspection retains bounded subprocess and conditional authority-lock effects;
 Project repair operations remain explicit and preserve their interleaved phase
-order. The exact interfaces, effects, owner-local tests and before/after fan-out
-for [#532](https://github.com/boldaxolotl/booley/issues/532) are recorded in
-[the implementation evidence](DOCTOR-DIAGNOSTICS.md).
+order. The owners' interfaces and permitted effects, and the shared health
+capability that Doctor, MCP and the Dashboard read, are described in
+[Doctor diagnostics and shared health](DOCTOR-HEALTH.md).
 
 ## Target/FuseSoC and execution separation
 
@@ -485,9 +485,8 @@ Config-to-Runtime, Criteria-to-Flow, and Flow-to-Ticket-Board separations had
 already landed by `1fdc706e`; they are not additional 10 SEP reductions.
 
 Named composition hotspot fan-out is the number of unique imported modules.
-These diagnostic values do not gate changes. These columns are historical. The #532 measurements are recorded in
-[the Doctor evidence](DOCTOR-DIAGNOSTICS.md), and the current integrated
-snapshot below records the latest source and analyzer:
+These diagnostic values do not gate changes. These columns are historical; the
+current integrated snapshot below records the latest source and analyzer:
 
 | Canonical role | Exact module | 02 SEP baseline | Before 10 SEP | 11 SEP |
 | --- | --- | ---: | ---: | ---: |

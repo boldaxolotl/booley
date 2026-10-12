@@ -95,7 +95,7 @@ def test_typed_report_preserves_warning_deduplication_and_machine_fields():
     result = reporter.result(0)
     assert result.counts["warn"] == 1
     assert result.findings == (
-        doctor.DoctorFinding("warn", "first wording", "repair", "project.example", "target"),
+        DiagnosticFinding(Severity.WARN, "first wording", "repair", "project.example", "target"),
     )
 
 

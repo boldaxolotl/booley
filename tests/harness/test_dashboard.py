@@ -225,7 +225,7 @@ def test_health_nonconsuming_clean_hidden_and_freshness(
         else ()
     )
     snapshot = (
-        health.HealthSnapshot(diagnostics, report, tmp_path / "last.log", due)
+        health.HealthSnapshot(diagnostics, "fixture-hash", tmp_path / "last.log", due)
         if report is not None
         else None
     )
@@ -248,7 +248,7 @@ def test_health_nonconsuming_clean_hidden_and_freshness(
     monkeypatch.setattr(
         model.upgrade_review, "observe", lambda *_a, **_k: pytest.fail("upgrade state changed")
     )
-    assert model.health_snapshot(tmp_path, tmp_path) == expected
+    assert model.health_lines(tmp_path, tmp_path) == expected
     assert reads == [True]
     assert list(tmp_path.iterdir()) == []
 

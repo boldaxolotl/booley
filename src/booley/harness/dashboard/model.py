@@ -195,7 +195,7 @@ def checking_goals(view: GoalView, jobs: JobSnapshot) -> GoalView:
     )
 
 
-def health_snapshot(root: Path, project_dir: Path) -> tuple[str, ...]:
+def health_lines(root: Path, project_dir: Path) -> tuple[str, ...]:
     """Non-consuming Doctor freshness and typed read-only upgrade-review projection."""
     lines = []
     snapshot = health.read_health(root)
@@ -270,7 +270,7 @@ class DashboardReader:
             tuple(checking_goals(goal, jobs) for goal in goals),
             replace(jobs, jobs=tuple(measured)),
             resources,
-            health_snapshot(self.root, self.project_dir),
+            health_lines(self.root, self.project_dir),
             sessions.diagnostics,
             now,
         )

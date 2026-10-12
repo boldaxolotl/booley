@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from booley.audit.diagnostic_results import DiagnosticFinding, Severity
 from booley.harness import auto_doctor, doctor
 from booley.runtime import doctor_stamp, health, health_presentation
 from booley.runtime.project_dir import reset_cache
@@ -51,9 +52,11 @@ def _report(root: Path, *, clean: bool, checked_at: datetime) -> dict:
         "findings": findings,
         "fingerprint": health.compute_fingerprint(project_dir, root),
     }
-    payload["finding_hash"] = health._finding_hash(payload)
     path = health.report_path(project_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    # A report without a stored hash is identified by the hash of its active findings.
+    payload["finding_hash"] = health.read_health(root).finding_hash
     path.write_text(json.dumps(payload), encoding="utf-8")
     return payload
 
@@ -94,7 +97,7 @@ class TestDueReason:
                 "subject": None,
             }
         ]
-        payload["finding_hash"] = health._finding_hash(payload)
+        del payload["finding_hash"]  # the fixture hashed its earlier FAIL finding
         health.report_path(tmp_path / ".booley_project").write_text(
             json.dumps(payload), encoding="utf-8"
         )
@@ -123,8 +126,8 @@ def test_execute_persists_structured_report_and_transcript(tmp_path: Path, monke
     result = doctor.DoctorRunResult(
         counts={"pass": 2, "fail": 0, "warn": 1, "waived": 0, "note": 0, "skip": 0},
         findings=(
-            doctor.DoctorFinding(
-                "warn", "license may expire", "renew it", "agent.credential", "claude"
+            DiagnosticFinding(
+                Severity.WARN, "license may expire", "renew it", "agent.credential", "claude"
             ),
         ),
         exit_code=0,
@@ -161,7 +164,7 @@ def test_manual_runtime_result_replaces_stale_automatic_status(tmp_path: Path):
     _report(tmp_path, clean=False, checked_at=datetime.now(tz=UTC))
     result = doctor.DoctorRunResult(
         counts={"pass": 3, "fail": 0, "warn": 0, "waived": 0, "note": 0, "skip": 0},
-        findings=(doctor.DoctorFinding("pass", "environment healthy"),),
+        findings=(DiagnosticFinding(Severity.PASS, "environment healthy"),),
         exit_code=0,
     )
 
@@ -177,7 +180,7 @@ def test_manual_smoke_result_does_not_replace_health_status(tmp_path: Path):
     previous = _report(tmp_path, clean=False, checked_at=datetime.now(tz=UTC))
     result = doctor.DoctorRunResult(
         counts={"pass": 3, "fail": 0, "warn": 0, "waived": 0, "note": 0, "skip": 3},
-        findings=(doctor.DoctorFinding("skip", "agent credential checks skipped"),),
+        findings=(DiagnosticFinding(Severity.SKIP, "agent credential checks skipped"),),
         exit_code=0,
         health_evidence=False,
     )
