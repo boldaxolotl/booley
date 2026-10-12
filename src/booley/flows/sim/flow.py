@@ -2248,7 +2248,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     cli_help: ClassVar[CliHelp | None] = CliHelp(
         summary=(
             "Compile and run the RTL simulation tests of one or more Targets and report "
-            "pass or fail for each test. Use it after any RTL or testbench change. "
+            "pass or fail for each test. Use it to check that a change still passes its tests. "
             "Add --mode elab-only to check that the design compiles and elaborates "
             "without running tests, or --mode elab-only-standalone to also sweep the "
             "reusable modules on their own. Leave --trace off for pass/fail runs: "

@@ -1038,14 +1038,9 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         summary=(
             "Run ASIC synthesis for one or more Targets. Use it for a quick PPA (power, "
             "performance, area) estimate while optimizing RTL; it is not tape-out "
-            "sign-off. Add --baseline to compare the results with another git revision. "
-            "Timing constraints (clock period, I/O delays, false and multicycle paths) "
-            "come from the SDC file in the Target's .core fileset (file_type: SDC), not "
-            "from booley.toml. A physical Target without an SDC file is a configuration "
-            "error; logical synthesis runs without timing constraints. Keep lasting "
-            "settings such as ppa_profile, flatten and frontend in the Target's "
-            "flow_options; the flags below override them for one run. [flows.synth] in "
-            "booley.toml only enables the Flow and sets its timeout and pass/fail policy."
+            "sign-off. Timing constraints come from the SDC file in the Target's .core "
+            "fileset; a physical Target needs one. The flags below override the "
+            "Target's flow_options for one run."
         ),
         example="booley flow synth --target synth_soc --baseline main",
     )
