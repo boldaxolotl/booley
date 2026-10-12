@@ -469,5 +469,8 @@ def test_recent_results_are_newest_first_and_bounded(monkeypatch):
     app.navigation = Navigation("jobs", None, "recent")
     assert [job.record.run_id for job in app._jobs()] == ["3", "2"]
     assert "recent (newest 2)" in app._content()[0]
+    # The selected result stays listed when newer results push it past the bound.
+    app.navigation = Navigation("jobs", None, "recent", json.dumps(jobs[0].key))
+    assert [job.record.run_id for job in app._jobs()] == ["3", "2", "1"]
     app.navigation = Navigation("jobs", None, "all")
     assert [job.record.run_id for job in app._jobs()] == ["3", "2", "1"]

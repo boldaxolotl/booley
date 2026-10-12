@@ -72,6 +72,18 @@
         ]
       }
     ],
+    "Notification": [
+      {
+        "matcher": "idle_prompt|permission_prompt|elicitation_dialog",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -I -S /usr/local/libexec/booley/session_activity_hook.py claude",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
     "SessionEnd": [
       {
         "hooks": [

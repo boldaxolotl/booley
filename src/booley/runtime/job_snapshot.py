@@ -69,8 +69,16 @@ def target_arg(argv: list[str]) -> str | None:
 def retained_job_roots(
     project_dir: Path, *, interactive_root: Path | None = None
 ) -> tuple[Path, ...]:
-    """Interactive roots and every retained Goal, including finished/abandoned records."""
+    """Interactive roots and every retained Goal, including finished/abandoned records.
+
+    Ordered by what a bounded scan must not lose: the caller's interactive
+    root, then every Goal Record, then older interactive sessions newest first.
+    """
     roots = [] if interactive_root is None else [interactive_root]
+    roots.extend(
+        record_paths(project_dir, rec.id).jobs_dir
+        for rec in GoalStore(project_dir).list_records().records
+    )
     history = []
     for path in islice(project_dir.glob(".interactive_logs/*/.runtime/jobs"), MAX_JOBS):
         try:
@@ -82,10 +90,6 @@ def retained_job_roots(
         for _, path in sorted(history, key=lambda item: item[0], reverse=True)[
             :MAX_INTERACTIVE_ROOTS
         ]
-    )
-    roots.extend(
-        record_paths(project_dir, rec.id).jobs_dir
-        for rec in GoalStore(project_dir).list_records().records
     )
     return tuple(dict.fromkeys(roots))
 
@@ -152,10 +156,7 @@ def _snapshot_records(
     records, diagnostics = [], []
     candidates = _record_candidates(project_dir, interactive_root, diagnostics)
     if len(candidates) > MAX_JOBS:
-        scanned = f"{len(candidates)}{'+' if len(candidates) >= MAX_SCANNED_JOBS else ''}"
-        diagnostics.append(
-            f"Job history truncated: showing the newest {MAX_JOBS} of {scanned} records"
-        )
+        diagnostics.append(_truncation_notice(len(candidates)))
         # Newest by modification time; a record is rewritten whenever its Job changes state.
         newest = sorted(candidates, key=lambda item: item[0], reverse=True)[:MAX_JOBS]
         kept = {(root, path) for _, root, path in newest}
@@ -167,6 +168,17 @@ def _snapshot_records(
             continue
         records.append((root, rec))
     return records, diagnostics
+
+
+def _truncation_notice(examined: int) -> str:
+    """Say what was cut; past the scan bound the oldest interactive sessions go unexamined."""
+    notice = f"Job history truncated: showing the newest {MAX_JOBS} of {examined} records"
+    if examined < MAX_SCANNED_JOBS:
+        return notice
+    return (
+        f"Job history truncated: showing the newest {MAX_JOBS} of the first "
+        f"{examined} records examined; older interactive sessions were not examined"
+    )
 
 
 def _record_candidates(

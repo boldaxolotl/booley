@@ -6,6 +6,7 @@ import json
 import os
 
 import pytest
+from tests.conftest import symlink_or_skip, write_activity_signal
 
 from booley.runtime import session_activity as activity
 from booley.runtime.session_activity import ActivitySignal, ActivityStore, observed_activity
@@ -14,19 +15,14 @@ NOW = 1791454200.0
 STAMP = "2026-10-08T10:10:00Z"
 
 
-def test_store_round_trips_replaces_clears_and_isolates_keys(tmp_path):
+def test_store_reads_each_sessions_own_signal(tmp_path):
     store = ActivityStore(tmp_path)
     assert store.read("codex:a") is None
-    first = ActivitySignal("codex:a", activity.WAITING_TOOL, STAMP, "sim")
-    store.write(first)
-    assert store.read("codex:a") == first
+    write_activity_signal(tmp_path, "codex:a", activity.WAITING_TOOL, STAMP, "sim")
+    assert store.read("codex:a") == ActivitySignal("codex:a", activity.WAITING_TOOL, STAMP, "sim")
     assert store.read("codex:b") is None
-    store.write(ActivitySignal("codex:a", activity.WORKING, STAMP))
-    assert store.read("codex:a").state == activity.WORKING
-    assert [path.suffix for path in store.root.iterdir()] == [".json"]
-    store.clear("codex:a")
-    store.clear("codex:a")
-    assert store.read("codex:a") is None
+    write_activity_signal(tmp_path, "codex:a", activity.WORKING, STAMP)
+    assert store.read("codex:a") == ActivitySignal("codex:a", activity.WORKING, STAMP)
 
 
 @pytest.mark.parametrize(
@@ -51,23 +47,12 @@ def test_malformed_foreign_or_oversized_signals_read_as_absent(tmp_path, payload
     assert store.read("codex:a") is None
 
 
-def test_store_refuses_a_symlinked_signal_and_reports_a_full_store(tmp_path, monkeypatch):
+def test_store_refuses_a_symlinked_signal(tmp_path):
     store = ActivityStore(tmp_path)
-    store.write(ActivitySignal("codex:a", activity.WORKING, STAMP))
-    target = tmp_path / "elsewhere.json"
-    target.write_bytes(ActivitySignal("codex:b", activity.WORKING, STAMP).payload())
-    try:
-        store.path("codex:b").symlink_to(target)
-    except OSError:
-        pytest.skip("symlinks unavailable on this platform")
+    target = write_activity_signal(tmp_path / "elsewhere", "codex:b", activity.WORKING, STAMP)
+    store.root.mkdir(parents=True)
+    symlink_or_skip(store.path("codex:b"), target)
     assert store.read("codex:b") is None
-    store.path("codex:b").unlink()
-    monkeypatch.setattr(activity, "MAX_SIGNALS", 1)
-    with pytest.raises(OSError, match="full"):
-        store.write(ActivitySignal("codex:c", activity.WORKING, STAMP))
-    # A session that already has a signal can still update it.
-    store.write(ActivitySignal("codex:a", activity.WAITING_USER, STAMP))
-    assert store.read("codex:a").state == activity.WAITING_USER
 
 
 def test_freshness_reports_unknown_for_missing_future_and_stale_busy_signals():
@@ -91,14 +76,34 @@ def test_freshness_reports_unknown_for_missing_future_and_stale_busy_signals():
 def test_prune_keeps_registered_and_recent_signals_only(tmp_path):
     store = ActivityStore(tmp_path)
     assert store.prune(set(), now=NOW, quiet_after=100) == 0  # No store yet.
-    for key in ("codex:held", "codex:recent", "codex:gone"):
-        store.write(ActivitySignal(key, activity.WAITING_USER, STAMP))
     for key, age in (("codex:held", 5000), ("codex:recent", 50), ("codex:gone", 100)):
-        os.utime(store.path(key), (NOW - age, NOW - age))
+        path = write_activity_signal(tmp_path, key, activity.WAITING_USER, STAMP)
+        os.utime(path, (NOW - age, NOW - age))
     assert store.prune({"codex:held"}, now=NOW, quiet_after=100) == 1
     assert store.read("codex:held") is not None
     assert store.read("codex:recent") is not None
     assert store.read("codex:gone") is None
+
+
+def test_prune_spares_a_signal_the_hook_replaced_after_it_was_listed(tmp_path, monkeypatch):
+    store = ActivityStore(tmp_path)
+    path = write_activity_signal(tmp_path, "codex:back", activity.WAITING_USER, STAMP)
+    os.utime(path, (NOW - 500, NOW - 500))
+    listing = ActivityStore._entries
+
+    def replaced_after_listing(self):
+        entries = listing(self)
+        for entry in entries:
+            entry.stat(follow_symlinks=False)  # The pruner's view is the expired file.
+        # The session's next event lands now, by atomic replacement, as the hook does it.
+        fresh = path.with_name(".staged.tmp")
+        fresh.write_bytes(path.read_bytes().replace(b"waiting for user input", b"working"))
+        fresh.replace(path)
+        return entries
+
+    monkeypatch.setattr(ActivityStore, "_entries", replaced_after_listing)
+    assert store.prune(set(), now=NOW, quiet_after=100) == 0
+    assert store.read("codex:back").state == activity.WORKING
 
 
 def test_session_keys_match_the_registry_format():
@@ -108,6 +113,8 @@ def test_session_keys_match_the_registry_format():
     assert activity.process_session_key(identity) == "pid:pid:[4026531836]:42:977"
     assert activity.thread_session_key("01a1") == "codex:01a1"
     assert activity.valid_thread_id("01a1")
+    assert activity.valid_thread_id("t" * activity.MAX_THREAD_ID)
+    assert not activity.valid_thread_id("t" * (activity.MAX_THREAD_ID + 1))
     assert not activity.valid_thread_id("")
     assert not activity.valid_thread_id("a\nb")
     assert not activity.valid_thread_id(7)

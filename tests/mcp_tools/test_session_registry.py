@@ -266,12 +266,13 @@ async def test_maintenance_prunes_activity_of_sessions_no_longer_held(monkeypatc
     import os
 
     from booley.mcp import session_observer
-    from booley.runtime.session_activity import WORKING, ActivitySignal, ActivityStore
+    from booley.runtime.session_activity import WORKING, ActivityStore
+    from tests.conftest import write_activity_signal
 
     store = ActivityStore(registry.project_dir)
     registry.upsert(facts("codex:held"), "sim", "completed", now=190)
     for key in ("codex:held", "codex:expired", "codex:not-yet-registered"):
-        store.write(ActivitySignal(key, WORKING, "2026-10-08T10:00:00Z"))
+        write_activity_signal(registry.project_dir, key, WORKING, "2026-10-08T10:00:00Z")
     # Signals age by file time: only the unregistered one past quiet_after expires.
     for key, written in (
         ("codex:held", 10),

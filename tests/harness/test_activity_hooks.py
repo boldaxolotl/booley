@@ -34,8 +34,10 @@ def test_shipped_policies_install_a_hook_for_every_translated_event(tmp_path):
     assert policy_error(root) is None
     claude = json.loads((root / CLAUDE_POLICY).read_text(encoding="utf-8"))["hooks"]
     codex = tomllib.loads((root / CODEX_POLICY).read_text(encoding="utf-8"))["hooks"]
-    assert set(claude) == {*EVENT_STATES, END_EVENT}
-    assert set(codex) == {*EVENT_STATES, END_EVENT} - {"PostToolUseFailure"}
+    every = {*EVENT_STATES, END_EVENT}
+    # Each client is given exactly the events it emits.
+    assert set(claude) == every - {"Interrupt"}
+    assert set(codex) == every - {"PostToolUseFailure", "Notification"}
     for hooks, client in ((claude, "claude"), (codex, "codex")):
         for groups in hooks.values():
             (handler,) = groups[0]["hooks"]
@@ -45,7 +47,11 @@ def test_shipped_policies_install_a_hook_for_every_translated_event(tmp_path):
             )
             # The client waits for the hook; 3 s is also the most Codex allows SessionEnd.
             assert handler["timeout"] == 3
-            assert "matcher" not in groups[0]
+    # Only the notifications that mean "waiting for the user" run the hook.
+    matchers = {event: groups[0].get("matcher") for event, groups in claude.items()}
+    assert matchers.pop("Notification") == "idle_prompt|permission_prompt|elicitation_dialog"
+    assert set(matchers.values()) == {None}
+    assert all("matcher" not in groups[0] for groups in codex.values())
 
 
 def test_probe_names_the_client_and_events_that_are_not_covered(tmp_path):
@@ -100,11 +106,3 @@ def test_doctor_warns_rather_than_fails_when_hooks_are_missing(monkeypatch):
     assert len(passed) == 1
     assert "activity will show as unknown: Codex activity hooks missing" in warned[0]
     assert "rebuild the sandbox image" in warned[0]
-
-
-def test_probe_cli_exit_code_reflects_the_result(monkeypatch, capsys):
-    monkeypatch.setattr(activity_hooks, "hooks_error", lambda: None)
-    assert activity_hooks.main() == 0
-    monkeypatch.setattr(activity_hooks, "hooks_error", lambda: "missing")
-    assert activity_hooks.main() == 1
-    assert capsys.readouterr().out == "missing\n"

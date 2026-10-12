@@ -19,7 +19,6 @@ from hashlib import sha256
 from itertools import islice
 from pathlib import Path
 
-from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.pid import ProcessIdentity
 from booley.runtime.safe_storage import refuse_symlinks
 from booley.runtime.timefmt import parse_timestamp, rfc3339_from_epoch
@@ -38,6 +37,10 @@ EVENT_STATES = {
     "PostToolUseFailure": WORKING,
     "PermissionRequest": WAITING_USER,
     "Stop": WAITING_USER,
+    # A turn the user interrupts ends without Stop. Codex reports the interrupt;
+    # Claude Code reports that it is idle or asking through a notification.
+    "Interrupt": WAITING_USER,
+    "Notification": WAITING_USER,
 }
 END_EVENT = "SessionEnd"
 
@@ -49,6 +52,7 @@ FUTURE_TOLERANCE = 5.0
 MAX_SIGNALS = 4096
 MAX_SIGNAL_BYTES = 4096
 MAX_TOOL_NAME = 128
+MAX_THREAD_ID = 1024
 
 
 def process_session_key(identity: ProcessIdentity) -> str:
@@ -63,7 +67,7 @@ def thread_session_key(thread: str) -> str:
 
 def valid_thread_id(value: object) -> bool:
     """Bound client metadata and reject controls or unencodable Unicode."""
-    return isinstance(value, str) and 0 < len(value) <= 1024 and value.isprintable()
+    return isinstance(value, str) and 0 < len(value) <= MAX_THREAD_ID and value.isprintable()
 
 
 @dataclass(frozen=True)
@@ -74,14 +78,6 @@ class ActivitySignal:
     state: str
     at: str
     tool: str = ""
-
-    def payload(self) -> bytes:
-        """Canonical persisted form."""
-        return json.dumps(
-            {"schema": SCHEMA, "key": self.key, "state": self.state, "at": self.at}
-            | ({"tool": self.tool} if self.tool else {}),
-            sort_keys=True,
-        ).encode()
 
 
 @dataclass(frozen=True)
@@ -106,7 +102,7 @@ def _parse(raw: bytes, key: str) -> ActivitySignal:
 
 
 class ActivityStore:
-    """One small file per session key; writes are atomic, reads never write."""
+    """Reader and pruner of the per-session signal files the hook script writes."""
 
     def __init__(self, project_dir: Path) -> None:
         self.root = project_dir / "runtime" / "session_activity"
@@ -119,21 +115,6 @@ class ActivityStore:
         """A bounded listing; the directory handle is closed before returning."""
         with os.scandir(self.root) as scan:
             return list(islice(scan, MAX_SIGNALS))
-
-    def write(self, signal: ActivitySignal) -> None:
-        """Replace the session's signal. Raises ``OSError`` when the store is full or unsafe."""
-        refuse_symlinks(self.root)
-        self.root.mkdir(parents=True, exist_ok=True)
-        path = self.path(signal.key)
-        refuse_symlinks(path)
-        if not path.exists() and len(self._entries()) >= MAX_SIGNALS:
-            raise OSError("session activity store is full")
-        atomic_replace_bytes(path, signal.payload())
-
-    def clear(self, key: str) -> None:
-        """Forget a session that reported its own end."""
-        refuse_symlinks(self.root)
-        self.path(key).unlink(missing_ok=True)
 
     def read(self, key: str) -> ActivitySignal | None:
         """The session's signal, or ``None`` when absent, unsafe or malformed."""
@@ -160,14 +141,31 @@ class ActivityStore:
         except OSError:
             return 0
         for entry in entries:
-            try:
-                expired = now - entry.stat(follow_symlinks=False).st_mtime >= quiet_after
-            except OSError:
-                continue
-            if entry.name not in keep and expired:
-                Path(entry.path).unlink(missing_ok=True)
+            if entry.name not in keep and self._unlink_if_expired(entry, now - quiet_after):
                 removed += 1
         return removed
+
+    @staticmethod
+    def _unlink_if_expired(entry: os.DirEntry[str], cutoff: float) -> bool:
+        """Remove a signal last written before *cutoff*, unless the hook just replaced it.
+
+        The hook publishes by atomic replacement and shares no lock with this
+        pruner, so the file is examined again immediately before removal: a
+        replacement is a different inode. The remaining window is the instant
+        between that check and the unlink; losing it shows unknown until the
+        session's next event.
+        """
+        try:
+            listed = entry.stat(follow_symlinks=False)
+            if listed.st_mtime > cutoff:
+                return False
+            current = Path(entry.path).lstat()
+            if (current.st_ino, current.st_mtime_ns) != (listed.st_ino, listed.st_mtime_ns):
+                return False
+            Path(entry.path).unlink()
+        except OSError:
+            return False
+        return True
 
 
 def observed_activity(signal: ActivitySignal | None, *, now: float) -> Activity:

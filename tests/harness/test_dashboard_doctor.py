@@ -434,14 +434,9 @@ def test_reader_joins_each_visible_session_with_its_reported_activity(tmp_path, 
     import time
 
     from booley.mcp.session_registry import Attribution, SessionRegistry
-    from booley.runtime.session_activity import (
-        UNKNOWN,
-        WAITING_TOOL,
-        WORKING,
-        ActivitySignal,
-        ActivityStore,
-    )
+    from booley.runtime.session_activity import UNKNOWN, WAITING_TOOL, WORKING
     from booley.runtime.timefmt import rfc3339_from_epoch
+    from tests.conftest import write_activity_signal
 
     monkeypatch.setattr(model, "namespace", lambda: "pid:[17]")
     now = time.time()
@@ -453,11 +448,12 @@ def test_reader_joins_each_visible_session_with_its_reported_activity(tmp_path, 
             "completed",
             now=now,
         )
-    store = ActivityStore(tmp_path)
-    store.write(ActivitySignal("codex:fresh", WAITING_TOOL, rfc3339_from_epoch(now - 30), "sim"))
+    write_activity_signal(
+        tmp_path, "codex:fresh", WAITING_TOOL, rfc3339_from_epoch(now - 30), "sim"
+    )
     # A busy state older than any tool call is no longer evidence of activity.
-    store.write(ActivitySignal("codex:stale", WORKING, rfc3339_from_epoch(now - 3 * 3600)))
-    store.write(ActivitySignal("codex:unregistered", WORKING, rfc3339_from_epoch(now)))
+    write_activity_signal(tmp_path, "codex:stale", WORKING, rfc3339_from_epoch(now - 3 * 3600))
+    write_activity_signal(tmp_path, "codex:unregistered", WORKING, rfc3339_from_epoch(now))
     before = {str(path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
     activity = model.DashboardReader(tmp_path, tmp_path).read().activity
     assert set(activity) == {"codex:fresh", "codex:stale", "codex:silent"}

@@ -456,7 +456,14 @@ class DashboardApp(App[None]):
         rows = sorted(
             rows, key=lambda job: job.record.ended_at or job.record.started_at, reverse=True
         )
-        return rows[:RECENT_JOBS] if self.navigation.job_filter == "recent" else rows
+        if self.navigation.job_filter != "recent":
+            return rows
+        # A newer result must not push the selected one out from under the cursor.
+        return [
+            job
+            for index, job in enumerate(rows)
+            if index < RECENT_JOBS or json.dumps(job.key) == self.navigation.selected
+        ]
 
     def _content(self) -> tuple[str, list[str], list[tuple[object, ...]]]:
         nav = self.navigation

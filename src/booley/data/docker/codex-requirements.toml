@@ -37,6 +37,12 @@ type = "command"
 command = "python3 -I -S /usr/local/libexec/booley/session_activity_hook.py codex"
 timeout = 3
 
+[[hooks.Interrupt]]
+[[hooks.Interrupt.hooks]]
+type = "command"
+command = "python3 -I -S /usr/local/libexec/booley/session_activity_hook.py codex"
+timeout = 3
+
 [[hooks.SessionEnd]]
 [[hooks.SessionEnd.hooks]]
 type = "command"

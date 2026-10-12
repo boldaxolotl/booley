@@ -24,11 +24,12 @@ hook = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(hook)
 
 
-def proc_tree(root, parents):
+def proc_tree(root, parents, commands=None):
     """Fake procfs: ``parents`` maps each PID to its parent PID."""
     for pid, parent in parents.items():
         directory = root / str(pid)
         (directory / "ns").mkdir(parents=True)
+        (directory / "comm").write_text((commands or {}).get(pid, "sh") + "\n", encoding="utf-8")
         fields = ["S", str(parent), *["0"] * 17, str(1000 + pid)]
         (directory / "stat").write_text(f"{pid} (a b) c) " + " ".join(fields), encoding="utf-8")
         try:
@@ -101,7 +102,9 @@ def test_ancestor_walk_is_bounded_and_survives_unreadable_processes(tmp_path, mo
 
 
 def test_codex_hook_keys_by_thread_and_prefers_a_subagents_own_thread(tmp_path):
-    record = lambda payload: hook.record("codex", payload, project=tmp_path, now=NOW)  # noqa: E731
+    def record(payload):
+        return hook.record("codex", payload, project=tmp_path, now=NOW)
+
     store = ActivityStore(tmp_path)
     assert record({"hook_event_name": "UserPromptSubmit", "session_id": "root"})
     assert store.read("codex:root").state == activity.WORKING
@@ -176,12 +179,23 @@ def test_script_repeats_the_packages_event_table_states_and_bounds():
     assert hook.END_EVENT == activity.END_EVENT
     assert hook.SCHEMA == activity.SCHEMA
     assert (hook.MAX_SIGNALS, hook.MAX_TOOL_NAME) == (activity.MAX_SIGNALS, activity.MAX_TOOL_NAME)
+    assert hook.MAX_THREAD_ID == activity.MAX_THREAD_ID
+    assert (hook.WORKING, hook.WAITING_TOOL, hook.WAITING_USER) == (
+        activity.WORKING,
+        activity.WAITING_TOOL,
+        activity.WAITING_USER,
+    )
     assert hook.PROJECT_DIR_NAME == ".booley_project"
 
 
 @pytest.mark.parametrize(("event", "state"), sorted(activity.EVENT_STATES.items()))
 def test_every_translated_event_is_readable_by_the_package(tmp_path, event, state):
-    payload = {"hook_event_name": event, "session_id": "t", "tool_name": "mcp__booley__Sim"}
+    payload = {
+        "hook_event_name": event,
+        "session_id": "t",
+        "tool_name": "mcp__booley__Sim",
+        "notification_type": "idle_prompt",
+    }
     assert hook.record("codex", payload, project=tmp_path, now=NOW + 0.9)
     signal = ActivityStore(tmp_path).read("codex:t")
     # Second-resolution UTC, truncated exactly as the package writes timestamps.
@@ -262,3 +276,50 @@ def test_script_runs_standalone_without_site_packages_or_booley(tmp_path):
     source = SCRIPT.read_text(encoding="utf-8")
     assert "import booley" not in source
     assert "from booley" not in source
+
+
+@pytest.mark.parametrize("kind", ["auth_success", "agent_completed", "", None])
+def test_only_waiting_notifications_report_activity(tmp_path, kind):
+    stop = {"hook_event_name": "UserPromptSubmit", "session_id": "t"}
+    assert hook.record("codex", stop, project=tmp_path, now=NOW)
+    other = {"hook_event_name": "Notification", "session_id": "t", "notification_type": kind}
+    assert not hook.record("codex", other, project=tmp_path, now=NOW)
+    assert ActivityStore(tmp_path).read("codex:t").state == activity.WORKING
+    for waiting in sorted(hook.WAITING_NOTIFICATIONS):
+        asking = {**other, "notification_type": waiting}
+        assert hook.record("codex", asking, project=tmp_path, now=NOW)
+        assert ActivityStore(tmp_path).read("codex:t").state == activity.WAITING_USER
+
+
+def test_fallback_never_credits_an_outer_session_with_an_inner_clients_events(tmp_path):
+    # The inner client (300) has not called Booley; only the outer session (100) has a row.
+    proc = proc_tree(tmp_path / "proc", CHAIN, {300: "claude", 100: "claude"})
+    project = tmp_path / "project"
+    registry = SessionRegistry(project, proc_root=proc)
+    row = registry.path(claude_key(proc, 100))
+    row.parent.mkdir(parents=True)
+    row.write_text("{}", encoding="utf-8")
+    stop = {"hook_event_name": "Stop"}
+    assert not hook.record(
+        "claude", stop, project=project, now=NOW, env={}, proc_root=proc, pid=500
+    )
+    assert not ActivityStore(project).root.exists()
+    # Once the inner client is itself a session, its own events are recorded.
+    registry.path(claude_key(proc, 300)).write_text("{}", encoding="utf-8")
+    assert hook.record("claude", stop, project=project, now=NOW, env={}, proc_root=proc, pid=500)
+    assert ActivityStore(project).read(claude_key(proc, 300)).state == activity.WAITING_USER
+    assert ActivityStore(project).read(claude_key(proc, 100)) is None
+
+
+def test_main_survives_a_deeply_nested_payload(tmp_path, monkeypatch, capsys):
+    depth = 200_000
+    nested = (
+        b'{"hook_event_name": "Stop", "session_id": "t1", "x": '
+        + b"[" * depth
+        + b"]" * depth
+        + b"}"
+    )
+    assert len(nested) < hook.MAX_PAYLOAD_BYTES
+    code, output = run_main(monkeypatch, capsys, ["codex"], nested, tmp_path)
+    assert (code, output.out) == (0, "")
+    assert "not recorded" in output.err

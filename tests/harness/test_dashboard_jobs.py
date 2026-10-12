@@ -668,6 +668,28 @@ def test_job_history_keeps_the_newest_records_and_reports_truncation(tmp_path, m
     assert {job.record.run_id for job in cut.jobs} == {"new", "newest"}
     assert "Job history truncated: showing the newest 2 of 4 records" in cut.diagnostics
     monkeypatch.setattr(job_snapshot, "MAX_SCANNED_JOBS", 3)
-    assert "Job history truncated: showing the newest 2 of 3+ records" in (
-        snapshot_jobs(tmp_path).diagnostics
-    )
+    bounded = snapshot_jobs(tmp_path)
+    assert (
+        "Job history truncated: showing the newest 2 of the first 3 records examined; "
+        "older interactive sessions were not examined"
+    ) in bounded.diagnostics
+
+
+def test_bounded_scan_examines_current_work_before_older_interactive_sessions(tmp_path):
+    import os
+
+    from booley.goals.store import GoalStore
+    from booley.runtime import job_snapshot
+
+    current = tmp_path / "current/.runtime/jobs"
+    for index in range(3):
+        root = tmp_path / f".interactive_logs/{index}/.runtime/jobs"
+        root.mkdir(parents=True)
+        os.utime(root, (100 + index, 100 + index))
+    roots = job_snapshot.retained_job_roots(tmp_path, interactive_root=current)
+    goal_roots = [
+        job_snapshot.record_paths(tmp_path, rec.id).jobs_dir
+        for rec in GoalStore(tmp_path).list_records().records
+    ]
+    history = [tmp_path / f".interactive_logs/{index}/.runtime/jobs" for index in (2, 1, 0)]
+    assert list(roots) == [current, *goal_roots, *history]
