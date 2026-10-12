@@ -109,6 +109,11 @@ from booley.flows.sim.run_guard import DEFAULT_SIM_TIME_GRACE_S, find_sim_time_s
 from booley.flows.sim.trace_session import TraceSession
 
 
+def seed_arguments(seed: int | None) -> list[str]:
+    """The adapter arguments that seed one Cocotb process; none when unseeded."""
+    return [] if seed is None else ["--seed", str(seed)]
+
+
 def prepare_invocation(work: PreparedSimulationWork) -> list[str]:
     """Render one parent-side Cocotb adapter invocation."""
     if work.adapter != "cocotb":
@@ -127,8 +132,7 @@ def prepare_invocation(work: PreparedSimulationWork) -> list[str]:
         str(work.timeout_s),
     ]
     cmd += [f"--test={name}" for name in work.tests]
-    if work.cocotb_seed is not None:
-        cmd += ["--seed", str(work.cocotb_seed)]
+    cmd += seed_arguments(work.cocotb_seed)
     cmd += ["--result-verbosity", work.result_verbosity]
     cmd += ["--sim-time-grace", str(work.sim_time_grace_s)]
     if work.max_rundir_bytes > 0:

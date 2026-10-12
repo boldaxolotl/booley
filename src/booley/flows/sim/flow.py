@@ -565,14 +565,21 @@ def _campaign_report_lines(
     *,
     blocks: list[str] | None = None,
     report_path: Path | None = None,
+    default_seeds: Mapping[str, int | None] | None = None,
 ) -> list[str]:
-    """Compose counts; None trailing lines means unavailable optional byte budget."""
+    """Compose counts; None trailing lines means unavailable optional byte budget.
+
+    *default_seeds* gives each Target's effective Default Seed, which decides
+    whether its Test Run rows say more than its own line.
+    """
     if coverage_campaigns is None and any(
         getattr(outcome, "coverage_reference", None) is not None for outcome in outcomes
     ):
         coverage_campaigns = _resolved_coverage_campaigns(outcomes)
     if blocks is None:
-        blocks = _campaign_base_report_lines(outcomes, coverage_campaigns, report_path=report_path)
+        blocks = _campaign_base_report_lines(
+            outcomes, coverage_campaigns, report_path=report_path, default_seeds=default_seeds
+        )
     if trailing_lines is None:
         return blocks
     stream = min(output_budget.mcp_stdout_budget(), output_budget.mcp_stderr_budget())
@@ -582,7 +589,11 @@ def _campaign_report_lines(
     if not any(additions):
         return blocks
     return _campaign_base_report_lines(
-        outcomes, coverage_campaigns, additions, report_path=report_path
+        outcomes,
+        coverage_campaigns,
+        additions,
+        report_path=report_path,
+        default_seeds=default_seeds,
     )
 
 
@@ -633,6 +644,7 @@ def _campaign_base_report_lines(
     cycle_lines: Sequence[Sequence[str]] | None = None,
     *,
     report_path: Path | None = None,
+    default_seeds: Mapping[str, int | None] | None = None,
 ) -> list[str]:
     if (resolved := coverage_campaigns) is None and any(
         getattr(outcome, "coverage_reference", None) is not None for outcome in outcomes
@@ -671,7 +683,9 @@ def _campaign_base_report_lines(
             f"  manifest: {outcome.manifest_path.resolve()}",
             *([f"  report: {report_path.resolve()}"] if report_path is not None else []),
             *(f"  {reason}" for reason in reasons),
-            *_campaign_test_run_lines(selector, outcome),
+            *_campaign_test_run_lines(
+                selector, outcome, _effective_default_seed(default_seeds, selector)
+            ),
         ]
         if cycle_lines is not None:
             report_lines.extend(cycle_lines[index])
@@ -690,12 +704,26 @@ def _coverage_run_label(campaign: CoverageCampaign, run: CoverageRun) -> str:
     return run.test_run if several else run.test
 
 
-def _coverage_test_run_lines(selector: str, rows: object) -> list[str]:
+def _effective_default_seed(
+    default_seeds: Mapping[str, int | None] | None, selector: str
+) -> int | None:
+    """*selector*'s Default Seed for report wording.
+
+    A Target whose own Default Seed is not known here is judged by the
+    Booley-wide one, which is what it uses unless its ``tests.toml`` says
+    otherwise.
+    """
+    return (default_seeds or {}).get(selector, DEFAULT_SEED)
+
+
+def _coverage_test_run_lines(
+    selector: str, rows: object, default_seed: int | None = DEFAULT_SEED
+) -> list[str]:
     """The Test Run rows of a directly collected Target, with rerun commands."""
     if not isinstance(rows, list):
         return []
     typed = [row for row in cast("list[object]", rows) if isinstance(row, Mapping)]
-    return informative_test_run_lines(selector, typed, default_seed=DEFAULT_SEED)
+    return informative_test_run_lines(selector, typed, default_seed=default_seed)
 
 
 def _coverage_pre_sim_lines(selector: str, campaign: CoverageCampaign) -> list[str]:
@@ -1003,10 +1031,12 @@ def _campaign_test_runs(outcome: CampaignOutcome) -> list[dict[str, object]]:
     return campaign_test_run_rows(outcome)
 
 
-def _campaign_test_run_lines(selector: str, outcome: CampaignOutcome) -> list[str]:
+def _campaign_test_run_lines(
+    selector: str, outcome: CampaignOutcome, default_seed: int | None = DEFAULT_SEED
+) -> list[str]:
     """Report rows only where they say more than the Target's own line."""
     return informative_test_run_lines(
-        selector, _campaign_test_runs(outcome), default_seed=DEFAULT_SEED
+        selector, _campaign_test_runs(outcome), default_seed=default_seed
     )
 
 
@@ -4288,6 +4318,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     def _coverage_result(self, outcomes: list[CoverageTargetOutcome]) -> EndpointOutcome:
         targets = {}
         lines = []
+        default_seeds = self._test_runs.default_seeds
         for outcome in outcomes:
             detail = coverage_mapping_document(outcome.detail)
             detail["exit_code"] = outcome.exit_code
@@ -4307,7 +4338,13 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 campaign = load_coverage_campaign(outcome.campaign_path).campaign
                 lines.extend(_waiver_block_hint_lines(campaign))
                 lines.extend(source_gap_report_lines(campaign))
-            lines.extend(_coverage_test_run_lines(outcome.target, detail.get("test_runs")))
+            lines.extend(
+                _coverage_test_run_lines(
+                    outcome.target,
+                    detail.get("test_runs"),
+                    _effective_default_seed(default_seeds, outcome.target),
+                )
+            )
             tests = detail.get("tests")
             for test in tests if isinstance(tests, list) else ():
                 if not isinstance(test, Mapping):
@@ -5169,7 +5206,10 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             campaign.evaluation["status"] == "fail" for campaign in coverage_campaigns.values()
         )
         report_path = self._report_destination()
-        lines = _campaign_base_report_lines(outcomes, coverage_campaigns, report_path=report_path)
+        default_seeds = self._test_runs.default_seeds
+        lines = _campaign_base_report_lines(
+            outcomes, coverage_campaigns, report_path=report_path, default_seeds=default_seeds
+        )
         invocation = self.context._reserved_invocation_dir
         campaigns = _campaign_structured_details(outcomes, invocation)
         coverage_targets = _coverage_compatibility_targets(
@@ -5194,7 +5234,12 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         ):
             budget_lines = _campaign_published_hook_lines(outcomes, invocation, frozenset(keys))
         lines = _campaign_report_lines(
-            outcomes, coverage_campaigns, budget_lines, blocks=lines, report_path=report_path
+            outcomes,
+            coverage_campaigns,
+            budget_lines,
+            blocks=lines,
+            report_path=report_path,
+            default_seeds=default_seeds,
         )
         lines.extend(hook_lines)
         if coverage_targets:
@@ -6578,7 +6623,8 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             passed = sum(1 for test in result.tests if test.passed)
             output_lines.append(f"  --- {passed}/{len(result.tests)} passed ---")
         rows = _test_run_rows(result.tests)
-        output_lines.extend(informative_test_run_lines(target, rows, default_seed=DEFAULT_SEED))
+        default_seed = _effective_default_seed(self._test_runs.default_seeds, target)
+        output_lines.extend(informative_test_run_lines(target, rows, default_seed=default_seed))
         return result
 
     def _role_selection(
@@ -6905,6 +6951,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             plan = self._target_test_plan(selector)
         except (fusesoc_registry.FuseSocError, ValueError) as exc:
             return EvidenceGuard(unresolved=(f"{selector}: {exc}",))
+        self._test_runs.default_seeds.setdefault(selector, plan.default_seed)
         other = tuple(f"{selector}: {run.name}" for run in runs if not plan.is_default_run(run))
         return EvidenceGuard(other_test_runs=other)
 
@@ -7027,6 +7074,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         key = (str(Path(self.args.work_dir)), target)
         if key not in cache:
             plan = self._registered_test_plan(target, test_names_map)
+            self._test_runs.default_seeds.setdefault(target, plan.default_seed)
             cache[key] = plan.resolve(
                 tuple(self.args.test) if self.args.test else None,
                 seed=getattr(self.args, "seed", None),

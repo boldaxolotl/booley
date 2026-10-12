@@ -173,5 +173,8 @@ class TestRunInvocation:
     planned_groups: dict[tuple[str, str], tuple[tuple[TestRun, ...], ...]] = field(
         default_factory=dict
     )
+    #: Each candidate Target's effective Default Seed, recorded when its Test
+    #: Runs are resolved. Reports use it to tell a plain run from a seeded one.
+    default_seeds: dict[str, int | None] = field(default_factory=dict)
     baseline: BaselineRuns = field(default_factory=BaselineRuns)
     guard: EvidenceGuard = field(default_factory=EvidenceGuard)

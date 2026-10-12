@@ -429,7 +429,7 @@ class VerilatorCoverageExecution:
     ) -> SimulationRunResult:
         invocation = prepare_adapter_invocation(work)
         environment = {
-            **launch_environment(simulation_target_environment(self._handle), work),
+            **launch_environment(simulation_target_environment(self._handle), work.environment),
             **request.environment,
         }
         script = _environment_script(environment, invocation)

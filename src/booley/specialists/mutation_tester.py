@@ -35,6 +35,7 @@ import shutil
 import subprocess
 import sys
 import time
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar
@@ -49,6 +50,7 @@ from booley.dev_support.mutation_variants import MutationVariantError, MutationV
 from booley.flows import artifacts as _artifacts
 from booley.flows.flow_config import tb_top_for_target
 from booley.flows.sim import edam as sim_edam
+from booley.flows.sim.backends.cocotb import seed_arguments
 from booley.flows.sim.backends.cocotb_results import (
     STATE_OK,
     VERDICT_FAIL,
@@ -65,6 +67,11 @@ from booley.flows.sim.config import (
     literal_run_cwd_problem,
     resolve_run_cwd,
 )
+from booley.flows.sim.execution.engine import (
+    launch_environment,
+    simulation_plusargs,
+    target_test_plan,
+)
 from booley.flows.sim.result import SIM_INFRA_ERROR_PREFIX, has_infra_error
 from booley.flows.sim.runner import SIM_RUN_HALVES, resolve_sim_sentinels
 from booley.flows.target_campaign import (
@@ -75,7 +82,7 @@ from booley.flows.target_campaign import (
     resolve_target_campaign,
 )
 from booley.flows.target_criteria import CampaignScopeError
-from booley.flows.target_test_plan import TestRunLaunch, load_target_test_plan
+from booley.flows.target_test_plan import TargetTestPlan, TestRunLaunch, batch_test_runs
 from booley.flows.target_test_suite import (
     NoRunnableTestsError,
     TargetTestSuite,
@@ -1894,6 +1901,7 @@ replacement must differ, and every proposal must remain a single source edit.
         timeout: int,
         test_names: tuple[str, ...],
         launch: TestRunLaunch,
+        plusargs: Sequence[str] = (),
     ) -> list[str]:
         """Build the :mod:`booley.flows.sim.backends.cocotb` invocation for one mutant.
 
@@ -1901,9 +1909,9 @@ replacement must differ, and every proposal must remain a single source edit.
         needs cocotb's ``COCOTB_TEST_MODULES``/filter environment — which only
         the cocotb run-half knows how to assemble.
 
-        Cocotb batches the Target's complete resolved suite into one process.
-        ``tests.toml`` ``select`` plusarg templates do not apply to Cocotb
-        Targets (ADR 0034 decision 2).
+        One invocation runs one Cocotb batch: Tests that share an environment
+        and a seed (ADR 0072). ``tests.toml`` ``select`` plusarg templates do
+        not apply to Cocotb Targets (ADR 0034 decision 2).
         """
         cmd = [
             sys.executable,
@@ -1919,8 +1927,8 @@ replacement must differ, and every proposal must remain a single source edit.
             str(max(1, timeout - 5)),
         ]
         cmd.extend(f"--test={test_name}" for test_name in test_names)
-        if launch.seed is not None:
-            cmd += ["--seed", str(launch.seed)]
+        cmd += seed_arguments(launch.seed)
+        cmd.extend(f"--plusarg={value}" for value in plusargs)
         run_cwd = resolve_run_cwd(work_dir)
         if run_cwd:
             cmd += ["--run-cwd", run_cwd]
@@ -1934,7 +1942,7 @@ replacement must differ, and every proposal must remain a single source edit.
         work_dir: Path,
         tb_top: str,
         timeout: int,
-        launch: TestRunLaunch,
+        plusargs: Sequence[str],
     ) -> list[str]:
         """Build the pinned ``V<top>`` invocation for one mutant (classic path).
 
@@ -1954,7 +1962,7 @@ replacement must differ, and every proposal must remain a single source edit.
             "--timeout",
             str(max(1, timeout - 5)),
         ]
-        cmd.extend(f"--plusarg={argument.removeprefix('+')}" for argument in launch.arguments)
+        cmd.extend(f"--plusarg={value}" for value in plusargs)
         pass_sentinels, fail_sentinels = _resolve_sim_sentinels(work_dir)
         cmd.extend(f"--pass-sentinel={sentinel}" for sentinel in pass_sentinels)
         cmd.extend(f"--fail-sentinel={sentinel}" for sentinel in fail_sentinels)
@@ -1970,7 +1978,7 @@ replacement must differ, and every proposal must remain a single source edit.
         target: str,
         work_dir: Path,
         timeout: int,
-        launch: TestRunLaunch,
+        plusargs: Sequence[str],
     ) -> list[str]:
         """Build the pinned ``vvp`` invocation for one classic Icarus mutant."""
         cmd = [
@@ -1982,7 +1990,7 @@ replacement must differ, and every proposal must remain a single source edit.
             "--timeout",
             str(max(1, timeout - 5)),
         ]
-        cmd.extend(f"--plusarg={argument.removeprefix('+')}" for argument in launch.arguments)
+        cmd.extend(f"--plusarg={value}" for value in plusargs)
         pass_sentinels, fail_sentinels = _resolve_sim_sentinels(work_dir)
         cmd.extend(f"--pass-sentinel={sentinel}" for sentinel in pass_sentinels)
         cmd.extend(f"--fail-sentinel={sentinel}" for sentinel in fail_sentinels)
@@ -1991,25 +1999,56 @@ replacement must differ, and every proposal must remain a single source edit.
             cmd += ["--run-cwd", run_cwd]
         return cmd
 
+    def _default_test_plan(
+        self, target: str, work_dir: Path, adapter: str
+    ) -> tuple[TargetTestPlan, Mapping[str, Any]]:
+        """The Test Run plan of *target* and the parameters its ``.core`` declares.
+
+        Built the way the Simulation Flow builds it, against the resolved
+        Target, so a Test Variant argument that overrides a Target plusarg is
+        refused here too.
+        """
+        try:
+            catalog = TargetCatalog.build(work_dir)
+            handle = catalog.select(target, for_flow="sim")
+            parameters = catalog.inspect(handle).parameters
+            return target_test_plan(handle, adapter, parameters), parameters
+        except (fusesoc_registry.FuseSocError, ValueError) as exc:
+            raise UnsupportedSimTargetError(f"mutation_tester: {exc}") from exc
+
     def _default_test_run_launch(
         self,
         target: str,
         work_dir: Path,
         adapter: str,
         test_names: tuple[str, ...],
-    ) -> TestRunLaunch:
-        """Launch inputs of *test_names* as default Test Variants at the Default Seed.
+    ) -> tuple[TestRunLaunch, list[str]]:
+        """Launch inputs and simulator arguments of *test_names* as default Test Runs.
 
         A mutation run grades the Target's declared suite, so it applies
         exactly what a plain Simulation Flow run of the same Tests applies
-        (ADR 0072): ``select``, the default Test Variant's arguments and
-        environment, and the seed.
+        (ADR 0072): the Target's plusargs, ``select``, the default Test
+        Variant's arguments and environment, and the seed, rendered by the
+        Simulation Flow's own functions.
         """
+        plan, parameters = self._default_test_plan(target, work_dir, adapter)
         try:
-            plan = load_target_test_plan(work_dir, target, adapter=adapter)
-            return plan.launch(plan.default_runs_for(test_names))
+            launch = plan.launch(plan.default_runs_for(test_names))
+            return launch, simulation_plusargs(launch, parameters)
         except ValueError as exc:
             raise UnsupportedSimTargetError(f"mutation_tester: {exc}") from exc
+
+    def _cocotb_suite_batches(
+        self, target: str, work_dir: Path, tests: tuple[str, ...]
+    ) -> tuple[tuple[str, ...], ...]:
+        """The Cocotb processes that run *tests*, as the Simulation Flow batches them.
+
+        Default Test Variants that differ in environment never share a
+        process, so such a suite takes several.
+        """
+        plan, _parameters = self._default_test_plan(target, work_dir, "cocotb")
+        batches = batch_test_runs(plan.default_runs_for(tests), one_process_per_run=False)
+        return tuple(tuple(run.test for run in batch if run.test is not None) for batch in batches)
 
     def _pinned_sim_command(
         self,
@@ -2026,7 +2065,9 @@ replacement must differ, and every proposal must remain a single source edit.
         rel = self._bin_dir_rel(target, work_dir, build_path)
         cocotb = self.cocotb_target(target, work_dir)
         if cocotb is not None:
-            launch = self._default_test_run_launch(target, work_dir, "cocotb", cocotb_tests)
+            launch, plusargs = self._default_test_run_launch(
+                target, work_dir, "cocotb", cocotb_tests
+            )
             command = self._cocotb_sim_cmd(
                 cocotb=cocotb,
                 rel=rel,
@@ -2035,6 +2076,7 @@ replacement must differ, and every proposal must remain a single source edit.
                 timeout=timeout,
                 test_names=cocotb_tests,
                 launch=launch,
+                plusargs=plusargs,
             )
             return command, launch
         eda_tool = self.target_eda_tool(target, work_dir, build_path)
@@ -2044,10 +2086,10 @@ replacement must differ, and every proposal must remain a single source edit.
                 f"EDA toolchain {eda_tool!r}"
             )
         names = (test_name,) if test_name is not None else ()
-        launch = self._default_test_run_launch(target, work_dir, eda_tool, names)
+        launch, plusargs = self._default_test_run_launch(target, work_dir, eda_tool, names)
         if eda_tool == "icarus":
             command = self._icarus_sim_cmd(
-                rel=rel, target=target, work_dir=work_dir, timeout=timeout, launch=launch
+                rel=rel, target=target, work_dir=work_dir, timeout=timeout, plusargs=plusargs
             )
         else:
             command = self._verilator_sim_cmd(
@@ -2056,7 +2098,7 @@ replacement must differ, and every proposal must remain a single source edit.
                 work_dir=work_dir,
                 tb_top=tb_top,
                 timeout=timeout,
-                launch=launch,
+                plusargs=plusargs,
             )
         return command, launch
 
@@ -2085,12 +2127,11 @@ replacement must differ, and every proposal must remain a single source edit.
             cmd,
             cwd=work_dir,
             env=relocate_python_artifacts(
-                # The Simulation Flow's launch environment: the Target's env
-                # table, then the Test Variant's (this launch only).
                 {
                     **os.environ,
-                    **_target_environment(work_dir, target),
-                    **dict(launch.environment),
+                    **launch_environment(
+                        _target_environment(work_dir, target), launch.environment
+                    ),
                 },
                 python_artifact_root(os.environ, build_path / "python-artifacts"),
                 pytest_scope=f"mutation-run:{build_path.resolve()}",
@@ -2113,6 +2154,13 @@ replacement must differ, and every proposal must remain a single source edit.
         """Run one built source variant against the Target's complete test suite."""
         campaign = self._campaign_for_target(target)
         batched = self.cocotb_target(target, work_dir) is not None
+        batches = (
+            self._cocotb_suite_batches(
+                target, work_dir, tuple(test for test in campaign.suite.tests if test is not None)
+            )
+            if batched
+            else None
+        )
 
         def _run_unit(unit: CampaignUnit) -> MutationTestRun:
             try:
@@ -2145,7 +2193,7 @@ replacement must differ, and every proposal must remain a single source edit.
                     requires_cocotb_results=batched,
                 )
 
-        return list(campaign.execute(_run_unit, batched=batched).values)
+        return list(campaign.execute(_run_unit, batched=batched, batches=batches).values)
 
     @staticmethod
     def _suite_output(runs: list[MutationTestRun]) -> str:

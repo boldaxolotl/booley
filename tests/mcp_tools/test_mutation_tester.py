@@ -42,6 +42,9 @@ from booley.specialists.mutation_tester import (
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import IncompatibleTargetError
 
+# The parameters the fake ``.core`` Target declares; a test may add plusargs.
+_TARGET_PARAMETERS: dict[str, Any] = {}
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -658,7 +661,10 @@ def _patch_resolve_target(monkeypatch, *, eda_tool: str | None = "verilator"):
                 {
                     "select": lambda _self, target, **kwargs: _fake_select(
                         work_dir, target, **kwargs
-                    )
+                    ),
+                    "inspect": lambda _self, _handle: SimpleNamespace(
+                        parameters=dict(_TARGET_PARAMETERS)
+                    ),
                 },
             )()
         ),
@@ -943,6 +949,31 @@ def test_sim_runs_the_default_variant_at_the_default_seed(tmp_path: Path, monkey
         ["--plusarg=test=stress", "--plusarg=iters=1000", "--plusarg=verilator+seed+7"],
     ]
     assert [env.get("STRESS_MODE") for _cmd, env in runs] == [None, "short"]
+
+
+def test_sim_passes_the_target_plusargs_like_the_simulation_flow(tmp_path: Path, monkeypatch):
+    """The Target's plusargs come first; ``select`` replaces one that sets its option."""
+    monkeypatch.setitem(_TARGET_PARAMETERS, "depth", {"paramtype": "plusarg", "default": 4})
+    monkeypatch.setitem(_TARGET_PARAMETERS, "test", {"paramtype": "plusarg", "default": "none"})
+    runs = _mutation_sim_runs(tmp_path, monkeypatch, _MUTATION_VARIANTS, "verilator")
+
+    plusargs = [[word for word in cmd if word.startswith("--plusarg=")] for cmd, _env in runs]
+    assert plusargs == [
+        ["--plusarg=depth=4", "--plusarg=test=reset", "--plusarg=verilator+seed+7"],
+        [
+            "--plusarg=depth=4",
+            "--plusarg=test=stress",
+            "--plusarg=iters=1000",
+            "--plusarg=verilator+seed+7",
+        ],
+    ]
+
+
+def test_sim_refuses_a_variant_argument_the_target_owns(tmp_path: Path, monkeypatch):
+    """The plan is built against the Target's declared plusargs, as in the Flow."""
+    monkeypatch.setitem(_TARGET_PARAMETERS, "iters", {"paramtype": "plusarg", "default": 1})
+    with pytest.raises(UnsupportedSimTargetError, match="overrides a plusarg the Target declares"):
+        _mutation_sim_runs(tmp_path, monkeypatch, _MUTATION_VARIANTS, "verilator")
 
 
 def test_mutant_builds_and_runs_under_the_target_environment(tmp_path: Path, monkeypatch):
@@ -1640,7 +1671,10 @@ def _patch_cocotb_target(monkeypatch, *, module: str | None, eda_tool: str | Non
                 },
             )()
 
-        return type("FakeCatalog", (), {"select": select})()
+        def inspect(_self, _handle):
+            return SimpleNamespace(parameters=dict(_TARGET_PARAMETERS))
+
+        return type("FakeCatalog", (), {"select": select, "inspect": inspect})()
 
     monkeypatch.setattr(
         TargetCatalog,
@@ -1761,6 +1795,56 @@ class TestCocotbSimDispatch:
 
         assert "--test=test_a" in captured[-1]
         assert "--test=test_b" in captured[-1]
+
+    def test_cocotb_suite_whose_default_variants_differ_in_env_runs_in_batches(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """Regression: such a suite raised UnsupportedSimTargetError before any run.
+
+        The Simulation Flow runs it as one process per environment; a mutant
+        is graded the same way, each batch under its own Test Variant's
+        environment and the Default Seed.
+        """
+        monkeypatch.delenv("MODE", raising=False)
+        captured: list[tuple[list[str], dict[str, str]]] = []
+        monkeypatch.setattr(
+            "booley.specialists.mutation_tester.subprocess.run",
+            lambda cmd, *a, **k: (
+                captured.append((list(cmd), dict(k.get("env") or {}))),
+                _fake_proc(rc=0),
+            )[1],
+        )
+        _patch_resolve_target(monkeypatch)
+        _patch_cocotb_target(monkeypatch, module="tb.test_noc")
+        _write_tests_toml(
+            tmp_path,
+            '[default]\ntests = ["test_a", "test_b", "test_c"]\ndefault_seed = 9\n'
+            '[default.variants.test_a]\ndefault = "x"\nx = { env = { MODE = "A" } }\n'
+            '[default.variants.test_b]\ndefault = "y"\ny = { env = { MODE = "B" } }\n',
+        )
+        endpoint = _make_endpoint(tmp_path, monkeypatch)
+        build_dir = tmp_path / "build"
+        build_dir.mkdir()
+        endpoint._run_elab("default", tmp_path, build_dir)
+
+        runs = endpoint._run_target_test_suite("default", tmp_path, build_dir, "tb")
+
+        launched = [
+            ([word for word in cmd if word.startswith("--test=")], env.get("MODE"))
+            for cmd, env in captured[-3:]
+        ]
+        assert launched == [
+            (["--test=test_a"], "A"),
+            (["--test=test_b"], "B"),
+            (["--test=test_c"], None),
+        ]
+        for cmd, _env in captured[-3:]:
+            assert cmd[cmd.index("--seed") + 1] == "9"
+        assert [run.test_name for run in runs] == [
+            "<cocotb-suite 1/3>",
+            "<cocotb-suite 2/3>",
+            "<cocotb-suite 3/3>",
+        ]
 
     def test_individual_test_flag_was_removed(self, tmp_path: Path, monkeypatch):
         with pytest.raises(SystemExit):

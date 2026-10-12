@@ -9,7 +9,7 @@ import re
 import shlex
 import shutil
 import time
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -1490,6 +1490,9 @@ class SimulationExecution:
             shlex.join(setup),
             *resolve_pre_sim_commands(root),
             shlex.join(edam_layer.make_command(rel)),
+            # The Test Variant's environment reaches the simulator launch only,
+            # exactly as the run applies it: never setup, Pre-Sim or the build.
+            *(f"export {name}={shlex.quote(value)}" for name, value in work.environment),
             shlex.join(prepare_adapter_invocation(work)),
         ]
         return ("sh", "-c", " && ".join(steps))
@@ -1629,21 +1632,21 @@ def simulation_target_environment(handle: TargetHandle) -> dict[str, str]:
 
 
 def launch_environment(
-    target_environment: Mapping[str, str], work: PreparedSimulationWork
+    target_environment: Mapping[str, str], variant_environment: Iterable[tuple[str, str]]
 ) -> dict[str, str]:
     """The simulator process environment: the Target's, then the Test Variant's.
 
-    The Variant's part is applied at launch only. The ``tests.toml`` loader
-    refuses a Variant variable the Target's ``env`` table also sets, so the
-    two never overlap.
+    *variant_environment* is the launch's ``(name, value)`` pairs, applied at
+    launch only. The ``tests.toml`` loader refuses a Variant variable the
+    Target's ``env`` table also sets, so the two never overlap.
     """
-    return {**target_environment, **dict(work.environment)}
+    return {**target_environment, **dict(variant_environment)}
 
 
 def _launch_environment(
     target_environment: tuple[tuple[str, str], ...], work: PreparedSimulationWork
 ) -> tuple[tuple[str, str], ...]:
-    return tuple(launch_environment(dict(target_environment), work).items())
+    return tuple(launch_environment(dict(target_environment), work.environment).items())
 
 
 def simulation_adapter_kind(eda_tool: str | None, flow_options: Mapping[str, Any]) -> str:
@@ -1722,10 +1725,17 @@ def _artifact_group(plan: TargetTestPlan, runs: tuple[TestRun, ...], cocotb: boo
     first = runs[0]
     if not cocotb:
         return first.name if first.test is not None else ""
-    if all(plan.is_default_run(run) for run in runs) and not first.env:
+    plain = first.seed == plan.default_seed and not first.env
+    if plain and all(_runs_default_variant(plan, run) for run in runs):
         return "batch"
     names = "\n".join(run.name for run in runs)
     return "batch-" + hashlib.sha256(names.encode("utf-8")).hexdigest()[:12]
+
+
+def _runs_default_variant(plan: TargetTestPlan, run: TestRun) -> bool:
+    """Whether *run* is its Test's default Test Variant (or the Test declares none)."""
+    table = plan.variants_of(run.test) if run.test is not None else None
+    return run.variant is None if table is None else run.variant == table.default
 
 
 def _plusarg_parameter_names(parameters: Mapping[str, Any]) -> tuple[str, ...]:

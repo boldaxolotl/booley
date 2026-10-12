@@ -168,3 +168,57 @@ def test_coverage_rows_come_from_the_frozen_test_runs_only():
     assert coverage_test_run_rows((), [_coverage_run(_SOAK_7, "pass")]) == []
     changed = build_test_run("stress", variant="soak", seed=7, args=("+iters=1",))
     assert coverage_test_run_rows((changed,), [_coverage_run(_SOAK_7, "pass")]) == []
+
+
+def test_rows_are_informative_relative_to_the_targets_own_default_seed():
+    """A Target with ``default_seed = 7``: ``@7`` is its plain run, ``@1`` is not."""
+    from booley.flows.sim.flow import (
+        _campaign_test_run_lines,
+        _coverage_test_run_lines,
+        _effective_default_seed,
+    )
+
+    at_seven = [{**test_run_document(build_test_run("smoke", seed=7)), "grade": "pass"}]
+    at_one = [{**test_run_document(_SMOKE), "grade": "pass"}]
+
+    assert _coverage_test_run_lines("lite", at_seven, 7) == []
+    assert _coverage_test_run_lines("lite", at_one, 7) == [
+        "  Test Runs: 1 (1 passed)",
+        "    PASS         smoke@1",
+    ]
+    # Without the Target's own value the Booley-wide Default Seed decides.
+    assert _coverage_test_run_lines("lite", at_one) == []
+    assert _coverage_test_run_lines("lite", at_seven) != []
+    assert _effective_default_seed({"lite": 7}, "lite") == 7
+    assert _effective_default_seed({"lite": None}, "lite") is None
+    assert _effective_default_seed({}, "other") == 1
+    assert _effective_default_seed(None, "other") == 1
+    assert _campaign_test_run_lines("lite", object(), 7) == []  # type: ignore[arg-type]
+
+
+def test_direct_run_at_a_target_default_seed_other_than_one_prints_no_rows(tmp_path: Path):
+    """Regression: every plain run of such a Target printed its Test Run rows."""
+    flow = _make_flow(tmp_path, config="lite", extra_args=["--test", "smoke"])
+    tests = {"lite": {**_TESTS["lite"], "default_seed": 7}}
+    with (
+        patch(
+            "booley.flows.target_test_plan.load_test_configuration",
+            return_value=normalize_tests_toml(tests),
+        ),
+        patch("booley.flows.sim.flow._get_test_names", return_value={"lite": ["smoke", "stress"]}),
+        patch.object(SimulateFlow, "_flow_enabled", return_value=_FLOW_ENABLED),
+        patch.object(
+            flow,
+            "_execute",
+            return_value=SubprocessResult(
+                returncode=0, stdout="[SIM_RESULT] PASSED\n", duration_s=0.1
+            ),
+        ),
+        flow.context.publication_resources,
+    ):
+        result = flow._run()
+
+    assert result.exit_code == EXIT_SUCCESS, result.report_text
+    assert flow._test_runs.default_seeds == {"lite": 7}
+    assert "Test Runs:" not in result.report_text
+    assert "smoke@7" not in result.report_text

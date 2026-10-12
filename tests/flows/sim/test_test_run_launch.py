@@ -188,7 +188,10 @@ class TestVariantEnvironment:
         plan = target_test_plan(_handle(root), "verilator", {})
         work = _work(root, inspection, ("stress",), (plan.run("stress", "fault"),))
         assert work.environment == (("FAULT_MODE", "1"),)
-        assert launch_environment({"FLAVOR": "a"}, work) == {"FLAVOR": "a", "FAULT_MODE": "1"}
+        assert launch_environment({"FLAVOR": "a"}, work.environment) == {
+            "FLAVOR": "a",
+            "FAULT_MODE": "1",
+        }
         assert work.cocotb_seed is None
 
     def test_default_variant_has_no_extra_environment(self, tmp_path: Path):
@@ -264,6 +267,44 @@ class TestDeclarationsTheTargetCannotApply:
                 ("test_a", "test_b"),
                 (plan.run("test_a"), plan.run("test_b", seed=5)),
             )
+
+
+class TestPreviewMatchesLaunch:
+    def test_preview_exports_the_test_variant_environment_for_the_launch_only(
+        self, tmp_path: Path
+    ):
+        """Regression: the previewed command ran the Test Variant without its env."""
+        from booley.flows.sim.execution.engine import _launch_environment
+
+        root = _project(
+            tmp_path,
+            '[sim]\ntests = ["stress"]\nenv = { FLAVOR = "a" }\n' + _VARIANTS,
+        )
+        inspection = _inspection("verilator")
+        plan = target_test_plan(_handle(root), "verilator", {})
+        fault = plan.run("stress", "fault")
+
+        preview = _preview(root, inspection, SelectedTestRuns((fault,)))
+        steps = preview.commands[0][-1].split(" && ")
+
+        assert steps[-2] == "export FAULT_MODE=1"
+        assert steps[-1].startswith("python3 -m booley.flows.sim.backends.verilator")
+        # The build steps before it see the Target's environment only.
+        build_steps = steps[: steps.index("export FAULT_MODE=1")]
+        assert "export FLAVOR=a" in build_steps
+        assert not any("FAULT_MODE" in step for step in build_steps)
+        # The launch applies exactly the previewed variables.
+        work = _work(root, inspection, ("stress",), (fault,))
+        assert dict(_launch_environment((("FLAVOR", "a"),), work)) == {
+            "FLAVOR": "a",
+            "FAULT_MODE": "1",
+        }
+
+    def test_preview_of_a_run_without_variant_environment_is_unchanged(self, tmp_path: Path):
+        root = _project(tmp_path, '[sim]\ntests = ["stress"]\n' + _VARIANTS)
+        preview = _preview(root, _inspection("verilator"), NamedTests(("stress",)))
+        steps = preview.commands[0][-1].split(" && ")
+        assert not steps[-2].startswith("export ")
 
 
 class TestEvidenceGroups:
