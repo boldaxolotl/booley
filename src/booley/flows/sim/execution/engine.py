@@ -18,6 +18,7 @@ from typing import Any, TypeGuard
 from fusesoc.vlnv import Vlnv
 
 from booley.config.project_config import load_test_configuration_field, lookup_target_section
+from booley.config.tests_toml_rules import TestVariantError, adapter_argument, option_key
 from booley.core.build_paths import work_root_for
 from booley.core.project_dir import PROJECT_DIR_NAME
 from booley.flows import artifacts as flow_artifacts
@@ -1677,16 +1678,26 @@ def group_test_runs(
     return test_runs
 
 
-def _simulation_plusargs(launch: TestRunLaunch, parameters: Mapping[str, Any]) -> list[str]:
+def simulation_plusargs(launch: TestRunLaunch, parameters: Mapping[str, Any]) -> list[str]:
     """Target plusargs, then the process's own arguments (ADR 0072 order).
 
     A Target plusarg that ``select`` or the ``seed`` template also sets is
     dropped: the rendered argument is the one value the testbench must see.
+    Nothing else replaces a Target plusarg. Raises :class:`TestVariantError`
+    when a Test Variant argument sets an option that the Target, ``select`` or
+    the seed owns: such a run would launch other inputs than it records.
     """
     rendered = _parameter_plusargs(parameters)
-    arguments = [token.removeprefix("+") for token in launch.arguments]
-    keys = {_plusarg_key(argument) for argument in arguments}
-    return [value for value in rendered if _plusarg_key(value) not in keys] + arguments
+    booley_keys = {option_key(argument) for argument in launch.booley_arguments}
+    owned = booley_keys | {option_key(f"+{name}") for name in _plusarg_parameter_names(parameters)}
+    for argument in launch.variant_arguments:
+        if option_key(argument) in owned:
+            raise TestVariantError(
+                f"Test Variant argument {argument!r} sets an option that the Target, "
+                "the select template or the seed already sets; the launch is refused"
+            )
+    kept = [value for value in rendered if option_key(value) not in booley_keys]
+    return kept + [adapter_argument(argument) for argument in launch.arguments]
 
 
 def _artifact_group(plan: TargetTestPlan, runs: tuple[TestRun, ...], cocotb: bool) -> str:
@@ -1732,11 +1743,6 @@ def _parameter_plusargs(parameters: Mapping[str, Any]) -> list[str]:
             raise ValueError(f"resolved plusarg parameter {name!r} contains a NUL byte")
         result.append(f"{name}={text}")
     return result
-
-
-def _plusarg_key(value: str) -> str | None:
-    stripped = value.removeprefix("+")
-    return None if stripped.startswith("-") else stripped.partition("=")[0] or None
 
 
 def _configured_run_cwd(root: Path) -> Path:
@@ -1794,10 +1800,10 @@ def prepare_simulation_work(
         )
         runs = group_test_runs(plan, identity.selected_tests, test_runs)
         launch = plan.launch(runs)
+        plusargs = simulation_plusargs(launch, prepared.resolved.parameters)
     except ValueError as exc:
         # A tests.toml declaration this Target cannot apply: nothing may launch.
         raise SimulationBuildPreparationError(str(exc)) from exc
-    plusargs = _simulation_plusargs(launch, prepared.resolved.parameters)
     passes, fails = resolve_sim_sentinels(root)
     return PreparedSimulationWork(
         adapter="cocotb" if cocotb else prepared.eda_tool,
@@ -1864,7 +1870,7 @@ def _preview_work(
         timeout_s=max(1, execution._effective_timeout_ms(handle) // 1000),
         eda_tool=eda_tool,
         max_rundir_bytes=resolve_max_rundir_bytes(root),
-        plusargs=tuple(_simulation_plusargs(launch, inspection.parameters)),
+        plusargs=tuple(simulation_plusargs(launch, inspection.parameters)),
         environment=launch.environment,
         cocotb_seed=launch.seed if cocotb else None,
         test_runs=runs,

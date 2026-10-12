@@ -417,7 +417,7 @@ class TestAuditTestsTomlRules:
             (
                 '[sim_fast]\ntests = ["stress"]\nseed = "+seed=1"\n',
                 "tests.toml invalid: tests.toml [sim_fast].seed template '+seed=1' must "
-                "contain the {seed} field exactly once",
+                "contain the plain {seed} field exactly once",
             ),
             (
                 '[sim_fast]\ntests = ["stress"]\ndefault_seed = 0\n',

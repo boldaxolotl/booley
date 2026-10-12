@@ -22,6 +22,7 @@ them at load and configuration must not import Flows;
 from __future__ import annotations
 
 import re
+import string
 import unicodedata
 from dataclasses import dataclass
 from typing import cast
@@ -234,20 +235,61 @@ def validate_declared_env_names(env: dict[str, str], *, where: str) -> dict[str,
     return env
 
 
-def option_key(token: str) -> str:
-    """The option an argument token sets, without its value.
-
-    ``+iters=5`` and ``+iters`` both give ``+iters``; ``--mem=a,b`` gives
-    ``--mem``. A ``+verilator+seed+<n>`` token gives the seed option itself,
-    whatever the number. Two tokens with one key set the same option.
-    """
-    if token.startswith(VERILATOR_SEED_OPTION):
-        return VERILATOR_SEED_OPTION
-    return token.partition("=")[0]
+_VARIANT_TABLE_KEYS = ("args", "env")
 
 
 _ARGUMENT_PREFIXES = ("+", "-")
-_VARIANT_TABLE_KEYS = ("args", "env")
+
+
+def option_key(token: str) -> str:
+    """The option an argument token sets, without its value: the one canonical key.
+
+    ``+iters=5``, ``+iters`` and the adapter form ``iters=5`` (a plusarg
+    without its ``+``, see :func:`adapter_argument`) all give ``+iters``;
+    ``--mem=a,b`` gives ``--mem``. A ``+verilator+seed+<n>`` token gives the
+    seed option itself, whatever the number. Two tokens with one key set the
+    same option. Validation and launch rendering both compare this key, so a
+    token cannot pass one and mean something else at the other.
+    """
+    if token.startswith("-"):
+        return token.partition("=")[0]
+    plusarg = token if token.startswith("+") else f"+{token}"
+    if plusarg.startswith(VERILATOR_SEED_OPTION):
+        return VERILATOR_SEED_OPTION
+    return plusarg.partition("=")[0]
+
+
+def adapter_argument(token: str) -> str:
+    """*token* as simulator adapters take it: a plusarg without its ``+``.
+
+    Adapters add the ``+`` back to every token that starts with neither ``+``
+    nor ``-``. :func:`argument_token_problem` refuses the tokens this would
+    change the meaning of, so ``option_key`` is the same before and after.
+    """
+    return token.removeprefix("+")
+
+
+def argument_token_problem(token: str) -> str:
+    """Why *token* cannot be one declared simulator argument; empty when it can.
+
+    A token is a plusarg (``+name[=value]``) or a getopt argument (``-…``),
+    one word. ``++name`` and ``+-name`` are refused: the simulator would read
+    them as the plusarg ``+name`` or the getopt argument ``-name``, so they
+    would set an option under another name than the one checked here.
+    """
+    if not token.startswith(_ARGUMENT_PREFIXES):
+        return "must start with '+' or '-'"
+    if "\0" in token or any(character.isspace() for character in token):
+        return (
+            "must be one token without whitespace or NUL; declare each "
+            "argument as its own list entry"
+        )
+    if token.startswith(("++", "+-")):
+        return (
+            f"must not start with {token[:2]!r}, which the simulator reads as another "
+            "option; write a plusarg with one '+' or a getopt argument with '-'"
+        )
+    return ""
 
 
 def _parse_variant_args(raw: object, where: str) -> tuple[str, ...]:
@@ -256,13 +298,9 @@ def _parse_variant_args(raw: object, where: str) -> tuple[str, ...]:
         raise TestVariantError(f"{where} arguments must be a list of strings")
     arguments = cast(list[str], raw)
     for argument in arguments:
-        if not argument.startswith(_ARGUMENT_PREFIXES):
-            raise TestVariantError(f"{where} argument {argument!r} must start with '+' or '-'")
-        if "\0" in argument or any(character.isspace() for character in argument):
-            raise TestVariantError(
-                f"{where} argument {argument!r} must be one token without "
-                "whitespace or NUL; declare each argument as its own list entry"
-            )
+        problem = argument_token_problem(argument)
+        if problem:
+            raise TestVariantError(f"{where} argument {argument!r} {problem}")
     return tuple(arguments)
 
 
@@ -338,33 +376,44 @@ def parse_test_variants(test: str, raw: object, *, where: str | None = None) -> 
     return TestVariantTable(test=test, default=default, variants=tuple(variants))
 
 
+def template_fields(template: str) -> tuple[tuple[str, str, str | None], ...]:
+    """The replacement fields of a format *template*: (name, spec, conversion).
+
+    Parsed, never guessed from the text: ``{{seed}}`` is an escaped literal
+    and has no field. Raises :class:`ValueError` for a malformed template.
+    """
+    return tuple(
+        (name, spec or "", conversion)
+        for _literal, name, spec, conversion in string.Formatter().parse(template)
+        if name is not None
+    )
+
+
 def validate_seed_template(template: object, *, where: str) -> str:
     """Return a valid ``seed`` argument template.
 
     Like ``select``, it is exactly one option token (a plusarg ``+…`` or a
-    getopt argument ``-…``) without whitespace. Its only field is ``{seed}``,
-    used exactly once. Raises :class:`SeedConfigurationError`.
+    getopt argument ``-…``) without whitespace. It has exactly one replacement
+    field, the plain ``{seed}``, so the rendered argument always holds the
+    seed as a decimal number. Raises :class:`SeedConfigurationError`.
     """
     if not isinstance(template, str) or not template.strip():
         raise SeedConfigurationError(f"{where} must be a non-empty string")
-    if template.count("{seed}") != 1:
-        raise SeedConfigurationError(
-            f"{where} template {template!r} must contain the {{seed}} field exactly once"
-        )
     try:
-        probe = template.format(seed=DEFAULT_SEED)
-    except (KeyError, IndexError, ValueError) as exc:
+        fields = template_fields(template)
+    except ValueError as exc:
         raise SeedConfigurationError(
-            f"{where} template {template!r} uses an unknown field; only {{seed}} is supported"
+            f"{where} template {template!r} is not a valid template: {exc}"
         ) from exc
-    if len(probe.split()) != 1 or probe != probe.strip() or "\0" in probe:
+    if fields != (("seed", "", None),):
         raise SeedConfigurationError(
-            f"{where} must be exactly one option token with no whitespace, got {template!r}"
+            f"{where} template {template!r} must contain the plain {{seed}} field "
+            "exactly once and no other field, conversion or format"
         )
-    if not probe.startswith(_ARGUMENT_PREFIXES):
-        raise SeedConfigurationError(
-            f"{where} must be a plusarg ('+…') or a getopt argument ('-…'), got {template!r}"
-        )
+    problem = argument_token_problem(template.format(seed=DEFAULT_SEED))
+    if problem:
+        raise SeedConfigurationError(f"{where} template {template!r} {problem}")
+    probe = template.format(seed=DEFAULT_SEED)
     if option_key(probe) == VERILATOR_SEED_OPTION:
         raise SeedConfigurationError(
             f"{where} may not be {VERILATOR_SEED_OPTION}: Booley passes the Verilator "

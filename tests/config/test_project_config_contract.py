@@ -435,28 +435,32 @@ class TestTestsTomlVariantsAndSeeds:
             ("", "tests.toml [sim].seed must be a non-empty string"),
             (
                 "+seed=1",
-                "tests.toml [sim].seed template '+seed=1' must contain the {seed} field "
-                "exactly once",
+                "tests.toml [sim].seed template '+seed=1' must contain the plain {seed} "
+                "field exactly once and no other field, conversion or format",
             ),
             (
                 "+a={seed}+b={seed}",
                 "tests.toml [sim].seed template '+a={seed}+b={seed}' must contain the "
-                "{seed} field exactly once",
+                "plain {seed} field exactly once and no other field, conversion or format",
             ),
             (
                 "+seed={seed}{name}",
-                "tests.toml [sim].seed template '+seed={seed}{name}' uses an unknown "
-                "field; only {seed} is supported",
+                "tests.toml [sim].seed template '+seed={seed}{name}' must contain the "
+                "plain {seed} field exactly once and no other field, conversion or format",
+            ),
+            (
+                "+seed={{seed}}",
+                "tests.toml [sim].seed template '+seed={{seed}}' must contain the "
+                "plain {seed} field exactly once and no other field, conversion or format",
             ),
             (
                 "+seed {seed}",
-                "tests.toml [sim].seed must be exactly one option token with no "
-                "whitespace, got '+seed {seed}'",
+                "tests.toml [sim].seed template '+seed {seed}' must be one token without "
+                "whitespace or NUL; declare each argument as its own list entry",
             ),
             (
                 "seed={seed}",
-                "tests.toml [sim].seed must be a plusarg ('+…') or a getopt argument "
-                "('-…'), got 'seed={seed}'",
+                "tests.toml [sim].seed template 'seed={seed}' must start with '+' or '-'",
             ),
             (
                 "+verilator+seed+{seed}",

@@ -20,8 +20,10 @@ from booley.config.tests_toml_rules import (
     VERILATOR_SEED_OPTION,
     TestRunNameError,
     TestVariant,
+    argument_token_problem,
     option_key,
     parse_test_variants,
+    template_fields,
     validate_declared_env_names,
     validate_env_table,
     validate_seed,
@@ -262,6 +264,35 @@ def _normalize_config_section(
 DEFAULT_TEST_SELECT = "+test_id={index}"
 
 
+_SELECT_FIELDS = ("index", "name")
+
+
+def _render_select_probe(target: str, template: str) -> str:
+    """Render *template* once, refusing fields that do not select a Test.
+
+    The fields are read with the format parser: an escaped ``{{name}}`` is
+    literal text, would render the same argument for every Test, and is
+    refused like a template without any field.
+    """
+    unknown = ValueError(
+        f"tests.toml [{target}].select template {template!r} uses an unknown "
+        "field; only {index} and {name} are supported"
+    )
+    try:
+        fields = template_fields(template)
+        probe = template.format(index=0, name="probe")
+    except (KeyError, IndexError, ValueError) as exc:
+        raise unknown from exc
+    if any(name not in _SELECT_FIELDS or conversion for name, _spec, conversion in fields):
+        raise unknown
+    if not fields:
+        raise ValueError(
+            f"tests.toml [{target}].select template {template!r} selects no Test: "
+            "it must contain the {index} or the {name} field"
+        )
+    return probe
+
+
 def _validate_select_template(target: str, template: Any) -> str:
     """Validate a tests.toml ``select`` runtime-arg template (decision 16).
 
@@ -282,13 +313,7 @@ def _validate_select_template(target: str, template: Any) -> str:
     """
     if not isinstance(template, str) or not template.strip():
         raise ValueError(f"tests.toml [{target}].select must be a non-empty string")
-    try:
-        probe = template.format(index=0, name="probe")
-    except (KeyError, IndexError, ValueError) as exc:
-        raise ValueError(
-            f"tests.toml [{target}].select template {template!r} uses an unknown "
-            "field; only {index} and {name} are supported"
-        ) from exc
+    probe = _render_select_probe(target, template)
     tokens = probe.split()
     if len(tokens) != 1 or not tokens[0].startswith(("+", "-")):
         raise ValueError(
@@ -296,6 +321,9 @@ def _validate_select_template(target: str, template: Any) -> str:
             f"plusarg ('+…') or a getopt argument ('-…' / '--…') with no embedded "
             f"whitespace, got {template!r}"
         )
+    problem = argument_token_problem(probe)
+    if problem:
+        raise ValueError(f"tests.toml [{target}].select template {template!r} {problem}")
     return template
 
 

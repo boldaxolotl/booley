@@ -34,6 +34,7 @@ from booley.config.tests_toml_rules import (
     TestVariantError,
     TestVariantTable,
     UnknownVariantError,
+    argument_token_problem,
     option_key,
     parse_test_variants,
 )
@@ -149,13 +150,31 @@ class TestRunLaunch:
 
     __test__ = False
 
-    #: ``select``, Test Variant arguments and seed arguments, as written
-    #: (each with its ``+`` or ``-`` prefix), in simulator order.
-    arguments: tuple[str, ...]
+    #: The rendered ``select`` argument; ``None`` when the process selects no
+    #: Test by argument (a Cocotb batch, the unnamed invocation).
+    select: str | None
+    #: The Test Variant's declared arguments, as written.
+    variant_arguments: tuple[str, ...]
+    #: The arguments that apply the seed; empty for cocotb and unseeded runs.
+    seed_arguments: tuple[str, ...]
     #: The Test Variant's environment, ``(name, value)`` pairs sorted by name.
     environment: tuple[tuple[str, str], ...]
     #: The seed of every Test Run in the process; ``None`` when unseeded.
     seed: int | None
+
+    @property
+    def booley_arguments(self) -> tuple[str, ...]:
+        """The arguments Booley renders itself: ``select`` and the seed's.
+
+        Only these may replace a Target plusarg that sets the same option.
+        """
+        return (*((self.select,) if self.select is not None else ()), *self.seed_arguments)
+
+    @property
+    def arguments(self) -> tuple[str, ...]:
+        """Every argument in simulator order: ``select``, Test Variant, seed."""
+        select = (self.select,) if self.select is not None else ()
+        return (*select, *self.variant_arguments, *self.seed_arguments)
 
 
 @dataclass(frozen=True)
@@ -175,6 +194,23 @@ class TargetTestPlan:
     mechanism: SeedMechanism
     #: The seed of a Test Run that names none; ``None`` on an unseeded Target.
     default_seed: int | None
+    #: Names of the plusarg parameters the resolved ``.core`` Target declares.
+    target_plusargs: tuple[str, ...] = ()
+
+    def owned_options(self) -> dict[str, str]:
+        """Options no Test Variant argument may set here, each with its owner."""
+        owned = {
+            option_key(self.select.format(index=0, name="probe")): "the select template sets it",
+            VERILATOR_SEED_OPTION: "Booley passes the Verilator seed option itself",
+        }
+        if self.mechanism.template is not None:
+            seed_key = option_key(self.mechanism.template.format(seed=DEFAULT_SEED))
+            owned[seed_key] = "the seed template sets it"
+        for name in self.target_plusargs:
+            owned[option_key(f"+{name}")] = (
+                "it overrides a plusarg the Target declares; the Target owns its parameter values"
+            )
+        return owned
 
     def variants_of(self, test: str) -> TestVariantTable | None:
         """The Variant table *test* declares, or ``None``."""
@@ -341,18 +377,28 @@ class TargetTestPlan:
         )
 
     def require_applicable(self, run: TestRun) -> None:
-        """Refuse a Test Run resolved elsewhere whose seed this Target cannot apply.
+        """Refuse a Test Run resolved elsewhere that this Target cannot apply as recorded.
 
         A Test Run can be carried to another checkout of the Target: a
         resumed campaign, or the baseline revision of a Cycle Count
         comparison. If the Target is unseeded there, the recorded seed would
-        be dropped silently and the record would be false. Raises
-        :class:`UnseededTargetError`.
+        be dropped silently; if it owns an option one of the run's arguments
+        sets, the run would launch with other inputs than it records. Raises
+        :class:`UnseededTargetError` or :class:`TestVariantError`.
         """
         if run.seed is not None and not self.mechanism.seeded:
             raise UnseededTargetError(
                 f"Test Run {run.name!r} has a seed, but {self.unseeded_reason()}"
             )
+        owned = self.owned_options()
+        for argument in run.args:
+            problem = argument_token_problem(argument)
+            owner = owned.get(option_key(argument))
+            if problem or owner:
+                raise TestVariantError(
+                    f"Test Run {run.name!r} of Target {self.target!r}: argument "
+                    f"{argument!r} " + (problem or f"is not allowed: {owner}")
+                )
 
     def launch(self, runs: Sequence[TestRun]) -> TestRunLaunch:
         """What one simulator process needs to run *runs*.
@@ -370,15 +416,14 @@ class TargetTestPlan:
                 "cannot share one simulator process"
             )
         first = runs[0]
-        arguments: tuple[str, ...] = ()
-        if len(runs) == 1:
-            select = self._select_argument(first)
-            arguments = (
-                *((select,) if select is not None else ()),
-                *first.args,
-                *self.mechanism.arguments(first.seed),
-            )
-        return TestRunLaunch(arguments=arguments, environment=first.env, seed=first.seed)
+        alone = len(runs) == 1
+        return TestRunLaunch(
+            select=self._select_argument(first) if alone else None,
+            variant_arguments=first.args if alone else (),
+            seed_arguments=self.mechanism.arguments(first.seed) if alone else (),
+            environment=first.env,
+            seed=first.seed,
+        )
 
     def _select_argument(self, run: TestRun) -> str | None:
         """The rendered ``select`` argument of a registered *run*; else ``None``."""
@@ -428,7 +473,7 @@ def _check_variants_against_target(
     where: str,
 ) -> None:
     """Refuse Variant arguments the resolved Target cannot take."""
-    owned = {f"+{name}" for name in target_plusargs}
+    owned = {option_key(f"+{name}") for name in target_plusargs}
     for table in tables:
         for variant in table.variants:
             spot = f"{where}.variants.{table.test}.{variant.name}"
@@ -478,6 +523,7 @@ def build_target_test_plan(
         variant_tables=tables,
         mechanism=mechanism,
         default_seed=None,
+        target_plusargs=tuple(target_plusargs),
     )
     if not mechanism.seeded:
         if declared_default is not None:
