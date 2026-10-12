@@ -25,10 +25,12 @@ Use it for human-steered or unattended work inside the Sandbox.
    Project directory: `BOOLEY_PROJECT_DIR` in the Sandbox, the same directory
    where entry checks `default.md`. Never read them from a Project copy or
    snapshot inside `work_dir`; a `default.md` present only there does not
-   apply. If `BOOLEY_PROJECT_DIR` is unset or points inside a worktree, set it
-   to the main checkout's Project directory for the session before reading
-   Goalsets or calling `goal_enter`. Initialization seeds `feature`, `bugfix`, `refactor`, and
-   `verification` create-only. The Project owns their prose and may add others.
+   apply. If `BOOLEY_PROJECT_DIR` is unset or points inside `work_dir`, stop
+   and ask the human to restart the session with it set to the main
+   checkout's Project directory; changing it mid-session does not change
+   what entry checks.
+   Initialization seeds `feature`, `bugfix`, `refactor`, and `verification`
+   create-only. The Project owns their prose and may add others.
    If `default.md` exists, include it unless the human explicitly skips it;
    record `default_skipped=true` and their reason as `skip_reason`. With no
    default file, leave `default_skipped=false`.

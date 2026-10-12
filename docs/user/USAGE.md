@@ -280,22 +280,21 @@ Goalsets are Project-owned Markdown files under `.booley_project/goalsets/`.
 express your project's rules. The agent translates them into concrete Goals;
 Booley validates the arguments, not the prose. Each Goal records its origin.
 
-Goalsets, including `default.md`, come from the **main checkout's Project
-directory**. In the Sandbox that is `BOOLEY_PROJECT_DIR`, even when the Project
-data lives outside the main checkout. A copy inside the Goal worktree (a
-paired Project checkout or a snapshot) is not used: a `default.md` that exists
-only there does not apply. `work_dir` selects the code worktree, not the
-Goalsets.
-
-Without `BOOLEY_PROJECT_DIR`, Booley may discover a worktree's copy instead.
-Set it to the main checkout's Project directory for the session before
-entering Goal Mode; entry refuses a Project directory inside the Goal
-worktree.
-
 An optional `default.md` applies to every entry. Skipping it requires your
 explicit instruction and reason. Setup can create this file; initialization
 does not seed it. You can also add Goals for this particular change. Duplicate
 Goals merge to the stricter condition, and entry reports every merge.
+
+Goalsets, including `default.md`, come from the **main checkout's Project
+directory**. In the Sandbox that is `BOOLEY_PROJECT_DIR`, even when the
+directory lives outside the main checkout. A Project copy or snapshot inside
+the Goal worktree is not used: a `default.md` that exists only there does not
+apply. `work_dir` selects the worktree, not the Goalsets.
+
+A session started inside a worktree without `BOOLEY_PROJECT_DIR` can resolve
+that worktree's copy instead. Start the session with `BOOLEY_PROJECT_DIR` set
+to the main checkout's Project directory; entry refuses a Project directory
+inside the Goal worktree.
 
 A Goal names a Flow or review family and the applicable Target, tests, and
 thresholds. Every Goal is mandatory. For example, a Goalset excerpt can ask for:

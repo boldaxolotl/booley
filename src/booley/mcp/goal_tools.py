@@ -62,7 +62,7 @@ _ENTER_DESCRIPTION = (
     "and return the rules for working in Goal Mode. Translate the chosen Goalsets from "
     "goalsets/ in the main checkout's Project directory (BOOLEY_PROJECT_DIR in the Sandbox) "
     "into concrete Goals yourself; a Project copy or snapshot inside work_dir is never the "
-    "source, for named Goalsets or default.md. Every per-Target Goal names "
+    "source. Every per-Target Goal names "
     "its Target. If the Project has a default Goalset, apply it (list 'default' in "
     "goalsets_used) unless the human explicitly skips it, with their reason."
 )

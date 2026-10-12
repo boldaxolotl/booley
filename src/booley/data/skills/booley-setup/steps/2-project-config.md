@@ -799,7 +799,7 @@ approved config is on disk.
 
 Goal entry reads Goalsets from the main checkout's Project directory
 (`BOOLEY_PROJECT_DIR` in the Sandbox). Edit them there; an edit made only in a
-worktree's paired copy or snapshot is not used.
+Project copy or snapshot inside a worktree is not used.
 
 Read the seeded `goalsets/{feature,bugfix,refactor,verification}.md` files and
 adapt their Goals to the Project's supported Targets and verification intent.
