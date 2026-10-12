@@ -344,11 +344,11 @@ def _build_commit_display_lines(commit: dict[str, Any]) -> list[str]:
 
 
 class TbCoderSpecialist(Specialist):
-    """Testbench/verification code-modifying agent -- applies changes from instruction file and commits."""
+    """Testbench/verification code-modifying Specialist -- applies changes from instruction file and commits."""
 
     name: str = "tb_coder"
     description: str = (
-        "Testbench/verification code-modifying agent -- applies changes "
+        "Testbench/verification code-modifying Specialist -- applies changes "
         "from instruction file and commits"
     )
     code_modifying: bool = True
@@ -416,7 +416,7 @@ class TbCoderSpecialist(Specialist):
         parser.add_argument(
             "--hide-files",
             default="",
-            help="Comma-separated file paths to hide from the agent",
+            help="Comma-separated file paths to hide from the Specialist",
         )
         parser.add_argument(
             "--skip-plan",
@@ -424,7 +424,7 @@ class TbCoderSpecialist(Specialist):
             help=(
                 "Skip the in-context verification-planning phase and treat the "
                 "instruction file as a complete, ready-to-implement plan. Default "
-                "(planning on): the agent first writes a verification plan, then "
+                "(planning on): the Specialist first writes a verification plan, then "
                 "implements the testbench from it in the same isolated context."
             ),
         )
@@ -585,7 +585,7 @@ class TbCoderSpecialist(Specialist):
         """Interpret agent output: check for escalation, commit changes from Python."""
         # Check for escalation
         if "[ESCALATION]" in (output or ""):
-            logger.warning("Agent reported escalation")
+            logger.warning("TB Coder Specialist reported escalation")
             return McpToolResult(
                 exit_code=EXIT_FAILURE,
                 report_text="BLOCKED",
@@ -597,7 +597,7 @@ class TbCoderSpecialist(Specialist):
         if error_result is not None:
             return error_result
         if not commit:
-            logger.warning("No changes to commit after agent run")
+            logger.warning("No changes to commit after Specialist run")
             return McpToolResult(
                 exit_code=EXIT_FAILURE,
                 report_text="No commit produced",

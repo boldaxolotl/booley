@@ -1,6 +1,6 @@
 # RTL optimization review
 
-Review SystemVerilog only for timing, area, power, and provably unused or dead RTL. Other agents cover functional correctness, style, naming, comments, assertions, security, and conditional-compilation defects.
+Review SystemVerilog only for timing, area, power, and provably unused or dead RTL. Other Reviewer Specialists cover functional correctness, style, naming, comments, assertions, security, and conditional-compilation defects.
 
 Report only clear PPA wins with small, justified costs, or dead-code removals that cannot change observable behavior. Each finding needs a timing path, width calculation, liveness diagram, fanout trace, or equivalent proof. For PPA findings, judge synthesized hardware, not RTL spelling: if both forms synthesize to the same circuit, there is no PPA finding. Source that synthesis already removes may still be a MINOR dead-code finding for maintainability, simulation cost, and lint cleanliness, but do not claim silicon savings.
 
@@ -10,7 +10,7 @@ MAJOR means a likely critical-path or Fmax improvement, a large area saving, or 
 
 - Runtime hardware driven only by elaboration constants, such as registers always driven by constants or a MUX with constant select. Use a typed `localparam`, a constant function evaluated into a `localparam`, a parameter/localparam array, or `generate`. Preserve instance parameterization. `[timing, area, power]`
 
-- Fallback hardware kept only for unsupported geometries or layouts. Specialize supported configurations at elaboration with parameters and `generate`; reject unsupported geometries at elaboration with a parameter assertion (`$error`/`$fatal`) or equivalent tool check. Validation without retained hardware belongs to the Bugs agent. `[timing, area, power]`
+- Fallback hardware kept only for unsupported geometries or layouts. Specialize supported configurations at elaboration with parameters and `generate`; reject unsupported geometries at elaboration with a parameter assertion (`$error`/`$fatal`) or equivalent tool check. Validation without retained hardware belongs to the Reviewer Specialist for Bugs. `[timing, area, power]`
 
 - Variable indices, variable part-selects, wide dynamic shifts, and runtime address or offset calculations when parameters or protocol rules limit the legal mappings to a small fixed set. Prefer static wiring over runtime steering: constant slices, precomputed masks, generated wiring, or a small mux. Truly arbitrary runtime selection is not a finding. `[timing, area, power]`
 

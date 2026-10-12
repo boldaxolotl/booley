@@ -13,7 +13,7 @@
       },
       "instruction": {
         "default": "",
-        "description": "Freeform instruction for the agent (e.g. distilled plan)",
+        "description": "Freeform instruction for the Specialist (e.g. distilled plan)",
         "type": "string"
       },
       "work_dir": {
@@ -40,7 +40,7 @@
       },
       "dry_run": {
         "default": false,
-        "description": "Validate inputs and preview planned work without invoking agents or EDA tools",
+        "description": "Validate inputs and preview planned work without invoking Specialists or EDA tools",
         "type": "boolean"
       },
       "min_detected": {
@@ -49,7 +49,7 @@
       },
       "regen_lock": {
         "default": false,
-        "description": "Wipe the mutation lock dir and re-run the creator agent from scratch.",
+        "description": "Wipe the mutation lock dir and re-run the Mutation Tester Specialist from scratch.",
         "type": "boolean"
       },
       "scope": {
@@ -96,7 +96,7 @@
       },
       "dry_run": {
         "default": false,
-        "description": "Validate inputs and preview planned work without invoking agents or EDA tools",
+        "description": "Validate inputs and preview planned work without invoking Specialists or EDA tools",
         "type": "boolean"
       },
       "focus": {

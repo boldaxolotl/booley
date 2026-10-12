@@ -268,6 +268,23 @@ def test_doctor_help_names_the_specialist_provider_probe() -> None:
     assert "Developer Agent authorization" not in help_text
 
 
+def test_specialist_help_and_review_guides_name_the_delegated_actor() -> None:
+    texts = {
+        command: text
+        for command, text in cli_help().items()
+        if command.startswith("booley specialist ")
+    }
+    texts.update(
+        {
+            str(path.relative_to(ROOT)): path.read_text(encoding="utf-8")
+            for path in (ROOT / "src/booley/data/refs/code_review").rglob("*.md")
+        }
+    )
+    assert texts
+    for name, text in texts.items():
+        assert not re.search(r"(?<!Developer )\bagents?\b", text, re.IGNORECASE), name
+
+
 @pytest.mark.parametrize(
     "phrase",
     [

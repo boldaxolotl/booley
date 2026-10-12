@@ -339,11 +339,11 @@ the design sources they describe.
 
 | File | Information | Affects |
 |------|-------------|---------|
-| `booley.toml` | Project, Flow, Developer Agent, Specialist, sandbox, and job policy | All Flows and Specialists |
+| `booley.toml` | Project, Flow, provider, Sandbox, and Job policy | All Flows and Specialists |
 | `tests.toml` | Per-Target tests, selectors, skips, and environment | `sim`, `mutation_tester` |
 | `goalsets/*.md` | Project-owned Goal bundles and optional default | `/booley-goal` |
 | `doctor-waivers.toml` | Reviewed warning waivers and expiry | No endpoint; `doctor` only |
-| `AGENTS.md` | Project instructions, ownership, and gotchas | Developer Agent sessions and Specialists |
+| `AGENTS.md` | Project instructions, ownership, and gotchas | Developer Agent and Specialists |
 | `rtl_style_guide.md` | Project RTL style overrides | `reviewer` RTL code-style focus |
 | `tb_style_guide.md` | Project testbench style overrides | `reviewer` TB quality focus |
 | `docker/Dockerfile` | Project image build steps and dependencies | Flows/Specialists in the Sandbox |
