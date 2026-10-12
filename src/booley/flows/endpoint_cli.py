@@ -83,7 +83,7 @@ def add_common_args(
         "--report-dir",
         type=_report_dir_arg,
         default=None,
-        help="Directory for endpoint report output",
+        help="Directory to write this run's reports to",
     )
     # Kept optional at argparse so each endpoint's validation can produce
     # specific guidance and discovery can represent no selection.
@@ -106,22 +106,25 @@ def add_common_args(
     )
 
 
+def human_endpoint_parser(endpoint) -> argparse.ArgumentParser:
+    """Build the parser a person sees: human controls, full command name, CLI wording."""
+    from booley.flows.cli_help import present_command
+    from booley.flows.cli_selection import human_parser
+    from booley.specialists.specialist import Specialist
+
+    projected = human_parser(endpoint._parser, durations=isinstance(endpoint, Specialist))
+    return present_command(projected, endpoint)
+
+
 def parse_args(endpoint, argv: list[str] | None = None) -> argparse.Namespace:
     """Parse CLI arguments, filling ticket context from env vars."""
     endpoint._raw_argv = argv if argv is not None else sys.argv[1:]
-    from booley.flows.cli_selection import (
-        human_parser,
-        normalize_endpoint_args,
-        transport_invocation,
-    )
-    from booley.specialists.specialist import Specialist
+    from booley.flows.cli_selection import normalize_endpoint_args, transport_invocation
 
-    parser = (
-        endpoint._parser
-        if transport_invocation()
-        else human_parser(endpoint._parser, durations=isinstance(endpoint, Specialist))
-    )
-    if not transport_invocation():
+    if transport_invocation():
+        parser = endpoint._parser
+    else:
+        parser = human_endpoint_parser(endpoint)
         _reject_unsupported_selector(parser, argv)
     endpoint._args = parser.parse_args(argv)
     normalize_endpoint_args(endpoint._args)
