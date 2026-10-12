@@ -81,23 +81,8 @@ class SimArguments(BuiltinArguments):
     )
 
     @staticmethod
-    def add_args(parser: Any) -> None:
-        # tb_top left the surface (ADR 0021): a sim Target's `toplevel` IS its
-        # TB top, so it comes from the resolved Target (tb_top_for_target), not
-        # a per-call arg.
-        parser.add_argument(
-            "--coverage",
-            "--cov",
-            action="store_true",
-            help="Collect a native Verilator Coverage Campaign for each selected Target",
-        )
-        parser.add_argument(
-            "--no-waivers",
-            action="store_true",
-            help="With --coverage, report raw coverage without applying approved waivers; "
-            "with a Coverage Criterion also requires --diagnostic",
-        )
-        SimArguments._add_elaboration_args(parser)
+    def _add_test_run_args(parser: Any) -> None:
+        """What to run: Test Run selectors, the seed, and a selector file."""
         parser.add_argument(
             "--test",
             action="append",
@@ -121,6 +106,26 @@ class SimArguments(BuiltinArguments):
             default=None,
             help="Read exact test names from PATH, one per line; blanks and # comments ignored",
         )
+
+    @staticmethod
+    def add_args(parser: Any) -> None:
+        # tb_top left the surface (ADR 0021): a sim Target's `toplevel` IS its
+        # TB top, so it comes from the resolved Target (tb_top_for_target), not
+        # a per-call arg.
+        parser.add_argument(
+            "--coverage",
+            "--cov",
+            action="store_true",
+            help="Collect a native Verilator Coverage Campaign for each selected Target",
+        )
+        parser.add_argument(
+            "--no-waivers",
+            action="store_true",
+            help="With --coverage, report raw coverage without applying approved waivers; "
+            "with a Coverage Criterion also requires --diagnostic",
+        )
+        SimArguments._add_elaboration_args(parser)
+        SimArguments._add_test_run_args(parser)
         parser.add_argument(
             "--resume-from",
             type=Path,

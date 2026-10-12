@@ -1099,12 +1099,7 @@ class SimulationExecution:
             )
         except OSError as exc:
             raise SimulationBuildSlotError(f"cannot open retained generation log: {exc}") from exc
-        return replace(
-            reused,
-            cache_key=key,
-            reused=True,
-            cache_decision=decision,
-        )
+        return replace(reused, cache_key=key, reused=True, cache_decision=decision)
 
     def _run_authorized_group(
         self,
@@ -1286,9 +1281,7 @@ class SimulationExecution:
         """
         started = time.monotonic()
         observe_stage(handle.selector, "preparing", tests=test_names)
-        prepared, trace_mode = (
-            prepared_override if prepared_override is not None else self._prepare_build(handle)
-        )
+        prepared, trace_mode = prepared_override or self._prepare_build(handle)
         adapter = "cocotb" if prepared.resolved.cocotb_module else prepared.eda_tool
         configured_run_cwd = _configured_run_cwd(handle.project_root)
         identity = _adapter_identity(
@@ -1309,8 +1302,6 @@ class SimulationExecution:
             test_runs=test_runs,
         )
         _adapter_invocation(work)  # fail unsupported adapters before any build starts
-        pre_sim_commands = tuple(resolve_pre_sim_commands(handle.project_root))
-        simulator_environment = tuple(simulation_target_environment(handle).items())
         observe_stage(
             handle.selector,
             "preparing",
@@ -1328,8 +1319,8 @@ class SimulationExecution:
             work=work,
             wrapper_timeout_s=work.timeout_s
             + (_TRACE_CLEANUP_MARGIN_S if self._options.trace else 0),
-            pre_sim_commands=pre_sim_commands,
-            simulator_environment=simulator_environment,
+            pre_sim_commands=tuple(resolve_pre_sim_commands(handle.project_root)),
+            simulator_environment=tuple(simulation_target_environment(handle).items()),
             cycle_sentinels=tuple(resolve_cycle_sentinels(handle.project_root)),
             workload_inputs=(),
             configured_run_cwd=configured_run_cwd,
@@ -1789,6 +1780,49 @@ def _simulation_run_cwd(
         return str(configured_run_cwd)
 
 
+def _process_launch_fields(
+    handle: TargetHandle,
+    adapter: str,
+    parameters: Mapping[str, Any],
+    test_names: tuple[str, ...],
+    test_runs: tuple[TestRun, ...] | None,
+    plusargs_suffix: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    """The fields of one simulator process that its Test Runs decide.
+
+    Run-time inputs only (ADR 0072): the plusargs, the Test Variant's
+    environment, the Cocotb seed, the Test Runs and their evidence directory.
+    Raises ``ValueError`` for a ``tests.toml`` declaration this Target cannot
+    apply.
+    """
+    cocotb = adapter == "cocotb"
+    plan = target_test_plan(handle, adapter, parameters)
+    runs = group_test_runs(plan, test_names, test_runs)
+    launch = plan.launch(runs)
+    return {
+        "adapter": adapter,
+        "plusargs": (*simulation_plusargs(launch, parameters), *plusargs_suffix),
+        "environment": launch.environment,
+        "cocotb_seed": launch.seed if cocotb else None,
+        "test_runs": runs,
+        "artifact_group": _artifact_group(plan, runs, cocotb),
+        "tests": test_names,
+    }
+
+
+def _project_run_fields(root: Path) -> dict[str, Any]:
+    """The fields of a simulator process that the Project's configuration decides."""
+    passes, fails = resolve_sim_sentinels(root)
+    return {
+        "max_rundir_bytes": resolve_max_rundir_bytes(root),
+        "trace_args": tuple(resolve_trace_args(root)),
+        "trace_files": tuple(resolve_trace_files(root)),
+        "pass_sentinels": tuple(passes),
+        "fail_sentinels": tuple(fails),
+        "sim_time_grace_s": resolve_sim_time_grace_s(root),
+    }
+
+
 def prepare_simulation_work(
     handle: TargetHandle,
     prepared: PreparedSimulationBuild,
@@ -1803,27 +1837,21 @@ def prepare_simulation_work(
 ) -> PreparedSimulationWork:
     """Shape one prepared build through the shared Simulation adapter contract.
 
-    *test_runs* are the concrete Test Runs of this process, aligned with the
-    selected Tests; without them each Test runs its default Variant at the
-    Default Seed.
+    *test_runs* are this process's concrete Test Runs, aligned with the selected
+    Tests; without them each Test runs its default Variant at the Default Seed.
     """
     root = handle.project_root
-    rel = edam_layer.relpath_for_make(prepared.build_root, root)
-    cocotb = bool(prepared.resolved.cocotb_module)
+    adapter = "cocotb" if prepared.resolved.cocotb_module else prepared.eda_tool
+    parameters = prepared.resolved.parameters
     try:
-        plan = target_test_plan(
-            handle, "cocotb" if cocotb else prepared.eda_tool, prepared.resolved.parameters
+        launch_fields = _process_launch_fields(
+            handle, adapter, parameters, identity.selected_tests, test_runs, plusargs_suffix
         )
-        runs = group_test_runs(plan, identity.selected_tests, test_runs)
-        launch = plan.launch(runs)
-        plusargs = simulation_plusargs(launch, prepared.resolved.parameters)
     except ValueError as exc:
         # A tests.toml declaration this Target cannot apply: nothing may launch.
         raise SimulationBuildPreparationError(str(exc)) from exc
-    passes, fails = resolve_sim_sentinels(root)
     return PreparedSimulationWork(
-        adapter="cocotb" if cocotb else prepared.eda_tool,
-        build_dir=rel,
+        build_dir=edam_layer.relpath_for_make(prepared.build_root, root),
         run_cwd=_simulation_run_cwd(
             root,
             prepared.work_root,
@@ -1832,28 +1860,18 @@ def prepare_simulation_work(
         ),
         timeout_s=max(1, (options.timeout_ms or resolve_sim_timeout_ms(root)) // 1000),
         eda_tool=prepared.eda_tool,
-        max_rundir_bytes=resolve_max_rundir_bytes(root),
-        plusargs=(*plusargs, *plusargs_suffix),
-        environment=launch.environment,
-        cocotb_seed=launch.seed if cocotb else None,
-        test_runs=runs,
-        artifact_group=_artifact_group(plan, runs, cocotb),
         trace=trace,
         trace_mode=trace_mode,
         trace_scope=prepared.toplevel,
-        trace_args=tuple(resolve_trace_args(root)),
-        trace_files=tuple(resolve_trace_files(root)),
         runtime_inputs=declared_runtime_inputs(prepared.resolved),
-        pass_sentinels=tuple(passes),
-        fail_sentinels=tuple(fails),
         top=prepared.toplevel,
         cocotb_module=prepared.resolved.cocotb_module or "",
-        tests=identity.selected_tests,
         result_verbosity=options.result_verbosity,
-        sim_time_grace_s=resolve_sim_time_grace_s(root),
         adapter_result_path=str(identity.result_path),
         attempt_token=identity.attempt_token,
         target_identity=identity.target_identity,
+        **launch_fields,
+        **_project_run_fields(root),
     )
 
 
@@ -1875,34 +1893,25 @@ def _preview_work(
             "declare either `flow: sim` with `flow_options.tool`, or legacy "
             "`default_tool`"
         ) from exc
-    passes, fails = resolve_sim_sentinels(root)
-    plan = target_test_plan(handle, "cocotb" if cocotb else eda_tool, inspection.parameters)
-    runs = group_test_runs(plan, test_names, test_runs)
-    launch = plan.launch(runs)
     return PreparedSimulationWork(
-        adapter="cocotb" if cocotb else eda_tool,
         build_dir=rel,
         run_cwd=_simulation_run_cwd(root, root / rel),
         timeout_s=max(1, execution._effective_timeout_ms(handle) // 1000),
         eda_tool=eda_tool,
-        max_rundir_bytes=resolve_max_rundir_bytes(root),
-        plusargs=tuple(simulation_plusargs(launch, inspection.parameters)),
-        environment=launch.environment,
-        cocotb_seed=launch.seed if cocotb else None,
-        test_runs=runs,
-        artifact_group=_artifact_group(plan, runs, cocotb),
         trace=execution._options.trace,
         trace_scope=inspection.toplevel,
-        trace_args=tuple(resolve_trace_args(root)),
-        trace_files=tuple(resolve_trace_files(root)),
         runtime_inputs=preview_runtime_inputs(getattr(inspection, "inputs", ())),
-        pass_sentinels=tuple(passes),
-        fail_sentinels=tuple(fails),
         top=inspection.toplevel,
         cocotb_module=str(inspection.flow_options.get("cocotb_module") or ""),
-        tests=test_names,
         result_verbosity=execution._options.result_verbosity,
-        sim_time_grace_s=resolve_sim_time_grace_s(root),
+        **_process_launch_fields(
+            handle,
+            "cocotb" if cocotb else eda_tool,
+            inspection.parameters,
+            test_names,
+            test_runs,
+        ),
+        **_project_run_fields(root),
     )
 
 

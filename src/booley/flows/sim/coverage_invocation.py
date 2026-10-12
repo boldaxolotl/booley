@@ -157,6 +157,23 @@ def _suite(
     return tuple(sorted(declared)), tuple(sorted(selected)), key, criterion
 
 
+def _collection_recipe(
+    handle: TargetHandle, inspection, closure, trace: bool
+) -> dict[str, object]:
+    """What decides a Target's coverage collection, for its recipe fingerprint."""
+    from .verilator_declarations import DECLARATION_CONTRACT, DECLARATION_OPTIONS
+
+    return {
+        "declaration_contract": DECLARATION_CONTRACT,
+        "declaration_options": DECLARATION_OPTIONS,
+        "identity": handle.identity,
+        "options": inspection.flow_options,
+        "parameters": inspection.parameters,
+        "sources": closure,
+        "trace": trace,
+    }
+
+
 def _prepare_target(
     handle: TargetHandle,
     catalog: TargetCatalog,
@@ -189,17 +206,7 @@ def _prepare_target(
     if finding is not None:
         return None, finding
     closure = coverage_source_closure(inspection)
-    from .verilator_declarations import DECLARATION_CONTRACT, DECLARATION_OPTIONS
-
-    recipe = {
-        "declaration_contract": DECLARATION_CONTRACT,
-        "declaration_options": DECLARATION_OPTIONS,
-        "identity": handle.identity,
-        "options": inspection.flow_options,
-        "parameters": inspection.parameters,
-        "sources": closure,
-        "trace": request.trace,
-    }
+    recipe = _collection_recipe(handle, inspection, closure, request.trace)
     plan = CoverageTargetPlan(
         handle,
         declared,

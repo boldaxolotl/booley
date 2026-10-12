@@ -639,6 +639,17 @@ def _cycle_display_line(item: Mapping[str, object], budget: int) -> str | None:
     return f"  {name}{suffix}"
 
 
+def _observation_reasons(outcome: CampaignOutcome) -> list[str]:
+    """Each distinct reason the observations of *outcome* give, in order."""
+    reasons: list[str] = []
+    for observation in outcome.observations:
+        detail = observation.get("detail")
+        reason = detail.get("reason") if isinstance(detail, Mapping) else None
+        if isinstance(reason, str) and reason and reason not in reasons:
+            reasons.append(reason)
+    return reasons
+
+
 def _campaign_base_report_lines(
     outcomes: Sequence[CampaignOutcome],
     coverage_campaigns: Mapping[str, CoverageCampaign] | None = None,
@@ -670,12 +681,7 @@ def _campaign_base_report_lines(
                 f"{selector}: simulation {outcome.aggregate_grade.upper()} · {suffix} "
                 f"(Simulation Campaign {campaign_id})"
             )
-        reasons = []
-        for observation in outcome.observations:
-            detail = observation.get("detail")
-            reason = detail.get("reason") if isinstance(detail, Mapping) else None
-            if isinstance(reason, str) and reason and reason not in reasons:
-                reasons.append(reason)
+        reasons = _observation_reasons(outcome)
         build_detail = _campaign_build_infrastructure_detail([outcome])
         if build_detail and reasons:
             line += f": {reasons[0].splitlines()[0]}"
@@ -1149,6 +1155,42 @@ def _link_baseline_prerequisites(
     for link in links:
         assert link.run is not None, "an accepted baseline link has a Test Run"
         prerequisites[link.candidate].append(by_run[link.run.name])
+
+
+def _manifest_trace(manifest: SimulationCampaignManifest) -> bool:
+    """Whether the campaign *manifest* froze a traced workload."""
+    return cast(bool, cast(Mapping[str, object], manifest.document["workload"])["trace"])
+
+
+def _group_disclosures(
+    execution: SimulationExecution,
+    handle: TargetHandle,
+    groups: Sequence[tuple[str, ...]],
+    run_groups: Sequence[tuple[TestRun, ...]],
+) -> tuple[dict[str, object], ...]:
+    """Disclose the build of each group's Test Runs, not of their Tests' defaults."""
+    return tuple(
+        execution.plan_campaign_group(handle, group, runs)
+        for group, runs in zip(groups, run_groups, strict=True)
+    )
+
+
+def _direct_coverage_pre_sim_lines(target: str, tests: object) -> list[str]:
+    """The Pre-Sim Commands line of each directly collected run that has one.
+
+    Several Test Runs of one Test are told apart by their Test Run names.
+    """
+    items = cast("list[object]", tests) if isinstance(tests, list) else []
+    rows = [cast("Mapping[str, object]", test) for test in items if isinstance(test, Mapping)]
+    lines: list[str] = []
+    for test in rows:
+        pre_sim = test.get("pre_sim")
+        if not isinstance(pre_sim, Mapping):
+            continue
+        several = sum(other.get("name") == test.get("name") for other in rows) > 1
+        name = (several and test.get("test_run")) or test.get("name")
+        lines.append(_pre_sim_report_line(target, name, cast("Mapping[str, object]", pre_sim)))
+    return lines
 
 
 def _evidence_guard_notes(guard: EvidenceGuard) -> list[str]:
@@ -3191,6 +3233,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         constraints = normalize_plan_paths(preview.constraints, self.args.work_dir)
         environment = self._target_sim_env(target)
         redacted = self._redact_plan_environment(target, command)
+        run_log = normalize_plan_path(build_root / RUN_LOG_NAME, self.args.work_dir)
         recipe = {
             "build_timeout_ms": self._effective_build_timeout_ms(),
             "environment_fingerprint": plan_value_fingerprint(environment),
@@ -3220,9 +3263,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             parameters=preview.parameters,
             recipe=recipe,
             commands=(CommandPlan(normalize_plan_argv(redacted, self.args.work_dir), ".", True),),
-            expected_artifacts=(
-                normalize_plan_path(build_root / RUN_LOG_NAME, self.args.work_dir),
-            ),
+            expected_artifacts=(run_log,),
         )
 
     def _unit_scope(
@@ -3719,12 +3760,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         if is_coverage:
             preview = replace(preview, groups=(names,), run_groups=(runs,))
         disclosures = (
-            ()
-            if is_coverage
-            else tuple(
-                execution.plan_campaign_group(handle, group, group_runs)
-                for group, group_runs in zip(groups, run_groups, strict=True)
-            )
+            () if is_coverage else _group_disclosures(execution, handle, groups, run_groups)
         )
         suite = cast(Mapping[str, object], manifest.document["required_suite"])
         target = cast(Mapping[str, str], manifest.document["target"])
@@ -3746,10 +3782,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 revision=revision,
                 invocation_id=invocation_id,
                 execution_id="",
-                trace=cast(
-                    bool,
-                    cast(Mapping[str, object], manifest.document["workload"])["trace"],
-                ),
+                trace=_manifest_trace(manifest),
                 kind=kind,
                 planning_disclosures=disclosures if kind == "cocotb_batch" else (),
                 required_suite_catalog_backed=not cast(bool, suite["default_invocation"]),
@@ -4344,28 +4377,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                     _effective_default_seed(default_seeds, outcome.target),
                 )
             )
-            tests = detail.get("tests")
-            for test in tests if isinstance(tests, list) else ():
-                if not isinstance(test, Mapping):
-                    continue
-                pre_sim = test.get("pre_sim")
-                if not isinstance(pre_sim, Mapping):
-                    continue
-                # Several Test Runs of one Test are told apart by their names.
-                several = (
-                    sum(
-                        isinstance(other, Mapping) and other.get("name") == test.get("name")
-                        for other in cast(list[object], tests)
-                    )
-                    > 1
-                )
-                lines.append(
-                    _pre_sim_report_line(
-                        outcome.target,
-                        (several and test.get("test_run")) or test.get("name"),
-                        cast(Mapping[str, object], pre_sim),
-                    )
-                )
+            lines.extend(_direct_coverage_pre_sim_lines(outcome.target, detail.get("tests")))
         return EndpointOutcome(
             exit_code=max((item.exit_code for item in outcomes), default=2),
             detail={
@@ -5142,11 +5154,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         )
         execution = self._simulation_execution()
         preview = execution.preview(handle, selection)
-        # Disclose the build of the Test Runs that launch, not of their Tests' defaults.
-        disclosures = tuple(
-            execution.plan_campaign_group(handle, group, runs)
-            for group, runs in zip(preview.groups, preview.run_groups, strict=True)
-        )
+        disclosures = _group_disclosures(execution, handle, preview.groups, preview.run_groups)
         suite = resolve_target_test_suite(
             target,
             test_names=test_names_map,
@@ -5204,11 +5212,11 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         threshold_missed = any(
             campaign.evaluation["status"] == "fail" for campaign in coverage_campaigns.values()
         )
-        report_path = self._report_destination()
-        default_seeds = self._test_runs.default_seeds
-        lines = _campaign_base_report_lines(
-            outcomes, coverage_campaigns, report_path=report_path, default_seeds=default_seeds
-        )
+        report: dict[str, Any] = {
+            "report_path": self._report_destination(),
+            "default_seeds": self._test_runs.default_seeds,
+        }
+        lines = _campaign_base_report_lines(outcomes, coverage_campaigns, **report)
         invocation = self.context._reserved_invocation_dir
         campaigns = _campaign_structured_details(outcomes, invocation)
         coverage_targets = _coverage_compatibility_targets(
@@ -5233,20 +5241,11 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         ):
             budget_lines = _campaign_published_hook_lines(outcomes, invocation, frozenset(keys))
         lines = _campaign_report_lines(
-            outcomes,
-            coverage_campaigns,
-            budget_lines,
-            blocks=lines,
-            report_path=report_path,
-            default_seeds=default_seeds,
+            outcomes, coverage_campaigns, budget_lines, blocks=lines, **report
         )
         lines.extend(hook_lines)
         if coverage_targets:
-            detail.update(
-                coverage=True,
-                targets=coverage_targets,
-                pending_targets=[],
-            )
+            detail.update(coverage=True, targets=coverage_targets, pending_targets=[])
         return EndpointOutcome(
             exit_code=exit_code,
             criterion_met=exit_code == EXIT_SUCCESS and not threshold_missed,

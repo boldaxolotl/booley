@@ -384,9 +384,8 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
         inputs = self._group_inputs(request)
         handle, names, options = inputs.handle, inputs.names, inputs.options
         execution, workload, access = inputs.execution, inputs.workload, inputs.access
-        with execution.ordinary_group(
-            handle, names, _work_item_test_runs(request.work_item)
-        ) as group:
+        runs = _work_item_test_runs(request.work_item)
+        with execution.ordinary_group(handle, names, runs) as group:
             prepared = self._prepare_bundle_artifacts(
                 request,
                 build_directory,
@@ -677,8 +676,7 @@ def _immutable_hook_failure(
 ) -> SimulationResult | None:
     if access != "immutable":
         return None
-    compile_surface = group.compile_surface
-    surface = project_compile_surface(compile_surface)
+    surface = project_compile_surface(group.compile_surface)
     pre_sim = _run_hook(
         handle,
         group.build_root,
@@ -691,7 +689,7 @@ def _immutable_hook_failure(
     )
     if pre_sim is not None:
         publish_pre_sim_firing(request, pre_sim, checkpoint=checkpoint)
-    if project_compile_surface(compile_surface) != surface:
+    if project_compile_surface(group.compile_surface) != surface:
         raise SimulationCampaignIntegrityError(
             "Project compile inputs changed during immutable Pre-Sim Commands"
         )
@@ -1532,6 +1530,24 @@ def _create_snapshot(
     )
 
 
+def _named_observations(
+    work_item: Mapping[str, object], observations: list[dict[str, object]]
+) -> tuple[str, list[dict[str, object]]]:
+    """The result schema and the observations, each naming the Test Run it observed.
+
+    A work item of a manifest that records no Test Runs keeps the earlier
+    result schema and its observations as they are.
+    """
+    bound = observation_test_runs(work_item, observations)
+    if bound is None:
+        return RESULT_V2_SCHEMA, observations
+    named = [
+        {**observation, "test_run": name}
+        for observation, (name, _fingerprint) in zip(observations, bound, strict=True)
+    ]
+    return RESULT_SCHEMA, named
+
+
 def _result(
     request: WorkExecutionRequest,
     build_directory: Path,
@@ -1546,14 +1562,9 @@ def _result(
     runtime_inputs: list[dict[str, object]] | None = None,
     diagnostics: tuple[str, ...] = (),
 ) -> SimulationResult:
-    bound = observation_test_runs(request.work_item, observations)
-    if bound is not None:
-        observations = [
-            {**observation, "test_run": name}
-            for observation, (name, _fingerprint) in zip(observations, bound, strict=True)
-        ]
+    schema, observations = _named_observations(request.work_item, observations)
     document = {
-        "$schema": RESULT_SCHEMA if bound is not None else RESULT_V2_SCHEMA,
+        "$schema": schema,
         **_common(request),
         "attempt_id": request.attempt_id,
         "attempt_ordinal": request.attempt_ordinal,

@@ -2039,16 +2039,27 @@ replacement must differ, and every proposal must remain a single source edit.
             raise UnsupportedSimTargetError(f"mutation_tester: {exc}") from exc
 
     def _cocotb_suite_batches(
-        self, target: str, work_dir: Path, tests: tuple[str, ...]
+        self, target: str, work_dir: Path, campaign: TargetCampaign
     ) -> tuple[tuple[str, ...], ...]:
-        """The Cocotb processes that run *tests*, as the Simulation Flow batches them.
+        """The Cocotb processes that run *campaign*'s suite, as the Simulation Flow batches it.
 
         Default Test Variants that differ in environment never share a
         process, so such a suite takes several.
         """
+        tests = tuple(test for test in campaign.suite.tests if test is not None)
         plan, _parameters = self._default_test_plan(target, work_dir, "cocotb")
         batches = batch_test_runs(plan.default_runs_for(tests), one_process_per_run=False)
         return tuple(tuple(run.test for run in batch if run.test is not None) for batch in batches)
+
+    def _classic_eda_tool(self, target: str, work_dir: Path, build_path: Path) -> str:
+        """The simulator of a classic (non-Cocotb) Target the mutation loop can drive."""
+        eda_tool = self.target_eda_tool(target, work_dir, build_path)
+        if eda_tool not in {"icarus", "verilator"}:
+            raise UnsupportedSimTargetError(
+                f"mutation_tester: cached Target {target!r} resolves to unsupported "
+                f"EDA toolchain {eda_tool!r}"
+            )
+        return eda_tool
 
     def _pinned_sim_command(
         self,
@@ -2079,12 +2090,7 @@ replacement must differ, and every proposal must remain a single source edit.
                 plusargs=plusargs,
             )
             return command, launch
-        eda_tool = self.target_eda_tool(target, work_dir, build_path)
-        if eda_tool not in {"icarus", "verilator"}:
-            raise UnsupportedSimTargetError(
-                f"mutation_tester: cached Target {target!r} resolves to unsupported "
-                f"EDA toolchain {eda_tool!r}"
-            )
+        eda_tool = self._classic_eda_tool(target, work_dir, build_path)
         names = (test_name,) if test_name is not None else ()
         launch, plusargs = self._default_test_run_launch(target, work_dir, eda_tool, names)
         if eda_tool == "icarus":
@@ -2154,13 +2160,7 @@ replacement must differ, and every proposal must remain a single source edit.
         """Run one built source variant against the Target's complete test suite."""
         campaign = self._campaign_for_target(target)
         batched = self.cocotb_target(target, work_dir) is not None
-        batches = (
-            self._cocotb_suite_batches(
-                target, work_dir, tuple(test for test in campaign.suite.tests if test is not None)
-            )
-            if batched
-            else None
-        )
+        batches = self._cocotb_suite_batches(target, work_dir, campaign) if batched else None
 
         def _run_unit(unit: CampaignUnit) -> MutationTestRun:
             try:

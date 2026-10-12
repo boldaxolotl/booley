@@ -14,7 +14,12 @@ from booley.evidence.fields import (
     ACCEPTANCE_FACTS_SCHEMAS,
 )
 
-from .codec import SimulationCampaignIntegrityError, canonical_json_bytes
+from .codec import (
+    OBSERVATION_EXECUTIONS,
+    OBSERVATION_FIELDS,
+    SimulationCampaignIntegrityError,
+    canonical_json_bytes,
+)
 
 # v2 = v1 plus the required ``test_run`` and ``test_run_fingerprint`` of every
 # observation and of every prerequisite's baseline ``cycle_observation``: the
@@ -95,6 +100,23 @@ def acceptance_facts_sha256(value: AcceptanceFacts) -> str:
     return "sha256:" + hashlib.sha256(raw.rstrip(b"\n")).hexdigest()
 
 
+def _validate_observations(value: object, *, names_test_runs: bool) -> None:
+    """Validate every observation; each Test Run (each Test before v2) appears once."""
+    observed: set[object] = set()
+    for index, item in enumerate(_list(value, "observations", 4_000)):
+        _validate_observation(item, index, names_test_runs=names_test_runs)
+        assert isinstance(item, Mapping)
+        if names_test_runs:
+            identity, what = item["test_run"], "Test Run"
+        else:
+            identity, what = (item["test"] if item["test"] is not None else "default"), "test"
+        if identity in observed:
+            raise SimulationCampaignIntegrityError(
+                f"acceptance facts repeat an observation {what}"
+            )
+        observed.add(identity)
+
+
 def _validate_facts(value: Mapping[str, object]) -> None:
     schema = value["$schema"]
     if schema not in ACCEPTANCE_FACTS_SCHEMAS:
@@ -129,20 +151,7 @@ def _validate_facts(value: Mapping[str, object]) -> None:
     consumed = _list(value["consumed_results"], "consumed_results", 1_000)
     for index, item in enumerate(consumed):
         _validate_consumed(item, index)
-    observations = _list(value["observations"], "observations", 4_000)
-    observed: set[object] = set()
-    for index, item in enumerate(observations):
-        _validate_observation(item, index, names_test_runs=names_test_runs)
-        assert isinstance(item, Mapping)
-        if names_test_runs:
-            identity, what = item["test_run"], "Test Run"
-        else:
-            identity, what = (item["test"] if item["test"] is not None else "default"), "test"
-        if identity in observed:
-            raise SimulationCampaignIntegrityError(
-                f"acceptance facts repeat an observation {what}"
-            )
-        observed.add(identity)
+    _validate_observations(value["observations"], names_test_runs=names_test_runs)
     coverage = value["coverage_reference"]
     if coverage is not None:
         _validate_coverage_reference(value, coverage)
@@ -251,22 +260,9 @@ def _validate_consumed(value: object, index: int) -> None:
 def _validate_observation(value: object, index: int, *, names_test_runs: bool = False) -> None:
     item = _exact(
         value,
-        ({"test_run", "test_run_fingerprint"} if names_test_runs else set())
-        | {
-            "work_item_id",
-            "role",
-            "revision",
-            "target",
-            "result_sha256",
-            "test",
-            "execution",
-            "failure_class",
-            "functional",
-            "assertions",
-            "assertion_count",
-            "detail",
-            "cycle_count",
-        },
+        (set(_CYCLE_TEST_RUN_FIELDS) if names_test_runs else set())
+        | {"work_item_id", "role", "revision", "target", "result_sha256"}
+        | OBSERVATION_FIELDS,
         f"observations[{index}]",
     )
     _digest(item["result_sha256"], "observation result_sha256")
@@ -279,15 +275,7 @@ def _validate_observation(value: object, index: int, *, names_test_runs: bool = 
         raise SimulationCampaignIntegrityError("observation test is invalid")
     if len(canonical_json_bytes(item["detail"]).rstrip(b"\n")) > 2 * 1024:
         raise SimulationCampaignIntegrityError("observation detail is invalid")
-    if item["execution"] not in {
-        "completed",
-        "timeout",
-        "crash",
-        "aborted",
-        "setup_error",
-        "blocked_by_build",
-        "not_run",
-    }:
+    if item["execution"] not in OBSERVATION_EXECUTIONS:
         raise SimulationCampaignIntegrityError("observation execution is invalid")
     if item["failure_class"] not in {None, "design", "infrastructure"}:
         raise SimulationCampaignIntegrityError("observation failure_class is invalid")

@@ -1069,6 +1069,24 @@ def _validate_result_test_runs(
         )
 
 
+# Result states in which an unfiltered Cocotb batch may report no Test at all.
+_UNNAMED_FAILURE_STATES = frozenset(
+    {"blocked_by_build", "setup_error", "timeout", "crash", "aborted"}
+)
+
+
+def _expected_observed_tests(
+    work_item: Mapping[str, object], names: tuple[str, ...]
+) -> tuple[object, ...]:
+    """The Test of each observation a named work item must report, in order.
+
+    One observation per recorded Test Run; a manifest before v4 names Tests
+    only, one observation each.
+    """
+    recorded = cast("tuple[Mapping[str, object], ...] | None", work_item.get("test_runs"))
+    return names if recorded is None else tuple(run["test"] for run in recorded)
+
+
 def _validate_result_selection(
     work_item: Mapping[str, object],
     result: SimulationResult,
@@ -1082,23 +1100,15 @@ def _validate_result_selection(
     observations = cast(tuple[Mapping[str, object], ...], result.document["observations"])
     observed = tuple(item["test"] for item in observations)
     kind = cast(str, work_item["kind"])
-    recorded = cast("tuple[Mapping[str, object], ...] | None", work_item.get("test_runs"))
-    # One observation per recorded Test Run, in order; a manifest before v4
-    # names Tests only, one observation each.
-    expected = names if recorded is None else tuple(run["test"] for run in recorded)
-    if selection["kind"] == "named" and observed != expected:
+    if selection["kind"] == "named" and observed != _expected_observed_tests(work_item, names):
         raise SimulationCampaignIntegrityError(
             "result observations disagree with named work-item selection"
         )
     _validate_result_test_runs(work_item, observations)
     if selection["kind"] == "unfiltered":
-        unnamed_failure = observed == (None,) and result.document["state"] in {
-            "blocked_by_build",
-            "setup_error",
-            "timeout",
-            "crash",
-            "aborted",
-        }
+        unnamed_failure = (
+            observed == (None,) and result.document["state"] in _UNNAMED_FAILURE_STATES
+        )
         discovered = bool(observed) and all(isinstance(name, str) and name for name in observed)
         if not (unnamed_failure or discovered):
             raise SimulationCampaignIntegrityError(

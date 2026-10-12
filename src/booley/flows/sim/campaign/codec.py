@@ -927,35 +927,37 @@ def _validate_result_grade(value: object, observations: list[Mapping[str, object
         raise SimulationCampaignIntegrityError("result grade disagrees with observations")
 
 
+#: How the execution of one observed Test Run ended.
+OBSERVATION_EXECUTIONS = frozenset(
+    {"completed", "timeout", "crash", "aborted", "setup_error", "blocked_by_build", "not_run"}
+)
+#: What one simulator observation records, in every result and facts version.
+OBSERVATION_FIELDS = frozenset(
+    {
+        "test",
+        "execution",
+        "failure_class",
+        "functional",
+        "assertions",
+        "assertion_count",
+        "detail",
+        "cycle_count",
+    }
+)
+_OBSERVATION_FIELDS = set(OBSERVATION_FIELDS)
+
+
 def _validate_observation(
     value: object, index: int, *, names_test_runs: bool = False
 ) -> Mapping[str, object]:
     observation = _exact_object(
         value,
-        ({"test_run"} if names_test_runs else set())
-        | {
-            "test",
-            "execution",
-            "failure_class",
-            "functional",
-            "assertions",
-            "assertion_count",
-            "detail",
-            "cycle_count",
-        },
+        ({"test_run"} if names_test_runs else set()) | _OBSERVATION_FIELDS,
         f"observations[{index}]",
     )
     if names_test_runs:
         _bounded_string(observation["test_run"], f"observations[{index}].test_run")
-    if observation["execution"] not in {
-        "completed",
-        "timeout",
-        "crash",
-        "aborted",
-        "setup_error",
-        "blocked_by_build",
-        "not_run",
-    }:
+    if observation["execution"] not in OBSERVATION_EXECUTIONS:
         raise SimulationCampaignIntegrityError("observation execution is invalid")
     if observation["failure_class"] not in {None, "design", "infrastructure"}:
         raise SimulationCampaignIntegrityError("observation failure class is invalid")

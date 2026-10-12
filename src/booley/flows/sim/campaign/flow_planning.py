@@ -27,6 +27,24 @@ from .planning import (
 )
 
 
+def _require_ordinary_hdl_inputs(
+    handle: TargetHandle,
+    inspection: TargetInspection,
+    preview: SimulationPreview,
+    role: str,
+    revision: str,
+) -> None:
+    """Refuse Target facts the ordinary-HDL planner cannot plan from."""
+    if inspection.handle != handle or preview.target_identity != handle.identity:
+        raise SimulationCampaignIntegrityError("campaign planning Target facts disagree")
+    if inspection.flow_options.get("cocotb_module"):
+        raise SimulationCampaignIntegrityError("ordinary HDL planner cannot plan Cocotb")
+    if role not in {"candidate", "cycle_count_baseline"}:
+        raise SimulationCampaignIntegrityError("campaign planning role is invalid")
+    if not revision:
+        raise SimulationCampaignIntegrityError("campaign revision is required")
+
+
 def plan_ordinary_hdl_campaign(
     *,
     handle: TargetHandle,
@@ -44,14 +62,7 @@ def plan_ordinary_hdl_campaign(
     required_suite_catalog_backed: bool | None = None,
 ) -> SimulationCampaignPlan:
     """Build one strict immutable plan from already-resolved Target facts."""
-    if inspection.handle != handle or preview.target_identity != handle.identity:
-        raise SimulationCampaignIntegrityError("campaign planning Target facts disagree")
-    if inspection.flow_options.get("cocotb_module"):
-        raise SimulationCampaignIntegrityError("ordinary HDL planner cannot plan Cocotb")
-    if role not in {"candidate", "cycle_count_baseline"}:
-        raise SimulationCampaignIntegrityError("campaign planning role is invalid")
-    if not revision:
-        raise SimulationCampaignIntegrityError("campaign revision is required")
+    _require_ordinary_hdl_inputs(handle, inspection, preview, role, revision)
     root = handle.project_root.resolve()
     sources = _source_entries(root, inspection.inputs)
     if len(groups) != len(preview.commands):
@@ -99,15 +110,12 @@ def plan_coarse_simulation_campaign(
 ) -> SimulationCampaignPlan:
     """Plan honest coarse work: Cocotb batches, or one native coverage aggregate.
 
-    ``preview.run_groups`` holds the Test Runs of each work item: one group per
-    Cocotb batch (Test Runs that share environment and seed), or the single
-    group of every Test Run a coverage aggregate collects. ``no_waivers`` freezes the
-    raw-coverage choice into the workload; only coverage aggregates may carry it.
+    ``preview.run_groups`` holds each work item's Test Runs: one group per Cocotb
+    batch (shared environment and seed), or the one group a coverage aggregate
+    collects. Only a coverage aggregate may freeze ``no_waivers`` into its workload.
     """
-    if no_waivers and kind != "coverage_aggregate":
-        raise SimulationCampaignIntegrityError("no_waivers requires a coverage aggregate")
-    run_groups = preview.run_groups
-    _validate_coarse_inputs(handle, inspection, preview, selected_tests, kind, run_groups)
+    _validate_coarse_inputs(handle, inspection, preview, selected_tests, kind, no_waivers)
+    runs = preview.run_groups
     root = handle.project_root.resolve()
     sources = _source_entries(root, inspection.inputs)
     workload, configured_cwd, run_kind, sources = _workload_document(
@@ -121,7 +129,7 @@ def plan_coarse_simulation_campaign(
     target = _target_document(handle, root, revision, "candidate")
     suite = _required_suite(root, required_suite, catalog_backed=required_suite_catalog_backed)
     variant = _variant_document(workload, sources, trace)
-    work_items = _work_items(run_groups, target, variant, configured_cwd, run_kind, kind=kind)
+    work_items = _work_items(runs, target, variant, configured_cwd, run_kind, kind=kind)
     manifest = _manifest_document(
         invocation_id,
         execution_id,
@@ -142,10 +150,13 @@ def _validate_coarse_inputs(
     preview: SimulationPreview,
     selected_tests: Sequence[str],
     kind: str,
-    run_groups: Sequence[tuple[TestRun, ...]],
+    no_waivers: bool,
 ) -> None:
+    run_groups = preview.run_groups
     if kind not in {"cocotb_batch", "coverage_aggregate"}:
         raise SimulationCampaignIntegrityError("coarse campaign kind is invalid")
+    if no_waivers and kind != "coverage_aggregate":
+        raise SimulationCampaignIntegrityError("no_waivers requires a coverage aggregate")
     if inspection.handle != handle or preview.target_identity != handle.identity:
         raise SimulationCampaignIntegrityError("campaign planning Target facts disagree")
     is_cocotb = bool(inspection.flow_options.get("cocotb_module"))

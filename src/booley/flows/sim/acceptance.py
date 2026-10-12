@@ -372,6 +372,18 @@ def _simulation_detail(
     }
 
 
+def _detail_stamper(
+    endpoint: EndpointState,
+) -> Callable[[CriterionChange, str], dict[str, Any]] | None:
+    """Stamp a Criterion change's detail with the endpoint's source fingerprint, if it has one."""
+    stamp = getattr(endpoint, "_stamp_source_fingerprint", None)
+    if not callable(stamp):
+        return None
+    return lambda change, selector: (
+        stamp(change.key, change.met, change.detail, source_target=selector) or change.detail
+    )
+
+
 def record_campaign_acceptance(
     endpoint: EndpointState,
     outcomes: tuple[object, ...],
@@ -385,7 +397,6 @@ def record_campaign_acceptance(
     recorder = endpoint._acceptance_recorder
     recorded_identity = recorder.acceptance_identity()
     identity: Mapping[str, Any] = recorded_identity if recorded_identity is not None else {}
-    stamp = getattr(endpoint, "_stamp_source_fingerprint", None)
     context = AcceptanceContext(
         endpoint.state.slug,
         dict(identity),
@@ -396,19 +407,7 @@ def record_campaign_acceptance(
         diagnostic=endpoint.records_no_evidence,
         baseline_refusals=dict(baseline_refusals or {}),
         observer=endpoint.record_report_criteria,
-        detail_stamper=(
-            lambda change, selector: (
-                stamp(
-                    change.key,
-                    change.met,
-                    change.detail,
-                    source_target=selector,
-                )
-                or change.detail
-            )
-        )
-        if callable(stamp)
-        else None,
+        detail_stamper=_detail_stamper(endpoint),
     )
     reconciler = SimulationAcceptanceCoordinator()
     keys: list[str] = []

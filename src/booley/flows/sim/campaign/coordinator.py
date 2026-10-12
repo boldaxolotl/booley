@@ -1102,27 +1102,32 @@ def _collected_result_facts(
             }
         )
         results = cast(tuple[Mapping[str, object], ...], document["observations"])
-        bound = observation_test_runs(item, results)
-        for index, observation in enumerate(results):
-            observations.append(
-                {
-                    "work_item_id": recovered.work_item_id,
-                    "role": item["role"],
-                    "revision": item["revision"],
-                    "target": item["target"],
-                    "result_sha256": digest,
-                    **dict(observation),
-                    **(
-                        {}
-                        if bound is None
-                        else {
-                            "test_run": bound[index][0],
-                            "test_run_fingerprint": bound[index][1],
-                        }
-                    ),
-                }
-            )
+        observations.extend(_observation_facts(recovered.work_item_id, item, digest, results))
     return consumed, observations
+
+
+def _observation_facts(
+    work_item_id: str,
+    item: Mapping[str, object],
+    result_sha256: str,
+    results: tuple[Mapping[str, object], ...],
+) -> list[dict[str, object]]:
+    """The facts of one result's observations, each naming the Test Run it observed."""
+    bound = observation_test_runs(item, results)
+    facts: list[dict[str, object]] = []
+    for index, observation in enumerate(results):
+        fact = {
+            "work_item_id": work_item_id,
+            "role": item["role"],
+            "revision": item["revision"],
+            "target": item["target"],
+            "result_sha256": result_sha256,
+            **dict(observation),
+        }
+        if bound is not None:
+            fact |= {"test_run": bound[index][0], "test_run_fingerprint": bound[index][1]}
+        facts.append(fact)
+    return facts
 
 
 def _prerequisite_facts(
