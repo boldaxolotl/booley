@@ -1201,6 +1201,7 @@ def test_publish_pr_supports_edit_comment_and_review(tmp_path: Path) -> None:
         assert captured_stdin.read_text(encoding="utf-8") == expected_stdin
 
 
+@pytest.mark.skipif(os.name == "nt", reason="fake gh is a POSIX shell script")
 def test_publish_pr_reports_only_the_created_reference(tmp_path: Path) -> None:
     repo, _base = _repository(tmp_path)
     sealed_env = _sealed_fixture(repo, _encoded_config())
