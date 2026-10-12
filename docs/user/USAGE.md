@@ -1,7 +1,7 @@
 # Usage
 
 This guide shows how to use Booley day to day. You don't need any experience
-with Developer Agents to follow it.
+with AI coding agents to follow it.
 
 **Contents**
 
