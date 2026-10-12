@@ -1393,7 +1393,7 @@ def _format_status_card(mcp_tool_names: list[str]) -> str:
     session_id = _interactive_session_id()
     mcp_tools_text = ", ".join(mcp_tool_names) if mcp_tool_names else "none"
     try:
-        from booley.harness.auto_doctor import current_summary
+        from booley.runtime.health_presentation import current_summary
 
         health = current_summary(Path.cwd())
     except Exception:  # noqa: BLE001 — status must survive corrupt/missing advisory state
@@ -1423,7 +1423,7 @@ def _prepend_changed_health_alert(content: McpToolContent) -> McpToolContent:
     if not _status_mcp_tool_visible():
         return content
     try:
-        from booley.harness.auto_doctor import consume_changed_summary
+        from booley.runtime.health_presentation import consume_changed_summary
 
         alert = consume_changed_summary(Path.cwd(), channel="mcp-tool", issues_only=True)
     except Exception:  # noqa: BLE001 — health reporting must never break a Booley Flow result

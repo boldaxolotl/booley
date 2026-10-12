@@ -160,8 +160,8 @@ def _publish_bookkeeping(root, data, repo):
     """Doctor, MCP sessions/jobs, supervision: runtime/ and .runtime/."""
     from tests.mcp_tools.test_session_registry import facts
 
-    from booley.harness.doctor_stamp import record_clean_run
     from booley.mcp.session_registry import SessionRegistry
+    from booley.runtime.doctor_stamp import record_clean_run
     from booley.runtime.execution_records import atomic_write_json, execution_paths
     from booley.runtime.job_records import JobRecord, write_record
 

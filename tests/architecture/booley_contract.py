@@ -387,13 +387,6 @@ COMPOSITION_PERMISSIONS = (
         "The Campaign package facade publishes the storage-backed read capabilities.",
     ),
     CompositionPermission(
-        "C1",
-        "D4",
-        "booley.mcp.server",
-        "booley.harness.auto_doctor",
-        "The MCP server composes the Doctor endpoint at the agent-facing entry point.",
-    ),
-    CompositionPermission(
         "C2",
         "D4",
         "booley.mcp.server",

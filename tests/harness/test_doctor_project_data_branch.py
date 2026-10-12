@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from booley.audit.doctor_waivers import load_doctor_waivers
 from booley.harness import doctor
-from booley.harness.doctor_waivers import load_doctor_waivers
 from tests.harness.git_support import git_stdout as _git
 
 

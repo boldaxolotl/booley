@@ -67,7 +67,7 @@ from booley.goals.goalsets import seed_goalsets
 # existing importers (booley.harness.doctor, tests) and this module's own steps
 # keep resolving them by their original ``init_cmd`` names. F401 is suppressed
 # for this file (see pyproject) because a facade re-exports names it may not use.
-from booley.harness import doctor_stamp, image_lifecycle, nangate_pdk
+from booley.harness import image_lifecycle, nangate_pdk
 from booley.harness.bootstrap import (
     BootstrapResult,
     BootstrapState,
@@ -141,7 +141,7 @@ from booley.harness.setup.plan import InitPlan, InitPreconditionError
 from booley.harness.setup.scaffold import step_scaffold
 from booley.harness.setup.skills import _deploy_skills
 from booley.projects.inventory import ProjectInventoryError, remember_project
-from booley.runtime import auth_token, project_repositories
+from booley.runtime import auth_token, doctor_stamp, project_repositories
 from booley.runtime import devcontainer as dc
 from booley.runtime import interactive_docker as idk
 from booley.runtime import project_image as pi

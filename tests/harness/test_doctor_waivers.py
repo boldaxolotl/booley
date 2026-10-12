@@ -3,12 +3,12 @@ from datetime import date
 
 import pytest
 
-from booley.harness import doctor
-from booley.harness.doctor_waivers import (
+from booley.audit.doctor_waivers import (
     DoctorWaiverError,
     load_doctor_waivers,
     warning,
 )
+from booley.harness import doctor
 
 
 def _write(tmp_path, body: str) -> None:
