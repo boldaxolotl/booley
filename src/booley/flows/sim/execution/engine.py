@@ -18,7 +18,12 @@ from typing import Any, TypeGuard
 from fusesoc.vlnv import Vlnv
 
 from booley.config.project_config import load_test_configuration_field, lookup_target_section
-from booley.config.tests_toml_rules import TestVariantError, adapter_argument, option_key
+from booley.config.tests_toml_rules import (
+    TestVariantError,
+    adapter_argument,
+    option_key,
+    validate_env_table,
+)
 from booley.core.build_paths import work_root_for
 from booley.core.project_dir import PROJECT_DIR_NAME
 from booley.flows import artifacts as flow_artifacts
@@ -245,10 +250,21 @@ class _Attempt:
     test_runs: tuple[TestRun, ...] | None = None
 
 
+def _export_line(name: str, value: str) -> str:
+    """One shell ``export`` of an environment variable, safe to join into a script.
+
+    The value is quoted. The name cannot be quoted, so it must be a plain
+    shell identifier: every source validates its names, and this refuses
+    anything else again where the text becomes shell. Raises ``ValueError``.
+    """
+    validate_env_table({name: value}, where="simulator environment")
+    return f"export {name}={shlex.quote(value)}"
+
+
 def _adapter_shell_command(attempt: _Attempt) -> tuple[str, str, str]:
     """Preserve the Target environment when build and run use separate processes."""
     exports = "".join(
-        f"export {name}={shlex.quote(value)}\n"
+        f"{_export_line(name, value)}\n"
         for name, value in _launch_environment(attempt.simulator_environment, attempt.work)
     )
     invocation = shlex.join(prepare_adapter_invocation(attempt.work))
@@ -1483,7 +1499,7 @@ class SimulationExecution:
             shlex.join(edam_layer.make_command(rel)),
             # The Test Variant's environment reaches the simulator launch only,
             # exactly as the run applies it: never setup, Pre-Sim or the build.
-            *(f"export {name}={shlex.quote(value)}" for name, value in work.environment),
+            *(_export_line(name, value) for name, value in work.environment),
             shlex.join(prepare_adapter_invocation(work)),
         ]
         return ("sh", "-c", " && ".join(steps))
@@ -1933,7 +1949,7 @@ def _preview_exports(
     if len(names) == 1:
         values["BOOLEY_TEST_NAME"] = names[0]
     values.update(test_run_environment(test_runs))
-    return [f"export {name}={shlex.quote(value)}" for name, value in values.items()]
+    return [_export_line(name, value) for name, value in values.items()]
 
 
 def _pre_sim_failure(

@@ -226,9 +226,11 @@ from .target_tests import (
 )
 from .test_run_invocation import (
     BaselineLink,
+    BaselineRefusal,
     BaselineRuns,
     EvidenceGuard,
     TestRunInvocation,
+    baseline_refusal_key,
     decide_baseline_runs,
 )
 
@@ -1144,6 +1146,16 @@ def _campaign_recovery_detail(status: CampaignRecoveryStatus) -> dict[str, objec
         "interrupted": list(status.interrupted),
         "pending": list(status.pending),
     }
+
+
+def _baseline_refusal_line(refusal: BaselineRefusal) -> str:
+    """One report line: which Cycle Count comparison is inconclusive, and why."""
+    link = refusal.link
+    run = f" (Test Run {link.run.name})" if link.run is not None else ""
+    return (
+        f"Cycle Count comparison inconclusive for {link.candidate} Test {link.test}{run}: "
+        f"{refusal.reason}"
+    )
 
 
 def _link_baseline_prerequisites(
@@ -2548,6 +2560,14 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         super().__init__()
         self._coverage_execution_factory = coverage_execution
         self._campaign_publication_checkpoint = campaign_publication_checkpoint
+
+    def begin_invocation(self) -> None:
+        """Start this invocation's Test Run decisions afresh.
+
+        Resolved Test Runs (drawn seeds included), planned groups, baseline
+        runs and the evidence guard belong to one request. A reused Flow
+        object must resolve the next request itself, never reuse these.
+        """
         self._test_runs = TestRunInvocation()
 
     request_type = SimRequest
@@ -3347,31 +3367,30 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         """Every relative Cycle Count comparison of *targets*, with its Test Run.
 
         A relative Cycle Count compares one Test Run on two revisions, so each
-        link carries the candidate's concrete Test Run (the same Test Variant
-        arguments, environment and seed) for the baseline to run. Call in the
-        candidate checkout.
+        link carries one concrete candidate Test Run (the same Test Variant
+        arguments, environment and seed) for the baseline to run. A Test the
+        candidate runs several times (``test@x3``, two Test Variants) gets a
+        link per Test Run, so each has its own baseline run or its own named
+        refusal. Call in the candidate checkout.
         """
-        return tuple(
-            BaselineLink(
-                candidate,
-                baseline,
-                test,
-                self._candidate_test_run(candidate, test, test_names_map),
-            )
-            for candidate, baseline, test in self._campaign_baseline_requirements(targets)
-        )
+        links: list[BaselineLink] = []
+        for candidate, baseline, test in self._campaign_baseline_requirements(targets):
+            runs = self._candidate_test_runs(candidate, test, test_names_map)
+            # One link per candidate Test Run; without any, one that is refused by name.
+            links.extend(BaselineLink(candidate, baseline, test, run) for run in runs or (None,))
+        return tuple(links)
 
-    def _candidate_test_run(
+    def _candidate_test_runs(
         self, candidate: str, test: str, test_names_map: Mapping[str, list[str]]
-    ) -> TestRun | None:
-        """The Test Run of *test* this invocation runs on *candidate*, if any."""
+    ) -> tuple[TestRun, ...]:
+        """Every Test Run of *test* this invocation runs on *candidate*."""
         try:
             runs = self._resolve_test_runs(candidate, test_names_map)
         except (fusesoc_registry.FuseSocError, ValueError):
             # Nothing to compare: the link is refused by name and no baseline
             # runs for it (test_test_run_resolution_errors).
-            return None
-        return next((run for run in runs if run.test == test), None)
+            return ()
+        return tuple(run for run in runs if run.test == test)
 
     @contextmanager
     def _baseline_checkout(
@@ -3395,17 +3414,19 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
     def _with_baseline_refusal_note(self, result: EndpointOutcome) -> EndpointOutcome:
         """Say which Cycle Count comparisons are inconclusive, and why."""
-        refusals = self._test_runs.baseline.refusals
-        if not refusals:
+        refused = self._test_runs.baseline.refused
+        if not refused:
             return result
         result.detail["cycle_count_baseline_inconclusive"] = [
-            {"target": target, "test": test, "reason": reason}
-            for (target, test), reason in refusals.items()
+            {
+                "target": item.link.candidate,
+                "test": item.link.test,
+                **({"test_run": item.link.run.name} if item.link.run is not None else {}),
+                "reason": item.reason,
+            }
+            for item in refused
         ]
-        note = "\n".join(
-            f"Cycle Count comparison inconclusive for {target} Test {test}: {reason}"
-            for (target, test), reason in refusals.items()
-        )
+        note = "\n".join(_baseline_refusal_line(item) for item in refused)
         result.report_text = f"{result.report_text}\n{note}" if result.report_text else note
         return result
 
@@ -6205,7 +6226,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             detail = self._direct_cycle_detail(target_result, test_name, current, baseline)
             if baseline is None and not relative:
                 detail["baseline_observation"] = "not_required"
-            refusal = self._baseline_refusal_for(target_result, test_name)
+            refusal = self._baseline_refusal_for(target_result, test_name, current)
             if relative and baseline is None and refusal is not None:
                 # The comparison could not be made at all: say why, by name.
                 detail["baseline_observation"] = "inapplicable"
@@ -6243,9 +6264,13 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             "test_runs": _test_run_rows([current] if current is not None else []),
         }
 
-    def _baseline_refusal_for(self, result: TargetResult, test: object) -> str | None:
-        """Why the baseline of this Criterion's Test could not run, if it could not."""
-        return self._test_runs.baseline.refusals.get((result.target, str(test)))
+    def _baseline_refusal_for(
+        self, result: TargetResult, test: object, current: TestResult | None
+    ) -> str | None:
+        """Why the baseline of the Test Run *current* observed could not run, if it could not."""
+        run = current.test_run if current is not None else None
+        key = baseline_refusal_key(str(test), run)
+        return self._test_runs.baseline.refusals.get((result.target, key))
 
     def _baseline_cycle_test(
         self, result: TargetResult, params: Mapping[str, Any], current: TestResult | None

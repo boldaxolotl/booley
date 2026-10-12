@@ -99,3 +99,63 @@ def test_group_disclosure_prepares_the_test_runs_it_is_given(monkeypatch):
     assert execution.plan_campaign_group(object(), ("a", "b"), runs) == {"disclosed": True}
     assert execution.plan_campaign_group(object(), ("a",)) == {"disclosed": True}
     assert prepared == [(("a", "b"), runs), (("a",), None)]
+
+
+def test_resume_discloses_the_test_runs_the_manifest_froze(tmp_path, monkeypatch):
+    """The resume call site: disclosure planning gets each batch's frozen Test Runs.
+
+    The manifest froze two batches of non-default Test Variants. Re-planning
+    for the resume comparison must prepare exactly those runs, not the
+    default Variants of the same Tests (which could not even share a batch).
+    """
+    from booley.flows.sim import flow as flow_module
+    from booley.flows.test_runs import build_test_run
+    from tests.flows.sim.test_campaign_test_runs import _cocotb_plan
+
+    groups = (
+        (
+            build_test_run("reset", variant="shared", seed=1, env={"MODE": "C"}),
+            build_test_run("count", variant="shared", seed=1, env={"MODE": "C"}),
+        ),
+        (build_test_run("count", variant="other", seed=9, env={"MODE": "D"}),),
+    )
+    manifest = _cocotb_plan(tmp_path, groups).manifest
+    handle = SimpleNamespace(project_root=tmp_path, selector="sim")
+    validated = SimpleNamespace(
+        manifest=manifest, binding_for=lambda _manifest: None, target_handles=(handle,)
+    )
+    disclosed: list[tuple[tuple[str, ...], object]] = []
+    previewed: list[object] = []
+    execution = SimpleNamespace(
+        preview=lambda _handle, selection: (
+            previewed.append(selection) or SimpleNamespace(groups=(), run_groups=())
+        ),
+        plan_campaign_group=lambda _handle, group, test_runs=None: (
+            disclosed.append((group, test_runs)) or {"group": group}
+        ),
+    )
+    flow = _flow(tmp_path, monkeypatch)
+    monkeypatch.setattr(flow, "_simulation_execution", lambda: execution)
+    monkeypatch.setattr(
+        flow_module.TargetCatalog,
+        "build",
+        lambda _root: SimpleNamespace(inspect=lambda _handle: object()),
+    )
+    monkeypatch.setattr(flow_module, "git_full_sha", lambda *_args: "c" * 40)
+    planned: dict[str, object] = {}
+    monkeypatch.setattr(
+        flow_module,
+        "plan_coarse_simulation_campaign",
+        lambda **kwargs: planned.update(kwargs) or "plan",
+    )
+
+    assert flow._resume_campaign_plan(validated, 1) == "plan"
+
+    assert disclosed == [(("reset", "count"), groups[0]), (("count",), groups[1])]
+    assert planned["planning_disclosures"] == (
+        {"group": ("reset", "count")},
+        {"group": ("count",)},
+    )
+    # Resume previews the frozen runs too: nothing is resolved or drawn again.
+    (selection,) = previewed
+    assert selection.runs == (*groups[0], *groups[1])

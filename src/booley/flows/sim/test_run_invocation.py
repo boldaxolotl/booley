@@ -21,10 +21,12 @@ from booley.flows.test_runs import TestRun, TestVariantError, UnseededTargetErro
 
 __all__ = [
     "BaselineLink",
+    "BaselineRefusal",
     "BaselineRuns",
     "EvidenceGuard",
     "TestRunInvocation",
     "baseline_link_refusal",
+    "baseline_refusal_key",
     "decide_baseline_runs",
 ]
 
@@ -61,9 +63,10 @@ class EvidenceGuard:
 class BaselineLink:
     """One relative Cycle Count comparison: a candidate Test on a baseline Target.
 
-    ``run`` is the candidate's Test Run of ``test`` in this invocation, the
-    one Test Run both revisions run; ``None`` when the candidate runs no Test
-    Run of that Test.
+    ``run`` is one Test Run of ``test`` the candidate runs in this invocation,
+    the Test Run both revisions run. A candidate that runs several Test Runs
+    of the Test (``test@x3``, two Test Variants) has one link per Test Run.
+    ``None`` when the candidate runs no Test Run of that Test.
     """
 
     candidate: str
@@ -73,17 +76,42 @@ class BaselineLink:
 
 
 @dataclass(frozen=True)
+class BaselineRefusal:
+    """A comparison the baseline revision does not run, and why."""
+
+    link: BaselineLink
+    reason: str
+
+
+@dataclass(frozen=True)
 class BaselineRuns:
     """The candidate Test Runs the Cycle Count baseline revision runs.
 
     A baseline Target runs every distinct candidate Test Run it is compared
     against, and nothing else: never a Test Run its own checkout would
-    resolve. ``refusals`` names why a comparison has no baseline run, by
-    ``(candidate Target, Test)``.
+    resolve. Every candidate Test Run of a compared Test is either in
+    ``links`` or in ``refused`` with its reason; so is a compared Test the
+    candidate does not run at all.
     """
 
     links: tuple[BaselineLink, ...] = ()
-    refusals: Mapping[tuple[str, str], str] = field(default_factory=lambda: MappingProxyType({}))
+    refused: tuple[BaselineRefusal, ...] = ()
+
+    @property
+    def refusals(self) -> Mapping[tuple[str, str], str]:
+        """Why a comparison has no baseline run, by candidate Target and Test Run.
+
+        The second key is the candidate's Test Run name, or the bare Test
+        when the candidate runs no Test Run of it.
+        """
+        return MappingProxyType(
+            {
+                (item.link.candidate, baseline_refusal_key(item.link.test, item.link.run)): (
+                    item.reason
+                )
+                for item in self.refused
+            }
+        )
 
     def runs_of(self, baseline: str) -> tuple[TestRun, ...]:
         """The distinct Test Runs *baseline* runs, in order of first need."""
@@ -93,6 +121,17 @@ class BaselineRuns:
     def links_of(self, baseline: str) -> tuple[BaselineLink, ...]:
         """The comparisons *baseline* serves."""
         return tuple(link for link in self.links if link.baseline == baseline)
+
+
+def baseline_refusal_key(test: str, run: TestRun | str | None) -> str:
+    """What names one comparison in :attr:`BaselineRuns.refusals`.
+
+    The candidate's Test Run name (*run* may be the run or its name), or the
+    bare Test when the candidate observed no Test Run of it.
+    """
+    if run is None:
+        return test
+    return run if isinstance(run, str) else run.name
 
 
 def baseline_link_refusal(
@@ -138,7 +177,7 @@ def decide_baseline_runs(
     Test Runs of one name.
     """
     accepted: list[BaselineLink] = []
-    refusals: dict[tuple[str, str], str] = {}
+    refused: list[BaselineRefusal] = []
     named: dict[tuple[str, str], TestRun] = {}
     plans: dict[str, TargetTestPlan] = {}
     for link in links:
@@ -157,8 +196,8 @@ def decide_baseline_runs(
         if reason is None:
             accepted.append(link)
         else:
-            refusals[(link.candidate, link.test)] = reason
-    return BaselineRuns(tuple(accepted), MappingProxyType(refusals))
+            refused.append(BaselineRefusal(link, reason))
+    return BaselineRuns(tuple(accepted), tuple(refused))
 
 
 @dataclass

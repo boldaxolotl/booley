@@ -198,7 +198,7 @@ def test_two_test_runs_of_one_name_but_other_inputs_cannot_share_a_baseline():
 
     assert baseline.runs_of("ref") == (first,)
     assert dict(baseline.refusals) == {
-        ("slow", "stress"): (
+        ("slow", "stress+soak@1"): (
             "Test Run 'stress+soak@1' has other declared arguments or environment on "
             "Target 'slow' than on another candidate compared against baseline Target 'ref'"
         )
@@ -254,7 +254,7 @@ def test_campaign_planning_runs_no_baseline_for_a_refused_test_run(tmp_path, mon
         flow.context.publication_resources.close()
 
     assert (requests, prerequisites) == ([], {"sim_core": []})
-    reason = flow._test_runs.baseline.refusals[("sim_core", "coremark")]
+    reason = flow._test_runs.baseline.refusals[("sim_core", "coremark@1")]
     assert reason == (
         f"baseline revision {revision[:12]} does not register Test 'coremark' on Target 'sim_core'"
     )
@@ -263,7 +263,8 @@ def test_campaign_planning_runs_no_baseline_for_a_refused_test_run(tmp_path, mon
     noted = flow._with_baseline_refusal_note(EndpointOutcome(report_text="sim: PASS"))
     assert noted.report_text.splitlines() == [
         "sim: PASS",
-        f"Cycle Count comparison inconclusive for sim_core Test coremark: {reason}",
+        f"Cycle Count comparison inconclusive for sim_core Test coremark "
+        f"(Test Run coremark@1): {reason}",
     ]
 
 
@@ -291,7 +292,7 @@ def test_campaign_criterion_names_why_the_comparison_is_inconclusive(tmp_path: P
         (change,) = SimulationAcceptanceCoordinator._derive_changes(outcome, state, refusals)
         return change.met, change.detail
 
-    assert detail({(selector, "count"): "baseline revision abc cannot apply the seed"}) == (
+    assert detail({(selector, "count@1"): "baseline revision abc cannot apply the seed"}) == (
         False,
         {
             **detail({})[1],
@@ -385,3 +386,56 @@ def test_prerequisite_facts_carry_the_baseline_work_items_test_run():
     assert _baseline_test_run_facts(None, names_test_runs=False) == {}
     with pytest.raises(SimulationCampaignIntegrityError, match="records no Test Run to compare"):
         _baseline_test_run_facts(None, names_test_runs=True)
+
+
+@pytest.mark.parametrize(
+    ("argv", "names"),
+    [
+        (("--test", "stress+short", "--test", "stress+soak"), ["stress+short@1", "stress+soak@1"]),
+        (("--test", "stress@3", "--test", "stress@4", "--test", "stress+soak@4"), None),
+    ],
+)
+def test_a_candidate_with_several_test_runs_of_one_test_links_each_of_them(
+    tmp_path, monkeypatch, argv, names
+):
+    """Each run has its own baseline run and its own prerequisite, not only the first."""
+    from booley.flows.sim.flow import _link_baseline_prerequisites
+
+    flow = _flow(tmp_path, monkeypatch, *argv)
+    candidate_runs = [run for run in flow._resolve_test_runs("sim", _MAP) if run.test == "stress"]
+    links = _links(flow, monkeypatch, ("sim", "sim", "stress"))
+
+    assert [link.run for link in links] == candidate_runs
+    assert names is None or [run.name for run in candidate_runs] == names
+    with flow._baseline_checkout(tmp_path / "baseline", links, "a" * 40) as baseline:
+        pass
+    assert list(baseline.runs_of("sim")) == candidate_runs
+    assert not baseline.refused
+    prerequisites: dict[str, list] = {"sim": []}
+    by_run = {run.name: {"work_item_id": run.name} for run in candidate_runs}
+    _link_baseline_prerequisites(prerequisites, baseline.links_of("sim"), by_run)
+    assert [item["work_item_id"] for item in prerequisites["sim"]] == [
+        run.name for run in candidate_runs
+    ]
+
+
+def test_count_selector_links_every_drawn_seed_and_refuses_each_by_name(tmp_path, monkeypatch):
+    from booley.flows.sim.test_run_invocation import baseline_refusal_key
+    from booley.flows.target_test_plan import build_target_test_plan
+
+    flow = _flow(tmp_path, monkeypatch, "--test", "stress@x3")
+    runs = flow._resolve_test_runs("sim", _MAP)
+    links = _links(flow, monkeypatch, ("sim", "ref", "stress"))
+    assert [link.run for link in links] == list(runs) and len(runs) == 3
+
+    # A baseline Target that cannot apply a seed refuses all three, each by name.
+    unseeded = build_target_test_plan("ref", {"tests": ["stress"]}, adapter="icarus")
+    monkeypatch.setattr(flow, "_target_test_plan", lambda _target: unseeded)
+    with flow._baseline_checkout(tmp_path / "baseline", links, "a" * 40) as baseline:
+        pass
+
+    assert baseline.runs_of("ref") == ()
+    assert sorted(baseline.refusals) == sorted(("sim", run.name) for run in runs)
+    assert all("cannot apply the seed" in reason for reason in baseline.refusals.values())
+    assert baseline_refusal_key("stress", runs[0]) == runs[0].name
+    assert baseline_refusal_key("stress", None) == "stress"

@@ -31,6 +31,7 @@ from booley.config.tests_toml_rules import (
     MAX_SEED,
     SEED_SEPARATOR,
     VARIANT_SEPARATOR,
+    EnvTableError,
     SeedConfigurationError,
     TestRunNameError,
     TestVariant,
@@ -38,6 +39,8 @@ from booley.config.tests_toml_rules import (
     TestVariantTable,
     UnknownVariantError,
     parse_test_variants,
+    validate_declared_env_names,
+    validate_env_table,
     validate_seed,
     validate_test_or_variant_name,
 )
@@ -299,6 +302,21 @@ def _require_seed(seed: object) -> int:
         raise TestRunNameError(str(exc)) from exc
 
 
+def _declared_environment(env: Mapping[str, str]) -> dict[str, str]:
+    """A Test Variant's environment, under the rules ``tests.toml`` applies to it.
+
+    Every Test Run is built here, also one decoded from a persisted record,
+    so a record cannot carry a variable name the loader would have refused:
+    not a shell-exportable name, or one Booley or the simulator integration
+    owns. Raises :class:`TestRunNameError`.
+    """
+    where = "Test Run environment"
+    try:
+        return validate_declared_env_names(validate_env_table(env, where=where), where=where)
+    except EnvTableError as exc:
+        raise TestRunNameError(str(exc)) from exc
+
+
 def build_test_run(
     test: str | None,
     *,
@@ -310,7 +328,8 @@ def build_test_run(
     """Build a :class:`TestRun` and fingerprint its declared inputs.
 
     Raises :class:`TestRunNameError` for an invalid name, a Test Variant on the
-    unnamed invocation, or a seed that is not an integer in ``1..MAX_SEED``.
+    unnamed invocation, a seed that is not an integer in ``1..MAX_SEED``, or
+    an environment variable a Test Variant may not set.
     """
     if test is None and variant is not None:
         raise TestRunNameError(
@@ -322,7 +341,7 @@ def build_test_run(
         validate_test_or_variant_name(variant, kind="Test Variant")
     if seed is not None:
         _require_seed(seed)
-    environment = dict(env or {})
+    environment = _declared_environment(env or {})
     return TestRun(
         test=test,
         variant=variant,

@@ -55,6 +55,7 @@ def _run(
     *,
     baseline_tool: str = "verilator",
     criterion_tests: tuple[str, ...] = ("stress",),
+    tests: tuple[str, ...] = ("stress",),
 ):
     """Run ``--test stress`` with a relative Cycle Count Criterion per *criterion_tests*.
 
@@ -65,7 +66,8 @@ def _run(
     for root in (candidate, baseline):
         root.mkdir()
     (baseline / "lite.core").write_text(_CORE.format(tool=baseline_tool), encoding="utf-8")
-    flow = _make_flow(candidate, config="lite", extra_args=["--test", "stress"])
+    selectors = [word for test in tests for word in ("--test", test)]
+    flow = _make_flow(candidate, config="lite", extra_args=selectors)
     template = CriteriaTemplate.from_yaml(
         {
             "mandatory": {
@@ -171,9 +173,11 @@ def test_a_baseline_that_cannot_run_the_test_run_makes_the_comparison_inconclusi
     (entry,) = result.detail["cycle_count_baseline_inconclusive"]
     assert (entry["target"], entry["test"]) == ("lite", "stress")
     assert entry["reason"].startswith(reason)
-    assert f"Cycle Count comparison inconclusive for lite Test stress: {reason}" in (
-        result.report_text
-    )
+    assert entry["test_run"] == "stress+soak@7"
+    assert (
+        "Cycle Count comparison inconclusive for lite Test stress "
+        f"(Test Run stress+soak@7): {reason}"
+    ) in result.report_text
 
 
 def test_a_baseline_test_the_candidate_does_not_run_is_not_run_from_baseline_defaults(
@@ -203,3 +207,47 @@ def test_a_baseline_test_the_candidate_does_not_run_is_not_run_from_baseline_def
             "so there is nothing to compare"
         ),
     }
+
+
+@pytest.mark.parametrize(
+    ("tests", "count"),
+    [
+        (("stress@x3",), 3),
+        (("stress+short", "stress+soak"), 2),
+        (("stress+soak@4", "stress@5"), 2),
+    ],
+    ids=["count-selector", "two-variants", "two-seeds"],
+)
+def test_every_candidate_test_run_of_a_compared_test_runs_on_the_baseline(
+    tmp_path: Path, tests, count
+):
+    """Not only the first: ``stress@x3`` and two Test Variants each get all their baselines."""
+    result, launched, _criterion = _run(tmp_path, _BASELINE, tests=tests)
+
+    assert result.exit_code == EXIT_SUCCESS, result.report_text
+    on_baseline = [_launch(script) for revision, script in launched if revision == "baseline"]
+    on_candidate = [_launch(script) for revision, script in launched if revision == "candidate"]
+    assert len(on_candidate) == count
+    assert on_baseline == on_candidate
+    assert len({tuple(plusargs) for plusargs, _mode in on_baseline}) == count
+    assert "cycle_count_baseline_inconclusive" not in result.detail
+
+
+def test_every_candidate_test_run_gets_its_own_named_refusal(tmp_path: Path):
+    """A baseline that cannot seed: each of the three runs is refused by its own name."""
+    result, launched, _criterion = _run(
+        tmp_path, _BASELINE, baseline_tool="icarus", tests=("stress@x3",)
+    )
+
+    assert [revision for revision, _script in launched] == ["candidate"] * 3
+    entries = result.detail["cycle_count_baseline_inconclusive"]
+    assert len(entries) == 3
+    names = [entry["test_run"] for entry in entries]
+    assert len(set(names)) == 3 and all(name.startswith("stress+soak@") for name in names)
+    for entry in entries:
+        assert (entry["target"], entry["test"]) == ("lite", "stress")
+        assert f"Test Run {entry['test_run']!r} has a seed" in entry["reason"]
+        assert (
+            f"Cycle Count comparison inconclusive for lite Test stress "
+            f"(Test Run {entry['test_run']}): "
+        ) in result.report_text

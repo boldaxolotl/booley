@@ -45,6 +45,7 @@ from booley.flows.sim.coverage_reference import (
     encode_coverage_campaign_reference,
     resolve_coverage_campaign_reference,
 )
+from booley.flows.sim.test_run_invocation import baseline_refusal_key
 from booley.flows.test_runs import UNNAMED_TEST_DISPLAY
 from booley.targets.domain import criterion_matches_target
 
@@ -719,7 +720,9 @@ def _cycle_changes(
         )
         detail["test_runs"] = rows.of((current,))
         if baseline_state == "mismatched":
-            _name_baseline_refusal(detail, refusals.get((selector, test)))
+            run_name = current.get("test_run") if current is not None else None
+            refused_as = baseline_refusal_key(str(test), cast("str | None", run_name))
+            _name_baseline_refusal(detail, refusals.get((selector, refused_as)))
         changes.extend(shadow.set_criterion(key, met, detail=detail))
     return changes
 
