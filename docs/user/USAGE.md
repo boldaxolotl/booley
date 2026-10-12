@@ -285,6 +285,17 @@ explicit instruction and reason. Setup can create this file; initialization
 does not seed it. You can also add Goals for this particular change. Duplicate
 Goals merge to the stricter condition, and entry reports every merge.
 
+Goalsets, including `default.md`, come from the **main checkout's Project
+directory**. In the Sandbox that is `BOOLEY_PROJECT_DIR`, even when the
+directory lives outside the main checkout. A Project copy or snapshot inside
+the Goal worktree is not used: a `default.md` that exists only there does not
+apply. `work_dir` selects the worktree, not the Goalsets.
+
+A session started inside a worktree without `BOOLEY_PROJECT_DIR` can resolve
+that worktree's copy instead. Start the session with `BOOLEY_PROJECT_DIR` set
+to the main checkout's Project directory; entry refuses a Project directory
+inside the Goal worktree.
+
 A Goal names a Flow or review family and the applicable Target, tests, and
 thresholds. Every Goal is mandatory. For example, a Goalset excerpt can ask for:
 

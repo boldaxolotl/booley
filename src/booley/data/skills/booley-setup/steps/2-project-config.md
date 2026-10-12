@@ -797,6 +797,10 @@ approved config is on disk.
 
 ## Goalsets
 
+Goal entry reads Goalsets from the main checkout's Project directory
+(`BOOLEY_PROJECT_DIR` in the Sandbox). Edit them there; an edit made only in a
+Project copy or snapshot inside a worktree is not used.
+
 Read the seeded `goalsets/{feature,bugfix,refactor,verification}.md` files and
 adapt their Goals to the Project's supported Targets and verification intent.
 Preserve existing Project edits. Offer to create `goalsets/default.md` for rules

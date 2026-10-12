@@ -72,9 +72,11 @@ omit it), and Project-defined endpoints must declare `work_dir` to run.
 `coverage_evidence`, and `bwave` accept no `work_dir`. Resume saved proposal
 and Finish IDs rather than editing records. Protected Input changes block
 Finish until reverted. Open `done` review findings remain visible; Finish does not merge.
-Project-owned Goalsets live under `goalsets/`; `default.md` applies unless the
-human explicitly skips it with a reason. Initialization seeds four create-only
-Goalsets and preserves edits.
+Read Project-owned Goalsets, including `default.md`, from `goalsets/` in the
+main checkout's Project directory (`BOOLEY_PROJECT_DIR` in the Sandbox); a
+Project copy or snapshot inside `work_dir` is not used. `default.md` applies
+unless the human explicitly skips it with a reason. Initialization seeds four
+create-only Goalsets and preserves edits.
 
 ### Booley Flows
 

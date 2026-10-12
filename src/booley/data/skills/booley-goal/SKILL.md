@@ -21,9 +21,16 @@ Use it for human-steered or unattended work inside the Sandbox.
    `booley_targets` may omit it), and Project-defined endpoints must declare
    `work_dir` to run. `booley_status`, `booley_poll`, `booley_cancel`,
    `booley_sleep`, `coverage_evidence`, and `bwave` accept no `work_dir`.
-3. Read the selected `*.md` Goalsets under the resolved Project directory's
-   `goalsets/`. Initialization seeds `feature`, `bugfix`, `refactor`, and
-   `verification` create-only. The Project owns their prose and may add others.
+3. Read the selected `*.md` Goalsets from `goalsets/` in the main checkout's
+   Project directory: `BOOLEY_PROJECT_DIR` in the Sandbox, the same directory
+   where entry checks `default.md`. Never read them from a Project copy or
+   snapshot inside `work_dir`; a `default.md` present only there does not
+   apply. If `BOOLEY_PROJECT_DIR` is unset or points inside `work_dir`, stop
+   and ask the human to restart the session with it set to the main
+   checkout's Project directory; changing it mid-session does not change
+   what entry checks.
+   Initialization seeds `feature`, `bugfix`, `refactor`, and `verification`
+   create-only. The Project owns their prose and may add others.
    If `default.md` exists, include it unless the human explicitly skips it;
    record `default_skipped=true` and their reason as `skip_reason`. With no
    default file, leave `default_skipped=false`.
