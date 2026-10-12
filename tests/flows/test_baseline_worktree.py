@@ -7,6 +7,8 @@ git without disturbing the caller's working tree.
 
 from __future__ import annotations
 
+import io
+import logging
 import subprocess
 from pathlib import Path
 
@@ -35,8 +37,11 @@ def _select_worktree_state(tmp_path: Path, monkeypatch):
         reset_cache()
 
 
-def _git(repo: Path, *a: str) -> None:
-    subprocess.run(["git", *a], cwd=repo, check=True, capture_output=True, text=True, timeout=30)
+def _git(repo: Path, *a: str) -> str:
+    result = subprocess.run(
+        ["git", *a], cwd=repo, check=True, capture_output=True, text=True, timeout=30
+    )
+    return result.stdout.strip()
 
 
 def _commit_all(repo: Path, message: str) -> None:
@@ -624,7 +629,7 @@ def _paired_checkout_without_upstream(tmp_path: Path) -> tuple[Path, Path, str]:
     (outer / ".git" / "info" / "exclude").write_text("/.booley_project\n", encoding="utf-8")
     project = outer / ".booley_project"
     (project / "cores").mkdir(parents=True)
-    _git(project, "init", "-q")
+    _git(project, "init", "-q", "-b", "project-source")
     _git(project, "config", "user.email", "t@example.com")
     _git(project, "config", "user.name", "Test")
     (project / ".gitignore").write_text("/worktrees/\n", encoding="utf-8")
@@ -634,9 +639,7 @@ def _paired_checkout_without_upstream(tmp_path: Path) -> tuple[Path, Path, str]:
     _git(outer, "worktree", "add", "-b", "goal", str(goal), "HEAD")
     paired = goal / ".booley_project"
     _git(project, "worktree", "add", "-b", "goal-project", str(paired), "HEAD")
-    entry_sha = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=paired, check=True, capture_output=True, text=True
-    ).stdout.strip()
+    entry_sha = _git(paired, "rev-parse", "HEAD")
     (paired / "cores" / "top.core").write_text("recipe: later\n", encoding="utf-8")
     _commit_all(paired, "change after entry")
     return goal, paired, entry_sha
@@ -658,32 +661,210 @@ def test_entry_pinned_paired_project_needs_no_upstream(tmp_path: Path) -> None:
 
 
 def test_standalone_paired_project_without_upstream_is_refused(tmp_path: Path) -> None:
-    """Without a pinned revision the upstream fork point is required, and absent here."""
-    goal, _paired, _entry_sha = _paired_checkout_without_upstream(tmp_path)
-
-    with (
-        pytest.raises(BaselineWorktreeError, match="no baseline upstream"),
-        baseline_worktree(goal, "HEAD"),
-    ):
-        pass
-
-
-@pytest.mark.parametrize("recorded", ["invalid-ref", "HEAD"])
-def test_standalone_baseline_upstream_wins_over_user_pairing_base(tmp_path, recorded):
-    goal, paired, entry_sha = _paired_checkout_without_upstream(tmp_path)
-    _git(paired, "config", "branch.goal-project.booleyBase", recorded)
-    _git(paired, "config", "branch.goal-project.remote", ".")
-    _git(paired, "config", "branch.goal-project.merge", "refs/heads/master")
-    with baseline_worktree(goal, "HEAD") as baseline:
-        assert git_full_sha("HEAD", baseline / ".booley_project") == entry_sha
-
-
-@pytest.mark.parametrize("recorded", ["missing-commit", "", "HEAD:cores/top.core"])
-def test_invalid_recorded_pairing_base_is_refused(tmp_path, recorded):
+    """A branch without a recorded base or upstream still refuses."""
     goal, paired, _entry_sha = _paired_checkout_without_upstream(tmp_path)
+    _assert_paired_baseline_refuses(goal, paired, "no baseline upstream")
+
+
+def _assert_paired_baseline_refuses(goal: Path, paired: Path, message: str) -> None:
+    registrations = (_git(goal, "worktree", "list"), _git(paired, "worktree", "list"))
+    with pytest.raises(BaselineWorktreeError, match=message), baseline_worktree(goal, "HEAD"):
+        pytest.fail("invalid baseline must refuse before yielding")
+    assert (_git(goal, "worktree", "list"), _git(paired, "worktree", "list")) == registrations
+
+
+def _assert_paired_baseline(goal: Path, paired: Path, expected: str, rule: str, caplog) -> None:
+    registrations = (_git(goal, "worktree", "list"), _git(paired, "worktree", "list"))
+    candidate = _git(paired, "rev-parse", "HEAD")
+    recipe = (paired / "cores/top.core").read_bytes()
+    caplog.set_level(logging.INFO, logger="booley.flows.baseline_worktree")
+    with baseline_worktree(goal, "HEAD") as baseline:
+        assert git_full_sha("HEAD", baseline / ".booley_project") == expected
+        assert (baseline / ".booley_project/cores/top.core").read_text().strip() == _git(
+            paired, "show", f"{expected}:cores/top.core"
+        )
+    assert f"paired Project baseline: {rule} -> {expected}" in caplog.text
+    assert not baseline.exists()
+    assert (_git(goal, "worktree", "list"), _git(paired, "worktree", "list")) == registrations
+    assert _git(paired, "rev-parse", "HEAD") == candidate
+    assert (paired / "cores/top.core").read_bytes() == recipe
+
+
+def test_standalone_recorded_base_wins_after_push(tmp_path, caplog):
+    goal, paired, entry_sha = _paired_checkout_without_upstream(tmp_path)
+    _git(paired, "config", "branch.goal-project.booleyBase", entry_sha)
+    remote = tmp_path / "remote.git"
+    _git(paired, "init", "--bare", str(remote))
+    _git(paired, "remote", "add", "origin", str(remote))
+    _git(paired, "push", "-u", "origin", "goal-project")
+    pushed = _git(paired, "rev-parse", "@{upstream}")
+    (paired / "cores/top.core").write_text("recipe: after push\n", encoding="utf-8")
+    _commit_all(paired, "after push")
+    assert pushed != entry_sha
+    assert _git(paired, "rev-parse", "HEAD") != pushed
+    _assert_paired_baseline(goal, paired, entry_sha, "recorded base", caplog)
+
+
+@pytest.mark.parametrize("operation", ["merge", "rebase"])
+def test_standalone_recorded_base_survives_new_source_commits(tmp_path, caplog, operation):
+    goal, paired, entry_sha = _paired_checkout_without_upstream(tmp_path)
+    _git(paired, "config", "branch.goal-project.booleyBase", entry_sha)
+    source = goal.parent.parent
+    (source / "new-source.txt").write_text("source update\n", encoding="utf-8")
+    _commit_all(source, "new source commit")
+    _git(paired, operation, "project-source")
+    assert (paired / "new-source.txt").is_file()
+    _assert_paired_baseline(goal, paired, entry_sha, "recorded base", caplog)
+    assert _git(paired, "config", "branch.goal-project.booleyBase") == entry_sha
+
+
+def test_standalone_without_recorded_base_uses_upstream(tmp_path, caplog):
+    goal, paired, entry_sha = _paired_checkout_without_upstream(tmp_path)
+    _git(paired, "branch", "--set-upstream-to=project-source")
+    _assert_paired_baseline(goal, paired, entry_sha, "upstream", caplog)
+
+
+def test_standalone_detached_paired_head_uses_checked_out_commit(tmp_path, caplog):
+    goal, paired, _entry_sha = _paired_checkout_without_upstream(tmp_path)
+    current = _git(paired, "rev-parse", "HEAD")
+    _git(paired, "checkout", "--detach", current)
+    _assert_paired_baseline(goal, paired, current, "detached HEAD", caplog)
+
+
+def test_colliding_tag_does_not_hide_recorded_branch_base(tmp_path, caplog):
+    goal, paired, entry_sha = _paired_checkout_without_upstream(tmp_path)
+    _git(paired, "config", "branch.goal-project.booleyBase", entry_sha)
+    _git(paired, "tag", "goal-project")
+    _git(paired, "branch", "--set-upstream-to=project-source")
+    # Make upstream newer than the recorded base so fallback is observable.
+    source = goal.parent.parent
+    (source / "source.txt").write_text("new source\n", encoding="utf-8")
+    _commit_all(source, "new source")
+    _git(paired, "merge", "project-source")
+    _assert_paired_baseline(goal, paired, entry_sha, "recorded base", caplog)
+
+
+@pytest.mark.parametrize("upstream", [False, True])
+@pytest.mark.parametrize(
+    "recorded",
+    ["missing-commit", "f" * 40, "", "HEAD", "project-source", "--help", "blob", "short"],
+)
+def test_invalid_recorded_pairing_base_is_refused(tmp_path, caplog, recorded, upstream):
+    goal, paired, _entry_sha = _paired_checkout_without_upstream(tmp_path)
+    if recorded == "blob":
+        recorded = _git(paired, "rev-parse", "HEAD:cores/top.core")
+    elif recorded == "short":
+        recorded = _git(paired, "rev-parse", "--short", "HEAD")
     _git(paired, "config", "branch.goal-project.booleyBase", recorded)
-    with (
-        pytest.raises(BaselineWorktreeError, match="no baseline upstream"),
-        baseline_worktree(goal, "HEAD"),
-    ):
+    if upstream:
+        _git(paired, "branch", "--set-upstream-to=project-source")
+    _assert_paired_baseline_refuses(goal, paired, "invalid recorded pairing base")
+    assert "paired Project baseline:" not in caplog.text
+
+
+@pytest.mark.parametrize("source", ["recorded base", "upstream"])
+def test_standalone_unrelated_history_refuses_without_fallback(tmp_path, source):
+    goal, paired, entry_sha = _paired_checkout_without_upstream(tmp_path)
+    _git(paired, "config", "branch.goal-project.booleyBase", entry_sha)
+    _git(paired, "checkout", "--orphan", "unrelated")
+    _git(paired, "commit", "-qm", "unrelated root")
+    if source == "recorded base":
+        _git(paired, "config", "branch.unrelated.booleyBase", entry_sha)
+        _git(paired, "branch", "--set-upstream-to=unrelated")
+    else:
+        _git(paired, "branch", "--set-upstream-to=project-source")
+    _assert_paired_baseline_refuses(goal, paired, "fork point")
+
+
+def test_nonancestor_recorded_base_uses_older_common_ancestor(tmp_path, caplog):
+    goal, paired, entry_sha = _paired_checkout_without_upstream(tmp_path)
+    recorded = _git(paired, "rev-parse", "HEAD")
+    _git(paired, "config", "branch.goal-project.booleyBase", recorded)
+    _git(paired, "reset", "--hard", entry_sha)
+    (paired / "cores/top.core").write_text("recipe: rewritten\n", encoding="utf-8")
+    _commit_all(paired, "rewritten history")
+    _assert_paired_baseline(goal, paired, entry_sha, "recorded base", caplog)
+    assert _git(paired, "config", "branch.goal-project.booleyBase") == recorded
+
+
+@pytest.mark.parametrize("mode", ["entry_pinned", "ticket_pinned"])
+@pytest.mark.parametrize("detached", [False, True])
+def test_explicit_pairing_pin_bypasses_standalone_policy(tmp_path, caplog, mode, detached):
+    from booley.evidence.acceptance import PairedProjectBaseline
+
+    goal, paired, entry_sha = _paired_checkout_without_upstream(tmp_path)
+    _git(paired, "config", "branch.goal-project.booleyBase", "invalid")
+    _git(paired, "branch", "--set-upstream-to=project-source")
+    if detached:
+        _git(paired, "checkout", "--detach", "HEAD")
+    policy = getattr(PairedProjectBaseline, mode)(entry_sha)
+    with baseline_worktree(goal, "HEAD", paired_project=policy) as baseline:
+        assert git_full_sha("HEAD", baseline / ".booley_project") == entry_sha
+    assert not baseline.exists()
+    assert "paired Project baseline:" not in caplog.text
+
+
+@pytest.mark.parametrize("probe", ["symbolic-ref", "config"])
+@pytest.mark.parametrize("failure", ["timeout", "os", "status"])
+def test_pairing_probe_failure_never_selects_another_source(tmp_path, monkeypatch, probe, failure):
+    from booley.flows import baseline_worktree as module
+
+    goal, paired, entry_sha = _paired_checkout_without_upstream(tmp_path)
+    _git(paired, "config", "branch.goal-project.booleyBase", entry_sha)
+    _git(paired, "branch", "--set-upstream-to=project-source")
+    real_git = module._git
+
+    def failing_git(cwd, *args, timeout):
+        if cwd == paired and args[0] == probe:
+            if failure == "timeout":
+                raise subprocess.TimeoutExpired(["git", *args], timeout)
+            if failure == "os":
+                raise OSError("cannot launch Git")
+            return subprocess.CompletedProcess(["git", *args], 1, "", "probe failed")
+        return real_git(cwd, *args, timeout=timeout)
+
+    monkeypatch.setattr(module, "_git", failing_git)
+    _assert_paired_baseline_refuses(goal, paired, "paired Project")
+
+
+def test_symbolic_head_outside_branch_namespace_refuses(tmp_path):
+    goal, paired, _entry_sha = _paired_checkout_without_upstream(tmp_path)
+    _git(paired, "tag", "elsewhere")
+    _git(paired, "symbolic-ref", "HEAD", "refs/tags/elsewhere")
+    _assert_paired_baseline_refuses(goal, paired, "paired Project")
+
+
+@pytest.mark.parametrize("rule", ["recorded base", "upstream", "detached HEAD"])
+def test_paired_baseline_selection_reaches_flow_progress_without_info_logging(tmp_path, rule):
+    from booley.flows.terminal_progress import TerminalProgress
+
+    goal, paired, entry_sha = _paired_checkout_without_upstream(tmp_path)
+    expected = entry_sha
+    if rule == "recorded base":
+        _git(paired, "config", "branch.goal-project.booleyBase", entry_sha)
+    elif rule == "upstream":
+        _git(paired, "branch", "--set-upstream-to=project-source")
+    else:
+        _git(paired, "checkout", "--detach", "HEAD")
+        expected = _git(paired, "rev-parse", "HEAD")
+    stream = io.StringIO()
+    observer = TerminalProgress("synth", "synth_core", goal, stream=stream)
+    logger = logging.getLogger("booley.flows.baseline_worktree")
+    previous = logger.level
+    logger.setLevel(logging.WARNING)
+    try:
+        with observer.installed(), baseline_worktree(goal, "HEAD"):
+            pass
+    finally:
+        logger.setLevel(previous)
+    assert f"baseline: paired Project {rule} -> {expected}" in stream.getvalue()
+
+
+def test_paired_baseline_without_progress_observer_emits_no_direct_output(tmp_path, capsys):
+    goal, paired, entry_sha = _paired_checkout_without_upstream(tmp_path)
+    _git(paired, "config", "branch.goal-project.booleyBase", entry_sha)
+    with baseline_worktree(goal, "HEAD"):
         pass
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
