@@ -20,11 +20,11 @@ from booley.goals.review_package import original_observations
 from booley.goals.state_store import load_goal_state
 from booley.goals.status import GoalStatusView, build_status
 from booley.goals.store import GoalStore
-from booley.harness import auto_doctor, upgrade_review
+from booley.harness import upgrade_review
 from booley.harness.dashboard.resources import ProcessSampler, Resources, ResourceSampler
 from booley.mcp.session_registry import SessionRegistry, SessionRow, namespace
 from booley.review.goal_package import GoalCompletionPackage
-from booley.runtime import job_slots
+from booley.runtime import health, health_presentation, job_slots
 from booley.runtime.artifact_paths import available_paths
 from booley.runtime.job_artifacts import JobArtifactCache
 from booley.runtime.job_snapshot import JobSnapshot, snapshot_jobs, target_arg
@@ -198,16 +198,16 @@ def checking_goals(view: GoalView, jobs: JobSnapshot) -> GoalView:
 def health_snapshot(root: Path, project_dir: Path) -> tuple[str, ...]:
     """Non-consuming Doctor freshness and typed read-only upgrade-review projection."""
     lines = []
-    report = auto_doctor.load_report(root)
-    if report is not None and any(auto_doctor.issue_counts(report)):
-        due = auto_doctor.due_reason(root)
+    snapshot = health.read_health(root)
+    if snapshot is not None and not snapshot.assessment.clean:
         lines.append(
-            auto_doctor.current_summary(root) + (f" · stale: {due}" if due else " · current")
+            health_presentation.brief_message(snapshot)
+            + (f" · stale: {snapshot.due}" if snapshot.due else " · current")
         )
-    elif report is None:
+    elif snapshot is None:
         lines.append("Doctor health unavailable: no readable automatic result")
-    elif due := auto_doctor.due_reason(root):
-        lines.append("Doctor health stale: " + due)
+    elif snapshot.due:
+        lines.append("Doctor health stale: " + snapshot.due)
     review = upgrade_review.read_status(project_dir)
     if review.condition not in {
         upgrade_review.ReviewCondition.CURRENT,

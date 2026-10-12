@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from booley.feedback.render import Environment, collect_environment
-from booley.harness import doctor_stamp
+from booley.runtime import doctor_stamp
 
 
 def resolve_feedback_environment(project_dir: Path) -> Environment:

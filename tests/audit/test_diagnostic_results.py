@@ -21,3 +21,9 @@ def test_warning_preserves_subject_deduplication_and_remediation():
         "once",
         "repair",
     )
+
+
+@pytest.mark.parametrize("severity", [Severity.WARN, Severity.WAIVED, "warn", "waived"])
+def test_active_and_waived_warning_strings_preserve_identity_validation(severity):
+    with pytest.raises(ValueError, match="stable check ID"):
+        DiagnosticFinding(severity, "Missing identity")

@@ -21,7 +21,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from booley.runtime import devcontainer as dc
-from booley.runtime import issuance_invalidation, session_spec
+from booley.runtime import health, health_presentation, issuance_invalidation, session_spec
 from booley.runtime import session_issuance as runtime_spec
 from booley.runtime import session_runtime as sr
 from booley.runtime.session_admission import (
@@ -3659,7 +3659,7 @@ class TestSessionRefresh:
         monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        from booley.harness import auto_doctor, booley
+        from booley.harness import booley
         from booley.harness.booley import _build_parser
         from booley.runtime import session_refresh
 
@@ -3672,7 +3672,7 @@ class TestSessionRefresh:
         booley_config.chmod(0o755)
         monkeypatch.setattr(booley, "_report_upgrade_before_session", lambda _root: None)
         monkeypatch.setattr(sr, "conflicting_vscode_session", lambda _root: None)
-        monkeypatch.setattr(auto_doctor, "due_reason", lambda _root: None)
+        monkeypatch.setattr(health, "due_reason", lambda _root: None)
         monkeypatch.setattr(session_refresh, "has_pending_refresh", lambda _root: False)
         monkeypatch.setattr(
             sr,
@@ -3691,7 +3691,7 @@ class TestSessionRefresh:
         assert "Traceback" not in captured.err
 
     def test_refresh_configures_progress_before_reconciling_image(self, tmp_path: Path):
-        from booley.harness import auto_doctor, booley, session_refresh
+        from booley.harness import booley, session_refresh
         from booley.harness.booley import _build_parser
         from booley.runtime.image_lifecycle import LifecycleResult, Status
 
@@ -3711,7 +3711,7 @@ class TestSessionRefresh:
                 side_effect=lambda *_args, **_kwargs: events.append("reconcile") or result,
             ),
             patch.object(booley, "_report_session_health"),
-            patch.object(auto_doctor, "due_reason", return_value=None),
+            patch.object(health, "due_reason", return_value=None),
         ):
             assert booley._session_refresh(args, tmp_path) == 0
 
@@ -4054,7 +4054,7 @@ class TestSessionRefresh:
         monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        from booley.harness import auto_doctor, booley
+        from booley.harness import booley
         from booley.harness.booley import _build_parser
 
         monkeypatch.setattr(sr, "down", lambda _root: sr.DownResult(headless=True))
@@ -4065,9 +4065,9 @@ class TestSessionRefresh:
 
         monkeypatch.setattr(sr, "conflicting_vscode_session", lambda _root: None)
         monkeypatch.setattr(sr, "up", lambda *_args, **_kwargs: "session")
-        monkeypatch.setattr(auto_doctor, "due_reason", lambda _root: "Doctor inputs changed")
+        monkeypatch.setattr(health, "due_reason", lambda _root: "Doctor inputs changed")
         monkeypatch.setattr(
-            auto_doctor,
+            health_presentation,
             "consume_changed_summary",
             lambda *_args, **_kwargs: pytest.fail("stale Doctor summary was consumed"),
         )

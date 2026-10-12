@@ -347,7 +347,6 @@ named rule and gives no source module a blanket exemption.
 
 | Permission | Rule | Exact source -> exact target | Reason |
 | --- | --- | --- | --- |
-| C1 | D4 | `booley.mcp.server -> booley.harness.auto_doctor` | The MCP server composes the Doctor endpoint at the agent-facing entry point. |
 | C2 | D4 | `booley.mcp.server -> booley.specialists.specialist` | The MCP server classifies and composes Specialist endpoints. |
 | C8 | D6 | `booley.runtime.incontainer_register -> booley.harness.incontainer_register` | The former module path remains an exact compatibility entry point. |
 | C10 | D31 | `booley.flows.sim.campaign.coordinator -> booley.flows.sim.campaign.store` | Campaign execution composes durable transaction, recovery, and publication. |

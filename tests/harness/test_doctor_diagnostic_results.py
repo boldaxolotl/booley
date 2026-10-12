@@ -9,8 +9,9 @@ import pytest
 
 from booley.audit import host_environment
 from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport, Severity
-from booley.harness import doctor, doctor_stamp, host_diagnostics
+from booley.harness import doctor, host_diagnostics
 from booley.harness.setup import readiness
+from booley.runtime import doctor_stamp
 from tests.harness.test_doctor import _patch_environment, _write_project
 
 

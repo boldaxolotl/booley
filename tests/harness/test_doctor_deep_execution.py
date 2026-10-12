@@ -13,7 +13,7 @@ import pytest
 import booley
 from booley.harness import doctor
 from booley.harness import doctor_deep as deep
-from booley.runtime import runtime_context, sandbox_artifact
+from booley.runtime import health, health_presentation, runtime_context, sandbox_artifact
 from tests.flows.sim.test_verilator_build_reuse_campaign import flow_project
 from tests.harness.test_doctor import _write_project
 
@@ -161,7 +161,7 @@ def test_missing_targets_are_incomplete_even_without_health_warning(tmp_path, mo
 
 def test_waived_missing_selftest_warning_cannot_supply_execution(tmp_path, monkeypatch):
     project = _project(tmp_path)
-    from booley.harness.doctor_waivers import load_doctor_waivers
+    from booley.audit.doctor_waivers import load_doctor_waivers
 
     path = project.project_dir / "doctor-waivers.toml"
     path.write_text(
@@ -310,21 +310,20 @@ def test_core_completion_requires_all_selected_verdicts(entries):
 def test_session_up_reports_deep_once_through_all_health_branches(
     tmp_path, monkeypatch, capsys, early
 ):
-    from booley.harness import auto_doctor
     from booley.harness import booley as cli
 
     monkeypatch.setattr(cli, "_report_upgrade_before_session", lambda _: None)
     monkeypatch.setattr(doctor.session_runtime, "conflicting_vscode_session", lambda _: None)
     monkeypatch.setattr(doctor.session_runtime, "up", lambda *_args, **_kw: "sandbox")
     monkeypatch.setattr(
-        auto_doctor, "due_reason", lambda _: "plain expired" if early == "scheduled" else None
+        health, "due_reason", lambda _: "plain expired" if early == "scheduled" else None
     )
     monkeypatch.setattr(
-        auto_doctor,
+        health_presentation,
         "consume_changed_summary",
         lambda *_args, **_kw: "plain healthy" if early == "changed" else None,
     )
-    monkeypatch.setattr(auto_doctor, "load_report", lambda _: {})
+    monkeypatch.setattr(health, "read_health", lambda _: None)
     observe = Mock(
         return_value=deep.evaluate_deep_status(
             deep.DeepState(), version=booley.__version__, image_id=IMAGE

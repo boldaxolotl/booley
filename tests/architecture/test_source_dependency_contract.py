@@ -441,3 +441,39 @@ def test_diagnostic_owners_do_not_acquire_command_or_rendering_knowledge(
     assert "D26" in report
     assert f"booley.harness.{owner}" in report
     assert f"booley.harness.{target}" in report
+
+
+def test_shared_health_has_no_transitive_command_or_sdk_dependency() -> None:
+    edges: dict[str, set[str]] = {}
+    for item in analyze_imports(_SOURCE_ROOT):
+        edges.setdefault(item.source, set()).add(item.target)
+    pending = {
+        "booley.audit.health",
+        "booley.runtime.health",
+        "booley.runtime.doctor_stamp",
+        "booley.runtime.health_presentation",
+    }
+    visited: set[str] = set()
+    while pending:
+        current = pending.pop()
+        if current in visited:
+            continue
+        visited.add(current)
+        assert not current.startswith(("booley.harness", "booley.mcp", "booley.specialists")), (
+            current
+        )
+        pending.update(edges.get(current, set()) - visited)
+
+
+def test_health_consumers_do_not_import_worker_or_old_stamp_paths() -> None:
+    consumers = {"booley.mcp.server", "booley.harness.dashboard.model"}
+    retired = {
+        "booley.harness.auto_doctor",
+        "booley.harness.doctor_stamp",
+        "booley.harness.doctor_waivers",
+    }
+    assert not [
+        (edge.source, edge.target)
+        for edge in analyze_imports(_SOURCE_ROOT)
+        if edge.source in consumers and edge.target in retired
+    ]

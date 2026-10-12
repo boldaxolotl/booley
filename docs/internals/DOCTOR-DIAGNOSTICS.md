@@ -21,8 +21,9 @@ original revisions.
 
 ## Interfaces and ownership
 
-Doctor retains check selection, phase ordering, rendering, warning waivers,
-counts, final health/exit status, reports, and deep Flow execution. The extracted
+Doctor retains check selection, phase ordering, rendering, waiver application,
+counts and deep Flow execution. Shared typed diagnostics now interpret final
+health and exit status; Runtime stores their reports and freshness state. The extracted
 owners accept domain inputs and return complete typed observations:
 
 | Owner | Public operations | Knowledge hidden from Doctor |
@@ -48,6 +49,55 @@ It now produces `host.bootstrap-pending`, with the Bootstrap resource as subject
 Malformed non-object devcontainer JSON likewise becomes a diagnostic failure
 instead of raising while examining its fields. These are the intentional edge-case
 fixes accompanying the extraction.
+
+## Shared health ownership (#1294)
+
+Doctor, MCP and the Dashboard consume one shared health capability outside
+command orchestration:
+
+| Owner | Interface | Responsibility |
+| --- | --- | --- |
+| `audit.diagnostic_results` | `DiagnosticFinding`, `DiagnosticReport.health`, `HealthAssessment` | Final observations, including `WAIVED`, and active FAIL/WARN interpretation. FAIL produces exit 1; WARN without FAIL produces exit 0 but is unclean. Waived warnings are inactive. |
+| `audit.health` | `HealthSnapshot`, `parse_diagnostics`, `freshness_reason` | Validated observations and deterministic freshness decisions from explicit fingerprint/time inputs. No Runtime, Harness or SDK dependency. |
+| `audit.doctor_waivers` | `DoctorWaivers`, `warning`, `load_doctor_waivers` | Stable warning identities and Project waiver policy. Doctor applies waivers and deduplication before publishing. |
+| `runtime.health` | `read_health`, `due_reason`, `publish_result`, `consume_changed_snapshot` | Fingerprint discovery, one-report snapshots, atomic report/transcript writes, and locked per-channel announcement state. Never executes Doctor. |
+| `runtime.health_presentation` | `brief_message`, `current_summary`, `consume_changed_summary` | Existing brief text from a typed snapshot. Formatting a snapshot never reloads its report. |
+| `runtime.doctor_stamp` | `record_clean_run`, `check_stamp_advisory` | The independent last-clean stamp and its existing package/config/age advisory. |
+| `harness.auto_doctor` | `launch`, `run_if_due` | Detached worker launch, run lock, read-only Doctor execution, crash capture and progress. |
+
+`read_health` reads `runtime/doctor/last.json` once, validates observations,
+then computes freshness for that observation. Missing or corrupt state is
+unavailable. Legacy records without optional metadata remain readable; records
+with invalid fields or contradictions among active counts, findings, `clean`
+and `exit_code` are unavailable. Unsupported schemas are also unavailable.
+Non-active counts may describe an abbreviated legacy report. The five persisted
+finding fields and announcement hash format are unchanged; internal `dedupe`
+metadata is excluded.
+
+The last-observation report and `runtime/doctor_stamp.json` remain distinct.
+Automatic or complete manual in-Sandbox runs publish the former, including
+unhealthy observations; the latter is written only by qualified clean runs.
+A partial manual profile does not replace complete health evidence. Deep status
+is retained as metadata, separate from active health counts and announcement
+identity. Correctly interpreted design findings remain compatible with healthy
+execution machinery.
+
+A clean or upgrade-only automatic observation expires at seven days; other
+unhealthy observations expire at one day. Fingerprint drift precedes age, and
+unreadable timestamps require rechecking. The separate clean stamp retains its
+whole-day `> max_age_days` threshold and version-drift guidance.
+
+The Dashboard reads one non-consuming snapshot, hides current healthy state,
+and retains its existing unavailable/stale messages. MCP status and alerts use
+the same observations. Announcement channels remain independent. An
+`issues_only=True` channel does not advance its ledger on clean observations:
+issue A, then clean, then identical issue A remains suppressed in that channel.
+Channels consuming clean observations announce the recurrence. Readers and
+renderers neither run Doctor nor write announcement state.
+
+The source-dependency contract removes the former C1 permission for MCP to
+import `harness.auto_doctor`; shared health readers have no transitive Harness
+or SDK dependency. No package-cycle member or permission is added.
 
 ## Effects and sequencing
 

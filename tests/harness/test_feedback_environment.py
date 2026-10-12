@@ -6,7 +6,8 @@ import pytest
 
 from booley.feedback import cli as feedback_cli
 from booley.feedback.findings import Finding, append
-from booley.harness import booley, doctor_stamp, feedback_environment
+from booley.harness import booley, feedback_environment
+from booley.runtime import doctor_stamp
 from booley.runtime import project_dir as project_dir_mod
 
 

@@ -35,7 +35,23 @@ from booley.audit import (
     resource_policy,
     target_matrix,
 )
-from booley.audit.diagnostic_results import DiagnosticReport, Severity
+from booley.audit import (
+    health as health_policy,
+)
+from booley.audit.diagnostic_results import (
+    DiagnosticFinding,
+    DiagnosticReport,
+    HealthAssessment,
+    Severity,
+)
+from booley.audit.doctor_waivers import (
+    WAIVER_FILENAME,
+    DoctorWaiverError,
+    DoctorWaivers,
+    DoctorWarning,
+    load_doctor_waivers,
+    warning,
+)
 from booley.config.jobs import parse_caps
 from booley.config.project_config import normalize_tests_toml
 from booley.core.boundary import (
@@ -65,7 +81,6 @@ from booley.fusesoc import (
 )
 from booley.harness import (
     doctor_deep,
-    doctor_stamp,
     host_diagnostics,
     nangate_pdk,
     upgrade_cli,
@@ -75,14 +90,6 @@ from booley.harness import (
     doctor_sim_dump as sim_dump,
 )
 from booley.harness.colors import green, red, yellow
-from booley.harness.doctor_waivers import (
-    WAIVER_FILENAME,
-    DoctorWaiverError,
-    DoctorWaivers,
-    DoctorWarning,
-    load_doctor_waivers,
-    warning,
-)
 from booley.harness.setup import readiness
 from booley.harness.setup.common import banner, err, info, note, ok, skip, warn
 from booley.harness.setup.docker_image import DOCKER_IMAGE, FLAVOR_IMAGES
@@ -98,6 +105,8 @@ from booley.harness.setup.line_endings import (
 from booley.harness.setup.readiness import ProjectAudit
 from booley.runtime import (
     auth_token,
+    doctor_stamp,
+    health,
     image_identity,
     inspection,
     project_repositories,
@@ -116,6 +125,7 @@ from booley.runtime.project_dir import (
     PROJECT_DIR_NAME,
     contains,
     resolve_checkout_project_dir,
+    resolve_project_dir,
 )
 from booley.runtime.project_gitignore import missing_gitignore_patterns
 from booley.runtime.timefmt import format_human_datetime
@@ -316,15 +326,7 @@ def _warning_sink(
     return emit
 
 
-@dataclass(frozen=True)
-class DoctorFinding:
-    """One structured Doctor observation, independent of console rendering."""
-
-    severity: str
-    message: str
-    fix: str = ""
-    check_id: str | None = None
-    subject: str | None = None
+DoctorFinding = DiagnosticFinding
 
 
 @dataclass(frozen=True)
@@ -359,9 +361,14 @@ class DoctorRunResult:
     deep_status: doctor_deep.DeepStatus | None = None
 
     @property
+    def diagnostics(self) -> DiagnosticReport:
+        """Shared typed findings after waiver and deduplication policy."""
+        return DiagnosticReport(self.findings)
+
+    @property
     def clean(self) -> bool:
         """True only when no active FAIL or WARN finding remains."""
-        return self.counts["fail"] == 0 and self.counts["warn"] == 0
+        return self.diagnostics.health.clean
 
 
 def _format_minutes(seconds: int) -> str:
@@ -471,6 +478,8 @@ class _Reporter:
                 self.skip_(finding.message)
             elif finding.severity is Severity.FAIL:
                 self.fail_(finding.message, finding.fix)
+            elif finding.severity is Severity.WAIVED:
+                self.waived_(finding)
             else:
                 assert finding.check_id is not None
                 self.warn_(
@@ -517,13 +526,9 @@ class _Reporter:
         suffix = _warning_identity(msg)
         waiver = self.waivers.match(msg)
         if waiver is not None:
-            assert self.findings is not None
-            self.findings.append(
+            self.waived_(
                 DoctorFinding("waived", str(msg), waiver.reason, msg.check_id, msg.subject)
             )
-            note(f"WAIVED  {msg} {suffix}")
-            info(f"  reason: {waiver.reason}")
-            self.counts["waived"] += 1
             return
         assert self.findings is not None
         self.findings.append(DoctorFinding("warn", str(msg), fix, msg.check_id, msg.subject))
@@ -531,6 +536,14 @@ class _Reporter:
         if fix:
             info(f"  fix: {fix}")
         self.counts["warn"] += 1
+
+    def waived_(self, finding: DiagnosticFinding) -> None:
+        """Render an already-waived observation without making it active again."""
+        assert self.findings is not None
+        self.findings.append(finding)
+        note(f"WAIVED  {finding.message} {_warning_identity(finding)}")
+        info(f"  reason: {finding.fix}")
+        self.counts["waived"] += 1
 
     def skip_(self, msg: str) -> None:
         assert self.findings is not None
@@ -583,7 +596,7 @@ class _Reporter:
             print(
                 yellow("  Resolve or explicitly waive every warning before calling setup clean.")
             )
-        return 0 if self.counts["fail"] == 0 else 1
+        return HealthAssessment(self.counts["fail"], self.counts["warn"]).exit_code
 
     def result(self, exit_code: int) -> DoctorRunResult:
         """Freeze the accumulated findings after :meth:`finish`."""
@@ -596,7 +609,7 @@ class _Reporter:
         )
 
 
-def _warning_identity(finding: DoctorWarning) -> str:
+def _warning_identity(finding: DoctorWarning | DiagnosticFinding) -> str:
     subject = f":{finding.subject}" if finding.subject is not None else ""
     return f"[{finding.check_id}{subject}]"
 
@@ -636,16 +649,38 @@ def _create_reporter(
     return reporter
 
 
+def record_manual_result(project_root: Path, result: DoctorRunResult) -> dict[str, Any] | None:
+    """Make a manual in-Sandbox Doctor result current for interactive reporting."""
+    if not result.health_evidence:
+        return None
+    try:
+        project_dir = resolve_project_dir(project_root)
+        findings = health_policy.finding_documents(result.diagnostics)
+        transcript = "\n".join(
+            f"{finding['severity'].upper()}: {finding['message']}" for finding in findings
+        )
+        return health.publish_result(
+            project_root,
+            project_dir,
+            trigger="manual-doctor",
+            duration_s=0,
+            counts=dict(result.counts),
+            diagnostics=result.diagnostics,
+            exit_code=int(result.exit_code),
+            transcript=transcript + "\n",
+            deep_status=result.deep_status.to_document() if result.deep_status else None,
+        )
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
+
+
 def run_doctor(args: argparse.Namespace, project_root: Path) -> int:
     """Run setup health checks."""
     result = run_doctor_result(args, project_root)
     if runtime_context.inside_session_runtime():
-        try:
-            from booley.harness.auto_doctor import record_manual_result
-
+        # Advisory publication must never change the manual result.
+        with contextlib.suppress(Exception):
             record_manual_result(project_root, result)
-        except Exception:  # noqa: BLE001 — advisory state must never change manual Doctor's result
-            pass
     return result.exit_code
 
 

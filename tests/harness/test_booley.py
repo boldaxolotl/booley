@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from booley.harness import booley as tlr
+from booley.runtime import health, health_presentation
 from booley.runtime.project_dir import reset_cache
 
 TICKETS_REL = Path(".booley") / "project" / "tickets"
@@ -340,10 +341,8 @@ def test_host_authority_guard_resolves_packaged_skills(monkeypatch, capsys):
 
 
 def test_session_health_reports_scheduled_automatic_check(tmp_path, monkeypatch, capsys):
-    from booley.harness import auto_doctor
-
-    monkeypatch.setattr(auto_doctor, "consume_changed_summary", lambda *_a, **_kw: None)
-    monkeypatch.setattr(auto_doctor, "due_reason", lambda _root: "stale")
+    monkeypatch.setattr(health_presentation, "consume_changed_summary", lambda *_a, **_kw: None)
+    monkeypatch.setattr(health, "due_reason", lambda _root: "stale")
 
     tlr._report_session_health(tmp_path)
 
@@ -351,7 +350,6 @@ def test_session_health_reports_scheduled_automatic_check(tmp_path, monkeypatch,
 
 
 def test_session_up_observes_upgrade_before_runtime_start(tmp_path, monkeypatch):
-    from booley.harness import auto_doctor
     from booley.runtime import session_runtime
 
     events: list[str] = []
@@ -364,7 +362,7 @@ def test_session_up_observes_upgrade_before_runtime_start(tmp_path, monkeypatch)
         "up",
         lambda *_args, **_kwargs: events.append("up") or "session",
     )
-    monkeypatch.setattr(auto_doctor, "due_reason", lambda _root: None)
+    monkeypatch.setattr(health, "due_reason", lambda _root: None)
     monkeypatch.setattr(tlr, "_report_session_health", lambda *_args, **_kwargs: None)
 
     assert tlr._session_up(tlr._build_parser().parse_args(["session", "up"]), tmp_path) == 0
@@ -374,10 +372,8 @@ def test_session_up_observes_upgrade_before_runtime_start(tmp_path, monkeypatch)
 def test_due_session_start_does_not_report_persisted_doctor_findings(
     tmp_path, monkeypatch, capsys
 ):
-    from booley.harness import auto_doctor
-
     monkeypatch.setattr(
-        auto_doctor,
+        health_presentation,
         "consume_changed_summary",
         lambda *_args, **_kwargs: pytest.fail("stale summary was consumed"),
     )
@@ -390,11 +386,9 @@ def test_due_session_start_does_not_report_persisted_doctor_findings(
 
 
 def test_session_health_rechecks_freshness_before_consuming_summary(tmp_path, monkeypatch, capsys):
-    from booley.harness import auto_doctor
-
-    monkeypatch.setattr(auto_doctor, "due_reason", lambda _root: "Doctor inputs changed")
+    monkeypatch.setattr(health, "due_reason", lambda _root: "Doctor inputs changed")
     monkeypatch.setattr(
-        auto_doctor,
+        health_presentation,
         "consume_changed_summary",
         lambda *_args, **_kwargs: pytest.fail("stale summary was consumed"),
     )
@@ -1019,12 +1013,11 @@ def test_hidden_session_prepare_accepts_explicit_workspace_root():
 def test_at_cap_session_start_reports_status_two_without_success(
     command, tmp_path, monkeypatch, capsys
 ):
-    from booley.harness import auto_doctor
     from booley.runtime import session_runtime as sr
 
     args = tlr._build_parser().parse_args(["session", command])
     monkeypatch.setattr(tlr, "_report_upgrade_before_session", lambda _root: None)
-    monkeypatch.setattr(auto_doctor, "due_reason", lambda _root: None)
+    monkeypatch.setattr(health, "due_reason", lambda _root: None)
     monkeypatch.setattr(sr, "conflicting_vscode_session", lambda _root: None)
     monkeypatch.setattr(
         sr,
