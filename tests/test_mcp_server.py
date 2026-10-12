@@ -12,6 +12,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from booley.runtime import health_presentation
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
@@ -1130,14 +1132,13 @@ class TestBooleyStatus:
             self.mcp_server = mcp_server
 
     def test_format_status_card(self, monkeypatch):
-        from booley.harness import auto_doctor
 
         monkeypatch.setattr(
             self.mcp_server.socket,
             "gethostname",
             lambda: "4f3c2a1b",
         )
-        monkeypatch.setattr(auto_doctor, "current_summary", lambda _root: "clean")
+        monkeypatch.setattr(health_presentation, "current_summary", lambda _root: "clean")
         monkeypatch.setattr(
             self.mcp_server,
             "format_status_line",
@@ -1204,7 +1205,6 @@ class TestBooleyStatus:
         ]
 
     def test_dispatch_status_returns_text_content(self, monkeypatch):
-        from booley.harness import auto_doctor
 
         def fake_text_content(**kwargs):
             return SimpleNamespace(type=kwargs["type"], text=kwargs["text"])
@@ -1219,7 +1219,7 @@ class TestBooleyStatus:
             "TextContent",
             fake_text_content,
         )
-        monkeypatch.setattr(auto_doctor, "current_summary", lambda _root: "1 WARN")
+        monkeypatch.setattr(health_presentation, "current_summary", lambda _root: "1 WARN")
         monkeypatch.setattr(
             self.mcp_server,
             "format_status_line",
@@ -1239,7 +1239,6 @@ class TestBooleyStatus:
         )
 
     def test_first_mcp_tool_result_gets_changed_health_warning(self, monkeypatch):
-        from booley.harness import auto_doctor
 
         def fake_text_content(**kwargs):
             return SimpleNamespace(type=kwargs["type"], text=kwargs["text"])
@@ -1247,7 +1246,7 @@ class TestBooleyStatus:
         monkeypatch.setattr(self.mcp_server, "_status_mcp_tool_visible", lambda: True)
         monkeypatch.setattr(self.mcp_server, "TextContent", fake_text_content)
         monkeypatch.setattr(
-            auto_doctor,
+            health_presentation,
             "consume_changed_summary",
             lambda *_a, **_kw: "Automatic Doctor found 1 FAIL",
         )
@@ -1259,7 +1258,6 @@ class TestBooleyStatus:
         assert result[1].text == "MCP tool result"
 
     def test_health_warning_preserves_error_disposition(self, monkeypatch):
-        from booley.harness import auto_doctor
 
         def fake_text_content(**kwargs):
             return SimpleNamespace(type=kwargs["type"], text=kwargs["text"])
@@ -1267,7 +1265,7 @@ class TestBooleyStatus:
         monkeypatch.setattr(self.mcp_server, "_status_mcp_tool_visible", lambda: True)
         monkeypatch.setattr(self.mcp_server, "TextContent", fake_text_content)
         monkeypatch.setattr(
-            auto_doctor,
+            health_presentation,
             "consume_changed_summary",
             lambda *_a, **_kw: "Automatic Doctor found 1 FAIL",
         )

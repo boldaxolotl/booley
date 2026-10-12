@@ -10,11 +10,13 @@ from types import SimpleNamespace
 import pytest
 from textual.widgets import DataTable, Static
 
+from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport, Severity
 from booley.criteria.presentation import CriterionPresentation
 from booley.harness import upgrade_review
 from booley.harness.dashboard import model
 from booley.harness.dashboard.app import DashboardApp, Navigation
 from booley.mcp.session_registry import Attribution, RecentCall, SessionRow
+from booley.runtime import health
 from booley.runtime.job_records import JobRecord
 from booley.runtime.job_snapshot import JobSnapshot, JobView
 
@@ -269,21 +271,37 @@ def test_responsive_goal_selection_uses_the_displayed_column_count(monkeypatch):
 def test_health_nonconsuming_clean_hidden_and_freshness(
     tmp_path, monkeypatch, report, due, expected
 ):
-    monkeypatch.setattr(model.auto_doctor, "load_report", lambda _: report)
-    monkeypatch.setattr(model.auto_doctor, "due_reason", lambda _: due)
-    monkeypatch.setattr(model.auto_doctor, "current_summary", lambda _: "failure")
+    diagnostics = DiagnosticReport(
+        (DiagnosticFinding(Severity.FAIL, "failure"),)
+        if report is not None and report["counts"]["fail"]
+        else ()
+    )
+    snapshot = (
+        health.HealthSnapshot(diagnostics, "fixture-hash", tmp_path / "last.log", due)
+        if report is not None
+        else None
+    )
+    reads = []
+
+    def read(_):
+        reads.append(True)
+        return snapshot
+
+    monkeypatch.setattr(model.health, "read_health", read)
+    monkeypatch.setattr(model.health_presentation, "brief_message", lambda _: "failure")
     monkeypatch.setattr(
         model.upgrade_review,
         "read_status",
         lambda _: upgrade_review.ReviewStatus(upgrade_review.ReviewCondition.CURRENT, "1", "path"),
     )
     monkeypatch.setattr(
-        model.auto_doctor, "consume_changed_summary", lambda _: pytest.fail("health consumed")
+        model.health, "consume_changed_snapshot", lambda _: pytest.fail("health consumed")
     )
     monkeypatch.setattr(
         model.upgrade_review, "observe", lambda *_a, **_k: pytest.fail("upgrade state changed")
     )
-    assert model.health_snapshot(tmp_path, tmp_path) == expected
+    assert model.health_lines(tmp_path, tmp_path) == expected
+    assert reads == [True]
     assert list(tmp_path.iterdir()) == []
 
 

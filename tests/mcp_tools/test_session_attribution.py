@@ -264,18 +264,28 @@ async def test_async_goal_reply_refreshes_shared_warning_after_deferred_peer(
     other = resolve_attribution(tmp_path, metadata={"threadId": "other"}, client_name="codex")
     registry.upsert(other, "lint", "completed", now=100)
     release = threading.Event()
+    # Liveness bound only: no assertion depends on work finishing inside a
+    # wall-clock window, so a loaded runner cannot change the outcome.
+    liveness_bound = 30
+    warnings_at_dispatch = []
 
     def peer(_request):
-        assert release.wait(2)
+        assert release.wait(liveness_bound)
         return ProcessIdentity(98765, "fixture", 101)
 
     monkeypatch.setattr(session_observer, "observed_peer", peer)
-    observer = SessionObserver(now=lambda: 100, budget=0.05)
+    # Zero budget: every advisory wait before dispatch expires while the peer
+    # is still gated, whatever the scheduler does.
+    observer = SessionObserver(now=lambda: 100, budget=0)
     monkeypatch.setattr(observer, "_registry", lambda: registry)
 
-    async def dispatch(*_):
+    async def dispatch(_name, _arguments, _source, request):
+        warnings_at_dispatch.append(request.presentation_warning)
         release.set()
-        await asyncio.wait_for(observer._pending, 2)
+        await asyncio.wait_for(observer._pending, liveness_bound)
+        # The peer is resolved. Completion-time registry I/O must now finish
+        # rather than race the advisory budget, which would report "unavailable".
+        observer.budget = liveness_bound
         return McpDispatchResult(
             [TextContent(type="text", text="RUNNING: sim")], False, goal_aware=True
         )
@@ -305,6 +315,9 @@ async def test_async_goal_reply_refreshes_shared_warning_after_deferred_peer(
         )
     finally:
         release.set()
+    # The request really was presented before its peer resolved ...
+    assert warnings_at_dispatch == ["WARNING: shared-worktree session attribution is unavailable"]
+    # ... and the reply reflects the identity resolved during dispatch.
     assert any(
         "another session shares this Goal worktree" in block.text for block in result.content
     )

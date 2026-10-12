@@ -13,9 +13,9 @@ from unittest.mock import Mock
 import pytest
 
 import booley
-from booley.harness import auto_doctor, doctor, doctor_stamp
+from booley.harness import auto_doctor, doctor
 from booley.harness import doctor_deep as deep
-from booley.runtime import sandbox_artifact
+from booley.runtime import doctor_stamp, health, sandbox_artifact
 
 IMAGE = "sha256:" + "a" * 64
 OTHER_IMAGE = "sha256:" + "b" * 64
@@ -305,12 +305,15 @@ def test_persisted_reports_include_status_without_scheduling_or_dedup_changes(
     if writer == "automatic":
         report = auto_doctor._execute(tmp_path, project_dir, "session-start")
     else:
-        report = auto_doctor.record_manual_result(tmp_path, result)
+        report = doctor.record_manual_result(tmp_path, result)
     assert report["deep_status"] == result.deep_status.to_document()
+    # Deep status is metadata: changing it leaves the announcement identity alone.
     changed = {**report, "deep_status": {"status": "current"}}
-    assert auto_doctor._finding_hash(report) == auto_doctor._finding_hash(changed)
-    assert auto_doctor.compute_fingerprint(project_dir, tmp_path) == report["fingerprint"]
-    assert auto_doctor.issue_counts(report) == (0, 0)
+    del changed["finding_hash"]
+    health.report_path(project_dir).write_text(json.dumps(changed))
+    assert health.read_health(tmp_path).finding_hash == report["finding_hash"]
+    assert health.compute_fingerprint(project_dir, tmp_path) == report["fingerprint"]
+    assert health.read_health(tmp_path).assessment.clean
     reset_cache()
 
 

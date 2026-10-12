@@ -8,13 +8,17 @@ from enum import StrEnum
 
 
 class Severity(StrEnum):
-    """Diagnostic severity before a caller applies warning waivers."""
+    """Diagnostic severity, including warnings waived by a reporting caller."""
 
     PASS = "pass"
     NOTE = "note"
     WARN = "warn"
     SKIP = "skip"
     FAIL = "fail"
+    WAIVED = "waived"
+
+
+_ACTIVE_SEVERITIES = frozenset({Severity.FAIL, Severity.WARN})
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,7 +33,7 @@ class DiagnosticFinding:
     dedupe: str | None = None
 
     def __post_init__(self) -> None:
-        if self.severity is Severity.WARN and (
+        if self.severity in {Severity.WARN, Severity.WAIVED} and (
             self.check_id is None
             or re.fullmatch(r"[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*", self.check_id) is None
         ):
@@ -52,6 +56,36 @@ class DiagnosticReport:
 
     findings: tuple[DiagnosticFinding, ...] = ()
     details: tuple[DiagnosticDetail, ...] = ()
+
+    @property
+    def active_findings(self) -> tuple[DiagnosticFinding, ...]:
+        """FAIL and WARN observations: the only ones that make health unclean."""
+        return tuple(f for f in self.findings if f.severity in _ACTIVE_SEVERITIES)
+
+    @property
+    def health(self) -> HealthAssessment:
+        """Interpret machinery observations after the caller applies waivers."""
+        active = self.active_findings
+        return HealthAssessment(
+            sum(f.severity is Severity.FAIL for f in active),
+            sum(f.severity is Severity.WARN for f in active),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class HealthAssessment:
+    """Active diagnostic issues; warnings prevent clean health but not exit zero."""
+
+    fail_count: int = 0
+    warn_count: int = 0
+
+    @property
+    def clean(self) -> bool:
+        return self.fail_count == 0 and self.warn_count == 0
+
+    @property
+    def exit_code(self) -> int:
+        return int(self.fail_count > 0)
 
 
 @dataclass

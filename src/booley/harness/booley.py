@@ -1109,9 +1109,9 @@ def _cmd_cheat(args: argparse.Namespace, project_root: Path | None) -> int:
 
 def _report_session_health(project_root: Path, *, startup_due_reason: str | None = None) -> None:
     """Surface the result, or the scheduled check, after Sandbox start."""
-    from booley.harness import auto_doctor
+    from booley.runtime import health, health_presentation
 
-    due_reason = startup_due_reason or auto_doctor.due_reason(project_root)
+    due_reason = startup_due_reason or health.due_reason(project_root)
     if due_reason is not None:
         print(
             f"Automatic Doctor is running in the Sandbox ({due_reason}); "
@@ -1119,22 +1119,21 @@ def _report_session_health(project_root: Path, *, startup_due_reason: str | None
             file=sys.stderr,
         )
         return
-    summary = auto_doctor.consume_changed_summary(project_root, channel="session-up")
-    if summary:
-        report = auto_doctor.load_report(project_root) or {}
-        prefix = "warning: " if any(auto_doctor.issue_counts(report)) else ""
-        print(f"{prefix}{summary}", file=sys.stderr)
+    snapshot = health.consume_changed_snapshot(project_root, channel="session-up")
+    if snapshot is not None:
+        prefix = "" if snapshot.assessment.clean else "warning: "
+        print(f"{prefix}{health_presentation.brief_message(snapshot)}", file=sys.stderr)
         return
 
 
 def _session_up(args: argparse.Namespace, project_root: Path) -> int:
     """Create or resume the headless Sandbox."""
-    from booley.harness import auto_doctor
+    from booley.runtime import health
     from booley.runtime import session_runtime as sr
 
     _report_upgrade_before_session(project_root)
     vscode = sr.conflicting_vscode_session(project_root)
-    startup_due_reason = auto_doctor.due_reason(project_root)
+    startup_due_reason = health.due_reason(project_root)
     name = sr.up(project_root, rebuild=getattr(args, "rebuild", False))
     if vscode:
         print(
@@ -1171,14 +1170,14 @@ def _report_upgrade_before_session(project_root: Path) -> None:
 def _session_refresh(args: argparse.Namespace, project_root: Path) -> int:
     """Reconcile the Sandbox Image and replace its Sandbox."""
     configure_progress_output()
-    from booley.harness import auto_doctor
     from booley.harness.session_refresh import refresh
+    from booley.runtime import health
 
     verbose = getattr(args, "verbose", False)
     result = refresh(project_root, verbose=verbose)
     _report_session_health(
         project_root,
-        startup_due_reason=auto_doctor.due_reason(project_root),
+        startup_due_reason=health.due_reason(project_root),
     )
     print(f"Refreshed Sandbox: {result.selected_reference} ({result.selected_id})")
     return 0
