@@ -1201,6 +1201,33 @@ def test_publish_pr_supports_edit_comment_and_review(tmp_path: Path) -> None:
         assert captured_stdin.read_text(encoding="utf-8") == expected_stdin
 
 
+@pytest.mark.skipif(os.name == "nt", reason="fake gh is a POSIX shell script")
+def test_publish_pr_reports_only_the_created_reference(tmp_path: Path) -> None:
+    repo, _base = _repository(tmp_path)
+    sealed_env = _sealed_fixture(repo, _encoded_config())
+    body = tmp_path / "body.md"
+    body.write_text("Public response", encoding="utf-8")
+    env, _captured_args, _captured_stdin = _recording_gh(tmp_path)
+    env["BOOLEY_LEAK_GUARD_KEY_DIR"] = sealed_env["BOOLEY_LEAK_GUARD_KEY_DIR"]
+    reference = "https://github.com/owner/name/pull/123#issuecomment-4567"
+    fake_gh = tmp_path / "bin" / "gh"
+    fake_gh.write_text(
+        f"#!/bin/sh\ncat > /dev/null\necho 'unrelated {SENTINEL} output'\necho '{reference}'\n",
+        encoding="utf-8",
+    )
+    arguments = ["comment", "--pr", "123", "--body-file", str(body)]
+
+    reported = _publish_pr(repo, arguments, env)
+    fake_gh.write_text("#!/bin/sh\ncat > /dev/null\necho 'no reference here'\n", encoding="utf-8")
+    silent = _publish_pr(repo, arguments, env)
+
+    assert reported.returncode == 0, reported.stderr
+    assert f"GitHub reference: {reference}" in reported.stdout.splitlines()
+    assert SENTINEL not in reported.stdout + reported.stderr
+    assert silent.returncode == 0, silent.stderr
+    assert "GitHub reference" not in silent.stdout
+
+
 def test_proposed_pr_text_fails_closed_when_draft_cannot_be_read(tmp_path: Path) -> None:
     repo, _base = _repository(tmp_path)
     missing = tmp_path / "missing.md"
