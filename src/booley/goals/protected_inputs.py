@@ -501,9 +501,7 @@ def _declared_working_file(root: Path, relative: str) -> DeclaredFile:
 
 
 def _declared_head_file(root: Path, row: TreeEntry, reader: _HeadView) -> DeclaredFile:
-    entry = reader._entry(
-        GoalCheckout(root), row.mode, row.object_id, root / row.path, frozenset()
-    )
+    entry = reader.entry(GoalCheckout(root), row.mode, row.object_id, root / row.path, frozenset())
     return DeclaredFile(
         row.path,
         str(entry["kind"]),
@@ -632,10 +630,10 @@ class _HeadView:
             key = "." if row.path == relative else row.path.removeprefix(f"{relative}/")
             if any(part in _SKIPPED_DIRECTORIES for part in key.split("/")):
                 continue
-            entries[key] = self._entry(checkout, row.mode, row.object_id, location / key, seen)
+            entries[key] = self.entry(checkout, row.mode, row.object_id, location / key, seen)
         return entries
 
-    def _entry(
+    def entry(
         self,
         checkout: GoalCheckout,
         mode: str,

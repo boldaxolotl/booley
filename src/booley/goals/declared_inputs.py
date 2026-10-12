@@ -166,7 +166,7 @@ def head_matches(
     root: Path, rows: Sequence[TreeEntry], declarations: Sequence[str], storage: Sequence[Path]
 ) -> tuple[TreeEntry, ...]:
     """Committed membership is independent of the working filesystem."""
-    selected = []
+    selected: list[TreeEntry] = []
     for row in sorted(rows, key=lambda row: row.path):
         rules = declarations_for(row.path, declarations)
         if rules:

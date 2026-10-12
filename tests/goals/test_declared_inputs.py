@@ -21,6 +21,11 @@ from tests.goals.conftest import TOP_CORE, git, install_paired_project
 from tests.goals.test_finish import environment, request
 from tests.goals.test_status import publish
 
+# Goal entry, publication, and Finish spawn many Git processes. The slowest case
+# took 34.4s on Windows CI; its 3x/30s-rounded budget is 120s, above CI's
+# unannotated 60s default and its 50% headroom limit.
+pytestmark = pytest.mark.timeout(120)
+
 
 def configure(layout, declarations, files=None):
     config = "[project]\nname='demo'\nprotected_inputs=" + json.dumps(declarations) + "\n"
