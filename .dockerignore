@@ -20,6 +20,7 @@
 # so both files must reach the image even under this whitelist build context.
 !src/booley/data/docker/codex-requirements.toml
 !src/booley/data/docker/claude-managed-settings.json
+!src/booley/data/docker/session_activity_hook.py
 !src/booley/data/docker/agent-clis-package.json
 !src/booley/data/docker/agent-clis-package-lock.json
 !src/booley/data/docker/openroad-source-manifest.json

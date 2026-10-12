@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,7 @@ from booley.runtime.artifact_paths import available_paths
 from booley.runtime.job_artifacts import JobArtifactCache
 from booley.runtime.job_snapshot import JobSnapshot, snapshot_jobs, target_arg
 from booley.runtime.pid import ProcessIdentity
+from booley.runtime.session_activity import Activity, ActivityStore, observed_activity
 
 
 @dataclass(frozen=True)
@@ -67,6 +69,8 @@ class DashboardSnapshot:
     health: tuple[str, ...] = ()
     diagnostics: tuple[str, ...] = ()
     observed_at: float = 0
+    # Reported activity by session key; a session without an entry is unknown.
+    activity: Mapping[str, Activity] = field(default_factory=dict)
 
 
 def _terminal(store: GoalStore, record: GoalRecord) -> GoalView:
@@ -273,4 +277,13 @@ class DashboardReader:
             health_snapshot(self.root, self.project_dir),
             sessions.diagnostics,
             now,
+            self._activity(sessions.rows, now),
         )
+
+    def _activity(self, rows: tuple[SessionRow, ...], now: float) -> dict[str, Activity]:
+        """Join each visible session with the last lifecycle event its client reported."""
+        store = ActivityStore(self.project_dir)
+        return {
+            row.attribution.key: observed_activity(store.read(row.attribution.key), now=now)
+            for row in rows
+        }

@@ -20,6 +20,8 @@ from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import FuseSocError
 
 MAX_JOBS = 4096
+# Upper bound on record files examined per read before the newest MAX_JOBS are kept.
+MAX_SCANNED_JOBS = 4 * MAX_JOBS
 MAX_INTERACTIVE_ROOTS = 64
 TERMINAL_JOB_STATES = frozenset({"completed", "failed", "cancelled"})
 
@@ -67,8 +69,16 @@ def target_arg(argv: list[str]) -> str | None:
 def retained_job_roots(
     project_dir: Path, *, interactive_root: Path | None = None
 ) -> tuple[Path, ...]:
-    """Interactive roots and every retained Goal, including finished/abandoned records."""
+    """Interactive roots and every retained Goal, including finished/abandoned records.
+
+    Ordered by what a bounded scan must not lose: the caller's interactive
+    root, then every Goal Record, then older interactive sessions newest first.
+    """
     roots = [] if interactive_root is None else [interactive_root]
+    roots.extend(
+        record_paths(project_dir, rec.id).jobs_dir
+        for rec in GoalStore(project_dir).list_records().records
+    )
     history = []
     for path in islice(project_dir.glob(".interactive_logs/*/.runtime/jobs"), MAX_JOBS):
         try:
@@ -80,10 +90,6 @@ def retained_job_roots(
         for _, path in sorted(history, key=lambda item: item[0], reverse=True)[
             :MAX_INTERACTIVE_ROOTS
         ]
-    )
-    roots.extend(
-        record_paths(project_dir, rec.id).jobs_dir
-        for rec in GoalStore(project_dir).list_records().records
     )
     return tuple(dict.fromkeys(roots))
 
@@ -146,20 +152,50 @@ def snapshot_jobs(
 def _snapshot_records(
     project_dir: Path, interactive_root: Path | None
 ) -> tuple[list[tuple[Path, job_records.JobRecord]], list[str]]:
-    """Collect the bounded projection before selecting eviction victims."""
+    """Parse only the newest bounded set of records, and say so when history is cut."""
     records, diagnostics = [], []
-    roots = retained_job_roots(project_dir, interactive_root=interactive_root)
-    for root in roots:
+    candidates = _record_candidates(project_dir, interactive_root, diagnostics)
+    if len(candidates) > MAX_JOBS:
+        diagnostics.append(_truncation_notice(len(candidates)))
+        # Newest by modification time; a record is rewritten whenever its Job changes state.
+        newest = sorted(candidates, key=lambda item: item[0], reverse=True)[:MAX_JOBS]
+        kept = {(root, path) for _, root, path in newest}
+        candidates = [item for item in candidates if (item[1], item[2]) in kept]
+    for _, root, path in candidates:
+        rec = _read_job(path)
+        if rec is None:
+            diagnostics.append(f"Job record unavailable: {path}")
+            continue
+        records.append((root, rec))
+    return records, diagnostics
+
+
+def _truncation_notice(examined: int) -> str:
+    """Say what was cut; past the scan bound the oldest interactive sessions go unexamined."""
+    notice = f"Job history truncated: showing the newest {MAX_JOBS} of {examined} records"
+    if examined < MAX_SCANNED_JOBS:
+        return notice
+    return (
+        f"Job history truncated: showing the newest {MAX_JOBS} of the first "
+        f"{examined} records examined; older interactive sessions were not examined"
+    )
+
+
+def _record_candidates(
+    project_dir: Path, interactive_root: Path | None, diagnostics: list[str]
+) -> list[tuple[int, Path, Path]]:
+    """List (mtime, root, record path) in root order without reading any record."""
+    candidates: list[tuple[int, Path, Path]] = []
+    for root in retained_job_roots(project_dir, interactive_root=interactive_root):
         if root.is_symlink():
             diagnostics.append(f"Job root unavailable: {root}")
             continue
-        for path in islice(root.glob("*.json"), max(0, MAX_JOBS - len(records))):
-            rec = _read_job(path)
-            if rec is None:
+        for path in islice(root.glob("*.json"), max(0, MAX_SCANNED_JOBS - len(candidates))):
+            try:
+                candidates.append((path.lstat().st_mtime_ns, root, path))
+            except OSError:
                 diagnostics.append(f"Job record unavailable: {path}")
-                continue
-            records.append((root, rec))
-    return records, diagnostics
+    return candidates
 
 
 def _read_job(path: Path) -> job_records.JobRecord | None:

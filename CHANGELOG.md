@@ -19,7 +19,11 @@ Packaged release history starts at 0.2.7. For older changes, see
   findings remain visible; Finish and abandonment use explicit record and
   operation IDs for recoverable retries.
 - **Sandbox Dashboard.** Sessions, Goals, and Jobs are visible through
-  `booley dashboard` and the default VS Code folder-attachment task.
+  `booley dashboard` and the default VS Code folder-attachment task. Each
+  session shows whether its agent is working, waiting for a tool call, or
+  waiting for your input, as reported by Claude Code and Codex lifecycle
+  hooks in the Sandbox Image. Report, artifact, and evidence paths open in
+  the editor on click.
 
 ### Bug fixes
 
@@ -32,6 +36,11 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 - Existing Review Goal evidence may need to be refreshed once after upgrading;
   re-run the Reviewer if it is reported stale.
+
+- Dashboard session activity needs the Sandbox Image's lifecycle hooks. Run
+  `booley bootstrap --update`, then `booley init` and `booley session refresh`
+  in each Project; until then sessions show `activity unknown` and Doctor
+  warns inside the Sandbox.
 
 - Physical synthesis results can differ from 0.3.0, and earlier physical
   recipe evidence is no longer accepted: rerun physical synthesis to refresh
