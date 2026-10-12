@@ -485,3 +485,66 @@ def test_briefing_names_test_runs_and_every_deferred_resolution(two: SimpleNames
     lines = _deferred_resolution_lines(resolved.to_json())
     assert lines[:2] == ["", "Test Runs resolved after entry"]
     assert len(lines) == 3 and lines[2].startswith(f"- {SIM_KEY}: late@1 (slot *, resolved ")
+
+
+# --- Rendering ---------------------------------------------------------------------
+
+
+def test_status_shows_frozen_runs_outcomes_and_a_rerun_command_per_failing_seed(
+    seeds: SimpleNamespace,
+) -> None:
+    from booley.goals.format import render_status, test_run_lines
+
+    first, second, third = seeds.seeds
+    _record(seeds, "run-1", [_seed(first), _seed(second, "fail")], key=SEEDS_KEY, met=False)
+    view = build_status(GoalStore(seeds.control), seeds.record, work_dir=seeds.worktree)
+    (goal,) = view.goals
+    assert test_run_lines(goal) == [
+        f"{SEEDS_KEY}: 3 Test Runs (1 passed, 1 failed, 1 missing): "
+        f"a@{first} passed, a@{second} failed, a@{third} missing",
+        f"  rerun a@{second}: booley flow sim --target top --test=a@{second}",
+    ]
+    text = render_status((view,))
+    assert "Test Runs\n" in text
+    assert f"rerun a@{second}: booley flow sim --target top --test=a@{second}" in text
+    assert "goal-test-run-failed" in text
+
+
+def test_status_lines_name_pending_slots_and_runs_resolved_after_entry(
+    layout: SimpleNamespace,
+) -> None:
+    from booley.goals.format import test_run_lines
+    from booley.goals.status import select_status
+
+    goals = [{"family": "sim", "target": "top"}, {"family": "sim", "target": "top", "test": "x"}]
+    record = enter_goals(layout, goals, tests_toml=TWO_TESTS)
+    mode = SimpleNamespace(**vars(layout), record=record)
+    write_tests_toml(mode, b'[top]\ntests = ["a", "b", "late"]\n')
+    (view,) = select_status(GoalStore(mode.control), mode.worktree).views
+    suite, pending = (test_run_lines(goal) for goal in view.goals)
+    assert suite == [
+        f"{SIM_KEY}: 3 Test Runs (3 missing): a@1 missing, b@1 missing, late@1 missing",
+        "  resolved after entry: late@1",
+    ]
+    assert pending == [
+        "sim_pass_top_run_78_d: 0 Test Runs (none): —",
+        "  pending (does not exist yet): x",
+    ]
+    lint = build_status(GoalStore(mode.control), mode.record, work_dir=mode.worktree)
+    assert all(goal.test_runs is not None for goal in lint.goals)
+
+
+def test_dashboard_goal_detail_lists_the_frozen_test_runs(two: SimpleNamespace) -> None:
+    from booley.harness.dashboard.app import (
+        _evidence_detail,  # pyright: ignore[reportPrivateUsage]
+    )
+    from booley.harness.dashboard.model import project_goal
+
+    _record(two, "run-1", [run_row(A), run_row(B, "fail")], met=False)
+    view = project_goal(GoalStore(two.control), two.record)
+    (detail,) = view.goals
+    assert detail.test_runs == (
+        f"{SIM_KEY}: 2 Test Runs (1 passed, 1 failed): a@1 passed, b@1 failed",
+        "  rerun b@1: booley flow sim --target top --test=b@1",
+    )
+    assert _evidence_detail(detail).startswith(detail.test_runs[0] + "\n  rerun b@1: ")

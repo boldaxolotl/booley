@@ -162,11 +162,13 @@ def _reported_metrics(report: dict[str, Any]) -> str:
 
 
 def _evidence_detail(goal: GoalDetail) -> str:
+    frozen = "".join(f"{line}\n" for line in goal.test_runs)
     if goal.evidence is None:
-        return "Last check: unavailable · Evidence unavailable"
+        return frozen + "Last check: unavailable · Evidence unavailable"
     facts = goal.evidence
     return (
-        f"Last check: {facts.get('recorded_at', 'unavailable')}\n"
+        frozen
+        + f"Last check: {facts.get('recorded_at', 'unavailable')}\n"
         + "Observations: "
         + json.dumps(facts.get("detail", {}), indent=2)[:8000]
         + "\nImmutable derivation provenance: "

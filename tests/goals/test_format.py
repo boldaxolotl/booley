@@ -7,7 +7,7 @@ import pytest
 from rich.console import Console
 from rich.table import Table
 
-from booley.goals.format import format_criterion_metric, render_status
+from booley.goals.format import format_criterion_metric, render_status, test_run_lines
 from booley.goals.status import GoalStatus, GoalStatusView
 
 
@@ -145,7 +145,7 @@ def test_met_metric_fallback_preserves_raw_empty_output(key):
     assert format_met_goal_metric(key, entry) == "evidence recorded"
 
 
-# Frozen verbatim from 9da903961; independent of the production renderer.
+# Frozen from 9da903961 plus the Test Runs section; independent of the production renderer.
 def baseline_render_status(views: tuple[GoalStatusView, ...], *, short: bool | None = None) -> str:
     """Render long detail for one Goal Mode, short rows for several by default."""
     import io
@@ -169,6 +169,13 @@ def baseline_render_status(views: tuple[GoalStatusView, ...], *, short: bool | N
                     evidence += f" — {goal.reason}"
                 table.add_row(goal.key, goal.status, evidence)
             console.print(table)
+            # Added with Goals that name Test Runs (#1233): the frozen Test Runs follow
+            # the table. Their lines are pinned by tests/goals/test_test_run_evidence.py.
+            frozen = [line for goal in view.goals for line in test_run_lines(goal)]
+            if frozen:
+                console.print("Test Runs")
+            for line in frozen:
+                console.print(f"  {line}", soft_wrap=True)
             console.print(f"Pending proposals: {view.pending_proposals}")
             conflicts = dict(view.proposal_conflicts)
             for proposal_view in view.proposals:
