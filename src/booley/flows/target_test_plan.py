@@ -76,6 +76,11 @@ SeedDraw = Callable[..., tuple[int, ...]]
 
 _COCOTB = "cocotb"
 _VERILATOR = "verilator"
+_ICARUS = "icarus"
+#: The simulators whose launch renders a ``seed`` argument template. The
+#: Simulation Flow launches no other simulator with a seed, so a Target of any
+#: other simulator is unseeded whatever its ``tests.toml`` declares.
+_TEMPLATE_ADAPTERS = (_VERILATOR, _ICARUS)
 
 
 class UnknownTestError(ValueError):
@@ -139,7 +144,7 @@ def seed_mechanism(adapter: str, seed_template: str | None, *, where: str) -> Se
         return SeedMechanism("cocotb_env")
     if adapter == _VERILATOR:
         return SeedMechanism("verilator_native", seed_template)
-    if seed_template is not None:
+    if adapter == _ICARUS and seed_template is not None:
         return SeedMechanism("template", seed_template)
     return SeedMechanism("none")
 
@@ -216,8 +221,20 @@ class TargetTestPlan:
         """The Variant table *test* declares, or ``None``."""
         return next((table for table in self.variant_tables if table.test == test), None)
 
+    def unseeded_cause(self) -> str:
+        """In a few words, why this Target is unseeded (for a Doctor line)."""
+        if self.adapter in _TEMPLATE_ADAPTERS:
+            return f"{self.adapter} without a seed template in tests.toml"
+        return f"Booley applies no seed to a {self.adapter} Test Run"
+
     def unseeded_reason(self) -> str:
         """Why this Target cannot apply a seed, and how to change that."""
+        if self.adapter not in _TEMPLATE_ADAPTERS:
+            return (
+                f"Target {self.target!r} is unseeded: Booley applies no seed to a "
+                f"{self.adapter} Test Run, with or without a seed argument template; "
+                "drop the seed"
+            )
         return (
             f"Target {self.target!r} is unseeded: its simulator ({self.adapter}) has no "
             "seed option that Booley uses, and tests.toml declares no seed argument "

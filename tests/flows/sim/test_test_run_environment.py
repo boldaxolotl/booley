@@ -166,6 +166,71 @@ class TestRunTimeInputsAreNotBuildInputs:
         assert works["stress+fault@7"].environment == (("FAULT_MODE", "1"),)
         assert works["stress+soak@1"].artifact_group == "stress+soak@1"
 
+    def test_two_variants_and_two_seeds_have_one_real_reuse_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The Simulator Bundle key itself is compared, not only the build description.
+
+        The key is the real ``SimulationBuildSession.reusable_key`` of the
+        ordinary Icarus recipe (only the installed-tool probes are pinned).
+        It is the same for the default Test Run, another Test Variant, a
+        Test Variant with its own environment and other seeds, and it does
+        change with the Target's own environment, so equality is not vacuous.
+        """
+        from booley.flows.sim import build_session
+        from booley.flows.sim.build_session import SimulationBuildSession
+
+        root = _project(
+            tmp_path,
+            '[sim]\ntests = ["stress"]\nselect = "+test={name}"\nseed = "+seed={seed}"\n'
+            + _VARIANTS,
+        )
+        core = root / "demo.core"
+        core.write_text("CAPI=2:\nname: acme:lib:demo:1\n", encoding="utf-8")
+        monkeypatch.setattr(build_session, "_eligible_core_file", lambda *_args: core)
+        monkeypatch.setattr(build_session, "_icarus_tool_identity", lambda: {"iverilog": "12"})
+        monkeypatch.setattr(build_session, "_python_recipe_identity", lambda: {"recipe": "1"})
+        handle = _handle(root, eda_tool="icarus")
+        plan = target_test_plan(handle, "icarus", {})
+        runs = (
+            None,
+            plan.run("stress", "soak"),
+            plan.run("stress", "fault", 7),
+            plan.run("stress", seed=9),
+        )
+        inputs = {"rtl/demo.sv": "sha256:" + "1" * 64}
+        keys: dict[str, str | None] = {}
+        with SimulationBuildSession(handle) as session:
+            for run in runs:
+                prepared = _prepared(handle, cocotb=False)
+                identity = _adapter_identity(
+                    handle, prepared, ("stress",), "icarus", campaign_build=False
+                )
+                work = prepare_simulation_work(
+                    handle,
+                    prepared,
+                    identity,
+                    SimulationOptions(),
+                    trace=False,
+                    trace_mode="vcd_fifo",
+                    test_runs=None if run is None else (run,),
+                )
+                keys[work.test_runs[0].name] = session.reusable_key(prepared, inputs, hooks=False)
+            flavored = dataclasses.replace(
+                _prepared(handle, cocotb=False), environment={"FLAVOR": "wide"}
+            )
+            other = session.reusable_key(flavored, inputs, hooks=False)
+
+        assert list(keys) == [
+            "stress+short@1",
+            "stress+soak@1",
+            "stress+fault@7",
+            "stress+short@9",
+        ]
+        (key,) = set(keys.values())
+        assert key is not None and len(key) == 64
+        assert other is not None and other != key
+
     def test_the_build_is_prepared_before_any_test_run_is_known(self, tmp_path: Path):
         """``prepare_simulation_build`` gets the Target's environment, never a Variant's."""
         from booley.flows.sim.execution import SimulationExecution, engine

@@ -5485,10 +5485,7 @@ def _eda_family(eda_tool: str | None) -> str:
 def _test_run_plan_line(selector: str, plan: TargetTestPlan) -> str:
     """One PASS line: how *selector*'s Test Runs are seeded."""
     if not plan.mechanism.seeded:
-        return (
-            f"Target '{selector}' Test Runs are unseeded ({plan.adapter} without a "
-            "seed template in tests.toml)"
-        )
+        return f"Target '{selector}' Test Runs are unseeded ({plan.unseeded_cause()})"
     return (
         f"Target '{selector}' Test Runs are seeded through {plan.mechanism.describe()} "
         f"(Default Seed {plan.default_seed})"

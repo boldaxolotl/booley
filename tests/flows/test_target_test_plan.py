@@ -86,6 +86,46 @@ class TestSeedMechanism:
         assert mechanism.seeded
         assert mechanism.arguments(7) == ()
 
+    @pytest.mark.parametrize("adapter", ["vcs", "xcelium"])
+    @pytest.mark.parametrize("template", [None, "+seed={seed}", "-svseed={seed}"])
+    def test_a_simulator_booley_does_not_seed_is_unseeded_even_with_a_template(
+        self, adapter: str, template: str | None
+    ):
+        """Regression: a VCS Target with a seed template reported itself seeded.
+
+        The Simulation Flow renders a seed template for Icarus and Verilator
+        only, so such a Target would have recorded seeds nothing applied.
+        """
+        mechanism = seed_mechanism(adapter, template, where="tests.toml [sim]")
+        assert (mechanism.kind, mechanism.seeded) == ("none", False)
+        assert mechanism.arguments(7) == ()
+
+        section = {"tests": ["reset"], **({"seed": template} if template else {})}
+        plan = build_target_test_plan(
+            "sim", normalize_tests_toml({"sim": section})["sim"], adapter=adapter
+        )
+        assert plan.default_seed is None
+        assert [run.name for run in plan.default_runs()] == ["reset"]
+        assert plan.unseeded_cause() == f"Booley applies no seed to a {adapter} Test Run"
+        for selectors, seed in (
+            (None, 5),
+            (None, "random"),
+            (["reset@5"], None),
+            (["reset@x2"], None),
+        ):
+            with pytest.raises(UnseededTargetError) as excinfo:
+                plan.resolve(selectors, seed=seed)
+            assert str(excinfo.value) == (
+                f"Target 'sim' is unseeded: Booley applies no seed to a {adapter} Test "
+                "Run, with or without a seed argument template; drop the seed"
+            )
+        with pytest.raises(UnseededTargetError, match="default_seed cannot apply"):
+            build_target_test_plan(
+                "sim",
+                normalize_tests_toml({"sim": {**section, "default_seed": 3}})["sim"],
+                adapter=adapter,
+            )
+
     def test_cocotb_refuses_a_seed_template(self):
         with pytest.raises(SeedConfigurationError) as excinfo:
             seed_mechanism("cocotb", "+seed={seed}", where="tests.toml [sim]")
