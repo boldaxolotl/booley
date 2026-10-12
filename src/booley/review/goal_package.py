@@ -5,7 +5,7 @@ from __future__ import annotations
 import html
 import json
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from booley.core.boundary import require_dict, require_int, require_list, require_str_value
 
@@ -142,10 +142,40 @@ def _validate_goal_row(row: dict[str, Any]) -> None:
     originals = require_list(row["original_observations"], field="original_observations")
     for original in originals:
         require_dict(original, field="original observation")
-    if originals:
+    if originals and "test_run_ledger" not in detail:
         require_dict(detail.get("goal_derivation"), field="goal_derivation")
     if row["selected_transaction"] is not None:
         require_dict(row["selected_transaction"], field="selected_transaction")
+
+
+def _test_run_lines(detail: dict[str, Any]) -> list[str]:
+    """The frozen Test Runs a Goal was judged by, with the outcome of each (ADR 0072)."""
+    ledger = detail.get("test_run_ledger")
+    if not isinstance(ledger, dict):
+        return []
+    runs = [
+        require_dict(run, field="test_run_ledger run")
+        for run in require_list(
+            cast("dict[str, Any]", ledger).get("runs"), field="test_run_ledger.runs"
+        )
+    ]
+    shown = ", ".join(f"{run['name']} {run['outcome']}" for run in runs)
+    return [f"  Test Runs: {shown}"]
+
+
+def _deferred_resolution_lines(record: dict[str, Any]) -> list[str]:
+    """Every Test Run that was frozen after Goal Mode entry, by Goal (ADR 0072)."""
+    lines: list[str] = []
+    resolutions = require_dict(record.get("test_run_resolutions") or {}, field="resolutions")
+    for key in sorted(resolutions):
+        resolution = require_dict(resolutions[key], field="resolution")
+        for raw in require_list(resolution.get("runs"), field="resolution runs"):
+            run = require_dict(raw, field="resolution run")
+            if run.get("resolved_by") == "deferred":
+                lines.append(
+                    f"- {key}: {run['name']} (slot {run['slot']}, resolved {run['resolved_at']})"
+                )
+    return ["", "Test Runs resolved after entry", *lines] if lines else []
 
 
 def render_goal_briefing(package: GoalCompletionPackage) -> str:
@@ -171,14 +201,18 @@ def render_goal_briefing(package: GoalCompletionPackage) -> str:
             lines.append(
                 "  Open finding: " + json.dumps(finding, sort_keys=True, ensure_ascii=False)
             )
+        lines += _test_run_lines(detail)
         if row["original_observations"]:
-            lines.append(
-                "  Approved derivation: " + json.dumps(detail["goal_derivation"], sort_keys=True)
-            )
+            if "goal_derivation" in detail:
+                lines.append(
+                    "  Approved derivation: "
+                    + json.dumps(detail["goal_derivation"], sort_keys=True)
+                )
             lines.append(
                 "  Original observations: "
                 + json.dumps(row["original_observations"], sort_keys=True, ensure_ascii=False)
             )
+    lines += _deferred_resolution_lines(facts["record"])
     for title, key in (
         ("Diff summary", "diff_summary"),
         ("Target changes", "target_changes"),

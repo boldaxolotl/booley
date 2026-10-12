@@ -18,6 +18,7 @@ from booley.goals.model import GoalRecord
 from booley.goals.paths import record_paths
 from booley.goals.proposals import digest, list_proposals
 from booley.goals.recorder import GOAL_SCOPE
+from booley.goals.test_run_evidence import LEDGER_DETAIL_KEY
 from booley.review.goal_package import GoalCompletionPackage, GoalReviewContext
 
 
@@ -144,9 +145,15 @@ def _row_digest(row: dict[str, Any]) -> str:
 def original_observations(
     row: dict[str, Any], indexed: dict[int, dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    """Digest-verified linked producer observations, including chained derivations."""
+    """Digest-verified linked producer observations, including chained derivations.
+
+    An observation links the observation an approved change derived it from
+    (``goal_derivation``) and the earlier observations its Test Run ledger
+    accumulated (``test_run_ledger``, ADR 0072). Every linked row must still
+    have the digest its link names.
+    """
     originals: list[dict[str, Any]] = []
-    pending = list(row["detail"].get("goal_derivation", {}).get("source_evidence", []))
+    pending = _linked_evidence(row)
     seen = {row["sequence"]}
     while pending:
         reference = pending.pop(0)
@@ -158,10 +165,17 @@ def original_observations(
         if original["sequence"] not in seen:
             seen.add(original["sequence"])
             originals.append(original)
-            pending.extend(
-                original["detail"].get("goal_derivation", {}).get("source_evidence", [])
-            )
+            pending.extend(_linked_evidence(original))
     return originals
+
+
+def _linked_evidence(row: dict[str, Any]) -> list[dict[str, Any]]:
+    """The ``{sequence, sha256}`` links of *row* to the observations it was built from."""
+    detail = row["detail"]
+    return [
+        *detail.get("goal_derivation", {}).get("source_evidence", []),
+        *detail.get(LEDGER_DETAIL_KEY, {}).get("source_evidence", []),
+    ]
 
 
 def _transactions(

@@ -420,3 +420,68 @@ def test_two_publications_fold_one_after_the_other(two: SimpleNamespace) -> None
         state.save()
     assert _outcomes(states[1].criteria[SIM_KEY].detail) == {"a@1": "failed", "b@1": "passed"}
     assert _status(two).reason.startswith("goal-test-run-failed")
+
+
+# --- The review package --------------------------------------------------------------
+
+
+def _package_inputs(layout: SimpleNamespace) -> tuple[Any, Any, dict[int, dict[str, Any]]]:
+    from booley.criteria.evidence_ledger import validated_evidence_records
+    from booley.goals.recorder import GOAL_SCOPE
+    from booley.goals.state_store import load_goal_state
+
+    store = GoalStore(layout.control)
+    record = store.load(layout.record.id)
+    state = load_goal_state(store, record)
+    logs = record_paths(layout.control, record.id).logs_dir
+    rows = validated_evidence_records(GOAL_SCOPE, logs, state, {})
+    return record, state, {row["sequence"]: row for row in rows}
+
+
+def test_accumulated_goal_discloses_its_contributing_campaigns(two: SimpleNamespace) -> None:
+    """The review package and generated-input authorization read these observations."""
+    from booley.goals.derivation import selected_observations
+    from booley.goals.review_package import original_observations, presentation_observations
+
+    _record(two, "run-1", [run_row(A)])
+    _record(two, "run-2", [run_row(B)])
+    record, state, indexed = _package_inputs(two)
+    selected = selected_observations(record, state, two.control)[SIM_KEY]
+    assert selected["sequence"] == 2
+    assert [row["sequence"] for row in original_observations(selected, indexed)] == [1]
+    disclosed = presentation_observations(record, state, two.control)
+    assert sorted(row["sequence"] for row in disclosed) == [1, 2]
+
+
+def test_review_package_rejects_a_substituted_contributor(two: SimpleNamespace) -> None:
+    from booley.goals.derivation import selected_observations
+    from booley.goals.lifecycle import LifecycleError
+    from booley.goals.review_package import original_observations
+
+    _record(two, "run-1", [run_row(A)])
+    _record(two, "run-2", [run_row(B)])
+    record, state, indexed = _package_inputs(two)
+    selected = selected_observations(record, state, two.control)[SIM_KEY]
+    forged = {**indexed, 1: {**indexed[1], "invocation_id": "another-campaign"}}
+    with pytest.raises(LifecycleError, match="missing or substituted original observation"):
+        original_observations(selected, forged)
+    with pytest.raises(LifecycleError, match="missing or substituted original observation"):
+        original_observations(selected, {2: indexed[2]})
+
+
+def test_briefing_names_test_runs_and_every_deferred_resolution(two: SimpleNamespace) -> None:
+    from booley.goals.test_run_resolving import ensure_test_run_resolutions
+    from booley.review.goal_package import (
+        _deferred_resolution_lines,  # pyright: ignore[reportPrivateUsage]
+        _test_run_lines,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    detail = _record(two, "run-1", [run_row(A), run_row(B, "fail")], met=False)
+    assert _test_run_lines(detail) == ["  Test Runs: a@1 passed, b@1 failed"]
+    assert _test_run_lines({"warnings": 0}) == []
+    assert _deferred_resolution_lines(two.record.to_json()) == []
+    write_tests_toml(two, b'[top]\ntests = ["a", "b", "late"]\n')
+    resolved = ensure_test_run_resolutions(GoalStore(two.control), two.record.id, two.worktree)
+    lines = _deferred_resolution_lines(resolved.to_json())
+    assert lines[:2] == ["", "Test Runs resolved after entry"]
+    assert len(lines) == 3 and lines[2].startswith(f"- {SIM_KEY}: late@1 (slot *, resolved ")
