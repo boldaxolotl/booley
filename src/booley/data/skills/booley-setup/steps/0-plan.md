@@ -26,7 +26,7 @@ parentheses.
 - **Interactive (default).** A human is present. Run the grill in Part C and
   the approval gate in Part D. This is the only stop-and-wait gate in the whole
   skill — everything after an approved plan executes without interruption.
-- **Unattended.** The agent was handed an explicit, pre-approved end-to-end
+- **Unattended.** The Claude Code or Codex session was handed an explicit, pre-approved end-to-end
   setup request and nobody will answer questions. No question is asked, in
   either mode of the word: resolve every row by the rule below, set the plan
   status to `auto-approved`, and proceed to execution. The plan document is the

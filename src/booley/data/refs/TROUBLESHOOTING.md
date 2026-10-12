@@ -6,7 +6,7 @@ Doctor setup-checks marked FPGA Targets; deep mode prints their manual full-
 implementation commands instead of launching long Vivado runs. What
 follows is the residue Booley cannot safely repair itself: upstream constraints,
 host policy, project-specific intent, and third-party lifecycle behavior.
-With an agent, invoke `/booley-heal` to drive that diagnosis-and-repair loop;
+With a Developer Agent, invoke `/booley-heal` to drive that diagnosis-and-repair loop;
 it uses this troubleshooting guide before improvising a fix and verifies both plain and deep
 Doctor before calling the project healthy.
 If Booley reports that its version changed, invoke `/booley-heal`.
@@ -20,7 +20,7 @@ Agent) see the glossary in [GLOSSARY.md](https://github.com/boldaxolotl/Booley/b
 ## Monitoring Goal work
 
 Use `booley dashboard` inside the Sandbox for sessions, Goals, and Jobs.
-Inspect records with `booley goal status`; ask the agent
+Inspect records with `booley goal status`; ask the Developer Agent
 for `goal_status(rules=true)` to recover evidence and rules after interruption.
 Read the Review Package and Session Summary when Finish succeeds.
 
@@ -45,7 +45,7 @@ recovery command.
 
 ## `booley` is missing from `/mcp` in Claude Code or Codex
 
-Run **Developer: Reload Window** so the agent session re-reads its MCP config.
+Run **Developer: Reload Window** so the Developer Agent session re-reads its MCP config.
 If it still doesn't appear, check the server is actually serving, from a
 terminal inside the Sandbox:
 
@@ -85,12 +85,12 @@ file for diagnosis, repair or remove only the malformed metadata, and rerun
 ## An MCP tool is missing from `/mcp`
 
 Every valid built-in and custom MCP tool is discovered by default. To remove
-a Booley Flow from agent and autonomous discovery, set
+a Booley Flow from Developer Agent discovery and autonomous execution, set
 `[flows.<name>].enabled = false`; for a Specialist, set
 `[specialists.<name>].enabled = false`. Protocol utilities have no Project
 enable switch.
 
-Submit a Goal's Session Summary through `goal_finish`. `tb_coder` is de-registered while the session agent
+Submit a Goal's Session Summary through `goal_finish`. `tb_coder` is de-registered while the Developer Agent
 writes testbench code directly. Direct Flow diagnostics can list endpoints
 independently of the project discovery filter. An individual Flow may still
 report its configured flow as disabled when invoked directly.
@@ -102,7 +102,7 @@ For any other missing MCP tool:
 2. For a custom MCP tool, fix Python syntax and make `name` and `description` literal
    class attributes so AST discovery can read them.
 3. Restart the Sandbox after adding or renaming the file.
-4. Check whether the MCP server was deliberately narrowed for a nested agent or
+4. Check whether the MCP server was deliberately narrowed for a Specialist or
    through the explicit `BOOLEY_MCP_TOOLS` environment filter.
 
 See [MCP-TOOLS.md](https://github.com/boldaxolotl/Booley/blob/main/docs/internals/MCP-TOOLS.md#default-discovery-and-explicit-opt-out) for the complete
@@ -368,12 +368,12 @@ the config is written. For the image
 contents and how to layer EDA tools on top, see
 [CONFIG.md → RISC-V toolchain image](https://github.com/boldaxolotl/Booley/blob/main/docs/user/CONFIG.md#risc-v-toolchain-image-booley-sandbox-riscv).
 
-## Agents turn into "Not logged in" partway through an unattended run
+## Developer Agents and Specialists turn into "Not logged in" partway through an unattended run
 
-The credential both agent apps ship with by default **refreshes, and refreshing
+The credential Claude Code and Codex ship with by default **refreshes, and refreshing
 rotates it**. The host and the container hold copies of the same refresh token,
-so an unrelated agent session on the host can revoke a running container's copy
-and turn every in-flight agent into "Not logged in" mid-run: the one failure
+so an unrelated Claude Code or Codex session on the host can revoke a running container's copy
+and turn every in-flight Developer Agent and Specialist call into "Not logged in" mid-run: the one failure
 mode that bites long, unattended runs specifically.
 
 The fix is a **rotation-free** credential, stored by `booley auth`:
@@ -387,14 +387,14 @@ The fix is a **rotation-free** credential, stored by `booley auth`:
 deliberately outside every repo and bind mount so it cannot be committed) and
 re-seeds the devcontainer spec; Booley then injects it on every container start.
 **Rebuild an existing container once** so the read-only mount exists.
-`booley auth --status` reports which credential each agent would use, and
+`booley auth --status` reports which credential each configured provider would use, and
 `booley doctor` warns when a run is about to rely on a refreshing one. Billing
 options are in [USAGE.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/USAGE.md#auth--billing);
 choosing between several credentials is in [CONFIG.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/CONFIG.md#pinning-what-bills-agent-auth).
 
-## Two interactive agents keep clobbering each other's edits
+## Two Developer Agents keep clobbering each other's edits
 
-Use one linked worktree per agent that edits code. Create it with
+Use one linked worktree per Developer Agent that edits code. Create it with
 `booley worktree new <name>` in the Sandbox, then enter Goal Mode there with
 `/booley-goal`. Tabs and terminals in the same worktree share files; the
 Dashboard warns about shared-worktree activity but does not isolate it.
@@ -694,7 +694,7 @@ replace its `detail` with an empty object. Select evidence through the numbered
 
 ### Coverage Analyst input and model availability
 
-Call the `coverage_analyst` Specialist from your connected agent session with
+Call the `coverage_analyst` Specialist from your Developer Agent session with
 `campaign="<reports>/sim/<number>/targets/<target>/coverage.json"`.
 Target names, `latest`, the point-store path, waveforms, and flat
 `coverage_report.json` are not Analyst inputs. A missing, changed, or invalid
@@ -726,7 +726,7 @@ failure report identifies the exhausted boundary instead of returning an empty r
 
 Codex analysis requires cached metadata for the exact configured model. If that
 metadata is missing, start the configured Codex CLI to refresh model discovery,
-then retry. Analysis fails closed instead of starting an agent with execution
+then retry. Analysis fails closed instead of starting a Specialist with execution
 capabilities. Claude analysis also disables built-in tools; both backends expose only
 the Campaign-bound evidence tool.
 
@@ -760,7 +760,7 @@ the Campaign-bound evidence tool.
 ### Waiver Candidates at review
 
 - Coverage remains unmet after Analyst screening: candidates are proposals,
-  not approvals. Ask the agent to use `goal_propose_change(kind="waiver")` and
+  not approvals. Ask the Developer Agent to use `goal_propose_change(kind="waiver")` and
   inspect the exact candidate before deciding.
 - `[coverage.waivers] is not configured`: select the
   [approval directory](https://github.com/boldaxolotl/Booley/blob/main/docs/user/CONFIG.md#approved-coverage-waivers) before approval.

@@ -1,7 +1,7 @@
 # RTL Mutation Testing Guide
 
 Mutation testing uses compiler-isolated source variants. The creator is a
-read-only design agent: it proposes exact replacements, while Booley validates
+read-only Mutation Tester Specialist: it proposes exact replacements, while Booley validates
 and materializes them. Neither side attempts to parse SystemVerilog or Verilog.
 The project's configured compiler is the language authority.
 

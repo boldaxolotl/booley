@@ -347,7 +347,7 @@ def compute_source_size_budget(scope_files: list[str], work_dir: Path) -> dict:
 
 
 def parse_creator_output(output: str) -> list[MutationSpec]:
-    """Extract mutation specs from creator agent output."""
+    """Extract mutation specs from Mutation Tester Specialist output."""
     data = _extract_json(output)
     if data is None:
         return []
@@ -669,7 +669,7 @@ class MutationTesterSpecialist(Specialist):
     min_timeout: int = 1200
     satisfies: ClassVar[list[str]] = ["mutation_score"]
 
-    # Cross-invocation session key for creator agent resume during retry rounds.
+    # Cross-invocation session key for Mutation Tester Specialist resume during retry rounds.
     SESSION_KEY: ClassVar[str] = "mutation_tester_creator"
 
     # Maximum verification rounds during cold start (1 happy path + 2 retries).
@@ -708,7 +708,7 @@ class MutationTesterSpecialist(Specialist):
         parser.add_argument(
             "--regen-lock",
             action="store_true",
-            help="Wipe the mutation lock dir and re-run the creator agent from scratch.",
+            help="Wipe the mutation lock dir and re-run the Mutation Tester Specialist from scratch.",
         )
 
     # ------------------------------------------------------------------
@@ -739,7 +739,7 @@ class MutationTesterSpecialist(Specialist):
         task_section = self._creator_task_section(count)
         tb_dirs = ", ".join(_configured_testbench_dirs(self.args.work_dir))
 
-        return f"""You are a mutation testing CREATOR agent.
+        return f"""You are a Mutation Tester Specialist.
 You are read-only. Do not edit any file or run simulators. Use provider-native
 read tools when available. If file inspection is exposed only through a shell,
 you may use read-only shell commands (for example: sed, rg, nl, head, tail, or
@@ -1247,7 +1247,7 @@ replacement must differ, and every proposal must remain a single source edit.
 
     @staticmethod
     def _creator_output_error(plan: MutationRunPlan, round_idx: int) -> McpToolResult:
-        reason = "creator agent returned no parseable mutation specs"
+        reason = "Mutation Tester Specialist returned no parseable mutation specs"
         return McpToolResult(
             exit_code=EXIT_ERROR,
             report_text=reason,
@@ -1354,7 +1354,7 @@ replacement must differ, and every proposal must remain a single source edit.
         resume: bool,
         attempt: int,
     ) -> tuple[list[MutationSpec], float]:
-        """Invoke the creator agent.  Returns (parsed_specs, elapsed_s)."""
+        """Invoke the Mutation Tester Specialist.  Returns (parsed_specs, elapsed_s)."""
         start = time.monotonic()
         params = AgentCallParams(
             prompt=prompt,
@@ -2780,7 +2780,7 @@ replacement must differ, and every proposal must remain a single source edit.
                 else f" [reused lock + rebuilt from {inputs.lock_created_at}]"
             )
         else:
-            suffix = " [cold: agent designed]"
+            suffix = " [cold: Specialist designed]"
         if plan.auto_mode and inputs.count < plan.formula_count:
             suffix += f" [auto: {plan.formula_count} requested, {inputs.count} budget-capped]"
         return base + suffix

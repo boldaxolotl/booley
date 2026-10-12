@@ -8,13 +8,13 @@ Related references:
 - [CONFIG.md](CONFIG.md): Targets, tests, constraints, Criteria, and Flow policy.
 - [SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md): which EDA tools and versions
   each Flow supports.
-- [USAGE.md](USAGE.md#booley-flows--specialists): the day-to-day agent workflow.
+- [USAGE.md](USAGE.md#booley-flows--specialists): the day-to-day Developer Agent workflow.
 - [FLOW_REPORTS.md](../internals/FLOW_REPORTS.md): JSON report schemas and file
   layouts, for scripts that consume Flow output.
 
 ## Running a Flow
 
-Normally you ask the session agent to run a Flow. Name the
+Normally you ask the Developer Agent to run a Flow. Name the
 Target, and for `sim` name the test (or ask for the Target's full suite). To
 reproduce or debug a run yourself, use the CLI inside the Sandbox:
 
@@ -102,7 +102,7 @@ Help, validation-only, dry-run and quiet calls create no transcript.
 
 Typed/MCP calls and runtime-composed calls retain their existing event
 transport. Ordinary direct shell calls gain stderr progress even without a TTY,
-including Interactive Agent shell calls. Agents or scripts requiring the previous
+including Developer Agent shell calls. Developer Agents or scripts requiring the previous
 captured transcript should pass `--quiet`.
 
 ### Choosing Targets
@@ -199,7 +199,7 @@ The CLI prints a final verdict card: stdout on success, stderr on failure.
 
 **Reports.** Each run writes a structured JSON report and complete logs. By
 default they go under `flow-reports/` in the project-data directory (Goal and
-agent runs use their runtime directory). `--report-dir` overrides this. Booley
+Specialist runs use their runtime directory). `--report-dir` overrides this. Booley
 never writes reports into the RTL checkout. The verdict card and the report both
 point at the exact log and artifact paths, so you rarely need to go looking.
 
@@ -428,7 +428,7 @@ across runs.
 booley flow sim --target sim_soc --coverage
 ```
 
-Then call the `coverage_analyst` Specialist from your connected agent session with
+Then call the `coverage_analyst` Specialist from your Developer Agent session with
 `campaign="<reports>/sim/12/targets/sim_soc/coverage.json"` for Waiver Candidates
 and testbench improvements. The verdict card prints the exact
 `coverage.json` path to pass as `campaign`.
@@ -496,7 +496,7 @@ those ready for human review in the local Goal Record's `waiver-candidates.json`
 An `unreachable` candidate needs a zero-hit point. A candidate carries no
 approval authority; only strict coverage evidence meets a Goal.
 
-Ask the agent to propose each needed candidate with
+Ask the Developer Agent to propose each needed candidate with
 `goal_propose_change(operation="create", kind="waiver", goal_key=...,
 candidate_id=..., rationale=...)`. Inspect the point, source, Campaign,
 coverage delta, and justification before approving or rejecting the exact
@@ -575,7 +575,7 @@ never infers a latest Campaign or merges coverage across Targets or runs.
 `coverage_analyst` explains one Campaign: what is uncovered, likely reasons,
 which tests to add, and Waiver Candidates for human review.
 
-Call the `coverage_analyst` Specialist from your connected agent session with `campaign="<exact coverage.json>"`.
+Call the `coverage_analyst` Specialist from your Developer Agent session with `campaign="<exact coverage.json>"`.
 
 It never runs simulation, changes Criteria, or approves waivers; in Goal
 Mode Booley records its candidates for

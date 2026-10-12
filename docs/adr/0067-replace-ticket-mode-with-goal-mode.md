@@ -187,3 +187,13 @@ Recorded after the Phase 0 spikes
 ## Amendment (2026-10-09)
 
 Rollout switch removed; Goal Mode is the only public workflow (Phase 7b, PR #1321); Ticket code removal follows in Phase 9a.
+
+## Amendment (2026-10-12): Developer Agent vocabulary
+
+Issue #1342 re-adopts **Developer Agent** with the definition in the
+[shared glossary](../GLOSSARY.md): the acting agent of a Claude Code or Codex
+session in a Sandbox, in Interactive Mode or Goal Mode, whether human-steered
+or unattended. It authors code and chooses Booley Flows and Specialists.
+This reverses only the vocabulary decision to retire Developer Agent above;
+it does not restore Ticket Mode or a separate Booley-launched Ticket actor.
+Old Ticket records retain their historical meaning.

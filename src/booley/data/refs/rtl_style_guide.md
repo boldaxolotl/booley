@@ -1,6 +1,6 @@
 # RTL Style Guide
 
-Single source of truth for coding standards. Used by review agents and RTL coding agents.
+Single source of truth for coding standards. Used by Reviewer Specialists and Developer Agents.
 
 Project-specific overlays may be supplied by the caller or change-request context.
 

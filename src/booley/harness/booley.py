@@ -474,9 +474,9 @@ def _add_doctor_subparser(sub) -> None:
     """Add setup and environment diagnostics."""
     doctor_p = sub.add_parser(
         "doctor",
-        help="Run setup and environment health checks [may invoke agent]",
+        help="Run setup and environment health checks [may invoke provider probe]",
         parents=[_project_root_parent()],
-        description="Check setup and environment health. Deep checks may invoke a Developer Agent authorization probe unless skipped.",
+        description="Check setup and environment health. Deep checks may invoke a Specialist provider authorization and memory probe unless skipped.",
     )
     output = doctor_p.add_mutually_exclusive_group()
     output.add_argument("--verbose", "-v", action="store_true")
@@ -495,7 +495,7 @@ def _add_doctor_subparser(sub) -> None:
         action="store_true",
         help=(
             "With --deep, skip agent credential inspection and the live "
-            "Developer authorization probe"
+            "Specialist provider authorization and memory probe"
         ),
     )
 

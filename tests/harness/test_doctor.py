@@ -883,7 +883,7 @@ def test_doctor_backend_hint_matches_mode(tmp_path, monkeypatch, capsys, deep):
 
     def probe(project, _pass, _skip, _fail, *, completeness=None):
         probe_calls.append(project.project_root)
-        _pass("agent backend live authorization check completed successfully")
+        _pass("Specialist provider live authorization check completed successfully")
 
     monkeypatch.setattr(doctor, "_run_developer_probe", probe)
     doctor.run_doctor_result(
@@ -893,7 +893,9 @@ def test_doctor_backend_hint_matches_mode(tmp_path, monkeypatch, capsys, deep):
     assert ("run `booley doctor --deep`" in output) is not deep
     assert ("worker backend configured locally: Codex" in output) is not deep
     assert ("Deep checks" in output) is deep
-    assert ("agent backend live authorization check completed successfully" in output) is deep
+    assert (
+        "Specialist provider live authorization check completed successfully" in output
+    ) is deep
     assert probe_calls == ([tmp_path] if deep else [])
 
 
@@ -907,7 +909,7 @@ def test_doctor_deep_host_preserves_probe_skip(tmp_path, monkeypatch, capsys):
     output = capsys.readouterr().out
     assert "run `booley doctor --deep`" not in output
     assert "worker backend configured locally: Codex" not in output
-    assert "agent memory probe: runs in-container" in output
+    assert "Specialist provider memory probe: runs in-container" in output
     assert result.deep_status.current is False
 
 
@@ -938,7 +940,10 @@ def test_doctor_skip_agent_checks_omits_credentials_and_live_probe(
     assert rc == 0
     assert "agent credential checks skipped by --skip-agent-checks" in output
     assert "worker backend health check skipped by --skip-agent-checks" in output
-    assert "developer authorization probe skipped by --skip-agent-checks" in output
+    assert (
+        "Specialist provider authorization and memory probe skipped by --skip-agent-checks"
+        in output
+    )
     assert "no agent call ran" in output
     assert "run `booley doctor --deep`" not in output
     assert doctor_stamp.load_stamp(project_dir) is None
@@ -5841,7 +5846,7 @@ class TestDeveloperProbe:
         rec = _Rec()
         doctor._run_developer_probe(_adr28_project(tmp_path), rec.p, rec.s, rec.f)
         assert rec.kinds() == {"fail"}
-        assert "every agent will fail" in rec.events[0][1]
+        assert "every Specialist using this provider will fail" in rec.events[0][1]
 
     def test_deep_phase_announces_probe_and_reports_usage(self, tmp_path, monkeypatch, capsys):
         """Issue #885: RUN line precedes the agent call; summary reports spend."""
@@ -5866,7 +5871,8 @@ class TestDeveloperProbe:
         reporter.finish()
 
         assert (
-            "RUN   agent-backed check: agent memory and authorization probe" in seen_before_call[0]
+            "RUN   provider-backed check: Specialist provider memory and authorization probe"
+            in seen_before_call[0]
         )
         assert (
             "Agent-backed checks: 1 agent call, 1,234 input tokens (1,000 cached), "

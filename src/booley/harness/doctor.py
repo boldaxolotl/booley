@@ -1068,7 +1068,7 @@ def _track_developer_probe(
 ) -> None:
     """Measure the agent before EDA children can contaminate its RSS observation."""
     tracker.require("developer-probe")
-    if reporter.agent_check_enabled("developer authorization probe"):
+    if reporter.agent_check_enabled("Specialist provider authorization and memory probe"):
         record = _run_developer_probe(
             project, reporter.pass_, reporter.skip_, reporter.fail_, completeness=tracker
         )
@@ -1672,12 +1672,12 @@ def _run_developer_probe(
 
     if not runtime_context.inside_session_runtime():
         _skip(
-            "agent memory probe: runs in-container (it measures the in-container agent footprint)"
+            "Specialist provider memory probe: runs in-container (it measures the provider CLI footprint)"
         )
         return None
     _announce_long_check(
-        "agent-backed check: agent memory and authorization probe",
-        "one light-tier agent turn; usually seconds, times out after "
+        "provider-backed check: Specialist provider memory and authorization probe",
+        "one light-tier provider turn; usually seconds, times out after "
         f"{_format_minutes(developer_probe.PROBE_TIMEOUT_S)}",
     )
     try:
@@ -1690,27 +1690,31 @@ def _run_developer_probe(
         )
         if getattr(exc, "agent_failure", False):
             _fail(
-                f"agent probe could not complete a trivial call — every "
-                f"agent will fail the same way at launch: {exc}",
+                f"Specialist provider probe could not complete a trivial call — every "
+                f"Specialist using this provider will fail the same way at launch: {exc}",
                 "check agent auth at THIS Sandbox location (booley auth, or claude login + "
-                "container recreate); see the harness log for the agent's error",
+                "container recreate); see the harness log for the provider's error",
             )
             return record
-        _skip(f"agent memory probe skipped - {exc} (memory invariant keeps the 1g fallback)")
+        _skip(
+            f"Specialist provider memory probe skipped - {exc} (memory invariant keeps the 1g fallback)"
+        )
         return record
     record = _AgentCallRecord("agent probe", measurement.usage)
     try:
         path = developer_probe.record_measurement(project.project_dir, measurement.peak_rss_bytes)
     except Exception as exc:  # noqa: BLE001 — fail-soft by contract; the paid call is still accounted
-        _skip(f"agent memory probe skipped - {exc} (memory invariant keeps the 1g fallback)")
+        _skip(
+            f"Specialist provider memory probe skipped - {exc} (memory invariant keeps the 1g fallback)"
+        )
         return record
     bound = "" if measurement.exact else " (upper bound)"
     _pass(
-        "agent peak RSS measured: "
+        "provider CLI peak RSS measured: "
         f"{resource_policy.format_memory(measurement.peak_rss_bytes)}{bound} — "
         f"recorded to {path}"
     )
-    _pass("agent backend live authorization check completed successfully")
+    _pass("Specialist provider live authorization check completed successfully")
     if completeness is not None:
         completeness.completed("developer-probe", measurement.peak_rss_bytes > 0)
     return record

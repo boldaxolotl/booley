@@ -6,7 +6,7 @@ verify the design. A design failure that the machinery executes and interprets
 correctly is compatible with healthy machinery. Doctor's existing verdict rules
 still apply; deep currency reporting does not change their classification.
 
-A host agent session is expected during Project Setup. `session.agent-on-host`
+A Claude Code or Codex session on the host is expected during Project Setup. `session.agent-on-host`
 is a PASS-level reminder that the Booley MCP server and Booley Flows live only
 in the Sandbox. For Interactive work, reopen in the devcontainer or use
 `booley session up && booley session enter`. This reminder needs no waiver.
@@ -39,7 +39,7 @@ of a Sandbox already running from that image. Selecting an image in configuratio
 also does not substitute it for the active image.
 
 A qualifying deep run must have no active health failures or unwaived warnings
-and must complete every applicable deep check: the agent authorization
+and must complete every applicable deep check: the Specialist provider authorization
 and memory probe, selected Simulation/Lint/ASIC Synthesis smokes, enabled sim/lint
 good-and-bad self-tests, and selected-core live resolution. Disabled capabilities
 and intentionally excluded FPGA implementation are legitimate exclusions.
@@ -50,8 +50,8 @@ Waiving a warning does not execute the missing check.
 Checks must run under one verified, stable artifact identity and matching Booley
 version. Core resolution runs in the same Sandbox as the Flow checks. Local
 FuseSoC resolution inside that Sandbox does not require Docker on its PATH.
-A host-side deep invocation cannot qualify when it skips the in-Sandbox Developer
-Agent probe; run deep Doctor inside the Sandbox for full evidence.
+A host-side deep invocation cannot qualify when it skips the in-Sandbox Specialist
+provider probe; run deep Doctor inside the Sandbox for full evidence.
 
 A completed failed or incomplete deep attempt retains historical success but
 makes deep Doctor due until a later qualifying run succeeds. Cancellation or an

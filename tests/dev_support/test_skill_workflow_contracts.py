@@ -285,7 +285,7 @@ def test_setup_never_authors_timing_constraints_and_blocks_on_missing_file():
         "Never write a placeholder SDC to unblock Doctor",
     ):
         assert required in project_config
-    assert "never agent-authored (a missing file blocks the Target)" in template
+    assert "never authored by a Developer Agent (a missing file blocks the Target)" in template
 
 
 def test_setup_plans_one_project_wide_tech_cell_replacement():
