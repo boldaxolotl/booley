@@ -1715,17 +1715,17 @@ def _artifact_group(plan: TargetTestPlan, runs: tuple[TestRun, ...], cocotb: boo
 
     An HDL process is named by its Test Run (``stress+soak@42``), or by the
     Target for the unnamed invocation. A Cocotb batch of default Test Runs is
-    ``batch``; any other batch adds what sets it apart, its seed and the
-    fingerprint of its environment, so two batches never share a directory.
+    ``batch``. Any other batch is named by a digest of its Test Run names: a
+    request names each Test Run once and batches share none, so two batches
+    never share a directory, and the same batch always gets the same one.
     """
     first = runs[0]
     if not cocotb:
         return first.name if first.test is not None else ""
-    if first.seed == plan.default_seed and not first.env:
+    if all(plan.is_default_run(run) for run in runs) and not first.env:
         return "batch"
-    seed = "" if first.seed is None else f"@{first.seed}"
-    env = "+" + first.fingerprint.removeprefix("sha256:")[:8] if first.env else ""
-    return f"batch{env}{seed}"
+    names = "\n".join(run.name for run in runs)
+    return "batch-" + hashlib.sha256(names.encode("utf-8")).hexdigest()[:12]
 
 
 def _plusarg_parameter_names(parameters: Mapping[str, Any]) -> tuple[str, ...]:

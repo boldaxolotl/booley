@@ -3797,6 +3797,7 @@ def _sim_mcp_tool_timeout_seconds(
             arguments.get("test"),
             None,
             mode,
+            seed=arguments.get("seed"),
         )
     except Exception:  # noqa: BLE001 — malformed project input is graded by the child
         work_units = target_count

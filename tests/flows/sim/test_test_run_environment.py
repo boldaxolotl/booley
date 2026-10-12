@@ -204,10 +204,59 @@ class TestWatchdogSizing:
         with patch("booley.flows.sim.flow._target_is_cocotb", return_value=False):
             assert _resolve_sim_campaign_work_units(project, "sim", selectors) == units
 
+    @pytest.fixture
+    def cocotb_project(self, tmp_path: Path) -> Path:
+        """Cocotb Test Variants carry environment only; ``stress`` defaults to none."""
+        return _project(
+            tmp_path,
+            '[sim]\ntests = ["reset", "stress", "idle"]\n'
+            "[sim.variants.stress]\n"
+            'default = "short"\nshort = []\nsoak = { env = { MODE = "soak" } }\n',
+        )
+
     @pytest.mark.parametrize(
-        ("selectors", "units"),
-        [(None, 1), (["reset", "stress"], 1), (["stress@x4"], 4), (["reset@3", "stress+soak"], 2)],
+        ("selectors", "seed", "units"),
+        [
+            (None, None, 1),
+            (["reset", "stress"], None, 1),
+            (["stress@x4"], None, 4),
+            (["reset@3", "stress+soak"], None, 2),
+            # One seed for every run keeps one batch; a drawn seed per run does not.
+            (None, 5, 1),
+            (None, "random", 3),
+            (["reset", "stress"], "random", 2),
+            (["stress+soak", "reset", "idle"], None, 2),
+            (["stress@x2", "reset@x2", "idle"], None, 5),
+        ],
     )
-    def test_cocotb_target_counts_a_bound_on_its_batches(self, project, selectors, units):
+    def test_cocotb_target_counts_its_resolved_batches(
+        self, cocotb_project, selectors, seed, units
+    ):
         with patch("booley.flows.sim.flow._target_is_cocotb", return_value=True):
-            assert _resolve_sim_campaign_work_units(project, "sim", selectors) == units
+            counted = _resolve_sim_campaign_work_units(cocotb_project, "sim", selectors, seed=seed)
+        assert counted == units
+
+    def test_cocotb_default_suite_whose_default_variants_differ_in_env_needs_several(
+        self, tmp_path: Path
+    ):
+        """No selector at all: the default suite already splits by environment."""
+        project = _project(
+            tmp_path,
+            '[sim]\ntests = ["a", "b", "c"]\n'
+            '[sim.variants.a]\ndefault = "x"\nx = { env = { MODE = "A" } }\n'
+            '[sim.variants.b]\ndefault = "y"\ny = { env = { MODE = "B" } }\n',
+        )
+        with patch("booley.flows.sim.flow._target_is_cocotb", return_value=True):
+            assert _resolve_sim_campaign_work_units(project, "sim") == 3
+            assert _resolve_sim_campaign_work_units(project, "sim", ["a", "b"]) == 2
+            assert _resolve_sim_campaign_work_units(project, "sim", ["c"]) == 1
+
+    @pytest.mark.parametrize(("seed", "units"), [("random", 2), (9, 2), ("bogus", 2), (0, 2)])
+    def test_hdl_target_counts_do_not_depend_on_the_seed(self, project, seed, units):
+        with patch("booley.flows.sim.flow._target_is_cocotb", return_value=False):
+            assert _resolve_sim_campaign_work_units(project, "sim", seed=seed) == units
+
+    def test_a_request_the_flow_refuses_is_counted_from_the_registry(self, cocotb_project):
+        with patch("booley.flows.sim.flow._target_is_cocotb", return_value=True):
+            assert _resolve_sim_campaign_work_units(cocotb_project, "sim", ["nope+x@x3"]) == 1
+            assert _resolve_sim_campaign_work_units(cocotb_project, "sim", ["stress+nope"]) == 1

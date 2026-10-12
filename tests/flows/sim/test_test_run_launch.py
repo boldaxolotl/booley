@@ -7,6 +7,7 @@ differs) live in ``tests/docker``.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -297,5 +298,29 @@ class TestEvidenceGroups:
                 (("test_c",), (plan.run("test_c", "slow", 5),)),
             )
         ]
-        tag = slow.fingerprint.removeprefix("sha256:")[:8]
-        assert groups == ["batch", "batch@5", f"batch+{tag}@1", f"batch+{tag}@5"]
+        assert groups[0] == "batch"
+        assert len(set(groups)) == 4
+        assert all(re.fullmatch(r"batch-[0-9a-f]{12}", group) for group in groups[1:])
+
+    def test_two_variants_of_one_test_with_one_environment_get_two_directories(
+        self, tmp_path: Path
+    ):
+        """They need two batches (a batch selects by Test name), so two directories."""
+        root = _project(
+            tmp_path,
+            '[sim]\ntests = ["test_a"]\n'
+            '[sim.variants.test_a]\ndefault = "one"\none = []\ntwo = []\n'
+            'three = { env = { MODE = "x" } }\nfour = { env = { MODE = "x" } }\n',
+        )
+        inspection = _inspection("icarus", cocotb=True)
+        plan = target_test_plan(_handle(root), "cocotb", {})
+        runs = [plan.run("test_a", variant) for variant in ("one", "two", "three", "four")]
+        assert {(run.env, run.seed) for run in runs[:2]} == {((), 1)}
+
+        def groups() -> list[str]:
+            return [_work(root, inspection, ("test_a",), (run,)).artifact_group for run in runs]
+
+        assert groups()[0] == "batch"
+        assert len(set(groups())) == 4
+        # Deterministic: the same batch is always the same directory.
+        assert groups() == groups()

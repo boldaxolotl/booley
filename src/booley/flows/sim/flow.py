@@ -16,7 +16,7 @@ import shlex
 import sys
 import time
 from collections import Counter
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
@@ -87,11 +87,17 @@ from booley.flows.sim.request import SimRequest
 from booley.flows.sim.result import parse_summary_line
 from booley.flows.sim.run_guard import DEFAULT_SIM_TIME_GRACE_S
 from booley.flows.sim.verilator_coverage import SimulationExecutionPort
-from booley.flows.target_test_plan import TargetTestPlan
+from booley.flows.target_test_plan import (
+    TargetTestPlan,
+    batch_test_runs,
+    load_target_test_plan,
+)
 from booley.flows.test_runs import (
     DEFAULT_SEED,
     SeedCount,
+    SeedRequest,
     TestRun,
+    parse_seed_request,
     parse_test_selector,
     test_run_document,
     test_run_from_document,
@@ -1888,21 +1894,54 @@ def _selector_test_run_count(available: Sequence[str], test_selector: Sequence[s
     return count
 
 
-def _cocotb_batch_bound(
-    available: Sequence[str], test_selector: Sequence[str] | str | None
+def _resolved_work_units(
+    work_dir: Path,
+    target: str,
+    registered: Sequence[str],
+    skips: Collection[str],
+    test_selector: Sequence[str] | None,
+    seed: SeedRequest,
 ) -> int:
-    """An upper bound on the Cocotb batches one Target's selection launches.
+    """Simulator processes *target* launches for this request, from its resolved Test Runs.
 
-    Default Test Runs share one batch. A selection that names a Test Variant
-    or a seed may need a batch per Test Run, because batches never mix
-    environments or seeds.
+    The request is resolved the way the Flow resolves it, then grouped into
+    processes the way the Flow groups it: one per Test Run on an HDL Target,
+    one per environment and seed on a Cocotb Target. A seed Booley would draw
+    (``--seed random``, ``test@xN``) is unknown here, so each such Test Run
+    counts as its own process, which is the most it can need. Raises
+    ``ValueError`` for a request the Flow itself refuses.
     """
-    if not test_selector:
-        return 1
-    requested = (test_selector,) if isinstance(test_selector, str) else tuple(test_selector)
-    if all("+" not in text and "@" not in text for text in requested):
-        return 1
-    return max(1, _selector_test_run_count(available, requested))
+    cocotb = _target_is_cocotb(work_dir, target)
+    # Sizing only: every HDL simulator launches one process per Test Run, and
+    # the seeded one accepts each seed form the real Target might accept.
+    plan = load_target_test_plan(work_dir, target, adapter="cocotb" if cocotb else "verilator")
+    plan = replace(
+        plan,
+        tests=tuple(registered),
+        skipped=tuple(name for name in registered if name in skips),
+    )
+    drawn: set[int] = set()
+
+    def draw(count: int, *, exclude: Collection[int] = ()) -> tuple[int, ...]:
+        taken = drawn | set(exclude)
+        seeds = [seed for seed in range(1, count + len(taken) + 1) if seed not in taken][:count]
+        drawn.update(seeds)
+        return tuple(seeds)
+
+    runs = plan.resolve(test_selector, seed=seed, draw=draw)
+    fixed = [run for run in runs if run.seed not in drawn]
+    batches = batch_test_runs(fixed, one_process_per_run=not cocotb)
+    return len(batches) + len(runs) - len(fixed)
+
+
+def _sizing_seed(seed: object) -> SeedRequest:
+    """The request's ``--seed`` for sizing; a value the Flow refuses counts as none."""
+    if seed is None:
+        return None
+    try:
+        return parse_seed_request(seed)
+    except ValueError:
+        return None
 
 
 def _resolve_sim_campaign_work_units(
@@ -1911,14 +1950,16 @@ def _resolve_sim_campaign_work_units(
     test_selector: Sequence[str] | str | None = None,
     skip_arg: str | None = None,
     mode: SimulationMode | str = SimulationMode.SIMULATE,
+    seed: object = None,
 ) -> int:
     """Count sequential simulator processes selected by one sim invocation.
 
-    Cocotb batches a Target's selected Test Runs by environment and seed.
-    Native HDL Targets launch one process per selected Test Run, so
-    ``test@xN`` counts N. This is deliberately a cheap
-    preflight read used by the outer MCP watchdog; validation remains the
-    child Flow's responsibility.
+    Counts the work items the request resolves to: its Test Runs, grouped
+    into processes as the Flow groups them (``test@xN`` counts N; Cocotb
+    batches split by environment and seed, also for a default suite). This
+    is a preflight read used by the outer MCP watchdog; validation remains
+    the child Flow's responsibility, so a request that does not resolve is
+    counted from the Test registry alone.
     """
     targets = [item.strip() for item in target_arg.split(",") if item.strip()]
     if not targets:
@@ -1930,19 +1971,25 @@ def _resolve_sim_campaign_work_units(
         return len(targets) + 1
     test_names = _get_test_names(work_dir)
     configured_skips = _get_test_skips(work_dir)
+    selectors = (test_selector,) if isinstance(test_selector, str) else test_selector
     units = 0
     for target in targets:
-        if _target_is_cocotb(work_dir, target):
-            units += _cocotb_batch_bound(
-                list(lookup_target_section(test_names, target) or []), test_selector
+        registered = list(lookup_target_section(test_names, target) or [])
+        skips = set(lookup_target_section(configured_skips, target) or [])
+        skips.update(item.strip() for item in (skip_arg or "").split(",") if item.strip())
+        try:
+            resolved = _resolved_work_units(
+                work_dir,
+                target,
+                registered,
+                skips,
+                tuple(selectors) if selectors else None,
+                _sizing_seed(seed),
             )
-            continue
-        units += _selected_test_work_units(
-            target,
-            test_names,
-            configured_skips,
-            test_selector,
-            skip_arg,
+        except ValueError:
+            resolved = 0
+        units += resolved or _selected_test_work_units(
+            target, test_names, configured_skips, test_selector, skip_arg
         )
     return max(1, units)
 
