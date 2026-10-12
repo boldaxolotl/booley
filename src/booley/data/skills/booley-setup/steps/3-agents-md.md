@@ -2,7 +2,7 @@
 
 > Part of the `booley-setup` skill. Run in order, or invoke this step alone with `booley-setup 3`. This step runs inside the devcontainer — edit files in the worktree and run `booley doctor` in a container terminal.
 
-Create a minimal Project-level `AGENTS.md` for assistants doing RTL work. The
+Create a minimal Project-level `AGENTS.md` for Developer Agents doing RTL work. The
 file is high leverage: do not auto-write, pad, or invent facts.
 
 **Template:** `../AGENTS_TEMPLATE.md`
@@ -35,10 +35,10 @@ file is high leverage: do not auto-write, pad, or invent facts.
   none of the Booley Flows are registered; the Sandbox bullets explain why.
   Doctor warns if the "Inside the Sandbox" bullet goes missing.
 - When `booley.toml` selects `booley-sandbox-riscv`, keep the template's RISC-V
-  reference-docs bullet verbatim so agents can find the image's offline manuals.
+  reference-docs bullet verbatim so Developer Agents can find the image's offline manuals.
   Remove that conditional bullet for every other sandbox image.
 - When `booley.toml` has `[stealth].enabled = true`, keep the template's stealth
-  mode bullet verbatim so agents treat `.booley_project/` as a separate Git
+  mode bullet verbatim so Developer Agents treat `.booley_project/` as a separate Git
   repository and do not expose its changes in the main repository.
   Remove that conditional bullet when stealth mode is disabled.
 - Do not read RTL, testbench, or test contents by default. Stable docs and

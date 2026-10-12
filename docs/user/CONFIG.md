@@ -6,8 +6,8 @@ ordered list of setup **steps**. You do not fill these files by hand: the
 `booley-setup` skill authors them interactively, and `booley doctor` validates
 them. When a step needs the meaning of a field, it links here.
 
-**Audience:** both humans and agents. A human can read this to understand the
-config surface; an agent running the setup skill dereferences these anchors as it
+**Audience:** humans and Developer Agents. A human can read this to understand the
+config surface; a Claude Code or Codex session running the setup skill dereferences these anchors as it
 fills each file.
 
 **Read this first.** This is a reference, not a tutorial. It assumes you have
@@ -22,13 +22,13 @@ you have not described your design yet, start with the [Design description
 builds from it — and come back to the per-Flow knobs after.
 
 **Found a knob that lies, or one you wish existed?** Both are worth a minute:
-tell the `/booley-feedback` skill in your agent chat. See
+tell the `/booley-feedback` skill in your Developer Agent chat. See
 [Feedback](#feedback-feedback).
 
 Contents:
 
 - [Host configuration](#host-configuration-configtoml): global Sandbox Policy
-- [booley.toml](#booleytoml): project identity, Flow selection, agent config
+- [booley.toml](#booleytoml): project identity, Flow selection, Developer Agent and Specialist config
 - [Design description (`.core`) and tests (`tests.toml`)](#design-description-core-and-tests-teststoml)
 - [Cocotb Targets](#cocotb-targets-python-testbenches): Python testbenches, and
   baking their dependency stack into the image
@@ -76,7 +76,7 @@ canceling the editor operation.
 
 ## booley.toml
 
-Project identity, Flow selection, and agent configuration live in
+Project identity, Flow selection, and Developer Agent and Specialist configuration live in
 `.booley_project/booley.toml`. A per-knob reference follows, section by section.
 
 `[project]` carries the project `name` and `preflight_checks` — see
@@ -88,8 +88,8 @@ setting for Booley Flows and Specialists.
 ### Flow and Specialist availability: `enabled`
 
 Every Booley Flow builds and executes its command inside the Sandbox.
-Set `[flows.<name>].enabled = false` to remove a Flow from agent and autonomous
-discovery. Specialists use `[specialists.<name>].enabled`:
+Set `[flows.<name>].enabled = false` to remove a Flow from Developer Agent discovery and autonomous
+execution. Specialists use `[specialists.<name>].enabled`:
 
 ```toml
 [flows.lint]
@@ -817,7 +817,7 @@ whose `flow_options.booley.doctor` includes `synth`. It records each synthesis
 boundary's EDA process-tree peak RSS, retains the largest selected-target
 measurement, and applies 15% rounded-up headroom to the HEAVY reservation. A later plain
 Doctor run warns when `[sandbox].memory` cannot admit the calibrated peak plus
-Developer-Agent memory and fixed session headroom. An OOM or timeout is an
+Developer Agent memory and fixed session headroom. An OOM or timeout is an
 incomplete calibration, never a successful PPA result.
 
 The slot store is per-project. It does not arbitrate separate Projects' shared
@@ -895,7 +895,7 @@ license-server addresses, license-file paths, or environment forwarding in
 #### Host skills (`[sandbox].mount_host_skills`)
 
 By default the sandbox carries only Booley's built-in `booley-*` skills (baked
-into the image). Flip this on to also use your **own** global agent skills
+into the image). Flip this on to also use your **own** global Claude Code or Codex skills
 inside the container:
 
 ```toml
@@ -908,7 +908,7 @@ and `~/.agents/skills` (Codex) — resolves each entry to its **real** directory
 (these dirs are usually full of symlinks, which would otherwise dangle inside
 the container), and mounts each one **read-only**. Booley's own built-ins are
 excluded (they are already in the image and always win a name clash), and each
-skill is de-duplicated by name. The agent discovers them alongside the built-ins
+skill is de-duplicated by name. The Developer Agent discovers them alongside the built-ins
 on every container start. Nothing on the host is ever written. Rerun
 `init --seed` after adding or removing host skills.
 
@@ -1331,7 +1331,7 @@ file. Read them there.
 
 ### Agent provider (`[agent]`)
 
-The configured chat launcher and Specialists use one selected provider, Claude
+The Developer Agent chat launcher and Specialists use one selected provider, Claude
 or Codex:
 
 ```toml
@@ -1348,7 +1348,7 @@ preserved on re-run. A Project with only `provider` configured receives the docu
 
 #### Pinning what bills (`[agent] auth`)
 
-Pick which credential agents bill when several are present:
+Pick which credential the Developer Agent and Specialists bill when several are present:
 
 ```toml
 [agent]
@@ -1359,7 +1359,7 @@ auth = "subscription"   # "subscription" | "api_key" | "auto" (default)
 - **`auto`** (default): the CLI's own precedence decides (an API key outbids a
   subscription); Booley reports the winner but changes nothing.
 - **`subscription`**: bill the subscription. Booley scrubs the API-key env vars
-  from the agent environment; a `booley auth` OAuth token still rides along.
+  from Developer Agent and Specialist environments; a `booley auth` OAuth token still rides along.
 - **`api_key`**: bill the API key.
 
 Either non-`auto` value fails loud (`booley doctor`) when its credential is
@@ -1397,10 +1397,10 @@ variables still take precedence.
 
 Booley Specialists select models through three **capability tiers**:
 `heavy`, `standard`, `light`. Specialists floor at `standard`; cheap internal
-steps run `light`. The interactive agent uses its native CLI model settings. Each
+steps run `light`. The Developer Agent uses its native CLI model settings. Each
 provider ships defaults, so an untouched project needs no `[models]` at all.
 
-Override a tier to move every agent on it at once:
+Override a tier to move every Specialist and internal call on it at once:
 
 ```toml
 [models]
@@ -1412,7 +1412,7 @@ light = "claude-sonnet-5"
 Tiers you leave out keep the active provider's default; overriding `heavy`
 alone does not disturb the other two.
 
-#### Pinning one agent (`[models.roles]`)
+#### Pinning one Specialist (`[models.roles]`)
 
 To choose a model for one Specialist, pin its role by name:
 
@@ -1426,8 +1426,8 @@ A tier name resolves through the `[models]` table (and tracks any override of
 it); anything else is passed to the provider verbatim. Specialist roles include `reviewer`, `mutation_tester`, `coverage_analyst`, `tb_coder`. An unknown
 role FAILs `booley doctor`.
 
-A pin overrides a specialist's minimum-tier floor and sets the **model only**;
-reasoning effort still follows the tier the agent would otherwise use (a no-op
+A pin overrides a Specialist's minimum-tier floor and sets the **model only**;
+reasoning effort still follows the tier the Specialist would otherwise use (a no-op
 on Claude, whose SDK exposes no per-call effort knob).
 
 ## Design description (`.core`) and tests (`tests.toml`)
@@ -2135,7 +2135,7 @@ with a RISC-V cross-compiler before simulating, so Booley ships a prebuilt
   the ISA manuals follow the newest date-named upstream release, checked at
   each Booley release currency audit
   ([ADR 0071](../adr/0071-follow-date-named-riscv-isa-manual-releases.md));
-  **`pdftotext`** is included for shell/agent text extraction.
+  **`pdftotext`** is included for shell and Developer Agent text extraction.
 
 Reserve about 6 GB of Docker storage for the complete RISC-V demo stack, plus
 Project artifacts and temporary upgrade/build data. The current Linux/AMD64
@@ -2202,7 +2202,7 @@ refresh, and Doctor—resolve that generated image name consistently.
 
 ### Custom MCP tools
 
-Project-specific MCP tools can be added via `.booley_project/mcp_tools/`, following the same base-class interface as built-in MCP tools. The agent discovers and invokes them just like built-in MCP tools. See [MCP-TOOLS.md](../internals/MCP-TOOLS.md) for the architecture and extension guide.
+Project-specific MCP tools can be added via `.booley_project/mcp_tools/`, following the same base-class interface as built-in MCP tools. The Developer Agent discovers and invokes them just like built-in MCP tools. See [MCP-TOOLS.md](../internals/MCP-TOOLS.md) for the architecture and extension guide.
 
 ### Worktree setup hooks
 

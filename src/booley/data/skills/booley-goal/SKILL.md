@@ -5,7 +5,7 @@ description: Enter, resume, and finish Booley Goal Mode for RTL work; translate 
 
 # Work in Goal Mode
 
-Goal Mode binds this agent session to one linked worktree and Goal Branch.
+Goal Mode binds this Developer Agent session to one linked worktree and Goal Branch.
 Only Booley Flow and Specialist evidence can meet its mandatory Goals.
 Use it for human-steered or unattended work inside the Sandbox.
 
@@ -56,7 +56,7 @@ Use it for human-steered or unattended work inside the Sandbox.
 
 Work only in the Goal worktree and commit on its Goal Branch. Use the relevant
 Booley Flows and Specialists, passing `work_dir` every time. Shell output,
-agent prose, and manually edited records cannot meet a Goal. Consult
+Developer Agent prose, and manually edited records cannot meet a Goal. Consult
 `goal_status` for unmet or stale Goals and rerun their producers after code
 changes. For a bug, reproduce the reported failure before fixing it; a setup
 failure or an already passing test is not evidence of the bug.
@@ -121,7 +121,7 @@ reported identity or protected-input problem.
 Abandon only on explicit human instruction. Call `goal_finish` with
 `abandon=true`, `instruction_quote` containing that instruction, the exact
 `record_id`, and a caller-stable `operation_id`. Retry with identical arguments.
-Do not abandon because the agent is stuck, quiet, or out of context. Abandonment
+Do not abandon because the Developer Agent is stuck, quiet, or out of context. Abandonment
 leaves the worktree and branch for the human to preserve or remove.
 
 ## Dashboard

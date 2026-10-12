@@ -21,9 +21,9 @@ them to `.booley_project/SETUP-PLAN.md` for approval. Execution then runs
 In unattended mode the plan file replaces the approval conversation entirely
 (see `steps/0-plan.md`).
 
-**Audience — humans and agents alike.** A human can read the `steps/` files and
+**Audience — humans and Claude Code or Codex sessions.** A human can read the `steps/` files and
 work through them by hand. Or invoke the skill **from the host** and let the
-agent drive: it plans, stops once for plan approval, and executes the rest
+session drive: it plans, stops once for plan approval, and executes the rest
 without interruption.
 
 ## The steps
@@ -33,7 +33,7 @@ without interruption.
 | 0 | **Plan** — feasibility + decision grill → `SETUP-PLAN.md`. | host | yes (lightweight in `new` mode) | `steps/0-plan.md` |
 | 1 | **Environment** — planned image + `booley init` re-run. | host | only if the plan changes the sandbox image | (execution phase, below) |
 | 2 | **Project config** — `.core`, `tests.toml`, `booley.toml`. | container; validate via `booley doctor` | yes | `steps/2-project-config.md` |
-| 3 | **AGENTS.md** — Project-level guidance for RTL agents. | container; file edits only | yes | `steps/3-agents-md.md` |
+| 3 | **AGENTS.md** — Project-level guidance for Developer Agents. | container; file edits only | yes | `steps/3-agents-md.md` |
 | 4 | **Doctor** — final audit; resolve every failure and warning, then the deep gate. | container terminal (+ one host run) | yes | `steps/4-doctor.md` |
 | 5 | **Parity** — diff Booley vs the repo's native flow, where EDA tools match. | container | no (only if plan row 18 ≠ `none`) | `steps/5-parity.md` |
 | 6 | **Findings** — report, triage, optional redacted export. | container | yes | `steps/6-findings.md` |
@@ -124,9 +124,9 @@ execution.
    follow **plus the approved `SETUP-PLAN.md`** — it holds every decision the
    step consumes. The rules a sub-agent must inherit are the **deviation
    rule**, the **onboarding voice**, and **"Waiting on long runs"** (all below);
-   a stop-and-ask always surfaces through the main agent, never inside the
+   a stop-and-ask always surfaces through the Developer Agent, never inside the
    sub-agent. Say the waiting rule out loud in the sub-agent's brief — a
-   delegated Step 2 or 4 is exactly where an agent parks on "standing by" and
+   delegated Step 2 or 4 is exactly where a sub-agent parks on "standing by" and
    waits for a notification that never comes.
 3. Run the plan's §2 execution-time checks as the step reaches the artifacts
    they verify.
@@ -155,7 +155,7 @@ Two rules, and the second is the one that gets skipped:
   or 4 is where most friction lives, and a sub-agent's context dies when it
   returns — so its brief must say: *run `booley feedback add` for anything that
   surprised you, before you report back.* The log is a file precisely so that a
-  finding survives the agent that found it. Do not ask sub-agents to summarize
+  finding survives the sub-agent that found it. Do not ask sub-agents to summarize
   findings in their return message and then re-log them yourself; that loses the
   detail and duplicates the entries.
 
@@ -284,7 +284,7 @@ wants you to break these; it doesn't.
   projects ignored root-level copies; do not create source symlinks. (The
   `booley_vcd_dump.sv` trace
   module is **not** one of them: the trace overlay supplies it from Booley's
-  `refs/` at run time.) Notes for the next agent or the user go in
+  `refs/` at run time.) Notes for the next Developer Agent or the user go in
   `.booley_project/`, not the repo. Whether `.booley_project/` **itself** is
   tracked is the plan's row-16 call: **hidden** (default) keeps it out via the
   parent repo's `.git/info/exclude` — never `.gitignore`, which is tracked and

@@ -31,7 +31,7 @@ Read the §3 **Execution ledger** in `SETUP-PLAN.md`.
 
   The root is `.booley_project/tmp/setup/<run-id>/`. Every setup-authored
   detached stdout/stderr capture, exit-code sidecar, probe, conversion, and
-  agent note is placed beneath it and registered before cleanup can remove it:
+  Developer Agent note is placed beneath it and registered before cleanup can remove it:
 
   ```console
   booley cleanup record <path> --run-id <run-id> --producer <step-command> \

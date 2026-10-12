@@ -460,10 +460,10 @@ Author within these limits:
   a faithful `-G` vlogparam and Booley ships no evaluator, so
   resolve it to a literal, or express it as a `vlogdefine` whose value is the
   expression text.
-- **Imperative scripts stay out of the agent's write Scope.** Any
+- **Imperative scripts stay out of the Developer Agent's write Scope.** Any
   `generators`/`hooks` script files must live **outside** the writable
   category dirs (`rtl/`, `tb/`, …) — e.g. under `scripts/` — so the Scope
-  pre-commit hook makes them agent-immutable. Scripts the agent could edit
+  pre-commit hook makes them agent-immutable. Scripts the Developer Agent could edit
   are rejected.
 
 #### Data files & built artifacts
@@ -532,7 +532,7 @@ The project's testbench flavor — `sv`, `cocotb`, or `mixed` with a default —
 is a **project convention fixed at setup**, not a per-session choice
 and was decided in the plan's row 4 (a mandatory grill
 question in Step 0); read it from `SETUP-PLAN.md`, don't re-ask. Targets
-authored here embody it, and during Goal Mode the agent follows the
+authored here embody it, and during Goal Mode the Developer Agent follows the
 existing Target's shape.
 
 A **Cocotb Target** is an ordinary sim Target whose flow options declare the
@@ -806,7 +806,7 @@ adapt their Goals to the Project's supported Targets and verification intent.
 Preserve existing Project edits. Offer to create `goalsets/default.md` for rules
 that should apply to every entry; create it only when the human selects that
 policy in the setup plan. Goalsets are free-form Markdown translated by the
-agent, with concrete family/Target examples for `/booley-goal`. Do not put
+Developer Agent, with concrete family/Target examples for `/booley-goal`. Do not put
 `[developer]` or `[jobs].max_tickets` in the Project configuration; Doctor treats
 them as ignored settings with delete fixes. Document `[sandbox].dashboard=false`
 when the human opts out of the default Dashboard attachment task.

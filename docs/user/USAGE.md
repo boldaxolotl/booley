@@ -1,14 +1,14 @@
 # Usage
 
 This guide shows how to use Booley day to day. You don't need any experience
-with AI coding agents to follow it.
+with Developer Agents to follow it.
 
 **Contents**
 
 1. [Read this first](#read-this-first)
 2. [Check your setup](#first-verify-your-setup)
 3. [Choose how to work](#choose-how-to-work)
-4. [Interactive Mode](#interactive-mode): [first session](#open-your-first-agent-session), [good prompts](#write-a-useful-prompt), [reviewing changes](#what-the-agent-is-allowed-to-do), [waveforms](#viewing-waveforms)
+4. [Interactive Mode](#interactive-mode): [first session](#open-your-first-developer-agent-session), [good prompts](#write-a-useful-prompt), [reviewing changes](#what-the-developer-agent-is-allowed-to-do), [waveforms](#viewing-waveforms)
 5. [Goal Mode](#goal-mode): [Goalsets](#goalsets-and-entry), [evidence](#working-with-evidence), [human decisions](#changes-and-human-decisions), [Finish](#finish-and-review)
 6. [Recovery and parallel work](#recovery-unattended-work-and-parallel-sessions), [without VS Code](#entering-the-sandbox-without-vs-code)
 
@@ -23,10 +23,10 @@ This guide picks up after installation and project setup. It assumes that
 install Booley using the [README](../../README.md#installation), then follow
 [SETUP.md](SETUP.md).
 
-**What Booley does.** Booley lets an AI coding agent, such as Claude Code or
-Codex, run your project's EDA tools. A coding agent is more than a chatbot: it
+**What Booley does.** Booley lets a Developer Agent, such as Claude Code or
+Codex, run your project's EDA tools. The Developer Agent is more than a chatbot: it
 can read and edit files, run commands, and call Booley while it works. You
-describe what you want in plain language, and the agent picks the right Booley
+describe what you want in plain language, and the Developer Agent picks the right Booley
 Flow or Specialist and runs it. You are still responsible for reviewing its reasoning, its
 code, and the hardware results.
 
@@ -35,12 +35,12 @@ Booley offers two kinds of capability:
 - **Flows** (`sim`, `lint`, `synth`, `fpga`) run EDA tools in a fixed,
   predictable way. No AI is involved.
 - **Specialists** (`reviewer`, `mutation_tester`, `coverage_analyst`) are small
-  AI agents that each do one focused job.
+  LLM-powered capabilities that each do one focused job.
 
 For direct CLI reproduction, see [live Flow progress and logs](FLOW_REFERENCE.md#live-progress-and-logs), including quiet and verbose output.
 
 Both run inside the **Sandbox**, a Docker container that holds the EDA tools
-and keeps the agent away from the rest of your computer.
+and keeps the Developer Agent away from the rest of your computer.
 
 Sandbox limits and network egress for both execution modes are host-owned
 `[sandbox]` settings; see [Host configuration](CONFIG.md#host-configuration-configtoml).
@@ -51,11 +51,11 @@ Sandbox limits and network egress for both execution modes are host-owned
 | --- | --- | --- |
 | **Host terminal** | Commands on your own computer, outside Docker | `booley doctor`, `code .` |
 | **Container terminal** | Commands inside the Sandbox, after VS Code has reopened the project in its container | `booley dashboard`, `git diff` |
-| **Agent chat** | Plain-language requests and skills that start with `/` | *"Run lint and explain every finding"* |
+| **Developer Agent chat** | Plain-language requests and skills that start with `/` | *"Run lint and explain every finding"* |
 
 Command blocks go in the terminal named in the text around them. Sentences in
-*italics* are prompts for the agent chat. Skills such as
-`/booley-goal` also go in the agent chat, not in a terminal.
+*italics* are prompts for the Developer Agent chat. Skills such as
+`/booley-goal` also go in the Developer Agent chat, not in a terminal.
 
 Booley uses some terms with exact meanings. When one is unfamiliar, look it up
 in the glossary linked from the [context map](../../GLOSSARY-MAP.md).
@@ -109,7 +109,7 @@ Don't continue until `booley doctor` shows no failures or warnings.
 
 - If `booley` is not found, go back to the
   [installation instructions](../../README.md#installation).
-- If Booley says its version changed, type `/booley-heal` in the agent chat.
+- If Booley says its version changed, type `/booley-heal` in the Developer Agent chat.
 - For a quick overview of Booley, start with `booley cheat`. It's long, so
   `booley cheat --list` shows its sections and you can print just the ones you
   need, for example `booley cheat --goals` or `booley cheat --commands --project-files`.
@@ -119,13 +119,13 @@ Don't continue until `booley doctor` shows no failures or warnings.
 ## Choose how to work
 
 Start with Interactive Mode to explore and run individual Flows. Use
-`/booley-goal` in the same Sandbox agent chat when a task needs mandatory
+`/booley-goal` in the same Developer Agent chat when a task needs mandatory
 completion conditions. Goal Mode supports both human guidance and unattended
 work, with one linked worktree and Goal Branch per session.
 
 ## Interactive Mode
 
-### Open your first agent session
+### Open your first Developer Agent session
 
 1. In a **host terminal**, go to your RTL project and open VS Code:
 
@@ -142,13 +142,13 @@ work, with one linked worktree and Goal Branch per session.
    done, the lower-left corner of the window says you are in a Dev Container.
 
 3. Open **Terminal → New Terminal**. This is a **container terminal**. Start
-   the agent:
+   the Developer Agent:
 
    ```bash
    booley
    ```
 
-   `booley` (or `booley chat`) just starts the agent chosen in
+   `booley` (or `booley chat`) just starts the Developer Agent chosen in
    `[agent].provider` in `.booley_project/booley.toml`:
 
    | Provider | Same as running |
@@ -156,7 +156,7 @@ work, with one linked worktree and Goal Branch per session.
    | `claude` | `claude` ([Claude Code](https://code.claude.com/docs/en/quickstart)) |
    | `codex` | `codex` ([Codex CLI](https://developers.openai.com/codex/cli)) |
 
-   From then on you are using that agent's own chat. To pass it extra options,
+   From then on you are using that CLI's own chat. To pass it extra options,
    run `claude` or `codex` directly. To run several sessions, open more
    container terminals.
 
@@ -198,7 +198,7 @@ the goal and any limits, and it works out the details.
 
 ### Write a useful prompt
 
-Brief the agent the way you would brief an engineer joining the task:
+Brief the Developer Agent the way you would brief an engineer joining the task:
 
 - what you want to learn or change,
 - the Target or module, if you know it,
@@ -214,18 +214,18 @@ If you only want an investigation, say **do not edit files**. For example:
 If the agent heads the wrong way, don't start over. Tell it which assumption
 was wrong or what evidence you want next.
 
-### What the agent is allowed to do
+### What the Developer Agent is allowed to do
 
-Inside the container, the agent **never asks for permission** before acting.
+Inside the container, the Developer Agent **never asks for permission** before acting.
 That is deliberate: the container itself is the safety boundary. It can only
 see your project, and its only network access is to the AI provider. Booley
-does not change your agent settings outside the container.
+does not change your Claude Code or Codex settings outside the container.
 
 **Always review changes yourself.** Use `git diff` in a container terminal and
 run the relevant checks. Asking the agent to explain its diff helps, but it
 doesn't replace your own review.
 
-> **Tip: let the agent commit; you push.** Let the agent commit its own work;
+> **Tip: let the Developer Agent commit; you push.** Let the Developer Agent commit its own work;
 > it writes good commit messages. It **can't** push to GitHub or any other
 > server, because the container blocks that network access. So: let it commit,
 > review the commits, then push them yourself from a terminal outside the
@@ -233,15 +233,15 @@ doesn't replace your own review.
 
 Per-session logs of Flow and Specialist calls through Booley’s tool server
 are saved in `.booley_project/.interactive_logs/`. Chat transcripts live in
-the agent CLI’s own session storage. If the
-agent can't reach Booley (`booley` is missing from its `/mcp` list), see
+the Developer Agent CLI’s own session storage. If the
+Developer Agent can't reach Booley (`booley` is missing from its `/mcp` list), see
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md#booley-is-missing-from-mcp-in-claude-code-or-codex).
 How the connection works is in
 [ARCHITECTURE.md](../internals/ARCHITECTURE.md#interactive-mode).
 
 ### Viewing waveforms
 
-When a simulation with tracing fails, the agent reads the waveform on its own
+When a simulation with tracing fails, the Developer Agent reads the waveform on its own
 with `bwave`. When *you* want to see it, ask: *"show me the FIFO handshake
 around the failure"*. The agent opens it in a VaporView tab in VS Code, showing
 just the signals and time range that matter. VS Code installs the extension
@@ -266,8 +266,8 @@ the rest. If a view fails to open, see
 
 ## Goal Mode
 
-Goal Mode gives one agent session mandatory, evidence-backed completion
-conditions. Open a Sandbox agent session and type `/booley-goal` with the work
+Goal Mode gives one Developer Agent session mandatory, evidence-backed completion
+conditions. Open a Developer Agent session and type `/booley-goal` with the work
 you want done. The skill helps you choose a clean linked worktree, Goalsets,
 Targets, and ad-hoc Goals, then calls `goal_enter`. Booley creates a Goal Branch
 from the worktree's current HEAD and records that base for comparisons.
@@ -277,7 +277,7 @@ from the worktree's current HEAD and records that base for comparisons.
 Goalsets are Project-owned Markdown files under `.booley_project/goalsets/`.
 `booley init` creates missing `feature.md`, `bugfix.md`, `refactor.md`, and
 `verification.md` without rewriting existing files. Customize their prose to
-express your project's rules. The agent translates them into concrete Goals;
+express your project's rules. The Developer Agent translates them into concrete Goals;
 Booley validates the arguments, not the prose. Each Goal records its origin.
 
 An optional `default.md` applies to every entry. Skipping it requires your
@@ -400,7 +400,7 @@ Relative comparisons report an **observed Cycle Count change**. When declared wo
 
 ### Working with evidence
 
-The agent passes the absolute worktree root as `work_dir` to every tool that
+The Developer Agent passes the absolute worktree root as `work_dir` to every tool that
 accepts it.
 
 Built-in MCP worktree routing:
@@ -420,7 +420,7 @@ tools, and `booley_report` refuse a call without `work_dir`, even a diagnostic
 call outside that worktree; `booley_targets` may omit it. Project-defined
 endpoints must declare `work_dir` to run.
 
-Only Booley Flows and Specialists meet Goals. Shell output or the agent saying
+Only Booley Flows and Specialists meet Goals. Shell output or the Developer Agent saying
 "done" does not. `goal_status` shows each Goal's current evidence and freshness;
 code changes can require another run. For a bugfix, reproduce the reported bug
 with a failing test before editing the design.
@@ -434,7 +434,7 @@ Review Package flags `.core`, `tests.toml`, and `.sdc`/`.xdc` edits.
 ### Changes and human decisions
 
 When a Goal needs to be added, relaxed, retargeted, or changed through a coverage
-waiver, the agent uses `goal_propose_change`. You see the exact proposal and
+waiver, the Developer Agent uses `goal_propose_change`. You see the exact proposal and
 approve or reject it with a reason. The client form is used when available;
 chat fallback records your quoted instruction against the saved proposal ID.
 Silence cannot approve a change. Approved changes appear in the Change Log.
@@ -443,7 +443,7 @@ Coverage Waiver Candidates need your decision; the Analyst cannot approve them.
 ### Finish and review
 
 Finish requires all Goals met with fresh evidence at a clean, committed HEAD
-and a Session Summary. The agent calls `goal_finish` with the record ID, a
+and a Session Summary. The Developer Agent calls `goal_finish` with the record ID, a
 stable operation ID, and that summary. The Review Package contains the diff
 against the base, final Goals and evidence, the Change Log, open review
 findings, Target changes, constraint edits, and the Session Summary.
@@ -461,18 +461,18 @@ path is Git-trackable. Stealth or excluded summaries stay local.
 ### Recovery, unattended work, and parallel sessions
 
 The same Goal session can work with your guidance or unattended. If intent is
-missing or a Goal cannot be met, the agent explains what decision it needs.
+missing or a Goal cannot be met, the Developer Agent explains what decision it needs.
 After a crash or reconnection, ask it to call `goal_status(rules=true)` in the
 same worktree before continuing. Saved proposal IDs and Finish operation IDs
 allow recovery without duplicating a decision or completion. A Finish result
 of `revalidation_required` needs fresh evidence and a new summary and operation ID.
 
 Abandonment is available only on your explicit instruction, through
-`goal_finish(abandon=true)` with your quoted words. Quiet presence or an agent
+`goal_finish(abandon=true)` with your quoted words. Quiet presence or a Developer Agent
 being stuck never abandons a Goal automatically. The branch and worktree remain.
 
 For parallel work, use one linked worktree and Goal Branch per session. Start
-another agent in another container terminal and invoke `/booley-goal` there.
+another Developer Agent in another container terminal and invoke `/booley-goal` there.
 Jobs share the Project's [admission caps](CONFIG.md#jobs--concurrency-jobs).
 `booley dashboard` shows sessions, Goals, and Jobs inside the Sandbox; it opens
 on VS Code folder attachment by default. Opt out with `[sandbox].dashboard=false`.
@@ -480,8 +480,8 @@ Inspect records with `booley goal status`.
 
 ### Entering the Sandbox without VS Code
 
-**Reopen in Container** needs VS Code. Without it (in CI, or when a script or
-agent drives Booley), `booley session` starts the same container. Run these on
+**Reopen in Container** needs VS Code. Without it (in CI or for unattended
+work), `booley session` starts the same container. Run these on
 the **host**, after `booley init`:
 
 ```bash
@@ -504,7 +504,7 @@ license server, run `booley session down` before refreshing.
 
 ## Auth & billing
 
-Booley's AI agents use the provider set in `[agent] provider` in `booley.toml`:
+The Developer Agent and Specialists use the provider set in `[agent] provider` in `booley.toml`:
 `claude` (the default) or `codex`. Each one signs in the same way its own app
 does, with either a **subscription** or an **API key**:
 
@@ -528,8 +528,8 @@ To choose explicitly, set `[agent] auth = "subscription"` or `"api_key"`; see
 shows which login is in use.
 
 **For long runs, run `booley auth`.** The normal login renews itself
-periodically, and a renewal can sign out every running agent in the middle of
-a run ([details](TROUBLESHOOTING.md#agents-turn-into-not-logged-in-partway-through-an-unattended-run)).
+periodically, and a renewal can sign out every running Developer Agent or Specialist in the middle of
+a run ([details](TROUBLESHOOTING.md#developer-agents-and-specialists-turn-into-not-logged-in-partway-through-an-unattended-run)).
 `booley auth` saves a login that doesn't need renewing:
 
 | App | Login that doesn't expire | How |
@@ -551,7 +551,7 @@ have no login on purpose. Don't use it for normal setup.
 
 Maybe a Flow failed with no useful message, a doc describes a setting that
 doesn't exist, or a message looks like a crash when nothing crashed. Type
-**`/booley-feedback`** in the agent chat while the problem is still on screen.
+**`/booley-feedback`** in the Developer Agent chat while the problem is still on screen.
 It records how to reproduce it, checks Booley's own code before blaming it,
 removes your project's names, and saves a report file for you to read and share
 yourself. Booley never sends it anywhere.
@@ -572,7 +572,7 @@ and may use a separate log. Use the report paths provided by the skill.
 ## Booley Flows & Specialists
 
 This section is reference. You rarely call Flows or Specialists yourself: ask
-the agent (*"run the reset test on `sim_lite`"*, *"how much area did that
+the Developer Agent (*"run the reset test on `sim_lite`"*, *"how much area did that
 cost?"*) and it picks the Flow or Specialist, Target, and options. The **Sets** column shows
 which [acceptance criteria](#working-with-evidence) each one can satisfy. Which
 EDA program runs underneath depends on the Target; see
@@ -595,9 +595,9 @@ Every Flow's options and results are in [FLOW_REFERENCE.md](FLOW_REFERENCE.md), 
 
 **Specialists**
 
-LLM-backed sub-agents running in scoped, isolated workspaces:
+LLM-powered Specialists running in scoped, isolated workspaces:
 
-Ask your connected agent session to invoke a Specialist by name with the arguments below. Or run `booley specialist <name> [args...]` inside the Sandbox. `booley specialist` lists visible Specialists; `booley specialist <name> --help` shows their arguments. `--model`, `--max-turns`, and `--timeout` are CLI-only controls.
+Ask your Developer Agent session to invoke a Specialist by name with the arguments below. Or run `booley specialist <name> [args...]` inside the Sandbox. `booley specialist` lists visible Specialists; `booley specialist <name> --help` shows their arguments. `--model`, `--max-turns`, and `--timeout` are CLI-only controls.
 
 For example: `booley specialist reviewer --category rtl --focus bugs --scope rtl`. The supported module alternative is `python -m booley.specialists.reviewer` with the same flags. Common options are `-C/--project PATH`, `--report-dir`, `--diagnostic`, and `--target` where supported. `--timeout DURATION` accepts positive seconds (`90` or `90s`), minutes (`30m`), hours (`2h`), and combinations (`1h30m`). Model-call minimum budgets apply; seconds-only providers round up.
 
@@ -609,7 +609,7 @@ For example: `booley specialist reviewer --category rtl --focus bugs --scope rtl
 
 #### `coverage_analyst`
 
-Call the `coverage_analyst` Specialist from your connected agent session with `campaign="<exact-coverage.json>"` and optional `instruction="<question>"`. The Analyst explains retained native evidence and proposes advisory next steps; its model only reads evidence. It does not run Simulation, read waveforms, evaluate Criteria, or approve waivers. In Goal Mode, screened Waiver Candidates support a proposed Goal change, which needs human approval. Finish requires every Goal met; advisory reports do not mark strict coverage met. Verified Target sources are optional; stale sources give report-only analysis.
+Call the `coverage_analyst` Specialist from your Developer Agent session with `campaign="<exact-coverage.json>"` and optional `instruction="<question>"`. The Analyst explains retained native evidence and proposes advisory next steps; its model only reads evidence. It does not run Simulation, read waveforms, evaluate Criteria, or approve waivers. In Goal Mode, screened Waiver Candidates support a proposed Goal change, which needs human approval. Finish requires every Goal met; advisory reports do not mark strict coverage met. Verified Target sources are optional; stale sources give report-only analysis.
 
 #### `reviewer`
 
@@ -617,7 +617,7 @@ Read-only, single-focus code review. It reports `CRITICAL`, `MAJOR`, and `MINOR`
 
 The result links saved review evidence, including rejected proposals for inspection. Rejected proposals do not affect Criteria.
 
-Call the `reviewer` Specialist from your connected agent session with `scope="<file,...>"`, `category="<category>"`, and `focus="<focus>"`.
+Call the `reviewer` Specialist from your Developer Agent session with `scope="<file,...>"`, `category="<category>"`, and `focus="<focus>"`.
 
 | Category | Focus | What it checks | Sets |
 |----------|-------|----------------|------|
@@ -629,7 +629,7 @@ Call the `reviewer` Specialist from your connected agent session with `scope="<f
 | `rtl` | `security` | Fault-injection resistance, simple power/timing leakage, secret exposure, and unsafe failure behavior | `review_rtl_security` |
 | `tb` | `quality` | False-pass paths in scoped testbench sources, missing checks and edge cases, coverage gaps, timing/sampling mistakes, and TB code quality | `review_tb_quality` |
 
-Arguments: required `scope="<file,...>"` selects files; `steer=["<context>"]` adds review context; `dry_run=true` validates and previews without invoking an agent. The `spec` focus needs specification text: use `spec="<path>"` or the spec file named by the Review Goal.
+Arguments: required `scope="<file,...>"` selects files; `steer=["<context>"]` adds review context; `dry_run=true` validates and previews without invoking a Specialist. The `spec` focus needs specification text: use `spec="<path>"` or the spec file named by the Review Goal.
 
 #### `mutation_tester`
 
@@ -643,13 +643,13 @@ Proposal-locked mutation testing. A read-only LLM creator returns exact source r
 | Explicit fixed | add `total: N` and `min_detected: K` | `count="N"` requires all N; add `min_detected=K` to require K |
 | Size-scaled | add `auto: true` — choose 3-25 mutations from language-neutral source size and the time budget | `count="auto"`; add `min_detected=K` for an explicit threshold |
 
-`dry_run=true` validates Target metadata and prints the source-size breakdown and proposed auto count without invoking an agent or simulator.
+`dry_run=true` validates Target metadata and prints the source-size breakdown and proposed auto count without invoking a Specialist or simulator.
 
-Call the `mutation_tester` Specialist from your connected agent session: `scope="<rtl-file,...>"` chooses mutation sites; `target="<sim-target>"` chooses exactly one complete runnable Target suite; `steer=["<context>"]` biases mutation selection. A valid lock is reused on later runs, so new steering takes effect only with `regen_lock=true`. The Target supplies the testbench top and complete RTL closure; they are not separate caller inputs.
+Call the `mutation_tester` Specialist from your Developer Agent session: `scope="<rtl-file,...>"` chooses mutation sites; `target="<sim-target>"` chooses exactly one complete runnable Target suite; `steer=["<context>"]` biases mutation selection. A valid lock is reused on later runs, so new steering takes effect only with `regen_lock=true`. The Target supplies the testbench top and complete RTL closure; they are not separate caller inputs.
 <!-- END GENERATED: flows -->
 
 `tb_coder` also exists but is hidden until it is ready (see
-[ROADMAP.md](../internals/ROADMAP.md)); for now, the agent writes testbenches
+[ROADMAP.md](../internals/ROADMAP.md)); for now, the Developer Agent writes testbenches
 itself.
 
 ### Running a Booley Flow directly
@@ -677,7 +677,7 @@ result to the Coverage Analyst for an explanation:
 booley flow sim --target sim_counter --coverage
 ```
 
-Then call the `coverage_analyst` Specialist from your connected agent session with
+Then call the `coverage_analyst` Specialist from your Developer Agent session with
 `campaign="<reports>/sim/12/targets/sim_counter/coverage.json"`.
 
 In Goal Mode, add a [coverage Goal](CONFIG.md#native-coverage-configuration)

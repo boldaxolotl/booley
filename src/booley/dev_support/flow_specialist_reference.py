@@ -233,7 +233,7 @@ def _render_reviewer_reference(satisfies_args: dict[str, str] | None) -> list[st
         "The result links saved review evidence, including rejected proposals for "
         "inspection. Rejected proposals do not affect Criteria.",
         "",
-        'Call the `reviewer` Specialist from your connected agent session with `scope="<file,...>"`, `category="<category>"`, and `focus="<focus>"`.',
+        'Call the `reviewer` Specialist from your Developer Agent session with `scope="<file,...>"`, `category="<category>"`, and `focus="<focus>"`.',
         "",
         "| Category | Focus | What it checks | Sets |",
         "|----------|-------|----------------|------|",
@@ -251,7 +251,7 @@ def _render_reviewer_reference(satisfies_args: dict[str, str] | None) -> list[st
             "",
             'Arguments: required `scope="<file,...>"` selects files; '
             '`steer=["<context>"]` adds review context; `dry_run=true` validates and previews '
-            "without invoking an agent. The `spec` focus needs specification text: "
+            "without invoking a Specialist. The `spec` focus needs specification text: "
             'use `spec="<path>"` or the spec file named by the Review Goal.',
         ]
     )
@@ -277,9 +277,9 @@ def _render_mutation_tester_reference() -> list[str]:
         '| Size-scaled | add `auto: true` — choose 3-25 mutations from language-neutral source size and the time budget | `count="auto"`; add `min_detected=K` for an explicit threshold |',
         "",
         "`dry_run=true` validates Target metadata and prints the source-size breakdown "
-        "and proposed auto count without invoking an agent or simulator.",
+        "and proposed auto count without invoking a Specialist or simulator.",
         "",
-        'Call the `mutation_tester` Specialist from your connected agent session: `scope="<rtl-file,...>"` chooses mutation sites; '
+        'Call the `mutation_tester` Specialist from your Developer Agent session: `scope="<rtl-file,...>"` chooses mutation sites; '
         '`target="<sim-target>"` chooses exactly one complete runnable Target suite; '
         '`steer=["<context>"]` biases mutation selection. A valid lock '
         "is reused on later runs, so new steering takes effect only with "
@@ -293,7 +293,7 @@ def _render_coverage_analyst_reference() -> list[str]:
     return [
         "#### `coverage_analyst`",
         "",
-        'Call the `coverage_analyst` Specialist from your connected agent session with `campaign="<exact-coverage.json>"` '
+        'Call the `coverage_analyst` Specialist from your Developer Agent session with `campaign="<exact-coverage.json>"` '
         'and optional `instruction="<question>"`. The Analyst explains retained '
         "native evidence and proposes advisory next steps; its model only reads evidence. "
         "It does not run Simulation, read waveforms, evaluate Criteria, or approve waivers. "
@@ -315,9 +315,9 @@ def render_specialists_reference(*, project_mcp_tools_dir: Path | None = None) -
         key=lambda t: t.name,
     )
     lines = [
-        "LLM-backed sub-agents running in scoped, isolated workspaces:",
+        "LLM-powered Specialists running in scoped, isolated workspaces:",
         "",
-        "Ask your connected agent session to invoke a Specialist by name with the arguments below. "
+        "Ask your Developer Agent session to invoke a Specialist by name with the arguments below. "
         "Or run `booley specialist <name> [args...]` inside the Sandbox. "
         "`booley specialist` lists visible Specialists; "
         "`booley specialist <name> --help` shows their arguments. "

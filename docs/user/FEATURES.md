@@ -1,10 +1,10 @@
 # Features
 
-Booley's core move is putting **one agent-native interface over the whole fragmented EDA toolchain**, every EDA tool and every coding agent behind the same typed surface, and wrapping the result in a single VS Code window. That makes agents more capable, but it also gives the engineer a faster, lower-friction RTL workflow. Every feature below builds on that foundation; the reasoning behind the load-bearing choices is in [WHY.md](../internals/WHY.md).
+Booley's core move is putting **one agent-native interface over the whole fragmented EDA toolchain**, every EDA tool and the Developer Agent behind the same typed surface, and wrapping the result in a single VS Code window. That makes Developer Agents more capable, but it also gives the engineer a faster, lower-friction RTL workflow. Every feature below builds on that foundation; the reasoning behind the load-bearing choices is in [WHY.md](../internals/WHY.md).
 
-New to Booley's vocabulary (agent, Specialist, Sandbox, Booley Flow, Target, Goal Mode)? The [context map](../../GLOSSARY-MAP.md) points to each canonical glossary and its rejected synonyms.
+New to Booley's vocabulary (Developer Agent, Specialist, Sandbox, Booley Flow, Target, Goal Mode)? The [context map](../../GLOSSARY-MAP.md) points to each canonical glossary and its rejected synonyms.
 
-- [One Interface Over Every EDA Tool and Agent](#one-interface-over-every-eda-tool-and-agent)
+- [One Interface Over Every EDA Tool and Developer Agent](#one-interface-over-every-eda-tool-and-developer-agent)
 - [The Agentic RTL IDE](#the-agentic-rtl-ide)
 - [Open Source and Local-First](#open-source-and-local-first)
 - [Interactive Mode](#interactive-mode)
@@ -21,30 +21,30 @@ New to Booley's vocabulary (agent, Specialist, Sandbox, Booley Flow, Target, Goa
 - [Lint Triage](#lint-triage)
 - [LLM Backend Selection](#llm-backend-selection)
 - [Expert-Written RTL Guides](#expert-written-rtl-guides)
-- [Agent-Driven Setup](#agent-driven-setup)
+- [Guided Project Setup](#guided-project-setup)
 - [Extensible Toolkit](#extensible-toolkit)
 - [Parallel Instances](#parallel-sessions)
 - [Windows Support](#windows-support)
 - [Firmware-in-the-Loop Debug](#firmware-in-the-loop-debug)
 - [Stealth Mode](#stealth-mode)
 
-## One Interface Over Every EDA Tool and Agent
+## One Interface Over Every EDA Tool and Developer Agent
 
-An RTL flow is a pile of EDA tools that share nothing: Verilator, Icarus, Yosys, plus licensed heavyweight tools, each with its own CLI, flags, and output format. The agent driving them is a moving part too: today Claude Code, tomorrow Codex. Wire agents straight into that mess and you get N EDA tools × M agents of brittle glue. Booley collapses it to one interface:
+An RTL flow is a pile of EDA tools that share nothing: Verilator, Icarus, Yosys, plus licensed heavyweight tools, each with its own CLI, flags, and output format. The Developer Agent driving them is a moving part too: today Claude Code, tomorrow Codex. Wire Developer Agents straight into that mess and you get N EDA tools × M Developer Agent clients of brittle glue. Booley collapses it to one interface:
 
-- **One typed surface over every Booley Flow.** Each Flow drives its selected EDA tool through the same structured call and returns the same normalized verdict inside the Sandbox. A tool can be supplied by the standard image or by an authorized read-only host installation under a built-in policy; the agent learns one interface, not one per EDA tool ([details](#structured-booley-flow-contracts)).
-- **Agent-agnostic.** The same Booley Flows are exposed as MCP tools, the protocol-level functions Claude Code and Codex both invoke natively. Swap the model; the EDA stack stays identical ([details](#llm-backend-selection)).
-- **Extension is linear, not multiplicative.** A new analysis is one custom MCP tool behind the same criteria contract ([details](#extensible-toolkit)); a new agent is one MCP client. Neither requires rewiring the other side.
+- **One typed surface over every Booley Flow.** Each Flow drives its selected EDA tool through the same structured call and returns the same normalized verdict inside the Sandbox. A tool can be supplied by the standard image or by an authorized read-only host installation under a built-in policy; the Developer Agent learns one interface, not one per EDA tool ([details](#structured-booley-flow-contracts)).
+- **Client-agnostic.** The same Booley Flows are exposed as MCP tools, the protocol-level functions Claude Code and Codex both invoke natively. Swap the model; the EDA stack stays identical ([details](#llm-backend-selection)).
+- **Extension is linear, not multiplicative.** A new analysis is one custom MCP tool behind the same criteria contract ([details](#extensible-toolkit)); a new Developer Agent client is one MCP client. Neither requires rewiring the other side.
 
 EDA-tool support lives in the [supported EDA tools matrix](SUPPORTED-EDA-TOOLS.md). One expectation worth setting up front: the built-in `synth` Flow is a **fast PPA (power/performance/area) estimate to optimize RTL against**, not tape-out synthesis. [SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md#built-in-flows) spells out exactly what it does and doesn't cover.
 
 ## The Agentic RTL IDE
 
-Booley is not only infrastructure for an agent. It is workflow infrastructure for the hardware engineer: editor, EDA tools, waveforms, run status, review evidence, and agent share a single VS Code window.
+Booley is not only infrastructure for the Developer Agent. It is workflow infrastructure for the hardware engineer: editor, EDA tools, waveforms, run status, review evidence, and Developer Agent share a single VS Code window.
 
 Work interactively through conversation—edit code, run Booley Flows, debug a failure, open a scoped waveform view (`bwave gui`, see [Waveform-Based Debug](#waveform-based-debug))—or let Goal sessions work unattended in container terminals alongside. In either mode, Booley removes the manual transitions among editor, build commands, logs, waveform viewer, and review artifacts. Less time spent on that plumbing means faster iterations and more opportunities to verify, refine, and optimize the design.
 
-Today that means stock VS Code chrome plus the agent chat and the Booley Flows it drives; native UI surfaces (Goal status, evidence status, Flow dashboards) are on the [roadmap](../internals/ROADMAP.md#native-ide-surface-in-vs-code), and the long-term direction is Booley as a **standalone agentic IDE**.
+Today that means stock VS Code chrome plus the Developer Agent chat and the Booley Flows it drives; native UI surfaces (Goal status, evidence status, Flow dashboards) are on the [roadmap](../internals/ROADMAP.md#native-ide-surface-in-vs-code), and the long-term direction is Booley as a **standalone agentic IDE**.
 
 ## Open Source and Local-First
 
@@ -52,11 +52,11 @@ Booley is free under Apache 2.0 and runs entirely on your machine.
 
 ## Interactive Mode
 
-Interactive Mode is the workflow for small tasks, codebase exploration, and interactive debug and coding sessions: anything human-in-the-loop. `booley init` registers a Booley MCP server with your agent CLI, so your interactive Claude Code or Codex session can call Booley Flows and Specialists (`sim`, `lint`, `reviewer`, `mutation_tester`, ...) directly from natural-language prompts,  each call self-contained. See [USAGE.md: Interactive Mode](USAGE.md#interactive-mode).
+Interactive Mode is the workflow for small tasks, codebase exploration, and interactive debug and coding sessions: anything human-in-the-loop. `booley init` registers a Booley MCP server with the Developer Agent CLI, so the Developer Agent can call Booley Flows and Specialists (`sim`, `lint`, `reviewer`, `mutation_tester`, ...) directly from natural-language prompts,  each call self-contained. See [USAGE.md: Interactive Mode](USAGE.md#interactive-mode).
 
 ## Goal Mode
 
-Use `/booley-goal` in a Sandbox agent session for work with mandatory completion
+Use `/booley-goal` in a Developer Agent session for work with mandatory completion
 conditions. Project-owned Goalsets become concrete Goals at entry; one linked
 worktree and Goal Branch hold the work. Only Booley Flow and Specialist evidence
 meets Goals. Human-approved changes are recorded in the Change Log, and Finish
@@ -65,15 +65,15 @@ or unattended work. See [Goal Mode](USAGE.md#goal-mode).
 
 ## Structured Booley Flow Contracts
 
-Booley Flows are evidence contracts between real EDA behavior and Booley's decision loop. An MCP tool call does not just dump terminal output back into context: it resolves Targets and tests, runs the Flow, validates the result, stores predictable logs/traces/reports, and returns a normalized verdict the agent can safely use.
+Booley Flows are evidence contracts between real EDA behavior and Booley's decision loop. An MCP tool call does not just dump terminal output back into context: it resolves Targets and tests, runs the Flow, validates the result, stores predictable logs/traces/reports, and returns a normalized verdict the Developer Agent can safely use.
 
-This matters most for high-consequence steps: simulation, lint, synthesis, debug, review, mutation testing. A passing simulation satisfies criteria only when the Booley Flow returns a valid `pass` verdict. Lint and synthesis likewise report structured findings or metrics instead of EDA-tool-specific log fragments. Failures, timeouts, inconclusive runs, and contract errors stay distinct, so the agent can choose the right next action instead of guessing from noisy EDA output.
+This matters most for high-consequence steps: simulation, lint, synthesis, debug, review, mutation testing. A passing simulation satisfies criteria only when the Booley Flow returns a valid `pass` verdict. Lint and synthesis likewise report structured findings or metrics instead of EDA-tool-specific log fragments. Failures, timeouts, inconclusive runs, and contract errors stay distinct, so the Developer Agent can choose the right next action instead of guessing from noisy EDA output.
 
 The same contract layer is what keeps project-specific build steps contained: a per-test firmware build rides `[flows.sim].pre_run_commands` inside the Sandbox, while a host-provisioned tool remains subject to host authority and keeps the same public Flow names, MCP schemas, criteria, artifact layout, and report format.
 
 ## Named Targets and Tests
 
-Booley does not let agents assemble simulator command lines from ad-hoc fragments. Every buildable variant of the design is a **named Target** in a FuseSoC `.core` file (CAPI2, FuseSoC's YAML design-description format), with filesets, parameters, defines, and top module in one place, and every test is a **named entry** in `.booley_project/tests.toml` keyed by that Target. Booley Flows take `target` and `test` arguments that resolve against them:
+Booley does not let Developer Agents assemble simulator command lines from ad-hoc fragments. Every buildable variant of the design is a **named Target** in a FuseSoC `.core` file (CAPI2, FuseSoC's YAML design-description format), with filesets, parameters, defines, and top module in one place, and every test is a **named entry** in `.booley_project/tests.toml` keyed by that Target. Booley Flows take `target` and `test` arguments that resolve against them:
 
 ```yaml
 # design.core — one target per build
@@ -92,9 +92,9 @@ targets:
 tests = ["test_basic", "test_edge_cases"]
 ```
 
-This is the identity half of the Booley Flow contract, and it matters for two reasons. First, **reproducibility**: a request to run one test resolves to exactly that test under exactly that Target's parameters and top module, and the resulting report carries the resolved identity. There is no gap between "what the agent asked for" and "what actually ran" for it to hallucinate into. Second, **conditional-compilation coverage**: designs with `ifdef`-gated features declare one Target per build, and Booley can fan Flows (lint, simulation, synthesis) across all of them instead of silently validating only the default build.
+This is the identity half of the Booley Flow contract, and it matters for two reasons. First, **reproducibility**: a request to run one test resolves to exactly that test under exactly that Target's parameters and top module, and the resulting report carries the resolved identity. There is no gap between "what the Developer Agent asked for" and "what actually ran" for it to hallucinate into. Second, **conditional-compilation coverage**: designs with `ifdef`-gated features declare one Target per build, and Booley can fan Flows (lint, simulation, synthesis) across all of them instead of silently validating only the default build.
 
-Because Targets and tests are data, not code, the same names mean the same thing to the agent, every Specialist, the Booley Flows, and you, across every run.
+Because Targets and tests are data, not code, the same names mean the same thing to the Developer Agent, every Specialist, the Booley Flows, and you, across every run.
 
 The same model covers **cocotb (Python) testbenches**: a Target whose flow options declare a `cocotb_module` lists its `@cocotb.test()` function names in `tests.toml`, and `sim` runs the selected set batched in one sim process, taking per-test verdicts from cocotb's `results.xml`; `--test` filters the set the same way, and `sim_pass_{target}` keeps its meaning.
 
@@ -103,18 +103,18 @@ The same model covers **cocotb (Python) testbenches**: a Target whose flow optio
 Every Goal is mandatory. Booley decides whether it is met from valid Flow or
 Specialist evidence at the current code, and stale evidence requires another
 run. Thresholds can enforce area, timing, cycle count, coverage, and mutation
-budgets. The agent can propose a change; only the human can approve it.
+budgets. The Developer Agent can propose a change; only the human can approve it.
 See [Working with evidence](USAGE.md#working-with-evidence).
 
 ## Docker Sandboxing
 
-Agents run with `--dangerously-skip-permissions` to operate autonomously. Docker sandboxing keeps this safe: every agent runs inside the per-folder Sandbox container with only the project workspace mounted, full access inside, no access to the host outside. There is no general internet access either: egress is restricted to the LLM API endpoints through a Booley proxy, so a prompt-injection payload picked up from a web page has nowhere to reach. The agent runs as a non-root user, and an idle reaper stops orphaned sessions. The sandbox image ships every built-in EDA tool (see [One Interface Over Every EDA Tool and Agent](#one-interface-over-every-eda-tool-and-agent)) and both agent CLIs preinstalled.
+Developer Agents run with `--dangerously-skip-permissions` to operate autonomously. Docker sandboxing keeps this safe: every Developer Agent runs inside the per-folder Sandbox container with only the project workspace mounted, full access inside, no access to the host outside. There is no general internet access either: egress is restricted to the LLM API endpoints through a Booley proxy, so a prompt-injection payload picked up from a web page has nowhere to reach. The Developer Agent runs as a non-root user, and an idle reaper stops orphaned sessions. The sandbox image ships every built-in EDA tool (see [One Interface Over Every EDA Tool and Developer Agent](#one-interface-over-every-eda-tool-and-developer-agent)) and both Claude Code and Codex CLIs preinstalled.
 
 The sandbox is **customizable** in two ways. Use `[sandbox].image` for a project image that extends `booley-sandbox` with EDA tools that must exist in every container. Run a Project setup script under `<project_dir>/hooks/` when a new worktree needs generated inputs before Goal entry.
 
 ## Fresh Context per Specialist
 
-Long single-context agent sessions degrade: the model loses the thread, gets distracted by stale logs, and quality falls off over a multi-hour task. Booley's answer is context isolation: each Specialist (code review, mutation testing) runs in a fresh LLM context, so none of them drags along stale logs or drafts from earlier iterations. A fresh context also means a fresh perspective: a Specialist that didn't write the code has no attachment to it and no memory of the reasoning that produced it, so it judges what's actually there rather than what was intended. This matters most for the reviewer: an agent reviewing its own work tends to confirm it, while an unbiased one finds the real issues. Continuity lives in structured state carried by the agent (Goal Records, evidence, summaries), not in an ever-growing conversation. See [ARCHITECTURE.md](../internals/ARCHITECTURE.md#the-sandbox).
+Long single-context Developer Agent sessions degrade: the model loses the thread, gets distracted by stale logs, and quality falls off over a multi-hour task. Booley's answer is context isolation: each Specialist (code review, mutation testing) runs in a fresh LLM context, so none of them drags along stale logs or drafts from earlier iterations. A fresh context also means a fresh perspective: a Specialist that didn't write the code has no attachment to it and no memory of the reasoning that produced it, so it judges what's actually there rather than what was intended. This matters most for the reviewer: a Developer Agent reviewing its own work tends to confirm it, while an independent Specialist finds the real issues. Continuity lives in structured state carried by the Developer Agent (Goal Records, evidence, summaries), not in an ever-growing conversation. See [ARCHITECTURE.md](../internals/ARCHITECTURE.md#the-sandbox).
 
 ## Waveform-Based Debug
 
@@ -138,11 +138,11 @@ Code review is split into focus categories with severity-stratified issue tracki
 - Findings are classified as CRITICAL, MAJOR, or MINOR. A `_clean` review requires every current finding, including MINOR, to be verified fixed or explicitly waived with user-visible justification. A terminal `_done` review reports findings without triggering fixes; advisory findings remain visible at Finish.
 - Testbench code gets its own separate review.
 
-The shipped reviewer is read-only: it reports issues by severity, and the agent resolves findings for `_clean` reviews. See [USAGE.md: RTL Code Review](USAGE.md#rtl-code-review) for the per-category criteria.
+The shipped reviewer is read-only: it reports issues by severity, and the Developer Agent resolves findings for `_clean` reviews. See [USAGE.md: RTL Code Review](USAGE.md#rtl-code-review) for the per-category criteria.
 
 ## Mutation Testing
 
-Booley includes a mutation testing framework to validate test quality, which matters more in agentic workflows than in human-driven ones. A read-only creator agent proposes targeted, exact source replacements—subtle bugs a good testbench should detect. Booley validates the proposal bytes, runs an untouched baseline, then applies and compiles one isolated replacement at a time. It does not parse SystemVerilog or inject runtime selectors; the project's configured compiler decides whether each variant is valid. The deterministic harness counts which variants the testbench catches and measures the detection rate against a configurable threshold.
+Booley includes a mutation testing framework to validate test quality, which matters more in agentic workflows than in human-driven ones. The read-only Mutation Tester Specialist proposes targeted, exact source replacements—subtle bugs a good testbench should detect. Booley validates the proposal bytes, runs an untouched baseline, then applies and compiles one isolated replacement at a time. It does not parse SystemVerilog or inject runtime selectors; the project's configured compiler decides whether each variant is valid. The deterministic harness counts which variants the testbench catches and measures the detection rate against a configurable threshold.
 
 ## Lint Triage
 
@@ -154,21 +154,21 @@ To attach waivers to a lint Target, see the
 
 ## LLM Backend Selection
 
-Booley works with either agent platform: **Codex CLI** (OpenAI) or **Claude Code** (Anthropic). Pick one per project via `booley.toml [agent] provider`; the agent and every specialist then run on that single provider. Each platform brings its own agentic runtime, MCP tool integration, and execution model, which Booley drives through a unified interface.
+Booley works with either Developer Agent client: **Codex CLI** (OpenAI) or **Claude Code** (Anthropic). Pick one per project via `booley.toml [agent] provider`; the Developer Agent and every Specialist then run on that single provider. Each platform brings its own agentic runtime, MCP tool integration, and execution model, which Booley drives through a unified interface.
 
 Both backends support **subscription-based auth** alongside API billing: a Claude Pro/Max subscription (Claude Code) or a ChatGPT/Codex subscription (Codex CLI). That means you can run Booley on an existing subscription instead of paying per-token API costs, which matters for a token-hungry workflow like RTL development. See the Auth & billing note in [USAGE.md](USAGE.md) for details.
 
 ## Expert-Written RTL Guides
 
-LLM agents specialize in software. For hardware development, they need guidance. Booley closes this gap with expert-written guides covering RTL coding style, testbench methodology, assertion strategy, debugging techniques, and more. Each guide has a **generic part** (shipped with Booley) and a **project-specific part** (filled in by you). For coding style, the project part goes in `.booley_project/rtl_style_guide.md` and `.booley_project/tb_style_guide.md`; whatever you write there is appended to the shipped guide during a quality review and takes precedence where the two conflict. Both files are optional: with neither present, reviews run against the shipped guides alone. Building up the project-specific knowledge over time directly improves the quality of every Specialist's output.
+Developer Agents and Specialists need guidance for hardware development. Booley closes this gap with expert-written guides covering RTL coding style, testbench methodology, assertion strategy, debugging techniques, and more. Each guide has a **generic part** (shipped with Booley) and a **project-specific part** (filled in by you). For coding style, the project part goes in `.booley_project/rtl_style_guide.md` and `.booley_project/tb_style_guide.md`; whatever you write there is appended to the shipped guide during a quality review and takes precedence where the two conflict. Both files are optional: with neither present, reviews run against the shipped guides alone. Building up the project-specific knowledge over time directly improves the quality of every Specialist's output.
 
-## Agent-Driven Setup
+## Guided Project Setup
 
-Making a project Booley-ready is a guided, mostly hands-off process. Booley ships a `booley-setup` skill, deployed into your agent runtime by `booley init`, that drives the bulk of setup for you, plan-first: an agent inspects the repository, gathers every decision into a setup plan for a single approval, then drafts `booley.toml`, the FuseSoC `.core` targets, and `tests.toml`, running Booley Flows to validate its work as it goes. Your job is to support the agent: answer its planning questions about your build system and design, approve the plan, and it handles the mechanical config authoring gate-free from there. See [SETUP.md](SETUP.md).
+Making a project Booley-ready is a guided, mostly hands-off process. Booley ships a `booley-setup` skill, deployed into Claude Code or Codex by `booley init`, that drives the bulk of setup for you, plan-first: a Claude Code or Codex session on the host inspects the repository, gathers every decision into a setup plan for a single approval, then continues as the Developer Agent in the Sandbox to draft `booley.toml`, the FuseSoC `.core` targets, and `tests.toml`, running Booley Flows to validate its work as it goes. Your job is to support that session: answer its planning questions about your build system and design, approve the plan, and it handles the mechanical config authoring gate-free from there. See [SETUP.md](SETUP.md).
 
 ## Extensible Toolkit
 
-Booley's MCP surface is designed for extension. The built-in Booley Flows and Specialists cover the core RTL workflow (simulation, synthesis, lint, review), but every project has unique needs: formal verification, logic equivalence checking, DFT insertion, custom lint rules, power analysis. Project-specific MCP tools can be added via the `.booley_project/mcp_tools/` directory, following the same base-class interface as built-in MCP tools. The agent discovers and invokes them just like built-in MCP tools. See [MCP-TOOLS.md](../internals/MCP-TOOLS.md) for the architecture and extension guide.
+Booley's MCP surface is designed for extension. The built-in Booley Flows and Specialists cover the core RTL workflow (simulation, synthesis, lint, review), but every project has unique needs: formal verification, logic equivalence checking, DFT insertion, custom lint rules, power analysis. Project-specific MCP tools can be added via the `.booley_project/mcp_tools/` directory, following the same base-class interface as built-in MCP tools. The Developer Agent discovers and invokes them just like built-in MCP tools. See [MCP-TOOLS.md](../internals/MCP-TOOLS.md) for the architecture and extension guide.
 
 ## Parallel sessions
 
@@ -179,7 +179,7 @@ Jobs are never preempted. See [Jobs](CONFIG.md#jobs--concurrency-jobs).
 
 ## Windows Support
 
-Because every EDA tool and agent runs inside the Docker sandbox, Booley's
+Because every EDA tool and Developer Agent runs inside the Docker sandbox, Booley's
 standard image-provisioned toolchain is functionally available from a native
 Windows checkout: you don't need to build Verilator, Yosys, or the rest
 natively, and you do not need to install a user-facing Ubuntu distribution.
@@ -196,7 +196,7 @@ its directory is mounted into one. See
 
 ## Firmware-in-the-Loop Debug
 
-For designs with embedded processors, the debug loop naturally extends to firmware. The agent traces problems through the waveform regardless of whether the root cause is in RTL, firmware, or their interaction. There's no artificial boundary between "hardware debug" and "firmware debug." This requires telling Booley how to compile your firmware as part of the project configuration, so the agent can modify, rebuild, and re-simulate in a single debug iteration.
+For designs with embedded processors, the debug loop naturally extends to firmware. The Developer Agent traces problems through the waveform regardless of whether the root cause is in RTL, firmware, or their interaction. There's no artificial boundary between "hardware debug" and "firmware debug." This requires telling Booley how to compile your firmware as part of the project configuration, so the Developer Agent can modify, rebuild, and re-simulate in a single debug iteration.
 
 ## Stealth Mode
 

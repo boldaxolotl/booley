@@ -4,7 +4,7 @@
 [project]
 name = "<project>"
 
-# Optional identity for agent-authored commits in Interactive and Goal Mode.
+# Optional identity for Developer Agent commits in Interactive and Goal Mode.
 # Values are applied to each checkout at worktree scope. Missing fields use the
 # neutral defaults `Dev` and `dev@localhost`.
 # [agent.git]
