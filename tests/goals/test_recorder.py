@@ -532,9 +532,11 @@ def test_target_changed_during_the_run_is_discarded(goal_mode: SimpleNamespace) 
 
 
 def _coverage_run(test: str, verdict: str) -> object:
-    from booley.flows.sim.coverage_campaign import CoverageRun
+    from booley.flows.sim.coverage_campaign import NO_DECLARED_INPUTS_FINGERPRINT, CoverageRun
 
-    return CoverageRun("001-" + test, test, verdict, "collected", None, {})  # type: ignore[arg-type]
+    return CoverageRun(  # type: ignore[arg-type]
+        "001-" + test, test, verdict, "collected", None, {}, test, NO_DECLARED_INPUTS_FINGERPRINT
+    )
 
 
 def test_complete_coverage_campaign_detail_stays_met(goal_mode: SimpleNamespace) -> None:

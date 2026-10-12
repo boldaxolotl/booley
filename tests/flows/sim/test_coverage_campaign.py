@@ -1122,3 +1122,57 @@ def test_two_unnamed_runs_of_one_test_recorded_before_test_runs_are_refused() ->
         del run["fingerprint"]
 
     assert _codes(document) == [("COV_TEST_RUN_DUPLICATE", "/tests/runs/1/test_run")]
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["reset@x3", "reset@0", "reset@01", "reset+a+b", "reset@", "reset+default", "", 7, None],
+)
+def test_a_recorded_test_run_obeys_the_test_run_grammar(name: object) -> None:
+    """Strict on decode: the name is parsed, never accepted as any string."""
+    document = _valid_document()
+    document["tests"]["runs"][0]["test_run"] = name
+
+    code = "COV_TEST_RUN_TEST_MISMATCH" if isinstance(name, str) else "COV_FIELD_TYPE"
+    assert (code, "/tests/runs/0/test_run") in _codes(document)
+
+
+@pytest.mark.parametrize("name", ["reset", "reset@7", "reset+soak", "reset+soak@2147483647"])
+def test_every_test_run_form_of_the_test_is_accepted(name: str) -> None:
+    document = _valid_document()
+    document["tests"]["runs"][0]["test_run"] = name
+
+    assert decode_coverage_campaign(document, _TARGET).runs[0].test_run == name
+
+
+@pytest.mark.parametrize(
+    "fingerprint", ["", "sha256:short", "9" * 64, "sha256:" + "G" * 64, "sha256:" + "A" * 64, 5]
+)
+def test_a_recorded_fingerprint_is_a_canonical_sha256_digest(fingerprint: object) -> None:
+    document = _valid_document()
+    document["tests"]["runs"][0]["fingerprint"] = fingerprint
+
+    expected = (
+        ("COV_TEST_RUN_TEST_MISMATCH", "/tests/runs/0/test_run")
+        if isinstance(fingerprint, str)
+        else ("COV_FIELD_TYPE", "/tests/runs/0/fingerprint")
+    )
+    assert expected in _codes(document)
+
+
+def test_decoding_never_coerces_or_defaults_a_recorded_identity() -> None:
+    from booley.flows.sim.coverage_campaign import (
+        NO_DECLARED_INPUTS_FINGERPRINT,
+        CoverageRun,
+        _decode_run,
+    )
+
+    base = {"id": "run:1", "test": "reset", "simulation_verdict": "pass", "collection": "included"}
+    # Storage older than v5: the bare Test with no declared inputs, set by the decoder.
+    legacy = _decode_run(base)
+    assert (legacy.test_run, legacy.fingerprint) == ("reset", NO_DECLARED_INPUTS_FINGERPRINT)
+    for bad in ({"test_run": 7}, {"test_run": ""}, {"test_run": "reset", "fingerprint": ""}):
+        with pytest.raises(ValueError):
+            _decode_run({**base, "fingerprint": NO_DECLARED_INPUTS_FINGERPRINT, **bad})
+    with pytest.raises(TypeError):
+        CoverageRun("run:1", "reset", "pass", "included", None, {})  # type: ignore[call-arg]

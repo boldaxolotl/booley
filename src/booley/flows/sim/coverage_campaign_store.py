@@ -340,7 +340,7 @@ def publish_coverage_campaign(target_dir: Path, campaign: CoverageCampaign) -> C
         manifest_bytes = _manifest_bytes(document)
         if len(manifest_bytes) > MAX_MANIFEST_BYTES:
             raise CoverageCampaignStoreError(
-                "COV_MANIFEST_LIMIT", "Coverage Campaign manifest exceeds V4 limit"
+                "COV_MANIFEST_LIMIT", "Coverage Campaign manifest exceeds its size limit"
             )
         digest = f"{_SHA256_PREFIX}{hashlib.sha256(manifest_bytes).hexdigest()}"
         _summary(document, DurableTargetIdentity(campaign.target.identity), digest)
@@ -539,7 +539,7 @@ def _decode_scoring(
 ) -> Mapping[str, FrozenJson]:
     record = require_dict(value, field="scoring")
     if set(record) != {"status", "reason"}:
-        raise CoverageCampaignStoreError("COV_SCORING_STATE_INVALID", "Malformed V4 scoring state")
+        raise CoverageCampaignStoreError("COV_SCORING_STATE_INVALID", "Malformed scoring state")
     status = require_str(record, "status")
     reason = record["reason"]
     if reason is not None and not isinstance(reason, str):
@@ -878,7 +878,7 @@ def load_coverage_campaign_bytes(
     try:
         if not raw or len(raw) > MAX_MANIFEST_BYTES:
             raise CoverageCampaignStoreError(
-                "COV_MANIFEST_LIMIT", "Coverage Campaign manifest exceeds V4 limit"
+                "COV_MANIFEST_LIMIT", "Coverage Campaign manifest exceeds its size limit"
             )
         document = dict(require_dict(json.loads(raw)))
         if document.get("$schema") not in POINT_STORE_CAMPAIGN_SCHEMAS:

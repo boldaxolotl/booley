@@ -7,6 +7,7 @@ from types import MappingProxyType
 import pytest
 
 from booley.flows.sim.coverage_campaign import (
+    NO_DECLARED_INPUTS_FINGERPRINT,
     CoverageCampaign,
     CoverageCapability,
     CoverageCollector,
@@ -79,6 +80,8 @@ def _campaign(*, simulation_verdict: str = "pass") -> CoverageCampaign:
                 collection="included",
                 raw_artifact="artifact:smoke",
                 attributes=MappingProxyType({}),
+                test_run="smoke",
+                fingerprint=NO_DECLARED_INPUTS_FINGERPRINT,
             ),
         ),
         artifacts=(),

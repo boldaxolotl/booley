@@ -15,6 +15,7 @@ import pytest
 
 from booley.flows.sim import coverage_waiver_files
 from booley.flows.sim.coverage_campaign import (
+    NO_DECLARED_INPUTS_FINGERPRINT,
     CoverageCampaign,
     CoverageCapability,
     CoverageCollector,
@@ -255,6 +256,8 @@ def _run() -> CoverageRun:
         collection="included",
         raw_artifact=None,
         attributes=MappingProxyType({}),
+        test_run="smoke",
+        fingerprint=NO_DECLARED_INPUTS_FINGERPRINT,
     )
 
 

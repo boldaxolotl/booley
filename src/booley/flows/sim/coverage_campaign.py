@@ -18,7 +18,6 @@ from fractions import Fraction
 from types import MappingProxyType
 from typing import Literal, NewType, TypeAlias, cast
 
-from booley.config.tests_toml_rules import SEED_SEPARATOR, VARIANT_SEPARATOR
 from booley.core.boundary import (
     BoundaryError,
     as_dict,
@@ -27,9 +26,11 @@ from booley.core.boundary import (
     require_finite_number,
     require_int,
     require_list,
+    require_sha256_digest,
     require_str,
+    require_str_value,
 )
-from booley.flows.test_runs import declared_inputs_fingerprint
+from booley.flows.test_runs import SeedCount, declared_inputs_fingerprint, parse_test_selector
 from booley.runtime.timefmt import parse_timestamp, rfc3339_from_epoch
 
 DurableTargetIdentity = NewType("DurableTargetIdentity", str)
@@ -143,9 +144,10 @@ class CoverageRun:
 
     ``test`` is the bare Test; ``test_run`` is the resolved Test Run name
     (``test[+variant][@seed]``, ADR 0072) and ``fingerprint`` covers the Test
-    Variant's declared arguments and environment. A run built without them is
-    the bare Test with no declared inputs, which is what every run recorded
-    before storage v5 was.
+    Variant's declared arguments and environment. Both are always explicit: a
+    run decoded from storage older than v5 is given the bare Test and
+    :data:`NO_DECLARED_INPUTS_FINGERPRINT` by the decoder, which is what
+    every run recorded then was.
     """
 
     id: str
@@ -154,14 +156,8 @@ class CoverageRun:
     collection: CoverageRunCollectionState
     raw_artifact: str | None
     attributes: Mapping[str, FrozenJson]
-    test_run: str = ""
-    fingerprint: str = ""
-
-    def __post_init__(self) -> None:
-        if not self.test_run:
-            object.__setattr__(self, "test_run", self.test)
-        if not self.fingerprint:
-            object.__setattr__(self, "fingerprint", NO_DECLARED_INPUTS_FINGERPRINT)
+    test_run: str
+    fingerprint: str
 
 
 @dataclass(frozen=True)
@@ -973,8 +969,27 @@ def _test_run_of(run: Mapping[str, object]) -> str:
     return str(run.get("test_run", run["test"]))
 
 
+def _test_run_identity_problem(run: Mapping[str, object]) -> str:
+    """Why a run's recorded Test Run identity is invalid; empty when it is valid.
+
+    The name obeys the Test Run grammar and names the run's own Test with one
+    concrete seed or none; the fingerprint is a canonical SHA-256 digest.
+    """
+    name, test = run["test_run"], run["test"]
+    try:
+        selector = parse_test_selector(require_str_value(name, field="test_run"))
+        require_sha256_digest(run["fingerprint"], field="fingerprint")
+    except (BoundaryError, ValueError) as exc:
+        return str(exc)
+    if isinstance(selector.seed_form, SeedCount):
+        return f"Test Run {name!r} names a seed count, not one seed."
+    if selector.test != test:
+        return f"Test Run {name!r} is not a run of Test {test!r}."
+    return ""
+
+
 def _test_run_identity_findings(runs: list[object]) -> list[CoverageFinding]:
-    """Refuse two runs of one Test Run, and a Test Run of another Test."""
+    """Refuse two runs of one Test Run, and a run whose recorded identity is invalid."""
     findings: list[CoverageFinding] = []
     seen: set[str] = set()
     for index, run in enumerate(runs):
@@ -986,18 +1001,9 @@ def _test_run_identity_findings(runs: list[object]) -> list[CoverageFinding]:
                 _error("COV_TEST_RUN_DUPLICATE", pointer, f"Duplicate Test Run {name!r}.")
             )
         seen.add(name)
-        test = str(run["test"])
-        rest = name.removeprefix(test)
-        if "test_run" in run and (
-            not name.startswith(test) or rest[:1] not in {"", VARIANT_SEPARATOR, SEED_SEPARATOR}
-        ):
-            findings.append(
-                _error(
-                    "COV_TEST_RUN_TEST_MISMATCH",
-                    pointer,
-                    f"Test Run {name!r} is not a run of Test {test!r}.",
-                )
-            )
+        problem = _test_run_identity_problem(run) if "test_run" in run else ""
+        if problem:
+            findings.append(_error("COV_TEST_RUN_TEST_MISMATCH", pointer, problem))
     return findings
 
 
@@ -1672,9 +1678,23 @@ def _decode_run(document: Mapping[str, object]) -> CoverageRun:
         attributes=_freeze_mapping(
             {key: value for key, value in document.items() if key not in known}
         ),
-        test_run=str(document.get("test_run", "")),
-        fingerprint=str(document.get("fingerprint", "")),
+        **_decode_run_identity(document),
     )
+
+
+def _decode_run_identity(document: Mapping[str, object]) -> dict[str, str]:
+    """A run's Test Run name and fingerprint, exactly as recorded.
+
+    Storage older than v5 records neither: such a run was the bare Test with
+    no declared inputs. The Campaign validator has already checked a recorded
+    identity; nothing is coerced here.
+    """
+    if "test_run" not in document:
+        return {"test_run": str(document["test"]), "fingerprint": NO_DECLARED_INPUTS_FINGERPRINT}
+    return {
+        "test_run": require_str_value(document["test_run"], field="test_run"),
+        "fingerprint": require_sha256_digest(document["fingerprint"], field="fingerprint"),
+    }
 
 
 def _decode_artifact(document: Mapping[str, object]) -> CoverageArtifact:
