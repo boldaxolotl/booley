@@ -119,7 +119,7 @@ class CoverageTarget:
 
 
 @dataclass(frozen=True)
-class SelectedCoverageTest:
+class SelectedCoverageRun:
     """One Test Run selected for an independent simulator process.
 
     ``name`` is the bare Test. ``run`` is the concrete Test Run (ADR 0072):
@@ -152,7 +152,7 @@ class CoverageCollectionRequest:
     """All resolved, policy-free input for one Target collection."""
 
     target: CoverageTarget
-    selected_tests: tuple[SelectedCoverageTest, ...]
+    selected_tests: tuple[SelectedCoverageRun, ...]
     artifact_root: Path
     trace: bool = False
     reset_included: bool = True
@@ -203,7 +203,7 @@ class SimulationRunRequest:
     """One collector-owned process envelope and unique native destination."""
 
     target: CoverageTarget
-    test: SelectedCoverageTest
+    test: SelectedCoverageRun
     run_id: str
     raw_path: Path
     hook_evidence_path: Path | None
@@ -339,14 +339,14 @@ class _CollectedRun:
 class _RunContext:
     run_id: str
     index: int
-    test: SelectedCoverageTest
+    test: SelectedCoverageRun
     raw_path: Path
     raw_before: ArtifactStamp | None
     hook_path: Path | None
     hook_before: ArtifactStamp | None
 
 
-def _run_stem(index: int, selected: SelectedCoverageTest) -> str:
+def _run_stem(index: int, selected: SelectedCoverageRun) -> str:
     """The unique file-name stem of one run: its ordinal and Test Run name.
 
     The name part is one safe path component on POSIX and Windows; a name
@@ -355,14 +355,14 @@ def _run_stem(index: int, selected: SelectedCoverageTest) -> str:
     return f"{index:03d}-{artifact_path_component(selected.run_name)}"
 
 
-def _run_id(index: int, selected: SelectedCoverageTest) -> str:
+def _run_id(index: int, selected: SelectedCoverageRun) -> str:
     """The Campaign-unique id of one run: its ordinal and Test Run name."""
     return f"run:{index:03d}:{artifact_path_component(selected.run_name)}"
 
 
 def _coverage_run(
     index: int,
-    selected: SelectedCoverageTest,
+    selected: SelectedCoverageRun,
     verdict: SimulationVerdict,
     collection: CoverageRunCollectionState,
     raw_artifact: str | None,
@@ -455,7 +455,7 @@ def _collect_one_run(
     request: CoverageCollectionRequest,
     execution: SimulationExecutionPort,
     index: int,
-    selected: SelectedCoverageTest,
+    selected: SelectedCoverageRun,
 ) -> _CollectedRun:
     context = _prepare_run(request, index, selected)
     result = execution.run(_run_request(request, context))
@@ -659,7 +659,7 @@ def _pre_sim_failure(
 def _prepare_run(
     request: CoverageCollectionRequest,
     index: int,
-    selected: SelectedCoverageTest,
+    selected: SelectedCoverageRun,
 ) -> _RunContext:
     run_id = _run_id(index, selected)
     stem = _run_stem(index, selected)

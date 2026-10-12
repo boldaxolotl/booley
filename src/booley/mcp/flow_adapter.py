@@ -4,7 +4,7 @@ from typing import Any
 
 from booley.flows.base import BuiltinFlow
 from booley.flows.builtin_cli import build_parser
-from booley.flows.test_runs import MAX_SEED, RANDOM_SEED
+from booley.flows.test_runs import MAX_SEED, SEED_REQUEST_RANDOM
 from booley.mcp.schema_extractor import SPECIALIST_CLI_ONLY_DESTS, extract_schema
 
 
@@ -51,7 +51,7 @@ def flow_schema(endpoint: Any) -> dict[str, Any]:
             "description": properties["seed"]["description"],
             "oneOf": [
                 {"type": "integer", "minimum": 1, "maximum": MAX_SEED},
-                {"type": "string", "enum": [RANDOM_SEED]},
+                {"type": "string", "enum": [SEED_REQUEST_RANDOM]},
             ],
         }
     return schema

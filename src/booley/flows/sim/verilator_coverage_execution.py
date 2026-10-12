@@ -83,7 +83,7 @@ from .verilator_coverage import (
     CoverageHarness,
     CoverageSource,
     CoverageTarget,
-    SelectedCoverageTest,
+    SelectedCoverageRun,
     SimulationBuildRequest,
     SimulationBuildResult,
     SimulationCommandRequest,
@@ -596,7 +596,7 @@ def _selected_runs(
     inspection: TargetInspection,
     selected_tests: tuple[str, ...],
     test_runs: tuple[TestRun, ...] | None,
-) -> tuple[SelectedCoverageTest, ...]:
+) -> tuple[SelectedCoverageRun, ...]:
     """One collector process per Test Run, in the order the campaign records them."""
     if test_runs is None and not selected_tests:
         return ()
@@ -611,7 +611,7 @@ def _selected_runs(
             f"coverage Test Runs of {handle.selector} must be distinct runs of exactly "
             "the selected Tests"
         )
-    return tuple(SelectedCoverageTest(str(run.test), run) for run in test_runs)
+    return tuple(SelectedCoverageRun(str(run.test), run) for run in test_runs)
 
 
 def collect_target_coverage(

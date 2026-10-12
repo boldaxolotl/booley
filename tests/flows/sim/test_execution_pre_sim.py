@@ -6,8 +6,9 @@ from typing import cast
 
 import pytest
 
-from booley.config.project_config import load_test_configuration_field, render_test_selector
+from booley.config.project_config import load_test_configuration_field
 from booley.flows.sim.execution.pre_sim import run_pre_sim_commands
+from booley.flows.target_test_plan_loading import load_target_test_plan
 from booley.targets.domain import TargetHandle
 
 
@@ -61,8 +62,11 @@ def test_test_registry_is_scoped_to_each_checkout(tmp_path: Path) -> None:
 
     assert load_test_configuration_field(current, "tests") == {"sim": ["now"]}
     assert load_test_configuration_field(baseline, "tests") == {"sim": ["then"]}
-    assert render_test_selector("sim", 0, "now", work_dir=current) == "+test=now"
-    assert render_test_selector("sim", 0, "then", work_dir=baseline) == "+case=0"
+    launched = {}
+    for root, name in ((current, "now"), (baseline, "then")):
+        plan = load_target_test_plan(root, "sim", adapter="icarus")
+        launched[name] = plan.launch((plan.run(name),)).select
+    assert launched == {"now": "+test=now", "then": "+case=0"}
 
 
 def test_legacy_two_groups_retain_both_real_hooks_after_second_integrity_failure(

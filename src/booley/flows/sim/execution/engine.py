@@ -1914,7 +1914,7 @@ def _preview_exports(
     handle: TargetHandle,
     names: tuple[str, ...],
     build_root: Path,
-    test_runs: tuple[TestRun, ...] = (),
+    test_runs: tuple[TestRun, ...],
 ) -> list[str]:
     root = handle.project_root
     values = {

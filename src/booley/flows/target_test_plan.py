@@ -36,7 +36,7 @@ from booley.config.tests_toml_rules import (
     parse_test_variants,
 )
 from booley.flows.test_runs import (
-    RANDOM_SEED,
+    SEED_REQUEST_RANDOM,
     SEED_WITH_SEEDED_SELECTOR,
     PinnedSeed,
     SeedCount,
@@ -364,7 +364,7 @@ class TargetTestPlan:
                 self.run(selector.test, selector.variant, drawn)
                 for drawn in draw(form.count, exclude=taken)
             ]
-        if seed == RANDOM_SEED:
+        if seed == SEED_REQUEST_RANDOM:
             taken = _seeds_of_variant(earlier, base)
             return [self.run(selector.test, selector.variant, draw(1, exclude=taken)[0])]
         return [self.run(selector.test, selector.variant, seed)] if seed is not None else [base]
@@ -373,7 +373,7 @@ class TargetTestPlan:
         """The unnamed invocation of a Target without registered Tests, at *seed*."""
         if seed is not None and not self.mechanism.seeded:
             raise UnseededTargetError(self.unseeded_reason())
-        concrete = draw(1)[0] if seed == RANDOM_SEED else seed
+        concrete = draw(1)[0] if seed == SEED_REQUEST_RANDOM else seed
         return self.run(None, seed=concrete)
 
     def default_runs_for(self, tests: Sequence[str]) -> tuple[TestRun, ...]:

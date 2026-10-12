@@ -18,7 +18,7 @@ from booley.flows.sim.verilator_coverage import (
     CoverageCollectionRequest,
     CoverageSource,
     CoverageTarget,
-    SelectedCoverageTest,
+    SelectedCoverageRun,
     SimulationBuildResult,
     SimulationCommandResult,
     SimulationRunResult,
@@ -145,7 +145,7 @@ endmodule
             harness="generated_main",
             sources=(CoverageSource(str(source), "rtl/counter.sv", "rtl"),),
         ),
-        selected_tests=(SelectedCoverageTest("generated_main"),),
+        selected_tests=(SelectedCoverageRun("generated_main"),),
         artifact_root=tmp_path / "campaign",
     )
 

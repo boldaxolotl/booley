@@ -29,7 +29,7 @@ from booley.flows.sim.verilator_coverage import (
     PINNED_VERILATOR,
     VERILATOR_COVERAGE_INSTRUMENTATION,
     CoverageTarget,
-    SelectedCoverageTest,
+    SelectedCoverageRun,
     SimulationBuildRequest,
     SimulationBuildResult,
     SimulationBuildVariant,
@@ -150,7 +150,7 @@ def _run_request(project: Path) -> SimulationRunRequest:
     raw_path = project.parent / "artifacts" / "raw.dat"
     return SimulationRunRequest(
         target=_target(project),
-        test=SelectedCoverageTest("smoke"),
+        test=SelectedCoverageRun("smoke"),
         run_id="run:001:smoke",
         raw_path=raw_path,
         hook_evidence_path=None,

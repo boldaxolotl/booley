@@ -8,13 +8,11 @@ import pytest
 
 from booley.config import project_config
 from booley.config.project_config import (
-    DEFAULT_TEST_SELECT,
     TESTS_SECTION_KEYS,
     load_test_configuration,
     normalize_configs_toml,
     normalize_tests_toml,
     project_name,
-    render_test_selector,
 )
 from booley.config.tests_toml_rules import TEST_NAME_RULES
 
@@ -570,21 +568,6 @@ class TestSelectTemplateValidation:
     def test_rejects_empty_template(self):
         with pytest.raises(ValueError, match="non-empty string"):
             normalize_tests_toml({"k": {"select": "  "}})
-
-
-class TestRenderTestSelector:
-    """`render_test_selector` renders a Target's template, default `+test_id`."""
-
-    def test_default_template_when_target_unknown(self):
-        # No tests.toml in the test project → module TEST_SELECT empty → default.
-        assert render_test_selector("nope", 3, "boot") == "+test_id=3"
-        assert DEFAULT_TEST_SELECT == "+test_id={index}"
-
-    def test_renders_declared_template(self, monkeypatch):
-        from booley.config import project_config
-
-        monkeypatch.setitem(project_config.TEST_SELECT, "lite", "+test={name}")
-        assert render_test_selector("lite", 1, "stress") == "+test=stress"
 
 
 class TestEnvTableValidation:

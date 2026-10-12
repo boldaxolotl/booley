@@ -24,7 +24,7 @@ from booley.flows.sim.coverage_transaction import run_coverage_target
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.request import SimRequest
 from booley.flows.sim.verilator_coverage import (
-    SelectedCoverageTest,
+    SelectedCoverageRun,
     SimulationRunResult,
 )
 from booley.flows.target_test_plan import MAX_TEST_RUNS_PER_REQUEST
@@ -179,19 +179,19 @@ def test_evidence_counts_a_test_as_passed_only_when_every_run_of_it_passed(tmp_p
 def test_a_run_name_outside_the_safe_set_becomes_a_digest_not_a_lossy_name(tmp_path):
     from booley.flows.sim.verilator_coverage import _run_id, _run_stem
 
-    plain = SelectedCoverageTest("smoke test")
-    other = SelectedCoverageTest("smoke_test")
+    plain = SelectedCoverageRun("smoke test")
+    other = SelectedCoverageRun("smoke_test")
 
     assert _run_stem(1, plain).startswith("001-~sha256-")
     assert _run_stem(1, plain) != _run_stem(1, other) == "001-smoke_test"
-    seeded = SelectedCoverageTest("stress", build_test_run("stress", variant="soak", seed=42))
+    seeded = SelectedCoverageRun("stress", build_test_run("stress", variant="soak", seed=42))
     assert _run_stem(7, seeded) == "007-stress+soak@42"
     assert _run_id(7, seeded) == "run:007:stress+soak@42"
 
 
 def test_a_selected_run_must_be_a_run_of_its_test():
     with pytest.raises(ValueError, match="not a run of selected Test"):
-        SelectedCoverageTest("reset", build_test_run("wrap", seed=1))
+        SelectedCoverageRun("reset", build_test_run("wrap", seed=1))
 
 
 def test_preflight_refuses_runs_of_an_unregistered_test(tmp_path, monkeypatch):

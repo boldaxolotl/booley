@@ -40,7 +40,7 @@ from booley.flows.sim.verilator_coverage import (
     PINNED_VERILATOR,
     VERILATOR_COVERAGE_INSTRUMENTATION,
     CoverageTarget,
-    SelectedCoverageTest,
+    SelectedCoverageRun,
     SimulationBuildRequest,
     SimulationBuildResult,
     SimulationBuildVariant,
@@ -226,7 +226,7 @@ def test_execution_launches_the_test_run_with_its_variant_and_seed(
     _build_coverage(execution, target)
 
     result = execution.run(
-        replace(_run_request(target, raw_path), test=SelectedCoverageTest("wrap", run))
+        replace(_run_request(target, raw_path), test=SelectedCoverageRun("wrap", run))
     )
 
     assert result.verdict == "pass"
@@ -335,7 +335,7 @@ def test_cocotb_coverage_runs_pre_sim_once_per_selected_test_process(
     for index, name in enumerate(("gap", "full"), start=1):
         request = replace(
             _run_request(target, raw_path),
-            test=SelectedCoverageTest(name),
+            test=SelectedCoverageRun(name),
             run_id=f"run:{index:03d}:{name}",
         )
         assert execution.run(request).verdict == "pass"
@@ -811,7 +811,7 @@ def test_coverage_build_run_and_identity_keep_distinct_budgets(
 def _run_request(target: CoverageTarget, raw_path: Path) -> SimulationRunRequest:
     return SimulationRunRequest(
         target=target,
-        test=SelectedCoverageTest("wrap"),
+        test=SelectedCoverageRun("wrap"),
         run_id="run:001:wrap",
         raw_path=raw_path,
         hook_evidence_path=None,

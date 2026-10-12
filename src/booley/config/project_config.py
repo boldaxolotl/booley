@@ -645,29 +645,3 @@ def resolve_test_name(target: str, name: str) -> int:
         )
 
     return matches[0][0]
-
-
-def render_test_selector(
-    target: str,
-    index: int,
-    name: str,
-    *,
-    work_dir: Path | str | None = None,
-) -> str:
-    """Render the per-Target plusarg that selects test ``index`` (decision 16).
-
-    Booley renders the Target's ``select`` template (from tests.toml) into the
-    concrete plusarg forwarded to the sim — e.g. ``"+test_id={index}"`` →
-    ``"+test_id=3"``.  Targets without a declared template use
-    :data:`DEFAULT_TEST_SELECT`, preserving the legacy ``+test_id=N`` contract.
-    The returned string is the full plusarg, leading ``+`` included.
-    """
-    templates = (
-        _get("TEST_SELECT")
-        if work_dir is None
-        else load_test_configuration_field(work_dir, "select")
-    )
-    template = lookup_target_section(templates, target)
-    if template is None:
-        template = DEFAULT_TEST_SELECT
-    return template.format(index=index, name=name)

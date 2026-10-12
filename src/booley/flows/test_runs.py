@@ -47,7 +47,7 @@ __all__ = [
     "DEFAULT_SEED",
     "MAX_MULTI_SEED_COUNT",
     "MAX_SEED",
-    "RANDOM_SEED",
+    "SEED_REQUEST_RANDOM",
     "SEED_WITH_SEEDED_SELECTOR",
     "UNNAMED_TEST_DISPLAY",
     "PinnedSeed",
@@ -78,7 +78,8 @@ __all__ = [
 MAX_MULTI_SEED_COUNT = 1000
 
 #: The ``--seed`` value that asks Booley to draw a seed for each Test Run.
-RANDOM_SEED: Literal["random"] = "random"
+#: (Not cocotb's ``RANDOM_SEED`` variable; see ``backends.cocotb``.)
+SEED_REQUEST_RANDOM: Literal["random"] = "random"
 #: What a request says about seeds: nothing, one seed, or "draw them".
 SeedRequest = int | Literal["random"] | None
 #: Why ``--seed`` and a seeded ``--test`` selector cannot be combined.
@@ -255,8 +256,8 @@ def parse_seed_request(value: object) -> int | Literal["random"]:
     obeys the selector's seed spelling (decimal, no sign, no leading zeros).
     Raises :class:`TestRunNameError`.
     """
-    if value == RANDOM_SEED:
-        return RANDOM_SEED
+    if value == SEED_REQUEST_RANDOM:
+        return SEED_REQUEST_RANDOM
     if isinstance(value, str):
         seed = _parse_bounded_number(value, what="seed", selector=f"--seed {value}")
         if not 1 <= seed <= MAX_SEED:
