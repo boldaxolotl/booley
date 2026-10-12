@@ -116,7 +116,15 @@ def audit_specialist_table(
 
 
 def audit_project_table(data: Mapping[str, Any]) -> ConfigTableAudit:
-    """Audit optional project metadata without making it authoritative."""
+    """Audit Project metadata and validate its Protected Input declarations."""
+    from booley.config.protected_inputs import parse_protected_inputs
+
+    try:
+        parse_protected_inputs(data)
+    except ValueError as exc:
+        return failure(
+            str(exc), "fix [project].protected_inputs using Project-relative file paths or globs"
+        )
     project = as_dict(data.get("project"))
     if project is None:
         return ConfigTableAudit((_project_warning("booley.toml missing [project] table"),))

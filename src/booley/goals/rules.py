@@ -9,6 +9,7 @@ so the rules and the check cannot drift apart.
 
 from __future__ import annotations
 
+from booley.goals.declared_inputs import DeclaredCapture
 from booley.goals.protected_inputs import PROTECTED_INPUT_NAMES
 
 WORK_DIR_GUIDANCE = (
@@ -19,9 +20,15 @@ WORK_DIR_GUIDANCE = (
 )
 
 
-def goal_mode_rules() -> str:
+def goal_mode_rules(declared: DeclaredCapture | None = None) -> str:
     """The Goal Mode rules as Markdown bullets, ending with a newline."""
     protected = ", ".join(f"`{name}`" for name in PROTECTED_INPUT_NAMES)
+    if declared is not None:
+        protected += "; Project-declared files: " + ", ".join(
+            f"`{row.path}`" for row in declared.working
+        )
+        protected += ". Declarations: " + ", ".join(f"`{rule}`" for rule in declared.declarations)
+        protected += "; changing these declarations requires abandon and re-entry"
     bullets = (
         WORK_DIR_GUIDANCE + " While any Goal Record occupies the Project, Flows, "
         "Specialists, Goal tools, and `booley_report` refuse a call without "

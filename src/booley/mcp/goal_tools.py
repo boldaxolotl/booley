@@ -150,7 +150,10 @@ async def dispatch_goal_tool(  # noqa: PLR0911 — four independent public Goal 
             aware = await asyncio.to_thread(_status_has_caller, views, root, request_context)
             text = render_status(views) if views else "No active Goal Mode."
             if arguments.get("rules") is True:
-                text += "\n\n" + goal_mode_rules()
+                for view in views:
+                    text += "\n\n" + goal_mode_rules(view.record.declared_protected_inputs)
+                if not views:
+                    text += "\n\n" + goal_mode_rules()
             return _text(text, is_error=False, goal_aware=aware)
     except (
         LifecycleError,
