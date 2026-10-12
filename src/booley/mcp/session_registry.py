@@ -19,6 +19,11 @@ from booley.goals.store import REPOSITORY_ID_FILE, resolve_worktree_identity
 from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.pid import ProcessIdentity, ProcessState, observe_process
 from booley.runtime.safe_storage import refuse_symlinks
+from booley.runtime.session_activity import (
+    process_session_key,
+    thread_session_key,
+    valid_thread_id,
+)
 from booley.runtime.timefmt import parse_timestamp, rfc3339_from_epoch
 
 MAX_ROWS = 4096
@@ -188,6 +193,7 @@ class SessionRegistry:
     def __init__(
         self, project_dir: Path, *, quiet_after: float = 7200, proc_root: Path = Path("/proc")
     ) -> None:
+        self.project_dir = project_dir
         self.root = project_dir / "runtime" / "sessions"
         self.quiet_after = quiet_after
         self.proc_root = proc_root
@@ -425,11 +431,6 @@ def canonical_attribution(facts: Attribution) -> Attribution:
     return replace(facts, branch=branch or facts.branch)
 
 
-def valid_thread_id(value: object) -> bool:
-    """Bound client metadata and reject controls or unencodable Unicode."""
-    return isinstance(value, str) and 0 < len(value) <= 1024 and value.isprintable()
-
-
 def resolve_attribution(
     work_dir: Path | None,
     *,
@@ -447,7 +448,7 @@ def resolve_attribution(
     scope = namespace(proc_root)
     if codex and valid_thread_id(thread):
         return Attribution(
-            "codex:" + str(thread),
+            thread_session_key(str(thread)),
             "thread",
             str(root) if root is not None else "",
             worktree_key,
@@ -464,7 +465,7 @@ def resolve_attribution(
         and peer.pid != os.getpid()
     ):
         return Attribution(
-            f"pid:{peer.identity_scope}:{peer.pid}:{peer.start_token}",
+            process_session_key(peer),
             "process",
             str(root) if root is not None else "",
             worktree_key,
