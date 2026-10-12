@@ -67,11 +67,12 @@ def _record(
     *,
     key: str = SIM_KEY,
     met: bool = True,
+    extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Record one V1 observation of *key* with Test Run *rows*; return its stored detail."""
     recorder = GoalEvidenceRecorder(bind(layout, run_id))
     state = DevelopmentState.load(_state_file(layout), recorder.state_persistence())
-    changes = state.set_criterion(key, met, detail={"test_runs": rows})
+    changes = state.set_criterion(key, met, detail={**(extra or {}), "test_runs": rows})
     recorder.record_changes(state, changes, invocation_id="ignored", producer="sim")
     state.save()
     return state.criteria[key].detail

@@ -67,3 +67,66 @@ def test_bound_flow_records_both_verdicts(layout, monkeypatch, simulation, cover
         )
     assert result.exit_code == (0 if simulation == "pass" else 1), result.outcome
     assert len(saved.acceptance_transactions) == 1
+
+
+def _enter(layout, monkeypatch, goals):
+    """A coverage-capable ``top`` Target with Tests ``reset`` and ``wrap``, in Goal Mode."""
+    root: Path = layout.worktree
+    project(root)
+    core = root / "counter.core"
+    core.write_text(core.read_text().replace("sim_0", "top"))
+    (root / ".booley_project/tests.toml").write_text('[top]\ntests = ["reset", "wrap"]\n')
+    git(root, "add", "counter.core", "rtl/counter.sv")
+    git(root, "commit", "-m", "simulation recipe")
+    record = enter_goal_mode(
+        EntryRequest(work_dir=root, slug="seeds", goals=parse_goal_args(goals)),
+        EntryEnvironment(project_dir=layout.control),
+    ).record
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    return root, record
+
+
+def _coverage_run(layout, root, run_id, *tests):
+    adapter = GoalFlowExecution(bind(layout, run_id))
+    result = SimulateFlow(coverage_execution=lambda *_args: NativeExecution(hits=1)).execute(
+        SimRequest(
+            target="top",
+            work_dir=root,
+            coverage=True,
+            report_dir=root / "reports" / run_id,
+            test=tests or None,
+        ),
+        adapter=adapter,
+    )
+    return result, DevelopmentState.load(adapter.state_file)
+
+
+def test_multi_seed_coverage_goal_is_met_only_by_a_campaign_of_exactly_its_frozen_seeds(
+    layout, monkeypatch
+):
+    goals = [
+        {"family": "coverage", "target": "top", "tests": ["reset@x2"], "metrics": {"line": 100}}
+    ]
+    root, record = _enter(layout, monkeypatch, goals)
+    frozen = [run.name for run in record.test_run_resolutions["coverage_top"].test_runs]
+    assert len(set(frozen)) == 2 and all(name.startswith("reset@") for name in frozen)
+
+    # The default seed of the same Test is not one of the frozen seeds: diagnostic.
+    result, state = _coverage_run(layout, root, "default-seed", "reset")
+    assert state.criteria["coverage_top"].met is False
+    assert state.criteria["coverage_top"].detail == {}
+    assert "match no Goal" in result.outcome.report_text
+    # One frozen seed alone is not the Goal's campaign either: coverage is not merged
+    # across campaigns.
+    _result, state = _coverage_run(layout, root, "one-seed", frozen[0])
+    assert state.criteria["coverage_top"].detail == {}
+
+    # ``reset@x2`` names the Goal's Target, Test Variant and N: it runs the frozen seeds.
+    result, state = _coverage_run(layout, root, "frozen-seeds", "reset@x2")
+    assert result.exit_code == 0, result.outcome
+    entry = state.criteria["coverage_top"]
+    assert entry.met is True
+    assert [row["name"] for row in entry.detail["test_runs"]] == frozen
+    outcomes = [run["outcome"] for run in entry.detail["test_run_ledger"]["runs"]]
+    assert outcomes == ["passed", "passed"]
+    assert "match no Goal" not in result.outcome.report_text

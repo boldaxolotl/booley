@@ -7069,11 +7069,17 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         frozen = self._frozen_test_runs()
         if frozen is None or seed is not None:
             return plan.resolve(selectors, seed=seed)
-        names = {target, plan.target}
-        runs, fresh = resolve_goal_test_runs(plan, selectors, frozen, names)
+        runs, fresh = resolve_goal_test_runs(plan, selectors, frozen, self._target_names(target))
         if fresh:
             self._test_runs.fresh_seed_selectors[target] = fresh
         return runs
+
+    def _target_names(self, target: str) -> set[str]:
+        """What a Goal may call *target*: its selector, and its identity when it resolves."""
+        try:
+            return {target, self._target_handle(target).identity}
+        except fusesoc_registry.FuseSocError:
+            return {target}
 
     def _registered_test_plan(
         self, target: str, test_names_map: Mapping[str, list[str]]

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Collection, Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from booley.config.project_config import load_test_configuration, lookup_target_section
 from booley.flows.simulator_family import normalize_eda_tool
@@ -39,7 +39,8 @@ def plusarg_parameter_names(parameters: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(
         str(name)
         for name, spec in parameters.items()
-        if isinstance(spec, Mapping) and spec.get("paramtype") == "plusarg"
+        if isinstance(spec, Mapping)
+        and cast("Mapping[str, Any]", spec).get("paramtype") == "plusarg"
     )
 
 
