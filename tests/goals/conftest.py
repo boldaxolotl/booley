@@ -21,6 +21,7 @@ import pytest
 from booley.core.project_dir import reset_cache
 from booley.flows import target_test_plan_loading
 from booley.flows.target_test_plan import TargetTestPlan
+from booley.flows.test_runs import TestRun, build_test_run, test_run_document
 from booley.goals import entry as entry_module
 from booley.goals.binding import GoalRunBinding, bind_run
 from booley.goals.store import GoalStore
@@ -188,13 +189,28 @@ def goal_mode(layout: SimpleNamespace) -> SimpleNamespace:
 
 
 CAMPAIGN_ID = "12345678-1234-4234-9234-123456789abc"
+#: The Test Run the ``goal_mode`` fixture's simulation Goal is frozen to.
+SMOKE_RUN = build_test_run("smoke", seed=1)
 
 
-def campaign_facts() -> dict[str, Any]:
+def run_row(run: TestRun | str = SMOKE_RUN, grade: str = "pass") -> dict[str, Any]:
+    """The Test Run row a campaign records for *run* (a name means Test at seed 1)."""
+    if isinstance(run, str):
+        run = build_test_run(run, seed=1)
+    return {**test_run_document(run), "grade": grade}
+
+
+def passing_sim(*runs: TestRun | str) -> dict[str, Any]:
+    """Simulation detail of a campaign in which *runs* (default: ``smoke@1``) passed."""
+    rows = [run_row(run) for run in runs or (SMOKE_RUN,)]
+    return {"tests_passed": len(rows), "tests_total": len(rows), "test_runs": rows}
+
+
+def campaign_facts(campaign_id: str = CAMPAIGN_ID) -> dict[str, Any]:
     """Simulation acceptance facts the ledger accepts (content is not interpreted)."""
     return {
         "$schema": "booley.simulation-acceptance-facts/v1",
-        "campaign_id": CAMPAIGN_ID,
+        "campaign_id": campaign_id,
         "manifest_sha256": f"sha256:{'a' * 64}",
         "origin": {"execution_id": "b" * 32, "invocation_id": 7},
         "target": {"identity": "::top:0#top", "selector": "top"},

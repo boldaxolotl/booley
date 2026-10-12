@@ -8,6 +8,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from booley.criteria.state import CriterionChange, DevelopmentState, StatePersistence
 from booley.evidence.acceptance import ResolvedFlowAcceptance
+from booley.flows.frozen_test_runs import FrozenTestRuns
 from booley.flows.request import FlowRequest
 from booley.flows.source_fingerprint import compute_source_fingerprint
 from booley.runtime.endpoint_execution import EndpointOutcome
@@ -110,6 +111,24 @@ def criterion_is_current_for(
         if isinstance(recorder, CriterionFreshness)
         else None
     )
+
+
+@runtime_checkable
+class FrozenTestRunsSource(Protocol):
+    """Optional recorder capability: the Test Runs the run's Goals are frozen to."""
+
+    def frozen_test_runs(self) -> FrozenTestRuns: ...
+
+
+def frozen_test_runs_for(recorder: AcceptanceRecorder) -> FrozenTestRuns | None:
+    """The frozen Test Runs *recorder* judges evidence by; ``None`` outside Goal Mode.
+
+    May raise :class:`EvidenceDiscarded` when the recorder's authority can no
+    longer be read.
+    """
+    if isinstance(recorder, FrozenTestRunsSource):
+        return recorder.frozen_test_runs()
+    return None
 
 
 @runtime_checkable

@@ -56,6 +56,14 @@ def test_bound_flow_records_both_verdicts(layout, monkeypatch, simulation, cover
     )
     saved = DevelopmentState.load(adapter.state_file)
     assert saved.criteria["sim_pass_top"].met is (simulation == "pass")
-    assert saved.criteria["coverage_top"].met is (coverage == "pass")
+    # A coverage Goal is judged by its frozen Test Runs too (ADR 0072): coverage
+    # collected from a failing Test Run does not meet it.
+    assert saved.criteria["coverage_top"].met is (coverage == "pass" and simulation == "pass")
+    if coverage == "pass" and simulation == "fail":
+        assert (
+            saved.criteria["coverage_top"]
+            .detail["goal_contract_violation"]
+            .startswith("Test Runs failed")
+        )
     assert result.exit_code == (0 if simulation == "pass" else 1), result.outcome
     assert len(saved.acceptance_transactions) == 1

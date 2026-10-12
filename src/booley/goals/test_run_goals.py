@@ -34,8 +34,11 @@ from booley.flows.test_runs import (
 )
 from booley.goals.model import GoalFamily, GoalSpec
 
-#: Key prefix of a simulation Goal that names a Test Run selector.
-SIMULATION_RUN_KEY_PREFIX = "sim_run_"
+#: Marks the key of a simulation Goal that names a Test Run selector. The key
+#: stays in the ``sim_pass`` Criterion family, so everything keyed on that
+#: family (admission of the Target, source categories, presentation) applies
+#: to a Test Goal as it does to a Target Goal.
+SIMULATION_RUN_KEY_MARK = "_run_"
 
 #: Goal families whose evidence is matched against frozen Test Runs.
 TEST_RUN_FAMILIES: frozenset[GoalFamily] = frozenset(
@@ -76,12 +79,13 @@ def _seed_form_tag(selector: TestSelector) -> str:
 def simulation_run_key(target: str, selector: TestSelector) -> str:
     """The key of the simulation Goal that names *selector* on *target*.
 
-    ``sim_run_<target>_<hex(test[+variant])>_<s<seed>|d|x>``. The count of a
-    multi-seed Goal is not part of the key: changing N changes the Goal, not
-    which Goal it is.
+    ``sim_pass_<target>_run_<hex(test[+variant])>_<s<seed>|d|x>``. The count
+    of a multi-seed Goal is not part of the key: changing N changes the Goal,
+    not which Goal it is.
     """
     encoded = variant_text(selector).encode("utf-8").hex()
-    return f"{SIMULATION_RUN_KEY_PREFIX}{target}_{encoded}_{_seed_form_tag(selector)}"
+    tag = _seed_form_tag(selector)
+    return f"sim_pass_{target}{SIMULATION_RUN_KEY_MARK}{encoded}_{tag}"
 
 
 def names_test_runs(goal: GoalSpec) -> bool:

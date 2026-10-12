@@ -8,10 +8,11 @@ from uuid import uuid4
 import pytest
 from mcp import Client
 
+from booley.flows.test_runs import build_test_run
 from booley.goals.finish import finish_goal
 from booley.goals.lifecycle import LifecycleRequest
 from booley.review.goal_package import GoalCompletionPackage
-from tests.goals.conftest import enter_goals
+from tests.goals.conftest import enter_goals, passing_sim
 from tests.goals.test_finish import environment
 from tests.goals.test_mcp_routing import _goal_reviewer_endpoint
 from tests.goals.test_proposal_wire import sdk
@@ -456,7 +457,7 @@ def _publish_current_base_simulation(layout):
     state = DevelopmentState.load(paths.state_file, recorder.state_persistence())
     shadow = DevelopmentState.from_json_object(state.to_dict())
     changes = shadow.set_criterion(
-        "sim_pass_base", True, detail={"required_tests": ["default"], "passed_tests": ["default"]}
+        "sim_pass_base", True, detail=passing_sim(build_test_run(None, seed=1))
     )
     transaction = recorder.record_or_verify_transaction(
         state, changes, acceptance_facts=facts, identity={}
@@ -481,7 +482,7 @@ def test_obsolete_simulation_after_approved_retarget_omits_inventory_without_rew
             {"family": "review", "review": "rtl_bugs", "verdict": "clean"},
         ],
         criterion=SIM_KEY,
-        criterion_detail={"required_tests": ["smoke"], "passed_tests": ["smoke"]},
+        criterion_detail=passing_sim(),
     )
     (layout.worktree / "base.core").write_bytes(
         b"CAPI=2:\nname: ::base:0\nfilesets:\n  rtl: {files: [rtl.v], file_type: verilogSource}\n"

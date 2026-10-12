@@ -135,9 +135,6 @@ class EndpointState(ABC):
         self._eda_tool: str | None = None
         # Why this invocation's evidence was discarded (B1); reset per invocation.
         self._evidence_discarded: str | None = None
-        # The endpoint decided this invocation records no acceptance evidence
-        # (see ``withhold_evidence``); reset per invocation.
-        self._evidence_withheld = False
         self.configure_flow_execution(StandaloneFlowExecution())
         self.flow_acceptance: ResolvedFlowAcceptance = ResolvedFlowAcceptance()
 
@@ -193,27 +190,8 @@ class EndpointState(ABC):
         return self._evidence_discarded
 
     def reset_evidence_discard(self) -> None:
-        """Start a new invocation whose evidence is neither discarded nor withheld."""
+        """Start a new invocation whose evidence has not been discarded."""
         self._evidence_discarded = None
-        self._evidence_withheld = False
-
-    def withhold_evidence(self) -> None:
-        """Make this invocation record no acceptance evidence.
-
-        The endpoint's own decision, apart from the user's ``--diagnostic``
-        flag: it stops evidence and grants none of that flag's privileges
-        (Targets still need a bound criterion, ``--no-waivers`` still needs
-        ``--diagnostic``).
-        """
-        self._evidence_withheld = True
-
-    @property
-    def records_no_evidence(self) -> bool:
-        """Whether this invocation records no acceptance evidence.
-
-        True for a ``--diagnostic`` request and after :meth:`withhold_evidence`.
-        """
-        return bool(getattr(self._args, "diagnostic", False)) or self._evidence_withheld
 
     def discard_evidence(self, exc: EvidenceDiscarded) -> None:
         """Record that this invocation's evidence was discarded; the first reason wins.

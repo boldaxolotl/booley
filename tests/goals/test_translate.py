@@ -497,10 +497,10 @@ def _resolver(default_variant: str | None = "short", default_seed: int | None = 
 @pytest.mark.parametrize(
     ("test", "key"),
     [
-        ("smoke", "sim_run_tb_736d6f6b65_d"),
-        ("stress+soak", "sim_run_tb_7374726573732b736f616b_d"),
-        ("stress+soak@7", "sim_run_tb_7374726573732b736f616b_s7"),
-        ("stress@x5", "sim_run_tb_737472657373_x"),
+        ("smoke", "sim_pass_tb_run_736d6f6b65_d"),
+        ("stress+soak", "sim_pass_tb_run_7374726573732b736f616b_d"),
+        ("stress+soak@7", "sim_pass_tb_run_7374726573732b736f616b_s7"),
+        ("stress@x5", "sim_pass_tb_run_737472657373_x"),
     ],
 )
 def test_test_goal_key_comes_from_the_written_selector(test: str, key: str) -> None:
@@ -544,7 +544,7 @@ def test_goals_that_resolve_to_one_test_run_merge_and_union_their_origins() -> N
     assert len(unresolved.goals) == 3  # written forms differ; nothing says they are one run
     merged = translate_goals(args, resolver=_resolver())
     (goal,) = merged.goals
-    assert goal.key == "sim_run_tb_737472657373_d"  # the first written form
+    assert goal.key == "sim_pass_tb_run_737472657373_d"  # the first written form
     assert goal.origins == ("a", "b", "c")
     assert "name the same Test Runs" in merged.warnings[0]
 

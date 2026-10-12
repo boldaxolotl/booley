@@ -22,6 +22,7 @@ from booley.criteria.evidence_ledger import AcceptanceTransaction
 from booley.criteria.state import CriterionChange, DevelopmentState, StatePersistence
 from booley.evidence.acceptance import PairedProjectBaseline, ResolvedFlowAcceptance
 from booley.flows.execution_persistence import EvidenceDiscarded
+from booley.flows.frozen_test_runs import FrozenTestRuns
 from booley.flows.request import FlowRequest
 from booley.flows.source_fingerprint import compute_source_fingerprint
 from booley.goals.binding import GoalRunBinding
@@ -30,6 +31,7 @@ from booley.goals.freshness import DEFAULT_RESOLVERS, RESOLVER_ERRORS, GoalFresh
 from booley.goals.paths import record_paths
 from booley.goals.recorder import GoalEvidenceRecorder
 from booley.goals.store import GoalStore, GoalStoreError
+from booley.goals.test_run_evidence import flow_test_runs
 from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
 
 
@@ -153,6 +155,17 @@ class GoalFlowExecution:
                 store, record, work_dir=self._binding.worktree_root, resolvers=self._resolvers
             )
             return any(item.key == key and item.status == "met" for item in view.goals)
+
+    def frozen_test_runs(self) -> FrozenTestRuns:
+        """The Test Runs the Goals this run was admitted with are frozen to (ADR 0072).
+
+        The Simulation Flow runs them and matches its evidence against them.
+        """
+        try:
+            record = GoalStore(self._binding.project_dir).load(self._binding.record_id)
+        except GoalStoreError as exc:
+            raise EvidenceDiscarded(f"Goal Record cannot be read: {exc}") from exc
+        return flow_test_runs(record, dict(self._binding.spec_revisions))
 
     def state_persistence(self) -> StatePersistence:
         """The gated, merging persistence of the run's state."""

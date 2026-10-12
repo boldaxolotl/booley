@@ -162,7 +162,7 @@ def prepare_params(
             raise ProposalError(
                 "the existing Goal runtime params are missing; cannot preserve its pins"
             )
-        return {**entry.params, **after.params}
+        return {**entry.params, **params[after.key]}
     root = Path(record.worktree_path)
     relative = has_relative_threshold(after.params)
     if relative:

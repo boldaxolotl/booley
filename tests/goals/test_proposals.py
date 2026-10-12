@@ -31,7 +31,7 @@ from booley.goals.recorder import GOAL_SCOPE, GoalEvidenceRecorder, GoalProjecti
 from booley.goals.state_store import load_goal_state
 from booley.goals.status import build_status
 from booley.goals.store import GoalStore
-from tests.goals.conftest import LINT_KEY, enter_goals, git
+from tests.goals.conftest import LINT_KEY, enter_goals, git, run_row
 
 CYCLE_ARG = {
     "family": "cycle_count",
@@ -103,7 +103,12 @@ def publish(
     state = DevelopmentState.load(
         record_paths(layout.control, layout.record.id).state_file, recorder.state_persistence()
     )
-    detail = {"cycles": cycles, "cycle_observation": "observed", "test": "smoke"}
+    detail = {
+        "cycles": cycles,
+        "cycle_observation": "observed",
+        "test": "smoke",
+        "test_runs": [run_row()],
+    }
     if not healthy:
         detail["reason"] = "current test did not pass"
     changes = state.set_criterion(CYCLE_KEY, False, detail=detail)

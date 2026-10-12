@@ -18,7 +18,7 @@ from booley.goals.test_run_resolution import SUITE_SLOT
 from booley.goals.test_run_resolving import ensure_test_run_resolutions
 from tests.goals.conftest import SIM_KEY, bind, enter_goals, write_tests_toml
 
-LATER_KEY = "sim_run_top_6c61746572_x"
+LATER_KEY = "sim_pass_top_run_6c61746572_x"
 GOALS = (
     {"family": "sim", "target": "top"},
     {"family": "sim", "target": "top", "test": "later@x2"},

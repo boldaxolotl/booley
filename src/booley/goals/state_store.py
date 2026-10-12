@@ -51,10 +51,11 @@ from booley.core.boundary import (
 from booley.criteria.categories import verification_fingerprint_categories
 from booley.criteria.state import CriterionEntry, DevelopmentState
 from booley.goals.binding import GoalRunBinding
-from booley.goals.model import GoalRecord, GoalSpec
+from booley.goals.model import GoalFamily, GoalRecord, GoalSpec
 from booley.goals.paths import record_paths
 from booley.goals.publication import PublicationGate
 from booley.goals.store import GoalStore, GoalStoreError
+from booley.goals.test_run_goals import goal_selectors, names_test_runs
 from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.timefmt import utc_now_rfc3339
 from booley.targets.domain import TARGET_IDENTITY_PARAM
@@ -83,10 +84,20 @@ class GoalStateError(RuntimeError):
 
 
 def goal_criterion_params(goals: Iterable[GoalSpec]) -> dict[str, dict[str, Any]]:
-    """State params per Goal key: the Criterion params plus the bound Target."""
+    """State params per Goal key: the Criterion params plus the bound Target.
+
+    A Criterion names Tests, a Goal names Test Runs (ADR 0072): the Cycle
+    Count and coverage params a Flow reads carry the Test of each written
+    selector, and the Goal's frozen Test Runs decide which runs of it count.
+    """
     params: dict[str, dict[str, Any]] = {}
     for goal in goals:
         entry = dict(goal.params)
+        selectors = goal_selectors(goal) if names_test_runs(goal) else None
+        if goal.family is GoalFamily.CYCLE_COUNT and selectors:
+            entry["test"] = selectors[0].test
+        if goal.family is GoalFamily.COVERAGE and selectors:
+            entry["tests"] = list(dict.fromkeys(selector.test for selector in selectors))
         if goal.target is not None:
             entry.setdefault(TARGET_IDENTITY_PARAM, goal.target)
         params[goal.key] = entry

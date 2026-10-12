@@ -4,8 +4,8 @@ One :class:`TestRunInvocation` belongs to one invocation of the Simulation
 Flow. It holds the decisions that later steps of the same invocation must
 reuse rather than make again: the Test Runs resolved for each Target (a drawn
 seed is never drawn twice), the Test Runs each planned simulator process
-runs, the candidate Test Runs each Cycle Count baseline Target runs, and
-whether the invocation records Goal evidence at all.
+runs, the candidate Test Runs each Cycle Count baseline Target runs, and,
+inside Goal Mode, the Test Runs the Goals are frozen to.
 
 Domain values only: no CLI, process or Sandbox imports.
 """
@@ -16,6 +16,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from types import MappingProxyType
 
+from booley.flows.frozen_test_runs import FrozenTestRuns
 from booley.flows.target_test_plan import TargetTestPlan
 from booley.flows.test_runs import TestRun, TestVariantError, UnseededTargetError
 
@@ -23,40 +24,11 @@ __all__ = [
     "BaselineLink",
     "BaselineRefusal",
     "BaselineRuns",
-    "EvidenceGuard",
     "TestRunInvocation",
     "baseline_link_refusal",
     "baseline_refusal_key",
     "decide_baseline_runs",
 ]
-
-
-@dataclass(frozen=True)
-class EvidenceGuard:
-    """Whether an invocation's Test Runs let it record Goal evidence.
-
-    INTERIM (#1233 stage S2; removed by stage S3). Goals cannot name a Test
-    Variant or a seed until S3, so evidence still matches by bare Test name.
-    An invocation that contains any Test Run other than the default Test
-    Variant at the Target's Default Seed therefore records no evidence for
-    any simulation, Coverage or Cycle Count Goal. So does an invocation whose
-    Test Runs could not be resolved: nothing shows they are defaults.
-
-    Withholding evidence is not ``--diagnostic``: it grants none of that
-    flag's privileges.
-    """
-
-    #: ``"<target>: <test run>"`` for every Test Run that is not a default.
-    other_test_runs: tuple[str, ...] = ()
-    #: ``"<target>: <reason>"`` for every Target whose Test Runs did not resolve.
-    unresolved: tuple[str, ...] = ()
-    #: The bare Test names of the request's default Test Runs, in order.
-    tests: tuple[str, ...] = ()
-
-    @property
-    def withholds_evidence(self) -> bool:
-        """Whether the invocation records no Goal evidence."""
-        return bool(self.other_test_runs or self.unresolved)
 
 
 @dataclass(frozen=True)
@@ -216,4 +188,10 @@ class TestRunInvocation:
     #: Runs are resolved. Reports use it to tell a plain run from a seeded one.
     default_seeds: dict[str, int | None] = field(default_factory=dict)
     baseline: BaselineRuns = field(default_factory=BaselineRuns)
-    guard: EvidenceGuard = field(default_factory=EvidenceGuard)
+    #: The Test Runs the run's Goals are frozen to (ADR 0072), read once;
+    #: ``None`` outside Goal Mode.
+    frozen: FrozenTestRuns | None = None
+    frozen_read: bool = False
+    #: ``@xN`` selectors that matched no Goal, by Target: their seeds were
+    #: drawn for this invocation and their Test Runs are diagnostic.
+    fresh_seed_selectors: dict[str, tuple[str, ...]] = field(default_factory=dict)

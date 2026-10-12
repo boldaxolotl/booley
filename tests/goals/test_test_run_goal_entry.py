@@ -43,14 +43,14 @@ def test_entry_freezes_target_and_test_goals(layout: SimpleNamespace, monkeypatc
     record = enter_goals(layout, goals, tests_toml=VARIANTS)
 
     assert _names(record, SIM_KEY) == ["smoke@1", "stress+short@1"]
-    seeds = _names(record, "sim_run_top_7374726573732b736f616b_x")
+    seeds = _names(record, "sim_pass_top_run_7374726573732b736f616b_x")
     assert len(set(seeds)) == 3 and all(name.startswith("stress+soak@") for name in seeds)
     # ``stress`` and ``stress+short@1`` resolve to one Test Run: one Goal, both origins.
     merged = next(goal.spec for goal in record.goals if goal.spec.key.endswith("737472657373_d"))
     assert merged.origins == ("a", "b")
     assert _names(record, merged.key) == ["stress+short@1"]
     assert record.test_run_resolution("sim_pass_later").pending == (SUITE_SLOT,)
-    assert record.test_run_resolution("sim_run_top_6c61746572_d").pending == ("later",)
+    assert record.test_run_resolution("sim_pass_top_run_6c61746572_d").pending == ("later",)
     assert "lint_clean_top" not in record.test_run_resolutions
     # The stored record carries the exact frozen runs and loads back to the same value.
     stored = GoalStore(layout.control).load(record.id)

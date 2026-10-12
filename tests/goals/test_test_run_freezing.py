@@ -220,12 +220,12 @@ def test_freeze_goals_is_strict_at_entry_and_lenient_when_deferred() -> None:
         )
     ).goals
     goals = tuple(RecordedGoal(spec, 1) for spec in specs)
-    with pytest.raises(GoalResolutionError, match=r"Goal sim_run_tb_\w+_x: .*seed"):
+    with pytest.raises(GoalResolutionError, match=r"Goal sim_pass_tb_run_\w+_x: .*seed"):
         freeze_goals(goals, {}, plans, request(), strict=True)
     lenient = freeze_goals(goals, {}, plans, request("deferred"), strict=False)
-    assert sorted(lenient) == ["sim_pass_gone", "sim_run_tb_737472657373_x"]
+    assert sorted(lenient) == ["sim_pass_gone", "sim_pass_tb_run_737472657373_x"]
     assert lenient["sim_pass_gone"].pending == (SUITE_SLOT,)
-    assert lenient["sim_run_tb_737472657373_x"].pending == ("stress@x2",)
+    assert lenient["sim_pass_tb_run_737472657373_x"].pending == ("stress@x2",)
     with pytest.raises(TargetPlanError, match="cannot be resolved"):
         plans.plan("broken")
 

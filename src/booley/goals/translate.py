@@ -136,7 +136,21 @@ def translate_goals(
         goals.append(goal)
         if warning is not None:
             warnings.append(warning)
+    _require_distinct_keys(goals)
     return Translation(tuple(goals), tuple(warnings))
+
+
+def _require_distinct_keys(goals: Sequence[GoalSpec]) -> None:
+    """Refuse two different Goals under one key.
+
+    Goals merge by what they name, and a Test Goal's key is built from its
+    Target and selector; a Target whose own name has that shape could give a
+    Target Goal the key of another Target's Test Goal.
+    """
+    keys = [goal.key for goal in goals]
+    repeated = sorted({key for key in keys if keys.count(key) > 1})
+    if repeated:
+        raise GoalConflictError(f"different Goals share the key {', '.join(repeated)}")
 
 
 # ---------------------------------------------------------------------------

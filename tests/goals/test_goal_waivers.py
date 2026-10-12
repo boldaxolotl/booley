@@ -50,7 +50,7 @@ from booley.goals.store import GoalStore
 from booley.mcp.goal_freshness import GOAL_FRESHNESS_RESOLVERS
 from booley.mcp.goal_waivers import GoalWaiverService
 from tests.flows.sim.test_coverage_campaign import _POINT_ID, _valid_document
-from tests.goals.conftest import enter_goals, git
+from tests.goals.conftest import enter_goals, git, run_row
 from tests.goals.test_proposals import Crash, approve, interrupted_transaction
 
 KEY = "coverage_top"
@@ -88,7 +88,11 @@ def prepared(layout, anchor="rtl_repository", directory="approvals", *, covered=
     changes = state.set_criterion(
         KEY,
         False,
-        detail={"coverage_campaign_reference": persisted, "evaluation": evaluation_json(campaign)},
+        detail={
+            "coverage_campaign_reference": persisted,
+            "evaluation": evaluation_json(campaign),
+            "test_runs": [run_row()],
+        },
     )
     recorder.record_changes(
         state, changes, invocation_id="coverage", producer="simulation_campaign"
@@ -313,7 +317,7 @@ def test_recorder_never_stamps_removed_producer_waivers_as_fresh(layout, race):
     )
     if race == "before":
         remove_policy(root)
-    changes = state.set_criterion(KEY, True, detail=detail)
+    changes = state.set_criterion(KEY, True, detail={**detail, "test_runs": [run_row()]})
     recorder.record_changes(state, changes, invocation_id="policy-race", producer="sim")
     state.save()
     saved = load_goal_state(env.store, record).criteria[KEY]
