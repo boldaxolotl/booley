@@ -388,3 +388,16 @@ def test_mutation_snapshot_cleanup_on_provider_exception(tmp_path, monkeypatch):
     assert specs == [] and elapsed == 0 and error.exit_code == 2
     assert (repo / "tb/tb.sv").is_file()
     assert all(not root.exists() for root in snapshots)
+
+
+def test_result_json_windows_snapshot_paths_are_restored():
+    import json
+
+    from booley.specialists.specialist_workspace import WorkspaceSnapshot
+
+    snapshot = WorkspaceSnapshot(
+        real_root=Path(r"C:\live"), snapshot_root=Path(r"D:\temp\snapshot")
+    )
+    result = AgentResult(output=json.dumps({"file": str(snapshot.snapshot_root) + r"\rtl\dut.sv"}))
+    restored = restore_result_paths(result, snapshot)
+    assert json.loads(restored.output)["file"] == str(snapshot.real_root) + r"\rtl\dut.sv"
