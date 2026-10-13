@@ -895,21 +895,24 @@ and conflicts with `target`, `test`, explicit `mode`, `coverage`, `trace`, and `
 
 Structured campaign output reports `grade`, `complete`, aggregate
 `observation_counts`, and a maximum-32 `observations` preview. Every preview
-entry retains `test`, `execution`, nullable `failure_class` (`design` or
+entry retains nullable `test`, `execution`, nullable `failure_class` (`design` or
 `infrastructure`), `functional`, `assertions`, `assertion_count`, nullable
 `cycle_count`, and bounded `detail`; `observation_total` and
 `observations_truncated` disclose whether the preview is complete. The full
 `report.json.cycle_counts` mapping (see
 [FLOW_REPORTS.md](FLOW_REPORTS.md)) is dropped from inline output before the
 64 KiB structured budget check; read the numbered report for all counts.
-The independent observation axes mean:
+The independent observation axes, which `observation_counts` aggregates, mean:
 
 - `execution`: whether the simulator completed, timed out, was guard-aborted,
   or failed before producing trustworthy test evidence;
-- `failure_class`: whether a failure is attributed to the `design` or to the
-  `infrastructure`; `null` when the observation records no failure;
 - `functional`: the pass/fail/inconclusive test verdict;
 - `assertions`: assertion evidence independently observed for that test.
+
+`failure_class` is derived from those axes rather than independent of them. It
+says whether the outcome is attributed to the `infrastructure` or to the
+`design`, and is `null` only when the test passed: every other outcome that is
+not an infrastructure failure, including an inconclusive one, carries `design`.
 
 Resolve the `manifest` artifact reference, then inspect its authenticated
 terminal results for the complete durable record; the MCP preview is
