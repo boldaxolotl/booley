@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -122,7 +123,10 @@ def _populate_snapshot(real_root: Path, snapshot_root: Path) -> None:
 def _replace_path(value: Any, old: str, new: str) -> Any:
     """Replace workspace paths recursively in agent-facing data."""
     if isinstance(value, str):
-        return value.replace(old, new)
+        # Agent output can embed Windows paths inside serialized JSON.
+        escaped_old = json.dumps(old)[1:-1]
+        escaped_new = json.dumps(new)[1:-1]
+        return value.replace(escaped_old, escaped_new).replace(old, new)
     if isinstance(value, list):
         return [_replace_path(item, old, new) for item in value]
     if isinstance(value, dict):

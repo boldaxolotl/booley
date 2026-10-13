@@ -18,6 +18,11 @@ from booley.specialists.mutation_tester import (
     compute_source_size_budget,
 )
 
+# Import registers the real Goal worktree fixture for this module.
+from tests.goals.conftest import (
+    layout as goal_layout,  # noqa: F401 — pytest registers the imported fixture by name.
+)
+
 
 def _process(returncode: int, output: str = "") -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess([], returncode, stdout=output, stderr="")
@@ -205,3 +210,138 @@ def test_auto_budget_uses_source_size_without_hdl_features(tmp_path: Path) -> No
 def test_auto_budget_fails_when_scope_file_is_unreadable(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         compute_source_size_budget(["rtl/missing.sv"], tmp_path)
+
+
+# Reuse the real linked-worktree Goal fixture for publication, not an in-memory state.
+
+
+@pytest.mark.timeout(120)
+def test_mutation_concurrent_proposer_preserves_reviewer_goal_evidence(request, monkeypatch):
+    layout = request.getfixturevalue("goal_layout")
+    import json
+    from concurrent.futures import ThreadPoolExecutor
+    from contextlib import nullcontext
+    from dataclasses import replace
+    from threading import Event
+
+    from booley.core.models import AgentResult
+    from tests.goals.test_proposals import observations
+
+    mutation, reviewer = _concurrent_endpoints(layout, monkeypatch)
+    repo = layout.worktree
+    entered, release = Event(), Event()
+
+    def provider(params, *, on_event):
+        if params.label.startswith("mutation_creator"):
+            entered.set()
+            assert release.wait(20), "reviewer did not release proposer"
+            assert (repo / "tb/tb.sv").is_file()
+            return AgentResult(
+                output=json.dumps(
+                    {
+                        "mutations": [
+                            MutationSpec(1, "operator", "rtl.v", 1, "a + b", "a - b").to_dict()
+                        ]
+                    }
+                )
+            )
+        assert (repo / "tb/tb.sv").is_file()
+        assert (Path(params.cwd) / "tb/tb.sv").is_file()
+        return AgentResult(output=json.dumps({"issues": []}))
+
+    monkeypatch.setattr("booley.specialists.specialist._call_agent_sync", provider)
+    monkeypatch.setattr(
+        "booley.specialists.specialist.parent_death_watchdog", lambda *_: nullcontext()
+    )
+    plan = replace(_plan(repo, "rtl.v"), target="top", count=1, formula_count=1)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(mutation._proposal_round, "propose", 1)
+        try:
+            assert entered.wait(10), "proposer did not enter provider"
+            review_result = reviewer._run()
+            assert review_result.exit_code == 0, review_result.report_text
+            assert reviewer.evidence_discarded is None
+            assert any(
+                row["producer"] == "reviewer" and row["met"] for row in observations(layout)
+            )
+        finally:
+            release.set()
+        specs, elapsed, error = future.result(timeout=20)
+    assert error is None
+    _publish_concurrent_mutation(mutation, plan, specs, elapsed)
+    rows = observations(layout)
+    assert {row["producer"] for row in rows} == {"reviewer", "mutation_tester"}
+    assert all(row["met"] for row in rows)
+    assert (repo / "tb/tb.sv").is_file()
+
+
+def _concurrent_endpoints(layout, monkeypatch):
+    from booley.goals.flow_execution import GoalFlowExecution
+    from booley.specialists.reviewer import ReviewerSpecialist
+    from tests.goals.conftest import bind, enter_goals, git
+
+    repo = layout.worktree
+    (repo / "tb").mkdir()
+    (repo / "tb/tb.sv").write_text("module tb; endmodule\n")
+    (repo / "design.core").write_text(
+        "CAPI=2:\nname: ::fixture\nfilesets:\n"
+        "  rtl:\n    files: [rtl.v]\n    file_type: verilogSource\n"
+        "  tb:\n    files: [tb/tb.sv]\n    file_type: systemVerilogSource\n    tags: [tb]\n"
+        "targets:\n  sim: {filesets: [rtl, tb], toplevel: tb}\n"
+    )
+    git(repo, "add", "tb/tb.sv", "design.core")
+    git(repo, "commit", "-qm", "testbench")
+    layout.record = enter_goals(
+        layout,
+        [
+            {"family": "REVIEW", "review": "tb_quality", "verdict": "clean"},
+            {"family": "MUTATION", "target": "top", "scope": ["rtl.v"], "total": 1},
+        ],
+    )
+    (repo / "rtl.v").write_text("assign x = a + b;\n")
+    endpoints = []
+    for endpoint, arguments in [
+        (MutationTesterSpecialist(), ["--target", "top", "--scope", "rtl.v"]),
+        (ReviewerSpecialist(), ["--scope", "tb/tb.sv", "--category", "tb", "--focus", "quality"]),
+    ]:
+        adapter = GoalFlowExecution(bind(layout, endpoint.name))
+        endpoint.configure_flow_execution(adapter)
+        endpoint.parse_args(["--work-dir", str(repo), *arguments])
+        endpoint.args.state_file = adapter.state_file
+        endpoint.read_state()
+        monkeypatch.setattr(endpoint, "_resolve_model", lambda: "test")
+        endpoints.append(endpoint)
+    mutation, reviewer = endpoints
+    mutation._target_campaign = types.SimpleNamespace(
+        target="top", suite=types.SimpleNamespace(display_names=("suite",))
+    )
+    return mutation, reviewer
+
+
+def _publish_concurrent_mutation(mutation, plan, specs, elapsed):
+    from booley.specialists.mutation_tester import MutationSummary, RunResultInputs
+
+    variants, problem = mutation._resolve_proposals(specs, plan)
+    assert problem == "" and variants is not None
+    # The deliberately live sweep runs only after reviewer evidence is durable.
+    mutation._run_elab = lambda *_args: _process(0)
+    mutation._run_target_test_suite = lambda *_args, **_kwargs: [
+        MutationTestRun("suite", process=_process(1))
+    ]
+    results, tester_elapsed, infra = mutation._run_variant_sweep(plan, specs, variants)
+    assert infra == "" and results[0].detected
+    result = mutation._build_run_result(
+        plan,
+        RunResultInputs(
+            summary=MutationSummary(specs=specs, results=results),
+            count=1,
+            tester_elapsed=tester_elapsed,
+            creator_elapsed=elapsed,
+            reused_lock=False,
+            lock_created_at=None,
+            verification_rounds=1,
+            build_cached=False,
+            variants=variants,
+        ),
+    )
+    assert result.exit_code == 0 and mutation.evidence_discarded is None
