@@ -12,6 +12,7 @@ import yaml
 from fusesoc.vlnv import Vlnv
 
 from booley.dev_support.mutation_build_sources import (
+    _response_tokens,
     materialize_build_mutation,
     validate_mutation_closure,
 )
@@ -329,3 +330,24 @@ def test_competing_header_lookup_is_rejected_before_mutation(tmp_path, shadow_lo
     with pytest.raises(MutationVariantError, match="ambiguous private include lookup"):
         materialize_build_mutation(variants, 1, tmp_path, resolved)
     assert staged.read_bytes() == source.read_bytes()
+
+
+@pytest.mark.parametrize("windows", [False, True])
+def test_response_tokens_preserve_platform_path_semantics(windows):
+    text = (
+        r'"src\private core\dut.sv" +incdir+src\headers # comment'
+        if windows
+        else r'"src/private core/dut.sv" +incdir+src/headers # comment'
+    )
+    expected = (
+        [r"src\private core\dut.sv", r"+incdir+src\headers"]
+        if windows
+        else ["src/private core/dut.sv", "+incdir+src/headers"]
+    )
+    assert _response_tokens(text, windows=windows) == expected
+
+
+def test_posix_response_tokens_keep_escaped_space_contract():
+    assert _response_tokens(r"src/private\ core/dut.sv", windows=False) == [
+        "src/private core/dut.sv"
+    ]

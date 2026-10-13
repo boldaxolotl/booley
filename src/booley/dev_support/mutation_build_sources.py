@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
 from pathlib import Path
@@ -79,6 +80,15 @@ def _source_aliases(
     return aliases
 
 
+def _response_tokens(contents: str, *, windows: bool) -> list[str]:
+    """Preserve native Windows separators while honoring response-file quotes."""
+    lexer = shlex.shlex(contents, posix=True)
+    lexer.whitespace_split = True
+    if windows:
+        lexer.escape = ""
+    return list(lexer)
+
+
 def _compiler_inputs(root: Path) -> tuple[set[Path], set[Path]]:
     """Read Edalize response files, rejecting compiler search outside the build."""
     sources: set[Path] = set()
@@ -96,7 +106,7 @@ def _compiler_inputs(root: Path) -> tuple[set[Path], set[Path]]:
             "cannot prove compiler routing: no Edalize .scr/.vc response file"
         )
     for recipe in recipes:
-        for token in shlex.split(recipe.read_text(encoding="utf-8"), comments=True):
+        for token in _response_tokens(recipe.read_text(encoding="utf-8"), windows=os.name == "nt"):
             if token.startswith("+incdir+"):
                 includes.add(_private_path(root, token[len("+incdir+") :]).resolve())
             elif token.startswith("-I") and len(token) > 2:
