@@ -239,7 +239,7 @@ booley flow sim --target sim_soc --seed random            # a drawn seed for eve
 |---|---|
 | `--test <test run>` | Run the named Test Runs: `test`, `test+variant`, `test@seed`, `test+variant@seed`, or `test[+variant]@xN` for N drawn seeds. Repeat for more. See [Test Runs, Test Variants and seeds](#test-runs-test-variants-and-seeds). |
 | `--seed <N\|random>` | Use seed `N` (1..2147483647) for every selected Test Run, or `random` to draw one seed per Test Run. Cannot be combined with a `--test` that names a seed (`test@seed`, `test@xN`), with an elaboration mode, or with `--resume-from`. |
-| `--tests-file <path>` | Read exact test names from a file, one per line (blank lines and `#` comments ignored). Cannot be combined with `--test`. |
+| `--tests-file <path>` | Read Test Run selectors from a file, one per line (blank lines and `#` comments ignored). Cannot be combined with `--test`. |
 | `--mode <simulate\|elab-only\|elab-only-standalone>` | Run tests (default), or only elaborate (see [Elaboration checks](#elaboration-checks)). |
 | `--trace` | Capture a waveform. Use it to debug a failure, not for pass/fail checks. |
 | `--coverage` / `--cov` | Collect coverage (see [Coverage](#coverage)). |

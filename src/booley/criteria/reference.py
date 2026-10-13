@@ -233,9 +233,10 @@ def _cycle_count_params_reference(descriptors) -> list[str]:
     lines = [
         "**Per-test `CYCLE_COUNT`**",
         "",
-        "`cycle_count` Goals name the Target with `target` and the registered test with `test`; "
-        "put bounds in `thresholds`. All thresholds for that test must pass. Relative forms "
-        "compare the same Target/test at the Goal base commit.",
+        "`cycle_count` Goals name the Target with `target` and one Test Run with `test` "
+        "(`test`, `test+variant`, or either with `@seed`); put bounds in `thresholds`. "
+        "All thresholds for that Test Run must pass. Relative forms compare the same "
+        "Test Run of the same Target at the Goal base commit.",
         "",
         "```json",
         '{"family": "cycle_count", "target": "sim", "test": "smoke",',
