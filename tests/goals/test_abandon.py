@@ -307,7 +307,9 @@ def test_interrupted_abandon_retains_effects_when_pair_metadata_breaks(layout, t
     (record,) = _store(layout).list_records().records
     marker = paired / ".git"
     broken = b"gitdir: /nonexistent-paired-metadata\n"
+    # Replace Git's owned pointer: Windows hidden attributes can block truncation.
     marker.chmod(marker.stat().st_mode | stat.S_IWRITE)
+    marker.unlink()
     marker.write_bytes(broken)
     (layout.worktree / "rtl.v").write_bytes(b"retain user work\n")
     branch = git(layout.worktree, "symbolic-ref", "HEAD")

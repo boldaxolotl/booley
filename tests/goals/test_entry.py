@@ -749,7 +749,9 @@ def test_pair_breaking_during_entry_rolls_back_record_and_retains_effects(layout
 
     def break_pair(name):
         if name == "checked_out":
+            # Replace Git's owned pointer: Windows hidden attributes can block truncation.
             marker.chmod(marker.stat().st_mode | stat.S_IWRITE)
+            marker.unlink()
             marker.write_bytes(broken)
             raise RuntimeError("original entry failure")
 

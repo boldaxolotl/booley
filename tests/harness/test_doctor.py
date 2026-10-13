@@ -8316,7 +8316,9 @@ def test_goal_history_broken_pair_is_active_and_preserves_exclusion(tmp_path, ig
     )
     waivers = doctor.load_doctor_waivers(project)
     marker = project / ".git"
+    # Replace Git's owned pointer: Windows hidden attributes can block truncation.
     marker.chmod(marker.stat().st_mode | stat.S_IWRITE)
+    marker.unlink()
     marker.write_bytes(b"gitdir: /nonexistent-paired-metadata\n")
     reporter = doctor._Reporter.create(waivers)
     doctor._check_goal_history_ignored(root, project, reporter.pass_, reporter.warn_)

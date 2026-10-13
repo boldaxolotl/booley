@@ -693,7 +693,9 @@ def test_active_finish_refuses_broken_pair_without_changing_participants(layout,
     marker = paired / ".git"
     broken = b"gitdir: /nonexistent-paired-metadata\n"
     outer = git(layout.worktree, "rev-parse", "HEAD")
+    # Replace Git's owned pointer: Windows hidden attributes can block truncation.
     marker.chmod(marker.stat().st_mode | stat.S_IWRITE)
+    marker.unlink()
     marker.write_bytes(broken)
     with pytest.raises(LifecycleError, match="Paired Checkout is unavailable"):
         finish_goal(request(layout), environment(layout))
