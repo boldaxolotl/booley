@@ -2028,7 +2028,7 @@ What differs from an SV Target:
   show a bounded preview and an omitted count; the complete IDs remain in
   `cocotb_results.json` in the Test Run's work directory. Missing or malformed
   results retain their file/import diagnosis because no trustworthy IDs are
-  available. Legacy compact results that omitted IDs say that the names were
+  available. Older compact results that omitted IDs say that the names were
   not transported and point to the full artifact.
 
 ### Baking the cocotb stack into the image
