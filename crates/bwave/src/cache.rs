@@ -3806,6 +3806,11 @@ pub fn wave_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         );
     } else {
         // Async: need range-bounded decode, then collect tick set from results
+        if range_end_opt.is_some_and(|end| end < 0) {
+            let _ = writeln!(err, "# No data in range");
+            let _ = err.flush();
+            return;
+        }
         let raw_ticks = cfg.async_mode && cfg.time_str.is_some();
         let bound_tick = |value: i64| {
             let value = value.max(0) as u64;

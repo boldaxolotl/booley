@@ -3625,7 +3625,10 @@ fn test_time_token_phase_config_fields_and_boundaries() {
         Ok(3)
     );
     cache.ticks_to_ns = 0.0;
-    assert_eq!(resolve_time_token(&cache, &policy, &TimeToken::Nano(25)), Ok(3));
+    assert_eq!(
+        resolve_time_token(&cache, &policy, &TimeToken::Nano(25)),
+        Ok(3)
+    );
     cache.timescale_exponent = None;
     assert!(resolve_time_token(&cache, &policy, &TimeToken::Nano(25)).is_err());
     cache.clock_period_ticks = 0;
