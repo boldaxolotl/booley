@@ -217,6 +217,10 @@ def install_parent_death_guard() -> None:
     """
     import signal
 
+    # Read before arming: a parent that is PID 1 from the start (Booley as a
+    # container's first process) is alive, not a sign of reparenting.
+    parent_at_entry = os.getppid()
+
     def _on_parent_death(signum: int, _frame: Any) -> None:
         from booley.runtime.platform_paths import kill_process_tree
 
@@ -232,9 +236,9 @@ def install_parent_death_guard() -> None:
         return
     if not _set_pdeathsig(signal.SIGTERM):
         return
-    # The parent may already be gone (we lost the race between fork and prctl);
-    # the kernel would then never deliver anything, so check once by hand.
-    if os.getppid() == 1:
+    # The parent may have died between the read above and prctl; the kernel
+    # would then never deliver anything, so check once by hand.
+    if os.getppid() != parent_at_entry:
         _on_parent_death(signal.SIGTERM, None)
 
 

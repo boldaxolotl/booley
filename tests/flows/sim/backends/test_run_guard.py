@@ -625,6 +625,31 @@ def test_supervise_child_is_idempotent():
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="PDEATHSIG is Linux-only")
+def test_parent_death_guard_keeps_a_run_whose_parent_is_pid_1(monkeypatch):
+    """Booley as a container's first process is a live parent with PID 1."""
+    monkeypatch.setattr(rg.os, "getppid", lambda: 1)
+    monkeypatch.setattr(rg, "_set_pdeathsig", lambda _signal: True)
+    monkeypatch.setattr("signal.signal", lambda _signum, _handler: None)
+
+    rg.install_parent_death_guard()
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="PDEATHSIG is Linux-only")
+def test_parent_death_guard_exits_when_the_parent_changed_while_arming(monkeypatch):
+    """A parent lost between entry and prctl is caught by the one manual check."""
+    parents = iter([4242, 1])
+    monkeypatch.setattr(rg.os, "getppid", lambda: next(parents))
+    monkeypatch.setattr(rg, "_set_pdeathsig", lambda _signal: True)
+    monkeypatch.setattr("signal.signal", lambda _signum, _handler: None)
+    monkeypatch.setattr("booley.runtime.platform_paths.kill_process_tree", lambda _proc: None)
+
+    with pytest.raises(SystemExit) as exit_info:
+        rg.install_parent_death_guard()
+
+    assert exit_info.value.code == 143
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="PDEATHSIG is Linux-only")
 def test_parent_death_guard_kills_the_whole_tree(monkeypatch):
     """SIGTERM from the guard tears the registered children down, then exits."""
     import signal
