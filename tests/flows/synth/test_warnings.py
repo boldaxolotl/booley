@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from booley.flows.synth.warnings import parse_synth_diagnostics
 
 
@@ -113,18 +115,25 @@ def test_missing_final_check_is_incomplete_not_clean() -> None:
     assert diagnostics.warnings.total_warnings == 0
 
 
-def test_yosys_loop_is_structural_when_final_check_is_clean() -> None:
+def test_earlier_loop_is_advisory_when_final_check_is_clean() -> None:
     diagnostics = parse_synth_diagnostics(
         {
-            "yosys": "Warning: found logic loop in module top:\n    wire \\feedback\n",
+            "yosys": "Warning: found logic loop in module top:\n    cell $add$rtl.sv:7$1\n    wire \\feedback\n",
             "final_check": "Found and reported 0 problems.\n",
         }
     )
 
     assert diagnostics.structural.complete is True
-    assert diagnostics.structural.comb_loops == 1
+    assert diagnostics.structural.comb_loops == 0
     assert diagnostics.structural.multi_driven == 0
     assert diagnostics.warnings.by_category == {"combinational_loop": 1}
+    assert diagnostics.warnings.advisory_warnings == 1
+    representative = diagnostics.warnings.representatives[0]
+    assert "$add$rtl.sv:7$1" in representative.message
+    assert "\\feedback" in representative.message
+    assert (
+        "completed final netlist check reports no combinational loops" in representative.rationale
+    )
 
 
 def test_final_check_without_completion_marker_is_incomplete() -> None:
@@ -146,3 +155,39 @@ def test_informational_warning_summary_is_not_a_warning_record() -> None:
     )
 
     assert diagnostics.warnings.total_warnings == 0
+
+
+@pytest.mark.parametrize("final", [None, "", "Checking module top...\n"])
+def test_earlier_loop_without_completed_final_stays_structural(final):
+    sources = {"yosys": "Warning: found logic loop in module top:\n    wire \\feedback\n"}
+    if final is not None:
+        sources["final_check"] = final
+    diagnostics = parse_synth_diagnostics(sources)
+    assert not diagnostics.structural.complete
+    assert diagnostics.warnings.structural_warnings == 1
+    assert diagnostics.warnings.representatives[0].rationale is None
+
+
+@pytest.mark.parametrize("count", [0, 2])
+def test_earlier_repeated_loops_do_not_change_exact_final_count(count):
+    loop = "Warning: found logic loop in module top:\n    wire \\feedback\n"
+    diagnostics = parse_synth_diagnostics(
+        {
+            "yosys": loop * 20,
+            "final_check": loop * count + f"Found and reported {count} problems.\n",
+        }
+    )
+    assert diagnostics.structural.comb_loops == count
+    assert diagnostics.warnings.total_warnings == 20 + count
+    assert diagnostics.warnings.advisory_warnings == (20 if count == 0 else 0)
+
+
+def test_earlier_driver_clean_final_remains_inventory_only():
+    diagnostics = parse_synth_diagnostics(
+        {
+            "yosys": "Warning: multiple conflicting drivers for top.sig:\n",
+            "final_check": "Found and reported 0 problems.\n",
+        }
+    )
+    assert diagnostics.structural.multi_driven == 0
+    assert diagnostics.warnings.structural_warnings == 1

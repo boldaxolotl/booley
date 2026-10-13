@@ -2511,6 +2511,11 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
             lines.append(self._format_critical_line(tgt, cur))
         if cur.warning_summary.total_warnings:
             lines.append(self._format_warning_line(tgt, cur))
+            lines.extend(
+                f"[synth] {tgt}: WARNING -- {group.message} {group.rationale}"
+                for group in cur.warning_summary.representatives
+                if group.category == "combinational_loop" and group.disposition == "advisory"
+            )
         if cur.failure_output:
             lines.append(self._format_failure_output(tgt, cur))
         if cur.log_path:
