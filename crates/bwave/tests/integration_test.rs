@@ -3155,7 +3155,31 @@ fn test_time_token_exact_typed_destinations() {
         ],
     );
     assert_eq!(wave, tick_wave);
-    assert!(wave.contains("edge"), "{wave}");
+    assert!(wave.lines().any(|line| line == "      edge"), "{wave}");
+    assert!(wave.lines().any(|line| line == "time  1369"), "{wave}");
+    assert!(wave.lines().any(|line| line == "data     1"), "{wave}");
+    let two_markers = store.query(
+        "wave",
+        &[
+            "--async",
+            "-s",
+            "data",
+            "-t",
+            "1369600ps:1369700ps",
+            "--marker",
+            "edge",
+            "1369600ps",
+            "--marker",
+            "tail",
+            "1369700ps",
+        ],
+    );
+    for expected in ["      edge  tail", "time  1369  1369", "data     1     0"] {
+        assert!(
+            two_markers.lines().any(|line| line == expected),
+            "{two_markers}"
+        );
+    }
     let row = wave
         .lines()
         .find(|l| l.trim_start().starts_with("data"))
@@ -3186,6 +3210,83 @@ fn test_time_token_exact_cli_overflow() {
             assert_eq!(code, 2, "{token}: {err}");
             assert!(out.is_empty(), "{out}");
             assert!(!err.contains("panicked"), "{err}");
+        }
+    }
+}
+
+#[test]
+fn test_time_token_exact_numeric_wave_overflow() {
+    const CHILD: &str = "BWAVE_EXACT_NUMERIC_WAVE_CHILD";
+    const STORE: &str = "BWAVE_EXACT_NUMERIC_WAVE_STORE";
+    if let Ok(case) = std::env::var(CHILD) {
+        let cache = bwave::cache::ColumnCache::load_from_file(std::path::Path::new(
+            &std::env::var(STORE).unwrap(),
+        ))
+        .unwrap();
+        let (start, end) = match case.as_str() {
+            "start" => (i64::MAX, Some(1)),
+            "end" => (1, Some(i64::MAX)),
+            _ => (i64::MAX, Some(i64::MAX)),
+        };
+        bwave::cache::wave_from_cache(
+            &cache,
+            &bwave::ExtractConfig {
+                async_mode: true,
+                wave_mode: true,
+                time_min: start,
+                time_max: end,
+                ..Default::default()
+            },
+        );
+        return;
+    }
+    for scale in ["1ps", "1fs"] {
+        let store = ExactTimeStore::new(Some(scale), false, "#0\n0!\n#10000\n1!\n");
+        let large = i64::MAX;
+        for (range, endpoint) in [
+            (format!("{large}:"), "start"),
+            (format!("1:{large}"), "end"),
+            (format!("{large}:{large}"), "start"),
+        ] {
+            let (out, err, code) = store.run("wave", &["-s", "data", "-t", &range]);
+            assert_eq!(code, 2, "{scale} {range}: {err}");
+            assert!(
+                err.contains(&format!("cannot convert wave {endpoint}")),
+                "{err}"
+            );
+            assert!(out.is_empty(), "{out}");
+            assert!(!err.contains("panicked"), "{err}");
+        }
+        for (case, endpoint) in [("start", "start"), ("end", "end"), ("both", "start")] {
+            let mut child = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "test_time_token_exact_numeric_wave_overflow",
+                    "--nocapture",
+                ])
+                .env(CHILD, case)
+                .env(STORE, &store.1)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while child.try_wait().unwrap().is_none() {
+                if std::time::Instant::now() >= deadline {
+                    child.kill().unwrap();
+                    panic!("numeric wave overflow timeout");
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            let output = child.wait_with_output().unwrap();
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert_eq!(output.status.code(), Some(2), "{scale} {case}: {stderr}");
+            assert!(
+                stderr.contains(&format!("cannot convert wave {endpoint}")),
+                "{stderr}"
+            );
+            assert!(!stderr.contains("panicked"), "{stderr}");
+            assert!(!String::from_utf8_lossy(&output.stdout).contains("time  "));
         }
     }
 }

@@ -1990,7 +1990,9 @@ impl FstBuildHandler {
 
         let info = fst_writer::FstInfo {
             start_time: 0,
-            timescale_exponent: header.timescale_exponent.unwrap_or(-9),
+            timescale_exponent: header
+                .timescale_exponent
+                .unwrap_or_else(|| crate::parser::timescale_to_exponent(&header.timescale_str)),
             version: format!("bwave {}", env!("CARGO_PKG_VERSION")),
             date: String::new(),
             file_type: fst_writer::FstFileType::Verilog,
@@ -3108,6 +3110,26 @@ $enddefinitions $end\n";
             if exponent < -15 || exponent > 2 {
                 assert_eq!(cache.timescale_str, "1ns");
             }
+        }
+    }
+
+    #[test]
+    fn time_token_exact_synthetic_header_string_fallback() {
+        for (text, exponent) in [("1ps", -12), ("2ns", -9), ("10bad", -8), ("", -9)] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("fallback.fst");
+            let mut reader = std::io::BufReader::new(b"$scope module tb $end\n$var wire 1 ! data $end\n$upscope $end\n$enddefinitions $end\n#0\n0!\n#10\n1!\n".as_slice());
+            let mut header = crate::parser::parse_header(&mut reader);
+            header.timescale_exponent = None;
+            header.timescale_str = text.into();
+            let mut handler = FstBuildHandler::new(&header, None, &path).unwrap();
+            handler.parse_bytes(&mut reader, None).unwrap();
+            handler.finalize_and_write().unwrap();
+            assert_eq!(
+                load_fst(&path).unwrap().timescale_exponent,
+                Some(exponent),
+                "{text}"
+            );
         }
     }
 }

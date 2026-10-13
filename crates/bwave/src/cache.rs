@@ -3748,14 +3748,14 @@ pub fn wave_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
             }
         };
         let range_start_tick = bound_tick(range_start).unwrap_or_else(|error| {
-            eprintln!("ERROR: {error}");
+            eprintln!("ERROR: cannot convert wave start: {error}");
             std::process::exit(2);
         });
         let range_end_tick = range_end_opt
             .map(bound_tick)
             .transpose()
             .unwrap_or_else(|error| {
-                eprintln!("ERROR: {error}");
+                eprintln!("ERROR: cannot convert wave end: {error}");
                 std::process::exit(2);
             })
             .unwrap_or(cache.sim_end_tick);
@@ -4372,6 +4372,13 @@ $enddefinitions $end
                     ..Default::default()
                 },
             );
+            diff_from_cache(
+                &cache,
+                &ExtractConfig {
+                    diff_points: Some((9_999_999_999_999_999, 10_000_000_000_000_000)),
+                    ..Default::default()
+                },
+            );
             return;
         }
         let mut child = std::process::Command::new(std::env::current_exe().unwrap())
@@ -4405,5 +4412,11 @@ $enddefinitions $end
             "{text}"
         );
         assert!(text.contains("\"value\": \"1\""), "{text}");
+        assert!(
+            text.lines()
+                .any(|line| line.split_whitespace().collect::<Vec<_>>()
+                    == ["data", "@9999999999999999=0", "@10000000000000000=1"]),
+            "{text}"
+        );
     }
 }
