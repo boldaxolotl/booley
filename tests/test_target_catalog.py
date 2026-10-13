@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import textwrap
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -681,6 +682,19 @@ def test_catalog_restores_tb_tags_across_symlinks(
 ) -> None:
     root = tmp_path
     prefix, tb_decl = _author_alias_core(root, layout)
+    if layout == "recursive":
+        original_plan = fusesoc_registry.prepare_core_library_plan
+
+        def with_alias_library(project_root):
+            plan = original_plan(project_root)
+            return replace(
+                plan,
+                roots=(*plan.roots, root / "lib/self"),
+                ignored_dirs=(*plan.ignored_dirs, frozenset({str((root / "lib").resolve())})),
+            )
+
+        # Real duplicate-core discovery, independent of platform traversal order.
+        monkeypatch.setattr(fusesoc_registry, "prepare_core_library_plan", with_alias_library)
     stripped_calls = []
     if strip_tags:
         from fusesoc.capi2.core import CoreInterface as Core

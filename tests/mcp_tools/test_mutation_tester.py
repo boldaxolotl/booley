@@ -11,7 +11,7 @@ import json
 import os
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -1928,13 +1928,27 @@ def test_pristine_baseline_reports_missing_literal_run_cwd_before_elaboration(
 
 
 @pytest.mark.parametrize("layout", ["recursive", "declared"])
-def test_scope_accepts_canonical_rtl_through_symlink(tmp_path: Path, layout: str) -> None:
+def test_scope_accepts_canonical_rtl_through_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, layout: str
+) -> None:
     require_symlinks(tmp_path)
     _author_scope_core(tmp_path)
     if layout == "recursive":
         (tmp_path / "lib").mkdir()
         symlink_or_skip(tmp_path / "lib/self", "../", target_is_directory=True)
         expected = "lib/self/rtl/counter.sv"
+        original_plan = fusesoc_registry.prepare_core_library_plan
+
+        def with_alias_library(project_root):
+            plan = original_plan(project_root)
+            return replace(
+                plan,
+                roots=(*plan.roots, tmp_path / "lib/self"),
+                ignored_dirs=(*plan.ignored_dirs, frozenset({str((tmp_path / "lib").resolve())})),
+            )
+
+        # Real duplicate-core discovery, independent of platform traversal order.
+        monkeypatch.setattr(fusesoc_registry, "prepare_core_library_plan", with_alias_library)
     else:
         symlink_or_skip(tmp_path / "design", "rtl", target_is_directory=True)
         core = tmp_path / "design.core"
