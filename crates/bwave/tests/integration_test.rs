@@ -3271,6 +3271,30 @@ fn test_time_token_phase_async_cli_and_ranges() {
             assert_eq!(code, 0, "{err}");
             assert_eq!(out, expected);
         }
+        for command in ["signal", "wave", "stats"] {
+            let tick_range = if included { "5t:25t" } else { "25t:45t" };
+            let marker_tick = if included { "5t" } else { "25t" };
+            let mut args = vec![
+                command, bp, "--clock", "qa.clk", "--reset", "qa.rstn", "--async", "-t", "1c:3c",
+                "-s", "qa.data",
+            ];
+            if included {
+                args.push("--with-reset");
+            }
+            if command == "wave" {
+                args.extend(["--marker", "edge", "1c"]);
+            }
+            let (out, err, code) = run_bwave(&args);
+            assert_eq!(code, 0, "{command}: {err}");
+            args[8] = tick_range;
+            if command == "wave" {
+                *args.last_mut().unwrap() = marker_tick;
+            }
+            let (expected, err, code) = run_bwave(&args);
+            assert_eq!(code, 0, "{command}: {err}");
+            assert_eq!(out, expected, "async {command}, with_reset={included}");
+            assert!(!out.is_empty());
+        }
         let cycles = if included { "3:4" } else { "1:2" };
         for (command, typed) in ["signal", "wave", "stats"]
             .into_iter()
