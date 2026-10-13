@@ -2363,15 +2363,15 @@ fn test_time_token_explicit_cycle_suffix() {
 
 #[test]
 fn test_time_token_ns_in_sync_converts_to_cycle() {
-    // 50ns at 10ns/cycle (test_basic.vcd) = cycle 5
+    // First rise 5, reset deassert 15: 50ns belongs to counted cycle 4.
     let bwave = build_bwave("test_basic.vcd", "tok_ns_sync");
     let bp = bwave.to_string_lossy().to_string();
     let (stdout, _stderr, code) = run_bwave(&["value", &bp, "--at", "50ns"]);
     let _ = std::fs::remove_file(&bwave);
     assert_eq!(code, 0);
     assert!(
-        stdout.contains("# Snapshot at cycle 5"),
-        "50ns at 10ns/cyc should resolve to cycle 5; got:\n{}",
+        stdout.contains("# Snapshot at cycle 4"),
+        "50ns should resolve to counted cycle 4; got:\n{}",
         stdout
     );
 }
@@ -2983,4 +2983,367 @@ fn issue_1108_public_find_rejects_invalid_row_selector_without_panic() {
             );
         }
     }
+}
+
+#[test]
+fn test_time_token_phase_snapshot() {
+    let store = build_bwave("test_time_token_phase.vcd", "phase_snapshot");
+    let bp = store.to_str().unwrap();
+    for included in [false, true] {
+        for (token, cycle) in [
+            ("25t", if included { 3 } else { 1 }),
+            ("25ns", if included { 3 } else { 1 }),
+            ("29t", if included { 3 } else { 1 }),
+            ("35ns", if included { 4 } else { 2 }),
+            ("4t", 0),
+        ] {
+            let mut args = vec![
+                "value", bp, "--clock", "qa.clk", "--reset", "qa.rstn", "--at", token,
+            ];
+            if included {
+                args.push("--with-reset");
+            }
+            let (out, err, code) = run_bwave(&args);
+            assert_eq!(code, 0, "{err}");
+            assert!(
+                out.contains(&format!("# Snapshot at cycle {cycle}")),
+                "{token}: {out}"
+            );
+        }
+    }
+    std::fs::remove_file(store).unwrap();
+}
+
+#[test]
+fn test_time_token_phase_config_fields_and_boundaries() {
+    use bwave::{
+        cache::{resolve_time_token, ColumnCache},
+        format::TimeToken,
+        ExtractConfig,
+    };
+    let store = build_bwave("test_time_token_phase.vcd", "phase_config");
+    let mut cache = ColumnCache::load_from_file(&store).unwrap();
+    for included in [false, true] {
+        let c = if included { 3 } else { 1 };
+        let policy = ExtractConfig {
+            with_reset: included,
+            reset_pattern: Some("qa.rstn".into()),
+            ..Default::default()
+        };
+        for token in [
+            TimeToken::Tick(25),
+            TimeToken::Nano(25),
+            TimeToken::Pico(25000),
+        ] {
+            assert_eq!(resolve_time_token(&cache, &policy, &token), Ok(c));
+        }
+        for token in [TimeToken::Tick(-1), TimeToken::Nano(-1), TimeToken::Tick(4)] {
+            assert_eq!(resolve_time_token(&cache, &policy, &token), Ok(0));
+        }
+        assert_eq!(
+            resolve_time_token(&cache, &policy, &TimeToken::Cycle(-1)),
+            Ok(-1)
+        );
+        assert_eq!(
+            resolve_time_token(&cache, &policy, &TimeToken::Tick(18)),
+            Ok(if included { 2 } else { 0 })
+        );
+        let mut cfg = ExtractConfig {
+            time_str: Some("25ns:35t".into()),
+            at_str: Some("25t".into()),
+            diff_strs: Some(("35ns".into(), "25t".into())),
+            marker_tokens: vec![
+                ("a".into(), TimeToken::Tick(35)),
+                ("b".into(), TimeToken::Nano(35)),
+                ("a".into(), TimeToken::Nano(25)),
+            ],
+            ..policy.clone()
+        };
+        cfg.resolve_time_tokens(&cache).unwrap();
+        assert_eq!(
+            (cfg.time_min, cfg.time_max, cfg.at_time, cfg.diff_points),
+            (c, Some(c + 1), Some(c), Some((c, c + 1)))
+        );
+        assert_eq!(cfg.markers, vec![("b".into(), c + 1), ("a".into(), c)]);
+        for range in ["29t:25t", "29ns:25ns"] {
+            cfg.time_str = Some(range.into());
+            cfg.resolve_time_tokens(&cache).unwrap();
+            assert_eq!((cfg.time_min, cfg.time_max), (c, Some(c)));
+        }
+        cfg.time_str = Some("35t:25t".into());
+        assert!(cfg.resolve_time_tokens(&cache).is_err());
+        for (range, lo, hi) in [
+            ("25t", c, Some(c)),
+            ("25ns:", c, None),
+            (":35t", c, Some(c + 1)),
+        ] {
+            cfg.time_str = Some(range.into());
+            cfg.resolve_time_tokens(&cache).unwrap();
+            assert_eq!((cfg.time_min, cfg.time_max), (lo, hi));
+        }
+        let async_policy = ExtractConfig {
+            async_mode: true,
+            ..policy.clone()
+        };
+        for n in [0, 1, 3] {
+            let expected = if n == 0 {
+                if included {
+                    0
+                } else {
+                    18
+                }
+            } else {
+                if included {
+                    5 + (n - 1) * 10
+                } else {
+                    25 + (n - 1) * 10
+                }
+            };
+            assert_eq!(
+                resolve_time_token(&cache, &async_policy, &TimeToken::Cycle(n)),
+                Ok(expected)
+            );
+        }
+        let mut async_cfg = ExtractConfig {
+            time_str: Some("1c:3c".into()),
+            at_str: Some("0c".into()),
+            diff_strs: Some(("3c".into(), "1c".into())),
+            marker_tokens: vec![("edge".into(), TimeToken::Cycle(1))],
+            ..async_policy.clone()
+        };
+        async_cfg.resolve_time_tokens(&cache).unwrap();
+        let base = if included { 5 } else { 25 };
+        assert_eq!(
+            (
+                async_cfg.time_min,
+                async_cfg.time_max,
+                async_cfg.at_time,
+                async_cfg.diff_points
+            ),
+            (
+                base,
+                Some(base + 20),
+                Some(if included { 0 } else { 18 }),
+                Some((base, base + 20))
+            )
+        );
+        assert_eq!(async_cfg.markers, vec![("edge".into(), base)]);
+        assert!(resolve_time_token(&cache, &async_policy, &TimeToken::Cycle(-1)).is_err());
+        assert!(resolve_time_token(&cache, &async_policy, &TimeToken::Cycle(i64::MAX)).is_err());
+        assert_eq!(
+            resolve_time_token(&cache, &async_policy, &TimeToken::Nano(-1)),
+            Ok(-1)
+        );
+        assert_eq!(
+            resolve_time_token(&cache, &async_policy, &TimeToken::Tick(25)),
+            Ok(25)
+        );
+        let mut numeric = ExtractConfig {
+            time_min: 7,
+            time_max: Some(9),
+            at_time: Some(8),
+            diff_points: Some((7, 9)),
+            ..policy
+        };
+        numeric.resolve_time_tokens(&cache).unwrap();
+        assert_eq!(
+            (
+                numeric.time_min,
+                numeric.time_max,
+                numeric.at_time,
+                numeric.diff_points
+            ),
+            (7, Some(9), Some(8), Some((7, 9)))
+        );
+    }
+    let policy = ExtractConfig {
+        with_reset: true,
+        ..Default::default()
+    };
+    cache.first_rise_tick = 5;
+    cache.clock_period_ticks = 10;
+    cache.ticks_to_ns = 1.0;
+    for token in [TimeToken::Micro(1), TimeToken::Milli(1)] {
+        let tick = token.resolve_to_tick(1.0).unwrap();
+        assert_eq!(
+            resolve_time_token(&cache, &policy, &token),
+            Ok((tick - 5) / 10 + 1)
+        );
+    }
+    let async_policy = ExtractConfig {
+        async_mode: true,
+        ..policy.clone()
+    };
+    cache.clock_period_ticks = i64::MAX as u64;
+    assert!(resolve_time_token(&cache, &async_policy, &TimeToken::Cycle(2)).is_err());
+    cache.clock_period_ticks = u64::MAX;
+    assert!(resolve_time_token(&cache, &async_policy, &TimeToken::Cycle(3)).is_err());
+    cache.clock_period_ticks = 10;
+    let no_reset = ExtractConfig {
+        reset_pattern: Some("absent".into()),
+        ..Default::default()
+    };
+    assert_eq!(
+        resolve_time_token(&cache, &no_reset, &TimeToken::Tick(25)),
+        Ok(3)
+    );
+    cache.ticks_to_ns = 0.0;
+    assert!(resolve_time_token(&cache, &policy, &TimeToken::Nano(25)).is_err());
+    cache.clock_period_ticks = 0;
+    assert!(resolve_time_token(&cache, &policy, &TimeToken::Tick(25)).is_err());
+    assert_eq!(
+        resolve_time_token(&cache, &policy, &TimeToken::Cycle(3)),
+        Ok(3)
+    );
+    std::fs::remove_file(store).unwrap();
+}
+
+#[test]
+fn test_time_token_phase_async_cli_and_ranges() {
+    let store = build_bwave("test_time_token_phase.vcd", "phase_async");
+    let bp = store.to_str().unwrap();
+    for included in [false, true] {
+        for (cycle, tick) in [
+            ("0c", if included { "0t" } else { "18t" }),
+            ("1c", if included { "5t" } else { "25t" }),
+            ("3c", if included { "25t" } else { "45t" }),
+        ] {
+            let mut a = vec![
+                "value", bp, "--clock", "qa.clk", "--reset", "qa.rstn", "--async", "--at", cycle,
+                "--format", "json",
+            ];
+            if included {
+                a.push("--with-reset");
+            }
+            let (out, err, code) = run_bwave(&a);
+            assert_eq!(code, 0, "{err}");
+            a[8] = tick;
+            let (expected, err, code) = run_bwave(&a);
+            assert_eq!(code, 0, "{err}");
+            assert_eq!(out, expected);
+        }
+        let typed = "25ns:35t";
+        let cycles = if included { "3:4" } else { "1:2" };
+        for command in ["signal", "wave", "stats"] {
+            let mut a = vec![
+                command, bp, "--clock", "qa.clk", "--reset", "qa.rstn", "-t", typed, "-s",
+                "qa.data",
+            ];
+            if included {
+                a.push("--with-reset");
+            }
+            let (out, err, code) = run_bwave(&a);
+            assert_eq!(code, 0, "{command}: {err}");
+            a[7] = cycles;
+            let (expected, err, code) = run_bwave(&a);
+            assert_eq!(code, 0, "{err}");
+            assert_eq!(out, expected, "{command}");
+        }
+    }
+    let (_, _, code) = run_bwave(&["value", bp, "--async", "--at=-1c"]);
+    assert_eq!(code, 2);
+    let (_, _, code) = run_bwave(&["value", bp, "--async", "--at", "9223372036854775807c"]);
+    assert_eq!(code, 2);
+    std::fs::remove_file(store).unwrap();
+}
+
+#[test]
+fn test_time_token_phase_consumers_round_trip() {
+    let store = build_bwave("test_time_token_phase.vcd", "phase_consumers");
+    let bp = store.to_str().unwrap();
+    for included in [false, true] {
+        let c = if included { 3 } else { 1 };
+        let cycle_range = if included { "3:4" } else { "1:2" };
+        let mut common = vec!["--clock", "qa.clk", "--reset", "qa.rstn"];
+        if included {
+            common.push("--with-reset");
+        }
+        for token in ["25ns", "25t", "25000ps"] {
+            let mut args = vec!["value", bp, "--at", token, "--format", "json"];
+            args.extend(&common);
+            let (out, err, code) = run_bwave(&args);
+            assert_eq!(code, 0, "{err}");
+            let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+            assert_eq!(v["data"]["at"], c);
+            assert_eq!(v["data"]["target_tick"], 25);
+            assert!(v["data"]["signals"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|s| s["name"] == "data" && s["value"] == "3"));
+        }
+        for command in ["find", "sample", "distance"] {
+            let mut args = vec![command, bp, "qa.data", "change", "-t", "25ns:35t"];
+            args.extend(&common);
+            if command == "sample" {
+                args.extend(["-s", "qa.data"]);
+            }
+            let (out, err, code) = run_bwave(&args);
+            assert_eq!(code, 0, "{err}");
+            args[5] = cycle_range;
+            let (expected, err, code) = run_bwave(&args);
+            assert_eq!(code, 0, "{err}");
+            assert_eq!(out, expected);
+            assert!(!out.is_empty(), "{command}");
+            if command == "sample" {
+                assert_eq!(out, format!("{c} data 3\n{} data 4\n", c + 1));
+            }
+        }
+        let mut args = vec!["stats", bp, "-t", "25ns:35t", "--format", "json"];
+        args.extend(&common);
+        let (out, err, code) = run_bwave(&args);
+        assert_eq!(code, 0, "{err}");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["data"]["total_ticks"], 10);
+        let mut args = vec![
+            "wave", bp, "-t", "25ns:35t", "-s", "qa.data", "--marker", "here", "35t", "--marker",
+            "here", "25ns",
+        ];
+        args.extend(&common);
+        let (out, err, code) = run_bwave(&args);
+        assert_eq!(code, 0, "{err}");
+        assert_eq!(
+            out,
+            format!("       here   \ncycle     {c}  {}\n data     3  4\n", c + 1)
+        );
+        for async_mode in [false, true] {
+            let mut a = vec!["diff", bp, "35t", "25ns", "-s", "qa.data"];
+            a.extend(&common);
+            if async_mode {
+                a.push("--async");
+            }
+            let (out, err, code) = run_bwave(&a);
+            assert_eq!(code, 0, "{err}");
+            a[2] = if async_mode {
+                if included {
+                    "4c"
+                } else {
+                    "2c"
+                }
+            } else {
+                if included {
+                    "4"
+                } else {
+                    "2"
+                }
+            };
+            a[3] = if async_mode {
+                if included {
+                    "3c"
+                } else {
+                    "1c"
+                }
+            } else {
+                if included {
+                    "3"
+                } else {
+                    "1"
+                }
+            };
+            let (expected, err, code) = run_bwave(&a);
+            assert_eq!(code, 0, "{err}");
+            assert_eq!(out, expected);
+        }
+    }
+    std::fs::remove_file(store).unwrap();
 }
