@@ -2166,7 +2166,10 @@ def _owned_empty_parameter_arguments(
 
     if handle.eda_tool in {"verible", "veriblelint"}:
         return ()
-    parameters = inspect_parameter_values(handle)
+    try:
+        parameters = inspect_parameter_values(handle)
+    except FuseSocError as exc:
+        raise TargetResolutionError(str(exc)) from exc
     names = tuple(
         name
         for name, metadata in parameters.items()

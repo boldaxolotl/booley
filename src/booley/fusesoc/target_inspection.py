@@ -188,7 +188,12 @@ def inspect_parameter_values(handle: TargetHandle) -> dict[str, Any]:
         core_file=handle.core_file,
         flags=flags,
     )
-    return _inspect_parameters(cores, flags)
+    try:
+        return _inspect_parameters(cores, flags)
+    except (OSError, SyntaxError, RuntimeError, ValueError) as exc:
+        raise fusesoc_registry.FuseSocError(
+            f"could not inspect parameters for Target {handle.identity!r}: {exc}"
+        ) from exc
 
 
 _TARGET_CONDITION_RE = re.compile(r"\btarget_(?P<name>[A-Za-z0-9_.-]+)\b")

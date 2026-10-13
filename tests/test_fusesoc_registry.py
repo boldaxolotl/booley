@@ -2769,3 +2769,27 @@ def test_owned_setup_parameters_do_not_require_toplevel(tmp_path, value):
         catalog.inspect(handle)
     command = setup_command_for_handle(handle, build_root=tmp_path / "build")
     assert ("--NAME=" in command) is (value == "")
+
+
+def test_undeclared_parameter_setup_failure_has_resolution_context(tmp_path):
+    from booley.fusesoc.fusesoc_registry import (
+        FuseSocError,
+        TargetResolutionError,
+        setup_command_for_handle,
+    )
+    from booley.targets.catalog import TargetCatalog
+
+    (tmp_path / "proof.core").write_text("""CAPI=2:
+name: proof:string:badparameter:1
+targets:
+  lint:
+    default_tool: verilator
+    parameters: [TYPO]
+""")
+    handle = TargetCatalog.build(tmp_path).select("lint")
+    with pytest.raises(
+        TargetResolutionError, match=r"badparameter.*Parameter 'TYPO'.*not found"
+    ) as caught:
+        setup_command_for_handle(handle, build_root=tmp_path / "build")
+    assert isinstance(caught.value.__cause__, FuseSocError)
+    assert isinstance(caught.value.__cause__.__cause__, SyntaxError)
