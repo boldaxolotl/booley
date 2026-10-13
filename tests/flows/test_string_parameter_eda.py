@@ -911,6 +911,7 @@ def test_actual_legacy_default_tool_receiver(tmp_path, tool, value):
     root = resolved.build_root
     suffix = ".vc" if tool == "verilator" else ".scr"
     response = root / (resolved.configuration_name + suffix)
+    normalize_parameter_records(resolved)
     before = response.read_bytes()
     normalize_parameter_records(resolved)
     assert response.read_bytes() == before

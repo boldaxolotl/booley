@@ -2626,10 +2626,8 @@ targets:
 def test_parameter_normalization_errors_have_target_resolution_context(tmp_path, value):
     from types import SimpleNamespace
 
-    from booley.fusesoc.fusesoc_registry import (
-        TargetResolutionError,
-        _normalize_resolved_parameters,
-    )
+    from booley.flows.parameter_transport import normalize_resolved_parameters
+    from booley.fusesoc.fusesoc_registry import TargetResolutionError
 
     resolved = SimpleNamespace(
         name="sim",
@@ -2639,7 +2637,7 @@ def test_parameter_normalization_errors_have_target_resolution_context(tmp_path,
         parameters={"NAME": {"datatype": "str", "paramtype": "vlogparam", "default": value}},
     )
     with pytest.raises(TargetResolutionError, match=r"Target 'sim'.*parameter transport"):
-        _normalize_resolved_parameters(resolved)
+        normalize_resolved_parameters(resolved)
 
 
 @pytest.mark.parametrize(

@@ -391,7 +391,7 @@ def test_backend_fanout_survives_transport_into_native_tcl(tmp_path):
 
     args = _build_parser().parse_args(["configure", "-t", "top", "--max-fanout", "16777217"])
     _, _, openroad = _resolve_ppa_settings(args)
-    timing = _resolve_syn_timing(args, openroad)
+    timing = _resolve_syn_timing(args, openroad, project_root=tmp_path)
     assert timing.max_fanout == 16777217
     assert "set ::booley_fanout::configured {16777217}" in policy_tcl(tmp_path, timing.max_fanout)
 

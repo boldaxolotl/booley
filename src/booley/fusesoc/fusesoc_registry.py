@@ -2342,19 +2342,7 @@ def _run_setup_command(
 
     edam_path = _find_edam(build_root, target)
     resolved = parse_edam(edam_path, target=target, vlnv=vlnv)
-    _normalize_resolved_parameters(resolved)
     return _restore_tb_tags(resolved, project_root=project_root, source_ref=source_ref)
-
-
-def _normalize_resolved_parameters(resolved: ResolvedTarget) -> None:
-    from booley.flows.parameter_transport import normalize_parameter_records
-
-    try:
-        normalize_parameter_records(resolved)
-    except ValueError as exc:
-        raise TargetResolutionError(
-            f"Target {resolved.name!r} {resolved.configured_eda_tool!r} parameter transport: {exc}"
-        ) from exc
 
 
 def resolve_target_handle(

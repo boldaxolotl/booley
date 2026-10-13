@@ -14,6 +14,7 @@ from booley.flows.target_parameters import (
     sv_byte_string_literal,
     vlogparam_specs,
 )
+from booley.fusesoc.fusesoc_registry import ResolvedTarget, TargetResolutionError
 
 
 def _record_pairs(
@@ -104,3 +105,13 @@ def normalize_parameter_records(resolved: Any) -> None:
     for path, text in contents.items():
         if _read_records(path) != text:
             _publish_records(path, text)
+
+
+def normalize_resolved_parameters(resolved: ResolvedTarget) -> None:
+    """Apply receiver transport at the Flow boundary with Target diagnostics."""
+    try:
+        normalize_parameter_records(resolved)
+    except ValueError as exc:
+        raise TargetResolutionError(
+            f"Target {resolved.name!r} {resolved.configured_eda_tool!r} parameter transport: {exc}"
+        ) from exc

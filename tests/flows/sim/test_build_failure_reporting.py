@@ -648,7 +648,6 @@ def test_escaped_build_metadata_stays_within_canonical_detail_budget(
 
 def test_parameter_record_failure_is_a_preparation_diagnostic(tmp_path, monkeypatch):
     from booley.flows.sim.build import SimulationBuildPreparationError, prepare_simulation_build
-    from booley.fusesoc.fusesoc_registry import _normalize_resolved_parameters
 
     resolved = SimpleNamespace(
         name="sim",
@@ -663,10 +662,11 @@ def test_parameter_record_failure_is_a_preparation_diagnostic(tmp_path, monkeypa
         lambda *_args, **_kwargs: (tmp_path, SimpleNamespace(), ()),
     )
 
-    def fail_resolution(*_args, **_kwargs):
-        _normalize_resolved_parameters(resolved)
-
-    monkeypatch.setattr(build_module.fusesoc_registry, "resolve_target_handle", fail_resolution)
+    monkeypatch.setattr(
+        build_module.fusesoc_registry,
+        "resolve_target_handle",
+        lambda *_args, **_kwargs: resolved,
+    )
     monkeypatch.setattr(
         build_module,
         "_verilator_cache_environment",
