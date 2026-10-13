@@ -1538,7 +1538,7 @@ pub fn find_value_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     };
     let effective_start = reset_deassert_tick.unwrap_or(0);
 
-    // Compute display names from watched patterns (matches Extractor's display_name)
+    // Strip the common scope prefix from matched names for display.
     let watched = cache.match_signals(&cfg.patterns);
     let all_names: Vec<String> = watched
         .iter()
@@ -1950,7 +1950,7 @@ pub fn sample_at_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     );
 
     // Read trigger signal transitions and identify trigger ticks.
-    // For level mode in sync: check every cycle, like the Extractor does.
+    // For level mode in sync: check the held value at every clock-grid tick.
     let mut trigger_ticks: Vec<u64> = Vec::new();
 
     if level_mode && sync_mode && cache.clock_period_ticks > 0 && cb > 0 {
@@ -1967,7 +1967,7 @@ pub fn sample_at_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         }
     } else if level_mode && !sync_mode {
         // Async level mode: trigger at every watched-signal-change timestamp
-        // where the trigger value matches (mirrors Extractor's timestamp callback)
+        // where the settled trigger value matches.
         let mut change_ticks: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
         for &w_idx in &watched_indices {
             for (tick, _) in &cache.read_transitions(w_idx) {
@@ -3245,9 +3245,8 @@ pub(crate) fn tick_to_cycle(tick: u64, cycle_base_tick: u64, clock_period: u64) 
     (tick - cycle_base_tick) / clock_period + 1
 }
 
-/// Compute the tick of the first rising edge at or after effective_start.
-/// Matches Extractor's cycle counting which starts at the first on_rising_edge
-/// after reset deassert.
+/// Compute the first clock-grid tick at or after effective_start.
+/// Cycle 1 starts there; later cycles advance by the detected clock period.
 fn cycle_base(cache: &ColumnCache, effective_start: u64) -> u64 {
     if cache.clock_period_ticks == 0 {
         return effective_start;
@@ -3280,7 +3279,7 @@ fn value_at_tick(transitions: &[(u64, String)], tick: u64) -> String {
     }
 }
 
-/// Find the best reset signal index, matching Extractor's depth-based selection.
+/// Find the best reset signal index.
 /// With explicit pattern: glob match. Without: contains("rst") on leaf name.
 /// Among matches, prefer shallowest scope depth, then lexicographic.
 fn find_best_reset_idx(cache: &ColumnCache, cfg: &ExtractConfig) -> Option<usize> {
