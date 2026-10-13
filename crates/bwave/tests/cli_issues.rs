@@ -3554,7 +3554,14 @@ fn issue_1423_find_library_child() {
         json_format: std::env::var("BWAVE_1423_TEXT").is_err(),
         explicit_selectors: true,
         patterns: vec!["tb.a".into(), "missing".into()],
-        find_pattern: Some(if case == "early" { "no_target" } else { "tb.a" }.into()),
+        find_pattern: Some(
+            if case.starts_with("early") {
+                "no_target"
+            } else {
+                "tb.a"
+            }
+            .into(),
+        ),
         find_value: Some("rising".into()),
         ..Default::default()
     };
@@ -3579,6 +3586,19 @@ fn issue_1423_find_library_child() {
     }
     if case == "empty" {
         cfg.patterns = vec!["missing".into()];
+    }
+    if case == "all-matching" {
+        cfg.patterns = vec!["tb.a".into(), "tb.b".into()];
+    }
+    if case == "array" {
+        cfg.patterns = vec!["tb.a".into(), "mem[56]".into(), "mem[57]".into()];
+    }
+    if case == "helper-virtual" {
+        cfg.patterns = vec!["helper".into()];
+    }
+    if case.starts_with("early-malformed") {
+        cfg.patterns = vec!["[oops".into()];
+        cfg.explicit_selectors = case.ends_with("explicit");
     }
     if case.starts_with("stats") {
         bwave::cache::stats_from_cache(&cache, &cfg);
@@ -3776,5 +3796,65 @@ fn issue_1423_data_and_total_miss_policies() {
             .unwrap()
             .iter()
             .any(|w| w.as_str().unwrap().contains("filter dropped")));
+    }
+}
+
+#[test]
+fn issue_1423_find_json_edges() {
+    let (_dir, fst) = issue_1423_store();
+    for case in [
+        "all-matching",
+        "array",
+        "empty",
+        "helper-virtual",
+        "early-malformed",
+        "early-malformed-explicit",
+    ] {
+        let out = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "issue_1423_find_library_child", "--nocapture"])
+            .env("BWAVE_1423_STORE", &fst)
+            .env("BWAVE_1423_CASE", case)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8(out.stdout).unwrap();
+        let stderr = String::from_utf8(out.stderr).unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(if case.starts_with("early") { 2 } else { 0 }),
+            "{case}: {stderr}"
+        );
+        if case == "early-malformed-explicit" {
+            assert!(!stdout.contains('{'), "{stdout}");
+            assert!(stderr.contains("invalid glob pattern '[oops'"), "{stderr}");
+            continue;
+        }
+        let begin = stdout
+            .find('{')
+            .unwrap_or_else(|| panic!("{case}: missing envelope: {stdout}; {stderr}"));
+        let json = serde_json::Deserializer::from_str(&stdout[begin..])
+            .into_iter::<serde_json::Value>()
+            .next()
+            .unwrap()
+            .unwrap();
+        if case == "array" {
+            let warnings = json["warnings"].as_array().unwrap();
+            assert_eq!(warnings.len(), 2);
+            for (warning, index) in warnings.iter().zip([56, 57]) {
+                let warning = warning.as_str().unwrap();
+                assert!(warning
+                    .starts_with(&format!("no signals match 'mem[{index}]' — filter dropped")));
+                assert!(warning.contains("indexed element:"));
+            }
+        } else if case == "early-malformed" {
+            assert_eq!(
+                json["warnings"],
+                serde_json::json!(["no signals match pattern 'no_target'"])
+            );
+            assert!(stderr.contains("ERROR: no signals match pattern(s) 'no_target'"));
+            assert!(!stderr.contains("invalid glob"));
+        } else {
+            assert_eq!(json["warnings"], serde_json::json!([]), "{case}: {json}");
+            assert_eq!(json["data"]["count"], 1, "{case}: {json}");
+        }
     }
 }

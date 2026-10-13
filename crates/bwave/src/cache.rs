@@ -549,17 +549,31 @@ fn record_limit(cfg: &ExtractConfig, count: usize) -> Vec<String> {
     }
 }
 
+fn unmatched_pattern_message(pattern: &str) -> String {
+    format!("no signals match '{}' — filter dropped", pattern)
+}
+
+fn array_element_hint(pattern: &str) -> String {
+    format!("(indexed element: simulators do not dump unpacked array/memory elements by default — probe the element into a wire, or check `bwave list -s '*{}*'` for what was dumped)", array_base_name(pattern))
+}
+
 fn unmatched_pattern_warnings(patterns: &[String], hit: &[bool], all_empty: bool) -> Vec<String> {
     if all_empty {
         return Vec::new();
     }
-    patterns.iter().zip(hit).filter(|(_, hit)| !**hit).map(|(pat, _)| {
-        let mut warning = format!("no signals match '{}' — filter dropped", pat);
-        if looks_like_array_element(pat) {
-            warning.push_str(&format!(" (indexed element: simulators do not dump unpacked array/memory elements by default — probe the element into a wire, or check `bwave list -s '*{}*'` for what was dumped)", array_base_name(pat)));
-        }
-        warning
-    }).collect()
+    patterns
+        .iter()
+        .zip(hit)
+        .filter(|(_, hit)| !**hit)
+        .map(|(pat, _)| {
+            let mut warning = unmatched_pattern_message(pat);
+            if looks_like_array_element(pat) {
+                warning.push(' ');
+                warning.push_str(&array_element_hint(pat));
+            }
+            warning
+        })
+        .collect()
 }
 
 /// Warn (once per query) about `-s` patterns that matched no signal.
@@ -585,19 +599,9 @@ fn report_unmatched_patterns(patterns: &[String], hit: &[bool], all_empty: bool)
     // would otherwise print 16 near-identical hint blocks.
     let mut hinted_bases = std::collections::HashSet::new();
     for pat in &misses {
-        let _ = writeln!(
-            err,
-            "# WARNING: no signals match '{}' — filter dropped",
-            pat
-        );
+        let _ = writeln!(err, "# WARNING: {}", unmatched_pattern_message(pat));
         if looks_like_array_element(pat) && hinted_bases.insert(array_base_name(pat)) {
-            let _ = writeln!(
-                err,
-                "#   (indexed element: simulators do not dump unpacked \
-                 array/memory elements by default — probe the element into a \
-                 wire, or check `bwave list -s '*{}*'` for what was dumped)",
-                array_base_name(pat)
-            );
+            let _ = writeln!(err, "#   {}", array_element_hint(pat));
         }
     }
     let _ = writeln!(
@@ -1471,17 +1475,21 @@ pub fn find_value_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         .filter(|ve| match_signal(&ve.name, &find_matchers))
         .collect();
 
-    let mut json_warnings = if cfg.json_format {
-        let virtual_names: Vec<String> = resolve_virtuals(cache, cfg)
-            .iter()
-            .map(|v| v.name.clone())
-            .collect();
-        cache
-            .select_signals_with_names(&cfg.patterns, &virtual_names, false)
-            .warnings
-    } else {
-        Vec::new()
-    };
+    // A missing target historically emits its error envelope before validating
+    // watched selectors unless query_config already validated explicit selectors.
+    let target_empty = target_indices.is_empty() && virtual_matches.is_empty();
+    let mut json_warnings =
+        if cfg.json_format && (!target_empty || compile_patterns(&cfg.patterns).is_ok()) {
+            let virtual_names: Vec<String> = resolve_virtuals(cache, cfg)
+                .iter()
+                .map(|v| v.name.clone())
+                .collect();
+            cache
+                .select_signals_with_names(&cfg.patterns, &virtual_names, false)
+                .warnings
+        } else {
+            Vec::new()
+        };
 
     if target_indices.is_empty() && virtual_matches.is_empty() {
         if cfg.json_format {
