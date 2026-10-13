@@ -61,7 +61,9 @@ Packaged release history starts at 0.2.7. For older changes, see
   resolves these Goals to exact Test Runs at entry and freezes them, so later
   `tests.toml` edits to defaults cannot change what a Goal requires. Seeds of
   a multi-seed Goal can pass over several runs and Simulation Campaigns. A
-  failed Test Run stays failed until the code changes. Adding such a Goal,
+  failed Test Run stays failed until the code changes. A coverage Goal is
+  decided by its coverage floors alone, whether or not the Test Runs that
+  measured it passed. Adding such a Goal,
   pinning a seed or changing N needs human approval. `goal_status`, the
   Dashboard and the Review Package show each Goal's frozen Test Runs, and
   failures come with rerun commands.

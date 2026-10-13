@@ -94,9 +94,11 @@ Default Seed.
   runs. A failure stays until the code changes: do not rerun a failed seed
   hoping for a pass. Reproduce it with the rerun command `goal_status`
   prints, then fix the cause.
-- A Cycle Count Goal is measured by a run of its frozen Test Run. A coverage
-  Goal is measured by one `coverage=true` run of exactly its frozen Test
-  Runs.
+- A Cycle Count Goal is measured by a run of its frozen Test Run, which must
+  pass. A coverage Goal is measured by one `coverage=true` run of exactly its
+  frozen Test Runs and is decided by its coverage floors alone: it can be met
+  while one of those Test Runs fails. Report such a failure to the human; do
+  not present a met coverage Goal as proof that its Test Runs pass.
 - Never edit `tests.toml` to make a frozen Test Run easier: changing or
   removing its Variant leaves the Goal unmet (`goal-test-run-changed`,
   `goal-test-run-missing`) until the human approves a retarget.

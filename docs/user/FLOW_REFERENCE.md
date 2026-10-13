@@ -586,7 +586,9 @@ and testbench improvements. The verdict card prints the exact
 - **Gated** (Goal Mode with a `COVERAGE:{target}` Goal): Booley also checks
   the thresholds. Only a persisted `pass` satisfies
   the Criterion. A Goal remains unmet until strict evidence passes; see
-  [Coverage waivers at review](#coverage-waivers-at-review).
+  [Coverage waivers at review](#coverage-waivers-at-review). The thresholds
+  alone decide the Goal: a Test Run that fails its checks does not make it
+  unmet, as long as the run still wrote its coverage data.
 - **Raw numbers** (`--no-waivers`): applies no approved waivers. With a
   Coverage Criterion it needs `--diagnostic`; otherwise Booley exits 2 before
   anything builds. The thresholds are then evaluated on raw numbers, and no

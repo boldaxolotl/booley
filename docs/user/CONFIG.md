@@ -2469,7 +2469,8 @@ Each `min_pct` is a finite non-boolean number in `(0, 100]`. Thresholds combine
 with AND and use exact rational arithmetic; displayed rounding does not decide
 truth. Zero eligible points blocks evaluation. Only RTL-closure points enter
 denominators; testbench, generated, foreign, FSM, and covergroup records remain
-unscored. Simulation verdicts do not change coverage threshold truth.
+unscored. Simulation verdicts do not change coverage threshold truth, and a
+failed Test Run does not make a coverage Goal unmet.
 
 #### Approved coverage waivers
 

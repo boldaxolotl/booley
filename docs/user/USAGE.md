@@ -404,7 +404,7 @@ Relative comparisons report an **observed Cycle Count change**. When declared wo
 A **Test Run** is one Test Variant simulated with one seed, written
 `test[+variant][@seed]`
 ([reference](FLOW_REFERENCE.md#test-runs-test-variants-and-seeds)). Simulation,
-Cycle Count and coverage Goals are judged by Test Runs, and each can name them
+Cycle Count and coverage Goals require exact Test Runs, and each can name them
 with a selector:
 
 ```json
@@ -471,9 +471,20 @@ A simulation Goal is met when every frozen Test Run is `passed`. They do not
 have to pass in one invocation: 20 seeds can pass over several runs and
 Simulation Campaigns, including after an interruption, and a run of a few
 named Test Runs adds their outcomes without disturbing the others. A Cycle
-Count Goal takes its measurement from a run of its frozen Test Run. A
-coverage Goal takes its measurement from one `--coverage` run that ran exactly
-its frozen Test Runs, because coverage is not merged across runs.
+Count Goal takes its measurement from a run of its frozen Test Run, and that
+Test Run must be `passed`.
+
+A coverage Goal is decided by its coverage floors alone. It takes its
+measurement from one `--coverage` run that ran exactly its frozen Test Runs,
+because coverage is not merged across runs. Whether those Test Runs passed
+does not matter to it: when the floors are met the Goal is met, even if a
+Test Run failed in that run or in any other. `goal_status` shows the outcomes
+of the measuring run under the Goal, with a rerun command for each failure.
+Add a simulation Goal for the same Test Runs when they must also pass. A run
+that does not measure the Goal, such as a plain simulation, leaves a
+measurement at the same file contents as it was. A failing Test Run that ends
+before the simulator writes its coverage data makes collection incomplete, so
+that run measures nothing and the Goal stays unmet.
 
 If a frozen Test Run's Test or Test Variant is removed or skipped, or its
 declared arguments or environment change, the Goal stays unmet until you

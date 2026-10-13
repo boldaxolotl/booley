@@ -504,7 +504,10 @@ Simulation, Cycle Count and coverage Goals require exact Test Runs that Goal
 Mode freezes at entry
 ([Goals that name Test Runs](https://github.com/boldaxolotl/Booley/blob/main/docs/user/USAGE.md#goals-that-name-test-runs)).
 `goal_status` shows each Goal's frozen Test Runs with their outcomes, and one
-of these reasons when the Goal is unmet:
+of these reasons when the Goal is unmet. A coverage Goal is decided by its
+coverage floors alone, so it never shows `goal-test-run-incomplete`,
+`goal-test-run-failed` or `goal-campaign-unaccounted`; it can be met while
+`goal_status` lists a failed Test Run under it.
 
 | Reason | Meaning | What to do |
 |---|---|---|
@@ -538,10 +541,11 @@ Inside Goal Mode, Booley registers each Simulation Campaign before its first
 Test Run starts: one `booley.goal-campaign/v1` document per campaign under
 `logs/acceptance/campaigns/` of the Goal Record. When a campaign is cancelled
 or killed, the next Flow run or status read reads the results it finished and
-adds them to the Goals' Test Run outcomes; a failure it saw counts. Do not
-edit or delete these documents. One that cannot be read gives every Goal that
-names Test Runs the reason `goal-campaign-unaccounted`, and Booley moves it to
-`quarantine/` beside the others when you approve a Goal change.
+adds them to the Test Run outcomes of simulation and Cycle Count Goals; a
+failure it saw counts. Do not edit or delete these documents. One that cannot
+be read gives every simulation and Cycle Count Goal the reason
+`goal-campaign-unaccounted`, and Booley moves it to `quarantine/` beside the
+others when you approve a Goal change.
 
 The Review Package lists the Test Runs that were frozen after entry and every
 Simulation Campaign whose results were never fully accounted for.

@@ -202,3 +202,14 @@ of 2026-10-11 unless it names another date.
   the ones that failed, so the result cannot pass unnoticed. Recording
   failures from diagnostic runs was considered and rejected: `--diagnostic`
   stays the one mode that never changes Goal state.
+- **A coverage Goal is decided by its coverage floors alone** (decided
+  2026-10-13). "A failure of a matching Test Run is never cancelled by a
+  later pass" holds for simulation and Cycle Count Goals. A failed Test Run
+  is a simulation concern: a coverage Goal is met when one coverage run of
+  exactly its frozen Test Runs reaches the floors, whether or not those runs
+  passed, in that run or in any other. Its Test Run outcomes are those of the
+  measuring run and are shown for information. A run that does not measure
+  the Goal never changes a measurement at the same file contents, and
+  Simulation Campaign accounting leaves coverage Goals out. The stricter
+  rule, unmet while any frozen run is failed, was implemented first and
+  reversed.
