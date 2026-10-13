@@ -179,6 +179,7 @@ def synthesis_recipe_snapshot(
     return {
         "schema": 5 if synth_mode.runs_openroad else 4,
         "flow": "synth",
+        "parameter_transport_revision": 1,
         "target": target,
         "vlnv": resolved.vlnv,
         "toplevel": resolved.toplevel,

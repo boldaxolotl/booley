@@ -1012,3 +1012,21 @@ def test_1095_false_pass_uses_offending_frontend_log(tmp_path, mode):
     assert outcome.stage == "sv2v"
     assert outcome.design_diagnostic == "ERROR: " + diagnostic
     assert "clean yosys" not in outcome.stage_log
+
+
+@pytest.mark.parametrize("mode", ["logical", "physical"])
+def test_structural_script_keeps_complete_frontend_assignment_commands(tmp_path, mode):
+    from booley.flows.target_parameters import ParameterValue
+
+    spec = dataclasses.replace(
+        _spec(tmp_path, mode=mode), params={"NAME": ParameterValue("str", "a; b"), "WIDTH": "8"}
+    )
+    build = _build_dir(tmp_path)
+    syn_make.configure_synthesis(spec, build)
+    script = (build / "synth.ys").read_text()
+    assert "-set NAME 32'h613b2062 -set WIDTH 8" in script
+    # Legacy no-metadata expression transport also retains literal semicolon-space.
+    syn_make._write_yosys_script(dataclasses.replace(spec, params={"NAME": '"a; b"'}), build)
+    assert any(
+        '-set NAME "a; b" dut' in line for line in (build / "synth.ys").read_text().splitlines()
+    )

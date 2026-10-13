@@ -109,7 +109,7 @@ from ..run_evidence import (
 )
 from ..source_fingerprint import compute_source_fingerprint
 from ..target_parameters import vlogdefine_args as _vlogdefine_args
-from ..target_parameters import vlogparam_args as _vlogparam_args
+from ..target_parameters import vlogparam_args, vlogparam_specs
 from .implementation_report import (
     build_synth_implementation_report,
 )
@@ -124,6 +124,8 @@ from .recipe import (
     synthesis_recipe_snapshot,
     synthesis_recipe_snapshot_fingerprint,
 )
+
+_vlogparam_args = vlogparam_args
 
 logger = logging.getLogger(__name__)
 
@@ -1137,8 +1139,10 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
         defines = _vlogdefine_args(resolved.parameters)
         for define in defines:
             cmd.extend(["-d", define])
-        for assignment in _vlogparam_args(resolved.parameters):
-            cmd.extend(["-p", assignment])
+        for name, parameter in vlogparam_specs(resolved.parameters).items():
+            cmd.extend(["-p", f"{name}={parameter.value}"])
+            if parameter.is_string:
+                cmd.extend(["--param-datatype", f"{name}={parameter.datatype}"])
         # Warn early when the target looks aimed at simulation (testbench top or
         # SIMULATION define) — otherwise it fails deep inside Yosys.
         for warning in _synth_target_warnings(top, defines):

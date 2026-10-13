@@ -58,6 +58,7 @@ from booley.flows.plan import (
     normalize_plan_path,
     stable_unit_id,
 )
+from booley.flows.target_parameters import vlogparam_specs
 from booley.fusesoc import fusesoc_registry
 from booley.runtime import job_slots
 from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
@@ -65,7 +66,7 @@ from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import utc_now_rfc3339
 from booley.targets.domain import TargetHandle
 from booley.targets.flow_names import config_section
-from booley.targets.parameter_integrity import validate_top_parameter_intent, vlogparam_values
+from booley.targets.parameter_integrity import validate_top_parameter_intent
 
 from .. import artifacts, run_evidence
 from .. import edam as edam_layer
@@ -107,6 +108,7 @@ from ..run_evidence import (
 )
 from .backends.vivado import cache as fpga_cache
 from .backends.vivado import edam as fpga_edam
+from .backends.vivado.edam import validate_vivado_parameter_types
 from .backends.vivado.metrics import (
     FpgaMetrics,
     _delta_pct,
@@ -561,6 +563,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         work_dir = Path(self.args.work_dir)
         resolved = self._resolve_fpga_target(target, build_root=build_root)
         validate_top_parameter_intent(resolved, flow="fpga")
+        validate_vivado_parameter_types(vlogparam_specs(resolved.parameters))
         part = self._resolve_part(resolved.flow_options)
         xdc_files = tuple(self._resolve_xdc_files(resolved, target))
         top = str(resolved.toplevel or "")
@@ -590,7 +593,7 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
             v_files=tuple(v_files),
             include_dirs=tuple(include_dirs),
             defines=tuple(_unique_strings(_vlogdefine_args(resolved.parameters))),
-            vlogparams=vlogparam_values(resolved.parameters),
+            vlogparams=vlogparam_specs(resolved.parameters),
             out_of_context=out_of_context,
             ppa_profile=ppa_profile,
             recipe_snapshot=snapshot,

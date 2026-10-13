@@ -1231,3 +1231,25 @@ def test_1095_text_scan_preserves_path_adapter(tmp_path, text):
 
     (tmp_path / "yosys.log").write_text(text)
     assert syn_core.scan_synth_text(text) == syn_core.scan_synth_logs(tmp_path)
+
+
+def test_declared_string_receiver_and_numeric_arguments_stay_distinct(tmp_path):
+    from booley.flows.synth.backends.yosys import core as syn_core
+    from booley.flows.target_parameters import ParameterValue
+
+    parameters = {"NAME": ParameterValue("str", 'a" b\\c; d'), "N": "12", "B": "1", "R": "1.25"}
+    slang = syn_core._slang_read_command([tmp_path / "top.sv"], "top", [], [], parameters)
+    assert "-G N=12 -G B=1 -G R=1.25" in slang
+    assert 'NAME="' in slang
+    commands = syn_core._rtl_frontend_commands(
+        [tmp_path / "top.v"],
+        "top",
+        frontend="sv2v",
+        inc_dirs=[],
+        defines=[],
+        params=parameters,
+        slang_options=[],
+    )
+    assert "-set N 12 -set B 1 -set R 1.25" in commands[1]
+    raw = parameters["NAME"].value.encode()
+    assert f"-set NAME {8 * len(raw)}'h{raw.hex()}" in commands[1]

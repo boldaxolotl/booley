@@ -8,6 +8,7 @@ boundary. This module does not execute EDA tools itself.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import math
 import shutil
 import sys
@@ -26,6 +27,7 @@ from booley.flows.synth.backends.yosys.core import (  # Core synthesis functions
 )
 from booley.flows.synth.mode import SYNTH_MODE_CHOICES, SynthMode
 from booley.flows.synth.timing import StaTimingConfig
+from booley.flows.target_parameters import ParameterValue
 from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.runtime.shared_infra import (
     check_paths as _check_paths,
@@ -95,7 +97,7 @@ def _resolve_inc_dirs(args: argparse.Namespace, root: Path | None = None) -> lis
 def _resolve_syn_workdir(
     args: argparse.Namespace,
     design_name: str,
-    params: dict[str, str],
+    params: dict[str, str | ParameterValue],
     *,
     project_root: Path | None = None,
 ) -> Path:
@@ -103,7 +105,12 @@ def _resolve_syn_workdir(
     result_root = _synth_result_root(project_root)
     if args.workdir:
         return result_root / args.workdir
-    suffix = "_".join(f"{k}{v}" for k, v in params.items()) if params else ""
+    suffix = "_".join(
+        f"{k}{hashlib.sha256((v.datatype + chr(0) + v.value).encode()).hexdigest()[:16]}"
+        if isinstance(v, ParameterValue)
+        else f"{k}{v}"
+        for k, v in params.items()
+    )
     dir_name = f"standalone.{design_name}" + (f".{suffix}" if suffix else "")
     return result_root / dir_name
 
@@ -275,7 +282,7 @@ def resolve_spec(
         sources=sources,
         inc_dirs=inc_dirs,
         defines=tuple(args.define),
-        params=parse_params(args.param),
+        params=parse_params(args.param, getattr(args, "param_datatype", [])),
         liberty=liberty,
         liberty_found=liberty_found,
         flatten=args.flatten,
@@ -422,6 +429,7 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="NAME=VALUE",
         help="Set top-level parameter (e.g. -p OP_W=32 -p DEPTH=4)",
     )
+    parser.add_argument("--param-datatype", action="append", default=[], help=argparse.SUPPRESS)
     parser.add_argument(
         "--abc-delay-ps",
         "--tdelay",
