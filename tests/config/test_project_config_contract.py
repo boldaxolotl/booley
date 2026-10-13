@@ -5,13 +5,17 @@ from pathlib import Path
 
 import pytest
 
+from booley.config import project_config
 from booley.config.project_config import (
     DEFAULT_TEST_SELECT,
+    TESTS_SECTION_KEYS,
+    load_test_configuration,
     normalize_configs_toml,
     normalize_tests_toml,
     project_name,
     render_test_selector,
 )
+from booley.config.tests_toml_rules import TEST_NAME_RULES
 
 
 def _write_toml(work_dir: Path, body: str) -> None:
@@ -137,6 +141,154 @@ class TestNormalizeTestsToml:
             normalize_tests_toml({"lite": {"tests": [1, 2]}})
 
 
+class TestTestsTomlNameRules:
+    """Test names obey the Test Run name rules (ADR 0072)."""
+
+    def test_valid_file_with_every_key_loads_unchanged(self):
+        raw = {
+            "test_lists": {"smoke": ["reset", "slow-first", "tb/basic.v2"]},
+            "sim": {
+                "tests": ["reset", "basic", "Default", "x5"],
+                "skip": ["basic"],
+                "select": "+test={name}",
+                "env": {"FLAVOR": "small"},
+            },
+            "sim_fast": {"test_list": "smoke"},
+            "lib:ip:port#sim": {"tests": ["reset"]},
+            "sim_empty": {},
+        }
+        assert normalize_tests_toml(raw) == {
+            "sim": raw["sim"],
+            "sim_fast": {"tests": ["reset", "slow-first", "tb/basic.v2"]},
+            "lib:ip:port#sim": {"tests": ["reset"]},
+            "sim_empty": {},
+        }
+
+    @pytest.mark.parametrize(
+        ("name", "reason"),
+        [
+            ("", "it is empty"),
+            ("my test", "it contains whitespace"),
+            ("smoke+fast", "it contains '+'"),
+            ("smoke@1", "it contains '@'"),
+            ("-foo", "it starts with '-'"),
+            ("<default>", "it contains '<'"),
+            ("it's", "single quote"),
+            ('say"hi', "double quote"),
+            ("a\\b", "backslash"),
+            ("bell\x07", "control character"),
+            ("default", "reserved"),
+        ],
+    )
+    @pytest.mark.parametrize("key", ["tests", "skip"])
+    def test_rejects_invalid_test_name(self, key: str, name: str, reason: str):
+        with pytest.raises(ValueError) as excinfo:
+            normalize_tests_toml({"sim": {key: ["reset", name]}})
+        message = str(excinfo.value)
+        assert message.startswith(f"tests.toml [sim].{key}: Test name ")
+        assert reason in message
+        assert message.endswith(f"Rule: {TEST_NAME_RULES}")
+
+    def test_rejects_invalid_name_in_shared_test_list(self):
+        # An unreferenced list is refused too: the file states a Test name.
+        with pytest.raises(ValueError) as excinfo:
+            normalize_tests_toml({"test_lists": {"nightly": ["soak@7"]}, "sim": {}})
+        message = str(excinfo.value)
+        assert message.startswith("tests.toml [test_lists].nightly: Test name 'soak@7'")
+        assert "'@'" in message
+
+    @pytest.mark.parametrize("key", ["tests", "skip"])
+    def test_rejects_duplicate_test_in_one_target(self, key: str):
+        section = {"tests": ["reset", "basic"], key: ["reset", "basic", "reset"]}
+        with pytest.raises(ValueError) as excinfo:
+            normalize_tests_toml({"sim": section})
+        assert str(excinfo.value) == (
+            f"tests.toml [sim].{key} names Test 'reset' more than once; each "
+            "Test name must be unique within a Target"
+        )
+
+    def test_duplicate_from_a_shared_list_names_the_list_not_a_tests_key(self):
+        # The section has no `tests` key: the duplicate is written in the list.
+        with pytest.raises(ValueError) as excinfo:
+            normalize_tests_toml({"test_lists": {"dup": ["a", "a"]}, "sim": {"test_list": "dup"}})
+        message = str(excinfo.value)
+        assert message == (
+            "tests.toml [sim].test_list = 'dup' ([test_lists].dup) names Test 'a' "
+            "more than once; each Test name must be unique within a Target"
+        )
+        assert "[sim].tests" not in message
+
+    def test_a_test_may_be_both_registered_and_skipped(self):
+        raw = {"sim": {"tests": ["a", "b"], "skip": ["b"]}}
+        assert normalize_tests_toml(raw) == raw
+
+    def test_same_test_name_in_two_targets_is_allowed(self):
+        raw = {"sim_a": {"tests": ["reset"]}, "sim_b": {"tests": ["reset"]}}
+        assert normalize_tests_toml(raw) == raw
+
+    def test_explicit_checkout_read_path_applies_the_rules(self, tmp_path: Path):
+        project = tmp_path / ".booley_project"
+        project.mkdir()
+        (project / "booley.toml").write_text('[project]\nname = "demo"\n', encoding="utf-8")
+        (project / "tests.toml").write_text('[sim]\ntests = ["default"]\n', encoding="utf-8")
+        with pytest.raises(ValueError, match=r"tests\.toml \[sim\]\.tests: .*reserved"):
+            load_test_configuration(tmp_path)
+
+    def test_active_project_read_path_applies_the_rules(self, tmp_path: Path, monkeypatch):
+        project = tmp_path / ".booley_project"
+        project.mkdir()
+        (project / "booley.toml").write_text('[project]\nname = "demo"\n', encoding="utf-8")
+        (project / "tests.toml").write_text('[sim]\ntests = ["a+b"]\n', encoding="utf-8")
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project))
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(project_config, "_CONFIG_CACHE", None)
+        reset_cache()
+        try:
+            with pytest.raises(ValueError, match=r"tests\.toml \[sim\]\.tests: .*'\+'"):
+                _ = project_config.TEST_NAMES
+        finally:
+            reset_cache()
+
+
+class TestTestsTomlClosedKeySet:
+    """A Target section holds only keys the Simulation Flow applies."""
+
+    def test_section_keys_are_exactly_the_documented_set(self):
+        assert TESTS_SECTION_KEYS == ("tests", "test_list", "skip", "select", "env")
+
+    @pytest.mark.parametrize(
+        ("key", "value"),
+        [
+            ("variants", {"stress": {"default": "short", "short": ["+iters=1000"]}}),
+            ("seed", "+seed={seed}"),
+            ("default_seed", 7),
+            ("test", ["reset"]),
+            ("Tests", ["reset"]),
+            ("timeout", 30),
+        ],
+    )
+    def test_rejects_unknown_section_key(self, key: str, value: object):
+        with pytest.raises(ValueError) as excinfo:
+            normalize_tests_toml({"sim": {"tests": ["reset", "stress"], key: value}})
+        assert str(excinfo.value) == (
+            f"tests.toml [sim] has unknown key {key!r}; a Target section holds "
+            "only: tests, test_list, skip, select, env"
+        )
+
+    def test_unknown_key_names_the_qualified_target_section(self):
+        with pytest.raises(ValueError, match=r"tests\.toml \[lib:ip:port#sim\] has unknown key"):
+            normalize_tests_toml({"lib:ip:port#sim": {"plusargs": ["+a"]}})
+
+    def test_legacy_configs_toml_keeps_free_form_sections(self):
+        raw = {
+            "test_lists": {"any": ["a+b", "default"]},
+            "default": {"defines": [], "test_list": "any", "tb_top": "tb"},
+        }
+        assert normalize_configs_toml(raw) == {
+            "default": {"defines": [], "tb_top": "tb", "tests": ["a+b", "default"]},
+        }
+
+
 class TestSelectTemplateValidation:
     """`select` must be exactly one well-formed option token (decision 16)."""
 
@@ -212,6 +364,23 @@ class TestEnvTableValidation:
     def test_rejects_non_identifier_name(self):
         with pytest.raises(ValueError, match="not a valid environment"):
             normalize_tests_toml({"k": {"env": {"MY-VAR": "x"}}})
+
+    @pytest.mark.parametrize("name", ["X\n", "FLAVOR\n", "\nX"])
+    def test_rejects_name_with_a_newline(self, name: str):
+        # Regression: `$` with `.match()` accepted a trailing newline.
+        with pytest.raises(ValueError) as excinfo:
+            normalize_tests_toml({"k": {"env": {name: "x"}}})
+        assert str(excinfo.value) == (
+            f"tests.toml [k].env key {name!r} is not a valid environment variable "
+            "name ([A-Za-z_][A-Za-z0-9_]*)"
+        )
+
+    def test_non_string_value_message_is_unchanged(self):
+        with pytest.raises(ValueError) as excinfo:
+            normalize_tests_toml({"k": {"env": {"WIDTH": 32}}})
+        assert str(excinfo.value) == (
+            "tests.toml [k].env.WIDTH must be a string — quote the value (got int)"
+        )
 
 
 from booley.runtime.project_dir import reset_cache
