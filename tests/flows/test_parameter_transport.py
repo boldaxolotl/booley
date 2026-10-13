@@ -28,7 +28,7 @@ def test_normalization_is_idempotent_and_preserves_other_records(
     value = 'a" b\\c; d'
     path = tmp_path / f"top.{suffix}"
     numeric = "-GWIDTH=12\n+define+MACRO=raw token\nsource.sv\n"
-    path.write_text(numeric + prefix + quote + value + quote + "\n")
+    path.write_bytes((numeric + prefix + quote + value + quote + "\n").encode("utf-8"))
     resolved = target(tmp_path, tool, value)
     normalize_parameter_records(resolved)
     normalized = path.read_bytes()
@@ -85,6 +85,7 @@ def test_failed_publication_preserves_original_bytes_and_retry(tmp_path, monkeyp
     original = b'-GNAME=\\"MAC\\"\r\n'
     path.write_bytes(original)
     path.chmod(0o640)
+    original_mode = path.stat().st_mode
     resolved = target(tmp_path, "verilator", "MAC")
     replace = Path.replace
 
@@ -96,11 +97,12 @@ def test_failed_publication_preserves_original_bytes_and_retry(tmp_path, monkeyp
         with pytest.raises(OSError, match="interrupted publication"):
             normalize_parameter_records(resolved)
     assert path.read_bytes() == original
+    assert path.stat().st_mode == original_mode
     assert list(tmp_path.iterdir()) == [path]
     assert Path.replace is replace
     normalize_parameter_records(resolved)
     assert b"24'h4d4143" in path.read_bytes()
-    assert path.stat().st_mode & 0o777 == 0o640
+    assert path.stat().st_mode == original_mode
 
 
 def test_only_edam_named_generated_file_is_inspected(tmp_path):
