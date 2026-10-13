@@ -428,9 +428,11 @@ async def test_refresh_failure_is_stale_and_next_read_recovers(monkeypatch, fail
 
 
 @pytest.mark.asyncio
-async def test_published_paths_open_in_editor_on_click_and_report_failures(tmp_path):
-    report = str(tmp_path / "report.json")
-    log = str(tmp_path / "sim.log")
+async def test_published_paths_open_in_editor_on_click_and_report_failures():
+    # Short fixed paths: a path as long as a pytest temporary directory would need a
+    # terminal of 120 columns or more, where Enter keeps the split Jobs view.
+    report = str(Path("/published/report.json"))
+    log = str(Path("/published/sim.log"))
     job = JobView(
         Path("/jobs"),
         JobRecord("one", "sim", STAMP, 60, status="done"),
@@ -446,7 +448,7 @@ async def test_published_paths_open_in_editor_on_click_and_report_failures(tmp_p
         return hint[0]
 
     app = DashboardApp(lambda: current, opener)
-    async with app.run_test(size=(max(90, len(report) + 10), 40)) as pilot:
+    async with app.run_test(size=(90, 40)) as pilot:
         await pilot.press("r", "enter")
         assert app.navigation.view == "job"
         detail = app.query_one("#detail", Static)
