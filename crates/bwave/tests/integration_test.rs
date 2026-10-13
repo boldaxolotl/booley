@@ -3210,6 +3210,16 @@ fn test_time_token_exact_cli_overflow() {
             assert_eq!(code, 2, "{token}: {err}");
             assert!(out.is_empty(), "{out}");
             assert!(!err.contains("panicked"), "{err}");
+            let discriminator = if token.ends_with("ps") {
+                "invalid integer in time token"
+            } else if token.ends_with("ns") {
+                "resolved time exceeds signed tick bounds"
+            } else if args.contains(&"--async") {
+                "resolved cycle exceeds signed tick bounds"
+            } else {
+                "beyond simulation range"
+            };
+            assert!(err.contains(discriminator), "{token}: {err}");
         }
     }
 }
