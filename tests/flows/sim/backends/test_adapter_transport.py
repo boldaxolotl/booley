@@ -488,16 +488,17 @@ def test_cocotb_abort_after_all_tests_completed_cannot_pass_batch(tmp_path) -> N
     assert [test.verdict for test in result.test_results] == ["pass", "pass"]
 
 
-def test_cocotb_transport_preserves_partial_timeout_progress(tmp_path) -> None:
+@pytest.mark.parametrize("prefix", ["", "tests.counter."])
+def test_cocotb_transport_preserves_partial_timeout_progress(tmp_path, prefix) -> None:
     identity = replace(
         _identity(tmp_path),
         adapter="cocotb",
         selected_tests=("done", "active", "later"),
     )
-    progress = """\
-0.00ns INFO cocotb.regression running done (1/3)
-1.00ns INFO cocotb.regression done passed
-1.00ns INFO cocotb.regression running active (2/3)
+    progress = f"""\
+0.00ns INFO cocotb.regression running {prefix}done (1/3)
+1.00ns INFO cocotb.regression {prefix}done passed
+1.00ns INFO cocotb.regression running {prefix}active (2/3)
 """
     publish = cocotb._partial_result_publisher(
         identity, list(identity.selected_tests), tmp_path / "results.xml"
@@ -515,7 +516,10 @@ def test_cocotb_transport_preserves_partial_timeout_progress(tmp_path) -> None:
     ]
 
 
-def test_default_cocotb_partial_transport_discovers_current_attempt_names(tmp_path) -> None:
+@pytest.mark.parametrize("prefix", ["", "tests.counter."])
+def test_default_cocotb_partial_transport_discovers_current_attempt_names(
+    tmp_path, prefix
+) -> None:
     identity = replace(_identity(tmp_path), adapter="cocotb", selected_tests=())
     results = tmp_path / "results.xml"
     results.write_text(
@@ -527,9 +531,9 @@ def test_default_cocotb_partial_transport_discovers_current_attempt_names(tmp_pa
     publish = cocotb._partial_result_publisher(identity, [], results)
     assert publish is not None
 
-    publish("0.00ns INFO cocotb.regression running done (1/3)\n")
-    publish("1.00ns INFO cocotb.regression done passed\n")
-    publish("1.00ns INFO cocotb.regression running active (2/3)\n")
+    publish(f"0.00ns INFO cocotb.regression running {prefix}done (1/3)\n")
+    publish(f"1.00ns INFO cocotb.regression {prefix}done passed\n")
+    publish(f"1.00ns INFO cocotb.regression running {prefix}active (2/3)\n")
 
     result = read_adapter_result(partial_result_identity(identity))
     assert result.tests == ("done", "active", "later")
