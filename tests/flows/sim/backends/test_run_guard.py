@@ -662,16 +662,20 @@ def test_parent_death_guard_stops_a_real_run_half_when_its_launcher_dies(tmp_pat
     exit_file = tmp_path / "run_half_exit"
     # A "run-half" that installs the guard, reports that it is armed, then
     # blocks. The handler leaves through SystemExit, whose code it records.
+    # The signal can arrive as soon as "armed" is out, so the report is inside
+    # the try; the code is renamed into place so it is never read half written.
     run_half_src = textwrap.dedent(
         f"""
-        import time
+        import os, time
         from booley.flows.sim.run_guard import install_parent_death_guard
         install_parent_death_guard()
-        print("armed", flush=True)
         try:
+            print("armed", flush=True)
             time.sleep(60)
         except SystemExit as exc:
-            open({str(exit_file)!r}, "w").write(str(exc.code))
+            with open({str(exit_file) + ".part"!r}, "w") as part:
+                part.write(str(exc.code))
+            os.replace({str(exit_file) + ".part"!r}, {str(exit_file)!r})
             raise
         """
     )
@@ -701,12 +705,11 @@ def test_parent_death_guard_stops_a_real_run_half_when_its_launcher_dies(tmp_pat
         assert launcher.stdout.readline().strip() == "armed"
         launcher.kill()
         launcher.wait(timeout=10)
-        deadline = time.monotonic() + 10
-        recorded = ""
-        while time.monotonic() < deadline and not recorded:
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline and not exit_file.exists():
             time.sleep(0.05)
-            recorded = exit_file.read_text() if exit_file.exists() else ""
-        assert recorded == "143"
+        assert exit_file.exists(), "the guarded process did not leave through the handler"
+        assert exit_file.read_text() == "143"
     finally:
         if launcher.poll() is None:
             launcher.kill()
