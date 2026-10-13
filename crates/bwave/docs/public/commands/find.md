@@ -143,3 +143,16 @@ bwave find sim.fst \
     --virtual "hsk = *valid & *ready" \
     hsk 'h1 --first
 ```
+
+## Clock-grid behavior
+
+- Literal level triggers (e.g. `'h1`) skip cycles inside a clock stop.
+  `--include-stopped` matches them too.
+- Edge and change triggers are unaffected.
+- `--count`, `--first`, `--last`, and Virtual Signals follow the same rule.
+- A stop overlapping the query window is reported as information, not a
+  warning. JSON lists it in `clock_stopped`.
+- `--sample-mode pre-edge` reads values just before each edge. Cycle numbers
+  do not change.
+
+See `reference/sync-vs-async` for the clock verdict and sampling modes.

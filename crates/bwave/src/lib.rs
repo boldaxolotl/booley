@@ -1,4 +1,5 @@
 pub mod cache;
+pub mod clock;
 pub mod docs;
 pub mod format;
 pub mod fst;
@@ -19,6 +20,10 @@ pub struct ExtractConfig {
     /// Query diagnostics to merge into supported JSON envelopes.
     pub warnings: Vec<String>,
     pub async_mode: bool,
+    pub pre_edge: bool,
+    pub include_stopped: bool,
+    pub clock_regularity: Option<clock::ClockVerdict>,
+    pub clock_stopped: Vec<clock::StoppedRange>,
     pub clock_pattern: Option<String>,
     pub reset_pattern: Option<String>,
     pub with_reset: bool,
@@ -73,6 +78,10 @@ impl Default for ExtractConfig {
             explicit_selectors: false,
             warnings: Vec::new(),
             async_mode: false,
+            pre_edge: false,
+            include_stopped: false,
+            clock_regularity: None,
+            clock_stopped: Vec::new(),
             clock_pattern: None,
             reset_pattern: None,
             with_reset: false,
@@ -177,5 +186,16 @@ impl ExtractConfig {
         }
 
         Ok(())
+    }
+}
+
+impl ExtractConfig {
+    /// Preserve the edge tick as row identity, shifting only the observation.
+    pub fn sample_tick(&self, edge: u64) -> Option<u64> {
+        if self.pre_edge && !self.async_mode {
+            edge.checked_sub(1)
+        } else {
+            Some(edge)
+        }
     }
 }

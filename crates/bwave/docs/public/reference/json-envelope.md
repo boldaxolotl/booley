@@ -9,7 +9,7 @@ commands; only the `data` field varies.
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/boldaxolotl/booley/v0.3.0/crates/bwave/schema/bwave.json",
+  "$schema": "https://raw.githubusercontent.com/boldaxolotl/booley/9f6ee6a81995e7b45d79da37f58744cce1034585/crates/bwave/schema/bwave.json",
   "command": "<subcommand>",
   "data":    { ... },
   "warnings": ["..."]
@@ -18,29 +18,31 @@ commands; only the `data` field varies.
 
 | Field | Type | Notes |
 |---|---|---|
-| `$schema` | string | URL of the JSON Schema this payload conforms to. Pinned to the release tag (currently `v0.3.0`). |
-| `command` | string | Subcommand name. Currently one of `list`, `value`, `find`, `stats`. |
+| `$schema` | string | URL of the JSON Schema this payload conforms to. Pinned to the schema commit. |
+| `command` | string | Subcommand name. One of the eight supported JSON commands. |
 | `data` | object | Per-command payload. See per-command docs for the shape. |
 | `warnings` | array of string | Diagnostics that text mode would emit to stderr as `# WARNING: ...` lines. Empty array on clean runs. |
 
 ## Subcommands that emit JSON
 
-Four commands respect `--format
-json`:
+Eight commands respect `--format json`:
 
 - `list`: see `commands/list`
 - `value`: see `commands/value`
 - `find`: see `commands/find`
 - `stats`: see `commands/stats`
+- `signal`: see `commands/signal`
+- `wave`: see `commands/wave`
+- `distance`: see `commands/distance`
+- `overview`: see `commands/overview`
 
 The other query subcommands reject `--format json` with
 exit code 2: `JSON output is not implemented for <command>;
-use find/value/stats/list`.
+use find/value/stats/list/signal/wave/distance/overview`.
 
 Commands that **do not** currently emit JSON:
 
-- `signal`, `wave`, `sample`, `diff`, `distance`,
-  `stuck`: text mode only; JSON requests exit with code 2.
+- `sample`, `diff`, `stuck`: text mode only; JSON requests exit with code 2.
 - `build`: produces a binary file, no envelope.
 - `schema`: produces the JSON Schema itself (no
   envelope around it; it *is* the schema).
@@ -181,3 +183,46 @@ bwave schema
 Prints the embedded JSON Schema to stdout. The schema
 is baked into the binary at build time, so the output
 always matches the installed version.
+
+## Clock-grid fields
+
+Two optional top-level fields sit beside `warnings`. Both are advisory; see
+`reference/sync-vs-async` for what they mean.
+
+### `clock_regularity`
+
+The verdict on the selected clock. Sync queries carry it, and so do async
+queries that use cycle tokens. Async queries with only tick/time tokens omit
+it.
+
+| Field | Notes |
+|---|---|
+| `status` | `pass`, `warning`, or `unavailable`. |
+| `reason` | Machine-readable cause. See `troubleshooting/clock-detection`. |
+| `clock` | Selected clock signal. |
+| `first_off_grid_tick`, `first_off_grid_cycle` | First edge off the grid, or null. |
+| `findings` | Array of `{reason, tick, detail}`, including multi-period context. |
+| `stopped` | `{stretches, total_cycles, longest}`; `longest` is a range or null. |
+
+A `warning` or `unavailable` reason is repeated in `warnings`.
+
+### `clock_stopped`
+
+Present only when the query window overlaps a clock stop. Each entry is the
+stop's full `{from_cycle, to_cycle}` range, numbered on the query's
+reset-aware grid. Its size follows the stored clock edges and is not capped
+by `--limit`.
+
+### Per-command fields
+
+| Command | Fields |
+|---|---|
+| `signal` | `records`: ordered `kind: value` and `kind: clock_stopped` entries. |
+| `wave` | `columns`, edge `ticks`, `names`, row `values`. |
+| `distance` | `pairs` (bounded by `--limit`), total `count`, optional `summary`, summed `stopped_cycles`, `truncated`. |
+| `overview` | `total_ticks`, `signal_count`, `period_ticks`, `first_rise_tick`. |
+| `value` | `target_tick` is the edge; `sample_tick` is the tick actually read. |
+| `stats` | `time_in_state_clocked_cycles` and `time_in_state_stopped_cycles` maps, beside tick/ns occupancy. |
+
+`bwave schema` prints the exact grammar. The emitted `$schema` URL pins it to
+an immutable commit.
