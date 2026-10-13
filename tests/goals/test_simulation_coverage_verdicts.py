@@ -101,6 +101,7 @@ def _coverage_run(layout, root, run_id, *tests):
     return result, DevelopmentState.load(adapter.state_file)
 
 
+@pytest.mark.timeout(120)  # Windows CI needs 3x the observed 30-33s runtime.
 def test_multi_seed_coverage_goal_is_met_only_by_a_campaign_of_exactly_its_frozen_seeds(
     layout, monkeypatch
 ):
