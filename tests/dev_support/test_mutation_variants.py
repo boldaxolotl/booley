@@ -26,13 +26,17 @@ def _source(tmp_path: Path, text: str = "module dut;\nassign y = a + b;\nendmodu
     return path
 
 
-def test_applied_variant_changes_exact_slice_and_restores_pristine_source(tmp_path: Path):
+def test_materialized_variant_changes_only_private_source(tmp_path: Path):
     path = _source(tmp_path)
     pristine = path.read_bytes()
     plan = MutationVariantPlan.resolve([Proposal()], tmp_path, ["rtl/dut.sv"])
 
-    with plan.applied(1):
-        assert path.read_text(encoding="utf-8") == "module dut;\nassign y = a - b;\nendmodule\n"
+    root = tmp_path / "private"
+    root.mkdir()
+    staged = root / "dut.sv"
+    staged.write_bytes(pristine)
+    plan.materialize(1, [staged], root)
+    assert staged.read_text(encoding="utf-8") == "module dut;\nassign y = a - b;\nendmodule\n"
 
     assert path.read_bytes() == pristine
 
@@ -89,3 +93,50 @@ def test_writes_one_auditable_source_file_per_mutant(tmp_path: Path):
     assert "a - b" in written[1].read_text(encoding="utf-8")
     assert "y <= a + b" in written[2].read_text(encoding="utf-8")
     assert "a + b" in (tmp_path / "rtl/dut.sv").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("alias", ["source", "symlink", "hardlink", "escape"])
+def test_materialization_rejects_live_aliases_and_escape(tmp_path, alias):
+    source = _source(tmp_path)
+    plan = MutationVariantPlan.resolve([Proposal()], tmp_path, ["rtl/dut.sv"])
+    root = tmp_path / "private"
+    root.mkdir()
+    destination = root / "dut.sv"
+    if alias == "source":
+        destination = source
+    elif alias == "symlink":
+        destination.symlink_to(source)
+    elif alias == "hardlink":
+        destination.hardlink_to(source)
+    else:
+        destination = tmp_path / "escaped.sv"
+        destination.write_bytes(source.read_bytes())
+    with pytest.raises(MutationVariantError):
+        plan.materialize(1, [destination], root)
+    assert "a + b" in source.read_text()
+
+
+def test_materialization_preserves_live_edit_after_proposal_snapshot(tmp_path):
+    source = _source(tmp_path)
+    plan = MutationVariantPlan.resolve([Proposal()], tmp_path, ["rtl/dut.sv"])
+    root = tmp_path / "private"
+    root.mkdir()
+    staged = root / "dut.sv"
+    staged.write_bytes(source.read_bytes())
+    source.write_bytes(source.read_bytes() + b"// new live edit\n")
+    dirty = source.read_bytes()
+    plan.materialize(1, [staged], root)
+    assert source.read_bytes() == dirty
+    assert b"a - b" in staged.read_bytes()
+
+
+def test_inspection_export_cannot_follow_symlink_to_live_source(tmp_path):
+    source = _source(tmp_path)
+    plan = MutationVariantPlan.resolve([Proposal()], tmp_path, ["rtl/dut.sv"])
+    destination = tmp_path / "variants"
+    path = destination / "mutant_1/rtl/dut.sv"
+    path.parent.mkdir(parents=True)
+    path.symlink_to(source)
+    with pytest.raises(MutationVariantError):
+        plan.write_variants(destination)
+    assert "a + b" in source.read_text()
