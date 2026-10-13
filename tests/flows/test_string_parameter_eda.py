@@ -824,14 +824,14 @@ def _verify_verilator_file(tmp_path, selected, *, normalize):
     assert "FILE_VALUE_OK" in _run([tmp_path / "Vtop"], tmp_path).stdout
 
 
-@pytest.mark.parametrize("explicit_empty", [False, True])
-def test_actual_trace_resolution_preserves_owned_empty_and_authored_flags(
-    tmp_path, explicit_empty
+@pytest.mark.parametrize("value,explicit_empty", [("", False), ("", True), ('a" b\\c', False)])
+def test_actual_trace_resolution_preserves_owned_parameters_and_authored_flags(
+    tmp_path, value, explicit_empty
 ):
+    from booley.flows.sim.build import prepare_simulation_build
     from booley.flows.sim.trace_overlay import write_trace_overlay
-    from booley.fusesoc.fusesoc_registry import resolve_target_handle
 
-    _project(tmp_path, "", explicit_empty=explicit_empty)
+    _project(tmp_path, value, explicit_empty=explicit_empty)
     path = tmp_path / "shared.core"
     data = yaml.safe_load(path.read_text().split("\n", 1)[1])
     data["targets"]["sim"]["flags"] = {"owned": True}
@@ -842,13 +842,13 @@ def test_actual_trace_resolution_preserves_owned_empty_and_authored_flags(
     handle = TargetCatalog.build(tmp_path).select("sim", for_flow="sim")
     overlay = write_trace_overlay(handle)
     try:
-        resolved = resolve_target_handle(
+        resolved = prepare_simulation_build(
             handle, build_root=tmp_path / "trace-build", resolution_vlnv=overlay.vlnv
-        )
+        ).resolved
         assert resolved.parameters["NAME"] == {
             "datatype": "str",
             "paramtype": "vlogparam",
-            "default": "",
+            "default": value,
         }
         _run(["make", "-C", resolved.build_root], tmp_path)
         assert (
@@ -900,12 +900,12 @@ endmodule
 @pytest.mark.parametrize("tool", ["verilator", "icarus"])
 @pytest.mark.parametrize("value", ['a" b\\c', ""])
 def test_actual_legacy_default_tool_receiver(tmp_path, tool, value):
-    from booley.fusesoc.fusesoc_registry import resolve_target_handle
+    from booley.flows.sim.build import prepare_simulation_build
 
     _legacy_receiver_project(tmp_path, tool, value)
     core_hash = hashlib.sha256((tmp_path / "legacy.core").read_bytes()).hexdigest()
     handle = TargetCatalog.build(tmp_path).select("sim", for_flow="sim")
-    resolved = resolve_target_handle(handle, build_root=tmp_path / "build")
+    resolved = prepare_simulation_build(handle, build_root=tmp_path / "build").resolved
     assert resolved.parameters["NAME"]["datatype"] == "str"
     assert resolved.parameters["NAME"]["default"] == value
     root = resolved.build_root
