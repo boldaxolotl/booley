@@ -333,7 +333,7 @@ simulator execution, or the standalone module sweep in
 budget.
 
 A simulation run that exceeds its run budget gets a `timeout` verdict, exits
-`1`, and fails `sim_pass_*`. Investigate a possible RTL/testbench deadlock;
+`1`, and fails `SIM:{target}`. Investigate a possible RTL/testbench deadlock;
 raise `--timeout` or `[flows.sim].timeout_ms` if the test legitimately needs
 longer. Build, Elaboration Check, and Pre-Sim Command timeouts are infrastructure
 errors and exit `2`.
@@ -2051,7 +2051,7 @@ hatches that remain, and what each is for:
   commands](#pre-sim-commands-flowssimpre_run_commands);
 - a **new kind of analysis** with its own criteria is a [Custom
   MCP tool](../internals/MCP-TOOLS.md) — it adds an MCP tool alongside the built-ins, never a
-  side door into `sim_pass_*`.
+  side door into `SIM:{target}`.
 
 A simulator outside the built-in matrix is out of scope for Goal Mode by
 declared boundary; widening the matrix is the sanctioned extension axis
@@ -2310,7 +2310,7 @@ be overridden in `[flows.sim]` or invocation flags.
 A coverage Goal sets policy independently for each Target:
 
 ```json
-{"family": "coverage", "target": "sim_counter", "tests": "all",
+{"family": "COVERAGE", "target": "sim_counter", "tests": "all",
  "metrics": {"line": 90, "branch": 80, "toggle": 75}}
 ```
 

@@ -768,7 +768,7 @@ the Campaign-bound evidence tool.
   evaluation without producing coverage findings. In that case, inspect the
   Target's `error` and `collection` status, correct the failure, and rerun.
 - Coverage Goals use a Target-bound argument such as
-  `{"family":"coverage","target":"sim_core","tests":"all","metrics":{"toggle": 50}}`;
+  `{"family":"COVERAGE","target":"sim_core","tests":"all","metrics":{"toggle": 50}}`;
   replace `all` with an exact registered suite when needed. Choose only a
   supported native metric; no silent translation or waveform scoring remains.
 - Missing `sim_<target>.json`: follow the exact numbered report pointer. Missing `coverage_report.json` or mutable

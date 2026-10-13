@@ -80,6 +80,12 @@ _D10_SIM_RULES = tuple(
 
 DIRECTION_RULES = (
     DirectionRule(
+        "D36",
+        (prefix("booley.flows"), prefix("booley.specialists")),
+        (prefix("booley.goals"),),
+        "evidence producers receive Goal presentation and candidate paths through neutral execution interfaces",
+    ),
+    DirectionRule(
         "D35",
         (prefix("booley.goals"),),
         (

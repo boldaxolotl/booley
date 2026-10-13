@@ -51,7 +51,7 @@ def request(layout: SimpleNamespace, **options) -> LifecycleRequest:
 
 @pytest.fixture
 def complete(layout: SimpleNamespace) -> SimpleNamespace:
-    layout.record = enter_goals(layout, [{"family": "lint", "target": "top"}])
+    layout.record = enter_goals(layout, [{"family": "LINT", "target": "top"}])
     publish(layout)
     git(layout.main, "config", "user.name", "Goal Test")
     git(layout.main, "config", "user.email", "goal@test.invalid")
@@ -68,7 +68,7 @@ def publication_layout(layout: SimpleNamespace) -> SimpleNamespace:
     (project / "tests.toml").write_bytes(b'[top]\ntests = ["smoke"]\n')
     git(layout.worktree, "add", ".booley_project")
     git(layout.worktree, "commit", "-qm", "versioned project inputs")
-    layout.record = enter_goals(layout, [{"family": "lint", "target": "top"}])
+    layout.record = enter_goals(layout, [{"family": "LINT", "target": "top"}])
     publish(layout)
     git(layout.main, "config", "user.name", "Goal Test")
     git(layout.main, "config", "user.email", "goal@test.invalid")
@@ -87,6 +87,13 @@ def test_stealth_completion_is_frozen_and_makes_zero_git_writes(complete):
     package = Path(result["package"]).read_bytes()
     assert json.loads(package)["goals"][0]["selected_observation"]["producer"] == "lint"
     assert Path(result["html"]).is_file()
+    for text in (
+        result["message"],
+        Path(result["summary"]).read_text(),
+        Path(result["html"]).read_text(),
+    ):
+        assert "LINT:top" in text
+        assert "lint_clean_top" not in text
     assert finish_goal(call, environment(complete)) == result
     assert Path(result["package"]).read_bytes() == package
     with pytest.raises(LifecycleError, match="immutable payload"):
@@ -106,6 +113,8 @@ def test_committed_summary_is_on_worktree_branch_and_main_does_not_move(layout):
         git(complete.worktree, "show", f"HEAD:{result['history_path']}")
         == Path(result["summary"]).read_text().strip()
     )
+    history = git(complete.worktree, "show", f"HEAD:{result['history_path']}")
+    assert "LINT:top" in history and "lint_clean_top" not in history
 
 
 @pytest.mark.parametrize(
@@ -146,7 +155,7 @@ def test_ignored_nonstealth_is_explicitly_local(complete):
         (root / "booley.toml").write_bytes(b"[stealth]\nenabled=false\n")
     complete.record = enter_goal_mode(
         EntryRequest(
-            complete.worktree, "again", parse_goal_args([{"family": "lint", "target": "top"}])
+            complete.worktree, "again", parse_goal_args([{"family": "LINT", "target": "top"}])
         ),
         EntryEnvironment(complete.control),
     ).record
@@ -182,8 +191,11 @@ def test_finish_refuses_before_publication(complete, change, message):
     else:
         call = replace(call, summary=" ")
     before = git(complete.worktree, "rev-parse", "HEAD")
-    with pytest.raises((LifecycleError, ValueError), match=message):
+    with pytest.raises((LifecycleError, ValueError), match=message) as caught:
         finish_goal(call, environment(complete))
+    if change in {"unmet", "protected"}:
+        assert "LINT:top" in str(caught.value)
+        assert "lint_clean_top" not in str(caught.value)
     assert git(complete.worktree, "rev-parse", "HEAD") == before
     assert GoalStore(complete.control).load(complete.record.id).state is GoalState.ACTIVE
 
@@ -229,7 +241,7 @@ def test_replacement_entry_does_not_receive_old_retry_or_abandon(complete):
     result = finish_goal(call, environment(complete))
     next_record = enter_goal_mode(
         EntryRequest(
-            complete.worktree, "new", parse_goal_args([{"family": "lint", "target": "top"}])
+            complete.worktree, "new", parse_goal_args([{"family": "LINT", "target": "top"}])
         ),
         EntryEnvironment(complete.control),
     ).record
@@ -279,7 +291,7 @@ def test_two_identical_finish_calls_share_one_frozen_result(complete):
 
 
 def test_untracked_ignored_consumed_design_source_is_not_copied_to_committed_view(layout):
-    layout.record = enter_goals(layout, [{"family": "lint", "target": "top"}])
+    layout.record = enter_goals(layout, [{"family": "LINT", "target": "top"}])
     # The user's explicit ignore hides the source from clean-tree checks.
     git(layout.worktree, "rm", "--cached", "rtl.v")
     (layout.main / ".git/info/exclude").write_bytes(b"/.booley_project\nrtl.v\n")
@@ -435,7 +447,7 @@ def _prepare_pinned_artifact_history(layout, history):
     else:
         (layout.main / ".git/info/exclude").write_text("/.booley_project\nhistory.hex\n")
     git(layout.worktree, "commit", "-qm", "baseline data target")
-    record = enter_goals(layout, [{"family": "review", "review": "rtl_bugs", "verdict": "done"}])
+    record = enter_goals(layout, [{"family": "REVIEW", "review": "rtl_bugs", "verdict": "done"}])
     if history == "tracked-removed":
         git(layout.worktree, "rm", "history.hex")
         (layout.main / ".git/info/exclude").write_text("/.booley_project\nhistory.hex\n")

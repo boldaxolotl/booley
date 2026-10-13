@@ -141,8 +141,8 @@ TOP_CORE = (
 )
 #: The Goals the active Goal Mode fixture enters with.
 GOAL_ARGS = (
-    {"family": "lint", "target": "top"},
-    {"family": "sim", "target": "top"},
+    {"family": "LINT", "target": "top"},
+    {"family": "SIM", "target": "top"},
 )
 LINT_KEY = "lint_clean_top"
 SIM_KEY = "sim_pass_top"

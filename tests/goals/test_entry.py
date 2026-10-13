@@ -41,7 +41,7 @@ class _Crash(BaseException):
 
 
 def _request(layout: SimpleNamespace, goals: list[dict[str, Any]] | None = None, **fields: Any):
-    raw_goals = goals if goals is not None else [{"family": "lint", "target": "top"}]
+    raw_goals = goals if goals is not None else [{"family": "LINT", "target": "top"}]
     return EntryRequest(
         work_dir=fields.pop("work_dir", layout.worktree),
         slug=fields.pop("slug", "uart-fix"),
@@ -73,7 +73,7 @@ def _branches(path: Path) -> set[str]:
 
 def test_entry_creates_branch_record_and_unmet_strict_state(layout: SimpleNamespace) -> None:
     base = git(layout.worktree, "rev-parse", "HEAD")
-    goals = [{"family": "lint", "target": "top"}, {"family": "sim", "target": "top"}]
+    goals = [{"family": "LINT", "target": "top"}, {"family": "SIM", "target": "top"}]
 
     result = enter_goal_mode(_request(layout, goals), _env(layout))
 
@@ -109,7 +109,7 @@ def test_entry_works_from_a_detached_head(layout: SimpleNamespace) -> None:
 
 
 def test_missing_work_dir_is_refused() -> None:
-    goals = [{"family": "lint", "target": "top"}]
+    goals = [{"family": "LINT", "target": "top"}]
     with pytest.raises(GoalEntryError, match="needs work_dir"):
         parse_entry_request({"slug": "uart-fix", "goals": goals}, session_key=None)
     with pytest.raises(GoalEntryError, match="needs work_dir"):
@@ -194,7 +194,7 @@ def test_default_goalset_applied_or_skipped_enters(
 
 def test_candidate_target_that_does_not_exist_warns(layout: SimpleNamespace) -> None:
     result = enter_goal_mode(
-        _request(layout, [{"family": "lint", "target": "new_block"}]), _env(layout)
+        _request(layout, [{"family": "LINT", "target": "new_block"}]), _env(layout)
     )
 
     assert result.record.state is GoalState.ACTIVE
@@ -203,7 +203,7 @@ def test_candidate_target_that_does_not_exist_warns(layout: SimpleNamespace) -> 
 
 def test_baseline_target_missing_at_head_is_refused(layout: SimpleNamespace) -> None:
     goal = {
-        "family": "synth",
+        "family": "SYNTH",
         "target": "top",
         "baseline": "gone",
         "thresholds": {"area_increase_at_most": "5%"},
@@ -214,7 +214,7 @@ def test_baseline_target_missing_at_head_is_refused(layout: SimpleNamespace) -> 
 
 
 def test_spec_review_needs_its_spec_file(layout: SimpleNamespace) -> None:
-    missing = {"family": "review", "review": "rtl_spec", "verdict": "clean", "spec": "nope.md"}
+    missing = {"family": "REVIEW", "review": "rtl_spec", "verdict": "clean", "spec": "nope.md"}
     with pytest.raises(GoalEntryError, match=r"spec file 'nope\.md'"):
         enter_goal_mode(_request(layout, [missing]), _env(layout))
 
@@ -232,8 +232,8 @@ def test_existing_goal_branch_name_is_refused(layout: SimpleNamespace) -> None:
 
 def test_conflicting_goals_are_refused_before_any_write(layout: SimpleNamespace) -> None:
     goals = [
-        {"family": "review", "review": "rtl_spec", "verdict": "clean", "spec": "a.md"},
-        {"family": "review", "review": "rtl_spec", "verdict": "done", "spec": "b.md"},
+        {"family": "REVIEW", "review": "rtl_spec", "verdict": "clean", "spec": "a.md"},
+        {"family": "REVIEW", "review": "rtl_spec", "verdict": "done", "spec": "b.md"},
     ]
     with pytest.raises(GoalEntryError, match="different spec files"):
         enter_goal_mode(_request(layout, goals), _env(layout))
@@ -436,7 +436,7 @@ def test_relative_goal_pins_the_paired_project_revision_seen_at_entry(
         "synthesis_ok_", "Synthesis", lambda _resolved, selector: {"target": selector}
     )
     env = replace(_env(layout), recipe_families=(family,))
-    goal = {"family": "synth", "target": "top", "thresholds": {"area_increase_at_most": "5%"}}
+    goal = {"family": "SYNTH", "target": "top", "thresholds": {"area_increase_at_most": "5%"}}
 
     record = enter_goal_mode(_request(layout, [goal]), env).record
 

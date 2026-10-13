@@ -151,10 +151,10 @@ def _assert_openroad(state: DevelopmentState) -> None:
 async def _success(workspace: Workspace) -> None:
     worktree = workspace.worktree
     goals = [
-        {"family": "lint", "target": "lint_smoke"},
-        {"family": "sim", "target": "sim_smoke"},
+        {"family": "LINT", "target": "lint_smoke"},
+        {"family": "SIM", "target": "sim_smoke"},
         {
-            "family": "synth",
+            "family": "SYNTH",
             "target": "synth_smoke",
             "thresholds": {
                 "cell_count_max": 500,
@@ -202,7 +202,7 @@ def test_goal_mode_success_staleness_and_openroad(tmp_path: Path) -> None:
 async def _failure(workspace: Workspace) -> None:
     worktree = workspace.worktree
     async with client_session(workspace) as client:
-        record_id = await _enter(client, workspace, [{"family": "sim", "target": "sim_fail"}])
+        record_id = await _enter(client, workspace, [{"family": "SIM", "target": "sim_fail"}])
         text = await run_flow(
             client, "sim", {"target": "sim_fail", "work_dir": str(worktree)}, expected_exit_code=1
         )

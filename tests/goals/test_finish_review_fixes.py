@@ -46,7 +46,7 @@ def paired_publication(layout, tmp_path):
         (project / name).write_bytes(content)
     git(project, "add", "-A")
     git(project, "commit", "-qm", "publication project")
-    layout.record = enter_goals(layout, [{"family": "lint", "target": "top"}])
+    layout.record = enter_goals(layout, [{"family": "LINT", "target": "top"}])
     publish(layout)
     return layout, project
 

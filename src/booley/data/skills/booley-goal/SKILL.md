@@ -39,7 +39,10 @@ Use it for human-steered or unattended work inside the Sandbox.
    be named at entry but remains unmet until it exists. A spec review names a
    spec file relative to the worktree. Clarify unresolved choices together;
    do not re-ask decisions the human has already made.
-5. Translate Goalset prose into concrete `goals` arguments. Expand each
+5. Translate Goalset prose into concrete `goals` arguments. Use uppercase
+   `family` capabilities (`LINT`, `SIM`, `ELAB`, `SYNTH`, `FPGA`, `CYCLE_COUNT`,
+   `COVERAGE`, `MUTATION`, `REVIEW`); names render as `SIM:sim_core` or
+   `REVIEW:rtl_bugs`, with requirements in parentheses. Expand each
    `<target>` for the Targets that family applies to, and `<spec>` for the
    specification. Set each Goal's `origin` to its Goalset name; ad-hoc Goals
    may omit it. Do not merge duplicates yourself: the tool chooses the stricter
@@ -78,7 +81,10 @@ an infrastructure failure.
 
 Use `goal_propose_change(operation="create", kind=..., rationale=...)` for
 `add`, `relax`, `retarget`, or `waiver`. Show the exact before/after Goal and
-why it is needed. A waiver names a screened Coverage Waiver Candidate with
+why it is needed. Read the exact "goal_key" from entry or status
+structured output for an existing Goal; the MCP client must expose `structuredContent`
+to the agent. Use that machine address in a change
+request and its public name when describing it to the human. A waiver names a screened Coverage Waiver Candidate with
 `candidate_id`; the Coverage Analyst cannot approve it. Save `proposal_id` and
 use `operation="resume"` with that exact ID after interruption.
 

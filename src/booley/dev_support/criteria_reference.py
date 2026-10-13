@@ -9,9 +9,9 @@ from booley.criteria.endpoint_catalog import CriterionEndpointCatalog
 from booley.criteria.reference import (
     has_block,
     render_criteria_params_reference,
-    render_criteria_reference,
     splice_generated,
 )
+from booley.goals.reference import render_goal_reference as render_criteria_reference
 from booley.mcp.registry import criterion_endpoint_relationships, discover_mcp_tools
 
 

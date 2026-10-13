@@ -19,7 +19,11 @@ from booley.flows.endpoint_events import (
     _emit_criteria_update,
 )
 from booley.flows.endpoint_session import PreparedExecution
-from booley.flows.execution_persistence import EvidenceDiscarded, criterion_source_fingerprint_for
+from booley.flows.execution_persistence import (
+    EvidenceDiscarded,
+    criterion_source_fingerprint_for,
+    execution_goal_name,
+)
 from booley.fusesoc.fusesoc_registry import FuseSocError
 from booley.runtime.endpoint_execution import (
     EXIT_CANCELLED,
@@ -69,7 +73,7 @@ def set_criterion(
     except EvidenceDiscarded as exc:
         endpoint.discard_evidence(exc)
         return
-    _emit_criteria_update(endpoint.state)
+    _emit_criteria_update(endpoint.state, endpoint._acceptance_recorder)
 
 
 def _record_acceptance_changes(endpoint: EndpointState, changes: list[CriterionChange]) -> None:
@@ -417,7 +421,9 @@ def _pending_criterion_invocations(endpoint, endpoint_catalog) -> str:
         ):
             continue
         invocation = planned_invocation(key, entry, endpoint_catalog)
-        pending.append(f"  {key} -> {invocation or endpoint.name}")
+        pending.append(
+            f"  {execution_goal_name(endpoint._acceptance_recorder, key)} -> {invocation or endpoint.name}"
+        )
     return "\n".join(pending) if pending else "  (no compatible criterion declared)"
 
 

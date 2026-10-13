@@ -37,7 +37,7 @@ def _roots(layout: SimpleNamespace, worktree: Path | None = None) -> ProtectedIn
 
 def _enter(layout: SimpleNamespace) -> None:
     request = EntryRequest(
-        layout.worktree, "uart-fix", parse_goal_args([{"family": "lint", "target": "top"}])
+        layout.worktree, "uart-fix", parse_goal_args([{"family": "LINT", "target": "top"}])
     )
     enter_goal_mode(request, EntryEnvironment(project_dir=layout.control))
 

@@ -20,6 +20,7 @@ from booley.goals.change_service import (
 from booley.goals.changes import Approval
 from booley.goals.entry import EntryEnvironment
 from booley.goals.model import goal_arg_json_schema
+from booley.goals.presentation import proposal_presentation
 from booley.goals.proposals import ProposalError, ProposalView, text
 from booley.goals.session_key import session_key
 from booley.goals.store import GoalStore
@@ -38,7 +39,11 @@ def proposal_schema(work_dir: Mapping[str, Any]) -> dict[str, Any]:
             "operation": {"enum": ["create", "resume", "approve", "reject"]},
             "proposal_id": {"type": "string", "format": "uuid"},
             "kind": {"enum": ["add", "relax", "retarget", "waiver"]},
-            "goal_key": {"type": "string", "minLength": 1},
+            "goal_key": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Exact machine change address from goal_enter/goal_status structuredContent. The MCP client must expose structured output to the agent.",
+            },
             "after": goal_arg_json_schema(),
             "candidate_id": {"type": "string", "minLength": 1},
             "rationale": {"type": "string", "minLength": 1},
@@ -206,7 +211,7 @@ def _form_answer(
     )
 
 
-def _summary(view: ProposalView) -> str:
+def _wire_summary(view: ProposalView) -> str:
     proposal = view.proposal
     value: dict[str, Any] = {
         "proposal_id": proposal.id,
@@ -228,6 +233,10 @@ def _summary(view: ProposalView) -> str:
     return json.dumps(value, sort_keys=True)
 
 
+def _summary(view: ProposalView) -> str:
+    return json.dumps(proposal_presentation(view), sort_keys=True, ensure_ascii=False)
+
+
 def _approval_required(view: ProposalView) -> McpDispatchResult:
     result = {
         "status": "approval_required",
@@ -236,11 +245,18 @@ def _approval_required(view: ProposalView) -> McpDispatchResult:
         "instructions": "Obtain the human's instruction. Make a fresh goal_propose_change call without a sealed token: operation=approve or reject, this exact proposal_id, reason and approval_quote. Resume by proposal_id to reissue an expired/restarted form.",
     }
     return McpDispatchResult(
-        [TextContent(type="text", text=json.dumps(result, sort_keys=True))], False, goal_aware=True
+        (
+            [TextContent(type="text", text=json.dumps(result, sort_keys=True))],
+            {**result, "proposal": json.loads(_wire_summary(view))},
+        ),
+        False,
+        goal_aware=True,
     )
 
 
 def _result(view: ProposalView) -> McpDispatchResult:
     return McpDispatchResult(
-        [TextContent(type="text", text=_summary(view))], False, goal_aware=True
+        ([TextContent(type="text", text=_summary(view))], json.loads(_wire_summary(view))),
+        False,
+        goal_aware=True,
     )

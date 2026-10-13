@@ -27,12 +27,12 @@ def translate(*raw: dict[str, Any]):
 @pytest.mark.parametrize(
     ("raw", "key", "params"),
     [
-        ({"family": "lint", "target": "lint_uart"}, "lint_clean_lint_uart", {}),
-        ({"family": "sim", "target": "sim_uart"}, "sim_pass_sim_uart", {}),
-        ({"family": "elab", "target": "sim_uart"}, "elab_pass_sim_uart", {}),
+        ({"family": "LINT", "target": "lint_uart"}, "lint_clean_lint_uart", {}),
+        ({"family": "SIM", "target": "sim_uart"}, "sim_pass_sim_uart", {}),
+        ({"family": "ELAB", "target": "sim_uart"}, "elab_pass_sim_uart", {}),
         (
             {
-                "family": "synth",
+                "family": "SYNTH",
                 "target": "synth_uart",
                 "thresholds": {"area_increase_at_most": "5%"},
             },
@@ -41,7 +41,7 @@ def translate(*raw: dict[str, Any]):
         ),
         (
             {
-                "family": "fpga",
+                "family": "FPGA",
                 "target": "fpga_new",
                 "baseline": "fpga_old",
                 "thresholds": {"lut_count_reduce_at_least": "10%"},
@@ -51,7 +51,7 @@ def translate(*raw: dict[str, Any]):
         ),
         (
             {
-                "family": "cycle_count",
+                "family": "CYCLE_COUNT",
                 "target": "sim_uart",
                 "test": "smoke",
                 "thresholds": {"cycle_count_max": 900},
@@ -60,22 +60,22 @@ def translate(*raw: dict[str, Any]):
             {"target": "sim_uart", "test": "smoke", "cycle_count_max": 900},
         ),
         (
-            {"family": "coverage", "target": "sim_uart", "metrics": {"line": 80}, "tests": "all"},
+            {"family": "COVERAGE", "target": "sim_uart", "metrics": {"line": 80}, "tests": "all"},
             "coverage_sim_uart",
             {"target": "sim_uart", "metrics": {"line": {"min_pct": 80}}, "tests": "all"},
         ),
         (
-            {"family": "mutation", "target": "sim_uart", "min_detected": 8, "total": 10},
+            {"family": "MUTATION", "target": "sim_uart", "min_detected": 8, "total": 10},
             "mutation_score_sim_uart",
             {"min_detected": 8, "total": 10},
         ),
         (
-            {"family": "review", "review": "rtl_bugs", "verdict": "clean"},
+            {"family": "REVIEW", "review": "rtl_bugs", "verdict": "clean"},
             "review_rtl_bugs_clean",
             {},
         ),
         (
-            {"family": "review", "review": "rtl_spec", "verdict": "done", "spec": "doc/uart.md"},
+            {"family": "REVIEW", "review": "rtl_spec", "verdict": "done", "spec": "doc/uart.md"},
             "review_rtl_spec_done",
             {"spec": "doc/uart.md"},
         ),
@@ -95,13 +95,13 @@ def test_every_family_translates_to_its_criterion_key(
 @pytest.mark.parametrize(
     ("raw", "authoring"),
     [
-        ({"family": "lint", "target": "t"}, {"lint_clean": ["t"]}),
+        ({"family": "LINT", "target": "t"}, {"lint_clean": ["t"]}),
         (
-            {"family": "synth", "target": "t", "thresholds": {"cell_count_max": 3}},
+            {"family": "SYNTH", "target": "t", "thresholds": {"cell_count_max": 3}},
             {"synthesis_ok": {"targets": ["t"], "cell_count_max": 3}},
         ),
         (
-            {"family": "coverage", "target": "t", "metrics": {"line": 9}, "tests": ["a"]},
+            {"family": "COVERAGE", "target": "t", "metrics": {"line": 9}, "tests": ["a"]},
             {
                 "coverage": [
                     {"targets": ["t"], "metrics": {"line": {"min_pct": 9}}, "tests": ["a"]}
@@ -109,7 +109,7 @@ def test_every_family_translates_to_its_criterion_key(
             },
         ),
         (
-            {"family": "review", "review": "tb_quality", "verdict": "clean"},
+            {"family": "REVIEW", "review": "tb_quality", "verdict": "clean"},
             {"review_tb_quality": None},
         ),
     ],
@@ -123,14 +123,14 @@ def test_criterion_specs_equal_the_ticket_authoring_ones(
 
 
 def test_goals_are_mandatory_criteria() -> None:
-    result = translate({"family": "lint", "target": "a"}, {"family": "sim", "target": "a"})
+    result = translate({"family": "LINT", "target": "a"}, {"family": "SIM", "target": "a"})
     assert all(spec.mandatory for spec in result.criteria)
     assert [goal.family for goal in result.goals] == [GoalFamily.LINT, GoalFamily.SIM]
 
 
 def test_a_candidate_target_that_does_not_exist_yet_is_accepted() -> None:
     # Translation never consults the Target catalog; entry warns later (Phase 2).
-    (goal,) = translate({"family": "synth", "target": "synth_not_written_yet"}).goals
+    (goal,) = translate({"family": "SYNTH", "target": "synth_not_written_yet"}).goals
     assert goal.target == "synth_not_written_yet"
 
 
@@ -138,25 +138,25 @@ def test_a_candidate_target_that_does_not_exist_yet_is_accepted() -> None:
     ("raw", "message"),
     [
         (
-            {"family": "synth", "target": "t", "thresholds": {"clk.area_um2_max": 1}},
-            "Unknown synthesis_ok params",
+            {"family": "SYNTH", "target": "t", "thresholds": {"clk.area_um2_max": 1}},
+            "Unknown parameters",
         ),
         (
             {
-                "family": "synth",
+                "family": "SYNTH",
                 "target": "t",
                 "thresholds": {"area_um2_max": 1, "area_kge_max": 1},
             },
             "mutually exclusive",
         ),
-        ({"family": "fpga", "target": "new", "baseline": "old"}, "relative threshold"),
-        ({"family": "cycle_count", "target": "t", "test": "x", "thresholds": {}}, "at least one"),
+        ({"family": "FPGA", "target": "new", "baseline": "old"}, "relative threshold"),
+        ({"family": "CYCLE_COUNT", "target": "t", "test": "x", "thresholds": {}}, "at least one"),
         (
-            {"family": "coverage", "target": "t", "metrics": {"line": 120}, "tests": "all"},
+            {"family": "COVERAGE", "target": "t", "metrics": {"line": 120}, "tests": "all"},
             r"\(0, 100\]",
         ),
-        ({"family": "mutation", "target": "t", "min_detected": 9, "total": 3}, "cannot exceed"),
-        ({"family": "synth", "target": "t", "thresholds": {"area_increase_at_most": 5}}, "'%'"),
+        ({"family": "MUTATION", "target": "t", "min_detected": 9, "total": 3}, "cannot exceed"),
+        ({"family": "SYNTH", "target": "t", "thresholds": {"area_increase_at_most": 5}}, "'%'"),
     ],
 )
 def test_criteria_rules_reject_bad_goals_and_name_the_argument(
@@ -171,12 +171,12 @@ def test_criteria_rules_reject_bad_goals_and_name_the_argument(
 
 
 def _synth(origin: str, **thresholds: Any) -> dict[str, Any]:
-    return {"family": "synth", "target": "synth_u", "thresholds": thresholds, "origin": origin}
+    return {"family": "SYNTH", "target": "synth_u", "thresholds": thresholds, "origin": origin}
 
 
 def _cycle(origin: str, **thresholds: Any) -> dict[str, Any]:
     return {
-        "family": "cycle_count",
+        "family": "CYCLE_COUNT",
         "target": "sim_u",
         "test": "t",
         "thresholds": thresholds,
@@ -256,25 +256,28 @@ def test_same_key_merges_to_the_stricter_threshold(
         assert goal.params == {**identity, **expected}
         assert set(goal.origins) == {first["origin"], second["origin"]}
         assert len(result.warnings) == 1
-        assert goal.key in result.warnings[0]
+        assert goal.family.name + ":" + str(goal.target) in result.warnings[0]
+        assert goal.key not in result.warnings[0]
 
 
 def test_identical_goals_merge_with_a_warning() -> None:
     result = translate(
-        {"family": "lint", "target": "a", "origin": "feature"},
-        {"family": "lint", "target": "a", "origin": "refactor"},
-        {"family": "sim", "target": "a"},
+        {"family": "LINT", "target": "a", "origin": "feature"},
+        {"family": "LINT", "target": "a", "origin": "refactor"},
+        {"family": "SIM", "target": "a"},
     )
     assert [goal.key for goal in result.goals] == ["lint_clean_a", "sim_pass_a"]
     assert result.goals[0].origins == ("feature", "refactor")
-    assert result.warnings == ("Goal lint_clean_a from feature, refactor merged: identical Goals",)
+    assert result.warnings == (
+        "Goal LINT:a (no unwaived findings) from feature, refactor merged: identical Goals",
+    )
 
 
 def test_review_clean_wins_over_done_for_the_same_review() -> None:
     result = translate(
-        {"family": "review", "review": "rtl_bugs", "verdict": "done", "origin": "feature"},
-        {"family": "review", "review": "rtl_bugs", "verdict": "clean", "origin": "ad-hoc"},
-        {"family": "review", "review": "tb_quality", "verdict": "done"},
+        {"family": "REVIEW", "review": "rtl_bugs", "verdict": "done", "origin": "feature"},
+        {"family": "REVIEW", "review": "rtl_bugs", "verdict": "clean", "origin": "ad-hoc"},
+        {"family": "REVIEW", "review": "tb_quality", "verdict": "done"},
     )
     assert [goal.key for goal in result.goals] == [
         "review_rtl_bugs_clean",
@@ -287,7 +290,7 @@ def test_review_clean_wins_over_done_for_the_same_review() -> None:
 def test_coverage_floors_merge_per_metric() -> None:
     def coverage(origin: str, metrics: dict[str, int]) -> dict[str, Any]:
         return {
-            "family": "coverage",
+            "family": "COVERAGE",
             "target": "s",
             "metrics": metrics,
             "tests": ["b", "a"],
@@ -311,13 +314,13 @@ def test_coverage_floors_merge_per_metric() -> None:
     [
         (
             {
-                "family": "synth",
+                "family": "SYNTH",
                 "target": "c",
                 "baseline": "b1",
                 "thresholds": {"area_increase_at_most": "1%"},
             },
             {
-                "family": "synth",
+                "family": "SYNTH",
                 "target": "c",
                 "baseline": "b2",
                 "thresholds": {"area_increase_at_most": "1%"},
@@ -325,18 +328,18 @@ def test_coverage_floors_merge_per_metric() -> None:
             "different baseline Targets",
         ),
         (
-            {"family": "coverage", "target": "s", "metrics": {"line": 1}, "tests": "all"},
-            {"family": "coverage", "target": "s", "metrics": {"line": 1}, "tests": ["a"]},
+            {"family": "COVERAGE", "target": "s", "metrics": {"line": 1}, "tests": "all"},
+            {"family": "COVERAGE", "target": "s", "metrics": {"line": 1}, "tests": ["a"]},
             "different coverage test selections",
         ),
         (
-            {"family": "mutation", "target": "s", "min_detected": 8, "total": 10},
-            {"family": "mutation", "target": "s", "min_detected": 8, "total": 12},
+            {"family": "MUTATION", "target": "s", "min_detected": 8, "total": 10},
+            {"family": "MUTATION", "target": "s", "min_detected": 8, "total": 12},
             "different mutation scope, total, or auto",
         ),
         (
-            {"family": "review", "review": "rtl_spec", "verdict": "clean", "spec": "a.md"},
-            {"family": "review", "review": "rtl_spec", "verdict": "clean", "spec": "b.md"},
+            {"family": "REVIEW", "review": "rtl_spec", "verdict": "clean", "spec": "a.md"},
+            {"family": "REVIEW", "review": "rtl_spec", "verdict": "clean", "spec": "b.md"},
             "different spec files",
         ),
         (_synth("x", area_um2_max=1), _synth("y", area_kge_max=1), "mutually exclusive"),
@@ -368,9 +371,9 @@ def test_disjoint_thresholds_are_listed_per_origin_not_called_identical() -> Non
 
 
 def test_a_goal_without_relative_thresholds_has_no_baseline_opinion() -> None:
-    plain = {"family": "synth", "target": "t", "origin": "feature"}
+    plain = {"family": "SYNTH", "target": "t", "origin": "feature"}
     paired = {
-        "family": "synth",
+        "family": "SYNTH",
         "target": "t",
         "baseline": "b",
         "thresholds": {"area_reduce_at_least": "5%"},
@@ -382,9 +385,9 @@ def test_a_goal_without_relative_thresholds_has_no_baseline_opinion() -> None:
 
 
 def test_a_relative_threshold_without_baseline_compares_against_the_candidate() -> None:
-    own = {"family": "synth", "target": "t", "thresholds": {"area_increase_at_most": "1%"}}
+    own = {"family": "SYNTH", "target": "t", "thresholds": {"area_increase_at_most": "1%"}}
     paired = {
-        "family": "synth",
+        "family": "SYNTH",
         "target": "t",
         "baseline": "b",
         "thresholds": {"area_reduce_at_least": "5%"},
@@ -396,7 +399,7 @@ def test_a_relative_threshold_without_baseline_compares_against_the_candidate() 
 def test_mutation_min_detected_merges_upward_when_the_rest_agree() -> None:
     def mutation(origin: str, detected: int) -> dict[str, Any]:
         return {
-            "family": "mutation",
+            "family": "MUTATION",
             "target": "s",
             "scope": ["rtl/a.sv"],
             "min_detected": detected,
@@ -421,33 +424,33 @@ _HOSTILE_THRESHOLDS: list[dict[str, Any]] = [
 
 def _hostile_goals() -> list[dict[str, Any]]:
     goals: list[dict[str, Any]] = [
-        {"family": "lint", "target": "wanted"},
-        {"family": "sim", "target": "wanted"},
-        {"family": "elab", "target": "wanted"},
-        {"family": "coverage", "target": "wanted", "metrics": {"line": 5}, "tests": ["a"]},
-        {"family": "coverage", "target": "wanted", "metrics": {"targets": 5}, "tests": "all"},
-        {"family": "mutation", "target": "wanted", "min_detected": 1, "total": 2},
-        {"family": "mutation", "target": "wanted", "targets": ["other"]},
-        {"family": "synth", "target": "wanted", "thresholds": {"cell_count_max": 3}},
+        {"family": "LINT", "target": "wanted"},
+        {"family": "SIM", "target": "wanted"},
+        {"family": "ELAB", "target": "wanted"},
+        {"family": "COVERAGE", "target": "wanted", "metrics": {"line": 5}, "tests": ["a"]},
+        {"family": "COVERAGE", "target": "wanted", "metrics": {"targets": 5}, "tests": "all"},
+        {"family": "MUTATION", "target": "wanted", "min_detected": 1, "total": 2},
+        {"family": "MUTATION", "target": "wanted", "targets": ["other"]},
+        {"family": "SYNTH", "target": "wanted", "thresholds": {"cell_count_max": 3}},
         {
-            "family": "fpga",
+            "family": "FPGA",
             "target": "wanted",
             "baseline": "old",
             "thresholds": {"lut_count_reduce_at_least": "1%"},
         },
         {
-            "family": "cycle_count",
+            "family": "CYCLE_COUNT",
             "target": "wanted",
             "test": "smoke",
             "thresholds": {"cycle_count_max": 2},
         },
     ]
     for thresholds in _HOSTILE_THRESHOLDS:
-        goals.append({"family": "synth", "target": "wanted", "thresholds": thresholds})
-        goals.append({"family": "fpga", "target": "wanted", "thresholds": thresholds})
+        goals.append({"family": "SYNTH", "target": "wanted", "thresholds": thresholds})
+        goals.append({"family": "FPGA", "target": "wanted", "thresholds": thresholds})
         goals.append(
             {
-                "family": "cycle_count",
+                "family": "CYCLE_COUNT",
                 "target": "wanted",
                 "test": "smoke",
                 "thresholds": thresholds,
@@ -468,7 +471,7 @@ def test_goal_key_and_target_always_follow_the_goal_argument(raw: dict[str, Any]
     spec = criterion_spec(goal)
     assert spec.expand([]) == [(goal.key, True)]
     assert goal.target == "wanted"
-    if raw["family"] == "cycle_count":
+    if raw["family"] == "CYCLE_COUNT":
         assert goal.key == cycle_count_criterion_key("wanted", "smoke")
         assert (spec.params["target"], spec.params["test"]) == ("wanted", "smoke")
     else:

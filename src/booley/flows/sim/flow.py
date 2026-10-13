@@ -3418,6 +3418,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             DevelopmentState.load(self.args.state_file)
             if self.args.state_file
             else DevelopmentState(),
+            recorder=self.context._acceptance_recorder,
         )
         prepared = prepare_coverage_invocation(
             CoverageInvocationRequest(
@@ -3496,6 +3497,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                     if self.args.state_file
                     else DevelopmentState()
                 ),
+                recorder=self.context._acceptance_recorder,
             )
             selection = self._selected_target_selection()
             prepared = prepare_coverage_invocation(

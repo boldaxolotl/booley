@@ -457,7 +457,7 @@ toolchain_sha256 = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
 required_targets = ["sim"]
 
 [[required_goal]]
-family = "sim"
+family = "SIM"
 target = "sim"
 
 [[generated_input]]
@@ -475,7 +475,7 @@ targets = ["sim"]
 _DUPLICATE_BINDING = """target = "sim"
 
 [[required_goal]]
-family = "sim"
+family = "SIM"
 target = "sim"
 
 [[generated_input]]"""
@@ -543,12 +543,12 @@ _INVALID_CONTRACT_CASES = [
     ),
     pytest.param(("[[required_goal]]", "[[other_binding]]"), "required_goal", id="bindings"),
     pytest.param(
-        ('family = "sim"', "family = 7"),
+        ('family = "SIM"', "family = 7"),
         "required_goal[0].family",
         id="malformed-binding",
     ),
     pytest.param(
-        ('family = "sim"', 'family = " "'),
+        ('family = "SIM"', 'family = " "'),
         "required_goal[0].family must be a non-empty string",
         id="empty-binding",
     ),
@@ -758,7 +758,7 @@ def _demo_contract() -> DemoContract:
         toolchain_url="https://example.invalid/toolchain.tar.gz",
         toolchain_sha256="c" * 64,
         required_targets=("sim",),
-        required_goals=(parse_goal_arg({"family": "sim", "target": "sim"}),),
+        required_goals=(parse_goal_arg({"family": "SIM", "target": "sim"}),),
         generated_inputs=(GeneratedInput("image.hex", "Makefile", ("sim",)),),
     )
 
@@ -845,7 +845,7 @@ def test_demo_contract_cli_reports_success_and_errors(
     "field", ["optional = true", "criterion = 'LINT'", "min_detected = 0", "auto = false"]
 )
 def test_goal_contract_rejects_legacy_and_invalid_mutation_fields(tmp_path, field) -> None:
-    path = _write_contract(tmp_path, ('family = "sim"', f'family = "mutation"\n{field}'))
+    path = _write_contract(tmp_path, ('family = "SIM"', f'family = "MUTATION"\n{field}'))
     with pytest.raises(DemoContractError, match=r"unknown fields|positive|true"):
         load_contract(path)
 
@@ -868,10 +868,18 @@ def test_contract_goals_use_real_entry_grammar_and_keep_mutation() -> None:
 
 @pytest.mark.parametrize("field", ["family", "target"])
 def test_goal_contract_uses_entry_boundary_normalization(tmp_path, field):
-    original = 'family = "sim"' if field == "family" else 'target = "sim"'
-    path = _write_contract(tmp_path, (original, original.replace('"sim"', '" sim "')))
+    original = 'family = "SIM"' if field == "family" else 'target = "sim"'
+    path = _write_contract(
+        tmp_path,
+        (
+            original,
+            original.replace('"SIM"', '" SIM "')
+            if field == "family"
+            else original.replace('"sim"', '" sim "'),
+        ),
+    )
     goals = load_contract(path).required_goals
-    assert goals == (parse_goal_arg({"family": "sim", "target": "sim"}),)
+    assert goals == (parse_goal_arg({"family": "SIM", "target": "sim"}),)
 
 
 def test_typed_goals_encode_for_mcp_without_sharing_nested_maps():

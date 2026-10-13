@@ -135,7 +135,7 @@ def test_entering_record_is_refused(layout: SimpleNamespace) -> None:
     request = EntryRequest(
         work_dir=layout.worktree,
         slug="evidence",
-        goals=parse_goal_args([{"family": "lint", "target": "top"}]),
+        goals=parse_goal_args([{"family": "LINT", "target": "top"}]),
     )
     with pytest.raises(_Crash):
         enter_goal_mode(request, EntryEnvironment(project_dir=layout.control, on_boundary=crash))

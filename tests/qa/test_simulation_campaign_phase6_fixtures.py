@@ -148,9 +148,9 @@ def _campaign_specs() -> tuple[GoalSpec, ...]:
     return translate_goals(
         parse_goal_args(
             [
-                {"family": "sim", "target": "sim_toggle"},
+                {"family": "SIM", "target": "sim_toggle"},
                 {
-                    "family": "coverage",
+                    "family": "COVERAGE",
                     "target": "sim_toggle",
                     "tests": ["half"],
                     "metrics": {"toggle": 50},

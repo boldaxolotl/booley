@@ -205,6 +205,22 @@ def _format_validation_error(error: ValidationError) -> str:
     path = "$"
     for part in error.absolute_path:
         path += f"[{part}]" if isinstance(part, int) else f".{part}"
+    if (
+        error.validator == "oneOf"
+        and isinstance(error.instance, dict)
+        and "family" in error.instance
+    ):
+        # Goal schemas expose public capabilities only. jsonschema's oneOf message
+        # echoes the rejected object, including internal family names and nested values.
+        capabilities = [
+            variant.get("properties", {}).get("family", {}).get("const")
+            for variant in error.validator_value
+        ]
+        if capabilities and all(isinstance(token, str) for token in capabilities):
+            return (
+                f"Invalid Goal arguments at {path}: use a supported uppercase capability "
+                f"({', '.join(capabilities)}) and its declared fields"
+            )
     return f"Invalid tool arguments at {path}: {error.message}"
 
 

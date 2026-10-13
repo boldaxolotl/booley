@@ -303,7 +303,7 @@ def _readiness_client(workspace, goals, record, monkeypatch, warning=""):
 def test_readiness_rejects_unresolved_record_targets_without_warning_prose(
     readiness_workspace, monkeypatch, target
 ) -> None:
-    goals = [parse_goal_arg({"family": "lint", "target": target or "lint_core"})]
+    goals = [parse_goal_arg({"family": "LINT", "target": target or "lint_core"})]
     key = driver.translate_goals(goals).goals[0].key
     record = SimpleNamespace(
         state=driver.GoalState.ACTIVE,

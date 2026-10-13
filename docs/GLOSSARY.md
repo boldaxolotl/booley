@@ -69,6 +69,11 @@ A named, mandatory boolean condition held by a session in Goal Mode, met only by
 The internal [Criterion](#execution-and-evidence) vocabulary remains in shared evaluation code; use Goal for the public success condition.
 _Avoid_: Criterion, acceptance criterion, optional criterion, check, gate
 
+**Goal Name**:
+The single human-visible name of a **Goal**: its uppercase capability and Target,
+or its review kind for a review Goal. Requirements appear beside the name.
+_Avoid_: Criterion key, family key, encoded key, Goal label
+
 **Goalset**:
 A named, Project-owned bundle of Goals, written as free-form prose that the Developer Agent translates into Goals when entering Goal Mode.
 _Avoid_: Ticket Creation Guidance, criteria defaults, goal profile
