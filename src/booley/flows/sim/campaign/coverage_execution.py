@@ -706,6 +706,8 @@ def _nested_evidence_matches(
 def _failure_test(item: Mapping[str, object]) -> dict[str, object]:
     return {
         "name": item["test"],
+        # Absent in a result written before observations named Test Runs.
+        **({"test_run": item["test_run"]} if "test_run" in item else {}),
         "verdict": item["functional"],
         "passed": item["functional"] == "pass",
         "failure_kind": item["failure_class"] or "",

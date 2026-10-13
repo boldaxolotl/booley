@@ -13,6 +13,7 @@ from booley.core.file_lock import active_child_lease_fd
 from booley.flows.eda_failures import find_missing_executable
 from booley.flows.sim.config import resolve_pre_sim_commands, resolve_run_cwd
 from booley.flows.sim.live_progress import observe_stage
+from booley.flows.test_runs import TestRun
 from booley.runtime.execution_records import RUNTIME_EXECUTION_ENV
 from booley.runtime.platform_paths import (
     bash_bin,
@@ -47,8 +48,13 @@ def run_pre_sim_commands(
     run_cwd: str | None = None,
     working_directory: Path | None = None,
     expose_build_root: bool = True,
+    test_runs: tuple[TestRun, ...] = (),
 ) -> PreSimEvidence | None:
-    """Run the hook once for a native test or once for a Cocotb batch."""
+    """Run the hook once for a native test or once for a Cocotb batch.
+
+    *test_runs* are the concrete Test Runs the firing prepares; the hook sees
+    them through the ``BOOLEY_TEST_RUN_*`` variables.
+    """
     root = handle.project_root
     resolved_commands = tuple(resolve_pre_sim_commands(root)) if commands is None else commands
     if not resolved_commands:
@@ -65,6 +71,7 @@ def run_pre_sim_commands(
         simulator_environment=simulator_environment,
         run_cwd=run_cwd,
         expose_build_root=expose_build_root,
+        test_runs=test_runs,
     )
     return _invoke_pre_sim(
         resolved_commands,
@@ -84,6 +91,7 @@ def _pre_sim_environment(
     simulator_environment: Mapping[str, str] | None,
     run_cwd: str | None,
     expose_build_root: bool,
+    test_runs: tuple[TestRun, ...] = (),
 ) -> dict[str, str]:
     """Build the Project-scoped environment for one hook firing."""
     root = handle.project_root
@@ -107,12 +115,50 @@ def _pre_sim_environment(
         environment["BOOLEY_PROJECT_DIR"] = str(resolve_project_dir(root))
     if len(test_names) == 1:
         environment["BOOLEY_TEST_NAME"] = test_names[0]
+    for name in TEST_RUN_VARIABLES:
+        # An inherited value would describe some other firing.
+        environment.pop(name, None)
+    environment.update(test_run_environment(test_runs))
     try:
         cache_root = resolve_checkout_project_dir(root) / ".runtime" / "python-artifacts"
     except (OSError, RuntimeError, ValueError):
         cache_root = build_root / "python-artifacts"
     scope = f"pre-sim:{handle.selector}:{resolved_run_cwd}:{' '.join(test_names)}"
     return relocate_python_artifacts(environment, cache_root, pytest_scope=scope)
+
+
+#: Every variable that describes the Test Runs of one hook firing.
+TEST_RUN_VARIABLES = (
+    "BOOLEY_TEST_RUN_NAMES",
+    "BOOLEY_TEST_RUN_NAME",
+    "BOOLEY_TEST_VARIANT",
+    "BOOLEY_TEST_SEED",
+)
+
+
+def test_run_environment(test_runs: tuple[TestRun, ...]) -> dict[str, str]:
+    """The ``BOOLEY_TEST_RUN_*`` variables of a firing for *test_runs*.
+
+    ``BOOLEY_TEST_NAME(S)`` keep bare Test names for existing hooks. These add
+    the resolved names: ``BOOLEY_TEST_RUN_NAMES`` (space-joined), and for a
+    firing of exactly one Test Run its name, its Test Variant (when the Test
+    declares Variants) and its seed (when the Target is seeded).
+    """
+    if not test_runs:
+        return {}
+    variables = {"BOOLEY_TEST_RUN_NAMES": " ".join(run.name for run in test_runs)}
+    if len(test_runs) == 1:
+        run = test_runs[0]
+        variables["BOOLEY_TEST_RUN_NAME"] = run.name
+        if run.variant is not None:
+            variables["BOOLEY_TEST_VARIANT"] = run.variant
+        if run.seed is not None:
+            variables["BOOLEY_TEST_SEED"] = str(run.seed)
+    return variables
+
+
+# Not a pytest test, although its name starts with ``test_``.
+test_run_environment.__test__ = False  # type: ignore[attr-defined]
 
 
 def _invoke_pre_sim(

@@ -325,15 +325,13 @@ def test_mutation_snapshot_proposals_resolve_live_wip(tmp_path, monkeypatch, tb_
         return AgentResult(output=_mutation_output(path), session_id="resume-id")
 
     monkeypatch.setattr("booley.specialists.specialist._call_agent_sync", provider)
-    specs, _, error = endpoint._proposal_round(
-        _mutation_plan(repo), f"Read {repo / 'rtl/dut.sv'}", 1, {"rtl/dut.sv"}
-    )
+    specs, _, error = endpoint._proposal_round(f"Read {repo / 'rtl/dut.sv'}", 1)
     assert error is None
     assert specs[0].file == "rtl/dut.sv"
     resolved, problem = endpoint._resolve_proposals(specs, _mutation_plan(repo))
     assert problem == "" and resolved is not None
-    assert resolved._mutations[0].original == b"live + b"
-    assert resolved._mutations[0].line == 1
+    assert resolved.mutations[0].original == b"live + b"
+    assert resolved.mutations[0].line == 1
     assert (repo / "rtl/dut.sv").read_text() == "assign x = live + b;\n"
     assert (repo / "tracked.sv").read_text() == "concurrent author\n"
     assert all(not root.exists() for root in snapshots)
@@ -364,9 +362,7 @@ def test_mutation_snapshot_resume_paths(tmp_path, monkeypatch, returned_path):
 
     monkeypatch.setattr("booley.specialists.specialist._call_agent_sync", provider)
     for round_idx in (1, 2):
-        specs, _, error = endpoint._proposal_round(
-            _mutation_plan(repo), "propose", round_idx, None
-        )
+        specs, _, error = endpoint._proposal_round("propose", round_idx)
         assert error is None
         resolved, problem = endpoint._resolve_proposals(specs, _mutation_plan(repo))
         if round_idx == 2 and returned_path != "current":
@@ -388,7 +384,7 @@ def test_mutation_snapshot_cleanup_on_provider_exception(tmp_path, monkeypatch):
         raise RuntimeError("provider failed")
 
     monkeypatch.setattr("booley.specialists.specialist._call_agent_sync", provider)
-    specs, elapsed, error = endpoint._proposal_round(_mutation_plan(repo), "propose", 1, None)
+    specs, elapsed, error = endpoint._proposal_round("propose", 1)
     assert specs == [] and elapsed == 0 and error.exit_code == 2
     assert (repo / "tb/tb.sv").is_file()
     assert all(not root.exists() for root in snapshots)

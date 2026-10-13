@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -14,11 +14,13 @@ from booley.criteria.state import CriterionChange, CriterionEntry, DevelopmentSt
 from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
 from booley.flows.criterion_freshness import build_criterion_freshness
 from booley.flows.execution_persistence import AcceptanceRecorder, EvidenceDiscarded
+from booley.flows.sim.campaign.test_run_report import test_run_grade, test_run_row
+from booley.flows.test_runs import TestRun, build_test_run
 
 from .coverage_projection import project_coverage_criterion
 
 if TYPE_CHECKING:
-    from .coverage_campaign import CoverageCampaign
+    from .coverage_campaign import CoverageCampaign, CoverageRun
     from .coverage_invocation import CoverageTargetPlan
 
 
@@ -144,21 +146,70 @@ def _apply_coverage_aliases(
     return changes
 
 
+def coverage_test_run_rows(
+    test_runs: Sequence[TestRun], runs: Sequence[CoverageRun]
+) -> list[dict[str, object]]:
+    """One row per collected run: the Test Run it is, and how it ended.
+
+    *test_runs* are the Test Runs the invocation froze before collection; a
+    row takes its Test Variant, seed, arguments and environment from there,
+    never from the current ``tests.toml``. A run collected without frozen
+    Test Runs is the bare Test with no declared inputs. A run whose recorded
+    fingerprint is not the frozen Test Run's has no row.
+    """
+    frozen = {run.name: run for run in test_runs}
+    rows: list[dict[str, object]] = []
+    for run in runs:
+        test_run = frozen.get(run.test_run) or _bare_test_run(run)
+        if test_run is None or test_run.fingerprint != run.fingerprint:
+            continue
+        rows.append(test_run_row(test_run, _run_grade(run)))
+    return rows
+
+
+def _bare_test_run(run: CoverageRun) -> TestRun | None:
+    """The Test Run of a run that names only its Test, when that is a Test name."""
+    if run.test_run != run.test:
+        return None
+    try:
+        return build_test_run(run.test)
+    except ValueError:
+        return None
+
+
+def _run_grade(run: CoverageRun) -> str:
+    """Grade a coverage run."""
+    return test_run_grade(
+        passed=run.simulation_verdict == "pass",
+        infrastructure=run.attributes.get("failure_kind") == "infrastructure",
+        inconclusive=run.simulation_verdict == "inconclusive",
+    )
+
+
 def _simulation_detail(
     plan: CoverageTargetPlan, campaign: CoverageCampaign, path: Path
 ) -> dict[str, Any]:
     del path
     selected = list(plan.selected_tests)
+    # Evidence names Tests. A Test passed only when every one of its Test Runs
+    # passed, so one passing run never stands in for a failing run of the Test.
+    failed = list(
+        dict.fromkeys(run.test for run in campaign.runs if run.simulation_verdict != "pass")
+    )
+    passed = [
+        test for test in dict.fromkeys(run.test for run in campaign.runs) if test not in failed
+    ]
     return {
         "campaign_id": getattr(campaign, "campaign_id", "unavailable"),
         "target": plan.handle.identity,
         "selected_tests": selected,
         "registry_tests": list(plan.declared_tests),
         "test_selector": "all" if plan.selected_tests == plan.declared_tests else "partial",
-        "passed_tests": [run.test for run in campaign.runs if run.simulation_verdict == "pass"],
-        "failed_tests": [run.test for run in campaign.runs if run.simulation_verdict != "pass"],
-        "tests_passed": sum(run.simulation_verdict == "pass" for run in campaign.runs),
-        "tests_total": len(campaign.runs),
+        "passed_tests": passed,
+        "failed_tests": failed,
+        "tests_passed": len(passed),
+        "tests_total": len(passed) + len(failed),
+        "test_runs": coverage_test_run_rows(plan.test_runs, campaign.runs),
     }
 
 

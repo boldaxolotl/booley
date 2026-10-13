@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from booley.flows.sim import campaign_reports
+from booley.flows.sim.test_run_invocation import TestRunInvocation
 from tests.flows.sim.test_verilator_build_reuse_campaign import flow_project
 from tests.runtime.test_sandbox_layout import project_alias
 
@@ -234,6 +235,7 @@ def test_endpoint_cycle_budget_includes_pre_sim_hook_lines(monkeypatch):
         context=SimpleNamespace(_reserved_invocation_dir=None),
         _campaign_completed_display_label=lambda _outcomes: None,
         _report_destination=lambda: None,
+        _test_runs=TestRunInvocation(),
     )
     outcome = SimpleNamespace(
         target={"selector": "sim"},
@@ -974,7 +976,7 @@ def test_original_renderer_and_detail_errors_precede_hook_probe(tmp_path, monkey
 
     events = []
 
-    def base(*_args, report_path=None):
+    def base(*_args, report_path=None, default_seeds=None):
         events.append("base")
         if fault == "base":
             raise KeyError("original base")
@@ -994,6 +996,7 @@ def test_original_renderer_and_detail_errors_precede_hook_probe(tmp_path, monkey
         context=SimpleNamespace(_reserved_invocation_dir=tmp_path),
         _current_published_pre_sim_keys=set(),
         _report_destination=lambda: None,
+        _test_runs=TestRunInvocation(),
     )
     outcome = SimpleNamespace(
         target={"selector": "sim"},

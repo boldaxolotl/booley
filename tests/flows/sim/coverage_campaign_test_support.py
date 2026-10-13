@@ -9,6 +9,20 @@ import json
 from pathlib import Path
 
 
+def rewrite_manifest_as_older_schema(manifest: dict, version: int) -> None:
+    """Turn a freshly published manifest into what Booley wrote at v3 or v4.
+
+    Runs named a bare Test before v5, and v3 had no scoring state.
+    """
+    assert version in {3, 4}
+    manifest["$schema"] = f"booley.coverage-campaign/v{version}"
+    for run in manifest["tests"]["runs"]:
+        for field in ("test_run", "variant", "seed", "fingerprint"):
+            del run[field]
+    if version == 3:
+        del manifest["scoring"]
+
+
 def corrupt_v3_campaign_with_duplicate_negative_point(
     campaign_path: Path, *, run_id: str = "run:reset"
 ) -> None:

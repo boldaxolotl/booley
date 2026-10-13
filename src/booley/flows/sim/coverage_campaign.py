@@ -26,8 +26,11 @@ from booley.core.boundary import (
     require_finite_number,
     require_int,
     require_list,
+    require_sha256_digest,
     require_str,
+    require_str_value,
 )
+from booley.flows.test_runs import build_test_run, declared_inputs_fingerprint
 from booley.runtime.timefmt import parse_timestamp, rfc3339_from_epoch
 
 DurableTargetIdentity = NewType("DurableTargetIdentity", str)
@@ -59,6 +62,9 @@ _METRIC_SEMANTICS = {
     "cover_property": "One user-authored cover-property point; covered when count is greater than zero.",
 }
 _WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
+#: Fingerprint of a run that records no Test Variant: no declared arguments or
+#: environment. It is what a run of a document older than storage v5 had.
+NO_DECLARED_INPUTS_FINGERPRINT = declared_inputs_fingerprint((), {})
 _TOP_LEVEL_FIELDS = (
     ("$schema", "string"),
     ("campaign_id", "string"),
@@ -134,7 +140,15 @@ class CoverageCollector:
 
 @dataclass(frozen=True)
 class CoverageRun:
-    """Independent simulation and collection truth for one selected test."""
+    """Independent simulation and collection truth for one Test Run.
+
+    ``test`` is the bare Test; ``test_run`` is the resolved Test Run name
+    (``test[+variant][@seed]``, ADR 0072) and ``fingerprint`` covers the Test
+    Variant's declared arguments and environment. Both are always explicit: a
+    run decoded from storage older than v5 is given the bare Test and
+    :data:`NO_DECLARED_INPUTS_FINGERPRINT` by the decoder, which is what
+    every run recorded then was.
+    """
 
     id: str
     test: str
@@ -142,6 +156,12 @@ class CoverageRun:
     collection: CoverageRunCollectionState
     raw_artifact: str | None
     attributes: Mapping[str, FrozenJson]
+    test_run: str
+    fingerprint: str
+    #: The Test Variant and seed the Test Run name states; ``None`` when it
+    #: has none (no Test Variants declared, an unseeded Target).
+    variant: str | None
+    seed: int | None
 
 
 @dataclass(frozen=True)
@@ -542,6 +562,29 @@ def _validate_run_shapes(runs: list[object], findings: list[CoverageFinding]) ->
             )
         if "raw_artifact" in run:
             _check_field(run, "raw_artifact", "string", pointer, findings)
+        _validate_run_identity_shape(run, pointer, findings)
+
+
+#: What a run records about its Test Run (storage v5): all of them, or none.
+RUN_IDENTITY_FIELDS = ("test_run", "variant", "seed", "fingerprint")
+
+
+def _validate_run_identity_shape(
+    run: Mapping[str, object], pointer: str, findings: list[CoverageFinding]
+) -> None:
+    """A run records its whole Test Run identity, or none of it (before v5)."""
+    present = [field for field in RUN_IDENTITY_FIELDS if field in run]
+    for field in ("test_run", "fingerprint"):
+        if field in run:
+            _check_field(run, field, "string", pointer, findings)
+    if present and len(present) != len(RUN_IDENTITY_FIELDS):
+        findings.append(
+            _error(
+                "COV_TEST_RUN_IDENTITY_INCOMPLETE",
+                pointer,
+                "A run must record test_run, variant, seed and fingerprint together.",
+            )
+        )
 
 
 def _validate_tests_shape(tests: Mapping[str, object], findings: list[CoverageFinding]) -> None:
@@ -908,15 +951,15 @@ def _validate_tests(document: Mapping[str, object]) -> tuple[list[CoverageFindin
                     f"Selected test {test!r} is not declared by the Target.",
                 )
             )
-        matching_runs = [run for run in runs if str(run["test"]) == str(test)]
-        if len(matching_runs) != 1:
+        if not any(str(run["test"]) == str(test) for run in runs):
             findings.append(
                 _error(
                     "COV_SELECTED_TEST_RUN_CARDINALITY",
                     f"/tests/selected/{index}",
-                    f"Selected test {test!r} must have exactly one simulator run.",
+                    f"Selected test {test!r} must have at least one simulator run.",
                 )
             )
+    findings.extend(_test_run_identity_findings(runs))
     for index, run in enumerate(runs):
         if str(run["test"]) not in selected_set:
             findings.append(
@@ -928,6 +971,56 @@ def _validate_tests(document: Mapping[str, object]) -> tuple[list[CoverageFindin
             )
     run_ids = {str(run["id"]) for run in runs}
     return findings, run_ids
+
+
+def _test_run_of(run: Mapping[str, object]) -> str:
+    """The Test Run a run document records; the bare Test before storage v5."""
+    return str(run.get("test_run", run["test"]))
+
+
+def _test_run_identity_problem(run: Mapping[str, object]) -> str:
+    """Why a run's recorded Test Run identity is invalid; empty when it is valid.
+
+    The recorded name must be exactly the name of the recorded Test, Test
+    Variant and seed, under the Test Run name rules; the fingerprint is a
+    canonical SHA-256 digest.
+    """
+    name, test, variant, seed = run["test_run"], run["test"], run["variant"], run["seed"]
+    try:
+        require_sha256_digest(run["fingerprint"], field="fingerprint")
+        recorded = build_test_run(
+            require_str_value(test, field="test"),
+            variant=None if variant is None else require_str_value(variant, field="variant"),
+            seed=None if seed is None else require_int(seed, field="seed"),
+        )
+    except (BoundaryError, ValueError) as exc:
+        return str(exc)
+    if recorded.name != name:
+        return (
+            f"Test Run {name!r} is not the Test Run of Test {test!r}, Test Variant "
+            f"{variant!r} and seed {seed!r}."
+        )
+    return ""
+
+
+def _test_run_identity_findings(runs: list[object]) -> list[CoverageFinding]:
+    """Refuse two runs of one Test Run, and a run whose recorded identity is invalid."""
+    findings: list[CoverageFinding] = []
+    seen: set[str] = set()
+    for index, run in enumerate(runs):
+        assert isinstance(run, Mapping)
+        name = _test_run_of(run)
+        pointer = f"/tests/runs/{index}/test_run"
+        if name in seen:
+            findings.append(
+                _error("COV_TEST_RUN_DUPLICATE", pointer, f"Duplicate Test Run {name!r}.")
+            )
+        seen.add(name)
+        recorded = all(field in run for field in RUN_IDENTITY_FIELDS)
+        problem = _test_run_identity_problem(run) if recorded else ""
+        if problem:
+            findings.append(_error("COV_TEST_RUN_TEST_MISMATCH", pointer, problem))
+    return findings
 
 
 def _validate_artifacts(document: Mapping[str, object]) -> list[CoverageFinding]:
@@ -1583,7 +1676,14 @@ def _decode_capability(document: Mapping[str, object]) -> CoverageCapability:
 
 
 def _decode_run(document: Mapping[str, object]) -> CoverageRun:
-    known = {"id", "test", "simulation_verdict", "collection", "raw_artifact"}
+    known = {
+        "id",
+        "test",
+        "simulation_verdict",
+        "collection",
+        "raw_artifact",
+        *RUN_IDENTITY_FIELDS,
+    }
     return CoverageRun(
         id=str(document["id"]),
         test=str(document["test"]),
@@ -1593,7 +1693,31 @@ def _decode_run(document: Mapping[str, object]) -> CoverageRun:
         attributes=_freeze_mapping(
             {key: value for key, value in document.items() if key not in known}
         ),
+        **_decode_run_identity(document),
     )
+
+
+def _decode_run_identity(document: Mapping[str, object]) -> dict[str, object]:
+    """A run's Test Run name, Test Variant, seed and fingerprint, exactly as recorded.
+
+    Storage older than v5 records none of them: such a run was the bare Test
+    with no declared inputs. The Campaign validator has already checked a
+    recorded identity; nothing is coerced here.
+    """
+    if "test_run" not in document:
+        return {
+            "test_run": str(document["test"]),
+            "variant": None,
+            "seed": None,
+            "fingerprint": NO_DECLARED_INPUTS_FINGERPRINT,
+        }
+    variant, seed = document["variant"], document["seed"]
+    return {
+        "test_run": require_str_value(document["test_run"], field="test_run"),
+        "variant": None if variant is None else require_str_value(variant, field="variant"),
+        "seed": None if seed is None else require_int(seed, field="seed"),
+        "fingerprint": require_sha256_digest(document["fingerprint"], field="fingerprint"),
+    }
 
 
 def _decode_artifact(document: Mapping[str, object]) -> CoverageArtifact:
@@ -1814,6 +1938,10 @@ def _encode_run(run: CoverageRun) -> dict[str, object]:
     document: dict[str, object] = {
         "id": run.id,
         "test": run.test,
+        "test_run": run.test_run,
+        "variant": run.variant,
+        "seed": run.seed,
+        "fingerprint": run.fingerprint,
         "simulation_verdict": run.simulation_verdict,
         "collection": run.collection,
     }

@@ -69,6 +69,33 @@ def test_cocotb_adapter_supports_unfiltered_batch() -> None:
     assert "--runtime-input=firmware.hex" in command
 
 
+def test_cocotb_adapter_receives_the_seed_as_its_own_option() -> None:
+    work = PreparedSimulationWork(
+        adapter="cocotb",
+        build_dir="build/sim",
+        run_cwd=".",
+        timeout_s=20,
+        eda_tool="icarus",
+        cocotb_module="tests.counter",
+        tests=("test_a",),
+        cocotb_seed=2**31 - 1,
+    )
+    command = prepare_adapter_invocation(work)
+    assert command[command.index("--seed") + 1] == "2147483647"
+
+    unseeded = prepare_adapter_invocation(
+        PreparedSimulationWork(
+            adapter="cocotb",
+            build_dir="build/sim",
+            run_cwd=".",
+            timeout_s=20,
+            eda_tool="icarus",
+            cocotb_module="tests.counter",
+        )
+    )
+    assert "--seed" not in unseeded
+
+
 def test_transport_identity_is_all_or_nothing() -> None:
     with pytest.raises(ValueError, match="transport requires"):
         PreparedSimulationWork(

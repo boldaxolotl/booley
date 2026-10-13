@@ -49,6 +49,7 @@ from uuid import UUID
 
 from booley.core.file_lock import release_file_lock, wait_for_file_lock
 from booley.criteria.state import CriterionChange, DevelopmentState
+from booley.evidence.fields import ACCEPTANCE_FACTS_SCHEMAS
 from booley.runtime.atomic_files import WriteOnceConflictError, atomic_write_once
 from booley.runtime.timefmt import utc_now_rfc3339
 
@@ -353,7 +354,7 @@ def _acceptance_fact_identity(
         },
         "Simulation acceptance facts",
     )
-    if facts.get("$schema") != "booley.simulation-acceptance-facts/v1":
+    if facts.get("$schema") not in ACCEPTANCE_FACTS_SCHEMAS:
         raise AcceptanceLedgerError("unsupported Simulation acceptance facts schema")
     campaign_id = _campaign_uuid(facts.get("campaign_id"))
     manifest_sha256 = _sha256_field(facts.get("manifest_sha256"), "manifest_sha256")

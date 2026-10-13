@@ -233,6 +233,7 @@ booley flow sim --target sim_soc --test irq --coverage    # collect coverage (Ve
 | Option | Effect |
 |---|---|
 | `--test <name>` | Run one registered test by exact name. Repeat for more. |
+| `--seed <N\|random>` | Use seed `N` (1..2147483647) for every selected Test Run, or `random` to draw one seed per Test Run. Cannot be combined with a `--test` that names a seed (`test@seed`, `test@xN`). |
 | `--tests-file <path>` | Read exact test names from a file, one per line (blank lines and `#` comments ignored). Cannot be combined with `--test`. |
 | `--mode <simulate\|elab-only\|elab-only-standalone>` | Run tests (default), or only elaborate (see [Elaboration checks](#elaboration-checks)). |
 | `--trace` | Capture a waveform. Use it to debug a failure, not for pass/fail checks. |
@@ -248,7 +249,10 @@ Test selection rules:
 - Coverage selections use deterministic sorted test-name order, regardless of
   the `--test` or `--tests-file` input order. This stabilizes Campaign identity
   and run numbering: `--test gap --test full --coverage` assigns
-  `run:001:full`, then `run:002:gap`.
+  `run:001:full@1`, then `run:002:gap@1`. A run id ends in its Test Run name.
+  Several Test Runs of one Test (two Test Variants, or `test@xN`) stay
+  together in the order you named them, each in its own simulator process;
+  the merged coverage is the union over all of them.
 - Plain selections preserve explicit input order; an unfiltered suite follows
   the registry order in `tests.toml`. HDL tests are scheduled in that order.
   cocotb batches filter the selected set within one simulator process; cocotb
@@ -539,7 +543,7 @@ numbered report directory (qualified Target selectors are percent-encoded):
     work-items/<item>/attempts/<attempt>/coverage-campaign/
       coverage.json          current Coverage Campaign manifest
       coverage-points.jsonl.gz
-      native/raw/            per-test Verilator databases
+      native/raw/            one Verilator database per Test Run
       native/merged/         merged Verilator database
       hooks/                 hook evidence, when collected
 ```

@@ -255,7 +255,7 @@ def test_mutation_concurrent_proposer_preserves_reviewer_goal_evidence(request, 
     )
     plan = replace(_plan(repo, "rtl.v"), target="top", count=1, formula_count=1)
     with ThreadPoolExecutor(max_workers=1) as pool:
-        future = pool.submit(mutation._proposal_round, plan, "propose", 1, None)
+        future = pool.submit(mutation._proposal_round, "propose", 1)
         try:
             assert entered.wait(10), "proposer did not enter provider"
             review_result = reviewer._run()
