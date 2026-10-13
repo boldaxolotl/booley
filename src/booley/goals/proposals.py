@@ -29,9 +29,10 @@ from booley.goals.model import (
     GoalSpec,
     GoalState,
     WorktreeIdentity,
-    parse_goal_arg,
+    parse_stored_goal_arg,
     record_timestamp,
 )
+from booley.goals.naming import apply_names, optional_names, save_names
 from booley.goals.proposal_errors import ProposalError
 from booley.goals.store import RecordLock
 from booley.goals.translate import translate_goals
@@ -120,7 +121,7 @@ class Proposal:
         arg = (
             None if raw["after_arg"] is None else require_dict(raw["after_arg"], field="after_arg")
         )
-        if arg is not None and translate_goals((parse_goal_arg(arg),)).goals[0] != after:
+        if arg is not None and translate_goals((parse_stored_goal_arg(arg),)).goals[0] != after:
             raise ProposalError("proposal after-value disagrees with its typed Goal arguments")
         kind = ChangeKind(raw["kind"])
         if (kind is ChangeKind.WAIVER) != (arg is None):
@@ -292,10 +293,11 @@ def load_proposal(root: Path, proposal_id: str) -> ProposalView:
     path = proposal_path(root, proposal_id)
     try:
         proposal = Proposal.from_json(json.loads((path / "payload.json").read_bytes()))
+        proposal = _named_proposal(proposal, optional_names(root))
         raw = json.loads((path / "state.json").read_bytes())
         return _view(proposal, raw)
     except (OSError, ValueError, TypeError) as exc:
-        raise ProposalError(f"cannot read proposal {proposal_id}: {exc}") from exc
+        raise ProposalError(f"cannot read proposal {proposal_id}: {exc}", path=path) from exc
 
 
 def _view(proposal: Proposal, value: object) -> ProposalView:
@@ -392,6 +394,11 @@ def save_new(lock: RecordLock, proposal: Proposal) -> ProposalView:
     validated = Proposal.from_json(proposal.to_json())
     if validated.record_id != lock.goal_id:
         raise ProposalError("proposal belongs to another record")
+    save_names(
+        lock.record_dir,
+        (proposal.after,) if proposal.before is None else (proposal.before, proposal.after),
+    )
+    validated = _named_proposal(validated, optional_names(lock.record_dir))
     path = proposal_path(lock.record_dir, validated.id)
     if path.exists():
         raise ProposalError("proposal id is already published")
@@ -403,6 +410,14 @@ def save_new(lock: RecordLock, proposal: Proposal) -> ProposalView:
     staging.rename(path)
     fsync_directory(path.parent)
     return view
+
+
+def _named_proposal(proposal: Proposal, names: dict[str, str]) -> Proposal:
+    return replace(
+        proposal,
+        before=None if proposal.before is None else apply_names(proposal.before, names),
+        after=apply_names(proposal.after, names),
+    )
 
 
 def save_decision(

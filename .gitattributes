@@ -10,3 +10,7 @@
 # QA fixtures, traces, and the frozen upstream corpus are compared byte for byte.
 # Checkout conversion must not rewrite those bytes.
 qa/** -text
+
+# Captured Campaign documents are authenticated by size and digest, so their
+# bytes, including trailing blank lines in run logs, stay as captured.
+tests/qa/fixtures/** -text -whitespace

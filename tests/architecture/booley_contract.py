@@ -93,6 +93,12 @@ DIRECTION_RULES = (
         "Job observation owns process and artifact facts without interpreting Target policy",
     ),
     DirectionRule(
+        "D38",
+        (prefix("booley.flows"), prefix("booley.specialists")),
+        (prefix("booley.goals"),),
+        "evidence producers receive Goal presentation and candidate paths through neutral execution interfaces",
+    ),
+    DirectionRule(
         "D35",
         (prefix("booley.goals"),),
         (

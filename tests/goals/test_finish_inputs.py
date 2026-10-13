@@ -27,7 +27,7 @@ def paired_complete(layout, tmp_path):
     (project / "tests.toml").write_bytes(b'[top]\ntests = ["smoke"]\n')
     git(project, "add", "tests.toml")
     git(project, "commit", "-qm", "entry suite")
-    layout.record = enter_goals(layout, [{"family": "lint", "target": "top"}])
+    layout.record = enter_goals(layout, [{"family": "LINT", "target": "top"}])
     publish(layout)
     return layout, project
 
@@ -55,7 +55,7 @@ def test_shared_nonversioned_control_project_uses_explicit_view_without_main_git
     (layout.control / "tests.toml").write_bytes(b'[top]\ntests=["shared"]\n')
     layout.record = enter_goal_mode(
         EntryRequest(
-            layout.worktree, "shared", parse_goal_args([{"family": "lint", "target": "top"}])
+            layout.worktree, "shared", parse_goal_args([{"family": "LINT", "target": "top"}])
         ),
         EntryEnvironment(layout.control),
     ).record
@@ -76,7 +76,7 @@ def test_shared_nonversioned_control_project_uses_explicit_view_without_main_git
 
 
 def test_authored_absolute_source_cannot_make_committed_freshness_read_live_checkout(layout):
-    layout.record = enter_goals(layout, [{"family": "lint", "target": "top"}])
+    layout.record = enter_goals(layout, [{"family": "LINT", "target": "top"}])
     core = layout.worktree / "top.core"
     core.write_bytes(
         core.read_bytes().replace(
@@ -157,7 +157,7 @@ def test_topology_replacement_after_fence_retains_attempt_and_allows_safe_abando
 
 
 def test_nonversioned_original_suite_snapshot_is_not_replaced_by_final(layout):
-    layout.record = enter_goals(layout, [{"family": "lint", "target": "top"}])
+    layout.record = enter_goals(layout, [{"family": "LINT", "target": "top"}])
     (layout.worktree / ".booley_project/tests.toml").write_bytes(b'[top]\ntests=["changed"]\n')
     publish(layout)
     result = finish_goal(request(layout), environment(layout))
@@ -172,7 +172,7 @@ def test_recovery_filesystem_mode_uses_windows_readonly_flag_and_posix_nonexecut
 ):
     import booley.goals.publication_destination as module
 
-    layout.record = enter_goals(layout, [{"family": "lint", "target": "top"}])
+    layout.record = enter_goals(layout, [{"family": "LINT", "target": "top"}])
     publish(layout)
     call = request(layout)
 
@@ -199,7 +199,7 @@ def test_paired_and_rtl_file_and_constraint_deltas_are_unambiguous(layout, tmp_p
         (root / "same.sdc").write_bytes(b"original constraint")
         git(root, "add", ".")
         git(root, "commit", "-qm", "original constraints")
-    layout.record = enter_goals(layout, [{"family": "lint", "target": "top"}])
+    layout.record = enter_goals(layout, [{"family": "LINT", "target": "top"}])
     for root in (layout.worktree, project):
         (root / "same.sdc").write_bytes(b"final constraint")
         (root / "new.xdc").write_bytes(b"new constraint")
@@ -219,7 +219,7 @@ def test_paired_and_rtl_file_and_constraint_deltas_are_unambiguous(layout, tmp_p
 
 @pytest.mark.parametrize("outcome", ["finish", "refusal"])
 def test_cleanliness_does_not_refresh_shared_index_for_same_bytes(layout, outcome):
-    layout.record = enter_goals(layout, [{"family": "lint", "target": "top"}])
+    layout.record = enter_goals(layout, [{"family": "LINT", "target": "top"}])
     publish(layout)
     path = layout.worktree / "rtl.v"
     metadata = path.stat()
@@ -330,7 +330,7 @@ def enter_shared_role_aliases(layout, tmp_path, monkeypatch):
     layout.control = control
     layout.record = enter_goal_mode(
         EntryRequest(
-            layout.worktree, "coalesced", parse_goal_args([{"family": "lint", "target": "top"}])
+            layout.worktree, "coalesced", parse_goal_args([{"family": "LINT", "target": "top"}])
         ),
         EntryEnvironment(control),
     ).record
@@ -500,7 +500,7 @@ def test_entry_through_alternate_spelling_finishes_from_original(layout, tmp_pat
         EntryRequest(
             current.worktree,
             "aliased-entry",
-            parse_goal_args([{"family": "lint", "target": "top"}]),
+            parse_goal_args([{"family": "LINT", "target": "top"}]),
         ),
         EntryEnvironment(current.control),
     ).record

@@ -24,27 +24,39 @@ import secrets
 import shlex
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
-from typing import cast
+from typing import Literal, cast
 
 from booley.config.tests_toml_rules import (
-    DEFAULT_VARIANT_KEY,
+    DEFAULT_SEED,
+    MAX_SEED,
     SEED_SEPARATOR,
     VARIANT_SEPARATOR,
     EnvTableError,
+    SeedConfigurationError,
     TestRunNameError,
+    TestVariant,
+    TestVariantError,
+    TestVariantTable,
+    UnknownVariantError,
+    parse_test_variants,
+    validate_declared_env_names,
     validate_env_table,
+    validate_seed,
     validate_test_or_variant_name,
 )
-from booley.core.boundary import BoundaryError, as_dict, is_str_list, require_int
+from booley.core.boundary import BoundaryError, as_dict, is_str_list, require_str_value
 
 __all__ = [
     "DEFAULT_SEED",
     "MAX_MULTI_SEED_COUNT",
     "MAX_SEED",
+    "SEED_REQUEST_RANDOM",
+    "SEED_WITH_SEEDED_SELECTOR",
     "UNNAMED_TEST_DISPLAY",
     "PinnedSeed",
     "SeedCount",
     "SeedForm",
+    "SeedRequest",
     "TestRun",
     "TestRunLimitError",
     "TestSelector",
@@ -56,19 +68,29 @@ __all__ = [
     "UnseededTargetError",
     "build_test_run",
     "declared_inputs_fingerprint",
+    "discovered_test_run",
     "draw_seeds",
+    "parse_seed_request",
     "parse_test_selector",
     "parse_test_variants",
     "rerun_command",
+    "test_run_document",
+    "test_run_from_document",
 ]
 
-#: The seed a Test Run uses when none is named. Never ``0``: Verilator reads
-#: ``+verilator+seed+0`` as "pick a seed at startup".
-DEFAULT_SEED = 1
-#: Largest seed Booley accepts or draws (a positive signed 32-bit value).
-MAX_SEED = 2**31 - 1
 #: Largest N of a multi-seed selector ``test@xN`` and of one seed draw.
 MAX_MULTI_SEED_COUNT = 1000
+
+#: The ``--seed`` value that asks Booley to draw a seed for each Test Run.
+#: (Not cocotb's ``RANDOM_SEED`` variable; see ``backends.cocotb``.)
+SEED_REQUEST_RANDOM: Literal["random"] = "random"
+#: What a request says about seeds: nothing, one seed, or "draw them".
+SeedRequest = int | Literal["random"] | None
+#: Why ``--seed`` and a seeded ``--test`` selector cannot be combined.
+SEED_WITH_SEEDED_SELECTOR = (
+    "--seed cannot be combined with a --test that names a seed "
+    "(test@seed or test@xN); name the seed in one place"
+)
 
 #: How the invocation of a Target without registered Tests is displayed.
 UNNAMED_TEST_DISPLAY = "<default>"
@@ -82,21 +104,8 @@ _MAX_NUMBER_DIGITS = 10
 _DRAW_ATTEMPTS_PER_SEED = 8
 _DRAW_ATTEMPTS_FLOOR = 64
 
-_VARIANT_TABLE_KEYS = ("args", "env")
-_ARGUMENT_PREFIXES = ("+", "-")
-
 # Every ``Test…`` class below sets ``__test__ = False``: "Test" is the domain
 # noun here, and pytest must not try to collect these when a test imports them.
-
-
-class TestVariantError(ValueError):
-    """One Test's Variant table in ``tests.toml`` is malformed."""
-
-    __test__ = False
-
-
-class UnknownVariantError(ValueError):
-    """A name refers to a Variant that the Test does not declare."""
 
 
 class UnseededTargetError(ValueError):
@@ -140,29 +149,6 @@ class TestSelector:
     test: str
     variant: str | None
     seed_form: SeedForm
-
-
-@dataclass(frozen=True)
-class TestVariant:
-    """One declared Variant: its run-time arguments and environment."""
-
-    __test__ = False
-
-    name: str
-    args: tuple[str, ...] = ()
-    #: ``(name, value)`` pairs sorted by name.
-    env: tuple[tuple[str, str], ...] = ()
-
-
-@dataclass(frozen=True)
-class TestVariantTable:
-    """The Variants one Test declares, in declaration order, and its default."""
-
-    __test__ = False
-
-    test: str
-    default: str
-    variants: tuple[TestVariant, ...]
 
 
 @dataclass(frozen=True)
@@ -267,6 +253,26 @@ def parse_test_selector(text: str) -> TestSelector:
     return TestSelector(test=test, variant=variant, seed_form=seed_form)
 
 
+def parse_seed_request(value: object) -> int | Literal["random"]:
+    """Parse a ``--seed`` value: a seed in ``1..MAX_SEED`` or ``random``.
+
+    Accepts the integer the MCP tool sends and the text the CLI sends; text
+    obeys the selector's seed spelling (decimal, no sign, no leading zeros).
+    Raises :class:`TestRunNameError`.
+    """
+    if value == SEED_REQUEST_RANDOM:
+        return SEED_REQUEST_RANDOM
+    if isinstance(value, str):
+        seed = _parse_bounded_number(value, what="seed", selector=f"--seed {value}")
+        if not 1 <= seed <= MAX_SEED:
+            raise TestRunNameError(f"--seed {value} is out of range 1..{MAX_SEED}")
+        return seed
+    try:
+        return validate_seed(value, where="--seed")
+    except SeedConfigurationError as exc:
+        raise TestRunNameError(f"{exc}; write a seed in 1..{MAX_SEED} or 'random'") from exc
+
+
 def declared_inputs_fingerprint(args: tuple[str, ...], env: Mapping[str, str]) -> str:
     """Canonical SHA-256 of a Variant's declared arguments and environment.
 
@@ -290,12 +296,24 @@ def declared_inputs_fingerprint(args: tuple[str, ...], env: Mapping[str, str]) -
 def _require_seed(seed: object) -> int:
     """Return *seed* when it is a strict integer in ``1..MAX_SEED``."""
     try:
-        value = require_int(seed, field="seed")
-    except BoundaryError as exc:
+        return validate_seed(seed, where="seed")
+    except SeedConfigurationError as exc:
         raise TestRunNameError(str(exc)) from exc
-    if not 1 <= value <= MAX_SEED:
-        raise TestRunNameError(f"seed {value} is out of range 1..{MAX_SEED}")
-    return value
+
+
+def _declared_environment(env: Mapping[str, str]) -> dict[str, str]:
+    """A Test Variant's environment, under the rules ``tests.toml`` applies to it.
+
+    Every Test Run is built here, also one decoded from a persisted record,
+    so a record cannot carry a variable name the loader would have refused:
+    not a shell-exportable name, or one Booley or the simulator integration
+    owns. Raises :class:`TestRunNameError`.
+    """
+    where = "Test Run environment"
+    try:
+        return validate_declared_env_names(validate_env_table(env, where=where), where=where)
+    except EnvTableError as exc:
+        raise TestRunNameError(str(exc)) from exc
 
 
 def build_test_run(
@@ -309,7 +327,8 @@ def build_test_run(
     """Build a :class:`TestRun` and fingerprint its declared inputs.
 
     Raises :class:`TestRunNameError` for an invalid name, a Test Variant on the
-    unnamed invocation, or a seed that is not an integer in ``1..MAX_SEED``.
+    unnamed invocation, a seed that is not an integer in ``1..MAX_SEED``, or
+    an environment variable a Test Variant may not set.
     """
     if test is None and variant is not None:
         raise TestRunNameError(
@@ -321,7 +340,7 @@ def build_test_run(
         validate_test_or_variant_name(variant, kind="Test Variant")
     if seed is not None:
         _require_seed(seed)
-    environment = dict(env or {})
+    environment = _declared_environment(env or {})
     return TestRun(
         test=test,
         variant=variant,
@@ -332,91 +351,101 @@ def build_test_run(
     )
 
 
-def _parse_variant_args(raw: object, where: str) -> tuple[str, ...]:
-    """Validate a Variant's argument list: one option token per entry."""
-    if not is_str_list(raw):
-        raise TestVariantError(f"{where} arguments must be a list of strings")
-    arguments = cast(list[str], raw)
-    for argument in arguments:
-        if not argument.startswith(_ARGUMENT_PREFIXES):
-            raise TestVariantError(f"{where} argument {argument!r} must start with '+' or '-'")
-        if "\0" in argument or any(character.isspace() for character in argument):
-            raise TestVariantError(
-                f"{where} argument {argument!r} must be one token without "
-                "whitespace or NUL; declare each argument as its own list entry"
-            )
-    return tuple(arguments)
+def discovered_test_run(test: str, unnamed: TestRun) -> TestRun:
+    """The Test Run of a Test that an unfiltered batch discovered under *unnamed*.
 
-
-def _parse_variant_env(raw: object, where: str) -> tuple[tuple[str, str], ...]:
-    """Validate a Test Variant's environment table of ``NAME = "value"`` pairs."""
-    try:
-        env = validate_env_table(raw, where=f"{where}.env")
-    except EnvTableError as exc:
-        raise TestVariantError(str(exc)) from exc
-    return tuple(sorted(env.items()))
-
-
-def _parse_variant(name: str, raw: object, where: str) -> TestVariant:
-    """Parse one Variant value: an argument list, or an ``args``/``env`` table."""
-    table = as_dict(raw)
-    if table is not None:
-        unknown = sorted(str(key) for key in table if key not in _VARIANT_TABLE_KEYS)
-        if unknown:
-            raise TestVariantError(
-                f"{where} has unknown key {unknown[0]!r}; a Test Variant table holds only args and env"
-            )
-        return TestVariant(
-            name=name,
-            args=_parse_variant_args(table.get("args", []), where),
-            env=_parse_variant_env(table.get("env", {}), where),
-        )
-    if isinstance(raw, list):
-        return TestVariant(name=name, args=_parse_variant_args(cast(list[object], raw), where))
-    raise TestVariantError(
-        f"{where} must be a list of arguments or a table with args and env, "
-        f"got {type(raw).__name__}"
-    )
-
-
-def parse_test_variants(test: str, raw: object, *, where: str | None = None) -> TestVariantTable:
-    """Parse and validate the Variant table of one Test.
-
-    *raw* is the TOML table: ``default = "<variant>"`` plus one entry per
-    Variant. *where* prefixes every message with the table's location (the
-    loader passes ``tests.toml [<target>].variants.<test>``).
-
-    Raises :class:`TestVariantError` for a malformed table,
-    :class:`TestRunNameError` for an invalid Variant name, and
-    :class:`UnknownVariantError` when ``default`` names no declared Variant.
+    A Target without registered Tests runs as its unnamed invocation, and a
+    Cocotb batch then reports the Tests its module holds. Each of them ran at
+    that invocation's seed and environment, so that is its Test Run. A
+    discovered name outside the Test name rules has no Test Run name of its
+    own and stays under the unnamed invocation. This is the one rule; results,
+    acceptance facts and reports all name a discovered Test through it.
     """
-    where = where or f"variants.{test}"
-    table = as_dict(raw)
-    if table is None:
-        raise TestVariantError(f"{where} must be a table of Test Variants")
-    if DEFAULT_VARIANT_KEY not in table:
-        raise TestVariantError(
-            f'{where} must name its default Test Variant: add default = "<variant>"'
+    try:
+        return build_test_run(test, seed=unnamed.seed, env=dict(unnamed.env))
+    except TestRunNameError:
+        return unnamed
+
+
+_TEST_RUN_DOCUMENT_FIELDS = frozenset(
+    {"name", "test", "variant", "seed", "args", "env", "fingerprint"}
+)
+
+
+def test_run_document(run: TestRun) -> dict[str, object]:
+    """The JSON form of *run* that persisted records carry."""
+    return {
+        "name": run.name,
+        "test": run.test,
+        "variant": run.variant,
+        "seed": run.seed,
+        "args": list(run.args),
+        "env": dict(run.env),
+        "fingerprint": run.fingerprint,
+    }
+
+
+# Not a pytest test, although its name starts with ``test_``.
+test_run_document.__test__ = False  # type: ignore[attr-defined]
+
+
+def _optional_name(value: object, field: str) -> str | None:
+    """A Test Run record's Test or Test Variant: a string or ``None``."""
+    if value is None:
+        return None
+    try:
+        return require_str_value(value, field=field, allow_empty=True)
+    except BoundaryError as exc:
+        raise TestRunNameError(f"Test Run record {field} must be a string or null") from exc
+
+
+def _record_args(value: object) -> tuple[str, ...]:
+    """A Test Run record's argument list (a tuple once the record is frozen)."""
+    items = list(cast("tuple[object, ...]", value)) if isinstance(value, tuple) else value
+    if not is_str_list(items):
+        raise TestRunNameError("Test Run record args must be a list of strings")
+    return tuple(cast("list[str]", items))
+
+
+def _record_env(value: object) -> dict[str, str]:
+    """A Test Run record's environment table."""
+    table = as_dict(value)
+    if table is None or not is_str_list([*table.keys(), *table.values()]):
+        raise TestRunNameError("Test Run record env must map names to strings")
+    return cast("dict[str, str]", table)
+
+
+def test_run_from_document(document: object) -> TestRun:
+    """Rebuild a :class:`TestRun` from its persisted form, strictly.
+
+    The document must hold exactly the fields :func:`test_run_document`
+    writes, and its ``name`` and ``fingerprint`` must be the ones the other
+    fields produce: a record cannot name one Test Run and describe another.
+    Raises :class:`TestRunNameError`.
+    """
+    record = as_dict(document)
+    if record is None:
+        raise TestRunNameError("a Test Run record must be an object")
+    if frozenset(record) != _TEST_RUN_DOCUMENT_FIELDS:
+        raise TestRunNameError(
+            "a Test Run record must hold exactly: " + ", ".join(sorted(_TEST_RUN_DOCUMENT_FIELDS))
         )
-    default = table[DEFAULT_VARIANT_KEY]
-    if not isinstance(default, str):
-        raise TestVariantError(f"{where}.default must be the name of a Test Variant (a string)")
-    variants: list[TestVariant] = []
-    for key, value in table.items():
-        if key == DEFAULT_VARIANT_KEY:
-            continue
-        try:
-            name = validate_test_or_variant_name(key, kind="Test Variant")
-        except TestRunNameError as exc:
-            raise TestRunNameError(f"{where}: {exc}") from exc
-        variants.append(_parse_variant(name, value, f"{where}.{name}"))
-    declared = [variant.name for variant in variants]
-    if default not in declared:
-        raise UnknownVariantError(
-            f"{where}.default names {default!r}, which is not a declared Test Variant "
-            f"(declared: {', '.join(declared) or 'none'})"
+    seed = record["seed"]
+    run = build_test_run(
+        _optional_name(record["test"], "test"),
+        variant=_optional_name(record["variant"], "variant"),
+        seed=None if seed is None else _require_seed(seed),
+        args=_record_args(record["args"]),
+        env=_record_env(record["env"]),
+    )
+    if record["name"] != run.name or record["fingerprint"] != run.fingerprint:
+        raise TestRunNameError(
+            f"Test Run record for {run.name!r} disagrees with its own name or fingerprint"
         )
-    return TestVariantTable(test=test, default=default, variants=tuple(variants))
+    return run
+
+
+test_run_from_document.__test__ = False  # type: ignore[attr-defined]
 
 
 def draw_seeds(

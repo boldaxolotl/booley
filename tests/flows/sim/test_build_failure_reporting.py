@@ -237,7 +237,7 @@ def _run_shared_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome
 
     class Execution:
         @contextmanager
-        def ordinary_group(self, _handle, _names):
+        def ordinary_group(self, _handle, _names, _test_runs=None):
             yield _InfrastructureGroup(root, outcome)
 
     executor = OrdinaryHdlSerialExecutor(
@@ -577,7 +577,7 @@ def test_large_batch_build_failure_publishes_bounded_terminal_result(
 
     class Execution:
         @contextmanager
-        def ordinary_group(self, _handle, _names):
+        def ordinary_group(self, _handle, _names, _test_runs=None):
             yield _InfrastructureGroup(root, outcome)
 
     monkeypatch.setattr(

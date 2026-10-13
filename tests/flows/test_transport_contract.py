@@ -839,7 +839,7 @@ def _report_campaign_document(handle, inspection, preview, mode, selected):
             inspection, flow_options={"cocotb_module": "tests"} if mode == "unfiltered" else {}
         )
         if mode == "coverage":
-            preview = replace(preview, groups=(selected,), commands=(("run",),))
+            preview = replace(preview, groups=(selected,), commands=(("run",),), run_groups=())
         document = plan_coarse_simulation_campaign(
             handle=handle,
             inspection=inspection,
@@ -879,7 +879,7 @@ def _prepared_report_campaign(runtime, mode, resume):
     inspection = replace(inspection, handle=handle)
     selected = ("reset", "count") if mode != "default" else ()
     if mode in {"default", "unfiltered"}:
-        preview = replace(preview, groups=((),), commands=(("run",),))
+        preview = replace(preview, groups=((),), commands=(("run",),), run_groups=())
     document = _report_campaign_document(handle, inspection, preview, mode, selected)
     manifest = decode_simulation_campaign_manifest(
         encode_simulation_campaign_manifest(SimulationCampaignManifest(document))

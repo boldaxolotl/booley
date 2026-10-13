@@ -13,7 +13,7 @@ from booley.flows.sim.verilator_coverage import (
     CoverageCollectionRequest,
     CoverageSource,
     CoverageTarget,
-    SelectedCoverageTest,
+    SelectedCoverageRun,
     SimulationBuildResult,
     SimulationCommandResult,
     SimulationRunResult,
@@ -45,7 +45,7 @@ def _request(
             sources=(CoverageSource("rtl/counter.sv", "rtl/counter.sv", "rtl"),),
             custom_main_hooks=hooks,
         ),
-        selected_tests=(SelectedCoverageTest(test),),
+        selected_tests=(SelectedCoverageRun(test),),
         artifact_root=tmp_path / "campaign",
         reset_included=reset_included,
     )
@@ -321,7 +321,7 @@ class _PreSimExecution(_GeneratedMainExecution):
 def test_pre_sim_failure_is_attributed_and_later_tests_continue(tmp_path: Path) -> None:
     request = replace(
         _request(tmp_path, "first"),
-        selected_tests=(SelectedCoverageTest("first"), SelectedCoverageTest("second")),
+        selected_tests=(SelectedCoverageRun("first"), SelectedCoverageRun("second")),
     )
     execution = _PreSimExecution("failed")
 
@@ -339,7 +339,7 @@ def test_pre_sim_failure_is_attributed_and_later_tests_continue(tmp_path: Path) 
 def test_pre_sim_spawn_error_aborts_later_tests(tmp_path: Path) -> None:
     request = replace(
         _request(tmp_path, "first"),
-        selected_tests=(SelectedCoverageTest("first"), SelectedCoverageTest("second")),
+        selected_tests=(SelectedCoverageRun("first"), SelectedCoverageRun("second")),
     )
     execution = _PreSimExecution("spawn_error")
 
@@ -475,7 +475,7 @@ def test_normalization_maps_fusesoc_staged_source_suffix(tmp_path: Path) -> None
             harness="generated_main",
             sources=(CoverageSource("rtl/counter.sv", "rtl/counter.sv", "rtl"),),
         ),
-        selected_tests=(SelectedCoverageTest("wrap"),),
+        selected_tests=(SelectedCoverageRun("wrap"),),
         artifact_root=tmp_path,
     )
 
@@ -497,7 +497,7 @@ def test_missing_raw_database_is_a_collector_error_without_losing_simulation_tru
             harness="generated_main",
             sources=(),
         ),
-        selected_tests=(SelectedCoverageTest("reset"),),
+        selected_tests=(SelectedCoverageRun("reset"),),
         artifact_root=tmp_path / "campaign",
     )
 
@@ -521,7 +521,7 @@ def test_stale_raw_database_is_retained_but_excluded_from_collection(tmp_path: P
             harness="generated_main",
             sources=(CoverageSource("rtl/counter.sv", "rtl/counter.sv", "rtl"),),
         ),
-        selected_tests=(SelectedCoverageTest("wrap"),),
+        selected_tests=(SelectedCoverageRun("wrap"),),
         artifact_root=tmp_path / "campaign",
     )
 
@@ -568,7 +568,7 @@ def test_malformed_raw_database_is_unqueryable_and_preserves_timeout(tmp_path: P
             harness="generated_main",
             sources=(),
         ),
-        selected_tests=(SelectedCoverageTest("hang"),),
+        selected_tests=(SelectedCoverageRun("hang"),),
         artifact_root=tmp_path / "campaign",
     )
 
@@ -592,7 +592,7 @@ def test_incompatible_native_format_blocks_normalization_with_stable_evidence(
             harness="generated_main",
             sources=(),
         ),
-        selected_tests=(SelectedCoverageTest("reset"),),
+        selected_tests=(SelectedCoverageRun("reset"),),
         artifact_root=tmp_path / "campaign",
     )
 
@@ -617,7 +617,7 @@ def test_known_deferred_and_unknown_record_classes_are_retained_losslessly(
             harness="generated_main",
             sources=(CoverageSource("rtl/counter.sv", "rtl/counter.sv", "rtl"),),
         ),
-        selected_tests=(SelectedCoverageTest("all_metrics"),),
+        selected_tests=(SelectedCoverageRun("all_metrics"),),
         artifact_root=tmp_path / "campaign",
     )
 
@@ -693,7 +693,7 @@ def test_post_reset_window_requires_one_fresh_successful_start_hook(tmp_path: Pa
             harness="generated_main",
             sources=(CoverageSource("rtl/counter.sv", "rtl/counter.sv", "rtl"),),
         ),
-        selected_tests=(SelectedCoverageTest("post_reset"),),
+        selected_tests=(SelectedCoverageRun("post_reset"),),
         artifact_root=tmp_path / "campaign",
         reset_included=False,
     )
@@ -721,7 +721,7 @@ def test_missing_post_reset_hook_evidence_is_a_structured_collector_error(
             harness="generated_main",
             sources=(CoverageSource("rtl/counter.sv", "rtl/counter.sv", "rtl"),),
         ),
-        selected_tests=(SelectedCoverageTest("forgot_hook"),),
+        selected_tests=(SelectedCoverageRun("forgot_hook"),),
         artifact_root=tmp_path / "campaign",
         reset_included=False,
     )
@@ -790,7 +790,7 @@ def test_invalid_start_hook_is_a_collector_error(
             harness="generated_main",
             sources=(CoverageSource("rtl/counter.sv", "rtl/counter.sv", "rtl"),),
         ),
-        selected_tests=(SelectedCoverageTest("bad_hook"),),
+        selected_tests=(SelectedCoverageRun("bad_hook"),),
         artifact_root=tmp_path / "campaign",
         reset_included=False,
     )
@@ -827,7 +827,7 @@ def test_invalid_custom_main_hook_declarations_fail_before_execution(
             sources=(),
             custom_main_hooks=hooks,
         ),
-        selected_tests=(SelectedCoverageTest("custom"),),
+        selected_tests=(SelectedCoverageRun("custom"),),
         artifact_root=tmp_path / "campaign",
         reset_included=reset_included,
     )
@@ -861,7 +861,7 @@ def test_custom_main_requires_one_successful_runtime_write_hook(tmp_path: Path) 
             sources=(CoverageSource("rtl/counter.sv", "rtl/counter.sv", "rtl"),),
             custom_main_hooks=("write_hook",),
         ),
-        selected_tests=(SelectedCoverageTest("custom"),),
+        selected_tests=(SelectedCoverageRun("custom"),),
         artifact_root=tmp_path / "campaign",
     )
 
@@ -1029,7 +1029,7 @@ def test_cocotb_trace_coverage_runs_one_process_per_test_and_keeps_failed_run_da
             harness="cocotb",
             sources=(CoverageSource("rtl/counter.sv", "rtl/counter.sv", "rtl"),),
         ),
-        selected_tests=(SelectedCoverageTest("increments"), SelectedCoverageTest("wraps")),
+        selected_tests=(SelectedCoverageRun("increments"), SelectedCoverageRun("wraps")),
         artifact_root=tmp_path / "campaign",
         trace=True,
     )
@@ -1056,7 +1056,7 @@ def test_native_merge_tool_failure_retains_normalized_per_run_evidence(tmp_path:
             harness="generated_main",
             sources=(CoverageSource("rtl/counter.sv", "rtl/counter.sv", "rtl"),),
         ),
-        selected_tests=(SelectedCoverageTest("reset"),),
+        selected_tests=(SelectedCoverageRun("reset"),),
         artifact_root=tmp_path / "campaign",
     )
 
@@ -1094,7 +1094,7 @@ def test_bad_native_merge_never_discards_per_run_evidence(
             harness="generated_main",
             sources=(CoverageSource("rtl/counter.sv", "rtl/counter.sv", "rtl"),),
         ),
-        selected_tests=(SelectedCoverageTest("reset"),),
+        selected_tests=(SelectedCoverageRun("reset"),),
         artifact_root=tmp_path / "campaign",
     )
     if mode == "stale":
@@ -1124,7 +1124,7 @@ def test_build_failure_reports_elaboration_truth_for_every_selected_test(tmp_pat
             harness="generated_main",
             sources=(),
         ),
-        selected_tests=(SelectedCoverageTest("a"), SelectedCoverageTest("b")),
+        selected_tests=(SelectedCoverageRun("a"), SelectedCoverageRun("b")),
         artifact_root=tmp_path / "campaign",
     )
 
@@ -1148,7 +1148,7 @@ def test_collector_rejects_any_verilator_other_than_the_exact_safe_pin(tmp_path:
             harness="generated_main",
             sources=(),
         ),
-        selected_tests=(SelectedCoverageTest("reset"),),
+        selected_tests=(SelectedCoverageRun("reset"),),
         artifact_root=tmp_path / "campaign",
     )
 

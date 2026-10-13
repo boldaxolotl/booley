@@ -6,7 +6,7 @@ import json
 import re
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass, replace
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any
 
 from fusesoc.coremanager import CoreManager, DependencyError
@@ -101,9 +101,7 @@ def _inspect_inputs(
     tb_paths: Collection[str],
 ) -> tuple[TargetInput, ...]:
     inputs: list[TargetInput] = []
-    normalized_tb_paths = {
-        PurePosixPath(str(path).replace("\\", "/")).as_posix() for path in tb_paths
-    }
+    canonical_tb_paths = {fusesoc_registry.canonical_project_path(root, path) for path in tb_paths}
     top = cores[-1]
     for core in cores:
         core_flags = dict(flags)
@@ -113,8 +111,8 @@ def _inspect_inputs(
                 Path(core.core_file), root, str(item["name"])
             )
             tags = tuple(item.get("tags") or ())
-            normalized_path = PurePosixPath(str(path).replace("\\", "/")).as_posix()
-            if normalized_path in normalized_tb_paths and "tb" not in tags:
+            canonical_path = fusesoc_registry.canonical_project_path(root, path)
+            if canonical_path in canonical_tb_paths and "tb" not in tags:
                 tags = (*tags, "tb")
             inputs.append(
                 TargetInput(

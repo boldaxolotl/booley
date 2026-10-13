@@ -51,7 +51,7 @@ from booley.goals.store import GoalStore
 from booley.mcp.goal_freshness import GOAL_FRESHNESS_RESOLVERS
 from booley.mcp.goal_waivers import GoalWaiverService
 from tests.flows.sim.test_coverage_campaign import _POINT_ID, _valid_document
-from tests.goals.conftest import enter_goals, git
+from tests.goals.conftest import enter_goals, git, run_row
 from tests.goals.test_proposals import Crash, approve, interrupted_transaction
 
 KEY = "coverage_top"
@@ -73,8 +73,8 @@ def prepared(layout, anchor="rtl_repository", directory="approvals", *, covered=
     layout.record = enter_goals(
         layout,
         [
-            {"family": "coverage", "target": "top", "tests": "all", "metrics": {"line": 100}},
-            {"family": "lint", "target": "top"},
+            {"family": "COVERAGE", "target": "top", "tests": "all", "metrics": {"line": 100}},
+            {"family": "LINT", "target": "top"},
         ],
     )
     service = GoalWaiverService(layout.control, layout.record)
@@ -89,7 +89,11 @@ def prepared(layout, anchor="rtl_repository", directory="approvals", *, covered=
     changes = state.set_criterion(
         KEY,
         False,
-        detail={"coverage_campaign_reference": persisted, "evaluation": evaluation_json(campaign)},
+        detail={
+            "coverage_campaign_reference": persisted,
+            "evaluation": evaluation_json(campaign),
+            "test_runs": [run_row()],
+        },
     )
     recorder.record_changes(
         state, changes, invocation_id="coverage", producer="simulation_campaign"
@@ -109,7 +113,7 @@ def fixture_campaign(source, service, *, covered=1, total=2):
     document["invocation"]["id"] = 1
     document["target"] = {"identity": str(IDENTITY), "selector": "top"}
     document["tests"]["declared"] = document["tests"]["selected"] = ["smoke"]
-    document["tests"]["runs"][0]["test"] = "smoke"
+    document["tests"]["runs"][0].update(test="smoke", test_run="smoke")
     seed = copy.deepcopy(document["points"][0])
     document["points"] = [
         fixture_point(seed, index, hit=0 < index <= covered) for index in range(total)
@@ -233,7 +237,7 @@ def public_change(layout, env, arguments):
     result = propose_change(
         {"work_dir": str(layout.worktree), "operation": "create", **arguments}, env.entry, None
     )
-    proposal_id = json.loads(result.value[0].text)["proposal_id"]
+    proposal_id = json.loads(result.value[0][0].text)["proposal_id"]
     applied = propose_change(
         {
             "work_dir": str(layout.worktree),
@@ -245,7 +249,7 @@ def public_change(layout, env, arguments):
         env.entry,
         None,
     )
-    assert json.loads(applied.value[0].text)["state"] == "applied"
+    assert json.loads(applied.value[0][0].text)["state"] == "applied"
 
 
 # Slowest Windows CI duration is 31 s; the headroom rule asks for three times that.
@@ -260,7 +264,7 @@ def test_public_relax_then_waive_preserves_current_bounds_on_reloaded_campaign(l
             "goal_key": KEY,
             "rationale": "accept measured threshold",
             "after": {
-                "family": "coverage",
+                "family": "COVERAGE",
                 "target": "top",
                 "tests": "all",
                 "metrics": {"line": 90},
@@ -318,7 +322,7 @@ def test_recorder_never_stamps_removed_producer_waivers_as_fresh(layout, race):
     )
     if race == "before":
         remove_policy(root)
-    changes = state.set_criterion(KEY, True, detail=detail)
+    changes = state.set_criterion(KEY, True, detail={**detail, "test_runs": [run_row()]})
     recorder.record_changes(state, changes, invocation_id="policy-race", producer="sim")
     state.save()
     saved = load_goal_state(env.store, record).criteria[KEY]
@@ -363,7 +367,7 @@ def test_numeric_derivation_keeps_checked_policy_or_refuses_drift(layout, monkey
             "goal_key": KEY,
             "rationale": "accept current bounds",
             "after": {
-                "family": "coverage",
+                "family": "COVERAGE",
                 "target": "top",
                 "tests": "all",
                 "metrics": {"line": 90},
@@ -483,6 +487,7 @@ def test_immediate_live_promotion_is_strict_and_other_unmet_goal_does_not_block(
         "applied",
     ],
 )
+@pytest.mark.timeout(120)  # Windows CI needs 3x the observed 30-33s runtime.
 def test_each_waiver_effect_recovers_without_revalidating_mutable_inputs(layout, boundary):
     env, candidate, root = prepared(layout)
     view = propose(layout, env, candidate)
@@ -582,7 +587,7 @@ def test_numeric_coverage_relaxation_reevaluates_immutable_points_without_waiver
             "kind": "relax",
             "goal_key": KEY,
             "after": {
-                "family": "coverage",
+                "family": "COVERAGE",
                 "target": "top",
                 "tests": "all",
                 "metrics": {"line": 50},

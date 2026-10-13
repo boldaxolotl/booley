@@ -117,28 +117,8 @@ class LifecycleOperation:
 
     def read_sealed(self, name: str) -> dict[str, Any]:
         """Verify all persisted fields against the independently durable authority."""
-        try:
-            authority = require_dict(
-                json.loads((self.directory / (name + ".authority.json")).read_bytes()),
-                field=name + " authority",
-            )
-            value = require_dict(authority.get("value"), field=name)
-            payload = self.request.payload(self.store.load(self.request.record_id))
-            if (
-                set(authority) != {"request_digest", "digest", "value", "record_directory"}
-                or authority["request_digest"] != digest(payload)
-                or authority["digest"] != digest(value)
-            ):
-                raise ValueError("immutable authority differs from the operation")
-            _record_directory(
-                authority, self.lock.record_dir, self.store.load(self.request.record_id)
-            )
-            path = self.directory / (name + ".json")
-            if path.exists() and json.loads(path.read_bytes()) != value:
-                raise ValueError("persisted artifact differs from durable authority")
-            return value
-        except (OSError, ValueError, TypeError) as exc:
-            raise LifecycleError(f"invalid frozen {name}: {exc}") from exc
+        record = self.store.load(self.request.record_id)
+        return read_sealed_artifact(self.directory, name, self.request.payload(record), record)
 
     def sealed_directory(self, name: str) -> Path:
         """The original logical storage prefix, for byte-identical restored responses."""
@@ -160,6 +140,31 @@ class LifecycleOperation:
                 "recovered_operation_id": result["operation_id"],
             }
         )
+
+
+def read_sealed_artifact(
+    directory: Path, name: str, payload: dict[str, Any], record: GoalRecord
+) -> dict[str, Any]:
+    """Read immutable artifact authority without lifecycle locks, writes or recovery."""
+    try:
+        authority = require_dict(
+            json.loads((directory / (name + ".authority.json")).read_bytes()),
+            field=name + " authority",
+        )
+        value = require_dict(authority.get("value"), field=name)
+        if (
+            set(authority) != {"request_digest", "digest", "value", "record_directory"}
+            or authority["request_digest"] != digest(payload)
+            or authority["digest"] != digest(value)
+        ):
+            raise ValueError("immutable authority differs from the operation")
+        _record_directory(authority, directory.parent.parent, record)
+        path = directory / (name + ".json")
+        if path.exists() and json.loads(path.read_bytes()) != value:
+            raise ValueError("persisted artifact differs from durable authority")
+        return value
+    except (OSError, ValueError, TypeError) as exc:
+        raise LifecycleError(f"invalid frozen {name}: {exc}") from exc
 
 
 @contextmanager

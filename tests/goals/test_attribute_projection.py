@@ -278,13 +278,13 @@ def test_finish_committed_ident(layout):
     assert (layout.worktree / "identifier.txt").read_bytes() == f"$Id: {oid} $\n".encode()
     git(layout.worktree, "add", "identifier.txt")
     assert git(layout.worktree, "rev-parse", ":identifier.txt") == oid
-    layout.record = enter_goals(layout, [{"family": "lint", "target": "top"}])
+    layout.record = enter_goals(layout, [{"family": "LINT", "target": "top"}])
     publish(layout)
     assert finish_goal(request(layout), environment(layout))["status"] == "finished"
 
 
 def test_finish_ignored_effective_attributes_refuse_then_restore(layout):
-    layout.record = enter_goals(layout, [{"family": "lint", "target": "top"}])
+    layout.record = enter_goals(layout, [{"family": "LINT", "target": "top"}])
     publish(layout)
     attrs = layout.worktree / ".gitattributes"
     with (layout.main / ".git/info/exclude").open("ab") as stream:

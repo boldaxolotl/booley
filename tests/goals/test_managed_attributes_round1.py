@@ -41,7 +41,7 @@ def external_policy(root, tmp_path, monkeypatch, source):
 def test_no_managed_policy_preserves_ineffective_external_attributes(
     layout, tmp_path, monkeypatch, source
 ):
-    layout.record = enter_goals(layout, [{"family": "lint", "target": "top"}])
+    layout.record = enter_goals(layout, [{"family": "LINT", "target": "top"}])
     publish(layout)
     external_policy(layout.worktree, tmp_path, monkeypatch, source)
     assert finish_goal(request(layout), environment(layout))["status"] == "finished"
@@ -84,7 +84,7 @@ def test_init_preserves_export_only_content_and_finish_replays_it(layout, commen
     assert report.status.value == "safe"
     content = GITATTRIBUTES_RULE.encode() + b"\n" + extra
     assert info.read_bytes() == content
-    layout.record = enter_goals(layout, [{"family": "lint", "target": "top"}])
+    layout.record = enter_goals(layout, [{"family": "LINT", "target": "top"}])
     publish(layout)
     result = finish_goal(request(layout), environment(layout))
     assert result["status"] == "finished"

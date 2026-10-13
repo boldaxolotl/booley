@@ -43,10 +43,12 @@ class FlowSession(EndpointState):
         self.announce_success_report = flow.announce_success_report
         self._simulation_campaign_outcomes: tuple[object, ...] = ()
         self._simulation_report_outcomes: tuple[object, ...] = ()
+        flow.begin_invocation()
 
     def reset_report_metadata(self) -> None:
         """Clear invocation-local Simulation metadata before admission gates."""
         self._simulation_report_outcomes = ()
+        self.flow.begin_invocation()
 
     @property
     def args(self) -> FlowRequest:
