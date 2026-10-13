@@ -7,7 +7,6 @@ two-phase apply/revert tests were deleted along with their helpers.
 
 from __future__ import annotations
 
-import contextlib
 import json
 import os
 import subprocess
@@ -188,11 +187,6 @@ def test_creator_provider_failure_has_durable_debug_traceback(
         monkeypatch,
         extra_args=["--transcript-dir", str(transcript_dir)],
     )
-    plan = SimpleNamespace(work_dir=tmp_path, scope_files=[])
-    monkeypatch.setattr(
-        "booley.specialists.mutation_tester.hide_opposite_sources",
-        lambda *_args, **_kwargs: contextlib.nullcontext(),
-    )
     monkeypatch.setattr(
         endpoint,
         "_invoke_creator",
@@ -200,7 +194,7 @@ def test_creator_provider_failure_has_durable_debug_traceback(
     )
     caplog.set_level("DEBUG")
 
-    specs, elapsed, error = endpoint._proposal_round(plan, "prompt", 1, None)
+    specs, elapsed, error = endpoint._proposal_round("prompt", 1)
 
     assert specs == []
     assert elapsed == 0.0
@@ -1208,12 +1202,7 @@ class TestColdStart:
             dut_top_module="design_top",
             dut_files=("rtl/design_top.sv",),
         )
-        # Avoid hide_opposite_sources side effects in tests.
-        with patch(
-            "booley.specialists.mutation_tester.hide_opposite_sources",
-            side_effect=lambda *a, **k: _NoopCtx(),
-        ):
-            result = endpoint._run()
+        result = endpoint._run()
 
         from booley.dev_support import mutation_lock as lm
 
@@ -1264,11 +1253,7 @@ class TestColdStart:
             min_detected=0,
         )
 
-        with patch(
-            "booley.specialists.mutation_tester.hide_opposite_sources",
-            side_effect=lambda *args, **kwargs: _NoopCtx(),
-        ):
-            result = endpoint._run()
+        result = endpoint._run()
 
         budget = result.detail["source_size_budget"]
         assert budget["method"] == "language_neutral_source_size"
@@ -1304,11 +1289,7 @@ class TestColdStart:
 
         monkeypatch.setattr("booley.specialists.mutation_tester.subprocess.run", fake_run)
         endpoint = _make_endpoint(tmp_path, monkeypatch, scope=scope, count=2, min_detected=0)
-        with patch(
-            "booley.specialists.mutation_tester.hide_opposite_sources",
-            side_effect=lambda *args, **kwargs: _NoopCtx(),
-        ):
-            cold = endpoint._run()
+        cold = endpoint._run()
         assert cold.detail["reused_lock"] is False
         cold_builds = len(build_calls)
 
@@ -1340,11 +1321,7 @@ class TestColdStart:
         _patch_invoke_agent(monkeypatch, [FakeAgentResult(output="no json here")])
         _patch_sim_runner(monkeypatch, sim_returncode=0)
         endpoint = _make_endpoint(tmp_path, monkeypatch, scope=scope, count=2)
-        with patch(
-            "booley.specialists.mutation_tester.hide_opposite_sources",
-            side_effect=lambda *a, **k: _NoopCtx(),
-        ):
-            result = endpoint._run()
+        result = endpoint._run()
         assert result.exit_code == EXIT_ERROR
 
     def test_forbidden_category_eventually_fails(self, tmp_path: Path, monkeypatch):
@@ -1372,20 +1349,8 @@ class TestColdStart:
         )
         _patch_sim_runner(monkeypatch, sim_returncode=0)
         endpoint = _make_endpoint(tmp_path, monkeypatch, scope=scope, count=1)
-        with patch(
-            "booley.specialists.mutation_tester.hide_opposite_sources",
-            side_effect=lambda *a, **k: _NoopCtx(),
-        ):
-            result = endpoint._run()
+        result = endpoint._run()
         assert result.exit_code == EXIT_ERROR
-
-
-class _NoopCtx:
-    def __enter__(self):
-        return None
-
-    def __exit__(self, *exc):
-        return False
 
 
 # ---------------------------------------------------------------------------
@@ -1568,11 +1533,7 @@ class TestColdScopeEnforcement:
             dut_top_module="design_top",
             dut_files=("rtl/design_top.sv",),
         )
-        with patch(
-            "booley.specialists.mutation_tester.hide_opposite_sources",
-            side_effect=lambda *a, **k: _NoopCtx(),
-        ):
-            endpoint._run()
+        endpoint._run()
 
         # The stray out-of-scope edit must be gone; the working tree clean.
         assert "unauthorized edit" not in (tmp_path / "rtl/off_scope.sv").read_text()
