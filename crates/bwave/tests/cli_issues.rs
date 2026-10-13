@@ -3774,3 +3774,224 @@ fn issue_1421_sparse_late_window_and_first_are_bounded() {
         "@ 99999999998 -> @ 99999999999  d=1"
     );
 }
+
+#[test]
+fn issue_1421_compressed_full_range_queries() {
+    let body = "#0\n0!\nb0000 #\n0$\n1%\n#5\n1$\n#10\n0$\n#15\n1$\n#20\n0$\n#21\n1!\nb0001 #\n#25\n1$\n#30\n0$\n#1000000000000\n";
+    let (_dir, store) = issue_1100_store(body, "parallel");
+    let (out, err, code) = issue_1100_run(&[
+        "find",
+        &store,
+        "scalar",
+        "rising",
+        "--with-reset",
+        "--limit",
+        "1",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        out.contains("cycle 3 scalar 1") && !err.contains("truncated"),
+        "{out} {err}"
+    );
+    assert_eq!(
+        issue_1100_query(
+            &store,
+            "find",
+            "scalar",
+            "falling",
+            &["--with-reset", "--first"]
+        ),
+        ""
+    );
+    assert_eq!(
+        issue_1100_query(
+            &store,
+            "find",
+            "scalar",
+            "'h1",
+            &["--with-reset", "--count"]
+        ),
+        "99999999998"
+    );
+    assert_eq!(
+        issue_1100_query(&store, "find", "scalar", "'h1", &["--with-reset", "--last"]),
+        "cycle 100000000000 scalar 1"
+    );
+    let (out, err, code) = issue_1100_run(&[
+        "find",
+        &store,
+        "*scalar*",
+        "'h1",
+        "--with-reset",
+        "--virtual",
+        "scalar_v=scalar=='h1",
+        "--last",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(json["data"]["count"], 199999999996u64);
+    assert_eq!(json["data"]["matches"][0]["time"], 100000000000u64);
+    assert_eq!(json["data"]["matches"][0]["name"], "scalar_v");
+    assert_eq!(json["data"]["truncated"], false);
+    // A single event fills one row exactly: absence of a later event must
+    // be established from transitions rather than scanning the clock grid.
+    let (out, err, code) = issue_1100_run(&[
+        "sample",
+        &store,
+        "scalar",
+        "rising",
+        "--with-reset",
+        "-s",
+        "scalar",
+        "--limit",
+        "1",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("3 scalar 1"), "{out}");
+    assert!(
+        err.contains("1 trigger events") && !err.contains("truncated"),
+        "{err}"
+    );
+    assert_eq!(
+        issue_1100_query(
+            &store,
+            "sample",
+            "scalar",
+            "falling",
+            &["--with-reset", "--count"]
+        ),
+        "0"
+    );
+    assert_eq!(
+        issue_1100_query(
+            &store,
+            "sample",
+            "scalar",
+            "'h1",
+            &["--with-reset", "--count"]
+        ),
+        "99999999998"
+    );
+    assert_eq!(
+        issue_1100_query(
+            &store,
+            "sample",
+            "scalar",
+            "'h1",
+            &["--with-reset", "--last", "-s", "scalar"]
+        ),
+        "100000000000 scalar 1"
+    );
+    let (out, err, code) = issue_1100_run(&[
+        "sample",
+        &store,
+        "*scalar*",
+        "'h1",
+        "--with-reset",
+        "--virtual",
+        "scalar_v=scalar=='h1",
+        "-s",
+        "scalar",
+        "--limit",
+        "1",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("3 scalar 1"), "{out}");
+    assert!(
+        err.contains("2 trigger events") && err.contains("truncated"),
+        "{err}"
+    );
+    let (out, err, code) = issue_1100_run(&[
+        "sample",
+        &store,
+        "scalar",
+        "falling",
+        "--with-reset",
+        "-s",
+        "scalar",
+        "--limit",
+        "1",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        out.is_empty() && err.contains("0 trigger events"),
+        "{out} {err}"
+    );
+    let (out, err, code) = issue_1100_run(&[
+        "sample",
+        &store,
+        "scalar",
+        "rising",
+        "--with-reset",
+        "--virtual",
+        "v=scalar=='h1",
+        "-s",
+        "scalar",
+        "-s",
+        "v",
+        "--limit",
+        "1",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("3 scalar 1"), "{out}");
+    assert!(
+        err.contains("1 trigger events") && err.contains("truncated"),
+        "{err}"
+    );
+    let late = body.replace(
+        "#1000000000000\n",
+        "#999999999971\n0!\n#999999999981\n1!\n#1000000000000\n",
+    );
+    let (_late_dir, late_store) = issue_1100_store(&late, "parallel");
+    let (out, err, code) = issue_1100_run(&[
+        "sample",
+        &late_store,
+        "scalar",
+        "rising",
+        "--with-reset",
+        "-s",
+        "scalar",
+        "--limit",
+        "1",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("3 scalar 1"), "{out}");
+    assert!(
+        err.contains("2 trigger events") && err.contains("truncated"),
+        "{err}"
+    );
+    for signal in ["scalar", "v"] {
+        for two_event in [false, true] {
+            let mut args = vec![
+                "distance",
+                &store,
+                signal,
+                "'h1",
+                "--with-reset",
+                "--virtual",
+                "v=scalar=='h1",
+                "--limit",
+                "1",
+            ];
+            if two_event {
+                args.extend(["--to", "v", "'h1"]);
+            }
+            let (out, err, code) = issue_1100_run(&args);
+            assert_eq!(code, 0, "{err}");
+            assert!(out.contains("@ 3 -> @ 4  d=1"), "{out}");
+            assert!(
+                err.contains("99999999997 pairs") && err.contains("truncated"),
+                "{err}"
+            );
+            args.push("--stats");
+            let (out, err, code) = issue_1100_run(&args);
+            assert_eq!(code, 0, "{err}");
+            assert!(
+                out.contains("count=99999999997  min=1  max=1  mean=1.0  median=1.0"),
+                "{out}"
+            );
+        }
+    }
+}
