@@ -66,12 +66,12 @@ def _names(layout: SimpleNamespace, key: str) -> list[str]:
 
 
 def test_finish_refuses_a_goal_whose_target_does_not_exist_yet(layout: SimpleNamespace) -> None:
-    goals = [{"family": "sim", "target": "top"}, {"family": "sim", "target": "soon"}]
+    goals = [{"family": "SIM", "target": "top"}, {"family": "SIM", "target": "soon"}]
     mode = _mode(layout, goals, tests_toml=TWO_TESTS)
     _record(mode, "run-1", [run_row(A), run_row(B)])
     assert _status(mode, SIM_KEY).status == "met"
     assert _status(mode, "sim_pass_soon").reason.startswith("goal-test-run-pending: ")
-    with pytest.raises(LifecycleError, match="must be met and fresh before finish: sim_pass_soon"):
+    with pytest.raises(LifecycleError, match=r"must be met and fresh before finish: SIM:soon \("):
         finish_goal(request(mode), environment(mode))
 
 
@@ -80,7 +80,7 @@ def test_an_unresolved_goal_and_an_all_skipped_suite_are_unmet_for_their_own_rea
 ) -> None:
     mode = _mode(
         layout,
-        [{"family": "sim", "target": "top"}, {"family": "sim", "target": "base"}],
+        [{"family": "SIM", "target": "top"}, {"family": "SIM", "target": "base"}],
         tests_toml=b'[top]\ntests = ["a"]\nskip = ["a"]\n[base]\ntests = ["a"]\n',
     )
     # ``top``: resolved, and it requires nothing. ``base``: as a record written before
@@ -92,7 +92,7 @@ def test_an_unresolved_goal_and_an_all_skipped_suite_are_unmet_for_their_own_rea
     )
     assert _status(mode, SIM_KEY).reason.startswith("goal-simulation-suite-empty: ")
     assert _status(mode, "sim_pass_base").reason.startswith("goal-test-run-pending: ")
-    with pytest.raises(LifecycleError, match="sim_pass_top, sim_pass_base"):
+    with pytest.raises(LifecycleError, match=r"SIM:top \(all selected tests pass\), SIM:base \("):
         finish_goal(request(mode), environment(mode))
     # The unresolved Goal resolves on first use; the empty suite stays empty.
     ensure_test_run_resolutions(GoalStore(mode.control), mode.record.id, mode.worktree)
@@ -103,7 +103,7 @@ def test_an_unresolved_goal_and_an_all_skipped_suite_are_unmet_for_their_own_rea
 def test_finish_refuses_an_accumulated_goal_whose_contributor_was_substituted(
     layout: SimpleNamespace,
 ) -> None:
-    mode = _mode(layout, [{"family": "sim", "target": "top"}], tests_toml=TWO_TESTS)
+    mode = _mode(layout, [{"family": "SIM", "target": "top"}], tests_toml=TWO_TESTS)
     _record(mode, "run-1", [run_row(A, "fail")], met=False)
     (mode.worktree / "rtl.v").write_bytes(b"module top; wire fixed; endmodule\n")
     git(mode.worktree, "commit", "-qam", "fix")
@@ -128,8 +128,8 @@ def test_goals_that_resolve_to_one_multi_seed_goal_merge_before_any_seed_is_draw
 ) -> None:
     """Through entry with the real plan: one draw of the larger N, never two draws."""
     goals = [
-        {"family": "sim", "target": "top", "test": "stress@x2", "origin": "a"},
-        {"family": "sim", "target": "::top:0#top", "test": "stress+short@x3", "origin": "b"},
+        {"family": "SIM", "target": "top", "test": "stress@x2", "origin": "a"},
+        {"family": "SIM", "target": "::top:0#top", "test": "stress+short@x3", "origin": "b"},
     ]
     record = enter_goals(layout, goals, tests_toml=VARIANTS)
     (goal,) = record.goals
@@ -145,7 +145,7 @@ def test_binding_runs_and_reading_status_never_redraw_frozen_seeds(
     from booley.goals import test_run_freezing
 
     mode = _mode(
-        layout, [{"family": "sim", "target": "top", "test": "stress@x2"}], tests_toml=VARIANTS
+        layout, [{"family": "SIM", "target": "top", "test": "stress@x2"}], tests_toml=VARIANTS
     )
     frozen = _names(mode, SEEDS_KEY)
 
@@ -168,7 +168,7 @@ def test_an_unpinned_goal_stays_on_its_frozen_runs_after_default_edits(
     layout: SimpleNamespace,
 ) -> None:
     """A real ``tests.toml`` edit of ``default`` and ``default_seed``: status and the Flow."""
-    mode = _mode(layout, [{"family": "sim", "target": "top"}], tests_toml=VARIANTS)
+    mode = _mode(layout, [{"family": "SIM", "target": "top"}], tests_toml=VARIANTS)
     frozen = ["smoke@1", "stress+short@1"]
     assert _names(mode, SIM_KEY) == frozen
     edited = VARIANTS.replace(b'default = "short"', b'default = "soak"').replace(
@@ -207,15 +207,15 @@ def test_nothing_is_resolved_over_a_really_interrupted_apply(layout: SimpleNames
             raise _StopError(boundary)
 
     goals = [
-        {"family": "sim", "target": "top"},
-        {"family": "sim", "target": "top", "test": "later"},
+        {"family": "SIM", "target": "top"},
+        {"family": "SIM", "target": "top", "test": "later"},
     ]
     mode = _mode(layout, goals)
     later = "sim_pass_top_run_6c61746572_d"
     env = ChangeEnvironment(entry_environment(mode))
     arguments = {
         "kind": "add",
-        "after": {"family": "sim", "target": "top", "test": "smoke@7"},
+        "after": {"family": "SIM", "target": "top", "test": "smoke@7"},
         "rationale": "pin one seed",
     }
     view = create_proposal(env, mode.record.id, arguments, session_key="test-session")

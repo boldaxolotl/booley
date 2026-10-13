@@ -17,6 +17,7 @@ from booley.goals.generated_artifacts import inventory_files
 from booley.goals.lifecycle import LifecycleError
 from booley.goals.model import GoalRecord
 from booley.goals.paths import record_paths
+from booley.goals.presentation import goal_presentation
 from booley.goals.proposals import digest, list_proposals
 from booley.goals.recorder import GOAL_SCOPE
 from booley.goals.store import GoalStore
@@ -125,7 +126,9 @@ def _package_rows(
     for goal in record.goals:
         observation = selected.get(goal.spec.key)
         if observation is None:
-            raise LifecycleError(f"selected evidence missing for {goal.spec.key}")
+            raise LifecycleError(
+                f"selected evidence missing for {goal_presentation(goal.spec).text}"
+            )
         originals = original_observations(observation, indexed)
         modified = any(
             item["change"] == "modified"

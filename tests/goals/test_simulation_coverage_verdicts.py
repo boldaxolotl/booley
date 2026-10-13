@@ -31,9 +31,9 @@ def test_bound_flow_records_both_verdicts(layout, monkeypatch, simulation, cover
             slug="verdicts",
             goals=parse_goal_args(
                 [
-                    {"family": "sim", "target": "top"},
+                    {"family": "SIM", "target": "top"},
                     {
-                        "family": "coverage",
+                        "family": "COVERAGE",
                         "target": "top",
                         "tests": "all",
                         "metrics": {"line": 100},
@@ -105,7 +105,7 @@ def test_multi_seed_coverage_goal_is_met_only_by_a_campaign_of_exactly_its_froze
     layout, monkeypatch
 ):
     goals = [
-        {"family": "coverage", "target": "top", "tests": ["reset@x2"], "metrics": {"line": 100}}
+        {"family": "COVERAGE", "target": "top", "tests": ["reset@x2"], "metrics": {"line": 100}}
     ]
     root, record = _enter(layout, monkeypatch, goals)
     frozen = [run.name for run in record.test_run_resolutions["coverage_top"].test_runs]
@@ -168,7 +168,7 @@ def test_a_published_coverage_campaign_whose_acceptance_never_ran_is_accounted_f
         EntryRequest(
             work_dir=root,
             slug="killed",
-            goals=parse_goal_args([{"family": "sim", "target": "top"}]),
+            goals=parse_goal_args([{"family": "SIM", "target": "top"}]),
         ),
         entry_environment(layout),
     ).record

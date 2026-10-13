@@ -85,14 +85,14 @@ def test_optional_criteria_are_omitted() -> None:
     ]
     goals = _goal_arguments(render_goalset("custom", specs), targets=["core"])
 
-    assert [goal["family"] for goal in goals] == ["sim"]
+    assert [goal["family"] for goal in goals] == ["SIM"]
 
 
 def test_sim_goal_names_only_a_target() -> None:
     markdown = render_goalset("bugfix", TEMPLATE_REGISTRY["bugfix"])
 
     assert _goal_arguments(markdown, targets=["core"]) == [
-        {"family": "sim", "target": "core", "origin": "bugfix"}
+        {"family": "SIM", "target": "core", "origin": "bugfix"}
     ]
 
 

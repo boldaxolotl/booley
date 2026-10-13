@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -161,8 +162,11 @@ def _test_run_lines(detail: dict[str, Any]) -> list[str]:
     return [f"  Test Runs: {shown}"]
 
 
-def _deferred_resolution_lines(record: dict[str, Any]) -> list[str]:
-    """Every Test Run that was frozen after Goal Mode entry, by Goal (ADR 0072)."""
+def _deferred_resolution_lines(record: dict[str, Any], names: dict[str, str]) -> list[str]:
+    """Every Test Run that was frozen after Goal Mode entry, by Goal (ADR 0072).
+
+    *names* gives the public name of each Goal key.
+    """
     lines: list[str] = []
     resolutions = require_dict(record.get("test_run_resolutions") or {}, field="resolutions")
     for key in sorted(resolutions):
@@ -171,14 +175,17 @@ def _deferred_resolution_lines(record: dict[str, Any]) -> list[str]:
             run = require_dict(raw, field="resolution run")
             if run.get("resolved_by") == "deferred":
                 lines.append(
-                    f"- {key}: {run['name']} (slot {run['slot']}, resolved {run['resolved_at']})"
+                    f"- {names.get(key, _unavailable_goal(key))}: {run['name']} (slot {run['slot']}, resolved {run['resolved_at']})"
                 )
     return ["", "Test Runs resolved after entry", *lines] if lines else []
 
 
-def render_goal_briefing(package: GoalCompletionPackage) -> str:
+def render_goal_briefing(
+    package: GoalCompletionPackage, *, present: Callable[[object], str] | None = None
+) -> str:
     """Render neutral completion facts and open findings, with full audit provenance."""
     facts = package.facts
+    presenter = present or _unavailable_goal
     lines = [
         f"Goal Mode {facts['record']['id']} finished.",
         "",
@@ -188,29 +195,9 @@ def render_goal_briefing(package: GoalCompletionPackage) -> str:
         "Goals",
     ]
     for row in facts["goals"]:
-        selected = row["selected_observation"]
-        lines += [
-            f"- {row['key']}: met and fresh; {row['metric']}"
-            + ("; bound Target modified" if row["modified_target"] else ""),
-            f"  Evidence {selected['sequence']} ({row['observation_sha256']}), producer {selected['producer']}, invocation {selected['invocation_id']}, recorded {selected['recorded_at']}, spec revision {row['spec_revision']}.",
-        ]
-        detail = selected["detail"]
-        for finding in detail.get("pending", detail.get("issue_list", [])):
-            lines.append(
-                "  Open finding: " + json.dumps(finding, sort_keys=True, ensure_ascii=False)
-            )
-        lines += _test_run_lines(detail)
-        if row["original_observations"]:
-            if "goal_derivation" in detail:
-                lines.append(
-                    "  Approved derivation: "
-                    + json.dumps(detail["goal_derivation"], sort_keys=True)
-                )
-            lines.append(
-                "  Original observations: "
-                + json.dumps(row["original_observations"], sort_keys=True, ensure_ascii=False)
-            )
-    lines += _deferred_resolution_lines(facts["record"])
+        lines.extend(_goal_lines(row, presenter))
+    names = {row["key"]: presenter(row["spec"]) for row in facts["goals"]}
+    lines += _deferred_resolution_lines(facts["record"], names)
     for title, key in (
         ("Diff summary", "diff_summary"),
         ("Target changes", "target_changes"),
@@ -223,14 +210,54 @@ def render_goal_briefing(package: GoalCompletionPackage) -> str:
         ("Evidence transactions", "evidence_transactions"),
         ("Input proof", "input_proof"),
     ):
-        lines += ["", title, json.dumps(facts[key], indent=2, sort_keys=True, ensure_ascii=False)]
+        lines += [
+            "",
+            title,
+            json.dumps(
+                _human_facts(key, facts[key], presenter),
+                indent=2,
+                sort_keys=True,
+                ensure_ascii=False,
+            ),
+        ]
     lines += [*_unsettled_campaign_lines(facts), *_earlier_attempt_lines(facts)]
     return "\n".join(lines)
 
 
-def render_goal_html(package: GoalCompletionPackage) -> str:
+def _goal_lines(row: dict[str, Any], presenter: Callable[[object], str]) -> list[str]:
+    lines: list[str] = []
+    selected = row["selected_observation"]
+    lines += [
+        f"- {presenter(row['spec'])}: met and fresh; {row['metric']}"
+        + ("; bound Target modified" if row["modified_target"] else ""),
+        f"  Evidence {selected['sequence']} ({row['observation_sha256']}), producer {selected['producer']}, invocation {selected['invocation_id']}, recorded {selected['recorded_at']}, spec revision {row['spec_revision']}.",
+    ]
+    detail = selected["detail"]
+    for finding in detail.get("pending", detail.get("issue_list", [])):
+        lines.append("  Open finding: " + json.dumps(finding, sort_keys=True, ensure_ascii=False))
+    lines += _test_run_lines(detail)
+    if row["original_observations"]:
+        if "goal_derivation" in detail:
+            lines.append(
+                "  Approved derivation: "
+                + json.dumps(_derivation_facts(detail["goal_derivation"]), sort_keys=True)
+            )
+        lines.append(
+            "  Original observations: "
+            + json.dumps(
+                [observation_facts(item) for item in row["original_observations"]],
+                sort_keys=True,
+                ensure_ascii=False,
+            )
+        )
+    return lines
+
+
+def render_goal_html(
+    package: GoalCompletionPackage, *, present: Callable[[object], str] | None = None
+) -> str:
     """Requested explanation uses the exact frozen Goal facts and escaped content."""
-    body = html.escape(render_goal_briefing(package))
+    body = html.escape(render_goal_briefing(package, present=present))
     return (
         '<!doctype html><html lang="en"><meta charset="utf-8"><title>Goal completion</title><body><pre>'
         + body
@@ -248,6 +275,107 @@ def _unsettled_campaign_lines(facts: dict[str, Any]) -> list[str]:
         "Simulation Campaigns not fully accounted for",
         json.dumps(listed, indent=2, sort_keys=True, ensure_ascii=False),
     ]
+
+
+def _unavailable_goal(_spec: object) -> str:
+    return "Goal unavailable (unsupported record)"
+
+
+def observation_facts(row: dict[str, Any]) -> dict[str, Any]:
+    """Retain readable evidence while projecting out its machine authority envelope."""
+    facts = {
+        name: row[name]
+        for name in ("sequence", "producer", "invocation_id", "recorded_at")
+        if name in row
+    }
+    detail = row.get("detail", {})
+    observations = {
+        name: value
+        for name, value in detail.items()
+        if name
+        not in {
+            "_source_fingerprint",
+            "goal_derivation",
+            "goal_identity",
+            "criterion",
+            "goal_key",
+            "goal_keys",
+            "spec_revisions",
+        }
+    }
+    if observations:
+        facts["observations"] = observations
+    return facts
+
+
+def _derivation_facts(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "proposal_id": row.get("proposal_id"),
+        "payload_digest": row.get("payload_digest"),
+        "source_evidence": [
+            {**observation_facts(item), "sha256": item.get("sha256")}
+            for item in row.get("source_evidence", [])
+        ],
+    }
+
+
+def _human_facts(section: str, value: Any, present: Callable[[object], str]) -> Any:
+    if section == "change_log":
+        return [_change_facts(row, present) for row in value]
+    if section.endswith("decisions"):
+        return [_decision_facts(row, present) for row in value]
+    if section == "evidence_transactions":
+        return [
+            {name: row[name] for name in ("transaction_id", "manifest_sha256", "observations")}
+            for row in value
+        ]
+    return value
+
+
+def _change_facts(row: dict[str, Any], present: Callable[[object], str]) -> dict[str, Any]:
+    facts = {
+        name: value
+        for name, value in row.items()
+        if name not in {"goal_key", "before", "after", "runtime_params", "after_arg", "waiver"}
+    }
+    for name in ("before", "after"):
+        if name in row:
+            facts[name] = None if row[name] is None else present(row[name])
+    return facts
+
+
+def _decision_facts(row: dict[str, Any], present: Callable[[object], str]) -> dict[str, Any]:
+    return {
+        **proposal_facts(row["proposal"], present),
+        **{
+            name: row[name]
+            for name in (
+                "state",
+                "decision",
+                "payload_digest",
+                "transaction_digest",
+                "closed_by_abandonment",
+            )
+            if name in row
+        },
+    }
+
+
+def proposal_facts(proposal: dict[str, Any], present: Callable[[object], str]) -> dict[str, Any]:
+    """One neutral approval/audit projection shared by all human surfaces."""
+    facts: dict[str, Any] = {
+        "proposal_id": proposal["id"],
+        "kind": proposal["kind"],
+        "before": None if proposal["before"] is None else present(proposal["before"]),
+        "after": present(proposal["after"]),
+        "rationale": proposal["rationale"],
+    }
+    waiver = proposal.get("waiver")
+    if waiver is not None:
+        facts["waiver"] = {
+            name: waiver[name] for name in ("candidate_id", "candidate", "policy", "approval_root")
+        }
+    return facts
 
 
 def _earlier_attempt_lines(facts: dict[str, Any]) -> list[str]:

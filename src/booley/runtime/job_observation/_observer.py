@@ -1,97 +1,71 @@
-"""Neutral, strictly observational multi-root Job projection for the Dashboard."""
+"""Bounded read-only Job refreshes with private artifact generations."""
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from collections.abc import Callable, Sequence
 from itertools import islice
 from pathlib import Path
 from typing import Any
 
-from booley.goals.binding import GoalBindingError, GoalRunBinding
-from booley.goals.paths import record_paths
-from booley.goals.store import GoalStore
 from booley.runtime import job_records, job_slots
 from booley.runtime.artifact_paths import available_paths
-from booley.runtime.job_artifacts import JobArtifactCache
+from booley.runtime.job_observation._artifacts import JobArtifactCache
+from booley.runtime.job_observation._model import JobObservation, ObservationSnapshot
 from booley.runtime.pid import ProcessIdentity, ProcessState, observe_process
 from booley.runtime.timefmt import parse_timestamp
-from booley.targets.catalog import TargetCatalog
-from booley.targets.domain import FuseSocError
 
 MAX_JOBS = 4096
-# Upper bound on record files examined per read before the newest MAX_JOBS are kept.
+# Examine at most four times the projected record capacity before selecting newest records.
 MAX_SCANNED_JOBS = 4 * MAX_JOBS
-MAX_INTERACTIVE_ROOTS = 64
-TERMINAL_JOB_STATES = frozenset({"completed", "failed", "cancelled"})
+RecordValidator = Callable[[job_records.JobRecord], None]
 
 
-@dataclass(frozen=True)
-class JobView:
-    """A run identity includes its root; duplicate legacy run IDs remain separate."""
+class JobObserver:
+    """Own one Project's cache across read-only refreshes of explicitly selected roots.
 
-    root: Path
-    record: job_records.JobRecord
-    state: str
-    report: dict[str, Any] | None = None
-    report_path: Path | None = None
-    stage: str = ""
-    diagnostic: str = ""
-    cpu_percent: float | None = None
-    memory: int | None = None
-    peak_memory: int | None = None
-    artifacts: tuple[str, ...] = ()
-    eda_tool: str = ""
-
-    @property
-    def key(self) -> tuple[str, str]:
-        """Stable selection identity through completion and session expiry."""
-        return str(self.root), self.record.run_id
-
-
-@dataclass(frozen=True)
-class JobSnapshot:
-    """Bounded rows and isolated diagnostics; history is retained by its producer."""
-
-    jobs: tuple[JobView, ...]
-    diagnostics: tuple[str, ...] = ()
-
-
-def target_arg(argv: list[str]) -> str | None:
-    """Read the producer's Target once, without inventing one for legacy records."""
-    try:
-        index = argv.index("--target")
-    except ValueError:
-        return None
-    return argv[index + 1] if index + 1 < len(argv) else None
-
-
-def retained_job_roots(
-    project_dir: Path, *, interactive_root: Path | None = None
-) -> tuple[Path, ...]:
-    """Interactive roots and every retained Goal, including finished/abandoned records.
-
-    Ordered by what a bounded scan must not lose: the caller's interactive
-    root, then every Goal Record, then older interactive sessions newest first.
+    The optional validator interprets caller-owned record metadata before artifact
+    or process observation. Raise ValueError to isolate an invalid record. Other
+    failures abort the refresh without committing its cache generation.
     """
-    roots = [] if interactive_root is None else [interactive_root]
-    roots.extend(
-        record_paths(project_dir, rec.id).jobs_dir
-        for rec in GoalStore(project_dir).list_records().records
-    )
-    history = []
-    for path in islice(project_dir.glob(".interactive_logs/*/.runtime/jobs"), MAX_JOBS):
-        try:
-            history.append((path.stat().st_mtime_ns, path))
-        except OSError:
-            continue
-    roots.extend(
-        path
-        for _, path in sorted(history, key=lambda item: item[0], reverse=True)[
-            :MAX_INTERACTIVE_ROOTS
-        ]
-    )
-    return tuple(dict.fromkeys(roots))
+
+    def __init__(
+        self,
+        project_dir: Path,
+        *,
+        slots_root: Path | None = None,
+        proc_root: Path = Path("/proc"),
+        validate_record: RecordValidator | None = None,
+    ) -> None:
+        self._project_dir = project_dir
+        self._slots_root = slots_root
+        self._proc_root = proc_root
+        self._validate_record = validate_record
+        self._artifacts = JobArtifactCache()
+
+    def read(self, roots: Sequence[Path]) -> ObservationSnapshot:
+        """Never poll, reconcile status, adopt, repair or invoke a reaper."""
+        cache = self._artifacts
+        cache.configure_project(self._project_dir, max_endpoints=MAX_JOBS)
+        cache.begin()
+        tokens = self._observe_slots()
+        records, diagnostics = _snapshot_records(roots, self._validate_record)
+        cache.prepare_endpoints((root, rec.endpoint) for root, rec in records)
+        rows = [_project_job(root, rec, tokens, self._proc_root, cache) for root, rec in records]
+        diagnostics.extend(cache.diagnostics)
+        diagnostics.extend(_ambiguous_ids(rows))
+        snapshot = ObservationSnapshot(tuple(rows), tuple(diagnostics))
+        cache.complete()
+        return snapshot
+
+    def _observe_slots(self) -> list[job_slots.SlotToken]:
+        tokens = []
+        if self._slots_root is not None:
+            store = job_slots.SlotStore(self._slots_root)
+            for kind in ("heavy", "light"):
+                holders, waiters = store.observe(kind)
+                tokens.extend((*holders, *waiters))
+        return tokens
 
 
 def _state(rec: job_records.JobRecord, slots: list[job_slots.SlotToken], proc_root: Path) -> str:
@@ -119,42 +93,12 @@ def _state(rec: job_records.JobRecord, slots: list[job_slots.SlotToken], proc_ro
     return "running" if rec.run_started_at else "spawning"
 
 
-def snapshot_jobs(
-    project_dir: Path,
-    *,
-    interactive_root: Path | None = None,
-    slots_root: Path | None = None,
-    proc_root: Path = Path("/proc"),
-    artifact_cache: JobArtifactCache | None = None,
-) -> JobSnapshot:
-    """Read files only. Never poll, derive/reconcile status, adopt or invoke a reaper."""
-    cache = artifact_cache if artifact_cache is not None else JobArtifactCache()
-    cache.configure_project(project_dir, max_endpoints=MAX_JOBS)
-    cache.begin()
-    tokens, rows, diagnostics = [], [], []
-    catalogs: dict[str, TargetCatalog | None] = {}
-    if slots_root is not None:
-        store = job_slots.SlotStore(slots_root)
-        for kind in ("heavy", "light"):
-            holders, waiters = store.observe(kind)
-            tokens.extend((*holders, *waiters))
-    records, record_diagnostics = _snapshot_records(project_dir, interactive_root)
-    diagnostics.extend(record_diagnostics)
-    cache.prepare_endpoints((root, rec.endpoint) for root, rec in records)
-    for root, rec in records:
-        rows.append(_project_job(root, rec, tokens, proc_root, catalogs, cache))
-    diagnostics.extend(cache.diagnostics)
-    diagnostics.extend(_ambiguous_ids(rows))
-    cache.complete()
-    return JobSnapshot(tuple(rows), tuple(diagnostics))
-
-
 def _snapshot_records(
-    project_dir: Path, interactive_root: Path | None
+    roots: Sequence[Path], validate_record: RecordValidator | None
 ) -> tuple[list[tuple[Path, job_records.JobRecord]], list[str]]:
     """Parse only the newest bounded set of records, and say so when history is cut."""
     records, diagnostics = [], []
-    candidates = _record_candidates(project_dir, interactive_root, diagnostics)
+    candidates = _record_candidates(roots, diagnostics)
     if len(candidates) > MAX_JOBS:
         diagnostics.append(_truncation_notice(len(candidates)))
         # Newest by modification time; a record is rewritten whenever its Job changes state.
@@ -162,7 +106,7 @@ def _snapshot_records(
         kept = {(root, path) for _, root, path in newest}
         candidates = [item for item in candidates if (item[1], item[2]) in kept]
     for _, root, path in candidates:
-        rec = _read_job(path)
+        rec = _read_job(path, validate_record)
         if rec is None:
             diagnostics.append(f"Job record unavailable: {path}")
             continue
@@ -182,11 +126,11 @@ def _truncation_notice(examined: int) -> str:
 
 
 def _record_candidates(
-    project_dir: Path, interactive_root: Path | None, diagnostics: list[str]
+    roots: Sequence[Path], diagnostics: list[str]
 ) -> list[tuple[int, Path, Path]]:
     """List (mtime, root, record path) in root order without reading any record."""
     candidates: list[tuple[int, Path, Path]] = []
-    for root in retained_job_roots(project_dir, interactive_root=interactive_root):
+    for root in dict.fromkeys(roots):
         if root.is_symlink():
             diagnostics.append(f"Job root unavailable: {root}")
             continue
@@ -198,7 +142,7 @@ def _record_candidates(
     return candidates
 
 
-def _read_job(path: Path) -> job_records.JobRecord | None:
+def _read_job(path: Path, validate_record: RecordValidator | None) -> job_records.JobRecord | None:
     try:
         if path.is_symlink() or path.stat().st_size > 2 * 1024 * 1024:
             return None
@@ -225,11 +169,14 @@ def _read_job(path: Path) -> job_records.JobRecord | None:
             parse_timestamp(rec.run_started_at)
         if rec.pid is not None and (type(rec.pid) is not int or rec.pid <= 0):
             return None
-        if rec.binding is not None:
-            GoalRunBinding.from_json(rec.binding)
-        return rec
-    except (OSError, ValueError, job_records.JobRecordError, GoalBindingError):
+    except (OSError, ValueError, job_records.JobRecordError):
         return None
+    if validate_record is not None:
+        try:
+            validate_record(rec)
+        except ValueError:
+            rec = None
+    return rec
 
 
 def _project_job(
@@ -237,9 +184,8 @@ def _project_job(
     rec: job_records.JobRecord,
     tokens: list[job_slots.SlotToken],
     proc_root: Path,
-    catalogs: dict[str, TargetCatalog | None],
     cache: JobArtifactCache,
-) -> JobView:
+) -> JobObservation:
     artifact = cache.find(root, rec.endpoint, rec.run_id, "report")
     report, report_path = (None, None) if artifact is None else artifact
     progress = cache.find(root, rec.endpoint, rec.run_id, "progress")
@@ -247,7 +193,7 @@ def _project_job(
     artifacts = available_paths(
         report or {}, (root.parent, Path(rec.work_dir) if rec.work_dir else root)
     )
-    return JobView(
+    return JobObservation(
         root,
         rec,
         _state(rec, tokens, proc_root),
@@ -255,7 +201,6 @@ def _project_job(
         report_path,
         stage,
         artifacts=artifacts,
-        eda_tool=_configured_tool(rec, catalogs),
     )
 
 
@@ -270,21 +215,7 @@ def _reported_stage(progress: dict[str, Any] | None) -> str:
     return phase if isinstance(phase, str) and phase != "starting" else ""
 
 
-def _configured_tool(rec: job_records.JobRecord, catalogs: dict[str, TargetCatalog | None]) -> str:
-    target = target_arg(rec.argv)
-    if rec.status != job_records.STATUS_RUNNING or not rec.work_dir or target is None:
-        return ""
-    try:
-        if rec.work_dir not in catalogs:
-            catalogs[rec.work_dir] = None
-            catalogs[rec.work_dir] = TargetCatalog.build(rec.work_dir)
-        catalog = catalogs[rec.work_dir]
-        return "" if catalog is None else (catalog.select(target).eda_tool or "")
-    except (OSError, ValueError, FuseSocError):
-        return ""
-
-
-def _ambiguous_ids(rows: list[JobView]) -> list[str]:
+def _ambiguous_ids(rows: list[JobObservation]) -> list[str]:
     counts: dict[str, int] = {}
     for row in rows:
         counts[row.record.run_id] = counts.get(row.record.run_id, 0) + 1

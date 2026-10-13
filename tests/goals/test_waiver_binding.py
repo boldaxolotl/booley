@@ -192,7 +192,7 @@ def test_malformed_saved_binding_refuses_before_external_locks_or_mutation(
 
 
 def test_mcp_summary_keeps_legacy_waiver_shape(tmp_path):
-    from booley.mcp.goal_changes import _summary
+    from booley.mcp.goal_changes import _wire_summary as _summary
 
     raw = legacy_payload()
     proposal = Proposal.from_json(raw)

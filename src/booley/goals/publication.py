@@ -47,6 +47,7 @@ from booley.goals.apply_barrier import require_no_apply
 from booley.goals.binding import GoalRunBinding, checkout_drift, protected_drift
 from booley.goals.model import GoalRecord, GoalState
 from booley.goals.paths import record_paths
+from booley.goals.presentation import goal_presentation
 from booley.goals.proposals import ProposalError
 from booley.goals.protected_inputs import ProtectedInputError, snapshot_protected_inputs
 from booley.goals.store import GoalRecordNotFoundError, GoalStore, GoalStoreError
@@ -151,11 +152,15 @@ class PublicationGate:
         for key in sorted(affected):
             admitted = binding.spec_revision(key)
             if admitted is None:
-                raise EvidenceDiscarded(f"{key} was not a Goal when the run started")
+                raise EvidenceDiscarded(
+                    "Evidence did not match a Goal admitted when the run started"
+                )
             if key not in current:
-                raise EvidenceDiscarded(f"Goal {key} was removed during the run")
+                raise EvidenceDiscarded("An admitted Goal was removed during the run")
             if current[key] != admitted:
-                raise EvidenceDiscarded(f"Goal {key} changed during the run")
+                raise EvidenceDiscarded(
+                    f"Goal {goal_presentation(next(goal.spec for goal in record.goals if goal.spec.key == key)).text} changed during the run"
+                )
 
     def _check_protected_inputs_now(self, record: GoalRecord) -> None:
         try:

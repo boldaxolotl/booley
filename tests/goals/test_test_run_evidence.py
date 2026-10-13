@@ -24,6 +24,7 @@ from booley.goals.test_run_evidence import (
 )
 from tests.goals.conftest import (
     SIM_KEY,
+    SIM_NAME,
     bind,
     bump_spec,
     campaign_facts,
@@ -52,7 +53,7 @@ def _interrupt(boundary: str) -> Callable[[str], None]:
 @pytest.fixture
 def two(layout: SimpleNamespace) -> SimpleNamespace:
     """An active Goal Mode whose simulation Target Goal is frozen to ``a@1`` and ``b@1``."""
-    record = enter_goals(layout, [{"family": "sim", "target": "top"}], tests_toml=TWO_TESTS)
+    record = enter_goals(layout, [{"family": "SIM", "target": "top"}], tests_toml=TWO_TESTS)
     return SimpleNamespace(**vars(layout), record=record)
 
 
@@ -331,7 +332,7 @@ def test_substituted_contributor_is_refused(two: SimpleNamespace) -> None:
 def seeds(layout: SimpleNamespace) -> SimpleNamespace:
     """An active Goal Mode with the multi-seed Goal ``a@x3`` and its three frozen seeds."""
     record = enter_goals(
-        layout, [{"family": "sim", "target": "top", "test": "a@x3"}], tests_toml=TWO_TESTS
+        layout, [{"family": "SIM", "target": "top", "test": "a@x3"}], tests_toml=TWO_TESTS
     )
     frozen = [run.seed for run in record.test_run_resolutions[SEEDS_KEY].test_runs]
     assert len(set(frozen)) == 3
@@ -375,9 +376,9 @@ def test_multi_seed_goal_accumulates_per_seed_and_lists_failing_seeds(
 
 def test_pending_and_empty_goals_are_unmet_whatever_passes(layout: SimpleNamespace) -> None:
     goals = [
-        {"family": "sim", "target": "top"},
-        {"family": "sim", "target": "top", "test": "later"},
-        {"family": "sim", "target": "soon"},
+        {"family": "SIM", "target": "top"},
+        {"family": "SIM", "target": "top", "test": "later"},
+        {"family": "SIM", "target": "soon"},
     ]
     record = enter_goals(layout, goals, tests_toml=b'[top]\ntests = ["a"]\nskip = ["a"]\n')
     mode = SimpleNamespace(**vars(layout), record=record)
@@ -399,7 +400,7 @@ def test_removed_test_and_changed_variant_inputs_need_a_retarget(layout: SimpleN
         b'[top]\ntests = ["a", "b"]\n[top.variants.a]\ndefault = "v"\n'
         b'v = { args = ["+n=1"], env = { MODE = "1" } }\n'
     )
-    record = enter_goals(layout, [{"family": "sim", "target": "top"}], tests_toml=variants)
+    record = enter_goals(layout, [{"family": "SIM", "target": "top"}], tests_toml=variants)
     mode = SimpleNamespace(**vars(layout), record=record)
     frozen_a = record.test_run_resolutions[SIM_KEY].test_runs[0]
     assert frozen_a.name == "a+v@1"
@@ -515,12 +516,13 @@ def test_briefing_names_test_runs_and_every_deferred_resolution(two: SimpleNames
     detail = _record(two, "run-1", [run_row(A), run_row(B, "fail")], met=False)
     assert _test_run_lines(detail) == ["  Test Runs: a@1 passed, b@1 failed"]
     assert _test_run_lines({"warnings": 0}) == []
-    assert _deferred_resolution_lines(two.record.to_json()) == []
+    names = {SIM_KEY: SIM_NAME}
+    assert _deferred_resolution_lines(two.record.to_json(), names) == []
     write_tests_toml(two, b'[top]\ntests = ["a", "b", "late"]\n')
     resolved = ensure_test_run_resolutions(GoalStore(two.control), two.record.id, two.worktree)
-    lines = _deferred_resolution_lines(resolved.to_json())
+    lines = _deferred_resolution_lines(resolved.to_json(), names)
     assert lines[:2] == ["", "Test Runs resolved after entry"]
-    assert len(lines) == 3 and lines[2].startswith(f"- {SIM_KEY}: late@1 (slot *, resolved ")
+    assert len(lines) == 3 and lines[2].startswith(f"- {SIM_NAME}: late@1 (slot *, resolved ")
 
 
 # --- Rendering ---------------------------------------------------------------------
@@ -536,7 +538,7 @@ def test_status_shows_frozen_runs_outcomes_and_a_rerun_command_per_failing_seed(
     view = build_status(GoalStore(seeds.control), seeds.record, work_dir=seeds.worktree)
     (goal,) = view.goals
     assert test_run_lines(goal) == [
-        f"{SEEDS_KEY}: 3 Test Runs (1 passed, 1 failed, 1 missing): "
+        "SIM:top (all selected tests pass, test a@x3): 3 Test Runs (1 passed, 1 failed, 1 missing): "
         f"a@{first} passed, a@{second} failed, a@{third} missing",
         f"  rerun a@{second}: booley flow sim --target top --test=a@{second}",
     ]
@@ -552,18 +554,18 @@ def test_status_lines_name_pending_slots_and_runs_resolved_after_entry(
     from booley.goals.format import test_run_lines
     from booley.goals.status import select_status
 
-    goals = [{"family": "sim", "target": "top"}, {"family": "sim", "target": "top", "test": "x"}]
+    goals = [{"family": "SIM", "target": "top"}, {"family": "SIM", "target": "top", "test": "x"}]
     record = enter_goals(layout, goals, tests_toml=TWO_TESTS)
     mode = SimpleNamespace(**vars(layout), record=record)
     write_tests_toml(mode, b'[top]\ntests = ["a", "b", "late"]\n')
     (view,) = select_status(GoalStore(mode.control), mode.worktree).views
     suite, pending = (test_run_lines(goal) for goal in view.goals)
     assert suite == [
-        f"{SIM_KEY}: 3 Test Runs (3 missing): a@1 missing, b@1 missing, late@1 missing",
+        f"{SIM_NAME}: 3 Test Runs (3 missing): a@1 missing, b@1 missing, late@1 missing",
         "  resolved after entry: late@1",
     ]
     assert pending == [
-        "sim_pass_top_run_78_d: 0 Test Runs (none): —",
+        "SIM:top (all selected tests pass, test x): 0 Test Runs (none): —",
         "  pending (does not exist yet): x",
     ]
     lint = build_status(GoalStore(mode.control), mode.record, work_dir=mode.worktree)
@@ -580,7 +582,7 @@ def test_dashboard_goal_detail_lists_the_frozen_test_runs(two: SimpleNamespace) 
     view = project_goal(GoalStore(two.control), two.record)
     (detail,) = view.goals
     assert detail.test_runs == (
-        f"{SIM_KEY}: 2 Test Runs (1 passed, 1 failed): a@1 passed, b@1 failed",
+        f"{SIM_NAME}: 2 Test Runs (1 passed, 1 failed): a@1 passed, b@1 failed",
         "  rerun b@1: booley flow sim --target top --test=b@1",
     )
     assert _evidence_detail(detail).startswith(detail.test_runs[0] + "\n  rerun b@1: ")

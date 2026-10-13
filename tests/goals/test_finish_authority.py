@@ -23,7 +23,7 @@ def complete(layout):
     from tests.goals.conftest import enter_goals
     from tests.goals.test_status import publish
 
-    layout.record = enter_goals(layout, [{"family": "lint", "target": "top"}])
+    layout.record = enter_goals(layout, [{"family": "LINT", "target": "top"}])
     publish(layout)
     return layout
 
@@ -59,7 +59,7 @@ def test_saved_attempt_path_tamper_refuses_before_any_effect(
         if publication == "excluded":
             for root in (layout.control, layout.worktree / ".booley_project"):
                 (root / "booley.toml").write_bytes(b"[stealth]\nenabled=false\n")
-        layout.record = enter_goals(layout, [{"family": "lint", "target": "top"}])
+        layout.record = enter_goals(layout, [{"family": "LINT", "target": "top"}])
         publish(layout)
     call, operation = freeze(layout, boundary)
     outside = tmp_path / "outside-summary.md"

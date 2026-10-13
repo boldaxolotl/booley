@@ -75,7 +75,9 @@ from booley.goals.model import (
     WorktreeIdentity,
     parse_goal_args,
 )
+from booley.goals.naming import resolve_spelling
 from booley.goals.paths import GoalIdError, new_goal_id, record_paths, validate_slug
+from booley.goals.presentation import goal_presentation
 from booley.goals.protected_inputs import (
     ProtectedInputError,
     ProtectedInputRoots,
@@ -256,7 +258,7 @@ def enter_goal_mode(request: EntryRequest, env: EntryEnvironment) -> EntryResult
     project_dir = env.project_dir.absolute()
     _refuse_worktree_copy(project_dir, work_dir)
     plans = TargetPlans(work_dir)
-    translation = _translate(request.goals, plans)
+    translation = _translate(request.goals, plans, work_dir)
     checkout = GoalCheckout(work_dir)
     store = GoalStore(project_dir, lock_timeout_s=env.lock_timeout_s)
     try:
@@ -419,10 +421,14 @@ def _refuse_worktree_copy(project_dir: Path, work_dir: Path) -> None:
     )
 
 
-def _translate(goals: Sequence[GoalArg], plans: TargetPlans) -> Translation:
+def _translate(goals: Sequence[GoalArg], plans: TargetPlans, work_dir: Path) -> Translation:
     """Translate and merge the Goals; Test Run selectors merge by what they resolve to."""
     try:
-        return translate_goals(goals, resolver=plans.resolver())
+        return translate_goals(
+            goals,
+            resolver=plans.resolver(),
+            target_spelling=lambda goal: resolve_spelling(goal, work_dir),
+        )
     except (GoalTranslationError, TargetPlanError) as exc:
         raise GoalEntryError(str(exc)) from None
 
@@ -511,18 +517,20 @@ def check_goal_targets(
     for goal in goals:
         if goal.target is not None and not _target_exists(catalog, goal.target):
             warnings.append(
-                f"Goal {goal.key} names Target {goal.target!r}, which does not exist yet; "
+                f"Goal {goal_presentation(goal).text} names Target {goal.target!r}, which does not exist yet; "
                 "it stays unmet until the Target exists"
             )
         baseline = _baseline_target(goal)
         if baseline is not None and not _target_exists(baseline_catalog, baseline):
             raise GoalEntryError(
-                f"Goal {goal.key} compares against baseline Target {baseline!r}, which does "
+                f"Goal {goal_presentation(goal).text} compares against baseline Target {baseline!r}, which does "
                 "not exist at the base commit"
             )
         spec = goal.params.get("spec")
         if isinstance(spec, str) and not (work_dir / spec).is_file():
-            raise GoalEntryError(f"Goal {goal.key} names spec file {spec!r}, which does not exist")
+            raise GoalEntryError(
+                f"Goal {goal_presentation(goal).text} names spec file {spec!r}, which does not exist"
+            )
     return warnings
 
 
@@ -779,9 +787,8 @@ def _describe_ref(ref: str) -> str:
 
 
 def _describe_goal(goal: GoalSpec) -> str:
-    subject = goal.target if goal.target is not None else "review"
     origins = ", ".join(goal.origins)
-    return f"{goal.key}: {goal.family.value} {subject} (from {origins})"
+    return f"{goal_presentation(goal).text} (from {origins})"
 
 
 def _input_topology(root: Path) -> str:

@@ -530,7 +530,7 @@ def _persist_run_state(
             endpoint.discard_evidence(exc)
             report_discarded_evidence(endpoint, result)
             return
-        _emit_criteria_update(endpoint.state)
+        _emit_criteria_update(endpoint.state, endpoint._acceptance_recorder)
 
 
 def report_discarded_evidence(endpoint: EndpointState, outcome: EndpointOutcome) -> None:

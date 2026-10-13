@@ -22,6 +22,7 @@ from booley.criteria.evidence_ledger import AcceptanceLedgerError
 from booley.flows.sim.unpublished_results import read_unpublished_results
 from booley.goals.binding import GoalBindingError
 from booley.goals.checkout import CheckoutError, GoalCheckout
+from booley.goals.diagnostics import is_unnamable_error, unavailable_diagnostic
 from booley.goals.entry import (
     EntryEnvironment,
     GoalEntryError,
@@ -33,12 +34,13 @@ from booley.goals.format import render_status
 from booley.goals.lifecycle import LifecycleError
 from booley.goals.model import goal_arg_json_schema
 from booley.goals.paths import SLUG_MAX_LENGTH, SLUG_PATTERN
+from booley.goals.presentation import goal_addresses
 from booley.goals.proposals import ProposalError
 from booley.goals.rules import goal_mode_rules
 from booley.goals.session_key import session_key
 from booley.goals.state_store import GoalStateError
 from booley.goals.status import GoalStatusView, status_views
-from booley.goals.store import GoalStore, GoalStoreError
+from booley.goals.store import GoalRecordCorruptError, GoalStore, GoalStoreError
 from booley.mcp.application import McpDispatchResult, McpInputRequired, McpRequestContext
 from booley.mcp.goal_changes import proposal_schema, propose_change
 from booley.mcp.goal_completion import complete_goal, finish_schema
@@ -160,7 +162,12 @@ async def dispatch_goal_tool(  # noqa: PLR0911 — four independent public Goal 
                     text += "\n\n" + goal_mode_rules(view.record.declared_protected_inputs)
                 if not views:
                     text += "\n\n" + goal_mode_rules()
-            return _text(text, is_error=False, goal_aware=aware)
+            return _text(
+                text,
+                is_error=False,
+                goal_aware=aware,
+                structured={"records": [goal_addresses(view.record) for view in views]},
+            )
     except (
         LifecycleError,
         GoalBindingError,
@@ -171,7 +178,8 @@ async def dispatch_goal_tool(  # noqa: PLR0911 — four independent public Goal 
         OSError,
         ValueError,
     ) as exc:
-        return _text(f"ERROR: {exc}", is_error=True)
+        message = unavailable_diagnostic(exc) if is_unnamable_error(exc) else str(exc)
+        return _text(f"ERROR: {message}", is_error=True)
     if name != GOAL_ENTER:
         return _text(f"{name} is not available yet in this Booley version.", is_error=True)
     try:
@@ -182,8 +190,16 @@ async def dispatch_goal_tool(  # noqa: PLR0911 — four independent public Goal 
         env = _entry_environment(project_dir, request_context)
         result = await asyncio.to_thread(enter_goal_mode, request, env)
     except (GoalEntryError, GoalStoreError) as exc:
-        return _text(f"ERROR: Goal Mode was not entered: {exc}", is_error=True)
-    return _text(result.render(), is_error=False, goal_aware=True)
+        message = (
+            unavailable_diagnostic(exc) if isinstance(exc, GoalRecordCorruptError) else str(exc)
+        )
+        return _text(f"ERROR: Goal Mode was not entered: {message}", is_error=True)
+    return _text(
+        result.render(),
+        is_error=False,
+        goal_aware=True,
+        structured=goal_addresses(result.record),
+    )
 
 
 def _status_has_caller(
@@ -263,9 +279,18 @@ def _fpga_snapshot(resolved: Any, target: str) -> dict[str, Any]:
     return fpga_recipe_snapshot(resolved, target=target)
 
 
-def _text(message: str, *, is_error: bool, goal_aware: bool = False) -> McpDispatchResult:
+def _text(
+    message: str,
+    *,
+    is_error: bool,
+    goal_aware: bool = False,
+    structured: dict[str, Any] | None = None,
+) -> McpDispatchResult:
+    blocks = [TextContent(type="text", text=message)]
     return McpDispatchResult(
-        value=[TextContent(type="text", text=message)], is_error=is_error, goal_aware=goal_aware
+        value=blocks if structured is None else (blocks, structured),
+        is_error=is_error,
+        goal_aware=goal_aware,
     )
 
 

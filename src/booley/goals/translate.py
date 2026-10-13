@@ -44,6 +44,7 @@ from booley.criteria.templates import (
 )
 from booley.criteria.thresholds import describe_threshold
 from booley.flows.test_runs import SeedCount, TestSelector, parse_test_selector
+from booley.goals.capabilities import CRITERION_FOR_FAMILY
 from booley.goals.model import (
     CoverageGoalArg,
     CycleCountGoalArg,
@@ -55,6 +56,7 @@ from booley.goals.model import (
     ReviewGoalArg,
     TargetGoalArg,
 )
+from booley.goals.presentation import goal_presentation
 from booley.goals.test_run_goals import (
     TEST_RUN_FAMILIES,
     CanonicalNames,
@@ -62,17 +64,6 @@ from booley.goals.test_run_goals import (
     selector_text,
     simulation_run_key,
 )
-
-# Criterion family each per-Target Goal family is judged by.
-CRITERION_FOR_FAMILY: Mapping[GoalFamily, str] = {
-    GoalFamily.LINT: "lint_clean",
-    GoalFamily.SIM: "sim_pass",
-    GoalFamily.ELAB: "elab_pass",
-    GoalFamily.SYNTH: "synthesis_ok",
-    GoalFamily.FPGA: "fpga_impl_ok",
-    GoalFamily.COVERAGE: "coverage",
-    GoalFamily.MUTATION: "mutation_score",
-}
 
 _ArgT = TypeVar("_ArgT")
 
@@ -114,7 +105,10 @@ def criterion_spec(goal: GoalSpec) -> CriterionSpec:
 
 
 def translate_goals(
-    args: Sequence[GoalArg], *, resolver: CanonicalNames | None = None
+    args: Sequence[GoalArg],
+    *,
+    resolver: CanonicalNames | None = None,
+    target_spelling: Callable[[GoalSpec], GoalSpec] | None = None,
 ) -> Translation:
     """Translate entry arguments into merged Goals.
 
@@ -128,7 +122,9 @@ def translate_goals(
     """
     groups: dict[object, list[tuple[GoalArg, GoalSpec]]] = {}
     for index, arg in enumerate(args):
-        goal = _translate_one(arg, where=f"goals[{index}]")
+        goal = _translate_one(arg, where=f"goals[{index}]", target_spelling=target_spelling)
+        if target_spelling is not None:
+            goal = target_spelling(goal)
         groups.setdefault(_merge_group(arg, goal, resolver), []).append((arg, goal))
     goals: list[GoalSpec] = []
     warnings: list[str] = []
@@ -180,7 +176,9 @@ def _authoring_entry(arg: GoalArg) -> tuple[str, Any]:
     return f"review_{arg.review}_{arg.verdict}", None
 
 
-def _translate_one(arg: GoalArg, *, where: str) -> GoalSpec:
+def _translate_one(
+    arg: GoalArg, *, where: str, target_spelling: Callable[[GoalSpec], GoalSpec] | None = None
+) -> GoalSpec:
     """Translate one argument through the Criteria authoring rules."""
     if isinstance(arg, TargetGoalArg) and arg.test is not None:
         # A Test Goal has no Criterion authoring entry: its key names the
@@ -191,7 +189,7 @@ def _translate_one(arg: GoalArg, *, where: str) -> GoalSpec:
     try:
         specs = CriteriaTemplate.from_yaml({"mandatory": {key: value}}).specs
     except ValueError as exc:
-        raise GoalTranslationError(f"{where} ({_describe(arg)}): {exc}") from None
+        raise GoalTranslationError(f"{where} ({_describe(arg, target_spelling)}): {exc}") from None
     assert len(specs) == 1, f"{where} translated to {len(specs)} Criteria"
     expanded = specs[0].expand([])
     assert len(expanded) == 1, f"{where} expanded to {len(expanded)} Criterion keys"
@@ -202,10 +200,15 @@ def _translate_one(arg: GoalArg, *, where: str) -> GoalSpec:
     return GoalSpec(expanded[0][0], arg.family, target, params, (arg.origin,))
 
 
-def _describe(arg: GoalArg) -> str:
-    if isinstance(arg, ReviewGoalArg):
-        return f"review {arg.review} {arg.verdict}"
-    return f"{arg.family.value} {arg.target}"
+def _describe(arg: GoalArg, target_spelling: Callable[[GoalSpec], GoalSpec] | None = None) -> str:
+    key, _value = _authoring_entry(arg)
+    goal = GoalSpec(
+        key, arg.family, None if isinstance(arg, ReviewGoalArg) else arg.target, {}, (arg.origin,)
+    )
+    if target_spelling is not None:
+        goal = target_spelling(goal)
+    presentation = goal_presentation(goal)
+    return presentation.text if isinstance(arg, ReviewGoalArg) else presentation.name
 
 
 def _merge_group(arg: GoalArg, goal: GoalSpec, resolver: CanonicalNames | None) -> object:
@@ -257,14 +260,23 @@ def _merge(members: Members, resolver: CanonicalNames | None) -> tuple[GoalSpec,
         merged = first_goal
     else:
         try:
-            merged = _translate_one(merged_arg, where=_group_name(members))
+            merged = _translate_one(
+                merged_arg,
+                where=_group_name(members),
+                target_spelling=lambda goal: replace(
+                    goal, display_target=first_goal.display_target
+                ),
+            )
         except GoalTranslationError as exc:
             raise GoalConflictError(f"cannot merge {_group_name(members)}: {exc}") from None
-    merged = replace(merged, origins=origins)
+    merged = replace(merged, origins=origins, display_target=first_goal.display_target)
     identical = all(goal.params == first_goal.params for _, goal in members)
     assert identical or decisions, f"{merged.key} merged differing Goals without a decision"
     detail = "; ".join(decisions) if decisions else "identical Goals"
-    return merged, f"Goal {merged.key} from {', '.join(origins)} merged: {detail}"
+    return (
+        merged,
+        f"Goal {goal_presentation(merged).text} from {', '.join(origins)} merged: {detail}",
+    )
 
 
 def _same_test_run_note(members: Members) -> list[str]:
@@ -282,7 +294,7 @@ def _same_test_run_note(members: Members) -> list[str]:
 
 
 def _group_name(members: Members) -> str:
-    keys = ", ".join(dict.fromkeys(goal.key for _, goal in members))
+    keys = ", ".join(dict.fromkeys(goal_presentation(goal).text for _, goal in members))
     origins = ", ".join(dict.fromkeys(o for _, goal in members for o in goal.origins))
     return f"Goals {keys} (from {origins})"
 

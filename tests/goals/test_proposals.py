@@ -34,7 +34,7 @@ from booley.goals.store import GoalStore
 from tests.goals.conftest import LINT_KEY, enter_goals, git, run_row
 
 CYCLE_ARG = {
-    "family": "cycle_count",
+    "family": "CYCLE_COUNT",
     "target": "top",
     "test": "smoke",
     "thresholds": {"cycle_count_max": 1},
@@ -86,7 +86,7 @@ def test_restart_rejects_unauthorized_destinations_before_any_publication(layout
 
 
 def setup_cycle(layout: SimpleNamespace) -> ChangeEnvironment:
-    layout.record = enter_goals(layout, [CYCLE_ARG, {"family": "lint", "target": "top"}])
+    layout.record = enter_goals(layout, [CYCLE_ARG, {"family": "LINT", "target": "top"}])
     return ChangeEnvironment(EntryEnvironment(layout.control))
 
 
@@ -390,7 +390,7 @@ def test_add_preserves_existing_identity_groups_and_starts_unmet(goal_mode):
         goal_mode.record.id,
         {
             "kind": "add",
-            "after": {"family": "elab", "target": "top"},
+            "after": {"family": "ELAB", "target": "top"},
             "rationale": "also validate elaboration",
         },
         session_key=None,
@@ -446,7 +446,7 @@ def test_retarget_away_and_back_allocates_new_spec_and_never_inherits_evidence(l
         {**CYCLE_ARG, "target": "base", "thresholds": {"cycle_count_max": 200}},
         {**CYCLE_ARG, "thresholds": {"cycle_count_reduce_at_least": "10%"}},
         {**CYCLE_ARG, "thresholds": {"cycle_count_max": 0}},
-        {"family": "lint", "target": "top"},
+        {"family": "LINT", "target": "top"},
     ],
 )
 def test_incomparable_mutations_are_refused(layout, after):
@@ -551,7 +551,7 @@ def publish_open_review(layout, monkeypatch):
     from booley.goals.freshness import stamp_goal_detail
 
     monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
-    clean = {"family": "review", "review": "rtl_bugs", "verdict": "clean"}
+    clean = {"family": "REVIEW", "review": "rtl_bugs", "verdict": "clean"}
     layout.record = enter_goals(layout, [clean])
     env = ChangeEnvironment(EntryEnvironment(layout.control))
     key = "review_rtl_bugs_clean"

@@ -77,6 +77,10 @@ Snapshot = dict[str, Any]
 class GoalStateError(RuntimeError):
     """A Goal state file cannot be loaded or a save was refused."""
 
+    def __init__(self, message: str = "", *, path: Path | None = None) -> None:
+        super().__init__(message)
+        self.path = path
+
 
 # ---------------------------------------------------------------------------
 # Declared Goals
@@ -146,13 +150,13 @@ def read_goal_state_file(path: Path) -> DevelopmentState | None:
     except FileNotFoundError:
         return None
     except OSError as exc:
-        raise GoalStateError(f"cannot read Goal state {path}: {exc}") from exc
+        raise GoalStateError(f"cannot read Goal state {path}: {exc}", path=path) from exc
     try:
         data: object = json.loads(raw.decode("utf-8-sig"))
         _validate_state_object(data)  # a dict of the right shapes: no AttributeError below
         return DevelopmentState.from_json_object(data)
     except (UnicodeDecodeError, ValueError, TypeError, KeyError) as exc:
-        raise GoalStateError(f"corrupt Goal state {path}: {exc}") from exc
+        raise GoalStateError(f"corrupt Goal state {path}: {exc}", path=path) from exc
 
 
 def _validate_state_object(data: object) -> None:

@@ -49,6 +49,7 @@ from booley.goals.model import (
     GoalState,
     WorktreeIdentity,
 )
+from booley.goals.naming import optional_names, record_names, save_names
 from booley.goals.paths import (
     GOAL_ID_PATTERN,
     RECORD_FILE,
@@ -478,6 +479,7 @@ class GoalStore:
         staging.mkdir(parents=True)
         try:
             atomic_replace_bytes(staging / RECORD_FILE, _encode(created))
+            save_names(staging, (row.spec for row in created.goals))
             staging.rename(target)
         except OSError as exc:
             shutil.rmtree(staging, ignore_errors=True)
@@ -534,7 +536,7 @@ class GoalStore:
         if record.id != goal_id:
             reason = f"it names Goal Record {record.id}"
             raise GoalRecordCorruptError([CorruptRecord(paths.record_file, reason)])
-        return record
+        return record_names(record, optional_names(paths.root))
 
     def save(self, lock: RecordLock, record: GoalRecord) -> GoalRecord:
         """Write *record* if the disk still holds ``record.revision``; return the new record.
@@ -569,6 +571,9 @@ class GoalStore:
         if frozen:
             raise InvalidRecordUpdateError(f"Goal Record {record.id}: {frozen}")
         saved = replace(record, revision=current.revision + 1)
+        save_names(
+            record_paths(self.project_dir, record.id).root, (row.spec for row in saved.goals)
+        )
         atomic_replace_bytes(
             record_paths(self.project_dir, record.id).record_file, _validate_encodable(saved)
         )

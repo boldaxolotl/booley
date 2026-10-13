@@ -36,12 +36,11 @@ import subprocess
 import sys
 import time
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 from urllib.parse import quote
 
-from booley.agent_workspace.isolation import hide_opposite_sources
 from booley.config.project_config import load_test_configuration_field, lookup_target_section
 from booley.core.boundary import BoundaryError, as_int, as_str, require_int, require_str
 from booley.core.models import AgentCallParams
@@ -49,6 +48,7 @@ from booley.dev_support import mutation_lock as lock_mod
 from booley.dev_support.mutation_variants import MutationVariantError, MutationVariantPlan
 from booley.flows import artifacts as _artifacts
 from booley.flows.cli_help import CliHelp, SurfaceHelp
+from booley.flows.execution_persistence import execution_goal_name
 from booley.flows.flow_config import tb_top_for_target
 from booley.flows.sim import edam as sim_edam
 from booley.flows.sim.backends.cocotb import seed_arguments
@@ -674,6 +674,8 @@ class MutationTesterSpecialist(Specialist):
         "tester builds isolated variants"
     )
     code_modifying: bool = False
+    workspace_access: Literal["read_only"] = "read_only"
+
     target_required: bool = True
     target_help: str = SurfaceHelp(
         "Exactly one Simulation Target. The CLI accepts one --target value; "
@@ -745,6 +747,9 @@ class MutationTesterSpecialist(Specialist):
     # ------------------------------------------------------------------
     # Abstract method stubs — _run() drives the flow directly.
     # ------------------------------------------------------------------
+
+    def _workspace_isolation_category(self) -> str:
+        return "rtl"
 
     def _build_prompt(self) -> str:
         raise NotImplementedError("MutationTesterSpecialist overrides _run() directly")
@@ -884,7 +889,7 @@ replacement must differ, and every proposal must remain a single source edit.
             return McpToolResult(
                 exit_code=EXIT_FAILURE,
                 report_text=(
-                    f"mutation_tester: {key} must declare scope: [rtl/file.sv, ...] "
+                    f"mutation_tester: {execution_goal_name(self._acceptance_recorder, key)} must declare scope: [rtl/file.sv, ...] "
                     "or the invocation must pass --scope."
                 ),
             )
@@ -1257,7 +1262,7 @@ replacement must differ, and every proposal must remain a single source edit.
         pre_dirty: set[str] | None,
     ) -> PreparedMutationRound:
         self.emit_progress(f"proposal round {round_idx}/{self.MAX_VERIFICATION_ROUNDS}")
-        specs, elapsed, error = self._proposal_round(plan, prompt, round_idx, pre_dirty)
+        specs, elapsed, error = self._proposal_round(prompt, round_idx)
         if error is not None:
             return PreparedMutationRound([], None, elapsed, error=error)
         if not specs:
@@ -1351,16 +1356,11 @@ replacement must differ, and every proposal must remain a single source edit.
 
     def _proposal_round(
         self,
-        plan: MutationRunPlan,
         prompt: str,
         round_idx: int,
-        pre_dirty: set[str] | None,
     ) -> tuple[list[MutationSpec], float, McpToolResult | None]:
         try:
-            with hide_opposite_sources(plan.work_dir, "rtl"):
-                specs, elapsed = self._invoke_creator(
-                    prompt, resume=round_idx > 1, attempt=round_idx
-                )
+            specs, elapsed = self._invoke_creator(prompt, resume=round_idx > 1, attempt=round_idx)
         except Exception as exc:  # noqa: BLE001 — normalize the creator-provider boundary
             log_exception(logger, exc, summary=f"Creator invocation failed on round {round_idx}")
             diagnostic_path = self._write_provider_diagnostic(exc, self._transcript_path())
@@ -1369,14 +1369,6 @@ replacement must differ, and every proposal must remain a single source edit.
                 report_text=exception_report_text("mutation creator", exc, diagnostic_path),
             )
             return [], 0.0, error
-        strays = self._revert_stray_tracked_edits(plan.work_dir, pre_dirty, keep=[])
-        if strays:
-            logger.warning(
-                "read-only mutation creator wrote %d file(s) (%s) — reverted",
-                len(strays),
-                ", ".join(strays[:5]),
-            )
-            self.emit_progress(f"scope guard: reverted {len(strays)} creator edit(s)")
         return specs, elapsed, None
 
     def _invoke_creator(
@@ -1423,8 +1415,25 @@ replacement must differ, and every proposal must remain a single source edit.
         # ask it to edit source only.  Empty parse on a resume round is
         # the normal "no JSON, just source edits" case.
         raw_output = result.output if hasattr(result, "output") else str(result)
-        specs = parse_creator_output(raw_output)
+        specs = self._relative_proposal_paths(parse_creator_output(raw_output))
         return specs, time.monotonic() - start
+
+    def _relative_proposal_paths(self, specs: list[MutationSpec]) -> list[MutationSpec]:
+        """Translate current live absolute paths while preserving invalid scope paths."""
+        root = Path(self.args.work_dir).resolve()
+        normalized = []
+        for spec in specs:
+            normalized_spec = spec
+            path = Path(spec.file)
+            if path.is_absolute():
+                try:
+                    relative = path.resolve().relative_to(root).as_posix()
+                except ValueError:
+                    pass
+                else:
+                    normalized_spec = replace(spec, file=relative)
+            normalized.append(normalized_spec)
+        return normalized
 
     def _run_pristine_baseline(self, plan: MutationRunPlan) -> McpToolResult | None:
         """Build and run the byte-identical project before any proposal is applied."""

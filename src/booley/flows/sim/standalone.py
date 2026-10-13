@@ -637,8 +637,8 @@ class StandaloneMixin:
             f"is a frontend capability gap, not a design defect, so the sweep "
             f"reached no verdict. First: {first['module']} ({first['file']}): {gist}. "
             f"Pin a frontend that reads this RTL with [flows.sim] "
-            f'standalone_frontend = "{other}", or drop the elaborate_standalone '
-            f"criterion for this project."
+            f'standalone_frontend = "{other}", or use --mode elab-only for the '
+            f"Target elaboration check."
         )
 
     def _standalone_error(

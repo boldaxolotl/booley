@@ -13,46 +13,46 @@ the same seed; at most two repairs. Unfinished feature work is not a repair.
 ```json
 [
   {
-    "family": "elab",
+    "family": "ELAB",
     "target": "sim_uart",
     "origin": "repair"
   },
   {
-    "family": "sim",
+    "family": "SIM",
     "target": "sim_uart",
     "origin": "repair"
   },
   {
-    "family": "lint",
+    "family": "LINT",
     "target": "lint_uart",
     "origin": "repair"
   },
   {
-    "family": "synth",
+    "family": "SYNTH",
     "target": "synth_uart",
     "origin": "repair"
   },
   {
-    "family": "review",
+    "family": "REVIEW",
     "review": "rtl_bugs",
     "verdict": "clean",
     "origin": "repair"
   },
   {
-    "family": "review",
+    "family": "REVIEW",
     "review": "rtl_protocol",
     "verdict": "clean",
     "origin": "repair"
   },
   {
-    "family": "review",
+    "family": "REVIEW",
     "review": "rtl_spec",
     "verdict": "clean",
     "spec": "spec/contract.md",
     "origin": "repair"
   },
   {
-    "family": "review",
+    "family": "REVIEW",
     "review": "tb_quality",
     "verdict": "clean",
     "origin": "repair"

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from booley.criteria.presentation import criteria_display_snapshot
 from booley.criteria.state import DevelopmentState
+from booley.flows.execution_persistence import AcceptanceRecorder, GoalPresentationProvider
 from booley.runtime.display_identity import DisplayIdentity
 from booley.runtime.timefmt import utc_now_rfc3339
 
@@ -36,12 +37,19 @@ _DISPLAY_TEXT_FIELDS = (
 )
 
 
-def _emit_criteria_update(state: DevelopmentState) -> None:
+def _emit_criteria_update(
+    state: DevelopmentState, recorder: AcceptanceRecorder | None = None
+) -> None:
     """Emit a criteria_update event to display.jsonl after state changes."""
+    snapshot = criteria_display_snapshot(state)
+    if isinstance(recorder, GoalPresentationProvider):
+        for key, row in snapshot.items():
+            presentation = recorder.present_criterion(key, state.criteria[key].to_dict())
+            row["presentation"] = {"label": presentation.label, "detail": presentation.detail}
     _write_display_event(
         {
             "type": "criteria_update",
-            "criteria": criteria_display_snapshot(state),
+            "criteria": snapshot,
             "timestamp": utc_now_rfc3339(),
         }
     )

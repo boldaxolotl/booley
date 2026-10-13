@@ -117,7 +117,7 @@ def test_interrupted_entering_is_classified_and_retained(layout, boundary):
     with pytest.raises(_Crash):
         enter_goal_mode(
             EntryRequest(
-                layout.worktree, "enter", parse_goal_args([{"family": "lint", "target": "top"}])
+                layout.worktree, "enter", parse_goal_args([{"family": "LINT", "target": "top"}])
             ),
             EntryEnvironment(layout.control, on_boundary=stop),
         )
@@ -220,7 +220,7 @@ def test_abandon_lost_terminal_response_retains_entering_classification(layout):
             EntryRequest(
                 layout.worktree,
                 "interrupted",
-                parse_goal_args([{"family": "lint", "target": "top"}]),
+                parse_goal_args([{"family": "LINT", "target": "top"}]),
             ),
             EntryEnvironment(layout.control, on_boundary=entering),
         )

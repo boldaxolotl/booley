@@ -295,7 +295,7 @@ class GoalProjection:
         for key, revision in canonical["spec_revisions"].items():
             if current.get(key) != revision:
                 raise AcceptanceLedgerError(
-                    f"Goal evidence for {key} was recorded under specification revision "
+                    "Goal evidence was recorded under specification revision "
                     f"{revision}; the Goal is now at {current.get(key, 'removed')}"
                 )
 
@@ -362,7 +362,9 @@ class GoalEvidenceRecorder:
         for key in keys:
             revision = self._binding.spec_revision(key)
             if revision is None:
-                raise EvidenceDiscarded(f"{key} was not a Goal when the run started")
+                raise EvidenceDiscarded(
+                    "Evidence did not match a Goal admitted when the run started"
+                )
             revisions[key] = revision
         if not revisions:
             raise AcceptanceRecordingError("Goal evidence needs at least one Criterion change")
