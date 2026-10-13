@@ -37,8 +37,12 @@ from booley.goals.test_run_evidence import (
     outcome_defect,
     requirement_defect,
 )
-from booley.goals.test_run_freezing import resolution_obstacle, unresolved
-from booley.goals.test_run_plans import TargetPlanError, TargetPlans
+from booley.goals.test_run_freezing import (
+    TargetPlanError,
+    TargetPlans,
+    resolution_obstacle,
+    unresolved,
+)
 from booley.goals.test_run_resolution import TestRunResolution
 
 

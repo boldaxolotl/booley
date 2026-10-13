@@ -1,9 +1,20 @@
-"""Freeze the Test Runs of a Goal from its Target's Test Run plan (ADR 0072).
+"""Freeze the Test Runs of Goals from their Targets' Test Run plans (ADR 0072).
 
-:func:`resolve_pending` fills the slots of a Goal's
+Three things that change together, in the order a reader meets them:
+
+**The plans** (:class:`TargetPlans`). Goal Mode freezes and later checks a
+Goal's Test Runs against the plan the Simulation Flow would build for the
+Goal's Target. Each Target's plan is loaded at most once; a Target that does
+not exist yet (the Goal waits for it, ADR 0067) is told apart from one whose
+plan cannot be built (an error the caller reports). The same catalog gives
+the identity of a Target however it is written.
+
+**The rule** (:func:`resolve_pending`, :func:`freeze_goals`,
+:func:`refreeze_changed_goal`), pure given the plans and a seed source. It
+fills the slots of a Goal's
 :class:`~booley.goals.test_run_resolution.TestRunResolution` that can be
-filled now and leaves every frozen run alone. It is the one rule entry,
-deferred resolution and an approved Goal change all use:
+filled now and leaves every frozen run alone; entry, deferred resolution and
+an approved Goal change all use it:
 
 - a selector slot becomes the Test Run it names: its Test Variant (the
   default one when none is written) at the written seed, or at the Target's
@@ -15,12 +26,24 @@ deferred resolution and an approved Goal change all use:
   set of seeds, whichever Goals name them, so ``--test test+variant@xN``
   names one set of Test Runs.
 
-An approved change (:func:`refreeze_changed_goal`) keeps what the change does
-not touch: a slot the Goal still names keeps its frozen runs, and a changed N
-keeps the first N of them or draws only the difference, for the frozen Test
-Variant with its frozen declared inputs.
+An approved change keeps what it does not touch: a slot the Goal still names
+keeps its frozen runs, and a changed N keeps the first N of them or draws
+only the difference, for the frozen Test Variant with its frozen declared
+inputs.
 
-Pure: the caller supplies the plans and the seed source.
+**Deferred resolution** (:func:`ensure_test_run_resolutions`). A Goal may
+name a Target or a Test that does not exist yet, a Test may be added later to
+the Target of a Target Goal, and a Goal Record an older Booley created has no
+frozen Test Runs at all. Each of those slots is pending until it is filled,
+when a run is bound and when Goal status is read. A resolution is **one
+atomic save** of ``record.json`` under the record lock. The saved record
+already holds the exact resolved Test Runs and drawn seeds, so a crash leaves
+either the old record (nothing was observable; the next call draws again) or
+the new one. The Change Log is not involved: its entries are approved Goal
+changes, which recovery and the apply barrier act on. While an apply is
+interrupted nothing is resolved, so a resolution never saves over one. A
+resolver whose record another writer replaced re-reads it and tries again;
+what the other resolver froze stays frozen.
 """
 
 from __future__ import annotations
@@ -28,26 +51,32 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 
 from booley.config.tests_toml_rules import UnknownVariantError
+from booley.flows import target_test_plan_loading
 from booley.flows.target_test_plan import TargetTestPlan, UnknownTestError
 from booley.flows.test_runs import (
     PinnedSeed,
     SeedCount,
     TestRun,
     TestSelector,
+    UnpinnedSeed,
     UnseededTargetError,
     draw_seeds,
     parse_test_selector,
 )
-from booley.goals.model import GoalSpec, RecordedGoal
+from booley.goals.apply_barrier import pending_applies
+from booley.goals.model import GoalRecord, GoalSpec, GoalState, RecordedGoal
+from booley.goals.paths import record_paths
+from booley.goals.store import GoalStore, StaleRevisionError
 from booley.goals.test_run_goals import (
+    CanonicalNames,
     goal_selectors,
     names_test_runs,
     selector_text,
     variant_text,
 )
-from booley.goals.test_run_plans import TargetPlanError, TargetPlans
 from booley.goals.test_run_resolution import (
     DEFERRED,
     SUITE_SLOT,
@@ -55,6 +84,95 @@ from booley.goals.test_run_resolution import (
     ResolvedBy,
     TestRunResolution,
 )
+from booley.runtime.timefmt import utc_now_rfc3339
+from booley.targets.domain import FuseSocError, UnknownTargetError
+
+# ---------------------------------------------------------------------------
+# The Test Run plans of one checkout
+# ---------------------------------------------------------------------------
+
+PlanLoader = Callable[[Path, str], TargetTestPlan]
+
+
+class TargetPlanError(ValueError):
+    """A Target exists but its Test Run plan cannot be built."""
+
+
+def load_plan(work_dir: Path, target: str) -> TargetTestPlan:
+    """The default :data:`PlanLoader`: the plan the Simulation Flow would build."""
+    return target_test_plan_loading.load_checkout_target_test_plan(work_dir, target)
+
+
+def load_identity(work_dir: Path, target: str) -> str:
+    """The default Target identity: the one the Target catalog of the checkout gives."""
+    return target_test_plan_loading.checkout_target_identity(work_dir, target)
+
+
+@dataclass
+class TargetPlans:
+    """The Test Run plans of the checkout at ``work_dir``, each loaded once."""
+
+    work_dir: Path
+    loader: PlanLoader = load_plan
+    identities: Callable[[Path, str], str] = load_identity
+    _identities: dict[str, str] = field(default_factory=dict[str, str])
+    _plans: dict[str, TargetTestPlan | None] = field(
+        default_factory=dict[str, TargetTestPlan | None]
+    )
+
+    def plan(self, target: str) -> TargetTestPlan | None:
+        """*target*'s plan, or ``None`` while the Target does not exist.
+
+        Raises :class:`TargetPlanError` when the Target exists but cannot be
+        inspected, or its ``tests.toml`` section cannot be applied to it.
+        """
+        if target not in self._plans:
+            try:
+                self._plans[target] = self.loader(self.work_dir, target)
+            except UnknownTargetError:
+                self._plans[target] = None
+            except (FuseSocError, ValueError, OSError) as exc:
+                raise TargetPlanError(
+                    f"the Test Runs of Target {target!r} cannot be resolved: {exc}"
+                ) from exc
+        return self._plans[target]
+
+    def identity(self, target: str) -> str:
+        """The identity of *target* however it is written; itself while it does not exist.
+
+        Raises :class:`TargetPlanError` when the Target catalog cannot be read.
+        """
+        if target not in self._identities:
+            try:
+                self._identities[target] = self.identities(self.work_dir, target)
+            except UnknownTargetError:
+                self._identities[target] = target
+            except (FuseSocError, ValueError, OSError) as exc:
+                raise TargetPlanError(f"Target {target!r} cannot be identified: {exc}") from exc
+        return self._identities[target]
+
+    def resolver(self) -> CanonicalNames:
+        """Canonical names for :func:`booley.goals.translate.translate_goals`."""
+
+        def resolve(target: str, selector: TestSelector) -> TestSelector | None:
+            plan = self.plan(target)
+            if plan is None:
+                return None
+            try:
+                base = plan.run(selector.test, selector.variant)
+            except (UnknownTestError, UnknownVariantError):
+                return None
+            form = selector.seed_form
+            if isinstance(form, UnpinnedSeed) and base.seed is not None:
+                form = PinnedSeed(base.seed)
+            return TestSelector(selector.test, base.variant, form)
+
+        return CanonicalNames(resolve, self.identity)
+
+
+# ---------------------------------------------------------------------------
+# The freezing rule
+# ---------------------------------------------------------------------------
 
 SeedDraw = Callable[..., tuple[int, ...]]
 #: The frozen seeds of multi-seed slots, by (Test, Test Variant, N).
@@ -419,3 +537,71 @@ def _more_seeds(
         )
         for seed in drawn
     ]
+
+
+# ---------------------------------------------------------------------------
+# Deferred resolution
+# ---------------------------------------------------------------------------
+
+# A resolver loses a save only to another writer of the same record; each
+# retry re-reads what that writer saved, so a few attempts always suffice.
+_SAVE_ATTEMPTS = 3
+
+
+def ensure_test_run_resolutions(
+    store: GoalStore,
+    record_id: str,
+    work_dir: Path,
+    *,
+    draw: SeedDraw | None = None,
+    checkpoint: Callable[[str], None] | None = None,
+) -> GoalRecord:
+    """Fill every pending Test Run slot of Goal Record *record_id* that can be filled now.
+
+    *work_dir* is the Goal worktree whose ``tests.toml`` and Targets the
+    slots resolve against. Returns the record as it is afterwards; a record
+    that is not ``active``, or whose apply is interrupted, is returned
+    unchanged. A Goal its Target refuses stays pending. *checkpoint* is
+    called with ``"before:save"`` and ``"after:save"`` (tests interrupt
+    there).
+
+    Raises :class:`~booley.goals.store.GoalStoreError` when the record cannot
+    be read or saved.
+    """
+    for _attempt in range(_SAVE_ATTEMPTS):
+        with store.record_lock(record_id) as lock:
+            record = store.load(record_id)
+            resolved = _resolved(store, record, work_dir, draw)
+            if resolved is None:
+                return record
+            if checkpoint is not None:
+                checkpoint("before:save")
+            try:
+                saved = store.save(lock, resolved)
+            except StaleRevisionError:
+                continue
+            if checkpoint is not None:
+                checkpoint("after:save")
+            return saved
+    raise StaleRevisionError(
+        f"Goal Record {record_id} kept changing while its Test Runs were resolved"
+    )
+
+
+def _resolved(
+    store: GoalStore, record: GoalRecord, work_dir: Path, draw: SeedDraw | None
+) -> GoalRecord | None:
+    """*record* with its pending slots filled, or ``None`` when nothing may or need change."""
+    if record.state is not GoalState.ACTIVE:
+        return None
+    if pending_applies(record_paths(store.project_dir, record.id).root):
+        return None
+    # Looked up here, not bound as a default: a caller without its own source
+    # (a run being bound, a status read) draws from this module's.
+    request = ResolutionRequest(DEFERRED, utc_now_rfc3339(), draw or draw_seeds)
+    frozen = freeze_goals(
+        record.goals, record.test_run_resolutions, TargetPlans(work_dir), request, strict=False
+    )
+    if frozen == dict(record.test_run_resolutions):
+        return None
+    return replace(record, test_run_resolutions=frozen)

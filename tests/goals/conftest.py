@@ -23,7 +23,7 @@ from booley.flows import target_test_plan_loading
 from booley.flows.target_test_plan import TargetTestPlan
 from booley.flows.test_runs import TestRun, build_test_run, test_run_document
 from booley.goals import entry as entry_module
-from booley.goals import test_run_resolving
+from booley.goals import test_run_freezing
 from booley.goals.binding import GoalRunBinding, bind_run
 from booley.goals.store import GoalStore
 from booley.targets.domain import UnknownTargetError
@@ -107,7 +107,7 @@ def layout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleNa
     monkeypatch.setattr(target_test_plan_loading, "checkout_target_identity", fake_target_identity)
     # A run being bound and a status read resolve pending slots without a seed source of
     # their own: give them a deterministic one.
-    monkeypatch.setattr(test_run_resolving, "draw_seeds", counting_draw(501))
+    monkeypatch.setattr(test_run_freezing, "draw_seeds", counting_draw(501))
     stamps = iter(f"{DATE}T12{minute:02d}00Z" for minute in range(60))
     monkeypatch.setattr(entry_module, "compact_utc_now", lambda: next(stamps))
     reset_cache()

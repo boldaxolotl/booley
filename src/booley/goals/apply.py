@@ -52,10 +52,10 @@ from booley.goals.test_run_freezing import (
     GoalResolutionError,
     ResolutionRequest,
     SeedDraw,
+    TargetPlans,
     refreeze_changed_goal,
 )
 from booley.goals.test_run_goals import names_test_runs
-from booley.goals.test_run_plans import TargetPlans
 from booley.goals.test_run_resolution import TestRunResolution
 from booley.runtime.atomic_files import atomic_write_once
 from booley.runtime.timefmt import utc_now_rfc3339

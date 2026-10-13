@@ -28,9 +28,8 @@ from booley.goals.proposals import ProposalView, list_proposals
 from booley.goals.recorder import GOAL_SCOPE
 from booley.goals.state_store import load_goal_state
 from booley.goals.store import GoalStore, GoalStoreError
+from booley.goals.test_run_freezing import TargetPlans, ensure_test_run_resolutions
 from booley.goals.test_run_goals import names_test_runs
-from booley.goals.test_run_plans import TargetPlans
-from booley.goals.test_run_resolving import ensure_test_run_resolutions
 from booley.goals.test_run_status import TestRunJudgement, judge_test_runs
 from booley.goals.warnings import goal_warnings, protected_warnings
 

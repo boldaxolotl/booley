@@ -162,7 +162,7 @@ def test_a_changed_frozen_run_needs_an_approved_retarget(layout: SimpleNamespace
 
     assert reason().startswith("goal-test-run-changed: ")
     # Rerunning cannot cure it, and neither can deferred resolution.
-    from booley.goals.test_run_resolving import ensure_test_run_resolutions
+    from booley.goals.test_run_freezing import ensure_test_run_resolutions
 
     ensure_test_run_resolutions(env.store, layout.record.id, layout.worktree)
     assert reason().startswith("goal-test-run-changed: ")

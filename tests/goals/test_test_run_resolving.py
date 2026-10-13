@@ -14,8 +14,8 @@ from booley.goals.model import GoalRecord
 from booley.goals.paths import record_paths
 from booley.goals.status import select_status
 from booley.goals.store import GoalStore
+from booley.goals.test_run_freezing import ensure_test_run_resolutions
 from booley.goals.test_run_resolution import SUITE_SLOT
-from booley.goals.test_run_resolving import ensure_test_run_resolutions
 from tests.goals.conftest import SIM_KEY, bind, enter_goals, write_tests_toml
 
 LATER_KEY = "sim_pass_top_run_6c61746572_x"
@@ -134,11 +134,11 @@ def test_the_loser_of_two_resolvers_keeps_the_winners_seeds(waiting: SimpleNames
 def test_resolution_waits_for_an_interrupted_apply(
     waiting: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from booley.goals import test_run_resolving
+    from booley.goals import test_run_freezing
 
     write_tests_toml(waiting, GROWN)
     with monkeypatch.context() as patch:
-        patch.setattr(test_run_resolving, "pending_applies", lambda _root: ("proposal-1",))
+        patch.setattr(test_run_freezing, "pending_applies", lambda _root: ("proposal-1",))
         record = ensure_test_run_resolutions(_store(waiting), waiting.record.id, waiting.worktree)
     assert record == waiting.record
     resolved = ensure_test_run_resolutions(

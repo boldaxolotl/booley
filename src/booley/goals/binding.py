@@ -42,7 +42,7 @@ from booley.goals.protected_inputs import (
 )
 from booley.goals.store import GoalStore, GoalStoreError
 from booley.goals.target_surface import TargetSurfaceError
-from booley.goals.test_run_resolving import ensure_test_run_resolutions
+from booley.goals.test_run_freezing import ensure_test_run_resolutions
 from booley.targets.domain import FuseSocError
 
 BINDING_SCHEMA = "booley.goal-run-binding/v1"

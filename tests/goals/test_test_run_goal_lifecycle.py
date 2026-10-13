@@ -19,7 +19,7 @@ from booley.goals.paths import record_paths
 from booley.goals.status import GoalStatus, build_status, status_views
 from booley.goals.store import GoalStore
 from booley.goals.test_run_evidence import flow_test_runs
-from booley.goals.test_run_resolving import ensure_test_run_resolutions
+from booley.goals.test_run_freezing import ensure_test_run_resolutions
 from tests.goals.conftest import (
     SIM_KEY,
     bind,
@@ -142,7 +142,7 @@ def test_goals_that_resolve_to_one_multi_seed_goal_merge_before_any_seed_is_draw
 def test_binding_runs_and_reading_status_never_redraw_frozen_seeds(
     layout: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from booley.goals import test_run_resolving
+    from booley.goals import test_run_freezing
 
     mode = _mode(
         layout, [{"family": "sim", "target": "top", "test": "stress@x2"}], tests_toml=VARIANTS
@@ -152,7 +152,7 @@ def test_binding_runs_and_reading_status_never_redraw_frozen_seeds(
     def no_draw(count: int, *, exclude: Any = ()) -> tuple[int, ...]:
         raise AssertionError("a frozen Goal drew seeds again")
 
-    monkeypatch.setattr(test_run_resolving, "draw_seeds", no_draw)
+    monkeypatch.setattr(test_run_freezing, "draw_seeds", no_draw)
     write_tests_toml(mode, VARIANTS.replace(b'default = "short"', b'default = "soak"'))
     for run_id in ("run-1", "run-2"):
         bound = bind(mode, run_id)

@@ -91,9 +91,10 @@ from booley.goals.test_run_freezing import (
     GoalResolutionError,
     ResolutionRequest,
     SeedDraw,
+    TargetPlanError,
+    TargetPlans,
     freeze_goals,
 )
-from booley.goals.test_run_plans import TargetPlanError, TargetPlans
 from booley.goals.test_run_resolution import TestRunResolution
 from booley.goals.translate import GoalTranslationError, Translation, translate_goals
 from booley.runtime.atomic_files import fsync_directory

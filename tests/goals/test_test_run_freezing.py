@@ -14,13 +14,14 @@ from booley.goals.model import GoalSpec, RecordedGoal, parse_goal_args
 from booley.goals.test_run_freezing import (
     GoalResolutionError,
     ResolutionRequest,
+    TargetPlanError,
+    TargetPlans,
     freeze_goals,
     goal_slots,
     refreeze_changed_goal,
     resolve_pending,
     unresolved,
 )
-from booley.goals.test_run_plans import TargetPlanError, TargetPlans
 from booley.goals.test_run_resolution import (
     SUITE_SLOT,
     ResolutionFormatError,

@@ -506,7 +506,7 @@ def test_review_package_rejects_a_substituted_contributor(two: SimpleNamespace) 
 
 
 def test_briefing_names_test_runs_and_every_deferred_resolution(two: SimpleNamespace) -> None:
-    from booley.goals.test_run_resolving import ensure_test_run_resolutions
+    from booley.goals.test_run_freezing import ensure_test_run_resolutions
     from booley.review.goal_package import (
         _deferred_resolution_lines,  # pyright: ignore[reportPrivateUsage]
         _test_run_lines,  # pyright: ignore[reportPrivateUsage]
