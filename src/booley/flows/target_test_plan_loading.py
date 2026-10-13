@@ -17,6 +17,7 @@ from booley.targets.catalog import TargetCatalog
 
 __all__ = [
     "checkout_target_identity",
+    "launches_cocotb",
     "load_checkout_target_test_plan",
     "load_target_test_plan",
     "plusarg_parameter_names",
@@ -24,10 +25,15 @@ __all__ = [
 ]
 
 
+def launches_cocotb(flow_options: Mapping[str, Any]) -> bool:
+    """Whether a Target with these flow options is launched through Cocotb."""
+    module = flow_options.get("cocotb_module")
+    return isinstance(module, str) and bool(module)
+
+
 def simulation_adapter_kind(eda_tool: str | None, flow_options: Mapping[str, Any]) -> str:
     """The integration that launches a Target: ``cocotb`` or its simulator family."""
-    module = flow_options.get("cocotb_module")
-    if isinstance(module, str) and module:
+    if launches_cocotb(flow_options):
         return "cocotb"
     try:
         return normalize_eda_tool(eda_tool)

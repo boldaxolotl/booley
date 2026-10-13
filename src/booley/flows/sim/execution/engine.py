@@ -89,6 +89,7 @@ from booley.flows.target_test_plan import (
     batch_test_runs,
 )
 from booley.flows.target_test_plan_loading import (
+    launches_cocotb,
     load_target_test_plan,
     plusarg_parameter_names,
     simulation_adapter_kind,
@@ -939,7 +940,7 @@ class SimulationExecution:
     ) -> SimulationPreview:
         """Describe the same work grouping and adapter rendering without side effects."""
         inspection = TargetCatalog.build(handle.project_root).inspect(handle)
-        cocotb = _is_cocotb(inspection.flow_options)
+        cocotb = launches_cocotb(inspection.flow_options)
         run_groups = _selection_run_groups(handle, inspection, selection)
         groups = tuple(_group_names(group) for group in run_groups)
         commands = tuple(
@@ -1569,11 +1570,6 @@ def _trace_overlay(handle: TargetHandle) -> Any:
     return trace_overlay.write_trace_overlay(handle)
 
 
-def _is_cocotb(flow_options: Mapping[str, Any]) -> bool:
-    module = flow_options.get("cocotb_module")
-    return isinstance(module, str) and bool(module)
-
-
 def _group_names(runs: tuple[TestRun, ...]) -> tuple[str, ...]:
     """Bare Test names of one simulator process; empty for the unnamed invocation."""
     return tuple(run.test for run in runs if run.test is not None)
@@ -1583,7 +1579,7 @@ def _selection_run_groups(
     handle: TargetHandle, inspection: Any, selection: SimulationSelection
 ) -> tuple[tuple[TestRun, ...], ...]:
     """Resolve *selection* to concrete Test Runs, grouped by simulator process."""
-    cocotb = _is_cocotb(inspection.flow_options)
+    cocotb = launches_cocotb(inspection.flow_options)
     plan = target_test_plan(
         handle,
         simulation_adapter_kind(inspection.eda_tool, inspection.flow_options),
