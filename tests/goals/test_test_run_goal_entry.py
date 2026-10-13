@@ -17,6 +17,9 @@ from booley.goals.store import GoalStore, InvalidRecordUpdateError
 from booley.goals.test_run_resolution import SUITE_SLOT
 from tests.goals.conftest import SIM_KEY, enter_goals, update_record
 
+# Each test enters Goal Mode in a real Git layout; Windows needs the headroom (#1202).
+pytestmark = pytest.mark.timeout(120)
+
 VARIANTS = (
     b'[top]\ntests = ["smoke", "stress"]\n'
     b'[top.variants.stress]\ndefault = "short"\nshort = ["+n=1"]\nsoak = ["+n=9"]\n'

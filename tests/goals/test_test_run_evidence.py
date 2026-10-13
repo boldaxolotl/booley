@@ -33,6 +33,9 @@ from tests.goals.conftest import (
     write_tests_toml,
 )
 
+# Each test enters Goal Mode in a real Git layout; Windows needs the headroom (#1202).
+pytestmark = pytest.mark.timeout(120)
+
 TWO_TESTS = b'[top]\ntests = ["a", "b"]\n'
 A, B = build_test_run("a", seed=1), build_test_run("b", seed=1)
 SEEDS_KEY = "sim_pass_top_run_61_x"
