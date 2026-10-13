@@ -133,6 +133,7 @@ class CoreSetupHazard:
     kind: str
     path: Path
     detail: str
+    target: Path | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -434,6 +435,7 @@ def _recursive_symlink_hazards(scan_root: Path, *, skip_state_dir: bool) -> list
                         kind="recursive-symlink",
                         path=link,
                         detail=f"directory link resolves to ancestor {target}",
+                        target=target,
                     )
                 )
         # ``followlinks=False`` is the primary guard; removing links from the

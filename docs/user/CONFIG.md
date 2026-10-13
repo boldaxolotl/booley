@@ -1918,6 +1918,20 @@ stalls at time zero, follow the diagnosis and recovery in
   example cores) are quarantined with a `FUSESOC_IGNORE` marker file in the
   directory. Booley's `.core` scanner skips any directory carrying one, exactly
   as FuseSoC's own scanner does.
+- **Recursive symlinks** are directory links back to a containing ancestor
+  (for example `src/a/lib/self -> ../../..`). FuseSoC discovery follows directory
+  links, so following these would repeatedly scan the same tree. Doctor reports
+  one failure per resolved ancestor, with a link count and a few paths; run
+  `booley doctor --verbose` for every affected path. Place `FUSESOC_IGNORE` in
+  each link's containing directory, or an enclosing subtree you can exclude:
+  it hides **all cores in that subtree**, so avoid excluding wanted cores at
+  the link's target. Local untracked markers leave vendored source files
+  unchanged, but **nested untracked markers are not copied into Goal or baseline
+  worktrees**; commit them if repository changes are acceptable. To keep the
+  vendored repository unchanged across worktrees, use
+  [Stealth isolation](#stealth-mode-stealth) (`enabled = true` and
+  `ignore_native_cores = true`) with authored cores in `.booley_project/cores/`;
+  this excludes native discovery entirely while reading the original RTL.
 - **Git submodules** work, but Goal Mode does not clone them. See
   [Submodules](#submodules) below.
 - **Multi-core repos** (a FuseSoC-native project shipping tens or hundreds of
