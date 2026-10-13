@@ -96,7 +96,7 @@ class SimArguments(BuiltinArguments):
                 cli=(
                     "Run only the named Test Runs: test, test+variant, test@seed, "
                     "test+variant@seed, or test[+variant]@xN for N drawn seeds; a bare test "
-                    "means its default Test Variant. Repeat the flag for more. With --coverage "
+                    "means its default Test Variant; repeat the flag for more. With --coverage "
                     "they run in sorted order, otherwise in the order given"
                 ),
             ),
