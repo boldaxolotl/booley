@@ -69,6 +69,7 @@ from booley.flows.test_runs import (
 from booley.goals.apply_barrier import pending_applies
 from booley.goals.model import GoalRecord, GoalSpec, GoalState, RecordedGoal
 from booley.goals.paths import record_paths
+from booley.goals.presentation import goal_presentation
 from booley.goals.store import GoalStore, StaleRevisionError
 from booley.goals.test_run_goals import (
     CanonicalNames,
@@ -382,7 +383,9 @@ def freeze_goals(
                 )
         except ValueError as exc:  # TargetPlanError and the Test Run error types
             if strict:
-                raise GoalResolutionError(f"Goal {key}: {exc}") from exc
+                raise GoalResolutionError(
+                    f"Goal {goal_presentation(goal.spec).text}: {exc}"
+                ) from exc
             logger.warning(
                 "Test Runs of Goal %s on Target %s stay pending: %s", key, goal.spec.target, exc
             )
@@ -438,7 +441,7 @@ def refreeze_changed_goal(
         if before is not None and not refreeze and before[0].target == target:
             start = _carried(start, before, plans.plan(target), request)
     except TargetPlanError as exc:
-        raise GoalResolutionError(f"Goal {key}: {exc}") from exc
+        raise GoalResolutionError(f"Goal {goal_presentation(goal.spec).text}: {exc}") from exc
     others = dict(siblings or {})
     others.pop(key, None)
     existing = {**{name: held for name, (_, held) in others.items()}, key: start}

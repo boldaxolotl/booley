@@ -146,9 +146,11 @@ def _frozen_run(raw: object, where: str) -> FrozenRun:
 
 
 def resolution_update_violation(
-    key: str, before: TestRunResolution, after: TestRunResolution
+    goal_name: str, before: TestRunResolution, after: TestRunResolution
 ) -> str:
     """Why *after* may not replace *before* at one specification revision; empty when it may.
+
+    *goal_name* is how the refusal names the Goal to its reader.
 
     An update only fills pending slots or freezes Tests added to the suite
     slot: every frozen run stays, in place, and no slot becomes pending. The
@@ -162,15 +164,15 @@ def resolution_update_violation(
             before, runs=tuple(item for item in before.runs if not _unnamed_suite_run(item))
         )
     if after.runs[: len(before.runs)] != before.runs:
-        return f"the frozen Test Runs of Goal {key} cannot change"
+        return f"the frozen Test Runs of Goal {goal_name} cannot change"
     if not set(after.pending) <= set(before.pending):
-        return f"Goal {key} cannot gain pending Test Run slots"
+        return f"Goal {goal_name} cannot gain pending Test Run slots"
     known = {item.run.test for item in before.runs if item.slot == SUITE_SLOT}
     for item in after.runs[len(before.runs) :]:
         filled = item.slot in before.pending and item.slot not in after.pending
         suite = item.slot == SUITE_SLOT and item.run.test not in known
         if not (filled or (suite and SUITE_SLOT not in before.pending)):
-            return f"Test Run {item.run.name} of Goal {key} fills no pending slot"
+            return f"Test Run {item.run.name} of Goal {goal_name} fills no pending slot"
     return ""
 
 
