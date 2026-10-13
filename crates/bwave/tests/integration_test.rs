@@ -3054,8 +3054,9 @@ fn test_time_token_phase_snapshot() {
             }
             let (out, err, code) = run_bwave(&args);
             assert_eq!(code, 0, "{err}");
-            assert!(
-                out.contains(&format!("# Snapshot at cycle {cycle}")),
+            assert_eq!(
+                out.lines().next().unwrap().split_whitespace().nth(4),
+                Some(cycle.to_string().as_str()),
                 "{token}: {out}"
             );
         }
@@ -3124,11 +3125,14 @@ fn test_time_token_phase_config_fields_and_boundaries() {
         for (range, lo, hi) in [
             ("25t", c, Some(c)),
             ("25ns:", c, None),
-            (":35t", c, Some(c + 1)),
+            (":35t", 0, Some(c + 1)),
         ] {
-            cfg.time_str = Some(range.into());
-            cfg.resolve_time_tokens(&cache).unwrap();
-            assert_eq!((cfg.time_min, cfg.time_max), (lo, hi));
+            let mut range_cfg = ExtractConfig {
+                time_str: Some(range.into()),
+                ..policy.clone()
+            };
+            range_cfg.resolve_time_tokens(&cache).unwrap();
+            assert_eq!((range_cfg.time_min, range_cfg.time_max), (lo, hi));
         }
         let async_policy = ExtractConfig {
             async_mode: true,
@@ -3315,10 +3319,23 @@ fn test_time_token_phase_async_cli_and_ranges() {
             assert_eq!(out, expected, "{command}");
         }
     }
-    let (_, _, code) = run_bwave(&["value", bp, "--async", "--at=-1c"]);
-    assert_eq!(code, 2);
-    let (_, _, code) = run_bwave(&["value", bp, "--async", "--at", "9223372036854775807c"]);
-    assert_eq!(code, 2);
+    for token in ["-1c", "9223372036854775807c"] {
+        let (out, err, code) = run_bwave(&[
+            "value",
+            bp,
+            "--clock",
+            "qa.clk",
+            "--async",
+            &format!("--at={token}"),
+        ]);
+        assert_eq!(code, 2, "{out} {err}");
+        let reason = if token == "-1c" {
+            "cycle-token must be nonnegative"
+        } else {
+            "cycle time is beyond simulation tick range"
+        };
+        assert!(err.contains(reason), "{err}");
+    }
     std::fs::remove_file(store).unwrap();
 }
 
