@@ -476,8 +476,6 @@ def test_immediate_live_promotion_is_strict_and_other_unmet_goal_does_not_block(
     assert build_status(env.store, env.store.load(layout.record.id)).goals[0].status == "stale"
 
 
-# Windows CI measured 27.2 s against the default 60 s budget; keep the headroom (#1202).
-@pytest.mark.timeout(120)
 @pytest.mark.parametrize(
     "boundary",
     [
@@ -491,6 +489,7 @@ def test_immediate_live_promotion_is_strict_and_other_unmet_goal_does_not_block(
         "applied",
     ],
 )
+@pytest.mark.timeout(120)  # Windows CI needs 3x the observed 30-33s runtime.
 def test_each_waiver_effect_recovers_without_revalidating_mutable_inputs(layout, boundary):
     env, candidate, root = prepared(layout)
     view = propose(layout, env, candidate)

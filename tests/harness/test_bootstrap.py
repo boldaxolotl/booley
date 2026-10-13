@@ -1662,3 +1662,63 @@ def test_missing_host_agent_cli_does_not_block_bootstrap(monkeypatch, intent):
     assert "skills" in calls
     assert "base-image" in calls
     assert any(finding.state is bootstrap.BootstrapState.WARNING for finding in result.findings)
+
+
+@pytest.mark.parametrize("failure", ["empty-revision", "persisted-validation"])
+def test_cli_invalid_registration_never_prints_update_success(
+    tmp_path, monkeypatch, capsys, failure
+):
+    from booley.runtime import host_install, session_refresh
+
+    source = Path(host_install.__file__).resolve().parent.parent / "data/skills"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setattr(host_install, "_eligibility_error", lambda _source: None)
+    monkeypatch.setattr(
+        host_install,
+        "current_build_metadata",
+        lambda: SimpleNamespace(
+            version="1.2.3", revision="previous", payload_fingerprint="f" * 64
+        ),
+    )
+    identity = host_install.current_host_installation(source)
+    state = host_install.host_installation_path()
+    host_install._write_identity(identity, state)
+    before = state.read_bytes()
+    monkeypatch.setattr(
+        host_install,
+        "current_build_metadata",
+        lambda: SimpleNamespace(
+            version="1.2.3",
+            revision="" if failure == "empty-revision" else "new",
+            payload_fingerprint="f" * 64,
+        ),
+    )
+    monkeypatch.setattr(bootstrap_cli, "skills_dir", lambda: source)
+    monkeypatch.setattr(session_refresh, "shared_recovery_blocks_command", lambda **_kwargs: False)
+    calls = []
+    monkeypatch.setattr(
+        bootstrap_cli,
+        "reconcile_bootstrap",
+        lambda *args, **kwargs: calls.append(args) or bootstrap.BootstrapResult(Intent.ENSURE, ()),
+    )
+    if failure == "persisted-validation":
+        original = host_install.load_host_installation
+
+        def load(path=None):
+            if path == state:
+                raise host_install.HostInstallationError("persisted validation failed")
+            return original(path)
+
+        monkeypatch.setattr(host_install, "load_host_installation", load)
+    assert bootstrap_cli.run_bootstrap(SimpleNamespace(update=True)) != 0
+    output = capsys.readouterr().out
+    assert "Updated canonical Booley host installation" not in output
+    assert not calls
+    if failure == "empty-revision":
+        assert "revision" in output
+        assert "complete source checkout" in output
+        assert state.read_bytes() == before
+        assert host_install.load_host_installation(state) == identity
+    else:
+        assert "persisted validation failed" in output
+        assert original(state).revision == "new"
