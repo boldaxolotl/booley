@@ -2759,9 +2759,10 @@ targets:
         assert any("tests.toml invalid" in m for m in rec.fails())
 
 
-# ===========================================================================
+# ====================================================================
+
 # Interactive Mode persistent state-volume note
-# ===========================================================================
+# ====================================================================
 
 
 class TestWcpServerCheck:
@@ -2965,9 +2966,10 @@ class TestWcpPortProbe:
         assert doctor._wcp_port_listening(["docker", "exec", "c"], 54322) is None
 
 
-# ===========================================================================
+# ====================================================================
+
 # Stale devcontainer.json detection (predates the home-state persistence fix)
-# ===========================================================================
+# ====================================================================
 
 
 # ---------------------------------------------------------------------------
@@ -6084,9 +6086,10 @@ class TestDeveloperProbe:
             developer_probe.measure_developer_rss(tmp_path)
 
 
-# ===========================================================================
+# ====================================================================
+
 # Flow Target configured — cheap pass (F-9)
-# ===========================================================================
+# ====================================================================
 
 
 def _audit_with_flows(tmp_path: Path, flows: dict) -> doctor.ProjectAudit:
@@ -6133,9 +6136,10 @@ class TestCheckDoctorTargets:
         assert "flow_options.booley.doctor" in fails[0][1]
 
 
-# ===========================================================================
+# ====================================================================
+
 # Legacy tools-section .core targets (F-6)
-# ===========================================================================
+# ====================================================================
 
 
 class TestCheckLegacyCoreTargets:
@@ -7198,9 +7202,10 @@ class TestLineEndingsCheck:
         assert reporter.findings[0].severity == "warn"
 
 
-# ===========================================================================
+# ====================================================================
+
 # _check_subscription_creds_health — expired-creds gap (2026-07-23 incident)
-# ===========================================================================
+# ====================================================================
 
 
 class TestSubscriptionCredsHealth:
@@ -8322,3 +8327,63 @@ def test_goal_history_broken_pair_is_active_and_preserves_exclusion(tmp_path, ig
     assert finding.check_id == "goals.history-layout-unreadable"
     assert "repair" in finding.fix and "remove" not in finding.fix
     assert exclude.read_bytes() == before
+
+
+def test_doctor_opt_out_migration_read_only_and_direct_init_hint(tmp_path):
+    from booley.harness.setup.line_endings import LineEndingMode, reconcile_project_line_endings
+
+    TestLineEndingsCheck._repo(tmp_path, autocrlf="false")
+    TestLineEndingsCheck._commit(tmp_path, ".gitignore", b".booley_project/\n")
+    data = tmp_path / ".booley_project"
+    data.mkdir()
+    config = data / "booley.toml"
+    config.write_text("[stealth]\nenabled = true\n")
+    reconcile_project_line_endings(tmp_path, data, mode=LineEndingMode.REPAIR)
+    config.write_text("[stealth]\nenabled = false\n")
+    paths = [
+        tmp_path / ".git/config",
+        tmp_path / ".git/index",
+        tmp_path / ".git/info/attributes",
+        config,
+    ]
+    before = [(p.read_bytes(), p.stat().st_mtime_ns) for p in paths]
+    c = _Collector()
+    hints = []
+
+    def warn(message, fix=""):
+        c._warn(message, fix)
+        hints.append(fix)
+
+    doctor._check_line_endings(tmp_path, c._pass, warn, c._skip, c._fail, project_dir=data)
+    assert c.warned and not c.failed and not c.passed
+    assert "migration" in c.warned[0]
+    assert "booley init" in hints[0]
+    assert "cannot prove ownership" not in c.warned[0]
+    assert [(p.read_bytes(), p.stat().st_mtime_ns) for p in paths] == before
+    reconcile_project_line_endings(tmp_path, data, mode=LineEndingMode.REPAIR)
+    c = _Collector()
+    doctor._check_line_endings(tmp_path, c._pass, c._warn, c._skip, c._fail, project_dir=data)
+    assert c.passed and not c.warned and not c.failed
+
+
+@pytest.mark.parametrize("ignored", [False, True])
+def test_goal_history_corrupt_standalone_is_active_and_preserves_history(tmp_path, ignored):
+    root, project, exclude = _versioned_history_layout(tmp_path, linked=False, ignored=ignored)
+    before = exclude.read_bytes()
+    metadata = project / ".git"
+    head = (metadata / "HEAD").read_bytes()
+    (metadata / "HEAD").rename(metadata / "HEAD.preserved")
+    (project / "doctor-waivers.toml").write_text(
+        'version = 1\n[[waiver]]\ncheck = "goals.history-ignored"\n'
+        'subject = "independent-booley-history"\n'
+        'reason = "Preserve independent history and local summaries."\npermanent = true\n'
+    )
+    reporter = doctor._Reporter.create(doctor.load_doctor_waivers(project))
+    doctor._check_goal_history_ignored(root, project, reporter.pass_, reporter.warn_)
+    finding = reporter.findings[0]
+    assert finding.severity == "warn"
+    assert finding.check_id == "goals.history-layout-unreadable"
+    assert "repair" in finding.fix and "remove" not in finding.fix
+    assert exclude.read_bytes() == before
+    assert (metadata / "HEAD.preserved").read_bytes() == head
+    assert (metadata / "objects").is_dir()
