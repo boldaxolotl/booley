@@ -15,32 +15,32 @@ never hide the failure, waive checks or push.
 ```json
 [
   {
-    "family": "elab",
+    "family": "ELAB",
     "target": "sim_mac_10g",
     "origin": "repair"
   },
   {
-    "family": "elab",
+    "family": "ELAB",
     "target": "sim_mac_10g_observability",
     "origin": "repair"
   },
   {
-    "family": "sim",
+    "family": "SIM",
     "target": "sim_mac_10g",
     "origin": "repair"
   },
   {
-    "family": "sim",
+    "family": "SIM",
     "target": "sim_mac_10g_observability",
     "origin": "repair"
   },
   {
-    "family": "lint",
+    "family": "LINT",
     "target": "lint_mac_10g",
     "origin": "repair"
   },
   {
-    "family": "synth",
+    "family": "SYNTH",
     "target": "synth_mac_10g",
     "thresholds": {
       "cell_count_increase_at_most": "0%"
@@ -48,7 +48,7 @@ never hide the failure, waive checks or push.
     "origin": "repair"
   },
   {
-    "family": "synth",
+    "family": "SYNTH",
     "target": "synth_mac_10g_physical",
     "thresholds": {
       "cell_count_increase_at_most": "0%",
@@ -57,19 +57,19 @@ never hide the failure, waive checks or push.
     "origin": "repair"
   },
   {
-    "family": "review",
+    "family": "REVIEW",
     "review": "rtl_bugs",
     "verdict": "clean",
     "origin": "repair"
   },
   {
-    "family": "review",
+    "family": "REVIEW",
     "review": "rtl_protocol",
     "verdict": "done",
     "origin": "repair"
   },
   {
-    "family": "review",
+    "family": "REVIEW",
     "review": "rtl_spec",
     "verdict": "done",
     "spec": "docs/taxi-contract.md",

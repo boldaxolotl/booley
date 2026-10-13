@@ -3900,7 +3900,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     def _resume_coverage_prepared(self, validated: ValidatedResumeManifest) -> tuple[Any, Any]:
         """Run the shared coverage preflight for the manifest's frozen coverage choice."""
         from booley.criteria.state import DevelopmentState
-        from booley.flows.sim.coverage_flow_context import coverage_project_context
+        from booley.flows.sim.coverage_flow_context import coverage_context_for_execution
         from booley.flows.sim.coverage_invocation import (
             CoverageInvocationRequest,
             prepare_coverage_invocation,
@@ -3911,11 +3911,12 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
         names = cast(tuple[str, ...], cast(Mapping[str, object], items[0]["selection"])["names"])
         workload = cast(Mapping[str, object], manifest.document["workload"])
-        context = coverage_project_context(
+        context = coverage_context_for_execution(
             self.args.work_dir,
             DevelopmentState.load(self.args.state_file)
             if self.args.state_file
             else DevelopmentState(),
+            recorder=self.context._acceptance_recorder,
         )
         runs = (
             tuple(
@@ -3986,7 +3987,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
     def _prepare_coverage(self) -> EndpointOutcome | None:
         from booley.criteria.state import DevelopmentState
-        from booley.flows.sim.coverage_flow_context import coverage_project_context
+        from booley.flows.sim.coverage_flow_context import coverage_context_for_execution
         from booley.flows.sim.coverage_invocation import (
             CoverageInvocationRequest,
             prepare_coverage_invocation,
@@ -3997,13 +3998,14 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         if not self._flow_enabled():
             return EndpointOutcome(exit_code=2, report_text="sim is disabled")
         try:
-            context = coverage_project_context(
+            context = coverage_context_for_execution(
                 self.args.work_dir,
                 (
                     DevelopmentState.load(self.args.state_file)
                     if self.args.state_file
                     else DevelopmentState()
                 ),
+                recorder=self.context._acceptance_recorder,
             )
             selection = self._selected_target_selection()
             prepared = prepare_coverage_invocation(

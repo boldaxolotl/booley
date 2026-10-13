@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from booley.criteria.evidence_ledger import AcceptanceTransaction
+from booley.criteria.presentation import CriterionPresentation
 from booley.criteria.state import CriterionChange, DevelopmentState, StatePersistence
 from booley.evidence.acceptance import PairedProjectBaseline, ResolvedFlowAcceptance
 from booley.flows.execution_persistence import EvidenceDiscarded
@@ -27,7 +28,9 @@ from booley.flows.source_fingerprint import compute_source_fingerprint
 from booley.goals.binding import GoalRunBinding
 from booley.goals.checkout import CheckoutError, GoalCheckout
 from booley.goals.freshness import DEFAULT_RESOLVERS, RESOLVER_ERRORS, GoalFreshnessResolvers
+from booley.goals.model import GoalRecord, GoalSpec
 from booley.goals.paths import record_paths
+from booley.goals.presentation import UNAVAILABLE_GOAL, goal_presentation
 from booley.goals.recorder import GoalEvidenceRecorder
 from booley.goals.store import GoalStore, GoalStoreError
 from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
@@ -48,6 +51,33 @@ class GoalFlowExecution:
         self._recorder = GoalEvidenceRecorder(
             binding, resolvers=resolvers, publication_checkpoint=publication_checkpoint
         )
+        self._presented_goals: dict[str, GoalSpec] | None = None
+
+    def _capture_presentation(self, record: GoalRecord) -> None:
+        if self._presented_goals is None:
+            self._presented_goals = {
+                goal.spec.key: goal.spec
+                for goal in record.goals
+                if goal.spec_revision == self._binding.spec_revision(goal.spec.key)
+            }
+
+    def present_criterion(self, key: str, entry: object) -> CriterionPresentation:
+        """Capture matching admitted revisions once; never follow a later retarget."""
+        if self._presented_goals is None:
+            try:
+                record = GoalStore(self._binding.project_dir).load(self._binding.record_id)
+            except GoalStoreError:
+                return CriterionPresentation(UNAVAILABLE_GOAL, "", "", "", "")
+            self._capture_presentation(record)
+        goal = (self._presented_goals or {}).get(key)
+        if goal is None:
+            return CriterionPresentation(UNAVAILABLE_GOAL, "", "", "", "")
+        return goal_presentation(goal, entry).criterion()
+
+    def candidate_store_paths(self) -> tuple[str, Path, Path]:
+        """Neutral Specialist paths selected from the validated admission binding."""
+        paths = record_paths(self._binding.project_dir, self._binding.record_id)
+        return self._binding.record_id, paths.runtime_dir / "flow-reports", paths.root
 
     @property
     def binding(self) -> GoalRunBinding:
@@ -73,6 +103,7 @@ class GoalFlowExecution:
             return _blocked(
                 f"{request.work_dir} is not the Goal worktree {self._binding.worktree_root}"
             )
+        self._capture_presentation(record)
         request.slug = self._binding.record_id
         request.state_file = self.state_file
         paired = (

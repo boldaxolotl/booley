@@ -13,12 +13,12 @@ clean committed TB-only diff and Session Summary.
 ```json
 [
   {
-    "family": "sim",
+    "family": "SIM",
     "target": "sim_generated",
     "origin": "close-test-gap"
   },
   {
-    "family": "coverage",
+    "family": "COVERAGE",
     "target": "sim_generated",
     "tests": "all",
     "metrics": {

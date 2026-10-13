@@ -101,7 +101,8 @@ def test_status_defaults_to_summary_for_multiple_modes_and_preserves_warnings(go
     assert "Worktree:" not in compact
     assert "lint_clean_top" not in compact
     detailed = render_status((first, second), short=False)
-    assert "lint_clean_top" in detailed
+    assert "Goal unavailable" in detailed
+    assert "lint_clean_top" not in detailed
     assert "Pending proposals: 2" in detailed
     assert "Worktree:" in detailed
 
@@ -159,7 +160,15 @@ def baseline_render_status(views: tuple[GoalStatusView, ...], *, short: bool | N
         )
         if view.warning:
             console.print(view.warning)
-        if not compact:
+        if compact:
+            for goal in view.goals:
+                name = (
+                    goal.presentation.text
+                    if goal.presentation
+                    else "Goal unavailable (unsupported record)"
+                )
+                console.print(f"  {name}: {goal.status}")
+        else:
             console.print(f"Worktree: {view.record.worktree_path}")
             console.print(f"Branch: {view.record.branch}")
             table = Table("Goal", "Status", "Evidence", box=None, padding=(0, 1))
@@ -167,7 +176,13 @@ def baseline_render_status(views: tuple[GoalStatusView, ...], *, short: bool | N
                 evidence = goal.evidence_summary
                 if goal.status == "unmet" and goal.reason:
                     evidence += f" — {goal.reason}"
-                table.add_row(goal.key, goal.status, evidence)
+                table.add_row(
+                    goal.presentation.text
+                    if goal.presentation
+                    else "Goal unavailable (unsupported record)",
+                    goal.status,
+                    evidence,
+                )
             console.print(table)
             console.print(f"Pending proposals: {view.pending_proposals}")
             conflicts = dict(view.proposal_conflicts)

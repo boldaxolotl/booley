@@ -22,67 +22,67 @@ gating. Implementation assets are `picorv32.v`, `testbench.v`, `testbench_wb.v`,
 ```json
 [
   {
-    "family": "elab",
+    "family": "ELAB",
     "target": "sim_core_zbb",
     "origin": "evolution"
   },
   {
-    "family": "elab",
+    "family": "ELAB",
     "target": "sim_axi_zbb",
     "origin": "evolution"
   },
   {
-    "family": "elab",
+    "family": "ELAB",
     "target": "sim_wb_zbb",
     "origin": "evolution"
   },
   {
-    "family": "elab",
+    "family": "ELAB",
     "target": "sim_zbb_disabled",
     "origin": "evolution"
   },
   {
-    "family": "lint",
+    "family": "LINT",
     "target": "lint_core_zbb",
     "origin": "evolution"
   },
   {
-    "family": "sim",
+    "family": "SIM",
     "target": "sim_core",
     "origin": "evolution"
   },
   {
-    "family": "sim",
+    "family": "SIM",
     "target": "sim_wb",
     "origin": "evolution"
   },
   {
-    "family": "sim",
+    "family": "SIM",
     "target": "sim_dhry_checked",
     "origin": "evolution"
   },
   {
-    "family": "sim",
+    "family": "SIM",
     "target": "sim_core_zbb",
     "origin": "evolution"
   },
   {
-    "family": "sim",
+    "family": "SIM",
     "target": "sim_axi_zbb",
     "origin": "evolution"
   },
   {
-    "family": "sim",
+    "family": "SIM",
     "target": "sim_wb_zbb",
     "origin": "evolution"
   },
   {
-    "family": "sim",
+    "family": "SIM",
     "target": "sim_zbb_disabled",
     "origin": "evolution"
   },
   {
-    "family": "mutation",
+    "family": "MUTATION",
     "target": "sim_core_zbb",
     "scope": [
       "picorv32.v"
@@ -92,7 +92,7 @@ gating. Implementation assets are `picorv32.v`, `testbench.v`, `testbench_wb.v`,
     "origin": "evolution"
   },
   {
-    "family": "synth",
+    "family": "SYNTH",
     "target": "synth_core_zbb",
     "baseline": "synth_core",
     "thresholds": {
@@ -102,44 +102,44 @@ gating. Implementation assets are `picorv32.v`, `testbench.v`, `testbench_wb.v`,
     "origin": "evolution"
   },
   {
-    "family": "review",
+    "family": "REVIEW",
     "review": "rtl_bugs",
     "verdict": "clean",
     "origin": "evolution"
   },
   {
-    "family": "review",
+    "family": "REVIEW",
     "review": "rtl_protocol",
     "verdict": "done",
     "origin": "evolution"
   },
   {
-    "family": "review",
+    "family": "REVIEW",
     "review": "rtl_spec",
     "verdict": "done",
     "spec": "docs/riscv-zbb-spec.txt",
     "origin": "evolution"
   },
   {
-    "family": "review",
+    "family": "REVIEW",
     "review": "rtl_code_style",
     "verdict": "done",
     "origin": "evolution"
   },
   {
-    "family": "review",
+    "family": "REVIEW",
     "review": "rtl_optimization",
     "verdict": "done",
     "origin": "evolution"
   },
   {
-    "family": "review",
+    "family": "REVIEW",
     "review": "rtl_security",
     "verdict": "done",
     "origin": "evolution"
   },
   {
-    "family": "review",
+    "family": "REVIEW",
     "review": "tb_quality",
     "verdict": "done",
     "origin": "evolution"

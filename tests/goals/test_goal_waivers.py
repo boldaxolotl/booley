@@ -73,8 +73,8 @@ def prepared(layout, anchor="rtl_repository", directory="approvals", *, covered=
     layout.record = enter_goals(
         layout,
         [
-            {"family": "coverage", "target": "top", "tests": "all", "metrics": {"line": 100}},
-            {"family": "lint", "target": "top"},
+            {"family": "COVERAGE", "target": "top", "tests": "all", "metrics": {"line": 100}},
+            {"family": "LINT", "target": "top"},
         ],
     )
     service = GoalWaiverService(layout.control, layout.record)
@@ -233,7 +233,7 @@ def public_change(layout, env, arguments):
     result = propose_change(
         {"work_dir": str(layout.worktree), "operation": "create", **arguments}, env.entry, None
     )
-    proposal_id = json.loads(result.value[0].text)["proposal_id"]
+    proposal_id = json.loads(result.value[0][0].text)["proposal_id"]
     applied = propose_change(
         {
             "work_dir": str(layout.worktree),
@@ -245,7 +245,7 @@ def public_change(layout, env, arguments):
         env.entry,
         None,
     )
-    assert json.loads(applied.value[0].text)["state"] == "applied"
+    assert json.loads(applied.value[0][0].text)["state"] == "applied"
 
 
 # Slowest Windows CI duration is 31 s; the headroom rule asks for three times that.
@@ -260,7 +260,7 @@ def test_public_relax_then_waive_preserves_current_bounds_on_reloaded_campaign(l
             "goal_key": KEY,
             "rationale": "accept measured threshold",
             "after": {
-                "family": "coverage",
+                "family": "COVERAGE",
                 "target": "top",
                 "tests": "all",
                 "metrics": {"line": 90},
@@ -363,7 +363,7 @@ def test_numeric_derivation_keeps_checked_policy_or_refuses_drift(layout, monkey
             "goal_key": KEY,
             "rationale": "accept current bounds",
             "after": {
-                "family": "coverage",
+                "family": "COVERAGE",
                 "target": "top",
                 "tests": "all",
                 "metrics": {"line": 90},
@@ -582,7 +582,7 @@ def test_numeric_coverage_relaxation_reevaluates_immutable_points_without_waiver
             "kind": "relax",
             "goal_key": KEY,
             "after": {
-                "family": "coverage",
+                "family": "COVERAGE",
                 "target": "top",
                 "tests": "all",
                 "metrics": {"line": 50},

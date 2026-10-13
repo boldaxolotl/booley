@@ -1,17 +1,17 @@
 [
   {
-    "family": "review",
+    "family": "REVIEW",
     "review": "rtl_security",
     "verdict": "done"
   },
   {
-    "family": "review",
+    "family": "REVIEW",
     "review": "rtl_spec",
     "verdict": "done",
     "spec": "spec/contract.md"
   },
   {
-    "family": "review",
+    "family": "REVIEW",
     "review": "tb_quality",
     "verdict": "done"
   }
