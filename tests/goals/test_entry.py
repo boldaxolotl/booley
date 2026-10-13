@@ -623,3 +623,90 @@ def test_the_state_file_is_flushed_before_activation(
     record = enter_goal_mode(_request(layout), _env(layout)).record
 
     assert record_paths(layout.control, record.id).state_file.parent in flushed
+
+
+def test_nonexcluded_paired_checkout_enters(layout, tmp_path):
+    paired = install_paired_project(layout, tmp_path)
+    empty = tmp_path / "empty-excludes"
+    empty.write_bytes(b"")
+    git(layout.worktree, "config", "core.excludesFile", str(empty))
+    (layout.main / ".git/info/exclude").write_bytes(b"")
+    assert git(layout.worktree, "status", "--porcelain=v1") == "?? .booley_project/"
+    result = enter_goal_mode(_request(layout), _env(layout))
+    assert result.record.state is GoalState.ACTIVE
+    assert result.record.paired_project_base_sha == git(paired, "rev-parse", "HEAD")
+
+
+@pytest.mark.parametrize("participant", ["outer", "inner"])
+@pytest.mark.parametrize("dirt", ["modified", "staged", "untracked"])
+def test_nonexcluded_pair_preserves_real_dirt_refusals(layout, tmp_path, participant, dirt):
+    paired = install_paired_project(layout, tmp_path)
+    empty = tmp_path / "empty-excludes"
+    empty.write_bytes(b"")
+    git(layout.worktree, "config", "core.excludesFile", str(empty))
+    (layout.main / ".git/info/exclude").write_bytes(b"")
+    root = layout.worktree if participant == "outer" else paired
+    name = "new.txt" if dirt == "untracked" else "booley.toml"
+    (root / name).write_bytes(b"user work\n")
+    if dirt == "staged":
+        git(root, "add", name)
+    expected = "the worktree" if participant == "outer" else "the Paired Checkout"
+    with pytest.raises(GoalEntryError, match=expected + " has uncommitted changes"):
+        enter_goal_mode(_request(layout), _env(layout))
+    assert (root / name).read_bytes() == b"user work\n"
+
+
+@pytest.mark.parametrize("nested", ["plain", "standalone", "broken"])
+def test_nonexcluded_unpaired_root_is_not_exempt(layout, tmp_path, nested):
+    empty = tmp_path / "empty-excludes"
+    empty.write_bytes(b"")
+    git(layout.worktree, "config", "core.excludesFile", str(empty))
+    (layout.main / ".git/info/exclude").write_bytes(b"")
+    project = layout.worktree / ".booley_project"
+    if nested == "standalone":
+        git(project, "init", "-q")
+        git(project, "add", "-A")
+        git(project, "commit", "-qm", "independent")
+    elif nested == "broken":
+        (project / ".git").write_bytes(b"gitdir: /nonexistent-paired-metadata\n")
+    with pytest.raises(
+        GoalEntryError, match=r"uncommitted changes|Paired Checkout is unavailable"
+    ):
+        enter_goal_mode(_request(layout), _env(layout))
+
+
+@pytest.mark.parametrize("real_dirt", [False, True])
+def test_nonexcluded_pair_rollback_classifies_only_real_outer_dirt(layout, tmp_path, real_dirt):
+    install_paired_project(layout, tmp_path)
+    empty = tmp_path / "empty-excludes"
+    empty.write_bytes(b"")
+    git(layout.worktree, "config", "core.excludesFile", str(empty))
+    (layout.main / ".git/info/exclude").write_bytes(b"")
+    with pytest.raises(_Crash):
+        enter_goal_mode(_request(layout), _env(layout, _crash_at("checked_out")))
+    (stale,) = _store(layout).list_records().records
+    if real_dirt:
+        (layout.worktree / "rtl.v").write_bytes(b"retain me\n")
+    failed = entry_module.rollback_entering(
+        _store(layout), stale.id, GoalCheckout(layout.worktree), "interrupted"
+    )
+    assert failed.state is GoalState.FAILED
+    assert (BRANCH in _branches(layout.main)) == real_dirt
+
+
+def test_doctor_retain_exclusion_hint_leaves_linked_goal_entry_working(layout, tmp_path):
+    from booley.harness import doctor
+
+    paired = install_paired_project(layout, tmp_path)
+    (paired / "booley.toml").write_bytes(b"[stealth]\nenabled = false\n")
+    git(paired, "add", "booley.toml")
+    git(paired, "commit", "-qm", "open configuration")
+    exclude = layout.main / ".git/info/exclude"
+    before = exclude.read_bytes()
+    reporter = doctor._Reporter.create()
+    doctor._check_goal_history_ignored(layout.worktree, paired, reporter.pass_, reporter.warn_)
+    assert "retain the outer exclusion" in reporter.findings[0].fix
+    # Follow the preserve-history branch: retain the exclusion and rerun Doctor.
+    doctor._check_goal_history_ignored(layout.worktree, paired, reporter.pass_, reporter.warn_)
+    assert exclude.read_bytes() == before
+    assert enter_goal_mode(_request(layout), _env(layout)).record.state is GoalState.ACTIVE

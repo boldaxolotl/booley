@@ -353,7 +353,7 @@ do not need these files.
 | Review Package | `<GOAL>/review-package.json` | Diff, final evidence, Change Log, and review findings |
 | Approved Goal changes | `<GOAL>/changes.jsonl` | Human decisions and reasons |
 | Evidence logs | `<GOAL>/logs/` | Flow/Specialist evidence and retained reports |
-| Summary on the Goal Branch | `.booley_project/goals/history/<goal-id>.md` | Committed outside Stealth when Git-trackable |
+| Summary on the Goal Branch | `.booley_project/goals/history/<goal-id>.md` | Committed outside Stealth when Git-trackable and owned by the RTL repository |
 
 ### Sandbox & Docker
 

@@ -8210,3 +8210,43 @@ def test_unanchored_evidence_workarounds_receive_canonical_init_repair(tmp_path)
     assert ignore.read_text().startswith(original)
     assert all(p in ignore.read_text().splitlines() for p in new)
     assert [f.severity for f in _gitignore_probe(tmp_path)] == ["pass"]
+
+
+@pytest.mark.parametrize("linked", [False, True])
+@pytest.mark.parametrize("ignored", [False, True])
+def test_goal_history_versioned_hint_preserves_history_and_policy(tmp_path, linked, ignored):
+    from tests.goals.conftest import git
+
+    root = tmp_path / "rtl"
+    root.mkdir()
+    git(root, "init", "-q", "-b", "main")
+    empty = tmp_path / "empty-excludes"
+    empty.write_bytes(b"")
+    git(root, "config", "core.excludesFile", str(empty))
+    owner = tmp_path / "owner" if linked else root / ".booley_project"
+    owner.mkdir()
+    git(owner, "init", "-q", "-b", "main")
+    (owner / "booley.toml").write_bytes(b"[stealth]\nenabled = false\n")
+    git(owner, "add", "-A")
+    git(owner, "commit", "-qm", "independent history")
+    project = root / ".booley_project"
+    if linked:
+        git(owner, "worktree", "add", "-q", "--detach", str(project))
+    exclude = root / ".git/info/exclude"
+    exclude.write_bytes(b".booley_project/\n" if ignored else b"")
+    before = exclude.read_bytes()
+    head = git(project, "rev-parse", "HEAD")
+    reporter = doctor._Reporter.create()
+    doctor._check_goal_history_ignored(root, project, reporter.pass_, reporter.warn_)
+    finding = reporter.findings[0]
+    if ignored:
+        assert finding.check_id == "goals.history-ignored"
+        assert "Independently versioned" in finding.message
+        assert "retain the outer exclusion" in finding.fix
+        assert finding.fix.index("history into the RTL repository first") < finding.fix.index(
+            "remove the exclusion"
+        )
+    else:
+        assert finding.severity == "pass"
+    assert exclude.read_bytes() == before
+    assert git(project, "rev-parse", "HEAD") == head

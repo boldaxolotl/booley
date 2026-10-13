@@ -92,7 +92,7 @@ from booley.runtime.pinned_history import (
     tree_rows,
     validate_pin,
 )
-from booley.runtime.project_repositories import RepositoryCheckoutError
+from booley.runtime.project_repositories import RepositoryCheckoutError, paired_project_repository
 from booley.runtime.publication_ownership import PublicationOwnership
 from booley.runtime.timefmt import utc_now_rfc3339
 from booley.targets.goal_diff import semantic_target_changes
@@ -453,6 +453,8 @@ def _publication_path(operation: LifecycleOperation, record: GoalRecord) -> str:
 
 
 def _skip_publication(root: Path, project: Path, path: str) -> str | None:
+    if paired_project_repository(root) is not None:
+        return "summary kept local; Paired Checkout preserves independent Booley history"
     if stealth_enabled(root, project_dir=project):
         return "summary kept local; Stealth publication is skipped"
     result = GoalCheckout(root)._git("check-ignore", "-q", "--", path, check=False)  # pyright: ignore[reportPrivateUsage]

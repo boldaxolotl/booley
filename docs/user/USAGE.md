@@ -462,7 +462,8 @@ Branch and worktree; merge, publication, and cleanup need separate instructions.
 Local Goal Records live under `.booley_project/goals/<goal-id>/`. Outside
 Stealth, Finish commits the Session Summary under
 `.booley_project/goals/history/<goal-id>.md` in the Goal worktree when that
-path is Git-trackable. Stealth or excluded summaries stay local.
+path is Git-trackable and owned by the RTL repository. Stealth, excluded, or
+independently versioned Booley Directory summaries stay local.
 
 ### Recovery, unattended work, and parallel sessions
 

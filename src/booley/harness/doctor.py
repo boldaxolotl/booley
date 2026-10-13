@@ -3178,6 +3178,20 @@ def _check_project_gitignore(project_dir: Path, _pass: Check, _warn: Check) -> N
     _pass("transient Booley state is gitignored")
 
 
+def _goal_history_layout_advice(root: Path) -> tuple[str, str]:
+    from booley.runtime.project_dir import PROJECT_DIR_NAME
+    from booley.runtime.project_repositories import is_git_worktree_root
+
+    if is_git_worktree_root(root / PROJECT_DIR_NAME):
+        return (
+            " Independently versioned Booley Directory preserves its own history.",
+            "retain the outer exclusion while preserving independent Booley history; "
+            "to publish through RTL, preserve or migrate that history into the RTL repository first, "
+            "then remove the exclusion and rerun booley doctor",
+        )
+    return "", "edit the reported exclusion when publication is wanted, then rerun booley doctor"
+
+
 def _check_goal_history_ignored(root: Path, project_dir: Path, _pass: Check, _warn: Warn) -> None:
     """Report preserved explicit exclusions which keep non-Stealth Goal history local."""
     from booley.commit_policy import stealth_enabled
@@ -3203,10 +3217,11 @@ def _check_goal_history_ignored(root: Path, project_dir: Path, _pass: Check, _wa
         )
         return
     if result.returncode == 0:
+        layout, hint = _goal_history_layout_advice(root)
         _warn(
             f"Goal Session Summary path {relative} is gitignored; summaries remain local. "
-            f"Exclusion: {result.stdout.strip()}",
-            "edit the reported exclusion when publication is wanted, then rerun booley doctor",
+            f"Exclusion: {result.stdout.strip()}{layout}",
+            hint,
         )
     elif result.returncode == 1:
         _pass("Goal history is eligible for commits")

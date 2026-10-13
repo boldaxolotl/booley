@@ -229,7 +229,7 @@ def _entering_effects(record: GoalRecord, root: Path) -> list[str]:
         ]
     if tip != record.base_sha:
         return [f"Goal Branch {record.branch} moved beyond entry; retained."]
-    if checkout.head_ref() == branch_ref(record.branch) and checkout.dirty_paths():
+    if checkout.head_ref() == branch_ref(record.branch) and checkout.dirty_paths(outer=True):
         return [f"Interrupted entry has uncommitted work on {record.branch}; retained."]
     return [f"Entry-owned Goal Branch {record.branch} retained at its original base."]
 

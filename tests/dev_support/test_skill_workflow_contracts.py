@@ -677,3 +677,15 @@ def test_heal_requires_user_decision_for_ticket_leftovers():
     assert "including unchanged shipped guidance" in skill
     assert "it does not authorize deletion" in skill
     assert "Leave the finding active until the user approves" in skill
+
+
+def test_setup_open_footprint_preserves_history_before_changing_exclusions():
+    text = _skill_text("booley-setup", "steps/4-doctor.md")
+    section = text.split("**Open —", 1)[1].split("Either way,", 1)[0]
+    assert section.index("Before changing exclusions") < section.index(
+        "drop the `/.booley_project` line"
+    )
+    assert section.index("retain the outer") < section.index("drop the `/.booley_project` line")
+    assert "human's chosen history migration" in section
+    assert "missing-exclusion waiver" in section
+    assert "git info/exclude missing Booley entry" not in section

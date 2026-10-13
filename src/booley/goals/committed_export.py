@@ -24,6 +24,12 @@ from booley.goals.input_identity import directory_identity, rebase_path
 from booley.goals.lifecycle import LifecycleError
 from booley.goals.proposals import digest
 from booley.runtime.pinned_history import raw_git, tree_rows, validate_pin
+from booley.runtime.project_repositories import (
+    RepositoryCheckoutError,
+    is_paired_root_change,
+    paired_project_repository,
+    parse_porcelain_z,
+)
 
 
 def confined(path: Path, scratch: Path, *, leaf_link: bool = False) -> Path:
@@ -210,7 +216,15 @@ def submodule_source(repository: Path, name: str) -> Path:
     top = Path(os.fsdecode(raw_git(source, "rev-parse", "--show-toplevel").strip()))
     if not top.samefile(source):
         raise LifecycleError(f"submodule source is not an independent checkout: {source}")
-    if raw_git(source, "status", "--porcelain=v1", "-z", "--untracked-files=all"):
+    try:
+        paired = paired_project_repository(source)
+    except RepositoryCheckoutError as exc:
+        raise LifecycleError(str(exc)) from exc
+    args = ("status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none")
+    changes = parse_porcelain_z(os.fsdecode(raw_git(source, *args)))
+    if (paired is not None and raw_git(paired.worktree, *args)) or any(
+        not is_paired_root_change(change, paired) for change in changes
+    ):
         raise LifecycleError(f"commit submodule changes before finish: {source}")
     return source
 

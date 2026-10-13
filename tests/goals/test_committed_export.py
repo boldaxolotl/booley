@@ -507,3 +507,57 @@ def test_baseline_refuses_substituted_current_submodule_administration(tmp_path)
     with pytest.raises(LifecycleError, match="differs from original cached administration"):
         export_tree(root, original, scratch / "rtl", scratch=scratch, baseline=True)
     assert before == (git(root, "rev-parse", "HEAD"), (root / ".git/index").read_bytes())
+
+
+@pytest.mark.parametrize("dirt", [None, "modified", "staged", "untracked", "outer"])
+def test_local_submodule_with_paired_root_exports_but_real_dirt_blocks(tmp_path, dirt):
+    root = nested_modules(tmp_path)
+    source = root / "module"
+    empty = tmp_path / "empty-excludes"
+    empty.write_bytes(b"")
+    git(source, "config", "core.excludesFile", str(empty))
+    owner = repository(tmp_path / "paired-owner")
+    (owner / "booley.toml").write_bytes(b"[project]\n")
+    git(owner, "add", "-A")
+    git(owner, "commit", "-qm", "independent")
+    paired = source / ".booley_project"
+    git(owner, "worktree", "add", "-q", "--detach", str(paired))
+    assert git(source, "status", "--porcelain=v1") == "?? .booley_project/"
+    git(root, "config", "diff.ignoreSubmodules", "all")
+    if dirt:
+        path = (
+            source / "extra"
+            if dirt == "outer"
+            else paired / ("new" if dirt == "untracked" else "booley.toml")
+        )
+        path.write_bytes(b"user work\n")
+        if dirt == "staged":
+            git(paired, "add", "booley.toml")
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    if dirt:
+        with pytest.raises(LifecycleError, match="submodule changes"):
+            export_tree(root, git(root, "rev-parse", "HEAD"), scratch / "out", scratch=scratch)
+    else:
+        export_tree(root, git(root, "rev-parse", "HEAD"), scratch / "out", scratch=scratch)
+        assert (scratch / "out/module/nested/rtl.v").read_bytes() == b"original committed design\n"
+    # Parent gitlink dirt remains a real outer modification, even with the production ignore config.
+    from booley.goals.checkout import GoalCheckout
+
+    assert "module" in GoalCheckout(root).dirty_paths(outer=True)
+
+
+def test_local_submodule_standalone_nested_repo_is_not_exempt(tmp_path):
+    root = nested_modules(tmp_path)
+    source = root / "module"
+    empty = tmp_path / "empty-excludes"
+    empty.write_bytes(b"")
+    git(source, "config", "core.excludesFile", str(empty))
+    nested = repository(source / ".booley_project")
+    (nested / "booley.toml").write_bytes(b"[project]\n")
+    git(nested, "add", "-A")
+    git(nested, "commit", "-qm", "standalone")
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    with pytest.raises(LifecycleError, match="submodule changes"):
+        export_tree(root, git(root, "rev-parse", "HEAD"), scratch / "out", scratch=scratch)

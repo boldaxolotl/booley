@@ -47,7 +47,12 @@ from booley.runtime.project_dir import (
     contains,
     resolve_checkout_project_dir,
 )
-from booley.runtime.project_repositories import RepositoryCheckoutError, paired_project_repository
+from booley.runtime.project_repositories import (
+    RepositoryCheckoutError,
+    is_paired_root_change,
+    paired_project_repository,
+    parse_porcelain_z,
+)
 from booley.targets.catalog import TargetCatalog
 from booley.targets.declared_inputs import HDL_SUFFIXES
 
@@ -245,6 +250,26 @@ def snapshot_project(root: Path) -> dict[str, str | None] | None:
     return result
 
 
+def _cleanliness_paths(root: Path, *, outer: bool) -> list[tuple[bytes, Path]]:
+    rows = raw_git(
+        root,
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+        "--ignore-submodules=none",
+    )
+    try:
+        paired = paired_project_repository(root) if outer else None
+    except RepositoryCheckoutError as exc:
+        raise LifecycleError(str(exc)) from exc
+    return [
+        (os.fsencode(change.status + " "), root / change.path)
+        for change in parse_porcelain_z(os.fsdecode(rows))
+        if not is_paired_root_change(change, paired)
+    ]
+
+
 def require_clean(
     selection: InputSelection,
     *,
@@ -256,8 +281,7 @@ def require_clean(
     for root in (selection.rtl, selection.project_repository):
         if root is None:
             continue
-        rows = raw_git(root, "status", "--porcelain=v1", "-z", "--untracked-files=all")
-        paths = [(row[:3], root / os.fsdecode(row[3:])) for row in rows.split(b"\0") if row]
+        paths = _cleanliness_paths(root, outer=root == selection.rtl)
         pin = selection.rtl_pin if root == selection.rtl else selection.project_pin
         projection = None
         for status, path in paths:

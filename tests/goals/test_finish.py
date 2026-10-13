@@ -564,3 +564,119 @@ def test_non_review_contract_metadata_does_not_break_retained_inputs(layout, mon
         ]
         == "finished"
     )
+
+
+def paired_publication_layout(layout, tmp_path, *, selected=None):
+    from tests.goals.conftest import install_paired_project
+
+    paired = install_paired_project(layout, tmp_path)
+    empty = tmp_path / "empty-excludes"
+    empty.write_bytes(b"")
+    git(layout.worktree, "config", "core.excludesFile", str(empty))
+    (layout.main / ".git/info/exclude").write_bytes(b"")
+    config = b"[stealth]\nenabled = false\n"
+    if selected is not None:
+        config += b"[submodules]\npaths = " + (b'["child"]' if selected else b"[]") + b"\n"
+    (paired / "booley.toml").write_bytes(config)
+    (paired / "tests.toml").write_bytes(b'[top]\ntests = ["smoke"]\n')
+    (paired / ".gitignore").write_bytes(PROJECT_GITIGNORE.encode())
+    git(paired, "add", "-A")
+    git(paired, "commit", "-qm", "Open independently versioned inputs")
+    (layout.control / "booley.toml").write_bytes(b"[stealth]\nenabled = false\n")
+    layout.record = enter_goals(layout, [{"family": "LINT", "target": "top"}])
+    # enter_goals writes the same already committed tests.toml bytes.
+    publish(layout)
+    return layout
+
+
+@pytest.mark.parametrize("boundary", [None, "local-artifacts", "finished"])
+def test_nonexcluded_pair_finish_retry_and_next_entry_stay_local(layout, tmp_path, boundary):
+    layout = paired_publication_layout(layout, tmp_path)
+    paired = layout.worktree / ".booley_project"
+    outer = git(layout.worktree, "rev-parse", "HEAD")
+    inner = git(paired, "rev-parse", "HEAD")
+    call = request(layout)
+
+    def crash(name):
+        if name == boundary:
+            raise Crash(name)
+
+    if boundary is not None:
+        with pytest.raises(Crash):
+            finish_goal(call, environment(layout, crash))
+    result = finish_goal(call, environment(layout))
+    assert result["status"] == "finished"
+    assert "independent Booley history" in result["publication_note"]
+    assert finish_goal(call, environment(layout)) == result
+    assert git(layout.worktree, "rev-parse", "HEAD") == outer
+    assert git(paired, "rev-parse", "HEAD") == inner
+    assert git(layout.worktree, "ls-tree", "-r", "HEAD", "--", ".booley_project") == ""
+    assert git(layout.worktree, "status", "--porcelain=v1") == "?? .booley_project/"
+    layout.record = enter_goal_mode(
+        EntryRequest(
+            layout.worktree, "next", parse_goal_args([{"family": "LINT", "target": "top"}])
+        ),
+        EntryEnvironment(layout.control),
+    ).record
+    publish(layout)
+    assert finish_goal(request(layout), environment(layout))["status"] == "finished"
+    assert git(layout.worktree, "status", "--porcelain=v1") == "?? .booley_project/"
+
+
+@pytest.mark.parametrize("selected", [False, True])
+def test_finish_refuses_dirty_gitlink_even_when_production_config_hides_it(
+    layout, tmp_path, selected
+):
+    module = tmp_path / "module-owner"
+    module.mkdir()
+    git(module, "init", "-q", "-b", "main")
+    (module / "rtl.v").write_bytes(b"module child; endmodule\n")
+    git(module, "add", "-A")
+    git(module, "commit", "-qm", "child")
+    git(
+        layout.worktree,
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        "-q",
+        str(module),
+        "child",
+    )
+    git(layout.worktree, "commit", "-qam", "local submodule")
+    layout = paired_publication_layout(layout, tmp_path, selected=selected)
+    git(layout.worktree, "config", "diff.ignoreSubmodules", "all")
+    (layout.worktree / "child/rtl.v").write_bytes(b"user work\n")
+    assert "child" not in git(layout.worktree, "status", "--porcelain=v1")
+    with pytest.raises(LifecycleError, match=r"commit changes|submodule changes"):
+        finish_goal(request(layout), environment(layout))
+    assert (layout.worktree / "child/rtl.v").read_bytes() == b"user work\n"
+
+
+@pytest.mark.parametrize("dirt", ["modified", "staged", "untracked"])
+def test_nonexcluded_pair_finish_retry_preserves_concurrent_inner_dirt(layout, tmp_path, dirt):
+    layout = paired_publication_layout(layout, tmp_path)
+    call = request(layout)
+
+    def crash(name):
+        if name == "local-artifacts":
+            raise Crash(name)
+
+    with pytest.raises(Crash):
+        finish_goal(call, environment(layout, crash))
+    paired = layout.worktree / ".booley_project"
+    path = paired / ("new" if dirt == "untracked" else "booley.toml")
+    before = path.read_bytes() if path.exists() else None
+    path.write_bytes(b"user work\n")
+    if dirt == "staged":
+        git(paired, "add", path.name)
+    with pytest.raises(LifecycleError, match="commit changes"):
+        finish_goal(call, environment(layout))
+    assert path.read_bytes() == b"user work\n"
+    if before is None:
+        path.unlink()
+    else:
+        path.write_bytes(before)
+    if dirt == "staged":
+        git(paired, "reset", "-q", "HEAD", "--", path.name)
+    assert finish_goal(call, environment(layout))["status"] == "finished"
