@@ -18,7 +18,7 @@ docker run --rm -v "$PWD/tests/fixtures/cocotb_counter":/work -w /work \
 | G8 happy ×2 | `--target sim_icarus` / `--target sim_verilator` | PASS, 3/3 per-test entries, one build + one sim process in the log |
 | G9 failure | `--target sim_fail` | FAIL; `test_fail_assert` entry `fail` with the assertion text; siblings pass |
 | G10 selection | `--target sim_icarus --test count` | runs exactly `test_count` |
-| G10 bogus name | `--target sim_bad` | `test_bogus_name` inconclusive with the "no matching @cocotb.test" message |
+| G10 bogus name | `--target sim_bad` | `test_bogus_name` inconclusive with the "no matching test ID" message and reported IDs |
 | G11 crash shapes | `--target sim_crash` | never pass: `test_py_exception` fail (RuntimeError), `test_rtl_fatal` fail + SVA count > 0 |
 | G11 timeout | `--target sim_hang --timeout-ms 15000` | never pass; timeout verdict |
 | G12 Elaboration Check | `python3 -m booley.flows.sim --work-dir /work --target sim_verilator --mode elab-only` | PASS (build half untouched) |

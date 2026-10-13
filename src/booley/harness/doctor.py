@@ -8,6 +8,7 @@ Flow dry-runs. ``--deep`` adds real first-Target EDA smoke checks.
 from __future__ import annotations
 
 import argparse
+import ast
 import contextlib
 import hashlib
 import json
@@ -5257,12 +5258,109 @@ def _cocotb_module_file(
 
 # A cocotb module can generate rendered test IDs at import time through legacy
 # ``TestFactory`` or cocotb 2's ``@cocotb.parametrize`` decorator. Those IDs
-# are invisible to a ``def <rendered-name>(`` grep. Recognizing either shape
-# lets Doctor say "not statically verifiable" instead of reporting every
-# generated name as missing.
-_COCOTB_GENERATED_TEST_RE = re.compile(
-    r"\b(?:TestFactory|generate_tests|cocotb\s*\.\s*parametrize)\b"
-)
+# are registered at import time. Static inspection must never execute a module.
+
+
+def _cocotb_symbol(node: ast.expr, aliases: dict[str, str]) -> str:
+    """Resolve source-visible import aliases for a decorator or factory call."""
+    if isinstance(node, ast.Call):
+        return _cocotb_symbol(node.func, aliases)
+    if isinstance(node, ast.Name):
+        return aliases.get(node.id, node.id)
+    if isinstance(node, ast.Attribute):
+        return f"{_cocotb_symbol(node.value, aliases)}.{node.attr}"
+    return ""
+
+
+def _cocotb_imports(tree: ast.Module) -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                aliases[alias.asname or alias.name.split(".")[0]] = (
+                    alias.name if alias.asname else alias.name.split(".")[0]
+                )
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            for alias in node.names:
+                aliases[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+    return aliases
+
+
+def _cocotb_source_names(tree: ast.Module) -> tuple[set[str], set[str], bool]:
+    """Identify plain test functions and known generating bases, conservatively."""
+    aliases = _cocotb_imports(tree)
+    plain: set[str] = set()
+    bases: set[str] = set()
+    generated = False
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        symbol = _cocotb_symbol(node.func, aliases)
+        if symbol.rsplit(".", 1)[-1] in {"TestFactory", "generate_tests", "parametrize"}:
+            generated = True
+        if symbol.rsplit(".", 1)[-1] == "TestFactory":
+            arguments = node.args[:1] + [
+                kw.value for kw in node.keywords if kw.arg == "test_function"
+            ]
+            bases.update(arg.id for arg in arguments if isinstance(arg, ast.Name))
+        if symbol == "cocotb.test" and any(kw.arg == "name" for kw in node.keywords):
+            generated = True
+    for node in tree.body:
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        decorators = {_cocotb_symbol(dec, aliases) for dec in node.decorator_list}
+        if "cocotb.parametrize" in decorators:
+            bases.add(node.name)
+        elif decorators == {"cocotb.test"}:
+            plain.add(node.name)
+    return plain - bases, bases, generated
+
+
+def _check_cocotb_test_names(
+    source: Path,
+    module: str,
+    target: str,
+    declared: list[str],
+    _pass: Check,
+    _warn: Fail,
+    _skip: Check,
+) -> None:
+    """Report only the name claims static source can support."""
+    try:
+        tree = ast.parse(source.read_text(encoding="utf-8", errors="replace"))
+        plain, bases, generated = _cocotb_source_names(tree)
+    except (OSError, SyntaxError, ValueError, RecursionError):
+        _skip(
+            f"cocotb Target '{target}': tests.toml names cannot be verified statically — "
+            f"{module}.py could not be read or parsed; check results.xml at run time"
+        )
+        return
+    if generated:
+        base_names = [name for name in declared if name in bases]
+        explanation = (
+            f"; generating function name(s): {', '.join(base_names)} — cocotb reports "
+            "rendered IDs, which may differ from these base names"
+            if base_names
+            else ""
+        )
+        _skip(
+            f"cocotb Target '{target}': {len(declared)} tests.toml name(s) "
+            f"cannot be verified statically: {', '.join(declared)} — {module}.py uses "
+            "factory/parameterized test generation or renamed test IDs; "
+            f"the names are checked against results.xml at run time{explanation}"
+        )
+        return
+    missing = [name for name in declared if name not in plain]
+    if missing:
+        _warning_sink(_warn, "cocotb.test-name-missing", subject=target)(
+            f"cocotb Target '{target}': tests.toml names not found as "
+            f"functions decorated with @cocotb.test in {module}.py: {', '.join(missing)} "
+            "(static, advisory)",
+            "check the names against the @cocotb.test functions — a "
+            "mismatch surfaces at run time as inconclusive",
+        )
+    else:
+        _pass(f"cocotb Target '{target}' tests.toml names all present in {module}.py")
 
 
 def _check_cocotb_targets(
@@ -5281,14 +5379,9 @@ def _check_cocotb_targets(
       contradiction (selection is the ``COCOTB_TEST_FILTER`` env var) — FAIL;
     * the module file should exist in the Target's filesets and its fileset
       be tagged ``tb`` (Source Isolation) — advisory WARN;
-    * declared test names should appear as functions in the module file
-      (grep-level; the authoritative check stays reactive via results.xml,
-      decision 7) — advisory WARN, but SKIPped when the module builds its
-      tests with a factory (see :data:`_COCOTB_FACTORY_RE`): a
-      ``TestFactory``-generated name exists only at import time, so a
-      `def <name>(` grep cannot see it and every such name would read as
-      missing (14/14 on taxi). Not verifiable statically ⇒ report it as such
-      rather than as a finding.
+    * plain test functions support advisory static name checks. Generating
+      modules defer every registered name, including generating base names,
+      to results.xml at run time (decision 7).
     """
     cocotb_refs = {n: r for n, r in refs.items() if r.cocotb_module}
     if not cocotb_refs:
@@ -5329,33 +5422,7 @@ def _check_cocotb_targets(
         _pass(f"cocotb Target '{name}' module file present ({module}.py)")
         declared = section.get("tests") or []
         if declared:
-            try:
-                text = source.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                text = ""
-            missing = [t for t in declared if not re.search(rf"def\s+{re.escape(t)}\s*\(", text)]
-            if missing and _COCOTB_GENERATED_TEST_RE.search(text):
-                # Generated names are registered at import time, not authored
-                # as `def <name>(` — the grep is structurally blind to them.
-                # Say the check cannot run; do not fault the project.
-                _skip(
-                    f"cocotb Target '{name}': {len(missing)} tests.toml name(s) "
-                    f"cannot be verified statically — {module}.py uses factory/"
-                    "parameterized test generation; the names are checked against "
-                    "results.xml at run time (ADR 0034 dec 7)"
-                )
-            elif missing:
-                _warning_sink(_warn, "cocotb.test-name-missing", subject=name)(
-                    f"cocotb Target '{name}': tests.toml names not found as "
-                    f"functions in {module}.py: {', '.join(missing)} "
-                    "(grep-level, advisory)",
-                    "check the names against the @cocotb.test functions — a "
-                    "mismatch surfaces at run time as inconclusive",
-                )
-            else:
-                _pass(
-                    f"cocotb Target '{name}' tests.toml names all present in {module}.py",
-                )
+            _check_cocotb_test_names(source, module, name, declared, _pass, _warn, _skip)
 
 
 #: Native headers whose development package the base sandbox does NOT carry,

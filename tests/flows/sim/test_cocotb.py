@@ -322,12 +322,37 @@ class TestCocotbVerdictMatrix:
         with patch("booley.flows.sim.flow._get_test_names", return_value=dict(_TESTS)):
             result = _run_cocotb(tmp_path, flow, out)
         assert result.exit_code == EXIT_FAILURE
-        assert "no matching @cocotb.test" in result.report_text
+        assert "no matching test ID" in result.report_text
+        assert '"test_reset", "test_count"' in result.report_text
         report = json.loads(
             (tmp_path / "reports" / "sim/1/targets/ccfg/simulation.json").read_text(),
         )
         by_name = {t["name"]: t for t in report["tests"]}
         assert by_name["test_fail_assert"]["verdict"] == "inconclusive"
+        assert '"test_reset", "test_count"' in by_name["test_fail_assert"]["error_tail"]
+
+    def test_zero_match_compact_filter_reports_rendered_ids(self, tmp_path):
+        flow = _make_cocotb_flow(tmp_path, extra_args=["--test", "test_reset"])
+        names = ["test_reset/ifg=12", "test_reset/ifg=0"]
+        results = cr.CocotbResults(
+            state=cr.STATE_OK,
+            tests=tuple(cr.CocotbTest(name, "test_counter", "skipped") for name in names),
+        )
+        out = (
+            cr.format_results_line(results, selected=["test_reset"], verbosity="compact")
+            + "\n"
+            + format_summary(False, 0, inconclusive=True)
+            + "\n"
+        )
+        with patch("booley.flows.sim.flow._get_test_names", return_value=dict(_TESTS)):
+            result = _run_cocotb(tmp_path, flow, out, returncode=1)
+        assert result.exit_code == EXIT_FAILURE
+        assert "INCONCLUSIVE" in result.report_text
+        assert all(name in result.report_text for name in names)
+        report = json.loads((tmp_path / "reports/sim/1/targets/ccfg/simulation.json").read_text())
+        entry = next(t for t in report["tests"] if t["name"] == "test_reset")
+        assert entry["verdict"] == "inconclusive"
+        assert all(name in entry["error_tail"] for name in names)
 
     def test_extra_unexpected_xml_test_is_logged_not_verdict_bearing(
         self,

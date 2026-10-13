@@ -225,7 +225,9 @@ class TestReconcile:
         # reaches the XML — reactive validation, actionable wording.
         ((_name, verdict, detail),) = cr.reconcile(["test_typo"], self._ok())
         assert verdict == cr.VERDICT_INCONCLUSIVE
-        assert "no matching @cocotb.test" in detail
+        assert "no matching test ID" in detail
+        assert "test_typo" in detail
+        assert all(name in detail for name in ("test_reset", "test_fail", "test_skipped"))
 
     def test_selected_but_skipped_is_inconclusive(self):
         # An explicitly skipped test is inconclusive when selected by Booley.
@@ -294,6 +296,100 @@ class TestFindImportFailure:
 
 
 class TestResultsLineRoundTrip:
+    @pytest.mark.parametrize("retained", [(), (cr.CocotbTest("plain", "m", "pass"),)])
+    def test_absent_detail_is_identical_through_full_and_compact_transport(self, retained):
+        res = cr.CocotbResults(
+            state=cr.STATE_OK,
+            tests=(
+                cr.CocotbTest("run_test/ifg=12", "m", "skipped"),
+                *retained,
+                cr.CocotbTest("run_test/ifg=0", "m", "skipped"),
+                cr.CocotbTest("run_test/ifg=12", "other", "skipped"),
+            ),
+        )
+        selected = ["run_test"]
+        compact = cr.parse_results_line(
+            cr.format_results_line(res, selected=selected, verbosity="compact")
+        )
+        full = cr.parse_results_line(cr.format_results_line(res))
+        assert compact is not None and full is not None
+        assert cr.reconcile(selected, compact) == cr.reconcile(selected, full)
+        detail = cr.reconcile(selected, compact)[0][2]
+        assert detail.count('"run_test/ifg=12"') == 1
+        assert '"run_test/ifg=0"' in detail
+        assert detail.index("ifg=12") < detail.index("ifg=0")
+        repeated = cr.parse_results_line(
+            cr.format_results_line(compact, selected=selected, verbosity="compact")
+        )
+        assert repeated == compact
+
+    def test_legacy_compact_transport_discloses_missing_candidate_names(self):
+        payload = '{"state":"ok","tests":[],"skipped_unselected":2}'
+        parsed = cr.parse_results_line(cr.COCOTB_RESULTS_PREFIX + payload)
+        assert parsed is not None
+        detail = cr.reconcile(["run_test"], parsed)[0][2]
+        assert "names were not transported" in detail
+        assert "cocotb_results.json" in detail
+        repeated = cr.parse_results_line(
+            cr.format_results_line(parsed, selected=["run_test"], verbosity="compact")
+        )
+        assert repeated is not None
+        assert cr.reconcile(["run_test"], repeated)[0][2] == detail
+
+    def test_diagnostic_names_cannot_fabricate_a_verdict(self):
+        res = cr.CocotbResults(state=cr.STATE_OK, reported_names=("test_reset",))
+        assert cr.reconcile(["test_reset"], res)[0][1] == cr.VERDICT_INCONCLUSIVE
+
+    def test_long_single_candidate_is_bounded_with_full_artifact_pointer(self):
+        res = cr.CocotbResults(
+            state=cr.STATE_OK, tests=(cr.CocotbTest("界" * 4000, "m", "skipped"),)
+        )
+        detail = cr.reconcile(["a" * 4000], res)[0][2]
+        assert len(detail) <= 1200
+        assert "long IDs abbreviated" in detail
+        assert "cocotb_results.json" in detail
+
+    @pytest.mark.parametrize("names", [None, "test", {}, [1], ["test", False]])
+    def test_invalid_reported_names_reject_transport(self, names):
+        import json
+
+        payload = {"state": "ok", "tests": [], "reported_names": names}
+        assert cr.parse_results_line(cr.COCOTB_RESULTS_PREFIX + json.dumps(payload)) is None
+
+    def test_large_candidate_detail_is_safe_for_campaign_evidence(self):
+        import json
+
+        from booley.flows.sim.campaign.codec import MAX_DETAIL_BYTES
+        from booley.flows.sim.campaign.store import _validate_cocotb_source
+
+        res = cr.CocotbResults(
+            state=cr.STATE_OK,
+            tests=tuple(
+                cr.CocotbTest(f"test_{i}/value=界\n\x1b[31m", "m", "skipped") for i in range(200)
+            ),
+        )
+        compact = cr.parse_results_line(
+            cr.format_results_line(res, selected=["absent"], verbosity="compact")
+        )
+        assert compact is not None
+        source = [
+            {"test": n, "verdict": v, "detail": d} for n, v, d in cr.reconcile(["absent"], res)
+        ]
+        detail = cr.reconcile(["absent"], compact)[0][2]
+        assert len(detail) <= 1200
+        assert len(json.dumps({"reason": detail}).encode()) < MAX_DETAIL_BYTES
+        assert "\n" not in detail and "\x1b" not in detail
+        assert "more" in detail and "cocotb_results.json" in detail
+        observations = (
+            {
+                "test": "absent",
+                "execution": "completed",
+                "functional": "inconclusive",
+                "detail": {"reason": detail[-1536:]},
+            },
+        )
+        _validate_cocotb_source(source, observations)
+
     def test_round_trip_preserves_everything(self):
         res = cr.parse_results_xml(_RESULTS_XML)
         line = cr.format_results_line(res)

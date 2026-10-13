@@ -128,9 +128,11 @@ Python** — the harness owns the trace lifecycle.
 
 ## 7. tests.toml Registration
 
-Every `@cocotb.test()` meant to gate a criterion must be listed by exact
-function name; a listed name with no matching function comes back
-**inconclusive** ("no matching @cocotb.test") rather than passing.
+Every `@cocotb.test()` meant to gate a criterion must be listed by its exact
+reported ID (the function name for a plain test). A listed ID absent from the
+results comes back **inconclusive** ("no matching test ID"), with reported IDs
+to help correct the registry. Generated tests use rendered IDs, and Doctor
+defers their static name check to the run-time results.
 
 ```toml
 [sim_cocotb]                 # the .core Target name

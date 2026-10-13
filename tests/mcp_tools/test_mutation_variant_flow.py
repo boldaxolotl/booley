@@ -227,6 +227,26 @@ def test_cocotb_all_pass_does_not_fabricate_a_killing_suite(tmp_path: Path) -> N
     assert verdict.first_killing_test == ""
 
 
+def test_zero_match_compact_cocotb_suite_remains_inconclusive(tmp_path: Path) -> None:
+    from booley.flows.sim.backends import cocotb_results as cr
+
+    endpoint = _endpoint(tmp_path)
+    results = cr.CocotbResults(
+        state=cr.STATE_OK,
+        tests=(cr.CocotbTest("run_test/ifg=12", "tb", "skipped"),),
+    )
+    output = cr.format_results_line(results, selected=["run_test"], verbosity="compact")
+    runs = [
+        MutationTestRun(
+            "<cocotb-suite>", process=_process(1), output=output, requires_cocotb_results=True
+        )
+    ]
+    verdict = endpoint._classify_variant_suite(runs)
+    assert verdict.detected is False
+    assert verdict.first_killing_test == ""
+    assert "without a failing test" in verdict.inconclusive_reason
+
+
 def test_auto_budget_uses_source_size_without_hdl_features(tmp_path: Path) -> None:
     source = tmp_path / "rtl/dut.sv"
     source.parent.mkdir(parents=True)
