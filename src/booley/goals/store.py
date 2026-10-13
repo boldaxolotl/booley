@@ -59,6 +59,7 @@ from booley.goals.paths import (
     validate_goal_id,
     worktree_lock_file,
 )
+from booley.goals.presentation import goal_presentation
 from booley.goals.test_run_resolution import resolution_update_violation
 from booley.runtime.atomic_files import (
     WriteOnceConflictError,
@@ -643,9 +644,10 @@ def frozen_run_violation(current: GoalRecord, record: GoalRecord) -> str:
         if before is None or goal not in record.goals:
             continue
         after = record.test_run_resolution(key)
+        name = goal_presentation(goal.spec).text
         if after is None:
-            return f"the frozen Test Runs of Goal {key} cannot be removed"
-        violation = resolution_update_violation(key, before, after)
+            return f"the frozen Test Runs of Goal {name} cannot be removed"
+        violation = resolution_update_violation(name, before, after)
         if violation:
             return violation
     return ""

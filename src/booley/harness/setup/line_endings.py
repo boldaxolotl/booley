@@ -12,7 +12,7 @@ import os
 import stat
 import subprocess
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from enum import StrEnum
@@ -74,6 +74,7 @@ class LineEndingActionKind(StrEnum):
     NORMALIZE_FILES = "normalize-files"
     REFRESH_INDEX = "refresh-index"
     PUBLISH_ATTRIBUTES = "publish-attributes"
+    MIGRATE_ATTRIBUTES = "migrate-attributes"
 
 
 class LineEndingActionState(StrEnum):
@@ -195,6 +196,16 @@ class _IndexPathState:
 
 
 @dataclass(frozen=True)
+class _AttributesMigration:
+    """Replayable shared default and selected root snapshots for recoverable opt-out."""
+
+    source: Path
+    source_snapshot: tuple[_FileIdentity | None, bytes]
+    root_snapshot: tuple[_FileIdentity | None, bytes]
+    root_owned: bool
+
+
+@dataclass(frozen=True)
 class _RepositoryPlan:
     """Private guarded transformation plan for one repository."""
 
@@ -212,6 +223,7 @@ class _RepositoryPlan:
     target: AttributesTarget
     policy_inputs: dict[str, tuple[_FileIdentity | None, bytes]]
     local_missing: bool
+    migration: _AttributesMigration | None
 
 
 @dataclass(frozen=True)
@@ -410,19 +422,15 @@ def read_autocrlf_setting(project_root: Path, *, local: bool = False) -> Autocrl
 
 
 def _eol_policy_is_user_owned(project_root: Path) -> bool:
-    """Does the root ``.gitattributes`` already set an all-files eol policy?
-
-    A ``*``-pattern line carrying ``text``/``-text``/``eol=`` means the project
-    has stated its own whole-tree policy. Whatever it says, it is a deliberate
-    choice and init must not second-guess it — we neither add our rule nor
-    argue with theirs.
-    """
-    path = project_root / ".gitattributes"
+    """Whether the root attributes file states a deliberate whole-tree policy."""
     try:
-        lines = path.read_text(encoding="utf-8", errors="surrogateescape").splitlines()
+        return _root_policy_owned((project_root / ".gitattributes").read_bytes())
     except OSError:
         return False
-    for line in lines:
+
+
+def _root_policy_owned(content: bytes) -> bool:
+    for line in content.decode("utf-8", errors="surrogateescape").splitlines():
         fields = line.split("#", 1)[0].split()
         if len(fields) < 2 or fields[0] != "*":
             continue
@@ -1231,11 +1239,18 @@ def _effective_user_inputs(root: Path) -> dict[str, tuple[_FileIdentity | None, 
 
 def _nonlocal_attributes_plan(repository: LineEndingRepository, target: AttributesTarget):
     observations: list[LineEndingObservation] = []
+    migration = None
+    error = None
+    owned = _eol_policy_is_user_owned(repository.root)
     if repository.role == "project-checkout":
         try:
             common = _common_attributes(repository.root)
-            _, content = _policy_content(common)
-            if has_managed_attributes(content):
+            snapshot = _policy_content(common)
+            if has_managed_attributes(snapshot[1], replayable=True):
+                root_snapshot = _policy_content(target.path)
+                owned = _root_policy_owned(root_snapshot[1])
+                migration = _AttributesMigration(common, snapshot, root_snapshot, owned)
+            elif has_managed_attributes(snapshot[1]):
                 observations.append(
                     _observation(
                         LineEndingObservationCode.LOCAL_POLICY_CONFLICT,
@@ -1243,14 +1258,8 @@ def _nonlocal_attributes_plan(repository: LineEndingRepository, target: Attribut
                     )
                 )
         except (OSError, ValueError, subprocess.SubprocessError) as exc:
-            # This read-only migration check must not block the existing root writer.
-            observations.append(
-                _observation(
-                    LineEndingObservationCode.UPSTREAM_POLICY,
-                    detail=f"could not inspect repository-local attributes for Stealth opt-out: {exc}; root policy behavior is unchanged",
-                )
-            )
-    return target, {}, _eol_policy_is_user_owned(repository.root), False, observations, None
+            error = f"attributes policy inspection failed: {exc}"
+    return target, {}, owned, False, observations, error, migration
 
 
 def _attributes_plan(repository: LineEndingRepository, stealth: bool):
@@ -1287,7 +1296,7 @@ def _attributes_plan(repository: LineEndingRepository, stealth: bool):
         )
         inputs[str(common)] = (common_identity, common_content)
         owned = upstream or local_policy_owned(common_content)
-        return target, inputs, owned, not owned, observations, None
+        return target, inputs, owned, not owned, observations, None, None
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         return (
             target,
@@ -1296,6 +1305,7 @@ def _attributes_plan(repository: LineEndingRepository, stealth: bool):
             local,
             observations,
             f"attributes policy inspection failed: {exc}",
+            None,
         )
 
 
@@ -1443,13 +1453,11 @@ def _plan_repository(
         clean = baseline_clean
     else:
         clean = _worktree_is_clean(repository.root)
-    target, inputs, owns_policy, local_missing, policy_observations, attributes_error = (
-        _attributes_plan(repository, stealth)
+    target, inputs, owned, missing, policy_obs, error, migration = _attributes_plan(
+        repository, stealth
     )
-    observations.extend(policy_observations)
-    attributes, attributes_error = _observe_attributes_snapshot(
-        target, attributes_error, observations
-    )
+    observations.extend(policy_obs)
+    attributes, error = _observe_attributes_snapshot(target, error, observations)
     return (
         _RepositoryPlan(
             repository=repository,
@@ -1461,11 +1469,12 @@ def _plan_repository(
             clean=clean,
             candidate_error=candidate_error,
             attributes=attributes,
-            attributes_error=attributes_error,
-            owns_attributes_policy=owns_policy,
+            attributes_error=error,
+            owns_attributes_policy=owned,
             target=target,
             policy_inputs=inputs,
-            local_missing=local_missing,
+            local_missing=missing,
+            migration=migration,
         ),
         tuple(observations),
     )
@@ -1511,7 +1520,9 @@ def _planned_actions(plan: _RepositoryPlan) -> tuple[LineEndingActionResult, ...
     needs_policy = bool(plan.crlf_paths) or any(
         action.kind is LineEndingActionKind.PIN_AUTOCRLF for action in actions
     )
-    if (needs_policy or plan.local_missing) and not plan.owns_attributes_policy:
+    if plan.migration:
+        actions.append(_migration_action(plan, LineEndingActionState.PLANNED))
+    elif (needs_policy or plan.local_missing) and not plan.owns_attributes_policy:
         state = (
             LineEndingActionState.REFUSED
             if plan.attributes_error
@@ -1638,7 +1649,9 @@ def _attributes_replacement(path: Path) -> bytes:
     return GITATTRIBUTES_RULE.encode() + b"\n" + existing
 
 
-def _create_attributes(path: Path, content: bytes) -> str | None:
+def _create_attributes(
+    path: Path, content: bytes, validate: Callable[[], str | None] | None = None
+) -> str | None:
     staged, error = _stage_atomic_content(path, content, mode=0o644)
     if error is not None:
         return error
@@ -1647,6 +1660,8 @@ def _create_attributes(path: Path, content: bytes) -> str | None:
         current, error = _optional_file_identity(path)
         if error is not None or current is not None:
             return error or f"{path}: attributes changed during line-ending repair"
+        if validate and (error := validate()):
+            return error
         os.link(staged, path)
     except FileExistsError:
         return f"{path}: attributes changed during line-ending repair"
@@ -1658,7 +1673,12 @@ def _create_attributes(path: Path, content: bytes) -> str | None:
     return None
 
 
-def _update_attributes(path: Path, expected: _FileIdentity, content: bytes) -> str | None:
+def _update_attributes(
+    path: Path,
+    expected: _FileIdentity,
+    content: bytes,
+    validate: Callable[[], str | None] | None = None,
+) -> str | None:
     staged, error = _stage_atomic_content(path, content, mode=expected.mode)
     if error is not None:
         return error
@@ -1667,6 +1687,8 @@ def _update_attributes(path: Path, expected: _FileIdentity, content: bytes) -> s
         current, error = _optional_file_identity(path)
         if error is not None or current != expected:
             return error or f"{path}: attributes changed during line-ending repair"
+        if validate and (error := validate()):
+            return error
         staged.replace(path)
     except OSError as exc:
         return f"could not atomically publish {path}: {exc}"
@@ -1676,8 +1698,18 @@ def _update_attributes(path: Path, expected: _FileIdentity, content: bytes) -> s
     return None
 
 
+def _write_attributes(path, expected, content, validate):
+    return (
+        _update_attributes(path, expected, content, validate)
+        if expected is not None
+        else _create_attributes(path, content, validate)
+    )
+
+
 def _publish_attributes(
-    project_root: Path, expected: _FileIdentity | None
+    project_root: Path,
+    expected: _FileIdentity | None,
+    validate: Callable[[], str | None] | None = None,
 ) -> LineEndingActionResult:
     path = project_root / ".gitattributes"
     current, error = _optional_file_identity(path)
@@ -1698,13 +1730,114 @@ def _publish_attributes(
     except OSError as exc:
         error = f"could not read .gitattributes: {exc}"
     else:
-        error = (
-            _update_attributes(path, expected, content)
-            if expected is not None
-            else _create_attributes(path, content)
-        )
+        error = _write_attributes(path, expected, content, validate)
     state = LineEndingActionState.COMPLETED if error is None else LineEndingActionState.FAILED
     return _action(LineEndingActionKind.PUBLISH_ATTRIBUTES, state, detail=error)
+
+
+def _migration_action(
+    plan: _RepositoryPlan, state: LineEndingActionState, error: str | None = None
+) -> LineEndingActionResult:
+    migration = plan.migration
+    assert migration is not None
+    destination = (
+        "preserving existing root policy" if migration.root_owned else "publishing root default"
+    )
+    return _action(
+        LineEndingActionKind.MIGRATE_ATTRIBUTES,
+        state,
+        detail=error or f"{migration.source} -> {plan.target.path} ({destination})",
+        target=plan.target,
+    )
+
+
+def _migration_revalidation(
+    plan: _RepositoryPlan, root_snapshot: tuple[_FileIdentity | None, bytes]
+) -> str | None:
+    migration = plan.migration
+    assert migration is not None
+    try:
+        if _common_attributes(plan.repository.root) != migration.source:
+            return "Git common attributes destination changed during line-ending repair"
+        if _policy_content(migration.source) != migration.source_snapshot:
+            return f"{migration.source}: attributes changed during line-ending repair"
+        if _policy_content(plan.target.path) != root_snapshot:
+            return f"{plan.target.path}: attributes changed during line-ending repair"
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        return f"could not revalidate attributes migration: {exc}"
+    return None
+
+
+def _raw_attribute_lines(content: bytes):
+    parts = content.split(b"\n")
+    return [line + b"\n" for line in parts[:-1]] + [parts[-1]]
+
+
+def _remove_migrated_default(plan: _RepositoryPlan, root_snapshot) -> str | None:
+    migration = plan.migration
+    assert migration is not None
+    identity, content = migration.source_snapshot
+    assert identity is not None
+    # Split only at Git's newline boundary, retaining every other byte verbatim.
+    remaining = b"".join(
+        line
+        for line in _raw_attribute_lines(content)
+        if line.strip(b" \t\r\n") != GITATTRIBUTES_RULE.encode()
+    )
+    error = _migration_revalidation(plan, root_snapshot)
+    if error:
+        return error
+    if remaining:
+        return _update_attributes(
+            migration.source,
+            identity,
+            remaining,
+            lambda: _migration_revalidation(plan, root_snapshot),
+        )
+    try:
+        migration.source.unlink()
+    except OSError as exc:
+        return f"could not remove {migration.source}: {exc}"
+    return None
+
+
+def _migrate_attributes(
+    plan: _RepositoryPlan, normalization: _NormalizationResult | None
+) -> LineEndingActionResult:
+    migration = plan.migration
+    assert migration is not None
+    root_snapshot = migration.root_snapshot
+    if normalization and ".gitattributes" in normalization.file_snapshots:
+        root_snapshot = (
+            normalization.file_snapshots[".gitattributes"],
+            root_snapshot[1].replace(b"\r\n", b"\n"),
+        )
+    error = _migration_revalidation(plan, root_snapshot)
+    if error:
+        return _migration_action(plan, LineEndingActionState.REFUSED, error)
+    if not migration.root_owned:
+        publication = _publish_attributes(
+            plan.repository.root,
+            root_snapshot[0],
+            lambda: _migration_revalidation(plan, root_snapshot),
+        )
+        if publication.state is not LineEndingActionState.COMPLETED:
+            return _migration_action(plan, publication.state, publication.detail)
+        try:
+            published = _policy_content(plan.target.path)
+            expected_content = GITATTRIBUTES_RULE.encode() + b"\n" + root_snapshot[1]
+            if root_snapshot[1] and not root_snapshot[1].endswith(b"\n"):
+                expected_content += b"\n"
+            if published[1] != expected_content:
+                return _migration_action(
+                    plan, LineEndingActionState.REFUSED, "root policy changed after publication"
+                )
+            root_snapshot = published
+        except (OSError, ValueError) as exc:
+            return _migration_action(plan, LineEndingActionState.FAILED, str(exc))
+    error = _remove_migrated_default(plan, root_snapshot)
+    state = LineEndingActionState.FAILED if error else LineEndingActionState.COMPLETED
+    return _migration_action(plan, state, error)
 
 
 def _repair_actions(plan: _RepositoryPlan) -> tuple[LineEndingActionResult, ...]:
@@ -1718,7 +1851,9 @@ def _repair_actions(plan: _RepositoryPlan) -> tuple[LineEndingActionResult, ...]
         actions.append(action)
     elif plan.phantom_paths:
         actions.append(_refresh_action(plan))
-    if (plan.crlf_paths or needs_pin or plan.local_missing) and not plan.owns_attributes_policy:
+    if plan.migration:
+        actions.append(_migrate_attributes(plan, normalization))
+    elif (plan.crlf_paths or needs_pin or plan.local_missing) and not plan.owns_attributes_policy:
         expected = plan.attributes
         if (
             not plan.target.local

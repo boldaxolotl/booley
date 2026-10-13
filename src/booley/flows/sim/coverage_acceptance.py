@@ -115,8 +115,9 @@ def _apply_goal_campaign(
     runs, so a matching failure is never left out. A coverage Goal's change
     carries the coverage only when the campaign ran exactly its frozen Test
     Runs (:meth:`GoalTestRuns.measured_by`): coverage merged over other runs
-    measures something else. A Goal without a graded matching run gets no
-    change: for it the campaign is diagnostic.
+    measures something else. Its verdict is the coverage floors' alone,
+    whether those runs passed or failed. A Goal without a graded matching
+    run gets no change: for it the campaign is diagnostic.
     """
     rows = cast("list[dict[str, object]]", common["test_runs"])
     coverage_keys = {plan.criterion_key, *shadow.flow_key_aliases.get(plan.criterion_key, [])}

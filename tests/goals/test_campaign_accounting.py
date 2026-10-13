@@ -155,6 +155,40 @@ def test_failure_of_a_killed_campaign_is_sticky_for_the_next_campaign(
     assert (registration.settled, registration.blocked) == (False, "")
 
 
+def test_a_coverage_goal_is_outside_campaign_accounting(layout: SimpleNamespace) -> None:
+    """No result a campaign left behind can change a Goal judged by coverage floors alone."""
+    goals = [
+        {"family": "SIM", "target": "top"},
+        {"family": "COVERAGE", "target": "top", "tests": "all", "metrics": {"line": 80}},
+    ]
+    mode = SimpleNamespace(**vars(layout))
+    mode.record = enter_goals(layout, goals, tests_toml=TWO_TESTS)
+    (coverage_key,) = [key for key in mode.record.test_run_resolutions if key != SIM_KEY]
+    campaign = _Campaign(mode)
+    _record(mode, "run-0", [run_row(A), run_row(B)], key=coverage_key)  # measured
+    measured = _status(mode, coverage_key)
+    assert measured.status != "unmet"
+
+    campaign.start("run-1")
+    assert set(campaign.registration().stamps) == {SIM_KEY}
+    # Running, or unreadable: the simulation Goal waits for it, the coverage Goal does not.
+    campaign.error = CampaignBusyError("running")
+    _record(mode, "run-2", [run_row(A), run_row(B)])
+    assert _status(mode).reason.startswith(REASON_UNACCOUNTED)
+    assert _status(mode, coverage_key) == measured
+    paths = record_paths(mode.control, mode.record.id)
+    broken = paths.logs_dir / "acceptance" / "campaigns" / ("f" * 64 + ".json")
+    broken.write_bytes(b"{torn")
+    assert _status(mode, coverage_key) == measured
+    broken.unlink()
+    # Killed with a failing frozen run: adopted for the simulation Goal only.
+    campaign.error = None
+    campaign.rows = [run_row(A, "fail")]
+    _account(mode)
+    assert _status(mode).reason.startswith("goal-test-run-failed")
+    assert _status(mode, coverage_key) == measured
+
+
 def test_a_campaign_read_before_it_started_is_read_again_after_it_failed(
     two: SimpleNamespace, campaign: _Campaign
 ) -> None:

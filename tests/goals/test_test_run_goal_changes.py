@@ -252,8 +252,10 @@ def test_an_approved_change_cannot_touch_another_goals_frozen_runs(
     monkeypatch.setattr(apply, "refreeze_changed_goal", losing_a_sibling)
     arguments = {"kind": "add", "after": _goal("smoke@8"), "rationale": "one more"}
     view = create_proposal(env, layout.record.id, arguments, session_key="test-session")
-    with pytest.raises(ProposalError, match="frozen Test Runs of Goal sim_pass_top cannot change"):
+    refusal = r"frozen Test Runs of Goal SIM:top \(all selected tests pass\) cannot change"
+    with pytest.raises(ProposalError, match=refusal) as refused:
         approve(layout, env, view.proposal.id)
+    assert SIM_KEY not in str(refused.value)  # the public Goal name, not its key
 
 
 def test_a_transaction_prepared_for_a_decision_that_was_never_saved_is_collected(

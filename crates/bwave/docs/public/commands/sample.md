@@ -95,7 +95,7 @@ bwave sample sim.fst \
 Capture a composed Virtual Signal without printing its helper:
 
 ```bash
-bwave sample sim.fst "*clk" rising \
+bwave sample sim.fst "*clk" "'h1" \
     --virtual "valid = *req & *ready" \
     --virtual "stalled = valid & *busy" \
     -s "stalled"

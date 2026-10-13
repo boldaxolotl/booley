@@ -19,6 +19,8 @@ pub struct VcdHeader {
     pub id_to_indices: HashMap<String, Vec<usize>>,
     /// Conversion factor: ticks * ticks_to_ns = nanoseconds
     pub ticks_to_ns: f64,
+    /// Authoritative decimal seconds exponent for exact input conversion.
+    pub timescale_exponent: Option<i8>,
     /// Raw timescale string (e.g. "1ns")
     pub timescale_str: String,
     /// Absolute input byte offset immediately after `$enddefinitions $end`.
@@ -135,6 +137,7 @@ pub fn try_parse_header(reader: &mut impl BufRead) -> Result<VcdHeader, VcdParse
     let mut id_to_indices: HashMap<String, Vec<usize>> = HashMap::new();
     let mut scope_stack: Vec<String> = Vec::new();
     let mut ticks_to_ns: f64 = 1.0;
+    let mut timescale_exponent = Some(-9);
     let mut timescale_str = String::from("1ns");
 
     let mut line_buf = String::new();
@@ -179,6 +182,7 @@ pub fn try_parse_header(reader: &mut impl BufRead) -> Result<VcdHeader, VcdParse
                         signals,
                         id_to_indices,
                         ticks_to_ns,
+                        timescale_exponent,
                         timescale_str,
                         body_offset: byte_offset,
                     });
@@ -228,6 +232,7 @@ pub fn try_parse_header(reader: &mut impl BufRead) -> Result<VcdHeader, VcdParse
                     let ts_text = token.trim_start_matches("$timescale").trim();
                     timescale_str = ts_text.to_string();
                     ticks_to_ns = parse_timescale(ts_text);
+                    timescale_exponent = Some(timescale_to_exponent(ts_text));
                 }
             }
             continue;
@@ -239,6 +244,7 @@ pub fn try_parse_header(reader: &mut impl BufRead) -> Result<VcdHeader, VcdParse
         signals,
         id_to_indices,
         ticks_to_ns,
+        timescale_exponent,
         timescale_str,
         body_offset: byte_offset,
     })
@@ -251,6 +257,30 @@ pub fn try_parse_header(reader: &mut impl BufRead) -> Result<VcdHeader, VcdParse
 /// concise while still failing loudly instead of treating an error as EOF.
 pub fn parse_header(reader: &mut impl BufRead) -> VcdHeader {
     try_parse_header(reader).expect("failed to read VCD header")
+}
+
+/// Normalize permissively using the historical FST import policy.
+/// "10ps" -> -11; unsupported factors or units use 1 or ns respectively.
+pub(crate) fn timescale_to_exponent(ts: &str) -> i8 {
+    let ts = ts.trim();
+    let digits: String = ts.chars().take_while(|c| c.is_ascii_digit()).collect();
+    let unit = ts[digits.len()..].trim();
+    let factor_exp: i8 = match digits.as_str() {
+        "1" | "" => 0,
+        "10" => 1,
+        "100" => 2,
+        _ => 0,
+    };
+    let unit_exp: i8 = match unit {
+        "s" => 0,
+        "ms" => -3,
+        "us" => -6,
+        "ns" => -9,
+        "ps" => -12,
+        "fs" => -15,
+        _ => -9,
+    };
+    unit_exp + factor_exp
 }
 
 /// Parse timescale string to ns conversion factor.
@@ -1044,5 +1074,33 @@ $end\n\
             watched_events.len() >= 2,
             "watched signal should have events before and after dumpon"
         );
+    }
+}
+
+#[cfg(test)]
+mod exact_time_tests {
+    use super::*;
+    #[test]
+    fn time_token_exact_timescale_normalization() {
+        for (text, exponent) in [
+            ("1ps", -12),
+            ("10ps", -11),
+            ("100ps", -10),
+            ("1ns", -9),
+            ("10 ns", -8),
+            ("100ns", -7),
+            ("1us", -6),
+            ("1ms", -3),
+            ("1s", 0),
+            ("1fs", -15),
+            ("2ns", -9),
+            ("10bad", -8),
+        ] {
+            let source = format!("$timescale {text} $end\n$enddefinitions $end\n");
+            let header = parse_header(&mut std::io::Cursor::new(source));
+            assert_eq!(header.timescale_exponent, Some(exponent), "{text}");
+        }
+        let header = parse_header(&mut std::io::Cursor::new("$enddefinitions $end\n"));
+        assert_eq!(header.timescale_exponent, Some(-9));
     }
 }
