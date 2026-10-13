@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from booley.core.boundary import require_dict, require_int, require_list, require_str_value
+from booley.evidence.test_run_ledger import LEDGER_DETAIL_KEY, LedgerFormatError, decode_ledger
 
 
 class GoalPackageError(ValueError):
@@ -76,7 +77,7 @@ def _validate_facts(facts: dict[str, Any]) -> None:
         *arrays,
     }
     if (
-        set(facts) not in (fields, fields | {"earlier_attempts"})
+        not fields <= set(facts) <= fields | {"earlier_attempts", "unsettled_campaigns"}
         or facts["purpose"] != "booley.goal-completion/v1"
     ):
         raise ValueError("artifact is not a complete Goal completion package")
@@ -143,10 +144,40 @@ def _validate_goal_row(row: dict[str, Any]) -> None:
     originals = require_list(row["original_observations"], field="original_observations")
     for original in originals:
         require_dict(original, field="original observation")
-    if originals:
+    if originals and LEDGER_DETAIL_KEY not in detail:
         require_dict(detail.get("goal_derivation"), field="goal_derivation")
     if row["selected_transaction"] is not None:
         require_dict(row["selected_transaction"], field="selected_transaction")
+
+
+def _test_run_lines(detail: dict[str, Any]) -> list[str]:
+    """The frozen Test Runs a Goal was judged by, with the outcome of each (ADR 0072)."""
+    try:
+        ledger = decode_ledger(detail)
+    except LedgerFormatError as exc:
+        return [f"  Test Runs: the recorded outcomes cannot be read ({exc})"]
+    if ledger is None:
+        return []
+    shown = ", ".join(f"{run['name']} {run['outcome']}" for run in ledger.runs)
+    return [f"  Test Runs: {shown}"]
+
+
+def _deferred_resolution_lines(record: dict[str, Any], names: dict[str, str]) -> list[str]:
+    """Every Test Run that was frozen after Goal Mode entry, by Goal (ADR 0072).
+
+    *names* gives the public name of each Goal key.
+    """
+    lines: list[str] = []
+    resolutions = require_dict(record.get("test_run_resolutions") or {}, field="resolutions")
+    for key in sorted(resolutions):
+        resolution = require_dict(resolutions[key], field="resolution")
+        for raw in require_list(resolution.get("runs"), field="resolution runs"):
+            run = require_dict(raw, field="resolution run")
+            if run.get("resolved_by") == "deferred":
+                lines.append(
+                    f"- {names.get(key, _unavailable_goal(key))}: {run['name']} (slot {run['slot']}, resolved {run['resolved_at']})"
+                )
+    return ["", "Test Runs resolved after entry", *lines] if lines else []
 
 
 def render_goal_briefing(
@@ -165,6 +196,8 @@ def render_goal_briefing(
     ]
     for row in facts["goals"]:
         lines.extend(_goal_lines(row, presenter))
+    names = {row["key"]: presenter(row["spec"]) for row in facts["goals"]}
+    lines += _deferred_resolution_lines(facts["record"], names)
     for title, key in (
         ("Diff summary", "diff_summary"),
         ("Target changes", "target_changes"),
@@ -187,7 +220,7 @@ def render_goal_briefing(
                 ensure_ascii=False,
             ),
         ]
-    lines += _earlier_attempt_lines(facts)
+    lines += [*_unsettled_campaign_lines(facts), *_earlier_attempt_lines(facts)]
     return "\n".join(lines)
 
 
@@ -202,11 +235,13 @@ def _goal_lines(row: dict[str, Any], presenter: Callable[[object], str]) -> list
     detail = selected["detail"]
     for finding in detail.get("pending", detail.get("issue_list", [])):
         lines.append("  Open finding: " + json.dumps(finding, sort_keys=True, ensure_ascii=False))
+    lines += _test_run_lines(detail)
     if row["original_observations"]:
-        lines.append(
-            "  Approved derivation: "
-            + json.dumps(_derivation_facts(detail["goal_derivation"]), sort_keys=True)
-        )
+        if "goal_derivation" in detail:
+            lines.append(
+                "  Approved derivation: "
+                + json.dumps(_derivation_facts(detail["goal_derivation"]), sort_keys=True)
+            )
         lines.append(
             "  Original observations: "
             + json.dumps(
@@ -228,6 +263,18 @@ def render_goal_html(
         + body
         + "</pre></body></html>"
     )
+
+
+def _unsettled_campaign_lines(facts: dict[str, Any]) -> list[str]:
+    """Simulation Campaigns whose results were never fully accounted for (ADR 0072)."""
+    if "unsettled_campaigns" not in facts:
+        return []
+    listed = require_list(facts["unsettled_campaigns"], field="unsettled_campaigns")
+    return [
+        "",
+        "Simulation Campaigns not fully accounted for",
+        json.dumps(listed, indent=2, sort_keys=True, ensure_ascii=False),
+    ]
 
 
 def _unavailable_goal(_spec: object) -> str:

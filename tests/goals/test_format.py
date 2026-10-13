@@ -7,7 +7,7 @@ import pytest
 from rich.console import Console
 from rich.table import Table
 
-from booley.goals.format import format_criterion_metric, render_status
+from booley.goals.format import format_criterion_metric, render_status, test_run_lines
 from booley.goals.status import GoalStatus, GoalStatusView
 
 
@@ -146,7 +146,19 @@ def test_met_metric_fallback_preserves_raw_empty_output(key):
     assert format_met_goal_metric(key, entry) == "evidence recorded"
 
 
-# Frozen verbatim from 9da903961; independent of the production renderer.
+def _baseline_test_runs(console: Console, view: GoalStatusView) -> None:
+    """Added with Goals that name Test Runs (#1233): the frozen Test Runs follow the table.
+
+    Their lines are pinned by tests/goals/test_test_run_evidence.py.
+    """
+    frozen = [line for goal in view.goals for line in test_run_lines(goal)]
+    if frozen:
+        console.print("Test Runs")
+    for line in frozen:
+        console.print(f"  {line}", soft_wrap=True)
+
+
+# Frozen from 9da903961 plus the Test Runs section; independent of the production renderer.
 def baseline_render_status(views: tuple[GoalStatusView, ...], *, short: bool | None = None) -> str:
     """Render long detail for one Goal Mode, short rows for several by default."""
     import io
@@ -171,7 +183,10 @@ def baseline_render_status(views: tuple[GoalStatusView, ...], *, short: bool | N
         else:
             console.print(f"Worktree: {view.record.worktree_path}")
             console.print(f"Branch: {view.record.branch}")
-            table = Table("Goal", "Status", "Evidence", box=None, padding=(0, 1))
+            table = Table(box=None, padding=(0, 1))
+            table.add_column("Goal", no_wrap=True)
+            table.add_column("Status", no_wrap=True)
+            table.add_column("Evidence")
             for goal in view.goals:
                 evidence = goal.evidence_summary
                 if goal.status == "unmet" and goal.reason:
@@ -184,6 +199,7 @@ def baseline_render_status(views: tuple[GoalStatusView, ...], *, short: bool | N
                     evidence,
                 )
             console.print(table)
+            _baseline_test_runs(console, view)
             console.print(f"Pending proposals: {view.pending_proposals}")
             conflicts = dict(view.proposal_conflicts)
             for proposal_view in view.proposals:

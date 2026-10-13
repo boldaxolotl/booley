@@ -82,7 +82,7 @@ def test_goal_abandon_cli_selects_once_and_retries_with_explicit_ids(
 @pytest.mark.parametrize("met", [False, True])
 def test_goal_status_simulation_contract_explanation(goal_mode, monkeypatch, capsys, met):  # noqa: F811 — shared pytest fixture
     from booley.goals.recorder import GoalEvidenceRecorder
-    from tests.goals.conftest import SIM_KEY, bind
+    from tests.goals.conftest import SIM_KEY, bind, run_row
     from tests.goals.test_recorder import _v1
 
     state = _v1(
@@ -91,8 +91,8 @@ def test_goal_status_simulation_contract_explanation(goal_mode, monkeypatch, cap
         SIM_KEY,
         met,
         {
-            "required_tests": [] if met else ["smoke"],
-            "passed_tests": [],
+            # A claimed pass that names no frozen Test Run, or a failing frozen one.
+            "test_runs": [] if met else [run_row(grade="fail")],
             "tests_passed": 1 if met else 0,
             "tests_total": 1,
         },
@@ -101,11 +101,9 @@ def test_goal_status_simulation_contract_explanation(goal_mode, monkeypatch, cap
     assert _cmd_goal(Namespace(goal_command="status", long=True, short=False), goal_mode.main) == 0
     text = " ".join(capsys.readouterr().out.split())
     assert f"{int(met)}/1 tests" in text
-    if met:
-        assert state.criteria[SIM_KEY].detail["goal_contract_violation"] in text
-    else:
-        assert "complete resolved suite" not in text
-        assert "—" not in text
+    assert state.criteria[SIM_KEY].met is False
+    reason = "goal-test-run-incomplete" if met else "goal-test-run-failed"
+    assert f"{reason}: {state.criteria[SIM_KEY].detail['goal_contract_violation']}" in text
 
 
 PREFIX = "No Goal Mode is active here. Active Goal Modes in this Project:\n"

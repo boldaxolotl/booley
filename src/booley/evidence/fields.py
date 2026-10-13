@@ -1,6 +1,9 @@
 """Persisted field names shared by evidence producers and Criteria policy."""
 
 SOURCE_FINGERPRINT_DETAIL_KEY = "_source_fingerprint"
+#: Reason of a change that unmeets a Criterion because its sources changed:
+#: its detail describes the old evidence, not a new observation.
+SOURCE_INVALIDATED_REASON = "source-invalidated"
 
 RECIPE_FINGERPRINT_PARAM = "_recipe_fingerprint"
 RECIPE_FINGERPRINT_DETAIL = "_recipe_fingerprint"

@@ -611,7 +611,7 @@ def test_goal_path_with_missing_git_metadata_refuses(goal_mode, monkeypatch):
 @pytest.mark.parametrize("met", [False, True])
 def test_goal_status_simulation_contract_explanation(goal_mode, met):
     from booley.goals.recorder import GoalEvidenceRecorder
-    from tests.goals.conftest import SIM_KEY, bind
+    from tests.goals.conftest import SIM_KEY, bind, run_row
     from tests.goals.test_recorder import _v1
 
     state = _v1(
@@ -620,8 +620,8 @@ def test_goal_status_simulation_contract_explanation(goal_mode, met):
         SIM_KEY,
         met,
         {
-            "required_tests": [] if met else ["smoke"],
-            "passed_tests": [],
+            # A claimed pass that names no frozen Test Run, or a failing frozen one.
+            "test_runs": [] if met else [run_row(grade="fail")],
             "tests_passed": 1 if met else 0,
             "tests_total": 1,
         },
@@ -634,11 +634,9 @@ def test_goal_status_simulation_contract_explanation(goal_mode, met):
     assert not result.is_error
     text = " ".join(result.value[0][0].text.split())
     assert f"{int(met)}/1 tests" in text
-    if met:
-        assert state.criteria[SIM_KEY].detail["goal_contract_violation"] in text
-    else:
-        assert "complete resolved suite" not in text
-        assert "—" not in text
+    assert state.criteria[SIM_KEY].met is False
+    reason = "goal-test-run-incomplete" if met else "goal-test-run-failed"
+    assert f"{reason}: {state.criteria[SIM_KEY].detail['goal_contract_violation']}" in text
 
 
 def _review_artifact(layout, monkeypatch, *, scope=None):
