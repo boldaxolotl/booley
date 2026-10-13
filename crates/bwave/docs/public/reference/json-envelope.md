@@ -9,7 +9,7 @@ commands; only the `data` field varies.
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/boldaxolotl/booley/v0.3.0/crates/bwave/schema/bwave.json",
+  "$schema": "https://raw.githubusercontent.com/boldaxolotl/booley/9f6ee6a81995e7b45d79da37f58744cce1034585/crates/bwave/schema/bwave.json",
   "command": "<subcommand>",
   "data":    { ... },
   "warnings": ["..."]
@@ -18,29 +18,29 @@ commands; only the `data` field varies.
 
 | Field | Type | Notes |
 |---|---|---|
-| `$schema` | string | URL of the JSON Schema this payload conforms to. Pinned to the release tag (currently `v0.3.0`). |
-| `command` | string | Subcommand name. Currently one of `list`, `value`, `find`, `stats`. |
+| `$schema` | string | URL of the JSON Schema this payload conforms to. Pinned to the schema commit. |
+| `command` | string | Subcommand name. One of the eight supported JSON commands. |
 | `data` | object | Per-command payload. See per-command docs for the shape. |
 | `warnings` | array of string | Diagnostics that text mode would emit to stderr as `# WARNING: ...` lines. Empty array on clean runs. |
 
 ## Subcommands that emit JSON
 
-Four commands respect `--format
-json`:
+Eight commands respect `--format json`:
 
 - `list`: see `commands/list`
 - `value`: see `commands/value`
 - `find`: see `commands/find`
 - `stats`: see `commands/stats`
+- `signal`, `wave`, `distance`: see their command topics
+- `overview`: clock-grid verdict and trace metadata
 
 The other query subcommands reject `--format json` with
 exit code 2: `JSON output is not implemented for <command>;
-use find/value/stats/list`.
+use find/value/stats/list/signal/wave/distance/overview`.
 
 Commands that **do not** currently emit JSON:
 
-- `signal`, `wave`, `sample`, `diff`, `distance`,
-  `stuck`: text mode only; JSON requests exit with code 2.
+- `sample`, `diff`, `stuck`: text mode only; JSON requests exit with code 2.
 - `build`: produces a binary file, no envelope.
 - `schema`: produces the JSON Schema itself (no
   envelope around it; it *is* the schema).
@@ -181,3 +181,29 @@ bwave schema
 Prints the embedded JSON Schema to stdout. The schema
 is baked into the binary at build time, so the output
 always matches the installed version.
+
+## Clock-grid metadata (schema revision 2)
+
+`clock_regularity` is an advisory verdict: `status` (`pass`, `warning`, or
+`unavailable`), machine-readable `reason`, selected `clock`, first off-grid
+tick/cycle, detailed `findings`, and `stopped` summary (`stretches`,
+`total_cycles`, `longest` range or null). Multi-period context lives in
+findings. Invalid-clock reasons also appear in `warnings` on sync queries
+and async queries containing cycle tokens. Raw async queries omit the verdict.
+
+`clock_stopped` is present only when an inclusive query window overlaps a
+proven interior stopped stretch. Entries retain the full `{from_cycle,
+to_cycle}` endpoints, rebased to the selected reset-aware grid. Stops are
+informational. Metadata is bounded by stored clock transitions, not `--limit`.
+
+New JSON commands: `signal` has ordered tagged `records` including stop
+separators; `wave` has `columns`, edge `ticks`, `names`, and row `values`;
+`distance` has bounded `pairs`, total `count`, optional `summary`, summed
+`stopped_cycles`, and `truncated`; `overview` has trace/clock header metadata.
+`sample`, `diff`, and `stuck` remain text-only. `value.sample_tick` records
+pre/post observation while `target_tick` remains the edge tick. Stats adds
+sampled clocked/stopped cycle maps alongside physical tick/ns occupancy.
+
+The emitted `$schema` URL pins the expanded schema to an immutable commit.
+Use `bwave schema` for the exact bundled grammar; revision 1's closed schema
+cannot validate revision 2 additions.

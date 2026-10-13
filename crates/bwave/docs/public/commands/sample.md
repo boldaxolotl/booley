@@ -53,7 +53,7 @@ With `--count`:
 1
 ```
 
-`--format json` exits with code 2: `JSON output is not implemented for sample; use find/value/stats/list`.
+`--format json` exits with code 2: `JSON output is not implemented for sample; use find/value/stats/list/signal/wave/distance/overview`.
 
 ## Common errors
 
@@ -66,8 +66,7 @@ With `--count`:
 - **Captured data looks stale**: sync mode samples on
   the same edge the trigger fires, post-edge. If you want
   the value the trigger was reacting to (pre-edge),
-  sample one cycle earlier with `--before <trigger+1>` or
-  use async mode.
+  use `--sample-mode pre-edge`.
 
 ## Examples
 
@@ -107,3 +106,9 @@ events:
 ```bash
 bwave sample sim.fst "*err" rising --count
 ```
+
+## Clock-grid behavior
+
+Literal triggers skip interior stopped cycles by default; `--include-stopped` includes them. Edge/change triggers are unaffected by stop exclusion. `--sample-mode pre-edge` applies to both trigger and captured values (including Virtual Signals), with the same edge-cycle labels as post-edge.
+
+See `reference/sync-vs-async` for the advisory verdict and sampling modes.

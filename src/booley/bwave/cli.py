@@ -406,6 +406,7 @@ _V02_CONSUMER_SUBCOMMANDS = frozenset(
         "diff",
         "distance",
         "stats",
+        "overview",
         "stuck",
     }
 )
@@ -1784,6 +1785,7 @@ Subcommands (pick one):
   sample PAT VALUE   Snapshot signals each time PAT matches VALUE
   diff T1 T2         Compare values between two time points
   distance PAT VAL [--to PAT VAL]   Time between events (latency)
+  overview           Clock-grid verdict and stopped-stretch summary
   stats              Per-signal transition count and time-in-state
   stuck [VALUE]      Find signals stuck at a constant
   schema             Print --format json envelope schema
@@ -1808,11 +1810,13 @@ Common filters and options (consumer subcommands accept these):
   --async            Raw timescale timestamps instead of cycle numbers.
   --with-reset       Include reset phase (default: skip until deassert).
   --clock SIG        Clock for cycle grid (default: auto *clk*).
+  --sample-mode MODE Sync observation: post-edge (default) or pre-edge.
   --reset SIG        Reset for skip detection (default: auto *rst*).
   --limit N          Record/column cap (query default 2000; list 400).
-  --format text|json JSON: list/value/find/stats; other queries exit 2.
+  --format text|json JSON: list/value/find/stats/signal/wave/distance/overview.
 
 find / sample modifiers:
+  --include-stopped  Include stopped grid points in literal trigger matches.
   --first            Stop after first match.
   --last             Return only the last match.
   --before N         Implies --last, sets -t :N (bare int — cycle/tick).
@@ -1830,9 +1834,10 @@ Radix display:
   'b1010, 8'd255. Bare hex like "FF" is rejected.
 
 JSON envelope (--format json):
-  Currently implemented for list, value, find, stats.
+  Implemented for list, value, find, stats, signal, wave, distance, overview.
   Shape: {"$schema", "command", "data", "warnings"} — see
-  `bwave schema` for the full grammar.
+  `bwave schema` for the full grammar. Inspect clock_regularity and the
+  overlapping clock_stopped ranges before relying on cycle observations.
   - `value` fields on signalValue/findMatch are raw cache
     values (no Verilog prefix).
   - `stats.signals[*].value_hist` keys ARE Verilog literals
@@ -1924,6 +1929,7 @@ Trace commands:
   sample PAT VALUE   Snapshot signals each time PAT matches VALUE
   diff T1 T2         Compare values between two time points
   distance PAT VAL   Measure time between events
+  overview           Clock-grid verdict and stopped-stretch summary
   stats              Per-signal transitions and time-in-state
   stuck [VALUE]      Find signals stuck at a constant
 
@@ -1941,7 +1947,9 @@ Common options:
   --async            Use raw VCD timestamps; suffix time tokens required
   --with-reset       Include reset phase
   --clock PAT        Override clock detection
-  --format text|json JSON is implemented for list, value, find, stats
+  --sample-mode MODE Sync observation: post-edge (default) or pre-edge
+  --include-stopped  find/sample literal matches include stopped cycles
+  --format text|json JSON: list, value, find, stats, signal, wave, distance, overview
 
 Help:
   bwave skill                  How to use these commands (workflows, pitfalls)

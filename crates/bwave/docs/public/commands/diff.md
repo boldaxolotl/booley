@@ -38,7 +38,7 @@ columns:
 b                                        @0=0            @5000=2
 ```
 
-`--format json` exits with code 2: `JSON output is not implemented for diff; use find/value/stats/list`.
+`--format json` exits with code 2: `JSON output is not implemented for diff; use find/value/stats/list/signal/wave/distance/overview`.
 
 ## Common errors
 

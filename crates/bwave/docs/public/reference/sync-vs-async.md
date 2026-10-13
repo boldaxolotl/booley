@@ -6,72 +6,68 @@ so this is the first thing to understand after a build.
 
 ## Sync mode (default)
 
-Sync mode reports signal values **once per rising clock
-edge**, indexed by **cycle number**. This is what
-GTKWave, Vivado, Questa, and most other waveform viewers
-default to. It's almost always what you want for
-RTL-level debugging.
+Sync mode is a **uniform time grid anchored on the selected clock**.
+The period is the gap between its first two rising edges. Cycle 1 is the
+first grid point at or after reset deassertion; later cycles advance by that
+period, including interior clock stops. Cycle distances remain proportional
+to elapsed time. A stop during the first measured gap can make later edges
+fail the check; choose another clock or use async in that case.
 
-For each cycle:
+### Clock regularity
 
-1. The simulation tick of the rising edge is computed
-   from the detected clock period.
-2. Each watched signal's value is sampled **post-edge**:
-   the value it holds *after* the edge has propagated
-   through flip-flops.
-3. That `(cycle, value)` pair is what appears in
-   `signal` / `wave` / `value` / `find` / `sample`
-   output.
+`build`, `overview` and `stats` summarize the selected clock and the verdict:
 
-Time arguments (`-t`, `--at`, `<T1> <T2>`, `--before`,
-`--after`) are interpreted as cycle numbers.
-
-### Post-edge sampling, concretely
-
-Suppose you have:
-
-```verilog
-always @(posedge clk) state <= next_state;
+```text
+# clock: tb.clk
+# clock regularity: pass (stopped_stretches)
+# clock stopped: 1 stretches, 3 cycles, longest 3:5
 ```
 
-If on cycle N the FSM decides `next_state = 3`, then in
-B-Wave's sync output:
+`pass` means all real rising edges fit the grid, with optional stopped
+stretches. `warning` means an off-grid edge or X/Z after the first rising
+edge makes sync sampling unreliable. `unavailable` means fewer than two
+rising edges, including no clock candidate. Every sync query warns about
+invalid clock evidence; JSON carries `clock_regularity` and `warnings`.
+The verdict is advisory and never changes a query's mode.
 
-- Cycle N still shows the *pre-edge* `state` value (the
-  flop hasn't captured yet at the start of the edge).
-- Cycle N+1 shows `state = 3` (post-capture).
+Only **interior** missing grid points in the regular prefix are marked as
+stopped. Gaps before the first or after the last rise are excluded. Stop
+marking ends at the first off-grid edge or X/Z tick; subsequent queries
+continue on the arithmetic grid with a warning. An integer-multiple slowdown
+looks like repeated gating and remains on-grid. Several candidate periods
+are reported as context in summaries, without invalidating the chosen clock.
+B-Wave cannot infer ordinary signals' clock-domain ownership from a trace;
+select `--clock` for the intended domain or inspect raw timestamps.
 
-This matches what you see in any waveform viewer when you
-park the cursor on the edge: the cursor sits on N, but
-the displayed value reflects post-edge.
+`clock_stopped` in JSON lists full inclusive `{from_cycle, to_cycle}` ranges
+intersecting the query window. Stops are information, never warnings. Metadata
+scales with the stored clock edges, not the elapsed cycle count, and is not
+capped by `--limit`. Point queries only report their containing stretch.
 
-### Clock auto-detection
+### Sampling modes
 
-B-Wave picks the clock by scanning the signal tree for
-the first 1-bit signal whose name matches `*clk*`,
-breadth-first by scope depth (shallowest first). The
-header prints which signal was selected:
+`--sample-mode post-edge` is the default: each signal holds its settled value
+at the grid tick, including same-tick updates recorded by the simulator.
+`--sample-mode pre-edge` observes strictly before that tick (the last integer
+tick before it), showing inputs that flops captured on the edge. The edge's
+cycle label stays the same. For example, an input changes at tick 13 and its
+flop output at the tick-15 edge: that row shows the new input and old output
+in pre-edge mode; post-edge shows both new values.
 
-```
-# clock: tb.dut.clk  period=10ns
-```
+`sample` applies the mode to both the trigger and captured values, including
+Virtual Signals. `value` JSON retains the edge in `target_tick` and records
+`sample_tick` separately. At tick zero there is no preceding observation:
+pre-edge values are unknown and `sample_tick` is null. Cycle 0 observes before
+the reset-dependent start tick; it is an initial snapshot, not a grid edge.
+The first pre-edge observation may precede reset deassertion by one tick.
+Explicit sampling modes are rejected with `--async`, and pre-edge needs a
+usable clock. `list`, `overview`, and `stuck` reject sampling-mode options.
 
-If no match is found, sync mode degrades:
-
-- `value --at N` interprets `N` as a tick (raw timescale
-  units), not a cycle, and emits `at_unit: "tick"` in
-  JSON.
-- `find` reports `unit: "tick"`.
-- `stats` reports `total_cycles: null,
-  clock_period_ns: null`.
-
-Override with `--clock PATTERN` (any pattern syntax:
-`--clock my_clock` matches the deepest `my_clock`,
-`--clock "*tb.clk*"` matches the testbench clock when
-the DUT also has one).
-
-See `troubleshooting/clock-detection` for diagnostic
-tips.
+Clock selection scans one-bit names matching the `clk` heuristic, ordered
+by scope depth and name, choosing the first usable period. `--clock PATTERN`
+selects the first matching one-bit signal in that order. If no usable clock
+exists, sync falls back to ticks (`value.at_unit` / `find.unit` are `tick`,
+`stats.total_cycles` is null). Inspect `overview` before relying on cycles.
 
 ### Reset auto-skip
 
@@ -159,5 +155,5 @@ full grammar.
 - If sync output looks 1 cycle off, recheck. You're
   probably staring at post-edge values from the cycle
   *after* the one you think you set up.
-- If sync output is empty or wrong, your clock pattern
-  is wrong. See `troubleshooting/clock-detection`.
+- If sync output is empty or wrong, inspect the regularity verdict and clock
+  selection. See `troubleshooting/clock-detection`.

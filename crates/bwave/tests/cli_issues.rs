@@ -2554,11 +2554,8 @@ fn issue_1108_store(label: &str) -> (PathBuf, PathBuf) {
 #[test]
 fn issue_1108_unsupported_json_before_io() {
     for (command, positionals) in [
-        ("signal", vec![]),
-        ("wave", vec![]),
         ("sample", vec!["a", "change"]),
         ("diff", vec!["1", "2"]),
-        ("distance", vec!["a", "change"]),
         ("stuck", vec![]),
     ] {
         let mut args = vec![command, "/nonexistent/1108.fst"];
@@ -2569,7 +2566,7 @@ fn issue_1108_unsupported_json_before_io() {
         assert!(out.is_empty());
         assert!(
             err.contains(&format!(
-                "JSON output is not implemented for {command}; use find/value/stats/list"
+                "JSON output is not implemented for {command}; use find/value/stats/list/signal/wave/distance/overview"
             )),
             "{err}"
         );

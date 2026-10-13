@@ -112,3 +112,7 @@ bwave build --input /tmp/sim.vcd -o sim.fst &
 my_simulator +vcd=/tmp/sim.vcd
 wait
 ```
+
+After conversion, build prints the detected clock regularity verdict and
+interior stopped-stretch summary to stderr. The verdict is advisory: the
+store is still built for async inspection when sync is unreliable.

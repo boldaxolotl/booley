@@ -126,3 +126,13 @@ Stats over a bounded window, e.g. a specific test phase:
 ```bash
 bwave stats sim.fst -s "*" -t 1000:5000
 ```
+
+## Clock-grid behavior
+
+Sync occupancy adds exact per-value `time_in_state_clocked_cycles` and `time_in_state_stopped_cycles` maps, counted over inclusive grid samples in the query window. These are null in async/no-clock mode. Existing tick/ns occupancy retains physical-duration semantics. Text cycle counts show the clocked/stopped split. The header summarizes clock regularity and stopped stretches.
+
+See `reference/sync-vs-async` for the advisory verdict and sampling modes.
+
+Cycle-map counts and sync text percentages describe inclusive grid samples.
+`total_cycles` retains its existing elapsed-duration meaning (whole periods),
+which can differ from the number of samples at inclusive endpoints.

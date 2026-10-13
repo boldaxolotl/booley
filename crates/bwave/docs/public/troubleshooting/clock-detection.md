@@ -1,157 +1,46 @@
-# Clock detection
+# Clock detection and regularity
 
-Sync mode needs a clock. B-Wave picks one automatically
-when a query loads the store (clock metadata is
-re-derived from the FST content each time; nothing is
-stored in sidecars), and reports its choice in the
-header. If the choice is wrong, sync-mode results will
-be off by clock-period factors or empty.
+Run `bwave overview trace.fst` or `bwave stats trace.fst -s clk` to inspect
+the clock verdict; `--format json` puts it in `clock_regularity`.
 
-## Auto-detection algorithm
-
-1. Walk the signal tree breadth-first (shallowest
-   scope first).
-2. For each 1-bit signal whose name matches `*clk*`
-   (case-insensitive), measure the period (time
-   between two adjacent rising edges).
-3. The first match with a sensible period wins.
-
-"Sensible period" means non-zero and roughly stable.
-A signal that toggles randomly at irregular intervals
-may be picked anyway: the algorithm only checks
-period > 0, not regularity.
-
-## What gets reported
-
-The header:
-
-```
-# clock: tb.dut.clk  period=10ns
-```
-
-`period=10ns` is the smoking gun for a healthy pick.
-`period=0ns` means the picked signal didn't toggle at
-all in the recorded window: sync mode will produce zero
-or garbage output.
-
-## Overriding
-
-`--clock PATTERN` forces a specific clock. Pattern
-syntax is the same as `-s` (suffix-match by default,
-wildcards otherwise):
-
-```bash
-bwave signal sim.fst -s "*state*" --clock "tb.dut.main_clk"
-bwave signal sim.fst -s "*state*" --clock "*core_clk*"
-```
-
-The pattern must match exactly one 1-bit signal. If it
-matches zero or multiple signals, B-Wave errors out:
-
-```
-ERROR: clock pattern '*clk*' matches 3 signals; narrow it
-```
-
-## Common detection failures
-
-### Multiple clocks, wrong one picked
-
-In multi-clock designs (CDC sim, multi-domain SoC),
-the shallowest `*clk*` wins. This may be the slow
-peripheral clock when you wanted the core clock.
-
-Override explicitly:
-
-```bash
-bwave find sim.fst "*error*" 'h1 --clock "*core_clk*"
-```
-
-### Clock signal not named `*clk*`
-
-Common offenders: `mclk`, `aclk`, `phi1`, `ck`,
-`hclock`. The default heuristic misses these. Either:
-
-- Override per-invocation: `--clock "*hclock*"`.
-- Build with `--scope` to drop ambiguous clocks if
-  the right one matches `*clk*` in the chosen
-  subtree.
-
-### Clock is multi-bit (e.g. clock + enable bundled)
-
-The algorithm requires 1-bit signals. A bundled
-`{clk, en}` 2-bit wire is silently skipped. Override
-with a 1-bit clock signal.
-
-### No clock at all
-
-Sim has no clock (pure combo, testbench infra). B-Wave
-reports:
-
-```
-# clock: <not detected>
-```
-
-Sync-mode commands degrade:
-
-- `value --at N` treats `N` as a tick (`at_unit:
-  "tick"` in JSON).
-- `find` reports `unit: "tick"`.
-- `stats` shows `total_cycles: null`,
-  `clock_period_ns: null`.
-
-This is graceful degradation, not an error. If you
-really want sync semantics, you need to define a
-clock-like signal upstream and rerun the sim.
-
-Alternatively, use `--async` explicitly: same data,
-clearer headers.
-
-### Period drift
-
-A clock with jitter (varying period) reports the
-*first* measured period as the canonical period. Cycle
-boundaries assume constant period, so jittery clocks
-will misalign sampling vs. real RTL behaviour.
-
-For accurate timing on jittery clocks, use `--async`
-and work in ticks.
-
-## Header symptoms cheat-sheet
-
-| Header | Meaning |
+| Reason | Meaning and next step |
 |---|---|
-| `# clock: tb.dut.clk  period=10ns` | healthy, proceed |
-| `# clock: tb.dut.clk  period=0ns` | clock never toggled; pick another |
-| `# clock: <not detected>` | no `*clk*` match; pick with `--clock` or use `--async` |
-| `ERROR: clock pattern matches N signals` | tighten the pattern |
-| `ERROR: clock pattern matches 0 signals` | check `bwave list -s "*clk*"` |
+| `regular` | Every real rising edge fits the grid. |
+| `stopped_stretches` | Interior grid points lack rising edges; inspect the summary and query notes. |
+| `off_grid_edge` | Frequency/phase change or jitter; warning names the first divergent tick. Use `--async` with tick/time bounds. |
+| `non_integer_period` | Inferred quantized fractional cadence; use `--async`. |
+| `unknown_clock` | Clock becomes X/Z after starting; use `--async` to inspect it. |
+| `insufficient_edges` | Fewer than two rising edges, so no period can be measured. Select another clock or use async. |
+| `multiple_clock_periods` | Candidate clocks have different periods. Select `--clock PATTERN` for the intended domain. |
 
-## Debug procedure
+The fractional inference requires at least six gaps, two adjacent gap lengths
+with each appearing at least twice, and less than one tick of error to the
+rational line through the first and last rise. This recognizes quantization,
+but cannot prove simulator intent or distinguish every jitter pattern.
 
-```bash
-# what clocks are in the store?
-bwave list sim.fst -s "*clk*"
-bwave list sim.fst -s "*ck*"
-
-# is the candidate actually toggling?
-bwave stats sim.fst -s "*core_clk*"
-
-# force the right one
-bwave signal sim.fst -s "*state*" --clock "*core_clk*"
-```
-
-If `stats` reports `transitions=0` for a candidate
-clock, it's not a clock in this sim: pick a different
-one.
-
-## Async fallback
-
-When in doubt, drop sync mode:
+Auto-detection considers one-bit signals whose bracket-stripped hierarchical name contains `clk`
+(case-insensitive), ordered by scope depth then name. The first candidate with two
+strict 0-to-1 transitions wins. An explicit pattern uses the first matching
+one-bit signal in the same order; a miss errors with exit 2, while an
+insufficient-edge selection reports an unavailable verdict. Use `list -s
+"*clk*"` to inspect candidates. A clock with an unconventional name can be
+selected explicitly:
 
 ```bash
-bwave signal sim.fst -s "*state*" --async -t 0t:1000t
+bwave overview trace.fst --clock phi1
+bwave signal trace.fst -s state --clock core_clk
 ```
 
-Async output is busier (every transition gets a row)
-but immune to clock-detection problems. Useful as a
-sanity check when sync output looks wrong.
+The grid uses the first gap even when that gap contains a clock stop. Later
+edges can therefore fail the check. Late starts and final stops do not fail
+regularity; only interior gaps are marked. Stops are reported only up to the
+first off-grid or X/Z tick. Integer-multiple slowdowns fit the grid and look
+like repeated gating. Per-signal domain ownership is not inferred.
+
+The verdict never switches modes automatically. Async requests with cycle
+tokens (`-t 100c:200c`, `--at 10c`, markers) still depend on that same grid and
+retain invalid-clock warnings. Use tick/time tokens for an independent view:
+
+```bash
+bwave signal trace.fst -s state --async -t 0t:1000t
+```

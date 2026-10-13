@@ -143,3 +143,9 @@ bwave find sim.fst \
     --virtual "hsk = *valid & *ready" \
     hsk 'h1 --first
 ```
+
+## Clock-grid behavior
+
+Literal level triggers skip interior stopped cycles by default; `--include-stopped` restores time-grid matching. Edge/change triggers keep their existing behavior. Counts and first/last selection use the same policy, including Virtual Signals. Overlapping stops are informational; JSON exposes `clock_stopped`. `--sample-mode pre-edge` changes observation values while retaining edge-cycle labels.
+
+See `reference/sync-vs-async` for the advisory verdict and sampling modes.

@@ -8,7 +8,7 @@ bwave distance <FST_FILE> <PATTERN> <VALUE>
                [-t START:END]
                [--async] [--clock PAT] [--reset PAT] [--with-reset]
                [--virtual "name = expr"]
-               [--format text] [--limit N]
+               [--format text|json] [--limit N]
 ```
 
 ## Semantics
@@ -76,7 +76,7 @@ With `--stats`:
 count=3  min=3000  max=15000  mean=8000.0  median=6000.0
 ```
 
-`--format json` exits with code 2: `JSON output is not implemented for distance; use find/value/stats/list`.
+`--format json` returns a structured envelope.
 
 ## Common errors
 
@@ -122,3 +122,9 @@ bwave distance sim.fst \
     --virtual "retire = *complete & *ack" \
     issue 'h1 --to retire 'h1 --stats
 ```
+
+## Clock-grid behavior
+
+Elapsed grid distance is preserved across stops. Each pair reports its stopped share in `(A,B]`, e.g. `d=1003 cycles (1000 stopped)`. JSON pair fields are `from`, `to`, `elapsed`, and `stopped_cycles`; `unit` identifies cycles or ticks. `--stats` adds total `stopped_cycles` across all measured pairs (overlaps counted per pair). Literal distance events keep their existing time-grid semantics, including stopped points.
+
+See `reference/sync-vs-async` for the advisory verdict and sampling modes.
