@@ -27,23 +27,23 @@ mandatory. Do not edit existing Taxi files or weaken upstream tests.
 ```json
 [
   {
-    "family": "elab",
+    "family": "ELAB",
     "target": "sim_mac_10g_observability",
     "origin": "observability"
   },
   {
-    "family": "sim",
+    "family": "SIM",
     "target": "sim_mac_10g_observability",
     "origin": "observability"
   },
   {
-    "family": "review",
+    "family": "REVIEW",
     "review": "tb_quality",
     "verdict": "clean",
     "origin": "observability"
   },
   {
-    "family": "mutation",
+    "family": "MUTATION",
     "target": "sim_mac_10g_observability",
     "scope": [
       "src/eth/rtl/taxi_eth_mac_10g.sv"

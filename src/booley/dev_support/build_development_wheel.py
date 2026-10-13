@@ -13,6 +13,7 @@ from booley.runtime.build_stamp import (
     BuildProfile,
     _iter_development_context_files,
     development_context_path,
+    resolve_build_commit,
     stamp_path,
     write_build_stamp,
 )
@@ -34,6 +35,36 @@ def _validate_checkout(checkout: Path) -> None:
     source_image_build_contracts(checkout)
 
 
+def _require_checkout_revision(checkout: Path) -> None:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel", "--absolute-git-dir"],
+            cwd=checkout,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        )
+        local_git = subprocess.run(
+            ["git", "rev-parse", "--resolve-git-dir", str(checkout / ".git")],
+            cwd=checkout,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ValueError("cannot resolve this checkout source revision/commit") from exc
+    root, git_dir = result.stdout.strip().splitlines()
+    if (
+        Path(root).resolve() != checkout
+        or Path(git_dir).resolve() != Path(local_git.stdout.strip()).resolve()
+    ):
+        raise ValueError("cannot resolve this checkout source revision: Git repository differs")
+    if not resolve_build_commit(checkout):
+        raise ValueError("cannot resolve this checkout source revision/commit")
+
+
 def _built_wheel(staging: Path) -> Path:
     candidates = list(staging.glob("booley_rtl-*.whl"))
     if len(candidates) != 1 or candidates[0].is_symlink() or not candidates[0].is_file():
@@ -45,6 +76,7 @@ def build_development_wheel(checkout: Path) -> Path:
     """Publish a fresh wheel, preserving old artifacts if its build fails."""
     checkout = checkout.resolve()
     _validate_checkout(checkout)
+    _require_checkout_revision(checkout)
     build = checkout / "build"
     if build.exists():
         shutil.rmtree(build)
@@ -54,7 +86,9 @@ def build_development_wheel(checkout: Path) -> Path:
         with ExitStack() as cleanup:
             cleanup.callback(stamp_path(checkout).unlink, missing_ok=True)
             cleanup.callback(development_context_path(checkout).unlink, missing_ok=True)
-            write_build_stamp(checkout, profile=BuildProfile.DEVELOPMENT_WHEEL)
+            commit = write_build_stamp(checkout, profile=BuildProfile.DEVELOPMENT_WHEEL)
+            if not commit:
+                raise ValueError("cannot resolve source revision/commit while stamping")
             subprocess.run(
                 [sys.executable, "-P", "-m", "build", "--wheel", "--outdir", temporary],
                 cwd=checkout,

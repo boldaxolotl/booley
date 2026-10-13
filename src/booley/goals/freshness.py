@@ -13,9 +13,10 @@ instead requires, per family, today's categories plus ``target_surface``
   with a reason;
 - any required digest that differs from the current one is ``stale``;
 - a review Goal is stale when either its Reviewer receipt or the Goal source
-  comparison says so;
-- a simulation Goal is also stale when the suite its evidence recorded
-  differs from the suite its Target resolves to now (:mod:`booley.goals.simulation`).
+  comparison says so.
+
+Whether a Goal's frozen Test Runs still are what its Target declares is not
+freshness: :mod:`booley.goals.test_run_status` judges it (ADR 0072).
 
 Only met evidence can be stale; an unmet Goal is reported as not stale.
 Resolution goes through :class:`GoalFreshnessResolvers`, which the recorder
@@ -40,8 +41,7 @@ from booley.goals.generated_artifacts import (
     goal_target_surface,
     project_source,
 )
-from booley.goals.model import GoalFamily, GoalSpec
-from booley.goals.simulation import GOAL_SUITE_DETAIL_KEY, resolved_simulation_suite
+from booley.goals.model import GoalSpec
 from booley.goals.target_surface import (
     TARGET_SURFACE_CATEGORY,
     TargetSurfaceError,
@@ -69,7 +69,6 @@ class GoalFreshnessResolvers:
 
     source: Callable[..., dict[str, Any]] = compute_source_fingerprint
     target_surface: Callable[[Path, str | None], dict[str, Any]] = goal_target_surface
-    simulation_suite: Callable[[Path, str], tuple[str, ...]] = resolved_simulation_suite
     waiver_policy: Callable[[Path], dict[str, Any]] = waiver_policy_fingerprint
     waiver_semantics: Callable[[Path], str] | None = None
 
@@ -134,10 +133,6 @@ def goal_required_categories(key: str) -> frozenset[str]:
     """The categories Goal evidence for *key* must stamp; empty when it has none."""
     base = verification_fingerprint_categories(key)
     return frozenset({*base, TARGET_SURFACE_CATEGORY}) if base else frozenset()
-
-
-def _is_simulation(key: str, goal: GoalSpec | None) -> bool:
-    return goal.family is GoalFamily.SIM if goal is not None else key.startswith("sim_pass_")
 
 
 def _stamp_target(stamp: Mapping[str, Any], goal: GoalSpec | None) -> str | None:
@@ -328,10 +323,6 @@ def _compare_met_evidence(
     )
     if shared is not None and shared.stale:
         return shared
-    if _is_simulation(key, goal):
-        suite = _suite_staleness(_entry_detail(entry), work_dir, target, resolvers)
-        if suite:
-            return _stale(required, suite, current)
     return source
 
 
@@ -386,32 +377,6 @@ def _compare_required(
         )
         return VerificationFreshness(True, changed, reason, dict(current))
     return VerificationFreshness(False, current_source_fingerprint=dict(current))
-
-
-def _suite_staleness(
-    detail: Mapping[str, Any],
-    work_dir: Path,
-    target: str | None,
-    resolvers: GoalFreshnessResolvers,
-) -> str:
-    recorded = _str_list(detail.get(GOAL_SUITE_DETAIL_KEY))
-    if GOAL_SUITE_DETAIL_KEY not in detail:
-        return "the evidence does not record the simulation suite it was judged against"
-    if target is None:
-        return "the simulation Goal has no bound Target"
-    try:
-        current = resolvers.simulation_suite(work_dir, target)
-    except RESOLVER_ERRORS as exc:
-        return f"the simulation suite can no longer be resolved: {exc}"
-    if sorted(recorded) == sorted(current):
-        return ""
-    added = sorted(set(current) - set(recorded))
-    removed = sorted(set(recorded) - set(current))
-    changes = [
-        f"added {', '.join(added)}" if added else "",
-        f"removed {', '.join(removed)}" if removed else "",
-    ]
-    return f"the resolved simulation suite changed ({'; '.join(c for c in changes if c)})"
 
 
 def _digest(fingerprint: Mapping[str, Any], category: str) -> object:

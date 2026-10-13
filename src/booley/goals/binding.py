@@ -42,6 +42,7 @@ from booley.goals.protected_inputs import (
 )
 from booley.goals.store import GoalStore, GoalStoreError
 from booley.goals.target_surface import TargetSurfaceError
+from booley.goals.test_run_freezing import ensure_test_run_resolutions
 from booley.targets.domain import FuseSocError
 
 BINDING_SCHEMA = "booley.goal-run-binding/v1"
@@ -250,7 +251,7 @@ def bind_run(
             require_no_apply(record_paths(store.project_dir, record.id).root)
         except ProposalError as exc:
             raise GoalBindingError(str(exc)) from exc
-        _require_goal_branch(root, record)
+        record = _on_goal_branch_with_test_runs(store, record, root)
         try:
             snapshot = snapshot_protected_inputs(ProtectedInputRoots(root, store.project_dir))
         except ProtectedInputError as exc:
@@ -274,6 +275,19 @@ def bind_run(
             ineligible_reason=reason,
             start_surfaces=_start_surfaces(root, record, surface),
         )
+
+
+def _on_goal_branch_with_test_runs(store: GoalStore, record: GoalRecord, root: Path) -> GoalRecord:
+    """Require the Goal Branch, then freeze the Test Runs resolvable since entry (ADR 0072).
+
+    The run is bound to the record as it is afterwards, so the Test Runs it
+    is handed and the ones its evidence is matched against are the same.
+    """
+    _require_goal_branch(root, record)
+    try:
+        return ensure_test_run_resolutions(store, record.id, root)
+    except GoalStoreError as exc:
+        raise GoalBindingError(f"cannot resolve the Goals' Test Runs: {exc}") from exc
 
 
 def _start_surfaces(

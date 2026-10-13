@@ -109,6 +109,11 @@ from booley.flows.sim.run_guard import DEFAULT_SIM_TIME_GRACE_S, find_sim_time_s
 from booley.flows.sim.trace_session import TraceSession
 
 
+def seed_arguments(seed: int | None) -> list[str]:
+    """The adapter arguments that seed one Cocotb process; none when unseeded."""
+    return [] if seed is None else ["--seed", str(seed)]
+
+
 def prepare_invocation(work: PreparedSimulationWork) -> list[str]:
     """Render one parent-side Cocotb adapter invocation."""
     if work.adapter != "cocotb":
@@ -127,6 +132,7 @@ def prepare_invocation(work: PreparedSimulationWork) -> list[str]:
         str(work.timeout_s),
     ]
     cmd += [f"--test={name}" for name in work.tests]
+    cmd += seed_arguments(work.cocotb_seed)
     cmd += ["--result-verbosity", work.result_verbosity]
     cmd += ["--sim-time-grace", str(work.sim_time_grace_s)]
     if work.max_rundir_bytes > 0:
@@ -443,6 +449,22 @@ def _cocotb_config(arg_sets: list[list[str]]) -> list[str]:
     return outputs
 
 
+class CocotbSeedError(RuntimeError):
+    """A seeded Cocotb run cannot tell which seed variable the installed cocotb reads."""
+
+
+def _probe_cocotb_version() -> tuple[int, int] | None:
+    """The installed cocotb ``(major, minor)``, or ``None`` when the probe fails."""
+    try:
+        (version,) = _cocotb_config([["--version"]])
+        match = re.match(r"^(\d+)\.(\d+)", version.strip())
+        if match is None:
+            return None
+        return (int(match.group(1)), int(match.group(2)))
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+
+
 def _cocotb_version() -> tuple[int, int]:
     """Best-effort ``(major, minor)`` cocotb version.
 
@@ -450,14 +472,53 @@ def _cocotb_version() -> tuple[int, int]:
     probe is required before emitting ``GPI_USERS`` because older
     ``cocotb-config`` versions do not provide ``--pygpi-entry-point``.
     """
-    try:
-        (version,) = _cocotb_config([["--version"]])
-        match = re.match(r"^(\d+)\.(\d+)", version.strip())
-        if match is None:
-            return (2, 0)
-        return (int(match.group(1)), int(match.group(2)))
-    except (OSError, subprocess.SubprocessError, ValueError):
-        return (2, 0)
+    return _probe_cocotb_version() or (2, 0)
+
+
+#: cocotb's seed variable by major version: 2.x reads ``COCOTB_RANDOM_SEED``
+#: (``cocotb/_init.py``, ``_setup_random_seed``) and only falls back to the
+#: deprecated ``RANDOM_SEED``; 1.x reads ``RANDOM_SEED`` alone
+#: (``cocotb/__init__.py``). Both parse it with ``int``.
+COCOTB_SEED_VARIABLE = "COCOTB_RANDOM_SEED"
+COCOTB_1X_SEED_VARIABLE = "RANDOM_SEED"
+
+
+def cocotb_seed_environment(seed: int, version: tuple[int, int] | None) -> dict[str, str]:
+    """The seed variable of the installed cocotb *version*, set to *seed*.
+
+    Raises :class:`CocotbSeedError` when *version* is unknown: guessing would
+    set a variable the installed cocotb may not read, and the run would be
+    seeded by the clock while Booley records *seed*.
+    """
+    if version is None:
+        raise CocotbSeedError(
+            f"cannot seed the Cocotb run with {seed}: `cocotb-config --version` did not "
+            "report a version, so the seed variable of the installed cocotb is unknown"
+        )
+    variable = COCOTB_1X_SEED_VARIABLE if version[0] < 2 else COCOTB_SEED_VARIABLE
+    return {variable: str(seed)}
+
+
+def _test_selection_environment(
+    module: str, tests: list[str], cocotb_version: tuple[int, ...]
+) -> dict[str, str]:
+    """The variable that selects *tests* on the installed cocotb.
+
+    cocotb 1.x ignores COCOTB_TEST_FILTER entirely (it would silently run the
+    whole module); its selection dialect is TESTCASE, comma-separated exact
+    test-function names. Gated by version because cocotb 2.x removed TESTCASE.
+    """
+    if cocotb_version[0] < 2:
+        return {"TESTCASE": ",".join(tests)}
+    return {"COCOTB_TEST_FILTER": build_cocotb_test_filter(module, tests)}
+
+
+def _gpi_users(libpython: str, existing: str) -> str:
+    """``GPI_USERS`` for cocotb >= 2.1: its own users first, then inherited ones."""
+    (pygpi_entry_point,) = _cocotb_config([["--pygpi-entry-point"]])
+    required = [libpython, pygpi_entry_point]
+    inherited = (user for user in existing.split(";") if user and user not in required)
+    return ";".join([*required, *inherited])
 
 
 def _build_cocotb_env(
@@ -465,34 +526,29 @@ def _build_cocotb_env(
     module: str,
     tests: list[str],
     results_file: Path,
+    seed: int | None = None,
 ) -> dict[str, str]:
-    """The cocotb run environment (decision 9's run-stage glue)."""
+    """The cocotb run environment (decision 9's run-stage glue).
+
+    With a *seed*, exactly one seed variable is set: the one the installed
+    cocotb reads. An inherited value of either variable never survives.
+    """
     libpython, python_bin = _cocotb_config([["--libpython"], ["--python-bin"]])
-    cocotb_version = _cocotb_version()
+    probed_version = _probe_cocotb_version()
+    cocotb_version = probed_version or (2, 0)
     env = os.environ.copy()
+    if seed is not None:
+        env.pop(COCOTB_SEED_VARIABLE, None)
+        env.pop(COCOTB_1X_SEED_VARIABLE, None)
+        env.update(cocotb_seed_environment(seed, probed_version))
     env["COCOTB_TEST_MODULES"] = module
     env["MODULE"] = module  # cocotb < 2.0 compat (harmless on 2.x)
     if tests:
-        if cocotb_version[0] < 2:
-            # cocotb 1.x ignores COCOTB_TEST_FILTER entirely (it would
-            # silently run the whole module); its selection dialect is
-            # TESTCASE — comma-separated exact test-function names. Gated by
-            # version because cocotb 2.x removed TESTCASE support.
-            env["TESTCASE"] = ",".join(tests)
-        else:
-            env["COCOTB_TEST_FILTER"] = build_cocotb_test_filter(module, tests)
+        env.update(_test_selection_environment(module, tests, cocotb_version))
     env["LIBPYTHON_LOC"] = libpython
     env["PYGPI_PYTHON_BIN"] = python_bin
     if cocotb_version >= (2, 1):
-        (pygpi_entry_point,) = _cocotb_config([["--pygpi-entry-point"]])
-        required_users = [libpython, pygpi_entry_point]
-        existing_users = env.get("GPI_USERS", "").split(";")
-        env["GPI_USERS"] = ";".join(
-            [
-                *required_users,
-                *(user for user in existing_users if user and user not in required_users),
-            ]
-        )
+        env["GPI_USERS"] = _gpi_users(libpython, env.get("GPI_USERS", ""))
     env["COCOTB_RESULTS_FILE"] = str(results_file)
     # Spike S1: PyGPI imports resolve against the process cwd; pin the build
     # dir (where copyto staged the module) so a project run_cwd can't break it.
@@ -940,6 +996,12 @@ def _persist_cocotb_verdict(
     return output
 
 
+def _reported_infra_failure(work_dir: Path, detail: str) -> str:
+    """Report an infrastructure failure and return its detail for the caller."""
+    _report_infra_failure(work_dir, detail)
+    return detail
+
+
 def _prepare_invocation(
     *,
     build_dir: Path,
@@ -950,6 +1012,7 @@ def _prepare_invocation(
     work_dir: Path,
     plusargs: list[str],
     vcd: bool,
+    seed: int | None = None,
 ) -> tuple[dict[str, str], list[str]] | str:
     """Resolve the sim env + command; ``None`` means the failure was reported.
 
@@ -963,7 +1026,7 @@ def _prepare_invocation(
     (mutation_tester) records "no observation" rather than a verdict.
     """
     try:
-        env = _build_cocotb_env(build_dir, cocotb_module, tests, results_file)
+        env = _build_cocotb_env(build_dir, cocotb_module, tests, results_file, seed)
         cmd = _build_run_cmd(
             eda_tool=eda_tool,
             build_dir=build_dir,
@@ -971,8 +1034,7 @@ def _prepare_invocation(
             vcd=vcd,
         )
     except FileNotFoundError:
-        _report_infra_failure(work_dir, COCOTB_CONFIG_MISSING_MSG)
-        return COCOTB_CONFIG_MISSING_MSG
+        return _reported_infra_failure(work_dir, COCOTB_CONFIG_MISSING_MSG)
     except subprocess.CalledProcessError as exc:
         stderr = (exc.stderr or "").strip() if isinstance(exc.stderr, str) else ""
         detail = (
@@ -980,15 +1042,15 @@ def _prepare_invocation(
             + (f": {stderr}" if stderr else "")
             + f" — {COCOTB_CONFIG_MISSING_MSG}"
         )
-        _report_infra_failure(work_dir, detail)
-        return detail
+        return _reported_infra_failure(work_dir, detail)
+    except CocotbSeedError as exc:
+        return _reported_infra_failure(work_dir, str(exc))
     if cmd is None:
         detail = (
             f"no built cocotb sim found in {build_dir} "
             f"({'no vvp image (*.scr)' if eda_tool == 'icarus' else 'no Vtop binary'})"
         )
-        _report_infra_failure(work_dir, detail)
-        return detail
+        return _reported_infra_failure(work_dir, detail)
     return env, cmd
 
 
@@ -1042,6 +1104,7 @@ def _prepare_cocotb_run(
     plusargs: list[str],
     vcd: bool,
     trace_scope: str,
+    seed: int | None = None,
 ) -> _CocotbRun | str:
     build = Path(build_dir).resolve()
     run = Path(run_cwd).resolve() if run_cwd is not None else build
@@ -1064,11 +1127,13 @@ def _prepare_cocotb_run(
         work_dir=work,
         plusargs=plusargs,
         vcd=vcd,
+        seed=seed,
     )
     if isinstance(prepared, str):
         return prepared
     env, command = prepared
-    trace = TraceSession(work, trace_scope, backend="iverilog") if vcd else None
+    backend = "iverilog" if eda_tool == "icarus" else eda_tool
+    trace = TraceSession(work, trace_scope, backend=backend) if vcd else None
     if trace is not None:
         trace.reset_for_run((run / _DEFAULT_VCD_NAME,))
     return _CocotbRun(build, run, work, results, tests, env, command, trace)
@@ -1168,8 +1233,9 @@ def run_cocotb_sim(
     expected_trace_scope: str = "",
     runtime_inputs: tuple[str, ...] = (),
     transport: AdapterTransportIdentity | None = None,
+    seed: int | None = None,
 ) -> int:
-    """Run the edalize-built Cocotb simulator once."""
+    """Run the edalize-built Cocotb simulator once; *seed* seeds cocotb's Python side."""
     tests = list(tests or [])
     run = _prepare_cocotb_run(
         build_dir,
@@ -1181,15 +1247,10 @@ def run_cocotb_sim(
         plusargs=list(plusargs or []),
         vcd=vcd,
         trace_scope=expected_trace_scope,
+        seed=seed,
     )
     if isinstance(run, str):
-        _publish_adapter_result(
-            transport,
-            "",
-            False,
-            failure_kind="infrastructure",
-            detail=run,
-        )
+        _publish_adapter_result(transport, "", False, failure_kind="infrastructure", detail=run)
         return 1
     _print_run_banner(run.env, run.command, run.run_cwd, cocotb_module, eda_tool, tests)
     lines, proc, termination = _execute_cocotb_run(
@@ -1251,6 +1312,24 @@ def _non_negative_float(value: str) -> float:
     return fvalue
 
 
+def _add_test_selection_arguments(parser: argparse.ArgumentParser) -> None:
+    """What the process runs: the selected Tests and their seed."""
+    parser.add_argument(
+        "--test",
+        action="append",
+        default=[],
+        dest="tests",
+        help="selected test-function name (repeatable; drives "
+        "COCOTB_TEST_FILTER — omit to run the whole module)",
+    )
+    parser.add_argument(
+        "--seed",
+        type=_positive_int,
+        default=None,
+        help="seed exported through the installed cocotb's seed variable",
+    )
+
+
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Run an edalize-built cocotb sim (Icarus or Verilator)",
@@ -1272,14 +1351,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         dest="cocotb_module",
         help="cocotb test module (from the resolved flow options)",
     )
-    p.add_argument(
-        "--test",
-        action="append",
-        default=[],
-        dest="tests",
-        help="selected test-function name (repeatable; drives "
-        "COCOTB_TEST_FILTER — omit to run the whole module)",
-    )
+    _add_test_selection_arguments(p)
     p.add_argument("--run-cwd", default=None, help="cwd to run the sim from")
     p.add_argument("--work-dir", default=None, help="result/trace output dir")
     p.add_argument("--timeout", type=_positive_int, default=600, help="run timeout (seconds)")
@@ -1345,6 +1417,7 @@ def main(argv: list[str] | None = None) -> int:
         expected_trace_scope=args.expected_trace_scope,
         runtime_inputs=tuple(args.runtime_input),
         transport=transport,
+        seed=args.seed,
     )
 
 

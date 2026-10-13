@@ -90,7 +90,7 @@ def _state_pair_from_entry(
     baseline = as_str(params[BASELINE_TARGET_PARAM])
     if baseline is None or not baseline.strip():
         raise ImplementationComparisonError(
-            f"{criterion_key} has invalid baseline Target metadata"
+            f"Implementation comparison for Target {candidate!r} has invalid baseline Target metadata"
         )
     return TargetPair(baseline.strip(), candidate)
 
@@ -138,7 +138,7 @@ def _state_pair_for_candidate(
     pairs = {_state_pair_from_entry(entry, key, candidate.selector) for key, entry in matches}
     if len(pairs) != 1:
         raise ImplementationComparisonError(
-            f"conflicting {criterion_prefix.removesuffix('_')} Target pairs for "
+            "conflicting implementation Goal Target pairs for "
             f"candidate Target {candidate.identity!r}"
         )
     return next(iter(pairs))
@@ -179,7 +179,7 @@ def _binding_for_candidate(
     )
     if not matches or len(matches) != len(set(matches)):
         raise ImplementationComparisonError(
-            f"Ticket baseline has no unique {flow}/{criterion} binding for "
+            f"Baseline {flow.upper()}:{candidate.selector} has no unique binding for "
             f"candidate Target {candidate.selector!r}"
         )
     if any(
@@ -206,12 +206,12 @@ def _basis_plan(
     binding = _binding_for_candidate(basis, flow, criterion, candidate)
     if state_baseline.identity != binding.baseline:
         raise ImplementationComparisonError(
-            f"{criterion}_{state_pair.candidate} baseline Target metadata does not "
+            f"{flow.upper()}:{state_pair.candidate} baseline Target metadata does not "
             "match the Ticket baseline"
         )
     if not binding.baseline_selector.strip() or not binding.candidate_selector.strip():
         raise ImplementationComparisonError(
-            f"Ticket baseline {flow}/{criterion} binding for {candidate.identity!r} "
+            f"Baseline {flow.upper()}:{candidate.selector} binding for {candidate.identity!r} "
             "has an empty callable selector"
         )
     baseline = _select_execution_ref(
@@ -228,7 +228,7 @@ def _basis_plan(
     )
     if baseline.identity != binding.baseline or basis_candidate.identity != binding.candidate:
         raise ImplementationComparisonError(
-            f"Ticket baseline {flow}/{criterion} selectors do not resolve to recorded identities"
+            f"Baseline {flow.upper()}:{candidate.selector} selectors do not resolve to recorded identities"
         )
     return _make_plan(flow, baseline, basis_candidate, binding)
 

@@ -6,8 +6,11 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+from booley.criteria.presentation import CriterionPresentation, criterion_presentation
 from booley.criteria.state import CriterionChange, DevelopmentState, StatePersistence
 from booley.evidence.acceptance import ResolvedFlowAcceptance
+from booley.flows.campaign_results import StartedCampaign
+from booley.flows.frozen_test_runs import FrozenTestRuns
 from booley.flows.request import FlowRequest
 from booley.flows.source_fingerprint import compute_source_fingerprint
 from booley.runtime.endpoint_execution import EndpointOutcome
@@ -42,6 +45,38 @@ class AcceptanceRecorder(Protocol):
         established for an execution that requires one.
         """
         ...
+
+
+@runtime_checkable
+class GoalPresentationProvider(Protocol):
+    """Optional presentation pinned by the execution owner, independent of Goals."""
+
+    def present_criterion(self, key: str, entry: object) -> CriterionPresentation: ...
+
+
+@runtime_checkable
+class CandidateStoreProvider(Protocol):
+    """Optional neutral paths for recording advisory coverage candidates."""
+
+    def candidate_store_paths(self) -> tuple[str, Path, Path]: ...
+
+
+def execution_presentation(
+    recorder: AcceptanceRecorder, key: str, entry: object = None
+) -> CriterionPresentation:
+    """Use the admitted Goal identity when supplied; retain diagnostic presentation."""
+    if isinstance(recorder, GoalPresentationProvider):
+        return recorder.present_criterion(key, entry)
+    return criterion_presentation(key, entry)
+
+
+def execution_goal_name(recorder: AcceptanceRecorder, key: str) -> str:
+    """Textual producer identity; machine keys remain unchanged in results."""
+    if isinstance(recorder, GoalPresentationProvider):
+        presentation = recorder.present_criterion(key, None)
+        suffix = f" ({presentation.context})" if presentation.context else ""
+        return presentation.label + suffix
+    return key
 
 
 @runtime_checkable
@@ -110,6 +145,49 @@ def criterion_is_current_for(
         if isinstance(recorder, CriterionFreshness)
         else None
     )
+
+
+@runtime_checkable
+class FrozenTestRunsSource(Protocol):
+    """Optional recorder capability: the Test Runs the run's Goals are frozen to."""
+
+    def frozen_test_runs(self) -> FrozenTestRuns: ...
+
+
+def frozen_test_runs_for(recorder: AcceptanceRecorder) -> FrozenTestRuns | None:
+    """The frozen Test Runs *recorder* judges evidence by; ``None`` outside Goal Mode.
+
+    May raise :class:`EvidenceDiscarded` when the recorder's authority can no
+    longer be read.
+    """
+    if isinstance(recorder, FrozenTestRunsSource):
+        return recorder.frozen_test_runs()
+    return None
+
+
+@runtime_checkable
+class CampaignRegistry(Protocol):
+    """Optional recorder capability: learn of each Simulation Campaign before it runs.
+
+    A campaign that is cancelled or killed never returns an outcome; a
+    recorder that was told of it can still account for the results it left.
+    """
+
+    def register_campaign(self, campaign: StartedCampaign) -> None: ...
+
+
+def wants_campaigns(recorder: object) -> bool:
+    """Whether *recorder* wants to be told of each Simulation Campaign before it runs."""
+    return isinstance(recorder, CampaignRegistry)
+
+
+def register_campaign_for(recorder: object, campaign: StartedCampaign) -> None:
+    """Tell *recorder* that *campaign* is about to run, if it wants to know.
+
+    May raise :class:`AcceptanceRecordingError`.
+    """
+    if isinstance(recorder, CampaignRegistry):
+        recorder.register_campaign(campaign)
 
 
 @runtime_checkable

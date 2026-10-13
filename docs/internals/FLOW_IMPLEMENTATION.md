@@ -366,7 +366,7 @@ Goal entry argument is:
 
 ```json
 {
-  "family": "cycle_count",
+  "family": "CYCLE_COUNT",
   "target": "sim_coremark",
   "test": "coremark",
   "thresholds": {
@@ -403,7 +403,7 @@ Campaign manifest at
 Append-only attempts/results and the ordered `summary.json` remain beside that
 manifest across exact resume. The replaceable compatibility report at
 `<runtime>/flow-reports/sim/<N>/targets/<encoded-target>/simulation.json` uses
-`booley.simulation-projection/v2` and carries typed, digest-bound
+`booley.simulation-projection/v3` and carries typed, digest-bound
 `origin_target` references to the immutable manifest and optional public Coverage
 reference. Legacy producer-absolute strings are compatibility hints only; local
 Simulation Campaign authentication is authoritative. The projection also carries
@@ -715,13 +715,12 @@ For the full comparison and known `slang` limitations, see
 
 Exact loop and multi-driver counts come from a dedicated final Yosys `check`
 artifact emitted after technology mapping and optimization. Yosys also runs
-`check` several times during `synth`; any combinational-loop warning from those
-earlier checks is fatal even when the final check reports none. Because the
-same loop can be reported repeatedly, an earlier-only loop is recorded as a
-conservative count of one rather than summing occurrences. Earlier multi-driver
-warnings remain inventory-only; the final check decides that condition.
-Missing or stale final-check evidence makes `structural_checks_complete` false
-and cannot produce a passing synthesis result.
+`check` several times during `synth`; earlier-only combinational loops are
+advisory when the completed final check reports zero loops. Their diagnostic
+evidence is retained with a rationale explaining that the final netlist is
+clean. Earlier multi-driver warnings remain inventory-only; the final check
+decides that condition. Missing, stale, or incomplete final-check evidence makes
+`structural_checks_complete` false and cannot produce a passing synthesis result.
 
 Timeouts, infrastructure errors, and metric-less nonzero exits are Flow
 failures; critical conditions on an otherwise clean run are design failures.

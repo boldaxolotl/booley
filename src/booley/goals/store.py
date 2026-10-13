@@ -49,6 +49,7 @@ from booley.goals.model import (
     GoalState,
     WorktreeIdentity,
 )
+from booley.goals.naming import optional_names, record_names, save_names
 from booley.goals.paths import (
     GOAL_ID_PATTERN,
     RECORD_FILE,
@@ -58,6 +59,7 @@ from booley.goals.paths import (
     validate_goal_id,
     worktree_lock_file,
 )
+from booley.goals.test_run_resolution import resolution_update_violation
 from booley.runtime.atomic_files import (
     WriteOnceConflictError,
     atomic_replace_bytes,
@@ -477,6 +479,7 @@ class GoalStore:
         staging.mkdir(parents=True)
         try:
             atomic_replace_bytes(staging / RECORD_FILE, _encode(created))
+            save_names(staging, (row.spec for row in created.goals))
             staging.rename(target)
         except OSError as exc:
             shutil.rmtree(staging, ignore_errors=True)
@@ -533,7 +536,7 @@ class GoalStore:
         if record.id != goal_id:
             reason = f"it names Goal Record {record.id}"
             raise GoalRecordCorruptError([CorruptRecord(paths.record_file, reason)])
-        return record
+        return record_names(record, optional_names(paths.root))
 
     def save(self, lock: RecordLock, record: GoalRecord) -> GoalRecord:
         """Write *record* if the disk still holds ``record.revision``; return the new record.
@@ -564,7 +567,13 @@ class GoalStore:
         ]
         if changed:
             raise InvalidRecordUpdateError(f"Goal Record {record.id} cannot change {changed}")
+        frozen = frozen_run_violation(current, record)
+        if frozen:
+            raise InvalidRecordUpdateError(f"Goal Record {record.id}: {frozen}")
         saved = replace(record, revision=current.revision + 1)
+        save_names(
+            record_paths(self.project_dir, record.id).root, (row.spec for row in saved.goals)
+        )
         atomic_replace_bytes(
             record_paths(self.project_dir, record.id).record_file, _validate_encodable(saved)
         )
@@ -620,6 +629,26 @@ def _occupant(records: Sequence[GoalRecord], identity: WorktreeIdentity) -> Goal
         ids = ", ".join(record.id for record in matches)
         raise GoalStoreError(f"several Goal Records occupy one worktree: {ids}")
     return matches[0] if matches else None
+
+
+def frozen_run_violation(current: GoalRecord, record: GoalRecord) -> str:
+    """Why *record* may not replace *current*'s frozen Test Runs; empty when it may.
+
+    While a Goal keeps its specification revision, its resolution can only
+    fill pending slots (ADR 0072): the Test Runs it is frozen to are fixed.
+    """
+    for goal in current.goals:
+        key = goal.spec.key
+        before = current.test_run_resolution(key)
+        if before is None or goal not in record.goals:
+            continue
+        after = record.test_run_resolution(key)
+        if after is None:
+            return f"the frozen Test Runs of Goal {key} cannot be removed"
+        violation = resolution_update_violation(key, before, after)
+        if violation:
+            return violation
+    return ""
 
 
 def _encode(record: GoalRecord) -> bytes:

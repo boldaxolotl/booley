@@ -9,7 +9,7 @@ import re
 import shlex
 import shutil
 import time
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -18,6 +18,12 @@ from typing import Any, TypeGuard
 from fusesoc.vlnv import Vlnv
 
 from booley.config.project_config import load_test_configuration_field, lookup_target_section
+from booley.config.tests_toml_rules import (
+    TestVariantError,
+    adapter_argument,
+    option_key,
+    validate_env_table,
+)
 from booley.core.build_paths import work_root_for
 from booley.core.project_dir import PROJECT_DIR_NAME
 from booley.flows import artifacts as flow_artifacts
@@ -77,7 +83,19 @@ from booley.flows.sim.runtime_inputs import (
 )
 from booley.flows.sim.trace_recipe import TraceMode
 from booley.flows.sim.workload import build_workload_snapshot, capture_workload_inputs
+from booley.flows.target_test_plan import (
+    TargetTestPlan,
+    TestRunLaunch,
+    batch_test_runs,
+)
+from booley.flows.target_test_plan_loading import (
+    launches_cocotb,
+    load_target_test_plan,
+    plusarg_parameter_names,
+    simulation_adapter_kind,
+)
 from booley.flows.terminal_progress import announce_unit
+from booley.flows.test_runs import TestRun, discovered_test_run
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.runtime.project_dir import resolve_checkout_project_dir, resolve_project_dir
 from booley.runtime.supervised_execution import current_supervised_execution
@@ -97,6 +115,7 @@ from .contract import (
     NamedTests,
     PreSimEvidence,
     PreSimScopeStoppedError,
+    SelectedTestRuns,
     SimulationArtifactEvidence,
     SimulationInfrastructureFailure,
     SimulationOptions,
@@ -110,7 +129,7 @@ from .freshness import (
     ArtifactValidationError,
     validate_fresh_artifact,
 )
-from .pre_sim import run_pre_sim_commands
+from .pre_sim import run_pre_sim_commands, test_run_environment
 from .telemetry import parse_build_seconds, parse_run_seconds, process_resources
 
 _DEFAULT_CYCLE_SENTINEL = "[SIM_CYCLES]"
@@ -232,12 +251,26 @@ class _Attempt:
     cache_key: str | None = None
     reused: bool = False
     cache_decision: str = ""
+    #: Concrete Test Runs the caller resolved; ``None`` means the defaults.
+    test_runs: tuple[TestRun, ...] | None = None
+
+
+def _export_line(name: str, value: str) -> str:
+    """One shell ``export`` of an environment variable, safe to join into a script.
+
+    The value is quoted. The name cannot be quoted, so it must be a plain
+    shell identifier: every source validates its names, and this refuses
+    anything else again where the text becomes shell. Raises ``ValueError``.
+    """
+    validate_env_table({name: value}, where="simulator environment")
+    return f"export {name}={shlex.quote(value)}"
 
 
 def _adapter_shell_command(attempt: _Attempt) -> tuple[str, str, str]:
     """Preserve the Target environment when build and run use separate processes."""
     exports = "".join(
-        f"export {name}={shlex.quote(value)}\n" for name, value in attempt.simulator_environment
+        f"{_export_line(name, value)}\n"
+        for name, value in _launch_environment(attempt.simulator_environment, attempt.work)
     )
     invocation = shlex.join(prepare_adapter_invocation(attempt.work))
     return "sh", "-c", f"{exports}{invocation}"
@@ -726,18 +759,28 @@ class SimulationExecution:
 
     @contextmanager
     def ordinary_group(
-        self, handle: TargetHandle, test_names: tuple[str, ...]
+        self,
+        handle: TargetHandle,
+        test_names: tuple[str, ...],
+        test_runs: tuple[TestRun, ...] | None = None,
     ) -> Iterator[PreparedOrdinaryGroup]:
-        """Observe preparation and compilation within one owned group."""
+        """Observe preparation and compilation within one owned group.
+
+        *test_runs* are the concrete Test Runs the group launches; without
+        them each Test runs its default Variant at the Default Seed.
+        """
         with (
             attempt_scope(handle.selector, identity=handle.identity, tests=test_names),
-            self._ordinary_group(handle, test_names) as group,
+            self._ordinary_group(handle, test_names, test_runs) as group,
         ):
             yield group
 
     @contextmanager
     def _ordinary_group(
-        self, handle: TargetHandle, test_names: tuple[str, ...]
+        self,
+        handle: TargetHandle,
+        test_names: tuple[str, ...],
+        test_runs: tuple[TestRun, ...] | None = None,
     ) -> Iterator[PreparedOrdinaryGroup]:
         """Prepare one ordinary-HDL group for separately controlled build and launch.
 
@@ -759,7 +802,7 @@ class SimulationExecution:
             self._build_session = session
             group: PreparedOrdinaryGroup | None = None
             try:
-                attempt = self._prepare_attempt(handle, test_names)
+                attempt = self._prepare_attempt(handle, test_names, test_runs=test_runs)
                 begin_run_log(attempt.prepared.build_root, flow="sim", target=handle.selector)
                 group = PreparedOrdinaryGroup(
                     self,
@@ -787,10 +830,16 @@ class SimulationExecution:
         selection: SimulationSelection,
         *,
         planned_groups: tuple[tuple[str, ...], ...] | None = None,
+        planned_runs: tuple[tuple[TestRun, ...], ...] | None = None,
     ) -> SimulationTargetOutcome:
-        """Observe one compatibility Target without changing returned authority."""
+        """Observe one compatibility Target without changing returned authority.
+
+        *planned_runs* gives each planned group its concrete Test Runs.
+        """
         with attempt_scope(handle.selector, identity=handle.identity):
-            return self._run_observed(handle, selection, planned_groups=planned_groups)
+            return self._run_observed(
+                handle, selection, planned_groups=planned_groups, planned_runs=planned_runs
+            )
 
     def _run_observed(
         self,
@@ -798,6 +847,7 @@ class SimulationExecution:
         selection: SimulationSelection,
         *,
         planned_groups: tuple[tuple[str, ...], ...] | None = None,
+        planned_runs: tuple[tuple[TestRun, ...], ...] | None = None,
     ) -> SimulationTargetOutcome:
         """Execute the selected Target and return immutable normalized evidence."""
         started = time.monotonic()
@@ -810,13 +860,25 @@ class SimulationExecution:
             inspection = TargetCatalog.build(handle.project_root).inspect(handle)
         except fusesoc_registry.FuseSocError as exc:
             return _setup_failure(handle, str(exc), started)
-        groups = (
-            planned_groups
-            if planned_groups is not None
-            else _work_groups(selection, _is_cocotb(inspection.flow_options))
-        )
+        if planned_groups is None:
+            try:
+                run_groups = _selection_run_groups(handle, inspection, selection)
+            except ValueError as exc:
+                return _setup_failure(handle, str(exc), started)
+            planned_groups = tuple(_group_names(group) for group in run_groups)
+            # Defaults are derived again per group; only named Test Runs travel.
+            planned_runs = run_groups if isinstance(selection, SelectedTestRuns) else None
+        groups = planned_groups
+        if planned_runs is not None and len(planned_runs) != len(groups):
+            return _setup_failure(
+                handle, "planned Test Runs disagree with the planned groups", started
+            )
         try:
-            results = self._run_groups_with_session(handle, groups)
+            results = (
+                self._run_groups_with_session(handle, groups)
+                if planned_runs is None
+                else self._run_groups_with_session(handle, groups, planned_runs=planned_runs)
+            )
         except (
             SimulationBuildSlotError,
             _BuildRootResetError,
@@ -841,15 +903,35 @@ class SimulationExecution:
         return replace(outcome, pre_sim_runs=tuple(self._pre_sim_firings))
 
     def _run_groups_with_session(
-        self, handle: TargetHandle, groups: tuple[tuple[str, ...], ...]
+        self,
+        handle: TargetHandle,
+        groups: tuple[tuple[str, ...], ...],
+        *,
+        planned_runs: tuple[tuple[TestRun, ...], ...] | None = None,
     ) -> list[SimulationTargetOutcome]:
         """Hold the Target lease through every group and artifact capture."""
         with SimulationBuildSession(handle, _build_policy(self._options.trace).variant) as session:
             self._build_session = session
             try:
-                return [self._run_group(handle, names) for names in groups]
+                return self._run_planned_groups(handle, groups, planned_runs=planned_runs)
             finally:
                 self._build_session = None
+
+    def _run_planned_groups(
+        self,
+        handle: TargetHandle,
+        groups: tuple[tuple[str, ...], ...],
+        *,
+        planned_runs: tuple[tuple[TestRun, ...], ...] | None = None,
+    ) -> list[SimulationTargetOutcome]:
+        """Run each group in order, with its concrete Test Runs when planned."""
+        runs = planned_runs if planned_runs is not None else (None,) * len(groups)
+        return [
+            self._run_group(handle, names)
+            if group_runs is None
+            else self._run_group(handle, names, group_runs)
+            for names, group_runs in zip(groups, runs, strict=True)
+        ]
 
     def preview(
         self,
@@ -858,10 +940,12 @@ class SimulationExecution:
     ) -> SimulationPreview:
         """Describe the same work grouping and adapter rendering without side effects."""
         inspection = TargetCatalog.build(handle.project_root).inspect(handle)
-        cocotb = _is_cocotb(inspection.flow_options)
-        groups = _work_groups(selection, cocotb)
+        cocotb = launches_cocotb(inspection.flow_options)
+        run_groups = _selection_run_groups(handle, inspection, selection)
+        groups = tuple(_group_names(group) for group in run_groups)
         commands = tuple(
-            self._preview_group(handle, inspection, names, cocotb) for names in groups
+            self._preview_group(handle, inspection, _group_names(runs), cocotb, runs)
+            for runs in run_groups
         )
         inputs = getattr(inspection, "inputs", ())
         constraints = tuple(item.path for item in inputs if item.file_type.lower() == "sdc")
@@ -876,39 +960,52 @@ class SimulationExecution:
             constraints=constraints,
             parameters=getattr(inspection, "parameters", {}),
             flow_options=inspection.flow_options,
+            run_groups=run_groups,
         )
 
     def plan_ordinary_group(
-        self, handle: TargetHandle, test_names: tuple[str, ...]
+        self,
+        handle: TargetHandle,
+        test_names: tuple[str, ...],
+        test_runs: tuple[TestRun, ...] | None = None,
     ) -> dict[str, object]:
-        """Prepare disposable scratch and disclose its exact staged source closure."""
-        with self.ordinary_group(handle, test_names) as group:
+        """Prepare disposable scratch and disclose its exact staged source closure.
+
+        *test_runs* are the concrete Test Runs the group launches; without
+        them each Test is prepared as its default Variant at the Default Seed.
+        """
+        with self.ordinary_group(handle, test_names, test_runs) as group:
             disclosure = group.planning_disclosure()
             group.discard_prepared_generation()
         return disclosure
 
     def plan_campaign_group(
-        self, handle: TargetHandle, test_names: tuple[str, ...]
+        self,
+        handle: TargetHandle,
+        test_names: tuple[str, ...],
+        test_runs: tuple[TestRun, ...] | None = None,
     ) -> dict[str, object]:
         """Disclose one durable ordinary-HDL or Cocotb campaign build."""
-        return self.plan_ordinary_group(handle, test_names)
+        return self.plan_ordinary_group(handle, test_names, test_runs)
 
     def _run_group(
         self,
         handle: TargetHandle,
         test_names: tuple[str, ...],
+        test_runs: tuple[TestRun, ...] | None = None,
     ) -> SimulationTargetOutcome:
         started = time.monotonic()
         compile_surface = resolve_target_compile_surface(handle)
         sources_before = project_compile_surface(compile_surface)
-        attempt = self._prepare_attempt(handle, test_names)
+        attempt = self._prepare_attempt(handle, test_names, test_runs=test_runs)
         try:
             with self._runtime_view(handle, attempt):
-                return self._run_group_body(
+                outcome = self._run_group_body(
                     handle, attempt, compile_surface, sources_before, started
                 )
         except selftest_overlay.SelftestOverlayError as exc:
             raise SimulationBuildSlotError(str(exc)) from exc
+        return _with_test_runs(outcome, handle, attempt.work.test_runs)
 
     def _run_group_body(
         self,
@@ -1008,6 +1105,7 @@ class SimulationExecution:
             handle,
             attempt.test_names,
             prepared_override=(selected, TraceMode(attempt.work.trace_mode)),
+            test_runs=attempt.test_runs,
         )
         self._fresh_generation = None
         session.discard_candidate(candidate)
@@ -1022,12 +1120,7 @@ class SimulationExecution:
             )
         except OSError as exc:
             raise SimulationBuildSlotError(f"cannot open retained generation log: {exc}") from exc
-        return replace(
-            reused,
-            cache_key=key,
-            reused=True,
-            cache_decision=decision,
-        )
+        return replace(reused, cache_key=key, reused=True, cache_decision=decision)
 
     def _run_authorized_group(
         self,
@@ -1200,6 +1293,7 @@ class SimulationExecution:
         test_names: tuple[str, ...],
         *,
         prepared_override: tuple[PreparedSimulationBuild, TraceMode] | None = None,
+        test_runs: tuple[TestRun, ...] | None = None,
     ) -> _Attempt:
         """Prepare a fresh candidate, or rebind *prepared_override*'s retained image.
 
@@ -1208,9 +1302,7 @@ class SimulationExecution:
         """
         started = time.monotonic()
         observe_stage(handle.selector, "preparing", tests=test_names)
-        prepared, trace_mode = (
-            prepared_override if prepared_override is not None else self._prepare_build(handle)
-        )
+        prepared, trace_mode = prepared_override or self._prepare_build(handle)
         adapter = "cocotb" if prepared.resolved.cocotb_module else prepared.eda_tool
         configured_run_cwd = _configured_run_cwd(handle.project_root)
         identity = _adapter_identity(
@@ -1228,10 +1320,9 @@ class SimulationExecution:
             trace=self._options.trace,
             trace_mode=trace_mode.value,
             configured_run_cwd=configured_run_cwd,
+            test_runs=test_runs,
         )
         _adapter_invocation(work)  # fail unsupported adapters before any build starts
-        pre_sim_commands = tuple(resolve_pre_sim_commands(handle.project_root))
-        simulator_environment = tuple(simulation_target_environment(handle).items())
         observe_stage(
             handle.selector,
             "preparing",
@@ -1249,12 +1340,13 @@ class SimulationExecution:
             work=work,
             wrapper_timeout_s=work.timeout_s
             + (_TRACE_CLEANUP_MARGIN_S if self._options.trace else 0),
-            pre_sim_commands=pre_sim_commands,
-            simulator_environment=simulator_environment,
+            pre_sim_commands=tuple(resolve_pre_sim_commands(handle.project_root)),
+            simulator_environment=tuple(simulation_target_environment(handle).items()),
             cycle_sentinels=tuple(resolve_cycle_sentinels(handle.project_root)),
             workload_inputs=(),
             configured_run_cwd=configured_run_cwd,
             setup_s=time.monotonic() - started,
+            test_runs=test_runs,
         )
 
     def _prepare_build(self, handle: TargetHandle) -> tuple[PreparedSimulationBuild, TraceMode]:
@@ -1306,6 +1398,7 @@ class SimulationExecution:
             simulator_environment=dict(attempt.simulator_environment),
             commands=attempt.pre_sim_commands,
             run_cwd=attempt.work.run_cwd,
+            test_runs=attempt.work.test_runs,
         )
 
     def _completed_group(
@@ -1391,6 +1484,7 @@ class SimulationExecution:
         inspection: Any,
         test_names: tuple[str, ...],
         cocotb: bool,
+        test_runs: tuple[TestRun, ...] | None = None,
     ) -> tuple[str, ...]:
         root = handle.project_root
         announce_unit("configure", target=handle.selector)
@@ -1402,12 +1496,15 @@ class SimulationExecution:
             inspection=inspection,
         )
         rel = edam_layer.relpath_for_make(build_root, root)
-        work = _preview_work(self, handle, inspection, test_names, cocotb, rel)
+        work = _preview_work(self, handle, inspection, test_names, cocotb, rel, test_runs)
         steps = [
-            *_preview_exports(handle, test_names, build_root),
+            *_preview_exports(handle, test_names, build_root, work.test_runs),
             shlex.join(setup),
             *resolve_pre_sim_commands(root),
             shlex.join(edam_layer.make_command(rel)),
+            # The Test Variant's environment reaches the simulator launch only,
+            # exactly as the run applies it: never setup, Pre-Sim or the build.
+            *(_export_line(name, value) for name, value in work.environment),
             shlex.join(prepare_adapter_invocation(work)),
         ]
         return ("sh", "-c", " && ".join(steps))
@@ -1473,17 +1570,61 @@ def _trace_overlay(handle: TargetHandle) -> Any:
     return trace_overlay.write_trace_overlay(handle)
 
 
-def _is_cocotb(flow_options: Mapping[str, Any]) -> bool:
-    module = flow_options.get("cocotb_module")
-    return isinstance(module, str) and bool(module)
+def _group_names(runs: tuple[TestRun, ...]) -> tuple[str, ...]:
+    """Bare Test names of one simulator process; empty for the unnamed invocation."""
+    return tuple(run.test for run in runs if run.test is not None)
 
 
-def _work_groups(selection: SimulationSelection, cocotb: bool) -> tuple[tuple[str, ...], ...]:
+def _selection_run_groups(
+    handle: TargetHandle, inspection: Any, selection: SimulationSelection
+) -> tuple[tuple[TestRun, ...], ...]:
+    """Resolve *selection* to concrete Test Runs, grouped by simulator process."""
+    cocotb = launches_cocotb(inspection.flow_options)
+    plan = target_test_plan(
+        handle,
+        simulation_adapter_kind(inspection.eda_tool, inspection.flow_options),
+        getattr(inspection, "parameters", {}),
+    )
     if isinstance(selection, DefaultSelection):
-        return ((),)
+        return (group_test_runs(plan, (), None),)
+    if isinstance(selection, SelectedTestRuns):
+        return batch_test_runs(selection.runs, one_process_per_run=not cocotb)
     if not isinstance(selection, NamedTests):
         raise TypeError(f"unsupported Simulation selection: {type(selection).__name__}")
-    return (selection.names,) if cocotb else tuple((name,) for name in selection.names)
+    runs = group_test_runs(plan, selection.names, None)
+    return batch_test_runs(runs, one_process_per_run=not cocotb)
+
+
+def _with_test_runs(
+    outcome: SimulationTargetOutcome, handle: TargetHandle, runs: tuple[TestRun, ...]
+) -> SimulationTargetOutcome:
+    """Name the Test Run each result of one simulator process observed."""
+    if not runs:
+        return outcome
+    tests = tuple(
+        replace(test, test_run=_observed_test_run(test.name, handle, runs))
+        for test in outcome.tests
+    )
+    return replace(outcome, tests=tests)
+
+
+def _observed_test_run(name: str, handle: TargetHandle, runs: tuple[TestRun, ...]) -> TestRun:
+    """The Test Run of *runs* that the result called *name* observed.
+
+    A process runs each Test at most once, so a result is bound by its Test
+    name. A result that is not named after a selected Test stands for the
+    process as a whole (the unnamed invocation, or a failure before any Test
+    reported) and takes the first Test Run. A Test that an unfiltered Cocotb
+    batch discovered ran under the batch's unnamed invocation: it is that
+    Test at the batch's seed and environment.
+    """
+    by_test = {run.test: run for run in runs}
+    if name in by_test:
+        return by_test[name]
+    first = runs[0]
+    if first.test is not None or name in {"", handle.selector}:
+        return first
+    return discovered_test_run(name, first)
 
 
 def simulation_target_environment(handle: TargetHandle) -> dict[str, str]:
@@ -1493,28 +1634,101 @@ def simulation_target_environment(handle: TargetHandle) -> dict[str, str]:
     return {str(name): str(value) for name, value in environment.items()}
 
 
-def _simulation_plusargs(
-    handle: TargetHandle,
-    test_names: tuple[str, ...],
-    parameters: Mapping[str, Any],
-) -> list[str]:
-    rendered = _parameter_plusargs(parameters)
-    if len(test_names) != 1:
-        return rendered
-    registry = load_test_configuration_field(handle.project_root, "tests")
-    available = lookup_target_section(registry, handle.selector) or []
-    if test_names[0] not in available:
-        return rendered
-    from booley.config.project_config import render_test_selector
+def launch_environment(
+    target_environment: Mapping[str, str], variant_environment: Iterable[tuple[str, str]]
+) -> dict[str, str]:
+    """The simulator process environment: the Target's, then the Test Variant's.
 
-    selector = render_test_selector(
+    *variant_environment* is the launch's ``(name, value)`` pairs, applied at
+    launch only. The ``tests.toml`` loader refuses a Variant variable the
+    Target's ``env`` table also sets, so the two never overlap.
+    """
+    return {**target_environment, **dict(variant_environment)}
+
+
+def _launch_environment(
+    target_environment: tuple[tuple[str, str], ...], work: PreparedSimulationWork
+) -> tuple[tuple[str, str], ...]:
+    return tuple(launch_environment(dict(target_environment), work.environment).items())
+
+
+def target_test_plan(
+    handle: TargetHandle, adapter: str, parameters: Mapping[str, Any]
+) -> TargetTestPlan:
+    """Build the Test Run plan of one resolved Target from its checkout."""
+    return load_target_test_plan(
+        handle.project_root,
         handle.selector,
-        available.index(test_names[0]),
-        test_names[0],
-        work_dir=handle.project_root,
-    ).removeprefix("+")
-    key = _plusarg_key(selector)
-    return [value for value in rendered if _plusarg_key(value) != key] + [selector]
+        adapter=adapter,
+        target_plusargs=plusarg_parameter_names(parameters),
+    )
+
+
+def group_test_runs(
+    plan: TargetTestPlan,
+    test_names: tuple[str, ...],
+    test_runs: tuple[TestRun, ...] | None,
+) -> tuple[TestRun, ...]:
+    """The Test Runs of one simulator process.
+
+    A caller that resolved concrete Test Runs passes them. Otherwise every
+    named Test runs its default Variant at the Default Seed, and an empty
+    group is the Target's unnamed invocation.
+    """
+    if test_runs is None:
+        return plan.default_runs_for(test_names)
+    if _group_names(test_runs) != test_names:
+        raise ValueError("Simulation Test Runs disagree with the group's Test names")
+    for run in test_runs:
+        plan.require_applicable(run)
+    return test_runs
+
+
+def simulation_plusargs(launch: TestRunLaunch, parameters: Mapping[str, Any]) -> list[str]:
+    """Target plusargs, then the process's own arguments (ADR 0072 order).
+
+    A Target plusarg that ``select`` or the ``seed`` template also sets is
+    dropped: the rendered argument is the one value the testbench must see.
+    Nothing else replaces a Target plusarg. Raises :class:`TestVariantError`
+    when a Test Variant argument sets an option that the Target, ``select`` or
+    the seed owns: such a run would launch other inputs than it records.
+    """
+    rendered = _parameter_plusargs(parameters)
+    booley_keys = {option_key(argument) for argument in launch.booley_arguments}
+    owned = booley_keys | {option_key(f"+{name}") for name in plusarg_parameter_names(parameters)}
+    for argument in launch.variant_arguments:
+        if option_key(argument) in owned:
+            raise TestVariantError(
+                f"Test Variant argument {argument!r} sets an option that the Target, "
+                "the select template or the seed already sets; the launch is refused"
+            )
+    kept = [value for value in rendered if option_key(value) not in booley_keys]
+    return kept + [adapter_argument(argument) for argument in launch.arguments]
+
+
+def _artifact_group(plan: TargetTestPlan, runs: tuple[TestRun, ...], cocotb: bool) -> str:
+    """Directory name of one process's evidence among its Target's.
+
+    An HDL process is named by its Test Run (``stress+soak@42``), or by the
+    Target for the unnamed invocation. A Cocotb batch of default Test Runs is
+    ``batch``. Any other batch is named by a digest of its Test Run names: a
+    request names each Test Run once and batches share none, so two batches
+    never share a directory, and the same batch always gets the same one.
+    """
+    first = runs[0]
+    if not cocotb:
+        return first.name if first.test is not None else ""
+    plain = first.seed == plan.default_seed and not first.env
+    if plain and all(_runs_default_variant(plan, run) for run in runs):
+        return "batch"
+    names = "\n".join(run.name for run in runs)
+    return "batch-" + hashlib.sha256(names.encode("utf-8")).hexdigest()[:12]
+
+
+def _runs_default_variant(plan: TargetTestPlan, run: TestRun) -> bool:
+    """Whether *run* is its Test's default Test Variant (or the Test declares none)."""
+    table = plan.variants_of(run.test) if run.test is not None else None
+    return run.variant is None if table is None else run.variant == table.default
 
 
 def _parameter_plusargs(parameters: Mapping[str, Any]) -> list[str]:
@@ -1533,11 +1747,6 @@ def _parameter_plusargs(parameters: Mapping[str, Any]) -> list[str]:
             raise ValueError(f"resolved plusarg parameter {name!r} contains a NUL byte")
         result.append(f"{name}={text}")
     return result
-
-
-def _plusarg_key(value: str) -> str | None:
-    stripped = value.removeprefix("+")
-    return None if stripped.startswith("-") else stripped.partition("=")[0] or None
 
 
 def _configured_run_cwd(root: Path) -> Path:
@@ -1568,6 +1777,49 @@ def _simulation_run_cwd(
         return str(configured_run_cwd)
 
 
+def _process_launch_fields(
+    handle: TargetHandle,
+    adapter: str,
+    parameters: Mapping[str, Any],
+    test_names: tuple[str, ...],
+    test_runs: tuple[TestRun, ...] | None,
+    plusargs_suffix: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    """The fields of one simulator process that its Test Runs decide.
+
+    Run-time inputs only (ADR 0072): the plusargs, the Test Variant's
+    environment, the Cocotb seed, the Test Runs and their evidence directory.
+    Raises ``ValueError`` for a ``tests.toml`` declaration this Target cannot
+    apply.
+    """
+    cocotb = adapter == "cocotb"
+    plan = target_test_plan(handle, adapter, parameters)
+    runs = group_test_runs(plan, test_names, test_runs)
+    launch = plan.launch(runs)
+    return {
+        "adapter": adapter,
+        "plusargs": (*simulation_plusargs(launch, parameters), *plusargs_suffix),
+        "environment": launch.environment,
+        "cocotb_seed": launch.seed if cocotb else None,
+        "test_runs": runs,
+        "artifact_group": _artifact_group(plan, runs, cocotb),
+        "tests": test_names,
+    }
+
+
+def _project_run_fields(root: Path) -> dict[str, Any]:
+    """The fields of a simulator process that the Project's configuration decides."""
+    passes, fails = resolve_sim_sentinels(root)
+    return {
+        "max_rundir_bytes": resolve_max_rundir_bytes(root),
+        "trace_args": tuple(resolve_trace_args(root)),
+        "trace_files": tuple(resolve_trace_files(root)),
+        "pass_sentinels": tuple(passes),
+        "fail_sentinels": tuple(fails),
+        "sim_time_grace_s": resolve_sim_time_grace_s(root),
+    }
+
+
 def prepare_simulation_work(
     handle: TargetHandle,
     prepared: PreparedSimulationBuild,
@@ -1578,16 +1830,25 @@ def prepare_simulation_work(
     trace_mode: str,
     configured_run_cwd: Path | None = None,
     plusargs_suffix: tuple[str, ...] = (),
+    test_runs: tuple[TestRun, ...] | None = None,
 ) -> PreparedSimulationWork:
-    """Shape one prepared build through the shared Simulation adapter contract."""
+    """Shape one prepared build through the shared Simulation adapter contract.
+
+    *test_runs* are this process's concrete Test Runs, aligned with the selected
+    Tests; without them each Test runs its default Variant at the Default Seed.
+    """
     root = handle.project_root
-    rel = edam_layer.relpath_for_make(prepared.build_root, root)
-    cocotb = bool(prepared.resolved.cocotb_module)
-    plusargs = _simulation_plusargs(handle, identity.selected_tests, prepared.resolved.parameters)
-    passes, fails = resolve_sim_sentinels(root)
+    adapter = "cocotb" if prepared.resolved.cocotb_module else prepared.eda_tool
+    parameters = prepared.resolved.parameters
+    try:
+        launch_fields = _process_launch_fields(
+            handle, adapter, parameters, identity.selected_tests, test_runs, plusargs_suffix
+        )
+    except ValueError as exc:
+        # A tests.toml declaration this Target cannot apply: nothing may launch.
+        raise SimulationBuildPreparationError(str(exc)) from exc
     return PreparedSimulationWork(
-        adapter="cocotb" if cocotb else prepared.eda_tool,
-        build_dir=rel,
+        build_dir=edam_layer.relpath_for_make(prepared.build_root, root),
         run_cwd=_simulation_run_cwd(
             root,
             prepared.work_root,
@@ -1596,24 +1857,18 @@ def prepare_simulation_work(
         ),
         timeout_s=max(1, (options.timeout_ms or resolve_sim_timeout_ms(root)) // 1000),
         eda_tool=prepared.eda_tool,
-        max_rundir_bytes=resolve_max_rundir_bytes(root),
-        plusargs=(*plusargs, *plusargs_suffix),
         trace=trace,
         trace_mode=trace_mode,
         trace_scope=prepared.toplevel,
-        trace_args=tuple(resolve_trace_args(root)),
-        trace_files=tuple(resolve_trace_files(root)),
         runtime_inputs=declared_runtime_inputs(prepared.resolved),
-        pass_sentinels=tuple(passes),
-        fail_sentinels=tuple(fails),
         top=prepared.toplevel,
         cocotb_module=prepared.resolved.cocotb_module or "",
-        tests=identity.selected_tests,
         result_verbosity=options.result_verbosity,
-        sim_time_grace_s=resolve_sim_time_grace_s(root),
         adapter_result_path=str(identity.result_path),
         attempt_token=identity.attempt_token,
         target_identity=identity.target_identity,
+        **launch_fields,
+        **_project_run_fields(root),
     )
 
 
@@ -1624,6 +1879,7 @@ def _preview_work(
     test_names: tuple[str, ...],
     cocotb: bool,
     rel: str,
+    test_runs: tuple[TestRun, ...] | None = None,
 ) -> PreparedSimulationWork:
     root = handle.project_root
     try:
@@ -1634,31 +1890,34 @@ def _preview_work(
             "declare either `flow: sim` with `flow_options.tool`, or legacy "
             "`default_tool`"
         ) from exc
-    passes, fails = resolve_sim_sentinels(root)
     return PreparedSimulationWork(
-        adapter="cocotb" if cocotb else eda_tool,
         build_dir=rel,
         run_cwd=_simulation_run_cwd(root, root / rel),
         timeout_s=max(1, execution._effective_timeout_ms(handle) // 1000),
         eda_tool=eda_tool,
-        max_rundir_bytes=resolve_max_rundir_bytes(root),
-        plusargs=tuple(_simulation_plusargs(handle, test_names, inspection.parameters)),
         trace=execution._options.trace,
         trace_scope=inspection.toplevel,
-        trace_args=tuple(resolve_trace_args(root)),
-        trace_files=tuple(resolve_trace_files(root)),
         runtime_inputs=preview_runtime_inputs(getattr(inspection, "inputs", ())),
-        pass_sentinels=tuple(passes),
-        fail_sentinels=tuple(fails),
         top=inspection.toplevel,
         cocotb_module=str(inspection.flow_options.get("cocotb_module") or ""),
-        tests=test_names,
         result_verbosity=execution._options.result_verbosity,
-        sim_time_grace_s=resolve_sim_time_grace_s(root),
+        **_process_launch_fields(
+            handle,
+            "cocotb" if cocotb else eda_tool,
+            inspection.parameters,
+            test_names,
+            test_runs,
+        ),
+        **_project_run_fields(root),
     )
 
 
-def _preview_exports(handle: TargetHandle, names: tuple[str, ...], build_root: Path) -> list[str]:
+def _preview_exports(
+    handle: TargetHandle,
+    names: tuple[str, ...],
+    build_root: Path,
+    test_runs: tuple[TestRun, ...],
+) -> list[str]:
     root = handle.project_root
     values = {
         **simulation_target_environment(handle),
@@ -1670,7 +1929,8 @@ def _preview_exports(handle: TargetHandle, names: tuple[str, ...], build_root: P
     }
     if len(names) == 1:
         values["BOOLEY_TEST_NAME"] = names[0]
-    return [f"export {name}={shlex.quote(value)}" for name, value in values.items()]
+    values.update(test_run_environment(test_runs))
+    return [_export_line(name, value) for name, value in values.items()]
 
 
 def _pre_sim_failure(
@@ -1882,7 +2142,7 @@ def _adapter_command(
         prepared,
         identity.attempt_token,
         run_line=shlex.join(_adapter_invocation(work)),
-        run_environment=dict(environment),
+        run_environment=dict(_launch_environment(environment, work)),
     )
     return ("sh", "-c", script)
 
@@ -2297,7 +2557,7 @@ def _workload_snapshot(
         "cycle_sentinels": list(attempt.cycle_sentinels),
         "pre_run_commands": list(attempt.pre_sim_commands),
         "run_cwd": attempt.work.run_cwd,
-        "environment": dict(attempt.simulator_environment),
+        "environment": dict(_launch_environment(attempt.simulator_environment, attempt.work)),
     }
     return build_workload_snapshot(
         handle.project_root,
@@ -2363,7 +2623,7 @@ def _archive_run_logs(
     if attempt.adapter == "cocotb":
         relative = flow_artifacts.publish_bytes(
             artifact_root,
-            (target, "tests", "batch", "run.log"),
+            (target, "tests", _evidence_group(handle, attempt), "run.log"),
             output.encode(),
             work_dir=artifact_root,
         )
@@ -2371,7 +2631,7 @@ def _archive_run_logs(
         return (SimulationArtifactEvidence("run_log", str(path), path.stat().st_size, names),)
     evidence: list[SimulationArtifactEvidence] = []
     for name in names:
-        test = artifact_path_component(name)
+        test = _evidence_group(handle, attempt, name)
         relative = flow_artifacts.publish_bytes(
             artifact_root,
             (target, "tests", test, "run.log"),
@@ -2385,6 +2645,18 @@ def _archive_run_logs(
     return tuple(evidence)
 
 
+def _evidence_group(handle: TargetHandle, attempt: _Attempt, name: str | None = None) -> str:
+    """The evidence directory of *attempt* (of its Test *name*) under its Target.
+
+    The Test Run name where the work resolved one, so ``test@xN`` and two Test
+    Variants of one Test keep separate evidence; otherwise the bare Test name.
+    """
+    if attempt.adapter == "cocotb":
+        return artifact_path_component(attempt.work.artifact_group or "batch")
+    fallback = name or (attempt.test_names or (handle.selector,))[0]
+    return artifact_path_component(attempt.work.artifact_group or fallback)
+
+
 def _archive_file_evidence(
     handle: TargetHandle,
     attempt: _Attempt,
@@ -2395,11 +2667,7 @@ def _archive_file_evidence(
     if artifact_root is None:
         return evidence
     target = artifact_path_component(f"sim_{handle.selector}")
-    group = (
-        "batch"
-        if attempt.adapter == "cocotb"
-        else artifact_path_component((attempt.test_names or (handle.selector,))[0])
-    )
+    group = _evidence_group(handle, attempt)
     archived: list[SimulationArtifactEvidence] = []
     try:
         for item in evidence:

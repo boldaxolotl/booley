@@ -10,11 +10,17 @@ from pathlib import Path
 from typing import Any
 
 from booley.config.goals import quiet_after
+from booley.core.boundary import require_dict
 from booley.criteria.evidence_ledger import validated_evidence_records
-from booley.criteria.presentation import CriterionPresentation, criterion_presentation
+from booley.criteria.presentation import CriterionPresentation
 from booley.goals.binding import GoalBindingError, GoalRunBinding
-from booley.goals.model import OCCUPYING_STATES, GoalRecord
+from booley.goals.diagnostics import is_unnamable_error, unavailable_diagnostic
+from booley.goals.format import test_run_lines
+from booley.goals.lifecycle import read_sealed_artifact
+from booley.goals.model import OCCUPYING_STATES, GoalRecord, GoalSpec
+from booley.goals.naming import apply_names, optional_names, read_names
 from booley.goals.paths import REVIEW_PACKAGE_FILE, record_paths
+from booley.goals.presentation import UNAVAILABLE_GOAL, goal_presentation
 from booley.goals.proposals import digest
 from booley.goals.recorder import GOAL_SCOPE
 from booley.goals.review_package import original_observations
@@ -43,6 +49,8 @@ class GoalDetail:
     provenance: tuple[dict[str, Any], ...] = ()
     checking: bool = False
     artifacts: tuple[str, ...] = ()
+    #: The Goal's frozen Test Runs with their outcomes and rerun commands (ADR 0072).
+    test_runs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -86,17 +94,12 @@ def _terminal(store: GoalStore, record: GoalRecord) -> GoalView:
         record.package_digest and record.package_digest != "sha256:" + digest(data)
     ):
         raise ValueError("completion package differs from frozen Goal facts")
+    names = _terminal_names(packages[0].parent, root, record)
     details = tuple(
         GoalDetail(
             row["key"],
             "passing",
-            criterion_presentation(
-                row["key"],
-                {
-                    "params": row["spec"].get("params", {}),
-                    "detail": row["selected_observation"]["detail"],
-                },
-            ),
+            _terminal_presentation(row, names),
             row["selected_observation"],
             tuple(row["original_observations"]),
             artifacts=available_paths(
@@ -105,7 +108,60 @@ def _terminal(store: GoalStore, record: GoalRecord) -> GoalView:
         )
         for row in data["goals"]
     )
-    return GoalView(record.id, record, goals=details, terminal_summary=data["session_summary"])
+    return GoalView(
+        record.id,
+        record,
+        goals=details,
+        diagnostic=UNAVAILABLE_GOAL if names is None else "",
+        terminal_summary=data["session_summary"],
+    )
+
+
+def _terminal_names(directory: Path, root: Path, record: GoalRecord) -> dict[str, str] | None:
+    try:
+        if any(
+            (directory / name).exists()
+            for name in ("goal-names.json", "goal-names.authority.json")
+        ):
+            return _completion_names(directory, record)
+        return optional_names(root)
+    except (OSError, ValueError):
+        return None
+
+
+def _terminal_presentation(
+    row: dict[str, Any], names: dict[str, str] | None
+) -> CriterionPresentation:
+    if names is None:
+        return CriterionPresentation(UNAVAILABLE_GOAL, "", "", "", "")
+    try:
+        spec = apply_names(GoalSpec.from_json(row["spec"], where="completion Goal"), names)
+    except ValueError:
+        return CriterionPresentation(UNAVAILABLE_GOAL, "", "", "", "")
+    return goal_presentation(
+        spec, {"params": spec.params, "detail": row["selected_observation"]["detail"]}
+    ).criterion()
+
+
+def _completion_names(directory: Path, record: GoalRecord) -> dict[str, str]:
+    """Validate the independently sealed display snapshot before using its subjects."""
+    names = read_names(directory)
+    if not (directory / "goal-names.json").is_file():
+        raise ValueError(UNAVAILABLE_GOAL)
+    request = require_dict(
+        json.loads((directory / "request.json").read_bytes()), field="Goal naming request"
+    )
+    request_digest = request.pop("payload_digest", None)
+    if (
+        request_digest != digest(request)
+        or request.get("record_id") != record.id
+        or request.get("operation_id") != record.finish_operation
+        or request.get("worktree") != record.worktree.to_json()
+    ):
+        raise ValueError(UNAVAILABLE_GOAL)
+    if read_sealed_artifact(directory, "goal-names", request, record) != names:
+        raise ValueError(UNAVAILABLE_GOAL)
+    return names
 
 
 def project_goal(store: GoalStore, record: GoalRecord) -> GoalView:
@@ -143,7 +199,7 @@ def project_goal(store: GoalStore, record: GoalRecord) -> GoalView:
                 GoalDetail(
                     goal.key,
                     label,
-                    criterion_presentation(goal.key, facts),
+                    goal_presentation(by_key[goal.key].spec, facts).criterion(),
                     selected.get(goal.key),
                     tuple(
                         original_observations(
@@ -152,6 +208,7 @@ def project_goal(store: GoalStore, record: GoalRecord) -> GoalView:
                     )
                     if goal.key in selected
                     else (),
+                    test_runs=tuple(test_run_lines(goal)),
                 )
             )
         return GoalView(current.id, current, status, _goal_artifacts(details, current, store))
@@ -222,6 +279,13 @@ def health_lines(root: Path, project_dir: Path) -> tuple[str, ...]:
     return tuple(lines)
 
 
+def _unavailable_view(record: GoalRecord, error: BaseException) -> GoalView:
+    diagnostic = (
+        unavailable_diagnostic(error) if is_unnamable_error(error) else f"unavailable: {error}"
+    )
+    return GoalView(record.id, record, diagnostic=diagnostic)
+
+
 class DashboardReader:
     """Bounded record-lock acquisitions and independent failures across record rows."""
 
@@ -245,7 +309,7 @@ class DashboardReader:
             try:
                 goals.append(project_goal(store, record))
             except (OSError, ValueError, RuntimeError) as exc:
-                goals.append(GoalView(record.id, record, diagnostic=f"unavailable: {exc}"))
+                goals.append(_unavailable_view(record, exc))
         goals.extend(
             GoalView(str(item), diagnostic="corrupt Goal Record") for item in scan.corrupt
         )

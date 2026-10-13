@@ -17,11 +17,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from booley.core.boundary import BoundaryError
+from booley.flows.execution_persistence import AcceptanceRecorder, CandidateStoreProvider
 from booley.flows.sim import waiver_candidates as store
 from booley.flows.sim.coverage_campaign import CoverageCampaign
 from booley.flows.sim.coverage_campaign_store import (
-    CAMPAIGN_SCHEMA_V3,
-    CAMPAIGN_SCHEMA_V4,
+    POINT_STORE_CAMPAIGN_SCHEMAS,
     CoverageCampaignSummary,
 )
 from booley.flows.sim.coverage_provisional import (
@@ -41,28 +41,10 @@ class GoalCandidateContext:
     record_dir: Path
 
     @classmethod
-    def from_environment(
-        cls, slug: str, environment: Mapping[str, str]
-    ) -> GoalCandidateContext | None:
-        """Return the Goal Record context, or None outside Goal Mode."""
-        goal_file = environment.get("BOOLEY_GOAL_FILE", "")
-        if goal_file:
-            import json
-
-            from booley.goals.binding import GoalRunBinding
-
-            raw = environment.get("BOOLEY_GOAL_RUN_BINDING")
-            if not raw:
-                raise ValueError("Goal candidates require the admission binding")
-            binding = GoalRunBinding.from_json(json.loads(raw))
-            from booley.goals.paths import record_paths
-
-            paths = record_paths(binding.project_dir, binding.record_id)
-            return cls(
-                binding.record_id,
-                paths.runtime_dir / "flow-reports",
-                paths.root,
-            )
+    def from_recorder(cls, recorder: AcceptanceRecorder) -> GoalCandidateContext | None:
+        """Receive paths from the admission owner, never reinterpret environment roots."""
+        if isinstance(recorder, CandidateStoreProvider):
+            return cls(*recorder.candidate_store_paths())
         return None
 
 
@@ -72,9 +54,9 @@ def _binding(
     campaign_path: Path,
     flow_reports_root: Path,
 ) -> store.CampaignBinding:
-    if summary is None or summary.source_schema not in {CAMPAIGN_SCHEMA_V3, CAMPAIGN_SCHEMA_V4}:
-        raise ValueError("only point-store Campaigns (V3/V4) can bind Waiver Candidates")
-    assert summary.point_store is not None  # V3/V4 always carry a point store
+    if summary is None or summary.source_schema not in POINT_STORE_CAMPAIGN_SCHEMAS:
+        raise ValueError("only point-store Campaigns (V3 and later) can bind Waiver Candidates")
+    assert summary.point_store is not None  # every point-store version carries a point store
     try:
         relative = canonical_project_alias_path(campaign_path.absolute()).relative_to(
             canonical_project_alias_path(flow_reports_root.absolute())

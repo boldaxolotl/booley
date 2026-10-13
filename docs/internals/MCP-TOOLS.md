@@ -988,7 +988,7 @@ Invalid input or
 malformed/model-incomplete output is an execution error; a valid advisory report
 succeeds even when its Campaign records simulation failure or a coverage miss.
 
-The wrapper checks canonical invocation/Target identity, the complete V3/V4
+The wrapper checks canonical invocation/Target identity, the complete point-store
 manifest/point-store relationship, and a matching completed Simulation projection
 before model invocation. The deep module is
 `analyze_coverage_campaign(campaign, sources, instruction)`; `CoverageAnalyzer`
@@ -1012,7 +1012,7 @@ cumulative byte budgets; later `points` or `source` queries may pass delivered v
 as `point_refs`. The host privately resolves them back to exact Campaign IDs before
 publishing an advisory report. Point records include their complete eligible,
 unscored, or waived disposition and Approved Waiver provenance. The host first
-deep-validates the complete V3/V4 manifest/point-store pair, so paging and reference
+deep-validates the complete manifest/point-store pair, so paging and reference
 resolution never weaken Campaign integrity. No other MCP tool is visible to this
 model. The validated session retains references to immutable
 Coverage Points rather than encoded population copies, uses an exact-ID index, derives

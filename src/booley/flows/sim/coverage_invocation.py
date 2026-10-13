@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 
+from booley.flows.test_runs import TestRun
 from booley.runtime.timefmt import utc_now_rfc3339
 from booley.targets.catalog import PreparedTargetSelection, TargetCatalog
 from booley.targets.domain import FuseSocError, TargetHandle, immutable_mapping
@@ -27,10 +28,17 @@ from .verilator_coverage_execution import prepare_coverage_collection
 
 @dataclass(frozen=True)
 class CoverageInvocationRequest:
-    """Explicit coverage selection; absent test names mean the registered suite minus skips."""
+    """Explicit coverage selection; absent test names mean the registered suite minus skips.
+
+    ``test_runs`` holds the concrete Test Runs already resolved for a Target
+    (ADR 0072), keyed by Target selector; they replace ``tests`` for that
+    Target, and several may be runs of one Test. A Target without an entry
+    runs each selected Test as its default Test Variant at the Default Seed.
+    """
 
     targets: tuple[str, ...]
     tests: tuple[str, ...] | None = None
+    test_runs: Mapping[str, tuple[TestRun, ...]] = field(default_factory=dict)
     trace: bool = False
     # Raw coverage: evaluate with no approved waivers.
     no_waivers: bool = False
@@ -49,10 +57,12 @@ class CoverageProjectContext:
     waiver_config: CoverageWaiverConfig | None = None
 
     skipped_tests: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    criterion_names: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "test_names", immutable_mapping(self.test_names))
         object.__setattr__(self, "criteria", MappingProxyType(dict(self.criteria)))
+        object.__setattr__(self, "criterion_names", MappingProxyType(dict(self.criterion_names)))
         object.__setattr__(
             self,
             "skipped_tests",
@@ -68,6 +78,8 @@ class CoverageTargetPlan:
     declared_tests: tuple[str, ...]
     selected_tests: tuple[str, ...]
     trace: bool
+    #: Every Test Run the campaign collects, grouped in ``selected_tests`` order.
+    test_runs: tuple[TestRun, ...] = ()
     criterion: CoverageCriterion | None = None
     criterion_key: str = ""
     collection_request: CoverageCollectionRequest | None = None
@@ -98,7 +110,10 @@ def _finding(code: str, message: str, pointer: str = "/targets") -> CoverageFind
 
 
 def _suite(
-    handle: TargetHandle, request: CoverageInvocationRequest, context: CoverageProjectContext
+    handle: TargetHandle,
+    request: CoverageInvocationRequest,
+    context: CoverageProjectContext,
+    runs: tuple[TestRun, ...] | None = None,
 ):
     declared = tuple(
         context.test_names.get(handle.selector, context.test_names.get(handle.name, ()))
@@ -117,7 +132,9 @@ def _suite(
     )
     # Selection never consults the Coverage Criterion: its test list is required
     # evidence, compared with what ran by evaluate_coverage_campaign (suite mismatch).
-    if request.tests is not None:
+    if runs is not None:
+        selected = tuple(dict.fromkeys(str(run.test) for run in runs))
+    elif request.tests is not None:
         selected = request.tests
     else:
         selected = tuple(name for name in declared if name not in skipped)
@@ -142,48 +159,63 @@ def _suite(
     return tuple(sorted(declared)), tuple(sorted(selected)), key, criterion
 
 
-def _prepare_target(
-    handle: TargetHandle,
-    catalog: TargetCatalog,
-    request: CoverageInvocationRequest,
-    context: CoverageProjectContext,
-):
-    try:
-        declared, selected, key, criterion = _suite(handle, request, context)
-    except ValueError as exc:
-        return None, _finding("COV_SUITE_INVALID", f"{handle.selector}: {exc}")
-    if request.no_waivers and criterion is not None and not request.diagnostic:
-        return None, _finding(
-            "COV_NO_WAIVERS_CRITERION",
-            f"{handle.selector}: --no-waivers skips the approved waivers that "
-            f"Coverage Criterion {key} is evaluated with; add --diagnostic for a "
-            "non-acceptance run with raw numbers, or drop --no-waivers",
-            "/no_waivers",
-        )
-    inspection = catalog.inspect(handle)
-    collection = prepare_coverage_collection(
-        handle, selected_tests=selected, artifact_root=Path(), trace=request.trace
-    )
-    finding = coverage_request_finding(collection)
-    if finding is not None:
-        return None, finding
-    closure = coverage_source_closure(inspection)
+def _collection_recipe(
+    handle: TargetHandle, inspection, closure, trace: bool
+) -> dict[str, object]:
+    """What decides a Target's coverage collection, for its recipe fingerprint."""
     from .verilator_declarations import DECLARATION_CONTRACT, DECLARATION_OPTIONS
 
-    recipe = {
+    return {
         "declaration_contract": DECLARATION_CONTRACT,
         "declaration_options": DECLARATION_OPTIONS,
         "identity": handle.identity,
         "options": inspection.flow_options,
         "parameters": inspection.parameters,
         "sources": closure,
-        "trace": request.trace,
+        "trace": trace,
     }
+
+
+def _prepare_target(
+    handle: TargetHandle,
+    catalog: TargetCatalog,
+    request: CoverageInvocationRequest,
+    context: CoverageProjectContext,
+):
+    runs = request.test_runs.get(handle.selector)
+    try:
+        declared, selected, key, criterion = _suite(handle, request, context, runs)
+    except ValueError as exc:
+        return None, _finding("COV_SUITE_INVALID", f"{handle.selector}: {exc}")
+    if request.no_waivers and criterion is not None and not request.diagnostic:
+        return None, _finding(
+            "COV_NO_WAIVERS_CRITERION",
+            f"{handle.selector}: --no-waivers skips the approved waivers that "
+            f"{context.criterion_names.get(key, 'Coverage Criterion ' + key)} is evaluated with; "
+            "add --diagnostic for a "
+            "non-acceptance run with raw numbers, or drop --no-waivers",
+            "/no_waivers",
+        )
+    inspection = catalog.inspect(handle)
+    collection = prepare_coverage_collection(
+        handle,
+        selected_tests=selected,
+        artifact_root=Path(),
+        trace=request.trace,
+        # Grouped by Test in ``selected`` order; a Test's runs keep request order.
+        test_runs=None if runs is None else tuple(sorted(runs, key=lambda run: str(run.test))),
+    )
+    finding = coverage_request_finding(collection)
+    if finding is not None:
+        return None, finding
+    closure = coverage_source_closure(inspection)
+    recipe = _collection_recipe(handle, inspection, closure, request.trace)
     plan = CoverageTargetPlan(
         handle,
         declared,
         selected,
         request.trace,
+        test_runs=tuple(item.run for item in collection.selected_tests if item.run is not None),
         criterion=criterion,
         criterion_key=key,
         waiver_config=None if request.no_waivers else context.waiver_config,

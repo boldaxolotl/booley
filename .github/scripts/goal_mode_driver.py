@@ -28,6 +28,8 @@ from mcp import Client, StdioServerParameters
 
 from booley.dev_support.demo_contract_codec import load_contract
 from booley.goals.model import GoalArg, GoalFamily, GoalRecord, GoalState, goal_arg_to_json
+from booley.goals.naming import resolve_spelling
+from booley.goals.presentation import goal_presentation
 from booley.goals.store import GoalStore
 from booley.goals.translate import translate_goals
 from booley.runtime.atomic_files import atomic_replace_bytes
@@ -122,7 +124,11 @@ def status_rows(text: str, record_id: str, keys: Sequence[str]) -> dict[str, str
     header = re.search(
         rf"^{re.escape(record_id)} \(active\) · (\d+)/(\d+) met$", text, re.MULTILINE
     )
-    matches = re.findall(r"^\s*(\S+)\s+(met|unmet|stale)(?:\s|$)", text, re.MULTILINE)
+    matches = re.findall(
+        r"^\s*(\S+)(?:[ \t]+\([^\n]*\))?[ \t]+(met|unmet|stale)(?:\s|$)",
+        text,
+        re.MULTILINE,
+    )
     rows = dict(matches)
     if len(matches) != len(keys):
         raise GoalDriverError(f"goal_status has missing or duplicate rows: {text}")
@@ -165,8 +171,12 @@ async def _status(
     session: ToolSession, worktree: Path, entry: dict[str, Any], goals: Sequence[GoalArg]
 ) -> dict[str, Any]:
     text = await tool_text(session, "goal_status", {"work_dir": str(worktree)})
-    keys = [goal.key for goal in translate_goals(goals).goals]
-    rows = status_rows(text, entry["record_id"], keys)
+    names = {
+        goal.key: goal_presentation(resolve_spelling(goal, worktree)).name
+        for goal in translate_goals(goals).goals
+    }
+    public_rows = status_rows(text, entry["record_id"], list(names.values()))
+    rows = {key: public_rows[name] for key, name in names.items()}
     return {
         "record_id": entry["record_id"],
         "goals": rows,

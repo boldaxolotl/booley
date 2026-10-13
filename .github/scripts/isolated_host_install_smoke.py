@@ -1,6 +1,6 @@
 """Run README installation on distro Python; exempt only full Host Bootstrap.
 
-Fixture-only root preparation installs sudo, creates an unprivileged user with
+Fixture preparation installs sudo and pipx, creates an unprivileged user with
 /home storage, and writes a direct-wheel constraint. Artifacts are read-only;
 no source, Project, host configuration, or Docker socket is mounted. A fresh
 login shell represents reopening the terminal after pipx ensurepath.
@@ -20,8 +20,8 @@ import zipfile
 from pathlib import Path
 
 IMAGE = "ubuntu:26.04"
+PIPX_PREPARATION = ("sudo apt-get update", "sudo apt-get install -y pipx", "pipx ensurepath")
 COMMANDS = {
-    "prepare": ("sudo apt-get update", "sudo apt-get install -y pipx", "pipx ensurepath"),
     "install": ("pipx install booley-rtl", "booley bootstrap"),
     "upgrade": ("pipx upgrade booley-rtl", "booley bootstrap --update"),
 }
@@ -161,7 +161,7 @@ def inside(wheel: Path, commands: dict[str, tuple[str, ...]]) -> None:
     Path("/etc/sudoers.d/smoke").write_text("smoke ALL=(ALL) NOPASSWD: ALL\n")
     Path("/etc/sudoers.d/smoke").chmod(0o440)
     Path("/home/smoke/constraint.txt").write_text(f"booley-rtl @ {wheel.as_uri()}\n")
-    for command in commands["prepare"]:
+    for command in PIPX_PREPARATION:
         user_command(command)
     user_command('test "$(command -v booley || true)" = ""')
     for command in commands["install"]:

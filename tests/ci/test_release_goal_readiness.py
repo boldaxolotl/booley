@@ -148,7 +148,7 @@ def test_release_rejects_mismatched_entry_record(tmp_path: Path) -> None:
 def test_release_derives_required_goals_from_supplied_contract(tmp_path: Path) -> None:
     contract = tmp_path / "demo.toml"
     contract.write_text(
-        CONTRACT.read_text() + '\n[[required_goal]]\nfamily = "sim"\ntarget = "sim_dhry"\n'
+        CONTRACT.read_text() + '\n[[required_goal]]\nfamily = "SIM"\ntarget = "sim_dhry"\n'
     )
     result = _run(tmp_path, _evidence(), contract)
     assert result.returncode == 2

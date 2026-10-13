@@ -15,24 +15,24 @@ required_targets = [
 ]
 
 [[required_goal]]
-family = "lint"
+family = "LINT"
 target = "lint_core"
 
 [[required_goal]]
-family = "sim"
+family = "SIM"
 target = "sim_core"
 
 [[required_goal]]
-family = "sim"
+family = "SIM"
 target = "sim_wb"
 
 [[required_goal]]
-family = "synth"
+family = "SYNTH"
 target = "synth_core"
 thresholds = { cell_count_increase_at_most = "11%", critical_path_ps_increase_at_most = "3%" }
 
 [[required_goal]]
-family = "mutation"
+family = "MUTATION"
 target = "sim_core"
 min_detected = 14
 total = 15

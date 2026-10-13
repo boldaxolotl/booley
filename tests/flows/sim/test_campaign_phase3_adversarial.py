@@ -127,7 +127,7 @@ class _TestExecution:
         self._build_root = build_root
 
     @contextmanager
-    def ordinary_group(self, _handle: object, names: tuple[str, ...]):
+    def ordinary_group(self, _handle: object, names: tuple[str, ...], _test_runs=None):
         yield _TestGroup(self._build_root, names[0])
 
 

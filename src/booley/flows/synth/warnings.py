@@ -11,7 +11,7 @@ import hashlib
 import re
 from collections import Counter
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 WarningDisposition = Literal["benign", "advisory", "structural"]
@@ -239,7 +239,7 @@ def _openroad_records(text: str) -> list[_WarningRecord]:
     return result
 
 
-def _records(sources: Mapping[str, str]) -> list[_WarningRecord]:
+def _records(sources: Mapping[str, str], structural: StructuralConditions) -> list[_WarningRecord]:
     records: list[_WarningRecord] = []
     for source in _SOURCE_ORDER:
         text = sources.get(source, "")
@@ -250,7 +250,20 @@ def _records(sources: Mapping[str, str]) -> list[_WarningRecord]:
         elif source == "sv2v":
             records.extend(_sv2v_records(text))
         else:
-            records.extend(_yosys_records(text))
+            parsed = _yosys_records(text)
+            if source != "final_check" and structural.complete and structural.comb_loops == 0:
+                parsed = [
+                    replace(
+                        item,
+                        disposition="advisory",
+                        rationale="Earlier synthesis pass reported this loop; the completed final "
+                        "netlist check reports no combinational loops.",
+                    )
+                    if item.category == "combinational_loop"
+                    else item
+                    for item in parsed
+                ]
+            records.extend(parsed)
     return records
 
 
@@ -291,7 +304,15 @@ def _warning_summary(records: list[_WarningRecord]) -> WarningSummary:
         )
         for key, count in grouped.items()
     ]
-    groups.sort(key=lambda item: (item.tool, item.code or "", item.category, item.message))
+    groups.sort(
+        key=lambda item: (
+            not (item.category == "combinational_loop" and item.disposition == "advisory"),
+            item.tool,
+            item.code or "",
+            item.category,
+            item.message,
+        )
+    )
     return WarningSummary(
         total_warnings=len(records),
         unique_warnings=len(groups),
@@ -310,22 +331,17 @@ def _structural_conditions(sources: Mapping[str, str]) -> StructuralConditions:
         return StructuralConditions()
     records = _yosys_records(final_check)
     final_comb_loops = sum(item.category == "combinational_loop" for item in records)
-    earlier_comb_loop = any(
-        item.category == "combinational_loop" for item in _yosys_records(sources.get("yosys", ""))
-    )
     return StructuralConditions(
         complete=True,
-        # The final check provides an exact count. Earlier synth checks can
-        # repeat the same diagnostic, so retain their presence as a
-        # conservative lower bound instead of summing their occurrences.
-        comb_loops=final_comb_loops or int(earlier_comb_loop),
+        comb_loops=final_comb_loops,
         multi_driven=sum(item.category == "multi_driver" for item in records),
     )
 
 
 def parse_synth_diagnostics(sources: Mapping[str, str]) -> SynthDiagnostics:
     """Parse fresh stage text into bounded warnings and structural conditions."""
+    structural = _structural_conditions(sources)
     return SynthDiagnostics(
-        warnings=_warning_summary(_records(sources)),
-        structural=_structural_conditions(sources),
+        warnings=_warning_summary(_records(sources, structural)),
+        structural=structural,
     )

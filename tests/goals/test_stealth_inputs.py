@@ -48,7 +48,7 @@ def stealth(tmp_path):
         reconcile_projected_cores(worktree)
         record = enter_goal_mode(
             EntryRequest(
-                worktree, "stealth", parse_goal_args([{"family": "lint", "target": "top"}])
+                worktree, "stealth", parse_goal_args([{"family": "LINT", "target": "top"}])
             ),
             EntryEnvironment(control),
         ).record
@@ -156,7 +156,7 @@ def test_target_less_nonversioned_hidden_constraint_follows_literal_definition(l
     from tests.goals.conftest import enter_goals
 
     layout.record = enter_goals(
-        layout, [{"family": "review", "review": "rtl_bugs", "verdict": "done"}]
+        layout, [{"family": "REVIEW", "review": "rtl_bugs", "verdict": "done"}]
     )
     constraint = layout.worktree / ".booley_project/top.sdc"
     constraint.write_text("constraint first\n")

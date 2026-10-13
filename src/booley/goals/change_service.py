@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -88,7 +89,10 @@ def _prepare_proposal(
         if not isinstance(raw, Mapping):
             raise ProposalError("after must be a typed Goal argument")
         after_arg = dict(cast("Mapping[str, Any]", raw))
-        after = translate_after(after_arg)
+        after = translate_after(after_arg, work_dir=Path(record.worktree_path))
+        if before is not None and before.target == after.target:
+            after = replace(after, display_target=before.display_target)
+        after_arg["family"] = after.family.value
         if kind is ChangeKind.ADD:
             key, before = after.key, None
         validate_kind(kind, before, after)

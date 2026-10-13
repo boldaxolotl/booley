@@ -21,6 +21,10 @@ corpus) → `bwave schema` (JSON Schema for `--format json`).
 
 ## Mental model
 
+- **Query input**: every query and introspection command requires an `.fst`
+  store. Convert a VCD with `bwave build trace.vcd -o trace.fst` first;
+  passing the VCD to a query exits 2 with a build hint. See
+  `bwave docs show commands/overview` for the shared file-input rule.
 - **Sync mode (default)**: every emitted row is indexed by *clock cycle*. Cycle
   1 is the first rising edge after reset deasserts. The clock is auto-detected
   (`*clk*` heuristic, shallowest scope wins) — override with `--clock PATTERN`.

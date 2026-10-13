@@ -145,17 +145,36 @@ def load_host_installation(path: Path | None = None) -> HostInstallationIdentity
         ) from exc
 
 
-def _write_identity(identity: HostInstallationIdentity, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
-    content = json.dumps(asdict(identity), indent=2, sort_keys=True) + "\n"
+def _validated_candidate(package_resource: Path) -> HostInstallationIdentity:
     try:
-        temporary.write_text(content, encoding="utf-8")
-        if os.name != "nt":
-            temporary.chmod(0o600)
-        temporary.replace(path)
-    finally:
-        temporary.unlink(missing_ok=True)
+        return _parse_identity(asdict(current_host_installation(package_resource)))
+    except BoundaryError as exc:
+        remedy = (
+            "install a build made from a complete source checkout"
+            if "revision" in str(exc)
+            else "reinstall a valid build"
+        )
+        raise HostInstallationError(f"invalid build identity: {exc}; {remedy}") from exc
+
+
+def _write_identity(identity: HostInstallationIdentity, path: Path) -> None:
+    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        content = json.dumps(asdict(identity), indent=2, sort_keys=True) + "\n"
+        try:
+            temporary.write_text(content, encoding="utf-8")
+            if os.name != "nt":
+                temporary.chmod(0o600)
+            if load_host_installation(temporary) != identity:
+                raise HostInstallationError("serialized host installation identity differs")
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
+    except (OSError, UnicodeError) as exc:
+        raise HostInstallationError(
+            f"cannot write host installation identity {path}: {exc}"
+        ) from exc
 
 
 def register_host_installation(
@@ -168,7 +187,7 @@ def register_host_installation(
     if error := _eligibility_error(package_resource):
         raise HostInstallationError(error)
     destination = path or host_installation_path()
-    candidate = current_host_installation(package_resource)
+    candidate = _validated_candidate(package_resource)
     if destination.exists() and not update:
         current = load_host_installation(destination)
         if current != candidate:
@@ -179,7 +198,12 @@ def register_host_installation(
             )
         return current
     _write_identity(candidate, destination)
-    return candidate
+    persisted = load_host_installation(destination)
+    if persisted != candidate:
+        raise HostInstallationError(
+            f"persisted host installation identity {destination} differs from this build"
+        )
+    return persisted
 
 
 def host_install_error(

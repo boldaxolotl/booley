@@ -8,9 +8,11 @@ from rich.console import Console
 from rich.table import Table
 
 from booley.evidence.timing import worst_fmax_from_json
+from booley.goals.presentation import UNAVAILABLE_GOAL, goal_presentation
+from booley.goals.test_run_resolution import SUITE_SLOT
 
 if TYPE_CHECKING:
-    from booley.goals.status import GoalStatusView
+    from booley.goals.status import GoalStatus, GoalStatusView
 
 
 def _format_coverage_metric(
@@ -196,6 +198,60 @@ def format_met_goal_metric(key: str, entry: Any) -> str:
     return format_criterion_metric(key, entry) or "evidence recorded"
 
 
+# How many Test Runs, and how many rerun commands, one Goal lists before it
+# only counts the rest: a multi-seed Goal may hold up to a thousand seeds.
+_TEST_RUN_LIMIT = 16
+_RERUN_LIMIT = 8
+
+
+def test_run_lines(goal: GoalStatus) -> list[str]:
+    """What status shows of a Goal's frozen Test Runs (ADR 0072); empty for other Goals.
+
+    Every frozen run with its outcome (``passed``, ``failed``, ``missing``),
+    the slots still pending, the runs frozen after entry, and for each
+    failing run the command that runs exactly it again.
+    """
+    judgement = goal.test_runs
+    if judgement is None:
+        return []
+    runs = judgement.runs
+    counts = ", ".join(
+        f"{sum(run.outcome == outcome for run in runs)} {outcome}"
+        for outcome in ("passed", "failed", "missing")
+        if any(run.outcome == outcome for run in runs)
+    )
+    shown = ", ".join(f"{run.name} {run.outcome}" for run in runs[:_TEST_RUN_LIMIT])
+    more = f", and {len(runs) - _TEST_RUN_LIMIT} more" if len(runs) > _TEST_RUN_LIMIT else ""
+    name = goal.presentation.text if goal.presentation else UNAVAILABLE_GOAL
+    lines = [f"{name}: {len(runs)} Test Runs ({counts or 'none'}): {shown or '—'}{more}"]
+    if judgement.pending:
+        waiting = ", ".join(
+            "the Target" if slot == SUITE_SLOT else slot for slot in judgement.pending
+        )
+        lines.append(f"  pending (does not exist yet): {waiting}")
+    late = [run.name for run in runs if run.deferred]
+    if late:
+        lines.append(f"  resolved after entry: {', '.join(late)}")
+    failed = judgement.failed
+    lines += [f"  rerun {run.name}: {run.rerun}" for run in failed[:_RERUN_LIMIT]]
+    if len(failed) > _RERUN_LIMIT:
+        lines.append(f"  ... and {len(failed) - _RERUN_LIMIT} more failing Test Runs")
+    return lines
+
+
+# Not a pytest test, although its name starts with ``test_``.
+test_run_lines.__test__ = False  # type: ignore[attr-defined]
+
+
+def _print_test_runs(console: Console, view: GoalStatusView) -> None:
+    """The frozen Test Runs of every Goal of *view* that is judged by them."""
+    lines = [line for goal in view.goals for line in test_run_lines(goal)]
+    if lines:
+        console.print("Test Runs")
+    for line in lines:
+        console.print(f"  {line}", soft_wrap=True)
+
+
 def render_status(
     views: tuple[GoalStatusView, ...],
     *,
@@ -206,7 +262,7 @@ def render_status(
     import io
 
     stream = io.StringIO()
-    console = Console(file=stream, color_system=None, width=120, markup=False)
+    console = Console(file=stream, color_system=None, width=120, markup=False, emoji=False)
     if project_wide and views:
         console.print("No Goal Mode is active here. Active Goal Modes in this Project:")
     compact = len(views) != 1 if short is None else short
@@ -216,29 +272,54 @@ def render_status(
         )
         if view.warning:
             console.print(view.warning)
-        if not compact:
-            console.print(f"Worktree: {view.record.worktree_path}")
-            console.print(f"Branch: {view.record.branch}")
-            table = Table("Goal", "Status", "Evidence", box=None, padding=(0, 1))
+        if compact:
             for goal in view.goals:
-                evidence = goal.evidence_summary
-                if goal.status == "unmet" and goal.reason:
-                    evidence += f" — {goal.reason}"
-                table.add_row(goal.key, goal.status, evidence)
-            console.print(table)
-            console.print(f"Pending proposals: {view.pending_proposals}")
-            conflicts = dict(view.proposal_conflicts)
-            for proposal_view in view.proposals:
-                proposal = proposal_view.proposal
-                console.print(
-                    f"Proposal {proposal.id}: {proposal_view.state} · {proposal.kind.value} {proposal.goal_key} · {proposal.rationale}"
-                )
-                if proposal.id in conflicts:
-                    console.print(f"  Conflict: {conflicts[proposal.id]}")
-                if proposal_view.decision is not None:
-                    console.print(
-                        f"  {proposal_view.decision.source.value}: {proposal_view.decision.reason}"
-                    )
-            if view.interrupted_applies:
-                console.print("Interrupted applies: " + ", ".join(view.interrupted_applies))
+                name = goal.presentation.text if goal.presentation else UNAVAILABLE_GOAL
+                console.print(f"  {name}: {goal.status}")
+        else:
+            _render_long_status(console, view)
     return stream.getvalue().rstrip()
+
+
+def _render_long_status(console: Console, view: GoalStatusView) -> None:
+    """Detailed Goal rows and recoverable proposal state."""
+    console.print(f"Worktree: {view.record.worktree_path}")
+    console.print(f"Branch: {view.record.branch}")
+    # The Goal name and its status stay on one line however long the evidence is:
+    # clients read a row as "<name> <status>".
+    table = Table(box=None, padding=(0, 1))
+    table.add_column("Goal", no_wrap=True)
+    table.add_column("Status", no_wrap=True)
+    table.add_column("Evidence")
+    for goal in view.goals:
+        evidence = goal.evidence_summary
+        if goal.status == "unmet" and goal.reason:
+            evidence += f" — {goal.reason}"
+        table.add_row(
+            goal.presentation.text if goal.presentation else UNAVAILABLE_GOAL,
+            goal.status,
+            evidence,
+        )
+    console.print(table)
+    _print_test_runs(console, view)
+    console.print(f"Pending proposals: {view.pending_proposals}")
+    conflicts = dict(view.proposal_conflicts)
+    for proposal_view in view.proposals:
+        proposal = proposal_view.proposal
+        after = goal_presentation(proposal.after).text
+        change = (
+            f"{goal_presentation(proposal.before).text} → {after}"
+            if proposal.before is not None
+            else after
+        )
+        console.print(
+            f"Proposal {proposal.id}: {proposal_view.state} · {proposal.kind.value} {change} · {proposal.rationale}"
+        )
+        if proposal.id in conflicts:
+            console.print(f"  Conflict: {conflicts[proposal.id]}")
+        if proposal_view.decision is not None:
+            console.print(
+                f"  {proposal_view.decision.source.value}: {proposal_view.decision.reason}"
+            )
+    if view.interrupted_applies:
+        console.print("Interrupted applies: " + ", ".join(view.interrupted_applies))

@@ -57,6 +57,7 @@ from booley.flows.sim.runtime_inputs import (
     RuntimeInputBinding,
     materialize_campaign_runtime_inputs,
 )
+from booley.flows.test_runs import TestRun, test_run_from_document
 from booley.runtime.supervised_execution import current_supervised_execution
 from booley.targets.catalog import TargetCatalog
 
@@ -64,6 +65,8 @@ from ..build import build_output_tail
 from .codec import (
     MAX_DETAIL_BYTES,
     RECORD_MAX_BYTES,
+    RESULT_SCHEMA,
+    RESULT_V2_SCHEMA,
     SimulationCampaignIntegrityError,
     canonical_json_bytes,
     decode_bundle_build_attempt,
@@ -96,6 +99,7 @@ from .model import (
 from .planning import manifest_digest
 from .pre_sim_evidence import publish_pre_sim_firing
 from .run_directory import RunDirectory, claimed_run_directory, expand_run_directory
+from .test_run_binding import observation_test_runs
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,6 +129,8 @@ class _SharedFailure:
 class _GroupInputs:
     handle: object
     names: tuple[str, ...]
+    #: The work item's concrete Test Runs; ``None`` for a manifest older than v4.
+    test_runs: tuple[TestRun, ...] | None
     options: SimulationOptions
     execution: SimulationExecution
     workload: Mapping[str, object]
@@ -309,7 +315,9 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
         self._publication_checkpoint("before:build_attempt")
         request.store.publish_build_attempt(directory, attempt)
         self._publication_checkpoint("after:build_attempt")
-        with execution.ordinary_group(handle, names) as group:
+        with execution.ordinary_group(
+            handle, names, _work_item_test_runs(request.work_item)
+        ) as group:
             _authenticate_planning_disclosure(request, group)
             build = group.compile()
             if not build.passed:
@@ -358,7 +366,9 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
 
     @staticmethod
     def _prepare_shared_launch(request, ready, execution, handle, names):
-        with execution.ordinary_group(handle, names) as group:
+        with execution.ordinary_group(
+            handle, names, _work_item_test_runs(request.work_item)
+        ) as group:
             _authenticate_planning_disclosure(request, group)
             group.bind_authenticated_bundle(ready.build_execution)
         return group
@@ -374,7 +384,8 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
         inputs = self._group_inputs(request)
         handle, names, options = inputs.handle, inputs.names, inputs.options
         execution, workload, access = inputs.execution, inputs.workload, inputs.access
-        with execution.ordinary_group(handle, names) as group:
+        runs = _work_item_test_runs(request.work_item)
+        with execution.ordinary_group(handle, names, runs) as group:
             prepared = self._prepare_bundle_artifacts(
                 request,
                 build_directory,
@@ -483,6 +494,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
         return _GroupInputs(
             handle,
             names,
+            _work_item_test_runs(request.work_item),
             options,
             execution,
             workload,
@@ -508,6 +520,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             None,
             True,
             commands=_frozen_hook_commands(request),
+            test_runs=_work_item_test_runs(request.work_item) or (),
         )
         if pre_sim is not None:
             publish_pre_sim_firing(request, pre_sim, checkpoint=self._publication_checkpoint)
@@ -663,8 +676,7 @@ def _immutable_hook_failure(
 ) -> SimulationResult | None:
     if access != "immutable":
         return None
-    compile_surface = group.compile_surface
-    surface = project_compile_surface(compile_surface)
+    surface = project_compile_surface(group.compile_surface)
     pre_sim = _run_hook(
         handle,
         group.build_root,
@@ -673,10 +685,11 @@ def _immutable_hook_failure(
         run_cwd,
         False,
         commands=_frozen_hook_commands(request),
+        test_runs=_work_item_test_runs(request.work_item) or (),
     )
     if pre_sim is not None:
         publish_pre_sim_firing(request, pre_sim, checkpoint=checkpoint)
-    if project_compile_surface(compile_surface) != surface:
+    if project_compile_surface(group.compile_surface) != surface:
         raise SimulationCampaignIntegrityError(
             "Project compile inputs changed during immutable Pre-Sim Commands"
         )
@@ -759,6 +772,7 @@ def _run_hook(
     expose_build_root: bool,
     *,
     commands: tuple[str, ...] | None = None,
+    test_runs: tuple[TestRun, ...] = (),
 ):
     return run_pre_sim_commands(
         handle,  # type: ignore[arg-type]
@@ -771,6 +785,7 @@ def _run_hook(
         working_directory=run_cwd,
         expose_build_root=expose_build_root,
         commands=commands,
+        test_runs=test_runs,
     )
 
 
@@ -850,6 +865,23 @@ def _fresh_shared_failure(
         FailureClass.INFRASTRUCTURE if outcome.infrastructure_failure else FailureClass.DESIGN,
         _bounded_reason(detail) if outcome.infrastructure_failure else detail[-1536:],
     )
+
+
+def _work_item_test_runs(work_item: Mapping[str, object]) -> tuple[TestRun, ...] | None:
+    """The concrete Test Runs a work item froze, or ``None`` before manifest v4.
+
+    The manifest codec already validated every record, so a decode failure
+    here means the record was altered after validation.
+    """
+    documents = work_item.get("test_runs")
+    if documents is None:
+        return None
+    try:
+        return tuple(
+            test_run_from_document(entry) for entry in cast(tuple[object, ...], documents)
+        )
+    except ValueError as exc:
+        raise SimulationCampaignIntegrityError(f"work item Test Runs are invalid: {exc}") from exc
 
 
 def _setup_result(
@@ -1498,6 +1530,24 @@ def _create_snapshot(
     )
 
 
+def _named_observations(
+    work_item: Mapping[str, object], observations: list[dict[str, object]]
+) -> tuple[str, list[dict[str, object]]]:
+    """The result schema and the observations, each naming the Test Run it observed.
+
+    A work item of a manifest that records no Test Runs keeps the earlier
+    result schema and its observations as they are.
+    """
+    bound = observation_test_runs(work_item, observations)
+    if bound is None:
+        return RESULT_V2_SCHEMA, observations
+    named = [
+        {**observation, "test_run": name}
+        for observation, (name, _fingerprint) in zip(observations, bound, strict=True)
+    ]
+    return RESULT_SCHEMA, named
+
+
 def _result(
     request: WorkExecutionRequest,
     build_directory: Path,
@@ -1512,8 +1562,9 @@ def _result(
     runtime_inputs: list[dict[str, object]] | None = None,
     diagnostics: tuple[str, ...] = (),
 ) -> SimulationResult:
+    schema, observations = _named_observations(request.work_item, observations)
     document = {
-        "$schema": "booley.simulation-result/v2",
+        "$schema": schema,
         **_common(request),
         "attempt_id": request.attempt_id,
         "attempt_ordinal": request.attempt_ordinal,

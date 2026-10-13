@@ -9,6 +9,7 @@ import pytest
 from booley.flows.target_campaign import (
     TargetCampaign,
     all_campaign_results_match,
+    describe_target_campaign,
     resolve_target_campaign,
 )
 from booley.flows.target_criteria import CampaignScopeError
@@ -134,3 +135,23 @@ def test_campaign_domain_does_not_import_presentation_layers() -> None:
             for module in imports
             if any(module == prefix or module.startswith(f"{prefix}.") for prefix in forbidden)
         }
+
+
+def test_batched_campaign_launches_one_process_per_given_batch():
+    campaign = describe_target_campaign(
+        "sim_noc",
+        test_names={"sim_noc": ["reset", "corner", "soak"]},
+        test_skips={},
+    )
+
+    units = campaign.execution_units(batched=True, batches=(("reset", "soak"), ("corner",)))
+
+    assert [(unit.display_name, unit.selected_tests) for unit in units] == [
+        ("<cocotb-suite 1/2>", ("reset", "soak")),
+        ("<cocotb-suite 2/2>", ("corner",)),
+    ]
+    seen: list[tuple[str, ...]] = []
+    campaign.execute(
+        lambda unit: seen.append(unit.selected_tests), batched=True, batches=(("corner",),)
+    )
+    assert seen == [("corner",)]

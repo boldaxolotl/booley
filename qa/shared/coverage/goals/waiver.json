@@ -1,10 +1,10 @@
 [
   {
-    "family": "sim",
+    "family": "SIM",
     "target": "sim_waiver"
   },
   {
-    "family": "coverage",
+    "family": "COVERAGE",
     "target": "sim_waiver",
     "tests": [
       "run"
