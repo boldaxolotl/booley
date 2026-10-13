@@ -456,6 +456,8 @@ def test_rejected_recovery_has_no_authority_to_publish_goal_or_approval_effects(
     assert not paths.changes_file.exists() and not list(root.rglob("*.toml"))
 
 
+# Windows CI used 30.1 s of the default 60 s budget; keep the required headroom (#1202).
+@pytest.mark.timeout(120)
 @pytest.mark.parametrize("anchor", ["rtl_repository", "project_data_repository"])
 def test_immediate_live_promotion_is_strict_and_other_unmet_goal_does_not_block(layout, anchor):
     env, candidate, root = prepared(layout, anchor)
