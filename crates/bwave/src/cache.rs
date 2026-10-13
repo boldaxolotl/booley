@@ -1497,8 +1497,7 @@ pub fn find_value_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     let mut truncated = false;
     let cb = cycle_base(cache, effective_start);
 
-    let use_cycle_walk =
-        sync_mode && mode == TriggerMode::Literal && cache.clock_period_ticks > 0 && cb > 0;
+    let use_cycle_walk = sync_mode && cache.clock_period_ticks > 0;
 
     // Closure that records one match. In JSON mode it pushes to `json_matches`
     // (or `last_json` for --last); in text mode it streams writeln. `raw_val`
@@ -1565,28 +1564,14 @@ pub fn find_value_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         };
 
         if use_cycle_walk {
-            let total_cycles =
-                (cache.sim_end_tick.saturating_sub(cb)) / cache.clock_period_ticks + 1;
-            let start_cycle = if cfg.time_min > 0 {
-                cfg.time_min as u64
-            } else {
-                1
-            };
-            let end_cycle = match cfg.time_max {
-                Some(max) if max > 0 => std::cmp::min(max as u64, total_cycles),
-                _ => total_cycles,
-            };
-
-            for cycle in start_cycle..=end_cycle {
-                let tick = cb + (cycle - 1) * cache.clock_period_ticks;
-                let val = value_at_tick(&transitions, tick);
-                if values_match(&val, find_value_str) {
+            for (tick, val, matched) in
+                sampled_events(cache, cfg, cb, &transitions, sig.width, find_value_str)
+            {
+                if matched {
+                    let cycle = tick_to_cycle(tick, cb, cache.clock_period_ticks);
                     let dval = fmt_val(&val, sig_idx, sig.width, &radix_map);
                     record_match!(cycle, dname, val.clone(), dval);
-                    if truncated {
-                        break 'outer;
-                    }
-                    if cfg.first_match {
+                    if truncated || cfg.first_match {
                         break 'outer;
                     }
                 }
@@ -1650,12 +1635,24 @@ pub fn find_value_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     // Search virtual signals whose names match find_pattern.
     // (Virtuals already use raw cache values — no fmt_val applied.)
     'vouter: for ve in &virtual_matches {
-        if truncated {
+        if truncated || (use_cycle_walk && cfg.first_match && find_count > 0) {
             break;
         }
         let dname = &ve.name;
 
-        if mode != TriggerMode::Literal {
+        if use_cycle_walk {
+            for (tick, val, matched) in
+                sampled_events(cache, cfg, cb, &ve.transitions, 1, find_value_str)
+            {
+                if matched {
+                    let cycle = tick_to_cycle(tick, cb, cache.clock_period_ticks);
+                    record_match!(cycle, dname.as_str(), val.clone(), &val);
+                    if truncated || cfg.first_match {
+                        break 'vouter;
+                    }
+                }
+            }
+        } else if mode != TriggerMode::Literal {
             let mut prev_val: Option<&str> = None;
             for (tick, val) in &ve.transitions {
                 if *tick < effective_start {
@@ -1677,31 +1674,6 @@ pub fn find_value_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
                         continue;
                     }
                     record_match!(time, dname.as_str(), val.clone(), val);
-                    if truncated {
-                        break 'vouter;
-                    }
-                    if cfg.first_match {
-                        break 'vouter;
-                    }
-                }
-            }
-        } else if use_cycle_walk {
-            let total_cycles =
-                (cache.sim_end_tick.saturating_sub(cb)) / cache.clock_period_ticks + 1;
-            let start_cycle = if cfg.time_min > 0 {
-                cfg.time_min as u64
-            } else {
-                1
-            };
-            let end_cycle = match cfg.time_max {
-                Some(max) if max > 0 => std::cmp::min(max as u64, total_cycles),
-                _ => total_cycles,
-            };
-            for cycle in start_cycle..=end_cycle {
-                let tick = cb + (cycle - 1) * cache.clock_period_ticks;
-                let val = value_at_tick(&ve.transitions, tick);
-                if values_match(&val, find_value_str) {
-                    record_match!(cycle, dname.as_str(), val.clone(), &val);
                     if truncated {
                         break 'vouter;
                     }
@@ -1882,17 +1854,33 @@ pub fn sample_at_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     );
 
     // Read trigger signal transitions and identify trigger ticks.
-    // For level mode in sync: check every cycle, like the Extractor does.
+    // Synchronous predicates compare observations on the eligible clock grid.
     let mut trigger_ticks: Vec<u64> = Vec::new();
 
-    if level_mode && sync_mode && cache.clock_period_ticks > 0 && cb > 0 {
-        // Sync level mode: walk every cycle, check trigger value at each
-        let total_cycles = (cache.sim_end_tick.saturating_sub(cb)) / cache.clock_period_ticks + 1;
-        for cycle in 1..=total_cycles {
-            let tick = cb + (cycle - 1) * cache.clock_period_ticks;
-            for (trig_trans, _) in &trigger_data {
-                if values_match(&value_at_tick(trig_trans, tick), sa_value) {
-                    trigger_ticks.push(tick);
+    if sync_mode && cache.clock_period_ticks > 0 {
+        // Each stream advances one sampled observation at a time. Merge at
+        // the grid tick so --first stops without searching the rest of a trace.
+        let mut streams: Vec<_> = trigger_data
+            .iter()
+            .map(|(transitions, width)| {
+                sampled_events(cache, cfg, cb, transitions, *width, sa_value)
+            })
+            .collect();
+        loop {
+            let mut tick = None;
+            let mut matched = false;
+            for stream in &mut streams {
+                if let Some((sample_tick, _, fires)) = stream.next() {
+                    tick = Some(sample_tick);
+                    matched |= fires;
+                }
+            }
+            let Some(tick) = tick else { break };
+            if matched {
+                trigger_ticks.push(tick);
+                if cfg.first_match
+                    || (!cfg.count_only && !cfg.last_match && trigger_ticks.len() > cfg.max_lines)
+                {
                     break;
                 }
             }
@@ -2464,6 +2452,20 @@ fn collect_event_ticks(
 
     for &sig_idx in &target_indices {
         let transitions = cache.read_transitions(sig_idx);
+        if sync_mode && cache.clock_period_ticks > 0 {
+            ticks.extend(
+                sampled_events(
+                    cache,
+                    cfg,
+                    cb,
+                    &transitions,
+                    cache.signals[sig_idx].width,
+                    value_str,
+                )
+                .filter_map(|(tick, _, matched)| matched.then_some(tick)),
+            );
+            continue;
+        }
         let mut prev_val: Option<&str> = None;
 
         for (tick, val) in &transitions {
@@ -2506,6 +2508,13 @@ fn collect_event_ticks(
         }
     }
     for ve in virtual_matches {
+        if sync_mode && cache.clock_period_ticks > 0 {
+            ticks.extend(
+                sampled_events(cache, cfg, cb, &ve.transitions, 1, value_str)
+                    .filter_map(|(tick, _, matched)| matched.then_some(tick)),
+            );
+            continue;
+        }
         let mut prev_val: Option<&str> = None;
 
         for (tick, val) in &ve.transitions {
@@ -2648,7 +2657,7 @@ pub fn distance_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     let mut err = BufWriter::new(stderr.lock());
 
     let tick_to_display = |tick: u64| -> String {
-        if sync_mode && cache.clock_period_ticks > 0 && (cb > 0 || change_query) {
+        if sync_mode && cache.clock_period_ticks > 0 {
             format!("{}", tick_to_cycle(tick, cb, cache.clock_period_ticks))
         } else {
             format!("{}", tick)
@@ -3180,6 +3189,42 @@ fn cycle_base(cache: &ColumnCache, effective_start: u64) -> u64 {
     } else {
         aligned + cache.clock_period_ticks
     }
+}
+
+/// Lazily compare observations on the eligible clock grid, within the query
+/// window. A late window needs only its immediately preceding grid sample;
+/// the first eligible edge after reset has no predecessor.
+fn sampled_events<'a>(
+    cache: &ColumnCache,
+    cfg: &ExtractConfig,
+    base: u64,
+    transitions: &'a [(u64, String)],
+    width: u32,
+    value: &'a str,
+) -> impl Iterator<Item = (u64, String, bool)> + 'a {
+    let period = cache.clock_period_ticks;
+    let total = if period == 0 || base > cache.sim_end_tick {
+        0
+    } else {
+        (cache.sim_end_tick - base) / period + 1
+    };
+    let start = u64::try_from(cfg.time_min).unwrap_or(0).max(1);
+    let end = cfg
+        .time_max
+        .map_or(total, |max| u64::try_from(max).unwrap_or(0).min(total));
+    let mut previous = if start > 1 && start <= end {
+        Some(value_at_tick(transitions, base + (start - 2) * period))
+    } else {
+        None
+    };
+    let mode = TriggerMode::classify(value);
+    (start..=end).map(move |cycle| {
+        let tick = base + (cycle - 1) * period;
+        let current = value_at_tick(transitions, tick);
+        let matched = mode.matches(previous.as_deref(), &current, width, value);
+        previous = Some(current.clone());
+        (tick, current, matched)
+    })
 }
 
 /// Binary search for the value of a signal at a given tick.
@@ -4117,7 +4162,7 @@ $enddefinitions $end
             println!();
             let mut cache = build_cache("$timescale 1ns $end\n$scope module tb $end\n$var wire 1 ! sig $end\n$upscope $end\n$enddefinitions $end\n#0\n0!\n#7\n1!\n#9\n0!\n#17\n1!\n#19\n0!\n#27\n1!\n#29\n0!\n");
             cache.override_clock(10, 0, "test_clock");
-            let name = if query.ends_with(":virtual") {
+            let name = if query.ends_with("virtual") {
                 "v"
             } else {
                 "sig"
@@ -4130,16 +4175,23 @@ $enddefinitions $end
                 virtual_defs: vec!["v=tb.sig=='b1".into()],
                 ..Default::default()
             };
+            let trigger = if query.contains("literal-") {
+                cfg.time_min = 1;
+                cfg.time_max = Some(3);
+                "0"
+            } else {
+                "change"
+            };
             if query.starts_with("find:") {
                 cfg.find_pattern = Some(name.into());
-                cfg.find_value = Some("change".into());
+                cfg.find_value = Some(trigger.into());
                 find_value_from_cache(&cache, &cfg);
             } else if query.starts_with("sample:") {
                 cfg.sample_at_pattern = Some(name.into());
-                cfg.sample_at_value = Some("change".into());
+                cfg.sample_at_value = Some(trigger.into());
                 sample_at_from_cache(&cache, &cfg);
             } else {
-                cfg.distance_a = Some((name.into(), "change".into()));
+                cfg.distance_a = Some((name.into(), trigger.into()));
                 if query.ends_with(":mixed-forward") {
                     cfg.distance_a = Some(("sig".into(), "rising".into()));
                     cfg.distance_b = Some(("v".into(), "change".into()));
@@ -4159,9 +4211,12 @@ $enddefinitions $end
             "mixed-forward",
             "mixed-reverse",
             "directional-only",
+            "literal-physical",
+            "literal-virtual",
         ] {
             for command in ["find", "sample", "distance"] {
-                if kind != "physical" && kind != "virtual" && command != "distance" {
+                if !kind.contains("physical") && !kind.contains("virtual") && command != "distance"
+                {
                     continue;
                 }
                 let mut child = std::process::Command::new(std::env::current_exe().unwrap())
@@ -4203,14 +4258,21 @@ $enddefinitions $end
                     })
                     .collect::<Vec<_>>()
                     .join("\n");
-                let name = if kind == "virtual" { "v" } else { "sig" };
-                let expected = match command {
-                    "find" => format!("cycle 2 {name} 1\ncycle 2 {name} 0"),
-                    "sample" => format!("2 {name} 1\n2 {name} 0"),
-                    _ if kind == "mixed-forward" => "@ 1 -> @ 2  d=1\n@ 2 -> @ 2  d=0".into(),
-                    _ if kind == "mixed-reverse" => "@ 2 -> @ 2  d=0\n@ 2 -> @ 3  d=1".into(),
-                    _ if kind == "directional-only" => "@ 7 -> @ 17  d=1\n@ 17 -> @ 27  d=1".into(),
-                    _ => "@ 2 -> @ 2  d=0".into(),
+                let name = if kind.ends_with("virtual") {
+                    "v"
+                } else {
+                    "sig"
+                };
+                // Raw pulses never survive the zero-based sampled grid.
+                // Literal zero matches all three samples, including cycle 1.
+                let expected = if kind.starts_with("literal-") {
+                    match command {
+                        "find" => format!("cycle 1 {name} 0\ncycle 2 {name} 0\ncycle 3 {name} 0"),
+                        "sample" => format!("1 {name} 0\n2 {name} 0\n3 {name} 0"),
+                        _ => "@ 1 -> @ 2  d=1\n@ 2 -> @ 3  d=1".into(),
+                    }
+                } else {
+                    String::new()
                 };
                 assert_eq!(rows, expected, "{command} {kind}: {text}");
             }

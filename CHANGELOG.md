@@ -27,6 +27,10 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ### Bug fixes
 
+- Synchronous B-Wave `find`, `sample`, and `distance` events now use
+  clock-edge sampled values and sampling-cycle labels, suppressing
+  between-edge glitches while preserving raw `--async` events.
+
 - Physical synthesis no longer repairs to OpenROAD's implicit fanout of 50.
   Fanout is limited only by the SDC, the library, or the new Target setting
   `advanced_settings_openroad.max_fanout`, which a per-call PPA profile keeps.

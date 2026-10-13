@@ -1111,7 +1111,7 @@ fn test_sample_at_sync_with_count() {
         "sample",
         &vcd,
         "*clk*",
-        "rising",
+        "'h1",
         "-s",
         "*data*",
         "--with-reset",
@@ -1119,7 +1119,7 @@ fn test_sample_at_sync_with_count() {
     ]);
     assert_eq!(code, 0);
     let count: usize = stdout.trim().parse().unwrap_or(0);
-    assert!(count >= 1, "should have at least 1 rising edge trigger");
+    assert!(count >= 1, "literal high captures the clock-edge samples");
 }
 
 // -- Wave mode --------------------------------------------------------
@@ -1583,7 +1583,8 @@ fn test_distance_async() {
 
 #[test]
 fn test_distance_same_no_pairs() {
-    // `*rstn*` rises exactly once → 1 event, 0 pairs. (This used to probe
+    // The first post-reset sample is baseline, so the reset rise is not
+    // a sampled event. (This used to probe
     // `*done*`, which does not exist in the fixture at all — that case is now
     // a hard exit-2 error, covered by test_distance_no_match.)
     let bwave = build_bwave("test_distance.vcd", "dist_nopairs");
@@ -1596,8 +1597,8 @@ fn test_distance_same_no_pairs() {
         stderr
     );
     assert!(
-        stdout.contains("no pairs"),
-        "should report no pairs: stdout={}, stderr={}",
+        stdout.is_empty() && stderr.contains("never occurred"),
+        "should report no sampled reset events: stdout={}, stderr={}",
         stdout,
         stderr
     );

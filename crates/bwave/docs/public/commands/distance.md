@@ -34,6 +34,12 @@ use one decimal; an even median averages the two middle distances.
 Both `VALUE` and `--to`'s value accept Verilog literals
 and edge keywords.
 
+In both modes, synchronous events are matches on clock-edge sampled values,
+labelled with their sampling cycle. Literals count every equal sample, even
+when the level holds across edges; edge keywords compare consecutive samples,
+with the first eligible sample serving as baseline. Glitches between samples
+are invisible. `--async` observes raw transitions instead.
+
 `distance` strictly requires a built `.fst` store.
 
 ## Defaults and requiredness
