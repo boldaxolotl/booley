@@ -7,8 +7,5 @@ from booley.runtime.job_observation._model import (
     ObservationSnapshot as ObservationSnapshot,
 )
 from booley.runtime.job_observation._observer import (
-    MAX_JOBS as MAX_JOBS,
-)
-from booley.runtime.job_observation._observer import (
     JobObserver as JobObserver,
 )

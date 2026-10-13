@@ -11,11 +11,13 @@ from booley.goals.binding import GoalBindingError, GoalRunBinding
 from booley.goals.model import GoalRecord
 from booley.goals.paths import record_paths
 from booley.runtime import job_records
-from booley.runtime.job_observation import MAX_JOBS, JobObservation, JobObserver
+from booley.runtime.job_observation import JobObservation, JobObserver
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import FuseSocError
 
 MAX_INTERACTIVE_ROOTS = 64
+# History selection has its own enumeration bound, independent of record projection.
+MAX_SCANNED_INTERACTIVE_ROOTS = 4096
 TERMINAL_JOB_STATES = frozenset({"completed", "failed", "cancelled"})
 
 
@@ -57,7 +59,9 @@ def retained_job_roots(
     roots = [] if interactive_root is None else [interactive_root]
     roots.extend(record_paths(project_dir, rec.id).jobs_dir for rec in records)
     history = []
-    for path in islice(project_dir.glob(".interactive_logs/*/.runtime/jobs"), MAX_JOBS):
+    for path in islice(
+        project_dir.glob(".interactive_logs/*/.runtime/jobs"), MAX_SCANNED_INTERACTIVE_ROOTS
+    ):
         try:
             history.append((path.stat().st_mtime_ns, path))
         except OSError:

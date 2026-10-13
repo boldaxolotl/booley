@@ -93,12 +93,20 @@ deletion test, deferred candidates and concrete test adapters.
 
 At the #1296 extraction, the same analyzer compares base
 `2813cb2d952486995d3e79503dfdc5b1fad517d0` with the implementation tree: 618 ->
-622 modules, 3,120 -> 3,128 located facts, and 2,760 -> 2,766 unique edges.
+622 modules, 3,120 -> 3,127 located facts, and 2,760 -> 2,766 unique edges.
 The direct `goals <-> runtime` pair is removed (six mutual pairs -> five).
 No mutual pair is added, and the existing 11-package and two-package cyclic
 groups remain unchanged. Named composition-hotspot fan-out is unchanged.
 The informative change is the removal of Runtime's Goal-policy direction and
 the explicit observation package, not a decrease in the total edge count.
+
+Reproduce the comparison against the current PR head with the same analyzer:
+
+```sh
+python3 tests/architecture/compare_report.py \
+  --before-ref 2813cb2d952486995d3e79503dfdc5b1fad517d0 \
+  --after-ref HEAD --repo-root .
+```
 
 ## Config and Runtime boundary
 

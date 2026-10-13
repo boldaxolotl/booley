@@ -169,11 +169,14 @@ def _read_job(path: Path, validate_record: RecordValidator | None) -> job_record
             parse_timestamp(rec.run_started_at)
         if rec.pid is not None and (type(rec.pid) is not int or rec.pid <= 0):
             return None
-        if validate_record is not None:
-            validate_record(rec)
-        return rec
     except (OSError, ValueError, job_records.JobRecordError):
         return None
+    if validate_record is not None:
+        try:
+            validate_record(rec)
+        except ValueError:
+            rec = None
+    return rec
 
 
 def _project_job(

@@ -41,8 +41,9 @@ Job; run identity includes its retained root.
 
 `harness.dashboard.jobs.JobReader` owns the higher-level composition. It selects
 roots from the same Goal enumeration that supplied the Dashboard's Goal rows:
-the explicit current interactive root, all retained Goal Records, then the newest
-64 historical interactive roots. It validates optional Goal bindings before a
+an optional caller-supplied interactive root first, all retained Goal Records, then the newest
+64 historical interactive roots, examining at most 4,096 history-root candidates
+under its own bound. It validates optional Goal bindings before a
 record reaches process/artifact projection and enriches observations with
 Target-derived EDA labels. Dashboard resource sampling and checking-Goal
 association remain in the Dashboard model. UI code consumes prepared values.
@@ -77,7 +78,16 @@ The former internal `runtime.job_snapshot` module is replaced by the observation
 facade and Dashboard composition. All in-repository consumers migrate together;
 CLI/MCP behavior, persisted record/report layouts and schemas remain unchanged.
 `runtime.job_artifacts.JobArtifactCache` remains a compatibility import for
-standalone cache callers. Dashboard code uses only the observer interface.
+standalone cache callers. This compatibility surface exports the class only;
+module-level limits, type aliases and reader helpers are private implementation
+details under `job_observation._artifacts`. The standalone regression suite
+constructs its caches through the compatibility import; fault injection targets
+the implementation module. Dashboard code uses only the observer interface.
+
+One historical presentation residue remains: the observer's scan-limit diagnostic
+retains the exact Dashboard wording about older interactive sessions being
+unexamined. That wording presumes Dashboard's supplied root ordering; it does
+not make the observer responsible for selecting roots.
 
 ## Concrete test adapters
 

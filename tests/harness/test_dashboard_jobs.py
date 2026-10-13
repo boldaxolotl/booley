@@ -419,6 +419,59 @@ def test_historical_interactive_roots_keep_only_newest_bounded_set(tmp_path, mon
     ) == set(expected)
 
 
+def test_interactive_history_bounds_enumeration_before_selecting_newest(tmp_path, monkeypatch):
+    import os
+    from pathlib import Path
+
+    from booley.harness.dashboard import jobs
+
+    roots = [tmp_path / f".interactive_logs/{index}/.runtime/jobs" for index in range(3)]
+    for index, root in enumerate(roots):
+        root.mkdir(parents=True)
+        os.utime(root, (100 + index, 100 + index))
+    original = Path.glob
+
+    def glob(path, pattern):
+        return iter(roots) if path == tmp_path else original(path, pattern)
+
+    monkeypatch.setattr(Path, "glob", glob)
+    monkeypatch.setattr(jobs, "MAX_SCANNED_INTERACTIVE_ROOTS", 2)
+    monkeypatch.setattr(jobs, "MAX_INTERACTIVE_ROOTS", 1)
+
+    assert jobs.retained_job_roots(tmp_path, ()) == (roots[1],)
+
+
+def test_dashboard_job_view_preserves_every_observation_field(tmp_path, monkeypatch):
+    from dataclasses import fields
+
+    from booley.runtime.job_observation import JobObservation, JobObserver, ObservationSnapshot
+
+    root = tmp_path / "jobs"
+    observation = JobObservation(
+        root,
+        rec(status="done"),
+        "completed",
+        report={"run_id": "one", "passed": False},
+        report_path=tmp_path / "report.json",
+        stage="simulation",
+        diagnostic="isolated observation",
+        artifacts=(str(tmp_path / "trace.vcd"),),
+    )
+    monkeypatch.setattr(
+        JobObserver,
+        "read",
+        lambda _self, _roots: ObservationSnapshot((observation,), ("history truncated",)),
+    )
+
+    snapshot = JobReader(tmp_path).read((), interactive_root=root)
+
+    assert all(
+        getattr(snapshot.jobs[0], field.name) == getattr(observation, field.name)
+        for field in fields(JobObservation)
+    )
+    assert snapshot.diagnostics == ("history truncated",)
+
+
 @pytest.mark.parametrize(
     "malformed", [{"session_key": 5}, {"binding": []}, {"binding": {"schema": "future"}}]
 )

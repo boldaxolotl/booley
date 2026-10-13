@@ -70,6 +70,20 @@ def test_metadata_validator_rejects_before_artifact_io_and_isolates_the_record(
     assert snapshot.diagnostics == (f"Job record unavailable: {rejected / 'bad.json'}",)
 
 
+@pytest.mark.parametrize("error", [OSError, job_records.JobRecordError, RuntimeError])
+def test_unexpected_metadata_validator_errors_abort_the_refresh(tmp_path, error):
+    root = tmp_path / "jobs"
+    write_job(root, "one")
+
+    def validate(_record):
+        raise error("metadata adapter failed")
+
+    observer = JobObserver(tmp_path, validate_record=validate)
+
+    with pytest.raises(error, match="metadata adapter failed"):
+        observer.read((root,))
+
+
 def test_failed_refresh_preserves_the_last_successful_generation(tmp_path, monkeypatch):
     roots = [tmp_path / str(number) / "jobs" for number in range(3)]
     reports = [write_job(root, str(number)) for number, root in enumerate(roots)]
