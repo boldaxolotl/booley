@@ -256,6 +256,24 @@ def test_raising_n_is_refused_when_the_frozen_variant_is_gone_or_changed(variant
     assert {item.resolved_by for item in again.runs} == {"change"}
 
 
+def test_a_change_on_a_target_whose_plan_cannot_be_read_names_the_goal_publicly() -> None:
+    """The refusal names the Goal as status does, not by its key."""
+    before = goal(family="SIM", test="stress@x2")
+    held = freeze(before, plan(), draw=fixed_draw(11, 12))
+    after = goal(family="SIM", test="stress@x3")
+
+    def unreadable(_dir: Path, _target: str) -> TargetTestPlan:
+        raise ValueError("tests.toml [tb] is malformed")
+
+    plans = TargetPlans(Path("unused"), loader=unreadable)
+    refusal = r"Goal SIM:tb \(all selected tests pass, test stress@x3\): .*cannot be resolved"
+    with pytest.raises(GoalResolutionError, match=refusal) as refused:
+        refreeze_changed_goal(
+            RecordedGoal(after, 2), (before, held), plans, request("change"), refreeze=False
+        )
+    assert after.key not in str(refused.value)
+
+
 def test_raising_n_of_a_coverage_goal_with_a_pin_draws_the_difference() -> None:
     before = goal(family="COVERAGE", tests=["stress@5", "stress@x3"], metrics={"line": 80})
     held = freeze(before, plan(), draw=fixed_draw(11, 12, 13))
@@ -362,8 +380,10 @@ def test_freeze_goals_is_strict_at_entry_and_lenient_when_deferred() -> None:
         )
     ).goals
     goals = tuple(RecordedGoal(spec, 1) for spec in specs)
-    with pytest.raises(GoalResolutionError, match=r"Goal sim_pass_tb_run_\w+_x: .*seed"):
+    refusal = r"Goal SIM:tb \(all selected tests pass, test stress@x2\): .*seed"
+    with pytest.raises(GoalResolutionError, match=refusal) as refused:
         freeze_goals(goals, {}, plans, request(), strict=True)
+    assert "sim_pass_tb_run" not in str(refused.value)  # the public Goal name, not its key
     lenient = freeze_goals(goals, {}, plans, request("deferred"), strict=False)
     assert sorted(lenient) == ["sim_pass_gone", "sim_pass_tb_run_737472657373_x"]
     assert lenient["sim_pass_gone"].pending == (SUITE_SLOT,)
@@ -400,14 +420,21 @@ def test_an_update_only_fills_pending_slots() -> None:
         spec, waiting, plan(tests=["reset", "stress", "later"]), request("deferred")
     )
     assert resolution_update_violation("k", waiting, filled) == ""
-    assert "cannot change" in resolution_update_violation("k", filled, waiting)
+    assert (
+        resolution_update_violation("SIM:tb", filled, waiting)
+        == "the frozen Test Runs of Goal SIM:tb cannot change"
+    )
     other = freeze(goal(family="SIM", test="reset@5"), plan())
     assert "cannot change" in resolution_update_violation("k", filled, other)
-    assert "fills no pending slot" in resolution_update_violation(
-        "k", filled, replace(filled, runs=(*filled.runs, *other.runs))
+    assert (
+        resolution_update_violation(
+            "SIM:tb", filled, replace(filled, runs=(*filled.runs, *other.runs))
+        )
+        == "Test Run reset@5 of Goal SIM:tb fills no pending slot"
     )
-    assert "cannot gain pending" in resolution_update_violation(
-        "k", filled, replace(filled, pending=("x",))
+    assert (
+        resolution_update_violation("SIM:tb", filled, replace(filled, pending=("x",)))
+        == "Goal SIM:tb cannot gain pending Test Run slots"
     )
     suite = freeze(goal(family="SIM"), plan())
     grown = resolve_pending(
