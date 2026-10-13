@@ -313,15 +313,18 @@ Booley refuses these requests before anything builds:
 - More than 1000 Test Runs of one Target in one request. Split the request.
 - Any seed for an **unseeded** Target: `--seed`, `test@seed` or `test@xN`. An
   Icarus Target with an HDL testbench is unseeded until its `tests.toml`
-  section declares a `seed` template. The refusal says how to add one. Test
-  Runs of an unseeded Target are written without `@seed`.
+  section declares a `seed` template, and the refusal says how to add one. An
+  HDL-testbench Target of any simulator other than Verilator and Icarus is
+  unseeded with or without a template. Test Runs of an unseeded Target are
+  written without `@seed`.
 
 How the seed reaches the simulation:
 
 | Target | Seed mechanism |
 |---|---|
 | Verilator, HDL testbench | `+verilator+seed+<seed>`, plus the Target's `seed` template when it declares one |
-| Icarus, HDL testbench | the Target's `seed` template |
+| Icarus, HDL testbench | the Target's `seed` template; unseeded without one |
+| Another simulator, HDL testbench | none: the Target is unseeded |
 | Cocotb Target | cocotb's seed variable (`COCOTB_RANDOM_SEED` on cocotb 2.x, `RANDOM_SEED` on 1.x) |
 
 Test Runs that differ in arguments, environment or seed never share a
@@ -330,8 +333,10 @@ Cocotb Target batches the Test Runs that have the same environment and seed,
 so a request with two seeds runs at least two batches. Test Variants and seeds
 are run-time inputs: they reuse the Target's simulator build.
 
-**Report rows.** When a Target ran anything other than one passing Test Run
-per Test at the Default Seed, its report lists the Test Runs, up to 32 rows:
+**Report rows.** A Target's report lists its Test Runs, up to 32 rows, when
+any of them did not pass, ran with a seed other than the Default Seed, or
+belongs to a Test that declares Test Variants, or when a Test ran more than
+once:
 
 ```text
   Test Runs: 3 (2 passed, 1 failed)
@@ -388,7 +393,7 @@ absolute root as `work_dir` to Booley Flows, Specialists, Goal tools,
 when `work_dir` is required.
 
 - `SIM:{target}` requires the default Test Variant of every Test of the
-  Target, each at the Default Seed.
+  Target that is not skipped, each at the Default Seed.
 - A simulation Goal with a `test` selector requires the Test Runs that the
   selector names: one Test Run, or N Test Runs with different seeds for
   `test@xN`.
@@ -416,8 +421,10 @@ Runs with the same declared arguments and environment. Inside the Goal
 worktree:
 
 - `booley flow sim --target sim_core` runs the frozen Test Runs of the
-  `SIM:sim_core` Goal, and the default Test Run of any Test added to the
-  Target since.
+  simulation Goal without `test`, and the default Test Run of any Test added
+  to the Target since. It does not run the Test Runs of a Goal with `test`.
+- `--test` with the name of a frozen Test Run, as `goal_status` lists it,
+  runs that Test Run.
 - `--test stress+soak@x20` runs the 20 frozen seeds of the Goal with the same
   Target, Test Variant and N. With no such Goal, Booley draws 20 new seeds and
   the report says that these Test Runs are diagnostic.

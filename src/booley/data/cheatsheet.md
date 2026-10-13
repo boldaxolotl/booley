@@ -93,7 +93,8 @@ Target in `tests.toml`.
 | `--seed 42` / `--seed random` | One seed for every selected Test Run / a drawn seed per Test Run; not with `@seed` or `@xN` |
 
 A request may run at most 1000 Test Runs of one Target. An unseeded Target
-(Icarus with an HDL testbench and no `seed` template) refuses every seed.
+refuses every seed: an HDL-testbench Target on Icarus without a `seed`
+template, or on any simulator other than Verilator and Icarus.
 Simulation Goals take the same selector in `test`, Cycle Count Goals in `test`
 without `@xN`, and coverage Goals in `tests`. Goal Mode freezes the Test Runs
 at entry, `@xN` seeds included; a simulation Goal is met when every frozen
@@ -271,7 +272,7 @@ Goal argument examples:
 
 > Mutually exclusive: `critical_path_ps_max` ⊕ `fmax_mhz_min`.
 
-**Per-test `CYCLE_COUNT`**
+**`CYCLE_COUNT` of one Test Run**
 
 `CYCLE_COUNT:{target}` Goals name the Target with `target` and one Test Run with `test` (`test`, `test+variant`, or either with `@seed`); put bounds in `thresholds`. All thresholds for that Test Run must pass. Relative forms compare the same Test Run of the same Target at the Goal base commit.
 

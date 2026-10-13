@@ -487,7 +487,7 @@ for the forms it accepts.
 |---|---|---|
 | `--seed cannot be combined with a --test that names a seed` | The request names a seed twice: `--seed` and `test@seed` or `test@xN`. | Name the seed in one place. |
 | `--seed applies to simulation, not to an elaboration mode` | `--seed` with `--mode elab-only` or `elab-only-standalone`. | Drop `--seed`. |
-| `Target '<t>' is unseeded` | The Target cannot apply a seed: an Icarus Target with an HDL testbench and no `seed` template in `tests.toml`. | Add a `seed` template that the testbench reads, for example `seed = "+seed={seed}"`, or drop the seed. |
+| `Target '<t>' is unseeded` | The Target cannot apply a seed. It has an HDL testbench and either runs on Icarus without a `seed` template in `tests.toml`, or runs on a simulator other than Verilator and Icarus. | On Icarus, add a `seed` template that the testbench reads, for example `seed = "+seed={seed}"`, or drop the seed. On another simulator, drop the seed: a `seed` template does not make the Target seeded. |
 | `has no Test Variant` / `declares no Test Variants` | The selector names a Variant that `tests.toml` does not declare for that Test. | Use a declared Variant, or declare one under `[<target>.variants.<test>]`. |
 | `selects Test Run '<name>' more than once` | Two selectors resolve to the same Test Run, such as `stress` and its default Variant `stress+short`. | Name each Test Run once. |
 | `asks for more than 1000 Test Runs of Target` | One request may run at most 1000 Test Runs of one Target. | Split the request into several. |
@@ -511,7 +511,7 @@ coverage floors alone, so it never shows `goal-test-run-incomplete`,
 
 | Reason | Meaning | What to do |
 |---|---|---|
-| `goal-test-run-incomplete` | Some frozen Test Runs have not passed yet. | Run them. A run of the whole Target, or of the Goal's `test@xN` selector, runs the frozen Test Runs. |
+| `goal-test-run-incomplete` | Some frozen Test Runs have not passed yet. | Run them. For a simulation Goal without `test`, run the whole Target. For a Goal with a `test@xN` selector, run `--test` with that selector. For any other Goal, run `--test` with each frozen Test Run name that `goal_status` lists. |
 | `goal-test-run-failed` | A frozen Test Run failed at the current file contents. A later pass at the same contents does not clear it. | Fix the cause and run again. `goal_status` prints a rerun command for each failed Test Run. |
 | `goal-test-run-pending` | The Goal names a Target, Test or Test Variant that does not exist yet. | Add it. Booley freezes the Test Run at the next Flow run or status read. |
 | `goal-test-run-unresolvable` | The pending part cannot be frozen: `tests.toml` cannot be loaded or applied to the Target, or the Goal names a seed and the Target is unseeded. | Fix `tests.toml` as the message says, or ask for a Goal change. |
@@ -522,7 +522,7 @@ coverage floors alone, so it never shows `goal-test-run-incomplete`,
 | `goal-test-run-ledger-missing` | The Goal's evidence carries no Test Run outcomes. | Run the Simulation Flow again. |
 | `goal-test-run-ledger-outdated` | The recorded Test Run outcomes differ from the recorded evidence, for example after an interrupted run was recovered. | Run the Simulation Flow again. |
 | `goal-test-run-ledger-malformed` | The recorded Test Run outcomes cannot be read. | Run the Simulation Flow again. |
-| `goal-campaign-unaccounted` | A Simulation Campaign that ran the Goal's Test Runs is still running, or its results cannot be read, so what it observed is not in the Goal's evidence yet. | Wait for the run to finish, or resume it, then read status again. A campaign registration that cannot be read is moved aside only when you approve a Goal change. |
+| `goal-campaign-unaccounted` | A Simulation Campaign that ran the Goal's Test Runs is still running, or its results cannot be read, so what it observed is not in the Goal's evidence yet. | Wait for the run to finish, or resume it, then read status again. A Simulation Campaign registration that cannot be read is moved aside only when you approve a Goal change. |
 
 A `retarget` that leaves the Goal as written freezes its Test Runs again from
 the Target as it is now. Like every Goal change it needs your approval, and
@@ -537,18 +537,21 @@ fails in it keeps the outcome `goal_status` showed before. The Flow report
 names the Goals whose frozen Test Runs ran and the ones that failed. Run again
 without `--diagnostic` to record them.
 
-Inside Goal Mode, Booley registers each Simulation Campaign before its first
-Test Run starts: one `booley.goal-campaign/v1` document per campaign under
-`logs/acceptance/campaigns/` of the Goal Record. When a campaign is cancelled
-or killed, the next Flow run or status read reads the results it finished and
-adds them to the Test Run outcomes of simulation and Cycle Count Goals; a
-failure it saw counts. Do not edit or delete these documents. One that cannot
+Inside Goal Mode, Booley registers a Simulation Campaign before its first
+Test Run starts when its Target has a simulation or Cycle Count Goal: one
+`booley.goal-campaign/v1` document per Simulation Campaign under
+`logs/acceptance/campaigns/` of the Goal Record. Booley does not register a
+Simulation Campaign that runs the Goal base commit. When a registered
+Simulation Campaign is cancelled or killed, the next Flow run or status read
+reads the results it finished and adds them to the Test Run outcomes of
+simulation and Cycle Count Goals; a failure it saw counts. Do not edit or delete these documents. One that cannot
 be read gives every simulation and Cycle Count Goal the reason
 `goal-campaign-unaccounted`, and Booley moves it to `quarantine/` beside the
 others when you approve a Goal change.
 
-The Review Package lists the Test Runs that were frozen after entry and every
-Simulation Campaign whose results were never fully accounted for.
+The Review Package lists the Test Runs that Booley froze after entry, under
+the heading `Test Runs resolved after entry`, and every Simulation Campaign
+whose results were never fully accounted for.
 
 ## Simulation stalls at time zero without results
 

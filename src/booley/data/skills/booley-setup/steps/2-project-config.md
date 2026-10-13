@@ -636,8 +636,8 @@ run. Full rules: CONFIG.md → "Tests (`tests.toml`)".
   It must contain `{index}` or `{name}`, the only fields that substitute, and
   cannot start with `++` or `+-`. The default is `+test_id={index}`;
   CPU harnesses may instead use forms such as `--meminit=ram,{name}`.
-- **Seeds.** Every Test Run gets an explicit seed, by default `1` (the
-  Default Seed). Check how each sim Target is seeded and write only what it
+- **Seeds.** Every Test Run of a seeded Target gets an explicit seed, by
+  default `1` (the Default Seed). Check how each sim Target is seeded and write only what it
   needs:
   - Verilator, HDL testbench: Booley passes `+verilator+seed+<seed>`. Declare
     `seed = "+seed={seed}"` (or the testbench's own option) only when the
@@ -646,6 +646,8 @@ run. Full rules: CONFIG.md → "Tests (`tests.toml`)".
     the Target is unseeded and refuses every seed. Declare the template when
     the testbench reads a seed argument; otherwise leave the Target unseeded
     and say so in the plan.
+  - Another simulator, HDL testbench: the Target is unseeded, with or without
+    a `seed` template. Say so in the plan.
   - Cocotb Target: Booley sets cocotb's seed variable. Do **not** declare
     `seed`; it is an error there.
   - `default_seed` (1..2147483647) changes one Target's Default Seed. Set it

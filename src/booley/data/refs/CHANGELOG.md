@@ -34,8 +34,8 @@ Packaged release history starts at 0.2.7. For older changes, see
 - **Test Variants and seeded Test Runs** (#1233). A Project declares each
   extra run-time configuration of a Test as a Test Variant in `tests.toml`
   (`[<target>.variants.<test>]`: arguments, environment, and a required
-  `default`), and every Test Run has an explicit, recorded seed. A Test Run is
-  written `test[+variant][@seed]`.
+  `default`), and every Test Run of a seeded Target has an explicit, recorded
+  seed. A Test Run is written `test[+variant][@seed]`.
   - `booley flow sim --test` accepts `test`, `test+variant`, `test@seed`,
     `test+variant@seed`, and `test[+variant]@xN` for N drawn seeds. The new
     `--seed N|random` sets or draws the seed of every selected Test Run. The
@@ -43,8 +43,9 @@ Packaged release history starts at 0.2.7. For older changes, see
   - Booley passes the seed itself: `+verilator+seed+<seed>` on Verilator,
     cocotb's seed variable on Cocotb Targets, and the new `tests.toml` `seed`
     argument template on Verilator and Icarus. An Icarus HDL-testbench Target
-    without a `seed` template is unseeded and refuses every seed. A Target can
-    set its own `default_seed`.
+    without a `seed` template is unseeded and refuses every seed. So is an
+    HDL-testbench Target of any other simulator, with or without a template.
+    A seeded Target can set its own `default_seed`.
   - Reports list each Test Run with its outcome and print, for every failed
     Test Run, the command that reruns it with the same seed. `simulation.json`
     gains `test_runs[]` rows.
@@ -80,15 +81,17 @@ Packaged release history starts at 0.2.7. For older changes, see
 - Existing Review Goal evidence may need to be refreshed once after upgrading;
   re-run the Reviewer if it is reported stale.
 
-- **Every Test Run now has a seed, and the Default Seed is 1** (#1233). On
-  Verilator and Cocotb Targets, a run that names no seed is simulated with
-  seed `1` instead of the simulator's own default, so testbenches that use
-  random values can see different stimulus than before the upgrade. To keep a
-  Target on another fixed seed, set `default_seed` in its `tests.toml`
-  section. Icarus HDL-testbench Targets are unchanged until they declare a
-  `seed` template.
-- **`tests.toml` is validated more strictly** (#1233). `booley doctor` names
-  each entry that fails to load; fix these before the next run:
+- **Test Runs of seeded Targets now have a seed, and the Default Seed is 1**
+  (#1233). On Verilator and Cocotb Targets, a run that names no seed is
+  simulated with seed `1` instead of the simulator's own default, so
+  testbenches that use random values can see different stimulus than before
+  the upgrade. To keep a Target on another fixed seed, set `default_seed` in
+  its `tests.toml` section. Icarus HDL-testbench Targets are unchanged until
+  they declare a `seed` template. HDL-testbench Targets of other simulators
+  are unchanged.
+- **`tests.toml` is validated more strictly** (#1233). `booley doctor` reports
+  the first entry that fails to load, so run it again after each fix until
+  `tests.toml` loads. Fix these before the next run:
   - A Test name must not be empty or `default`, must not start with `-`, and
     must not contain whitespace, a control character, `+`, `@`, `<`, `>`, a
     quote or a backslash. Rename such Tests and adapt the testbench or the
@@ -121,8 +124,8 @@ Packaged release history starts at 0.2.7. For older changes, see
   again.
 - **An older Booley cannot read a Goal Record written by this version**
   (#1233). The record carries the frozen Test Runs, and an older Booley
-  refuses it as written by a newer Booley. Finish or abandon an active Goal
-  Mode before downgrading.
+  refuses it as written by a newer Booley. This holds for finished and
+  abandoned Goal Records too, because every saved record carries them.
 - **A partial run no longer makes a Target's simulation Goal unmet** (#1233).
   `SIM:{target}` is met when every frozen Test Run has passed at the
   current file contents. Running a few Tests with `--test` adds their

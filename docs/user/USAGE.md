@@ -372,7 +372,7 @@ Goal argument examples:
 
 > Mutually exclusive: `critical_path_ps_max` ⊕ `fmax_mhz_min`.
 
-**Per-test `CYCLE_COUNT`**
+**`CYCLE_COUNT` of one Test Run**
 
 `CYCLE_COUNT:{target}` Goals name the Target with `target` and one Test Run with `test` (`test`, `test+variant`, or either with `@seed`); put bounds in `thresholds`. All thresholds for that Test Run must pass. Relative forms compare the same Test Run of the same Target at the Goal base commit.
 
@@ -420,12 +420,12 @@ with a selector:
 ]
 ```
 
-| Goal | `test` / `tests` | Requires |
+| `family` | `test` / `tests` | Requires |
 |---|---|---|
-| `sim` without `test` | none | The default Test Variant of every Test of the Target, each at the Default Seed. |
-| `sim` with `test` | `test`, `test+variant`, either with `@seed`, or either with `@xN` | That Test Run. `@xN` requires N Test Runs of the Test Variant with different seeds, N from 1 to 1000. |
-| `cycle_count` | `test`, `test+variant`, either with `@seed` | One Test Run. `@xN` is refused: a threshold applies to the Cycle Count of one Test Run. |
-| `coverage` | `"all"`, or a list of selectors, `@xN` included | Coverage floors over the merged coverage of the listed Test Runs. |
+| `SIM` without `test` | none | The default Test Variant of every Test of the Target that is not skipped, each at the Default Seed. |
+| `SIM` with `test` | `test`, `test+variant`, either with `@seed`, or either with `@xN` | That Test Run. `@xN` requires N Test Runs of the Test Variant with different seeds, N from 1 to 1000. |
+| `CYCLE_COUNT` | `test`, `test+variant`, either with `@seed` | One Test Run. `@xN` is refused: a threshold applies to the Cycle Count of one Test Run. |
+| `COVERAGE` | `"all"`, or a list of selectors, `@xN` included | Coverage floors over the merged coverage of the listed Test Runs. |
 
 A selector without a Test Variant means the Test's default Variant. A selector
 without a seed means the Target's Default Seed.
@@ -449,7 +449,8 @@ Test Variant that the work will add. That part of the Goal is *pending* and
 the Goal is unmet. Booley freezes it when it first exists, at the next Flow
 run or status read, with the defaults `tests.toml` declares at that moment. A
 Goal over a whole Target also freezes each Test that is added to the Target
-later. The Review Package lists every Test Run that was frozen after entry.
+later. The Review Package lists every such Test Run under the heading
+`Test Runs resolved after entry`.
 
 **Evidence.** A Test Run counts for a Goal only when its name and its declared
 arguments and environment equal one of the Goal's frozen Test Runs. Each
@@ -484,7 +485,8 @@ Add a simulation Goal for the same Test Runs when they must also pass. A run
 that does not measure the Goal, such as a plain simulation, leaves a
 measurement at the same file contents as it was. A failing Test Run that ends
 before the simulator writes its coverage data makes collection incomplete, so
-that run measures nothing and the Goal stays unmet.
+that run measures nothing either. With no earlier measurement at those
+contents, the Goal stays unmet as not measured.
 
 If a frozen Test Run's Test or Test Variant is removed or skipped, or its
 declared arguments or environment change, the Goal stays unmet until you
@@ -494,7 +496,7 @@ for each reason `goal_status` can show.
 
 **Seeing the frozen Test Runs.** `goal_status`, `booley goal status` and the
 Dashboard list each Goal's frozen Test Runs with their outcomes, the parts
-still pending, the Test Runs frozen after entry, and a rerun command for every
+still pending, the Test Runs resolved after entry, and a rerun command for every
 failed Test Run. The Review Package shows the frozen Test Runs and outcomes
 each Goal was judged by.
 

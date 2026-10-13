@@ -58,12 +58,10 @@ _Avoid_: session binding, run context
 A Test Run that a Goal requires, fixed in the Goal Record when the Goal is
 resolved: at entry, or later when the Target, Test or Test Variant it names
 first exists. It keeps its Test Variant, seed, and declared arguments and
-environment whatever `tests.toml` says afterwards; only a Goal Change
-freezes other Test Runs. Its outcome is `passed`, `failed`, or `missing`.
-For a simulation or Cycle Count Goal a failure stands until the files the
-Goal depends on change, and the Goal is unmet while one stands. A coverage
-Goal shows the outcomes of the run that measured it, and they do not decide
-it.
+environment whatever `tests.toml` says afterwards. A Goal comes to require
+other Test Runs only through a Goal Change, or, when it covers every Test of
+its Target, when a Test is added to that Target. Its outcome is `passed`,
+`failed`, or `missing`.
 _Avoid_: pinned test, locked seed, required test
 
 **Diagnostic Test Run**:

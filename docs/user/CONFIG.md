@@ -506,7 +506,7 @@ artifact staging never has to guess the sim's working directory:
 | `BOOLEY_TARGET` | always | the Target being run |
 | `BOOLEY_TEST_NAME` | single-test runs only | the selected Test, as its bare name |
 | `BOOLEY_TEST_NAMES` | always | the bare names of the run's Tests, space-joined |
-| `BOOLEY_TEST_RUN_NAMES` | always | the names of the [Test Runs](#seeds-seed-default_seed) this firing prepares (`test[+variant][@seed]`), space-joined |
+| `BOOLEY_TEST_RUN_NAMES` | firings that prepare a Test Run | the names of the [Test Runs](#seeds-seed-default_seed) this firing prepares (`test[+variant][@seed]`), space-joined |
 | `BOOLEY_TEST_RUN_NAME` | one Test Run only | that Test Run's name |
 | `BOOLEY_TEST_VARIANT` | one Test Run whose Test declares Test Variants | the Test Variant that runs |
 | `BOOLEY_TEST_SEED` | one Test Run on a seeded Target | the seed, in decimal |
@@ -1728,7 +1728,7 @@ selected through its filesets. Supply at most one rules file; waiver files are o
 
 `tests.toml` says what to verify on each sim Target: the Target's **Tests**,
 how the testbench is told which Test to run, the **Test Variants** of a Test,
-and how a run is seeded.
+and how a Test Run is seeded.
 
 ```toml
 [test_lists]                          # optional shared, reusable lists
@@ -1764,10 +1764,10 @@ A Target section holds only these keys. Any other key fails to load, and
 **Test names.** A Test name is not empty, is not `default`, does not start
 with `-`, and contains no whitespace, control character, `+`, `@`, `<`, `>`,
 quote or backslash. The same rule applies to Test Variant names. `+` and `@`
-are reserved because a run is written `test+variant@seed`; the other
-characters are refused so that a name is one word in every shell. A name
-appears at most once in a Target's `tests` list and at most once in its
-`skip` list.
+are reserved because a Test Run is written `test+variant@seed`. A valid name
+can still contain characters that a shell interprets, such as `;`, `|`, `&`,
+`$`, `(`, `)` or `*`: quote such a name on the command line. A name appears
+at most once in a Target's `tests` list and at most once in its `skip` list.
 
 **`select`** is **exactly one option token** (no embedded whitespace). Two
 forms: a **plusarg** (`+…`), consumed by the testbench's `$value$plusargs`
@@ -1851,6 +1851,7 @@ the Target:
 |---|---|
 | Verilator, HDL testbench | `+verilator+seed+<seed>`, and the rendered `seed` template when the Target declares one |
 | Icarus, HDL testbench | the rendered `seed` template; without a template the Target is **unseeded** |
+| Another simulator, HDL testbench | nothing: the Target is **unseeded**, with or without a `seed` template |
 | Cocotb Target | cocotb's seed variable: `COCOTB_RANDOM_SEED` on cocotb 2.x, `RANDOM_SEED` on cocotb 1.x |
 
 ```toml
@@ -1871,7 +1872,8 @@ default_seed = 7             # optional: this Target's Default Seed
 - An **unseeded** Target cannot apply a seed. Its Test Runs are written
   without `@seed`, and Booley refuses `--seed`, `test@seed`, `test@xN` and a
   `default_seed` key for it. To seed an Icarus Target, declare a `seed`
-  template that the testbench reads.
+  template that the testbench reads. An HDL-testbench Target of a simulator
+  other than Verilator and Icarus stays unseeded.
 
 On the simulator command the arguments appear in this order: the Target's
 plusarg parameters, the `select` argument, the Variant's arguments, then the

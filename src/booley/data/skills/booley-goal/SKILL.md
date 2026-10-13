@@ -62,11 +62,11 @@ A Test Run is one Test Variant simulated with one seed, written
 a bare Test name means its default Variant, and no seed means the Target's
 Default Seed.
 
-| Goal | Argument | Accepts |
+| `family` | Argument | Accepts |
 |---|---|---|
-| `sim` | optional `test` | `test`, `test+variant`, either with `@seed`, or either with `@xN` (N Test Runs with different seeds, N from 1 to 1000). Without `test`: every Test of the Target, each as its default Variant at the Default Seed. |
-| `cycle_count` | `test` | `test`, `test+variant`, either with `@seed`. `@xN` is refused. |
-| `coverage` | `tests` | `"all"` or a list of the `sim` selector forms. |
+| `SIM` | optional `test` | `test`, `test+variant`, either with `@seed`, or either with `@xN` (N Test Runs with different seeds, N from 1 to 1000). Without `test`: every Test of the Target that is not skipped, each as its default Variant at the Default Seed. |
+| `CYCLE_COUNT` | `test` | `test`, `test+variant`, either with `@seed`. `@xN` is refused. |
+| `COVERAGE` | `tests` | `"all"` or a list of the `SIM` selector forms. |
 
 ```json
 {"family": "SIM", "target": "sim_fifo", "test": "stress+soak@x20"}
@@ -80,10 +80,12 @@ Default Seed.
 - A Target, Test or Variant that does not exist yet is pending. Booley
   freezes it when it first exists. Until then the Goal is unmet.
 - Only a Test Run with a frozen name and unchanged declared arguments and
-  environment counts. `flow sim` on the Target runs the frozen Test Runs of
-  the Target's simulation Goal; `--test test+variant@xN` runs the frozen seeds
-  of the Goal with that Target, Variant and N. Any other Test Run is
-  diagnostic: it records no evidence and its failure blocks no Goal.
+  environment counts. `flow sim` on the Target without `test` runs the frozen
+  Test Runs of the Target's simulation Goal that has no `test`, and of no
+  other Goal. `test="test+variant@xN"` runs the frozen seeds of the Goal with
+  that Target, Variant and N. For any other Goal, pass each frozen Test Run
+  name from `goal_status` in `test`. Any other Test Run is diagnostic: it
+  records no evidence and its failure blocks no Goal.
 - A `diagnostic=true` run records nothing even for frozen Test Runs; its
   report names the Goals whose frozen Test Runs ran and failed. Use it to
   debug. A failure it shows is real: fix the cause, then run without
