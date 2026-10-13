@@ -895,8 +895,9 @@ and conflicts with `target`, `test`, explicit `mode`, `coverage`, `trace`, and `
 
 Structured campaign output reports `grade`, `complete`, aggregate
 `observation_counts`, and a maximum-32 `observations` preview. Every preview
-entry retains `test`, `execution`, `functional`, `assertions`,
-`assertion_count`, nullable `cycle_count`, and bounded `detail`; `observation_total` and
+entry retains `test`, `execution`, nullable `failure_class` (`design` or
+`infrastructure`), `functional`, `assertions`, `assertion_count`, nullable
+`cycle_count`, and bounded `detail`; `observation_total` and
 `observations_truncated` disclose whether the preview is complete. The full
 `report.json.cycle_counts` mapping (see
 [FLOW_REPORTS.md](FLOW_REPORTS.md)) is dropped from inline output before the
@@ -905,6 +906,8 @@ The independent observation axes mean:
 
 - `execution`: whether the simulator completed, timed out, was guard-aborted,
   or failed before producing trustworthy test evidence;
+- `failure_class`: whether a failure is attributed to the `design` or to the
+  `infrastructure`; `null` when the observation records no failure;
 - `functional`: the pass/fail/inconclusive test verdict;
 - `assertions`: assertion evidence independently observed for that test.
 
