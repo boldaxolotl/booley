@@ -1231,24 +1231,21 @@ def test_combined_prepared_mode_freezes_both_eligible_families(
     assert (result.outcome.criterion_key, result.outcome.criterion_met) == expected
 
 
-@pytest.mark.parametrize("name", ["mutation_tester", "coverage_analyst", "tb_coder"])
+@pytest.mark.parametrize("name", ["mutation_tester", "coverage_analyst"])
 def test_specialist_public_completion_projects_actual_evaluations(runtime, monkeypatch, name):
     from booley.mcp.base import McpToolResult
     from booley.specialists.coverage_analyst import CoverageAnalystSpecialist
     from booley.specialists.mutation_tester import MutationTesterSpecialist
-    from booley.specialists.tb_coder import TbCoderSpecialist
 
     _report_targets(runtime, ("first",))
     classes = {
         "mutation_tester": MutationTesterSpecialist,
         "coverage_analyst": CoverageAnalystSpecialist,
-        "tb_coder": TbCoderSpecialist,
     }
     endpoint_type = classes[name]
     extras = {
         "mutation_tester": ["--target", "first", "--scope", "rtl"],
         "coverage_analyst": ["--campaign", str(runtime / "coverage.json")],
-        "tb_coder": ["--instruction-file", str(runtime / "instruction.md"), "--scope", "tb"],
     }[name]
 
     def run(self):

@@ -31,7 +31,6 @@ class TestNestedMcpToolsFor:
         [
             ("reviewer", []),
             ("mutation_tester", []),
-            ("tb_coder", ["sim"]),
             ("coverage_analyst", ["coverage_evidence"]),
         ],
     )

@@ -103,3 +103,7 @@ from quiet attributable session presence; quiet does not prove abandonment.
 Both IDs are stable and waivable through `doctor-waivers.toml`. Doctor also
 WARNs on ignored `[developer]` settings and `[jobs].max_tickets` with a delete
 fix. These settings do not configure Goal Mode.
+
+Doctor WARNs with `workspace.legacy-source-stash` when an interrupted run left
+a source stash record for this worktree; see
+[manual source recovery](TROUBLESHOOTING.md#recover-sources-hidden-by-an-interrupted-older-run).

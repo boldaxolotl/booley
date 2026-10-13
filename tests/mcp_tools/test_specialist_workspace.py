@@ -103,6 +103,16 @@ def test_category_isolation_only_hides_snapshot_sources(
         assert (isolated_root / visible_dir / "source.sv").is_file()
         assert (repo / "rtl" / "source.sv").is_file()
         assert (repo / "tb" / "source.sv").is_file()
+        history = subprocess.run(
+            ["git", "show", f"HEAD:{hidden_dir}/source.sv"],
+            cwd=isolated_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert history.returncode != 0
+        assert f"// {hidden_dir}" not in history.stdout
+        _git(["show", f"HEAD:{visible_dir}/source.sv"], isolated_root)
 
     assert (repo / "rtl" / "source.sv").is_file()
     assert (repo / "tb" / "source.sv").is_file()
