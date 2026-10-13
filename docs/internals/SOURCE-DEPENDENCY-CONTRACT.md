@@ -53,6 +53,15 @@ Feedback from importing Harness in any static import location.
 
 ## Runtime execution boundary
 
+MCP application behavior is independent of the external MCP SDK and transport:
+`mcp.job_lifecycle.JobLifecycle` owns submission, duplicate attachment, bounded
+polling, cancellation, and terminal-result resolution. It composes the existing
+Runtime record and slot owners through internal `mcp.job_results` lookup and
+`mcp.endpoint_process` supervision. `mcp.report_encoding.ReportEncoder` owns text
+tails, report deduplication, and the structured-result budget and oversized-result
+fallback. None of these owners depends on `mcp.server`; the server composes their
+results with SDK content, Goal warnings, and the existing health announcements.
+
 - `runtime.job_records` stores records at an explicit jobs root. MCP composition
   resolves `runtime.session_paths.session_jobs_dir` after Interactive logging setup;
   the job manager retains each run's root from submission through completion,
@@ -129,9 +138,9 @@ protects the two new Harness owners, including deferred and type-only imports.
 
 Inspection retains bounded subprocess and conditional authority-lock effects;
 Project repair operations remain explicit and preserve their interleaved phase
-order. The exact interfaces, effects, owner-local tests and before/after fan-out
-for [#532](https://github.com/boldaxolotl/booley/issues/532) are recorded in
-[the implementation evidence](DOCTOR-DIAGNOSTICS.md).
+order. The owners' interfaces and permitted effects, and the shared health
+capability that Doctor, MCP and the Dashboard read, are described in
+[Doctor diagnostics and shared health](DOCTOR-HEALTH.md).
 
 ## Target/FuseSoC and execution separation
 
@@ -347,7 +356,6 @@ named rule and gives no source module a blanket exemption.
 
 | Permission | Rule | Exact source -> exact target | Reason |
 | --- | --- | --- | --- |
-| C1 | D4 | `booley.mcp.server -> booley.harness.auto_doctor` | The MCP server composes the Doctor endpoint at the agent-facing entry point. |
 | C2 | D4 | `booley.mcp.server -> booley.specialists.specialist` | The MCP server classifies and composes Specialist endpoints. |
 | C8 | D6 | `booley.runtime.incontainer_register -> booley.harness.incontainer_register` | The former module path remains an exact compatibility entry point. |
 | C10 | D31 | `booley.flows.sim.campaign.coordinator -> booley.flows.sim.campaign.store` | Campaign execution composes durable transaction, recovery, and publication. |
@@ -486,9 +494,8 @@ Config-to-Runtime, Criteria-to-Flow, and Flow-to-Ticket-Board separations had
 already landed by `1fdc706e`; they are not additional 10 SEP reductions.
 
 Named composition hotspot fan-out is the number of unique imported modules.
-These diagnostic values do not gate changes. These columns are historical. The #532 measurements are recorded in
-[the Doctor evidence](DOCTOR-DIAGNOSTICS.md), and the current integrated
-snapshot below records the latest source and analyzer:
+These diagnostic values do not gate changes. These columns are historical; the
+current integrated snapshot below records the latest source and analyzer:
 
 | Canonical role | Exact module | 02 SEP baseline | Before 10 SEP | 11 SEP |
 | --- | --- | ---: | ---: | ---: |

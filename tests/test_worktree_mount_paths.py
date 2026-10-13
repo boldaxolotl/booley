@@ -1,10 +1,20 @@
 """Selected worktree storage and Git metadata capability checks."""
 
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
 from booley.runtime.project_dir import reset_cache
+
+
+@pytest.fixture(autouse=True)
+def isolated_project_cache() -> Iterator[None]:
+    reset_cache()
+    try:
+        yield
+    finally:
+        reset_cache()
 
 
 def test_old_git_repair_omits_unsupported_mode_flags(monkeypatch):
@@ -25,6 +35,8 @@ def test_unsupported_git_and_linked_root_use_explicit_creation_fallback(tmp_path
     state = root / ".booley_project"
     state.mkdir(parents=True)
     monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(state))
+    # Another test in this worker may have cached a different Project directory.
+    reset_cache()
     monkeypatch.setattr(worktree_paths, "_git_supports_relative_paths", lambda: False)
     assert worktree_paths.worktree_creation_config(root) == (
         "-c",

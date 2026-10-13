@@ -328,3 +328,18 @@ FST_HEADER_BYTES = bytes([0]) + (329).to_bytes(8, "big") + b"\x00" * 321
 FST_VCDATA_BYTES = bytes([1]) + (16).to_bytes(8, "big") + b"\x00" * 8
 #: Smallest byte string that reads as a real, queryable waveform store.
 MINIMAL_FST_BYTES = FST_HEADER_BYTES + FST_VCDATA_BYTES
+
+
+def write_activity_signal(
+    project_dir: Path, key: str, state: str, at: str, tool: str = ""
+) -> Path:
+    """Write one session-activity signal in the hook script's on-disk format."""
+    import json
+
+    from booley.runtime.session_activity import SCHEMA, ActivityStore
+
+    path = ActivityStore(project_dir).path(key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    signal = {"schema": SCHEMA, "key": key, "state": state, "at": at}
+    path.write_text(json.dumps(signal | ({"tool": tool} if tool else {})), encoding="utf-8")
+    return path

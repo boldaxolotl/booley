@@ -50,3 +50,39 @@ tickets.
 - **Claim**: assign the issue to the driving developer before starting work.
 - **Resolve**: record the answer in a comment, close the issue, and add a
   concise linked pointer to the map's Decisions-so-far section.
+
+## Agent claims
+
+An agent that takes an issue claims it with a task-specific comment, then
+assigns the issue to the authenticated login. Draft and scan the comment as
+`AGENTS.md` requires, and post exactly:
+
+```text
+Claimed by agent `<agent-id>`.
+```
+
+The earliest claim that has not been released wins, ordered by `createdAt`,
+then comment ID. Read every page of comments and the assignees before
+assigning and before each later state-changing command; stop when a claim or
+assignee appears that the last read did not show. These reads detect a
+conflict. They are not a lock: two hosts can still race.
+
+Release a claim only after every command the claiming run started has stopped
+and no PR of that run is still queued. Post a release comment that names the
+original claim comment ID, the run, and the reason, then remove the run's own
+assignment:
+
+```text
+Released claim <claim-comment-id> by agent `<agent-id>`: <reason>.
+```
+
+GitHub authenticates the login, not the agent ID written in a comment. A
+release therefore counts only when the releasing run can match it to its own
+recorded command and the returned comment ID, or when the maintainer
+authorizes the release or handoff. A release comment alone, written under a
+shared login by an agent that cannot show that record, does not free the
+claim. Elapsed time never releases a claim.
+
+An open PR for the issue keeps it out of automatic selection even after its
+claim is released. To recover an abandoned claim, the maintainer confirms that
+the old run and its processes have stopped, then authorizes the takeover.

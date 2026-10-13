@@ -7,10 +7,10 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from booley.audit.doctor_waivers import DoctorWarning, warning
 from booley.config.goals import quiet_after
 from booley.goals.model import GoalRecord
 from booley.goals.store import GoalStore
-from booley.harness.doctor_waivers import DoctorWarning, warning
 from booley.mcp.session_registry import SessionRegistry, SessionRow, namespace, session_presence
 from booley.runtime.worktrees import WorktreeEntry, list_worktrees
 

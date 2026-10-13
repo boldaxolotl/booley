@@ -33,6 +33,27 @@ def test_production_source_dependencies_obey_approved_contract() -> None:
     assert not problems, "Source dependency contract failures:\n" + format_problems(problems)
 
 
+def test_job_and_report_owners_have_no_dependency_path_to_mcp_adapter() -> None:
+    dependencies = analyze_imports(_SOURCE_ROOT)
+    edges: dict[str, set[str]] = {}
+    for dependency in dependencies:
+        edges.setdefault(dependency.source, set()).add(dependency.target)
+    for owner in (
+        "booley.mcp.job_lifecycle",
+        "booley.mcp.job_results",
+        "booley.mcp.endpoint_process",
+        "booley.mcp.report_encoding",
+    ):
+        pending, visited = [owner], set()
+        while pending:
+            module = pending.pop()
+            if module in visited:
+                continue
+            assert module != "booley.mcp.server", f"{owner} depends on the MCP adapter"
+            visited.add(module)
+            pending.extend(edges.get(module, set()) - visited)
+
+
 def test_every_campaign_storage_permission_is_a_current_exact_edge() -> None:
     dependencies = analyze_imports(_SOURCE_ROOT)
     edges = {(item.source, item.target) for item in dependencies}
@@ -441,3 +462,40 @@ def test_diagnostic_owners_do_not_acquire_command_or_rendering_knowledge(
     assert "D26" in report
     assert f"booley.harness.{owner}" in report
     assert f"booley.harness.{target}" in report
+
+
+def test_shared_health_has_no_transitive_command_or_sdk_dependency() -> None:
+    edges: dict[str, set[str]] = {}
+    for item in analyze_imports(_SOURCE_ROOT):
+        edges.setdefault(item.source, set()).add(item.target)
+    pending = {
+        "booley.audit.health",
+        "booley.runtime.health",
+        "booley.runtime.doctor_stamp",
+        "booley.runtime.health_presentation",
+    }
+    visited: set[str] = set()
+    while pending:
+        current = pending.pop()
+        if current in visited:
+            continue
+        visited.add(current)
+        assert not current.startswith(("booley.harness", "booley.mcp", "booley.specialists")), (
+            current
+        )
+        pending.update(edges.get(current, set()) - visited)
+
+
+def test_health_consumers_reach_shared_health_without_the_doctor_worker() -> None:
+    consumers = {"booley.mcp.server", "booley.harness.dashboard.model"}
+    shared = {"booley.runtime.health", "booley.runtime.health_presentation"}
+    worker = "booley.harness.auto_doctor"
+    targets: dict[str, set[str]] = {consumer: set() for consumer in consumers}
+    for edge in analyze_imports(_SOURCE_ROOT):
+        if edge.source in consumers:
+            targets[edge.source].add(edge.target)
+    for consumer, imported in targets.items():
+        # Proves the analyzer saw this consumer's health imports, deferred ones included.
+        assert imported & shared, consumer
+        assert worker not in imported, consumer
+    assert (_SOURCE_ROOT / "harness" / "auto_doctor.py").is_file()

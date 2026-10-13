@@ -94,7 +94,7 @@ clearing it means paying the build cost again.
 ## Vendored-Core Quarantine
 Aliases: vendored-core quarantine
 Vendored-core quarantine marks third-party `.core` files with the `vendored`
-tag so Booley's agents treat them as read-only upstream input. Integrations
+tag so Developer Agents and Specialists treat them as read-only upstream input. Integrations
 belong in your own cores rather than edits to that upstream code.
 
 ## `.booley_project/`
@@ -131,10 +131,10 @@ created, typically a Docker image containing your EDA tools. It supplies the
 programs; the Sandbox is the running environment that uses them.
 
 ## Goal Mode
-Goal Mode binds one agent session to a linked worktree and Goal Branch, with
+Goal Mode binds one Developer Agent session to a linked worktree and Goal Branch, with
 mandatory completion conditions judged by Booley Flow and Specialist evidence.
 
 ## Goalset
-A Goalset is a Project-owned Markdown bundle under `goalsets/`. The agent
+A Goalset is a Project-owned Markdown bundle under `goalsets/`. The Developer Agent
 translates its prose into concrete Goals at entry. An optional `default.md`
 applies to every entry unless the human explicitly skips it with a reason.

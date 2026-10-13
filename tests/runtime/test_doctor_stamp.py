@@ -1,4 +1,4 @@
-"""Tests for the doctor freshness stamp (booley.harness.doctor_stamp)."""
+"""Tests for the doctor freshness stamp (booley.runtime.doctor_stamp)."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from booley.harness import doctor_stamp
+from booley.runtime import doctor_stamp
 from booley.runtime.project_dir import reset_cache
 
 

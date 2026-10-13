@@ -279,7 +279,9 @@ def enter_goal_mode(request: EntryRequest, env: EntryEnvironment) -> EntryResult
     except (GoalStoreError, CheckoutError) as exc:
         raise GoalEntryError(str(exc)) from exc
     warnings = (*plan.warnings, *_session_warnings(env, identity))
-    return EntryResult(active, warnings, goal_mode_rules(), recovered)
+    return EntryResult(
+        active, warnings, goal_mode_rules(active.declared_protected_inputs), recovered
+    )
 
 
 @dataclass(frozen=True)
@@ -358,6 +360,7 @@ def _drive_entry(
         protected_paths=snapshot.encoded_paths,
         protected_digest=snapshot.working_digest,
         protected_head_digest=snapshot.head_digest,
+        declared_protected_inputs=snapshot.declared,
     )
     _boundary(env, "protected_saved")
     params = {key: dict(value) for key, value in plan.criterion_params.items()}
@@ -581,7 +584,7 @@ def _checkout_goal_branch(checkout: GoalCheckout, record: GoalRecord) -> None:
 def _snapshot(roots: ProtectedInputRoots) -> ProtectedSnapshot:
     """Step 6: the protected paths and both digests, as a run would read them now."""
     try:
-        return snapshot_protected_inputs(roots)
+        return snapshot_protected_inputs(roots, entering=True)
     except ProtectedInputError as exc:
         raise GoalEntryError(str(exc)) from exc
 
@@ -600,7 +603,11 @@ def _revalidate_before_activation(
     assert record.protected_digest is not None  # saved at step 6
     try:
         violations = protected_input_violations(
-            record.protected_paths, record.protected_digest, record.protected_head_digest, roots
+            record.protected_paths,
+            record.protected_digest,
+            record.protected_head_digest,
+            roots,
+            record.declared_protected_inputs,
         )
     except ProtectedInputError as exc:
         raise GoalEntryError(str(exc)) from exc

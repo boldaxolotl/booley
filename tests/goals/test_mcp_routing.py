@@ -57,8 +57,13 @@ def test_binding_and_environment(
 
 
 def test_missing_work_dir_both_paths(goal_mode: SimpleNamespace) -> None:
-    with pytest.raises(GoalBindingError, match="Pass work_dir"):
+    with pytest.raises(GoalBindingError, match="Pass work_dir") as refusal:
         resolve_call_context({})
+    message = str(refusal.value)
+    assert "every Booley call" not in message
+    assert str(goal_mode.worktree) in message
+    assert "booley_report" in message and "booley_targets" in message
+    assert "booley_status" in message and "accept no work_dir" in message
     result = asyncio.run(dispatch_goal_tool("goal_status", {}, project_dir=goal_mode.control))
     assert result.is_error and "Pass work_dir" in result.value[0].text
 
@@ -231,7 +236,10 @@ def test_shared_worktree_and_missing_path_warning(goal_mode):
         other_sessions=("one", "two"),
     )
     assert "another session" in warning
-    assert "pass work_dir" in warning
+    assert "pass work_dir" in warning.casefold()
+    assert "every Booley call" not in warning
+    assert "booley_report" in warning and "booley_targets" in warning
+    assert "booley_status" in warning and "accept no work_dir" in warning
 
 
 def test_spec_from_declared_goal_is_forwarded(layout):

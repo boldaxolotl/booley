@@ -191,6 +191,12 @@ and configured Project-directory candidates according to the readers described
 in `goals/protected_inputs.py`; it includes fallback copies as well as the
 currently selected configuration. Goal entry captures working and committed
 input identities; drift warns and blocks Finish until reverted.
+A Project adds files to this set with `[project].protected_inputs`, read from
+the Goal worktree's effective configuration and resolved against the worktree
+root. For declared files, Goal entry also stores a versioned per-file capture of
+path, contents, type, and executable bit, separately for the working tree and
+HEAD, so a violation can name the file. Without declarations the stored digest
+is unchanged. See [Additional Protected Inputs](../user/CONFIG.md#additional-protected-inputs-projectprotected_inputs).
 Run admission and publication bind evidence to the Goal Record, specification
 revisions, source fingerprints, and Target surface. Approved coverage-policy
 changes use the Goal proposal-and-approval transaction described below.
@@ -483,9 +489,10 @@ holds execution policy, including whether warnings affect the process exit.
 [CONFIG.md](../user/CONFIG.md#lint-flowslint) owns the exact keys and defaults.
 
 Lint *policy*, which rules fire and what is waived, is design description,
-not Booley config, so it lives on the Target: a `.vlt` file for Verilator,
+not Booley config, so it lives on the Target. For Verilator, that is a `.vlt`
+file declared with `file_type: vlt` in a selected fileset; for Verible,
 `veribleLintRules` / `veribleLintWaiver` filesets (and the `ruleset` / `rules`
-flow options) for Verible. Booley adds no severity tiers and no waiver
+flow options). Booley adds no severity tiers and no waiver
 machinery of its own: every finding counts against the Criterion, and a waiver
 edit lands in the diff like any other design-input change, where the
 Review Package and Reviewer Specialist ([GLOSSARY.md](../GLOSSARY.md)) expose it

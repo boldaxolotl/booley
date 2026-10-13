@@ -125,7 +125,8 @@ def extract_schema(parser: argparse.ArgumentParser) -> dict[str, Any]:
 
         # Add description from help text
         if action.help and action.help != argparse.SUPPRESS:
-            prop["description"] = action.help
+            # Plain text only: help may carry a separate CLI wording.
+            prop["description"] = str(action.help)
 
         # Add default if present and not None/SUPPRESS
         if (

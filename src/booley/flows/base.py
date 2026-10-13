@@ -26,6 +26,7 @@ from booley.criteria.state import DevelopmentState
 from booley.evidence.acceptance import PairedProjectBaseline, ResolvedFlowAcceptance
 from booley.flows import execution
 from booley.flows.cli_arguments import BuiltinArguments
+from booley.flows.cli_help import CliHelp, SurfaceHelp
 from booley.flows.display import format_flow_display_label
 from booley.flows.endpoint_context import EndpointContext
 from booley.flows.execution_persistence import FlowExecutionAdapter
@@ -496,6 +497,8 @@ class BuiltinFlow(FlowMechanics, Generic[RequestT]):
 
     name: str = ""
     description: str = ""
+    # Human `--help` wording; ``description`` stays the agent-facing tool text.
+    cli_help: ClassVar[CliHelp | None] = None
     code_modifying: bool = False
     modifies_category: str | None = None
     config_aware: bool = True
@@ -503,10 +506,14 @@ class BuiltinFlow(FlowMechanics, Generic[RequestT]):
     announce_success_report: bool = False
     satisfies: ClassVar[list[str]] = []
     satisfies_args: ClassVar[dict[str, str]] = {}
-    target_help: str = (
+    target_help: str = SurfaceHelp(
         "FuseSoC .core Target name(s) this run applies to. The CLI flag may be "
         "repeated or its value comma-separated; MCP accepts one comma-separated string. "
-        "List available Targets with `booley targets`."
+        "List available Targets with `booley targets`.",
+        cli=(
+            "FuseSoC .core Target name(s) to run. Repeat the flag or separate names "
+            "with commas. List available Targets with `booley targets`."
+        ),
     )
 
     def __init__(self) -> None:

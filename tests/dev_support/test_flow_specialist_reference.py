@@ -173,7 +173,7 @@ def test_specialist_examples_use_connected_session_arguments_without_cli_flags()
     assert "MCP" not in rendered
     assert "CLI-only controls" in rendered
     for name in ("coverage_analyst", "reviewer", "mutation_tester"):
-        assert f"Call the `{name}` Specialist from your connected agent session" in rendered
+        assert f"Call the `{name}` Specialist from your Developer Agent session" in rendered
     assert "booley specialist <name> --help" in rendered
     assert 'steer=["<context>"]' in rendered
     assert 'campaign="<exact-coverage.json>"' in rendered

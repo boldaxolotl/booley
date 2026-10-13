@@ -37,8 +37,9 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from booley.audit.doctor_waivers import WAIVER_FILENAME
+from booley.audit.health import HEALTHY_MAX_AGE_DAYS
 from booley.core.differences import format_differences
-from booley.harness.doctor_waivers import WAIVER_FILENAME
 from booley.runtime import runtime_context
 from booley.runtime.devcontainer import devcontainer_path
 from booley.runtime.project_dir import resolve_project_dir
@@ -48,7 +49,7 @@ STAMP_FILENAME = "doctor_stamp.json"
 
 # A clean doctor run older than this is considered stale. One week matches
 # the cadence at which sandbox images and agent CLIs realistically drift.
-MAX_AGE_DAYS = 7
+MAX_AGE_DAYS = HEALTHY_MAX_AGE_DAYS
 _VERSION_WARNING_SEPARATOR = "=" * 72
 
 

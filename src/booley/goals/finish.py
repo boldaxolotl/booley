@@ -71,6 +71,7 @@ from booley.goals.target_changes import (
     resolved_goal_targets,
     resolved_surfaces,
 )
+from booley.goals.warnings import protected_warnings
 from booley.review.goal_package import (
     GoalCompletionPackage,
     GoalReviewContext,
@@ -225,6 +226,10 @@ def _freeze(
     except AcceptanceLedgerError as exc:
         raise LifecycleError(f"Goal evidence cannot be accounted for: {exc}") from exc
     selection = select_inputs(record, operation.root)
+    if record.declared_protected_inputs is not None:
+        violations = protected_warnings(record, operation.store.project_dir, operation.root)
+        if violations:
+            raise LifecycleError("; ".join(violations))
     require_clean(selection, retained=retained_outputs(operation))
     require_branch(operation.root, branch_ref(record.branch))
     status = build_status(
@@ -729,6 +734,7 @@ def _inputs_unchanged(
         ProtectedInputRoots(operation.root, operation.store.project_dir).with_input_paths(
             record.input_paths
         ),
+        record.declared_protected_inputs,
     )
     return not violations and observations_unchanged(
         frozen.get("private_capture", frozen["package"]["input_proof"]),

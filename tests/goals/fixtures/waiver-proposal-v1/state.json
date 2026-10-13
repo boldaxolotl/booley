@@ -1,0 +1,20 @@
+{
+  "applied_at": null,
+  "closed_by_abandonment": null,
+  "decision": {
+    "at": "2026-10-11T16:09:34Z",
+    "decision": "approve",
+    "payload_digest": "99bdf7554f555886daad421b48f5eb4ba7bdefa8344974ad83428df0c8acc4b9",
+    "peer_process": null,
+    "quote": "I approve this exact change",
+    "reason": "Measured behavior is acceptable",
+    "session_key": "test-session",
+    "source": "agent-recorded",
+    "transaction_id": "09195dee-31ce-466c-9bac-cf9a9ff8c748"
+  },
+  "payload_digest": "99bdf7554f555886daad421b48f5eb4ba7bdefa8344974ad83428df0c8acc4b9",
+  "resolved_at": null,
+  "schema": "booley.goal-proposal-state/v1",
+  "state": "approved",
+  "transaction_digest": "c65601974193e766678d35c7b23f9c54d0642fb200091c1fce8b3390bdbea71f"
+}

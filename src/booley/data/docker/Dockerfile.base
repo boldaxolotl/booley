@@ -272,6 +272,11 @@ RUN echo ">>> Installing Node.js ${NODE_VERSION} and exact agent CLIs..." \
 # user/project config and full-access modes cannot turn those MCP tools back on.
 COPY src/booley/data/docker/codex-requirements.toml /etc/codex/requirements.toml
 COPY src/booley/data/docker/claude-managed-settings.json /etc/claude-code/managed-settings.json
+# Both policy files also run this hook on client lifecycle events so the
+# Dashboard can show session activity (ADR 0068). It is a standalone
+# standard-library script, not a `booley` import: the client waits for it on
+# every prompt and tool call.
+COPY src/booley/data/docker/session_activity_hook.py /usr/local/libexec/booley/session_activity_hook.py
 
 # Non-root user for agent execution.
 # Pin agent to uid/gid 1000 so it matches the typical first host user on native

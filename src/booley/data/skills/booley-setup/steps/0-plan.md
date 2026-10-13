@@ -26,7 +26,7 @@ parentheses.
 - **Interactive (default).** A human is present. Run the grill in Part C and
   the approval gate in Part D. This is the only stop-and-wait gate in the whole
   skill — everything after an approved plan executes without interruption.
-- **Unattended.** The agent was handed an explicit, pre-approved end-to-end
+- **Unattended.** The Claude Code or Codex session was handed an explicit, pre-approved end-to-end
   setup request and nobody will answer questions. No question is asked, in
   either mode of the word: resolve every row by the rule below, set the plan
   status to `auto-approved`, and proceed to execution. The plan document is the
@@ -619,8 +619,14 @@ separate columns (see "How a row resolves"). The standard checklist:
    firmware compile, vector staging)? — use repo evidence or the defaults
    block; ask when the build recipe is unresolved. If yes, the
    command lines become `[flows.sim].pre_run_commands` and the toolchain
-   they need goes into the sandbox image (row 7). Two shape constraints to plan
-   against, both from CONFIG.md: `pre_run_commands` and `run_cwd` live under
+   they need goes into the sandbox image (row 7). When a hook or generator
+   invokes a recipe (for example `make <target>`), propose the tracked recipe
+   file and its stimulus sources as additional Protected Inputs: tell the human
+   that Goal Mode will freeze them, check that no build output lands inside a
+   proposed pattern, and record their agreement in this row. Step 2 writes
+   `[project].protected_inputs` only from that agreement; see CONFIG.md →
+   "Additional Protected Inputs". Two shape constraints to plan against, both
+   from CONFIG.md: `pre_run_commands` and `run_cwd` live under
    `[flows.sim]` and are therefore **global to the Flow — one value shared
    by every sim Target**, not per-Target knobs. Per-Target behavior has to come
    from *inside* the commands, branching on the exported `$BOOLEY_TARGET` (also

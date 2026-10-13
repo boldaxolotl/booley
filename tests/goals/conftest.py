@@ -34,7 +34,11 @@ DATE = "20261006"
 
 
 def git(cwd: Path, *args: str) -> str:
-    """Run git with a fixed identity and return its stripped output."""
+    """Run git with a fixed identity and return its stripped output.
+
+    Automatic maintenance is off: a detached repack started by one fixture
+    commit would otherwise change the object store under a later assertion.
+    """
     result = subprocess.run(
         [
             "git",
@@ -44,6 +48,10 @@ def git(cwd: Path, *args: str) -> str:
             "user.email=goal@test.invalid",
             "-c",
             "core.autocrlf=false",
+            "-c",
+            "maintenance.auto=false",
+            "-c",
+            "gc.auto=0",
             *args,
         ],
         cwd=cwd,

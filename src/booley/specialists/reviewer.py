@@ -42,6 +42,7 @@ from booley.evidence.review_vocabulary import (
     DISPOSITION_OUT_OF_SCOPE,
     DISPOSITION_SUPERSEDED,
 )
+from booley.flows.cli_help import CliHelp
 from booley.flows.execution_persistence import done_findings_require_approval_for
 from booley.mcp.base import (
     EXIT_ERROR,
@@ -550,7 +551,7 @@ def _validate_finding_dict(d: Any) -> list[str]:
 
 @dataclass
 class ReviewParseResult:
-    """Outcome of parsing reviewer agent output.
+    """Outcome of parsing reviewer Specialist output.
 
     ``json_present`` distinguishes "agent emitted no JSON wrapper at all"
     (typically free-form prose) from "agent emitted a wrapper with zero
@@ -625,7 +626,7 @@ def _find_balanced_json_object(
 
 
 def _extract_issues_payload(output: str) -> tuple[list[Any], bool]:
-    """Extract the raw items list from agent output.
+    """Extract the raw items list from Specialist output.
 
     Returns (items, json_present). ``json_present=True`` means a JSON
     wrapper object with an ``issues`` key was decoded, even if it
@@ -644,7 +645,7 @@ def parse_review_output(
     output: str,
     allowed_category: str | None = None,
 ) -> ReviewParseResult:
-    """Strict-schema parser for the initial review agent output.
+    """Strict-schema parser for the initial Reviewer Specialist output.
 
     Each item is validated against the issue schema. Items that violate
     the schema are dropped with a logged warning rather than coerced
@@ -747,7 +748,7 @@ def report_findings_to_issues(
 
 
 def parse_issues(output: str) -> list[ReviewIssue]:
-    """Parse issues JSON from agent output (schema-validated).
+    """Parse issues JSON from Specialist output (schema-validated).
 
     Convenience wrapper around :func:`parse_review_output` that returns
     just the valid issues. Callers that need to distinguish "no JSON at
@@ -866,6 +867,15 @@ class ReviewerSpecialist(Specialist):
 
     name: str = "reviewer"
     description: str = "Single-focus code review: reports issues by severity"
+    cli_help: ClassVar[CliHelp | None] = CliHelp(
+        summary=(
+            "Have an AI reviewer read the RTL or testbench files in --scope with one "
+            "review focus and list the issues it finds by severity. Use it for a second "
+            "opinion on a change before you merge it. The reviewer reads code and "
+            "never edits it."
+        ),
+        example="booley specialist reviewer --category rtl --focus bugs --scope rtl/fifo.sv",
+    )
     code_modifying: bool = False
     config_aware: bool = False
     accepts_target: bool = False
@@ -894,7 +904,7 @@ class ReviewerSpecialist(Specialist):
         "review_rtl_code_style": "--category rtl --focus code_style",
     }
 
-    # Review agent only reads code through bounded read/search agent capabilities.
+    # Reviewer Specialist only reads code through bounded read/search agent capabilities.
     agent_capabilities: ClassVar[list[str]] = ["Read", "Grep", "Glob"]
 
     # The provider-independent boundary: the nested reviewer receives a
@@ -1694,7 +1704,7 @@ object, even after calling the capability.
             return McpToolResult(
                 exit_code=EXIT_ERROR,
                 report_text=self._provider_failure_report(
-                    output_lines, "Review agent invocation failed"
+                    output_lines, "Reviewer Specialist invocation failed"
                 ),
             )
 
@@ -1759,7 +1769,7 @@ object, even after calling the capability.
         )
         if remaining is None:
             report = self._provider_failure_report(
-                output_lines, "Verify review agent invocation failed"
+                output_lines, "Verify Reviewer Specialist invocation failed"
             )
             return McpToolResult(exit_code=EXIT_ERROR, report_text=report)
         return self._build_result_clean_verify(
@@ -1795,7 +1805,7 @@ object, even after calling the capability.
             return McpToolResult(
                 exit_code=EXIT_ERROR,
                 report_text=self._provider_failure_report(
-                    output_lines, "Review agent invocation failed"
+                    output_lines, "Reviewer Specialist invocation failed"
                 ),
             )
         elapsed = time.monotonic() - overall_start
@@ -1992,7 +2002,7 @@ object, even after calling the capability.
         prior_sid = self._load_session_id(session_key)
         start = time.monotonic()
         params = self._verify_agent_params(focus, prior_detail, prior_sid)
-        self.emit_progress("invoking verify agent")
+        self.emit_progress("invoking verification Specialist")
         try:
             with self._review_state_filter():
                 result = self._invoke_agent_with_resume(params)
@@ -2004,7 +2014,7 @@ object, even after calling the capability.
                 self._record_review_provider_failure(
                     exc,
                     params.transcript_path,
-                    f"Verify review agent failed for focus={focus}",
+                    f"Verify Reviewer Specialist failed for focus={focus}",
                 )
             )
             return None, output_lines, set(), {}
@@ -2217,7 +2227,7 @@ Schema enforcement (applied upstream by the harness):
         diagnostics: list[dict[str, Any]] | None = None,
         issue_count: int | None = None,
     ) -> dict[int, dict[str, str]]:
-        """Pull validated per-index dispositions out of agent output.
+        """Pull validated per-index dispositions out of Specialist output.
 
         Applies the strict finding schema (see ``_validate_finding_dict``)
         at the parsing boundary. Schema violations are logged and
@@ -2227,7 +2237,7 @@ Schema enforcement (applied upstream by the harness):
         data = _find_balanced_json_object(output, "findings")
         if data is None:
             logger.warning(
-                "Verify agent output had no recognizable findings JSON "
+                "Verification Specialist output had no recognizable findings JSON "
                 "wrapper — every original finding will be treated as "
                 "STILL_PRESENT (fail-closed)",
             )
@@ -2349,7 +2359,7 @@ Schema enforcement (applied upstream by the harness):
                 "entr" + ("y" if dropped == 1 else "ies") + " (missing file/summary)",
             )
         logger.info(
-            "Review agent for %s/%s reported %d finding(s) via %s",
+            "Reviewer Specialist for %s/%s reported %d finding(s) via %s",
             self.args.category,
             focus,
             len(issues),
@@ -2363,7 +2373,7 @@ Schema enforcement (applied upstream by the harness):
         focus: str,
         output_lines: list[str],
     ) -> list[ReviewIssue] | None:
-        """Turn a review agent result into issues, honoring both contracts.
+        """Turn a Reviewer Specialist result into issues, honoring both contracts.
 
         Claude-backend agents report through the native ``ReportFindings``
         capability (captured via ``capture_agent_capability_calls``); Codex agents — and Claude
@@ -2390,7 +2400,7 @@ Schema enforcement (applied upstream by the harness):
         self._record_rejections(text_parsed.diagnostics, "canonical")
         if not text_parsed.json_present:
             logger.error(
-                "Review agent for %s/%s called %s but emitted no canonical issues JSON",
+                "Reviewer Specialist for %s/%s called %s but emitted no canonical issues JSON",
                 self.args.category,
                 focus,
                 REPORT_FINDINGS_CAPABILITY,
@@ -2415,7 +2425,7 @@ Schema enforcement (applied upstream by the harness):
     ) -> bool:
         """Report schema-rejected issues; True when *every* reported issue died.
 
-        "The agent reported issues and the harness threw all of them away"
+        "The Reviewer Specialist reported issues and the harness threw all of them away"
         must not render as a clean review — that is a false PASS with extra
         steps (same class as SETUP-F-33). The caller turns it into a Specialist
         error; a partial rejection is just a warning.
@@ -2428,7 +2438,7 @@ Schema enforcement (applied upstream by the harness):
             output_lines.append(f"WARN: rejected {count} malformed issue entr{plural} (see logs)")
             return False
         logger.error(
-            "Review agent for %s/%s: all %d reported issue(s) failed the schema — "
+            "Reviewer Specialist for %s/%s: all %d reported issue(s) failed the schema — "
             "refusing to treat as a clean review",
             self.args.category,
             focus,
@@ -2479,7 +2489,7 @@ Schema enforcement (applied upstream by the harness):
         focus: str,
         output_lines: list[str],
     ) -> list[ReviewIssue] | None:
-        """Parse agent output for a review focus.
+        """Parse Specialist output for a review focus.
 
         Appends any warning/error lines to ``output_lines`` and returns the
         parsed issues, or ``None`` when no JSON wrapper was present (treated
@@ -2489,14 +2499,14 @@ Schema enforcement (applied upstream by the harness):
         self._record_rejections(parsed.diagnostics, "canonical")
         if not parsed.json_present:
             logger.error(
-                "Review agent for %s/%s emitted no recognizable "
+                "Reviewer Specialist for %s/%s emitted no recognizable "
                 "issues JSON wrapper — refusing to treat as a "
                 "clean review",
                 self.args.category,
                 focus,
             )
             output_lines.append(
-                "ERROR: agent output contained no parseable issues JSON — not a clean pass",
+                "ERROR: Specialist output contained no parseable issues JSON — not a clean pass",
             )
             return None
         if self._note_rejected_issues(parsed, focus, output_lines):
@@ -2541,7 +2551,7 @@ Schema enforcement (applied upstream by the harness):
 
         start = time.monotonic()
         params = self._single_review_params(focus)
-        self.emit_progress(f"invoking review agent ({self.args.category}/{focus})")
+        self.emit_progress(f"invoking Reviewer Specialist ({self.args.category}/{focus})")
         try:
             with self._review_state_filter():
                 result = self._invoke_agent(params)
@@ -2559,7 +2569,7 @@ Schema enforcement (applied upstream by the harness):
                 self._record_review_provider_failure(
                     exc,
                     params.transcript_path,
-                    f"Review agent failed for focus={focus}",
+                    f"Reviewer Specialist failed for focus={focus}",
                 )
             )
             return None, output_lines
@@ -2859,7 +2869,7 @@ Schema enforcement (applied upstream by the harness):
         discovered, discovery_lines, source_digest = rediscovery
         if discovered is None:
             report = self._provider_failure_report(
-                discovery_lines, "Final clean-review discovery agent invocation failed"
+                discovery_lines, "Final clean-review discovery Specialist invocation failed"
             )
             return McpToolResult(exit_code=EXIT_ERROR, report_text=report)
         output_lines.extend(["", "[review] final discovery after source changes"])

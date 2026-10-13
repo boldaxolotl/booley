@@ -6,8 +6,8 @@ ordered list of setup **steps**. You do not fill these files by hand: the
 `booley-setup` skill authors them interactively, and `booley doctor` validates
 them. When a step needs the meaning of a field, it links here.
 
-**Audience:** both humans and agents. A human can read this to understand the
-config surface; an agent running the setup skill dereferences these anchors as it
+**Audience:** humans and Developer Agents. A human can read this to understand the
+config surface; a Claude Code or Codex session running the setup skill dereferences these anchors as it
 fills each file.
 
 **Read this first.** This is a reference, not a tutorial. It assumes you have
@@ -22,13 +22,13 @@ you have not described your design yet, start with the [Design description
 builds from it — and come back to the per-Flow knobs after.
 
 **Found a knob that lies, or one you wish existed?** Both are worth a minute:
-tell the `/booley-feedback` skill in your agent chat. See
+tell the `/booley-feedback` skill in your Developer Agent chat. See
 [Feedback](#feedback-feedback).
 
 Contents:
 
 - [Host configuration](#host-configuration-configtoml): global Sandbox Policy
-- [booley.toml](#booleytoml): project identity, Flow selection, agent config
+- [booley.toml](#booleytoml): project identity, Flow selection, Developer Agent and Specialist config
 - [Design description (`.core`) and tests (`tests.toml`)](#design-description-core-and-tests-teststoml)
 - [Cocotb Targets](#cocotb-targets-python-testbenches): Python testbenches, and
   baking their dependency stack into the image
@@ -76,20 +76,72 @@ canceling the editor operation.
 
 ## booley.toml
 
-Project identity, Flow selection, and agent configuration live in
+Project identity, Flow selection, and Developer Agent and Specialist configuration live in
 `.booley_project/booley.toml`. A per-knob reference follows, section by section.
 
-`[project]` carries the project `name` and `preflight_checks` — see
+`[project]` carries the project `name`, `protected_inputs`, and `preflight_checks` — see
 [Per-Target environment](#per-target-environment-env) for the last one, which is
 about testbench file-existence checks rather than identity. Everything else is
 detailed below, starting with the shared `enabled`
 setting for Booley Flows and Specialists.
 
+### Additional Protected Inputs: `[project].protected_inputs`
+
+Goal Mode already freezes Booley's own configuration and hooks. `protected_inputs`
+adds tracked files of yours that decide how a Goal is evaluated, such as a
+Makefile a hook runs, firmware sources, or reference vectors:
+
+```toml
+[project]
+name = "example"
+protected_inputs = ["Makefile", "firmware/**/*.c", "vectors/"]
+```
+
+Omitting the key or leaving the list empty protects nothing extra. Booley does
+not infer these files from scripts or Makefiles; list each one.
+
+Each entry is a path relative to the repo root of the Goal's worktree, wherever
+that worktree's `booley.toml` lives. Write `/` on every host.
+
+| Form | Example | Matches |
+|---|---|---|
+| File | `Makefile` | That file. |
+| Glob | `firmware/**/*.c` | `*` and `?` match within one path component; `**` as a whole component matches any number of components, including none. Dotfiles match. |
+| Directory | `vectors/` | Every file below it, the same as `vectors/**`. The trailing slash is required: `vectors` is refused with a hint to add it. |
+
+**At Goal entry** Booley lists the matched files. It refuses entry, naming the
+entry at fault, when:
+
+- an entry matches no file;
+- a match is untracked or ignored, or sits in a submodule or nested repository;
+- an entry is empty or absolute, or contains `..`, a backslash, brackets,
+  braces, or `**` joined to other characters (`**.c`);
+- an entry reaches into `.git` or Goal Record storage;
+- a matched symlink does not resolve to a tracked file inside the repository.
+  That covers directory symlinks and dangling or escaping links.
+
+**During the Goal** Booley freezes the list itself, the set of matched files,
+and each file's contents, type, and executable bit. Adding, removing, renaming,
+or editing a matched file warns at once and blocks Finish. Committing such a
+change does too, even when the working files are restored afterward. The
+warning names the entry, the file, and the kind of change, once per file however
+many entries or built-in protections cover it. Restoring the file clears the
+violation. An approved Goal Change cannot lift the protection: to change the
+list, abandon the Goal and enter again.
+
+Two limits:
+
+- Keep build outputs out of protected patterns. A build that writes into a
+  protected directory is a violation, so prefer `firmware/**/*.c` to `firmware/`
+  when compilation writes there.
+- As with built-in Protected Inputs, an edit made and reverted while a Flow is
+  running is not detected.
+
 ### Flow and Specialist availability: `enabled`
 
 Every Booley Flow builds and executes its command inside the Sandbox.
-Set `[flows.<name>].enabled = false` to remove a Flow from agent and autonomous
-discovery. Specialists use `[specialists.<name>].enabled`:
+Set `[flows.<name>].enabled = false` to remove a Flow from Developer Agent discovery and autonomous
+execution. Specialists use `[specialists.<name>].enabled`:
 
 ```toml
 [flows.lint]
@@ -817,7 +869,7 @@ whose `flow_options.booley.doctor` includes `synth`. It records each synthesis
 boundary's EDA process-tree peak RSS, retains the largest selected-target
 measurement, and applies 15% rounded-up headroom to the HEAVY reservation. A later plain
 Doctor run warns when `[sandbox].memory` cannot admit the calibrated peak plus
-Developer-Agent memory and fixed session headroom. An OOM or timeout is an
+Developer Agent memory and fixed session headroom. An OOM or timeout is an
 incomplete calibration, never a successful PPA result.
 
 The slot store is per-project. It does not arbitrate separate Projects' shared
@@ -895,7 +947,7 @@ license-server addresses, license-file paths, or environment forwarding in
 #### Host skills (`[sandbox].mount_host_skills`)
 
 By default the sandbox carries only Booley's built-in `booley-*` skills (baked
-into the image). Flip this on to also use your **own** global agent skills
+into the image). Flip this on to also use your **own** global Claude Code or Codex skills
 inside the container:
 
 ```toml
@@ -908,7 +960,7 @@ and `~/.agents/skills` (Codex) — resolves each entry to its **real** directory
 (these dirs are usually full of symlinks, which would otherwise dangle inside
 the container), and mounts each one **read-only**. Booley's own built-ins are
 excluded (they are already in the image and always win a name clash), and each
-skill is de-duplicated by name. The agent discovers them alongside the built-ins
+skill is de-duplicated by name. The Developer Agent discovers them alongside the built-ins
 on every container start. Nothing on the host is ever written. Rerun
 `init --seed` after adding or removing host skills.
 
@@ -1331,7 +1383,7 @@ file. Read them there.
 
 ### Agent provider (`[agent]`)
 
-The configured chat launcher and Specialists use one selected provider, Claude
+The Developer Agent chat launcher and Specialists use one selected provider, Claude
 or Codex:
 
 ```toml
@@ -1348,7 +1400,7 @@ preserved on re-run. A Project with only `provider` configured receives the docu
 
 #### Pinning what bills (`[agent] auth`)
 
-Pick which credential agents bill when several are present:
+Pick which credential the Developer Agent and Specialists bill when several are present:
 
 ```toml
 [agent]
@@ -1359,7 +1411,7 @@ auth = "subscription"   # "subscription" | "api_key" | "auto" (default)
 - **`auto`** (default): the CLI's own precedence decides (an API key outbids a
   subscription); Booley reports the winner but changes nothing.
 - **`subscription`**: bill the subscription. Booley scrubs the API-key env vars
-  from the agent environment; a `booley auth` OAuth token still rides along.
+  from Developer Agent and Specialist environments; a `booley auth` OAuth token still rides along.
 - **`api_key`**: bill the API key.
 
 Either non-`auto` value fails loud (`booley doctor`) when its credential is
@@ -1397,10 +1449,10 @@ variables still take precedence.
 
 Booley Specialists select models through three **capability tiers**:
 `heavy`, `standard`, `light`. Specialists floor at `standard`; cheap internal
-steps run `light`. The interactive agent uses its native CLI model settings. Each
+steps run `light`. The Developer Agent uses its native CLI model settings. Each
 provider ships defaults, so an untouched project needs no `[models]` at all.
 
-Override a tier to move every agent on it at once:
+Override a tier to move every Specialist and internal call on it at once:
 
 ```toml
 [models]
@@ -1412,7 +1464,7 @@ light = "claude-sonnet-5"
 Tiers you leave out keep the active provider's default; overriding `heavy`
 alone does not disturb the other two.
 
-#### Pinning one agent (`[models.roles]`)
+#### Pinning one Specialist (`[models.roles]`)
 
 To choose a model for one Specialist, pin its role by name:
 
@@ -1426,8 +1478,8 @@ A tier name resolves through the `[models]` table (and tracks any override of
 it); anything else is passed to the provider verbatim. Specialist roles include `reviewer`, `mutation_tester`, `coverage_analyst`, `tb_coder`. An unknown
 role FAILs `booley doctor`.
 
-A pin overrides a specialist's minimum-tier floor and sets the **model only**;
-reasoning effort still follows the tier the agent would otherwise use (a no-op
+A pin overrides a Specialist's minimum-tier floor and sets the **model only**;
+reasoning effort still follows the tier the Specialist would otherwise use (a no-op
 on Claude, whose SDK exposes no per-call effort knob).
 
 ## Design description (`.core`) and tests (`tests.toml`)
@@ -1501,6 +1553,50 @@ A few conventions worth calling out in that example:
   passes through to the toolchain. The built-in synth path drives its own
   PDK/target via the OpenROAD engine and ignores `arch`.
 
+### Fileset file types
+
+Set `file_type` on a fileset as the default for its files, or on a file entry
+to override it. Booley treats untyped files as `user`.
+
+The built-in Flows consume these types. Spell them exactly as shown:
+
+| `file_type` | Use for |
+| --- | --- |
+| `verilogSource` | Verilog RTL and testbenches for lint and sim; non-testbench RTL for synth and fpga. |
+| `systemVerilogSource` | SystemVerilog RTL and testbenches for the same Flows. |
+| `vlt` | Verilator control (waiver) files for lint and Target-based Verilator simulation builds. See the [Verilator recipe](#verilator-lint-target). |
+| `cSource`, `cppSource` | C/C++ sources of a Verilator simulation harness. |
+| `veribleLintRules` | Verible rules file; select at most one. |
+| `veribleLintWaiver` | Verible waiver files; select any number. See the [Verible recipe](#verible-lint-target). |
+| `SDC` | ASIC timing constraints for physical synth; the type is uppercase. See [ASIC synthesis](#asic-synthesis-flowssynth). |
+| `xdc` | Vivado FPGA constraints; name the file `*.xdc`. See [FPGA implementation](#fpga-implementation-flowsfpga). |
+| `user` | Non-RTL inputs such as firmware, vectors, and cocotb Python modules. `copyto:` sets the staged path; see the example above and [Cocotb Targets](#cocotb-targets-python-testbenches). |
+
+- Give headers the same type as their sources and mark them
+  `is_include_file: true`. HDL headers (`.vh`/`.svh`) then supply include
+  paths instead of compiling separately.
+- Keep `SDC` and `xdc` files outside testbench-tagged filesets.
+- Use the unversioned names `verilogSource` and `systemVerilogSource`. Some
+  consumers accept version-suffixed names, but simulation reuse and coverage
+  helpers match the unversioned names exactly.
+
+Every Flow except fpga keeps declared types; for lint and simulation, FuseSoC
+passes them to the selected EDA tool. The fpga Flow rebuilds file types from
+filenames and selects RTL by suffix alone, so give FPGA RTL a lowercase `.v`
+or `.sv` suffix. The `xdc` type is matched case-insensitively, but a file
+keeps it only if its name also has an XDC suffix.
+
+Edalize support alone does not make a type an input to every Booley Flow.
+These types are recognized only in narrow places:
+
+- `systemCSource`, `uhdm`: the pinned Edalize Verilator node accepts them, but
+  that alone does not make SystemC or UHDM execution supported; see the
+  [EDA-tool matrix](SUPPORTED-EDA-TOOLS.md).
+- `tclSource`: mapped from the `.tcl` suffix, but the built-in synth and FPGA
+  recipes have no general Tcl fileset hook.
+- `vhdlSource`, `vhdlSource-2008`: classified as sources by simulation
+  coverage, but Booley has no supported VHDL simulation path.
+
 ### Target authoring
 
 Name project-owned Targets `<axis>_<subject>` using the Booley Flow axis:
@@ -1522,11 +1618,71 @@ Renaming a Target also requires updating its `tests.toml` section, Doctor
 metadata references, explicit callers, and Goals. For Python testbenches, see
 [Cocotb Targets](#cocotb-targets-python-testbenches).
 
-#### Verible lint Target
-
 Explicit lint Targets require `verilator`, `verible`, or `veriblelint` in
 `flow_options.tool`; unsupported or missing EDA tools are excluded from
 `booley targets --for lint`, and explicit Doctor lint selections report incompatibility.
+
+#### Verilator lint Target
+
+To waive Verilator warnings, declare a `.vlt` control file with
+`file_type: vlt` and select its fileset on the lint Target. The type must be
+exactly `vlt`: an untyped `.vlt` file, or a guessed type such as
+`verilatorConfig`, does not apply the waiver.
+
+This core sits beside the `rtl/` and `lint/` directories; file paths are
+relative to the `.core` file:
+
+```yaml
+CAPI=2:
+name: acme:ip:top:1.0
+filesets:
+  rtl:
+    files: [rtl/top.sv]
+    file_type: systemVerilogSource
+  lint_config:
+    files:
+      - lint/waivers.vlt: {file_type: vlt}
+targets:
+  lint_structural:
+    flow: lint
+    flow_options:
+      tool: verilator
+      verilator_options: [-Wall]
+    filesets: [rtl, lint_config]
+    toplevel: top
+```
+
+`-Wall` is optional: it adds lint warnings to Verilator's default set and is
+independent of the waiver.
+
+`lint/waivers.vlt` holds the required control-file directive, then the warning
+to waive:
+
+```text
+`verilator_config
+lint_off -rule WIDTHTRUNC -file "*top.sv"
+```
+
+This waives `WIDTHTRUNC` in source paths ending in `top.sv`, including the
+FuseSoC build-tree copy; other warning classes stay enabled. Make the pattern
+specific to your sources; `-lines` narrows a waiver further (see Verilator's
+[control-file reference](https://verilator.org/guide/latest/control.html)).
+
+Run inside the Sandbox:
+
+```bash
+booley flow lint --target lint_structural
+```
+
+- Edalize places `vlt` files before HDL inputs, so file-specific rules apply
+  when those inputs are read.
+- Add `lint_config` to other Verilator Targets only where the same waiver is
+  intended.
+- `--mode elab-only-standalone` probes (see
+  [Elaboration Check](#elaboration-check-flowssim)) use their own HDL-only
+  inputs and ignore Target waiver filesets.
+
+#### Verible lint Target
 
 Use canonical `verible` for a style Target that selects RTL, its rules, and optional
 waivers:
@@ -2031,7 +2187,7 @@ with a RISC-V cross-compiler before simulating, so Booley ships a prebuilt
   the ISA manuals follow the newest date-named upstream release, checked at
   each Booley release currency audit
   ([ADR 0071](../adr/0071-follow-date-named-riscv-isa-manual-releases.md));
-  **`pdftotext`** is included for shell/agent text extraction.
+  **`pdftotext`** is included for shell and Developer Agent text extraction.
 
 Reserve about 6 GB of Docker storage for the complete RISC-V demo stack, plus
 Project artifacts and temporary upgrade/build data. The current Linux/AMD64
@@ -2098,7 +2254,7 @@ refresh, and Doctor—resolve that generated image name consistently.
 
 ### Custom MCP tools
 
-Project-specific MCP tools can be added via `.booley_project/mcp_tools/`, following the same base-class interface as built-in MCP tools. The agent discovers and invokes them just like built-in MCP tools. See [MCP-TOOLS.md](../internals/MCP-TOOLS.md) for the architecture and extension guide.
+Project-specific MCP tools can be added via `.booley_project/mcp_tools/`, following the same base-class interface as built-in MCP tools. The Developer Agent discovers and invokes them just like built-in MCP tools. See [MCP-TOOLS.md](../internals/MCP-TOOLS.md) for the architecture and extension guide.
 
 ### Worktree setup hooks
 

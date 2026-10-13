@@ -18,15 +18,28 @@ from textual.widgets import DataTable, Footer, Header, Static
 
 from booley.core.boundary import as_float
 from booley.goals.model import OCCUPYING_STATES
+from booley.harness.dashboard.links import linked_text, open_in_editor
 from booley.harness.dashboard.model import DashboardSnapshot, GoalDetail, GoalView
 from booley.harness.dashboard.resources import Resources
 from booley.mcp.session_registry import Attribution, SessionRow, shares_worktree
 from booley.runtime.job_snapshot import TERMINAL_JOB_STATES, JobView, target_arg
 from booley.runtime.pid import ProcessState
+from booley.runtime.session_activity import UNKNOWN, WAITING_TOOL, Activity
 from booley.runtime.timefmt import parse_timestamp
 
 logger = logging.getLogger(__name__)
 READ_BUDGET = 1.0
+# "Recent" lists this many newest results; "All" lists everything the snapshot retains.
+RECENT_JOBS = 50
+HELP = (
+    "1-9 stable session shortcuts · arrows / Enter select any row\n"
+    "Esc back · j Running · r Recent · a All\n"
+    "s all sessions / standalone · ? help · q quit\n"
+    "Click a report, artifact or evidence path to open it in the editor\n"
+    "Activity is what the agent client last reported: working, waiting for tool call,\n"
+    "or waiting for user input. Unknown means no fresh report, never a guess.\n"
+    "Navigation is read-only; approvals remain in chat."
+)
 
 _STATUS_STYLE = {
     "passing": "green",
@@ -53,6 +66,32 @@ def _age(stamp: str, now: float) -> str:
         return f"{seconds // 3600}h {seconds % 3600 // 60}m"
     except ValueError:
         return "—"
+
+
+def _duration(stamp: str, now: float) -> str:
+    """Compact age of a recent state: seconds, then minutes, then hours."""
+    try:
+        seconds = max(0, int(now - parse_timestamp(stamp).timestamp()))
+    except ValueError:
+        return "—"
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m"
+    return f"{seconds // 3600}h {seconds % 3600 // 60}m"
+
+
+def _sentence(text: str) -> str:
+    """Capitalize only the first letter; tool names keep their case."""
+    return text[:1].upper() + text[1:]
+
+
+def activity_label(activity: Activity, now: float) -> str:
+    """Reported session activity and how long it has lasted; unknown is said plainly."""
+    if activity.state == UNKNOWN:
+        return "activity unknown"
+    tool = f" ({activity.tool})" if activity.state == WAITING_TOOL and activity.tool else ""
+    return f"{activity.state}{tool} · {_duration(activity.since, now)}"
 
 
 def _measure(value: int | float | None) -> str:
@@ -130,7 +169,7 @@ def _job_row(job: JobView, now: float, owner: str) -> str:
 def job_detail(job: JobView, *, now: float | None = None) -> str:
     """Execution outcome and design verdict remain distinct; no inline logs."""
     rec, report = job.record, job.report or {}
-    paths = ([str(job.report_path)] if job.report_path is not None else []) + list(job.artifacts)
+    paths = job_paths(job)
     return "\n".join(
         [
             f"{rec.endpoint} · {rec.run_id}",
@@ -144,9 +183,20 @@ def job_detail(job: JobView, *, now: float | None = None) -> str:
             f"CPU: {'—' if job.cpu_percent is None else str(round(job.cpu_percent, 1)) + '% of one core'} · Memory: {_measure(job.memory)} · Peak memory: {_measure(job.peak_memory)}",
             f"Result: {report.get('summary', report.get('detail', 'unavailable'))}",
             "Metrics / failure details: " + _reported_metrics(report),
-            "Artifacts: " + ("\n".join(paths) or "—"),
+            "Artifacts:\n" + ("\n".join(paths) or "—"),
         ]
     )
+
+
+def job_paths(job: JobView) -> tuple[str, ...]:
+    """The report and artifact paths published for one Job, each shown on its own line."""
+    report = (str(job.report_path),) if job.report_path is not None else ()
+    return (*report, *job.artifacts)
+
+
+def _job_summary(job: JobView, now: float) -> str:
+    """Compact overview form: Flow, Target and elapsed time."""
+    return f"{job.record.endpoint} {DashboardApp._target(job)} {_elapsed(job, now)}"
 
 
 def _reported_metrics(report: dict[str, Any]) -> str:
@@ -173,7 +223,7 @@ def _evidence_detail(goal: GoalDetail) -> str:
         + json.dumps(facts.get("detail", {}), indent=2)[:8000]
         + "\nImmutable derivation provenance: "
         + json.dumps(goal.provenance, indent=2)[:8000]
-        + "\nAvailable evidence paths: "
+        + "\nAvailable evidence paths:\n"
         + ("\n".join(goal.artifacts) or "—")
     )
 
@@ -201,9 +251,14 @@ class DashboardApp(App[None]):
     #empty { height: auto; }
     """
 
-    def __init__(self, reader: Callable[[], DashboardSnapshot]) -> None:
+    def __init__(
+        self,
+        reader: Callable[[], DashboardSnapshot],
+        opener: Callable[[str], str] = open_in_editor,
+    ) -> None:
         super().__init__()
         self.reader = reader
+        self.opener = opener
         self.snapshot = DashboardSnapshot()
         self.navigation = Navigation()
         self.history: list[Navigation] = []
@@ -307,6 +362,11 @@ class DashboardApp(App[None]):
         """Remove the session filter in the Jobs view."""
         self._push(Navigation("jobs", None, self.navigation.job_filter))
 
+    def action_open_path(self, path: str) -> None:
+        """Open a published path in the editor; a failure is reported, never raised."""
+        if hint := self.opener(path):
+            self.notify(hint, severity="warning")
+
     def on_key(self, event: events.Key) -> None:
         if event.key in "123456789" and len(event.key) == 1:
             key = next(
@@ -349,9 +409,14 @@ class DashboardApp(App[None]):
         return (
             f"{facts.work_dir} · {branch or 'branch unavailable'} · "
             f"{'Goal Mode' if goal else 'Interactive'} · {connection} · uptime {_age(row.started_at, self.snapshot.observed_at)}\n"
-            f"Activity unknown · {warning}\nLast Booley call: {last.tool if last else '—'} "
+            f"{_sentence(self._activity_label(facts.key))} · {warning}\nLast Booley call: {last.tool if last else '—'} "
             f"· {_age(row.last_call_at, self.snapshot.observed_at)} ago"
         ), goal
+
+    def _activity_label(self, key: str) -> str:
+        return activity_label(
+            self.snapshot.activity.get(key, Activity()), self.snapshot.observed_at
+        )
 
     def _goal_for_session(self, facts: Attribution) -> GoalView | None:
         candidates = [
@@ -390,9 +455,17 @@ class DashboardApp(App[None]):
                 if (job.state in TERMINAL_JOB_STATES) == recent
                 or (not recent and json.dumps(job.key) == self.navigation.selected)
             ]
-        return sorted(
+        rows = sorted(
             rows, key=lambda job: job.record.ended_at or job.record.started_at, reverse=True
         )
+        if self.navigation.job_filter != "recent":
+            return rows
+        # A newer result must not push the selected one out from under the cursor.
+        return [
+            job
+            for index, job in enumerate(rows)
+            if index < RECENT_JOBS or json.dumps(job.key) == self.navigation.selected
+        ]
 
     def _content(self) -> tuple[str, list[str], list[tuple[object, ...]]]:
         nav = self.navigation
@@ -401,7 +474,8 @@ class DashboardApp(App[None]):
         if nav.view == "jobs":
             jobs = self._jobs()
             return (
-                f"Jobs · {nav.job_filter} · {nav.session or 'all sessions and standalone'}",
+                f"Jobs · {nav.job_filter}{f' (newest {RECENT_JOBS})' if nav.job_filter == 'recent' else ''}"
+                f" · {nav.session or 'all sessions and standalone'}",
                 [json.dumps(job.key) for job in jobs],
                 [
                     (
@@ -467,7 +541,8 @@ class DashboardApp(App[None]):
         activities.extend(
             (
                 "job:" + json.dumps(job.key),
-                f"Running Job: {job.record.endpoint} · {self._target(job)} · {job.state}",
+                f"Running Job: {job.record.endpoint} · {self._target(job)} · {job.state}"
+                f" · {_elapsed(job, self.snapshot.observed_at)}",
             )
             for job in self.snapshot.jobs.jobs
             if job.record.session_key == self.navigation.session
@@ -529,14 +604,11 @@ class DashboardApp(App[None]):
             for job in self.snapshot.jobs.jobs
             if job.record.session_key == facts.key and job.state == "running"
         ]
-        running = "; ".join(
-            f"{job.record.endpoint} {self._target(job)} {_age(job.record.started_at, self.snapshot.observed_at)}"
-            for job in jobs
-        )
+        running = "; ".join(_job_summary(job, self.snapshot.observed_at) for job in jobs)
         branch = facts.branch or (goal.record.branch if goal and goal.record else "")
         return (
             f"{self.shortcuts.get(facts.key, '·')} · {facts.work_dir} · {branch or 'branch —'} · "
-            f"{'Goal Mode' if goal else 'Interactive'} · {_age(row.started_at, self.snapshot.observed_at)} · activity unknown"
+            f"{'Goal Mode' if goal else 'Interactive'} · {_age(row.started_at, self.snapshot.observed_at)} · {self._activity_label(facts.key)}"
             + summary
             + warning
             + (" · " + running if running else "")
@@ -551,7 +623,8 @@ class DashboardApp(App[None]):
             if job.record.session_key is None and job.state == "running"
         ]
         orientation = "Sessions" + (
-            "\nStandalone running Jobs: " + "; ".join(job.record.endpoint for job in standalone)
+            "\nStandalone running Jobs: "
+            + "; ".join(_job_summary(job, self.snapshot.observed_at) for job in standalone)
             if standalone
             else ""
         )
@@ -603,62 +676,70 @@ class DashboardApp(App[None]):
         self.row_keys = keys
         self._render_detail()
 
-    def _selected_goal_detail(self) -> str:
-        nav = self.navigation
+    def _selected_goal(self) -> GoalDetail | None:
         _, goal = self._session()
-        selected = (
-            next((item for item in goal.goals if item.key == nav.selected), None) if goal else None
+        if goal is None:
+            return None
+        return next((item for item in goal.goals if item.key == self.navigation.selected), None)
+
+    def _selected_job(self) -> JobView | None:
+        """The Job named by a dedicated detail view, or under the Jobs list cursor."""
+        table = self.query_one(DataTable)
+        if self.navigation.view == "job":
+            key = self.navigation.selected
+        elif self.row_keys and table.cursor_row < len(self.row_keys):
+            key = self.row_keys[table.cursor_row]
+        else:
+            key = ""
+        return next((job for job in self.snapshot.jobs.jobs if json.dumps(job.key) == key), None)
+
+    def _selected_proposal_detail(self) -> str:
+        _, goal = self._session()
+        view = (
+            next(
+                (
+                    view
+                    for view in goal.status.proposals
+                    if view.proposal.id == self.navigation.selected
+                ),
+                None,
+            )
+            if goal and goal.status
+            else None
         )
-        if selected is None:
-            return "Goal data unavailable"
-        return (
-            f"{selected.presentation.label}\n{selected.state}\nRequirement: {selected.presentation.requirement}\n{selected.presentation.detail}\n"
-            + _evidence_detail(selected)
-        )
+        if view is None:
+            return "Proposal unavailable"
+        return json.dumps(view.proposal.to_json(), indent=2) + "\nApproval remains in chat."
+
+    def _detail_content(self) -> tuple[str, tuple[str, ...]]:
+        """Detail text for the current view and the published paths it may link."""
+        view = self.navigation.view
+        if view in {"jobs", "job"}:
+            job = self._selected_job()
+            return (self._job_detail(job), job_paths(job)) if job else ("Job data unavailable", ())
+        if view == "goal":
+            goal = self._selected_goal()
+            if goal is None:
+                return "Goal data unavailable", ()
+            return (
+                f"{goal.presentation.label}\n{goal.state}\nRequirement: {goal.presentation.requirement}\n{goal.presentation.detail}\n"
+                + _evidence_detail(goal)
+            ), goal.artifacts
+        if view == "help":
+            return HELP, ()
+        if view == "proposal":
+            return self._selected_proposal_detail(), ()
+        return "", ()
 
     def _render_detail(self) -> None:
         nav = self.navigation
         aside = self.query_one("#aside", VerticalScroll)
-        table = self.query_one(DataTable)
-        detail = ""
-        if nav.view in {"jobs", "job"}:
-            key = (
-                nav.selected
-                if nav.view == "job"
-                else (
-                    self.row_keys[table.cursor_row]
-                    if self.row_keys and table.cursor_row < len(self.row_keys)
-                    else ""
-                )
-            )
-            job = next(
-                (job for job in self.snapshot.jobs.jobs if json.dumps(job.key) == key), None
-            )
-            detail = self._job_detail(job) if job else "Job data unavailable"
-        elif nav.view == "goal":
-            detail = self._selected_goal_detail()
-        elif nav.view == "help":
-            detail = "1-9 stable session shortcuts · arrows / Enter select any row\nEsc back · j Running · r Recent · a All\ns all sessions / standalone · ? help · q quit\nActivity unknown: no fresh client lifecycle signals\nNavigation is read-only; approvals remain in chat."
-        elif nav.view == "proposal":
-            _, goal = self._session()
-            view = (
-                next(
-                    (view for view in goal.status.proposals if view.proposal.id == nav.selected),
-                    None,
-                )
-                if goal and goal.status
-                else None
-            )
-            detail = (
-                json.dumps(view.proposal.to_json(), indent=2) + "\nApproval remains in chat."
-                if view
-                else "Proposal unavailable"
-            )
+        detail, paths = self._detail_content()
         dedicated = nav.view in {"job", "goal", "help", "proposal"}
         aside.display = dedicated or (nav.view == "jobs" and self.size.width >= 120)
-        table.display = not dedicated
+        self.query_one(DataTable).display = not dedicated
         aside.styles.width = "100%" if dedicated else "50%"
-        self.query_one("#detail", Static).update(detail)
+        self.query_one("#detail", Static).update(linked_text(detail, paths))
 
     def _job_detail(self, job: JobView) -> str:
         return (

@@ -9,6 +9,7 @@ from booley.goals.protected_inputs import (
     ProtectedInputRoots,
     protected_input_violations,
 )
+from booley.goals.rules import WORK_DIR_GUIDANCE
 
 
 def protected_warnings(record: GoalRecord, project_dir: Path, work_dir: Path) -> tuple[str, ...]:
@@ -22,6 +23,7 @@ def protected_warnings(record: GoalRecord, project_dir: Path, work_dir: Path) ->
                 record.protected_digest or "",
                 record.protected_head_digest,
                 ProtectedInputRoots(work_dir, project_dir).with_input_paths(record.input_paths),
+                record.declared_protected_inputs,
             )
         )
     except (ProtectedInputError, OSError, ValueError) as exc:
@@ -43,5 +45,5 @@ def goal_warnings(
     if any(key != session_key for key in other_sessions):
         warnings.append("another session shares this Goal worktree")
     if work_dir is None:
-        warnings.append("pass work_dir on every Booley call while Goal Mode is active")
+        warnings.append(WORK_DIR_GUIDANCE.replace("`", ""))
     return "\n".join(f"WARNING: {reason}" for reason in warnings)

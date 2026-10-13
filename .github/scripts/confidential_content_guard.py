@@ -60,6 +60,11 @@ _ASCII_REGEX_FOLD = str.maketrans({"\u0130": "i", "\u0131": "i"})
 _PREFILTER_CHUNK_CHARS = 1024 * 1024
 _IDENT_RE = re.compile(r"^(?P<name>.*) <(?P<email>[^<>]*)> \d+ [+-]\d{4}$")
 _OID_RE = re.compile(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})")
+# The only `gh` output a PR write may echo: the URL of what it created.
+_PR_WRITE_URL_RE = re.compile(
+    r"https://[A-Za-z0-9.-]+/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/\d+"
+    r"(?:#(?:issuecomment|pullrequestreview)-\d+)?"
+)
 
 
 class GuardError(RuntimeError):
@@ -932,7 +937,21 @@ def publish_pr_main(repo: Path | str, args: argparse.Namespace) -> int:
         error = exc if isinstance(exc, GuardError) else GuardError("the PR write could not run")
         return _guard_failure(error, sys.stderr)
     print("GitHub pull-request write completed after confidential-content scan.")
+    reference = _pr_write_reference(result.stdout)
+    if reference is not None:
+        print(f"GitHub reference: {reference}")
     return 0
+
+
+def _pr_write_reference(gh_stdout: bytes) -> str | None:
+    """Return the created PR, comment, or review URL that ``gh`` reported.
+
+    Callers need the returned identifier to tell their own write from a later
+    identical one. Any other output stays suppressed.
+    """
+    words = gh_stdout.decode("utf-8", errors="replace").split()
+    matches = [word for word in words if _PR_WRITE_URL_RE.fullmatch(word)]
+    return matches[-1] if matches else None
 
 
 def _create_local_key() -> bytes:

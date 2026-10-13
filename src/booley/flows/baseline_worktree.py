@@ -8,8 +8,10 @@ working tree in Interactive and Goal Mode. The worktree lives under
 inside the Sandbox workspace. It is force-removed on context exit,
 even if the body raises.
 
-For a paired ``.booley_project`` repository, the outer baseline
-worktree receives a nested detached worktree at the branch's fork point.
+For a paired ``.booley_project`` repository, the outer baseline worktree
+receives a nested detached worktree at the recorded creation base's merge-base
+with HEAD, falling back to upstream only without a recorded base. A detached
+paired HEAD uses its checked-out commit; explicit pins use their exact commit.
 That preserves the baseline revision's Target definitions and recipe instead of
 mirroring live project data into both comparisons.
 """
@@ -18,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import subprocess
 from collections.abc import Iterator, Mapping, Sequence
@@ -28,6 +31,7 @@ from typing import Any
 from booley.core.boundary import as_dict, as_str
 from booley.evidence.acceptance import PairedBaselineMode, PairedProjectBaseline
 from booley.evidence.fields import BASELINE_REF_PARAM
+from booley.flows.terminal_progress import announce_unit
 from booley.fusesoc.core_projection import projection_enabled
 from booley.fusesoc.fusesoc_registry import prepare_core_library_plan, state_cores_dir
 from booley.runtime.project_repositories import paired_project_repository
@@ -243,38 +247,65 @@ def _install_paired_project_baseline(
 
 
 def _paired_project_base_sha(project_worktree: Path) -> str:
-    """Resolve the standalone fork point of a paired Project branch."""
-    upstream = _git(project_worktree, "rev-parse", "@{upstream}", timeout=30)
-    if upstream.returncode != 0:
-        branch = _git(project_worktree, "symbolic-ref", "--short", "HEAD", timeout=30)
-        base = _git(
-            project_worktree,
-            "config",
-            "--get",
-            f"branch.{branch.stdout.strip()}.booleyBase",
-            timeout=30,
-        )
-        upstream = _git(
-            project_worktree,
-            "rev-parse",
-            "--verify",
-            f"{base.stdout.strip()}^{{commit}}",
-            timeout=30,
-        )
-        if branch.returncode or base.returncode or upstream.returncode:
-            raise BaselineWorktreeError(
-                "paired Project branch has no baseline upstream or recorded pairing base"
+    """Resolve and announce the standalone paired Project baseline, refusing probe failures."""
+    try:
+        branch = _git(project_worktree, "symbolic-ref", "--quiet", "HEAD", timeout=30)
+        ref = branch.stdout.strip()
+        if branch.returncode == 1 and not ref and not branch.stderr.strip():
+            rule = "detached HEAD"
+            sha = _paired_project_commit(
+                project_worktree, "HEAD", "cannot resolve paired Project HEAD"
             )
-    merge_base = _git(
+        elif branch.returncode == 0 and ref.startswith("refs/heads/"):
+            rule, source = _paired_project_branch_base(
+                project_worktree, ref.removeprefix("refs/heads/")
+            )
+            merge_base = _git(project_worktree, "merge-base", source, "HEAD", timeout=30)
+            if merge_base.returncode != 0 or not merge_base.stdout.strip():
+                raise BaselineWorktreeError("could not resolve paired Project baseline fork point")
+            sha = merge_base.stdout.strip()
+        else:
+            raise BaselineWorktreeError(
+                "could not inspect paired Project branch: "
+                f"{branch.stderr.strip() or 'HEAD is not a branch or detached commit'}"
+            )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise BaselineWorktreeError(f"could not resolve paired Project baseline: {exc}") from exc
+    logger.info("paired Project baseline: %s -> %s", rule, sha)
+    announce_unit(f"baseline: paired Project {rule} -> {sha}")
+    return sha
+
+
+def _paired_project_branch_base(project_worktree: Path, branch: str) -> tuple[str, str]:
+    base = _git(project_worktree, "config", "--get", f"branch.{branch}.booleyBase", timeout=30)
+    ref = base.stdout.strip()
+    if base.returncode == 1 and not ref and not base.stderr.strip():
+        message = "paired Project branch has no baseline upstream or recorded pairing base"
+        return "upstream", _paired_project_commit(project_worktree, "@{upstream}", message)
+    if base.returncode != 0:
+        raise BaselineWorktreeError(
+            f"could not read paired Project recorded base: {base.stderr.strip() or base.returncode}"
+        )
+    message = (
+        "paired Project branch has an invalid recorded pairing base; expected a full commit ID"
+    )
+    if re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", ref) is None:
+        raise BaselineWorktreeError(message)
+    return "recorded base", _paired_project_commit(project_worktree, ref, message)
+
+
+def _paired_project_commit(project_worktree: Path, ref: str, message: str) -> str:
+    result = _git(
         project_worktree,
-        "merge-base",
-        upstream.stdout.strip(),
-        "HEAD",
+        "rev-parse",
+        "--verify",
+        "--end-of-options",
+        f"{ref}^{{commit}}",
         timeout=30,
     )
-    if merge_base.returncode != 0 or not merge_base.stdout.strip():
-        raise BaselineWorktreeError("could not resolve paired project ticket fork point")
-    return merge_base.stdout.strip()
+    if result.returncode != 0 or not result.stdout.strip():
+        raise BaselineWorktreeError(message)
+    return result.stdout.strip()
 
 
 def _remove_paired_project_baseline(project_root: Path, baseline: Path) -> None:

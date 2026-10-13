@@ -100,6 +100,9 @@ def _load_config() -> dict[str, Any]:
         if migration:
             raise EdaConfigError(migration)
         parse_eda_config(toml.get("eda"))
+        from booley.config.protected_inputs import parse_protected_inputs
+
+        parse_protected_inputs(toml)
     except (FileNotFoundError, OSError, SourceCheckoutProjectError) as exc:
         _logger.debug("booley.toml not found -- using empty config: %s", exc)
         project_dir = None
