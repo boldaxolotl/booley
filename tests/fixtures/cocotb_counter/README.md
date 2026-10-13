@@ -6,7 +6,7 @@ Six `.core` Targets share one build shape; only their `tests.toml` selected
 sets differ, so each G-case is one `simulate` invocation.
 
 The e2e runs **inside the Sandbox Image**, which pins cocotb. From the
-repo root, with a freshly built image:
+Booley repository root, with a freshly built image:
 
 ```bash
 docker run --rm -v "$PWD/tests/fixtures/cocotb_counter":/work -w /work \

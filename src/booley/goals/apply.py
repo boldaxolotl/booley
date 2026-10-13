@@ -93,7 +93,7 @@ class ChangeEnvironment:
 
     @property
     def store(self) -> GoalStore:
-        """All lifecycle files stay in the resolved control Project directory."""
+        """All lifecycle files stay in the resolved Main Booley Directory."""
         return GoalStore(self.entry.project_dir)
 
     def checkpoint(self, name: str) -> None:

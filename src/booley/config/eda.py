@@ -25,7 +25,7 @@ class EdaConfigError(ValueError):
 class EdaConfig:
     """One EDA kind's provisioning request.
 
-    Project data can select only the source class. Installations, mounts,
+    Project configuration can select only the source class. Installations, mounts,
     paths, wrappers, environment, and licensing remain host-owned policy.
     """
 

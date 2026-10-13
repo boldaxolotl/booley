@@ -26,7 +26,7 @@ def _write_core(path: Path, body: str) -> None:
     path.write_text(textwrap.dedent(body), encoding="utf-8")
 
 
-# A flat single-file repo (ADR 0026): the .core sits at the project root and its
+# A flat single-file repo (ADR 0026): the .core sits at the Project Root and its
 # fileset paths are root-relative, so a root file classifies by verbatim path.
 _FLAT_CORE = """\
     CAPI=2:
@@ -193,7 +193,7 @@ class TestSourceDirsFromCore:
         assert tb_incl == []
 
     def test_core_source_symlink_normalizes_to_tracked_repo_path(self, tmp_path: Path):
-        """A project-dir core may expose repository sources through a symlink."""
+        """A core in the Booley Directory may expose repository sources through a symlink."""
         (tmp_path / "src" / "rtl").mkdir(parents=True)
         (tmp_path / "src" / "rtl" / "dut.sv").write_text("module dut; endmodule\n")
         core_dir = tmp_path / ".booley_project" / "cores"

@@ -24,7 +24,7 @@ from booley.runtime.project_dir import resolve_project_dir
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Project root resolution (shared convention)
+# Project Root resolution (shared convention)
 # ---------------------------------------------------------------------------
 
 
@@ -379,7 +379,7 @@ def check_paths(
     *,
     extra_checks: dict | None = None,
 ) -> None:
-    """Verify project root and key directories, print JSON report.
+    """Verify Project Root and key directories, print JSON report.
 
     Args:
         project_root: Repository root.

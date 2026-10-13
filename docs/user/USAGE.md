@@ -83,7 +83,7 @@ Use the selector once, at the root, command, or nested operation. It also works 
 and do not accept the new selector. Full option names are stable; ambiguous
 abbreviations produce an error. Arguments after a command's payload `--` stay opaque.
 
-Selection chooses the checkout, while `BOOLEY_PROJECT_DIR` chooses Project data;
+Selection chooses the checkout, while `BOOLEY_PROJECT_DIR` chooses the Booley Directory;
 an external data override remains supported. Checkout-local data configuration and
 initialization's destination scope keep their existing precedence. A selector
 requires an existing directory; `init` accepts an uninitialized directory.
@@ -285,15 +285,14 @@ explicit instruction and reason. Setup can create this file; initialization
 does not seed it. You can also add Goals for this particular change. Duplicate
 Goals merge to the stricter condition, and entry reports every merge.
 
-Goalsets, including `default.md`, come from the **main checkout's Project
-directory**. In the Sandbox that is `BOOLEY_PROJECT_DIR`, even when the
-directory lives outside the main checkout. A Project copy or snapshot inside
+Goalsets, including `default.md`, come from the **Main Booley Directory**. In the Sandbox that is `BOOLEY_PROJECT_DIR`, even when the
+directory lives outside the main checkout. The Worktree Booley Directory inside
 the Goal worktree is not used: a `default.md` that exists only there does not
 apply. `work_dir` selects the worktree, not the Goalsets.
 
 A session started inside a worktree without `BOOLEY_PROJECT_DIR` can resolve
 that worktree's copy instead. Start the session with `BOOLEY_PROJECT_DIR` set
-to the main checkout's Project directory; entry refuses a Project directory
+to the Main Booley Directory; entry refuses a Booley Directory
 inside the Goal worktree.
 
 A Goal names a Flow or review family and the applicable Target, tests, and
@@ -659,8 +658,8 @@ It doesn't have to be a bug. Confusing behavior, praise, complaints, wishes, or
 `/booley-feedback`. See [CONFIG.md](CONFIG.md#feedback-feedback).
 
 In the Sandbox, each Project has one Findings Log shared by all of its worktrees.
-The log and default local report stay in the shared Project directory, even
-when a worktree has its own paired Project checkout. When the skill uses the
+The log and default local report stay in the Main Booley Directory, even
+when a worktree has its own Paired Checkout. When the skill uses the
 feedback CLI, its `-C` / `--project` option selects the checkout used for context;
 it does not move that shared log or the default report. For Projects, the
 `BOOLEY_PROJECT_DIR` environment variable selects shared storage. Outside the
@@ -857,7 +856,7 @@ booley goal status                # this worktree's Goal Mode, or every active G
 booley dashboard                  # sessions, Goals, and Jobs
 
 # Worktrees (container)
-booley worktree new <name>        # .booley_project/worktrees/<name>, paired Project or clean snapshot
+booley worktree new <name>        # .booley_project/worktrees/<name>, Paired Checkout or Snapshot
 
 # Quick reference
 booley cheat                      # the whole cheatsheet
@@ -876,21 +875,21 @@ booley projects                   # list known projects
 booley projects discover <dir>    # find existing projects under <dir>
 ```
 
-`booley worktree new <name>` gives a versioned `.booley_project` repository a
-paired checkout on `booley-worktree/<name>` at its current HEAD. Commit tracked
-changes and untracked files in the Project repository first; an unborn
-repository and an existing Project branch are refused. Ignored state stays
-behind. A non-versioned Project gets a clean snapshot. Run this command from
-the primary workspace; creating from a paired Project checkout is refused.
+`booley worktree new <name>` gives a Versioned Booley Directory a
+Paired Checkout on `booley-worktree/<name>` at its current HEAD. Commit tracked
+changes and untracked files in the Booley Directory's repository first; an unborn
+repository and an existing Booley Directory branch are refused. Ignored state stays
+behind. A non-versioned Booley Directory supplies a Snapshot. Run this command from
+the primary workspace; creating from a Paired Checkout is refused.
 The outer checkout starts detached unless `<branch>--<description>` selects an
-existing branch. To remove a paired workspace, remove the Project checkout
-first with `git -C <absolute-project-dir> worktree remove <absolute-worktree>/.booley_project`,
-then run `git -C <absolute-workspace-root> worktree remove <absolute-worktree>`.
-To reuse the name, preserve any Project commits you need, then delete its branch
-with `git -C <absolute-project-dir> branch -D booley-worktree/<name>`.
+existing branch. To remove a paired workspace, remove the Paired Checkout
+first with `git -C <absolute-booley-directory> worktree remove <absolute-worktree>/.booley_project`,
+then run `git -C <absolute-project-root> worktree remove <absolute-worktree>`.
+To reuse the name, preserve any Booley Directory commits you need, then delete its branch
+with `git -C <absolute-booley-directory> branch -D booley-worktree/<name>`.
 The command prints these steps with absolute paths.
 
-Outside Goal Mode, `--baseline` uses the paired Project branch's recorded
+Outside Goal Mode, `--baseline` uses the Paired Checkout branch's recorded
 creation base ahead of its upstream. Pushing, merging or rebasing newer Project
 changes does not update that recorded commit: the Project baseline is its
 merge-base with the current HEAD. Rewriting history can therefore select an
@@ -899,7 +898,7 @@ upstream's merge-base with HEAD; a branch with neither refuses. An invalid
 recorded base refuses even when an upstream exists. A detached paired HEAD
 uses its checked-out commit, including during a rebase or bisect. Baseline
 preparation progress names the rule and commit. Goal Mode keeps the exact
-paired Project commit pinned at entry.
+Paired Checkout commit pinned at entry.
 
 `booley projects discover` stops descending at each initialized Project to
 avoid scanning its RTL, vendor, and build trees. Nested Projects are not imported

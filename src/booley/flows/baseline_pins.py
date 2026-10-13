@@ -140,7 +140,7 @@ def freeze_recipe_family(
     from a temporary baseline checkout; absolute Criteria use ``ctx.work_dir``.
     A candidate Target that does not exist yet is skipped (validated later).
 
-    *paired_project* selects which revision of a paired Project repository the
+    *paired_project* selects which revision of a Paired Checkout the
     baseline checkout uses; ``None`` keeps :func:`baseline_worktree`'s default
     (the recorded creation base's merge-base with HEAD, upstream fallback if
     absent, or the checked-out commit when detached). A caller that recorded the

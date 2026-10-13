@@ -1,4 +1,4 @@
-"""Doctor diagnostics for outer/Project-data destination alignment."""
+"""Doctor diagnostics for outer/Booley Directory destination alignment."""
 
 from __future__ import annotations
 

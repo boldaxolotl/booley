@@ -53,7 +53,7 @@ def _apply_pre_state_gate(endpoint: EndpointState) -> EndpointOutcome | None:
 
 
 def _apply_default_endpoint_report_root(endpoint: EndpointState) -> EndpointOutcome | None:
-    """Select durable Project data after adapters can supply a runtime root."""
+    """Select durable Booley Directory after adapters can supply a runtime root."""
     if (
         endpoint.endpoint_kind not in {"flow", "specialist"}
         or endpoint.args.report_dir is not None

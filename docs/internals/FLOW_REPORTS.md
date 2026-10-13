@@ -18,7 +18,7 @@ Booley picks the report root in this order:
 
 1. `--report-dir`, if given.
 2. When `BOOLEY_RUNTIME_DIR` is set, `<runtime>/flow-reports`. Every MCP endpoint subprocess sets it: Goal-bound calls use the Goal Record's runtime directory, ordinary Interactive calls use the server's session runtime under `.interactive_logs/<session>/.runtime`.
-3. Otherwise, `flow-reports/` in the Project data directory.
+3. Otherwise, `flow-reports/` in the Booley Directory.
 
 Booley never writes `flow-reports/` into the RTL checkout itself.
 

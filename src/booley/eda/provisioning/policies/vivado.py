@@ -55,7 +55,7 @@ def inspect_installation(source: Path, *, project_root: Path | None = None) -> I
     if project_root is not None:
         project = project_root.resolve(strict=True)
         if _overlaps(root, project):
-            raise VivadoPolicyError("Vivado installation overlaps the Project root")
+            raise VivadoPolicyError("Vivado installation overlaps the Project Root")
     launcher = root / "Vivado" / "bin" / "vivado"
     if not launcher.is_file() or not os.access(launcher, os.X_OK):
         raise VivadoPolicyError("release root must contain executable Vivado/bin/vivado")

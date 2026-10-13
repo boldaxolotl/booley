@@ -257,7 +257,7 @@ def _prepare_directory(root: Path) -> None:
 
 
 def _cache_owner(root: Path) -> Path:
-    """Return the Project-data owner that *root* (``owner/<segments>``) lives under."""
+    """Return the Booley Directory owner that *root* (``owner/<segments>``) lives under."""
     return root.parents[len(COMPILER_CACHE_SEGMENTS) - 1]
 
 

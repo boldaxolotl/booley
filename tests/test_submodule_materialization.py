@@ -212,7 +212,7 @@ def test_composite_materialization_normalizes_invalid_paired_checkout(tmp_path: 
 
     with pytest.raises(
         SubmoduleMaterializationError,
-        match="paired project repository is unavailable",
+        match="Paired Checkout is unavailable",
     ):
         materialize_project_submodules(source, destination)
 
@@ -678,7 +678,7 @@ def test_standalone_default_requires_installed_project_destination(tmp_path: Pat
     destination = tmp_path / "destination"
     _add_worktree(source, destination)
     with pytest.raises(
-        SubmoduleMaterializationError, match="paired project checkout is unavailable"
+        SubmoduleMaterializationError, match="Paired Checkout destination is unavailable"
     ):
         materialize_project_submodules(source, destination)
 

@@ -169,12 +169,12 @@ logger = logging.getLogger("booley")
 
 
 # ---------------------------------------------------------------------------
-# Project root detection
+# Project Root detection
 # ---------------------------------------------------------------------------
 
 
 def find_project_root() -> Path:
-    """Find the main project root by walking up from cwd looking for .git.
+    """Find the main Project Root by walking up from cwd looking for .git.
 
     Falls back to $RTL_PROJECT_ROOT env var if set.
     """
@@ -419,7 +419,7 @@ def _project_root_parent() -> argparse.ArgumentParser:
         "-p",
         type=str,
         default=argparse.SUPPRESS,
-        help="Path to the RTL project root (default: discovered from cwd)",
+        help="Path to the RTL Project Root (default: discovered from cwd)",
     )
     return parent
 
@@ -794,7 +794,7 @@ def _cmd_dashboard(_args: argparse.Namespace, project_root: Path) -> int:
 
 
 def _cmd_goal(args: argparse.Namespace, _project_root: Path) -> int:
-    """Show Goal status using the Project directory discovered for this command."""
+    """Show Goal status using the Booley Directory discovered for this command."""
     if args.goal_command == "status":
         from booley.criteria.evidence_ledger import AcceptanceLedgerError
         from booley.goals.format import render_status
@@ -1736,7 +1736,7 @@ def _require_command_project(command: str, project_root: Path) -> None:
     except FileNotFoundError:
         present = False
     except PermissionError as exc:
-        raise ProjectRequiredError(f"cannot access Booley Project data: {exc}") from exc
+        raise ProjectRequiredError(f"cannot access Booley Directory: {exc}") from exc
     if not present:
         raise ProjectRequiredError(
             "not a Booley Project; cd into one or run `booley init` on the host."

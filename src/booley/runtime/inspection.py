@@ -451,10 +451,10 @@ def _check_runtime_booley_version(docker_exe: str, image: str, report: Findings)
 
 
 def _check_runtime_isolation(report: Findings) -> bool:
-    """Enforce authority absence and fixed Project-data identity in every runtime."""
+    """Enforce authority absence and fixed Booley Directory identity in every runtime."""
     if os.environ.get("BOOLEY_PROJECT_DIR") != "/booley-project":
         report.fail(
-            "Sandbox Project-data identity differs from /booley-project",
+            "Sandbox Booley Directory identity differs from /booley-project",
             "reissue the spec on the host and recreate the Sandbox",
         )
         return False
@@ -473,7 +473,7 @@ def _check_runtime_isolation(report: Findings) -> bool:
             "reissue the spec on the host and recreate the Sandbox",
         )
         return False
-    report.pass_("Sandbox Project data and host-authority isolation verified")
+    report.pass_("Sandbox Booley Directory and host-authority isolation verified")
     return True
 
 

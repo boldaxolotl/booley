@@ -4,7 +4,7 @@
 [project]
 name = "<project>"
 # Extra files Goal Mode freezes: recipes and stimulus sources that hooks or
-# generators consume. Paths are relative to the repo root; keep generated
+# generators consume. Paths are relative to the Project Root; keep generated
 # outputs out of the patterns. Add only with the human's agreement.
 # protected_inputs = ["Makefile", "firmware/**/*.c"]
 

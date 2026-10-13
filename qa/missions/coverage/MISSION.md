@@ -25,7 +25,7 @@ recipes live in `../../shared/coverage/RUNBOOK.md`; skim it before area 1.
 ## Staging the coverage fixture
 - Create a fresh disposable Project (add it to `resources.md`): copy `../../shared/coverage/project/` as its
   source, initialize it through the documented public route, and install `project-data/tests.toml` into the
-  project-data directory Booley actually resolves (never assume `.booley_project`). Keep the rest of
+  resolved Booley Directory (never assume `.booley_project`). Keep the rest of
   initialization's config. Commit fixture and initialized Project files, including seeded Goalsets and
   managed `.gitignore`, before creating a Goal worktree.
 - Tools: pinned Verilator v5.052 (`ea338be98e1e838d3518809ce8899f85a009963c`) in the issued Sandbox, Yosys
@@ -151,12 +151,12 @@ Depends on: baseline.policy, baseline.custom.
 ### 4. cov-waivers — Approved waivers and formal proof (~35 min)
 Intent: only exact, pre-approved, Target-bound waivers apply; any bad entry blocks the whole set.
 Try:
-- Run `yosys -s ../../shared/coverage/proof/parity.ys` from the Project root (must prove induction), copy
+- Run `yosys -s ../../shared/coverage/proof/parity.ys` from the Project Root (must prove induction), copy
   the log to `<approved-dir>/proof/parity.log`, then bind (repeat with `excluded` on the `sim_properties4`
   half Campaign):
   `python3 ../../shared/coverage/faults/approvals.py unreachable <nested-v4>/coverage.json --project <p> --directory <approved-dir> --inputs ../../shared/coverage/approval-inputs.json`
   Gated `sim_waiver` `[run]` toggle @1 → two bit-zero points waived with provenance.
-- Anchors `rtl_repository` and `project_data_repository` (use a separately initialized project-data repo);
+- Anchors `rtl_repository` and `project_data_repository` (use a separately initialized Booley Directory repo);
   approval digest change → new set digest, old Campaign unchanged; approval for one Target never leaks to
   another.
 - In separate copies, keep one valid approval and break the other: invalid anchor, absolute or `../`
@@ -164,7 +164,7 @@ Try:
   wrong Target, TB point, missing proof file, proof path escape, proof on `excluded`, missing `approved_by`,
   Analyst `waiver_candidates` pasted in → blocked, neither applied.
 - Ungated run with an unreadable malformed approval dir → `blocked`, rc2, waiver diagnostics, and a `--no-waivers` hint. The same run with `--no-waivers` → no reads, `not_requested`, dir unchanged.
-Look for: partial application, symlink/path escapes, hardcoded project-data path.
+Look for: partial application, symlink/path escapes, hardcoded Booley Directory path.
 Depends on: baseline.waiver.
 
 ### 5. cov-storage — Campaign layout, integrity and publication faults (~45 min)

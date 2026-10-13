@@ -40,7 +40,7 @@ domain concepts.
 
 `booley.commit_policy` is the dependency-light owner of immutable Project Stealth
 policy and reusable commit-message validation. Runtime, Specialists, Project Setup,
-Project Initialization, development commands, and standalone Project Git hooks all
+Project Initialization, development commands, and Project Git hooks all
 consume that same implementation. Dev Support retains command, staged-diff, and hook
 adapters; D32 prevents Runtime from depending on those script owners, while D34 keeps
 the shared owner independent of Runtime, Harness, and Dev Support.
@@ -151,9 +151,9 @@ Runtime. D28 forbids FuseSoC from importing Runtime. These rules include deferre
 and type-only imports and have no waiver or composition exception.
 
 - `core.build_paths.work_root_for` owns the canonical checkout-local Edalize
-  directory identity. It reuses the neutral checkout guard and Project-directory
+  directory identity. It reuses the neutral checkout guard and Booley Directory
   name, preserves config sanitization and variant suffixes, and creates no files.
-  Ambient Project-directory overrides do not redirect these existing per-worktree
+  Ambient Booley Directory overrides do not redirect these existing per-worktree
   build caches. Flow callers retain directory creation, leases and execution;
   Target detail retains its existing payload and exception handling.
 - `core.scope_matching` owns pure literal/glob matching and Scope entry syntax.
@@ -378,7 +378,7 @@ proofs define that limit:
 | Owner | Mechanism and scope | Existing named proof |
 | --- | --- | --- |
 | `booley.dev_support.validate_commit_msg` | Imports packaged `core.run_command` or a flat vendored `run_command`; the packaged case is the dynamic equivalent of `booley.dev_support.validate_commit_msg -> booley.core.run_command`. | `tests/dev_support/test_validate_commit_msg.py` proves packaged, vendored, and stale-hook resolution. |
-| `booley.harness.setup.project_git_hook_bundle` | Builds the explicit nine-module flat source inventory, including the shared policy and validator under collision-resistant names, and a zip-root launcher for the standalone Project Git-hook bundle. | `tests/harness/setup/test_project_git_hook_bundle.py` proves deterministic bytes, normalized sources, isolated execution, and command dispatch. |
+| `booley.harness.setup.project_git_hook_bundle` | Builds the explicit nine-module flat source inventory, including the shared policy and validator under collision-resistant names, and a zip-root launcher for the Project Git-hook bundle. | `tests/harness/setup/test_project_git_hook_bundle.py` proves deterministic bytes, normalized sources, isolated execution, and command dispatch. |
 | `booley.mcp.server` | Imports discovered built-in `booley.mcp.*` endpoint modules and Project-local MCP files. | MCP server and registry discovery tests prove built-in and custom endpoint loading. |
 | `booley.harness.booley` | Imports a registry-selected built-in `booley.*` MCP tool class or a Project-local MCP file for diagnostic commands. | `tests/harness/test_booley.py` proves built-in and Project-local loading. |
 | `booley.mcp.project_flow_loader` | Loads a named Project-local `BooleyFlow` from an explicit file for MCP execution composition. | `tests/flows/test_transport_contract.py` proves Project-local Flow loading. |

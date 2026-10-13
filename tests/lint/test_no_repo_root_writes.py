@@ -1,7 +1,7 @@
 """Architecture guard: no tool may default an OUTPUT-location arg to cwd.
 
 Bug class (recent fixes c78725e, 2088efe, 59ede2e): generated / scratch state
-lands in the git repo root because a tool's output-location argparse argument
+lands in the Git repository root because a tool's output-location argparse argument
 *defaults to ``Path.cwd()``*. When the flag is omitted, the tool then writes
 its artifacts under whatever directory it was launched from — often the repo
 root.
@@ -125,7 +125,7 @@ def _find_violations(py_file: Path) -> list[str]:
         violations.append(
             f"{rel}: argparse arg {arg!r} defaults to cwd (Path.cwd()/os.getcwd()). "
             "This makes an omitted flag write output into the launch directory "
-            "(often the repo root). Leave default=None and resolve lazily under "
+            "(often the repository root). Leave default=None and resolve lazily under "
             "the worktree --work-dir or booley.runtime.project_dir.runtime_dir() instead."
         )
     return violations

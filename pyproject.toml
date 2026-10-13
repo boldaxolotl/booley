@@ -365,7 +365,7 @@ include = [
     "src/booley/runtime/pinned_history.py",
 ]
 strict = [
-    # External-input coercion and the project-directory trust boundary.
+    # External-input coercion and the Booley Directory trust boundary.
     "src/booley/core/boundary.py",
     "src/booley/targets",
     "src/booley/runtime/project_dir.py",

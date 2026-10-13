@@ -19,47 +19,46 @@ worktree reached through another spelling (a bind-mount alias, a symlink)
 records the same list:
 
 - ``worktree``: the Goal worktree root (``work_dir``);
-- ``project``: the session Project directory the caller resolved
+- ``project``: the Main Booley Directory the caller resolved
   (:func:`booley.runtime.project_dir.resolve_project_dir`; in a Sandbox the
   shared ``BOOLEY_PROJECT_DIR``);
 - ``main``: the primary checkout of the worktree's repository;
 - ``abs``: an absolute path, only for a ``[project].dir`` override that lies
   outside the other three.
 
-=============================== =============================================== ===================================
-Protected input                 Consumers and what they read                    Candidates digested
-=============================== =============================================== ===================================
-Project ``booley.toml``         Session-global readers (``project_config``      ``project:booley.toml``; the
-                                globals, EDA requests, endpoint config,         ``booley.toml`` in
-                                Specialist ``[agent]``/``[models]``) read the   ``worktree:.booley_project/``,
-                                session Project directory. Flow readers given   ``worktree:.booley/project/``,
-                                ``work_dir`` read the worktree snapshot         ``main:.booley_project/``,
-                                (``resolve_checkout_project_dir``, which may    ``main:.booley/project/``; the
-                                follow a ``[project].dir`` override) or the     directory
-                                fixed ``.booley_project`` / ``.booley/project`` ``resolve_checkout_project_dir``
-                                path, falling back to the main checkout's copy. returns
-Checkout ``booley.toml``        ``[project].dir`` routing walks up from the     ``worktree:booley.toml``
+=============================== ================================================================= ========================================
+Protected input                 Consumers and what they read                                      Candidates digested
+=============================== ================================================================= ========================================
+Project ``booley.toml``         Session-global readers (``project_config``                        ``project:booley.toml``; the
+                                globals, EDA requests, endpoint config,                           ``booley.toml`` in
+                                Specialist ``[agent]``/``[models]``) read the                     ``worktree:.booley_project/``,
+                                Main Booley Directory. Flow readers given                         ``worktree:.booley/project/``,
+                                ``work_dir`` read the Worktree Booley Directory                   ``main:.booley_project/``,
+                                (``resolve_checkout_project_dir``, which may                      ``main:.booley/project/``; the
+                                follow a ``[project].dir`` override) or the fixed                 directory
+                                ``.booley_project`` / ``.booley/project`` path,                   ``resolve_checkout_project_dir``
+                                falling back to the main checkout's copy.                         returns
+Checkout ``booley.toml``        ``[project].dir`` routing walks up from the                       ``worktree:booley.toml``
                                 worktree root.
-legacy ``pipeline.toml``        Every reader above falls back to it beside      the ``pipeline.toml`` sibling of
-                                a missing ``booley.toml`` (``resolve_toml``).   every ``booley.toml`` candidate
-``hooks/``                      Runner hooks read the session Project           ``project:hooks``,
-                                directory; worktree preparation reads the       ``worktree:.booley_project/hooks``,
-                                snapshot, or the directory                      ``hooks`` in the directory
-                                ``resolve_checkout_project_dir`` returns.       ``resolve_checkout_project_dir``
-                                No Flow or Specialist reads it.                 returns
-``.managed/``                   The Git hook adapters run the worktree's        ``worktree:.booley_project/.managed``,
-                                bundle file when it exists, else the main       ``main:.booley_project/.managed``,
-                                checkout's; ``init`` writes the session         ``project:.managed``
-                                Project directory's.
-``generators/``                 No Booley reader exists; FuseSoC generators     ``project:generators``
+legacy ``pipeline.toml``        Every reader above falls back to it beside                        the ``pipeline.toml`` sibling of
+                                a missing ``booley.toml`` (``resolve_toml``).                     every ``booley.toml`` candidate
+``hooks/``                      Runner hooks read the Main Booley Directory;                      ``project:hooks``,
+                                worktree preparation reads the Worktree Booley Directory          ``worktree:.booley_project/hooks``,
+                                or the directory ``resolve_checkout_project_dir`` returns.        ``hooks`` in the directory
+                                No Flow or Specialist reads it.                                   ``resolve_checkout_project_dir``
+                                                                                                  returns
+``.managed/``                   The Git hook adapters run the worktree's bundle                   ``worktree:.booley_project/.managed``,
+                                file when it exists, else the main checkout's;                    ``main:.booley_project/.managed``,
+                                ``init`` writes the selected checkout's Booley Directory.         ``project:.managed``
+``generators/``                 No Booley reader exists; FuseSoC generators                       ``project:generators``
                                 are declared per ``.core``. Digested where it
                                 is authored.
-``mcp_tools/``                  Discovered once, at MCP server start, from      ``project:mcp_tools``,
-                                ``BOOLEY_PROJECT_DIR``, else the server's       ``main:.booley_project/mcp_tools``
+``mcp_tools/``                  Discovered once, at MCP server start, from                        ``project:mcp_tools``,
+                                ``BOOLEY_PROJECT_DIR``, else the server's                         ``main:.booley_project/mcp_tools``
                                 working directory (the main checkout). The
-                                snapshot copy is never run.
-``FUSESOC_IGNORE``              Core discovery scans the ``work_dir`` root.     ``worktree:FUSESOC_IGNORE``
-=============================== =============================================== ===================================
+                                Worktree Booley Directory copy is never run.
+``FUSESOC_IGNORE``              Core discovery scans the ``work_dir`` root.                       ``worktree:FUSESOC_IGNORE``
+=============================== ================================================================= ========================================
 
 Encoding rules:
 
@@ -78,8 +77,7 @@ Encoding rules:
   the file is restored as untracked bytes, and a checkout that converts line
   endings never differs from itself. Paths outside the worktree have no HEAD
   and contribute their working view.
-- HEAD is that of the innermost repository containing the path, so a paired
-  Project checkout nested in the worktree is read from its own HEAD. A
+- HEAD is that of the innermost repository containing the path, so a Paired Checkout nested in the worktree is read from its own HEAD. A
   tracked symlink's target is read through the HEAD view as well.
 - A directory that cannot be listed fails the snapshot; it is never digested
   as empty.
@@ -134,7 +132,7 @@ PROTECTED_INPUT_NAMES: tuple[str, ...] = (
 )
 # Every name a Project configuration file may have, newest first (resolve_toml).
 CONFIG_FILE_NAMES: tuple[str, ...] = ("booley.toml", "pipeline.toml")
-# The legacy Project directory layout resolve_booley_toml still reads.
+# The legacy Booley Directory layout resolve_booley_toml still reads.
 LEGACY_PROJECT_DIR = ".booley/project"
 _SKIPPED_DIRECTORIES = frozenset({"__pycache__"})
 _DIGEST_FORMAT = "booley-protected-inputs/2"
@@ -182,7 +180,7 @@ class ProtectedPath:
 
 @dataclass(frozen=True)
 class ProtectedInputRoots:
-    """Where the resolvers look: the Goal worktree and the session's Project directory."""
+    """Where the resolvers look: the Goal worktree and the Main Booley Directory."""
 
     worktree: Path
     project_dir: Path
@@ -596,7 +594,7 @@ class _HeadView:
     """Committed content of protected paths inside the Goal worktree (module docstring).
 
     Each path is read from the HEAD of the innermost repository containing
-    it: the Goal worktree's, or a paired Project checkout nested inside it.
+    it: the Goal worktree's, or a Paired Checkout nested inside it.
     """
 
     def __init__(self, *, include_mode: bool = False) -> None:

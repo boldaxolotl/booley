@@ -2186,7 +2186,7 @@ def test_previewed_spec_issues_for_every_project_data_layout(
 ) -> None:
     """Init's preview -> issue_prepared round trip must accept its own layout.
 
-    An in-repository Project-data directory on an alias-capable image yields a
+    An in-repository Booley Directory on an alias-capable image yields a
     canonical-alias spec; that prepared spec must issue without being mistaken
     for authority drift (the 0.3.0 release-candidate init Step 15 failure).
     """
@@ -2566,3 +2566,116 @@ def test_real_git_issued_environment_preserves_host_identity(issued, monkeypatch
         )
     assert git("config", "user.name") == "Human"
     assert git("config", "--global", "user.name") == "Human Global"
+
+
+def test_validation_refuses_lost_canonical_alias_capability(issued, monkeypatch):
+    from booley.runtime import project_image
+
+    project, _legacy, _path, _stamp = issued
+    monkeypatch.setattr(project_image, "project_data_alias_capable", lambda _image: True)
+    spec = dc.build_devcontainer_spec(
+        dc.APP_NONE,
+        mcp_start_command=dc.mcp_post_start_command(),
+        protected_devcontainer_source=str(project / ".devcontainer"),
+    )
+    runtime_spec.pin_image(spec)
+    runtime_spec.seal(project, spec)
+    path = dc.write_devcontainer(project, spec)
+    runtime_spec.issue(project, spec, path)
+    monkeypatch.setattr(project_image, "project_data_alias_capable", lambda _image: False)
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="canonical Booley Directory alias"):
+        runtime_spec.validate(project, spec, path)
+
+
+def test_authorized_directory_source_refuses_an_ordinary_file(issued, monkeypatch, tmp_path):
+    project, _spec, _path, _stamp = issued
+    source = tmp_path / "not-a-directory"
+    source.write_text("keep", encoding="utf-8")
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(source.resolve()))
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="mount source is not a directory"):
+        runtime_spec.authorized_project_data_source(project)
+    assert source.read_text(encoding="utf-8") == "keep"
+
+
+@pytest.mark.parametrize("count", [0, 2])
+def test_seal_refuses_missing_or_duplicate_directory_authority(issued, count):
+    project, _issued_spec, _path, _stamp = issued
+    spec = dc.build_devcontainer_spec(
+        dc.APP_NONE,
+        mcp_start_command=dc.mcp_post_start_command(),
+        protected_devcontainer_source=str(project / ".devcontainer"),
+    )
+    mounts = spec["mounts"]
+    selected = [raw for raw in mounts if runtime_spec._mount_target(raw) == "/booley-project"]
+    assert len(selected) == 1
+    spec["mounts"] = [raw for raw in mounts if raw not in selected] + selected * count
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="one exact writable bind"):
+        runtime_spec.seal(project, spec)
+
+
+def test_seal_refuses_an_already_mounted_directory_workspace_view(issued):
+    project, _issued_spec, _path, _stamp = issued
+    spec = dc.build_devcontainer_spec(
+        dc.APP_NONE,
+        mcp_start_command=dc.mcp_post_start_command(),
+        protected_devcontainer_source=str(project / ".devcontainer"),
+    )
+    spec["mounts"].append("source=/untrusted,target=/work/.booley_project,type=bind")
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="workspace view is already mounted"):
+        runtime_spec.seal(project, spec)
+
+
+def test_runtime_directory_mount_requires_host_source_authority(issued):
+    project, _spec, _path, _stamp = issued
+    with pytest.raises(
+        runtime_spec.RuntimeSpecError, match="lacks an authorized Booley Directory"
+    ):
+        runtime_spec._require_project_data_mount([], None, project)
+
+
+def test_runtime_directory_mount_requires_canonical_source(issued):
+    project, _spec, _path, _stamp = issued
+    intermediate = project / "existing"
+    intermediate.mkdir()
+    source = intermediate / ".." / ".booley_project"
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="mount source is no longer canonical"):
+        runtime_spec._require_project_data_mount([], str(source), project)
+
+
+def test_canonical_alias_rejects_external_directory_authority(issued, tmp_path):
+    project, _spec, _path, _stamp = issued
+    external = tmp_path / "external"
+    external.mkdir()
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="checkout-local Booley Directory"):
+        runtime_spec._require_project_data_mount(
+            [], str(external), project, layout="canonical-alias"
+        )
+
+
+@pytest.mark.parametrize("damage", ["missing", "duplicate", "readonly"])
+def test_runtime_directory_mount_refuses_inexact_host_bind(issued, damage):
+    project, _spec, _path, _stamp = issued
+    source = project / ".booley_project"
+    mount = f"source={docker_mount_path(source)},target=/booley-project,type=bind"
+    mounts = {"missing": [], "duplicate": [mount, mount], "readonly": [mount + ",readonly"]}[
+        damage
+    ]
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="one exact host-authorized bind"):
+        runtime_spec._require_project_data_mount(mounts, str(source), project)
+
+
+@pytest.mark.parametrize("boundary", ["issuance", "runtime", "lifecycle"])
+def test_directory_alias_proof_refuses_missing_image_identity_before_docker(monkeypatch, boundary):
+    from booley.runtime import image_lifecycle, project_image
+
+    probe = Mock(side_effect=AssertionError("malformed identity must not reach Docker"))
+    monkeypatch.setattr(project_image, "project_data_alias_capable", probe)
+    checks = {
+        "issuance": (runtime_spec._project_data_alias_capable, runtime_spec.RuntimeSpecError),
+        "runtime": (session_runtime._project_data_alias_capable, session_runtime.SessionError),
+        "lifecycle": (image_lifecycle._layout_alias_capable, image_lifecycle.ImageLifecycleError),
+    }
+    check, error = checks[boundary]
+    with pytest.raises(error, match="Sandbox image identity is unavailable"):
+        check(None)
+    probe.assert_not_called()

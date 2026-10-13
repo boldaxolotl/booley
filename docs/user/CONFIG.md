@@ -100,7 +100,7 @@ protected_inputs = ["Makefile", "firmware/**/*.c", "vectors/"]
 Omitting the key or leaving the list empty protects nothing extra. Booley does
 not infer these files from scripts or Makefiles; list each one.
 
-Each entry is a path relative to the repo root of the Goal's worktree, wherever
+Each entry is a path relative to the Project Root of the Goal's worktree, wherever
 that worktree's `booley.toml` lives. Write `/` on every host.
 
 | Form | Example | Matches |
@@ -211,13 +211,13 @@ provisioning = "host"
 ```
 
 `provisioning` is `image` (the default) or `host`. For `host`, the exact
-Project root must have a host-issued Grant selecting one Installation
+Project Root must have a host-issued Grant selecting one Installation
 Registration before a Sandbox can be created. That Grant is the sole source of
 the installation name and host path; Project configuration cannot select
 either. The host administrator manages registrations and grants using
 `booley eda installation register` and `booley eda grant add`.
 
-Successful ordinary `booley init` runs remember their canonical Project root
+Successful ordinary `booley init` runs remember their canonical Project Root
 in the host-owned Project Inventory. `booley projects` joins those roots with
 their Grants and reports each root as `present`, `missing`, or `uninitialized`.
 Use `booley projects discover <root>...` to import existing initialized
@@ -275,7 +275,7 @@ fractional values, and suffixes outside this grammar are configuration errors.
 The selected checkout's `booley.toml` (or `pipeline.toml`) owns these
 settings; malformed explicit configuration fails preparation.
 
-The cache lives at `.runtime/compiler-cache/ccache` in the issued Project data
+The cache lives at `.runtime/compiler-cache/ccache` in the issued Booley Directory
 mount. Goal worktrees share it while retaining their own configuration and
 fresh build generations. Sandbox recreation, generation cleanup, and disabling
 caching preserve its entries. A Sandbox created before this cache existed keeps
@@ -439,12 +439,12 @@ edge. The usual real fix is re-pinning the cocotb ↔ simulator pair; see
 
 Some testbenches `$readmemh` vectors or firmware via paths relative to the
 process working directory (`data/…`, `../fw/…`). Booley runs the sim from the
-project root by default, so those reads miss. Point the run at the directory
+Project Root by default, so those reads miss. Point the run at the directory
 those relative paths are authored against — usually the testbench dir:
 
 ```toml
 [flows.sim]
-run_cwd = "tests/work"   # relative to the repo root; unset = run from project root
+run_cwd = "tests/work"   # relative to the Project Root; unset = run from Project Root
 ```
 
 Durable ordinary-HDL Simulation Campaigns also accept `{campaign}`, `{target}`,
@@ -492,8 +492,8 @@ The lines run **inside the Sandbox** immediately before each simulator
 process: once per Test Run for an HDL-testbench Target, once before each batch
 for a Cocotb Target.
 
-Their working directory is the **repo root** — *not* `run_cwd`, and not the
-build tree. Write paths relative to the repo root, or `cd "$BOOLEY_RUN_CWD"`
+Their working directory is the **Project Root** — *not* `run_cwd`, and not the
+build tree. Write paths relative to the Project Root, or `cd "$BOOLEY_RUN_CWD"`
 first. Nothing in the chain creates directories for you: neither `run_cwd` nor
 any output dir your script writes into is auto-created, so a staging script
 that targets a fresh directory must `mkdir -p` it itself.
@@ -510,7 +510,7 @@ artifact staging never has to guess the sim's working directory:
 | `BOOLEY_TEST_RUN_NAME` | one Test Run only | that Test Run's name |
 | `BOOLEY_TEST_VARIANT` | one Test Run whose Test declares Test Variants | the Test Variant that runs |
 | `BOOLEY_TEST_SEED` | one Test Run on a seeded Target | the seed, in decimal |
-| `BOOLEY_RUN_CWD` | always | the directory the Simulation Flow runs in ([`run_cwd`](#sim-working-directory-flowssimrun_cwd) when set; otherwise the Project root) |
+| `BOOLEY_RUN_CWD` | always | the directory the Simulation Flow runs in ([`run_cwd`](#sim-working-directory-flowssimrun_cwd) when set; otherwise the Project Root) |
 | `BOOLEY_BUILD_ROOT` | `pre_sim_build_access = "legacy-per-test"` only | the fresh private per-test Edalize build tree; deliberately absent in immutable mode |
 | `BOOLEY_PROJECT_ROOT` / `BOOLEY_PROJECT_DIR` | always | same meaning as in the [post-setup hook](#worktree-setup-hooks) |
 | `BOOLEY_SIM_EDA_TOOL` | after Target resolution | concrete EDA tool driven by this Simulation Flow run |
@@ -528,9 +528,9 @@ pre_run_commands = [
 
 `BOOLEY_PROJECT_DIR` deserves a note: **inside the Sandbox it is
 `/booley-project`**, not `/work/.booley_project`. For the default in-checkout
-Project, both paths reach the same state directory through the issued layout;
+Project, both paths reach the same Booley Directory through the issued layout;
 compatible images provide the short path as a symlink. Only the short path is
-exported. An external Project-data directory uses its issued short-path mount,
+exported. An external Booley Directory uses its issued short-path mount,
 without a `/work/.booley_project` counterpart. Prefer the variable.
 
 Failure semantics: a nonzero exit records that test as a **failed** run with an
@@ -954,7 +954,7 @@ memory = "8g"   # single container memory limit, fed into the generated
 
 #### Commercial-license policy
 
-A supported License Profile is host-owned, separately granted to the exact Project root, and emits only the
+A supported License Profile is host-owned, separately granted to the exact Project Root, and emits only the
 fixed Sandbox pointer required by the built-in commercial policy. Do not put
 license-server addresses, license-file paths, or environment forwarding in
 `booley.toml`.
@@ -994,7 +994,7 @@ pip_requirements = ["sim-requirements.txt", "python/tb/requirements.txt"]
 ```
 
 The value is a **list of paths to requirements files** (a bare string is
-ignored). Paths are relative to the repo root; any name and any depth works.
+ignored). Paths are relative to the Project Root; any name and any depth works.
 `init` warns on an entry it can't find and skips it — and if every entry is
 missing, the project quietly falls back to the base image, so check the `init`
 output rather than assuming the pins landed. Two content rules still apply to
@@ -1030,7 +1030,7 @@ the choice is about whether the pins should survive a fresh clone:
 - **Tracked, in the repo** (e.g. `sim-requirements.txt` at the root, or next to
   the testbenches) — the file is a normal source file, reviewed and cloned like
   any other. Preferred when you can add a file to the repo.
-- **Inside the project dir** (e.g. `.booley_project/sim-requirements.txt`) —
+- **Inside the Booley Directory** (e.g. `.booley_project/sim-requirements.txt`) —
   legal, and the right call under [stealth mode](#stealth-mode-stealth) when you
   do not want a Booley-shaped file in the tracked tree. The catch is durability:
   `.booley_project/` is excluded from the host repo, so a fresh clone has no
@@ -1197,7 +1197,7 @@ readable, and it also covers identities that arrive via rebase, cherry-pick, or
 
 The hook also inspects changed tracked paths and committed symlink targets. A
 push is rejected when either carries a banned term or resolves into the hidden
-project-state directory. The reserved repository spelling `.booley_project/`
+Booley Directory. The reserved repository spelling `.booley_project/`
 is blocked independently of the Sandbox's absolute project-state path,
 and changing the worktree link after committing does not bypass the check.
 
@@ -1292,10 +1292,10 @@ the project's**, including:
 Two consequences worth planning for:
 
 **`git add -f` does not rescue a file under `.booley_project/`.** `booley init`
-gives the project dir its **own** git repo when stealth is on, so the host repo
+gives the Booley Directory its **own** git repo when stealth is on, so the host repo
 sees an embedded repository and refuses to track paths inside it. Commit that
 inner repo (or back it up) if you want the setup to survive a machine, and use
-`git add -f` only for files *outside* the project dir.
+`git add -f` only for files *outside* the Booley Directory.
 
 **A file that a tracked `.core` references must itself be tracked.** This is
 most visible for a deliberately-broken lint fixture: it has to be a real file
@@ -1371,7 +1371,7 @@ filed and excluded from later exports.
 
 #### What redaction does and does not do
 
-**Replaced:** absolute paths (repo root, `$HOME`, any `/home/<user>`), git remote
+**Replaced:** absolute paths (Project Root, `$HOME`, any `/home/<user>`), git remote
 URLs and their `org/repo` slug, your `git config` name and email, and design
 identifiers scraped from `booley.toml` and your `.core` files (project name,
 Target names, VLNV segments, toplevels) — mapped to stable `<module-N>`
@@ -2099,7 +2099,7 @@ git -C .booley_project submodule update --init --recursive
 ```
 
 Every selected submodule must be **present, clean, and non-shallow** in its
-owning outer or paired project repository before Goal entry or a baseline Flow
+owning RTL repository or Paired Checkout before Goal entry or a baseline Flow
 starts. Its local object database must also contain the complete object closure
 for the destination's pinned commit. Worktree setup hard-errors when one of
 these preconditions is not met, for example:
@@ -2131,7 +2131,7 @@ gitlinks below a selected entry are always reconstructed recursively.
 
 For a separately paired `.booley_project` repository, the allowlist above
 selects gitlinks in the outer repository. Booley also materializes every
-top-level gitlink recorded by the paired project repository, recursively and
+top-level gitlink recorded by the Paired Checkout, recursively and
 offline, because that repository can own acceptance controls and build inputs.
 
 ## Doctor waivers (`doctor-waivers.toml`)
@@ -2408,7 +2408,7 @@ Project-specific MCP tools can be added via `.booley_project/mcp_tools/`, follow
 Project setup scripts can live under `.booley_project/hooks/`. After creating a
 Goal worktree with `booley worktree new`, run any Project-specific setup it
 needs from that worktree before entry. The command creates the worktree and
-Project checkout; it does not invoke these scripts automatically. Keep generated
+Worktree Booley Directory; it does not invoke these scripts automatically. Keep generated
 build outputs ignored and commit deliberate Project inputs before Goal entry.
 Hooks are Protected Inputs during Goal Mode.
 
@@ -2473,7 +2473,7 @@ unscored. Simulation verdicts do not change coverage threshold truth.
 
 #### Approved coverage waivers
 
-Project-data `booley.toml` optionally selects one project-wide approval directory:
+The Booley Directory's `booley.toml` optionally selects one project-wide approval directory:
 
 ```toml
 [coverage.waivers]
@@ -2530,7 +2530,7 @@ cannot be copied here by hand; they become approval files through a human-approv
 ### Dashboard and quiet Goal presence (`[goals]`)
 
 The Sandbox Dashboard opens on VS Code
-folder attachment by default. Configure these values in the Project directory's
+folder attachment by default. Configure these values in the Booley Directory's
 `booley.toml`:
 
 ```toml

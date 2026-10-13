@@ -1,6 +1,6 @@
 """Seeded Goalsets: Markdown bundles of Goals the Project owns (ADR 0067).
 
-A Goalset is one free-form Markdown file in ``<project dir>/goalsets/``,
+A Goalset is one free-form Markdown file in ``<booley-directory>/goalsets/``,
 written in the vocabulary of the entry tool's Goal arguments
 (:data:`~booley.goals.model.GoalArg`). The agent reads the chosen Goalsets at
 entry and translates them into Goal arguments, so validation happens at entry,
@@ -34,7 +34,7 @@ from booley.goals.model import REVIEW_KINDS, REVIEW_VERDICTS, SPEC_REVIEW_KIND, 
 from booley.goals.translate import CRITERION_FOR_FAMILY
 from booley.runtime.guarded_write import WriteOutcome, guarded_write
 
-# Directory, inside the Project directory, that holds every Goalset.
+# Directory, inside the Booley Directory, that holds every Goalset.
 GOALSETS_DIR = "goalsets"
 
 # Goalsets ``init`` seeds, in the order it writes them. ``default`` is never

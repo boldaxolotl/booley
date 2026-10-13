@@ -2,8 +2,8 @@
 
 Readiness leaves the Goal Mode active in a disposable workspace. Caller inputs
 are only cloned. ``booley worktree new`` creates the outer checkout and its
-paired Project checkout through the same path used in Interactive Mode.
-The control Project is the main checkout's directory. Preview is explicitly
+Paired Checkout through the same path used in Interactive Mode.
+The Main Booley Directory is the main checkout's directory. Preview is explicitly
 enabled here for 7a; 7b removes it.
 """
 
@@ -288,7 +288,7 @@ def _clone_project(
         )
     if not (primary / ".booley_project/booley.toml").is_file():
         raise GoalDriverError(
-            "Project inputs must be versioned in the source or a Project repository"
+            "Project inputs must be versioned in the source or a Versioned Booley Directory"
         )
     return paired
 

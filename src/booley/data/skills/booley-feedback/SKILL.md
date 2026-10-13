@@ -16,8 +16,8 @@ Check the installed CLI with `booley feedback --help`; run its commands for the
 user rather than asking them to choose subcommands.
 
 In the Sandbox, each Project has one Findings Log shared by all of its worktrees.
-The log and default local report stay in the shared Project directory, even
-when the selected worktree has its own paired Project checkout. `-C` / `--project`
+The log and default local report stay in the Main Booley Directory, even
+when the selected worktree has its own Paired Checkout. `-C` / `--project`
 selects the checkout used for context; it does not move that shared log or the
 default report. For Projects, `BOOLEY_PROJECT_DIR` selects shared storage.
 Without that override outside the Sandbox, storage is discovered from the
@@ -28,8 +28,7 @@ Attachment paths remain as supplied and are not rebased by `-C`.
 For `report`, `export`, and `redact`, the selected checkout supplies repository
 identifiers for redaction: paths, remotes, committer identity, and `.core` names.
 Configured names and `[feedback]` / `[stealth]` redaction settings come from
-`booley.toml` in the feedback storage directory, which is the shared Project
-directory in the Sandbox; selecting a paired checkout does not select its settings.
+`booley.toml` in the feedback storage directory, which is the Main Booley Directory in the Sandbox; selecting a Paired Checkout does not select its settings.
 
 ## 1. Capture and classify
 

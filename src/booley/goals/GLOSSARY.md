@@ -4,7 +4,8 @@ This is the vocabulary for the inside of one Goal Mode: how its Goals are
 stored, changed, and bound to a worktree. **Goal Mode**, **Goal**,
 **Goalset**, **Goal Branch**, **Goal Record**, **Goal Change Proposal**,
 **Change Log**, **Protected Input**, **Review Package**, **Session**, and
-**Generated Build Artifact** are
+**Generated Build Artifact**, **Main Booley Directory**, **Worktree Booley Directory**,
+**Paired Checkout**, and **Snapshot** are
 defined in the [shared glossary](../../../docs/GLOSSARY.md); this glossary
 uses them with that meaning, as it does **Test**, **Test Variant**,
 **Test Run**, and **Default Seed**. **Waiver Candidate** and **Provisional Coverage
