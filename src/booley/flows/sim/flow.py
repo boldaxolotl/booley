@@ -37,6 +37,7 @@ from booley.flows.display import format_flow_display_label
 from booley.flows.eda_failures import find_missing_executable, new_attempt_token
 from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.execution_persistence import (
+    execution_goal_name,
     frozen_test_runs_for,
     register_campaign_for,
     wants_campaigns,
@@ -1055,12 +1056,16 @@ def _diagnostic_test_runs(
 
 
 def _with_frozen_runs_of_a_diagnostic_run(
-    result: EndpointOutcome, frozen: FrozenTestRuns, names: Callable[[str], Collection[str]]
+    result: EndpointOutcome,
+    frozen: FrozenTestRuns,
+    names: Callable[[str], Collection[str]],
+    goal_name: Callable[[str], str],
 ) -> EndpointOutcome:
     """Say which Goals' frozen Test Runs a ``--diagnostic`` run executed, and which failed.
 
     The run records nothing; the report must not let that pass unnoticed
-    when what ran is exactly what a Goal is judged by.
+    when what ran is exactly what a Goal is judged by. The report names each
+    Goal as *goal_name* presents its key; ``detail`` keeps the keys.
     """
     campaigns = result.detail.get("campaigns")
     ran: dict[str, list[str]] = {}
@@ -1076,10 +1081,10 @@ def _with_frozen_runs_of_a_diagnostic_run(
         return result
     result.detail["diagnostic_test_runs"] = {"goal_frozen_runs": ran, "goal_failures": failed}
     lines = ["Diagnostic run: these frozen Test Runs of Goals ran and nothing was recorded:"]
-    lines += [f"  {key}: {', '.join(runs)}" for key, runs in ran.items()]
+    lines += [f"  {goal_name(key)}: {', '.join(runs)}" for key, runs in ran.items()]
     if failed:
         lines.append("Diagnostic failures of Goals' frozen Test Runs (not recorded):")
-        lines += [f"  {key}: {', '.join(runs)}" for key, runs in failed.items()]
+        lines += [f"  {goal_name(key)}: {', '.join(runs)}" for key, runs in failed.items()]
     note = "\n".join(lines)
     result.report_text = f"{result.report_text}\n{note}" if result.report_text else note
     return result
@@ -7092,7 +7097,10 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         if frozen is None:
             return result
         if self.args.diagnostic:
-            return _with_frozen_runs_of_a_diagnostic_run(result, frozen, self._target_names)
+            adapter = self.context.execution_adapter
+            return _with_frozen_runs_of_a_diagnostic_run(
+                result, frozen, self._target_names, lambda key: execution_goal_name(adapter, key)
+            )
         fresh = [
             f"{target}: {selector}"
             for target, selectors in self._test_runs.fresh_seed_selectors.items()

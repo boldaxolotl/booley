@@ -98,8 +98,10 @@ def test_a_save_cannot_change_or_remove_frozen_test_runs(goal_mode: SimpleNamesp
     other = replace(frozen.runs[0], run=test_runs.build_test_run("smoke", seed=5))
     with pytest.raises(InvalidRecordUpdateError, match="cannot change"):
         update_record(goal_mode, test_run_resolutions={SIM_KEY: replace(frozen, runs=(other,))})
-    with pytest.raises(InvalidRecordUpdateError, match="cannot be removed"):
+    removed = r"the frozen Test Runs of Goal SIM:top \(all selected tests pass\) cannot be removed"
+    with pytest.raises(InvalidRecordUpdateError, match=removed) as refused:
         update_record(goal_mode, test_run_resolutions={})
+    assert SIM_KEY not in str(refused.value)  # the public Goal name, not its key
     with pytest.raises(InvalidRecordUpdateError, match="cannot change"):
         update_record(goal_mode, test_run_resolutions={SIM_KEY: replace(frozen, runs=())})
     update_record(goal_mode, test_run_resolutions={SIM_KEY: frozen})  # unchanged is fine
