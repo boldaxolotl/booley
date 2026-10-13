@@ -1,57 +1,221 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/boldaxolotl/booley/v0.3.0/crates/bwave/schema/bwave.json",
+  "$id": "urn:bwave:json-envelope:2",
   "title": "B-Wave --format json envelope",
-  "description": "Every `bwave <cmd> --format json` payload is wrapped in this envelope. Phase 2 of v0.2 implements `list`, `value`, `find`, and `stats`; signal/wave/sample/diff/distance/stuck reject JSON requests with exit code 2.",
+  "description": "B-Wave JSON envelope revision 2; clock-grid diagnostics and stopped ranges are advisory. Obtain the emitted revision using bwave schema.",
   "type": "object",
-  "required": ["$schema", "command", "data", "warnings"],
+  "required": [
+    "$schema",
+    "command",
+    "data",
+    "warnings"
+  ],
   "additionalProperties": false,
   "properties": {
     "$schema": {
       "type": "string",
-      "description": "URL of the schema document this payload conforms to. Pinned to the v0.3.0 release tag."
+      "description": "Immutable URL of the expanded schema revision."
     },
     "command": {
       "type": "string",
-      "enum": ["list", "value", "find", "stats"],
+      "enum": [
+        "list",
+        "value",
+        "find",
+        "stats",
+        "signal",
+        "wave",
+        "distance",
+        "overview"
+      ],
       "description": "Which subcommand produced this envelope."
     },
     "warnings": {
       "type": "array",
-      "items": { "type": "string" },
+      "items": {
+        "type": "string"
+      },
       "description": "Diagnostics that text mode would write to stderr as `# WARNING: ...` lines."
     },
     "data": {
       "oneOf": [
-        { "$ref": "#/$defs/listData" },
-        { "$ref": "#/$defs/valueData" },
-        { "$ref": "#/$defs/findData" },
-        { "$ref": "#/$defs/statsData" }
+        {
+          "$ref": "#/$defs/listData"
+        },
+        {
+          "$ref": "#/$defs/valueData"
+        },
+        {
+          "$ref": "#/$defs/findData"
+        },
+        {
+          "$ref": "#/$defs/statsData"
+        },
+        {
+          "$ref": "#/$defs/signalData"
+        },
+        {
+          "$ref": "#/$defs/waveData"
+        },
+        {
+          "$ref": "#/$defs/distanceData"
+        },
+        {
+          "$ref": "#/$defs/overviewData"
+        }
       ]
+    },
+    "clock_regularity": {
+      "$ref": "#/$defs/clockVerdict"
+    },
+    "clock_stopped": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/stoppedRange"
+      }
     }
   },
   "allOf": [
     {
-      "if":   { "properties": { "command": { "const": "list" } } },
-      "then": { "properties": { "data": { "$ref": "#/$defs/listData" } } }
+      "if": {
+        "properties": {
+          "command": {
+            "const": "list"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/listData"
+          }
+        }
+      }
     },
     {
-      "if":   { "properties": { "command": { "const": "value" } } },
-      "then": { "properties": { "data": { "$ref": "#/$defs/valueData" } } }
+      "if": {
+        "properties": {
+          "command": {
+            "const": "value"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/valueData"
+          }
+        }
+      }
     },
     {
-      "if":   { "properties": { "command": { "const": "find" } } },
-      "then": { "properties": { "data": { "$ref": "#/$defs/findData" } } }
+      "if": {
+        "properties": {
+          "command": {
+            "const": "find"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/findData"
+          }
+        }
+      }
     },
     {
-      "if":   { "properties": { "command": { "const": "stats" } } },
-      "then": { "properties": { "data": { "$ref": "#/$defs/statsData" } } }
+      "if": {
+        "properties": {
+          "command": {
+            "const": "stats"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/statsData"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "command": {
+            "const": "signal"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/signalData"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "command": {
+            "const": "wave"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/waveData"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "command": {
+            "const": "distance"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/distanceData"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "command": {
+            "const": "overview"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/overviewData"
+          }
+        }
+      }
     }
   ],
   "$defs": {
     "listData": {
       "type": "object",
-      "required": ["scope_prefix", "root_scopes", "signal_count", "clock", "total_ticks", "signals"],
+      "required": [
+        "scope_prefix",
+        "root_scopes",
+        "signal_count",
+        "clock",
+        "total_ticks",
+        "signals"
+      ],
       "additionalProperties": false,
       "properties": {
         "scope_prefix": {
@@ -60,7 +224,9 @@
         },
         "root_scopes": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "description": "Distinct first-level scopes represented by the matched signals. Unlike scope_prefix, this remains populated when a trace has multiple roots."
         },
         "signal_count": {
@@ -70,26 +236,43 @@
         },
         "clock": {
           "anyOf": [
-            { "type": "string" },
-            { "type": "null" }
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
           ],
           "description": "Full hierarchical name of the detected (or --clock-overridden) clock; null on an async trace. Trace-level, not filtered by the pattern. `bwave gui` makes it row 1 of a new view."
         },
         "total_ticks": {
           "type": "integer",
           "minimum": 0,
-          "description": "End of the trace in file-timescale ticks — same value `stats` reports. Trace-level, not filtered by the pattern; here so an open-ended time range does not cost a full stats walk."
+          "description": "End of the trace in file-timescale ticks \u2014 same value `stats` reports. Trace-level, not filtered by the pattern; here so an open-ended time range does not cost a full stats walk."
         },
         "signals": {
           "type": "array",
           "items": {
             "type": "object",
-            "required": ["name", "width", "var_type"],
+            "required": [
+              "name",
+              "width",
+              "var_type"
+            ],
             "additionalProperties": false,
             "properties": {
-              "name": { "type": "string", "description": "Signal name with `scope_prefix` stripped." },
-              "width": { "type": "integer", "minimum": 1 },
-              "var_type": { "type": "string", "description": "VCD var type — `wire`, `reg`, `integer`, etc." }
+              "name": {
+                "type": "string",
+                "description": "Signal name with `scope_prefix` stripped."
+              },
+              "width": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "var_type": {
+                "type": "string",
+                "description": "VCD var type \u2014 `wire`, `reg`, `integer`, etc."
+              }
             }
           }
         }
@@ -97,18 +280,39 @@
     },
     "valueData": {
       "type": "object",
-      "required": ["scope_prefix", "mode", "at", "at_unit", "target_tick", "time_label", "signals"],
+      "required": [
+        "scope_prefix",
+        "mode",
+        "at",
+        "at_unit",
+        "target_tick",
+        "time_label",
+        "signals",
+        "sample_tick"
+      ],
       "additionalProperties": false,
       "properties": {
-        "scope_prefix": { "type": "string" },
-        "mode": { "type": "string", "enum": ["sync", "async"] },
+        "scope_prefix": {
+          "type": "string"
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "sync",
+            "async"
+          ]
+        },
         "at": {
           "type": "integer",
           "description": "User-supplied time argument verbatim."
         },
         "at_unit": {
           "type": "string",
-          "enum": ["cycle", "tick", "ns"],
+          "enum": [
+            "cycle",
+            "tick",
+            "ns"
+          ],
           "description": "Unit of `at`. `cycle` in sync mode; `tick` when sync was requested but no clock was found; `ns` in async mode."
         },
         "target_tick": {
@@ -122,44 +326,86 @@
         },
         "signals": {
           "type": "array",
-          "items": { "$ref": "#/$defs/signalValue" }
+          "items": {
+            "$ref": "#/$defs/signalValue"
+          }
+        },
+        "sample_tick": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
         }
       }
     },
     "findData": {
       "type": "object",
       "required": [
-        "scope_prefix", "pattern", "value", "mode", "unit",
-        "count", "matches", "truncated",
-        "first_only", "last_only", "count_only"
+        "scope_prefix",
+        "pattern",
+        "value",
+        "mode",
+        "unit",
+        "count",
+        "matches",
+        "truncated",
+        "first_only",
+        "last_only",
+        "count_only"
       ],
       "additionalProperties": false,
       "properties": {
-        "scope_prefix": { "type": "string" },
-        "pattern": { "type": "string", "description": "Find-target glob." },
+        "scope_prefix": {
+          "type": "string"
+        },
+        "pattern": {
+          "type": "string",
+          "description": "Find-target glob."
+        },
         "value": {
           "type": "string",
           "description": "Edge keyword (`rising`, `falling`, `change`) or literal value, as the user passed it."
         },
-        "mode": { "type": "string", "enum": ["sync", "async"] },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "sync",
+            "async"
+          ]
+        },
         "unit": {
           "type": "string",
-          "enum": ["cycle", "tick"],
+          "enum": [
+            "cycle",
+            "tick"
+          ],
           "description": "Unit of `time` in each match. `cycle` in sync mode with a clock; `tick` otherwise."
         },
-        "count": { "type": "integer", "minimum": 0 },
+        "count": {
+          "type": "integer",
+          "minimum": 0
+        },
         "matches": {
           "type": "array",
-          "items": { "$ref": "#/$defs/findMatch" },
+          "items": {
+            "$ref": "#/$defs/findMatch"
+          },
           "description": "Empty when `count_only`. Contains the single match when `last_only`."
         },
         "truncated": {
           "type": "boolean",
           "description": "True when output was capped by --limit."
         },
-        "first_only": { "type": "boolean" },
-        "last_only": { "type": "boolean" },
-        "count_only": { "type": "boolean" }
+        "first_only": {
+          "type": "boolean"
+        },
+        "last_only": {
+          "type": "boolean"
+        },
+        "count_only": {
+          "type": "boolean"
+        }
       }
     },
     "statsData": {
@@ -173,75 +419,507 @@
       ],
       "additionalProperties": false,
       "properties": {
-        "simulation_ns": { "type": "integer" },
-        "total_ticks": { "type": "integer", "minimum": 0 },
+        "simulation_ns": {
+          "type": "integer"
+        },
+        "total_ticks": {
+          "type": "integer",
+          "minimum": 0
+        },
         "total_cycles": {
           "anyOf": [
-            { "type": "integer", "minimum": 0 },
-            { "type": "null" }
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
           ],
           "description": "Null when no clock was found."
         },
         "clock_period_ns": {
           "anyOf": [
-            { "type": "integer", "minimum": 0 },
-            { "type": "null" }
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "signals": {
           "type": "array",
-          "items": { "$ref": "#/$defs/statsEntry" }
+          "items": {
+            "$ref": "#/$defs/statsEntry"
+          }
         }
       }
     },
     "signalValue": {
       "type": "object",
-      "required": ["name", "value"],
+      "required": [
+        "name",
+        "value"
+      ],
       "additionalProperties": false,
       "properties": {
-        "name": { "type": "string" },
+        "name": {
+          "type": "string"
+        },
         "value": {
           "type": "string",
-          "description": "Raw cache value — no Verilog-literal prefix, no radix formatting. Hex/binary mix per cache encoding."
+          "description": "Raw cache value \u2014 no Verilog-literal prefix, no radix formatting. Hex/binary mix per cache encoding."
         }
       }
     },
     "findMatch": {
       "type": "object",
-      "required": ["time", "name", "value"],
+      "required": [
+        "time",
+        "name",
+        "value"
+      ],
       "additionalProperties": false,
       "properties": {
-        "time": { "type": "integer", "minimum": 0 },
-        "name": { "type": "string" },
-        "value": { "type": "string", "description": "Raw cache value (see signalValue.value)." }
+        "time": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "name": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string",
+          "description": "Raw cache value (see signalValue.value)."
+        }
       }
     },
     "statsEntry": {
       "type": "object",
-      "required": ["name", "width", "transitions", "toggle_pct", "value_pct", "value_hist", "time_in_state_ticks"],
+      "required": [
+        "name",
+        "width",
+        "transitions",
+        "toggle_pct",
+        "value_pct",
+        "value_hist",
+        "time_in_state_ticks",
+        "time_in_state_clocked_cycles",
+        "time_in_state_stopped_cycles"
+      ],
       "additionalProperties": false,
       "properties": {
-        "name": { "type": "string" },
-        "width": { "type": "integer", "minimum": 1 },
-        "transitions": { "type": "integer", "minimum": 0 },
-        "toggle_pct": { "type": "number" },
-        "value_pct": { "type": "number" },
+        "name": {
+          "type": "string"
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "transitions": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "toggle_pct": {
+          "type": "number"
+        },
+        "value_pct": {
+          "type": "number"
+        },
         "value_hist": {
           "type": "object",
-          "additionalProperties": { "type": "integer", "minimum": 0 },
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          },
           "description": "Map of Verilog-literal value (e.g. \"'hFF\", \"'d255\", \"'b101\") -> occurrence count. Matches the text-mode display radix per signal."
         },
         "time_in_state_ticks": {
           "type": "object",
-          "additionalProperties": { "type": "integer", "minimum": 0 },
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          },
           "description": "Map of Verilog-literal value -> tick count held. Renamed from `time_in_state` in v0.2.1 so the unit is unambiguous; pair with `time_in_state_ns` if you want nanoseconds."
         },
         "time_in_state_ns": {
-          "type": ["object", "null"],
-          "additionalProperties": { "type": "integer" },
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "type": "integer"
+          },
           "description": "Same keys as `time_in_state_ticks`, values converted to ns via the cache timescale. Null when no timescale is recorded in the VCD."
+        },
+        "time_in_state_clocked_cycles": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "time_in_state_stopped_cycles": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
         }
       }
+    },
+    "stoppedRange": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "from_cycle": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "to_cycle": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "from_cycle",
+        "to_cycle"
+      ]
+    },
+    "stopSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "stretches": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "total_cycles": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "longest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/stoppedRange"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "stretches",
+        "total_cycles",
+        "longest"
+      ]
+    },
+    "clockFinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "reason": {
+          "type": "string"
+        },
+        "tick": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "detail": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "reason",
+        "tick",
+        "detail"
+      ]
+    },
+    "clockVerdict": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "enum": [
+            "pass",
+            "warning",
+            "unavailable"
+          ]
+        },
+        "reason": {
+          "type": "string"
+        },
+        "clock": {
+          "type": "string"
+        },
+        "first_off_grid_tick": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "first_off_grid_cycle": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "findings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/clockFinding"
+          }
+        },
+        "stopped": {
+          "$ref": "#/$defs/stopSummary"
+        }
+      },
+      "required": [
+        "status",
+        "reason",
+        "clock",
+        "first_off_grid_tick",
+        "first_off_grid_cycle",
+        "findings",
+        "stopped"
+      ]
+    },
+    "signalRecord": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "value"
+            },
+            "time": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "name": {
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "time",
+            "name",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "clock_stopped"
+            },
+            "from_cycle": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "to_cycle": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "kind",
+            "from_cycle",
+            "to_cycle"
+          ]
+        }
+      ]
+    },
+    "signalData": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "enum": [
+            "sync",
+            "async"
+          ]
+        },
+        "records": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/signalRecord"
+          }
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "mode",
+        "records",
+        "truncated"
+      ]
+    },
+    "waveData": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "enum": [
+            "sync",
+            "async"
+          ]
+        },
+        "columns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "ticks": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "names": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "values": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "required": [
+        "mode",
+        "columns",
+        "ticks",
+        "names",
+        "values"
+      ]
+    },
+    "distancePair": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "from": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "to": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "elapsed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "stopped_cycles": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "from",
+        "to",
+        "elapsed",
+        "stopped_cycles"
+      ]
+    },
+    "distanceData": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "unit": {
+          "enum": [
+            "ticks",
+            "cycles"
+          ]
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "pairs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/distancePair"
+          }
+        },
+        "summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stopped_cycles": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "unit",
+        "count",
+        "pairs",
+        "summary",
+        "stopped_cycles",
+        "truncated"
+      ]
+    },
+    "overviewData": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "total_ticks": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "signal_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "period_ticks": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "first_rise_tick": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "total_ticks",
+        "signal_count",
+        "period_ticks",
+        "first_rise_tick"
+      ]
     }
   }
 }

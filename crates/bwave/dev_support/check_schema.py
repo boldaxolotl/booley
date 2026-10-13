@@ -2,8 +2,8 @@
 """Developer CI gate: validate every `bwave <cmd> --format json` payload
 against the schema baked into the binary.
 
-Runs `bwave schema` to fetch the schema, then runs the four implemented
-subcommands (`list`, `value`, `find`, `stats`) against a representative
+Runs `bwave schema` to fetch the schema, then runs the eight implemented
+JSON subcommands, including clock-grid diagnostics against a representative
 .fst fixture and validates each stdout against the schema.
 
 Exits 0 on success, 1 on any drift (schema/envelope mismatch).
@@ -18,6 +18,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 try:
@@ -88,59 +89,89 @@ def validate(validator: Draft202012Validator, command: str, payload: str) -> lis
     return msgs
 
 
+def query_cases(fixture: Path) -> list[tuple[str, list[str]]]:
+    trace = str(fixture)
+    return [
+        ("list", ["list", trace, "--format", "json"]),
+        ("value", ["value", trace, "--at", "1", "--format", "json"]),
+        ("find", ["find", trace, "*", "rising", "--format", "json"]),
+        ("stats", ["stats", trace, "--format", "json"]),
+        ("signal", ["signal", trace, "--format", "json"]),
+        ("wave", ["wave", trace, "--format", "json"]),
+        ("distance", ["distance", trace, "*", "rising", "--format", "json"]),
+        ("overview", ["overview", trace, "--format", "json"]),
+    ]
+
+
+def validate_cases(binary: str, validator: Draft202012Validator, fixture: Path) -> list[str]:
+    errors: list[str] = []
+    for name, argv in query_cases(fixture):
+        rc, stdout, stderr = run_bwave(binary, argv)
+        if rc != 0 or not stdout.strip():
+            errors.append(f"{name}: exited {rc}, stderr={stderr!r}, stdout={stdout!r}")
+            continue
+        violations = validate(validator, name, stdout)
+        errors.extend(violations)
+        if not violations:
+            print(f"  OK  {name}: {fixture.name}")
+    return errors
+
+
+def clock_fixture(binary: str, directory: Path, off_grid: bool) -> Path:
+    label = "off-grid" if off_grid else "gated"
+    vcd = directory / f"{label}.vcd"
+    edge = 56 if off_grid else 55
+    vcd.write_text(
+        "$timescale 1ns $end\n$scope module tb $end\n"
+        '$var wire 1 ! clk $end\n$var wire 1 " valid $end\n'
+        "$upscope $end\n$enddefinitions $end\n"
+        '#0\n0!\n1"\n#5\n1!\n#10\n0!\n#15\n1!\n#20\n0!\n'
+        f"#{edge}\n1!\n#60\n0!\n"
+    )
+    store = vcd.with_suffix(".fst")
+    rc, _, err = run_bwave(binary, ["build", str(vcd), "-o", str(store)])
+    if rc != 0:
+        raise RuntimeError(f"{label} build failed: {err}")
+    return store
+
+
 def main() -> int:
     repo_root = Path(__file__).resolve().parent.parent
     binary = find_binary()
     fixture = find_fixture(repo_root)
-
-    # 1) Fetch the schema from the binary itself. This is the contract.
-    rc, schema_stdout, schema_stderr = run_bwave(binary, ["schema"])
+    rc, stdout, stderr = run_bwave(binary, ["schema"])
     if rc != 0:
-        print(f"ERROR: `{binary} schema` exited {rc}\n{schema_stderr}", file=sys.stderr)
+        print(f"ERROR: schema exited {rc}: {stderr}", file=sys.stderr)
         return 1
-    try:
-        schema = json.loads(schema_stdout)
-    except json.JSONDecodeError as e:
-        print(f"ERROR: schema is not valid JSON: {e}", file=sys.stderr)
-        return 1
-
+    schema = json.loads(stdout)
+    Draft202012Validator.check_schema(schema)
     validator = Draft202012Validator(schema)
-
-    # 2) Run each implemented subcommand against the fixture and validate.
-    cases: list[tuple[str, list[str]]] = [
-        ("list", ["list", str(fixture), "--format", "json"]),
-        ("value", ["value", str(fixture), "--at", "1", "--format", "json"]),
-        ("find", ["find", str(fixture), "*", "rising", "--format", "json"]),
-        ("stats", ["stats", str(fixture), "--format", "json"]),
-    ]
-
-    all_errors: list[str] = []
-    for name, argv in cases:
-        rc, stdout, stderr = run_bwave(binary, argv)
-        if rc not in (0, 2):  # 2 = recoverable (e.g. bad --virtual)
-            all_errors.append(f"{name}: `bwave {' '.join(argv)}` exited {rc}\nstderr: {stderr}")
-            continue
-        if not stdout.strip():
-            all_errors.append(f"{name}: empty stdout (rc={rc}, stderr={stderr!r})")
-            continue
-        errs = validate(validator, name, stdout)
-        if errs:
-            all_errors.extend(errs)
-        else:
-            print(f"  OK  bwave {' '.join(argv[:2])} ...")
-
-    if all_errors:
-        print("\nFAIL: schema drift detected:", file=sys.stderr)
-        for e in all_errors:
-            print(f"  - {e}", file=sys.stderr)
-        print(
-            "\nHint: edit schema/bwave.json and/or src/output.rs to bring "
-            "them back into sync, then rerun this check.",
-            file=sys.stderr,
-        )
+    errors = validate_cases(binary, validator, fixture)
+    with tempfile.TemporaryDirectory(prefix="bwave-schema-") as directory:
+        for off_grid in [False, True]:
+            store = clock_fixture(binary, Path(directory), off_grid)
+            errors.extend(validate_cases(binary, validator, store))
+            rc, payload, stderr = run_bwave(
+                binary,
+                [
+                    "value",
+                    str(store),
+                    "--at",
+                    "4",
+                    "--sample-mode",
+                    "pre-edge",
+                    "--format",
+                    "json",
+                ],
+            )
+            if rc != 0:
+                errors.append(f"pre-edge value: {stderr}")
+            else:
+                errors.extend(validate(validator, "pre-edge value", payload))
+    if errors:
+        print("FAIL: schema drift detected:\n" + "\n".join(errors), file=sys.stderr)
         return 1
-
-    print("\nOK: all envelopes match schema.")
+    print("OK: all envelopes match schema, including gated/off-grid traces.")
     return 0
 
 

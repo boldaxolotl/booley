@@ -112,3 +112,7 @@ bwave build --input /tmp/sim.vcd -o sim.fst &
 my_simulator +vcd=/tmp/sim.vcd
 wait
 ```
+
+After conversion, `build` prints the clock verdict and clock-stop summary to
+stderr. A `warning` verdict does not fail the build: the store still serves
+`--async` queries. See `reference/sync-vs-async`.

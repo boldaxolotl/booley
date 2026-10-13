@@ -6,7 +6,7 @@
 bwave wave <FST_FILE> [-t START:END] [-s PATTERN[%RADIX] ...]
            [--async] [--clock PAT] [--reset PAT] [--with-reset]
            [--virtual "name = expr"] [--marker NAME TIME]
-           [--format text] [--limit N]
+           [--format text|json] [--limit N]
 ```
 
 ## Semantics
@@ -51,7 +51,7 @@ time  0    1000  5000
    b  0       1     2
 ```
 
-`--format json` exits with code 2: `JSON output is not implemented for wave; use find/value/stats/list`.
+`--format json` returns a structured envelope.
 
 ## Common errors
 
@@ -107,3 +107,14 @@ bwave wave sim.fst \
 ```
 
 Both definitions are evaluated, but only `stalled` is printed.
+
+## Clock-grid behavior
+
+- A clock stop collapses into one `clk stopped A:B` column. It counts as one
+  column toward `--limit` and survives `--rle`.
+- Markers inside the stop appear in that column's label.
+- Values inside the stop are hidden. Use `signal` or `--async` to see them.
+- JSON has `columns`, edge `ticks`, `names`, and row `values`. JSON columns
+  are never run-length compressed, even with `--rle`.
+
+See `reference/sync-vs-async` for the clock verdict and sampling modes.

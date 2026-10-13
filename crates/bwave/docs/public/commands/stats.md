@@ -126,3 +126,16 @@ Stats over a bounded window, e.g. a specific test phase:
 ```bash
 bwave stats sim.fst -s "*" -t 1000:5000
 ```
+
+## Clock-grid behavior
+
+- The header summarizes the clock verdict and clock stops.
+- Sync JSON adds per-value `time_in_state_clocked_cycles` and
+  `time_in_state_stopped_cycles` maps. Both are null in async mode or without
+  a clock. Text output shows the same clocked/stopped split.
+- These maps, and the sync text percentages, count grid samples in the query
+  window with both endpoints included. `total_cycles` counts whole elapsed
+  periods, so it can differ from the sample total.
+- Tick/ns occupancy stays a physical duration.
+
+See `reference/sync-vs-async` for the clock verdict and sampling modes.

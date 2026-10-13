@@ -50,7 +50,7 @@ With an explicit `VALUE` filter:
   constant  4-bit  stuck at A  (100%, 100ns)
 ```
 
-`--format json` exits with code 2: `JSON output is not implemented for stuck; use find/value/stats/list`.
+`--format json` exits with code 2: `JSON output is not implemented for stuck; use find/value/stats/list/signal/wave/distance/overview`.
 
 ## Common errors
 

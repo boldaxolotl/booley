@@ -5,7 +5,7 @@
 ```bash
 bwave signal <FST_FILE> [-s PATTERN[%RADIX] ...] [-t START:END]
             [--async] [--clock PAT] [--reset PAT] [--with-reset]
-            [--format text] [--limit N]
+            [--format text|json] [--limit N]
 ```
 
 ## Semantics
@@ -60,7 +60,7 @@ value at the window start and says so on stderr:
 `value --at 56` remains the direct way to ask that
 question, and snapshots every matching signal.
 
-`--format json` exits with code 2: `JSON output is not implemented for signal; use find/value/stats/list`.
+`--format json` returns a structured envelope.
 
 ## Common errors
 
@@ -99,3 +99,14 @@ glitches between clock edges:
 ```bash
 bwave signal sim.fst -s "*valid*" -s "*ready*" -t 0t:1000t --async
 ```
+
+## Clock-grid behavior
+
+- A clock stop prints a `# clk stopped A:B` line on **stdout**, in order with
+  the value rows. It counts toward `--limit`.
+- Changes inside the stop keep their grid-cycle numbers.
+- All other diagnostics go to stderr.
+- JSON `records` is an ordered array of `kind: value` and
+  `kind: clock_stopped` entries. Values use the selected display radix.
+
+See `reference/sync-vs-async` for the clock verdict and sampling modes.

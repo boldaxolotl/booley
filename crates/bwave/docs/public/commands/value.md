@@ -123,3 +123,13 @@ bwave value sim.fst --at 1000 \
     --virtual "stalled = valid & *busy" \
     -s "stalled"
 ```
+
+## Clock-grid behavior
+
+- A sync point inside a clock stop reports its cycle and the stop's full
+  range. JSON lists the stop in `clock_stopped`.
+- `--sample-mode pre-edge` reads just before the same edge; the cycle number
+  does not change. In JSON, `target_tick` is the edge and `sample_tick` is
+  the tick actually read.
+
+See `reference/sync-vs-async` for the clock verdict and sampling modes.
