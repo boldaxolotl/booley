@@ -793,6 +793,11 @@ def _cmd_dashboard(_args: argparse.Namespace, project_root: Path) -> int:
     return run_dashboard(project_root)
 
 
+def _goal_checkout(args: argparse.Namespace, project_root: Path) -> Path:
+    """Use explicit CLI selection while retaining ambient checkout defaults."""
+    return project_root if hasattr(args, "_cli_selection") else Path.cwd()
+
+
 def _cmd_goal(args: argparse.Namespace, _project_root: Path) -> int:
     """Show Goal status using the Booley Directory discovered for this command."""
     if args.goal_command == "status":
@@ -806,7 +811,9 @@ def _cmd_goal(args: argparse.Namespace, _project_root: Path) -> int:
         from booley.runtime.project_dir import resolve_project_dir
 
         try:
-            selection = select_status(GoalStore(resolve_project_dir(_project_root)), Path.cwd())
+            selection = select_status(
+                GoalStore(resolve_project_dir(_project_root)), _goal_checkout(args, _project_root)
+            )
             short = True if args.short else False if args.long else None
             print(
                 render_status(selection.views, short=short, project_wide=selection.project_wide)
@@ -837,7 +844,7 @@ def _abandon_goal_cli(args: argparse.Namespace, _project_root: Path) -> int:
         project_dir = resolve_project_dir(_project_root)
         result = abandon_goal(
             GoalStore(project_dir),
-            Path.cwd(),
+            _goal_checkout(args, _project_root),
             completion_environment(EntryEnvironment(project_dir)),
             record_id=args.record_id,
             operation_id=args.operation_id,
