@@ -17,11 +17,6 @@ from booley.goals.freshness import (
     stamp_goal_detail,
 )
 from booley.goals.model import GoalFamily, GoalSpec
-from booley.goals.simulation import (
-    GOAL_SUITE_DETAIL_KEY,
-    resolved_simulation_suite,
-    simulation_contract_violation,
-)
 from booley.goals.target_surface import TargetSurfaceError, target_surface_fingerprint
 from booley.runtime.project_dir import reset_cache
 
@@ -319,102 +314,6 @@ def test_review_source_stale_alone_is_stale_despite_a_fresh_receipt(
 
     assert result.stale is True
     assert result.changed_categories == ("target_surface",)
-
-
-# ---------------------------------------------------------------------------
-# Simulation suite (B9)
-# ---------------------------------------------------------------------------
-
-
-def test_resolved_suite_follows_tests_and_skips(project: Path) -> None:
-    tests = project / ".booley_project" / "tests.toml"
-    assert resolved_simulation_suite(project, "top") == ("smoke",)
-    tests.write_text('[top]\ntests = ["smoke", "regress"]\nskip = ["regress"]\n')
-    assert resolved_simulation_suite(project, "top") == ("smoke",)
-    tests.write_text('[top]\ntests = ["smoke"]\nskip = ["smoke"]\n')
-    assert resolved_simulation_suite(project, "top") == ()
-    tests.write_text("[other]\ntests = ['x']\n")
-    assert resolved_simulation_suite(project, "top") == ("default",)
-
-
-@pytest.mark.parametrize(
-    ("detail", "suite", "violation"),
-    [
-        ({"required_tests": ["smoke"], "passed_tests": ["smoke"]}, ("smoke",), ""),
-        ({"required_tests": [], "passed_tests": []}, (), "suite is empty"),
-        ({"required_tests": ["smoke"], "passed_tests": []}, ("smoke",), "did not pass smoke"),
-        ({"required_tests": ["smoke"], "passed_tests": ["smoke"]}, ("smoke", "b"), "complete"),
-        # Coverage names what it ran as selected_tests, never required_tests.
-        ({"selected_tests": ["smoke"], "passed_tests": ["smoke"]}, ("smoke",), ""),
-        ({"selected_tests": ["smoke"], "passed_tests": ["smoke"]}, ("smoke", "b"), "complete"),
-        ({"passed_tests": ["smoke"]}, ("smoke",), "does not name"),
-        ({}, ("smoke",), "does not name the tests"),
-    ],
-)
-def test_simulation_contract(detail: dict, suite: tuple[str, ...], violation: str) -> None:
-    found = simulation_contract_violation(detail, suite)
-    assert (violation in found) if violation else found == ""
-
-
-def _constant_surface(work_dir: Path, target: str | None) -> dict[str, Any]:
-    return {"digest": "constant", "files": []}
-
-
-def test_sim_required_set_change_is_stale(project: Path) -> None:
-    resolvers = GoalFreshnessResolvers(target_surface=_constant_surface)
-    detail = stamp_goal_detail(SIM_KEY, {}, work_dir=project, goal=SIM_GOAL, resolvers=resolvers)
-    entry = {"met": True, "detail": {**detail, GOAL_SUITE_DETAIL_KEY: ["smoke"]}}
-    assert _evaluate(SIM_KEY, entry, project, SIM_GOAL, resolvers=resolvers).stale is False
-
-    (project / ".booley_project" / "tests.toml").write_text(
-        '[top]\ntests = ["smoke", "regress"]\n'
-    )
-    result = _evaluate(SIM_KEY, entry, project, SIM_GOAL, resolvers=resolvers)
-
-    assert result.stale is True
-    assert "suite changed (added regress)" in result.reason
-
-
-def test_sim_evidence_without_a_recorded_suite_is_stale(project: Path) -> None:
-    entry = _met(SIM_KEY, project, SIM_GOAL)
-
-    result = _evaluate(SIM_KEY, entry, project, SIM_GOAL, resolvers=DEFAULT_RESOLVERS)
-
-    assert result.stale is True
-    assert "does not record the simulation suite" in result.reason
-
-
-def test_flow_required_suite_and_goal_suite_agree_on_durable_skips(project: Path) -> None:
-    """The Flow's ``required_tests`` and the Goal suite both exclude durable skips (B9).
-
-    The Simulation Flow takes its Required Simulation Suite from
-    ``resolve_target_test_suite(...).tests`` (runnable tests, skips removed)
-    and an ``all`` contract requires exactly that set; the Goal suite resolves
-    the same way, so a real pass on a Target with a skipped test is met.
-    """
-    from booley.config.project_config import load_test_configuration_field
-    from booley.criteria.simulation import resolve_simulation_criterion_contract
-    from booley.flows.target_test_suite import resolve_target_test_suite
-
-    (project / ".booley_project" / "tests.toml").write_text(
-        '[top]\ntests = ["smoke", "hang"]\nskip = ["hang"]\n'
-    )
-    suite = resolve_target_test_suite(
-        "top",
-        test_names=load_test_configuration_field(project, "tests"),
-        test_skips=load_test_configuration_field(project, "skip"),
-    )
-    registered = {name for name in suite.tests if name is not None}
-    contract = resolve_simulation_criterion_contract({}, registered, registered)
-    flow_detail = {"required_tests": sorted(contract.required_tests), "passed_tests": ["smoke"]}
-
-    goal_suite = resolved_simulation_suite(project, "top")
-
-    assert goal_suite == ("smoke",)
-    assert flow_detail["required_tests"] == ["smoke"]
-    assert simulation_contract_violation(flow_detail, goal_suite) == ""
-    with_skipped = {"required_tests": ["hang", "smoke"], "passed_tests": ["smoke"]}
-    assert "complete resolved suite" in simulation_contract_violation(with_skipped, goal_suite)
 
 
 @pytest.mark.parametrize("suffix", [".hex", ".py", ".tcl", ".sdc", ".toml"])

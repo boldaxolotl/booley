@@ -96,7 +96,7 @@ This is the identity half of the Booley Flow contract, and it matters for two re
 
 Because Targets and tests are data, not code, the same names mean the same thing to the Developer Agent, every Specialist, the Booley Flows, and you, across every run.
 
-The same model covers **cocotb (Python) testbenches**: a Target whose flow options declare a `cocotb_module` lists its `@cocotb.test()` function names in `tests.toml`, and `sim` runs the selected set batched in one sim process, taking per-test verdicts from cocotb's `results.xml`; `--test` filters the set the same way, and `sim_pass_{target}` keeps its meaning.
+The same model covers **cocotb (Python) testbenches**: a Target whose flow options declare a `cocotb_module` lists its `@cocotb.test()` function names in `tests.toml`, and `sim` runs the selected set batched in one sim process, taking per-test verdicts from cocotb's `results.xml`; `--test` filters the set the same way, and `SIM:{target}` keeps its meaning.
 
 ## Evidence-backed Goals
 
@@ -138,7 +138,7 @@ Code review is split into focus categories with severity-stratified issue tracki
 - Findings are classified as CRITICAL, MAJOR, or MINOR. A `_clean` review requires every current finding, including MINOR, to be verified fixed or explicitly waived with user-visible justification. A terminal `_done` review reports findings without triggering fixes; advisory findings remain visible at Finish.
 - Testbench code gets its own separate review.
 
-The shipped reviewer is read-only: it reports issues by severity, and the Developer Agent resolves findings for `_clean` reviews. See [USAGE.md: RTL Code Review](USAGE.md#rtl-code-review) for the per-category criteria.
+The shipped reviewer is read-only: it reports issues by severity, and the Developer Agent resolves findings for reviews requiring a clean verdict. See [USAGE.md: reviewer](USAGE.md#reviewer) for the supported review kinds.
 
 ## Mutation Testing
 

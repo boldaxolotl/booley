@@ -181,7 +181,7 @@ def test_v2_campaign_discard_is_caught_once_at_completion(endpoint_env: SimpleNa
 
     assert result.exit_code == 0
     assert result.outcome.report_text.startswith(
-        f"evidence discarded: Goal {LINT_KEY} changed during the run"
+        "evidence discarded: Goal LINT:top (no unwaived findings) changed during the run"
     )
     assert "completion_error" not in result.outcome.detail
     assert tree_digest(_record_root(endpoint_env)) == before

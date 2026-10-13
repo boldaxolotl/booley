@@ -171,3 +171,13 @@ def test_explicit_older_schema_dialect_is_respected() -> None:
     payload = asyncio.run(application.call_tool("echo", {"text": "valid"}))
 
     assert payload.is_error is False
+
+
+@pytest.mark.parametrize(
+    "alternatives", [[False, False], [{"properties": {"family": False}}, False]]
+)
+def test_boolean_schema_alternatives_return_argument_errors(alternatives):
+    application = _application([_definition(schema={"oneOf": alternatives}, is_custom=True)])
+    payload = asyncio.run(application.call_tool("echo", {"family": "invalid"}))
+    assert payload.is_error
+    assert payload.content[0].text.startswith("Invalid tool arguments at $:")

@@ -2,8 +2,7 @@
 
 The creator proposes one exact source replacement per mutation.  This module
 owns the mutation seam: it validates those proposals against the pristine
-source snapshot, applies one proposal at a time, and restores the original
-bytes after the caller builds or simulates the variant.
+source snapshot and applies one proposal only to private compiler source copies.
 
 No SystemVerilog or Verilog structure is inferred here.  Syntax and language
 semantics belong to the project's configured compiler; this module deals only
@@ -12,9 +11,8 @@ in byte-exact source spans.
 
 from __future__ import annotations
 
-import contextlib
 import hashlib
-from collections.abc import Iterator, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -55,7 +53,7 @@ class MutationVariantPlan:
     * every proposal names an allowed scope file and a unique positive index;
     * ``original_code`` occurs exactly once on the declared starting line;
     * original and replacement text are non-empty and different;
-    * applying a variant changes one exact span and always restores the file.
+    * applying a variant changes one exact span without writing live source.
     """
 
     def __init__(
@@ -145,24 +143,39 @@ class MutationVariantPlan:
     def mutations(self) -> tuple[ResolvedMutation, ...]:
         return self._mutations
 
-    @contextlib.contextmanager
-    def applied(self, index: int) -> Iterator[ResolvedMutation]:
-        """Apply exactly one mutation for the duration of the context."""
+    def materialize(self, index: int, paths: Sequence[Path], build_root: Path) -> None:
+        """Replace one span only in verified independent private source copies."""
         mutation = self._by_index[index]
-        path = self._work_dir / mutation.file
         pristine = self._originals[mutation.file]
+        destinations = tuple(dict.fromkeys(path.resolve() for path in paths))
+        if not destinations:
+            raise MutationVariantError("no private compiler source copies")
+        for path in destinations:
+            self._validate_destination(path, build_root)
+            if path.read_bytes() != pristine:
+                raise MutationVariantError(
+                    f"private source changed after proposal resolution: {path}"
+                )
         variant = _replace_exact(pristine, mutation)
-        try:
+        for path in destinations:
             path.write_bytes(variant)
-            yield mutation
-        finally:
-            path.write_bytes(pristine)
+
+    def _validate_destination(self, path: Path, build_root: Path) -> None:
+        if not path.resolve().is_relative_to(build_root.resolve()):
+            raise MutationVariantError(f"mutation destination escapes private build: {path}")
+        for relative in self._originals:
+            source = self._work_dir / relative
+            if path.resolve() == source.resolve() or (path.exists() and path.samefile(source)):
+                raise MutationVariantError(f"mutation destination aliases live source: {path}")
+        if path.exists() and path.stat().st_nlink != 1:
+            raise MutationVariantError(f"mutation destination is hardlinked: {path}")
 
     def write_variants(self, destination: Path) -> dict[int, Path]:
         """Write one inspectable mutated source per proposal."""
         written: dict[int, Path] = {}
         for mutation in self._mutations:
             path = destination / f"mutant_{mutation.index}" / mutation.file
+            self._validate_destination(path, destination)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(_replace_exact(self._originals[mutation.file], mutation))
             written[mutation.index] = path

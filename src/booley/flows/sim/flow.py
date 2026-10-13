@@ -36,6 +36,12 @@ from booley.flows.cli_help import CliHelp
 from booley.flows.display import format_flow_display_label
 from booley.flows.eda_failures import find_missing_executable, new_attempt_token
 from booley.flows.endpoint_admission import AdmissionContext
+from booley.flows.execution_persistence import (
+    frozen_test_runs_for,
+    register_campaign_for,
+    wants_campaigns,
+)
+from booley.flows.frozen_test_runs import FrozenTestRuns, resolve_goal_test_runs
 from booley.flows.plan import (
     CommandPlan,
     FlowPlan,
@@ -89,6 +95,7 @@ from booley.flows.sim.live_progress import (
 from booley.flows.sim.request import SimRequest
 from booley.flows.sim.result import parse_summary_line
 from booley.flows.sim.run_guard import DEFAULT_SIM_TIME_GRACE_S
+from booley.flows.sim.unpublished_results import started_coverage_campaign
 from booley.flows.sim.verilator_coverage import SimulationExecutionPort
 from booley.flows.target_test_plan import (
     TargetTestPlan,
@@ -177,6 +184,7 @@ from .campaign import (
     build_artifact_reference,
     encode_artifact_reference,
     encode_simulation_campaign_manifest,
+    started_campaign,
     validate_resume_manifest,
 )
 from .campaign.codec import MANIFEST_MAX_BYTES
@@ -229,7 +237,6 @@ from .test_run_invocation import (
     BaselineLink,
     BaselineRefusal,
     BaselineRuns,
-    EvidenceGuard,
     TestRunInvocation,
     baseline_refusal_key,
     decide_baseline_runs,
@@ -1018,20 +1025,89 @@ def _campaign_report_detail(
     return detail
 
 
-def _diagnostic_failures(detail: Mapping[str, object]) -> list[str]:
-    """Failed Test Runs of every campaign in *detail*, as ``target: test run``."""
+def _diagnostic_test_runs(
+    detail: Mapping[str, object],
+    frozen: FrozenTestRuns,
+    names: Callable[[str], Collection[str]],
+) -> tuple[list[str], list[str]]:
+    """Test Runs of *detail*'s campaigns no Goal requires, and the failed ones among them.
+
+    Both as ``target: test run``. *names* gives every name of a campaign's
+    Target (selector and identity): a Goal may be written with either.
+    """
     campaigns = detail.get("campaigns")
     if not isinstance(campaigns, Mapping):
-        return []
+        return [], []
+    diagnostic: list[str] = []
     failures: list[str] = []
     for selector, campaign in campaigns.items():
         rows = campaign.get("test_runs", ()) if isinstance(campaign, Mapping) else ()
-        failures.extend(
-            f"{selector}: {row['name']}"
-            for row in rows
-            if isinstance(row, Mapping) and row.get("grade") == "fail"
+        goals = frozen.of_target(names(str(selector)))
+        for row in rows:
+            if not isinstance(row, Mapping) or any(
+                goal.requires(row.get("name"), row.get("fingerprint")) for goal in goals
+            ):
+                continue
+            diagnostic.append(f"{selector}: {row['name']}")
+            if row.get("grade") == "fail":
+                failures.append(f"{selector}: {row['name']}")
+    return diagnostic, failures
+
+
+def _with_frozen_runs_of_a_diagnostic_run(
+    result: EndpointOutcome, frozen: FrozenTestRuns, names: Callable[[str], Collection[str]]
+) -> EndpointOutcome:
+    """Say which Goals' frozen Test Runs a ``--diagnostic`` run executed, and which failed.
+
+    The run records nothing; the report must not let that pass unnoticed
+    when what ran is exactly what a Goal is judged by.
+    """
+    campaigns = result.detail.get("campaigns")
+    ran: dict[str, list[str]] = {}
+    failed: dict[str, list[str]] = {}
+    for selector, campaign in campaigns.items() if isinstance(campaigns, Mapping) else ():
+        rows = campaign.get("test_runs", ()) if isinstance(campaign, Mapping) else ()
+        for goal in frozen.of_target(names(str(selector))):
+            for row in goal.matching([row for row in rows if isinstance(row, Mapping)]):
+                ran.setdefault(goal.key, []).append(str(row["name"]))
+                if row.get("grade") == "fail":
+                    failed.setdefault(goal.key, []).append(str(row["name"]))
+    if not ran:
+        return result
+    result.detail["diagnostic_test_runs"] = {"goal_frozen_runs": ran, "goal_failures": failed}
+    lines = ["Diagnostic run: these frozen Test Runs of Goals ran and nothing was recorded:"]
+    lines += [f"  {key}: {', '.join(runs)}" for key, runs in ran.items()]
+    if failed:
+        lines.append("Diagnostic failures of Goals' frozen Test Runs (not recorded):")
+        lines += [f"  {key}: {', '.join(runs)}" for key, runs in failed.items()]
+    note = "\n".join(lines)
+    result.report_text = f"{result.report_text}\n{note}" if result.report_text else note
+    return result
+
+
+def _diagnostic_test_run_notes(
+    fresh: Sequence[str], diagnostic: Sequence[str], failures: Sequence[str]
+) -> list[str]:
+    """The report lines about Test Runs that are evidence for no Goal."""
+    notes: list[str] = []
+    if fresh:
+        notes.append(
+            "Diagnostic: no Goal names these multi-seed Test Runs with this seed count "
+            f"({', '.join(fresh[:8])}); their seeds are new and they record no Goal evidence."
         )
-    return failures
+    if diagnostic:
+        shown = ", ".join(diagnostic[:8])
+        more = f", and {len(diagnostic) - 8} more" if len(diagnostic) > 8 else ""
+        notes.append(
+            f"Diagnostic: these Test Runs match no Goal and record no Goal evidence ({shown}{more})."
+        )
+    if failures:
+        # These failures block no Goal: say so apart from the Target lines.
+        notes.append("Diagnostic failures (they block no Goal):")
+        notes.extend(f"  {name}" for name in failures[:TEST_RUN_ROW_LIMIT])
+        if len(failures) > TEST_RUN_ROW_LIMIT:
+            notes.append(f"  ... and {len(failures) - TEST_RUN_ROW_LIMIT} more")
+    return notes
 
 
 def _campaign_test_runs(outcome: CampaignOutcome) -> list[dict[str, object]]:
@@ -1204,24 +1280,6 @@ def _direct_coverage_pre_sim_lines(target: str, tests: object) -> list[str]:
         name = (several and test.get("test_run")) or test.get("name")
         lines.append(_pre_sim_report_line(target, name, cast("Mapping[str, object]", pre_sim)))
     return lines
-
-
-def _evidence_guard_notes(guard: EvidenceGuard) -> list[str]:
-    """The report lines that say why a guarded invocation records no evidence."""
-    notes: list[str] = []
-    names = guard.other_test_runs
-    if names:
-        shown = ", ".join(names[:8]) + (f", and {len(names) - 8} more" if len(names) > 8 else "")
-        notes.append(
-            "Diagnostic: this run includes Test Runs other than the default Test Variant "
-            f"at the Default Seed ({shown}); it records no Goal evidence."
-        )
-    if guard.unresolved:
-        notes.append(
-            "Diagnostic: the Test Runs of this run could not be resolved "
-            f"({'; '.join(guard.unresolved[:8])}); it records no Goal evidence."
-        )
-    return notes
 
 
 def _manifest_run_groups(
@@ -2566,7 +2624,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         """Start this invocation's Test Run decisions afresh.
 
         Resolved Test Runs (drawn seeds included), planned groups, baseline
-        runs and the evidence guard belong to one request. A reused Flow
+        runs and the Goals' frozen Test Runs belong to one request. A reused Flow
         object must resolve the next request itself, never reuse these.
         """
         self._test_runs = TestRunInvocation()
@@ -2694,11 +2752,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 )
                 if selection_error is not None:
                     return selection_error
-                self._enforce_evidence_guard(
-                    self._request_evidence_guard(list(selected_targets), test_names_map)
-                )
             else:
-                self._enforce_evidence_guard(self._resume_evidence_guard(resume.manifest))
                 resume_error = self._resume_coverage_preflight_if_coverage(resume)
                 if resume_error is not None:
                     return resume_error
@@ -2810,7 +2864,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         """Run one immutable preflight with its explicitly borrowed admission."""
         self._current_published_pre_sim_keys: set[tuple[str, str, str, int]] = set()
         if prepared.resume is not None:
-            result = self._with_test_run_guard_note(
+            result = self._with_diagnostic_test_run_note(
                 self._run_campaign_resume(prepared.resume, admission)
             )
             return self._attach_published_pre_sim(result, prepared.resume.path)
@@ -2821,7 +2875,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         )
         result.detail["mode"] = self._mode.value
         return self._attach_published_pre_sim(
-            self._with_baseline_refusal_note(self._with_test_run_guard_note(result))
+            self._with_baseline_refusal_note(self._with_diagnostic_test_run_note(result))
         )
 
     def _record_pre_sim_firing(self, key: tuple[str, str, str, int]) -> None:
@@ -3159,10 +3213,6 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         plan_error = self._validate_test_plans(targets, test_names_map)
         if plan_error is not None:
             return plan_error
-        if not campaign_prepared:
-            # The campaign preflight already decided and applied the guard.
-            self._enforce_evidence_guard(self._request_evidence_guard(targets, test_names_map))
-
         runnable_error = self._validate_runnable_tests(targets, test_names_map)
         if runnable_error is not None:
             return runnable_error
@@ -3451,7 +3501,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             else self._run_selected_mode()
         )
         result.detail["mode"] = self._mode.value
-        return self._with_baseline_refusal_note(self._with_test_run_guard_note(result))
+        return self._with_baseline_refusal_note(self._with_diagnostic_test_run_note(result))
 
     def _run_campaign_resume(
         self, validated: ValidatedResumeManifest, admission: object | None
@@ -3900,7 +3950,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
     def _resume_coverage_prepared(self, validated: ValidatedResumeManifest) -> tuple[Any, Any]:
         """Run the shared coverage preflight for the manifest's frozen coverage choice."""
         from booley.criteria.state import DevelopmentState
-        from booley.flows.sim.coverage_flow_context import coverage_project_context
+        from booley.flows.sim.coverage_flow_context import coverage_context_for_execution
         from booley.flows.sim.coverage_invocation import (
             CoverageInvocationRequest,
             prepare_coverage_invocation,
@@ -3911,11 +3961,12 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
         names = cast(tuple[str, ...], cast(Mapping[str, object], items[0]["selection"])["names"])
         workload = cast(Mapping[str, object], manifest.document["workload"])
-        context = coverage_project_context(
+        context = coverage_context_for_execution(
             self.args.work_dir,
             DevelopmentState.load(self.args.state_file)
             if self.args.state_file
             else DevelopmentState(),
+            recorder=self.context._acceptance_recorder,
         )
         runs = (
             tuple(
@@ -3986,7 +4037,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
 
     def _prepare_coverage(self) -> EndpointOutcome | None:
         from booley.criteria.state import DevelopmentState
-        from booley.flows.sim.coverage_flow_context import coverage_project_context
+        from booley.flows.sim.coverage_flow_context import coverage_context_for_execution
         from booley.flows.sim.coverage_invocation import (
             CoverageInvocationRequest,
             prepare_coverage_invocation,
@@ -3997,13 +4048,14 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         if not self._flow_enabled():
             return EndpointOutcome(exit_code=2, report_text="sim is disabled")
         try:
-            context = coverage_project_context(
+            context = coverage_context_for_execution(
                 self.args.work_dir,
                 (
                     DevelopmentState.load(self.args.state_file)
                     if self.args.state_file
                     else DevelopmentState()
                 ),
+                recorder=self.context._acceptance_recorder,
             )
             selection = self._selected_target_selection()
             prepared = prepare_coverage_invocation(
@@ -4045,11 +4097,6 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         return resolved
 
     def _run_coverage(self) -> EndpointOutcome:
-        self._enforce_evidence_guard(
-            self._request_evidence_guard(
-                self._requested_targets(), _get_test_names(self.args.work_dir)
-            )
-        )
         error = self._prepare_coverage()
         if error is not None:
             return error
@@ -4350,11 +4397,26 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             result.detail["progress_error"] = str(exc)
             return result
 
+    def _register_coverage_campaign(self, target: CoverageTargetPlan, invocation: Path) -> None:
+        """Tell the run's Goals of a Coverage Campaign collected on its own, before it runs.
+
+        Like a Simulation Campaign (:meth:`_manifest_publisher`): if the
+        campaign is published but its acceptance never is, its Test Run
+        outcomes can still be accounted for.
+        """
+        adapter = getattr(self.context, "execution_adapter", None)
+        if not wants_campaigns(adapter) or self.args.diagnostic:
+            return
+        root = target_report_directory(invocation, target.handle.selector)
+        names = (target.handle.selector, target.handle.identity)
+        register_campaign_for(adapter, started_coverage_campaign(root, names))
+
     def _execute_coverage_target(
         self, target: CoverageTargetPlan, progress: CoverageProgress, started_at: str
     ) -> CoverageTargetOutcome:
         from booley.flows.sim.coverage_flow_context import coverage_acceptance
 
+        self._register_coverage_campaign(target, progress.invocation_dir)
         plan = replace(
             target,
             invocation_dir=progress.invocation_dir,
@@ -4362,7 +4424,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             acceptance=coverage_acceptance(
                 self.state,
                 self.context._acceptance_recorder,
-                diagnostic=self.context.records_no_evidence,
+                diagnostic=self.args.diagnostic,
                 observer=self.context.record_report_criteria,
                 on_discard=self.context.discard_evidence,
             ),
@@ -4647,6 +4709,12 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             if path in published:
                 return
             published.append(path)
+            adapter = getattr(self.context, "execution_adapter", None)
+            diagnostic = getattr(getattr(self.context, "_args", None), "diagnostic", False)
+            if wants_campaigns(adapter) and diagnostic is not True:
+                # Before any of its work runs: a campaign that never returns an
+                # outcome still leaves results its Goals must account for.
+                register_campaign_for(adapter, started_campaign(path))
             if getattr(self.context, "_console_publication_requested", False):
                 with suppress(OSError, ValueError):
                     print(f"campaign manifest: {path.resolve()}", file=sys.stderr, flush=True)
@@ -5231,7 +5299,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             timeout_seconds=self._effective_timeout_ms() / 1000,
             build_timeout_seconds=self._effective_build_timeout_ms() / 1000,
             no_kill=self.args.no_kill,
-            diagnostic=self.context.records_no_evidence,
+            diagnostic=self.args.diagnostic,
             result_verbosity=self.args.result_verbosity,
         )
 
@@ -6214,11 +6282,45 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             },
         )
 
+    def _record_test_goal_criteria(self, target_result: TargetResult) -> None:
+        """Record this Target's Test Runs for the Goals that name Test Runs (ADR 0072).
+
+        The Target Goal is recorded under ``sim_pass_<target>`` by
+        :meth:`_record_sim_criterion`, and a Cycle Count Goal whose frozen run
+        ran by :meth:`_record_cycle_count_criteria`. Every other Goal with a
+        graded matching run gets that run's outcome here: a Goal that names
+        a selector as its verdict, a coverage Goal as outcomes only (this
+        path measures no coverage). Without a matching run this invocation
+        is diagnostic for the Goal.
+        """
+        frozen = self._frozen_test_runs()
+        if frozen is None or target_result.inconclusive:
+            return
+        rows = _test_run_rows(target_result.tests)
+        for goal in frozen.of_target(self._target_names(target_result.target)):
+            matched = goal.matching(rows)
+            graded = any(row["grade"] in {"pass", "fail"} for row in matched)
+            if goal.kind == "cycle_count" or (goal.suite and goal.kind == "simulation"):
+                continue
+            if not graded:
+                continue
+            passed = sum(row["grade"] == "pass" for row in matched)
+            self.set_criterion(
+                goal.key,
+                goal.own_verdict(matched),
+                source_target=target_result.target,
+                detail={
+                    "mode": self._mode.value,
+                    "tests_passed": passed,
+                    "tests_total": len(matched),
+                    **goal.outcomes_detail(matched),
+                },
+            )
+
     def _record_cycle_count_criteria(self, target_result: TargetResult) -> None:
         """Grade every declared Criterion bound to this Target and named test."""
         if self.args.state_file is None:
             return
-        tests = {test.name: test for test in target_result.tests}
         for key, entry in self.state.criteria.items():
             params = entry.params or {}
             if not key.startswith("cycle_count_") or not criterion_matches_target(
@@ -6228,30 +6330,58 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             ):
                 continue
             test_name = params.get("test")
-            current = tests.get(test_name) if isinstance(test_name, str) else None
-            relative = has_relative_threshold(params)
-            baseline = (
-                self._baseline_cycle_test(target_result, params, current) if relative else None
-            )
-            met, reason = _admissible_cycle_evidence(current, "current")
-            if met and relative:
-                met, reason = _admissible_cycle_evidence(baseline, "baseline")
-            detail = self._direct_cycle_detail(target_result, test_name, current, baseline)
-            if baseline is None and not relative:
-                detail["baseline_observation"] = "not_required"
-            refusal = self._baseline_refusal_for(target_result, test_name, current)
-            if relative and baseline is None and refusal is not None:
-                # The comparison could not be made at all: say why, by name.
-                detail["baseline_observation"] = "inapplicable"
-                met, reason = False, (reason if reason.startswith("current") else refusal)
-            if reason:
-                detail["reason"] = reason
-            self.set_criterion(
-                key,
-                met,
-                source_target=target_result.target,
-                detail=detail,
-            )
+            judged, current = self._cycle_observation(key, test_name, target_result)
+            if judged:
+                self._record_cycle_count_criterion(key, params, target_result, current)
+
+    def _cycle_observation(
+        self, key: str, test_name: object, target_result: TargetResult
+    ) -> tuple[bool, TestResult | None]:
+        """Whether Cycle Count Criterion *key* is graded on this Target, and from which result.
+
+        Outside Goal Mode a Criterion names a Test and is always graded: from
+        that Test's result, or as missing when the Test did not run. Inside
+        Goal Mode a Goal requires one frozen Test Run (ADR 0072): only the
+        result of that run, by resolved name and fingerprint, is its
+        observation. Another Test Run of the same Test is evidence of
+        nothing for the Goal, which then is not graded at all.
+        """
+        frozen = self._frozen_test_runs()
+        if frozen is None:
+            named = [test for test in target_result.tests if test.name == test_name]
+            return True, (named[-1] if named else None)
+        goal = next((item for item in frozen.goals if item.key == key), None)
+        for test in target_result.tests if goal is not None else ():
+            run = test.test_run
+            if run is not None and goal is not None and goal.requires(run.name, run.fingerprint):
+                return True, test
+        return False, None
+
+    def _record_cycle_count_criterion(
+        self,
+        key: str,
+        params: dict[str, Any],
+        target_result: TargetResult,
+        current: TestResult | None,
+    ) -> None:
+        """Grade Cycle Count Criterion *key* from *current* and its baseline observation."""
+        test_name = params.get("test")
+        relative = has_relative_threshold(params)
+        baseline = self._baseline_cycle_test(target_result, params, current) if relative else None
+        met, reason = _admissible_cycle_evidence(current, "current")
+        if met and relative:
+            met, reason = _admissible_cycle_evidence(baseline, "baseline")
+        detail = self._direct_cycle_detail(target_result, test_name, current, baseline)
+        if baseline is None and not relative:
+            detail["baseline_observation"] = "not_required"
+        refusal = self._baseline_refusal_for(target_result, test_name, current)
+        if relative and baseline is None and refusal is not None:
+            # The comparison could not be made at all: say why, by name.
+            detail["baseline_observation"] = "inapplicable"
+            met, reason = False, (reason if reason.startswith("current") else refusal)
+        if reason:
+            detail["reason"] = reason
+        self.set_criterion(key, met, source_target=target_result.target, detail=detail)
 
     def _direct_cycle_detail(
         self,
@@ -6935,98 +7065,48 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             try:
                 self._resolve_test_runs(target, test_names_map)
             except fusesoc_registry.FuseSocError:
-                # Target resolution reports its own error on the run path, and
-                # the evidence guard withholds evidence for a Target whose
-                # Test Runs did not resolve (test_interim_goal_guard).
+                # Target resolution reports its own error on the run path.
                 continue
             except ValueError as exc:
                 return EndpointOutcome(exit_code=EXIT_ERROR, report_text=f"sim: {exc}")
         return None
 
-    def _request_evidence_guard(
-        self, targets: Sequence[str], test_names_map: Mapping[str, list[str]]
-    ) -> EvidenceGuard:
-        """Decide whether this request's Test Runs may record Goal evidence.
+    def _frozen_test_runs(self) -> FrozenTestRuns | None:
+        """The Test Runs this run's Goals are frozen to; ``None`` outside Goal Mode.
 
-        INTERIM (#1233 stage S2; removed by stage S3); see
-        :class:`EvidenceGuard`. Decides only: nothing is changed here. A
-        Target whose Test Runs do not resolve fails closed, because nothing
-        shows that it runs defaults.
+        Read once per invocation: what the invocation runs and what its
+        report calls diagnostic come from one reading.
         """
-        other: list[str] = []
-        unresolved: list[str] = []
-        tests: list[str] = []
-        for target in targets:
-            try:
-                plan = self._registered_test_plan(target, test_names_map)
-                runs = self._resolve_test_runs(target, test_names_map)
-            except (fusesoc_registry.FuseSocError, ValueError) as exc:
-                unresolved.append(f"{target}: {exc}")
-                continue
-            other.extend(f"{target}: {run.name}" for run in runs if not plan.is_default_run(run))
-            tests.extend(run.test for run in runs if run.test is not None)
-        return EvidenceGuard(tuple(other), tuple(unresolved), tuple(dict.fromkeys(tests)))
+        if not self._test_runs.frozen:
+            self._test_runs.frozen = (frozen_test_runs_for(self.context.execution_adapter),)
+        return self._test_runs.frozen[0]
 
-    def _resume_evidence_guard(self, manifest: SimulationCampaignManifest) -> EvidenceGuard:
-        """Decide whether a resumed campaign's frozen Test Runs may record evidence.
+    def _with_diagnostic_test_run_note(self, result: EndpointOutcome) -> EndpointOutcome:
+        """Name the Test Runs of this invocation that are evidence for no Goal (ADR 0072).
 
-        INTERIM (#1233 stage S2; removed by stage S3), with
-        :meth:`_request_evidence_guard`. A resumed campaign runs the Test
-        Runs its manifest froze, not a request, so the guard reads them there.
-        When the Target's plan cannot be built, no run can be shown to be a
-        default and the campaign records no evidence.
+        Inside Goal Mode a Test Run is evidence only by matching a frozen Test
+        Run of a Goal. Every other Test Run is diagnostic: it is reported, and
+        a failing one prominently, but it blocks no Goal.
         """
-        try:
-            runs = [run for group in _manifest_run_groups(manifest) for run in group]
-        except ValueError:
-            # Predates recorded Test Runs. Resume refuses such a manifest on
-            # its own (test_campaign_test_runs), so nothing runs to guard.
-            return EvidenceGuard()
-        selector = str(cast(Mapping[str, object], manifest.document["target"])["selector"])
-        try:
-            plan = self._target_test_plan(selector)
-        except (fusesoc_registry.FuseSocError, ValueError) as exc:
-            return EvidenceGuard(unresolved=(f"{selector}: {exc}",))
-        self._test_runs.default_seeds.setdefault(selector, plan.default_seed)
-        other = tuple(f"{selector}: {run.name}" for run in runs if not plan.is_default_run(run))
-        return EvidenceGuard(other_test_runs=other)
-
-    def _enforce_evidence_guard(self, guard: EvidenceGuard) -> None:
-        """Apply the guard's decision to this invocation.
-
-        INTERIM (#1233 stage S2; removed by stage S3). A guarded invocation
-        withholds its evidence; that is not ``--diagnostic`` and grants none
-        of its privileges. An invocation of default Test Runs only keeps
-        today's evidence, with ``--test`` reduced to the bare Test names every
-        evidence consumer already matches on.
-        """
-        self._test_runs.guard = guard
-        if guard.withholds_evidence:
-            self.context.withhold_evidence()
-        elif guard.tests and self.args.test:
-            self.args.test = guard.tests
-            self.args.seed = None
-
-    def _with_test_run_guard_note(self, result: EndpointOutcome) -> EndpointOutcome:
-        """Say in the report that the interim Goal guard withheld the run's evidence."""
-        guard = self._test_runs.guard
-        if not guard.withholds_evidence:
+        frozen = self._frozen_test_runs()
+        if frozen is None:
             return result
-        result.detail["test_run_goal_guard"] = {
-            "diagnostic": True,
-            "test_runs": list(guard.other_test_runs),
-            **({"unresolved": list(guard.unresolved)} if guard.unresolved else {}),
+        if self.args.diagnostic:
+            return _with_frozen_runs_of_a_diagnostic_run(result, frozen, self._target_names)
+        fresh = [
+            f"{target}: {selector}"
+            for target, selectors in self._test_runs.fresh_seed_selectors.items()
+            for selector in selectors
+        ]
+        diagnostic, failures = _diagnostic_test_runs(result.detail, frozen, self._target_names)
+        if not (fresh or diagnostic):
+            return result
+        result.detail["diagnostic_test_runs"] = {
+            "test_runs": diagnostic,
+            "failures": failures,
+            "fresh_seed_selectors": fresh,
         }
-        notes = _evidence_guard_notes(guard)
-        failures = _diagnostic_failures(result.detail)
-        if failures:
-            # These failures block no Goal: say so apart from the Target lines.
-            result.detail["test_run_goal_guard"]["diagnostic_failures"] = failures
-            notes.append("Diagnostic failures (recorded as no Goal evidence):")
-            notes.extend(f"  {name}" for name in failures[:TEST_RUN_ROW_LIMIT])
-            if len(failures) > TEST_RUN_ROW_LIMIT:
-                notes.append(f"  ... and {len(failures) - TEST_RUN_ROW_LIMIT} more")
-        note = "\n".join(notes)
+        note = "\n".join(_diagnostic_test_run_notes(fresh, diagnostic, failures))
         result.report_text = f"{result.report_text}\n{note}" if result.report_text else note
         return result
 
@@ -7111,11 +7191,34 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         if key not in cache:
             plan = self._registered_test_plan(target, test_names_map)
             self._test_runs.default_seeds.setdefault(target, plan.default_seed)
-            cache[key] = plan.resolve(
-                tuple(self.args.test) if self.args.test else None,
-                seed=getattr(self.args, "seed", None),
-            )
+            cache[key] = self._plan_test_runs(plan, target)
         return cache[key]
+
+    def _plan_test_runs(self, plan: TargetTestPlan, target: str) -> tuple[TestRun, ...]:
+        """Resolve this request on *plan*; inside Goal Mode from the frozen Test Runs.
+
+        A request with ``--seed`` names its own seeds and always resolves from
+        the current ``tests.toml``. Without it, a Target run without ``--test``
+        runs the frozen Test Runs of its Target Goal, and ``test@xN`` runs the
+        frozen seeds of the Goal with that Target, Test Variant and N; a
+        ``test@xN`` no Goal names draws new seeds and is reported diagnostic.
+        """
+        selectors = tuple(self.args.test) if self.args.test else None
+        seed = getattr(self.args, "seed", None)
+        frozen = self._frozen_test_runs()
+        if frozen is None or seed is not None:
+            return plan.resolve(selectors, seed=seed)
+        runs, fresh = resolve_goal_test_runs(plan, selectors, frozen, self._target_names(target))
+        if fresh:
+            self._test_runs.fresh_seed_selectors[target] = fresh
+        return runs
+
+    def _target_names(self, target: str) -> set[str]:
+        """What a Goal may call *target*: its selector, and its identity when it resolves."""
+        try:
+            return {target, self._target_handle(target).identity}
+        except fusesoc_registry.FuseSocError:
+            return {target}
 
     def _registered_test_plan(
         self, target: str, test_names_map: Mapping[str, list[str]]
@@ -7266,6 +7369,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         self._write_target_report(result, complete=False)
         self._record_elab_criterion(result)
         self._record_sim_criterion(result)
+        self._record_test_goal_criteria(result)
         self._record_cycle_count_criteria(result)
         if self.state._file_path is not None:
             self.state.save()

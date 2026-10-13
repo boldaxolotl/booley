@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from booley.criteria.categories import verification_fingerprint_categories
 from booley.criteria.state import CriterionChange
-from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
+from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY, SOURCE_INVALIDATED_REASON
 from booley.flows.criterion_freshness import build_criterion_freshness
 from booley.flows.endpoint_diff import (
     _classify_files,
@@ -19,7 +19,11 @@ from booley.flows.endpoint_events import (
     _emit_criteria_update,
 )
 from booley.flows.endpoint_session import PreparedExecution
-from booley.flows.execution_persistence import EvidenceDiscarded, criterion_source_fingerprint_for
+from booley.flows.execution_persistence import (
+    EvidenceDiscarded,
+    criterion_source_fingerprint_for,
+    execution_goal_name,
+)
 from booley.fusesoc.fusesoc_registry import FuseSocError
 from booley.runtime.endpoint_execution import (
     EXIT_CANCELLED,
@@ -45,7 +49,7 @@ def set_criterion(
     source_target: str | None = None,
 ) -> None:
     """Set a criterion and persist state. No-op when state has no file."""
-    if endpoint.records_no_evidence:
+    if getattr(endpoint.args, "diagnostic", False):
         logger.info("Diagnostic run: not recording criterion %s", key)
         return
     key = endpoint._criterion_key_for_source(key, source_target)
@@ -69,7 +73,7 @@ def set_criterion(
     except EvidenceDiscarded as exc:
         endpoint.discard_evidence(exc)
         return
-    _emit_criteria_update(endpoint.state)
+    _emit_criteria_update(endpoint.state, endpoint._acceptance_recorder)
 
 
 def _record_acceptance_changes(endpoint: EndpointState, changes: list[CriterionChange]) -> None:
@@ -417,7 +421,9 @@ def _pending_criterion_invocations(endpoint, endpoint_catalog) -> str:
         ):
             continue
         invocation = planned_invocation(key, entry, endpoint_catalog)
-        pending.append(f"  {key} -> {invocation or endpoint.name}")
+        pending.append(
+            f"  {execution_goal_name(endpoint._acceptance_recorder, key)} -> {invocation or endpoint.name}"
+        )
     return "\n".join(pending) if pending else "  (no compatible criterion declared)"
 
 
@@ -466,7 +472,7 @@ def _record_final_acceptance(endpoint: EndpointState, outcome: EndpointOutcome) 
                 CriterionChange(
                     key,
                     endpoint.state.criteria[key].met,
-                    "source-invalidated",
+                    SOURCE_INVALIDATED_REASON,
                     dict(endpoint.state.criteria[key].detail),
                     endpoint.state.criteria[key].mandatory,
                     dict(endpoint.state.criteria[key].params),

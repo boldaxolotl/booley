@@ -367,7 +367,8 @@ async def test_deleted_goal_worktree_does_not_break_status_or_dashboard(
     )
     assert result.is_error is (caller == "removed")
     assert result.goal_aware is (caller == "healthy")
-    assert "Goal worktree missing or unavailable" in result.value[0].text
+    blocks = result.value[0] if isinstance(result.value, tuple) else result.value
+    assert "Goal worktree missing or unavailable" in blocks[0].text
     assert build_status(GoalStore(control), healthy_record) == before_healthy
     snapshot = model.DashboardReader(healthy, control).read()
     missing_view = next(goal for goal in snapshot.goals if goal.id == missing_record.id)

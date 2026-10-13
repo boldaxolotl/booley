@@ -16,17 +16,17 @@ Project Target/test definitions needed for `sim_dhry_checked` and its registered
 ```json
 [
   {
-    "family": "elab",
+    "family": "ELAB",
     "target": "sim_dhry_checked",
     "origin": "continuity"
   },
   {
-    "family": "sim",
+    "family": "SIM",
     "target": "sim_dhry_checked",
     "origin": "continuity"
   },
   {
-    "family": "cycle_count",
+    "family": "CYCLE_COUNT",
     "target": "sim_dhry_checked",
     "test": "dhry",
     "thresholds": {
@@ -35,7 +35,7 @@ Project Target/test definitions needed for `sim_dhry_checked` and its registered
     "origin": "continuity"
   },
   {
-    "family": "review",
+    "family": "REVIEW",
     "review": "tb_quality",
     "verdict": "done",
     "origin": "continuity"

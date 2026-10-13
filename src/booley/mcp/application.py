@@ -16,7 +16,7 @@ from jsonschema.exceptions import SchemaError, ValidationError
 from jsonschema.protocols import Validator
 from jsonschema.validators import validator_for
 
-from booley.core.boundary import BoundaryError, require_dict
+from booley.core.boundary import BoundaryError, as_dict, require_dict
 from booley.mcp.session_registry import Attribution
 
 
@@ -205,7 +205,30 @@ def _format_validation_error(error: ValidationError) -> str:
     path = "$"
     for part in error.absolute_path:
         path += f"[{part}]" if isinstance(part, int) else f".{part}"
+    if error.validator == "oneOf":
+        # Goal schemas expose public capabilities only. jsonschema's oneOf message
+        # echoes the rejected object, including internal family names and nested values.
+        capabilities = _goal_capabilities(error.validator_value)
+        if capabilities:
+            return (
+                f"Invalid Goal arguments at {path}: use a supported uppercase capability "
+                f"({', '.join(capabilities)}) and its declared fields"
+            )
     return f"Invalid tool arguments at {path}: {error.message}"
+
+
+def _goal_capabilities(alternatives: Iterable[object]) -> list[str]:
+    """Recognize family schemas without assuming every JSON Schema is an object."""
+    capabilities = []
+    for variant in alternatives:
+        schema = as_dict(variant) or {}
+        properties = as_dict(schema.get("properties")) or {}
+        family = as_dict(properties.get("family")) or {}
+        token = family.get("const")
+        if not isinstance(token, str):
+            return []
+        capabilities.append(token)
+    return capabilities
 
 
 def _normalize_payload(result: object) -> McpToolPayload:

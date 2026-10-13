@@ -385,13 +385,10 @@ def test_acceptance_indexes_by_test_run_and_never_lets_one_run_stand_for_another
     by_run = _candidate_observations(facts, outcome.target)
     assert list(by_run) == ["reset@1", "count+soak@42", "count+fault@42"]
     assert [item["test"] for item in by_run.values()] == ["reset", "count", "count"]
+    # A Criterion names a Test: the Test with several Test Runs has no single
+    # observation and is left out, so no run stands in for another.
     for indexer in (_candidate_simulation_observations, _candidate_cycle_observations):
-        with pytest.raises(SimulationCampaignIntegrityError) as excinfo:
-            indexer(facts, outcome.target)
-        assert str(excinfo.value) == (
-            "Test 'count' has several Test Runs in this campaign (count+soak@42, "
-            "count+fault@42); a Criterion that names the Test cannot choose between them"
-        )
+        assert list(indexer(facts, outcome.target)) == ["reset"]
 
 
 def test_acceptance_keeps_indexing_one_test_run_per_test_by_test(tmp_path: Path):

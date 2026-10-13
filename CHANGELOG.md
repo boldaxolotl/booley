@@ -7,6 +7,13 @@ range from the packaged copy of this file.
 Packaged release history starts at 0.2.7. For older changes, see
 [GitHub Releases](https://github.com/boldaxolotl/Booley/releases).
 
+## Unreleased
+
+- Goals use one name everywhere, such as `SIM:sim_core` and `REVIEW:rtl_bugs`.
+  Goal arguments now require uppercase capabilities (`family: "SIM"`). Existing
+  Goal Records and pending proposals retain their stored identities. Project-owned
+  Goalsets stay untouched; translate their intent using the current tool schema.
+
 ## 0.3.1 - 05 OCT 2026
 
 ### Major features

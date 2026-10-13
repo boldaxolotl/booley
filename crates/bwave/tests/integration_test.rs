@@ -1221,14 +1221,32 @@ fn test_wave_rejects_raw_vcd() {
 #[test]
 fn test_rejects_vcd_input() {
     let vcd = vcd_path("test_basic.vcd").to_string_lossy().to_string();
-    // Signal queries reject raw .vcd input.
-    let (_stdout, stderr, code) = run_raw(&["signal", &vcd]);
-    assert_eq!(code, 2, "should reject .vcd input");
-    assert!(
-        stderr.contains("requires a built waveform store"),
-        "expected store-required error, got: {}",
-        stderr
-    );
+    for (command, options) in [
+        ("list", vec![]),
+        ("signal", vec![]),
+        ("wave", vec![]),
+        ("value", vec!["--at", "1"]),
+        ("find", vec!["data", "1"]),
+        ("sample", vec!["clk", "rising"]),
+        ("diff", vec!["1", "2"]),
+        ("distance", vec!["clk", "rising"]),
+        ("stats", vec![]),
+        ("stuck", vec![]),
+    ] {
+        let mut args = vec![command, &vcd];
+        args.extend(options);
+        let (stdout, stderr, code) = run_raw(&args);
+        assert_eq!(code, 2, "{command}: {stderr}");
+        assert!(stdout.is_empty(), "{command}: {stdout}");
+        assert!(
+            stderr.contains("requires a built waveform store"),
+            "{command}: {stderr}"
+        );
+        assert!(
+            stderr.contains(&format!("bwave build {vcd} -o trace.fst")),
+            "{command}: {stderr}"
+        );
+    }
 }
 
 #[test]
@@ -2550,6 +2568,37 @@ fn test_native_verilator_fst_clock_rederivation() {
     // clock meta is re-derived from FST content: 10ns period, 36 cycles
     assert!(stdout.contains("36 cycles"), "got: {}", stdout);
     assert!(stdout.contains("10ns period"), "got: {}", stdout);
+}
+
+#[test]
+fn issue_1431_async_sample_level_rising_and_change() {
+    let store = Issue1098Store::new(
+        "$var wire 1 ! flag $end\n$var wire 8 # data [7:0] $end\n",
+        "#0\n0!\nb00000000 #\n#10\n1!\nb00001010 #\n#15\nb00001011 #\n#20\n0!\nb00001111 #\n#30\n1!\nb11111111 #\n",
+    );
+    for (mode, expected) in [
+        ("1", "10 data[7:0] A\n15 data[7:0] B\n30 data[7:0] FF"),
+        ("rising", "10 data[7:0] A\n30 data[7:0] FF"),
+        ("change", "10 data[7:0] A\n20 data[7:0] F\n30 data[7:0] FF"),
+    ] {
+        let output = store.query("sample", &["flag", mode, "--async", "-s", "data"]);
+        assert_eq!(output.trim(), expected, "{mode}");
+        let count = store.query(
+            "sample",
+            &["flag", mode, "--async", "-s", "data", "--count"],
+        );
+        assert_eq!(count.trim(), expected.lines().count().to_string(), "{mode}");
+    }
+}
+
+#[test]
+fn issue_1431_clock_detection_prefers_shallowest_scope() {
+    let store = Issue1098Store::new(
+        "$scope module dut $end\n$scope module sub $end\n$var wire 1 ! sub_clk $end\n$upscope $end\n$var wire 1 \" dut_clk $end\n$upscope $end\n$var wire 1 # tb_clk $end\n",
+        "#0\n0!\n0\"\n0#\n#5\n1!\n1\"\n1#\n#10\n0!\n0\"\n0#\n#15\n1!\n1\"\n1#\n#20\n0!\n0\"\n0#\n",
+    );
+    let list = store.json("list", &[]);
+    assert_eq!(list["data"]["clock"], "tb.tb_clk");
 }
 
 /// Real CLI conversion, unique temp paths, and cleanup even after an assertion fails.

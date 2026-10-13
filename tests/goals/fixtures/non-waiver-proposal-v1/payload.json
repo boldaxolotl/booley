@@ -1,0 +1,33 @@
+{
+  "after": {
+    "family": "lint",
+    "key": "lint_clean_top",
+    "origins": [
+      "ad-hoc"
+    ],
+    "params": {},
+    "target": "top"
+  },
+  "after_arg": {
+    "family": "lint",
+    "target": "top"
+  },
+  "before": null,
+  "created_at": "2026-10-11T16:09:34Z",
+  "goal_key": "lint_clean_top",
+  "id": "b591fffc-24a9-47a1-ac19-396c34e7dac6",
+  "kind": "add",
+  "rationale": "approve this exact measured point",
+  "record_id": "evidence-20261006T120000Z",
+  "record_revision": 4,
+  "runtime_params": {
+    "target": "top"
+  },
+  "schema": "booley.goal-proposal/v1",
+  "session_key": null,
+  "waiver": null,
+  "worktree": {
+    "checkout": "worktrees/wt",
+    "repository": "fb09a581-8436-4d97-b8c0-3ccd08f5943e"
+  }
+}
