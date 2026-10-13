@@ -39,16 +39,16 @@ the row reads like an ASCII waveform.
 Text mode example:
 
 ```
-time  0  1  5
-   b  0  1  2
+time  0  1000  5000
+   b  0     1     2
 ```
 
 With markers:
 
 ```
          change
-time  0       1  5
-   b  0       1  2
+time  0    1000  5000
+   b  0       1     2
 ```
 
 `--format json` exits with code 2: `JSON output is not implemented for wave; use find/value/stats/list`.
