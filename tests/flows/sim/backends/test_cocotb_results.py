@@ -80,6 +80,44 @@ def test_timeout_progress_preserves_qualified_failure_and_matches_exact_test_nam
     ]
 
 
+# Console output of real batches killed mid-run; provenance lives beside them.
+_TIMEOUT_LOGS = Path(__file__).parents[3] / "fixtures/cocotb_timeout_progress/2.1.0"
+_MIXED_TESTS = ["test_done", "test_bad", "test_hang", "test_later"]
+
+
+@pytest.mark.parametrize("selected", [_MIXED_TESTS, []])
+def test_timeout_progress_recovers_captured_producer_batch(selected):
+    output = (_TIMEOUT_LOGS / "mixed.log").read_text(encoding="utf-8")
+
+    results = cr.recover_timeout_progress(output, list(selected))
+
+    verdicts = [
+        ("test_done", cr.VERDICT_PASS, ""),
+        ("test_bad", cr.VERDICT_FAIL, "reported failed before the cocotb batch timed out"),
+        ("test_hang", cr.VERDICT_FAIL, cr.TIMEOUT_ACTIVE_DETAIL),
+        ("test_later", cr.VERDICT_INCONCLUSIVE, cr.TIMEOUT_NOT_RUN_DETAIL),
+    ]
+    # An unfiltered run can only discover the tests that started.
+    expected = verdicts if selected else verdicts[:3]
+    names = [name for name, _, _ in expected]
+    assert [test.name for test in results.tests] == names
+    assert cr.reconcile(names, results) == expected
+
+
+@pytest.mark.parametrize("filtered", [True, False])
+def test_timeout_progress_keeps_dots_inside_captured_parametrized_names(filtered):
+    output = (_TIMEOUT_LOGS / "parametrized.log").read_text(encoding="utf-8")
+    names = ["test_gain/gain=0.5", "test_gain/gain=1.5"]
+
+    results = cr.recover_timeout_progress(output, list(names) if filtered else [])
+
+    assert [test.name for test in results.tests] == names
+    assert cr.reconcile(names, results) == [
+        (names[0], cr.VERDICT_PASS, ""),
+        (names[1], cr.VERDICT_FAIL, cr.TIMEOUT_ACTIVE_DETAIL),
+    ]
+
+
 # Captured from the pinned producer; provenance and reproduction live beside it.
 _RESULTS_XML = Path(__file__).parents[3] / "fixtures/cocotb_results/2.1.0/results.xml"
 

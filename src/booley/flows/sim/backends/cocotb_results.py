@@ -197,6 +197,20 @@ def parse_results_xml(path: Path | str) -> CocotbResults:
     return CocotbResults(state=STATE_OK, tests=tests)
 
 
+# Dotted module path cocotb 2.x prepends to a test name in progress lines.
+_MODULE_PREFIX = r"(?:\w+\.)*"
+
+
+def _bare_progress_name(logged: str) -> str:
+    """Strip the leading module path, keeping dots inside the test name itself.
+
+    A parametrized cocotb 2.x test logs ``pkg.mod.test_gain/gain=0.5``. Only
+    the identifier segments before the test name are module path, so splitting
+    at the last dot would return ``5``.
+    """
+    return re.sub(rf"^{_MODULE_PREFIX}", "", logged)
+
+
 def recover_timeout_progress(
     output: str,
     selected: list[str],
@@ -209,11 +223,11 @@ def recover_timeout_progress(
     if not selected:
         xml_names = [test.name for test in parsed.tests] if parsed is not None else []
         running_names = [
-            name.rsplit(".", 1)[-1]
+            _bare_progress_name(name)
             for name in re.findall(r"cocotb\.regression\s+running\s+(\S+)\s+\(", output)
         ]
         selected = list(dict.fromkeys((*xml_names, *running_names)))
-    patterns = {name: rf"(?:\w+\.)*{re.escape(name)}" for name in selected}
+    patterns = {name: rf"{_MODULE_PREFIX}{re.escape(name)}" for name in selected}
     passed = {
         name
         for name in selected
