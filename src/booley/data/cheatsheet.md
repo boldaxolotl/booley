@@ -98,7 +98,8 @@ Simulation Goals take the same selector in `test`, Cycle Count Goals in `test`
 without `@xN`, and coverage Goals in `tests`. Goal Mode freezes the Test Runs
 at entry, `@xN` seeds included; a simulation Goal is met when every frozen
 Test Run has passed, and a failure stays until the code changes.
-`goal_status` lists the frozen Test Runs with a rerun command per failure.
+`goal_status` lists the frozen Test Runs with a rerun command per failure. A
+`--diagnostic` run records no Test Run outcome, frozen or not.
 
 ### Booley Flows
 

@@ -84,6 +84,11 @@ Default Seed.
   the Target's simulation Goal; `--test test+variant@xN` runs the frozen seeds
   of the Goal with that Target, Variant and N. Any other Test Run is
   diagnostic: it records no evidence and its failure blocks no Goal.
+- A `diagnostic=true` run records nothing even for frozen Test Runs; its
+  report names the Goals whose frozen Test Runs ran and failed. Use it to
+  debug. A failure it shows is real: fix the cause, then run without
+  `diagnostic` to record the outcome. Never report a Goal's Test Runs as
+  passing on the strength of a diagnostic run.
 - Each frozen Test Run is `passed`, `failed` or `missing` in `goal_status`. A
   simulation Goal is met when all are `passed`; they may pass in separate
   runs. A failure stays until the code changes: do not rerun a failed seed

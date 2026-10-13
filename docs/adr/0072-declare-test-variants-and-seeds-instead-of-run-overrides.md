@@ -167,7 +167,7 @@ never stand in for the declared Test. Implementation waits for Goal Mode
 ## Amendments (2026-10-13)
 
 Recorded while implementing issue #1233. Each item is a maintainer decision
-of 2026-10-11.
+of 2026-10-11 unless it names another date.
 
 - **A request over the Test Run limit is refused.** The Decision said "One
   request can span more than one Simulation Campaign, which keeps the
@@ -194,3 +194,11 @@ of 2026-10-11.
   template on Verilator and Icarus. A Target of any other simulator is
   unseeded. The Xcelium option belongs to the change that adds its launch
   path.
+- **A `--diagnostic` run records nothing, frozen Test Runs included**
+  (decided 2026-10-13). "A failure of a matching Test Run is never cancelled
+  by a later pass" applies to runs that record evidence. A `--diagnostic` run
+  that executes a Goal's frozen Test Runs enters neither their passes nor
+  their failures. Its report names the Goals whose frozen Test Runs ran and
+  the ones that failed, so the result cannot pass unnoticed. Recording
+  failures from diagnostic runs was considered and rejected: `--diagnostic`
+  stays the one mode that never changes Goal state.

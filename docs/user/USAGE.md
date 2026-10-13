@@ -463,6 +463,10 @@ frozen Test Run is `passed`, `failed` or `missing`:
 - It is `missing` until it has run. An `error` or `inconclusive` Test Run
   leaves the outcome as it was.
 
+A `--diagnostic` run changes none of these outcomes, even when it runs a
+frozen Test Run. Its report names the Goals whose frozen Test Runs ran and
+the ones that failed; run again without `--diagnostic` to record them.
+
 A simulation Goal is met when every frozen Test Run is `passed`. They do not
 have to pass in one invocation: 20 seeds can pass over several runs and
 Simulation Campaigns, including after an interruption, and a run of a few

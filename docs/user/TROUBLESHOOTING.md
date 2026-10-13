@@ -529,6 +529,20 @@ A failing Test Run that is not one of a Goal's frozen Test Runs is
 **diagnostic**. The Flow report lists it under `Diagnostic failures`, and it
 blocks no Goal. Ask for a Goal change if that Test Run should become required.
 
+A run with `--diagnostic` records nothing, so a frozen Test Run that passes or
+fails in it keeps the outcome `goal_status` showed before. The Flow report
+names the Goals whose frozen Test Runs ran and the ones that failed. Run again
+without `--diagnostic` to record them.
+
+Inside Goal Mode, Booley registers each Simulation Campaign before its first
+Test Run starts: one `booley.goal-campaign/v1` document per campaign under
+`logs/acceptance/campaigns/` of the Goal Record. When a campaign is cancelled
+or killed, the next Flow run or status read reads the results it finished and
+adds them to the Goals' Test Run outcomes; a failure it saw counts. Do not
+edit or delete these documents. One that cannot be read gives every Goal that
+names Test Runs the reason `goal-campaign-unaccounted`, and Booley moves it to
+`quarantine/` beside the others when you approve a Goal change.
+
 The Review Package lists the Test Runs that were frozen after entry and every
 Simulation Campaign whose results were never fully accounted for.
 

@@ -117,6 +117,10 @@ Packaged release history starts at 0.2.7. For older changes, see
   Count and coverage evidence recorded before the upgrade does not count:
   `goal_status` shows `goal-test-run-ledger-missing` until the Flow has run
   again.
+- **An older Booley cannot read a Goal Record written by this version**
+  (#1233). The record carries the frozen Test Runs, and an older Booley
+  refuses it as written by a newer Booley. Finish or abandon an active Goal
+  Mode before downgrading.
 - **A partial run no longer makes a Target's simulation Goal unmet** (#1233).
   `SIM:{target}` is met when every frozen Test Run has passed at the
   current file contents. Running a few Tests with `--test` adds their

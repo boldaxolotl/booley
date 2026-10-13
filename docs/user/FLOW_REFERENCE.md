@@ -424,6 +424,11 @@ worktree:
 - Every other Test Run is **diagnostic**: it is reported, it records no Goal
   evidence, and its failure blocks no Goal. The report lists diagnostic
   failures under their own heading.
+- `--diagnostic` records nothing, even when the run executes a Goal's frozen
+  Test Runs: a pass does not count for the Goal and a failure does not make
+  the frozen Test Run `failed`. The report names each Goal whose frozen Test
+  Runs ran and the ones that failed. Run again without `--diagnostic` to
+  record them.
 
 A simulation Goal is met when every one of its frozen Test Runs has passed at
 the current file contents. The Test Runs can pass in separate invocations. See
