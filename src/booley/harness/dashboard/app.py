@@ -14,6 +14,7 @@ from rich.text import Text
 from textual import events
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, VerticalScroll
+from textual.css.query import NoMatches
 from textual.widgets import DataTable, Footer, Header, Static
 
 from booley.core.boundary import as_float
@@ -214,11 +215,13 @@ def _reported_metrics(report: dict[str, Any]) -> str:
 
 
 def _evidence_detail(goal: GoalDetail) -> str:
+    frozen = "".join(f"{line}\n" for line in goal.test_runs)
     if goal.evidence is None:
-        return "Last check: unavailable · Evidence unavailable"
+        return frozen + "Last check: unavailable · Evidence unavailable"
     facts = goal.evidence
     return (
-        f"Last check: {facts.get('recorded_at', 'unavailable')}\n"
+        frozen
+        + f"Last check: {facts.get('recorded_at', 'unavailable')}\n"
         + "Observations: "
         + json.dumps(observation_facts(facts).get("observations", {}), indent=2)[:8000]
         + "\nImmutable derivation provenance: "
@@ -298,17 +301,30 @@ class DashboardApp(App[None]):
             self.snapshot = await asyncio.wait_for(asyncio.shield(self._read_task), READ_BUDGET)
             self._read_task = None
             self._assign_shortcuts()
-            self.render_snapshot()
+            if self._health() is not None:
+                self.render_snapshot()
         except TimeoutError:
-            self.query_one("#health", Static).update(
-                "Dashboard data unavailable/stale: read still in progress"
-            )
+            self._show_stale("read still in progress")
         except Exception as exc:
             self._read_task = None
             logger.exception("Dashboard refresh failed")
-            self.query_one("#health", Static).update(
-                f"Dashboard data unavailable/stale: {str(exc) or type(exc).__name__}"
-            )
+            self._show_stale(str(exc) or type(exc).__name__)
+
+    def _health(self) -> Static | None:
+        """Return the health line, or None once the view is gone.
+
+        The refresh interval can fire once more while the app shuts down and
+        its widgets are already removed; that tick has nothing to update.
+        """
+        try:
+            return self.query_one("#health", Static)
+        except NoMatches:
+            return None
+
+    def _show_stale(self, reason: str) -> None:
+        health = self._health()
+        if health is not None:
+            health.update(f"Dashboard data unavailable/stale: {reason}")
 
     def _assign_shortcuts(self) -> None:
         connected = {row.attribution.key for row in self.snapshot.sessions}

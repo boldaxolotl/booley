@@ -1372,6 +1372,8 @@ def test_cli_resume_announces_validated_origin_before_execution(
 def test_scheduler_preserves_terminal_cause_after_actual_child_lease_loss(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scope_stop: bool
 ) -> None:
+    from dataclasses import replace
+
     monkeypatch.setattr("booley.runtime.job_slots.LEASE_RENEW_INTERVAL_SECONDS", 0.01)
     manifest = _two_item_manifest()
     campaign_store = CampaignStore(tmp_path / "campaign")
@@ -1388,7 +1390,9 @@ def test_scheduler_preserves_terminal_cause_after_actual_child_lease_loss(
     execute = _lease_lost_execute(slots, child_finished, child_ids, scope_stop, tmp_path)
 
     capacity = HeavyCapacity(
-        _managed(slots, outer),
+        # Real durable child retirement can exceed the five-second fake-work budget
+        # on Windows. Keep this cause test within the production shutdown budget.
+        replace(_managed(slots, outer), timeout_seconds=30.0),
         terminal_proof=registry.is_terminal,
         recover_child=lambda _execution_id: False,
     )

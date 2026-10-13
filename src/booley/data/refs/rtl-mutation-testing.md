@@ -15,7 +15,7 @@ The project's configured compiler is the language authority.
 4. Booley checks that the exact original bytes occur once on the declared line.
 5. Booley builds and runs the untouched source as the baseline.
 6. Booley applies one replacement alone, builds it in an independent directory,
-   runs the Target's complete test suite, and restores the pristine bytes.
+   runs the Target's complete test suite with replacements applied only to private build source copies; live RTL remains unchanged.
 
 The creator proposes intent; exact byte matching and the compiler enforce the
 mechanics. A proposal that does not anchor safely or compile is rejected and a

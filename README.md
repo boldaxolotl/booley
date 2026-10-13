@@ -26,31 +26,8 @@ RTL development is fragmented across editors, tool-specific commands, build envi
 The mental model behind Booley is simple: treat the Developer Agent like a talented junior engineer. It can write RTL and testbenches, but it is inexperienced with EDA tools, prone to questionable design decisions, and too risky to give unrestricted host access—it could, for example, force-push to your Git repository and rewrite its history. Booley gives it a constrained workspace, explicit specifications, automated checks, and human review.
 
 - **Sandboxed for autonomous execution:** the Developer Agent and every command it launches run inside a Docker container with restricted mounts and network access. You can delegate long-running tasks to Developer Agents without approving every bash tool call and without worrying about your files and git history ([details](https://github.com/boldaxolotl/Booley/blob/main/docs/user/FEATURES.md#docker-sandboxing), [security model](https://github.com/boldaxolotl/Booley/blob/main/docs/internals/ARCHITECTURE.md#security--trust-model)).
-- **Strict guardrails and acceptance criteria:** in Goal Mode, Booley checks mandatory Goals chosen at entry. Area and cycle-count criteria help the Developer Agent stay within the project's PPA budget, while coverage and mutation-testing criteria help it write stronger testbenches. At review time, one briefing shows Goal changes, Target and constraint edits, and evidence, so you can see at a glance what passed and what needs attention ([details](https://github.com/boldaxolotl/Booley/blob/main/docs/user/USAGE.md#goal-mode)).
+- **Goal Mode — guardrails for long autonomous work:** you set mandatory Goals at entry, and Booley checks them against results from Booley Flows and Specialists. Area and cycle-count Goals (`SYNTH:synth_fifo (area increase ≤ 10%)`, `CYCLE_COUNT:sim_fifo (≤ 1,000 cycles, test smoke)`) keep the Developer Agent within your PPA budget, while coverage and mutation-testing Goals (`COVERAGE:sim_fifo (line ≥ 90%, tests all)`, `MUTATION:sim_fifo (≥ 10/10 mutations detected, scope rtl/fifo.sv)`) help it write stronger testbenches. Saved Goals and evidence keep long sessions on track, including across context compaction; completion requires fresh evidence for every Goal. At review time, one briefing shows achieved Goals and their evidence, approved Goal changes, open review findings, and Target and constraint edits, so you can see what passed and what needs attention ([details](https://github.com/boldaxolotl/Booley/blob/main/docs/user/USAGE.md#goal-mode)).
 - **Waveform-aware debugging:** `bwave` lets the Developer Agent query real traces instead of guessing from RTL. Ask "How many `i_ready`/`o_valid` handshakes occurred between 1,000 and 2,000 ns?" or "When did `data_o` equal `0xDEADBEEF`?" The Developer Agent answers from actual simulation data instead of spending minutes reasoning from code (and getting it wrong) ([details](https://github.com/boldaxolotl/Booley/blob/main/docs/user/FEATURES.md#waveform-based-debug)).
-
-Use **Interactive Mode** to explore, debug, and call Flows and Specialists with
-a Developer Agent in the Sandbox. Enter **Goal Mode** with `/booley-goal` when work needs
-explicit completion conditions. The same session can run with your guidance or
-unattended, in its own linked worktree and Goal Branch. Booley tracks evidence
-and requires every Goal to be met before Finish returns a Review Package.
-
-A **Goalset** is Project-owned Markdown under `.booley_project/goalsets/`.
-The Developer Agent translates its prose into concrete Goals at entry. For example:
-
-> **Goalset: fifo-feature**
-> Lint the FIFO, pass its simulation suite, reach at least 90% line coverage,
-> finish an RTL bug review clean, and synthesize within 10% of the base area.
-
-```json
-[
-  {"family": "LINT", "target": "lint_fifo", "origin": "fifo-feature"},
-  {"family": "SIM", "target": "sim_fifo", "origin": "fifo-feature"},
-  {"family": "COVERAGE", "target": "sim_fifo", "tests": "all", "metrics": {"line": 90}, "origin": "fifo-feature"},
-  {"family": "REVIEW", "review": "rtl_bugs", "verdict": "clean", "origin": "fifo-feature"},
-  {"family": "SYNTH", "target": "synth_fifo", "thresholds": {"area_increase_at_most": "10%"}, "origin": "fifo-feature"}
-]
-```
 
 See [FEATURES.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/FEATURES.md) for the full list of capabilities.
 
@@ -89,27 +66,11 @@ supported. You need:
 - [Docker](https://www.docker.com/), with about **4 GB** free for the image
   (**6 GB** with the RISC-V toolchain) plus room for build artifacts
 - [VS Code](https://code.visualstudio.com/)
-- A Claude Code or Codex CLI on the host PATH for Project Setup: [Claude Code](https://code.claude.com/docs/en/setup)
-  (`claude`, the default) or [Codex](https://developers.openai.com/codex/cli) (`codex`)
-- Credentials for the installed agent CLI
+- An agent CLI on the host PATH with credentials configured for Project Setup:
+  [Claude Code](https://code.claude.com/docs/en/setup) (`claude`, the default)
+  or [Codex](https://developers.openai.com/codex/cli) (`codex`)
 
-Use pipx to install the CLI in a persistent, isolated environment.
-On **Ubuntu/Debian**, first prepare pipx:
-
-<!-- booley-smoke:prepare -->
-```bash
-sudo apt-get update
-sudo apt-get install -y pipx
-pipx ensurepath
-```
-<!-- /booley-smoke:prepare -->
-
-**Reopen your terminal** before running the install block so the pipx launcher
-is on `PATH`. On Windows, install pipx with `py -m pip install --user pipx`,
-run `py -m pipx ensurepath`, and reopen the terminal first.
-
-Install Claude Code or Codex on the host using the instructions linked above, then install
-Booley and prepare the host:
+With [pipx installed](https://pipx.pypa.io/latest/how-to/install-pipx.html), install Booley and prepare the host:
 
 <!-- booley-smoke:install -->
 ```bash
@@ -126,22 +87,6 @@ pipx upgrade booley-rtl
 booley bootstrap --update
 ```
 <!-- /booley-smoke:upgrade -->
-
-If you already have uv, `uv tool install booley-rtl` and
-`uv tool upgrade booley-rtl` are equivalent; follow them with
-`booley bootstrap` and `booley bootstrap --update`, respectively.
-
-**Alternative: pip user install**, only for interpreters that permit user
-installs (including Windows). Ensure the user scripts directory is on `PATH`:
-
-```bash
-python3 -m pip install --user booley-rtl
-booley bootstrap
-```
-
-On Windows use `py -m pip` in place of `python3 -m pip`. To upgrade this
-alternative, run `python3 -m pip install --user --upgrade booley-rtl`, then
-`booley bootstrap --update`.
 
 Seeing `externally-managed-environment`, PATH, or other install errors? See
 [Troubleshooting](https://github.com/boldaxolotl/Booley/blob/main/docs/user/TROUBLESHOOTING.md#installation-fails-with-externally-managed-environment).

@@ -57,10 +57,12 @@ from .inspection import (
     authenticate_work_item,
     collect_pre_sim_firings,
     inspect_retained_campaign,
+    read_durable_results,
     read_invocation_pre_sim_firings,
     read_pre_sim_firings,
     recover_retained_campaign_resources,
     retained_campaign_lock,
+    started_campaign,
 )
 from .model import (
     BundleBuildAttempt,
@@ -142,11 +144,13 @@ __all__ = [
     "encode_simulation_result",
     "encode_simulator_bundle",
     "inspect_retained_campaign",
+    "read_durable_results",
     "read_invocation_pre_sim_firings",
     "read_pre_sim_firings",
     "recover_retained_campaign_resources",
     "resolve_artifact_reference",
     "resolve_report_artifact_reference",
     "retained_campaign_lock",
+    "started_campaign",
     "validate_resume_manifest",
 ]
