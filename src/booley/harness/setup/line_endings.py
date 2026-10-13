@@ -1699,16 +1699,10 @@ def _update_attributes(
 
 
 def _write_attributes(path, expected, content, validate):
-    if validate is not None:
-        return (
-            _update_attributes(path, expected, content, validate)
-            if expected is not None
-            else _create_attributes(path, content, validate)
-        )
     return (
-        _update_attributes(path, expected, content)
+        _update_attributes(path, expected, content, validate)
         if expected is not None
-        else _create_attributes(path, content)
+        else _create_attributes(path, content, validate)
     )
 
 
