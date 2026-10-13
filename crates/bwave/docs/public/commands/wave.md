@@ -22,9 +22,8 @@ the row reads like an ASCII waveform.
 
 ## Defaults and requiredness
 
-- `<FST_FILE>` required. Like `diff` and `distance`,
-  `wave` strictly requires a built `.fst` store; there is
-  no raw-VCD fallback.
+- `<FST_FILE>` required. See the shared file-input rule in
+  `commands/overview`.
 - `-t START:END` is optional; `--limit` bounds the columns
   when the time window is omitted or open-ended.
 - `-s PATTERN` optionally selects stored and Virtual Signal
@@ -56,6 +55,8 @@ time  0       1  5
 
 ## Common errors
 
+- **`requires a built waveform store`**: build one first:
+  `bwave build <vcd> -o trace.fst`.
 - **Truncated columns**: terminal width caps how many
   cycles fit. Narrow the `-t` range or pipe through
   `less -S` and scroll horizontally.
