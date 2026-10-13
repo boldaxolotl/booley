@@ -74,62 +74,17 @@ impl TimeToken {
         }
     }
 
-    /// Resolve this token to a **cycle** number, using `ticks_to_ns` and
-    /// `clock_period_ticks` from the cache header.
-    ///
-    /// Async-mode callers should use [`Self::resolve_to_tick`] instead. This
-    /// method is the right call for sync-mode time bounds and `--at` snapshots.
-    pub fn resolve_to_cycle(
-        &self,
-        ticks_to_ns: f64,
-        clock_period_ticks: u64,
-    ) -> Result<i64, String> {
-        match *self {
-            TimeToken::Cycle(n) => Ok(n),
-            TimeToken::Tick(n) => {
-                if clock_period_ticks == 0 {
-                    return Err("cannot resolve tick-token to cycle: no clock detected".to_string());
-                }
-                Ok(n / clock_period_ticks as i64)
-            }
-            TimeToken::Pico(n) | TimeToken::Nano(n) | TimeToken::Micro(n) | TimeToken::Milli(n) => {
-                let ns = self.to_ns().unwrap();
-                let _ = n; // silence unused warning when match cases collapse
-                if ticks_to_ns <= 0.0 {
-                    return Err("no VCD timescale available".to_string());
-                }
-                if clock_period_ticks == 0 {
-                    return Err(
-                        "cannot convert physical-time token to cycle: no clock detected"
-                            .to_string(),
-                    );
-                }
-                let ticks = (ns / ticks_to_ns) as i64;
-                Ok(ticks / clock_period_ticks as i64)
-            }
-        }
-    }
-
-    /// Resolve this token to a raw **simulation tick**, for async-mode use.
-    pub fn resolve_to_tick(
-        &self,
-        ticks_to_ns: f64,
-        clock_period_ticks: u64,
-    ) -> Result<i64, String> {
+    /// Resolve tick and physical tokens to raw simulation ticks.
+    /// Cycle tokens require the cache-aware cycle grid.
+    pub fn resolve_to_tick(&self, ticks_to_ns: f64) -> Result<i64, String> {
         match *self {
             TimeToken::Tick(n) => Ok(n),
-            TimeToken::Cycle(n) => {
-                if clock_period_ticks == 0 {
-                    return Err("cannot resolve cycle-token to tick: no clock detected".to_string());
-                }
-                Ok(n * clock_period_ticks as i64)
-            }
+            TimeToken::Cycle(_) => Err("cycle tokens require cache-aware resolution".to_string()),
             _ => {
-                let ns = self.to_ns().unwrap();
                 if ticks_to_ns <= 0.0 {
                     return Err("no VCD timescale available".to_string());
                 }
-                Ok((ns / ticks_to_ns) as i64)
+                Ok((self.to_ns().unwrap() / ticks_to_ns) as i64)
             }
         }
     }

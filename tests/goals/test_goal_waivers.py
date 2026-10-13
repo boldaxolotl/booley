@@ -54,6 +54,9 @@ from tests.flows.sim.test_coverage_campaign import _POINT_ID, _valid_document
 from tests.goals.conftest import enter_goals, git, run_row
 from tests.goals.test_proposals import Crash, approve, interrupted_transaction
 
+# Each test enters Goal Mode in a real Git layout; Windows needs the headroom (#1202).
+pytestmark = pytest.mark.timeout(120)
+
 KEY = "coverage_top"
 IDENTITY = DurableTargetIdentity("::top:0#top")
 
@@ -456,8 +459,6 @@ def test_rejected_recovery_has_no_authority_to_publish_goal_or_approval_effects(
     assert not paths.changes_file.exists() and not list(root.rglob("*.toml"))
 
 
-# Windows CI used 30.1 s of the default 60 s budget; keep the required headroom (#1202).
-@pytest.mark.timeout(120)
 @pytest.mark.parametrize("anchor", ["rtl_repository", "project_data_repository"])
 def test_immediate_live_promotion_is_strict_and_other_unmet_goal_does_not_block(layout, anchor):
     env, candidate, root = prepared(layout, anchor)
