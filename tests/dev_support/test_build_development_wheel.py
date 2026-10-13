@@ -18,6 +18,52 @@ ROOT = Path(__file__).resolve().parents[2]
 WHEEL = "booley_rtl-0.2.15-py3-none-any.whl"
 
 
+@pytest.fixture(autouse=True)
+def isolated_git(tmp_path, monkeypatch):
+    for name in (
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_CONFIG",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_PARAMETERS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    empty = tmp_path / "empty-git-config"
+    empty.mkdir()
+    monkeypatch.setenv("GIT_TEMPLATE_DIR", str(empty))
+    monkeypatch.setenv("BOOLEY_TEST_GIT_HOOKS", str(empty))
+
+
+def init_git(root):
+    def git(*args):
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                f"core.hooksPath={os.environ['BOOLEY_TEST_GIT_HOOKS']}",
+                *args,
+            ],
+            cwd=root,
+            check=True,
+            capture_output=True,
+            timeout=10,
+        )
+
+    git("init")
+    git("config", "user.name", "Test")
+    git("config", "user.email", "test@example.invalid")
+    (root / "tracked-sentinel").write_text("tracked")
+    git("add", "tracked-sentinel")
+    git("commit", "-m", "fixture")
+
+
 @pytest.fixture
 def checkout(tmp_path, monkeypatch):
     root = tmp_path / "checkout"
@@ -36,6 +82,7 @@ def checkout(tmp_path, monkeypatch):
         "source_image_build_contracts",
         lambda _root: SimpleNamespace(runtime_base="a" * 64, standard_substrate="b" * 64),
     )
+    init_git(root)
     return root
 
 
@@ -82,6 +129,8 @@ def test_explicit_profile_selects_only_new_wheel_and_prints_absolute_path(
         namespace = {}
         exec(build_stamp.stamp_path(root).read_text(), namespace)
         assert namespace["OFFICIAL_RELEASE"] is False
+        assert namespace["COMMIT"]
+        assert namespace["COMMIT"].endswith("+dirty")
         assert len(namespace["DEVELOPMENT_CONTEXT_SHA256"]) == 64
         assert build_stamp.development_context_path(root).is_file()
         assert not (root / "build").exists()
@@ -207,6 +256,7 @@ def test_source_launcher_runs_from_unrelated_cwd(tmp_path):
         "    try:\n        wheel = build_development_wheel(checkout)",
     )
     copied_owner.write_text(owner_source)
+    init_git(root)
     frontend = tmp_path / "frontend"
     frontend.mkdir()
     (frontend / "build.py").write_text(
@@ -229,3 +279,89 @@ def test_source_launcher_runs_from_unrelated_cwd(tmp_path):
     assert "stub frontend log" in result.stderr
     assert (tmp_path / "source-owner-evidence").read_text() == str(copied_owner.resolve())
     assert_clean(root)
+
+
+@pytest.mark.parametrize("existing_dist", [False, True])
+@pytest.mark.parametrize(
+    "layout", ["export", "nested-export", "no-head", "redirected", "spoofed-root"]
+)
+def test_unresolvable_checkout_preserves_dist(
+    checkout, tmp_path, monkeypatch, capsys, existing_dist, layout
+):
+    shutil.rmtree(checkout / ".git")
+    if layout == "nested-export":
+        init_git(tmp_path)
+    elif layout == "no-head":
+        subprocess.run(["git", "init", str(checkout)], check=True, capture_output=True, timeout=10)
+    elif layout in {"redirected", "spoofed-root"}:
+        other = tmp_path / "other"
+        other.mkdir()
+        init_git(other)
+        monkeypatch.setenv("GIT_DIR", str(other / ".git"))
+        monkeypatch.setenv("GIT_WORK_TREE", str(checkout if layout == "spoofed-root" else other))
+    dist = checkout / "dist"
+    if existing_dist:
+        (dist / "nested").mkdir(parents=True)
+        (dist / WHEEL).write_bytes(b"previous")
+        (dist / "nested/keep").write_bytes(b"keep")
+    before = {p.relative_to(dist): p.read_bytes() for p in dist.rglob("*") if p.is_file()}
+    calls = []
+    module = wire_frontend(
+        monkeypatch,
+        lambda _root, staging: calls.append(staging) or (staging / WHEEL).write_bytes(b"new"),
+    )
+    assert module.main(checkout) != 0
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert "revision" in output.err
+    assert "complete source checkout" in output.err
+    assert not calls
+    assert dist.exists() == existing_dist
+    assert {p.relative_to(dist): p.read_bytes() for p in dist.rglob("*") if p.is_file()} == before
+    assert_clean(checkout)
+
+
+def test_unresolved_stamp_return_prevents_frontend(checkout, monkeypatch, capsys):
+    dist = checkout / "dist"
+    dist.mkdir()
+    prior = dist / WHEEL
+    prior.write_bytes(b"previous")
+    calls = []
+    module = wire_frontend(monkeypatch, lambda *args: calls.append(args))
+    original = module.write_build_stamp
+
+    def stamp(root, **kwargs):
+        original(root, **kwargs)
+        return ""
+
+    monkeypatch.setattr(module, "write_build_stamp", stamp)
+    assert module.main(checkout) != 0
+    assert capsys.readouterr().out == ""
+    assert not calls
+    assert prior.read_bytes() == b"previous"
+    assert_clean(checkout)
+
+
+def test_linked_worktree_remains_supported(checkout, tmp_path, monkeypatch):
+    linked = tmp_path / "linked"
+    subprocess.run(
+        ["git", "-C", str(checkout), "worktree", "add", "-b", "linked", str(linked)],
+        check=True,
+        capture_output=True,
+        timeout=10,
+    )
+    for tree in build_stamp._DEVELOPMENT_CONTEXT_TREES:
+        (linked / tree).mkdir(parents=True, exist_ok=True)
+    for source in checkout.rglob("*"):
+        relative = source.relative_to(checkout)
+        if ".git" in relative.parts or not source.is_file():
+            continue
+        target = linked / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+    module = wire_frontend(
+        monkeypatch, lambda _root, staging: (staging / WHEEL).write_bytes(b"new")
+    )
+    assert (linked / ".git").is_file()
+    assert module.build_development_wheel(linked).read_bytes() == b"new"
+    assert_clean(linked)
