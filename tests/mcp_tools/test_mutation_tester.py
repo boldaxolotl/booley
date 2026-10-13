@@ -41,6 +41,7 @@ from booley.specialists.mutation_tester import (
 )
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import IncompatibleTargetError
+from tests.conftest import require_symlinks, symlink_or_skip
 
 # The parameters the fake ``.core`` Target declares; a test may add plusargs.
 _TARGET_PARAMETERS: dict[str, Any] = {}
@@ -1962,3 +1963,27 @@ def test_pristine_baseline_reports_missing_literal_run_cwd_before_elaboration(
     assert ".gitkeep" in result.report_text
     assert result.detail["phase"] == "baseline_run_cwd"
     elab.assert_not_called()
+
+
+@pytest.mark.parametrize("layout", ["recursive", "declared"])
+def test_scope_accepts_canonical_rtl_through_symlink(tmp_path: Path, layout: str) -> None:
+    require_symlinks(tmp_path)
+    _author_scope_core(tmp_path)
+    if layout == "recursive":
+        (tmp_path / "lib").mkdir()
+        symlink_or_skip(tmp_path / "lib/self", "../", target_is_directory=True)
+        expected = "lib/self/rtl/counter.sv"
+    else:
+        symlink_or_skip(tmp_path / "design", "rtl", target_is_directory=True)
+        core = tmp_path / "design.core"
+        core.write_text(core.read_text().replace("rtl/", "design/"))
+        expected = "design/counter.sv"
+    catalog = TargetCatalog.build(tmp_path)
+    inspection = catalog.inspect(catalog.select("sim"))
+    assert expected in inspection.rtl_files
+    endpoint = _make_endpoint(tmp_path, target="sim")
+    assert endpoint._validate_scope_against_target(["rtl/counter.sv"]) is None
+    rejected = endpoint._validate_scope_against_target(["tb/tb_counter.sv"])
+    assert rejected is not None
+    assert "does not match" in rejected.report_text
+    assert expected in rejected.report_text

@@ -935,7 +935,9 @@ replacement must differ, and every proposal must remain a single source edit.
             return None
         if not resolved:
             return None
-        resolved_set = set(resolved)
+        resolved_set = {
+            fusesoc_registry.canonical_project_path(self.args.work_dir, path) for path in resolved
+        }
         by_base = {Path(r).name: r for r in resolved}
         for entry in scope_files:
             if entry in resolved_set:

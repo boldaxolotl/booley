@@ -12,6 +12,7 @@ from booley.flows.baseline_worktree import baseline_worktree
 from booley.flows.sim.trace_overlay import write_trace_overlay
 from booley.fusesoc import fusesoc_registry, selftest_overlay, target_inspection
 from booley.fusesoc.constants import TRACE_OVERLAY_MARKER
+from booley.harness.doctor import _check_sim_target_tb_staging
 from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.runtime.project_repositories import paired_project_repository
 from booley.targets.catalog import TargetCatalog
@@ -23,6 +24,7 @@ from booley.targets.domain import (
     StaleTargetCatalogError,
     UnknownTargetError,
 )
+from tests.conftest import require_symlinks, symlink_or_skip
 
 
 def _write_core(root: Path, filename: str, vlnv: str, targets: str) -> Path:
@@ -642,3 +644,93 @@ def test_mixed_lint_other_flow_classification_control(tmp_path, name, flow, eda_
     handle = TargetCatalog.build(tmp_path).select(name, for_flow=expected)
     assert handle.eda_tool == eda_tool
     assert expected in handle.drivable_by
+
+
+def _author_alias_core(root: Path, layout: str) -> tuple[str, str]:
+    core_root = root / "nested" if layout == "nested" else root
+    core_root.mkdir(exist_ok=True)
+    for directory, module in (("rtl", "dut"), ("tb", "tb")):
+        (core_root / directory).mkdir()
+        (core_root / directory / f"{module}.sv").write_text(f"module {module}; endmodule\n")
+    tb_decl = "tb/tb.sv"
+    prefix = "nested/" if layout == "nested" else ""
+    if layout in {"recursive", "declared"}:
+        require_symlinks(root)
+        if layout == "recursive":
+            (root / "lib").mkdir()
+            symlink_or_skip(root / "lib/self", "../", target_is_directory=True)
+            prefix = "lib/self/"
+        else:
+            symlink_or_skip(root / "rtl/tblink", "../tb", target_is_directory=True)
+            tb_decl = "rtl/tblink/tb.sv"
+    (core_root / "design.core").write_text(
+        "CAPI=2:\nname: ::alias_dut:0\nfilesets:\n"
+        "  rtl:\n    files: [rtl/dut.sv]\n    file_type: systemVerilogSource\n"
+        f"  tb:\n    files: [{tb_decl}]\n    tags: [tb]\n"
+        "    file_type: systemVerilogSource\ntargets:\n"
+        "  sim_dut:\n    flow: sim\n    flow_options: {tool: icarus}\n"
+        "    filesets: [rtl, tb]\n    toplevel: tb\n"
+    )
+    return prefix, tb_decl
+
+
+@pytest.mark.parametrize("layout", ["control", "recursive", "declared", "nested"])
+@pytest.mark.parametrize("strip_tags", [False, True])
+def test_catalog_restores_tb_tags_across_symlinks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, layout: str, strip_tags: bool
+) -> None:
+    root = tmp_path
+    prefix, tb_decl = _author_alias_core(root, layout)
+    if strip_tags:
+        from fusesoc.capi2.core import CoreInterface as Core
+
+        original = Core.get_files
+
+        def without_tags(self, flags):
+            return [{**item, "tags": []} for item in original(self, flags)]
+
+        monkeypatch.setattr(Core, "get_files", without_tags)
+    catalog = TargetCatalog.build(root)
+    inspection = catalog.inspect(catalog.select("sim_dut"))
+    assert tuple(item.path for item in inspection.inputs) == (
+        prefix + "rtl/dut.sv",
+        prefix + tb_decl,
+    )
+    assert inspection.rtl_files == (prefix + "rtl/dut.sv",)
+    assert inspection.tb_files == (prefix + tb_decl,)
+    assert inspection.inputs[1].tags.count("tb") == 1
+    assert all(item.file_type == "systemVerilogSource" for item in inspection.inputs)
+    passed, failed = [], []
+    _check_sim_target_tb_staging(
+        "sim_dut", inspection.sources, passed.append, lambda *args: failed.append(args)
+    )
+    assert passed == ["sim Target 'sim_dut' TB fileset tagged"]
+    assert failed == []
+
+
+@pytest.mark.parametrize("tags", [("other",), ("other", "tb")])
+def test_tb_tag_restoration_preserves_input_metadata(
+    tmp_path: Path, tags: tuple[str, ...]
+) -> None:
+    from types import SimpleNamespace
+
+    (tmp_path / "tb").mkdir()
+    symlink_or_skip(tmp_path / "alias", "tb", target_is_directory=True)
+    item = {
+        "name": "alias/tb.sv",
+        "tags": tags,
+        "file_type": "systemVerilogSource",
+        "is_include_file": True,
+        "copyto": "copied.sv",
+    }
+    core = SimpleNamespace(
+        name="::test:0", core_file=str(tmp_path / "test.core"), get_files=lambda flags: [item]
+    )
+    inspected = target_inspection._inspect_inputs(tmp_path, [core], {}, tb_paths=["tb/tb.sv"])
+    assert inspected[0].path == "alias/tb.sv"
+    assert inspected[0].tags == ("other", "tb")
+    assert inspected[0].is_include is True
+    assert inspected[0].file_type == item["file_type"]
+    assert inspected[0].core == core.name
+    assert inspected[0].attributes == {key: value for key, value in item.items() if key != "name"}
+    assert item["tags"] == tags
