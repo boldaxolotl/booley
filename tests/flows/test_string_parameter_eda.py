@@ -826,12 +826,13 @@ def _verify_verilator_file(tmp_path, selected, *, normalize):
 
 @pytest.mark.parametrize("value,explicit_empty", [("", False), ("", True), ('a" b\\c', False)])
 def test_actual_trace_resolution_preserves_owned_parameters_and_authored_flags(
-    tmp_path, value, explicit_empty
+    tmp_path, monkeypatch, value, explicit_empty
 ):
     from booley.flows.sim.build import prepare_simulation_build
     from booley.flows.sim.trace_overlay import write_trace_overlay
 
     _project(tmp_path, value, explicit_empty=explicit_empty)
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path / ".booley_project"))
     path = tmp_path / "shared.core"
     data = yaml.safe_load(path.read_text().split("\n", 1)[1])
     data["targets"]["sim"]["flags"] = {"owned": True}
@@ -899,10 +900,12 @@ endmodule
 
 @pytest.mark.parametrize("tool", ["verilator", "icarus"])
 @pytest.mark.parametrize("value", ['a" b\\c', ""])
-def test_actual_legacy_default_tool_receiver(tmp_path, tool, value):
+def test_actual_legacy_default_tool_receiver(tmp_path, monkeypatch, tool, value):
     from booley.flows.sim.build import prepare_simulation_build
 
     _legacy_receiver_project(tmp_path, tool, value)
+    (tmp_path / ".booley_project").mkdir()
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path / ".booley_project"))
     core_hash = hashlib.sha256((tmp_path / "legacy.core").read_bytes()).hexdigest()
     handle = TargetCatalog.build(tmp_path).select("sim", for_flow="sim")
     resolved = prepare_simulation_build(handle, build_root=tmp_path / "build").resolved
@@ -911,7 +914,6 @@ def test_actual_legacy_default_tool_receiver(tmp_path, tool, value):
     root = resolved.build_root
     suffix = ".vc" if tool == "verilator" else ".scr"
     response = root / (resolved.configuration_name + suffix)
-    normalize_parameter_records(resolved)
     before = response.read_bytes()
     normalize_parameter_records(resolved)
     assert response.read_bytes() == before
