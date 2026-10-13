@@ -45,6 +45,10 @@ fn assert_semantically_equal(serial: &ColumnCache, parallel: &ColumnCache, fixtu
     assert_eq!(serial.sim_start_tick, parallel.sim_start_tick, "{fixture}");
     assert_eq!(serial.sim_end_tick, parallel.sim_end_tick, "{fixture}");
     assert_eq!(serial.ticks_to_ns, parallel.ticks_to_ns, "{fixture}");
+    assert_eq!(
+        serial.timescale_exponent, parallel.timescale_exponent,
+        "{fixture}"
+    );
     assert_eq!(serial.timescale_str, parallel.timescale_str, "{fixture}");
     assert_eq!(
         serial.clock_period_ticks, parallel.clock_period_ticks,
