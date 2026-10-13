@@ -6206,6 +6206,36 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             },
         )
 
+    def _record_test_goal_criteria(self, target_result: TargetResult) -> None:
+        """Record this Target's Test Runs for the Goals that name Test Runs (ADR 0072).
+
+        The Target Goal is recorded under ``sim_pass_<target>`` by
+        :meth:`_record_sim_criterion`. A Goal that names a selector has its own
+        key and takes the runs that match its frozen Test Runs; without a
+        matching run this invocation is diagnostic for it.
+        """
+        frozen = self._frozen_test_runs()
+        if frozen is None or target_result.inconclusive:
+            return
+        rows = _test_run_rows(target_result.tests)
+        for goal in frozen.of_target(self._target_names(target_result.target)):
+            matched = goal.matching(rows)
+            graded = any(row["grade"] in {"pass", "fail"} for row in matched)
+            if goal.kind != "simulation" or goal.suite or not graded:
+                continue
+            passed = sum(row["grade"] == "pass" for row in matched)
+            self.set_criterion(
+                goal.key,
+                goal.passed_by(matched),
+                source_target=target_result.target,
+                detail={
+                    "mode": self._mode.value,
+                    "tests_passed": passed,
+                    "tests_total": len(matched),
+                    "test_runs": matched,
+                },
+            )
+
     def _record_cycle_count_criteria(self, target_result: TargetResult) -> None:
         """Grade every declared Criterion bound to this Target and named test."""
         if self.args.state_file is None:
@@ -7230,6 +7260,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         self._write_target_report(result, complete=False)
         self._record_elab_criterion(result)
         self._record_sim_criterion(result)
+        self._record_test_goal_criteria(result)
         self._record_cycle_count_criteria(result)
         if self.state._file_path is not None:
             self.state.save()

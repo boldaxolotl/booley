@@ -206,3 +206,39 @@ def test_outside_goal_mode_nothing_is_called_diagnostic(tmp_path, monkeypatch):
     result = EndpointOutcome(report_text="sim: ran")
     assert flow._with_diagnostic_test_run_note(result).report_text == "sim: ran"
     assert "diagnostic_test_runs" not in result.detail
+
+
+def test_direct_recording_gives_a_test_goal_only_its_matching_runs(tmp_path, monkeypatch):
+    """Outside a campaign too, a Goal that names a selector takes just its frozen runs."""
+    from unittest.mock import MagicMock
+
+    from booley.flows.sim.flow import TargetResult, TestResult
+
+    pinned = GoalTestRuns(
+        "sim_pass_sim_run_x_s9", "simulation", "sim", (_run("stress", "soak", 9),)
+    )
+    flow = _goal_flow(tmp_path, monkeypatch, _frozen(_SUITE, pinned, _SEEDS))
+    flow.set_criterion = MagicMock()
+
+    def result(run, passed: bool) -> TestResult:
+        return TestResult(name=run.test, passed=passed, test_run=run)
+
+    target = TargetResult(
+        target="sim",
+        passed=False,
+        tests=[result(pinned.runs[0], True), result(_run("stress", "short", 1), False)],
+    )
+    flow._record_test_goal_criteria(target)
+
+    # The suite Goal is recorded under ``sim_pass_sim`` elsewhere, and no frozen
+    # seed of the multi-seed Goal ran: only the pinned Goal gets a change.
+    flow.set_criterion.assert_called_once()
+    assert flow.set_criterion.call_args.args == ("sim_pass_sim_run_x_s9", True)
+    detail = flow.set_criterion.call_args.kwargs["detail"]
+    assert [row["name"] for row in detail["test_runs"]] == ["stress+soak@9"]
+    assert (detail["tests_passed"], detail["tests_total"]) == (1, 1)
+
+    standalone = _flow(tmp_path, monkeypatch)
+    standalone.set_criterion = MagicMock()
+    standalone._record_test_goal_criteria(target)
+    standalone.set_criterion.assert_not_called()
