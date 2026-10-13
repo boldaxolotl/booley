@@ -50,7 +50,7 @@ def validate(
         project=project,
         project_state=state,
         python=python,
-        goals=(parse_goal_arg({"family": "lint", "target": "lint_core"}),),
+        goals=(parse_goal_arg({"family": "LINT", "target": "lint_core"}),),
     )
     if result.get("state") != "finished":
         raise RuntimeError("demo Goal surface did not finish")

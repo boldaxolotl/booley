@@ -421,7 +421,7 @@ def _finalize_result(endpoint: EndpointState, result: EndpointOutcome) -> None:
     stats for code-modifying endpoints. Specialist overrides this to also
     stamp accumulated token/cost data from sub-agent calls.
     """
-    if endpoint.records_no_evidence:
+    if getattr(endpoint.args, "diagnostic", False):
         result.detail = dict(result.detail or {})
         result.detail["acceptance_effect"] = "diagnostic"
     if endpoint.code_modifying:
@@ -530,7 +530,7 @@ def _persist_run_state(
             endpoint.discard_evidence(exc)
             report_discarded_evidence(endpoint, result)
             return
-        _emit_criteria_update(endpoint.state)
+        _emit_criteria_update(endpoint.state, endpoint._acceptance_recorder)
 
 
 def report_discarded_evidence(endpoint: EndpointState, outcome: EndpointOutcome) -> None:

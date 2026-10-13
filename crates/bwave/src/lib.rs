@@ -1,9 +1,7 @@
 pub mod cache;
 pub mod docs;
-pub mod extract;
 pub mod format;
 pub mod fst;
-pub mod index;
 pub mod output;
 pub mod parser;
 mod profile;
@@ -111,7 +109,7 @@ impl Default for ExtractConfig {
 
 impl ExtractConfig {
     /// Parse the raw time-token strings (`time_str`, `at_str`, `diff_strs`)
-    /// against `ticks_to_ns` and `clock_period_ticks` from the cache header.
+    /// against the cache's timescale, counted clock grid, and reset policy.
     /// Populates `time_min`, `time_max`, `at_time`, and `diff_points` in
     /// place. Returns a human-readable error on bad syntax or
     /// timescale-missing conditions. No-op when the relevant string field
@@ -119,20 +117,16 @@ impl ExtractConfig {
     ///
     /// Sync vs async: when `self.async_mode` is true, time bounds resolve to
     /// raw simulation ticks; in sync mode they resolve to cycle numbers.
-    pub fn resolve_time_tokens(
-        &mut self,
-        ticks_to_ns: f64,
-        clock_period_ticks: u64,
-    ) -> Result<(), String> {
+    pub fn resolve_time_tokens(&mut self, cache: &cache::ColumnCache) -> Result<(), String> {
         use format::{parse_time_range, TimeToken};
 
-        let resolve = |tok: &TimeToken| -> Result<i64, String> {
-            if self.async_mode {
-                tok.resolve_to_tick(ticks_to_ns, clock_period_ticks)
-            } else {
-                tok.resolve_to_cycle(ticks_to_ns, clock_period_ticks)
-            }
+        let policy = ExtractConfig {
+            async_mode: self.async_mode,
+            with_reset: self.with_reset,
+            reset_pattern: self.reset_pattern.clone(),
+            ..Default::default()
         };
+        let resolve = |tok: &TimeToken| cache::resolve_time_token(cache, &policy, tok);
 
         let mut markers = Vec::with_capacity(self.marker_tokens.len());
         for (name, token) in &self.marker_tokens {

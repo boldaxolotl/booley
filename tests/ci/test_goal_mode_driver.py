@@ -19,8 +19,8 @@ from tests.smoke import test_goal_mode_image_smoke as smoke
 _ID = "ci-demo-20261009T120000Z"
 _WORKTREE = Path("/fixture")
 _LINT = driver.load_contract(Path(".github/contracts/picorv32-demo.toml")).required_goals[0]
-_ENTER = f"Goal Mode {_ID} entered in {_WORKTREE}.\nGoals (all unmet):\n- lint_clean_lint_core"
-_STATUS = f"{_ID} (active) · 1/1 met\nlint_clean_lint_core met clean"
+_ENTER = f"Goal Mode {_ID} entered in {_WORKTREE}.\nGoals (all unmet):\n- LINT:lint_core"
+_STATUS = f"{_ID} (active) · 1/1 met\nLINT:lint_core met clean"
 
 
 def _reply(text, *, error=False):
@@ -66,7 +66,10 @@ def test_roundtrip_requires_enter_lint_fresh_status_and_finish() -> None:
 def test_readiness_lists_full_contract_and_leaves_unmet_goals_active() -> None:
     goals = driver.load_contract(Path(".github/contracts/picorv32-demo.toml")).required_goals
     keys = [goal.key for goal in driver.translate_goals(goals).goals]
-    status = f"{_ID} (active) · 0/{len(keys)} met\n" + "\n".join(f"{key} unmet" for key in keys)
+    status = f"{_ID} (active) · 0/{len(keys)} met\n" + "\n".join(
+        f"{driver.goal_presentation(spec).text} unmet"
+        for spec in driver.translate_goals(goals).goals
+    )
     result, calls = _exercise([_reply(_ENTER), _reply(status)], goals=goals, readiness=True)
     assert result["state"] == "active" and set(result["goals"]) == set(keys)
     assert [name for name, _ in calls] == ["goal_enter", "goal_status"]
@@ -102,8 +105,8 @@ def test_failed_or_incomplete_lint_never_finishes(text) -> None:
         _STATUS.replace(_ID, "foreign"),
         _STATUS.replace("1/1", "0/1"),
         _STATUS.replace("1/1", "1/2"),
-        _STATUS.replace("lint_clean_lint_core", "other"),
-        _STATUS + "\nlint_clean_lint_core met",
+        _STATUS.replace("LINT:lint_core", "other"),
+        _STATUS + "\nLINT:lint_core met",
         _STATUS.replace("1/1 met", "0/1 met").replace("met clean", "unmet"),
         _STATUS.replace("1/1 met", "0/1 met").replace("met clean", "stale"),
     ],
@@ -283,7 +286,9 @@ def _readiness_client(workspace, goals, record, monkeypatch, warning=""):
             _reply(f"Goal Mode {_ID} entered in {workspace.worktree}.\n{warning}"),
             _reply(
                 f"{_ID} (active) · 0/{len(specs)} met\n"
-                + "\n".join(f"{spec.key} unmet no evidence" for spec in specs)
+                + "\n".join(
+                    f"{driver.goal_presentation(spec).text} unmet no evidence" for spec in specs
+                )
             ),
         ]
     )
@@ -303,7 +308,7 @@ def _readiness_client(workspace, goals, record, monkeypatch, warning=""):
 def test_readiness_rejects_unresolved_record_targets_without_warning_prose(
     readiness_workspace, monkeypatch, target
 ) -> None:
-    goals = [parse_goal_arg({"family": "lint", "target": target or "lint_core"})]
+    goals = [parse_goal_arg({"family": "LINT", "target": target or "lint_core"})]
     key = driver.translate_goals(goals).goals[0].key
     record = SimpleNamespace(
         state=driver.GoalState.ACTIVE,
@@ -392,10 +397,8 @@ def test_image_failure_uses_shared_unflagged_refusal_classification(tmp_path, mo
     session = FakeSession(
         [
             _reply("EXIT_CODE: 1\nintentional Goal Mode smoke failure"),
-            _reply(f"{_ID} (active) · 0/1 met\nsim_pass_sim_fail unmet failure"),
-            _reply(
-                "ERROR: Goals must be met and fresh before finish: sim_pass_sim_fail", error=None
-            ),
+            _reply(f"{_ID} (active) · 0/1 met\nSIM:sim_fail unmet failure"),
+            _reply("ERROR: Goals must be met and fresh before finish: SIM:sim_fail", error=None),
         ]
     )
 
@@ -418,3 +421,17 @@ def test_image_failure_uses_shared_unflagged_refusal_classification(tmp_path, mo
     )
     asyncio.run(smoke._failure(driver.Workspace(tmp_path, tmp_path / "worktree")))
     assert [name for name, _ in session.calls] == ["sim", "goal_status", "goal_finish"]
+
+
+def test_status_parser_accepts_public_names_with_parenthesized_requirements():
+    text = f"{_ID} (active) · 1/2 met\n SYNTH:synth_core (fmax ≥ 400 MHz) met fresh\n REVIEW:rtl_bugs (clean) unmet no evidence"
+    assert driver.status_rows(text, _ID, ["SYNTH:synth_core", "REVIEW:rtl_bugs"]) == {
+        "SYNTH:synth_core": "met",
+        "REVIEW:rtl_bugs": "unmet",
+    }
+    with pytest.raises(driver.GoalDriverError):
+        driver.status_rows(
+            text + "\n SYNTH:synth_core (fmax ≥ 400 MHz) met fresh",
+            _ID,
+            ["SYNTH:synth_core", "REVIEW:rtl_bugs"],
+        )

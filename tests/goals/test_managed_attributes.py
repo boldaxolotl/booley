@@ -98,7 +98,7 @@ def test_finish_accepts_and_records_managed_policy_for_each_participant(layout, 
         layout, project = paired_complete(layout, tmp_path)
         managed_attributes(project)
     else:
-        layout.record = enter_goals(layout, [{"family": "lint", "target": "top"}])
+        layout.record = enter_goals(layout, [{"family": "LINT", "target": "top"}])
         publish(layout)
     managed_attributes(layout.worktree)
     call = request(layout)
@@ -131,7 +131,7 @@ def test_empty_info_or_recognized_rule_whitespace_is_safe(tmp_path, content):
 def test_finish_recovery_revalidates_local_policy(layout, change):
     from tests.goals.test_finish import Crash
 
-    layout.record = enter_goals(layout, [{"family": "lint", "target": "top"}])
+    layout.record = enter_goals(layout, [{"family": "LINT", "target": "top"}])
     publish(layout)
     info = managed_attributes(layout.worktree)
     call = request(layout)

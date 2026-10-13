@@ -9,6 +9,7 @@ vvp/Vtop runs are exercised end-to-end in the Sandbox e2e.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shlex
@@ -911,3 +912,39 @@ def test_live_exception_log_before_cocotb_child_completes(tmp_path, monkeypatch)
     assert proc.returncode == 0
     assert not termination.aborted
     assert "final diagnostic" in log.read_text()
+
+
+@pytest.mark.parametrize("eda_tool,backend", [("icarus", "iverilog"), ("verilator", "verilator")])
+def test_traced_cocotb_status_reports_simulator(tmp_path: Path, eda_tool: str, backend: str):
+    build = tmp_path / "build"
+    build.mkdir()
+    (build / ("sim_image.scr" if eda_tool == "icarus" else "Vtop")).write_text("")
+    with (
+        patch.object(crun, "_cocotb_config", side_effect=_stub_cocotb_config),
+        patch("shutil.which", return_value="/usr/bin/vvp"),
+    ):
+        run = crun._prepare_cocotb_run(
+            build_dir=build,
+            run_cwd=None,
+            work_dir=tmp_path / "work",
+            eda_tool=eda_tool,
+            module="test_counter",
+            tests=["test_count"],
+            plusargs=[],
+            vcd=True,
+            trace_scope="counter",
+        )
+    assert not isinstance(run, str)
+    if eda_tool == "icarus":
+        assert run.command[0] == "/usr/bin/vvp"
+        assert str(build / "sim_image") in run.command
+        assert run.command[-1] == "+trace"
+    else:
+        assert run.command[0] == str(build / "Vtop")
+        assert run.command[-3:] == ["--trace", "--trace-file", "dump.vcd"]
+    assert run.trace is not None
+    assert not run.trace.manifest_path.exists()
+    run.trace.record_attempt("vcd_postprocess", "started")
+    status = json.loads(run.trace.manifest_path.read_text())
+    assert status["backend"] == backend
+    assert status["trace_scope"] == "counter"

@@ -75,7 +75,7 @@ def test_private_protected_bytes_are_hash_only_in_all_public_artifacts(layout):
     hook = layout.control / "hooks" / "private.py"
     hook.parent.mkdir()
     hook.write_bytes(marker)
-    layout.record = enter_goals(layout, [{"family": "lint", "target": "top"}])
+    layout.record = enter_goals(layout, [{"family": "LINT", "target": "top"}])
     publish(layout)
     call = request(layout, explain_html=True)
     result = finish_goal(call, environment(layout))
@@ -122,7 +122,7 @@ def test_recovery_caller_retry_survives_prior_terminal_response_gap_and_reentry(
         EntryRequest(
             complete.worktree,
             "replacement",
-            parse_goal_args([{"family": "lint", "target": "top"}]),
+            parse_goal_args([{"family": "LINT", "target": "top"}]),
         ),
         EntryEnvironment(complete.control),
     ).record

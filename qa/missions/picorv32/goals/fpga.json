@@ -1,6 +1,6 @@
 [
   {
-    "family": "fpga",
+    "family": "FPGA",
     "target": "fpga_core_zbb"
   }
 ]

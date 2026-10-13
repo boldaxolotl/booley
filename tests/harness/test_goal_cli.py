@@ -26,7 +26,7 @@ def test_goal_status_cli(
     assert _cmd_goal(args, goal_mode.main) == 0
     text = capsys.readouterr().out
     assert goal_mode.record.id in text
-    assert ("lint_clean_top" in text) is not short
+    assert "LINT:top" in text
 
 
 @pytest.mark.parametrize("short", [False, True])
@@ -82,7 +82,7 @@ def test_goal_abandon_cli_selects_once_and_retries_with_explicit_ids(
 @pytest.mark.parametrize("met", [False, True])
 def test_goal_status_simulation_contract_explanation(goal_mode, monkeypatch, capsys, met):  # noqa: F811 — shared pytest fixture
     from booley.goals.recorder import GoalEvidenceRecorder
-    from tests.goals.conftest import SIM_KEY, bind
+    from tests.goals.conftest import SIM_KEY, bind, run_row
     from tests.goals.test_recorder import _v1
 
     state = _v1(
@@ -91,8 +91,8 @@ def test_goal_status_simulation_contract_explanation(goal_mode, monkeypatch, cap
         SIM_KEY,
         met,
         {
-            "required_tests": [] if met else ["smoke"],
-            "passed_tests": [],
+            # A claimed pass that names no frozen Test Run, or a failing frozen one.
+            "test_runs": [] if met else [run_row(grade="fail")],
             "tests_passed": 1 if met else 0,
             "tests_total": 1,
         },
@@ -101,11 +101,9 @@ def test_goal_status_simulation_contract_explanation(goal_mode, monkeypatch, cap
     assert _cmd_goal(Namespace(goal_command="status", long=True, short=False), goal_mode.main) == 0
     text = " ".join(capsys.readouterr().out.split())
     assert f"{int(met)}/1 tests" in text
-    if met:
-        assert state.criteria[SIM_KEY].detail["goal_contract_violation"] in text
-    else:
-        assert "complete resolved suite" not in text
-        assert "—" not in text
+    assert state.criteria[SIM_KEY].met is False
+    reason = "goal-test-run-incomplete" if met else "goal-test-run-failed"
+    assert f"{reason}: {state.criteria[SIM_KEY].detail['goal_contract_violation']}" in text
 
 
 PREFIX = "No Goal Mode is active here. Active Goal Modes in this Project:\n"
@@ -233,4 +231,165 @@ def test_goal_status_error_bytes(goal_mode, tmp_path, monkeypatch, capsys, error
         _cmd_goal(Namespace(goal_command="status", short=False, long=False), goal_mode.main) == 2
     )
     captured = capsys.readouterr()
-    assert (captured.out, captured.err) == ("", f"ERROR: {failure.value}\n")
+    message = (
+        f"Goal unavailable (unsupported record); inspect: {record_paths(goal_mode.control, goal_mode.record.id).record_file}"
+        if error == "corrupt"
+        else str(failure.value)
+    )
+    assert (captured.out, captured.err) == ("", f"ERROR: {message}\n")
+
+
+@pytest.fixture
+def selection_cli(monkeypatch):
+    from booley.harness import booley as cli
+
+    monkeypatch.delenv("BOOLEY_CONTAINER", raising=False)
+    monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
+    monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: True)
+    monkeypatch.setattr(cli.runtime_context, "ensure_proxy_env", lambda: False)
+
+    def invoke(*arguments):
+        monkeypatch.setattr("sys.argv", ["booley", *map(str, arguments)])
+        return cli.main()
+
+    return invoke
+
+
+@pytest.mark.parametrize("caller", ["main", "worktree"])
+@pytest.mark.parametrize("spelling", ["prefix", "alias", "suffix", "nested-relative"])
+def test_goal_status_project_selection(
+    goal_mode,  # noqa: F811 — shared fixture
+    monkeypatch,
+    capsys,
+    selection_cli,
+    caller,
+    spelling,
+):
+    import os
+
+    other = second_goal(goal_mode, monkeypatch)
+    monkeypatch.chdir(getattr(goal_mode, caller))
+    selected = other.worktree
+    if spelling == "nested-relative":
+        selected = selected / "nested"
+        selected.mkdir()
+        selected = os.path.relpath(selected)
+    arguments = ["-C", selected, "goal", "status", "--long"]
+    if spelling == "alias":
+        arguments[0] = "--project"
+    elif spelling == "suffix":
+        arguments = ["goal", "status", "--long", "-C", selected]
+    assert selection_cli(*arguments) == 0
+    captured = capsys.readouterr()
+    assert other.record.id in captured.out
+    assert goal_mode.record.id not in captured.out
+    assert PREFIX not in captured.out
+    assert captured.err == ""
+
+
+@pytest.mark.parametrize("caller", ["main", "worktree"])
+def test_goal_abandon_project_selection_and_retry(
+    goal_mode,  # noqa: F811 — shared fixture
+    monkeypatch,
+    capsys,
+    selection_cli,
+    caller,
+):
+    from booley.goals.model import GoalState
+    from booley.goals.store import GoalStore
+    from tests.goals.conftest import git
+
+    other = second_goal(goal_mode, monkeypatch)
+    store = GoalStore(goal_mode.control)
+    before = store.load(goal_mode.record.id)
+    monkeypatch.chdir(getattr(goal_mode, caller))
+    quote = "Stop selected Goal"
+    arguments = ["-C", other.worktree, "goal", "abandon", "--instruction-quote", quote]
+    result = selection_cli(*arguments)
+    captured = capsys.readouterr()
+    # Check persisted selection even when the unfixed command reports success for A.
+    assert store.load(goal_mode.record.id) == before
+    assert result == 0, captured.err
+    ended = store.load(other.record.id)
+    assert ended.state == GoalState.ABANDONED
+    assert ended.end_instruction_quote == quote
+    assert "Branch and files retained" in captured.out
+    assert captured.err == ""
+    operation = captured.out.split("--operation-id ", 1)[1].splitlines()[0].strip()
+    for retry_caller in (goal_mode.main, goal_mode.worktree):
+        monkeypatch.chdir(retry_caller)
+        assert (
+            selection_cli(*arguments, "--record-id", other.record.id, "--operation-id", operation)
+            == 0
+        )
+        assert capsys.readouterr().out == captured.out
+        assert store.load(goal_mode.record.id) == before
+        assert store.load(other.record.id) == ended
+    for mode in (goal_mode, other):
+        assert (mode.worktree / "rtl.v").is_file()
+        assert git(mode.main, "show-ref", "--verify", f"refs/heads/{mode.record.branch}")
+
+
+@pytest.mark.parametrize("command", ["status", "abandon"])
+def test_goal_project_selection_main_without_occupant(
+    goal_mode,  # noqa: F811 — shared fixture
+    monkeypatch,
+    capsys,
+    selection_cli,
+    command,
+):
+    from booley.goals.store import GoalStore
+
+    other = second_goal(goal_mode, monkeypatch)
+    store = GoalStore(goal_mode.control)
+    before = [store.load(mode.record.id) for mode in (goal_mode, other)]
+    monkeypatch.chdir(goal_mode.worktree)
+    assert selection_cli("-C", goal_mode.main, "goal", command) == (
+        0 if command == "status" else 2
+    )
+    captured = capsys.readouterr()
+    if command == "status":
+        assert captured.out.startswith(PREFIX)
+        assert all(record.id in captured.out for record in before)
+        assert captured.err == ""
+    else:
+        assert captured.err == (
+            "ERROR: worktree hosts no Goal Mode; supply exact retry IDs for a closed operation\n"
+        )
+    assert [store.load(mode.record.id) for mode in (goal_mode, other)] == before
+
+
+def test_goal_status_project_selection_no_option(goal_mode, monkeypatch, capsys, selection_cli):  # noqa: F811 — shared fixture
+    other = second_goal(goal_mode, monkeypatch)
+    nested = goal_mode.worktree / "nested"
+    nested.mkdir()
+    occupant_output = None
+    for location in (goal_mode.main, goal_mode.worktree, nested):
+        monkeypatch.chdir(location)
+        assert selection_cli("goal", "status", "--long") == 0
+        captured = capsys.readouterr()
+        assert goal_mode.record.id in captured.out
+        assert captured.err == ""
+        if location == goal_mode.main:
+            assert captured.out.startswith(PREFIX)
+            assert other.record.id in captured.out
+        else:
+            assert PREFIX not in captured.out
+            assert other.record.id not in captured.out
+            if occupant_output is None:
+                occupant_output = captured.out
+            assert captured.out == occupant_output
+
+
+def test_goal_abandon_project_selection_no_option(goal_mode, monkeypatch, capsys, selection_cli):  # noqa: F811 — shared fixture
+    from booley.goals.model import GoalState
+    from booley.goals.store import GoalStore
+
+    other = second_goal(goal_mode, monkeypatch)
+    store = GoalStore(goal_mode.control)
+    before = store.load(other.record.id)
+    monkeypatch.chdir(goal_mode.worktree)
+    assert selection_cli("goal", "abandon") == 0
+    assert capsys.readouterr().err == ""
+    assert store.load(goal_mode.record.id).state == GoalState.ABANDONED
+    assert store.load(other.record.id) == before

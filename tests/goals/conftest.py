@@ -19,7 +19,11 @@ from typing import Any
 import pytest
 
 from booley.core.project_dir import reset_cache
+from booley.flows import target_test_plan_loading
+from booley.flows.target_test_plan import TargetTestPlan
+from booley.flows.test_runs import TestRun, build_test_run, test_run_document
 from booley.goals import entry as entry_module
+from booley.goals import test_run_freezing
 from booley.goals.binding import GoalRunBinding, bind_run
 from booley.goals.store import GoalStore
 from booley.targets.domain import UnknownTargetError
@@ -59,6 +63,20 @@ def git(cwd: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
+def fake_target_identity(_work_dir: Path | str, target: str) -> str:
+    """The identity of a known Target, written by name or as ``::name:0#name``."""
+    name = target.rpartition("#")[2]
+    if name not in KNOWN_TARGETS or target not in {name, f"::{name}:0#{name}"}:
+        raise UnknownTargetError(target)
+    return f"::{name}:0#{name}"
+
+
+def fake_test_plan(work_dir: Path | str, target: str) -> TargetTestPlan:
+    """The Test Run plan of a known Target: its ``tests.toml`` section on Verilator."""
+    name = fake_target_identity(work_dir, target).rpartition("#")[2]
+    return target_test_plan_loading.load_target_test_plan(work_dir, name, adapter="verilator")
+
+
 class FakeCatalog:
     """Knows :data:`KNOWN_TARGETS`; any other name is unknown."""
 
@@ -93,6 +111,11 @@ def layout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleNa
     write_project_files(worktree / ".booley_project")
     monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(control))
     monkeypatch.setattr(entry_module, "TargetCatalog", FakeCatalog)
+    monkeypatch.setattr(target_test_plan_loading, "load_checkout_target_test_plan", fake_test_plan)
+    monkeypatch.setattr(target_test_plan_loading, "checkout_target_identity", fake_target_identity)
+    # A run being bound and a status read resolve pending slots without a seed source of
+    # their own: give them a deterministic one.
+    monkeypatch.setattr(test_run_freezing, "draw_seeds", counting_draw(501))
     stamps = iter(f"{DATE}T12{minute:02d}00Z" for minute in range(60))
     monkeypatch.setattr(entry_module, "compact_utc_now", lambda: next(stamps))
     reset_cache()
@@ -141,16 +164,53 @@ TOP_CORE = (
 )
 #: The Goals the active Goal Mode fixture enters with.
 GOAL_ARGS = (
-    {"family": "lint", "target": "top"},
-    {"family": "sim", "target": "top"},
+    {"family": "LINT", "target": "top"},
+    {"family": "SIM", "target": "top"},
 )
 LINT_KEY = "lint_clean_top"
 SIM_KEY = "sim_pass_top"
+#: The public name of the Goal :data:`SIM_KEY` is the key of.
+SIM_NAME = "SIM:top (all selected tests pass)"
 
 
-def enter_goals(layout: SimpleNamespace, goals: Sequence[Mapping[str, Any]] = GOAL_ARGS) -> Any:
+TESTS_TOML = b'[top]\ntests = ["smoke"]\n'
+
+
+def counting_draw(first: int = 101) -> Any:
+    """A seed source that hands out *first*, *first* + 1, ... and skips excluded seeds."""
+    counter = iter(range(first, first + 10_000))
+
+    def draw(count: int, *, exclude: Any = ()) -> tuple[int, ...]:
+        drawn: list[int] = []
+        while len(drawn) < count:
+            seed = next(counter)
+            if seed not in exclude:
+                drawn.append(seed)
+        return tuple(drawn)
+
+    return draw
+
+
+def entry_environment(layout: SimpleNamespace, **extra: Any) -> Any:
+    """The entry environment of *layout*, with a deterministic seed source."""
+    from booley.goals.entry import EntryEnvironment
+
+    return EntryEnvironment(project_dir=layout.control, draw_seeds=counting_draw(), **extra)
+
+
+def write_tests_toml(layout: SimpleNamespace, content: bytes) -> None:
+    """Rewrite the worktree's ``tests.toml`` (bytes: digests match on every platform)."""
+    (layout.worktree / ".booley_project" / "tests.toml").write_bytes(content)
+
+
+def enter_goals(
+    layout: SimpleNamespace,
+    goals: Sequence[Mapping[str, Any]] = GOAL_ARGS,
+    *,
+    tests_toml: bytes = TESTS_TOML,
+) -> Any:
     """Commit a ``top`` core and a ``tests.toml`` in the worktree, then enter Goal Mode."""
-    from booley.goals.entry import EntryEnvironment, EntryRequest, enter_goal_mode
+    from booley.goals.entry import EntryRequest, enter_goal_mode
     from booley.goals.model import parse_goal_args
 
     # Byte writes keep every digested file identical on every platform.
@@ -158,11 +218,11 @@ def enter_goals(layout: SimpleNamespace, goals: Sequence[Mapping[str, Any]] = GO
     (layout.worktree / "rtl.v").write_bytes(b"module top; endmodule\n")
     git(layout.worktree, "add", "top.core", "rtl.v")
     git(layout.worktree, "commit", "-q", "-m", "top core")
-    (layout.worktree / ".booley_project" / "tests.toml").write_bytes(b'[top]\ntests = ["smoke"]\n')
+    write_tests_toml(layout, tests_toml)
     request = EntryRequest(
         work_dir=layout.worktree, slug="evidence", goals=parse_goal_args(list(goals))
     )
-    return enter_goal_mode(request, EntryEnvironment(project_dir=layout.control)).record
+    return enter_goal_mode(request, entry_environment(layout)).record
 
 
 @pytest.fixture
@@ -173,13 +233,28 @@ def goal_mode(layout: SimpleNamespace) -> SimpleNamespace:
 
 
 CAMPAIGN_ID = "12345678-1234-4234-9234-123456789abc"
+#: The Test Run the ``goal_mode`` fixture's simulation Goal is frozen to.
+SMOKE_RUN = build_test_run("smoke", seed=1)
 
 
-def campaign_facts() -> dict[str, Any]:
+def run_row(run: TestRun | str = SMOKE_RUN, grade: str = "pass") -> dict[str, Any]:
+    """The Test Run row a campaign records for *run* (a name means Test at seed 1)."""
+    if isinstance(run, str):
+        run = build_test_run(run, seed=1)
+    return {**test_run_document(run), "grade": grade}
+
+
+def passing_sim(*runs: TestRun | str) -> dict[str, Any]:
+    """Simulation detail of a campaign in which *runs* (default: ``smoke@1``) passed."""
+    rows = [run_row(run) for run in runs or (SMOKE_RUN,)]
+    return {"tests_passed": len(rows), "tests_total": len(rows), "test_runs": rows}
+
+
+def campaign_facts(campaign_id: str = CAMPAIGN_ID) -> dict[str, Any]:
     """Simulation acceptance facts the ledger accepts (content is not interpreted)."""
     return {
         "$schema": "booley.simulation-acceptance-facts/v1",
-        "campaign_id": CAMPAIGN_ID,
+        "campaign_id": campaign_id,
         "manifest_sha256": f"sha256:{'a' * 64}",
         "origin": {"execution_id": "b" * 32, "invocation_id": 7},
         "target": {"identity": "::top:0#top", "selector": "top"},

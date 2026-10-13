@@ -8,11 +8,20 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
+from booley.core.file_lock import LockContentionError
+from booley.flows.campaign_results import (
+    CampaignBusyError,
+    DurableCampaignResults,
+    StartedCampaign,
+)
+
 from .codec import SimulationCampaignIntegrityError
+from .coordinator import collected_result_facts
 from .model import SimulationCampaignManifest, SimulationResult
 from .planning import manifest_digest
 from .pre_sim_evidence import PreSimFiring
 from .store import CampaignRecovery, CampaignStore
+from .test_run_report import observation_test_run_rows
 
 
 class SimulationCampaignWorkItemError(SimulationCampaignIntegrityError):
@@ -275,6 +284,93 @@ def _surviving_owned_run_directories(
     return tuple(surviving)
 
 
+def started_campaign(manifest_path: Path) -> StartedCampaign:
+    """The identity of the campaign whose manifest was just published at *manifest_path*.
+
+    Raises :class:`SimulationCampaignIntegrityError` when the manifest cannot
+    be read or is not a campaign manifest.
+    """
+    try:
+        manifest = _store_for_manifest(manifest_path).load_manifest()
+    except OSError as exc:
+        raise SimulationCampaignIntegrityError(
+            f"cannot read Simulation Campaign manifest: {exc}"
+        ) from exc
+    target = cast(Mapping[str, object], manifest.document["target"])
+    return StartedCampaign(
+        manifest_path,
+        str(manifest.document["campaign_id"]),
+        manifest_digest(manifest),
+        (str(target["selector"]), f"{target['vlnv']}#{target['name']}"),
+        target["role"] == "candidate",
+    )
+
+
+def read_durable_results(manifest_path: Path, manifest_sha256: str) -> DurableCampaignResults:
+    """Authenticate and return the terminal results of the campaign at *manifest_path*.
+
+    For a campaign that never returned an outcome (it was cancelled or
+    killed): the same Test Run rows a completed campaign's acceptance
+    records, for the work items that finished. *manifest_sha256* is the
+    digest recorded when the campaign started; another manifest is refused.
+    Every result and its evidence is authenticated by the store's validated
+    scan, and each row carries the Test Run the manifest recorded with the
+    fingerprint its observation bound. The read holds the campaign's
+    mutation lock, so the results returned are all there are until the
+    campaign is resumed.
+
+    Raises :class:`~booley.flows.campaign_results.CampaignBusyError` while a
+    scheduler owns the campaign, and :class:`SimulationCampaignIntegrityError`
+    when the campaign is gone, is not the expected one, or any of its results
+    cannot be authenticated (one whose writer was killed mid-write included).
+    """
+    store = _store_for_manifest(manifest_path)
+    try:
+        with store.mutation_lock():
+            return _durable_results(store, manifest_sha256)
+    except LockContentionError as exc:
+        raise CampaignBusyError(
+            f"Simulation Campaign {manifest_path} is running: its results are not final"
+        ) from exc
+    except OSError as exc:
+        raise SimulationCampaignIntegrityError(
+            f"cannot inspect Simulation Campaign storage: {exc}"
+        ) from exc
+
+
+def _durable_results(store: CampaignStore, manifest_sha256: str) -> DurableCampaignResults:
+    manifest = store.load_manifest()
+    digest = manifest_digest(manifest)
+    if digest != manifest_sha256:
+        raise SimulationCampaignIntegrityError(
+            "Simulation Campaign manifest is not the one that was registered"
+        )
+    recovery = store.scan_validated(manifest, digest)
+    items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
+    by_id = {item["work_item_id"]: item for item in items}
+    consumed, observations = collected_result_facts(store, recovery, by_id)
+    results = tuple(
+        (str(fact["work_item_id"]), str(cast(Mapping[str, object], fact["result"])["sha256"]))
+        for fact in consumed
+    )
+    rows = tuple(observation_test_run_rows(manifest, observations))
+    started = set(recovery.interrupted)
+    unfinished = tuple(
+        (str(run["name"]), str(run["fingerprint"]))
+        for item in items
+        if item["work_item_id"] in started
+        for run in cast(tuple[Mapping[str, object], ...], item.get("test_runs", ()))
+    )
+    return DurableCampaignResults(
+        digest,
+        str(manifest.document["campaign_id"]),
+        results,
+        rows,
+        complete=not recovery.pending and not recovery.interrupted,
+        unfinished=unfinished,
+    )
+
+
 def _store_for_manifest(manifest_path: Path) -> CampaignStore:
     canonical = manifest_path.absolute()
     if canonical.name != "manifest.json" or canonical.parent.name != "campaign":
@@ -291,6 +387,8 @@ __all__ = [
     "authenticate_retained_campaign_inventory",
     "authenticate_work_item",
     "inspect_retained_campaign",
+    "read_durable_results",
     "recover_retained_campaign_resources",
     "retained_campaign_lock",
+    "started_campaign",
 ]

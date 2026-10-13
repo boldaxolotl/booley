@@ -23,9 +23,17 @@
   ``booley_state.json``.
 - :mod:`booley.goals.recorder` — Goal evidence in the Criterion evidence
   ledger: the identity codec, projection fencing, and the recorder.
-- :mod:`booley.goals.freshness`, :mod:`booley.goals.target_surface`, and
-  :mod:`booley.goals.simulation` — when met evidence is stale, the Target
-  declaration digest, and the simulation suite contract.
+- :mod:`booley.goals.freshness` and :mod:`booley.goals.target_surface` —
+  when met evidence is stale, and the Target declaration digest.
+- :mod:`booley.goals.test_run_goals`, :mod:`booley.goals.test_run_resolution`,
+  :mod:`booley.goals.test_run_freezing`, :mod:`booley.goals.test_run_evidence`,
+  and :mod:`booley.goals.test_run_status` — Goals that name Test Runs
+  (ADR 0072): their keys, the stored Test Runs they are frozen to, freezing
+  them (at entry, deferred, and on approved changes), the Test Run ledger,
+  and its reading.
+- :mod:`booley.goals.campaign_accounting` — durable Simulation Campaign
+  results and acceptance transactions that were never published are brought
+  into the ledger before anything else is recorded or judged.
 - :mod:`booley.goals.flow_execution` — the Flow execution adapter of a bound
   Goal run.
 

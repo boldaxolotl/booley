@@ -176,8 +176,8 @@ class TestCheatCommand:
     def test_criteria_flag_narrows_output(self, capsys):
         assert tlr._cmd_cheat(self._parse(["cheat", "--criteria"]), Path.cwd()) == 0
         out = capsys.readouterr().out
-        assert "elab_pass" in out  # live-spliced criteria table survives filtering
-        assert "synthesis_ok" in out
+        assert "ELAB:{target}" in out  # live-spliced criteria table survives filtering
+        assert "SYNTH:{target}" in out
         assert "booley-sandbox" not in out  # Docker section is gone
 
     def test_flows_and_specialists_are_separate_views(self, capsys):
@@ -190,7 +190,7 @@ class TestCheatCommand:
         assert tlr._cmd_cheat(self._parse(["cheat", "--specialists"]), Path.cwd()) == 0
         specialists_out = capsys.readouterr().out
         assert "Specialists" in specialists_out
-        assert "review_rtl_protocol" in specialists_out
+        assert "REVIEW:rtl_protocol" in specialists_out
         assert "Target campaign with target + scope" in specialists_out
         assert "\n  sim " not in specialists_out
 

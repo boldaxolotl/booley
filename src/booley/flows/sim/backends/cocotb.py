@@ -1132,7 +1132,8 @@ def _prepare_cocotb_run(
     if isinstance(prepared, str):
         return prepared
     env, command = prepared
-    trace = TraceSession(work, trace_scope, backend="iverilog") if vcd else None
+    backend = "iverilog" if eda_tool == "icarus" else eda_tool
+    trace = TraceSession(work, trace_scope, backend=backend) if vcd else None
     if trace is not None:
         trace.reset_for_run((run / _DEFAULT_VCD_NAME,))
     return _CocotbRun(build, run, work, results, tests, env, command, trace)

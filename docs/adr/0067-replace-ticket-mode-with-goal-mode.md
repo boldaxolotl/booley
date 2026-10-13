@@ -197,3 +197,18 @@ or unattended. It authors code and chooses Booley Flows and Specialists.
 This reverses only the vocabulary decision to retire Developer Agent above;
 it does not restore Ticket Mode or a separate Booley-launched Ticket actor.
 Old Ticket records retain their historical meaning.
+
+
+## Amendment: canonical Goal names (13 OCT 2026)
+
+Issue #1235 establishes one public name, `CAPABILITY:target`, or
+`REVIEW:review_kind`, with details in parentheses. Public Goal arguments use
+uppercase capability tokens; stored families, Goal/evidence keys, verdicts and
+record formats retain their identities. Typed Goal specifications own display;
+Flow and Specialist producers receive presentation from the execution boundary.
+Target spelling uses the catalog's minimal selector: bare when unique, qualified
+when ambiguous. Separate presentation metadata binds that spelling to the unchanged
+typed specification and freezes it beside completion artifacts, including when a
+Target disappears. Saved completion bytes are replayed
+without regeneration. MCP structured output retains separate addresses so proposals
+can select Goals without exposing internal keys in human text.

@@ -7,12 +7,11 @@ two-phase apply/revert tests were deleted along with their helpers.
 
 from __future__ import annotations
 
-import contextlib
 import json
 import os
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -24,6 +23,7 @@ from booley.criteria.state import DevelopmentState
 from booley.flows.sim.backends.cocotb import _parse_args as parse_cocotb_run_args
 from booley.flows.sim.build import PreparedSimulationBuild, SimulationBuildPreparationError
 from booley.flows.sim.target_tests import NoRunnableTestsError
+from booley.fusesoc import fusesoc_registry
 from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS, McpToolResult
 from booley.specialists.mutation_tester import (
     MutationResult,
@@ -41,6 +41,7 @@ from booley.specialists.mutation_tester import (
 )
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import IncompatibleTargetError
+from tests.conftest import require_symlinks, symlink_or_skip
 
 # The parameters the fake ``.core`` Target declares; a test may add plusargs.
 _TARGET_PARAMETERS: dict[str, Any] = {}
@@ -188,11 +189,6 @@ def test_creator_provider_failure_has_durable_debug_traceback(
         monkeypatch,
         extra_args=["--transcript-dir", str(transcript_dir)],
     )
-    plan = SimpleNamespace(work_dir=tmp_path, scope_files=[])
-    monkeypatch.setattr(
-        "booley.specialists.mutation_tester.hide_opposite_sources",
-        lambda *_args, **_kwargs: contextlib.nullcontext(),
-    )
     monkeypatch.setattr(
         endpoint,
         "_invoke_creator",
@@ -200,7 +196,7 @@ def test_creator_provider_failure_has_durable_debug_traceback(
     )
     caplog.set_level("DEBUG")
 
-    specs, elapsed, error = endpoint._proposal_round(plan, "prompt", 1, None)
+    specs, elapsed, error = endpoint._proposal_round("prompt", 1)
 
     assert specs == []
     assert elapsed == 0.0
@@ -632,7 +628,45 @@ def _patch_resolve_target(monkeypatch, *, eda_tool: str | None = "verilator"):
 
     def _fake_prepare(handle, *, build_root, lane_kind, **kwargs):
         assert lane_kind == "unreserved"
+        import yaml
+
+        root = Path(build_root)
+        root.mkdir(parents=True, exist_ok=True)
+        project = Path(handle.project_root)
+        core_file = project / "fixture.core"
+        sources = sorted((project / "rtl").glob("*.sv"))
+        core_file.write_text(
+            "CAPI=2:\n"
+            + yaml.safe_dump(
+                {
+                    "name": "acme:test:fixture:1",
+                    "filesets": {
+                        "rtl": {"files": [str(path.relative_to(project)) for path in sources]}
+                    },
+                    "targets": {},
+                }
+            )
+        )
+        entries = []
+        for source in sources:
+            name = "src/acme_test_fixture_1/" + str(source.relative_to(project))
+            staged = root / name
+            staged.parent.mkdir(parents=True, exist_ok=True)
+            staged.write_bytes(source.read_bytes())
+            entries.append({"name": name, "core": "acme:test:fixture:1"})
+        edam_path = root / "fixture.eda.yml"
+        edam_path.write_text(
+            yaml.safe_dump(
+                {
+                    "cores": {"acme:test:fixture:1": {"core_file": str(core_file)}},
+                    "files": entries,
+                }
+            )
+        )
+        (root / "Makefile").write_text("verilator -f fixture.vc\n")
+        (root / "fixture.vc").write_text("\n".join(entry["name"] for entry in entries))
         resolved = types.SimpleNamespace(
+            edam_path=edam_path,
             build_root=Path(build_root),
             toplevel="tb",
             eda_tool=eda_tool,
@@ -662,6 +696,7 @@ def _patch_resolve_target(monkeypatch, *, eda_tool: str | None = "verilator"):
                     "select": lambda _self, target, **kwargs: _fake_select(
                         work_dir, target, **kwargs
                     ),
+                    "core_closure": lambda _self, _handles: frozenset(),
                     "inspect": lambda _self, _handle: SimpleNamespace(
                         parameters=dict(_TARGET_PARAMETERS)
                     ),
@@ -1208,12 +1243,7 @@ class TestColdStart:
             dut_top_module="design_top",
             dut_files=("rtl/design_top.sv",),
         )
-        # Avoid hide_opposite_sources side effects in tests.
-        with patch(
-            "booley.specialists.mutation_tester.hide_opposite_sources",
-            side_effect=lambda *a, **k: _NoopCtx(),
-        ):
-            result = endpoint._run()
+        result = endpoint._run()
 
         from booley.dev_support import mutation_lock as lm
 
@@ -1264,11 +1294,7 @@ class TestColdStart:
             min_detected=0,
         )
 
-        with patch(
-            "booley.specialists.mutation_tester.hide_opposite_sources",
-            side_effect=lambda *args, **kwargs: _NoopCtx(),
-        ):
-            result = endpoint._run()
+        result = endpoint._run()
 
         budget = result.detail["source_size_budget"]
         assert budget["method"] == "language_neutral_source_size"
@@ -1304,11 +1330,7 @@ class TestColdStart:
 
         monkeypatch.setattr("booley.specialists.mutation_tester.subprocess.run", fake_run)
         endpoint = _make_endpoint(tmp_path, monkeypatch, scope=scope, count=2, min_detected=0)
-        with patch(
-            "booley.specialists.mutation_tester.hide_opposite_sources",
-            side_effect=lambda *args, **kwargs: _NoopCtx(),
-        ):
-            cold = endpoint._run()
+        cold = endpoint._run()
         assert cold.detail["reused_lock"] is False
         cold_builds = len(build_calls)
 
@@ -1340,11 +1362,7 @@ class TestColdStart:
         _patch_invoke_agent(monkeypatch, [FakeAgentResult(output="no json here")])
         _patch_sim_runner(monkeypatch, sim_returncode=0)
         endpoint = _make_endpoint(tmp_path, monkeypatch, scope=scope, count=2)
-        with patch(
-            "booley.specialists.mutation_tester.hide_opposite_sources",
-            side_effect=lambda *a, **k: _NoopCtx(),
-        ):
-            result = endpoint._run()
+        result = endpoint._run()
         assert result.exit_code == EXIT_ERROR
 
     def test_forbidden_category_eventually_fails(self, tmp_path: Path, monkeypatch):
@@ -1372,20 +1390,8 @@ class TestColdStart:
         )
         _patch_sim_runner(monkeypatch, sim_returncode=0)
         endpoint = _make_endpoint(tmp_path, monkeypatch, scope=scope, count=1)
-        with patch(
-            "booley.specialists.mutation_tester.hide_opposite_sources",
-            side_effect=lambda *a, **k: _NoopCtx(),
-        ):
-            result = endpoint._run()
+        result = endpoint._run()
         assert result.exit_code == EXIT_ERROR
-
-
-class _NoopCtx:
-    def __enter__(self):
-        return None
-
-    def __exit__(self, *exc):
-        return False
 
 
 # ---------------------------------------------------------------------------
@@ -1568,11 +1574,7 @@ class TestColdScopeEnforcement:
             dut_top_module="design_top",
             dut_files=("rtl/design_top.sv",),
         )
-        with patch(
-            "booley.specialists.mutation_tester.hide_opposite_sources",
-            side_effect=lambda *a, **k: _NoopCtx(),
-        ):
-            endpoint._run()
+        endpoint._run()
 
         # The stray out-of-scope edit must be gone; the working tree clean.
         assert "unauthorized edit" not in (tmp_path / "rtl/off_scope.sv").read_text()
@@ -1962,3 +1964,72 @@ def test_pristine_baseline_reports_missing_literal_run_cwd_before_elaboration(
     assert ".gitkeep" in result.report_text
     assert result.detail["phase"] == "baseline_run_cwd"
     elab.assert_not_called()
+
+
+@pytest.mark.parametrize("layout", ["recursive", "declared"])
+def test_scope_accepts_canonical_rtl_through_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, layout: str
+) -> None:
+    require_symlinks(tmp_path)
+    _author_scope_core(tmp_path)
+    if layout == "recursive":
+        (tmp_path / "lib").mkdir()
+        symlink_or_skip(tmp_path / "lib/self", Path(".."), target_is_directory=True)
+        assert (tmp_path / "lib/self").is_dir()
+        assert (tmp_path / "lib/self").resolve() == tmp_path.resolve()
+        expected = "lib/self/rtl/counter.sv"
+        original_plan = fusesoc_registry.prepare_core_library_plan
+
+        def with_alias_library(project_root):
+            plan = original_plan(project_root)
+            return replace(
+                plan,
+                roots=(*plan.roots, tmp_path / "lib/self"),
+                ignored_dirs=(*plan.ignored_dirs, frozenset({str((tmp_path / "lib").resolve())})),
+            )
+
+        # Real duplicate-core discovery, independent of platform traversal order.
+        monkeypatch.setattr(fusesoc_registry, "prepare_core_library_plan", with_alias_library)
+    else:
+        symlink_or_skip(tmp_path / "design", "rtl", target_is_directory=True)
+        core = tmp_path / "design.core"
+        core.write_text(core.read_text().replace("rtl/", "design/"))
+        expected = "design/counter.sv"
+    catalog = TargetCatalog.build(tmp_path)
+    inspection = catalog.inspect(catalog.select("sim"))
+    assert expected in inspection.rtl_files
+    endpoint = _make_endpoint(tmp_path, target="sim")
+    assert endpoint._validate_scope_against_target(["rtl/counter.sv"]) is None
+    rejected = endpoint._validate_scope_against_target(["tb/tb_counter.sv"])
+    assert rejected is not None
+    assert "does not match" in rejected.report_text
+    assert expected in rejected.report_text
+
+
+def test_scope_rejects_rtl_symlink_outside_project(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    _author_scope_core(root)
+    external = tmp_path / "external.sv"
+    external.write_text("module counter; endmodule\n")
+    source = root / "rtl/counter.sv"
+    source.unlink()
+    symlink_or_skip(source, external)
+    endpoint = _make_endpoint(root, target="sim")
+    rejected = endpoint._validate_scope_against_target([str(external)])
+    assert rejected is not None
+    assert "does not match" in rejected.report_text
+
+
+def test_scope_fails_open_when_identity_resolution_fails(tmp_path: Path) -> None:
+    _author_scope_core(tmp_path)
+    endpoint = _make_endpoint(tmp_path, target="sim")
+    catalog = TargetCatalog.build(tmp_path)
+    inspection = catalog.inspect(catalog.select("sim"))
+    with (
+        patch.object(TargetCatalog, "inspect", return_value=inspection),
+        patch.object(
+            fusesoc_registry, "canonical_project_path", side_effect=OSError("unreadable")
+        ),
+    ):
+        assert endpoint._validate_scope_against_target(["rtl/counter.sv"]) is None

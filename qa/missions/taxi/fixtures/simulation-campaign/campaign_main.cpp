@@ -26,7 +26,7 @@ void exercise_parallel_attempt(const std::string &test) {
     std::ofstream marker("qa-shared-name.txt", std::ios::trunc);
     marker << test << '\n';
     marker.close();
-    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    std::this_thread::sleep_for(std::chrono::milliseconds(2000));
 }
 
 }  // namespace

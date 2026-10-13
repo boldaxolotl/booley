@@ -193,7 +193,7 @@ def test_init_with_comment_only_xdg_attributes_can_finish(layout, tmp_path, monk
     assert (
         layout.main / ".git/info/attributes"
     ).read_bytes() == GITATTRIBUTES_RULE.encode() + b"\n"
-    layout.record = enter_goals(layout, [{"family": "lint", "target": "top"}])
+    layout.record = enter_goals(layout, [{"family": "LINT", "target": "top"}])
     publish(layout)
     assert finish_goal(request(layout), environment(layout))["status"] == "finished"
 

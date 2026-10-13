@@ -11,8 +11,9 @@ sequence lock. Before anything is written it:
 - checks the gate for the Goals the write affects (record active, specs
   unchanged, protected inputs unchanged at start and now: D7, D15);
 - stamps every change's detail with the ``target_surface`` digest (D6) and,
-  for a simulation Goal, the suite it is judged against (B9), turning a pass
-  that does not cover the complete resolved suite into a failure.
+  for a Goal that is judged by Test Runs, keeps the runs that match its
+  frozen Test Runs, materializes its Test Run ledger, and decides the verdict
+  from it (ADR 0072, :mod:`booley.goals.test_run_evidence`).
 
 The recorder also supplies the run's state persistence
 (:class:`~booley.goals.state_store.GoalStatePersistence`), so a Flow's state
@@ -62,7 +63,10 @@ from booley.criteria.evidence_ledger import (
     plain_json_value,
 )
 from booley.criteria.state import CriterionChange, DevelopmentState, StatePersistence
+from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY, SOURCE_INVALIDATED_REASON
+from booley.flows.campaign_results import CampaignResultsReader, StartedCampaign
 from booley.flows.execution_persistence import AcceptanceRecordingError
+from booley.goals import campaign_accounting
 from booley.goals.apply_barrier import require_no_apply
 from booley.goals.binding import GoalRunBinding
 from booley.goals.freshness import (
@@ -73,13 +77,14 @@ from booley.goals.freshness import (
     stamp_goal_detail,
 )
 from booley.goals.generated_artifacts import inventory_files
-from booley.goals.model import GoalFamily, GoalRecord, GoalSpec
+from booley.goals.model import GoalRecord, GoalSpec, RecordedGoal
 from booley.goals.paths import GOAL_ID_PATTERN, record_paths
 from booley.goals.proposals import ProposalError
 from booley.goals.publication import EvidenceDiscarded, PublicationGate
-from booley.goals.simulation import GOAL_SUITE_DETAIL_KEY, simulation_contract_violation
 from booley.goals.state_store import GoalStateError, GoalStatePersistence, read_goal_state_file
 from booley.goals.store import GoalStore, GoalStoreError
+from booley.goals.test_run_evidence import judged_change
+from booley.goals.test_run_goals import names_test_runs
 
 GOAL_EVIDENCE_PURPOSE = "goal_evidence"
 _IDENTITY_FIELDS = frozenset({"purpose", "record_id", "goal_keys", "spec_revisions"})
@@ -230,7 +235,7 @@ class GoalProjection:
         current = self._current_revisions()
         newest: dict[str, dict[str, Any]] = {}
         for payload in evidence_ledger.validated_evidence_records(
-            GOAL_SCOPE, log_dir, self._with_disk_selection(state), identity
+            GOAL_SCOPE, log_dir, self.with_disk_selection(state), identity
         ):
             group = payload[GoalIdentity.identity_field]
             if group["record_id"] != self.record_id or any(
@@ -248,7 +253,7 @@ class GoalProjection:
             for payload in records
         ]
 
-    def _with_disk_selection(self, state: DevelopmentState) -> DevelopmentState:
+    def with_disk_selection(self, state: DevelopmentState) -> DevelopmentState:
         """A shallow copy of *state* selecting its own and the state file's transactions."""
         path = state.file_path
         if path is None:
@@ -290,7 +295,7 @@ class GoalProjection:
         for key, revision in canonical["spec_revisions"].items():
             if current.get(key) != revision:
                 raise AcceptanceLedgerError(
-                    f"Goal evidence for {key} was recorded under specification revision "
+                    "Goal evidence was recorded under specification revision "
                     f"{revision}; the Goal is now at {current.get(key, 'removed')}"
                 )
 
@@ -318,8 +323,10 @@ class GoalEvidenceRecorder:
         *,
         resolvers: GoalFreshnessResolvers = DEFAULT_RESOLVERS,
         publication_checkpoint: Callable[[str], None] | None = None,
+        campaign_reader: CampaignResultsReader | None = None,
     ) -> None:
         self._binding = binding
+        self._campaign_reader = campaign_reader
         self._gate = PublicationGate(binding)
         self._resolvers = resolvers
         self._checkpoint = publication_checkpoint
@@ -355,7 +362,9 @@ class GoalEvidenceRecorder:
         for key in keys:
             revision = self._binding.spec_revision(key)
             if revision is None:
-                raise EvidenceDiscarded(f"{key} was not a Goal when the run started")
+                raise EvidenceDiscarded(
+                    "Evidence did not match a Goal admitted when the run started"
+                )
             revisions[key] = revision
         if not revisions:
             raise AcceptanceRecordingError("Goal evidence needs at least one Criterion change")
@@ -408,7 +417,7 @@ class GoalEvidenceRecorder:
         """
         with self._publication(state, changes) as (publication_identity, stamped):
             try:
-                return evidence_ledger.record_or_verify_transaction(
+                transaction = evidence_ledger.record_or_verify_transaction(
                     self.log_dir,
                     state,
                     stamped,
@@ -418,8 +427,56 @@ class GoalEvidenceRecorder:
                     identity=publication_identity,
                     publication_checkpoint=self._checkpoint,
                 )
-            except AcceptanceLedgerError as exc:
+                # The campaign's results are in the ledger now: nothing is left to adopt.
+                campaign_accounting.mark_published(
+                    self._gate.store, self._binding.record_id, acceptance_facts
+                )
+            except (AcceptanceLedgerError, campaign_accounting.RegistrationFormatError) as exc:
                 raise AcceptanceRecordingError(str(exc)) from exc
+            return transaction
+
+    def register_campaign(self, campaign: StartedCampaign) -> None:
+        """Register a Simulation Campaign this run is about to start (ADR 0072).
+
+        Earlier campaigns are accounted for first, then the campaign is
+        registered with the freshness stamp of each Goal of its Target as
+        the files are now, so that its finished results can be adopted with
+        the contents they ran at if the campaign never publishes
+        (:mod:`booley.goals.campaign_accounting`). A run whose evidence the
+        gate discards registers nothing: nothing it observes will count.
+        """
+        store = self._gate.store
+        try:
+            with self._gate.publishing(()):
+                self._account(store)
+                campaign_accounting.register_campaign(
+                    store, self._binding, campaign, self._start_stamp
+                )
+        except EvidenceDiscarded:
+            return
+        except (AcceptanceLedgerError, GoalStoreError, ValueError) as exc:
+            raise AcceptanceRecordingError(
+                f"Simulation Campaign {campaign.manifest_path} cannot be registered: {exc}"
+            ) from exc
+
+    def _account(self, store: GoalStore) -> None:
+        """Bring earlier durable evidence into the ledger; this run's campaigns are its own."""
+        campaign_accounting.account_for_campaigns(
+            store,
+            self._binding.record_id,
+            reader=self._campaign_reader,
+            own_run=self._binding.invocation_id,
+        )
+
+    def _start_stamp(self, goal: RecordedGoal) -> dict[str, Any] | None:
+        """The source fingerprint detail of *goal*'s dependent files now; ``None`` if discarded."""
+        blank = CriterionChange(goal.spec.key, False, "outcome", {}, True, {})
+        try:
+            stamped = self._prepare_change(blank, goal.spec)
+        except EvidenceDiscarded:
+            return None
+        stamp = stamped.detail.get(SOURCE_FINGERPRINT_DETAIL_KEY)
+        return dict(cast("dict[str, Any]", stamp)) if isinstance(stamp, dict) else None
 
     @contextmanager
     def _publication(
@@ -430,7 +487,14 @@ class GoalEvidenceRecorder:
         keys = sorted({change.key for change in changes})
         identity = self.identity_for(keys)
         with self._gate.publishing(keys) as record:
-            yield identity, self._prepare(record, changes)
+            # No new evidence before what earlier campaigns durably observed is in the ledger.
+            try:
+                self._account(self._gate.store)
+            except (AcceptanceLedgerError, GoalStoreError) as exc:
+                raise AcceptanceRecordingError(
+                    f"earlier Goal evidence cannot be accounted for: {exc}"
+                ) from exc
+            yield identity, self._prepare(record, changes, state)
 
     def _require_unchanged_target(
         self, goal: GoalSpec, resolvers: GoalFreshnessResolvers
@@ -456,10 +520,35 @@ class GoalEvidenceRecorder:
         return surface
 
     def _prepare(
-        self, record: GoalRecord, changes: list[CriterionChange]
+        self, record: GoalRecord, changes: list[CriterionChange], state: DevelopmentState
     ) -> list[CriterionChange]:
-        goals = {goal.spec.key: goal.spec for goal in record.goals}
-        return [self._prepare_change(change, goals.get(change.key)) for change in changes]
+        """Stamp *changes*, then judge the Goals that name Test Runs by their ledger (ADR 0072)."""
+        goals = {goal.spec.key: goal for goal in record.goals}
+        history: list[dict[str, Any]] | None = None
+        prepared: list[CriterionChange] = []
+        for change in changes:
+            goal = goals.get(change.key)
+            stamped = self._prepare_change(change, None if goal is None else goal.spec)
+            if goal is not None and names_test_runs(goal.spec) and not _invalidated(change):
+                if history is None:
+                    history = self._history(state)
+                stamped = judged_change(stamped, goal, record, history)
+            prepared.append(stamped)
+        return prepared
+
+    def _history(self, state: DevelopmentState) -> list[dict[str, Any]]:
+        """Every validated observation of the record, read under the gate's record lock.
+
+        Goal writers hold that lock from here until their row is appended, so
+        no observation can appear between this read and the new one.
+        """
+        selection = self.projection().with_disk_selection(state)
+        try:
+            return evidence_ledger.validated_evidence_records(
+                GOAL_SCOPE, self.log_dir, selection, {}
+            )
+        except AcceptanceLedgerError as exc:
+            raise AcceptanceRecordingError(str(exc)) from exc
 
     def _require_producer_stamp(
         self, change: CriterionChange, goal: GoalSpec | None, excluded: frozenset[Path]
@@ -487,7 +576,7 @@ class GoalEvidenceRecorder:
                     )
 
     def _prepare_change(self, change: CriterionChange, goal: GoalSpec | None) -> CriterionChange:
-        if not change.met and change.reason == "source-invalidated":
+        if _invalidated(change):
             return change  # The detail describes old evidence, not this producer's inputs.
         work_dir = self._binding.worktree_root
         resolvers = self._resolvers
@@ -508,18 +597,12 @@ class GoalEvidenceRecorder:
             resolvers=resolvers,
             target_surface=surface,
         )
-        if goal is None or goal.family is not GoalFamily.SIM or goal.target is None:
-            return replace(change, detail=detail)
-        try:
-            suite = self._resolvers.simulation_suite(work_dir, goal.target)
-        except (OSError, ValueError) as exc:
-            detail[GOAL_SUITE_DETAIL_KEY] = None
-            return _unmet(change, detail, f"the simulation suite cannot be resolved: {exc}")
-        detail[GOAL_SUITE_DETAIL_KEY] = list(suite)
-        violation = simulation_contract_violation(detail, suite) if change.met else ""
-        if violation:
-            return _unmet(change, detail, violation)
         return replace(change, detail=detail)
+
+
+def _invalidated(change: CriterionChange) -> bool:
+    """Whether *change* only unmeets a Goal whose sources changed: it observed nothing."""
+    return not change.met and change.reason == SOURCE_INVALIDATED_REASON
 
 
 def _target_label(target: str | None) -> str:
@@ -534,12 +617,6 @@ def _require_goal_persistence(state: DevelopmentState) -> None:
         )
 
 
-def _unmet(change: CriterionChange, detail: dict[str, Any], reason: str) -> CriterionChange:
-    """*change* as a failure: a pass that does not satisfy the Goal contract never marks met."""
-    detail["goal_contract_violation"] = reason
-    return replace(change, met=False, reason="goal-simulation-contract", detail=detail)
-
-
 def _mirror_into_state(state: DevelopmentState, changes: Sequence[CriterionChange]) -> None:
     """Make *state*'s entries carry exactly what the ledger recorded for them."""
     for change in changes:
@@ -547,5 +624,4 @@ def _mirror_into_state(state: DevelopmentState, changes: Sequence[CriterionChang
         if entry is None:
             continue
         entry.detail = dict(change.detail)
-        if entry.met and not change.met:
-            entry.met = False
+        entry.met = change.met
