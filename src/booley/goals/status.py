@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
 
@@ -19,6 +19,7 @@ from booley.goals.freshness import (
 )
 from booley.goals.model import GoalRecord, RecordedGoal
 from booley.goals.paths import record_paths
+from booley.goals.presentation import GoalPresentation, goal_presentation
 from booley.goals.proposals import ProposalView, list_proposals
 from booley.goals.recorder import GOAL_SCOPE
 from booley.goals.state_store import load_goal_state
@@ -34,6 +35,7 @@ class GoalStatus:
     status: Literal["met", "unmet", "stale"]
     evidence_summary: str
     reason: str = ""
+    presentation: GoalPresentation | None = None
 
 
 @dataclass(frozen=True)
@@ -116,14 +118,20 @@ def _build_status(
     )
     latest = _latest_evidence(paths.logs_dir, state)
     goals = tuple(
-        _goal_status(
-            goal,
-            state.criteria.get(goal.spec.key),
-            latest.get(goal.spec.key),
-            record,
-            root,
-            drift,
-            resolvers,
+        replace(
+            _goal_status(
+                goal,
+                state.criteria.get(goal.spec.key),
+                latest.get(goal.spec.key),
+                record,
+                root,
+                drift,
+                resolvers,
+            ),
+            presentation=goal_presentation(
+                goal.spec,
+                _entry_facts(state.criteria.get(goal.spec.key)),
+            ),
         )
         for goal in record.goals
     )
@@ -136,6 +144,10 @@ def _build_status(
         _proposal_conflicts(proposals, record),
         interrupted,
     )
+
+
+def _entry_facts(entry: Any) -> dict[str, Any] | None:
+    return None if entry is None else entry.to_dict()
 
 
 def _proposal_conflicts(

@@ -28,8 +28,8 @@ from pathlib import Path
 from typing import Any
 
 from booley.criteria.templates import TEMPLATE_REGISTRY, CriterionSpec
+from booley.goals.capabilities import CRITERION_FOR_FAMILY
 from booley.goals.model import REVIEW_KINDS, REVIEW_VERDICTS, SPEC_REVIEW_KIND, GoalFamily
-from booley.goals.translate import CRITERION_FOR_FAMILY
 from booley.runtime.guarded_write import WriteOutcome, guarded_write
 
 # Directory, inside the Booley Directory, that holds every Goalset.
@@ -154,7 +154,7 @@ def _goal_argument(spec: CriterionSpec, *, origin: str) -> dict[str, Any]:
     """The Goal argument (entry tool input) one template Criterion stands for."""
     family = _FAMILY_FOR_CRITERION.get(spec.name)
     if spec.per_target and family is not None:
-        goal: dict[str, Any] = {"family": family.value, "target": TARGET_PLACEHOLDER}
+        goal: dict[str, Any] = {"family": family.name, "target": TARGET_PLACEHOLDER}
         if spec.params:
             if family not in (GoalFamily.SYNTH, GoalFamily.FPGA):
                 raise GoalsetTemplateError(
@@ -164,7 +164,7 @@ def _goal_argument(spec: CriterionSpec, *, origin: str) -> dict[str, Any]:
         return {**goal, "origin": origin}
     review = _REVIEW_NAME.fullmatch(spec.name)
     if review is not None and not spec.per_target and not spec.params:
-        goal = {"family": GoalFamily.REVIEW.value, **review.groupdict()}
+        goal = {"family": GoalFamily.REVIEW.name, **review.groupdict()}
         if review["review"] == SPEC_REVIEW_KIND:
             goal["spec"] = SPEC_PLACEHOLDER
         return {**goal, "origin": origin}
@@ -173,13 +173,13 @@ def _goal_argument(spec: CriterionSpec, *, origin: str) -> dict[str, Any]:
 
 def _describe(goal: Mapping[str, Any]) -> str:
     """One prose line for a Goal argument built by :func:`_goal_argument`."""
-    family = GoalFamily(goal["family"])
+    family = GoalFamily[goal["family"]]
     if family is GoalFamily.REVIEW:
-        line = f"`review`: the `{goal['review']}` review {_VERDICT_PROSE[goal['verdict']]}"
+        line = f"`REVIEW:{goal['review']}`: the review {_VERDICT_PROSE[goal['verdict']]}"
         if "spec" in goal:
             line += ", judged against the spec file the Goal names"
         return line + "."
-    line = f"`{family.value}`: every Target the change touches {_PER_TARGET_PROSE[family]}"
+    line = f"`{family.name}:{TARGET_PLACEHOLDER}`: every Target the change touches {_PER_TARGET_PROSE[family]}"
     thresholds = goal.get("thresholds")
     if thresholds:
         line += " within " + ", ".join(f"`{key}` {value}" for key, value in thresholds.items())

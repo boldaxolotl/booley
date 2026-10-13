@@ -48,7 +48,9 @@ def test_committed_block_matches_source(doc: Path) -> None:
     """Each committed criteria block is byte-identical to the current render."""
     assert doc.exists(), f"missing doc: {doc}"
     committed = extract_generated(doc.read_text(encoding="utf-8"))
-    assert committed == render_criteria_reference(_ENDPOINTS), (
+    from booley.goals.reference import render_goal_reference
+
+    assert committed == render_goal_reference(_ENDPOINTS), (
         f"{doc.name} criteria block is stale. {REGEN_HINT}"
     )
 
@@ -237,9 +239,9 @@ def test_generated_goal_examples_and_named_keys_parse_through_goal_boundary():
     named_keys = set(re.findall(r"(?:set|with|in) `([a-z_]+)`", prose))
     assert {"baseline", "target", "test", "thresholds"} <= named_keys
     assert named_keys <= set().union(*(example.keys() for example in examples))
-    families = re.findall(r"`([a-z_]+)`(?: and `([a-z_]+)`)? Goals", prose)
+    families = re.findall(r"`([A-Z_]+):\{target\}`(?: and `([A-Z_]+):\{target\}`)? Goals", prose)
     assert families
     for pair in families:
         for family in filter(None, pair):
             example = next((raw for raw in examples if raw["family"] == family), examples[0])
-            parse_goal_arg({**example, "family": family})
+            parse_goal_arg({**example, "family": family.upper()})

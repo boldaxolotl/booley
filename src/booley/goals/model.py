@@ -250,6 +250,7 @@ def goal_arg_to_json(goal: GoalArg) -> dict[str, Any]:
     }
     if isinstance(goal, MutationGoalArg):
         result.update(result.pop("params"))
+    result["family"] = goal.family.name
     return result
 
 
@@ -452,10 +453,20 @@ def _spec_path(raw: Mapping[str, Any], where: str) -> str:
 def _family(raw: Mapping[str, Any], where: str) -> GoalFamily:
     name = _required_text(raw, "family", where)
     try:
-        return GoalFamily(name)
+        return GoalFamily[name]
+    except KeyError:
+        families = [family.name for family in GoalFamily]
+        raise GoalArgError(f"{where}.family must be one of {families}") from None
+
+
+def parse_stored_goal_arg(raw: object) -> GoalArg:
+    """Read legacy argument spelling without changing its digested persisted bytes."""
+    mapping = require_dict(raw, field="stored Goal argument")
+    try:
+        family = GoalFamily(mapping.get("family"))
     except ValueError:
-        families = [family.value for family in GoalFamily]
-        raise GoalArgError(f"{where}.family must be one of {families}, got {name!r}") from None
+        raise GoalArgError("unsupported stored Goal capability") from None
+    return parse_goal_arg({**mapping, "family": family.name})
 
 
 def parse_goal_arg(raw: object, *, where: str = "goal") -> GoalArg:
@@ -510,7 +521,7 @@ _THRESHOLD_VALUE = {"type": ["number", "string"]}
 def _object(family: GoalFamily, properties: dict[str, Any], required: list[str]) -> dict[str, Any]:
     return {
         "type": "object",
-        "properties": {"family": {"const": family.value}, **properties, "origin": _ORIGIN},
+        "properties": {"family": {"const": family.name}, **properties, "origin": _ORIGIN},
         "required": ["family", *required],
         "additionalProperties": False,
     }
@@ -606,6 +617,8 @@ class GoalSpec:
     target: str | None
     params: dict[str, Any]
     origins: tuple[str, ...]
+    # Observational decoration restored from separate naming metadata; never serialized.
+    display_target: str | None = field(default=None, compare=False, repr=False)
 
     def to_json(self) -> dict[str, Any]:
         """The JSON form stored in ``record.json`` and the change log."""
@@ -824,7 +837,9 @@ class GoalRecord:
             raise GoalRecordFormatError("publication_floor must be within record revisions")
         stale = [goal.spec.key for goal in record.goals if goal.spec_revision > record.revision]
         if stale:
-            raise GoalRecordFormatError(f"record.goals {stale} are newer than the record")
+            raise GoalRecordFormatError(
+                "record.goals have specification revisions newer than the record"
+            )
         return record
 
 

@@ -31,9 +31,9 @@ def test_bound_flow_records_both_verdicts(layout, monkeypatch, simulation, cover
             slug="verdicts",
             goals=parse_goal_args(
                 [
-                    {"family": "sim", "target": "top"},
+                    {"family": "SIM", "target": "top"},
                     {
-                        "family": "coverage",
+                        "family": "COVERAGE",
                         "target": "top",
                         "tests": "all",
                         "metrics": {"line": 100},

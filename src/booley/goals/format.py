@@ -8,6 +8,7 @@ from rich.console import Console
 from rich.table import Table
 
 from booley.evidence.timing import worst_fmax_from_json
+from booley.goals.presentation import UNAVAILABLE_GOAL, goal_presentation
 
 if TYPE_CHECKING:
     from booley.goals.status import GoalStatusView
@@ -206,7 +207,7 @@ def render_status(
     import io
 
     stream = io.StringIO()
-    console = Console(file=stream, color_system=None, width=120, markup=False)
+    console = Console(file=stream, color_system=None, width=120, markup=False, emoji=False)
     if project_wide and views:
         console.print("No Goal Mode is active here. Active Goal Modes in this Project:")
     compact = len(views) != 1 if short is None else short
@@ -216,29 +217,48 @@ def render_status(
         )
         if view.warning:
             console.print(view.warning)
-        if not compact:
-            console.print(f"Worktree: {view.record.worktree_path}")
-            console.print(f"Branch: {view.record.branch}")
-            table = Table("Goal", "Status", "Evidence", box=None, padding=(0, 1))
+        if compact:
             for goal in view.goals:
-                evidence = goal.evidence_summary
-                if goal.status == "unmet" and goal.reason:
-                    evidence += f" — {goal.reason}"
-                table.add_row(goal.key, goal.status, evidence)
-            console.print(table)
-            console.print(f"Pending proposals: {view.pending_proposals}")
-            conflicts = dict(view.proposal_conflicts)
-            for proposal_view in view.proposals:
-                proposal = proposal_view.proposal
-                console.print(
-                    f"Proposal {proposal.id}: {proposal_view.state} · {proposal.kind.value} {proposal.goal_key} · {proposal.rationale}"
-                )
-                if proposal.id in conflicts:
-                    console.print(f"  Conflict: {conflicts[proposal.id]}")
-                if proposal_view.decision is not None:
-                    console.print(
-                        f"  {proposal_view.decision.source.value}: {proposal_view.decision.reason}"
-                    )
-            if view.interrupted_applies:
-                console.print("Interrupted applies: " + ", ".join(view.interrupted_applies))
+                name = goal.presentation.text if goal.presentation else UNAVAILABLE_GOAL
+                console.print(f"  {name}: {goal.status}")
+        else:
+            _render_long_status(console, view)
     return stream.getvalue().rstrip()
+
+
+def _render_long_status(console: Console, view: GoalStatusView) -> None:
+    """Detailed Goal rows and recoverable proposal state."""
+    console.print(f"Worktree: {view.record.worktree_path}")
+    console.print(f"Branch: {view.record.branch}")
+    table = Table("Goal", "Status", "Evidence", box=None, padding=(0, 1))
+    for goal in view.goals:
+        evidence = goal.evidence_summary
+        if goal.status == "unmet" and goal.reason:
+            evidence += f" — {goal.reason}"
+        table.add_row(
+            goal.presentation.text if goal.presentation else UNAVAILABLE_GOAL,
+            goal.status,
+            evidence,
+        )
+    console.print(table)
+    console.print(f"Pending proposals: {view.pending_proposals}")
+    conflicts = dict(view.proposal_conflicts)
+    for proposal_view in view.proposals:
+        proposal = proposal_view.proposal
+        after = goal_presentation(proposal.after).text
+        change = (
+            f"{goal_presentation(proposal.before).text} → {after}"
+            if proposal.before is not None
+            else after
+        )
+        console.print(
+            f"Proposal {proposal.id}: {proposal_view.state} · {proposal.kind.value} {change} · {proposal.rationale}"
+        )
+        if proposal.id in conflicts:
+            console.print(f"  Conflict: {conflicts[proposal.id]}")
+        if proposal_view.decision is not None:
+            console.print(
+                f"  {proposal_view.decision.source.value}: {proposal_view.decision.reason}"
+            )
+    if view.interrupted_applies:
+        console.print("Interrupted applies: " + ", ".join(view.interrupted_applies))

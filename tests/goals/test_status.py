@@ -82,7 +82,8 @@ def test_status_inside_outside_and_rendering(goal_mode: SimpleNamespace) -> None
     store = GoalStore(goal_mode.control)
     inside = status_views(store, goal_mode.worktree)
     assert inside == status_views(store, goal_mode.main)
-    assert "lint_clean_top" in render_status(inside)
+    assert "LINT:top" in render_status(inside)
+    assert "lint_clean_top" not in render_status(inside)
     assert "Pending proposals: 0" in render_status(inside, short=False)
     assert "lint_clean_top" not in render_status(inside, short=True)
     assert store.load(goal_mode.record.id) == goal_mode.record
@@ -99,7 +100,7 @@ def test_revision_without_evidence_cannot_become_met(goal_mode: SimpleNamespace)
 def test_candidate_target_appearing_stays_unmet(layout: SimpleNamespace) -> None:
     from tests.goals.conftest import enter_goals
 
-    layout.record = enter_goals(layout, [{"family": "lint", "target": "future"}])
+    layout.record = enter_goals(layout, [{"family": "LINT", "target": "future"}])
     store = GoalStore(layout.control)
     assert build_status(store, layout.record).goals[0].status == "unmet"
     (layout.worktree / "future.core").write_bytes(
@@ -115,8 +116,8 @@ def test_review_done_with_findings_and_clean_unmet(layout, monkeypatch):
     layout.record = enter_goals(
         layout,
         [
-            {"family": "review", "review": "rtl_bugs", "verdict": "done"},
-            {"family": "review", "review": "rtl_code_style", "verdict": "clean"},
+            {"family": "REVIEW", "review": "rtl_bugs", "verdict": "done"},
+            {"family": "REVIEW", "review": "rtl_code_style", "verdict": "clean"},
         ],
     )
     recorder = GoalEvidenceRecorder(bind(layout))

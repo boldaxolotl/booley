@@ -740,7 +740,7 @@ def test_goal_entry_and_finish_use_real_user_worktree(versioned_project, monkeyp
         reconcile_projected_cores(worktree)
         record = enter_goal_mode(
             EntryRequest(
-                worktree, "user-goal", parse_goal_args([{"family": "lint", "target": "top"}])
+                worktree, "user-goal", parse_goal_args([{"family": "LINT", "target": "top"}])
             ),
             EntryEnvironment(control),
         ).record
