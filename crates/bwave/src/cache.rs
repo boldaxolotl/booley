@@ -3649,14 +3649,25 @@ pub fn wave_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         );
     } else {
         // Async: need range-bounded decode, then collect tick set from results
-        let range_start_tick = if cache.ticks_to_ns > 0.0 {
+        if range_end_opt.is_some_and(|end| end < 0) {
+            let _ = writeln!(err, "# No data in range");
+            let _ = err.flush();
+            return;
+        }
+        // Explicit async bounds were already resolved to ticks. Clockless
+        // implicit async retains the legacy conversion of cycle-valued bounds.
+        let range_start_tick = if cfg.async_mode {
+            range_start.max(0) as u64
+        } else if cache.ticks_to_ns > 0.0 {
             (range_start as f64 / cache.ticks_to_ns) as u64
         } else {
             range_start as u64
         };
         let range_end_tick = match range_end_opt {
             Some(e) => {
-                if cache.ticks_to_ns > 0.0 {
+                if cfg.async_mode {
+                    u64::try_from(e).expect("negative upper bound handled above")
+                } else if cache.ticks_to_ns > 0.0 {
                     (e as f64 / cache.ticks_to_ns) as u64
                 } else {
                     e as u64
@@ -3708,8 +3719,7 @@ pub fn wave_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
                 );
                 break;
             }
-            let ns = (t as f64 * cache.ticks_to_ns) as u64;
-            col_headers.push(ns.to_string());
+            col_headers.push(t.to_string());
             col_ticks.push(t);
         }
 
