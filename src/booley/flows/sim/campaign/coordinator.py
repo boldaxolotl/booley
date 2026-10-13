@@ -10,6 +10,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Protocol, cast, overload
 
+from booley.evidence.fields import ACCEPTANCE_FACTS_SCHEMA_V1
 from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.sim.campaign_reports import target_report_directory
 from booley.flows.sim.coverage_campaign_store import CoverageCampaignStoreError
@@ -29,7 +30,7 @@ from .codec import (
     SimulationCampaignIntegrityError,
     encode_simulation_campaign_manifest,
 )
-from .facts import AcceptanceFacts
+from .facts import ACCEPTANCE_FACTS_SCHEMA, AcceptanceFacts
 from .model import SimulationCampaignManifest, SimulationCampaignPlan, SimulationResult
 from .planning import (
     WorkloadDiagnostic,
@@ -50,6 +51,7 @@ from .run_directory import (
 )
 from .scheduler import BoundedCampaignScheduler, ScheduledAttempt
 from .store import CampaignRecovery, CampaignStore, WorkItemRecovery
+from .test_run_binding import observation_test_runs
 
 
 @dataclass(frozen=True, slots=True)
@@ -1014,9 +1016,12 @@ def _acceptance_facts(
     by_id = {item["work_item_id"]: item for item in items}
     consumed, observations = _collected_result_facts(store, recovery, by_id)
     suite = cast(Mapping[str, object], manifest.document["required_suite"])
+    names_test_runs = all("test_runs" in item for item in items)
     facts = AcceptanceFacts(
         {
-            "$schema": "booley.simulation-acceptance-facts/v1",
+            "$schema": (
+                ACCEPTANCE_FACTS_SCHEMA if names_test_runs else ACCEPTANCE_FACTS_SCHEMA_V1
+            ),
             "campaign_id": manifest.document["campaign_id"],
             "manifest_sha256": manifest_digest(manifest),
             "origin": manifest.document["origin"],
@@ -1026,7 +1031,7 @@ def _acceptance_facts(
                 "default_invocation": suite["default_invocation"],
                 "source_sha256": suite["source_sha256"],
             },
-            "prerequisites": _prerequisite_facts(store, manifest),
+            "prerequisites": _prerequisite_facts(store, manifest, names_test_runs=names_test_runs),
             "consumed_results": consumed,
             "observations": observations,
             "coverage_reference": _coverage_acceptance_reference(
@@ -1096,23 +1101,40 @@ def _collected_result_facts(
                 "finished_at": document["finished_at"],
             }
         )
-        for observation in cast(tuple[Mapping[str, object], ...], document["observations"]):
-            observations.append(
-                {
-                    "work_item_id": recovered.work_item_id,
-                    "role": item["role"],
-                    "revision": item["revision"],
-                    "target": item["target"],
-                    "result_sha256": digest,
-                    **dict(observation),
-                }
-            )
+        results = cast(tuple[Mapping[str, object], ...], document["observations"])
+        observations.extend(_observation_facts(recovered.work_item_id, item, digest, results))
     return consumed, observations
+
+
+def _observation_facts(
+    work_item_id: str,
+    item: Mapping[str, object],
+    result_sha256: str,
+    results: tuple[Mapping[str, object], ...],
+) -> list[dict[str, object]]:
+    """The facts of one result's observations, each naming the Test Run it observed."""
+    bound = observation_test_runs(item, results)
+    facts: list[dict[str, object]] = []
+    for index, observation in enumerate(results):
+        fact = {
+            "work_item_id": work_item_id,
+            "role": item["role"],
+            "revision": item["revision"],
+            "target": item["target"],
+            "result_sha256": result_sha256,
+            **dict(observation),
+        }
+        if bound is not None:
+            fact |= {"test_run": bound[index][0], "test_run_fingerprint": bound[index][1]}
+        facts.append(fact)
+    return facts
 
 
 def _prerequisite_facts(
     owner_store: CampaignStore,
     manifest: SimulationCampaignManifest,
+    *,
+    names_test_runs: bool,
 ) -> list[dict[str, object]]:
     facts: list[dict[str, object]] = []
     entries = cast(tuple[Mapping[str, object], ...], manifest.document["prerequisites"])
@@ -1120,7 +1142,7 @@ def _prerequisite_facts(
     for entry in entries:
         manifest_reference = cast(Mapping[str, object], entry["manifest"])
         store = CampaignStore((invocation / cast(str, manifest_reference["path"])).parent)
-        _linked, expected_test = _authenticate_prerequisite_manifest(
+        _linked, expected_test, baseline_run = _authenticate_prerequisite_manifest(
             store, entry, manifest_reference
         )
         selected = _selected_prerequisite_result(store, entry)
@@ -1152,17 +1174,35 @@ def _prerequisite_facts(
                     "test": observation["test"],
                     "cycle_count": observation["cycle_count"],
                     "unit": "cycles",
+                    **_baseline_test_run_facts(baseline_run, names_test_runs=names_test_runs),
                 },
             }
         )
     return facts
 
 
+def _baseline_test_run_facts(
+    run: Mapping[str, object] | None, *, names_test_runs: bool
+) -> dict[str, object]:
+    """Name the Test Run a baseline observed, so facts show both revisions ran it.
+
+    Facts that name Test Runs need the baseline's too: a baseline campaign
+    that recorded none cannot be compared and is refused.
+    """
+    if not names_test_runs:
+        return {}
+    if run is None:
+        raise SimulationCampaignIntegrityError(
+            "Cycle Count prerequisite records no Test Run to compare"
+        )
+    return {"test_run": run["name"], "test_run_fingerprint": run["fingerprint"]}
+
+
 def _authenticate_prerequisite_manifest(
     store: CampaignStore,
     entry: Mapping[str, object],
     reference: Mapping[str, object],
-) -> tuple[SimulationCampaignManifest, str]:
+) -> tuple[SimulationCampaignManifest, str, Mapping[str, object] | None]:
     linked = store.load_manifest()
     raw = encode_simulation_campaign_manifest(linked)
     if len(raw) != reference["bytes"] or manifest_digest(linked) != reference["sha256"]:
@@ -1188,7 +1228,12 @@ def _authenticate_prerequisite_manifest(
         raise SimulationCampaignIntegrityError(
             "Cycle Count prerequisite must select exactly one test"
         )
-    return linked, names[0]
+    runs = cast("tuple[Mapping[str, object], ...] | None", selected.get("test_runs"))
+    if runs is not None and len(runs) != 1:
+        raise SimulationCampaignIntegrityError(
+            "Cycle Count prerequisite must run exactly one Test Run"
+        )
+    return linked, names[0], runs[0] if runs else None
 
 
 def _selected_prerequisite_result(store: CampaignStore, entry: Mapping[str, object]):

@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from copy import deepcopy
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -33,6 +33,7 @@ from booley.flows.sim.campaign import (
     encode_artifact_reference,
 )
 from booley.flows.sim.campaign.codec import MANIFEST_MAX_BYTES, SimulationCampaignIntegrityError
+from booley.flows.sim.campaign.test_run_report import evidence_test_run_rows
 from booley.flows.sim.campaign_reports import (
     write_compatibility_projection,
 )
@@ -44,6 +45,8 @@ from booley.flows.sim.coverage_reference import (
     encode_coverage_campaign_reference,
     resolve_coverage_campaign_reference,
 )
+from booley.flows.sim.test_run_invocation import baseline_refusal_key
+from booley.flows.test_runs import UNNAMED_TEST_DISPLAY
 from booley.targets.domain import criterion_matches_target
 
 if TYPE_CHECKING:
@@ -61,6 +64,9 @@ class AcceptanceContext:
     recorder: AcceptanceRecorder
     invocation_id: str
     diagnostic: bool = False
+    #: Why a Cycle Count baseline Test Run was not run, by (baseline Target
+    #: selector, Test). The verdict comes from the facts; this names its reason.
+    baseline_refusals: Mapping[tuple[str, str], str] = field(default_factory=dict)
     observer: Callable[[list[CriterionChange]], None] | None = None
     detail_stamper: Callable[[CriterionChange, str], dict[str, Any]] | None = None
 
@@ -75,6 +81,32 @@ class AcceptanceOutcome:
     reason: str
 
 
+class SeveralTestRunsOfOneTestError(SimulationCampaignIntegrityError):
+    """A Criterion names a Test that the campaign ran as several Test Runs.
+
+    A Criterion names a bare Test until Goals can name Test Runs (#1233 stage
+    S3), so it cannot be judged from several Test Runs of that Test. The
+    Simulation Flow keeps such a campaign diagnostic, which records no
+    Criteria; reaching this error means a caller reconciled it anyway.
+    """
+
+
+class _TestRunRows:
+    """The authenticated Test Run rows of one outcome, read on first use."""
+
+    def __init__(self, outcome: CampaignOutcome) -> None:
+        self._outcome = outcome
+        self._rows: dict[object, dict[str, object]] | None = None
+
+    def of(self, observations: Iterable[Mapping[str, object] | None]) -> list[dict[str, object]]:
+        """The row of each of *observations* that names a Test Run, in order."""
+        if self._rows is None:
+            rows = evidence_test_run_rows(self._outcome)
+            self._rows = {row["name"]: row for row in rows}
+        named = (item.get("test_run") for item in observations if item is not None)
+        return [dict(self._rows[name]) for name in named if name in self._rows]
+
+
 class SimulationAcceptanceCoordinator:
     """Derive and transactionally commit Criteria from campaign facts only."""
 
@@ -85,7 +117,7 @@ class SimulationAcceptanceCoordinator:
     ) -> AcceptanceOutcome:
         if context.diagnostic or context.state._file_path is None:
             return AcceptanceOutcome(False, None, (), "no_criteria")
-        changes = self._derive_changes(outcome, context.state)
+        changes = self._derive_changes(outcome, context.state, context.baseline_refusals)
         if context.detail_stamper is not None:
             selector = str(outcome.target["selector"])
             changes = [
@@ -115,6 +147,7 @@ class SimulationAcceptanceCoordinator:
     def _derive_changes(
         outcome: CampaignOutcome,
         state: DevelopmentState,
+        baseline_refusals: Mapping[tuple[str, str], str] | None = None,
     ) -> list[CriterionChange]:
         facts = outcome.acceptance_facts.document
         target = facts["target"]
@@ -122,9 +155,10 @@ class SimulationAcceptanceCoordinator:
             raise TypeError("campaign acceptance Target is not a mapping")
         target_name = str(target["name"])
         shadow = deepcopy(state)
-        changes = _cycle_changes(outcome, shadow, target)
-        changes.extend(_coverage_changes(outcome, shadow, target))
-        changes.extend(_simulation_changes(outcome, shadow, target, target_name))
+        rows = _TestRunRows(outcome)
+        changes = _cycle_changes(outcome, shadow, target, rows, baseline_refusals or {})
+        changes.extend(_coverage_changes(outcome, shadow, target, rows))
+        changes.extend(_simulation_changes(outcome, shadow, target, target_name, rows))
         return changes
 
 
@@ -133,6 +167,7 @@ def _simulation_changes(
     shadow: DevelopmentState,
     target: Mapping[str, object],
     target_name: str,
+    rows: _TestRunRows,
 ) -> list[CriterionChange]:
     if not outcome.complete or target["role"] != "candidate":
         return []
@@ -162,6 +197,7 @@ def _simulation_changes(
             continue
         met = _simulation_criterion_met(outcome, contract, relevant)
         detail = _simulation_detail(outcome, contract, registered, relevant)
+        detail["test_runs"] = rows.of(relevant)
         changes.extend(shadow.set_criterion(key, met, detail=detail))
     return changes
 
@@ -206,10 +242,15 @@ def eligible_simulation_keys(
     return eligible
 
 
-def _candidate_simulation_observations(
+def _candidate_observations(
     facts: Mapping[str, object], target: Mapping[str, object]
-) -> dict[object, Mapping[str, object]]:
-    indexed: dict[object, Mapping[str, object]] = {}
+) -> dict[str, Mapping[str, object]]:
+    """The candidate revision's observations of *target*, by Test Run name.
+
+    Facts before v2 name Tests only; such an observation is keyed by its Test
+    (``<default>`` for the unnamed invocation), which is unique there.
+    """
+    indexed: dict[str, Mapping[str, object]] = {}
     for item in facts["observations"]:  # type: ignore[union-attr]
         if not isinstance(item, Mapping):
             continue
@@ -219,9 +260,39 @@ def _candidate_simulation_observations(
             or item["target"] != target
         ):
             continue
+        name = str(item.get("test_run") or item["test"] or UNNAMED_TEST_DISPLAY)
+        if name in indexed:
+            raise SimulationCampaignIntegrityError(
+                f"validated acceptance facts repeat Test Run {name!r}"
+            )
+        indexed[name] = item
+    return indexed
+
+
+def _candidate_simulation_observations(
+    facts: Mapping[str, object], target: Mapping[str, object]
+) -> dict[object, Mapping[str, object]]:
+    """Candidate observations by Test, for Criteria that name Tests.
+
+    A Criterion names a Test, so it has exactly one observation to judge only
+    when the campaign ran one Test Run of that Test. Several Test Runs of one
+    Test are refused rather than letting one stand in for the others; judging
+    them needs Goals that name Test Runs (#1233 stage S3).
+
+    Raises :class:`SeveralTestRunsOfOneTestError`.
+    """
+    indexed: dict[object, Mapping[str, object]] = {}
+    names: dict[object, str] = {}
+    for name, item in _candidate_observations(facts, target).items():
         test = item["test"]
-        assert test not in indexed, "validated acceptance facts repeat an observation test"
+        if test in indexed:
+            raise SeveralTestRunsOfOneTestError(
+                f"Test {test!r} has several Test Runs in this campaign "
+                f"({names[test]}, {name}); a Criterion that names the Test cannot "
+                "choose between them"
+            )
         indexed[test] = item
+        names[test] = name
     return indexed
 
 
@@ -302,9 +373,23 @@ def _simulation_detail(
     }
 
 
+def _detail_stamper(
+    endpoint: EndpointState,
+) -> Callable[[CriterionChange, str], dict[str, Any]] | None:
+    """Stamp a Criterion change's detail with the endpoint's source fingerprint, if it has one."""
+    stamp = getattr(endpoint, "_stamp_source_fingerprint", None)
+    if not callable(stamp):
+        return None
+    return lambda change, selector: (
+        stamp(change.key, change.met, change.detail, source_target=selector) or change.detail
+    )
+
+
 def record_campaign_acceptance(
     endpoint: EndpointState,
     outcomes: tuple[object, ...],
+    *,
+    baseline_refusals: Mapping[tuple[str, str], str] | None = None,
 ) -> None:
     """Reconcile campaign facts before publishing compatibility projections."""
     work_dir = getattr(endpoint.args, "work_dir", None)
@@ -313,7 +398,6 @@ def record_campaign_acceptance(
     recorder = endpoint._acceptance_recorder
     recorded_identity = recorder.acceptance_identity()
     identity: Mapping[str, Any] = recorded_identity if recorded_identity is not None else {}
-    stamp = getattr(endpoint, "_stamp_source_fingerprint", None)
     context = AcceptanceContext(
         endpoint.state.slug,
         dict(identity),
@@ -321,21 +405,10 @@ def record_campaign_acceptance(
         endpoint.state,
         recorder,
         endpoint._invocation_id,
-        diagnostic=bool(getattr(endpoint.args, "diagnostic", False)),
+        diagnostic=endpoint.records_no_evidence,
+        baseline_refusals=dict(baseline_refusals or {}),
         observer=endpoint.record_report_criteria,
-        detail_stamper=(
-            lambda change, selector: (
-                stamp(
-                    change.key,
-                    change.met,
-                    change.detail,
-                    source_target=selector,
-                )
-                or change.detail
-            )
-        )
-        if callable(stamp)
-        else None,
+        detail_stamper=_detail_stamper(endpoint),
     )
     reconciler = SimulationAcceptanceCoordinator()
     keys: list[str] = []
@@ -373,7 +446,11 @@ def _record_standalone_campaign(endpoint: EndpointState, outcome: CampaignOutcom
         f"sim_pass_{outcome.target['name']}",
         outcome.aggregate_grade == "pass",
         source_target=str(outcome.target["selector"]),
-        detail={"mode": "simulate", "selected_tests": [_test_name(name) for name in observations]},
+        detail={
+            "mode": "simulate",
+            "selected_tests": [_test_name(name) for name in observations],
+            "test_runs": _TestRunRows(outcome).of(observations.values()),
+        },
     )
 
 
@@ -381,6 +458,7 @@ def _campaign_projection(outcome: CampaignOutcome) -> dict[str, object]:
     facts = outcome.acceptance_facts.document
     campaign_id = str(facts["campaign_id"])
     target_directory = outcome.manifest_path.parents[1]
+    test_runs = evidence_test_run_rows(outcome)
     projection = {
         "$schema": SIMULATION_PROJECTION_SCHEMA,
         "flow": "sim",
@@ -389,7 +467,8 @@ def _campaign_projection(outcome: CampaignOutcome) -> dict[str, object]:
         "target_identity": f"{outcome.target['vlnv']}#{outcome.target['name']}",
         "passed": outcome.aggregate_grade == "pass",
         "inconclusive": outcome.aggregate_grade == "inconclusive",
-        "tests": _campaign_test_projections(outcome),
+        "tests": _campaign_test_projections(outcome, test_runs),
+        "test_runs": test_runs,
         "campaign_id": campaign_id,
         "campaign_manifest": _artifact_document(
             outcome.manifest_path,
@@ -404,10 +483,21 @@ def _campaign_projection(outcome: CampaignOutcome) -> dict[str, object]:
     return projection
 
 
-def _campaign_test_projections(outcome: CampaignOutcome) -> list[dict[str, object]]:
+def _campaign_test_projections(
+    outcome: CampaignOutcome, test_runs: list[dict[str, object]]
+) -> list[dict[str, object]]:
+    """One row per observation, with the Test Run it observed when recorded.
+
+    *test_runs* is either empty (facts that name no Test Runs) or aligned
+    with the observations.
+    """
+    runs: list[dict[str, object] | None] = (
+        list(test_runs) if test_runs else [None] * len(outcome.observations)
+    )
     return [
         {
             "name": observation["test"] or "default",
+            **_test_run_fields(run),
             "passed": _observation_passed(observation),
             "cycles": observation["cycle_count"],
             "sva_errors": observation["assertion_count"],
@@ -416,8 +506,20 @@ def _campaign_test_projections(outcome: CampaignOutcome) -> list[dict[str, objec
             "failure_kind": observation["failure_class"] or "",
             "error_tail": _observation_error_tail(observation),
         }
-        for observation in outcome.observations
+        for observation, run in zip(outcome.observations, runs, strict=True)
     ]
+
+
+def _test_run_fields(run: Mapping[str, object] | None) -> dict[str, object]:
+    """What a per-Test row says about its Test Run (the coverage rows' keys)."""
+    if run is None:
+        return {}
+    return {
+        "test_run": run["name"],
+        "variant": run["variant"],
+        "seed": run["seed"],
+        "fingerprint": run["fingerprint"],
+    }
 
 
 def _observation_error_tail(observation: Mapping[str, object]) -> str:
@@ -467,6 +569,7 @@ def _coverage_changes(
     outcome: CampaignOutcome,
     shadow: DevelopmentState,
     target: Mapping[str, object],
+    rows: _TestRunRows,
 ) -> list[CriterionChange]:
     """Bind nested Coverage Campaign evaluation into the joint transaction."""
     if outcome.coverage_reference is None:
@@ -490,6 +593,7 @@ def _coverage_changes(
     if not keys:
         return []
     detail = _coverage_detail(outcome, resolved, public_path)
+    detail["test_runs"] = rows.of(outcome.observations)
     evaluation = campaign.evaluation
     changes: list[CriterionChange] = []
     for key in keys:
@@ -575,6 +679,8 @@ def _cycle_changes(
     outcome: CampaignOutcome,
     shadow: DevelopmentState,
     target: Mapping[str, object],
+    rows: _TestRunRows,
+    refusals: Mapping[tuple[str, str], str],
 ) -> list[CriterionChange]:
     identity = f"{target['vlnv']}#{target['name']}"
     selector = str(target["selector"])
@@ -596,7 +702,7 @@ def _cycle_changes(
         current = observations.get(test)
         if _unobserved_infrastructure(current):
             continue
-        baseline, baseline_state = _bound_baseline(prerequisites, params, test)
+        baseline, baseline_state = _bound_baseline(prerequisites, params, test, current)
         if _unobserved_infrastructure(baseline):
             continue
         current_cycles = _healthy_cycles(current)
@@ -612,6 +718,11 @@ def _cycle_changes(
             baseline_state,
             checks,
         )
+        detail["test_runs"] = rows.of((current,))
+        if baseline_state == "mismatched":
+            run_name = current.get("test_run") if current is not None else None
+            refused_as = baseline_refusal_key(str(test), cast("str | None", run_name))
+            _name_baseline_refusal(detail, refusals.get((selector, refused_as)))
         changes.extend(shadow.set_criterion(key, met, detail=detail))
     return changes
 
@@ -619,14 +730,11 @@ def _cycle_changes(
 def _candidate_cycle_observations(
     facts: Mapping[str, object], target: Mapping[str, object]
 ) -> dict[object, Mapping[str, object]]:
+    """Candidate observations of named Tests, by Test (one Test Run each)."""
     return {
-        item["test"]: item
-        for item in facts["observations"]  # type: ignore[union-attr]
-        if isinstance(item, Mapping)
-        and item["test"] is not None
-        and item["role"] == "candidate"
-        and item["revision"] == target["revision"]
-        and item["target"] == target
+        test: item
+        for test, item in _candidate_simulation_observations(facts, target).items()
+        if test is not None
     }
 
 
@@ -647,10 +755,16 @@ def _bound_baseline(
     prerequisites: tuple[Mapping[str, object], ...],
     params: Mapping[str, object],
     test: object,
+    current: Mapping[str, object] | None,
 ) -> tuple[Mapping[str, object] | None, str]:
+    """The baseline observation a relative Cycle Count Criterion compares with.
+
+    It must be the baseline's observation of the Test Run *current* observed:
+    the same name and the same declared-inputs fingerprint on both revisions.
+    """
     if not has_relative_threshold(dict(params)):
         return None, "not_required"
-    selector = params.get(BASELINE_TARGET_PARAM, params.get("_target_selector"))
+    selector = _baseline_selector(params)
     revision = params.get(BASELINE_REF_PARAM)
     for item in prerequisites:
         target = item.get("target")
@@ -665,6 +779,7 @@ def _bound_baseline(
             and target.get("selector") == selector
             and (revision is None or target.get("revision") == revision)
             and cycle.get("test") == test
+            and _same_test_run(cycle, current)
             and isinstance(manifest, Mapping)
             and manifest.get("owner") == item.get("campaign_id")
             and isinstance(result, Mapping)
@@ -673,6 +788,36 @@ def _bound_baseline(
         if bound:
             return cycle, "observed"
     return None, "mismatched"
+
+
+def _same_test_run(cycle: Mapping[str, object], current: Mapping[str, object] | None) -> bool:
+    """Whether a baseline observation is of the Test Run the candidate observed.
+
+    Facts before v2 name Tests only, on both sides; such a baseline
+    observation binds by Test, which is unique there.
+    """
+    if "test_run" not in cycle:
+        return current is None or "test_run" not in current
+    return (
+        current is not None
+        and cycle["test_run"] == current.get("test_run")
+        and cycle["test_run_fingerprint"] == current.get("test_run_fingerprint")
+    )
+
+
+def _name_baseline_refusal(detail: dict[str, object], refusal: str | None) -> None:
+    """Say why no baseline ran when its revision could not run the Test Run.
+
+    The comparison is then inconclusive rather than merely unbound.
+    """
+    if refusal is not None:
+        detail["baseline_observation"] = "inapplicable"
+        detail["reason"] = refusal
+
+
+def _baseline_selector(params: Mapping[str, object]) -> object:
+    """The baseline Target a Cycle Count Criterion compares against."""
+    return params.get(BASELINE_TARGET_PARAM, params.get("_target_selector"))
 
 
 def _cycle_threshold_checks(
@@ -715,6 +860,7 @@ def _cycle_detail(
 __all__ = [
     "AcceptanceContext",
     "AcceptanceOutcome",
+    "SeveralTestRunsOfOneTestError",
     "SimulationAcceptanceCoordinator",
     "record_campaign_acceptance",
 ]

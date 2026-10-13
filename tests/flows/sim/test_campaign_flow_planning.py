@@ -9,6 +9,7 @@ import pytest
 from booley.flows.sim.campaign.flow_planning import plan_ordinary_hdl_campaign
 from booley.flows.sim.execution.contract import SimulationPreview
 from booley.flows.sim.flow import SimulateFlow
+from booley.flows.test_runs import build_test_run
 from booley.targets.domain import TargetHandle, TargetInput, TargetInspection
 
 
@@ -147,13 +148,13 @@ def test_campaign_baseline_planning_materializes_project_topologies(
         _assert_topology_baseline(worktree, root, target)
         assert identity == handle.identity
         assert ref == revision
-        assert requirements == (("sim_core", "sim_core", "coremark"),)
+        assert [run.name for run in requirements] == ["coremark@1"]
         assert tests == {"sim_core": ["coremark"]}
         assert invocation == tmp_path / "invocation"
         assert admission is None
         assert flow.args.work_dir == worktree
         roots.append(worktree)
-        return request, {"coremark": prerequisite}
+        return request, {"coremark@1": prerequisite}
 
     monkeypatch.setattr(flow, "_planned_baseline_request", plan)
     try:
@@ -195,11 +196,11 @@ def test_campaign_baseline_preview_materializes_project_topologies(
         assert owner is campaign
         _assert_topology_baseline(worktree, root, target)
         assert ref == revision
-        assert requirements == (("sim_core", "sim_core", "coremark"),)
+        assert [run.name for run in requirements] == ["coremark@1"]
         assert tests == {"sim_core": ["coremark"]}
         assert flow.args.work_dir == worktree
         roots.append(worktree)
-        return preview, {"coremark": prerequisite}
+        return preview, {"coremark@1": prerequisite}
 
     monkeypatch.setattr(flow, "_preview_one_campaign_baseline", inspect)
     prerequisites, previews = flow._preview_campaign_baselines(
@@ -214,7 +215,7 @@ def test_campaign_baseline_preview_materializes_project_topologies(
 @pytest.mark.parametrize("mapping", [False, True])
 @pytest.mark.parametrize("contract_version", ["1", "2"])
 @pytest.mark.parametrize("raw_coverage", [False, True])
-def test_disclosed_source_mapping_selects_v3_without_changing_legacy_shape(
+def test_every_planned_manifest_is_v4_whatever_it_discloses(
     mapping, raw_coverage, contract_version
 ):
     from booley.flows.sim.campaign.flow_planning import _manifest_document
@@ -249,7 +250,14 @@ def test_disclosed_source_mapping_selects_v3_without_changing_legacy_shape(
     variant = _variant_document(workload, [], False)
     variants, items = (
         [variant],
-        _work_items([()], document["target"], variant, "run", "literal", kind="ordinary_hdl"),
+        _work_items(
+            [(build_test_run(None),)],
+            document["target"],
+            variant,
+            "run",
+            "literal",
+            kind="ordinary_hdl",
+        ),
     )
     document["build_variants"] = variants
     document["work_items"] = items
@@ -265,6 +273,10 @@ def test_disclosed_source_mapping_selects_v3_without_changing_legacy_shape(
         [],
         document["work_items"],
     )
-    assert manifest.document["$schema"] == "booley.simulation-campaign-manifest/" + (
-        "v3" if mapping or contract_version == "2" else "v2" if raw_coverage else "v1"
-    )
+    # One written version: it records each work item's Test Runs (ADR 0072),
+    # permits source identities, and carries no_waivers only when requested.
+    assert manifest.document["$schema"] == "booley.simulation-campaign-manifest/v4"
+    assert ("no_waivers" in manifest.document["workload"]) is raw_coverage
+    assert [run["name"] for run in manifest.document["work_items"][0]["test_runs"]] == [
+        "<default>"
+    ]

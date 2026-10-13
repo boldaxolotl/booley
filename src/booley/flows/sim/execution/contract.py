@@ -8,6 +8,7 @@ from typing import Any, Literal
 
 from booley.flows.sim.backends.shared import RunTerminationKind, SimulationFailureKind
 from booley.flows.sim.build import BuildOutcome
+from booley.flows.test_runs import TestRun, build_test_run
 
 SimulationVerdict = Literal["pass", "fail", "elab_error", "timeout", "crash", "inconclusive"]
 PreSimStatus = Literal["passed", "failed", "timed_out", "spawn_error"]
@@ -43,7 +44,21 @@ class DefaultSelection:
     """Run the Target's native default or an unfiltered Cocotb module."""
 
 
-SimulationSelection = NamedTests | DefaultSelection
+@dataclass(frozen=True)
+class SelectedTestRuns:
+    """A nonempty ordered selection of concrete, uniquely named Test Runs."""
+
+    runs: tuple[TestRun, ...]
+
+    def __post_init__(self) -> None:
+        if not self.runs:
+            raise InvalidSimulationRequestError("Simulation Test Run selection must not be empty")
+        names = [run.name for run in self.runs]
+        if len(set(names)) != len(names):
+            raise InvalidSimulationRequestError("Simulation Test Run names must be unique")
+
+
+SimulationSelection = NamedTests | DefaultSelection | SelectedTestRuns
 
 
 @dataclass(frozen=True)
@@ -137,6 +152,9 @@ class SimulationTestOutcome:
     workload_snapshot: Mapping[str, Any] | None = None
     phase_timings_s: Mapping[str, float] = field(default_factory=dict)
     resources: Mapping[str, float | int | None] = field(default_factory=dict)
+    #: The Test Run this result observed; ``None`` when setup failed before
+    #: the Target's Test Runs were known.
+    test_run: TestRun | None = None
 
 
 @dataclass(frozen=True)
@@ -164,6 +182,7 @@ class SimulationPreview:
     """Side-effect-free resolved recipe and commands in execution order."""
 
     commands: tuple[tuple[str, ...], ...]
+    #: Bare Test names of each simulator process, in execution order.
     groups: tuple[tuple[str, ...], ...]
     target_identity: str
     toplevel: str
@@ -172,6 +191,18 @@ class SimulationPreview:
     constraints: tuple[str, ...]
     parameters: Mapping[str, object]
     flow_options: Mapping[str, object]
+    #: The concrete Test Runs of each simulator process, aligned with ``groups``.
+    run_groups: tuple[tuple[TestRun, ...], ...] = ()
+
+    def __post_init__(self) -> None:
+        # A preview described by Test names alone stands for unseeded default
+        # Test Runs: one per name, or the unnamed invocation for an empty group.
+        if not self.run_groups and self.groups:
+            derived = tuple(
+                tuple(build_test_run(name) for name in group) or (build_test_run(None),)
+                for group in self.groups
+            )
+            object.__setattr__(self, "run_groups", derived)
 
 
 __all__ = [
@@ -181,6 +212,7 @@ __all__ = [
     "PreSimEvidence",
     "PreSimScopeStoppedError",
     "PreSimStatus",
+    "SelectedTestRuns",
     "SimulationArtifactEvidence",
     "SimulationInfrastructureFailure",
     "SimulationOptions",
