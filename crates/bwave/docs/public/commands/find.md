@@ -27,6 +27,12 @@ or width-prefixed `8'd255`) **or** an edge keyword:
 `rising`, `falling`, `change`. See
 `reference/verilog-literals`.
 
+Synchronous queries sample values at clock edges and label matches with the
+sampling cycle. Literals match every equal sample; `rising`, `falling`, and
+`change` compare consecutive sampled values, with the first eligible sample
+serving as baseline. Glitches between samples are invisible. `--async`
+queries observe raw transitions instead.
+
 ## Defaults and requiredness
 
 - `<FST_FILE>`, `<PATTERN>`, `<VALUE>` all required.
