@@ -45,8 +45,9 @@ __all__ = [
 GoalRunsKind = Literal["simulation", "cycle_count", "coverage"]
 
 #: Detail key of a change that carries a Goal's matching Test Runs but no
-#: measurement of the Goal's metric (its Cycle Count or coverage): the runs'
-#: outcomes count for the Goal, the change says nothing about the metric.
+#: measurement of the Goal's metric (its Cycle Count or coverage): the change
+#: says nothing about the metric. The runs' outcomes count for a Cycle Count
+#: Goal; a coverage Goal is judged by its coverage floors alone.
 OUTCOMES_ONLY_DETAIL_KEY = "test_run_outcomes_only"
 
 
@@ -143,9 +144,10 @@ class GoalTestRuns:
     def passed_by(self, matched: Sequence[Mapping[str, object]]) -> bool:
         """Whether *matched* rows alone show every required Test Run passing.
 
-        One invocation's own verdict. The Goal's recorder decides the Goal
-        from every matching run recorded so far, which may pass runs this
-        invocation did not run and holds a failure an earlier one recorded.
+        One invocation's own verdict on a simulation Goal. The Goal's
+        recorder decides the Goal from every matching run recorded so far,
+        which may pass runs this invocation did not run and holds a failure
+        an earlier one recorded.
         """
         outcomes = fold_test_run_outcomes(matched, self.runs)
         passed = all(run["outcome"] == "passed" for run in outcomes)
@@ -174,7 +176,9 @@ class GoalTestRuns:
         the Goal's one frozen run, so that run must be among *rows*. Coverage
         is merged over an invocation's runs, so *rows* must be exactly the
         frozen runs: fewer, more or other runs measured something else. The
-        metric of any other invocation says nothing about the Goal.
+        metric of any other invocation says nothing about the Goal. Every
+        frozen run must have run to a pass or a fail; which of the two does
+        not matter here.
         """
         if self.kind == "simulation":
             return True

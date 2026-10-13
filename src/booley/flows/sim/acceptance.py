@@ -916,8 +916,9 @@ def _goal_changes(
     A Cycle Count or coverage Goal's change also carries the metric when
     this campaign measured it (:meth:`GoalTestRuns.measured_by`).
 
-    Whether the Goal is met is decided by its recorder from every matching
-    run recorded so far; ``met`` here is this campaign's own verdict.
+    Whether the Goal is met is decided by its recorder: from every matching
+    run recorded so far, or for a coverage Goal from the coverage floors
+    alone. ``met`` here is this campaign's own verdict.
     """
     if target["role"] != "candidate":
         return []
