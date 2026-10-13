@@ -3247,22 +3247,90 @@ pub(crate) fn tick_to_cycle(tick: u64, cycle_base_tick: u64, clock_period: u64) 
 
 /// Compute the first clock-grid tick at or after effective_start.
 /// Cycle 1 starts there; later cycles advance by the detected clock period.
-fn cycle_base(cache: &ColumnCache, effective_start: u64) -> u64 {
-    if cache.clock_period_ticks == 0 {
-        return effective_start;
+fn checked_cycle_base(first_rise: u64, period: u64, effective_start: u64) -> Result<u64, String> {
+    if period == 0 {
+        return Ok(effective_start);
     }
-    let frt = cache.first_rise_tick;
-    if effective_start <= frt {
-        return frt;
+    if effective_start <= first_rise {
+        return Ok(first_rise);
     }
-    // Snap to clock grid: first rising edge tick >= effective_start
-    let elapsed = effective_start - frt;
-    let full_periods = elapsed / cache.clock_period_ticks;
-    let aligned = frt + full_periods * cache.clock_period_ticks;
+    let elapsed = effective_start - first_rise;
+    let aligned = first_rise + (elapsed / period) * period;
     if aligned >= effective_start {
-        aligned
+        Ok(aligned)
     } else {
-        aligned + cache.clock_period_ticks
+        aligned
+            .checked_add(period)
+            .ok_or_else(|| "cycle base is beyond simulation tick range".to_string())
+    }
+}
+
+fn cycle_base(cache: &ColumnCache, effective_start: u64) -> u64 {
+    // An unrepresentable next edge lies beyond every representable query tick.
+    // Saturation keeps existing query consumers from wrapping into early time;
+    // typed-token resolution reports this condition as an input error instead.
+    checked_cycle_base(
+        cache.first_rise_tick,
+        cache.clock_period_ticks,
+        effective_start,
+    )
+    .unwrap_or(u64::MAX)
+}
+
+/// Resolve typed query times using the same counted clock edges as sync queries.
+/// Async cycle tokens deliberately use the sync reset policy, while async ticks
+/// and physical times remain raw simulation instants.
+pub fn resolve_time_token(
+    cache: &ColumnCache,
+    cfg: &ExtractConfig,
+    token: &crate::format::TimeToken,
+) -> Result<i64, String> {
+    use crate::format::TimeToken;
+    if let TimeToken::Cycle(n) = *token {
+        if !cfg.async_mode {
+            return Ok(n);
+        }
+        if n < 0 {
+            return Err("cycle-token must be nonnegative".to_string());
+        }
+        if cache.clock_period_ticks == 0 {
+            return Err("cannot resolve cycle-token to tick: no clock detected".to_string());
+        }
+    } else if cfg.async_mode {
+        return token.resolve_to_tick(cache.ticks_to_ns);
+    } else if cache.clock_period_ticks == 0 {
+        return Err("cannot resolve time-token to cycle: no clock detected".to_string());
+    }
+    let effective_start = if cfg.with_reset {
+        0
+    } else {
+        find_reset_deassert_tick(cache, cfg).unwrap_or(0)
+    };
+    if let TimeToken::Cycle(0) = *token {
+        return i64::try_from(effective_start)
+            .map_err(|_| "cycle time is beyond signed tick range".to_string());
+    }
+    let base = checked_cycle_base(
+        cache.first_rise_tick,
+        cache.clock_period_ticks,
+        effective_start,
+    )?;
+    match *token {
+        TimeToken::Cycle(n) => {
+            let tick = (n as u64 - 1)
+                .checked_mul(cache.clock_period_ticks)
+                .and_then(|offset| base.checked_add(offset))
+                .ok_or_else(|| "cycle time is beyond simulation tick range".to_string())?;
+            i64::try_from(tick).map_err(|_| "cycle time is beyond signed tick range".to_string())
+        }
+        _ => {
+            let tick = token.resolve_to_tick(cache.ticks_to_ns)?;
+            if tick < 0 {
+                return Ok(0);
+            }
+            i64::try_from(tick_to_cycle(tick as u64, base, cache.clock_period_ticks))
+                .map_err(|_| "cycle number is beyond signed range".to_string())
+        }
     }
 }
 
@@ -3885,6 +3953,13 @@ pub fn wave_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn time_token_phase_checked_grid_overflow() {
+        assert!(super::checked_cycle_base(6, 10, u64::MAX).is_err());
+        assert_eq!(super::checked_cycle_base(5, 10, 18), Ok(25));
+        assert_eq!(super::checked_cycle_base(5, 10, 15), Ok(15));
+    }
+
     #[test]
     fn issue_1098_virtual_and_real_statistics_share_occupied_run_semantics() {
         let events = vec![

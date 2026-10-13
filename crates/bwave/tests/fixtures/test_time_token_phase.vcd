@@ -1,0 +1,65 @@
+$timescale 1ns $end
+$scope module qa $end
+$var wire 1 ! clk $end
+$var wire 1 " rstn $end
+$var wire 8 # data $end
+$var wire 1 $ pulse $end
+$var wire 1 % stable $end
+$upscope $end
+$enddefinitions $end
+#0
+0!
+0"
+b00000000 #
+0$
+1%
+#5
+1!
+b00000001 #
+0$
+#10
+0!
+#15
+1!
+b00000010 #
+1$
+#18
+1"
+#20
+0!
+#25
+1!
+b00000011 #
+0$
+#30
+0!
+#35
+1!
+b00000100 #
+1$
+#40
+0!
+#45
+1!
+b00000101 #
+0$
+#50
+0!
+#55
+1!
+b00000110 #
+1$
+#60
+0!
+#65
+1!
+b00000111 #
+0$
+#70
+0!
+#75
+1!
+b00001000 #
+1$
+#80
+0!

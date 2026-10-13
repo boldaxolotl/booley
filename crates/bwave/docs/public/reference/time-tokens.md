@@ -17,19 +17,23 @@ A `time-range` (used by `-t`) accepts open-ended forms:
 
 ## Resolution rules
 
-| Input          | Sync mode                      | Async mode                          |
-|----------------|--------------------------------|-------------------------------------|
-| `100`  (bare)  | cycle 100                      | **ERROR**: bare int is ambiguous    |
-| `100c`         | cycle 100                      | cycle 100 (resolved via clock)      |
-| `100t`         | cycle 100/period               | tick 100                            |
-| `100ns`        | cycle 100ns/period             | tick 100ns/timescale                |
-| `100us` etc.   | same, scaled                   | same, scaled                        |
+| Input         | Sync mode                  | Async mode                       |
+|---------------|----------------------------|----------------------------------|
+| `100` (bare)  | cycle 100                  | **ERROR**: bare int is ambiguous  |
+| `100c`        | cycle 100                  | counted edge of cycle 100        |
+| `100t`        | counted cycle at tick 100  | tick 100                         |
+| `100ns`       | counted cycle at 100ns     | tick 100ns/timescale             |
+| `100us` etc.  | same, scaled              | same, scaled                     |
 
 In **sync mode** every token resolves to a cycle number.
 In **async mode** every token resolves to a raw
-simulation tick. Cross-unit resolution requires the
-clock period (`*ns -> cycle`, `*t -> cycle`); when the
-trace has no detected clock those forms error.
+simulation tick. Sync tick and physical tokens select the cycle whose
+counted rising edge is last at or before the instant; instants before the
+first counted edge resolve to cycle 0. The clock phase and reset policy
+(`--reset`, `--with-reset`) determine the counted grid. Async `Nc` uses
+that same grid; `0c` selects the effective start (reset deassertion, or
+zero with `--with-reset`). Cross-unit cycle resolution requires a clock;
+when the trace has no detected clock those forms error.
 
 ## Why bare integers are rejected in async mode
 
@@ -60,7 +64,7 @@ bwave value foo.fst --at 100
 # Sync mode — same, explicit
 bwave value foo.fst --at 100c
 
-# Sync mode — convert physical time via clock period
+# Sync mode — select the counted cycle at the physical instant
 bwave value foo.fst --at 500ns
 
 # Async mode — explicit unit required
