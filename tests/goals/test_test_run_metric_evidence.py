@@ -10,6 +10,7 @@ its Test Runs passed never decides it.
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -23,6 +24,7 @@ from booley.goals.test_run_evidence import LEDGER_DETAIL_KEY, REASON_FAILED, REA
 from tests.goals.conftest import enter_goals, run_row
 from tests.goals.test_test_run_evidence import (
     _edit_rtl,
+    _evidence_file,
     _outcomes,
     _record,
     _shown,
@@ -194,6 +196,29 @@ def test_run_that_does_not_measure_coverage_restates_nothing_before_a_measuremen
     status = _status(coverage, key)
     assert status.status == "unmet" and "did not measure the Goal" in status.reason
     assert _shown(status) == {"stress@5": "missing", "smoke@1": "passed"}
+
+
+def test_run_that_does_not_measure_coverage_never_restates_evidence_without_a_ledger(
+    coverage: SimpleNamespace,
+) -> None:
+    """An older Booley's met observation is no measurement: it must not be recorded again."""
+    key = coverage.key
+    campaign = [run_row(STRESS), run_row("smoke")]
+    detail = _record(coverage, "run-1", campaign, key=key, met=True)
+    # Rewrite the observation and its projection as the previous version stored them.
+    old = {name: value for name, value in detail.items() if name != LEDGER_DETAIL_KEY}
+    evidence, path = _evidence_file(coverage, 1), _state_file(coverage)
+    row = json.loads(evidence.read_text(encoding="utf-8"))
+    row["detail"] = old
+    evidence.write_text(json.dumps(row), encoding="utf-8")
+    state = json.loads(path.read_text(encoding="utf-8"))
+    state["criteria"][key]["detail"] = old
+    path.write_text(json.dumps(state), encoding="utf-8")
+    # An ordinary simulation at the same contents records itself, and measures nothing.
+    later = _record(coverage, "run-2", [run_row("smoke")], key=key, met=False, extra=OUTCOMES_ONLY)
+    assert "did not measure" in later["goal_contract_violation"]
+    assert DevelopmentState.load(path).criteria[key].met is False
+    assert _status(coverage, key).status == "unmet"
 
 
 def test_coverage_verdict_needs_exactly_the_frozen_runs_in_the_same_change(

@@ -351,15 +351,18 @@ def _adds_nothing(
     new outcome, a failure above all, must be recorded. Where they do not,
     whenever the selected observation measured the Goal: no outcome can
     change what a measurement established. One that measured nothing
-    established nothing, and the change's own outcomes replace it.
+    established nothing, and the change's own outcomes replace it. A
+    measurement is an observation recorded with a ledger and no defect.
     """
     selected_detail = cast("Mapping[str, Any]", selected["detail"])
-    if not decisive:
-        return "goal_contract_violation" not in selected_detail
     try:
-        return ledger_runs(selected_detail) == ledger["runs"]
+        recorded = ledger_runs(selected_detail)
     except LedgerFormatError:
         return False  # a ledger that cannot be read is never restated
+    if decisive:
+        return recorded == ledger["runs"]
+    # Evidence without a ledger predates Goals that name Test Runs: no measurement.
+    return recorded is not None and "goal_contract_violation" not in selected_detail
 
 
 def _restated(
