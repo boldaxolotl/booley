@@ -85,5 +85,7 @@ Native marker annotation is `wave`-only:
 ## File-input rule
 
 Every query/introspect subcommand requires a built `.fst`
-store as the first positional argument. Pass a `.vcd` and
-you'll get an error with a `bwave build` hint.
+store as the first positional argument: `list`, `signal`,
+`wave`, `value`, `find`, `sample`, `diff`, `distance`,
+`stats`, and `stuck`. Pass a `.vcd` and you'll get exit code 2
+with a `bwave build` hint. Only `build` reads VCD input.
