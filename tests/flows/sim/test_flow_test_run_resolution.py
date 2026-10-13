@@ -368,3 +368,41 @@ def test_every_published_manifest_is_registered_with_the_goal_run_before_it_runs
     assert silent.campaigns == []
     # Outside Goal Mode nothing wants to know.
     _flow(tmp_path, monkeypatch)._manifest_publisher([])(manifest)
+
+
+def test_direct_cycle_count_goal_compares_with_the_baseline_of_its_frozen_run(
+    tmp_path, monkeypatch
+):
+    """Baseline-relative: the baseline observation is of the Goal's frozen Test Run too."""
+    from booley.flows.sim.flow import TargetResult, TestResult
+
+    pinned, default = _run("stress", "short", 7), _run("stress", "short", 1)
+    goal = GoalTestRuns("cycle_count_sim_x", "cycle_count", "sim", (pinned,))
+    flow = _cycle_goal_flow(tmp_path, monkeypatch, goal)
+    flow._state.criteria[goal.key].params = {
+        "target": "sim",
+        "test": "stress",
+        "cycle_count_reduce_at_least": "5%",
+    }
+
+    def result(run, cycles: int) -> TestResult:
+        return TestResult(
+            name=run.test, passed=True, cycles=cycles, cycle_status="observed", test_run=run
+        )
+
+    # On the baseline the default-seed run is slow and the pinned one is not: only the
+    # pinned run may be compared with the candidate's pinned run.
+    flow._baseline_results = {
+        "sim": TargetResult(
+            target="sim", passed=True, tests=[result(default, 9000), result(pinned, 100)]
+        )
+    }
+    candidate = TargetResult(
+        target="sim", passed=True, tests=[result(default, 10), result(pinned, 99)]
+    )
+    flow._record_cycle_count_criteria(candidate)
+
+    flow.set_criterion.assert_called_once()
+    assert flow.set_criterion.call_args.args[0] == goal.key
+    detail = flow.set_criterion.call_args.kwargs["detail"]
+    assert (detail["cycles"], detail["baseline_cycles"]) == (99, 100)
