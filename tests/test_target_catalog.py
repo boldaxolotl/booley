@@ -681,17 +681,21 @@ def test_catalog_restores_tb_tags_across_symlinks(
 ) -> None:
     root = tmp_path
     prefix, tb_decl = _author_alias_core(root, layout)
+    stripped_calls = []
     if strip_tags:
         from fusesoc.capi2.core import CoreInterface as Core
 
         original = Core.get_files
 
         def without_tags(self, flags):
+            stripped_calls.append(self)
             return [{**item, "tags": []} for item in original(self, flags)]
 
         monkeypatch.setattr(Core, "get_files", without_tags)
     catalog = TargetCatalog.build(root)
     inspection = catalog.inspect(catalog.select("sim_dut"))
+    if strip_tags:
+        assert stripped_calls
     assert tuple(item.path for item in inspection.inputs) == (
         prefix + "rtl/dut.sv",
         prefix + tb_decl,

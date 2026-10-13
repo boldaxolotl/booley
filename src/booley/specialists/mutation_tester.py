@@ -931,16 +931,17 @@ replacement must differ, and every proposal must remain a single source edit.
         try:
             catalog = TargetCatalog.build(self.args.work_dir)
             resolved = list(catalog.inspect(catalog.select(target)).rtl_files)
+            resolved_set = {
+                fusesoc_registry.canonical_project_path(self.args.work_dir, path)
+                for path in resolved
+            }
         except Exception:  # noqa: BLE001 — unresolvable target: fail open, let downstream report
             return None
         if not resolved:
             return None
-        resolved_set = {
-            fusesoc_registry.canonical_project_path(self.args.work_dir, path) for path in resolved
-        }
         by_base = {Path(r).name: r for r in resolved}
         for entry in scope_files:
-            if entry in resolved_set:
+            if not Path(entry).is_absolute() and entry in resolved_set:
                 continue
             suggestion = by_base.get(Path(entry).name)
             hint = f" Did you mean '{suggestion}'?" if suggestion else ""

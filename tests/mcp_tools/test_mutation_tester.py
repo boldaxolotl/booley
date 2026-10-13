@@ -24,6 +24,7 @@ from booley.criteria.state import DevelopmentState
 from booley.flows.sim.backends.cocotb import _parse_args as parse_cocotb_run_args
 from booley.flows.sim.build import PreparedSimulationBuild, SimulationBuildPreparationError
 from booley.flows.sim.target_tests import NoRunnableTestsError
+from booley.fusesoc import fusesoc_registry
 from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS, McpToolResult
 from booley.specialists.mutation_tester import (
     MutationResult,
@@ -1987,3 +1988,32 @@ def test_scope_accepts_canonical_rtl_through_symlink(tmp_path: Path, layout: str
     assert rejected is not None
     assert "does not match" in rejected.report_text
     assert expected in rejected.report_text
+
+
+def test_scope_rejects_rtl_symlink_outside_project(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    _author_scope_core(root)
+    external = tmp_path / "external.sv"
+    external.write_text("module counter; endmodule\n")
+    source = root / "rtl/counter.sv"
+    source.unlink()
+    symlink_or_skip(source, external)
+    endpoint = _make_endpoint(root, target="sim")
+    rejected = endpoint._validate_scope_against_target([str(external)])
+    assert rejected is not None
+    assert "does not match" in rejected.report_text
+
+
+def test_scope_fails_open_when_identity_resolution_fails(tmp_path: Path) -> None:
+    _author_scope_core(tmp_path)
+    endpoint = _make_endpoint(tmp_path, target="sim")
+    catalog = TargetCatalog.build(tmp_path)
+    inspection = catalog.inspect(catalog.select("sim"))
+    with (
+        patch.object(TargetCatalog, "inspect", return_value=inspection),
+        patch.object(
+            fusesoc_registry, "canonical_project_path", side_effect=OSError("unreadable")
+        ),
+    ):
+        assert endpoint._validate_scope_against_target(["rtl/counter.sv"]) is None
