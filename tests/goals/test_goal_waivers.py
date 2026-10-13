@@ -54,6 +54,9 @@ from tests.flows.sim.test_coverage_campaign import _POINT_ID, _valid_document
 from tests.goals.conftest import enter_goals, git, run_row
 from tests.goals.test_proposals import Crash, approve, interrupted_transaction
 
+# Each test enters Goal Mode in a real Git layout; Windows needs the headroom (#1202).
+pytestmark = pytest.mark.timeout(120)
+
 KEY = "coverage_top"
 IDENTITY = DurableTargetIdentity("::top:0#top")
 
