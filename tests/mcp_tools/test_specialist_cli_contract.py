@@ -101,7 +101,6 @@ def test_listing_filters_disabled_and_discovers_project_specialist(tmp_path, mon
     assert "coverage_analyst" in output
     assert "mutation_tester" in output
     assert "reviewer" not in output
-    assert "tb_coder" not in output
     assert (
         output.index("coverage_analyst")
         < output.index("mutation_tester")
@@ -122,7 +121,7 @@ def test_wrong_kind_suggests_canonical_command(tmp_path, capsys, route, name, su
     assert suggestion in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("name", ["unknown", "tb_coder"])
+@pytest.mark.parametrize("name", ["unknown", "missing_specialist"])
 def test_unknown_or_hidden_never_loads(tmp_path, monkeypatch, name, capsys):
     loader = Mock()
     monkeypatch.setattr(cli, "_load_mcp_tool_class", loader)
@@ -456,13 +455,11 @@ def test_coverage_provider_preserves_minimum_and_rounding(tmp_path):
 def test_builtin_specialist_defaults_stay_seconds_for_watchdogs():
     from booley.specialists.coverage_analyst import CoverageAnalystSpecialist
     from booley.specialists.reviewer import ReviewerSpecialist
-    from booley.specialists.tb_coder import TbCoderSpecialist
 
     for cls, argv in [
         (ReviewerSpecialist, ["--category", "rtl", "--focus", "bugs", "--scope", "rtl"]),
         (MutationTesterSpecialist, ["--target", "sim_demo", "--scope", "rtl"]),
         (CoverageAnalystSpecialist, ["--campaign", "coverage.json"]),
-        (TbCoderSpecialist, ["--instruction-file", "instruction.md", "--scope", "tb"]),
     ]:
         endpoint = cls()
         endpoint.parse_args(argv)

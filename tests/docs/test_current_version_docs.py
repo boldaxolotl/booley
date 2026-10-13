@@ -69,6 +69,20 @@ ALLOWLIST = (
     ),
 )
 
+# These are current diagnostic/schema literals, not historical narrative.
+ALLOWLIST += tuple(
+    ExceptionRule(path, "`workspace.legacy-source-stash`", "Current Doctor warning ID.", 1)
+    for path in (
+        "docs/user/DOCTOR.md",
+        "docs/user/TROUBLESHOOTING.md",
+        "src/booley/data/refs/TROUBLESHOOTING.md",
+    )
+)
+ALLOWLIST += tuple(
+    ExceptionRule(path, "including `.retired` records", "Supported recovery-record suffix.", 1)
+    for path in ("docs/user/TROUBLESHOOTING.md", "src/booley/data/refs/TROUBLESHOOTING.md")
+)
+
 
 def document_paths(root: Path) -> list[Path]:
     """Discover current user text, with explicit history/implementation exclusions."""

@@ -3,8 +3,7 @@
 Extracted from ``specialist`` (principle 8): reading commit metadata and
 reverting out-of-scope files via ``git`` subprocesses is one reason to
 change (git plumbing), independent of agent invocation or commit-message
-formatting. Consumed by ``specialist`` (commit / revert flow) and
-``tb_coder`` (``_git_head_sha`` for before-SHA capture).
+formatting. Consumed by ``specialist`` (commit / revert flow).
 """
 
 from __future__ import annotations

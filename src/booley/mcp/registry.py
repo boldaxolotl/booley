@@ -49,10 +49,6 @@ SKIP_MODULES = frozenset(
         "base",
         "specialist",
         "registry",
-        # Hidden: not yet mature / not proven effective. Code is retained;
-        # re-enable by removing the name from this set (see docs/internals/ROADMAP.md).
-        # tb_coder is de-registered too: TB is authored by the developer directly for now.
-        "tb_coder",
     }
 )
 

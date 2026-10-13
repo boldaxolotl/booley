@@ -67,7 +67,6 @@ KNOWN_ROLES = frozenset(
         "reviewer",
         "mutation_tester",
         "coverage_analyst",
-        "tb_coder",
     }
 )
 _KNOWN_ROLES = KNOWN_ROLES

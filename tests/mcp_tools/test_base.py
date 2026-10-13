@@ -987,7 +987,7 @@ class TestHumanModeStderr:
 
     def test_a_mention_inside_a_log_line_does_not_suppress_the_reason(self, capsys, monkeypatch):
         """The witness must match whole printed lines, not any substring: a
-        short report_text like tb_coder's bare "BLOCKED" otherwise matches any
+        short report_text like a bare "BLOCKED" otherwise matches any
         streamed agent line containing the word, and the only copy of the
         failure reason disappears."""
         rc = self._run_human(self._ChattyBlockedMcpTool())
