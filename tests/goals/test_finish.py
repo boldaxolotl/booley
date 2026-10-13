@@ -67,7 +67,7 @@ def publication_layout(layout: SimpleNamespace) -> SimpleNamespace:
     (project / ".gitignore").write_bytes(PROJECT_GITIGNORE.encode())
     (project / "tests.toml").write_bytes(b'[top]\ntests = ["smoke"]\n')
     git(layout.worktree, "add", ".booley_project")
-    git(layout.worktree, "commit", "-qm", "versioned project inputs")
+    git(layout.worktree, "commit", "-qm", "Versioned Booley Directory inputs")
     layout.record = enter_goals(layout, [{"family": "LINT", "target": "top"}])
     publish(layout)
     git(layout.main, "config", "user.name", "Goal Test")

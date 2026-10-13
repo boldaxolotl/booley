@@ -12,7 +12,7 @@ fresh copy of the same disposable Project and keep all attempts under `evidence/
 Create the baseline through the preceding release's normal `booley init` and
 VS Code **Reopen in Container**. Close the window without deleting its container;
 prepare the Project with the target build's normal host initialization. Verify
-that the old Sandbox still uses the old project-data bind and is running. A copied
+that the old Sandbox still uses the old Booley Directory bind and is running. A copied
 label or invented inspect response is not an authenticated baseline.
 
 The control matrix uses actual resources, not simulated Docker inspection:

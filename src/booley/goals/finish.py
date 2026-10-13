@@ -411,7 +411,7 @@ def _input_proof(
         else dict(record.project_snapshot),
         "nonversioned_project_baseline": "entry snapshot"
         if record.project_snapshot is not None
-        else "versioned bases, or unavailable for legacy nonversioned Project",
+        else "versioned bases, or unavailable for a non-versioned Booley Directory without a recorded baseline",
     }
 
 

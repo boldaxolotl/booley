@@ -130,12 +130,12 @@ def test_project_selection_permission_error_is_clean(tmp_path, monkeypatch, caps
     monkeypatch.setattr(sys, "argv", ["booley", "doctor"])
 
     def refuse(_root):
-        raise PermissionError("Project data is not readable")
+        raise PermissionError("Booley Directory is not readable")
 
     monkeypatch.setattr("booley.runtime.project_dir.resolve_checkout_project_dir", refuse)
     assert cli.main() == 2
     assert capsys.readouterr().err == (
-        "ERROR: cannot access Booley Project data: Project data is not readable\n"
+        "ERROR: cannot access Booley Directory: Booley Directory is not readable\n"
     )
 
 

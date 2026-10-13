@@ -350,7 +350,7 @@ _CREATION_FIELDS = (
 
 @dataclass(frozen=True)
 class GoalStore:
-    """Goal Records of one Project directory (resolved by the caller)."""
+    """Goal Records of one Booley Directory (resolved by the caller)."""
 
     project_dir: Path
     lock_timeout_s: float = DEFAULT_LOCK_TIMEOUT_S

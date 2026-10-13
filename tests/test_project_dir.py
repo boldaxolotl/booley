@@ -1,4 +1,4 @@
-"""Tests for project_dir: 4-step project directory discovery."""
+"""Tests for project_dir: 4-step Booley Directory discovery."""
 
 from __future__ import annotations
 

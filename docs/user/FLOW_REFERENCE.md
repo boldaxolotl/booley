@@ -123,7 +123,7 @@ is `sim --resume-from`, which takes its Target from the Campaign it resumes.)
 | Option | Effect |
 |---|---|
 | `--target <name,...>` | Targets to run (see above). |
-| `-C/--project PATH` | Select the Project checkout or worktree; nested paths discover their owning checkout. Omission preserves cwd discovery. |
+| `-C/--project PATH` | Select the Project Root or worktree; nested paths discover their owning checkout. Omission preserves cwd discovery. |
 | `--report-dir <path>` | Write reports here instead of the default report root. |
 | `--diagnostic` | Run diagnostically without recording Goal evidence. |
 | `--dry-run` | Resolve and validate the work, print the plan, and stop. No EDA tool runs and no state changes. |
@@ -147,8 +147,7 @@ exclude hidden endpoints. Host listing and help work; execution requires the
 Sandbox, for example `booley session enter -- booley specialist reviewer ...`.
 
 Specialists share `-C/--project PATH`, `--report-dir`, `--diagnostic`, and `--target`
-where supported. Reports default to `mcp-tool-reports/` under resolved Project
-data, or the runtime directory when supplied; an explicit flag takes precedence.
+where supported. Reports default to `mcp-tool-reports/` under the resolved Booley Directory, or the runtime directory when supplied; an explicit flag takes precedence.
 `--model` selects a tier subject to the Specialist floor and configured role pin;
 `--max-turns` accepts a positive integer. These and `--timeout` are CLI-only:
 MCP rejects `model`, `max_turns`, `timeout`, and `timeout_ms` for Specialists.
@@ -198,7 +197,7 @@ longer. Build, Elaboration Check, and Pre-Sim Command timeouts instead exit `2`.
 The CLI prints a final verdict card: stdout on success, stderr on failure.
 
 **Reports.** Each run writes a structured JSON report and complete logs. By
-default they go under `flow-reports/` in the project-data directory (Goal and
+default they go under `flow-reports/` in the Booley Directory (Goal and
 Specialist runs use their runtime directory). `--report-dir` overrides this. Booley
 never writes reports into the RTL checkout. The verdict card and the report both
 point at the exact log and artifact paths, so you rarely need to go looking.
@@ -599,7 +598,7 @@ python -m booley.flows.sim.campaign_retention \
 
 - `--full` refuses when later resumed runs depend on this one; add
   `--include-dependents` to remove them together.
-- If reports live outside the standard project-data locations, `--full` may ask
+- If reports live outside the standard Booley Directory locations, `--full` may ask
   for `--project-data "$PROJECT_DATA"`.
 - Pruning refuses runs that are still active, and files it did not produce.
   An interrupted cleanup is safe to retry with the same arguments.

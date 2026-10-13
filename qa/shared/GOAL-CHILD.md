@@ -31,10 +31,10 @@ Apply these rules to every mission area that uses a Goal child.
   Design implementations occur only in clean linked Goal worktrees.
 - Operator integration always merges the outer `goal/<slug>-<date>` Goal
   Branch into its run-owned destination. If `booley worktree new` printed a
-  paired checkout (the Project directory is its own Git repository), also merge
-  its `booley-worktree/<name>` Project-data branch into its destination. Record
+  paired checkout (the Booley Directory is its own Git repository), also merge
+  its `booley-worktree/<name>` Booley Directory branch into its destination. Record
   only the branches/checkouts actually printed in `resources.md`. A non-Stealth
   scaffold such as UART has no paired branch. Preserve the package and use the
-  printed USAGE cleanup steps; remove a paired checkout first when present.
+  printed USAGE cleanup steps; remove a Paired Checkout first when present.
   Leave every participating destination clean before the next
   `booley session enter -- booley worktree new <name>`.

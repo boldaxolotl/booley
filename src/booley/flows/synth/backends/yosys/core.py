@@ -680,7 +680,7 @@ def _resolve_sta_sdc_paths(sdc: list[str] | None, root: Path | None = None) -> l
     STA constraint SDC files (ADR 0029): one per ``--sta-sdc``, sourced from
     the Target's ``file_type: SDC`` fileset (the Flow forwards them) or passed
     directly to the configure surface. A relative path resolves against
-    the project root (``/work`` in the Sandbox), not cwd — same
+    the Project Root (``/work`` in the Sandbox), not cwd — same
     convention as ``--inc-dir`` / ``--extra-rtl`` — so a path the caller
     relativized against the worktree stays valid for the generated boundary
     command. There is no TOML fallback: ``[flows.synth.timing].sdc`` is a

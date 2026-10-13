@@ -132,7 +132,7 @@ def _infra_failure_reason(proc: subprocess.CompletedProcess) -> str:
 
 
 # Marker files (under the build dir) record the edalize binary dir relative to
-# the project root and its resolved EDA-tool family. _run_elab writes them; the
+# the Project Root and its resolved EDA-tool family. _run_elab writes them; the
 # per-mutant run-many loop reads them so it never has to re-resolve the Target.
 _EDALIZE_BINDIR_MARKER = ".booley_edalize_bindir"
 _EDALIZE_EDA_TOOL_MARKER = ".booley_edalize_eda_tool"

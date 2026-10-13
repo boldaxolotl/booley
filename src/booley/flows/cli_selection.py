@@ -139,7 +139,7 @@ def add_project_option(parser: argparse.ArgumentParser, dest: str, *, cheat: boo
         action=SelectionAction,
         default=argparse.SUPPRESS,
         metavar="PATH",
-        help="Select the Project checkout (default: discover from cwd)",
+        help="Select the Project Root (default: discover from cwd)",
     )
     parser.add_argument(
         "--project",
@@ -148,7 +148,7 @@ def add_project_option(parser: argparse.ArgumentParser, dest: str, *, cheat: boo
         default=argparse.SUPPRESS,
         metavar="PATH",
         **({"nargs": "?"} if cheat else {}),
-        help="Select the Project checkout",
+        help="Select the Project Root",
     )
 
 
@@ -237,7 +237,7 @@ def human_parser(
             action=EndpointProjectAction,
             default=argparse.SUPPRESS,
             metavar="PATH",
-            help="Select the Project checkout",
+            help="Select the Project Root",
         )
     if durations and "--timeout" not in occupied and "--timeout-ms" in occupied:
         old = occupied["--timeout-ms"]

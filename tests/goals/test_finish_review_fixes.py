@@ -95,7 +95,7 @@ def test_content_violation_does_not_authorize_index_write_to_recreated_control(
     call = request(complete)
     with pytest.raises(Crash):
         finish_goal(call, environment(complete, stop_at("ref-published")))
-    # Preserve the actual worktree while replacing its Control Project's physical root.
+    # Preserve the actual worktree while replacing its Main Booley Directory's physical root.
     worktrees = complete.control / "worktrees"
     held = complete.control.parent / "held-worktrees"
     worktrees.rename(held)
@@ -147,7 +147,7 @@ def test_recovering_publication_with_broken_paired_git_is_actionable(layout, tmp
     marker.unlink()
     marker.write_text("gitdir: /missing-paired-git-administration\n")
     before = git(complete.worktree, "rev-parse", "HEAD")
-    with pytest.raises(LifecycleError, match=r"paired project repository.*unavailable"):
+    with pytest.raises(LifecycleError, match=r"Paired Checkout.*unavailable"):
         finish_goal(call, environment(complete))
     assert git(complete.worktree, "rev-parse", "HEAD") == before
 

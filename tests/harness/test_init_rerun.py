@@ -538,7 +538,7 @@ def _git(repository: Path, *args: str) -> str:
 
 
 def _crlf_project_data(project_dir: Path) -> list[str]:
-    """Tracked or untracked Project data whose working-tree copy has CRLF.
+    """Tracked or untracked files in the Booley Directory whose working-tree copy has CRLF.
 
     ``git ls-files --eol`` reports ``w/crlf`` (or ``w/mixed``) for such files;
     ignored runtime state is out of scope.
@@ -551,7 +551,7 @@ _IDENTITY = ("-c", "user.name=t", "-c", "user.email=t@t")
 
 
 def _crlf_checkout_project_data(project_dir: Path, files: dict[str, bytes]) -> None:
-    """Commit LF Project data, then re-check it out as Git for Windows would.
+    """Commit Booley configuration with LF line endings, then re-check it out as Git for Windows would.
 
     Git for Windows defaults to ``core.autocrlf=true``: every tracked file
     lands with CRLF while ``git status`` stays clean.
@@ -561,7 +561,7 @@ def _crlf_checkout_project_data(project_dir: Path, files: dict[str, bytes]) -> N
     for name, data in files.items():
         (project_dir / name).write_bytes(data)
     _git(project_dir, "add", "-A")
-    _git(project_dir, *_IDENTITY, "commit", "-qm", "project data")
+    _git(project_dir, *_IDENTITY, "commit", "-qm", "Booley Directory")
     _git(project_dir, "config", "core.autocrlf", "true")
     for name in files:
         (project_dir / name).unlink()
@@ -605,7 +605,7 @@ _CONFIG_WITHOUT_AGENT = b"# user config\n[flows.sim]\nenabled = true\n"
 def test_agent_selection_write_does_not_block_line_ending_repair(
     repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Init's own [agent] write to CRLF project data must not look like user work."""
+    """Init's own [agent] write to Booley configuration with CRLF line endings must not look like user work."""
     _stub_current_host(monkeypatch)
     project_dir = repo / ".booley_project"
     _crlf_checkout_project_data(
@@ -626,7 +626,7 @@ def test_agent_selection_write_does_not_block_line_ending_repair(
 class TestWindowsProjectDataLineEndings:
     """Real Project Initialization on the Windows filesystem (#609).
 
-    Nothing that writes files is stubbed: init creates the project data, the
+    Nothing that writes files is stubbed: init creates the Booley Directory, the
     guidance links, and runs the line-ending repair against real Git. Only
     host services (bootstrap, image, auth, Runtime) are stubbed by ``repo``.
     ``force_hardlink_fallback`` makes the guidance symlink attempt fail the way
@@ -700,7 +700,7 @@ class TestWindowsProjectDataLineEndings:
     ) -> None:
         project_dir = repo / ".booley_project"
         # 1. A Windows checkout with Git for Windows' default autocrlf=true:
-        #    every tracked Project data file lands with CRLF, index clean.
+        #    every tracked file in the Booley Directory lands with CRLF, index clean.
         _crlf_checkout_project_data(
             project_dir,
             {"AGENTS.md": _GUIDANCE, "booley.toml": _AGENT_TABLE, "notes.md": b"# Notes\n"},
@@ -884,7 +884,7 @@ def test_project_dir_check_reports_all_backfills_and_converges(repo, capsys):
     init_cmd._step_project_dir(ctx)
     output = capsys.readouterr().out
     _assert_backfill_report(output, missing)
-    assert "would secure project directory permissions" in output
+    assert "would secure Booley Directory permissions" in output
     assert [(r.name, r.status, r.detail) for r in ctx.results] == [
         ("project_dir", "warn", "permissions need 0700")
     ]
@@ -910,7 +910,7 @@ def test_project_dir_check_correct_permissions_keeps_skip(repo, capsys):
     init_cmd._step_project_dir(ctx)
     output = capsys.readouterr().out
     _assert_backfill_report(output, missing)
-    assert "project directory found at" in output
+    assert "Booley Directory found at" in output
     assert "permissions" not in output
     assert [(r.status, r.detail) for r in ctx.results] == [("skip", "already present")]
     assert _complete_snapshot(repo) == before
@@ -929,7 +929,7 @@ def test_project_dir_check_inaccessible_reports_incomplete(repo, capsys):
         ctx = InitContext(project_root=repo, check_only=True)
         init_cmd._step_project_dir(ctx)
         output = capsys.readouterr().out
-        assert "would secure project directory permissions" in output
+        assert "would secure Booley Directory permissions" in output
         assert "backfill report is incomplete" in output
         assert "cannot inspect" in output
         assert "would add" not in output
@@ -961,7 +961,7 @@ def test_project_dir_check_full_init_reports_backfills_without_mutation(repo, mo
     assert "would add 1 config skeleton file(s)" in output
     assert "would add FUSESOC_IGNORE" in output
     assert f"would add {len(missing)} missing ignore pattern(s)" in output
-    assert "would secure project directory permissions" in output
+    assert "would secure Booley Directory permissions" in output
     assert _complete_snapshot(repo) == before
     assert _run_full_init(repo) == 0
     after = _complete_snapshot(repo)

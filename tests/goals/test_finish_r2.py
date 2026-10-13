@@ -126,11 +126,11 @@ def test_new_external_versioned_project_during_finishing_revalidates(layout):
     with pytest.raises(Crash):
         finish_goal(call, environment(layout, stop))
     project = layout.worktree / ".booley_project"
-    # A separate repository in the literal Project directory changes participants
+    # A separate repository in the literal Booley Directory changes participants
     # without introducing a publication-path symlink that must independently refuse.
     git(project, "init", "-q", "-b", "main")
     git(project, "add", ".")
-    git(project, "commit", "-qm", "external versioned Project")
+    git(project, "commit", "-qm", "external Versioned Booley Directory")
     result = finish_goal(call, environment(layout))
     assert result["status"] == "revalidation_required"
     assert "outside the pinned" in result["reason"]

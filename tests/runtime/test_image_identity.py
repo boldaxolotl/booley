@@ -682,3 +682,86 @@ def test_layout_verification_refuses_malformed_parent_labels(
     records["parent"]["Config"]["Labels"] = labels
     with pytest.raises(RuntimeError, match="labels are invalid"):
         project_image.verify_layout_image(records["parent"], records["candidate"])
+
+
+@pytest.mark.parametrize("damaged", ["parent", "child"])
+def test_layout_proof_requires_image_configuration(damaged):
+    from booley.runtime import project_image
+
+    records = _layout_inspections("parent", "child", {}, {})
+    records[damaged]["Config"] = None
+    with pytest.raises(RuntimeError, match="layout image configuration is missing"):
+        project_image.verify_layout_image(records["parent"], records["child"])
+
+
+@pytest.mark.parametrize("key", ["Architecture", "Os", "Variant"])
+def test_layout_proof_refuses_a_changed_parent_platform(key):
+    from booley.runtime import project_image
+
+    records = _layout_inspections("parent", "child", {}, {})
+    records["child"][key] = "substituted"
+    with pytest.raises(RuntimeError, match="changed parent platform"):
+        project_image.verify_layout_image(records["parent"], records["child"])
+
+
+def test_layout_proof_requires_inspection_to_match_requested_identity(monkeypatch):
+    from booley.runtime import project_image
+
+    project_image.verify_layout_parent_identity.cache_clear()
+    monkeypatch.setattr(
+        project_image, "inspect_layout_image", lambda *_args, **_kwargs: {"Id": "substituted"}
+    )
+    with pytest.raises(RuntimeError, match="inspection changed immutable identity"):
+        project_image.verify_layout_parent_identity("child", "parent")
+    project_image.verify_layout_parent_identity.cache_clear()
+
+
+def test_layout_proof_refuses_a_failed_alias_directory_probe(monkeypatch):
+    from types import SimpleNamespace
+
+    from booley.runtime import project_image
+
+    parent = "sha256:" + "a" * 64
+    child = "sha256:" + "b" * 64
+    records = _layout_inspections(parent, child, {}, {})
+    commands = []
+
+    def probe(command, **_kwargs):
+        commands.append(command)
+        return SimpleNamespace(returncode=1)
+
+    monkeypatch.setattr(project_image, "_image_history", _layout_history)
+    monkeypatch.setattr(project_image.subprocess, "run", probe)
+    with pytest.raises(RuntimeError, match="lacks its root-owned alias directory"):
+        project_image.verify_layout_image(records[parent], records[child])
+    assert len(commands) == 1
+    assert "--pull=never" in commands[0] and "--network=none" in commands[0]
+
+
+@pytest.mark.parametrize(
+    "parent,child", [([], ["extra"]), (["base"], ["base"]), (["base"], ["extra", "other"])]
+)
+def test_layout_history_refuses_substituted_parent_layers(monkeypatch, parent, child):
+    from booley.runtime import project_image
+
+    monkeypatch.setattr(
+        project_image,
+        "_image_history",
+        lambda image, _executable: parent if image == "parent" else child,
+    )
+    with pytest.raises(RuntimeError, match="build history has a substituted parent"):
+        project_image._verify_layout_history("parent", "child", "docker")
+
+
+def test_layout_history_requires_the_trusted_recipe(monkeypatch, tmp_path):
+    from booley.runtime import paths, project_image
+
+    parent = "sha256:" + "a" * 64
+    child = "sha256:" + "b" * 64
+    histories = {image: _layout_history(image, "docker") for image in (parent, child)}
+    monkeypatch.setattr(
+        project_image, "_image_history", lambda image, _executable: histories[image]
+    )
+    monkeypatch.setattr(paths, "docker_data_dir", lambda: tmp_path)
+    with pytest.raises(RuntimeError, match="trusted recipe is unavailable or malformed"):
+        project_image._verify_layout_history(parent, child, "docker")

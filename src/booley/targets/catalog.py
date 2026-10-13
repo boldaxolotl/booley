@@ -99,7 +99,7 @@ class PreparedTargetSelection:
 
 @dataclass(frozen=True)
 class TargetCatalog:
-    """One immutable Target declaration snapshot for one Project checkout."""
+    """One immutable Target declaration snapshot for one Project Root."""
 
     project_root: Path
     snapshot_id: str

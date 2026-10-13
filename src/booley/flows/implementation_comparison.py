@@ -302,7 +302,7 @@ def target_pair_plans_for_candidates(
         if basis is not None:
             if project_root is None or not flow:
                 raise ImplementationComparisonError(
-                    "Ticket baseline comparison requires project root and flow"
+                    "Ticket baseline comparison requires Project Root and flow"
                 )
             plan = _basis_plan(
                 basis,

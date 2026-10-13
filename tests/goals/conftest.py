@@ -1,6 +1,6 @@
 """Goal Mode test support: a real Git repository laid out like a Booley Project.
 
-The control Project directory is ``<main>/.booley_project`` (excluded from
+The Main Booley Directory is ``<main>/.booley_project`` (excluded from
 Git, as ``init`` does); the linked worktree lives under its ``worktrees/``
 and carries a copied ``.booley_project`` snapshot. Only the Target catalog is
 faked, so entry never needs FuseSoC.
@@ -74,7 +74,7 @@ class FakeCatalog:
 
 @pytest.fixture
 def layout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleNamespace]:
-    """A Project with a control Project directory and one linked worktree."""
+    """A Project with a Main Booley Directory and one linked worktree."""
     main = tmp_path / "main"
     main.mkdir()
     git(main, "init", "-q", "-b", "main")
@@ -101,14 +101,14 @@ def layout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleNa
 
 
 def write_project_files(project_dir: Path) -> None:
-    """A minimal Project directory: configuration and one custom MCP tool."""
+    """A minimal Booley Directory: configuration and one custom MCP tool."""
     (project_dir / "mcp_tools").mkdir(parents=True)
     (project_dir / "booley.toml").write_text("[project]\nname = 'demo'\n", encoding="utf-8")
     (project_dir / "mcp_tools" / "tool.py").write_text("# custom tool\n", encoding="utf-8")
 
 
 def install_paired_project(layout: SimpleNamespace, tmp_path: Path) -> Path:
-    """Replace the worktree's snapshot with a paired Project repository checkout.
+    """Replace the worktree's snapshot with a Paired Checkout.
 
     The paired branch has no upstream, like a Goal worktree's would.
     """
@@ -219,7 +219,7 @@ def bump_spec(layout: SimpleNamespace, key: str) -> None:
 
 
 def edit_protected(layout: SimpleNamespace, text: str = "[project]\nname = 'edited'\n") -> str:
-    """Rewrite the session Project's ``booley.toml`` (a Protected Input); return what it held."""
+    """Rewrite the Main Booley Directory's ``booley.toml`` (a Protected Input); return what it held."""
     path = layout.control / "booley.toml"
     before = path.read_text(encoding="utf-8")
     path.write_text(text, encoding="utf-8")

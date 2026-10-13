@@ -222,7 +222,7 @@ def test_stealth_cores_copied_into_worktree(tmp_path: Path) -> None:
 
 
 def test_paired_project_uses_ticket_fork_recipe(tmp_path: Path) -> None:
-    """A ticket's paired project repo contributes its old Target definition."""
+    """A ticket's Paired Checkout contributes its old Target definition."""
     outer = tmp_path / "outer"
     outer.mkdir()
     _init_repo(outer)
@@ -268,7 +268,7 @@ def _stealth_core_linking_to_rtl(repo: Path, link_name: str = "rtl") -> Path:
     core_dir.mkdir(parents=True)
     (core_dir / "top.core").write_text("CAPI=2:\nname: x:ip:top:1.0\n", encoding="utf-8")
     link = core_dir / link_name
-    # cores/ip -> cores -> .booley_project -> repo root
+    # cores/ip -> cores -> .booley_project -> Project Root
     link.symlink_to(Path("..", "..", "..", "rtl"), target_is_directory=True)
     return link
 
@@ -349,7 +349,7 @@ def test_symlink_outside_the_project_is_left_verbatim(tmp_path: Path, monkeypatc
 def test_link_into_the_state_dir_follows_the_live_tree(tmp_path: Path) -> None:
     """ADR 0036 blesses ``cores/worktrees -> ../worktrees`` (a core pinning a
     frozen checkout). ``.booley_project/`` is git-excluded, so no checkout has
-    one — the link must keep naming the LIVE state dir instead of dangling."""
+    one — the link must keep naming the LIVE Booley Directory instead of dangling."""
     _init_repo(tmp_path)
     frozen = tmp_path / ".booley_project" / "worktrees" / "pinned"
     frozen.mkdir(parents=True)
@@ -618,9 +618,9 @@ def test_external_standalone_project_baseline_copies_cores(tmp_path, monkeypatch
 
 
 def _paired_checkout_without_upstream(tmp_path: Path) -> tuple[Path, Path, str]:
-    """An outer worktree whose paired Project branch has no upstream (a Goal worktree).
+    """An outer worktree whose Paired Checkout branch has no upstream (a Goal worktree).
 
-    Returns the outer worktree, its paired Project checkout, and the paired
+    Returns the outer worktree, its Paired Checkout, and the paired
     commit recorded at entry, which a later commit then moves past.
     """
     outer = tmp_path / "outer"
@@ -683,7 +683,7 @@ def _assert_paired_baseline(goal: Path, paired: Path, expected: str, rule: str, 
         assert (baseline / ".booley_project/cores/top.core").read_text().strip() == _git(
             paired, "show", f"{expected}:cores/top.core"
         )
-    assert f"paired Project baseline: {rule} -> {expected}" in caplog.text
+    assert f"Paired Checkout baseline: {rule} -> {expected}" in caplog.text
     assert not baseline.exists()
     assert (_git(goal, "worktree", "list"), _git(paired, "worktree", "list")) == registrations
     assert _git(paired, "rev-parse", "HEAD") == candidate
@@ -759,7 +759,7 @@ def test_invalid_recorded_pairing_base_is_refused(tmp_path, caplog, recorded, up
     if upstream:
         _git(paired, "branch", "--set-upstream-to=project-source")
     _assert_paired_baseline_refuses(goal, paired, "invalid recorded pairing base")
-    assert "paired Project baseline:" not in caplog.text
+    assert "Paired Checkout baseline:" not in caplog.text
 
 
 @pytest.mark.parametrize("source", ["recorded base", "upstream"])
@@ -801,7 +801,7 @@ def test_explicit_pairing_pin_bypasses_standalone_policy(tmp_path, caplog, mode,
     with baseline_worktree(goal, "HEAD", paired_project=policy) as baseline:
         assert git_full_sha("HEAD", baseline / ".booley_project") == entry_sha
     assert not baseline.exists()
-    assert "paired Project baseline:" not in caplog.text
+    assert "Paired Checkout baseline:" not in caplog.text
 
 
 @pytest.mark.parametrize("probe", ["symbolic-ref", "config"])
@@ -824,14 +824,14 @@ def test_pairing_probe_failure_never_selects_another_source(tmp_path, monkeypatc
         return real_git(cwd, *args, timeout=timeout)
 
     monkeypatch.setattr(module, "_git", failing_git)
-    _assert_paired_baseline_refuses(goal, paired, "paired Project")
+    _assert_paired_baseline_refuses(goal, paired, "Paired Checkout")
 
 
 def test_symbolic_head_outside_branch_namespace_refuses(tmp_path):
     goal, paired, _entry_sha = _paired_checkout_without_upstream(tmp_path)
     _git(paired, "tag", "elsewhere")
     _git(paired, "symbolic-ref", "HEAD", "refs/tags/elsewhere")
-    _assert_paired_baseline_refuses(goal, paired, "paired Project")
+    _assert_paired_baseline_refuses(goal, paired, "Paired Checkout")
 
 
 @pytest.mark.parametrize("rule", ["recorded base", "upstream", "detached HEAD"])
@@ -857,7 +857,7 @@ def test_paired_baseline_selection_reaches_flow_progress_without_info_logging(tm
             pass
     finally:
         logger.setLevel(previous)
-    assert f"baseline: paired Project {rule} -> {expected}" in stream.getvalue()
+    assert f"baseline: Paired Checkout {rule} -> {expected}" in stream.getvalue()
 
 
 def test_paired_baseline_without_progress_observer_emits_no_direct_output(tmp_path, capsys):

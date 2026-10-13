@@ -1,6 +1,6 @@
 """Cross-platform guidance-link behavior: the two-venue link target (F-13).
 
-The project dir is bind-mounted at ``/booley-project`` inside the Session
+The Booley Directory is bind-mounted at ``/booley-project`` inside the Session
 Runtime — outside the workspace. A link relative to *that* reads
 ``../booley-project/AGENTS.md``, which on the host resolves to a sibling of the
 repo that does not exist, so a host-side editor or agent reads no guidance.

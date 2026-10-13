@@ -70,7 +70,7 @@ class PublicationGate:
 
     @property
     def store(self) -> GoalStore:
-        """The store of the bound record's Control Project directory."""
+        """The store of the bound record's Main Booley Directory."""
         return GoalStore(self.binding.project_dir)
 
     @property

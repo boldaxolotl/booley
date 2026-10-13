@@ -27,7 +27,7 @@ Inside the Sandbox, for Interactive Mode, we recommend `booley` / `booley chat`,
 | `booley chat` | Explicit spelling of the Sandbox default `booley` command |
 | `booley goal` | Inspect Goal Records, status, and abandonment |
 | `booley dashboard` | Show sessions, Goals, and Jobs |
-| `booley worktree` | Create a linked worktree with paired versioned Project inputs or a clean non-versioned snapshot |
+| `booley worktree` | Create a linked worktree with a Paired Checkout or Snapshot |
 
 #### Either-location and mixed commands
 
@@ -73,8 +73,8 @@ omit it), and Project-defined endpoints must declare `work_dir` to run.
 and Finish IDs rather than editing records. Protected Input changes block
 Finish until reverted. Open `done` review findings remain visible; Finish does not merge.
 Read Project-owned Goalsets, including `default.md`, from `goalsets/` in the
-main checkout's Project directory (`BOOLEY_PROJECT_DIR` in the Sandbox); a
-Project copy or snapshot inside `work_dir` is not used. `default.md` applies
+Main Booley Directory (`BOOLEY_PROJECT_DIR` in the Sandbox); a
+Worktree Booley Directory inside `work_dir` is not used. `default.md` applies
 unless the human explicitly skips it with a reason. Initialization seeds four
 create-only Goalsets and preserves edits.
 

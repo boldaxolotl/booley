@@ -94,7 +94,7 @@ class TestResolveProjectRoot:
         monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
         from booley.runtime.shared_infra import resolve_project_root
 
-        # Create a fake project root with .git
+        # Create a fake Project Root with .git
         project = tmp_path / "project"
         project.mkdir()
         (project / ".git").mkdir()

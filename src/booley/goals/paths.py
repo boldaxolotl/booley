@@ -1,21 +1,20 @@
 """Where Goal Mode keeps its files (ADR 0067 D9).
 
-Every Goal Record lives in the Project directory the caller resolved through
+Every Goal Record lives in the Booley Directory the caller resolved through
 :mod:`booley.runtime.project_dir`; nothing here discovers or hardcodes it::
 
-    <project dir>/goals/<goal-id>/record.json         the Goal Record
-    <project dir>/goals/<goal-id>/lock                its record lock (D15)
-    <project dir>/goals/<goal-id>/booley_state.json   Goal evidence state
-    <project dir>/goals/<goal-id>/logs/               receipts and reviewer inputs
-    <project dir>/goals/<goal-id>/.runtime/jobs/      Job records
-    <project dir>/goals/<goal-id>/changes.jsonl       the Change Log
-    <project dir>/goals/<goal-id>/SUMMARY.md          the Session Summary
-    <project dir>/goals/<goal-id>/review-package.json the Review Package
-    <project dir>/goals/locks/worktree-<hash>.lock    one worktree lock per worktree
-    <checkout project dir>/goals/history/<goal-id>.md the committed summary
+    <booley-directory>/goals/<goal-id>/record.json         the Goal Record
+    <booley-directory>/goals/<goal-id>/lock                its record lock (D15)
+    <booley-directory>/goals/<goal-id>/booley_state.json   Goal evidence state
+    <booley-directory>/goals/<goal-id>/logs/               receipts and reviewer inputs
+    <booley-directory>/goals/<goal-id>/.runtime/jobs/      Job records
+    <booley-directory>/goals/<goal-id>/changes.jsonl       the Change Log
+    <booley-directory>/goals/<goal-id>/SUMMARY.md          the Session Summary
+    <booley-directory>/goals/<goal-id>/review-package.json the Review Package
+    <booley-directory>/goals/locks/worktree-<hash>.lock    one worktree lock per worktree
+    <worktree-booley-directory>/goals/history/<goal-id>.md the committed summary
 
-The committed summary is the one path in a *checkout's* own Project
-directory: it is written inside the Goal worktree so it commits on the Goal
+The committed summary is the one path in a *checkout's* own Booley Directory: it is written inside the Goal worktree so it commits on the Goal
 Branch. ``goals/*/`` is ignored and ``goals/history/`` kept by the Project
 ``.gitignore`` (:mod:`booley.runtime.project_gitignore`).
 """
@@ -100,7 +99,7 @@ def worktree_lock_file(project_dir: Path, identity: WorktreeIdentity) -> Path:
 
 
 def history_file(checkout_project_dir: Path, goal_id: str) -> Path:
-    """The committed summary of *goal_id* inside a checkout's own Project directory."""
+    """The committed summary of *goal_id* inside a checkout's own Booley Directory."""
     return checkout_project_dir / GOALS_DIR / HISTORY_DIR / f"{validate_goal_id(goal_id)}.md"
 
 

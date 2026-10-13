@@ -1,4 +1,4 @@
-"""Project-repository line-ending inspection and reconciliation.
+"""Project line-ending inspection and reconciliation.
 
 Owns Git discovery, container-safety policy, guarded worktree normalization,
 index reconciliation, and verification for every repository supplying Project
@@ -148,7 +148,7 @@ class LineEndingActionResult:
 
 @dataclass(frozen=True)
 class RepositoryLineEndingReport:
-    """Typed result for one distinct Project repository."""
+    """Typed result for one inspected RTL or Booley Directory's repository."""
 
     repository: LineEndingRepository
     status: LineEndingStatus
@@ -225,7 +225,7 @@ class _NormalizationResult:
 
 def line_ending_repository_display(role: LineEndingRole, root: Path) -> str:
     """Render one repository role and path consistently across init and Doctor."""
-    label = "project checkout" if role == "project-checkout" else "project data"
+    label = "Project Root" if role == "project-checkout" else "Booley Directory"
     return f"{label} ({root})"
 
 
@@ -1764,9 +1764,9 @@ def _repair_repository(
 def sample_worktree_cleanliness(
     project_root: Path, project_dir: Path | None = None
 ) -> dict[Path, bool | None]:
-    """Record whether each Project repository is clean before init writes anything.
+    """Record whether each RTL or Booley Directory's repository is clean before init writes anything.
 
-    Init itself edits tracked Project data (for example the ``[agent]``
+    Init itself edits tracked files in the Booley Directory (for example the ``[agent]``
     selection in ``booley.toml``) before the line-ending repair runs. Those LF
     edits are Booley's own, not user work, so the repair judges "uncommitted
     changes" against this pre-write baseline. A repository dirty here still
@@ -1789,7 +1789,7 @@ def reconcile_project_line_endings(
     """Inspect or reconcile every distinct repository supplying Project files.
 
     ``clean_baseline`` comes from :func:`sample_worktree_cleanliness` taken
-    before the caller wrote Project data. Repair uses it instead of the
+    before the caller wrote files in the Booley Directory. Repair uses it instead of the
     current ``git status`` for each repository it covers.
     """
     discovery = discover_line_ending_repositories(project_root, project_dir)

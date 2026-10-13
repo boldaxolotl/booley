@@ -32,7 +32,7 @@ from collections.abc import Iterator
 from enum import Enum
 from pathlib import Path, PurePosixPath
 
-#: Generated stamp module, relative to the Booley repo root. Gitignored.
+#: Generated stamp module, relative to the Booley repository root. Gitignored.
 STAMP_RELPATH = "src/booley/_build_commit.py"
 DEVELOPMENT_CONTEXT_RELPATH = "src/booley/data/development-build-context.tar.gz"
 
