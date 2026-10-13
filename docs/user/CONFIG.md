@@ -582,16 +582,16 @@ trace_args = ["--trace={file}"]
 ```
 
 `{file}` interpolates the destination selected from the Target's trace recipe.
-For a Verilator Target with a C++ simulation harness and an authored
-`--trace-fst` setup it is a regular `trace.fst` file; Booley leaves the Target's
-FST build options intact and B-Wave reads that file directly. For VCD tracing it
+For a Verilator Target with a project-owned C++ simulation harness and an
+authored `--trace-fst` setup it is a regular `trace.fst` file; Booley leaves the
+Target's FST build options intact and B-Wave reads that file directly. For VCD tracing it
 is the live FIFO that B-Wave converts to FST. Args without `{file}` are passed
 as-is (`["-t"]`). This **replaces** the default pair, so include every argument
 the binary needs. Booley rejects header-only or otherwise unqueryable waveforms.
 
-None of this applies to a Cocotb Target: it has no C++ simulation harness, it
-ignores `trace_args`, and it rejects `--trace-fst`. See
-[Tracing a Cocotb Target](#tracing-a-cocotb-target).
+A Cocotb Target differs on two points: it runs cocotb's harness instead of a
+project-owned one, so `trace_args` has no effect, and it rejects `--trace-fst`.
+See [Tracing a Cocotb Target](#tracing-a-cocotb-target).
 
 ### Where the testbench drops its dump (`[flows.sim].trace_files`)
 
@@ -2025,26 +2025,28 @@ What differs from an SV Target:
 ### Tracing a Cocotb Target
 
 `booley flow sim --target <target> --trace` works on a Cocotb Target with no
-trace setup in the `.core`. The Cocotb run owns a VCD dump: the simulator writes
+trace setup in the `.core`. The cocotb run owns a VCD dump: the simulator writes
 `dump.vcd` in the run directory, and after the run Booley converts it to the FST
-that B-Wave reads, then removes the raw VCD. A failed conversion keeps the VCD
-and its diagnostics in the simulation work area.
+that B-Wave reads, then removes the raw VCD. A failed conversion keeps the VCD,
+as `trace.vcd`, with its diagnostics in the Target's simulation work directory.
+As on any Target, a header-only or otherwise unqueryable waveform is rejected.
 
 Booley drives the dump itself, so `[flows.sim].trace_args` has no effect here:
 
 - **Icarus** gets `+trace`, which fires Booley's dump module, the same one the
   [trace overlay](#how-booley-asks-for-a-waveform-flowssimtrace_args) supplies
   to an SV Target.
-- **Verilator** gets cocotb's own `--trace --trace-file dump.vcd`. Booley adds
-  `--trace` to the traced build when `verilator_options` names no trace format.
+- **Verilator** gets `--trace --trace-file dump.vcd`, the flags of the C++
+  harness cocotb supplies.
 
-What `verilator_options` may carry on a Verilator Cocotb Target:
+What `verilator_options` may carry on a Verilator Cocotb Target, and what a
+traced run then does:
 
 | Trace flag | Result |
 |---|---|
 | none | Accepted. Booley adds `--trace` to the traced build. |
 | `--trace` or `--trace-vcd` | Accepted. This is a VCD trace recipe; Booley keeps the options as written. |
-| `--trace-fst` | Rejected: the Cocotb run owns a VCD dump, so native FST tracing has nowhere to go. |
+| `--trace-fst` | Rejected: this is a native FST recipe, and cocotb's harness is driven for a VCD. |
 | `--trace-saif` | Rejected, as on every Verilator Target. |
 
 Booley refuses a traced run of a `--trace-fst` Cocotb Target with:
