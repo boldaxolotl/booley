@@ -7,12 +7,11 @@ two-phase apply/revert tests were deleted along with their helpers.
 
 from __future__ import annotations
 
-import contextlib
 import json
 import os
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -24,6 +23,7 @@ from booley.criteria.state import DevelopmentState
 from booley.flows.sim.backends.cocotb import _parse_args as parse_cocotb_run_args
 from booley.flows.sim.build import PreparedSimulationBuild, SimulationBuildPreparationError
 from booley.flows.sim.target_tests import NoRunnableTestsError
+from booley.fusesoc import fusesoc_registry
 from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS, McpToolResult
 from booley.specialists.mutation_tester import (
     MutationResult,
@@ -41,6 +41,10 @@ from booley.specialists.mutation_tester import (
 )
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import IncompatibleTargetError
+from tests.conftest import require_symlinks, symlink_or_skip
+
+# The parameters the fake ``.core`` Target declares; a test may add plusargs.
+_TARGET_PARAMETERS: dict[str, Any] = {}
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -87,6 +91,14 @@ def _write_dut_top(tmp_path: Path, top: str = "design_top") -> Path:
         encoding="utf-8",
     )
     return f
+
+
+def _write_tests_toml(root: Path, text: str) -> None:
+    """Give the checkout at *root* a Project directory with this ``tests.toml``."""
+    project = root / ".booley_project"
+    project.mkdir(exist_ok=True)
+    (project / "booley.toml").write_text('[project]\nname = "demo"\n', encoding="utf-8")
+    (project / "tests.toml").write_text(text, encoding="utf-8")
 
 
 def _make_endpoint(
@@ -177,11 +189,6 @@ def test_creator_provider_failure_has_durable_debug_traceback(
         monkeypatch,
         extra_args=["--transcript-dir", str(transcript_dir)],
     )
-    plan = SimpleNamespace(work_dir=tmp_path, scope_files=[])
-    monkeypatch.setattr(
-        "booley.specialists.mutation_tester.hide_opposite_sources",
-        lambda *_args, **_kwargs: contextlib.nullcontext(),
-    )
     monkeypatch.setattr(
         endpoint,
         "_invoke_creator",
@@ -189,7 +196,7 @@ def test_creator_provider_failure_has_durable_debug_traceback(
     )
     caplog.set_level("DEBUG")
 
-    specs, elapsed, error = endpoint._proposal_round(plan, "prompt", 1, None)
+    specs, elapsed, error = endpoint._proposal_round("prompt", 1)
 
     assert specs == []
     assert elapsed == 0.0
@@ -690,6 +697,9 @@ def _patch_resolve_target(monkeypatch, *, eda_tool: str | None = "verilator"):
                         work_dir, target, **kwargs
                     ),
                     "core_closure": lambda _self, _handles: frozenset(),
+                    "inspect": lambda _self, _handle: SimpleNamespace(
+                        parameters=dict(_TARGET_PARAMETERS)
+                    ),
                 },
             )()
         ),
@@ -793,7 +803,9 @@ def test_elab_uses_shared_preparer_and_its_exact_command(tmp_path: Path, monkeyp
 
     result = endpoint._run_elab("default", tmp_path, build_dir)
 
-    prepare.assert_called_once_with(handle, build_root=build_dir, lane_kind="unreserved")
+    prepare.assert_called_once_with(
+        handle, build_root=build_dir, lane_kind="unreserved", environment={}
+    )
     assert captured == [["custom-build", "--exact-command"]]
     assert result.returncode == 0
 
@@ -910,13 +922,9 @@ def test_sim_runs_every_configured_test_selector(tmp_path: Path, monkeypatch):
         "booley.specialists.mutation_tester.subprocess.run",
         _fake_run,
     )
-    monkeypatch.setattr(
-        "booley.specialists.mutation_tester.project_config.TEST_NAMES",
-        {"default": ["coremark.elf", "smoke.elf"]},
-    )
-    monkeypatch.setattr(
-        "booley.specialists.mutation_tester.project_config.render_test_selector",
-        lambda target, index, name: f"--meminit=ram,{name}",
+    _write_tests_toml(
+        tmp_path,
+        '[default]\ntests = ["coremark.elf", "smoke.elf"]\nselect = "--meminit=ram,{name}"\n',
     )
 
     endpoint = _make_endpoint(tmp_path, monkeypatch)
@@ -929,6 +937,131 @@ def test_sim_runs_every_configured_test_selector(tmp_path: Path, monkeypatch):
     assert [run.test_name for run in runs] == ["coremark.elf", "smoke.elf"]
     assert "--plusarg=--meminit=ram,coremark.elf" in sim_cmds[0]
     assert "--plusarg=--meminit=ram,smoke.elf" in sim_cmds[1]
+
+
+def _mutation_sim_runs(tmp_path: Path, monkeypatch, tests_toml: str, eda_tool: str | None = None):
+    """Run the declared suite of ``default`` once; return ``(argv, env)`` per sim."""
+    captured: list[tuple[list[str], dict[str, str]]] = []
+
+    def _fake_run(cmd, *args, **kwargs):
+        captured.append((list(cmd), dict(kwargs.get("env") or {})))
+        return _fake_proc(rc=0, stdout="[ok]", stderr="")
+
+    _patch_resolve_target(monkeypatch)
+    monkeypatch.setattr("booley.specialists.mutation_tester.subprocess.run", _fake_run)
+    _write_tests_toml(tmp_path, tests_toml)
+    endpoint = _make_endpoint(tmp_path, monkeypatch)
+    if eda_tool is not None:
+        monkeypatch.setattr(endpoint, "target_eda_tool", lambda *_args, **_kwargs: eda_tool)
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+    endpoint._run_elab("default", tmp_path, build_dir)
+    endpoint._run_target_test_suite("default", tmp_path, build_dir, "tb")
+    return captured[1:]
+
+
+_MUTATION_VARIANTS = """
+[default]
+tests = ["reset", "stress"]
+select = "+test={name}"
+default_seed = 7
+
+[default.variants.stress]
+default = "short"
+short = { args = ["+iters=1000"], env = { STRESS_MODE = "short" } }
+soak = ["+iters=100000"]
+"""
+
+
+def test_sim_runs_the_default_variant_at_the_default_seed(tmp_path: Path, monkeypatch):
+    """A mutant is graded by the same Test Runs a plain Simulation Flow run uses."""
+    monkeypatch.delenv("STRESS_MODE", raising=False)
+    runs = _mutation_sim_runs(tmp_path, monkeypatch, _MUTATION_VARIANTS, "verilator")
+
+    plusargs = [[word for word in cmd if word.startswith("--plusarg=")] for cmd, _env in runs]
+    assert plusargs == [
+        ["--plusarg=test=reset", "--plusarg=verilator+seed+7"],
+        ["--plusarg=test=stress", "--plusarg=iters=1000", "--plusarg=verilator+seed+7"],
+    ]
+    assert [env.get("STRESS_MODE") for _cmd, env in runs] == [None, "short"]
+
+
+def test_sim_passes_the_target_plusargs_like_the_simulation_flow(tmp_path: Path, monkeypatch):
+    """The Target's plusargs come first; ``select`` replaces one that sets its option."""
+    monkeypatch.setitem(_TARGET_PARAMETERS, "depth", {"paramtype": "plusarg", "default": 4})
+    monkeypatch.setitem(_TARGET_PARAMETERS, "test", {"paramtype": "plusarg", "default": "none"})
+    runs = _mutation_sim_runs(tmp_path, monkeypatch, _MUTATION_VARIANTS, "verilator")
+
+    plusargs = [[word for word in cmd if word.startswith("--plusarg=")] for cmd, _env in runs]
+    assert plusargs == [
+        ["--plusarg=depth=4", "--plusarg=test=reset", "--plusarg=verilator+seed+7"],
+        [
+            "--plusarg=depth=4",
+            "--plusarg=test=stress",
+            "--plusarg=iters=1000",
+            "--plusarg=verilator+seed+7",
+        ],
+    ]
+
+
+def test_sim_refuses_a_variant_argument_the_target_owns(tmp_path: Path, monkeypatch):
+    """The plan is built against the Target's declared plusargs, as in the Flow."""
+    monkeypatch.setitem(_TARGET_PARAMETERS, "iters", {"paramtype": "plusarg", "default": 1})
+    with pytest.raises(UnsupportedSimTargetError, match="overrides a plusarg the Target declares"):
+        _mutation_sim_runs(tmp_path, monkeypatch, _MUTATION_VARIANTS, "verilator")
+
+
+def test_mutant_builds_and_runs_under_the_target_environment(tmp_path: Path, monkeypatch):
+    """Regression: the Target's tests.toml env table never reached a mutant.
+
+    The Simulation Flow builds and launches under that table, so a mutant
+    graded without it runs a different testbench configuration.
+    """
+    monkeypatch.delenv("FLAVOR", raising=False)
+    monkeypatch.delenv("STRESS_MODE", raising=False)
+    import booley.specialists.mutation_tester as mutation_tester_module
+
+    prepared_with: list[dict[str, str]] = []
+
+    tests_toml = _MUTATION_VARIANTS.replace(
+        "default_seed = 7", 'default_seed = 7\nenv = { FLAVOR = "wide" }'
+    )
+    _patch_resolve_target(monkeypatch)
+    patched = mutation_tester_module.prepare_simulation_build
+
+    def recording_prepare(handle, **kwargs):
+        prepared_with.append(dict(kwargs.get("environment") or {}))
+        return patched(handle, **kwargs)
+
+    monkeypatch.setattr(mutation_tester_module, "prepare_simulation_build", recording_prepare)
+    captured: list[dict[str, str]] = []
+
+    def _fake_run(cmd, *args, **kwargs):
+        captured.append(dict(kwargs.get("env") or {}))
+        return _fake_proc(rc=0, stdout="[ok]", stderr="")
+
+    monkeypatch.setattr("booley.specialists.mutation_tester.subprocess.run", _fake_run)
+    _write_tests_toml(tmp_path, tests_toml)
+    endpoint = _make_endpoint(tmp_path, monkeypatch)
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+    endpoint._run_elab("default", tmp_path, build_dir)
+    endpoint._run_target_test_suite("default", tmp_path, build_dir, "tb")
+
+    assert prepared_with and all(env == {"FLAVOR": "wide"} for env in prepared_with)
+    runs = captured[1:]
+    assert [env.get("FLAVOR") for env in runs] == ["wide", "wide"]
+    # The Test Variant's variable is added on top, for its own run only.
+    assert [env.get("STRESS_MODE") for env in runs] == [None, "short"]
+
+
+def test_sim_on_an_unseeded_target_passes_no_seed(tmp_path: Path, monkeypatch):
+    runs = _mutation_sim_runs(
+        tmp_path, monkeypatch, '[default]\ntests = ["reset"]\nselect = "+test={name}"\n', "icarus"
+    )
+    assert [word for word in runs[0][0] if word.startswith("--plusarg=")] == [
+        "--plusarg=test=reset"
+    ]
 
 
 def test_sim_selector_resolves_vlnv_qualified_target(tmp_path: Path, monkeypatch):
@@ -950,13 +1083,9 @@ def test_sim_selector_resolves_vlnv_qualified_target(tmp_path: Path, monkeypatch
         "booley.specialists.mutation_tester.subprocess.run",
         _fake_run,
     )
-    monkeypatch.setattr(
-        "booley.specialists.mutation_tester.project_config.TEST_NAMES",
-        {"default": ["coremark.elf", "smoke.elf"]},
-    )
-    monkeypatch.setattr(
-        "booley.specialists.mutation_tester.project_config.render_test_selector",
-        lambda target, index, name: f"--meminit=ram,{name}",
+    _write_tests_toml(
+        tmp_path,
+        '[default]\ntests = ["coremark.elf", "smoke.elf"]\nselect = "--meminit=ram,{name}"\n',
     )
 
     endpoint = _make_endpoint(tmp_path, monkeypatch)
@@ -971,10 +1100,7 @@ def test_sim_selector_resolves_vlnv_qualified_target(tmp_path: Path, monkeypatch
 
 
 def test_target_suite_accepts_vlnv_qualified_target(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr(
-        "booley.specialists.mutation_tester.project_config.TEST_NAMES",
-        {"default": ["test_a", "test_b"]},
-    )
+    _write_tests_toml(tmp_path, '[default]\ntests = ["test_a", "test_b"]\n')
     endpoint = _make_endpoint(tmp_path, monkeypatch)
     assert endpoint._target_test_suite("lib:ip:core#default").tests == (
         "test_a",
@@ -1117,12 +1243,7 @@ class TestColdStart:
             dut_top_module="design_top",
             dut_files=("rtl/design_top.sv",),
         )
-        # Avoid hide_opposite_sources side effects in tests.
-        with patch(
-            "booley.specialists.mutation_tester.hide_opposite_sources",
-            side_effect=lambda *a, **k: _NoopCtx(),
-        ):
-            result = endpoint._run()
+        result = endpoint._run()
 
         from booley.dev_support import mutation_lock as lm
 
@@ -1173,11 +1294,7 @@ class TestColdStart:
             min_detected=0,
         )
 
-        with patch(
-            "booley.specialists.mutation_tester.hide_opposite_sources",
-            side_effect=lambda *args, **kwargs: _NoopCtx(),
-        ):
-            result = endpoint._run()
+        result = endpoint._run()
 
         budget = result.detail["source_size_budget"]
         assert budget["method"] == "language_neutral_source_size"
@@ -1213,11 +1330,7 @@ class TestColdStart:
 
         monkeypatch.setattr("booley.specialists.mutation_tester.subprocess.run", fake_run)
         endpoint = _make_endpoint(tmp_path, monkeypatch, scope=scope, count=2, min_detected=0)
-        with patch(
-            "booley.specialists.mutation_tester.hide_opposite_sources",
-            side_effect=lambda *args, **kwargs: _NoopCtx(),
-        ):
-            cold = endpoint._run()
+        cold = endpoint._run()
         assert cold.detail["reused_lock"] is False
         cold_builds = len(build_calls)
 
@@ -1249,11 +1362,7 @@ class TestColdStart:
         _patch_invoke_agent(monkeypatch, [FakeAgentResult(output="no json here")])
         _patch_sim_runner(monkeypatch, sim_returncode=0)
         endpoint = _make_endpoint(tmp_path, monkeypatch, scope=scope, count=2)
-        with patch(
-            "booley.specialists.mutation_tester.hide_opposite_sources",
-            side_effect=lambda *a, **k: _NoopCtx(),
-        ):
-            result = endpoint._run()
+        result = endpoint._run()
         assert result.exit_code == EXIT_ERROR
 
     def test_forbidden_category_eventually_fails(self, tmp_path: Path, monkeypatch):
@@ -1281,20 +1390,8 @@ class TestColdStart:
         )
         _patch_sim_runner(monkeypatch, sim_returncode=0)
         endpoint = _make_endpoint(tmp_path, monkeypatch, scope=scope, count=1)
-        with patch(
-            "booley.specialists.mutation_tester.hide_opposite_sources",
-            side_effect=lambda *a, **k: _NoopCtx(),
-        ):
-            result = endpoint._run()
+        result = endpoint._run()
         assert result.exit_code == EXIT_ERROR
-
-
-class _NoopCtx:
-    def __enter__(self):
-        return None
-
-    def __exit__(self, *exc):
-        return False
 
 
 # ---------------------------------------------------------------------------
@@ -1477,11 +1574,7 @@ class TestColdScopeEnforcement:
             dut_top_module="design_top",
             dut_files=("rtl/design_top.sv",),
         )
-        with patch(
-            "booley.specialists.mutation_tester.hide_opposite_sources",
-            side_effect=lambda *a, **k: _NoopCtx(),
-        ):
-            endpoint._run()
+        endpoint._run()
 
         # The stray out-of-scope edit must be gone; the working tree clean.
         assert "unauthorized edit" not in (tmp_path / "rtl/off_scope.sv").read_text()
@@ -1580,7 +1673,10 @@ def _patch_cocotb_target(monkeypatch, *, module: str | None, eda_tool: str | Non
                 },
             )()
 
-        return type("FakeCatalog", (), {"select": select})()
+        def inspect(_self, _handle):
+            return SimpleNamespace(parameters=dict(_TARGET_PARAMETERS))
+
+        return type("FakeCatalog", (), {"select": select, "inspect": inspect})()
 
     monkeypatch.setattr(
         TargetCatalog,
@@ -1691,10 +1787,7 @@ class TestCocotbSimDispatch:
         )
         _patch_resolve_target(monkeypatch)
         _patch_cocotb_target(monkeypatch, module="tb.test_noc")
-        monkeypatch.setattr(
-            "booley.specialists.mutation_tester.project_config.TEST_NAMES",
-            {"default": ["test_a", "test_b"]},
-        )
+        _write_tests_toml(tmp_path, '[default]\ntests = ["test_a", "test_b"]\n')
 
         endpoint = _make_endpoint(tmp_path, monkeypatch)
         build_dir = tmp_path / "build"
@@ -1704,6 +1797,56 @@ class TestCocotbSimDispatch:
 
         assert "--test=test_a" in captured[-1]
         assert "--test=test_b" in captured[-1]
+
+    def test_cocotb_suite_whose_default_variants_differ_in_env_runs_in_batches(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """Regression: such a suite raised UnsupportedSimTargetError before any run.
+
+        The Simulation Flow runs it as one process per environment; a mutant
+        is graded the same way, each batch under its own Test Variant's
+        environment and the Default Seed.
+        """
+        monkeypatch.delenv("MODE", raising=False)
+        captured: list[tuple[list[str], dict[str, str]]] = []
+        monkeypatch.setattr(
+            "booley.specialists.mutation_tester.subprocess.run",
+            lambda cmd, *a, **k: (
+                captured.append((list(cmd), dict(k.get("env") or {}))),
+                _fake_proc(rc=0),
+            )[1],
+        )
+        _patch_resolve_target(monkeypatch)
+        _patch_cocotb_target(monkeypatch, module="tb.test_noc")
+        _write_tests_toml(
+            tmp_path,
+            '[default]\ntests = ["test_a", "test_b", "test_c"]\ndefault_seed = 9\n'
+            '[default.variants.test_a]\ndefault = "x"\nx = { env = { MODE = "A" } }\n'
+            '[default.variants.test_b]\ndefault = "y"\ny = { env = { MODE = "B" } }\n',
+        )
+        endpoint = _make_endpoint(tmp_path, monkeypatch)
+        build_dir = tmp_path / "build"
+        build_dir.mkdir()
+        endpoint._run_elab("default", tmp_path, build_dir)
+
+        runs = endpoint._run_target_test_suite("default", tmp_path, build_dir, "tb")
+
+        launched = [
+            ([word for word in cmd if word.startswith("--test=")], env.get("MODE"))
+            for cmd, env in captured[-3:]
+        ]
+        assert launched == [
+            (["--test=test_a"], "A"),
+            (["--test=test_b"], "B"),
+            (["--test=test_c"], None),
+        ]
+        for cmd, _env in captured[-3:]:
+            assert cmd[cmd.index("--seed") + 1] == "9"
+        assert [run.test_name for run in runs] == [
+            "<cocotb-suite 1/3>",
+            "<cocotb-suite 2/3>",
+            "<cocotb-suite 3/3>",
+        ]
 
     def test_individual_test_flag_was_removed(self, tmp_path: Path, monkeypatch):
         with pytest.raises(SystemExit):
@@ -1821,3 +1964,72 @@ def test_pristine_baseline_reports_missing_literal_run_cwd_before_elaboration(
     assert ".gitkeep" in result.report_text
     assert result.detail["phase"] == "baseline_run_cwd"
     elab.assert_not_called()
+
+
+@pytest.mark.parametrize("layout", ["recursive", "declared"])
+def test_scope_accepts_canonical_rtl_through_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, layout: str
+) -> None:
+    require_symlinks(tmp_path)
+    _author_scope_core(tmp_path)
+    if layout == "recursive":
+        (tmp_path / "lib").mkdir()
+        symlink_or_skip(tmp_path / "lib/self", Path(".."), target_is_directory=True)
+        assert (tmp_path / "lib/self").is_dir()
+        assert (tmp_path / "lib/self").resolve() == tmp_path.resolve()
+        expected = "lib/self/rtl/counter.sv"
+        original_plan = fusesoc_registry.prepare_core_library_plan
+
+        def with_alias_library(project_root):
+            plan = original_plan(project_root)
+            return replace(
+                plan,
+                roots=(*plan.roots, tmp_path / "lib/self"),
+                ignored_dirs=(*plan.ignored_dirs, frozenset({str((tmp_path / "lib").resolve())})),
+            )
+
+        # Real duplicate-core discovery, independent of platform traversal order.
+        monkeypatch.setattr(fusesoc_registry, "prepare_core_library_plan", with_alias_library)
+    else:
+        symlink_or_skip(tmp_path / "design", "rtl", target_is_directory=True)
+        core = tmp_path / "design.core"
+        core.write_text(core.read_text().replace("rtl/", "design/"))
+        expected = "design/counter.sv"
+    catalog = TargetCatalog.build(tmp_path)
+    inspection = catalog.inspect(catalog.select("sim"))
+    assert expected in inspection.rtl_files
+    endpoint = _make_endpoint(tmp_path, target="sim")
+    assert endpoint._validate_scope_against_target(["rtl/counter.sv"]) is None
+    rejected = endpoint._validate_scope_against_target(["tb/tb_counter.sv"])
+    assert rejected is not None
+    assert "does not match" in rejected.report_text
+    assert expected in rejected.report_text
+
+
+def test_scope_rejects_rtl_symlink_outside_project(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    _author_scope_core(root)
+    external = tmp_path / "external.sv"
+    external.write_text("module counter; endmodule\n")
+    source = root / "rtl/counter.sv"
+    source.unlink()
+    symlink_or_skip(source, external)
+    endpoint = _make_endpoint(root, target="sim")
+    rejected = endpoint._validate_scope_against_target([str(external)])
+    assert rejected is not None
+    assert "does not match" in rejected.report_text
+
+
+def test_scope_fails_open_when_identity_resolution_fails(tmp_path: Path) -> None:
+    _author_scope_core(tmp_path)
+    endpoint = _make_endpoint(tmp_path, target="sim")
+    catalog = TargetCatalog.build(tmp_path)
+    inspection = catalog.inspect(catalog.select("sim"))
+    with (
+        patch.object(TargetCatalog, "inspect", return_value=inspection),
+        patch.object(
+            fusesoc_registry, "canonical_project_path", side_effect=OSError("unreadable")
+        ),
+    ):
+        assert endpoint._validate_scope_against_target(["rtl/counter.sv"]) is None

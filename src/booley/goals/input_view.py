@@ -36,6 +36,7 @@ from booley.goals.input_identity import (
 )
 from booley.goals.lifecycle import LifecycleError
 from booley.goals.model import PROJECT_SNAPSHOT_NAMES, GoalRecord
+from booley.goals.presentation import goal_presentation
 from booley.goals.proposals import digest
 from booley.goals.protected_inputs import ProtectedInputRoots, ProtectedPath
 from booley.goals.target_surface import target_surface_fingerprint
@@ -691,7 +692,7 @@ def validate_committed(
         )
         if freshness.stale:
             raise LifecycleError(
-                f"committed evidence for {goal.spec.key} is stale: {freshness.reason}"
+                f"committed evidence for {goal_presentation(goal.spec).text} is stale: {freshness.reason}"
             )
     _require_versioned_policy(view)
 

@@ -52,7 +52,7 @@ def test_type_exact_parameter_and_define_values_are_modified(before, after):
 
 
 def test_constraints_and_resolved_target_modifications_are_frozen_in_completion(layout):
-    layout.record = enter_goals(layout, [{"family": "lint", "target": "top"}])
+    layout.record = enter_goals(layout, [{"family": "LINT", "target": "top"}])
     (layout.worktree / "timing.sdc").write_bytes(b"create_clock -period 10 clk\n")
     (layout.worktree / "pins.xdc").write_bytes(b"set_property PACKAGE_PIN A1 [get_ports clk]\n")
     core = layout.worktree / "top.core"

@@ -636,7 +636,17 @@ class BuiltinFlow(FlowMechanics, Generic[RequestT]):
         from booley.flows.builtin_cli import parse_request
 
         self.context._args = parse_request(self, argv)
+        self.begin_invocation()
         return self.args
+
+    def begin_invocation(self) -> None:
+        """Drop whatever this Flow object kept from an earlier invocation.
+
+        Called wherever a new invocation starts: a new session, a newly
+        parsed request, and the preparation of a session's execution. A Flow
+        that keeps per-invocation state overrides this to start it afresh, so
+        one Flow object never answers a request from another request's state.
+        """
 
     def execute(
         self,

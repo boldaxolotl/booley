@@ -797,14 +797,22 @@ def _cmd_goal(args: argparse.Namespace, _project_root: Path) -> int:
     """Show Goal status using the Booley Directory discovered for this command."""
     if args.goal_command == "status":
         from booley.criteria.evidence_ledger import AcceptanceLedgerError
+        from booley.goals.diagnostics import is_unnamable_error, unavailable_diagnostic
         from booley.goals.format import render_status
+        from booley.goals.proposal_errors import ProposalError
         from booley.goals.state_store import GoalStateError
         from booley.goals.status import select_status
         from booley.goals.store import GoalStore, GoalStoreError
         from booley.runtime.project_dir import resolve_project_dir
 
         try:
-            selection = select_status(GoalStore(resolve_project_dir(_project_root)), Path.cwd())
+            from booley.flows.sim.unpublished_results import read_unpublished_results
+
+            selection = select_status(
+                GoalStore(resolve_project_dir(_project_root)),
+                Path.cwd(),
+                campaign_reader=read_unpublished_results,
+            )
             short = True if args.short else False if args.long else None
             print(
                 render_status(selection.views, short=short, project_wide=selection.project_wide)
@@ -812,8 +820,9 @@ def _cmd_goal(args: argparse.Namespace, _project_root: Path) -> int:
                 else "No active Goal Mode."
             )
             return 0
-        except (GoalStoreError, GoalStateError, AcceptanceLedgerError) as exc:
-            print(f"ERROR: {exc}", file=sys.stderr)
+        except (GoalStoreError, GoalStateError, ProposalError, AcceptanceLedgerError) as exc:
+            message = unavailable_diagnostic(exc) if is_unnamable_error(exc) else str(exc)
+            print(f"ERROR: {message}", file=sys.stderr)
             return 2
     return _abandon_goal_cli(args, _project_root)
 
@@ -1055,11 +1064,9 @@ def _cmd_cheat(args: argparse.Namespace, project_root: Path | None) -> int:
     # project-defined criteria.
     try:
         from booley.criteria.reference import (
-            render_criteria_reference,
-        )
-        from booley.criteria.reference import (
             splice_generated as splice_criteria,
         )
+        from booley.goals.reference import render_goal_reference as render_criteria_reference
         from booley.runtime.project_dir import resolve_checkout_project_dir
 
         if project_root is None:

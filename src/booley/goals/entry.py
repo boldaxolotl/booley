@@ -61,6 +61,7 @@ from booley.flows.baseline_pins import (
     freeze_recipe_family,
     pin_cycle_count_baselines,
 )
+from booley.flows.test_runs import draw_seeds
 from booley.goals.checkout import CheckoutError, GoalCheckout, branch_name, branch_ref
 from booley.goals.goalsets import GOALSETS_DIR
 from booley.goals.model import (
@@ -74,7 +75,9 @@ from booley.goals.model import (
     WorktreeIdentity,
     parse_goal_args,
 )
+from booley.goals.naming import resolve_spelling
 from booley.goals.paths import GoalIdError, new_goal_id, record_paths, validate_slug
+from booley.goals.presentation import goal_presentation
 from booley.goals.protected_inputs import (
     ProtectedInputError,
     ProtectedInputRoots,
@@ -86,6 +89,15 @@ from booley.goals.rules import goal_mode_rules
 from booley.goals.session_key import worktree_session_key
 from booley.goals.state_store import goal_criterion_params, review_categories
 from booley.goals.store import GoalStore, GoalStoreError
+from booley.goals.test_run_freezing import (
+    GoalResolutionError,
+    ResolutionRequest,
+    SeedDraw,
+    TargetPlanError,
+    TargetPlans,
+    freeze_goals,
+)
+from booley.goals.test_run_resolution import TestRunResolution
 from booley.goals.translate import GoalTranslationError, Translation, translate_goals
 from booley.runtime.atomic_files import fsync_directory
 from booley.runtime.git import is_linked_worktree
@@ -156,6 +168,9 @@ class EntryEnvironment:
     other_sessions: Callable[[WorktreeIdentity], Sequence[str]] = _no_other_sessions
     on_boundary: Callable[[str], None] | None = None
     lock_timeout_s: float = 30.0
+    #: Where the seeds of multi-seed Goals come from, at entry and for the
+    #: approved changes of the Goal Mode; tests supply a deterministic source.
+    draw_seeds: SeedDraw = draw_seeds
 
 
 @dataclass(frozen=True)
@@ -242,7 +257,8 @@ def enter_goal_mode(request: EntryRequest, env: EntryEnvironment) -> EntryResult
     work_dir = _require_linked_worktree_root(request.work_dir)
     project_dir = env.project_dir.absolute()
     _refuse_worktree_copy(project_dir, work_dir)
-    translation = _translate(request.goals)
+    plans = TargetPlans(work_dir)
+    translation = _translate(request.goals, plans, work_dir)
     checkout = GoalCheckout(work_dir)
     store = GoalStore(project_dir, lock_timeout_s=env.lock_timeout_s)
     try:
@@ -250,7 +266,8 @@ def enter_goal_mode(request: EntryRequest, env: EntryEnvironment) -> EntryResult
         assert identity is not None  # create=True always returns an identity
         with store.worktree_lock(identity) as lock:
             recovered = _recover_occupant(store, identity, checkout)
-            plan = _plan_entry(request, checkout, identity, translation, project_dir)
+            freezing = _Freezing(plans, env.draw_seeds)
+            plan = _plan_entry(request, checkout, identity, translation, project_dir, freezing)
             created = store.create(lock, plan.record)
             _boundary(env, "created")
             try:
@@ -284,6 +301,7 @@ def _plan_entry(
     identity: WorktreeIdentity,
     translation: Translation,
     project_dir: Path,
+    freezing: _Freezing,
 ) -> _EntryPlan:
     """Validate the checkout and the Goals under the lock; build the new record."""
     base_sha = checkout.head_sha()
@@ -299,6 +317,7 @@ def _plan_entry(
     if checkout.branch_tip(branch) is not None:
         raise GoalEntryError(f"branch {branch} already exists; choose another slug")
     warnings = [*translation.warnings, *check_goal_targets(checkout.root, translation.goals)]
+    goals = tuple(RecordedGoal(goal, 1) for goal in translation.goals)
     record = GoalRecord(
         id=new_goal_id(request.slug, timestamp=timestamp),
         state=GoalState.ENTERING,
@@ -309,7 +328,8 @@ def _plan_entry(
         base_sha=base_sha,
         entered_at=utc_now_rfc3339(),
         session_key=request.session_key or worktree_session_key(identity),
-        goals=tuple(RecordedGoal(goal, 1) for goal in translation.goals),
+        goals=goals,
+        test_run_resolutions=_freeze_test_runs(goals, freezing),
         goalsets_used=request.goalsets_used,
         default_skipped=request.default_skipped,
         skip_reason=request.skip_reason,
@@ -401,10 +421,38 @@ def _refuse_worktree_copy(project_dir: Path, work_dir: Path) -> None:
     )
 
 
-def _translate(goals: Sequence[GoalArg]) -> Translation:
+def _translate(goals: Sequence[GoalArg], plans: TargetPlans, work_dir: Path) -> Translation:
+    """Translate and merge the Goals; Test Run selectors merge by what they resolve to."""
     try:
-        return translate_goals(goals)
-    except GoalTranslationError as exc:
+        return translate_goals(
+            goals,
+            resolver=plans.resolver(),
+            target_spelling=lambda goal: resolve_spelling(goal, work_dir),
+        )
+    except (GoalTranslationError, TargetPlanError) as exc:
+        raise GoalEntryError(str(exc)) from None
+
+
+@dataclass(frozen=True)
+class _Freezing:
+    """What freezing the Goals' Test Runs reads: the Targets' plans and the seed source."""
+
+    plans: TargetPlans
+    draw: SeedDraw
+
+
+def _freeze_test_runs(
+    goals: Sequence[RecordedGoal], freezing: _Freezing
+) -> dict[str, TestRunResolution]:
+    """Freeze every Goal's Test Runs (ADR 0072); a Target or Test not there yet stays pending.
+
+    A Goal its Target refuses, for example a seed on a Target that cannot
+    apply seeds, fails the entry.
+    """
+    request = ResolutionRequest("entry", utc_now_rfc3339(), freezing.draw)
+    try:
+        return freeze_goals(goals, {}, freezing.plans, request, strict=True)
+    except GoalResolutionError as exc:
         raise GoalEntryError(str(exc)) from None
 
 
@@ -469,18 +517,20 @@ def check_goal_targets(
     for goal in goals:
         if goal.target is not None and not _target_exists(catalog, goal.target):
             warnings.append(
-                f"Goal {goal.key} names Target {goal.target!r}, which does not exist yet; "
+                f"Goal {goal_presentation(goal).text} names Target {goal.target!r}, which does not exist yet; "
                 "it stays unmet until the Target exists"
             )
         baseline = _baseline_target(goal)
         if baseline is not None and not _target_exists(baseline_catalog, baseline):
             raise GoalEntryError(
-                f"Goal {goal.key} compares against baseline Target {baseline!r}, which does "
+                f"Goal {goal_presentation(goal).text} compares against baseline Target {baseline!r}, which does "
                 "not exist at the base commit"
             )
         spec = goal.params.get("spec")
         if isinstance(spec, str) and not (work_dir / spec).is_file():
-            raise GoalEntryError(f"Goal {goal.key} names spec file {spec!r}, which does not exist")
+            raise GoalEntryError(
+                f"Goal {goal_presentation(goal).text} names spec file {spec!r}, which does not exist"
+            )
     return warnings
 
 
@@ -737,9 +787,8 @@ def _describe_ref(ref: str) -> str:
 
 
 def _describe_goal(goal: GoalSpec) -> str:
-    subject = goal.target if goal.target is not None else "review"
     origins = ", ".join(goal.origins)
-    return f"{goal.key}: {goal.family.value} {subject} (from {origins})"
+    return f"{goal_presentation(goal).text} (from {origins})"
 
 
 def _input_topology(root: Path) -> str:

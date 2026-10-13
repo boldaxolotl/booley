@@ -657,11 +657,11 @@ class TestClockScopedParamValidation:
 
     def test_clock_scope_rejected_for_non_per_clock_metric(self):
         # area is not a per-clock metric — clock-scoping it is invalid.
-        with pytest.raises(ValueError, match="Unknown synthesis_ok params"):
+        with pytest.raises(ValueError, match="Unknown parameters"):
             _validate_criterion_params("synthesis_ok", {"clk_i.area_kge_max": 10})
 
     def test_unknown_base_param_rejected(self):
-        with pytest.raises(ValueError, match="Unknown synthesis_ok params"):
+        with pytest.raises(ValueError, match="Unknown parameters"):
             _validate_criterion_params("synthesis_ok", {"x.bogus_min": 1})
 
     def test_mutex_rejected_within_a_clock(self):

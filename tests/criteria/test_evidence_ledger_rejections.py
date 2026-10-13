@@ -294,6 +294,26 @@ def test_acceptance_fact_identity_rejects_invalid_origin(
         ledger._acceptance_fact_identity(document)
 
 
+@pytest.mark.parametrize("version", ["v1", "v2"])
+def test_acceptance_fact_identity_accepts_both_written_facts_versions(version: str) -> None:
+    """v2 facts name each observation's Test Run (ADR 0072); the identity is unchanged."""
+    document = _acceptance_facts()
+    document["$schema"] = f"booley.simulation-acceptance-facts/{version}"
+    _facts, campaign_id, manifest_sha256, origin, _finished = ledger._acceptance_fact_identity(
+        document
+    )
+    assert campaign_id == document["campaign_id"]
+    assert manifest_sha256 == document["manifest_sha256"]
+    assert origin == document["origin"]
+
+
+def test_acceptance_fact_identity_rejects_a_future_facts_version() -> None:
+    document = _acceptance_facts()
+    document["$schema"] = "booley.simulation-acceptance-facts/v3"
+    with pytest.raises(ledger.AcceptanceLedgerError, match="unsupported"):
+        ledger._acceptance_fact_identity(document)
+
+
 def test_timestamp_rejects_parseable_but_noncanonical_separator() -> None:
     with pytest.raises(ledger.AcceptanceLedgerError, match="canonical UTC"):
         ledger._canonical_timestamp("2026-09-21t10:00:00Z", "timestamp")

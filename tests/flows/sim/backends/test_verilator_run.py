@@ -39,6 +39,15 @@ def test_build_run_cmd_appends_plusargs(tmp_path: Path):
         assert str(tmp_path) in env["LD_LIBRARY_PATH"]
 
 
+def test_build_run_cmd_passes_the_seed_option_the_runtime_reads(tmp_path: Path):
+    # ADR 0072: the engine renders the seed as the plusarg ``verilator+seed+<n>``;
+    # the binary must receive Verilator's own ``+verilator+seed+<n>`` spelling.
+    cmd, _ = vr._build_run_cmd(
+        tmp_path / "Vtop", tmp_path, ["test_id=1", "iters=5", "verilator+seed+2147483647"]
+    )
+    assert cmd[1:] == ["+test_id=1", "+iters=5", "+verilator+seed+2147483647"]
+
+
 def test_build_run_cmd_forwards_getopt_arg_verbatim(tmp_path: Path):
     # SETUP-7: a '-'/'--' selector is a getopt argument, forwarded to the
     # binary's main WITHOUT a '+' prefix (unlike bare plusargs).

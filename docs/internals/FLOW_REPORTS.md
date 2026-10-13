@@ -131,7 +131,7 @@ no longer be resumed.
 
 ### Report schemas and references
 
-- `simulation.json` uses `booley.simulation-projection/v2`.
+- `simulation.json` uses `booley.simulation-projection/v3`.
 - `report.json` uses `booley.simulation-report/v3`; other Flow reports use `booley.flow-report/v1` and Specialist reports use `booley.specialist-report/v1`. Older v2 and unversioned files retain their historical ambiguity; existing files are not migrated.
 - Target-level `coverage.json` uses `booley.coverage-campaign-reference/v1`.
 - The selected nested `coverage.json` is the current Coverage Campaign manifest.
@@ -169,6 +169,7 @@ unavailable` instead; the verdict and Criteria are unaffected.
 | `passed`, `complete`, `elapsed_s` | Target verdict, whether the run finished writing its results, and duration. `complete: false` means the run was interrupted while publishing and can be resumed. |
 | `phase_timings_s` | Seconds spent in `setup`, `pre_sim`, `build`, `run`, `result_processing`, `publication`, and `unattributed`, with `execution_total` and `total`. |
 | `tests[]` | One entry per test (see below). |
+| `test_runs[]` | One row per Test Run: `name`, `test`, `variant`, `seed`, `args`, `env`, `fingerprint`, and `grade` (`pass`, `fail`, `error`, or `inconclusive`). `test` is null for the unnamed invocation; `variant` and `seed` are null when the run has none. |
 | `compile_command`, `fileset` | The build command and the resolved `rtl` and `tb` source lists. |
 | `artifacts` | The report, per-test run logs, result files, and waveforms from this run. |
 
@@ -183,6 +184,8 @@ Simulation Campaign entries have `name` (`default` for an unnamed test),
 `trace_path`, `trace_bytes`, `trace_top_scope`, `trace_signal_count`, and
 `trace_total_ticks`. Optional fields: `artifacts.run_log`,
 `workload_fingerprint`, and `validation_note`.
+Every `tests[]` entry that observed a Test Run also names it: `test_run` (the
+Test Run name, `test[+variant][@seed]`), `variant`, `seed`, and `fingerprint`.
 
 Elaboration checks write the same file with `mode` set to `elab_only` or
 `elab_only_standalone`, and these fields:
@@ -209,7 +212,7 @@ A coverage run publishes this reference and nested evidence:
   campaign/work-items/<item>/attempts/<attempt>/coverage-campaign/
     coverage.json            current Coverage Campaign manifest
     coverage-points.jsonl.gz  every coverage point and which runs hit it
-    native/raw/              one Verilator database per test
+    native/raw/              one Verilator database per Test Run
     native/merged/           the merged database
     hooks/                   hook evidence, when collected
 ```

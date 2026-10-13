@@ -1291,7 +1291,7 @@ def test_interrupted_and_pruned_invocations_are_never_reused(tmp_path, monkeypat
     reports, request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
     original_path = next(
         (reports / "sim/1/targets/sim_0/campaign").glob(
-            "work-items/*/attempts/*/coverage-campaign/native/raw/001-reset.dat"
+            "work-items/*/attempts/*/coverage-campaign/native/raw/001-reset@1.dat"
         )
     )
     original = original_path.read_bytes()
@@ -2234,7 +2234,7 @@ def test_interactive_collection_then_exact_campaign_analysis(tmp_path, monkeypat
     report = analyst.coverage_analyst(campaign).to_dict()
     assert report["$schema"] == "booley.coverage-analysis/v2"
     assert report["observed_evidence"]["campaign_manifest"]["$schema"] == (
-        "booley.coverage-campaign/v4"
+        "booley.coverage-campaign/v5"
     )
     assert "points" not in report["observed_evidence"]
     assert report["observed_evidence"]["point_store_sha256"].startswith("sha256:")
@@ -2242,7 +2242,7 @@ def test_interactive_collection_then_exact_campaign_analysis(tmp_path, monkeypat
     assert len(model.calls) == 1
     prompt = json.loads(model.calls[0].prompt)
     assert "campaign" not in prompt
-    assert prompt["campaign_reference"]["storage_schema"] == "booley.coverage-campaign/v4"
+    assert prompt["campaign_reference"]["storage_schema"] == "booley.coverage-campaign/v5"
     assert prompt["campaign_reference"]["point_count"] == 1
     assert "points" not in prompt
     assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before

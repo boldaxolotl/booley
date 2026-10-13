@@ -16,8 +16,18 @@ from pathlib import Path
 from typing import Any
 
 from booley.config.tests_toml_rules import (
+    DEFAULT_SEED,
+    VERILATOR_SEED_OPTION,
     TestRunNameError,
+    TestVariant,
+    argument_token_problem,
+    option_key,
+    parse_test_variants,
+    template_fields,
+    validate_declared_env_names,
     validate_env_table,
+    validate_seed,
+    validate_seed_template,
     validate_test_or_variant_name,
 )
 from booley.core.boundary import as_dict, as_str, is_str_list
@@ -257,6 +267,35 @@ def _normalize_config_section(
 DEFAULT_TEST_SELECT = "+test_id={index}"
 
 
+_SELECT_FIELDS = ("index", "name")
+
+
+def _render_select_probe(target: str, template: str) -> str:
+    """Render *template* once, refusing fields that do not select a Test.
+
+    The fields are read with the format parser: an escaped ``{{name}}`` is
+    literal text, would render the same argument for every Test, and is
+    refused like a template without any field.
+    """
+    unknown = ValueError(
+        f"tests.toml [{target}].select template {template!r} uses an unknown "
+        "field; only {index} and {name} are supported"
+    )
+    try:
+        fields = template_fields(template)
+        probe = template.format(index=0, name="probe")
+    except (KeyError, IndexError, ValueError) as exc:
+        raise unknown from exc
+    if any(name not in _SELECT_FIELDS or conversion for name, _spec, conversion in fields):
+        raise unknown
+    if not fields:
+        raise ValueError(
+            f"tests.toml [{target}].select template {template!r} selects no Test: "
+            "it must contain the {index} or the {name} field"
+        )
+    return probe
+
+
 def _validate_select_template(target: str, template: Any) -> str:
     """Validate a tests.toml ``select`` runtime-arg template (decision 16).
 
@@ -277,13 +316,7 @@ def _validate_select_template(target: str, template: Any) -> str:
     """
     if not isinstance(template, str) or not template.strip():
         raise ValueError(f"tests.toml [{target}].select must be a non-empty string")
-    try:
-        probe = template.format(index=0, name="probe")
-    except (KeyError, IndexError, ValueError) as exc:
-        raise ValueError(
-            f"tests.toml [{target}].select template {template!r} uses an unknown "
-            "field; only {index} and {name} are supported"
-        ) from exc
+    probe = _render_select_probe(target, template)
     tokens = probe.split()
     if len(tokens) != 1 or not tokens[0].startswith(("+", "-")):
         raise ValueError(
@@ -291,6 +324,9 @@ def _validate_select_template(target: str, template: Any) -> str:
             f"plusarg ('+…') or a getopt argument ('-…' / '--…') with no embedded "
             f"whitespace, got {template!r}"
         )
+    problem = argument_token_problem(probe)
+    if problem:
+        raise ValueError(f"tests.toml [{target}].select template {template!r} {problem}")
     return template
 
 
@@ -378,7 +414,16 @@ def load_test_configuration_field(
 
 # Every key a Target section of tests.toml may hold. The set is closed: a key
 # the Simulation Flow would not apply must fail to load rather than be ignored.
-TESTS_SECTION_KEYS = ("tests", "test_list", "skip", "select", "env")
+TESTS_SECTION_KEYS = (
+    "tests",
+    "test_list",
+    "skip",
+    "select",
+    "env",
+    "seed",
+    "default_seed",
+    "variants",
+)
 
 
 def _validate_test_names(where: str, names: list[str]) -> None:
@@ -466,10 +511,99 @@ def _normalize_tests_section(
         # Verification-intent, like ``select``: an env-parameterized testbench
         # (a cocotb module reading ``os.getenv("FLAVOR")``) declares here what
         # the simulator process must see. ``EnvTableError`` is a ``ValueError``.
-        normalized["env"] = validate_env_table(
-            normalized["env"], where=f"tests.toml [{target}].env"
+        normalized["env"] = validate_declared_env_names(
+            validate_env_table(normalized["env"], where=f"tests.toml [{target}].env"),
+            where=f"tests.toml [{target}].env",
         )
+    _normalize_seed_keys(target, normalized)
+    if "variants" in normalized:
+        normalized["variants"] = _validate_variants(target, normalized)
     return normalized
+
+
+def _normalize_seed_keys(target: str, normalized: dict[str, Any]) -> None:
+    """Validate the ``seed`` argument template and ``default_seed`` (ADR 0072)."""
+    if "seed" in normalized:
+        normalized["seed"] = validate_seed_template(
+            normalized["seed"], where=f"tests.toml [{target}].seed"
+        )
+        select_key = _select_option_key(normalized)
+        if option_key(normalized["seed"].format(seed=DEFAULT_SEED)) == select_key:
+            raise ValueError(
+                f"tests.toml [{target}].seed sets the same option as the select "
+                f"template ({select_key}); the seed needs its own option"
+            )
+    if "default_seed" in normalized:
+        normalized["default_seed"] = validate_seed(
+            normalized["default_seed"], where=f"tests.toml [{target}].default_seed"
+        )
+
+
+def _select_option_key(normalized: Mapping[str, Any]) -> str:
+    """The option the Target's effective ``select`` template sets."""
+    template = normalized.get("select", DEFAULT_TEST_SELECT)
+    return option_key(template.format(index=0, name="probe"))
+
+
+def _reserved_option_keys(normalized: Mapping[str, Any]) -> dict[str, str]:
+    """Options a Test Variant may not set, each with the reason."""
+    reserved = {
+        _select_option_key(normalized): "the select template sets it",
+        VERILATOR_SEED_OPTION: "Booley passes the Verilator seed option itself",
+    }
+    if "seed" in normalized:
+        seed_key = option_key(normalized["seed"].format(seed=DEFAULT_SEED))
+        reserved[seed_key] = "the seed template sets it"
+    return reserved
+
+
+def _validate_variants(target: str, normalized: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate every Test's Variant table against the rest of the section.
+
+    Returns the tables as written (plain TOML data, keyed by Test); readers
+    rebuild the typed form with ``parse_test_variants``. A Variant belongs to a
+    Test the Target runs, may not repeat the ``select`` or seed option, and may
+    not set an environment variable the Target's own ``env`` table sets: the
+    Target owns that value, and Target ``env`` is a build input.
+    """
+    where = f"tests.toml [{target}].variants"
+    tables = as_dict(normalized["variants"])
+    if tables is None:
+        raise ValueError(f"{where} must be a table of Test names")
+    tests = normalized.get("tests") or []
+    reserved = _reserved_option_keys(normalized)
+    target_env = normalized.get("env") or {}
+    for test, raw in tables.items():
+        if test not in tests:
+            raise ValueError(
+                f"{where}.{test} declares Test Variants for {test!r}, which is not "
+                f"one of the Target's tests ({', '.join(tests) or 'none declared'})"
+            )
+        table = parse_test_variants(test, raw, where=f"{where}.{test}")
+        for variant in table.variants:
+            _validate_variant_inputs(
+                f"{where}.{test}.{variant.name}", variant, reserved, target_env
+            )
+    return dict(tables)
+
+
+def _validate_variant_inputs(
+    where: str,
+    variant: TestVariant,
+    reserved: Mapping[str, str],
+    target_env: Mapping[str, str],
+) -> None:
+    """Refuse a Variant argument or variable that something else already owns."""
+    for argument in variant.args:
+        reason = reserved.get(option_key(argument))
+        if reason is not None:
+            raise ValueError(f"{where} argument {argument!r} is not allowed: {reason}")
+    for name, _value in variant.env:
+        if name in target_env:
+            raise ValueError(
+                f"{where}.env may not set {name}: the Target's env table already "
+                "sets it, and the Target owns that value"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -514,29 +648,3 @@ def resolve_test_name(target: str, name: str) -> int:
         )
 
     return matches[0][0]
-
-
-def render_test_selector(
-    target: str,
-    index: int,
-    name: str,
-    *,
-    work_dir: Path | str | None = None,
-) -> str:
-    """Render the per-Target plusarg that selects test ``index`` (decision 16).
-
-    Booley renders the Target's ``select`` template (from tests.toml) into the
-    concrete plusarg forwarded to the sim — e.g. ``"+test_id={index}"`` →
-    ``"+test_id=3"``.  Targets without a declared template use
-    :data:`DEFAULT_TEST_SELECT`, preserving the legacy ``+test_id=N`` contract.
-    The returned string is the full plusarg, leading ``+`` included.
-    """
-    templates = (
-        _get("TEST_SELECT")
-        if work_dir is None
-        else load_test_configuration_field(work_dir, "select")
-    )
-    template = lookup_target_section(templates, target)
-    if template is None:
-        template = DEFAULT_TEST_SELECT
-    return template.format(index=index, name=name)

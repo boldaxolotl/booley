@@ -61,7 +61,8 @@ from booley.runtime.platform_paths import posix_relpath
 
 logger = logging.getLogger(__name__)
 
-_SAFE_COMPONENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
+# ``+`` and ``@`` are the separators of a Test Run name (``stress+soak@42``).
+_SAFE_COMPONENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.+@-]{0,127}\Z")
 
 
 def path_component(value: str) -> str:

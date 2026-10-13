@@ -44,6 +44,7 @@ from booley.flows.sim.campaign.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.campaign.store import CampaignStore
 from booley.flows.sim.execution.contract import SimulationTargetOutcome, SimulationTestOutcome
 from booley.flows.sim.flow import SimulateFlow, _unfinished_coverage_work
+from booley.flows.test_runs import build_test_run
 from booley.targets.catalog import TargetCatalog
 from tests.runtime.test_sandbox_layout import project_alias
 
@@ -140,10 +141,33 @@ class _GeneratorExecution:
         self.group = group
 
     @contextmanager
-    def ordinary_group(self, handle, names):
+    def ordinary_group(self, handle, names, _test_runs=None):
         del handle
         assert names == ()
         yield self.group
+
+
+def _names_only_work_items(items: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Work items as manifests before v4 wrote them: Tests named, no Test Runs."""
+    legacy = []
+    for item in items:
+        identity = {
+            key: value
+            for key, value in item.items()
+            if key not in {"test_runs", "fingerprint_sha256", "work_item_id"}
+        }
+        from booley.flows.sim.campaign.planning import canonical_sha256
+
+        fingerprint = canonical_sha256(identity)
+        legacy.append(
+            {
+                "work_item_id": f"item:{item['ordinal']:04d}:"
+                + fingerprint.removeprefix("sha256:")[:16],
+                **identity,
+                "fingerprint_sha256": fingerprint,
+            }
+        )
+    return legacy
 
 
 def _manifest() -> dict[str, object]:
@@ -1863,7 +1887,16 @@ def test_source_mapping_schema_grammar(schema, mapping):
         variant = _variant_document(workload, [], False)
         variants, items = (
             [variant],
-            _work_items([()], document["target"], variant, "run", "literal", kind="ordinary_hdl"),
+            _names_only_work_items(
+                _work_items(
+                    [(build_test_run(None),)],
+                    document["target"],
+                    variant,
+                    "run",
+                    "literal",
+                    kind="ordinary_hdl",
+                )
+            ),
         )
         document["build_variants"], document["work_items"] = variants, items
     entry = {

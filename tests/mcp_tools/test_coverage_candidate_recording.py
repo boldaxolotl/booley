@@ -155,7 +155,7 @@ def test_legacy_campaign_without_point_store_is_refused(record_context) -> None:
     )
 
     assert section["status"] == "failed"
-    assert "V3/V4" in section["reason"]
+    assert "only point-store Campaigns" in section["reason"]
 
 
 def test_corrupt_candidate_record_is_reported_not_raised(record_context) -> None:
@@ -178,8 +178,9 @@ def test_corrupt_candidate_record_is_reported_not_raised(record_context) -> None
 
 
 def test_interactive_mode_has_no_goal_context() -> None:
-    assert GoalCandidateContext.from_environment("", {}) is None
-    assert GoalCandidateContext.from_environment("g-1", {"BOOLEY_RUNTIME_DIR": "/r"}) is None
+    from booley.flows.execution_persistence import NoAcceptanceRecorder
+
+    assert GoalCandidateContext.from_recorder(NoAcceptanceRecorder()) is None
 
 
 def _unreachable_model(monkeypatch):
@@ -211,9 +212,7 @@ def _unreachable_model(monkeypatch):
 def test_run_records_candidates_in_goal_mode(tmp_path: Path, monkeypatch) -> None:
     path = source_project(tmp_path)
     context = GoalCandidateContext("g-1", tmp_path / "reports", tmp_path / "record")
-    monkeypatch.setattr(
-        analyst_module.GoalCandidateContext, "from_environment", lambda *_: context
-    )
+    monkeypatch.setattr(analyst_module.GoalCandidateContext, "from_recorder", lambda *_: context)
     analyst = CoverageAnalystSpecialist(model=_unreachable_model(monkeypatch))
     analyst.parse_args(["--work-dir", str(tmp_path), "--campaign", str(path)])
 

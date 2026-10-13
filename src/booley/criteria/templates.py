@@ -982,7 +982,7 @@ def _parse_list_criterion(
                 params = _validate_criterion_params(key, params)
             if isinstance(target, dict):
                 if key not in _PAIRED_TARGET_CRITERIA or not has_relative_qor_threshold(params):
-                    raise ValueError(f"{key} paired campaign target needs a relative threshold")
+                    raise ValueError("Paired campaign Target needs a relative threshold")
                 specs.extend(_paired_target_specs(key, [target], params, mandatory=mandatory))
                 continue
             if not isinstance(target, str) or not target.strip():
@@ -1155,9 +1155,7 @@ def _parse_dict_criterion(
                 "synthesis_ok and fpga_impl_ok"
             )
         if not has_relative_qor_threshold(params):
-            raise ValueError(
-                f"{key}.targets baseline/candidate mappings require a relative threshold"
-            )
+            raise ValueError("Target baseline/candidate mappings require a relative threshold")
         return _paired_target_specs(key, targets, params, mandatory=mandatory)
     return [CriterionSpec(key, mandatory=mandatory, params=params)]
 
@@ -1216,7 +1214,7 @@ def _validate_criterion_params(key: str, params: dict[str, Any]) -> dict[str, An
             unknown.append(param)
     if unknown:
         raise ValueError(
-            f"Unknown {key} params: {sorted(unknown)}. Valid: {sorted(valid_params)} "
+            f"Unknown parameters: {sorted(unknown)}. Valid: {sorted(valid_params)} "
             f"(per-clock metrics {sorted(_PER_CLOCK_METRICS)} may be clock-scoped "
             f"as '<clock>.<param>')"
         )
@@ -1231,7 +1229,7 @@ def _validate_criterion_params(key: str, params: dict[str, Any]) -> dict[str, An
         and {"min_detected", "total"} <= normalized.keys()
         and normalized["min_detected"] > normalized["total"]
     ):
-        raise ValueError("mutation_score min_detected cannot exceed total")
+        raise ValueError("min_detected cannot exceed total")
     # Mutex is per scope: clk_i.critical_path_ps_max and clk_i.fmax_mhz_min clash,
     # but clk_i.fmax_mhz_min and clk_2x.critical_path_ps_max do not.
     by_scope: dict[str, set[str]] = {}
@@ -1242,7 +1240,7 @@ def _validate_criterion_params(key: str, params: dict[str, Any]) -> dict[str, An
         for scope, bases in by_scope.items():
             if a in bases and b in bases:
                 where = f" (clock {scope!r})" if scope else ""
-                raise ValueError(f"{key} params {a!r} and {b!r} are mutually exclusive{where}")
+                raise ValueError(f"Parameters {a!r} and {b!r} are mutually exclusive{where}")
     return normalized
 
 
@@ -1256,7 +1254,7 @@ def _normalize_criterion_param_value(key: str, param: str, value: Any) -> Any:
         _validate_criterion_param_value(key, param, value)
         return value
 
-    field = f"{key} param {param!r}"
+    field = f"Parameter {param!r}"
     number = _parse_percentage(value, field=field)
     coverage = key.startswith("coverage_")
     _validate_percentage_range(
@@ -1306,24 +1304,22 @@ def _validate_criterion_param_value(key: str, param: str, value: Any) -> None:
         return
     if param == "scope":
         if not is_str_list(value) or not value or not all(path.strip() for path in value):
-            raise ValueError(f"{key} param 'scope' must be a non-empty list[str]")
+            raise ValueError("Parameter 'scope' must be a non-empty list[str]")
         return
     if param == "auto":
         if value is not True:
-            raise ValueError(f"{key} param 'auto' must be true when present")
+            raise ValueError("Parameter 'auto' must be true when present")
         return
     if key == "mutation_score" and param in {"min_detected", "total"}:
         if as_positive_int(value, 0) == 0:
-            raise ValueError(f"{key} param {param!r} must be a positive integer, got {value!r}")
+            raise ValueError(f"Parameter {param!r} must be a positive integer, got {value!r}")
         return
     try:
-        number = require_finite_number(value, field=f"{key} param {param!r}")
+        number = require_finite_number(value, field=f"Parameter {param!r}")
     except BoundaryError:
-        raise ValueError(
-            f"{key} param {param!r} must be a positive number, got {value!r}"
-        ) from None
+        raise ValueError(f"Parameter {param!r} must be a positive number, got {value!r}") from None
     if number < 0:
-        raise ValueError(f"{key} param {param!r} must be a positive number or zero, got {value!r}")
+        raise ValueError(f"Parameter {param!r} must be a positive number or zero, got {value!r}")
 
 
 def _validate_cycle_count_value(param: str, value: Any) -> None:
@@ -1332,7 +1328,7 @@ def _validate_cycle_count_value(param: str, value: Any) -> None:
     if integer:
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             raise ValueError(
-                f"cycle_count param {param!r} must be a non-negative integer, got {value!r}"
+                f"Cycle Count parameter {param!r} must be a non-negative integer, got {value!r}"
             )
         return
     raise AssertionError(f"percentage Cycle Count param {param!r} was not normalized")
@@ -1347,7 +1343,7 @@ def _validate_cycle_count_bounds(params: dict[str, Any]) -> None:
         and absolute_upper is not None
         and absolute_lower > absolute_upper
     ):
-        raise ValueError("cycle_count has contradictory absolute min/max bounds")
+        raise ValueError("Cycle Count has contradictory absolute min/max bounds")
     _validate_signed_bounds(params, unit="percent", suffix="")
     _validate_signed_bounds(params, unit="cycles", suffix="_cycles")
 
@@ -1373,4 +1369,4 @@ def _validate_signed_bounds(params: dict[str, Any], *, unit: str, suffix: str) -
     lower_values = [value for value in lower if value is not None]
     upper_values = [value for value in upper if value is not None]
     if lower_values and upper_values and max(lower_values) > min(upper_values):
-        raise ValueError(f"cycle_count has contradictory relative {unit} bounds")
+        raise ValueError(f"Cycle Count has contradictory relative {unit} bounds")

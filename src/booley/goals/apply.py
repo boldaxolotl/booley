@@ -21,6 +21,7 @@ from booley.criteria.evidence_ledger import prepare_observations
 from booley.criteria.state import CriterionChange, CriterionEntry, DevelopmentState
 from booley.goals.apply_barrier import require_no_apply
 from booley.goals.apply_effects import FileEffect, read_bytes, require_destination
+from booley.goals.campaign_accounting import quarantine_unreadable
 from booley.goals.change_policy import conflict, validate_kind
 from booley.goals.changes import (
     ChangeEntry,
@@ -47,7 +48,16 @@ from booley.goals.proposals import (
 )
 from booley.goals.recorder import GOAL_SCOPE, goal_identity
 from booley.goals.state_store import load_goal_state, review_categories
-from booley.goals.store import GoalStore, RecordLock
+from booley.goals.store import GoalStore, RecordLock, frozen_run_violation
+from booley.goals.test_run_freezing import (
+    GoalResolutionError,
+    ResolutionRequest,
+    SeedDraw,
+    TargetPlans,
+    refreeze_changed_goal,
+)
+from booley.goals.test_run_goals import names_test_runs
+from booley.goals.test_run_resolution import TestRunResolution
 from booley.goals.waiver_binding import WaiverBinding
 from booley.runtime.atomic_files import atomic_write_once
 from booley.runtime.timefmt import utc_now_rfc3339
@@ -75,6 +85,11 @@ class ChangeEnvironment:
     entry: EntryEnvironment
     waivers: WaiverPort | None = None
     on_boundary: Callable[[str], None] | None = None
+
+    @property
+    def draw_seeds(self) -> SeedDraw:
+        """Where the seeds of a multi-seed Goal an approved change freezes come from."""
+        return self.entry.draw_seeds
 
     @property
     def store(self) -> GoalStore:
@@ -157,6 +172,7 @@ def decide(
     _require_pending(view, record)
     require_no_apply(lock.record_dir)
     decision = replace(decision, transaction_id=str(uuid4()))
+    _remove_orphan_transactions(lock.record_dir)
     with _waiver_lock(view.proposal, env):
         transaction = _prepare(lock, view.proposal, record, decision, env)
         _validate_contents(view.proposal, transaction)
@@ -169,6 +185,22 @@ def decide(
         )
         env.checkpoint("approved" if decision.decision == "approve" else "rejected")
         return _drive(lock, updated, transaction, env)
+
+
+def _remove_orphan_transactions(root: Path) -> None:
+    """Delete prepared transactions no decision names.
+
+    A stop after a transaction was written and before its decision was saved
+    leaves the file behind; that decision was never made, and the next one
+    prepares its own transaction. The caller holds the record lock, so no
+    other decision is between those two writes now.
+    """
+    named = {
+        view.decision.transaction_id for view in list_proposals(root) if view.decision is not None
+    }
+    for path in sorted((root / "applies").glob("*.json")):
+        if path.stem not in named:
+            path.unlink()
 
 
 def recover(store: GoalStore, record_id: str, env: ChangeEnvironment) -> GoalRecord:
@@ -287,6 +319,7 @@ def _prepare_approved(
 ) -> ApplyTransaction:
     assert decision.transaction_id is not None
     updated = _next_record(record, proposal)
+    updated = _with_frozen_test_runs(record, updated, proposal, env)
     derivations = derive_changes(proposal, record, state, env.entry.project_dir, coverage=coverage)
     shadow = _state_delta(state, proposal)
     _apply_derivations(shadow, derivations)
@@ -396,8 +429,57 @@ def _next_record(record: GoalRecord, proposal: Proposal) -> GoalRecord:
     )
     if proposal.kind is ChangeKind.ADD:
         goals = (*record.goals, replacement)
-    updated = replace(record, revision=revision, goals=goals)
+    resolutions = {
+        key: value
+        for key, value in record.test_run_resolutions.items()
+        if any(goal.spec.key == key for goal in goals)
+    }
+    updated = replace(record, revision=revision, goals=goals, test_run_resolutions=resolutions)
     return GoalRecord.from_json(updated.to_json())
+
+
+def _with_frozen_test_runs(
+    record: GoalRecord, updated: GoalRecord, proposal: Proposal, env: ChangeEnvironment
+) -> GoalRecord:
+    """*updated* with the changed Goal's Test Runs frozen (ADR 0072).
+
+    The prepared record carries the exact runs and drawn seeds, so a
+    recovered apply writes the same ones. What the change leaves alone stays
+    frozen (:func:`refreeze_changed_goal`); a retarget that leaves the Goal
+    as written freezes it again from the Target as it is now. No other Goal's
+    frozen Test Runs may change: the record effect is written without
+    :meth:`GoalStore.save`, so its rule is applied here.
+    """
+    after = next(goal for goal in updated.goals if goal.spec.key == proposal.after.key)
+    changed = {proposal.goal_key, after.spec.key}
+    siblings = {
+        goal.spec.key: (goal, held)
+        for goal in updated.goals
+        if goal.spec.key not in changed
+        and (held := record.test_run_resolution(goal.spec.key)) is not None
+    }
+    resolutions: dict[str, TestRunResolution] = {}
+    if names_test_runs(after.spec):
+        held = record.test_run_resolution(proposal.goal_key)
+        before = None if proposal.before is None or held is None else (proposal.before, held)
+        try:
+            resolutions[after.spec.key] = refreeze_changed_goal(
+                after,
+                before,
+                TargetPlans(Path(record.worktree_path)),
+                ResolutionRequest("change", utc_now_rfc3339(), env.draw_seeds),
+                refreeze=proposal.kind is ChangeKind.RETARGET
+                and proposal.before == proposal.after,
+                siblings=siblings,
+            )
+        except GoalResolutionError as exc:
+            raise ProposalError(str(exc)) from exc
+    resolutions |= {key: held for key, (_, held) in siblings.items()}
+    frozen = GoalRecord.from_json(replace(updated, test_run_resolutions=resolutions).to_json())
+    violation = frozen_run_violation(record, frozen)
+    if violation:
+        raise ProposalError(f"the approved change cannot be applied: {violation}")
+    return frozen
 
 
 def _state_delta(state: DevelopmentState, proposal: Proposal) -> DevelopmentState:
@@ -439,6 +521,9 @@ def _drive(
         env.checkpoint("applied")
     result = finalize(lock, view)
     env.checkpoint("finalized")
+    # The human approved a Goal change: registrations nobody can read stop blocking the
+    # Goals from here on (ADR 0072). A stop before this leaves them where they block.
+    quarantine_unreadable(env.store, lock.goal_id)
     return result
 
 

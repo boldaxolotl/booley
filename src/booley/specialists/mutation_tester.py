@@ -35,13 +35,13 @@ import shutil
 import subprocess
 import sys
 import time
-from dataclasses import dataclass, field
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 from urllib.parse import quote
 
-from booley.agent_workspace.isolation import hide_opposite_sources
-from booley.config import project_config
+from booley.config.project_config import load_test_configuration_field, lookup_target_section
 from booley.core.boundary import BoundaryError, as_int, as_str, require_int, require_str
 from booley.core.models import AgentCallParams
 from booley.dev_support import mutation_lock as lock_mod
@@ -52,8 +52,10 @@ from booley.dev_support.mutation_build_sources import (
 from booley.dev_support.mutation_variants import MutationVariantError, MutationVariantPlan
 from booley.flows import artifacts as _artifacts
 from booley.flows.cli_help import CliHelp, SurfaceHelp
+from booley.flows.execution_persistence import execution_goal_name
 from booley.flows.flow_config import tb_top_for_target
 from booley.flows.sim import edam as sim_edam
+from booley.flows.sim.backends.cocotb import seed_arguments
 from booley.flows.sim.backends.cocotb_results import (
     STATE_OK,
     VERDICT_FAIL,
@@ -70,6 +72,11 @@ from booley.flows.sim.config import (
     literal_run_cwd_problem,
     resolve_run_cwd,
 )
+from booley.flows.sim.execution.engine import (
+    launch_environment,
+    simulation_plusargs,
+    target_test_plan,
+)
 from booley.flows.sim.result import SIM_INFRA_ERROR_PREFIX, has_infra_error
 from booley.flows.sim.runner import SIM_RUN_HALVES, resolve_sim_sentinels
 from booley.flows.target_campaign import (
@@ -80,6 +87,7 @@ from booley.flows.target_campaign import (
     resolve_target_campaign,
 )
 from booley.flows.target_criteria import CampaignScopeError
+from booley.flows.target_test_plan import TargetTestPlan, TestRunLaunch, batch_test_runs
 from booley.flows.target_test_suite import (
     NoRunnableTestsError,
     TargetTestSuite,
@@ -96,6 +104,14 @@ from booley.targets.catalog import TargetCatalog
 from .specialist import Specialist
 
 _SIM_RUN_HALVES = SIM_RUN_HALVES
+
+
+def _target_environment(work_dir: Path, target: str) -> dict[str, str]:
+    """The ``tests.toml`` env table of *target* in the checkout at *work_dir*."""
+    sections = load_test_configuration_field(work_dir, "env")
+    return dict(lookup_target_section(sections, target) or {})
+
+
 _resolve_sim_sentinels = resolve_sim_sentinels
 
 logger = logging.getLogger(__name__)
@@ -662,6 +678,8 @@ class MutationTesterSpecialist(Specialist):
         "tester builds isolated variants"
     )
     code_modifying: bool = False
+    workspace_access: Literal["read_only"] = "read_only"
+
     target_required: bool = True
     target_help: str = SurfaceHelp(
         "Exactly one Simulation Target. The CLI accepts one --target value; "
@@ -733,6 +751,9 @@ class MutationTesterSpecialist(Specialist):
     # ------------------------------------------------------------------
     # Abstract method stubs — _run() drives the flow directly.
     # ------------------------------------------------------------------
+
+    def _workspace_isolation_category(self) -> str:
+        return "rtl"
 
     def _build_prompt(self) -> str:
         raise NotImplementedError("MutationTesterSpecialist overrides _run() directly")
@@ -856,6 +877,7 @@ replacement must differ, and every proposal must remain a single source edit.
                 self.satisfies,
                 self.state.criteria,
                 explicit_scope=self.args.scope,
+                **self._registered_tests(),
                 enforce_scope_match=(
                     self.state.strict_criteria and not getattr(self.args, "diagnostic", False)
                 ),
@@ -871,7 +893,7 @@ replacement must differ, and every proposal must remain a single source edit.
             return McpToolResult(
                 exit_code=EXIT_FAILURE,
                 report_text=(
-                    f"mutation_tester: {key} must declare scope: [rtl/file.sv, ...] "
+                    f"mutation_tester: {execution_goal_name(self._acceptance_recorder, key)} must declare scope: [rtl/file.sv, ...] "
                     "or the invocation must pass --scope."
                 ),
             )
@@ -917,14 +939,17 @@ replacement must differ, and every proposal must remain a single source edit.
         try:
             catalog = TargetCatalog.build(self.args.work_dir)
             resolved = list(catalog.inspect(catalog.select(target)).rtl_files)
+            resolved_set = {
+                fusesoc_registry.canonical_project_path(self.args.work_dir, path)
+                for path in resolved
+            }
         except Exception:  # noqa: BLE001 — unresolvable target: fail open, let downstream report
             return None
         if not resolved:
             return None
-        resolved_set = set(resolved)
         by_base = {Path(r).name: r for r in resolved}
         for entry in scope_files:
-            if entry in resolved_set:
+            if not Path(entry).is_absolute() and entry in resolved_set:
                 continue
             suggestion = by_base.get(Path(entry).name)
             hint = f" Did you mean '{suggestion}'?" if suggestion else ""
@@ -1244,7 +1269,7 @@ replacement must differ, and every proposal must remain a single source edit.
         pre_dirty: set[str] | None,
     ) -> PreparedMutationRound:
         self.emit_progress(f"proposal round {round_idx}/{self.MAX_VERIFICATION_ROUNDS}")
-        specs, elapsed, error = self._proposal_round(plan, prompt, round_idx, pre_dirty)
+        specs, elapsed, error = self._proposal_round(prompt, round_idx)
         if error is not None:
             return PreparedMutationRound([], None, elapsed, error=error)
         if not specs:
@@ -1338,16 +1363,11 @@ replacement must differ, and every proposal must remain a single source edit.
 
     def _proposal_round(
         self,
-        plan: MutationRunPlan,
         prompt: str,
         round_idx: int,
-        pre_dirty: set[str] | None,
     ) -> tuple[list[MutationSpec], float, McpToolResult | None]:
         try:
-            with hide_opposite_sources(plan.work_dir, "rtl"):
-                specs, elapsed = self._invoke_creator(
-                    prompt, resume=round_idx > 1, attempt=round_idx
-                )
+            specs, elapsed = self._invoke_creator(prompt, resume=round_idx > 1, attempt=round_idx)
         except Exception as exc:  # noqa: BLE001 — normalize the creator-provider boundary
             log_exception(logger, exc, summary=f"Creator invocation failed on round {round_idx}")
             diagnostic_path = self._write_provider_diagnostic(exc, self._transcript_path())
@@ -1356,14 +1376,6 @@ replacement must differ, and every proposal must remain a single source edit.
                 report_text=exception_report_text("mutation creator", exc, diagnostic_path),
             )
             return [], 0.0, error
-        strays = self._revert_stray_tracked_edits(plan.work_dir, pre_dirty, keep=[])
-        if strays:
-            logger.warning(
-                "read-only mutation creator wrote %d file(s) (%s) — reverted",
-                len(strays),
-                ", ".join(strays[:5]),
-            )
-            self.emit_progress(f"scope guard: reverted {len(strays)} creator edit(s)")
         return specs, elapsed, None
 
     def _invoke_creator(
@@ -1410,8 +1422,25 @@ replacement must differ, and every proposal must remain a single source edit.
         # ask it to edit source only.  Empty parse on a resume round is
         # the normal "no JSON, just source edits" case.
         raw_output = result.output if hasattr(result, "output") else str(result)
-        specs = parse_creator_output(raw_output)
+        specs = self._relative_proposal_paths(parse_creator_output(raw_output))
         return specs, time.monotonic() - start
+
+    def _relative_proposal_paths(self, specs: list[MutationSpec]) -> list[MutationSpec]:
+        """Translate current live absolute paths while preserving invalid scope paths."""
+        root = Path(self.args.work_dir).resolve()
+        normalized = []
+        for spec in specs:
+            normalized_spec = spec
+            path = Path(spec.file)
+            if path.is_absolute():
+                try:
+                    relative = path.resolve().relative_to(root).as_posix()
+                except ValueError:
+                    pass
+                else:
+                    normalized_spec = replace(spec, file=relative)
+            normalized.append(normalized_spec)
+        return normalized
 
     def _run_pristine_baseline(self, plan: MutationRunPlan) -> McpToolResult | None:
         """Build and run the byte-identical project before any proposal is applied."""
@@ -1729,6 +1758,9 @@ replacement must differ, and every proposal must remain a single source edit.
             handle,
             build_root=build_path,
             lane_kind="unreserved",
+            # The Target's env table is a build input of the Simulation Flow;
+            # a mutant must build and run under the same one.
+            environment=_target_environment(work_dir, target),
         )
         if mutation is not None:
             materialize_build_mutation(mutation[0], mutation[1], work_dir, prepared.resolved)
@@ -1857,11 +1889,22 @@ replacement must differ, and every proposal must remain a single source edit.
         (build_path / _EDALIZE_EDA_TOOL_MARKER).write_text(prepared.eda_tool, encoding="utf-8")
         return rel
 
-    @staticmethod
-    def _target_test_suite(target: str) -> TargetTestSuite:
+    def _registered_tests(self) -> dict[str, dict[str, list[str]]]:
+        """The Test registry and skips of the checkout this run mutates.
+
+        Read from that checkout's ``tests.toml``, the same file the launch of
+        each Test Run reads, so the suite and its arguments cannot disagree.
+        """
+        work_dir = self.args.work_dir
+        return {
+            "test_names": load_test_configuration_field(work_dir, "tests"),
+            "test_skips": load_test_configuration_field(work_dir, "skip"),
+        }
+
+    def _target_test_suite(self, target: str) -> TargetTestSuite:
         """Return every runnable test declared for *target*."""
         try:
-            return require_runnable_target_test_suite(target)
+            return require_runnable_target_test_suite(target, **self._registered_tests())
         except NoRunnableTestsError as exc:
             raise UnsupportedSimTargetError(f"mutation_tester: {exc}") from exc
 
@@ -1878,6 +1921,7 @@ replacement must differ, and every proposal must remain a single source edit.
             target,
             criterion_keys=self.satisfies,
             criteria=criteria,
+            **self._registered_tests(),
         )
 
     def _cocotb_sim_cmd(
@@ -1889,6 +1933,8 @@ replacement must differ, and every proposal must remain a single source edit.
         work_dir: Path,
         timeout: int,
         test_names: tuple[str, ...],
+        launch: TestRunLaunch,
+        plusargs: Sequence[str] = (),
     ) -> list[str]:
         """Build the :mod:`booley.flows.sim.backends.cocotb` invocation for one mutant.
 
@@ -1896,9 +1942,9 @@ replacement must differ, and every proposal must remain a single source edit.
         needs cocotb's ``COCOTB_TEST_MODULES``/filter environment — which only
         the cocotb run-half knows how to assemble.
 
-        Cocotb batches the Target's complete resolved suite into one process.
-        ``tests.toml`` ``select`` plusarg templates do not apply to Cocotb
-        Targets (ADR 0034 decision 2).
+        One invocation runs one Cocotb batch: Tests that share an environment
+        and a seed (ADR 0072). ``tests.toml`` ``select`` plusarg templates do
+        not apply to Cocotb Targets (ADR 0034 decision 2).
         """
         cmd = [
             sys.executable,
@@ -1914,6 +1960,8 @@ replacement must differ, and every proposal must remain a single source edit.
             str(max(1, timeout - 5)),
         ]
         cmd.extend(f"--test={test_name}" for test_name in test_names)
+        cmd += seed_arguments(launch.seed)
+        cmd.extend(f"--plusarg={value}" for value in plusargs)
         run_cwd = resolve_run_cwd(work_dir)
         if run_cwd:
             cmd += ["--run-cwd", run_cwd]
@@ -1927,7 +1975,7 @@ replacement must differ, and every proposal must remain a single source edit.
         work_dir: Path,
         tb_top: str,
         timeout: int,
-        test_name: str | None,
+        plusargs: Sequence[str],
     ) -> list[str]:
         """Build the pinned ``V<top>`` invocation for one mutant (classic path).
 
@@ -1947,14 +1995,7 @@ replacement must differ, and every proposal must remain a single source edit.
             "--timeout",
             str(max(1, timeout - 5)),
         ]
-        tests = project_config.lookup_target_section(project_config.TEST_NAMES, target) or []
-        if test_name is not None:
-            selector = project_config.render_test_selector(
-                target,
-                tests.index(test_name),
-                test_name,
-            )
-            cmd.append(f"--plusarg={selector.removeprefix('+')}")
+        cmd.extend(f"--plusarg={value}" for value in plusargs)
         pass_sentinels, fail_sentinels = _resolve_sim_sentinels(work_dir)
         cmd.extend(f"--pass-sentinel={sentinel}" for sentinel in pass_sentinels)
         cmd.extend(f"--fail-sentinel={sentinel}" for sentinel in fail_sentinels)
@@ -1970,7 +2011,7 @@ replacement must differ, and every proposal must remain a single source edit.
         target: str,
         work_dir: Path,
         timeout: int,
-        test_name: str | None,
+        plusargs: Sequence[str],
     ) -> list[str]:
         """Build the pinned ``vvp`` invocation for one classic Icarus mutant."""
         cmd = [
@@ -1982,14 +2023,7 @@ replacement must differ, and every proposal must remain a single source edit.
             "--timeout",
             str(max(1, timeout - 5)),
         ]
-        tests = project_config.lookup_target_section(project_config.TEST_NAMES, target) or []
-        if test_name is not None:
-            selector = project_config.render_test_selector(
-                target,
-                tests.index(test_name),
-                test_name,
-            )
-            cmd.append(f"--plusarg={selector.removeprefix('+')}")
+        cmd.extend(f"--plusarg={value}" for value in plusargs)
         pass_sentinels, fail_sentinels = _resolve_sim_sentinels(work_dir)
         cmd.extend(f"--pass-sentinel={sentinel}" for sentinel in pass_sentinels)
         cmd.extend(f"--fail-sentinel={sentinel}" for sentinel in fail_sentinels)
@@ -1997,6 +2031,68 @@ replacement must differ, and every proposal must remain a single source edit.
         if run_cwd:
             cmd += ["--run-cwd", run_cwd]
         return cmd
+
+    def _default_test_plan(
+        self, target: str, work_dir: Path, adapter: str
+    ) -> tuple[TargetTestPlan, Mapping[str, Any]]:
+        """The Test Run plan of *target* and the parameters its ``.core`` declares.
+
+        Built the way the Simulation Flow builds it, against the resolved
+        Target, so a Test Variant argument that overrides a Target plusarg is
+        refused here too.
+        """
+        try:
+            catalog = TargetCatalog.build(work_dir)
+            handle = catalog.select(target, for_flow="sim")
+            parameters = catalog.inspect(handle).parameters
+            return target_test_plan(handle, adapter, parameters), parameters
+        except (fusesoc_registry.FuseSocError, ValueError) as exc:
+            raise UnsupportedSimTargetError(f"mutation_tester: {exc}") from exc
+
+    def _default_test_run_launch(
+        self,
+        target: str,
+        work_dir: Path,
+        adapter: str,
+        test_names: tuple[str, ...],
+    ) -> tuple[TestRunLaunch, list[str]]:
+        """Launch inputs and simulator arguments of *test_names* as default Test Runs.
+
+        A mutation run grades the Target's declared suite, so it applies
+        exactly what a plain Simulation Flow run of the same Tests applies
+        (ADR 0072): the Target's plusargs, ``select``, the default Test
+        Variant's arguments and environment, and the seed, rendered by the
+        Simulation Flow's own functions.
+        """
+        plan, parameters = self._default_test_plan(target, work_dir, adapter)
+        try:
+            launch = plan.launch(plan.default_runs_for(test_names))
+            return launch, simulation_plusargs(launch, parameters)
+        except ValueError as exc:
+            raise UnsupportedSimTargetError(f"mutation_tester: {exc}") from exc
+
+    def _cocotb_suite_batches(
+        self, target: str, work_dir: Path, campaign: TargetCampaign
+    ) -> tuple[tuple[str, ...], ...]:
+        """The Cocotb processes that run *campaign*'s suite, as the Simulation Flow batches it.
+
+        Default Test Variants that differ in environment never share a
+        process, so such a suite takes several.
+        """
+        tests = tuple(test for test in campaign.suite.tests if test is not None)
+        plan, _parameters = self._default_test_plan(target, work_dir, "cocotb")
+        batches = batch_test_runs(plan.default_runs_for(tests), one_process_per_run=False)
+        return tuple(tuple(run.test for run in batch if run.test is not None) for batch in batches)
+
+    def _classic_eda_tool(self, target: str, work_dir: Path, build_path: Path) -> str:
+        """The simulator of a classic (non-Cocotb) Target the mutation loop can drive."""
+        eda_tool = self.target_eda_tool(target, work_dir, build_path)
+        if eda_tool not in {"icarus", "verilator"}:
+            raise UnsupportedSimTargetError(
+                f"mutation_tester: cached Target {target!r} resolves to unsupported "
+                f"EDA toolchain {eda_tool!r}"
+            )
+        return eda_tool
 
     def _pinned_sim_command(
         self,
@@ -2008,40 +2104,42 @@ replacement must differ, and every proposal must remain a single source edit.
         timeout: int = 300,
         test_name: str | None = None,
         cocotb_tests: tuple[str, ...] = (),
-    ) -> list[str]:
+    ) -> tuple[list[str], TestRunLaunch]:
+        """The pinned simulator command of one mutant and its launch inputs."""
         rel = self._bin_dir_rel(target, work_dir, build_path)
         cocotb = self.cocotb_target(target, work_dir)
         if cocotb is not None:
-            return self._cocotb_sim_cmd(
+            launch, plusargs = self._default_test_run_launch(
+                target, work_dir, "cocotb", cocotb_tests
+            )
+            command = self._cocotb_sim_cmd(
                 cocotb=cocotb,
                 rel=rel,
                 target=target,
                 work_dir=work_dir,
                 timeout=timeout,
                 test_names=cocotb_tests,
+                launch=launch,
+                plusargs=plusargs,
             )
-        eda_tool = self.target_eda_tool(target, work_dir, build_path)
+            return command, launch
+        eda_tool = self._classic_eda_tool(target, work_dir, build_path)
+        names = (test_name,) if test_name is not None else ()
+        launch, plusargs = self._default_test_run_launch(target, work_dir, eda_tool, names)
         if eda_tool == "icarus":
-            return self._icarus_sim_cmd(
-                rel=rel,
-                target=target,
-                work_dir=work_dir,
-                timeout=timeout,
-                test_name=test_name,
+            command = self._icarus_sim_cmd(
+                rel=rel, target=target, work_dir=work_dir, timeout=timeout, plusargs=plusargs
             )
-        if eda_tool == "verilator":
-            return self._verilator_sim_cmd(
+        else:
+            command = self._verilator_sim_cmd(
                 rel=rel,
                 target=target,
                 work_dir=work_dir,
                 tb_top=tb_top,
                 timeout=timeout,
-                test_name=test_name,
+                plusargs=plusargs,
             )
-        raise UnsupportedSimTargetError(
-            f"mutation_tester: cached Target {target!r} resolves to unsupported "
-            f"EDA toolchain {eda_tool!r}"
-        )
+        return command, launch
 
     def _run_sim_pinned(
         self,
@@ -2055,7 +2153,7 @@ replacement must differ, and every proposal must remain a single source edit.
         cocotb_tests: tuple[str, ...] = (),
     ) -> subprocess.CompletedProcess:
         """Run the simulation image built in *build_path*."""
-        cmd = self._pinned_sim_command(
+        cmd, launch = self._pinned_sim_command(
             target,
             work_dir,
             build_path,
@@ -2068,7 +2166,12 @@ replacement must differ, and every proposal must remain a single source edit.
             cmd,
             cwd=work_dir,
             env=relocate_python_artifacts(
-                os.environ,
+                {
+                    **os.environ,
+                    **launch_environment(
+                        _target_environment(work_dir, target), launch.environment
+                    ),
+                },
                 python_artifact_root(os.environ, build_path / "python-artifacts"),
                 pytest_scope=f"mutation-run:{build_path.resolve()}",
             ),
@@ -2090,6 +2193,7 @@ replacement must differ, and every proposal must remain a single source edit.
         """Run one built source variant against the Target's complete test suite."""
         campaign = self._campaign_for_target(target)
         batched = self.cocotb_target(target, work_dir) is not None
+        batches = self._cocotb_suite_batches(target, work_dir, campaign) if batched else None
 
         def _run_unit(unit: CampaignUnit) -> MutationTestRun:
             try:
@@ -2122,7 +2226,7 @@ replacement must differ, and every proposal must remain a single source edit.
                     requires_cocotb_results=batched,
                 )
 
-        return list(campaign.execute(_run_unit, batched=batched).values)
+        return list(campaign.execute(_run_unit, batched=batched, batches=batches).values)
 
     @staticmethod
     def _suite_output(runs: list[MutationTestRun]) -> str:
