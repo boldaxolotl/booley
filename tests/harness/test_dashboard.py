@@ -446,9 +446,11 @@ async def test_published_paths_open_in_editor_on_click_and_report_failures(tmp_p
         return hint[0]
 
     app = DashboardApp(lambda: current, opener)
-    async with app.run_test(size=(max(90, len(report) + 10), 40)) as pilot:
+    async with app.run_test(size=(90, 40)) as pilot:
         await pilot.press("r", "enter")
         assert app.navigation.view == "job"
+        # Enter the narrow dedicated view before sizing for long published paths.
+        await pilot.resize_terminal(max(90, len(report) + 10), 40)
         detail = app.query_one("#detail", Static)
         lines = str(detail.render()).split("\n")
         await pilot.click("#detail", offset=(3, lines.index(report)))
