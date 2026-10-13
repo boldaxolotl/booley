@@ -66,7 +66,9 @@ def test_affected_goal_spec_change_is_discarded(goal_mode: SimpleNamespace) -> N
     binding = bind(goal_mode)
     bump_spec(goal_mode, LINT_KEY)
 
-    with pytest.raises(EvidenceDiscarded, match=f"Goal {LINT_KEY} changed during the run"):
+    with pytest.raises(
+        EvidenceDiscarded, match=r"Goal LINT:top \(no unwaived findings\) changed during the run"
+    ):
         publish(binding, {LINT_KEY})
 
 
@@ -84,7 +86,7 @@ def test_removed_goal_and_unknown_key_are_discarded(goal_mode: SimpleNamespace) 
 
     with pytest.raises(EvidenceDiscarded, match="removed during the run"):
         publish(binding, {SIM_KEY})
-    with pytest.raises(EvidenceDiscarded, match="was not a Goal"):
+    with pytest.raises(EvidenceDiscarded, match="did not match a Goal"):
         publish(binding, {"lint_clean_other"})
 
 
@@ -226,7 +228,7 @@ def test_job_completing_after_abandon_and_reentry_is_discarded(
     request = EntryRequest(
         work_dir=goal_mode.worktree,
         slug="again",
-        goals=parse_goal_args([{"family": "lint", "target": "top"}]),
+        goals=parse_goal_args([{"family": "LINT", "target": "top"}]),
     )
     new = enter_goal_mode(request, EntryEnvironment(project_dir=goal_mode.control)).record
     new_paths = record_paths(goal_mode.control, new.id)

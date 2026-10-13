@@ -47,7 +47,7 @@ def classified(
     criterion=LINT_KEY,
     criterion_detail=None,
 ):
-    layout.record = enter_goals(layout, goals or [{"family": "lint", "target": "top"}])
+    layout.record = enter_goals(layout, goals or [{"family": "LINT", "target": "top"}])
     relative = (
         ("dhrystone/dhry.hex" if suffix == ".vmem" else "dhrystone/dhry" + suffix)
         if copyto is not None
@@ -485,8 +485,8 @@ def _prepare_target_less_generated_record(
     classified(
         layout,
         goals=[
-            {"family": "lint", "target": "top"},
-            {"family": "review", "review": "rtl_bugs", "verdict": "done"},
+            {"family": "LINT", "target": "top"},
+            {"family": "REVIEW", "review": "rtl_bugs", "verdict": "done"},
         ],
     )
     document = (

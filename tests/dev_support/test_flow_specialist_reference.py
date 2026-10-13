@@ -22,6 +22,7 @@ from booley.dev_support.flow_specialist_reference import (
     render_flow_specialist_reference,
     render_specialists_reference,
 )
+from booley.goals.capabilities import evidence_goal_name
 from booley.mcp.registry import discover_mcp_tools
 from booley.runtime.paths import cheatsheet_path
 
@@ -150,7 +151,7 @@ def test_specialist_reference_lists_every_reviewer_focus_and_mutation_mode() -> 
 
     rendered = render_specialists_reference()
     for criterion, args in (reviewer.satisfies_args or {}).items():
-        assert criterion in rendered
+        assert evidence_goal_name(criterion) in rendered
         assert args.split("--focus ", maxsplit=1)[1] in rendered
     assert "| Campaign | Goal arguments | Interactive Mode arguments |" in rendered
     assert "| Default fixed |" in rendered

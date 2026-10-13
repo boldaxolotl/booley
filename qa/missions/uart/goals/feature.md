@@ -15,46 +15,46 @@ from Finish; the child sees no evaluator implementation, seed or generated cases
 ```json
 [
   {
-    "family": "elab",
+    "family": "ELAB",
     "target": "sim_uart",
     "origin": "feature"
   },
   {
-    "family": "sim",
+    "family": "SIM",
     "target": "sim_uart",
     "origin": "feature"
   },
   {
-    "family": "lint",
+    "family": "LINT",
     "target": "lint_uart",
     "origin": "feature"
   },
   {
-    "family": "synth",
+    "family": "SYNTH",
     "target": "synth_uart",
     "origin": "feature"
   },
   {
-    "family": "review",
+    "family": "REVIEW",
     "review": "rtl_bugs",
     "verdict": "clean",
     "origin": "feature"
   },
   {
-    "family": "review",
+    "family": "REVIEW",
     "review": "rtl_protocol",
     "verdict": "clean",
     "origin": "feature"
   },
   {
-    "family": "review",
+    "family": "REVIEW",
     "review": "rtl_spec",
     "verdict": "clean",
     "spec": "spec/contract.md",
     "origin": "feature"
   },
   {
-    "family": "review",
+    "family": "REVIEW",
     "review": "tb_quality",
     "verdict": "clean",
     "origin": "feature"

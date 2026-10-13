@@ -294,8 +294,8 @@ def _concurrent_endpoints(layout, monkeypatch):
     layout.record = enter_goals(
         layout,
         [
-            {"family": "review", "review": "tb_quality", "verdict": "clean"},
-            {"family": "mutation", "target": "top", "scope": ["rtl.v"], "total": 1},
+            {"family": "REVIEW", "review": "tb_quality", "verdict": "clean"},
+            {"family": "MUTATION", "target": "top", "scope": ["rtl.v"], "total": 1},
         ],
     )
     (repo / "rtl.v").write_text("assign x = a + b;\n")

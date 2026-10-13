@@ -65,9 +65,9 @@ def test_goal_enter_schema_reuses_the_goal_argument_vocabulary() -> None:
 @pytest.mark.parametrize(
     ("arguments", "valid"),
     [
-        ({"work_dir": "/w", "slug": "fix", "goals": [{"family": "lint", "target": "t"}]}, True),
-        ({"slug": "fix", "goals": [{"family": "lint", "target": "t"}]}, False),
-        ({"work_dir": "/w", "slug": "Fix!", "goals": [{"family": "lint", "target": "t"}]}, False),
+        ({"work_dir": "/w", "slug": "fix", "goals": [{"family": "LINT", "target": "t"}]}, True),
+        ({"slug": "fix", "goals": [{"family": "LINT", "target": "t"}]}, False),
+        ({"work_dir": "/w", "slug": "Fix!", "goals": [{"family": "LINT", "target": "t"}]}, False),
         ({"work_dir": "/w", "slug": "fix", "goals": []}, False),
         ({"work_dir": "/w", "slug": "fix", "goals": [{"family": "nope", "target": "t"}]}, False),
     ],
@@ -106,7 +106,7 @@ def test_goal_tools_listed_in_an_interactive_tab(monkeypatch: pytest.MonkeyPatch
 # Direct calls
 # ---------------------------------------------------------------------------
 
-_ENTER = {"work_dir": "/nowhere", "slug": "fix", "goals": [{"family": "lint", "target": "t"}]}
+_ENTER = {"work_dir": "/nowhere", "slug": "fix", "goals": [{"family": "LINT", "target": "t"}]}
 
 
 @pytest.mark.parametrize("name", sorted(GOAL_TOOLS))
@@ -146,7 +146,7 @@ def test_finish_requires_explicit_retry_binding(
 def test_goal_enter_without_work_dir_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
 
-    payload = _call("goal_enter", {"slug": "fix", "goals": [{"family": "lint", "target": "t"}]})
+    payload = _call("goal_enter", {"slug": "fix", "goals": [{"family": "LINT", "target": "t"}]})
 
     assert payload.is_error is True
     assert "work_dir" in payload.content[0].text

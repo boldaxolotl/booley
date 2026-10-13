@@ -48,6 +48,7 @@ from booley.dev_support import mutation_lock as lock_mod
 from booley.dev_support.mutation_variants import MutationVariantError, MutationVariantPlan
 from booley.flows import artifacts as _artifacts
 from booley.flows.cli_help import CliHelp, SurfaceHelp
+from booley.flows.execution_persistence import execution_goal_name
 from booley.flows.flow_config import tb_top_for_target
 from booley.flows.sim import edam as sim_edam
 from booley.flows.sim.backends.cocotb import seed_arguments
@@ -888,7 +889,7 @@ replacement must differ, and every proposal must remain a single source edit.
             return McpToolResult(
                 exit_code=EXIT_FAILURE,
                 report_text=(
-                    f"mutation_tester: {key} must declare scope: [rtl/file.sv, ...] "
+                    f"mutation_tester: {execution_goal_name(self._acceptance_recorder, key)} must declare scope: [rtl/file.sv, ...] "
                     "or the invocation must pass --scope."
                 ),
             )

@@ -26,7 +26,7 @@ def test_goal_status_cli(
     assert _cmd_goal(args, goal_mode.main) == 0
     text = capsys.readouterr().out
     assert goal_mode.record.id in text
-    assert ("lint_clean_top" in text) is not short
+    assert "LINT:top" in text
 
 
 @pytest.mark.parametrize("short", [False, True])
@@ -233,4 +233,9 @@ def test_goal_status_error_bytes(goal_mode, tmp_path, monkeypatch, capsys, error
         _cmd_goal(Namespace(goal_command="status", short=False, long=False), goal_mode.main) == 2
     )
     captured = capsys.readouterr()
-    assert (captured.out, captured.err) == ("", f"ERROR: {failure.value}\n")
+    message = (
+        f"Goal unavailable (unsupported record); inspect: {record_paths(goal_mode.control, goal_mode.record.id).record_file}"
+        if error == "corrupt"
+        else str(failure.value)
+    )
+    assert (captured.out, captured.err) == ("", f"ERROR: {message}\n")

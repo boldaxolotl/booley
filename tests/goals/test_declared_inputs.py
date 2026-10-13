@@ -40,7 +40,7 @@ def configure(layout, declarations, files=None):
 
 def enter(layout):
     call = EntryRequest(
-        layout.worktree, "protected", parse_goal_args([{"family": "lint", "target": "top"}])
+        layout.worktree, "protected", parse_goal_args([{"family": "LINT", "target": "top"}])
     )
     result = enter_goal_mode(call, EntryEnvironment(layout.control))
     layout.record = result.record

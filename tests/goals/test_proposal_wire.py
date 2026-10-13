@@ -34,6 +34,53 @@ def arguments(layout):
     }
 
 
+def test_agent_can_relax_using_only_structured_status_and_reload_legacy_arguments(
+    layout, monkeypatch
+):
+    from booley.goals.apply_barrier import require_no_apply
+
+    setup_cycle(layout)
+
+    async def exercise():
+        async with Client(sdk(layout, monkeypatch), mode="2026-07-28") as client:
+            status = await client.call_tool("goal_status", {"work_dir": str(layout.worktree)})
+            rows = status.structured_content["records"][0]["goals"]
+            address = next(row["goal_key"] for row in rows if row["name"] == "CYCLE_COUNT:top")
+            assert address not in status.content[0].text
+            created = await client.call_tool(
+                "goal_propose_change", {**arguments(layout), "goal_key": address}
+            )
+            proposal_id = json.loads(created.content[0].text)["proposal_id"]
+            assert "CYCLE_COUNT:top" in created.content[0].text
+            saved = proposals(layout)[0].proposal
+            assert saved.after_arg["family"] == "cycle_count"
+            require_no_apply(record_paths(layout.control, layout.record.id).root)
+            resumed = await client.call_tool(
+                "goal_propose_change",
+                {
+                    "work_dir": str(layout.worktree),
+                    "operation": "resume",
+                    "proposal_id": proposal_id,
+                },
+            )
+            assert not resumed.is_error
+            approved = await client.call_tool(
+                "goal_propose_change",
+                {
+                    "work_dir": str(layout.worktree),
+                    "operation": "approve",
+                    "proposal_id": proposal_id,
+                    "reason": "measured workload",
+                    "approval_quote": "Approve the relaxed bound",
+                },
+            )
+            assert not approved.is_error
+            assert json.loads(approved.content[0].text)["state"] == "applied"
+            assert saved.goal_key not in approved.content[0].text
+
+    asyncio.run(exercise())
+
+
 def proposals(layout):
     return list_proposals(record_paths(layout.control, layout.record.id).root)
 
