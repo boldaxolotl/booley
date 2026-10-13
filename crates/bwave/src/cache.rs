@@ -1856,6 +1856,10 @@ pub fn sample_at_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     // Read trigger signal transitions and identify trigger ticks.
     // Synchronous predicates compare observations on the eligible clock grid.
     let mut trigger_ticks: Vec<u64> = Vec::new();
+    // The output limit counts watched rows, not trigger events. Retain the
+    // first event containing a row beyond the limit to prove truncation.
+    let rows_per_event = watched_indices.len() + watched_virtual_indices.len();
+    let discovery_limit = cfg.max_lines / rows_per_event.max(1);
 
     if sync_mode && cache.clock_period_ticks > 0 {
         // Each stream advances one sampled observation at a time. Merge at
@@ -1879,7 +1883,7 @@ pub fn sample_at_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
             if matched {
                 trigger_ticks.push(tick);
                 if cfg.first_match
-                    || (!cfg.count_only && !cfg.last_match && trigger_ticks.len() > cfg.max_lines)
+                    || (!cfg.count_only && !cfg.last_match && trigger_ticks.len() > discovery_limit)
                 {
                     break;
                 }

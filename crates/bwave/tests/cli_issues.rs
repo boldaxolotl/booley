@@ -3714,6 +3714,22 @@ fn issue_1421_sparse_late_window_and_first_are_bounded() {
     // window must seed the direct predecessor instead of walking the prefix.
     let body = "#0\n0!\nb0000 #\n0$\n1%\n#5\n1$\n#10\n0$\n#15\n1$\n#20\n0$\n#21\n1!\n#25\n1$\n#30\n0$\n#999999999991\n0!\n#1000000000000\n";
     let (_dir, store) = issue_1100_store(body, "parallel");
+    let (stdout, stderr, code) = issue_1100_run(&[
+        "sample",
+        &store,
+        "scalar",
+        "rising",
+        "--with-reset",
+        "-s",
+        "scalar",
+        "-s",
+        "bus",
+        "--limit",
+        "1",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(stdout.contains("3 scalar 1"), "{stdout}");
+    assert!(stderr.contains("truncated"), "{stderr}");
     for command in ["find", "sample"] {
         let mut flags = vec!["--with-reset", "--first"];
         if command == "sample" {
