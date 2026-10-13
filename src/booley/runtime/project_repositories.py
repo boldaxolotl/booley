@@ -1,4 +1,4 @@
-"""Repository discovery, path coordinates and bounded Git inspection for project checkouts."""
+"""Repository discovery, path coordinates and bounded Git inspection for checkouts at their Project Roots."""
 
 from __future__ import annotations
 
@@ -85,7 +85,7 @@ class ProjectTopology:
 def project_topology(
     checkout_root: Path, *, discover_paired: bool = True, discover_standalone: bool = True
 ) -> ProjectTopology:
-    """Inspect requested Project repository selections without changing their policy."""
+    """Inspect requested RTL and Booley Directory repository selections without changing their policy."""
     paired = _inspect_paired_project_repository(checkout_root) if discover_paired else None
     standalone = None
     if discover_standalone:
@@ -100,7 +100,7 @@ def project_topology(
 
 
 def resolve_inner_project_repo(project_root: Path) -> Path | None:
-    """Return this checkout's configured standalone Project repository."""
+    """Return this checkout's configured Versioned Booley Directory."""
     return project_topology(project_root, discover_paired=False).standalone
 
 
@@ -117,20 +117,18 @@ def _inspect_paired_project_repository(checkout_root: Path) -> RepositoryCheckou
     result = run_git(nested, "rev-parse", "--show-toplevel")
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()
-        raise RepositoryCheckoutError(
-            f"paired project repository is unavailable at {nested}: {detail}"
-        )
+        raise RepositoryCheckoutError(f"Paired Checkout is unavailable at {nested}: {detail}")
     try:
         top = Path(result.stdout.strip()).resolve()
         expected = nested.resolve()
         same_root = top.samefile(expected)
     except OSError as exc:
         raise RepositoryCheckoutError(
-            f"paired project repository cannot be resolved at {nested}: {exc}"
+            f"Paired Checkout cannot be resolved at {nested}: {exc}"
         ) from exc
     if not same_root:
         raise RepositoryCheckoutError(
-            f"paired project repository has unexpected root {top}; expected {expected}"
+            f"Paired Checkout has unexpected root {top}; expected {expected}"
         )
     return RepositoryCheckout(nested, PROJECT_DIR_NAME)
 

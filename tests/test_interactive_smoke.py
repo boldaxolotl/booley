@@ -334,7 +334,7 @@ targets:
         assert "synth_default" in results
         assert short_sha  # HEAD~1 resolved to a short sha
 
-        # The baseline ran inside a throwaway worktree, not the project root.
+        # The baseline ran inside a throwaway worktree, not the Project Root.
         assert seen_work_dirs and seen_work_dirs[0] != repo
         assert ".baseline-wt-" in str(seen_work_dirs[0])
 
@@ -761,7 +761,7 @@ class TestInitInteractive:
         assert rc == 1
         assert results["project_dir"].status == "warn"
         assert results["interactive"].status == "warn"
-        assert results["interactive"].detail == "project directory would be created first"
+        assert results["interactive"].detail == "Booley Directory would be created first"
         assert not (tmp_path / ".booley_project").exists()
         assert not (tmp_path / ".devcontainer").exists()
 
@@ -783,7 +783,7 @@ class TestInitInteractive:
 
         def strict_preview(project, *_args, **_kwargs):
             runtime_spec.authorized_project_data_source(project)
-            pytest.fail("missing Project data unexpectedly passed validation")
+            pytest.fail("missing Booley Directory unexpectedly passed validation")
 
         monkeypatch.setattr(runtime_spec, "preview", strict_preview)
         current_image = init_cmd.LifecycleResult(
@@ -877,7 +877,7 @@ class TestInitInteractive:
             runtime_spec,
             "preview",
             lambda *_args, **_kwargs: (_ for _ in ()).throw(
-                runtime_spec.RuntimeSpecError("Project-data mount source is unavailable")
+                runtime_spec.RuntimeSpecError("Booley Directory mount source is unavailable")
             ),
         )
         ctx = init_cmd.InitContext(project_root=tmp_path, check_only=True)
@@ -1081,7 +1081,7 @@ class TestInitInteractive:
         assert init_cmd._select_interactive_app(tmp_path) == "codex"
 
     def test_seed_only_fails_closed_without_private_project_state(self, tmp_path, monkeypatch):
-        """`--seed` cannot invent the writable host Project-data authority."""
+        """`--seed` cannot invent the writable host Booley Directory authority."""
         import argparse
         import subprocess
 

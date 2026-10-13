@@ -1,4 +1,4 @@
-"""Build the standalone Project Git-hook zip application."""
+"""Build the Versioned Booley Directory Git-hook zip application."""
 
 from __future__ import annotations
 

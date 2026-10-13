@@ -257,7 +257,7 @@ Look for: writable mounts that should be read-only, missing local lifecycle repo
 
 ### 14. interactive-surface — MCP, discovery, custom flows, feedback (~25 min)
 Try:
-- Launch: bare `booley`/chat starts the configured provider in the Project directory. With a
+- Launch: bare `booley`/chat starts the configured provider in the current working directory. With a
   missing client executable (disposable), you get an actionable error; restore it. Make a safe
   edit and commit it, and check the exact local diff and history.
 - MCP: the Interactive Sandbox exposes Goal entry/status/proposal/Finish schemas. Disabling an

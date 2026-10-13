@@ -55,7 +55,7 @@ class TestStorage:
         assert auth_token.stored_token_is_private()
 
     def test_lives_outside_any_repo(self, home):
-        # A one-year credential inside the project dir is one `git add -f` from
+        # A one-year credential inside the Booley Directory is one `git add -f` from
         # being published, so its host-side source must not land under the workspace.
         assert "booley" in auth_token.token_path().parts[-2]
         assert auth_token.token_path().name == "claude-oauth-token"

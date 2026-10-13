@@ -91,7 +91,7 @@ def _render_discovered(discovered: tuple[Path, ...], *, json_output: bool) -> in
             )
         )
         return 0
-    print(f"Remembered {len(discovered)} Project root(s):")
+    print(f"Remembered {len(discovered)} Project Root(s):")
     for project in discovered:
         print(f"  {project}")
     return 0

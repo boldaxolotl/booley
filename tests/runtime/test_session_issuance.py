@@ -2186,7 +2186,7 @@ def test_previewed_spec_issues_for_every_project_data_layout(
 ) -> None:
     """Init's preview -> issue_prepared round trip must accept its own layout.
 
-    An in-repository Project-data directory on an alias-capable image yields a
+    An in-repository Booley Directory on an alias-capable image yields a
     canonical-alias spec; that prepared spec must issue without being mistaken
     for authority drift (the 0.3.0 release-candidate init Step 15 failure).
     """

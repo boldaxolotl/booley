@@ -7,7 +7,7 @@
    body in place so authored rationale survives.
 3. Validate via validate_commit_msg.validate_message().
 
-Project Initialization packages this module into the standalone Project Git-hook
+Project Initialization packages this module into the Versioned Booley Directory Git-hook
 bundle; Ticket worktrees receive the same source through harness/setup/workspace.py.
 
 **Bodies are kept.** They used to be truncated away on every non-merge commit

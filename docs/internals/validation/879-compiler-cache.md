@@ -23,7 +23,7 @@ Timing is evidence, never a normal CI assertion.
   mask. The independent expected result is `5 ^ revision`; both HDL and Cocotb
   testbenches assert it, and the host independently checks the printed value.
 - Each repetition has a new physical Project cache. Baseline uses the image's
-  home cache; candidate uses the fixed issued Project-data cache. Initial cold
+  home cache; candidate uses the fixed issued Booley Directory cache. Initial cold
   builds, unchanged fresh generations, previously unseen same-Sandbox edits,
   and previously unseen edits after container destruction/recreation are measured.
   The before/after order alternates across three repetitions. No cache counters
@@ -124,7 +124,7 @@ Fetch the pinned public `picorv32.v`, then run
 an issued candidate Sandbox. The `compiler_cache_make_probe.py` helper must sit
 beside it. Use `--revision`, `--trace`, `--coverage`, `--harness cocotb`, `--debug`,
 `--max-size`, and `--disabled` for the recorded cases. Give each repetition a new
-Project; recreate its Sandbox with the same issued Project-data owner. Build the
+Project; recreate its Sandbox with the same issued Booley Directory owner. Build the
 baseline with the pre-change Booley Python sources in the same pinned image.
 
 Complete Ruff check/format gates pass. The final full test suite

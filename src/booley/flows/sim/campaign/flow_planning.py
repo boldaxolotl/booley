@@ -329,7 +329,7 @@ def _source_entries(root: Path, inputs: Sequence[TargetInput]) -> list[dict[str,
             raw = resolved.read_bytes()
         except ValueError as exc:
             raise SimulationCampaignIntegrityError(
-                f"Target source escapes Project root: {item.path}"
+                f"Target source escapes Project Root: {item.path}"
             ) from exc
         except OSError as exc:
             raise SimulationCampaignIntegrityError(

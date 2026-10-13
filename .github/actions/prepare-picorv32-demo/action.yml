@@ -43,7 +43,7 @@ runs:
         fetch-depth: 0
         persist-credentials: false
 
-    # Keep the nested project-data checkout and the core projections produced
+    # Keep the nested Booley Directory checkout and the core projections produced
     # by readiness checks outside the reviewed upstream checkout's status.
     # This is repository-local so validation never depends on a runner's
     # personal global ignore configuration.

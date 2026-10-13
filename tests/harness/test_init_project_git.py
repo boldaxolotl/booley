@@ -1,4 +1,4 @@
-"""Project-data Git initialization follows the outer Project branch."""
+"""Booley Directory Git initialization follows the outer Project branch."""
 
 from __future__ import annotations
 

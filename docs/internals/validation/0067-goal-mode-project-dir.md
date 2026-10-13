@@ -1,4 +1,4 @@
-# Goal Mode Project directory spike (ADR 0067, Phase 0, fact 19)
+# Goal Mode Booley Directory spike (ADR 0067, Phase 0, fact 19)
 
 Validated on 06 OCT 2026 for [ADR 0067](../../adr/0067-replace-ticket-mode-with-goal-mode.md).
 Decides where the committed Goal summary is written so it lands on the Goal
@@ -28,7 +28,7 @@ Variants:
 | | stealth | excl | noexcl |
 | --- | --- | --- | --- |
 | Worktree has its own `.booley_project/` | yes (copied by `worktree_create.sh`, no nested `.git`) | yes | yes |
-| `resolve_project_dir(start=worktree)` with `BOOLEY_PROJECT_DIR` set | the shared Project directory (env wins) | shared | shared |
+| `resolve_project_dir(start=worktree)` with `BOOLEY_PROJECT_DIR` set | the Main Booley Directory (env wins) | shared | shared |
 | `resolve_project_dir(start=worktree)` without the env | the worktree's copy | worktree's copy | worktree's copy |
 | `resolve_checkout_project_dir(worktree)` | worktree's copy | worktree's copy | worktree's copy |
 | `discover_project_root(<worktree>/.booley_project/goals/history)` | the worktree | the worktree | the worktree |
@@ -51,19 +51,19 @@ Two more facts the spike surfaced:
   entry) creates it, and the `check_branch` binding above enforces it at
   Finish.
 - Inside the Sandbox, `BOOLEY_PROJECT_DIR` points every `resolve_project_dir`
-  call at the shared Project directory even with an explicit `start`, so a
+  call at the Main Booley Directory even with an explicit `start`, so a
   Goal record keyed by that resolution lives in the shared directory, not
   in the worktree's copy. That is the intended place for the local record.
 
 ## Decision for D9
 
-- The local Goal record stays in the Project directory that discovery
+- The local Goal record stays in the Booley Directory that discovery
   returns (`.booley_project/goals/<goal-id>/`, shared in a Sandbox).
 - Outside Stealth, the committed summary is a separate file written at
   `<goal worktree>/.booley_project/goals/history/<goal-id>.md` and committed
   from the worktree with the repository taken from the worktree
   (`git rev-parse --show-toplevel` from the history directory), never from
-  the Project directory. The commit binds the branch: `commit_file` is
+  the Booley Directory. The commit binds the branch: `commit_file` is
   called with a `check_branch` callback that raises unless the full ref it
   receives is the Goal Branch, and `commit_file` itself refuses a detached
   HEAD, since the publisher otherwise commits onto whatever HEAD is

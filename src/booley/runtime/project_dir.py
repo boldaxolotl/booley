@@ -1,4 +1,4 @@
-"""Runtime directories and the stable Project-directory compatibility interface."""
+"""Runtime directories and the stable Booley Directory compatibility interface."""
 
 from __future__ import annotations
 
@@ -58,7 +58,7 @@ def _identity_suffix(candidate: Path, root: Path) -> Path | None:
 
 
 def contains(path: str | Path, *, project_dir: Path | None = None) -> Path | None:
-    """Return a selected-root Project-data path, or None if membership is unproven.
+    """Return a selected-root Booley Directory path, or None if membership is unproven.
 
     Directory identity admits independent mount spellings, including missing
     descendants of an existing root. File hardlinks do not establish membership.

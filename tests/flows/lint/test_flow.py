@@ -282,7 +282,7 @@ class TestLintResolution:
 
         # The ResolvedTarget rides along for EDA-tool/coverage reporting.
         assert resolved is fake
-        # Target name and project root are forwarded; build_root is the
+        # Target name and Project Root are forwarded; build_root is the
         # per-(EDA tool, config) Edalize dir.
         assert captured["target"] == "lite"
         assert captured["vlnv"] == "::lint_demo:0"

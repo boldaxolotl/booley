@@ -73,11 +73,11 @@ def _step_git_hooks(ctx: InitContext) -> None:
     guard_sh = project_dir / "hooks" / "booley_commit_guard.sh"
     if not guard_sh.is_file():
         # Only Booley's own dev repo ships this repo-level guard; a normal
-        # project repo has none, so there is nothing to install — expected, not
+        # RTL repository has none, so there is nothing to install — expected, not
         # a failure (SETUP-4). The project commit-msg hook is a separate step.
         skip(
             "no repo-level commit guard (booley_commit_guard.sh) to install — "
-            "expected for a project repo; the project commit-msg hook installs "
+            "expected for an RTL repository; the project commit-msg hook installs "
             "separately below"
         )
         ctx.record("git_hooks", "skip", "no repo-level guard (expected)")
@@ -347,7 +347,7 @@ def _step_line_endings(
     """Render the shared line-ending report for Project Initialization.
 
     ``clean_baseline`` is the per-repository cleanliness sampled before init
-    wrote any Project data, so Booley's own earlier edits do not block repair.
+    wrote any files in the Booley Directory, so Booley's own earlier edits do not block repair.
     """
     ctx.step_banner("line endings")
     mode = LineEndingMode.INSPECT if ctx.check_only else LineEndingMode.REPAIR
@@ -355,7 +355,7 @@ def _step_line_endings(
         ctx.project_root, project_dir, mode=mode, clean_baseline=clean_baseline
     )
     if report.status is LineEndingStatus.NOT_APPLICABLE:
-        skip("project root is not a git repo — line-endings check skipped")
+        skip("Project Root is not a git repo — line-endings check skipped")
         ctx.record("line_endings", "skip", "not a git repo")
         return
     details: list[str] = []
@@ -604,7 +604,7 @@ def _step_worktree_prune_guard(ctx: InitContext, *, project_dir: Path | None = N
     """Keep automatic pruning disabled in every worktree repository."""
     ctx.step_banner("worktree prune guard")
 
-    # Confirm the project root is a git repo before touching its config.
+    # Confirm the Project Root is a git repo before touching its config.
     probe = subprocess.run(
         ["git", "-C", str(ctx.project_root), "rev-parse", "--git-dir"],
         capture_output=True,
@@ -613,7 +613,7 @@ def _step_worktree_prune_guard(ctx: InitContext, *, project_dir: Path | None = N
         timeout=10,
     )
     if probe.returncode != 0:
-        skip("project root is not a git repo — worktree prune guard skipped")
+        skip("Project Root is not a git repo — worktree prune guard skipped")
         ctx.record("worktree_prune_guard", "skip", "not a git repo")
         return
 

@@ -244,14 +244,13 @@ experiment, not a setup requirement.
 - **The container sees a fully modified tree / phantom diffs.** Git for
   Windows' `core.autocrlf=true` default checks files out with CRLF, which the
   Linux container reads as every file modified. `booley init` handles it: it
-  inspects both the Project checkout and the resolved project-data directory
-  when they are separate Git repositories. In each repository it sets
-  `core.autocrlf=false` locally. With Stealth enabled, the Project checkout's
+  inspects both the RTL repository and the Booley Directory's repository
+  when they are separate. In each repository it sets
+  `core.autocrlf=false` locally. With Stealth enabled, the Project Root's
   `* text=auto eol=lf` default goes in Git's common `info/attributes`, local to
   the repository and shared by linked worktrees; it does not travel through
   commits. Existing upstream attributes policy suppresses that default to
-  preserve its rules. With Stealth disabled, and in independent project-data
-  repositories, init adds the default as the first line of root `.gitattributes`
+  preserve its rules. With Stealth disabled, and in a Versioned Booley Directory, init adds the default as the first line of root `.gitattributes`
   unless the root already owns a whole-tree policy. `text=auto` preserves Git's
   binary-file detection, and later rules in that file can override the default.
   **Commit only published root `.gitattributes` files** to share their policy.
@@ -270,7 +269,7 @@ experiment, not a setup requirement.
   and unaffected tracked files alone. Init refuses dirty trees, Git-protected
   affected paths, and hard-linked candidates. The one exception is Booley's own
   Windows guidance fallback: when the root `AGENTS.md`/`CLAUDE.md` are untracked
-  hardlinks to the resolved Project directory's `AGENTS.md`, init releases them,
+  hardlinks to the resolved Booley Directory's `AGENTS.md`, init releases them,
   normalizes the canonical file, and recreates the links. Failed tracking
   inspections preserve the links; a partial release is reconciled even if
   another link is locked. Any other hardlink to a candidate
@@ -327,7 +326,7 @@ experiment, not a setup requirement.
   passed.** An image recipe can grow beyond the conservative estimate. Booley
   retains Docker's error and warns that pruning may discard reusable layers.
   Recheck the complete sequence after cleanup. A completed preflight is not
-  permission to delete cache, images, volumes, or Project data.
+  permission to delete cache, images, volumes, or the contents of the Booley Directory.
 
 ## Lint or ASIC synth fails with an interface parameter mismatch
 
@@ -422,7 +421,7 @@ Dashboard warns about shared-worktree activity but does not isolate it.
 Use Git inside the Sandbox to inspect its worktrees. A container path can be
 unreachable from the host and appear `prunable` there. Do not prune an active
 worktree based on that label. Inspect the Goal Record and preserve branch and
-Project commits before removing a workspace. For paired Project checkout
+Project commits before removing a workspace. For Paired Checkout
 removal, follow the absolute Git commands printed by `booley worktree new`.
 
 ## `git` cannot see files under `.booley_project/`
@@ -451,7 +450,7 @@ one aside before you edit it.
 ## Doctor reports files under `tickets/` or guidance files
 
 `Project checks` reports `tickets.leftover-board` for nonempty
-`tickets/{board,state,logs,locks,waiver-candidates}` under the Project directory.
+`tickets/{board,state,logs,locks,waiver-candidates}` under the Booley Directory.
 Inspect and preserve any work you need, then delete the reported directory.
 Empty directories are listed in the same warning when applicable and are silent
 on their own; `tickets/history/` is not reported.
@@ -573,7 +572,7 @@ closed. Use `booley eda installation list`, `booley eda license list`, and
 `booley projects` to inspect administrator-owned records and see each Project's
 Grants together.
 
-If a granted Project directory was deleted, do not recreate it just to revoke
+If a granted Project Root was deleted, do not recreate it just to revoke
 authority. Run `booley projects`, copy the missing root's exact absolute path,
 then run:
 
@@ -688,7 +687,7 @@ only after terminal proof.
 An authenticated abandoned Simulation Campaign can be discarded with exact
 `--full` pruning after its producer exits. Full pruning performs bounded orphan-child
 cancellation/recovery and marker-checked cleanup of owned templated run directories.
-Project data is needed only when one of those authenticated external resources
+The Booley Directory is needed only when one of those authenticated external resources
 survives. An empty reservation abandoned before its first `progress.json` can also
 be discarded with `--full` when its external invocation lock remains intact.
 Use the printed `booley flow sim --resume-from <manifest>` command instead when the
@@ -698,12 +697,12 @@ Malformed, contradictory, linked, foreign, or unrecognized evidence remains
 protected. For coverage collected inside a Simulation
 Campaign, the public Target-level `coverage.json` is an authenticated reference
 to the selected attempt's nested Coverage Campaign; keep the reference and
-enclosing Simulation Campaign together. If full pruning reports that Project
-data is required, the supplied report root is outside the inferable
-`<project-data>/.runtime/flow-reports` and `<project-data>/flow-reports` layouts;
+enclosing Simulation Campaign together. If full pruning reports that the Booley
+Directory is required, the supplied report root is outside the inferable
+`<booley-directory>/.runtime/flow-reports` and `<booley-directory>/flow-reports` layouts;
 retry the same exact `--full`
-selection with `--project-data <resolved-project-data>`. Do not add that option
-to compensate for an incorrect project-data path or for native-only pruning.
+selection with `--project-data <resolved-booley-directory>`. Do not add that option
+to compensate for an incorrect Booley Directory path or for native-only pruning.
 
 `<reports>/sim.json` is a mutable last-writer compatibility copy of the newest
 invocation report, not a stable Campaign pointer. A later failed run can

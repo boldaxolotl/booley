@@ -64,7 +64,7 @@ class GoalCheckout:
 
         Returns the repository's top level and the POSIX prefix of ``root``
         below it (empty at the top level), or ``None`` outside any repository.
-        A nested repository (a paired Project checkout) wins over the one
+        A nested repository (a Paired Checkout) wins over the one
         around it, as it does for Git itself.
         """
         result = self._git("rev-parse", "--show-toplevel", "--show-prefix", check=False)

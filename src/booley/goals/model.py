@@ -724,10 +724,10 @@ class GoalRecord:
     declarations and per-file working/HEAD properties for diagnostics.
     ``session_key`` is the entering session, an audit field only (D3).
     ``failure`` explains a ``failed`` record, for example a branch left behind.
-    ``paired_project_base_sha`` is the commit a paired Project repository
+    ``paired_project_base_sha`` is the commit a Paired Checkout
     (Stealth's separate ``.booley_project`` repository, checked out inside the
     worktree) was on at entry; baseline checkouts use it instead of guessing
-    a fork point. ``None`` when the worktree has no paired Project repository.
+    a fork point. ``None`` when the worktree has no Paired Checkout.
     """
 
     id: str

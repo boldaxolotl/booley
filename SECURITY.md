@@ -19,7 +19,7 @@ possible:
 - the expected and observed impact; and
 - any suggested mitigation or patch.
 
-Do not include live credentials, private project data, proprietary RTL, or
+Do not include live credentials, private contents of the Booley Directory, proprietary RTL, or
 other secrets. Replace them with minimal synthetic examples.
 
 We aim to acknowledge reports within three business days and provide an

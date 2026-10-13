@@ -33,9 +33,9 @@ def _sim_config(work_dir: Path | str | None) -> Mapping[str, Any]:
 
 
 def resolve_run_cwd(work_dir: Path | str | None = None) -> str:
-    """Return the configured simulation cwd relative to the Project root.
+    """Return the configured simulation cwd relative to the Project Root.
 
-    ``.`` is explicit when unset so every run-half uses the Project root rather
+    ``.`` is explicit when unset so every run-half uses the Project Root rather
     than falling back to its simulator build directory.
     """
     value = _sim_config(work_dir).get("run_cwd")

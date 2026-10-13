@@ -93,11 +93,11 @@ _IMPLICIT_TARGET = "default"
 # unearthed under these are resolution artifacts, not authored design-description.
 _BUILD_DIR_NAMES = frozenset({"build", "_build", ".runtime"})
 
-# Booley's own state directory. It holds transient checkouts — per-ticket git
+# Booley's own Booley Directory. It holds transient checkouts — per-ticket git
 # worktrees (``.booley_project/worktrees/<name>``) and ephemeral baseline
 # worktrees (``.booley_project/.baseline-wt-*``) — each a full clone carrying a
 # COPY of the project's ``.core`` files with the same VLNV. A stale copy left
-# there shadows the repo-root core in FuseSoC's recursive ``--cores-root`` scan
+# there shadows the core at the Project Root in FuseSoC's recursive ``--cores-root`` scan
 # (silently building the worktree's RTL, not ``/work``'s) and collapses under
 # Booley's own version-dedup (:func:`_enumerate_all`). With one exception
 # (``cores/``, below), nothing authored lives under it (config is ``.toml``,
@@ -106,12 +106,12 @@ _BUILD_DIR_NAMES = frozenset({"build", "_build", ".runtime"})
 # Booley's code control) skips it too.
 _STATE_DIR_NAME = ".booley_project"
 
-# The one sanctioned home for authored cores INSIDE the state directory
+# The one sanctioned home for authored cores INSIDE the Booley Directory
 # (ADR 0036). Stealth projects — where Booley usage must stay invisible to the
 # host repo — cannot commit ``.core`` files to the main tree; they author them
-# under ``.booley_project/cores/`` instead, versioned by the project dir's own
+# under ``.booley_project/cores/`` instead, versioned by the Booley Directory's own
 # git repo. :func:`discover_cores` scans it as a *second root* (never as an
-# exception carved into the state-dir skip), and :func:`setup_command` hands it
+# exception carved into the Booley Directory skip), and :func:`setup_command` hands it
 # to FuseSoC as a second ``--cores-root``. FuseSoC's scanner checks
 # ``FUSESOC_IGNORE`` only on directories it walks *into*, never on ancestors of
 # a scan root, so the ``.booley_project/FUSESOC_IGNORE`` marker does not veto
@@ -233,7 +233,7 @@ def state_cores_dir(project_root: Path | str) -> Path:
 
     Purely structural — no env-var or config resolution — so
     :func:`discover_cores` stays a deterministic function of the tree it is
-    handed. A relocated project dir (``BOOLEY_PROJECT_DIR``) is out of scope
+    handed. A relocated Booley Directory (``BOOLEY_PROJECT_DIR``) is out of scope
     for stealth cores; ``booley doctor`` reports the mismatch.
     """
     return Path(project_root) / _STATE_DIR_NAME / STATE_CORES_SUBDIR
@@ -244,7 +244,7 @@ def discover_cores(project_root: Path | str) -> list[Path]:
 
     Two roots are scanned: *project_root* itself, and — when it exists — the
     stealth authored-cores dir ``.booley_project/cores/`` (ADR 0036), the one
-    subtree of the state dir that holds sources rather than transient state.
+    subtree of the Booley Directory that holds sources rather than transient state.
 
     Git metadata and generated build/cache trees (``build/``, ``.runtime/``)
     are skipped — a ``.core`` copied there by a prior resolution is an
@@ -261,7 +261,7 @@ def discover_cores(project_root: Path | str) -> list[Path]:
     cores = [] if native_cores_ignored(root) else _scan_core_root(root)
     stealth_root = state_cores_dir(root)
     if stealth_root.is_dir():
-        # Second root, not an exception to the state-dir skip: the skip above
+        # Second root, not an exception to the Booley Directory skip: the skip above
         # stays fail-closed for everything else under .booley_project/, and the
         # scan below judges exclusions relative to the stealth root (so a
         # FUSESOC_IGNORE *at or under* it is honored, matching FuseSoC).
@@ -1030,8 +1030,8 @@ def _selectable_core_closure_for_refs(
 def core_relative_to_project(core_file: Path | str, project_root: Path | str, path: str) -> str:
     """A fileset path (core-dir-relative per CAPI2) re-based project-root-relative.
 
-    For a repo-root ``.core`` this is the identity — which is why consumers that
-    joined fileset paths straight onto the project root used to get away with
+    For a ``.core`` at the Project Root this is the identity — which is why consumers that
+    joined fileset paths straight onto the Project Root used to get away with
     it — but a nested or state-zone core (ADR 0036 stealth cores) declares its
     files relative to the ``.core``'s own directory. Purely lexical (normpath,
     never ``resolve()``): a stealth core's reach-through symlinks must keep
@@ -1652,7 +1652,7 @@ def _core_relative_path(core_file: Path, root: Path, declared: str) -> str:
     """Normalize a ``.core``-declared fileset path to project-root-relative POSIX.
 
     CAPI2 fileset paths are relative to the ``.core`` file's own directory, not
-    the project root. For a flat repo (ADR 0026) the ``.core`` sits at the root
+    the Project Root. For a flat repo (ADR 0026) the ``.core`` sits at the root
     so the two coincide; for a ``.core`` in a subdir they don't. This joins the
     declared path onto the core's directory, then re-expresses it relative to
     *root* (collapsing any ``..``). An absolute or escaping path that lands

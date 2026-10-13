@@ -299,7 +299,7 @@ class TestShippedFlavorFiles:
 
     def test_flavor_dockerfiles_are_copy_free(self):
         """init builds a flavor with data/docker/ as the context so a
-        pip-installed Booley (no repo root) can build it — a COPY would break
+        pip-installed Booley (no Booley repository root) can build it — a COPY would break
         that silently, at build time, on someone else's machine. Copying from
         a stage defined in the same file reads no build context (ADR 0070)."""
         docker_dir = idi.docker_data_dir()

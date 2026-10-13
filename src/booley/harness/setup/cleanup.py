@@ -196,12 +196,12 @@ class CleanupResult:
 
 
 def _project_root(root: Path | None) -> Path:
-    """Resolve and validate the checkout containing the Project directory."""
+    """Resolve and validate the checkout containing the Booley Directory."""
     resolved = (root or Path.cwd()).resolve()
     try:
         project_dir = resolve_checkout_project_dir(resolved)
     except (OSError, ValueError) as exc:
-        raise CleanupError(f"cannot resolve the Project directory: {exc}") from exc
+        raise CleanupError(f"cannot resolve the Booley Directory: {exc}") from exc
     if (
         project_dir != resolved / SETUP_ROOT
         or project_dir.is_symlink()
@@ -226,7 +226,7 @@ def _safe_relative(root: Path, raw: str | Path) -> str:
     resolved = absolute.resolve(strict=False)
     project_dir = root / SETUP_ROOT
     if project_dir.is_symlink():
-        raise CleanupError(f"the Project directory must not be a symlink: {project_dir}")
+        raise CleanupError(f"the Booley Directory must not be a symlink: {project_dir}")
     project_dir = project_dir.resolve()
     canonical = contains(resolved, project_dir=project_dir)
     if canonical is None:

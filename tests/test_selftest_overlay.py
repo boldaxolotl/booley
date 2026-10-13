@@ -158,7 +158,7 @@ def test_doctor_shadow_rejects_symlinked_generation(tmp_path: Path) -> None:
 )
 def test_stage_bad_run_overlay_excludes_project_dir_from_mirror(tmp_path: Path) -> None:
     """The shadow must not symlink .booley_project — it is project infra, not a
-    runtime input, and FuseSoC chokes on a symlinked project dir (#586)."""
+    runtime input, and FuseSoC chokes on a symlinked Booley Directory (#586)."""
     project_dir = tmp_path / ".booley_project"
     overlay_file = selftest_overlay.bad_overlay_dir(project_dir, "sim") / "fixture.hex"
     overlay_file.parent.mkdir(parents=True)

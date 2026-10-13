@@ -80,7 +80,7 @@ Every Flow command executes inside the Sandbox. Most EDA binaries ship
 in the Sandbox Image. A supported commercial tool may instead come from an
 administrator-registered host installation mounted read-only under a built-in
 policy. Project configuration requests host provisioning, while the exact host
-Grant selects the Installation Registration; Project data cannot select a host
+Grant selects the Installation Registration; Booley configuration cannot select a host
 path, command, execution location, or license server.
 The support matrix lives in
 [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md#built-in-flows). The per-Flow sections
@@ -186,8 +186,8 @@ exposed in the Review Package rather than guarded by a Ticket Scope allowlist.
 Protected Inputs include Project configuration and checkout-root `booley.toml`,
 every configuration candidate's legacy `pipeline.toml` sibling, worktree-root
 `FUSESOC_IGNORE`, and `hooks`, `.managed`, `generators`, and `mcp_tools` at their
-consumer roots. The snapshot covers session-Project, worktree, main-checkout,
-and configured Project-directory candidates according to the readers described
+consumer roots. The Protected Input digests cover the Main Booley Directory, Worktree Booley
+Directory, Project Root files, and configured Booley Directory candidates according to the readers described
 in `goals/protected_inputs.py`; it includes fallback copies as well as the
 currently selected configuration. Goal entry captures working and committed
 input identities; drift warns and blocks Finish until reverted.
@@ -328,7 +328,7 @@ Each test resolves to exactly one of five verdicts:
 
 `SimulateFlow` delegates execution through one `SimulationExecution.run` /
 `preview` boundary. The boundary resolves each `TargetHandle` from its own
-Project root, prepares the shared build, fires Pre-Sim Commands, invokes one
+Project Root, prepares the shared build, fires Pre-Sim Commands, invokes one
 leaf adapter, and returns immutable build, test, workload, log, trace, and
 infrastructure evidence. The Flow retains campaign concerns: Target/test
 selection, Cycle Count baselines, Criteria, report rendering, and public exit
@@ -1026,7 +1026,7 @@ Target-local collector failures permit later Targets; shared execution or
 publication failures abort with earlier Target results and pending Targets
 preserved in structured output. Progress is observational and never resumed.
 
-Project-wide waiver configuration is `[coverage.waivers]` in the project-data
+Project-wide waiver configuration is `[coverage.waivers]` in the Booley Directory
 `booley.toml`, with explicit `anchor` (`rtl_repository` or
 `project_data_repository`) and safe relative `directory`. Target window/hook
 configuration remains under `flow_options.booley.coverage`.
@@ -1134,7 +1134,7 @@ observational supersession; it never prevents manifest-authoritative recovery.
 #### Exact report retention
 
 The maintenance seams in `booley.flows.sim.campaign_retention` accept the report
-root explicitly; callers obtain project-data roots through
+root explicitly; callers obtain Booley Directory roots through
 `booley.runtime.project_dir.resolve_project_dir()`. They never discover a
 “latest” Campaign or apply age/size rules:
 
@@ -1183,11 +1183,11 @@ removes the invocation. When authenticated surviving external resources exist,
 it first performs bounded recovery/cancellation of exact Campaign-mirrored orphan
 process trees, proves them terminal, reconciles their heavy-slot tokens, publishes
 retirement mirrors, and marker-authenticates cleanup of owned templated run
-directories. It does not require or inspect Project data when no such resource
+directories. It does not require or inspect the Booley Directory when no such resource
 survives. Literal run directories are untouched.
-The project-data root is inferred only when the report
-root is exactly `<project-data>/.runtime/flow-reports`. A nonstandard report
-root therefore requires `--project-data <resolved-project-data>` for `--full`
+The Booley Directory root is inferred only when the report
+root is exactly `<booley-directory>/.runtime/flow-reports`. A nonstandard report
+root therefore requires `--project-data <resolved-booley-directory>` for `--full`
 when Campaign child records exist. Native-only pruning does not inspect or
 release those records and does not require the option.
 

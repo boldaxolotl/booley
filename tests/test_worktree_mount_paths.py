@@ -35,7 +35,7 @@ def test_unsupported_git_and_linked_root_use_explicit_creation_fallback(tmp_path
     state = root / ".booley_project"
     state.mkdir(parents=True)
     monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(state))
-    # Another test in this worker may have cached a different Project directory.
+    # Another test in this worker may have cached a different Booley Directory.
     reset_cache()
     monkeypatch.setattr(worktree_paths, "_git_supports_relative_paths", lambda: False)
     assert worktree_paths.worktree_creation_config(root) == (

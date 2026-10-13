@@ -5,9 +5,9 @@ Usage:
   python validate_commit_msg.py "commit message"
   python validate_commit_msg.py --no-diff "commit message"
 
-Checks run only in a configured project repository.  The framework source
+Checks run only in a configured RTL repository.  The framework source
 repository has no project configuration, so this command is intentionally a
-no-op there.  In a project repository, the default also scans the staged diff
+no-op there.  In a RTL repository, the default also scans the staged diff
 (git diff --cached) for banned words.
 Use --no-diff to skip the diff check (e.g. for retroactive message validation).
 Exit code 0 = valid, 1 = invalid (errors printed to stderr).

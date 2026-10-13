@@ -1,4 +1,4 @@
-"""Pair a user worktree with committed inputs from its standalone Project."""
+"""Pair a user worktree with committed inputs from its Versioned Booley Directory."""
 
 from __future__ import annotations
 
@@ -34,20 +34,20 @@ class ProjectPairingError(RuntimeError):
 
 
 def project_pairing_source(project_root: Path) -> Path | None:
-    """Select a standalone Project; refuse creation from a paired checkout."""
+    """Select a Versioned Booley Directory; refuse creation from a Paired Checkout."""
     source = project_root / PROJECT_DIR_NAME
     if (source / ".git").is_file():
         raise ProjectPairingError(
-            "cannot create a worktree from a paired Project checkout; "
+            "cannot create a worktree from a Paired Checkout; "
             "run booley worktree new from the primary workspace"
         )
     if (source / ".git").is_dir():
         # Git skips an unusable .git directory and keeps searching upward, so a
-        # broken Project repository would otherwise resolve to the outer one.
+        # broken Booley Directory's repository would otherwise resolve to the outer one.
         resolved = Path(_require_git(source, "rev-parse", "--absolute-git-dir").strip())
         if resolved.resolve() != (source / ".git").resolve():
             raise ProjectPairingError(
-                f"cannot read the Project repository at {source}: Git resolved {resolved}"
+                f"cannot read the Booley Directory's repository at {source}: Git resolved {resolved}"
             )
     return source if is_standalone_git_repository(source) else None
 
@@ -63,7 +63,7 @@ def _require_git(repository: Path, *args: str) -> str:
 def _require_base(source: Path, branch: str) -> str:
     head = run_git(source, "rev-parse", "--verify", "HEAD^{commit}")
     if head.returncode:
-        raise ProjectPairingError("commit the Project repository first")
+        raise ProjectPairingError("commit the Booley Directory's repository first")
     status = _require_git(
         source, "status", "--porcelain", "-z", "--untracked-files=all", "--ignore-submodules"
     )
@@ -87,7 +87,7 @@ def _refuse_registered(source: Path, nested: Path) -> None:
     for line in listing.splitlines():
         if line.startswith("worktree ") and Path(line[len("worktree ") :]).resolve() == target:
             raise ProjectPairingError(
-                f"the Project repository already registers a checkout at {nested}; "
+                f"the Booley Directory's repository already registers a checkout at {nested}; "
                 f"remove it with `git -C {source} worktree remove --force {nested}` first"
             )
 
@@ -122,7 +122,9 @@ def _refuse_dirty_project(source: Path, changes: tuple[ProjectRepositoryChange, 
         remedies.append(
             f"inputs: {_listed_paths(inputs)}; commit them in `{PROJECT_DIR_NAME}` first"
         )
-    raise ProjectPairingError("Project repository has uncommitted changes; " + "; ".join(remedies))
+    raise ProjectPairingError(
+        "Booley Directory's repository has uncommitted changes; " + "; ".join(remedies)
+    )
 
 
 @contextmanager
@@ -143,9 +145,11 @@ def _project_lock(source: Path) -> Iterator[None]:
 def _remove_copy(worktree: Path) -> Path:
     nested = worktree / PROJECT_DIR_NAME
     if nested.is_symlink() or not nested.resolve().is_relative_to(worktree.resolve()):
-        raise ProjectPairingError(f"Project copy escapes its containing worktree: {nested}")
+        raise ProjectPairingError(
+            f"Worktree Booley Directory escapes its containing worktree: {nested}"
+        )
     if (nested / ".git").exists():
-        raise ProjectPairingError(f"refusing to replace a versioned Project checkout: {nested}")
+        raise ProjectPairingError(f"refusing to replace a Versioned Booley Directory: {nested}")
     if nested.exists():
         safe_rmtree(nested)
     return nested
@@ -269,7 +273,7 @@ def worktree_removal_instructions(project_root: Path, worktree: Path, name: str)
         return shlex.quote(str(path))
 
     return (
-        f"Remove the paired Project first: git -C {quote(source)} worktree remove {quote(outer / PROJECT_DIR_NAME)}\n"
+        f"Remove the Paired Checkout first: git -C {quote(source)} worktree remove {quote(outer / PROJECT_DIR_NAME)}\n"
         f"Then remove the outer worktree: git -C {quote(root)} worktree remove {quote(outer)}\n"
         f"To reuse the name, delete the Project branch after preserving its commits: "
         f"git -C {quote(source)} branch -D {shlex.quote(f'booley-worktree/{name}')}"

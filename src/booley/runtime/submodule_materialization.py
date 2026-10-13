@@ -98,11 +98,11 @@ def materialize_project_submodules(
             else checkout_project_dir_relative_to(source_root)
         )
     except (FileNotFoundError, ValueError) as exc:
-        raise SubmoduleMaterializationError(f"paired project path is unavailable: {exc}") from exc
+        raise SubmoduleMaterializationError(f"Paired Checkout path is unavailable: {exc}") from exc
     project_destination = destination_root / project_relative
     if not (project_destination / ".git").exists():
         raise SubmoduleMaterializationError(
-            f"paired project checkout is unavailable: {project_destination}"
+            f"Paired Checkout is unavailable: {project_destination}"
         )
     materialize_submodules(
         source_root,
@@ -117,7 +117,7 @@ def materialize_project_submodules(
 
 
 def _standalone_project_exclusion(source_root: Path, project: Path) -> frozenset[str]:
-    """Exclude only a safe, nonempty checkout-local standalone Project path."""
+    """Exclude only a safe, nonempty checkout-local Versioned Booley Directory path."""
     try:
         relative = project.relative_to(source_root)
     except ValueError:

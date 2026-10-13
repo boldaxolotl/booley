@@ -41,16 +41,16 @@ Try:
   `booley init` and follow the demo steps it prints (Sandbox, then
   `bash .booley_project/hooks/post-setup.sh`). The demo ships preconfigured for sim, lint, and
   synth. Configure it with the edits below, not with the `booley-setup` skill.
-- Project-data edits: set `[specialists.coverage_analyst] enabled = false` in `booley.toml` (the Icarus
+- Booley Directory edits: set `[specialists.coverage_analyst] enabled = false` in `booley.toml` (the Icarus
   Targets can't produce Verilator Coverage Campaigns). If Vivado is present, also set
   `[flows.fpga] enabled = true`, add `[eda.vivado]` with `provisioning = "host"`, and add
   `booley: {doctor: [fpga]}` to `fpga_core` in `cores/picorv32_impl.core`.
 - Enable Stealth with `ignore_native_cores = true`. Only the hidden authored cores are projected,
   with no copied RTL and no symlinks. Dot-prefixed paths don't count as native.
-- Create run-owned destination branches (outer and standalone Project-data).
+- Create run-owned destination branches (outer and standalone Booley Directory).
   Area 1 makes the Project its own Git repo: require the paired checkout printed
   by `booley worktree new` before using two-branch integration. Commit the setup changes
-  (Flows, EDA, FPGA Doctor Target) to the Project-data one. Both repos must be clean before area 4.
+  (Flows, EDA, FPGA Doctor Target) to the Booley Directory one. Both repos must be clean before area 4.
 - Build `firmware/firmware.hex` before the first Doctor run, since Doctor resolves the sim Target
   against it. `booley doctor` and `booley doctor --deep` should show no warnings. Repeat
   `booley init`: no drift; the auth policy matches the provider.
@@ -93,7 +93,7 @@ tools.
 
 ### 4. goal-enter — Goalsets, ad-hoc entry and refusals (~20 min)
 Intent: entry creates a bound Goal Branch with concrete mandatory Goals and clear refusals.
-Depends on: area 1's clean outer and Project-data destination branches.
+Depends on: area 1's clean outer and Booley Directory destination branches.
 Try:
 - Install `goals/continuity.md` and `goals/evolution.md` in Project `goalsets/`
   and commit. Create a linked workspace from the primary checkout with
@@ -103,8 +103,7 @@ Try:
   identity, then explicitly abandon this entry probe.
 - Use `goals/entry-probe.json` for a separate disposable ad-hoc entry; abandon
   it on the operator's explicit instruction before removing its workspace.
-- Probe refusal for the main checkout, dirty outer tree and dirty paired
-  Project checkout, each in isolation.
+- Probe refusal for the main checkout, dirty outer tree and dirty Paired Checkout, each in isolation.
 - Separately probe an active/finishing occupant and existing same-day Goal Branch.
 - Probe a missing relative baseline Target and missing spec separately.
   A missing candidate Target only warns and remains unmet. Preserve each
@@ -129,16 +128,16 @@ Try:
   `goal_status(work_dir=...)`. A shell-only diagnostic cannot meet a Goal.
   Save initial evidence, make a harmless relevant edit within the Goal, check
   freshness, rerun and require fresh evidence. Restore and commit intended work.
-- In a separate disposable Project copy, change a Protected Input, observe warnings/discarded
+- In a separate disposable checkout of the Project, change a Protected Input, observe warnings/discarded
   evidence and blocked Finish, restore exact bytes and rerun the affected producer.
 - Finish the continuity Goal, inspect the package as in area 7 and integrate
-  the outer branch plus the Project-data branch when printed.
+  the outer branch plus the Booley Directory branch when printed.
 - After that integration, follow `fixtures/dhrystone-guard.md` in a separate
   disposable Project/Goal: corrupt one expected operand, require trap/no magic/
   no cycles, restore and rerun to pass. Explicitly abandon the probe and retain
   the real continuity Goal's Review Package before cutting the Zbb worktree.
 Look for: a pass before validation, the cap bound to the wrong test, stale
-Goal evidence or a missing `sim_dhry_checked` in a printed Project-data merge.
+Goal evidence or a missing `sim_dhry_checked` in a printed Booley Directory merge.
 
 ### 6. goal-change — Zbb feature and human decisions (~150 min child time)
 Intent: a second Goal starts from integrated Dhrystone work and tests add, relax and retarget.
@@ -191,7 +190,7 @@ Try:
   non-Stealth disposable control with a trackable history path, complete its
   Goal and require Finish to commit the summary before integration.
 - Finish preserves branch/worktree. The operator reviews and merges the outer Goal Branch
-  and any printed paired Project-data branch; remove the paired checkout first
+  and any printed Paired Checkout branch; remove the paired checkout first
   when present, following the printed cleanup steps.
   Regress sim/lint/synth on the integrated destination and save both final HEADs.
 Look for: Finish merging or cleaning without instruction, missing commits from a printed pair,
@@ -278,7 +277,7 @@ results passed off as fresh.
 ### 12. sim-campaign — Simulation Campaign (~30 min, optional follow-up)
 Intent: a campaign keeps request order, resumes exactly, and grants Goals only for the full
 suite.
-Try: follow `fixtures/simulation-campaign/RUNBOOK.md` in a run-owned Project copy.
+Try: follow `fixtures/simulation-campaign/RUNBOOK.md` in a run-owned checkout of the Project.
 - `--test tail --test quick` keeps that order, and `--tests-file reverse-tests.txt` normalizes to
   it. A duplicate `--test quick` exits 2 before any manifest or process exists.
 - The manifest bytes stay stable. Kill the run during `slow` and `--resume-from` it: `quick` stays
@@ -332,7 +331,7 @@ installations, images, and Sessions untouched. Record the final pin state. Nothi
 - Integrate every printed branch before cutting the next worktree. When a paired
   checkout was printed, a clean outer tree alone does not prove its branch is current.
 - Entry reads `default.md` only from the primary checkout's Project `goalsets/`. With a copy
-  committed only in a worktree's paired Project checkout, entry does not ask for an include-or-skip
+  committed only in a worktree's Paired Checkout, entry does not ask for an include-or-skip
   decision.
 - A regrant alone leaves the Session spec stale. Reissue it before any Doctor, FPGA, or mount check.
 - Exit 125 from `booley session enter --` means your argv is missing the executable. It's not a lint

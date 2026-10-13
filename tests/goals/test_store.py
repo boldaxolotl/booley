@@ -61,7 +61,7 @@ def _git(cwd: Path, *args: str) -> str:
 
 @pytest.fixture
 def repo(tmp_path: Path) -> dict[str, Path]:
-    """A repository with one linked worktree and a Project dir."""
+    """A repository with one linked worktree and a Booley Directory."""
     main = tmp_path / "main"
     main.mkdir()
     _git(main, "init", "-q", "-b", "main")

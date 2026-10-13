@@ -27,7 +27,7 @@ from booley.core.checkout_role import require_project_checkout
 
 logger = logging.getLogger(__name__)
 
-# The project data directory's name inside the RTL repo. On the host the project
+# The Booley Directory's name inside the RTL repo. On the host the project
 # dir IS <repo>/.booley_project; inside the Sandbox it is bind-mounted at
 # /booley-project, but the same files stay reachable through the workspace mount
 # at <repo>/.booley_project. Code that must name a path valid on both sides of
@@ -38,7 +38,7 @@ _cache: Path | None = None
 
 
 def project_dir_for_init(project_root: Path) -> Path:
-    """Return the checkout-local Project directory owned by full initialization.
+    """Return the checkout-local Booley Directory owned by full initialization.
 
     Unlike runtime and seed resolution, full initialization must not inherit an
     ancestor Project, an environment override, or a cached result. The directory
@@ -96,7 +96,7 @@ def _resolve_from_toml(current: Path) -> Path | None:
 
 
 def resolve_project_dir(start: Path | None = None) -> Path:
-    """Resolve the project data directory via 4-step discovery.
+    """Resolve the Booley Directory via 4-step discovery.
 
     Args:
         start: Directory to start walking up from. Defaults to cwd.
@@ -145,7 +145,7 @@ def resolve_project_dir(start: Path | None = None) -> Path:
 
 
 def _resolve_explicit_project_dir(root: Path) -> Path | None:
-    """Resolve a configured or co-located Project directory for one root."""
+    """Resolve a configured or co-located Booley Directory for one root."""
     toml_result = _resolve_from_toml(root)
     if toml_result is not None:
         return toml_result
@@ -194,7 +194,7 @@ def resolve_checkout_project_dir(project_root: Path) -> Path:
 
 
 def resolve_authoritative_project_dir(project_root: Path) -> Path:
-    """Resolve the Project directory owned by an authority-bearing root.
+    """Resolve the Booley Directory owned by an authority-bearing root.
 
     This resolver never consults ambient Project selection or the process cache.
     Use it only when the caller's explicit root is itself the authority boundary.
@@ -207,15 +207,15 @@ def resolve_authoritative_project_dir(project_root: Path) -> Path:
 
 
 def checkout_project_dir_relative_to(project_root: Path) -> Path:
-    """Return the selected checkout's project directory as a safe relative path."""
+    """Return the selected checkout's Booley Directory as a safe relative path."""
     root = project_root.resolve()
     project_dir = resolve_checkout_project_dir(root).resolve()
     try:
         relative = project_dir.relative_to(root)
     except ValueError as exc:
-        raise ValueError(f"project directory {project_dir} is outside checkout {root}") from exc
+        raise ValueError(f"Booley Directory {project_dir} is outside checkout {root}") from exc
     if relative == Path():
-        raise ValueError("project directory cannot be the checkout root")
+        raise ValueError("Booley Directory cannot be the checkout root")
     return relative
 
 

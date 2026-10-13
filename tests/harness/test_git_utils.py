@@ -33,7 +33,7 @@ from booley.runtime.git import (
 
 
 def _init_repo(path: Path) -> Path:
-    """Create a bare-minimum git repo with one commit. Returns repo root."""
+    """Create a bare-minimum git repo with one commit. Returns Project Root."""
     subprocess.run(["git", "init", str(path)], capture_output=True, check=True)
     subprocess.run(
         ["git", "-C", str(path), "config", "user.email", "test@test.com"],

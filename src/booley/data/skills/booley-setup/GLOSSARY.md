@@ -65,7 +65,7 @@ you choose to keep Booley out of your git history.
 
 ## Hidden-core projection
 Booley keeps an authored build description under `.booley_project/cores/` and
-makes an ignored copy at the RTL repo root for FuseSoC to discover. The hidden
+makes an ignored copy at the Project Root for FuseSoC to discover. The hidden
 copy remains authoritative, so you do not edit the projected copy.
 
 ## Commit-message scrub
@@ -97,11 +97,12 @@ Vendored-core quarantine marks third-party `.core` files with the `vendored`
 tag so Developer Agents and Specialists treat them as read-only upstream input. Integrations
 belong in your own cores rather than edits to that upstream code.
 
-## `.booley_project/`
-Aliases: Project directory
-`.booley_project/` is the directory holding Booley's configuration, logs, and
-other project state alongside your RTL. Hidden setup keeps it out of the RTL
-repo's tracked files; open setup commits its durable configuration.
+## Booley Directory
+Aliases: `.booley_project/`
+The Booley Directory holds Booley's configuration, Goalsets, Goal Records,
+evidence, logs, and worktrees for your Project. It sits at the Project Root
+by default and is named `.booley_project/`; Stealth keeps it out of the RTL repository's
+tracked files, while open setup commits its durable configuration.
 
 ## `.core`
 Aliases: FuseSoC core

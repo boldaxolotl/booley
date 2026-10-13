@@ -32,7 +32,7 @@ class RunDirectory:
 
 
 def _absolute(rendered: str, project_root: Path) -> Path:
-    """Resolve one rendered run_cwd against the Project root without following links."""
+    """Resolve one rendered run_cwd against the Project Root without following links."""
     path = Path(rendered)
     return (path if path.is_absolute() else project_root / path).absolute()
 
@@ -168,7 +168,7 @@ def restore_run_directory(document: Mapping[str, object], *, project_root: Path)
 def restore_run_directory_from_project_data(
     document: Mapping[str, object], *, project_data: Path
 ) -> RunDirectory:
-    """Reconstruct a persisted run directory from resolved Project data."""
+    """Reconstruct a persisted run directory from resolved Booley Directory."""
     return _restore_run_directory(document, project_data / ".runtime")
 
 

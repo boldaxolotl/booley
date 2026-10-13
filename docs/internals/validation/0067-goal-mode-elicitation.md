@@ -16,7 +16,7 @@ Decides how `goal_propose_change` asks the human for approval, per client.
 - Clients: Claude Code 2.1.285 and Codex 0.160.0, each started inside the
   Sandbox (`booley session enter -- claude|codex`), driven by a human at the
   keyboard. The server appended every call to a JSON-lines log in the
-  Project directory; the human reported what the screen showed.
+  Booley Directory; the human reported what the screen showed.
 
 ## Results
 
