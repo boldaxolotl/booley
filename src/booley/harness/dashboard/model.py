@@ -22,13 +22,12 @@ from booley.goals.state_store import load_goal_state
 from booley.goals.status import GoalStatusView, build_status
 from booley.goals.store import GoalStore
 from booley.harness import upgrade_review
+from booley.harness.dashboard.jobs import JobReader, JobSnapshot, target_arg
 from booley.harness.dashboard.resources import ProcessSampler, Resources, ResourceSampler
 from booley.mcp.session_registry import SessionRegistry, SessionRow, namespace
 from booley.review.goal_package import GoalCompletionPackage
 from booley.runtime import health, health_presentation, job_slots
 from booley.runtime.artifact_paths import available_paths
-from booley.runtime.job_artifacts import JobArtifactCache
-from booley.runtime.job_snapshot import JobSnapshot, snapshot_jobs, target_arg
 from booley.runtime.pid import ProcessIdentity
 from booley.runtime.session_activity import Activity, ActivityStore, observed_activity
 
@@ -231,7 +230,7 @@ class DashboardReader:
         self.project_dir = project_dir
         self.resources = ResourceSampler()
         self.processes = ProcessSampler()
-        self.artifacts = JobArtifactCache()
+        self.jobs = JobReader(project_dir, slots_root=job_slots.slots_dir(project_dir))
 
     def read(self) -> DashboardSnapshot:
         """Read one snapshot without retaining locks or touching persistent state."""
@@ -251,11 +250,7 @@ class DashboardReader:
             GoalView(str(item), diagnostic="corrupt Goal Record") for item in scan.corrupt
         )
         resources = self.resources.sample(self.root, now=time.monotonic())
-        jobs = snapshot_jobs(
-            self.project_dir,
-            slots_root=job_slots.slots_dir(self.project_dir),
-            artifact_cache=self.artifacts,
-        )
+        jobs = self.jobs.read(scan.records)
         measured = []
         for job in jobs.jobs:
             identity = ProcessIdentity.from_payload(job.record.process_identity)

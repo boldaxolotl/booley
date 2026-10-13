@@ -78,6 +78,28 @@ results with SDK content, Goal warnings, and the existing health announcements.
   pause/resume without importing Ticket Board policy.
 - `runtime.project_repositories` owns generic repository discovery, coordinate translation, status parsing, and bounded Git inspection. Goal worktrees and composite submodule materialization reuse these mechanics.
 
+## Runtime Job observation
+
+`runtime.job_observation.JobObserver` owns bounded read-only record/process/slot
+projection, exact artifacts and private cache refresh generations from explicit
+ordered roots. `harness.dashboard.jobs.JobReader` selects retained history,
+validates Goal bindings and supplies Target-derived display labels, reusing the
+Dashboard's existing Goal enumeration. Runtime no longer imports Goals (D36);
+observation does not import Targets (D37). D5/D6 retain the adapter directions.
+The released Flow progress readers remain the observation implementation's
+explicit dependency; no progress publication or recovery policy is duplicated.
+The [responsibility map and selection](RUNTIME_RESPONSIBILITIES.md) records the
+deletion test, deferred candidates and concrete test adapters.
+
+At the #1296 extraction, the same analyzer compares base
+`2813cb2d952486995d3e79503dfdc5b1fad517d0` with the implementation tree: 618 ->
+622 modules, 3,120 -> 3,128 located facts, and 2,760 -> 2,766 unique edges.
+The direct `goals <-> runtime` pair is removed (six mutual pairs -> five).
+No mutual pair is added, and the existing 11-package and two-package cyclic
+groups remain unchanged. Named composition-hotspot fan-out is unchanged.
+The informative change is the removal of Runtime's Goal-policy direction and
+the explicit observation package, not a decrease in the total edge count.
+
 ## Config and Runtime boundary
 
 Config modules parse and validate declarative values without constructing live
@@ -271,6 +293,8 @@ as tracked by [#281](https://github.com/boldaxolotl/booley/issues/281).
 | D33 | Prefix `booley.feedback` | Prefix `booley.harness` | Forbid | Feedback consumes resolved environment observations and owns report rendering without command or Ticket Mode composition. |
 | D34 | Prefix `booley.commit_policy` | Prefixes `booley.runtime`, `booley.harness`, `booley.dev_support` | Forbid | Shared commit policy stays independent of execution composition and script adapters. |
 | D35 | Prefix `booley.goals` | Prefixes `booley.harness`, `booley.mcp`, `booley.specialists`, `booley.flows.{sim,synth,fpga,lint}` | Forbid | Goal Mode policy and records are composed by MCP and command entry points; they do not depend on those entry points, Specialists, or concrete Flows |
+| D36 | Prefix `booley.runtime` | Prefix `booley.goals` | Forbid | Runtime consumes explicit execution inputs; Goal history and binding interpretation belong to higher-level composition. |
+| D37 | Prefix `booley.runtime.job_observation` | Prefix `booley.targets` | Forbid | Job observation owns process and artifact facts without interpreting Target policy. |
 
 ## Simulation Campaign storage boundary
 

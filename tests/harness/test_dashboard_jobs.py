@@ -6,11 +6,21 @@ import json
 
 import pytest
 
+from booley.goals.store import GoalStore
 from booley.harness.dashboard.app import job_detail
+from booley.harness.dashboard.jobs import JobReader
 from booley.harness.dashboard.resources import ResourceSampler
-from booley.runtime import job_records, job_slots
-from booley.runtime.job_snapshot import snapshot_jobs
+from booley.runtime import job_records
 from booley.runtime.pid import ProcessIdentity
+
+
+def snapshot_jobs(
+    project_dir, *, interactive_root=None, slots_root=None, proc_root=None, reader=None
+):
+    options = {} if proc_root is None else {"proc_root": proc_root}
+    reader = reader or JobReader(project_dir, slots_root=slots_root, **options)
+    records = GoalStore(project_dir).list_records().records
+    return reader.read(records, interactive_root=interactive_root)
 
 
 def files(root):
@@ -23,38 +33,6 @@ def files(root):
 
 def rec(run="one", **kwargs):
     return job_records.JobRecord(run, "sim", "2026-10-08T10:00:00Z", 60, **kwargs)
-
-
-def test_multi_roots_duplicate_ids_disconnected_history_and_byte_identity(tmp_path, monkeypatch):
-    from booley.runtime import job_snapshot
-
-    roots = [
-        tmp_path / name / "jobs"
-        for name in ("interactive", "active1", "active2", "finished", "abandoned")
-    ]
-    for number, root in enumerate(roots):
-        job_records.write_record(
-            rec(
-                "duplicate" if number < 2 else str(number),
-                session_key="codex:expired",
-                status="done" if number > 2 else "running",
-            ),
-            root,
-        )
-    monkeypatch.setattr(job_snapshot, "retained_job_roots", lambda *_a, **_k: tuple(roots))
-    monkeypatch.setattr(
-        job_slots.SlotStore, "reap", lambda *_a: pytest.fail("observational read reaped work")
-    )
-    monkeypatch.setattr(
-        job_slots.SlotStore, "snapshot", lambda *_a: pytest.fail("used mutating snapshot")
-    )
-    before = files(tmp_path)
-    snapshot = snapshot_jobs(tmp_path, slots_root=tmp_path / "slots")
-    assert len(snapshot.jobs) == 5
-    assert len({job.key for job in snapshot.jobs}) == 5
-    assert all(job.record.session_key == "codex:expired" for job in snapshot.jobs)
-    assert snapshot.diagnostics == ("ambiguous legacy run ID: duplicate",)
-    assert files(tmp_path) == before
 
 
 def test_exact_run_report_never_latest_foreign_and_missing_artifacts(tmp_path):
@@ -80,7 +58,7 @@ def test_artifact_bound_keeps_newest_report_and_complete_exact_progress(tmp_path
     import os
 
     from booley.flows.progress_lifecycle import progress_document
-    from booley.runtime import job_artifacts
+    from booley.runtime.job_observation import _artifacts as job_artifacts
 
     root = tmp_path / "jobs"
     monkeypatch.setattr(job_artifacts, "MAX_ARTIFACTS", 2)
@@ -115,28 +93,6 @@ def test_artifact_bound_keeps_newest_report_and_complete_exact_progress(tmp_path
     assert files(tmp_path) == before
 
 
-@pytest.mark.parametrize(
-    "status,pid,identity,state",
-    [
-        ("running", None, None, "spawning"),
-        ("running", 99, None, "unavailable"),
-        ("running", 99, ProcessIdentity(99, "missing", 101).to_payload(), "orphaned"),
-        ("failed", None, None, "failed"),
-        ("done", None, None, "completed"),
-        ("cancelled", None, None, "cancelled"),
-    ],
-)
-def test_job_states_without_lifecycle_mutation(tmp_path, status, pid, identity, state):
-    root = tmp_path / "jobs"
-    job_records.write_record(rec(status=status, pid=pid, process_identity=identity), root)
-    before = files(tmp_path)
-    assert (
-        snapshot_jobs(tmp_path, interactive_root=root, proc_root=tmp_path / "proc").jobs[0].state
-        == state
-    )
-    assert files(tmp_path) == before
-
-
 def test_resources_use_sandbox_capacity_and_limits_no_sleep(tmp_path):
     cgroup = tmp_path / "cgroup"
     cgroup.mkdir()
@@ -158,29 +114,6 @@ def test_resources_use_sandbox_capacity_and_limits_no_sleep(tmp_path):
     assert (
         missing.cpu_percent is missing.memory is missing.memory_limit is missing.disk_free is None
     )
-
-
-@pytest.mark.parametrize("slot,state", [("w", "queued"), ("h", "running")])
-def test_observational_slot_state_and_corrupt_entry_isolation(tmp_path, monkeypatch, slot, state):
-    from booley.runtime import job_snapshot
-    from booley.runtime.pid import ProcessObservation, ProcessState
-
-    identity = ProcessIdentity(99, "fixture", 101)
-    root = tmp_path / "jobs"
-    job_records.write_record(rec(pid=99, process_identity=identity.to_payload()), root)
-    slots = tmp_path / "slots/heavy"
-    slots.mkdir(parents=True)
-    token = slots / job_slots._entry_name(slot, 1, 1, 99, 0)
-    token.write_text(json.dumps({"owner_identity": identity.to_payload()}))
-    (slots / job_slots._entry_name("h", 1, 2, 100, 0)).write_text("[]")
-    monkeypatch.setattr(
-        job_snapshot, "observe_process", lambda *_a, **_k: ProcessObservation(ProcessState.RUNNING)
-    )
-    monkeypatch.setattr(job_slots.SlotStore, "reap", lambda *_: pytest.fail("reaped a stale slot"))
-    before = files(tmp_path)
-    view = snapshot_jobs(tmp_path, interactive_root=root, slots_root=slots.parent).jobs[0]
-    assert view.state == state
-    assert files(tmp_path) == before
 
 
 def test_process_resource_delta_and_reused_identity_are_honest(tmp_path, monkeypatch):
@@ -215,7 +148,7 @@ def test_process_resource_delta_and_reused_identity_are_honest(tmp_path, monkeyp
 def test_retained_goal_roots_are_discovered_without_current_sessions(tmp_path):
     from booley.goals.model import GoalRecord, GoalState, WorktreeIdentity
     from booley.goals.paths import record_paths
-    from booley.runtime.job_snapshot import retained_job_roots
+    from booley.harness.dashboard.jobs import retained_job_roots
 
     expected = []
     for number, state in enumerate((GoalState.ACTIVE, GoalState.FINISHED, GoalState.ABANDONED)):
@@ -234,7 +167,9 @@ def test_retained_goal_roots_are_discovered_without_current_sessions(tmp_path):
         paths.root.mkdir(parents=True)
         paths.record_file.write_text(json.dumps(record.to_json()))
         expected.append(paths.jobs_dir)
-    assert set(retained_job_roots(tmp_path)) == set(expected)
+    assert set(retained_job_roots(tmp_path, GoalStore(tmp_path).list_records().records)) == set(
+        expected
+    )
 
 
 def test_reported_metrics_and_legacy_elapsed_are_not_invented():
@@ -242,7 +177,7 @@ def test_reported_metrics_and_legacy_elapsed_are_not_invented():
     from pathlib import Path
 
     from booley.harness.dashboard.app import _elapsed
-    from booley.runtime.job_snapshot import JobView
+    from booley.harness.dashboard.jobs import JobView
 
     view = JobView(
         Path("/jobs"),
@@ -306,15 +241,19 @@ def test_job_resources_include_eda_descendants_and_reject_child_reuse(tmp_path, 
 
 
 def test_server_job_lifecycle_does_not_include_other_interactive_roots(tmp_path, monkeypatch):
+    from booley.harness.dashboard.jobs import retained_job_roots
     from booley.mcp import server
-    from booley.runtime.job_snapshot import retained_job_roots
 
     current = tmp_path / ".interactive_logs/current/.runtime/jobs"
     historic = tmp_path / ".interactive_logs/historic/.runtime/jobs"
     historic.mkdir(parents=True)
     monkeypatch.setattr(server, "container_jobs_root", lambda: current)
     monkeypatch.setattr(server, "resolve_project_dir", lambda: tmp_path)
-    assert set(retained_job_roots(tmp_path, interactive_root=current)) == {current, historic}
+    assert set(
+        retained_job_roots(
+            tmp_path, GoalStore(tmp_path).list_records().records, interactive_root=current
+        )
+    ) == {current, historic}
     assert server.job_roots() == (current,)
 
 
@@ -465,9 +404,9 @@ def test_dashboard_artifacts_are_indexed_once_and_reparsed_only_when_changed(
 def test_historical_interactive_roots_keep_only_newest_bounded_set(tmp_path, monkeypatch):
     import os
 
-    from booley.runtime import job_snapshot
+    from booley.harness.dashboard import jobs
 
-    monkeypatch.setattr(job_snapshot, "MAX_INTERACTIVE_ROOTS", 3, raising=False)
+    monkeypatch.setattr(jobs, "MAX_INTERACTIVE_ROOTS", 3, raising=False)
     expected = []
     for index in range(5):
         root = tmp_path / f".interactive_logs/{index}/.runtime/jobs"
@@ -475,7 +414,9 @@ def test_historical_interactive_roots_keep_only_newest_bounded_set(tmp_path, mon
         os.utime(root, (100 + index, 100 + index))
         if index >= 2:
             expected.append(root)
-    assert set(job_snapshot.retained_job_roots(tmp_path)) == set(expected)
+    assert set(
+        jobs.retained_job_roots(tmp_path, GoalStore(tmp_path).list_records().records)
+    ) == set(expected)
 
 
 @pytest.mark.parametrize(
@@ -492,203 +433,83 @@ def test_malformed_job_is_isolated_from_other_records(tmp_path, malformed):
     assert "bad.json" in str(observed.diagnostics)
 
 
-def test_snapshot_indexes_reports_and_progress_through_parent_link(tmp_path, monkeypatch):
-    from booley.flows.progress_lifecycle import progress_document
-    from booley.runtime import job_artifacts
-
-    real = tmp_path / "real"
-    project = real / "project"
-    root = project / "logs/.runtime/jobs"
-    job_records.write_record(rec(status="done"), root)
-    directory = root.parent / "flow-reports/sim/1"
-    directory.mkdir(parents=True)
-    (directory / "report.json").write_text(json.dumps({"run_id": "one", "passed": True}))
-    (directory / "progress.json").write_text(
-        json.dumps(
-            progress_document(
-                flow="sim",
-                run_id="one",
-                phase="complete",
-                targets=[],
-                completed_targets=[],
-                detail={},
-                extra={"stage": "simulation"},
-            )
-        )
-    )
-    alias = tmp_path / "alias"
-    alias.symlink_to(real, target_is_directory=True)
-    before = files(real)
-    monkeypatch.setattr(
-        job_artifacts,
-        "read_progress_for_run",
-        lambda *_a, **_k: pytest.fail("indexed progress used fallback"),
-    )
-    cache = job_artifacts.JobArtifactCache()
-    view = snapshot_jobs(
-        alias / "project",
-        interactive_root=alias / "project/logs/.runtime/jobs",
-        artifact_cache=cache,
-    ).jobs[0]
-    assert view.report["passed"] is True
-    assert view.stage == "simulation"
-    assert files(real) == before
-
-
-def test_snapshot_missing_progress_reuses_unrelated_checkpoint(tmp_path, monkeypatch):
-    from booley.flows import progress_lifecycle
-    from booley.runtime.job_artifacts import JobArtifactCache
+def test_invalid_goal_binding_never_reaches_process_observation(tmp_path, monkeypatch):
+    from booley.runtime.job_observation import _observer
 
     root = tmp_path / "jobs"
-    job_records.write_record(rec("absent", status="done"), root)
-    path = root.parent / "flow-reports/sim/1/progress.json"
-    path.parent.mkdir(parents=True)
-    path.write_text(
-        json.dumps(
-            progress_lifecycle.progress_document(
-                flow="sim",
-                run_id="other",
-                phase="complete",
-                targets=[],
-                completed_targets=[],
-                detail={},
-            )
-        )
+    job_records.write_record(rec("good", status="done"), root)
+    identity = ProcessIdentity(99, "fixture", 101)
+    job_records.write_record(
+        rec("bad", pid=99, process_identity=identity.to_payload(), binding={"schema": "future"}),
+        root,
     )
-    original = progress_lifecycle._read_json_object_nofollow
-    reads = []
+    monkeypatch.setattr(
+        _observer,
+        "observe_process",
+        lambda *_a, **_k: pytest.fail("invalid Goal binding reached process observation"),
+    )
 
-    def read(*args, **kwargs):
-        reads.append(args[0])
-        return original(*args, **kwargs)
+    observed = JobReader(tmp_path).read((), interactive_root=root)
 
-    monkeypatch.setattr(progress_lifecycle, "_read_json_object_nofollow", read)
-    cache = JobArtifactCache()
-    snapshot_jobs(tmp_path, interactive_root=root, artifact_cache=cache)
-    reads.clear()
-    snapshot_jobs(tmp_path, interactive_root=root, artifact_cache=cache)
-    assert reads == []
+    assert [job.record.run_id for job in observed.jobs] == ["good"]
+    assert observed.diagnostics == (f"Job record unavailable: {root / 'bad.json'}",)
 
 
-def test_snapshot_shared_artifact_directory_checked_once(tmp_path, monkeypatch):
-    from dataclasses import replace
-    from pathlib import Path
+def test_dashboard_goal_rows_and_job_history_share_one_enumeration(tmp_path, monkeypatch):
+    from booley.goals.model import GoalRecord, GoalState, WorktreeIdentity
+    from booley.goals.paths import record_paths
+    from booley.goals.store import RecordScan
+    from booley.harness.dashboard.model import DashboardReader
 
-    from booley.runtime.job_artifacts import JobArtifactCache
+    record = GoalRecord(
+        "fixture-20261008T100000Z",
+        GoalState.FINISHED,
+        WorktreeIdentity("00000000-0000-4000-8000-000000000001", "main"),
+        str(tmp_path),
+        "goal/fixture",
+        "refs/heads/main",
+        "a" * 40,
+        "2026-10-08T10:00:00Z",
+        revision=1,
+    )
+    paths = record_paths(tmp_path, record.id)
+    paths.root.mkdir(parents=True)
+    paths.record_file.write_text(json.dumps(record.to_json()))
+    paths.lock_file.touch()
+    job_records.write_record(rec("retained", status="done"), paths.jobs_dir)
+    original = GoalStore.list_records
+    calls = []
 
-    root = tmp_path / "logs/.runtime/jobs"
-    for endpoint in ("sim", "lint"):
-        job_records.write_record(replace(rec(endpoint, status="done"), endpoint=endpoint), root)
-        path = root.parent / "flow-reports" / endpoint / "1/report.json"
-        path.parent.mkdir(parents=True)
-        path.write_text(json.dumps({"run_id": endpoint, "passed": True}))
-    namespace = root.parent / "flow-reports"
-    original = Path.lstat
-    checks = []
+    def list_records(store):
+        calls.append(store)
+        # A concurrent change could make a second enumeration select different history.
+        return original(store) if len(calls) == 1 else RecordScan((), ())
 
-    def lstat(path, *args, **kwargs):
-        if path == namespace:
-            checks.append(path)
-        return original(path, *args, **kwargs)
+    monkeypatch.setattr(GoalStore, "list_records", list_records)
+    snapshot = DashboardReader(tmp_path, tmp_path).read()
 
-    monkeypatch.setattr(Path, "lstat", lstat)
-    snapshot_jobs(tmp_path, interactive_root=root, artifact_cache=JobArtifactCache())
-    assert checks == [namespace]
-
-
-def test_outside_project_interactive_job_remains_observable_without_artifacts(tmp_path):
-    root = tmp_path / "outside/jobs"
-    project = tmp_path / "project"
-    project.mkdir()
-    job_records.write_record(rec(status="done"), root)
-    directory = root.parent / "flow-reports/sim/1"
-    directory.mkdir(parents=True)
-    (directory / "report.json").write_text(json.dumps({"run_id": "one", "passed": True}))
-    snapshot = snapshot_jobs(project, interactive_root=root)
-    assert len(snapshot.jobs) == 1
-    assert snapshot.jobs[0].report is None
-    assert f"Job artifact root unavailable: {root}" in snapshot.diagnostics
-
-
-def test_capacity_replacement_only_parses_new_endpoint_history(tmp_path, monkeypatch):
-    from booley.runtime import job_artifacts, job_snapshot
-
-    roots = [tmp_path / str(number) / "jobs" for number in range(3)]
-    reports = []
-    for number, root in enumerate(roots):
-        job_records.write_record(rec(str(number), status="done"), root)
-        path = root.parent / "flow-reports/sim/1/report.json"
-        path.parent.mkdir(parents=True)
-        path.write_text(json.dumps({"run_id": str(number), "passed": True}))
-        reports.append(path)
-    monkeypatch.setattr(job_snapshot, "MAX_JOBS", 2)
-    current = roots[:2]
-    monkeypatch.setattr(job_snapshot, "retained_job_roots", lambda *_a, **_k: tuple(current))
-    cache = job_artifacts.JobArtifactCache()
-    snapshot_jobs(tmp_path, artifact_cache=cache)
-    original = job_artifacts.JobArtifactCache._read
-    reads = []
-
-    def read(self, path):
-        reads.append(path)
-        return original(self, path)
-
-    monkeypatch.setattr(job_artifacts.JobArtifactCache, "_read", read)
-    current[:] = [roots[2], roots[0]]
-    snapshot = snapshot_jobs(tmp_path, artifact_cache=cache)
-    assert len(snapshot.jobs) == 2
-    assert all(job.report is not None for job in snapshot.jobs)
-    assert reads == [reports[2]]
-
-
-def test_job_history_keeps_the_newest_records_and_reports_truncation(tmp_path, monkeypatch):
-    import os
-
-    from booley.runtime import job_snapshot
-
-    roots = [tmp_path / name / "jobs" for name in ("first", "second")]
-    # The oldest records sit in the root that is scanned first.
-    for root, run in (
-        (roots[0], "old"),
-        (roots[0], "older"),
-        (roots[1], "new"),
-        (roots[1], "newest"),
-    ):
-        job_records.write_record(rec(run, status="done"), root)
-    stamps = {"older": 100, "old": 200, "new": 300, "newest": 400}
-    for root in roots:
-        for path in root.glob("*.json"):
-            os.utime(path, (stamps[path.stem], stamps[path.stem]))
-    monkeypatch.setattr(job_snapshot, "retained_job_roots", lambda *_a, **_k: tuple(roots))
-    full = snapshot_jobs(tmp_path)
-    assert len(full.jobs) == 4
-    assert not any("truncated" in line for line in full.diagnostics)
-    monkeypatch.setattr(job_snapshot, "MAX_JOBS", 2)
-    cut = snapshot_jobs(tmp_path)
-    assert {job.record.run_id for job in cut.jobs} == {"new", "newest"}
-    assert "Job history truncated: showing the newest 2 of 4 records" in cut.diagnostics
-    monkeypatch.setattr(job_snapshot, "MAX_SCANNED_JOBS", 3)
-    bounded = snapshot_jobs(tmp_path)
-    assert (
-        "Job history truncated: showing the newest 2 of the first 3 records examined; "
-        "older interactive sessions were not examined"
-    ) in bounded.diagnostics
+    assert len(calls) == 1
+    assert [goal.id for goal in snapshot.goals] == [record.id]
+    assert snapshot.goals[0].terminal_summary == "finished"
+    assert [job.key for job in snapshot.jobs.jobs] == [(str(paths.jobs_dir), "retained")]
 
 
 def test_bounded_scan_examines_current_work_before_older_interactive_sessions(tmp_path):
     import os
 
     from booley.goals.store import GoalStore
-    from booley.runtime import job_snapshot
+    from booley.harness.dashboard import jobs
 
     current = tmp_path / "current/.runtime/jobs"
     for index in range(3):
         root = tmp_path / f".interactive_logs/{index}/.runtime/jobs"
         root.mkdir(parents=True)
         os.utime(root, (100 + index, 100 + index))
-    roots = job_snapshot.retained_job_roots(tmp_path, interactive_root=current)
+    roots = jobs.retained_job_roots(
+        tmp_path, GoalStore(tmp_path).list_records().records, interactive_root=current
+    )
     goal_roots = [
-        job_snapshot.record_paths(tmp_path, rec.id).jobs_dir
+        jobs.record_paths(tmp_path, rec.id).jobs_dir
         for rec in GoalStore(tmp_path).list_records().records
     ]
     history = [tmp_path / f".interactive_logs/{index}/.runtime/jobs" for index in (2, 1, 0)]
