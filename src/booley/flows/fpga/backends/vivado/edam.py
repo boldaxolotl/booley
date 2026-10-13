@@ -27,7 +27,9 @@ from pathlib import Path
 from typing import Any
 
 from booley.evidence.timing import CLOCK_TIMING_FIELDS, make_clock_timing
+from booley.flows.edam import _infer_datatype
 from booley.flows.fpga.profiles import VivadoProfile, validate_vivado_profile
+from booley.flows.target_parameters import ParameterValue
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +39,21 @@ POST_ROUTE_COMPLETION_MARKER = "BOOLEY_POST_ROUTE_PHYS_OPT_COMPLETE"
 # ---------------------------------------------------------------------------
 # EDAM construction (the edalize ``vivado`` flow)
 # ---------------------------------------------------------------------------
+
+
+def validate_vivado_parameter_types(parameters: dict[str, Any]) -> None:
+    """Vivado cannot override string generics (AMD UG901)."""
+    unsupported = [
+        name
+        for name, value in parameters.items()
+        if (isinstance(value, ParameterValue) and value.is_string)
+        or (isinstance(value, str) and _infer_datatype(value)[0] == "str")
+    ]
+    if unsupported:
+        raise ValueError(
+            "fpga: Vivado does not support string/file top-level parameter overrides (AMD UG901): "
+            + ", ".join(unsupported)
+        )
 
 
 def build_fpga_edam(
@@ -78,6 +95,7 @@ def build_fpga_edam(
     """
     from booley.flows import edam as edam_layer
 
+    validate_vivado_parameter_types(vlogparams)
     eda_tool_options: dict[str, Any] = {"part": part}
     if extra_eda_tool_options:
         eda_tool_options.update(extra_eda_tool_options)
@@ -134,6 +152,8 @@ def validate_vivado_parameter_contract(
 
 def _vivado_parameter_value(value: Any) -> str:
     """Match Edalize's Vivado rendering for supported EDAM scalar types."""
+    if isinstance(value, ParameterValue):
+        return value.value
     if isinstance(value, bool):
         return "1" if value else "0"
     return str(value)

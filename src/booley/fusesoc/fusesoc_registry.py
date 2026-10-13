@@ -1870,6 +1870,9 @@ class ResolvedTarget:
     edam_path: Path = field(repr=False)
     """Absolute path to the resolved ``.eda.yml`` that was parsed."""
 
+    configuration_name: str = ""
+    """EDAM-owned basename of the generated receiving-tool configuration."""
+
     configured_eda_tool: str | None = None
     """The EDA tool FuseSoC configured in the generated EDAM.
 
@@ -2016,6 +2019,7 @@ def parse_edam(edam_path: Path | str, *, target: str, vlnv: str) -> ResolvedTarg
         vlnv=vlnv,
         toplevel=str(edam.get("toplevel", "")),
         eda_tool=eda_tool,
+        configuration_name=str(edam.get("name", "")),
         configured_eda_tool=configured_eda_tool,
         flow_options=dict(flow_options),
         cocotb_module=str(cocotb_module) if cocotb_module else None,
@@ -2140,6 +2144,7 @@ def setup_command_for_handle(
         library_plan.operational_core(handle.core_file)
     except (CoreProjectionError, OSError) as exc:
         raise TargetResolutionError(f"could not project stealth cores: {exc}") from exc
+    owned = _owned_empty_parameter_arguments(handle, backend_arguments)
     return _setup_argv(
         library_plan,
         target_name=handle.name,
@@ -2149,7 +2154,41 @@ def setup_command_for_handle(
         build_root=Path(build_root),
         fusesoc_cmd=fusesoc_cmd,
         backend_arguments=backend_arguments,
+        owned_parameter_arguments=owned,
     )
+
+
+def _owned_empty_parameter_arguments(
+    handle: TargetHandle, backend_arguments: Sequence[str]
+) -> tuple[str, ...]:
+    """Replay only selected, explicitly authored empty string parameters."""
+    from booley.fusesoc.target_inspection import inspect_parameter_values
+
+    if handle.eda_tool in {"verible", "veriblelint"}:
+        return ()
+    try:
+        parameters = inspect_parameter_values(handle)
+    except FuseSocError as exc:
+        raise TargetResolutionError(str(exc)) from exc
+    names = tuple(
+        name
+        for name, metadata in parameters.items()
+        if metadata.get("datatype") == "str"
+        and metadata.get("paramtype") == "vlogparam"
+        and metadata.get("default", None) == ""
+    )
+    if not names:
+        return ()
+    if handle.eda_tool not in {"verilator", "icarus", "iverilog", "yosys"}:
+        raise TargetResolutionError(
+            f"Target {handle.name!r}: {handle.eda_tool!r} does not support Target-owned empty string parameter overrides"
+        )
+    for argument in backend_arguments:
+        if any(argument.startswith((f"--{name}=", f"-G{name}=", f"-P{name}=")) for name in names):
+            raise TargetResolutionError(
+                f"backend argument conflicts with Target-owned empty parameter: {argument!r}"
+            )
+    return tuple(f"--{name}=" for name in names)
 
 
 def require_current_target_handle(
@@ -2181,6 +2220,7 @@ def _setup_argv(
     build_root: Path,
     fusesoc_cmd: Sequence[str],
     backend_arguments: Sequence[str] = (),
+    owned_parameter_arguments: Sequence[str] = (),
 ) -> list[str]:
     flag_args = ["--flag", f"tool_{eda_tool}"] if flow and eda_tool else []
     library_args = [
@@ -2201,6 +2241,7 @@ def _setup_argv(
         target_name,
         vlnv,
         *backend_args,
+        *owned_parameter_arguments,
     ]
 
 
@@ -2340,7 +2381,7 @@ def resolve_target_handle(
         root,
         source_ref,
     )
-    return _run_setup_command(
+    resolved = _run_setup_command(
         cmd,
         project_root=root,
         build_root=build,
@@ -2351,6 +2392,26 @@ def resolve_target_handle(
         env=env,
         runner=runner,
     )
+
+    return _validate_owned_empty_parameters(resolved, handle, backend_arguments)
+
+
+def _validate_owned_empty_parameters(
+    resolved: ResolvedTarget, handle: TargetHandle, backend_arguments: Sequence[str]
+) -> ResolvedTarget:
+    """Require the producer to retain the exact source-owned string default."""
+    for argument in _owned_empty_parameter_arguments(handle, backend_arguments):
+        name = argument[2:-1]
+        metadata = resolved.parameters.get(name, {})
+        if (
+            metadata.get("datatype"),
+            metadata.get("paramtype"),
+            metadata.get("default", None),
+        ) != ("str", "vlogparam", ""):
+            raise TargetResolutionError(
+                f"Target-owned empty string parameter {name!r} was not preserved by setup"
+            )
+    return resolved
 
 
 def _try_resolve_target(

@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from booley.core.build_paths import work_root_for
 from booley.flows.eda_failures import classify_eda_failure
+from booley.flows.parameter_transport import normalize_resolved_parameters
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.runtime.compiler_cache import read_issued_identity
 from booley.runtime.project_dir import resolve_project_dir
@@ -189,6 +190,7 @@ def _prepare_simulation_build(
         resolution_vlnv=resolution_vlnv,
         backend_arguments=backend_arguments,
     )
+    normalize_resolved_parameters(resolved)
     validate_top_parameter_intent(resolved, flow="sim")
     eda_tool = _validated_simulator(handle, resolved)
     cache_policy = None

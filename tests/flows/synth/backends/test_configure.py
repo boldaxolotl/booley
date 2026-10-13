@@ -391,6 +391,41 @@ def test_backend_fanout_survives_transport_into_native_tcl(tmp_path):
 
     args = _build_parser().parse_args(["configure", "-t", "top", "--max-fanout", "16777217"])
     _, _, openroad = _resolve_ppa_settings(args)
-    timing = _resolve_syn_timing(args, openroad)
+    timing = _resolve_syn_timing(args, openroad, project_root=tmp_path)
     assert timing.max_fanout == 16777217
     assert "set ::booley_fanout::configured {16777217}" in policy_tcl(tmp_path, timing.max_fanout)
+
+
+def test_declared_string_parser_preserves_whitespace_and_rejects_unbound_metadata():
+    from booley.flows.synth.backends.yosys.parsing import parse_params
+    from booley.flows.target_parameters import ParameterValue
+
+    assert parse_params(["NAME=  ../a b  ", "N= 12 "], ["NAME=file"]) == {
+        "NAME": ParameterValue("file", "  ../a b  "),
+        "N": "12",
+    }
+    with pytest.raises(SystemExit, match="has no value"):
+        parse_params(["N=12"], ["NAME=str"])
+
+
+def test_string_workdir_suffix_cannot_traverse(tmp_path):
+    from types import SimpleNamespace
+
+    from booley.flows.synth.backends.configure import _resolve_syn_workdir
+    from booley.flows.target_parameters import ParameterValue
+
+    args = SimpleNamespace(workdir=None)
+    root = _resolve_syn_workdir(args, "top", {}, project_root=tmp_path).parent
+    for value in ["../../escape", "/absolute/path", "a\\b", "a" * 4096]:
+        path = _resolve_syn_workdir(
+            args, "top", {"NAME": ParameterValue("str", value)}, project_root=tmp_path
+        )
+        assert path.parent == root
+        assert len(path.name) < 80
+
+
+def test_typed_parameter_invalid_utf8_has_boundary_diagnostic():
+    from booley.flows.synth.backends.yosys.parsing import parse_params
+
+    with pytest.raises(SystemExit, match=r"ERROR: Invalid string parameter.*valid UTF-8"):
+        parse_params(["NAME=\udc80"], ["NAME=str"])

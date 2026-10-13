@@ -571,3 +571,18 @@ class TestConfigure:
         assert (work_root / "Makefile").is_file()
         vc = (work_root / "design.vc").read_text()
         assert "--lint-only" in vc
+
+
+def test_explicit_target_datatypes_survive_edam_builder():
+    from booley.flows.edam import _vlogparam
+    from booley.flows.target_parameters import ParameterValue
+
+    assert _vlogparam(ParameterValue("str", "123")) == {
+        "datatype": "str",
+        "paramtype": "vlogparam",
+        "default": "123",
+    }
+    assert _vlogparam(ParameterValue("file", "a b"))["datatype"] == "file"
+    assert _vlogparam(ParameterValue("bool", "1"))["default"] is True
+    assert _vlogparam(ParameterValue("int", "12"))["default"] == 12
+    assert _vlogparam(ParameterValue("real", "1.25"))["default"] == 1.25
