@@ -201,19 +201,32 @@ def test_invalid_capture_bytes_raise_and_reap(tmp_path):
             assert process.poll() is not None
 
 
-def test_timeout_preserves_partial_output_and_reaps(tmp_path):
+@pytest.mark.parametrize("startup_delay", [0, 0.5])
+def test_timeout_preserves_partial_output_and_reaps(tmp_path, startup_delay):
+    ready = tmp_path / "child-ready"
+    script = (
+        "import os,pathlib,time; "
+        f"time.sleep({startup_delay}); os.write(1,b'partial'); "
+        f"pathlib.Path({str(ready)!r}).touch(); time.sleep(30)"
+    )
     sink = observer(tmp_path)
     with sink.installed():
         sink.begin_command()
         with subprocess.Popen(
-            [sys.executable, "-c", "import os,time; os.write(1,b'partial'); time.sleep(30)"],
+            [sys.executable, "-c", script],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
             start_new_session=True,
         ) as process:
-            stdout, stderr, timed_out = communicate_observed(process, sink, timeout=0.3)
-            assert process.poll() is not None
+            try:
+                wait_until(ready.exists, timeout=10)
+                stdout, stderr, timed_out = communicate_observed(process, sink, timeout=0.3)
+                assert process.poll() is not None
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait(timeout=3)
     assert (stdout, stderr, timed_out) == ("partial", "", True)
 
 
