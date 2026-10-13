@@ -108,8 +108,6 @@ child #(.NAME(NAME)) child_instance(ok);
 assign bytes=NAME;
 endmodule
 """
-    # slang requires an explicit packed type cast; sv2v supports this cast.
-    source = source.replace("32768'(NAME)", "32768'(NAME)")
     (tmp_path / "top.sv").write_text(source)
     if frontend == "slang":
         # String-to-packed conversions are not supported by slang's sized cast.
@@ -129,7 +127,9 @@ endmodule
         "\n".join(lines[:boundary])
         + "\nflatten\nopt\nwrite_json result.json\nwrite_rtlil result.il\n"
     )
-    _run(["yosys", "-Q", "-T", "-s", "synth.ys"], tmp_path)
+    result = _run(["yosys", "-Q", "-T", "-s", "synth.ys"], tmp_path)
+    (tmp_path / "yosys.log").write_text(result.stdout + result.stderr)
+    assert core.scan_synth_logs(tmp_path) is None
     bits, module = _read_constant(tmp_path, "result.json")
     assert bits == ["1"]
     if frontend == "sv2v":
@@ -145,6 +145,14 @@ endmodule
                 tmp_path,
             )
             assert 'parameter \\NAME ""' in (tmp_path / "roundtrip.il").read_text()
+            numeric_script = script.read_text().replace('-set NAME ""', "-set NAME 8'h00")
+            assert numeric_script != script.read_text()
+            (tmp_path / "numeric.ys").write_text(numeric_script)
+            _run(["yosys", "-Q", "-T", "-s", "numeric.ys"], tmp_path)
+            assert _read_constant(tmp_path, "result.json")[0] == ["1"]
+            numeric_rtlil = (tmp_path / "result.il").read_text()
+            assert "parameter \\NAME 8'00000000" in numeric_rtlil
+            assert 'parameter \\NAME ""' not in numeric_rtlil
 
 
 @pytest.mark.parametrize("tool", ["verilator", "icarus"])

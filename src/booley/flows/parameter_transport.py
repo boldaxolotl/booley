@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import re
+import shutil
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -60,6 +62,18 @@ def _normalize_record(
         contents[path] = text[: match.start()] + normalized + text[match.end() :]
 
 
+def _publish_records(path: Path, text: str) -> None:
+    """Keep complete old bytes until the replacement is ready to publish."""
+    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as stream:
+        temporary = Path(stream.name)
+    try:
+        temporary.write_bytes(text.encode("utf-8"))
+        shutil.copymode(path, temporary)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def normalize_parameter_records(resolved: Any) -> None:
     """Rewrite only declared str/file assignments in confined generated files."""
     tool = "icarus" if resolved.configured_eda_tool == "iverilog" else resolved.configured_eda_tool
@@ -73,10 +87,12 @@ def normalize_parameter_records(resolved: Any) -> None:
     if not parameters:
         return
     root = Path(resolved.build_root).resolve()
-    paths = sorted(root.rglob("*.vc" if tool == "verilator" else "*.scr"))
+    suffix = ".vc" if tool == "verilator" else ".scr"
+    configuration_name = getattr(resolved, "configuration_name", "") or str(resolved.toplevel)
+    paths = [root / (configuration_name + suffix)]
     if any(not path.resolve().is_relative_to(root) for path in paths):
         raise ValueError(f"{tool}: parameter record escapes build root")
-    contents = {path: _read_records(path) for path in paths}
+    contents = {path: _read_records(path) for path in paths if path.exists()}
     for name, parameter in parameters.items():
         for original, normalized in _record_pairs(tool, name, parameter, str(resolved.toplevel)):
             _normalize_record(
@@ -87,5 +103,4 @@ def normalize_parameter_records(resolved: Any) -> None:
             )
     for path, text in contents.items():
         if _read_records(path) != text:
-            with path.open("w", encoding="utf-8", newline="") as stream:
-                stream.write(text)
+            _publish_records(path, text)

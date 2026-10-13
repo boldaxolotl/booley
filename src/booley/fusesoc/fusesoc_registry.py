@@ -1870,6 +1870,9 @@ class ResolvedTarget:
     edam_path: Path = field(repr=False)
     """Absolute path to the resolved ``.eda.yml`` that was parsed."""
 
+    configuration_name: str = ""
+    """EDAM-owned basename of the generated receiving-tool configuration."""
+
     configured_eda_tool: str | None = None
     """The EDA tool FuseSoC configured in the generated EDAM.
 
@@ -2016,6 +2019,7 @@ def parse_edam(edam_path: Path | str, *, target: str, vlnv: str) -> ResolvedTarg
         vlnv=vlnv,
         toplevel=str(edam.get("toplevel", "")),
         eda_tool=eda_tool,
+        configuration_name=str(edam.get("name", "")),
         configured_eda_tool=configured_eda_tool,
         flow_options=dict(flow_options),
         cocotb_module=str(cocotb_module) if cocotb_module else None,
@@ -2174,7 +2178,7 @@ def _owned_empty_parameter_arguments(
         return ()
     if handle.eda_tool not in {"verilator", "icarus", "iverilog", "yosys"}:
         raise TargetResolutionError(
-            f"Target {handle.name!r}: {handle.eda_tool!r} does not support string parameter overrides"
+            f"Target {handle.name!r}: {handle.eda_tool!r} does not support Target-owned empty string parameter overrides"
         )
     for argument in backend_arguments:
         if any(argument.startswith((f"--{name}=", f"-G{name}=", f"-P{name}=")) for name in names):

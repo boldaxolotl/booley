@@ -37,3 +37,37 @@ def test_macro_contract_remains_raw_tokens():
     assert parameters.vlogdefine_args(
         {"M": {"datatype": "str", "paramtype": "vlogdefine", "default": "a b"}}
     ) == ["M=a b"]
+
+
+def test_synthesis_flow_carries_types_without_changing_numeric_arguments():
+    from types import SimpleNamespace
+
+    from booley.flows.synth.flow import AsicSynthesizeFlow
+
+    resolved = SimpleNamespace(
+        parameters={
+            "N": {"datatype": "int", "paramtype": "vlogparam", "default": 12},
+            "B": {"datatype": "bool", "paramtype": "vlogparam", "default": True},
+            "R": {"datatype": "real", "paramtype": "vlogparam", "default": 1.25},
+            "NAME": {"datatype": "str", "paramtype": "vlogparam", "default": ' a"b\\c '},
+            "FILE": {"datatype": "file", "paramtype": "vlogparam", "default": "a.mem"},
+        }
+    )
+    command = []
+    AsicSynthesizeFlow._append_typed_param_args(None, command, resolved, "synth", "top")
+    assert command == [
+        "-p",
+        "N=12",
+        "-p",
+        "B=1",
+        "-p",
+        "R=1.25",
+        "-p",
+        'NAME= a"b\\c ',
+        "--param-datatype",
+        "NAME=str",
+        "-p",
+        "FILE=a.mem",
+        "--param-datatype",
+        "FILE=file",
+    ]

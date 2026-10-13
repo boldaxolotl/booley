@@ -76,3 +76,44 @@ def test_only_complete_assignment_records_are_changed(tmp_path):
     path.write_text(comment + '-GNAME=\\"MAC\\"\n')
     normalize_parameter_records(target(tmp_path, "verilator", "MAC"))
     assert path.read_text().startswith(comment)
+
+
+def test_failed_publication_preserves_original_bytes_and_retry(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    path = tmp_path / "top.vc"
+    original = b'-GNAME=\\"MAC\\"\r\n'
+    path.write_bytes(original)
+    path.chmod(0o640)
+    resolved = target(tmp_path, "verilator", "MAC")
+    replace = Path.replace
+
+    def fail_replace(self, destination):
+        raise OSError("interrupted publication")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "replace", fail_replace)
+        with pytest.raises(OSError, match="interrupted publication"):
+            normalize_parameter_records(resolved)
+    assert path.read_bytes() == original
+    assert list(tmp_path.iterdir()) == [path]
+    assert Path.replace is replace
+    normalize_parameter_records(resolved)
+    assert b"24'h4d4143" in path.read_bytes()
+    assert path.stat().st_mode & 0o777 == 0o640
+
+
+def test_only_edam_named_generated_file_is_inspected(tmp_path):
+    path = tmp_path / "configured.vc"
+    path.write_text('-GNAME=\\"MAC\\"\n')
+    (tmp_path / "user.vc").write_bytes(b"\xff")
+    nested = tmp_path / "staged"
+    nested.mkdir()
+    (nested / "duplicate.vc").write_bytes(path.read_bytes())
+    (tmp_path / "unrelated.vc").symlink_to("/dev/null")
+    resolved = target(tmp_path, "verilator", "MAC")
+    resolved.configuration_name = "configured"
+    normalize_parameter_records(resolved)
+    assert b"24'h4d4143" in path.read_bytes()
+    assert (tmp_path / "user.vc").read_bytes() == b"\xff"
+    assert (nested / "duplicate.vc").read_text() == '-GNAME=\\"MAC\\"\n'

@@ -305,6 +305,7 @@ class _TargetSourceInspector:
     def _inspect_handle(self, handle: TargetHandle) -> TargetInspection:
         """Inspect one canonical handle with fresh Target-specific flags."""
         flags = _inspection_flags(handle)
+        inventory_flags = dict(flags)
         source_ref = TargetRef(
             name=handle.name,
             vlnv=handle.vlnv,
@@ -340,7 +341,7 @@ class _TargetSourceInspector:
                 eda_tool=handle.eda_tool,
                 flow_options=dict(core.get_flow_options(flags)),
                 parameters=_inspect_parameters(cores, flags),
-                inputs=_inspect_inputs(self.root, cores, flags, tb_paths=tb_paths),
+                inputs=_inspect_inputs(self.root, cores, inventory_flags, tb_paths=tb_paths),
                 tool_options=_inspect_tool_options(core, flags),
             )
         except (OSError, SyntaxError, RuntimeError, ValueError) as exc:

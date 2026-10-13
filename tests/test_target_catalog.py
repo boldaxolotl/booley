@@ -848,6 +848,11 @@ def test_empty_dependency_intent_preserves_upstream_nonempty_precedence(
 def test_authored_flag_selects_empty_parameter_and_dependency(tmp_path):
     import yaml
 
+    from booley.fusesoc import fusesoc_registry
+
+    (tmp_path / "top.sv").write_text("module top; endmodule\n")
+    (tmp_path / "conditional_tb.sv").write_text("module conditional_tb; endmodule\n")
+
     (tmp_path / "dep.core").write_text(
         "CAPI=2:\n"
         + yaml.safe_dump(
@@ -865,7 +870,12 @@ def test_authored_flag_selects_empty_parameter_and_dependency(tmp_path):
         + yaml.safe_dump(
             {
                 "name": "proof:string:conditional:1",
-                "filesets": {"rtl": {"depend": ["owned ? (proof:string:dependency:1)"]}},
+                "filesets": {
+                    "rtl": {
+                        "files": ["top.sv", {"owned ? (conditional_tb.sv)": {"tags": ["tb"]}}],
+                        "depend": ["owned ? (proof:string:dependency:1)"],
+                    },
+                },
                 "targets": {
                     "sim": {
                         "flow": "sim",
@@ -880,6 +890,11 @@ def test_authored_flag_selects_empty_parameter_and_dependency(tmp_path):
         )
     )
     catalog = TargetCatalog.build(tmp_path)
-    assert (
-        catalog.inspect(catalog.select("sim", for_flow="sim")).parameters["NAME"]["default"] == ""
-    )
+    handle = catalog.select("sim", for_flow="sim")
+    inspection = catalog.inspect(handle)
+    assert inspection.parameters["NAME"]["default"] == ""
+    assert {item.path for item in inspection.inputs} == {"top.sv"}
+    ref = fusesoc_registry._resolve_ref(tmp_path, "sim")
+    sources = fusesoc_registry.target_source_files_for_ref(tmp_path, ref)
+    assert "conditional_tb.sv" in sources.tb_files
+    assert "top.sv" in sources.rtl_source_files

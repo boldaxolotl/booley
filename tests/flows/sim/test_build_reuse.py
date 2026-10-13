@@ -766,6 +766,7 @@ def test_normalized_string_response_preserves_stock_recipe_gate(tmp_path, value)
     resolved = SimpleNamespace(
         build_root=build,
         configured_eda_tool="verilator",
+        configuration_name="demo",
         toplevel="top",
         parameters={"NAME": {"datatype": "str", "paramtype": "vlogparam", "default": value}},
     )
