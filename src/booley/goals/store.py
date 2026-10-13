@@ -565,7 +565,7 @@ class GoalStore:
         ]
         if changed:
             raise InvalidRecordUpdateError(f"Goal Record {record.id} cannot change {changed}")
-        frozen = _frozen_run_violation(current, record)
+        frozen = frozen_run_violation(current, record)
         if frozen:
             raise InvalidRecordUpdateError(f"Goal Record {record.id}: {frozen}")
         saved = replace(record, revision=current.revision + 1)
@@ -626,7 +626,7 @@ def _occupant(records: Sequence[GoalRecord], identity: WorktreeIdentity) -> Goal
     return matches[0] if matches else None
 
 
-def _frozen_run_violation(current: GoalRecord, record: GoalRecord) -> str:
+def frozen_run_violation(current: GoalRecord, record: GoalRecord) -> str:
     """Why *record* may not replace *current*'s frozen Test Runs; empty when it may.
 
     While a Goal keeps its specification revision, its resolution can only

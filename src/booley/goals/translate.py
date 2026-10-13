@@ -18,7 +18,7 @@ the stricter Goal (D11) and every merge is reported as a warning:
 - Coverage floors and the mutation ``min_detected`` count are lower bounds:
   the larger wins (mutation only when scope, total, and auto agree).
 - Goals that name Test Runs (ADR 0072) merge by what they resolve to, not by
-  how they are written: with a :data:`SelectorResolver`, ``stress`` and
+  how they are written: with a :data:`CanonicalNames`, ``stress`` and
   ``stress+short`` are one Goal when ``short`` is the default Test Variant.
   Two multi-seed Goals on one Test Variant merge to the larger N; a pinned
   seed and a seed count stay separate Goals. The merged Goal keeps the key of
@@ -56,7 +56,8 @@ from booley.goals.model import (
     TargetGoalArg,
 )
 from booley.goals.test_run_goals import (
-    SelectorResolver,
+    TEST_RUN_FAMILIES,
+    CanonicalNames,
     canonical_identity,
     selector_text,
     simulation_run_key,
@@ -113,7 +114,7 @@ def criterion_spec(goal: GoalSpec) -> CriterionSpec:
 
 
 def translate_goals(
-    args: Sequence[GoalArg], *, resolver: SelectorResolver | None = None
+    args: Sequence[GoalArg], *, resolver: CanonicalNames | None = None
 ) -> Translation:
     """Translate entry arguments into merged Goals.
 
@@ -207,18 +208,22 @@ def _describe(arg: GoalArg) -> str:
     return f"{arg.family.value} {arg.target}"
 
 
-def _merge_group(arg: GoalArg, goal: GoalSpec, resolver: SelectorResolver | None) -> object:
+def _merge_group(arg: GoalArg, goal: GoalSpec, resolver: CanonicalNames | None) -> object:
     """Goals in one group merge.
 
     Review Goals group by review, Goals that name one Test Run selector by
-    what the selector resolves to, every other Goal by key.
+    what the selector resolves to, other Goals judged by Test Runs by the
+    identity of their Target, every other Goal by key.
     """
     if isinstance(arg, ReviewGoalArg):
         return f"review_{arg.review}"
     selector = _one_selector(arg)
-    if selector is None:
-        return goal.key
-    return (arg.family, *canonical_identity(arg.target, selector, resolver))
+    if selector is not None:
+        return (arg.family, *canonical_identity(arg.target, selector, resolver))
+    if resolver is not None and goal.family in TEST_RUN_FAMILIES and goal.target is not None:
+        # However the Target is written, it is one Target with one set of frozen Test Runs.
+        return (arg.family, resolver.target(goal.target))
+    return goal.key
 
 
 def _one_selector(arg: GoalArg) -> TestSelector | None:
@@ -238,7 +243,7 @@ def _one_selector(arg: GoalArg) -> TestSelector | None:
 Members = list[tuple[GoalArg, GoalSpec]]
 
 
-def _merge(members: Members, resolver: SelectorResolver | None) -> tuple[GoalSpec, str | None]:
+def _merge(members: Members, resolver: CanonicalNames | None) -> tuple[GoalSpec, str | None]:
     """Merge one group to its stricter Goal and describe the merge."""
     first_arg, first_goal = members[0]
     if len(members) == 1:
@@ -351,14 +356,14 @@ def stricter_threshold(param: str, candidate: Any, current: Any) -> bool:
 
 
 def _merge_identical(
-    members: Members, _resolver: SelectorResolver | None
+    members: Members, _resolver: CanonicalNames | None
 ) -> tuple[GoalArg, list[str]]:
     """lint and elab Goals for one key are identical by construction."""
     return members[0][0], []
 
 
 def _merge_simulation(
-    members: Members, _resolver: SelectorResolver | None
+    members: Members, _resolver: CanonicalNames | None
 ) -> tuple[GoalArg, list[str]]:
     """Target Goals are identical; of two multi-seed Goals the larger N is stricter."""
     counts = [
@@ -374,9 +379,7 @@ def _merge_simulation(
     return winner, [f"seed counts {described} -> stricter {largest}"]
 
 
-def _merge_review(
-    members: Members, _resolver: SelectorResolver | None
-) -> tuple[GoalArg, list[str]]:
+def _merge_review(members: Members, _resolver: CanonicalNames | None) -> tuple[GoalArg, list[str]]:
     reviews = [arg for arg, _ in members if isinstance(arg, ReviewGoalArg)]
     _require_equal(members, "spec files", lambda arg: _as(arg, ReviewGoalArg).spec)
     clean = [arg for arg in reviews if arg.verdict == "clean"]
@@ -404,7 +407,7 @@ def _baseline_opinion(arg: GoalArg) -> str | None:
 
 
 def _merge_implementation(
-    members: Members, _resolver: SelectorResolver | None
+    members: Members, _resolver: CanonicalNames | None
 ) -> tuple[GoalArg, list[str]]:
     opinions = [(arg, goal) for arg, goal in members if _baseline_opinion(arg) is not None]
     _require_equal(opinions, "baseline Targets", _baseline_opinion)
@@ -421,7 +424,7 @@ def _merge_implementation(
 
 
 def _merge_cycle_count(
-    members: Members, _resolver: SelectorResolver | None
+    members: Members, _resolver: CanonicalNames | None
 ) -> tuple[GoalArg, list[str]]:
     thresholds, decisions = _merge_values(
         members,
@@ -433,7 +436,7 @@ def _merge_cycle_count(
 
 
 def _merge_coverage(
-    members: Members, resolver: SelectorResolver | None
+    members: Members, resolver: CanonicalNames | None
 ) -> tuple[GoalArg, list[str]]:
     # A coverage floor is a minimum percentage: the larger floor is stricter.
     _require_equal(
@@ -453,7 +456,7 @@ def _merge_coverage(
     return replace(_as(members[0][0], CoverageGoalArg), metrics=floors), decisions
 
 
-def _coverage_tests_key(arg: CoverageGoalArg, resolver: SelectorResolver | None) -> object:
+def _coverage_tests_key(arg: CoverageGoalArg, resolver: CanonicalNames | None) -> object:
     """The selection as the Test Runs it names; a seed count keeps its N."""
     if arg.tests == "all":
         return "all"
@@ -471,7 +474,7 @@ _MUTATION_FIXED = ("scope", "total", "auto")
 
 
 def _merge_mutation(
-    members: Members, _resolver: SelectorResolver | None
+    members: Members, _resolver: CanonicalNames | None
 ) -> tuple[GoalArg, list[str]]:
     # Scope, total and auto have no defined stricter value and must agree.
     # With them equal, more detected mutants out of the same total is stricter.
@@ -500,7 +503,7 @@ def _as(arg: GoalArg, kind: type[_ArgT]) -> _ArgT:
     return arg
 
 
-_Merger = Callable[[Members, SelectorResolver | None], tuple[GoalArg, list[str]]]
+_Merger = Callable[[Members, CanonicalNames | None], tuple[GoalArg, list[str]]]
 _MERGERS: Mapping[GoalFamily, _Merger] = {
     GoalFamily.LINT: _merge_identical,
     GoalFamily.SIM: _merge_simulation,

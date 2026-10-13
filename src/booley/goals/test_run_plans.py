@@ -18,7 +18,7 @@ from booley.config.tests_toml_rules import UnknownVariantError
 from booley.flows import target_test_plan_loading
 from booley.flows.target_test_plan import TargetTestPlan, UnknownTestError
 from booley.flows.test_runs import PinnedSeed, TestSelector, UnpinnedSeed
-from booley.goals.test_run_goals import SelectorResolver
+from booley.goals.test_run_goals import CanonicalNames
 from booley.targets.domain import FuseSocError, UnknownTargetError
 
 PlanLoader = Callable[[Path, str], TargetTestPlan]
@@ -33,12 +33,19 @@ def load_plan(work_dir: Path, target: str) -> TargetTestPlan:
     return target_test_plan_loading.load_checkout_target_test_plan(work_dir, target)
 
 
+def load_identity(work_dir: Path, target: str) -> str:
+    """The default Target identity: the one the Target catalog of the checkout gives."""
+    return target_test_plan_loading.checkout_target_identity(work_dir, target)
+
+
 @dataclass
 class TargetPlans:
     """The Test Run plans of the checkout at ``work_dir``, each loaded once."""
 
     work_dir: Path
     loader: PlanLoader = load_plan
+    identities: Callable[[Path, str], str] = load_identity
+    _identities: dict[str, str] = field(default_factory=dict[str, str])
     _plans: dict[str, TargetTestPlan | None] = field(
         default_factory=dict[str, TargetTestPlan | None]
     )
@@ -60,8 +67,22 @@ class TargetPlans:
                 ) from exc
         return self._plans[target]
 
-    def resolver(self) -> SelectorResolver:
-        """Canonical selectors for :func:`booley.goals.translate.translate_goals`."""
+    def identity(self, target: str) -> str:
+        """The identity of *target* however it is written; itself while it does not exist.
+
+        Raises :class:`TargetPlanError` when the Target catalog cannot be read.
+        """
+        if target not in self._identities:
+            try:
+                self._identities[target] = self.identities(self.work_dir, target)
+            except UnknownTargetError:
+                self._identities[target] = target
+            except (FuseSocError, ValueError, OSError) as exc:
+                raise TargetPlanError(f"Target {target!r} cannot be identified: {exc}") from exc
+        return self._identities[target]
+
+    def resolver(self) -> CanonicalNames:
+        """Canonical names for :func:`booley.goals.translate.translate_goals`."""
 
         def resolve(target: str, selector: TestSelector) -> TestSelector | None:
             plan = self.plan(target)
@@ -76,4 +97,4 @@ class TargetPlans:
                 form = PinnedSeed(base.seed)
             return TestSelector(selector.test, base.variant, form)
 
-        return resolve
+        return CanonicalNames(resolve, self.identity)

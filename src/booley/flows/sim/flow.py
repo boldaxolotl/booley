@@ -1019,11 +1019,14 @@ def _campaign_report_detail(
 
 
 def _diagnostic_test_runs(
-    detail: Mapping[str, object], frozen: FrozenTestRuns
+    detail: Mapping[str, object],
+    frozen: FrozenTestRuns,
+    names: Callable[[str], Collection[str]],
 ) -> tuple[list[str], list[str]]:
     """Test Runs of *detail*'s campaigns no Goal requires, and the failed ones among them.
 
-    Both as ``target: test run``.
+    Both as ``target: test run``. *names* gives every name of a campaign's
+    Target (selector and identity): a Goal may be written with either.
     """
     campaigns = detail.get("campaigns")
     if not isinstance(campaigns, Mapping):
@@ -1032,7 +1035,7 @@ def _diagnostic_test_runs(
     failures: list[str] = []
     for selector, campaign in campaigns.items():
         rows = campaign.get("test_runs", ()) if isinstance(campaign, Mapping) else ()
-        goals = frozen.of_target({str(selector)})
+        goals = frozen.of_target(names(str(selector)))
         for row in rows:
             if not isinstance(row, Mapping) or any(
                 goal.requires(row.get("name"), row.get("fingerprint")) for goal in goals
@@ -7021,7 +7024,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             for target, selectors in self._test_runs.fresh_seed_selectors.items()
             for selector in selectors
         ]
-        diagnostic, failures = _diagnostic_test_runs(result.detail, frozen)
+        diagnostic, failures = _diagnostic_test_runs(result.detail, frozen, self._target_names)
         if not (fresh or diagnostic):
             return result
         result.detail["diagnostic_test_runs"] = {

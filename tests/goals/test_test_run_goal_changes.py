@@ -109,7 +109,8 @@ def test_lowering_n_keeps_the_first_seeds_and_raising_n_draws_the_difference(
     seeds = _seeds(raised, SEEDS_KEY)
     assert seeds[:2] == frozen[:2] and len(set(seeds)) == 4
     resolution = raised.test_run_resolution(SEEDS_KEY)
-    assert {item.resolved_by for item in resolution.runs} == {"change"}
+    # The kept runs stay as they were frozen; only the difference is new.
+    assert [item.resolved_by for item in resolution.runs] == ["entry", "entry", "change", "change"]
 
 
 def test_an_approved_n_change_restarts_the_outcomes(layout: SimpleNamespace) -> None:

@@ -54,11 +54,18 @@ def git(cwd: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
+def fake_target_identity(_work_dir: Path | str, target: str) -> str:
+    """The identity of a known Target, written by name or as ``::name:0#name``."""
+    name = target.rpartition("#")[2]
+    if name not in KNOWN_TARGETS or target not in {name, f"::{name}:0#{name}"}:
+        raise UnknownTargetError(target)
+    return f"::{name}:0#{name}"
+
+
 def fake_test_plan(work_dir: Path | str, target: str) -> TargetTestPlan:
     """The Test Run plan of a known Target: its ``tests.toml`` section on Verilator."""
-    if target not in KNOWN_TARGETS:
-        raise UnknownTargetError(target)
-    return target_test_plan_loading.load_target_test_plan(work_dir, target, adapter="verilator")
+    name = fake_target_identity(work_dir, target).rpartition("#")[2]
+    return target_test_plan_loading.load_target_test_plan(work_dir, name, adapter="verilator")
 
 
 class FakeCatalog:
@@ -96,6 +103,7 @@ def layout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleNa
     monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(control))
     monkeypatch.setattr(entry_module, "TargetCatalog", FakeCatalog)
     monkeypatch.setattr(target_test_plan_loading, "load_checkout_target_test_plan", fake_test_plan)
+    monkeypatch.setattr(target_test_plan_loading, "checkout_target_identity", fake_target_identity)
     stamps = iter(f"{DATE}T12{minute:02d}00Z" for minute in range(60))
     monkeypatch.setattr(entry_module, "compact_utc_now", lambda: next(stamps))
     reset_cache()

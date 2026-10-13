@@ -22,6 +22,7 @@ Pure: no filesystem, Git or record access.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from booley.flows.test_runs import (
     SEED_SEPARATOR,
@@ -45,10 +46,24 @@ TEST_RUN_FAMILIES: frozenset[GoalFamily] = frozenset(
     {GoalFamily.SIM, GoalFamily.CYCLE_COUNT, GoalFamily.COVERAGE}
 )
 
-#: Canonical form of a selector on its Target: the default Test Variant named
-#: and the Default Seed substituted. ``None`` while the Target or Test does
-#: not exist yet.
-SelectorResolver = Callable[[str, TestSelector], TestSelector | None]
+
+def _as_written(target: str) -> str:
+    return target
+
+
+@dataclass(frozen=True)
+class CanonicalNames:
+    """What the names Goals are written with stand for in one checkout.
+
+    ``selector`` gives the canonical form of a selector on its Target: the
+    default Test Variant named and the Default Seed substituted; ``None``
+    while the Target or Test does not exist yet. ``target`` gives the
+    identity of a Target however it is written (``top`` and ``vlnv#top`` are
+    one Target); a Target that does not exist yet stands for itself.
+    """
+
+    selector: Callable[[str, TestSelector], TestSelector | None]
+    target: Callable[[str], str] = _as_written
 
 
 def variant_text(selector: TestSelector) -> str:
@@ -121,17 +136,18 @@ def seed_count(goal: GoalSpec) -> int | None:
 
 
 def canonical_identity(
-    target: str, selector: TestSelector, resolver: SelectorResolver | None
+    target: str, selector: TestSelector, names: CanonicalNames | None
 ) -> tuple[str, str, str]:
-    """What two selectors of one Target share when they name the same Test Runs.
+    """What two selectors share when they name the same Test Runs of one Target.
 
-    ``(target, test[+variant], seed form)`` with the default Test Variant
-    named and the Default Seed substituted. Without a resolver, or while the
-    Test does not exist, the written form stands for itself. A pinned seed
-    and a seed count never share an identity.
+    ``(Target identity, test[+variant], seed form)`` with the default Test
+    Variant named and the Default Seed substituted. Without *names*, or
+    while the Target or Test does not exist, the written form stands for
+    itself. A pinned seed and a seed count never share an identity.
     """
-    resolved = resolver(target, selector) if resolver is not None else None
+    resolved = names.selector(target, selector) if names is not None else None
+    identity = names.target(target) if names is not None else target
     canonical = selector if resolved is None else resolved
     if isinstance(canonical.seed_form, UnpinnedSeed):
-        return target, variant_text(canonical), "d"
-    return target, variant_text(canonical), _seed_form_tag(canonical)
+        return identity, variant_text(canonical), "d"
+    return identity, variant_text(canonical), _seed_form_tag(canonical)

@@ -313,3 +313,19 @@ def test_direct_recording_enters_a_coverage_goals_matching_failure_as_outcomes_o
     assert [(row["name"], row["grade"]) for row in detail["test_runs"]] == [
         ("stress+soak@5", "fail")
     ]
+
+
+def test_a_goal_written_with_the_target_identity_is_not_listed_as_diagnostic(
+    tmp_path, monkeypatch
+):
+    """A campaign keyed by selector matches a Goal that names the Target by its identity."""
+    by_identity = replace(_SUITE, target="lib:ip:core#sim")
+    flow = _goal_flow(tmp_path, monkeypatch, _frozen(by_identity))
+    monkeypatch.setattr(flow, "_target_names", lambda target: {target, f"lib:ip:core#{target}"})
+    frozen_row = {**test_run_document(_SUITE.runs[0]), "grade": "fail"}
+    result = EndpointOutcome(
+        report_text="sim: ran", detail={"campaigns": {"sim": {"test_runs": [frozen_row]}}}
+    )
+    flow._with_diagnostic_test_run_note(result)
+    assert "diagnostic_test_runs" not in result.detail
+    assert result.report_text == "sim: ran"

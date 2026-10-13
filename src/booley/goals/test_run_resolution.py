@@ -12,8 +12,10 @@ written selector; a Goal over every Test of its Target has the one slot
 :data:`SUITE_SLOT`. A slot that cannot be resolved yet (the Target or the
 Test does not exist) is ``pending`` and is filled later, once. The suite slot
 additionally grows: a Test added to the Target later is frozen when it first
-exists. Nothing else about a resolution may change while the Goal keeps its
-specification revision (:func:`resolution_update_violation`).
+exists; and the unnamed run it froze while the Target registered no Test at
+all is superseded by the Target's first registered Tests. Nothing else about
+a resolution may change while the Goal keeps its specification revision
+(:func:`resolution_update_violation`).
 
 This module holds the stored values only and imports nothing of the Goal
 Record, which holds them.
@@ -22,11 +24,12 @@ Record, which holds them.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal, cast
 
 from booley.core.boundary import BoundaryError, require_dict, require_list, require_positive_int
 from booley.flows.test_runs import TestRun, test_run_document, test_run_from_document
+from booley.runtime.timefmt import parse_timestamp
 
 #: The slot of a Goal over every Test of its Target.
 SUITE_SLOT = "*"
@@ -93,7 +96,9 @@ class TestRunResolution:
             mapping = require_dict(raw, field=where)
             if set(mapping) != {"spec_revision", "runs", "pending"}:
                 raise ResolutionFormatError(f"{where} must hold spec_revision, runs and pending")
-            revision = require_positive_int(mapping["spec_revision"], field=f"{where}.revision")
+            revision = require_positive_int(
+                mapping["spec_revision"], field=f"{where}.spec_revision"
+            )
             rows = require_list(mapping["runs"], field=f"{where}.runs")
             pending = require_list(mapping["pending"], field=f"{where}.pending")
         except BoundaryError as exc:
@@ -118,6 +123,10 @@ def _frozen_run(raw: object, where: str) -> FrozenRun:
     if not isinstance(slot, str) or not slot or not isinstance(at, str) or by not in _RESOLVED_BY:
         raise ResolutionFormatError(f"{where} needs slot, resolved_by and resolved_at")
     try:
+        parse_timestamp(at)
+    except ValueError:
+        raise ResolutionFormatError(f"{where}.resolved_at is not a timestamp") from None
+    try:
         run = test_run_from_document(row)
     except ValueError as exc:
         raise ResolutionFormatError(f"{where}: {exc}") from None
@@ -135,8 +144,16 @@ def resolution_update_violation(
     """Why *after* may not replace *before* at one specification revision; empty when it may.
 
     An update only fills pending slots or freezes Tests added to the suite
-    slot: every frozen run stays, in place, and no slot becomes pending.
+    slot: every frozen run stays, in place, and no slot becomes pending. The
+    one run that may go is the suite slot's unnamed run, and only when the
+    update freezes a named Test in that slot: a Target that registers Tests
+    no longer has an unnamed invocation.
     """
+    named = any(item.slot == SUITE_SLOT and item.run.test is not None for item in after.runs)
+    if named and not any(_unnamed_suite_run(item) for item in after.runs):
+        before = replace(
+            before, runs=tuple(item for item in before.runs if not _unnamed_suite_run(item))
+        )
     if after.runs[: len(before.runs)] != before.runs:
         return f"the frozen Test Runs of Goal {key} cannot change"
     if not set(after.pending) <= set(before.pending):
@@ -148,6 +165,11 @@ def resolution_update_violation(
         if not (filled or (suite and SUITE_SLOT not in before.pending)):
             return f"Test Run {item.run.name} of Goal {key} fills no pending slot"
     return ""
+
+
+def _unnamed_suite_run(item: FrozenRun) -> bool:
+    """Whether *item* is the unnamed invocation a whole-Target Goal froze."""
+    return item.slot == SUITE_SLOT and item.run.test is None
 
 
 def resolutions_to_json(resolutions: Mapping[str, TestRunResolution]) -> dict[str, Any]:

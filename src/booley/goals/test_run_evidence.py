@@ -42,9 +42,10 @@ from booley.flows.frozen_test_runs import (
     GoalTestRuns,
     SeedGroup,
 )
-from booley.flows.test_runs import SeedCount, TestRun, parse_test_selector
+from booley.flows.test_runs import TestRun
 from booley.goals.freshness import goal_required_categories
 from booley.goals.model import GoalFamily, GoalRecord, RecordedGoal
+from booley.goals.test_run_freezing import seed_groups
 from booley.goals.test_run_goals import names_test_runs
 from booley.goals.test_run_resolution import SUITE_SLOT, TestRunResolution
 
@@ -114,21 +115,11 @@ def goal_test_runs(goal: RecordedGoal, resolution: TestRunResolution | None) -> 
         suite=any(item.slot == SUITE_SLOT for item in resolution.runs)
         or SUITE_SLOT in resolution.pending,
         complete=not resolution.pending,
-        seed_groups=_seed_groups(resolution),
+        seed_groups=tuple(
+            SeedGroup(test, variant, seeds)
+            for (test, variant, _count), seeds in seed_groups(resolution).items()
+        ),
     )
-
-
-def _seed_groups(resolution: TestRunResolution) -> tuple[SeedGroup, ...]:
-    """The frozen seeds of each multi-seed slot of *resolution*."""
-    groups: list[SeedGroup] = []
-    for slot in dict.fromkeys(item.slot for item in resolution.runs):
-        if slot == SUITE_SLOT or not isinstance(parse_test_selector(slot).seed_form, SeedCount):
-            continue
-        runs = [item.run for item in resolution.runs if item.slot == slot]
-        seeds = tuple(run.seed for run in runs if run.seed is not None)
-        if runs[0].test is not None:
-            groups.append(SeedGroup(runs[0].test, runs[0].variant, seeds))
-    return tuple(groups)
 
 
 # ---------------------------------------------------------------------------

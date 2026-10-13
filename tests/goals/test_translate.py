@@ -482,6 +482,7 @@ def test_goal_key_and_target_always_follow_the_goal_argument(raw: dict[str, Any]
 def _resolver(default_variant: str | None = "short", default_seed: int | None = 1):
     """Canonical selectors of a Target whose Tests default to *default_variant*."""
     from booley.flows.test_runs import PinnedSeed, TestSelector, UnpinnedSeed
+    from booley.goals.test_run_goals import CanonicalNames
 
     def resolve(_target: str, selector: TestSelector) -> TestSelector | None:
         if selector.test == "later":
@@ -491,7 +492,43 @@ def _resolver(default_variant: str | None = "short", default_seed: int | None = 
             form = PinnedSeed(default_seed)
         return TestSelector(selector.test, selector.variant or default_variant, form)
 
-    return resolve
+    # ``tb`` and ``lib#tb`` are one Target.
+    return CanonicalNames(resolve, lambda target: f"lib#{target.rpartition('#')[2]}")
+
+
+def test_one_target_written_two_ways_is_one_goal_with_one_set_of_seeds() -> None:
+    """Aliases of a Target merge before any seed is drawn (the larger N wins)."""
+    args = parse_goal_args(
+        [
+            {"family": "sim", "target": "tb", "test": "stress@x2", "origin": "a"},
+            {"family": "sim", "target": "lib#tb", "test": "stress@x3", "origin": "b"},
+            {"family": "sim", "target": "tb", "origin": "a"},
+            {"family": "sim", "target": "lib#tb", "origin": "b"},
+            {
+                "family": "coverage",
+                "target": "tb",
+                "tests": "all",
+                "metrics": {"line": 80},
+                "origin": "a",
+            },
+            {
+                "family": "coverage",
+                "target": "lib#tb",
+                "tests": "all",
+                "metrics": {"line": 90},
+                "origin": "b",
+            },
+        ]
+    )
+    assert len(translate_goals(args).goals) == 6  # nothing says the two names are one Target
+    merged = translate_goals(args, resolver=_resolver())
+    assert [(goal.key, goal.target, goal.origins) for goal in merged.goals] == [
+        ("sim_pass_lib#tb_run_737472657373_x", "lib#tb", ("a", "b")),
+        ("sim_pass_tb", "tb", ("a", "b")),
+        ("coverage_tb", "tb", ("a", "b")),
+    ]
+    assert merged.goals[0].params == {"test": "stress@x3"}
+    assert merged.goals[2].params["metrics"]["line"]["min_pct"] == 90
 
 
 @pytest.mark.parametrize(

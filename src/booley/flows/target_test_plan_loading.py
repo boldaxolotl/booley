@@ -16,6 +16,7 @@ from booley.flows.target_test_plan import TargetTestPlan, build_target_test_plan
 from booley.targets.catalog import TargetCatalog
 
 __all__ = [
+    "checkout_target_identity",
     "load_checkout_target_test_plan",
     "load_target_test_plan",
     "plusarg_parameter_names",
@@ -57,6 +58,16 @@ def load_target_test_plan(
     return build_target_test_plan(
         target, section, adapter=adapter, target_plusargs=target_plusargs
     )
+
+
+def checkout_target_identity(work_dir: Path | str, target: str) -> str:
+    """The identity (``vlnv#name``) of the Target written *target* in the checkout at *work_dir*.
+
+    Every way of writing one Target gives the same identity. Raises
+    ``FuseSocError`` (``UnknownTargetError`` included) when the Target cannot
+    be selected.
+    """
+    return TargetCatalog.build(work_dir).select(target, for_flow="sim").identity
 
 
 def load_checkout_target_test_plan(work_dir: Path | str, target: str) -> TargetTestPlan:
