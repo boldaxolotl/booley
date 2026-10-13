@@ -295,6 +295,8 @@ def remove_policy(root):
             path.unlink()
 
 
+# Windows CI: the "after" case took 31 s, past half of the default 60 s budget.
+@pytest.mark.timeout(120)
 @pytest.mark.parametrize("race", ["before", "during", "after", "missing_reader"])
 def test_recorder_never_stamps_removed_producer_waivers_as_fresh(layout, race):
     env, candidate, root = prepared(layout)
