@@ -35,7 +35,11 @@ from booley.criteria.thresholds import has_relative_threshold
 from booley.flows.display import format_flow_display_label
 from booley.flows.eda_failures import find_missing_executable, new_attempt_token
 from booley.flows.endpoint_admission import AdmissionContext
-from booley.flows.execution_persistence import frozen_test_runs_for
+from booley.flows.execution_persistence import (
+    frozen_test_runs_for,
+    register_campaign_for,
+    wants_campaigns,
+)
 from booley.flows.frozen_test_runs import FrozenTestRuns, resolve_goal_test_runs
 from booley.flows.plan import (
     CommandPlan,
@@ -178,6 +182,7 @@ from .campaign import (
     build_artifact_reference,
     encode_artifact_reference,
     encode_simulation_campaign_manifest,
+    started_campaign,
     validate_resume_manifest,
 )
 from .campaign.codec import MANIFEST_MAX_BYTES
@@ -4642,6 +4647,12 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             if path in published:
                 return
             published.append(path)
+            adapter = getattr(self.context, "execution_adapter", None)
+            diagnostic = getattr(getattr(self.context, "_args", None), "diagnostic", False)
+            if wants_campaigns(adapter) and diagnostic is not True:
+                # Before any of its work runs: a campaign that never returns an
+                # outcome still leaves results its Goals must account for.
+                register_campaign_for(adapter, started_campaign(path))
             if getattr(self.context, "_console_publication_requested", False):
                 with suppress(OSError, ValueError):
                     print(f"campaign manifest: {path.resolve()}", file=sys.stderr, flush=True)

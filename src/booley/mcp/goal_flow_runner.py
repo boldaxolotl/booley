@@ -7,6 +7,7 @@ from pathlib import Path
 
 from booley.flows.fpga.flow import FpgaImplFlow
 from booley.flows.lint.flow import LintFlow
+from booley.flows.sim.campaign import read_durable_results
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.goals.binding import GoalBindingError
@@ -37,7 +38,9 @@ def main(argv: list[str] | None = None) -> int:
         if not args or (custom_path is None and args[0] not in _FLOW_TYPES):
             raise GoalBindingError("Goal Flow runner requires a supported Flow name")
         name = args.pop(0)
-        adapter = GoalFlowExecution(binding, resolvers=GOAL_FRESHNESS_RESOLVERS)
+        adapter = GoalFlowExecution(
+            binding, resolvers=GOAL_FRESHNESS_RESOLVERS, campaign_reader=read_durable_results
+        )
         if custom_path is None:
             return _FLOW_TYPES[name]().main(args, adapter=adapter)
         flow = load_project_flow(custom_path, name)

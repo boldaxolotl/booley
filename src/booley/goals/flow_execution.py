@@ -21,6 +21,7 @@ from typing import Any
 from booley.criteria.evidence_ledger import AcceptanceTransaction
 from booley.criteria.state import CriterionChange, DevelopmentState, StatePersistence
 from booley.evidence.acceptance import PairedProjectBaseline, ResolvedFlowAcceptance
+from booley.flows.campaign_results import CampaignResultsReader, StartedCampaign
 from booley.flows.execution_persistence import EvidenceDiscarded
 from booley.flows.frozen_test_runs import FrozenTestRuns
 from booley.flows.request import FlowRequest
@@ -44,11 +45,15 @@ class GoalFlowExecution:
         *,
         resolvers: GoalFreshnessResolvers = DEFAULT_RESOLVERS,
         publication_checkpoint: Callable[[str], None] | None = None,
+        campaign_reader: CampaignResultsReader | None = None,
     ) -> None:
         self._binding = binding
         self._resolvers = resolvers
         self._recorder = GoalEvidenceRecorder(
-            binding, resolvers=resolvers, publication_checkpoint=publication_checkpoint
+            binding,
+            resolvers=resolvers,
+            publication_checkpoint=publication_checkpoint,
+            campaign_reader=campaign_reader,
         )
 
     @property
@@ -166,6 +171,10 @@ class GoalFlowExecution:
         except GoalStoreError as exc:
             raise EvidenceDiscarded(f"Goal Record cannot be read: {exc}") from exc
         return flow_test_runs(record, dict(self._binding.spec_revisions))
+
+    def register_campaign(self, campaign: StartedCampaign) -> None:
+        """Register a Simulation Campaign the run is about to start (ADR 0072)."""
+        self._recorder.register_campaign(campaign)
 
     def state_persistence(self) -> StatePersistence:
         """The gated, merging persistence of the run's state."""

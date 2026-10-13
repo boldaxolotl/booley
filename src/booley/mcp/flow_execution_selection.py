@@ -48,9 +48,12 @@ def select_flow_execution(binding: GoalRunBinding | None = None) -> FlowExecutio
 def _goal_acceptance_recorder(binding: GoalRunBinding) -> Callable[[], AcceptanceRecorder]:
     def build() -> AcceptanceRecorder:
         # Imported on construction so importing MCP tools never loads Goal Mode.
+        from booley.flows.sim.campaign import read_durable_results
         from booley.goals.flow_execution import GoalFlowExecution
         from booley.mcp.goal_freshness import GOAL_FRESHNESS_RESOLVERS
 
-        return GoalFlowExecution(binding, resolvers=GOAL_FRESHNESS_RESOLVERS)
+        return GoalFlowExecution(
+            binding, resolvers=GOAL_FRESHNESS_RESOLVERS, campaign_reader=read_durable_results
+        )
 
     return build

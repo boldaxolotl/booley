@@ -63,7 +63,10 @@ from booley.criteria.evidence_ledger import (
     plain_json_value,
 )
 from booley.criteria.state import CriterionChange, DevelopmentState, StatePersistence
+from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
+from booley.flows.campaign_results import CampaignResultsReader, StartedCampaign
 from booley.flows.execution_persistence import AcceptanceRecordingError
+from booley.goals import campaign_accounting
 from booley.goals.apply_barrier import require_no_apply
 from booley.goals.binding import GoalRunBinding
 from booley.goals.freshness import (
@@ -74,7 +77,7 @@ from booley.goals.freshness import (
     stamp_goal_detail,
 )
 from booley.goals.generated_artifacts import inventory_files
-from booley.goals.model import GoalRecord, GoalSpec
+from booley.goals.model import GoalRecord, GoalSpec, RecordedGoal
 from booley.goals.paths import GOAL_ID_PATTERN, record_paths
 from booley.goals.proposals import ProposalError
 from booley.goals.publication import EvidenceDiscarded, PublicationGate
@@ -320,8 +323,10 @@ class GoalEvidenceRecorder:
         *,
         resolvers: GoalFreshnessResolvers = DEFAULT_RESOLVERS,
         publication_checkpoint: Callable[[str], None] | None = None,
+        campaign_reader: CampaignResultsReader | None = None,
     ) -> None:
         self._binding = binding
+        self._campaign_reader = campaign_reader
         self._gate = PublicationGate(binding)
         self._resolvers = resolvers
         self._checkpoint = publication_checkpoint
@@ -410,7 +415,7 @@ class GoalEvidenceRecorder:
         """
         with self._publication(state, changes) as (publication_identity, stamped):
             try:
-                return evidence_ledger.record_or_verify_transaction(
+                transaction = evidence_ledger.record_or_verify_transaction(
                     self.log_dir,
                     state,
                     stamped,
@@ -420,8 +425,56 @@ class GoalEvidenceRecorder:
                     identity=publication_identity,
                     publication_checkpoint=self._checkpoint,
                 )
-            except AcceptanceLedgerError as exc:
+                # The campaign's results are in the ledger now: nothing is left to adopt.
+                campaign_accounting.mark_published(
+                    self._gate.store, self._binding.record_id, acceptance_facts
+                )
+            except (AcceptanceLedgerError, campaign_accounting.RegistrationFormatError) as exc:
                 raise AcceptanceRecordingError(str(exc)) from exc
+            return transaction
+
+    def register_campaign(self, campaign: StartedCampaign) -> None:
+        """Register a Simulation Campaign this run is about to start (ADR 0072).
+
+        Earlier campaigns are accounted for first, then the campaign is
+        registered with the freshness stamp of each Goal of its Target as
+        the files are now, so that its finished results can be adopted with
+        the contents they ran at if the campaign never publishes
+        (:mod:`booley.goals.campaign_accounting`). A run whose evidence the
+        gate discards registers nothing: nothing it observes will count.
+        """
+        store = self._gate.store
+        try:
+            with self._gate.publishing(()):
+                self._account(store)
+                campaign_accounting.register_campaign(
+                    store, self._binding, campaign, self._start_stamp
+                )
+        except EvidenceDiscarded:
+            return
+        except (AcceptanceLedgerError, GoalStoreError, ValueError) as exc:
+            raise AcceptanceRecordingError(
+                f"Simulation Campaign {campaign.manifest_path} cannot be registered: {exc}"
+            ) from exc
+
+    def _account(self, store: GoalStore) -> None:
+        """Bring earlier durable evidence into the ledger; this run's campaigns are its own."""
+        campaign_accounting.account_for_campaigns(
+            store,
+            self._binding.record_id,
+            reader=self._campaign_reader,
+            own_run=self._binding.invocation_id,
+        )
+
+    def _start_stamp(self, goal: RecordedGoal) -> dict[str, Any] | None:
+        """The source fingerprint detail of *goal*'s dependent files now; ``None`` if discarded."""
+        blank = CriterionChange(goal.spec.key, False, "outcome", {}, True, {})
+        try:
+            stamped = self._prepare_change(blank, goal.spec)
+        except EvidenceDiscarded:
+            return None
+        stamp = stamped.detail.get(SOURCE_FINGERPRINT_DETAIL_KEY)
+        return dict(cast("dict[str, Any]", stamp)) if isinstance(stamp, dict) else None
 
     @contextmanager
     def _publication(
@@ -432,6 +485,13 @@ class GoalEvidenceRecorder:
         keys = sorted({change.key for change in changes})
         identity = self.identity_for(keys)
         with self._gate.publishing(keys) as record:
+            # No new evidence before what earlier campaigns durably observed is in the ledger.
+            try:
+                self._account(self._gate.store)
+            except (AcceptanceLedgerError, GoalStoreError) as exc:
+                raise AcceptanceRecordingError(
+                    f"earlier Goal evidence cannot be accounted for: {exc}"
+                ) from exc
             yield identity, self._prepare(record, changes, state)
 
     def _require_unchanged_target(

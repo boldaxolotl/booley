@@ -70,7 +70,8 @@ def _record(
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Record one V1 observation of *key* with Test Run *rows*; return its stored detail."""
-    recorder = GoalEvidenceRecorder(bind(layout, run_id))
+    reader = getattr(layout, "campaign_reader", None)
+    recorder = GoalEvidenceRecorder(bind(layout, run_id), campaign_reader=reader)
     state = DevelopmentState.load(_state_file(layout), recorder.state_persistence())
     changes = state.set_criterion(key, met, detail={**(extra or {}), "test_runs": rows})
     recorder.record_changes(state, changes, invocation_id="ignored", producer="sim")
@@ -220,10 +221,44 @@ def test_rows_of_another_spec_revision_are_not_folded(two: SimpleNamespace) -> N
 # --- The stale-intent interleaving -----------------------------------------------
 
 
-def test_recovered_stale_intent_cannot_erase_an_intervening_failure(
+def test_stopped_transaction_is_completed_before_the_next_evidence_is_recorded(
     two: SimpleNamespace,
 ) -> None:
     """Campaign A freezes a passing intent and stops; B records a failure; A is recovered."""
+    passing = [run_row(A), run_row(B)]
+    campaign = "11111111-1111-4111-8111-111111111111"
+    binding = bind(two, "run-a")
+    stopped = GoalEvidenceRecorder(
+        binding, publication_checkpoint=_interrupt("before:acceptance_record")
+    )
+    with pytest.raises(_InterruptedError):
+        _transaction(two, stopped, campaign, passing)
+
+    # B's recorder completes A's transaction first, so B's failure folds after it.
+    failed = _record(two, "run-b", [run_row(A, "fail"), run_row(B)], met=False)
+    assert len(failed[LEDGER_DETAIL_KEY]["source_evidence"]) == 1
+    assert _status(two).reason.startswith("goal-test-run-failed")
+
+    # Recovering A now only verifies it: the failure stays the selected observation.
+    _transaction(two, GoalEvidenceRecorder(binding), campaign, passing)
+    assert _status(two).reason.startswith("goal-test-run-failed")
+    rerun = _record(two, "run-c", passing)
+    assert _outcomes(rerun) == {"a@1": "failed", "b@1": "passed"}
+    assert _status(two).reason.startswith("goal-test-run-failed")
+
+
+def test_recovered_stale_intent_cannot_erase_an_intervening_failure(
+    two: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The read-time check alone: a writer that did not complete A before recording B.
+
+    Recorders account for earlier transactions before they record, so this
+    interleaving needs that step switched off; status must still refuse a
+    ledger that predates a failure.
+    """
+    from booley.goals import campaign_accounting
+
+    monkeypatch.setattr(campaign_accounting, "account_for_campaigns", lambda *_a, **_k: None)
     passing = [run_row(A), run_row(B)]
     binding = bind(two, "run-a")
     stopped = GoalEvidenceRecorder(

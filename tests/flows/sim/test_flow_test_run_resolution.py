@@ -329,3 +329,42 @@ def test_a_goal_written_with_the_target_identity_is_not_listed_as_diagnostic(
     flow._with_diagnostic_test_run_note(result)
     assert "diagnostic_test_runs" not in result.detail
     assert result.report_text == "sim: ran"
+
+
+def test_every_published_manifest_is_registered_with_the_goal_run_before_it_runs(
+    tmp_path, monkeypatch
+):
+    """A campaign that never returns an outcome must already be known to its Goals."""
+    from booley.flows.campaign_results import StartedCampaign
+    from booley.flows.sim import flow as flow_module
+
+    class Registry(_GoalAdapter):
+        def __init__(self) -> None:
+            super().__init__(_frozen(_SUITE))
+            self.campaigns: list[StartedCampaign] = []
+
+        def register_campaign(self, campaign: StartedCampaign) -> None:
+            self.campaigns.append(campaign)
+
+    def started(path: Path) -> StartedCampaign:
+        return StartedCampaign(path, "id", "sha256:" + "0" * 64, ("sim",), True)
+
+    monkeypatch.setattr(flow_module, "started_campaign", started)
+    manifest = tmp_path / "campaign" / "manifest.json"
+
+    flow = _flow(tmp_path, monkeypatch)
+    registry = Registry()
+    flow.context.configure_flow_execution(registry)
+    published: list[Path] = []
+    publish = flow._manifest_publisher(published)
+    publish(manifest)
+    publish(manifest)  # a resume names the path again: registered once per invocation
+    assert [item.manifest_path for item in registry.campaigns] == [manifest.resolve()]
+
+    diagnostic = _flow(tmp_path, monkeypatch, "--diagnostic")
+    silent = Registry()
+    diagnostic.context.configure_flow_execution(silent)
+    diagnostic._manifest_publisher([])(manifest)
+    assert silent.campaigns == []
+    # Outside Goal Mode nothing wants to know.
+    _flow(tmp_path, monkeypatch)._manifest_publisher([])(manifest)

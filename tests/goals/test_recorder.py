@@ -445,9 +445,13 @@ def test_recovery_from_a_stale_instance_keeps_a_concurrently_selected_observatio
     second = concurrent.record_or_verify_transaction(
         other, changes, acceptance_facts=campaign_facts(), identity={}
     )
-    assert _disk_state(goal_mode)["acceptance_transactions"] == [second.transaction_id]
+    # Before it recorded anything, the concurrent run completed the crashed transaction
+    # (ADR 0072: no new evidence while an earlier transaction is left unselected).
+    first, last = _disk_state(goal_mode)["acceptance_transactions"]
+    assert last == second.transaction_id
 
     state, recovered = _v2(goal_mode, recovering, stale)
+    assert recovered.transaction_id == first
 
     assert state.criteria[LINT_KEY].met is False
     assert state.criteria[LINT_KEY].detail["warnings"] == 9

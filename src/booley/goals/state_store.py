@@ -205,6 +205,17 @@ def load_goal_state(store: GoalStore, record: GoalRecord) -> DevelopmentState:
     return declared_goal_state(record, record.worktree_path) if state is None else state
 
 
+def write_goal_state_file(path: Path, state: DevelopmentState) -> None:
+    """Atomically replace the Goal state file at *path* with *state*, stamped now.
+
+    For a writer that holds the record lock from its read of the file on:
+    every other writer holds that lock too, so nothing is lost.
+    """
+    state.last_updated = utc_now_rfc3339()
+    encoded = json.dumps(state.to_dict(), indent=2).encode("utf-8")
+    atomic_replace_bytes(path, encoded, mode=_STATE_FILE_MODE)
+
+
 # ---------------------------------------------------------------------------
 # The three-way merge
 # ---------------------------------------------------------------------------
