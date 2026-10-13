@@ -4353,6 +4353,31 @@ mod tests {
     /// Build an FST store from VCD text via the streaming build handler and
     /// load it back through the query-facing `ColumnCache` interface.
     #[test]
+    fn issue_1421_sampling_uses_last_same_tick_write() {
+        let transitions = vec![
+            (0, "0".to_string()),
+            (10, "1".to_string()),
+            (10, "0".to_string()),
+            (10, "1".to_string()),
+            (10, "0".to_string()),
+            (20, "1".to_string()),
+        ];
+        assert_eq!(value_at_tick(&transitions, 10), "0");
+        assert_eq!(value_at_tick(&transitions, 15), "0");
+        for before in 0..16 {
+            for duplicates in 1..64 {
+                for after in 0..16 {
+                    let mut records: Vec<_> = (0..before).map(|t| (t, t.to_string())).collect();
+                    records.extend((0..duplicates).map(|i| (20, i.to_string())));
+                    records.extend((0..after).map(|i| (30 + i, i.to_string())));
+                    assert_eq!(value_at_tick(&records, 20), (duplicates - 1).to_string());
+                    assert_eq!(value_at_tick(&records, 25), (duplicates - 1).to_string());
+                }
+            }
+        }
+    }
+
+    #[test]
     fn issue_1421_compressed_pairs_match_small_exhaustive_oracle() {
         for mask_a in 0u64..64 {
             let a: Vec<_> = (1..=6).filter(|c| mask_a & (1 << (c - 1)) != 0).collect();

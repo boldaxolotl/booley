@@ -4600,3 +4600,55 @@ fn issue_1418_signed_bounds() {
     assert!(err.contains("No data in range"), "{err}");
     issue_1418_wave(p, &["--async", "-t=-1t:0t"], &[0], &["0"]);
 }
+
+#[test]
+fn issue_1421_same_tick_samples_zero_window_and_reset_round_trip() {
+    for engine in ["serial", "parallel"] {
+        let body = "#0\n0!\nb0000 #\n0$\n1%\n#5\n1$\n#10\n0$\n#15\n1$\n1!\n0!\n1!\n0!\n#20\n0$\n#25\n1$\n1!\n0!\n1!\n#30\n0$\n#35\n1$\n#40\n0$\n";
+        let (_dir, store) = issue_1100_store(body, engine);
+        for command in ["find", "sample", "distance"] {
+            let mut flags = vec!["--with-reset"];
+            if command == "sample" {
+                flags.extend(["-s", "scalar"]);
+            }
+            let expected = match command {
+                "find" => "cycle 3 scalar 1",
+                "sample" => "3 scalar 1",
+                _ => "",
+            };
+            assert_eq!(
+                issue_1100_query(&store, command, "scalar", "rising", &flags),
+                expected
+            );
+            flags.extend(["-t", "0:0"]);
+            assert_eq!(
+                issue_1100_query(&store, command, "scalar", "'h1", &flags),
+                ""
+            );
+        }
+        assert_eq!(
+            issue_1100_query(
+                &store,
+                "find",
+                "scalar",
+                "change",
+                &["--async", "--with-reset", "--count"]
+            ),
+            "7"
+        );
+        let reset = ISSUE_1421_TIMELINE
+            .replace("1%\n", "0%\n")
+            .replace("#21\n", "#21\n1%\n");
+        let (_dir, store) = issue_1100_store(&reset, engine);
+        for cycle in ["1c", "3c"] {
+            let (out, err, code) =
+                issue_1100_run(&["value", &store, "--at", cycle, "-s", "scalar"]);
+            assert_eq!(code, 0, "{err}");
+            assert!(
+                out.lines()
+                    .any(|line| line.starts_with("scalar") && line.ends_with("= 1")),
+                "{out}"
+            );
+        }
+    }
+}
