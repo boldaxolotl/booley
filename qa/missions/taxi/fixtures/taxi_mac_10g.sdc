@@ -13,7 +13,7 @@ foreach qa_port [all_inputs] {
         lappend qa_data_inputs $qa_port
     }
 }
-foreach qa_clock_name {rx_clk tx_clk stat_clk ptp_clk ptp_sample_clk} {
+foreach qa_clock_name $qa_clock_port_names {
     set_input_delay -clock [get_clocks $qa_clock_name] -add_delay 0.0 $qa_data_inputs
     set_output_delay -clock [get_clocks $qa_clock_name] -add_delay 0.0 [all_outputs]
 }

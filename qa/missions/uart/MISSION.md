@@ -17,7 +17,7 @@ also exercises the host, auth, runtime, policy, Doctor and feedback surfaces.
   `spec/timing-addendum.md` and `spec/contract.md`. The contract file inlines
   registers/MMIO only; it omits timing, serial behavior, theory and programmer
   guidance, which the child reads from the separate allowed sources. Origin: a new, empty, run-owned Git repository.
-- Host: Docker with at least 6 GB free, plus artifact space; Verilator and Yosys come from the
+- Host: Docker with at least 6 GB free, plus artifact space; Verilator, Verible and Yosys come from the
   standard image. The evaluator needs cocotb 2.1.0 and Icarus outside the Sandbox.
 - Also: a Codex or Claude client; the previous published Booley release (upgrade and legacy
   cases); a digest-pinned external image with the same Booley build and EDA tools. Optional:
@@ -102,8 +102,7 @@ Try:
   child `prompts/interactive.md`: `qa_uart` interface plus minimal CTRL
   reset/read/write, an MMIO smoke test, and `sim_uart`, `lint_uart`, `lint_uart_verible`,
   `synth_uart`. Through MCP/Flows the smoke sim self-checks and passes, Verilator and Verible
-  lint are clean, Yosys
-  gives a fresh netlist and reports, then Doctor is clean.
+  lint are clean, Yosys gives a fresh netlist and reports, then Doctor is clean.
 - A fresh trace read back through B-Wave matches the stimulus. Commit the clean
   baseline before area 4. Run this Interactive area with no active Goal in the Project.
 Look for: supplied choices ignored, stale artifacts called fresh, MCP calls without matching
@@ -173,8 +172,7 @@ that succeeds only on the bounded-feedback subset.
 
 ### 7. final-regression — Final tree health (~15 min)
 Try: on the final accepted tree, run the full developer sim, Verilator and Verible lint, Yosys
-synthesis and
-Doctor. In Git, confirm a clean accepted commit, the local merge, ordinary source and core
+synthesis and Doctor. In Git, confirm a clean accepted commit, the local merge, ordinary source and core
 paths, and literal commit messages (Stealth is off).
 Look for: stale reports, Doctor drift after Goal work.
 

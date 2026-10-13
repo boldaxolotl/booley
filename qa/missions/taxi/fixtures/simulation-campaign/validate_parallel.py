@@ -15,6 +15,10 @@ The timeline document is the operator's own measurement of one parallel run:
   ``output_text``, and ``output`` (``path`` and ``sha256`` of the retained
   copy of the attempt's output file, relative to the timeline document).
 
+``token`` must equal the interval's test name: the fixture writes the test
+name into its output file, and the attempt's run log is searched for
+``+test=<token>``.
+
 Every other input is a document Booley wrote, read in place or from a copy.
 """
 
@@ -29,6 +33,9 @@ _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _EVIDENCE_FIELDS = {"path", "bytes", "sha256", "kind", "owner"}
 _SHARED_OUTPUT = "qa-shared-name.txt"
 _EXPECTED_TESTS = ["slow-first", "slow-fail", "slow-last"]
+_EXPECTED_GRADES = ["pass", "fail", "pass"]
+# The outer Job holds one heavy slot for as long as its Campaign runs.
+_OUTER_SLOTS = 1
 
 
 def _load(path: Path) -> dict[str, object]:
@@ -51,6 +58,29 @@ def _is_digest(value: object) -> bool:
     return isinstance(value, str) and _DIGEST.fullmatch(value) is not None
 
 
+def _is_timestamp(value: object) -> bool:
+    return type(value) is int
+
+
+def _is_name(value: object) -> bool:
+    return isinstance(value, str) and bool(value)
+
+
+def _relative(path: object, label: str) -> PurePosixPath:
+    """Return a contained relative path, rejecting absolute and parent-escaping ones."""
+    _need(_is_name(path), f"{label} path is missing")
+    relative = PurePosixPath(path)
+    _need(not relative.is_absolute() and ".." not in relative.parts, f"{label} path escapes")
+    return relative
+
+
+def _read_retained(root: Path, path: object, label: str) -> bytes:
+    """Read one retained regular file named by a relative path below ``root``."""
+    retained = root / _relative(path, label)
+    _need(retained.is_file() and not retained.is_symlink(), f"{label} file is not retained")
+    return retained.read_bytes()
+
+
 def _intervals(document: dict[str, object]) -> list[dict[str, object]]:
     value = document.get("intervals")
     _need(isinstance(value, list) and value, "process intervals are missing")
@@ -58,28 +88,33 @@ def _intervals(document: dict[str, object]) -> list[dict[str, object]]:
     for item in value:
         _need(isinstance(item, dict), "process interval is invalid")
         _need(
-            isinstance(item.get("start_ns"), int)
-            and isinstance(item.get("end_ns"), int)
+            _is_timestamp(item.get("start_ns"))
+            and _is_timestamp(item.get("end_ns"))
             and item["start_ns"] < item["end_ns"],
             "process interval bounds are invalid",
         )
         child = item.get("child_execution_id")
-        _need(child is None or (isinstance(child, str) and child), "child identity is invalid")
+        _need(child is None or _is_name(child), "child identity is invalid")
         intervals.append(item)
     return intervals
 
 
-def _peak_overlap(intervals: list[dict[str, object]]) -> int:
+def _peak_overlap(spans: list[tuple[int, int]]) -> int:
+    """Return the most half-open ``[start, end)`` spans active at one instant."""
     events = []
-    for item in intervals:
-        events.append((item["start_ns"], 1))
-        events.append((item["end_ns"], -1))
+    for start, end in spans:
+        events.append((start, 1))
+        events.append((end, -1))
     active = 0
     peak = 0
-    for _at_ns, delta in sorted(events, key=lambda event: (event[0], event[1])):
+    for _at_ns, delta in sorted(events):
         active += delta
         peak = max(peak, active)
     return peak
+
+
+def _process_spans(intervals: list[dict[str, object]]) -> list[tuple[int, int]]:
+    return [(item["start_ns"], item["end_ns"]) for item in intervals]
 
 
 def validate_heavy_cap(timeline_path: Path, max_heavy: int) -> dict[str, int]:
@@ -87,10 +122,10 @@ def validate_heavy_cap(timeline_path: Path, max_heavy: int) -> dict[str, int]:
     _need(max_heavy > 1, "heavy-cap case requires max_heavy greater than one")
     timeline = _load(timeline_path)
     intervals = _intervals(timeline)
-    peak = _peak_overlap(intervals)
+    peak = _peak_overlap(_process_spans(intervals))
     _need(1 < peak <= max_heavy, "simulator overlap does not prove the heavy cap")
     outer_id = timeline.get("outer_execution_id")
-    _need(isinstance(outer_id, str) and outer_id, "outer execution identity is missing")
+    _need(_is_name(outer_id), "outer execution identity is missing")
     samples = _slot_samples(timeline, max_heavy)
     final = timeline.get("final_slot_state")
     _need(
@@ -99,6 +134,7 @@ def validate_heavy_cap(timeline_path: Path, max_heavy: int) -> dict[str, int]:
     )
     transitioned = _validate_claim_transitions(timeline)
     _need(outer_id not in transitioned, "outer Job is recorded as a child claim")
+    _validate_claim_peak(transitioned, max_heavy)
     child_samples = {
         value
         for sample in samples
@@ -121,7 +157,7 @@ def _slot_samples(timeline: dict[str, object], max_heavy: int) -> list[dict[str,
         holders = sample.get("heavy_holders")
         waiters = sample.get("heavy_waiters")
         at_ns = sample.get("at_ns")
-        _need(isinstance(at_ns, int), "SlotStore sample timestamp is missing")
+        _need(_is_timestamp(at_ns), "SlotStore sample timestamp is missing")
         _need(at_ns >= previous_sample, "SlotStore samples are not timestamp ordered")
         previous_sample = at_ns
         _need(isinstance(holders, list), "heavy-holder sample is missing")
@@ -145,9 +181,9 @@ def _validate_claim_transitions(
         child = transition.get("child_execution_id")
         state = transition.get("state")
         at_ns = transition.get("at_ns")
-        _need(isinstance(child, str) and child, "claim child identity is missing")
+        _need(_is_name(child), "claim child identity is missing")
         _need(state in {"submitted", "promoted", "released"}, "claim state is invalid")
-        _need(isinstance(at_ns, int) and at_ns >= previous, "claim timestamps are invalid")
+        _need(_is_timestamp(at_ns) and at_ns >= previous, "claim timestamps are invalid")
         previous = at_ns
         by_child.setdefault(child, []).append(transition)
     _need(
@@ -158,6 +194,15 @@ def _validate_claim_transitions(
         "claim transitions do not end in exact release",
     )
     return by_child
+
+
+def _validate_claim_peak(transitions, max_heavy: int) -> None:
+    """Bound the slots held between samples: every promoted claim plus the outer Job."""
+    held = [(events[1]["at_ns"], events[2]["at_ns"]) for events in transitions.values()]
+    _need(
+        _peak_overlap(held) + _OUTER_SLOTS <= max_heavy,
+        "claim transitions exceed max_heavy",
+    )
 
 
 def _validate_sample_accounting(samples, outer_id, transitions) -> None:
@@ -208,7 +253,10 @@ def _validate_interval_accounting(intervals: list[dict[str, object]], transition
     _need(len(set(children)) == len(children), "process intervals reuse a child identity")
     _need(set(children) == set(transitions), "process intervals do not bind every exact child")
     _need(bool(borrowed), "no process ran on the borrowed outer slot")
-    _need(_peak_overlap(borrowed) == 1, "processes overlap on the borrowed outer slot")
+    _need(
+        _peak_overlap(_process_spans(borrowed)) == _OUTER_SLOTS,
+        "processes overlap on the borrowed outer slot",
+    )
     for interval in claimed:
         events = transitions[interval["child_execution_id"]]
         _need(events[1]["at_ns"] <= interval["start_ns"], "process started before promotion")
@@ -228,19 +276,15 @@ def validate_attempt_isolation(timeline_path: Path, campaign_path: Path) -> None
     directories = [item.get("run_directory") for item in intervals]
     tokens = [item.get("token") for item in intervals]
     work_items = [item.get("work_item_id") for item in intervals]
-    _need(
-        all(isinstance(value, str) and value for value in directories), "run directory is missing"
-    )
-    _need(all(isinstance(value, str) and value for value in tokens), "attempt token is missing")
-    _need(
-        all(isinstance(value, str) and value for value in work_items),
-        "work-item identity is missing",
-    )
+    _need(all(_is_name(value) for value in directories), "run directory is missing")
+    _need(all(_is_name(value) for value in tokens), "attempt token is missing")
+    _need(all(_is_name(value) for value in work_items), "work-item identity is missing")
     _need(len(set(directories)) == len(directories), "parallel run directories collide")
     _need(len(set(tokens)) == len(tokens), "parallel attempt tokens collide")
     _need(len(set(work_items)) == len(intervals), "process intervals reuse a work item")
     attempts = _attempt_directories(campaign_path)
     for item in intervals:
+        _need(item.get("token") == item.get("test"), "attempt token is not the test name")
         _need(item.get("token") == item.get("output_text"), "attempt output is contaminated")
         attempt_id = item.get("attempt_id")
         _need(
@@ -294,18 +338,13 @@ def _validate_retained_output(item: dict[str, object], evidence_root: Path) -> N
     artifact = item.get("output")
     _need(isinstance(artifact, dict), "output evidence is missing")
     path = artifact.get("path")
-    digest = artifact.get("sha256")
     _need(
         isinstance(path, str) and str(item["attempt_id"]) in path,
         "output path is not attempt-scoped",
     )
-    _need(_is_digest(digest), "output digest is invalid")
-    relative = Path(path)
-    _need(not relative.is_absolute() and ".." not in relative.parts, "output path escapes")
-    retained = evidence_root / relative
-    _need(retained.is_file() and not retained.is_symlink(), "output file is not retained")
-    raw = retained.read_bytes()
-    _need(_file_digest(raw) == digest, "output retained digest differs")
+    _need(_is_digest(artifact.get("sha256")), "output digest is invalid")
+    raw = _read_retained(evidence_root, path, "output")
+    _need(_file_digest(raw) == artifact["sha256"], "output retained digest differs")
     _need(raw.rstrip(b"\n") == str(token).encode(), "output retained token differs")
 
 
@@ -341,11 +380,8 @@ def _need_attempt_evidence(reference: object, attempt_id: object) -> None:
         "evidence is not a typed artifact reference",
     )
     _need(reference["owner"] == attempt_id, "evidence owner differs from the attempt")
-    _need(isinstance(reference["kind"], str) and reference["kind"], "evidence kind is missing")
-    path = reference["path"]
-    _need(isinstance(path, str) and path, "evidence path is missing")
-    relative = PurePosixPath(path)
-    _need(not relative.is_absolute() and ".." not in relative.parts, "evidence path escapes")
+    _need(_is_name(reference["kind"]), "evidence kind is missing")
+    _relative(reference["path"], "evidence")
     _need(type(reference["bytes"]) is int and reference["bytes"] > 0, "evidence size is invalid")
     _need(_is_digest(reference["sha256"]), "evidence digest is invalid")
 
@@ -353,12 +389,11 @@ def _need_attempt_evidence(reference: object, attempt_id: object) -> None:
 def _read_attempt_evidence(
     reference: object, attempt_id: object, attempt_directory: Path
 ) -> bytes:
+    """Authenticate one attempt-relative artifact reference against its retained file."""
     _need_attempt_evidence(reference, attempt_id)
-    retained = attempt_directory / reference["path"]
-    _need(retained.is_file() and not retained.is_symlink(), "log file is not retained")
-    raw = retained.read_bytes()
-    _need(len(raw) == reference["bytes"], "log retained size differs")
-    _need(_file_digest(raw) == reference["sha256"], "log retained digest differs")
+    raw = _read_retained(attempt_directory, reference["path"], "evidence")
+    _need(len(raw) == reference["bytes"], "evidence retained size differs")
+    _need(_file_digest(raw) == reference["sha256"], "evidence retained digest differs")
     return raw
 
 
@@ -370,11 +405,11 @@ def validate_continue_after_failure(
     manifest = _load(manifest_path)
     expected_ids = _manifest_work_item_ids(manifest)
     results = [_load(path) for path in result_paths]
-    _need(len(results) == 3, "not every work item published a terminal result")
+    _need(len(results) == len(_EXPECTED_TESTS), "not every work item published a terminal result")
     result_order = [_single_observation(item).get("test") for item in results]
     grades = [item.get("grade") for item in results]
     _need(result_order == _EXPECTED_TESTS, "result order differs from the manifest")
-    _need(grades == ["pass", "fail", "pass"], "terminal grades differ")
+    _need(grades == _EXPECTED_GRADES, "terminal grades differ")
     # Durable records bind the manifest by its bytes without the trailing newline.
     manifest_digest = _file_digest(manifest_raw.rstrip(b"\n"))
     identity = {
@@ -382,7 +417,7 @@ def validate_continue_after_failure(
         "manifest_sha256": manifest_digest,
         "workload_sha256": _workload_digest(manifest),
     }
-    _need(isinstance(identity["campaign_id"], str), "manifest Campaign identity is missing")
+    _need(_is_name(identity["campaign_id"]), "manifest Campaign identity is missing")
     for result, work_item_id in zip(results, expected_ids, strict=True):
         _validate_result_identity(result, work_item_id, identity)
     attempt_ids = [result["attempt_id"] for result in results]
@@ -434,8 +469,7 @@ def _validate_result_identity(
     _need(
         all(result.get(key) == value for key, value in identity.items())
         and result.get("work_item_id") == work_item_id
-        and isinstance(attempt_id, str)
-        and bool(attempt_id)
+        and _is_name(attempt_id)
         and isinstance(evidence, list)
         and bool(evidence),
         "Simulation Results do not authenticate manifest/work-item/attempt identity",

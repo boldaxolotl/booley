@@ -11,6 +11,9 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 TAXI = ROOT / "qa/missions/taxi/fixtures/simulation-campaign"
+# Documents captured unchanged from one Taxi QA run; ``timeline.json`` is the operator's
+# measurement of that run with its SlotStore samples thinned.
+CAPTURED = ROOT / "tests/qa/fixtures/taxi_campaign/parallel"
 UART = ROOT / "qa/missions/uart/fixtures/simulation-campaign"
 CAMPAIGN_ID = "9904b376-4087-4d49-a9be-55c4b8e27da8"
 OUTER = "539e1228e49a48de8b6f967edbe31ce1"
@@ -133,36 +136,40 @@ def _write_attempt(campaign: Path, index: int, common: dict[str, str]) -> None:
     )
     _write_json(
         _work_item_directory(campaign, index) / "result.json",
-        {
-            "$schema": "booley.simulation-result/v2",
-            **identity,
-            "attempt_ordinal": 1,
-            "evidence": [
-                {
-                    "bytes": len(log),
-                    "kind": "live_run_log",
-                    "owner": ATTEMPTS[index],
-                    "path": "evidence/0001-run.log",
-                    "sha256": _digest(log),
-                }
-            ],
-            "grade": GRADES[index],
-            "observations": [
-                {
-                    "assertion_count": 0,
-                    "assertions": "clean",
-                    "cycle_count": None,
-                    "detail": {"reason": ""},
-                    "execution": "completed",
-                    "failure_class": None if GRADES[index] == "pass" else "design",
-                    "functional": GRADES[index],
-                    "test": TESTS[index],
-                }
-            ],
-            "runtime_inputs": [],
-            "state": "completed",
-        },
+        _result(index, identity, log),
     )
+
+
+def _result(index: int, identity: dict[str, str], log: bytes) -> dict[str, object]:
+    return {
+        "$schema": "booley.simulation-result/v2",
+        **identity,
+        "attempt_ordinal": 1,
+        "evidence": [
+            {
+                "bytes": len(log),
+                "kind": "live_run_log",
+                "owner": ATTEMPTS[index],
+                "path": "evidence/0001-run.log",
+                "sha256": _digest(log),
+            }
+        ],
+        "grade": GRADES[index],
+        "observations": [
+            {
+                "assertion_count": 0,
+                "assertions": "clean",
+                "cycle_count": None,
+                "detail": {"reason": ""},
+                "execution": "completed",
+                "failure_class": None if GRADES[index] == "pass" else "design",
+                "functional": GRADES[index],
+                "test": TESTS[index],
+            }
+        ],
+        "runtime_inputs": [],
+        "state": "completed",
+    }
 
 
 def _sample(at_ns: int, holders: list[str], waiters: list[str]) -> dict[str, object]:
@@ -247,6 +254,70 @@ def test_taxi_parallel_validator_accepts_published_campaign_shape(validator, evi
     )
 
 
+def test_taxi_heavy_cap_accepts_captured_run(validator) -> None:
+    assert validator.validate_heavy_cap(CAPTURED / "timeline.json", 3) == {
+        "max_heavy": 3,
+        "peak_simulators": 3,
+    }
+
+
+def test_taxi_attempt_isolation_accepts_captured_run(validator) -> None:
+    validator.validate_attempt_isolation(CAPTURED / "timeline.json", CAPTURED / "campaign")
+
+
+def test_taxi_continuation_accepts_captured_run(validator) -> None:
+    campaign = CAPTURED / "campaign"
+    validator.validate_continue_after_failure(
+        campaign / "manifest.json",
+        campaign / "summary.json",
+        sorted(campaign.glob("work-items/*/result.json")),
+    )
+
+
+def test_taxi_heavy_cap_rejects_overshoot_between_samples(validator, tmp_path: Path) -> None:
+    """Two child claims overlap in [5, 7) while no sample looks: three slots under a cap of two."""
+    intervals = [(None, 1, 3), ("child-a", 2, 4), ("child-b", 6, 8)]
+    timeline = tmp_path / "timeline.json"
+    _write_json(
+        timeline,
+        {
+            "outer_execution_id": OUTER,
+            "slot_samples": [
+                _sample(2, [OUTER, "child-a"], []),
+                _sample(8, [OUTER, "child-b"], []),
+            ],
+            "final_slot_state": {"heavy_holders": [], "heavy_waiters": []},
+            "claim_transitions": [
+                {"at_ns": 2, "child_execution_id": "child-a", "state": "submitted"},
+                {"at_ns": 2, "child_execution_id": "child-a", "state": "promoted"},
+                {"at_ns": 5, "child_execution_id": "child-b", "state": "submitted"},
+                {"at_ns": 5, "child_execution_id": "child-b", "state": "promoted"},
+                {"at_ns": 7, "child_execution_id": "child-a", "state": "released"},
+                {"at_ns": 9, "child_execution_id": "child-b", "state": "released"},
+            ],
+            "intervals": [
+                {
+                    "attempt_id": f"attempt-{index}",
+                    "child_execution_id": child,
+                    "start_ns": start,
+                    "end_ns": end,
+                }
+                for index, (child, start, end) in enumerate(intervals)
+            ],
+        },
+    )
+    with pytest.raises(ValueError, match="claim transitions exceed max_heavy"):
+        validator.validate_heavy_cap(timeline, 2)
+    assert validator.validate_heavy_cap(timeline, 3) == {"max_heavy": 3, "peak_simulators": 2}
+
+
+def _unobserved_process(document) -> None:
+    document["slot_samples"] = [
+        sample for sample in document["slot_samples"] if sample["at_ns"] not in (9, 10)
+    ]
+    document["intervals"][2].update(start_ns=8, end_ns=10)
+
+
 def _drop_promotion(document) -> None:
     document["claim_transitions"] = [
         item
@@ -283,6 +354,7 @@ def _early_child_process(document) -> None:
         (_unclaimed_child_lane, "bind every exact child"),
         (_outer_absent_while_running, "omits the borrowed outer Job"),
         (_early_child_process, "started before promotion"),
+        (_unobserved_process, "no SlotStore sample observed a simulator process"),
         (
             lambda document: document["final_slot_state"]["heavy_holders"].append(OUTER),
             "final SlotStore inspection",
@@ -329,7 +401,7 @@ def test_taxi_attempt_isolation_rejects_tampered_evidence(validator, evidence) -
     log = _attempt_directory(campaign, 1) / "evidence/0001-run.log"
     original = log.read_bytes()
     log.write_bytes(original.replace(b"done", b"gone"))
-    with pytest.raises(ValueError, match="log retained digest differs"):
+    with pytest.raises(ValueError, match="evidence retained digest differs"):
         validator.validate_attempt_isolation(timeline, campaign)
     log.write_bytes(original)
     validator.validate_attempt_isolation(timeline, campaign)
@@ -376,6 +448,40 @@ def _swap_child(campaign: Path) -> None:
     ],
 )
 def test_taxi_attempt_isolation_rejects_inconsistent_campaign_records(
+    validator, evidence, mutation, message
+) -> None:
+    timeline, campaign = evidence
+    mutation(campaign)
+    with pytest.raises(ValueError, match=message):
+        validator.validate_attempt_isolation(timeline, campaign)
+
+
+def _misname_attempt_directory(campaign: Path) -> None:
+    directory = _attempt_directory(campaign, 0)
+    directory.rename(directory.with_name("0001-someone-else"))
+
+
+def _duplicate_attempt(campaign: Path) -> None:
+    source = _attempt_directory(campaign, 0)
+    target = _work_item_directory(campaign, 1) / "attempts" / f"0002-{ATTEMPTS[0]}"
+    target.mkdir()
+    (target / "attempt.json").write_bytes((source / "attempt.json").read_bytes())
+
+
+def _remove_attempt_records(campaign: Path) -> None:
+    for record in campaign.glob("work-items/*/attempts/*/attempt.json"):
+        record.unlink()
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (_misname_attempt_directory, "does not name its Simulation Attempt"),
+        (_duplicate_attempt, "Simulation Attempt identity repeats"),
+        (_remove_attempt_records, "Campaign has no Simulation Attempts"),
+    ],
+)
+def test_taxi_attempt_isolation_rejects_broken_attempt_layout(
     validator, evidence, mutation, message
 ) -> None:
     timeline, campaign = evidence

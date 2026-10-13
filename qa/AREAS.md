@@ -72,7 +72,7 @@ timebox. A row whose areas are all optional is not covered by a primary run.
 | Feedback reporting | [uart/interactive-surface](missions/uart/MISSION.md) |
 | Documentation usability | [picorv32/host-inventory](missions/picorv32/MISSION.md) (optional), [picorv32/setup](missions/picorv32/MISSION.md), [picorv32/goal-enter](missions/picorv32/MISSION.md), [picorv32/goal-change](missions/picorv32/MISSION.md), [taxi/cleanup](missions/taxi/MISSION.md), [taxi/final-regression](missions/taxi/MISSION.md), [taxi/interactive](missions/taxi/MISSION.md), [taxi/goal-repair](missions/taxi/MISSION.md), [taxi/setup](missions/taxi/MISSION.md), [taxi/goal-observability](missions/taxi/MISSION.md), [uart/evaluate](missions/uart/MISSION.md), [uart/goal-feature](missions/uart/MISSION.md), [uart/gui-client](missions/uart/MISSION.md) (optional), [uart/interactive-surface](missions/uart/MISSION.md) |
 | Verilator simulation integration | [coverage/cov-collect](missions/coverage/MISSION.md), [taxi/baseline](missions/taxi/MISSION.md), [taxi/campaign](missions/taxi/MISSION.md) |
-| Verilator lint integration | [picorv32/setup](missions/picorv32/MISSION.md) |
+| Verilator lint integration | [picorv32/setup](missions/picorv32/MISSION.md), [taxi/lint-synth](missions/taxi/MISSION.md), [uart/setup-interactive](missions/uart/MISSION.md) |
 | Icarus simulation integration | [picorv32/setup](missions/picorv32/MISSION.md) |
 | Verible lint integration | [taxi/lint-synth](missions/taxi/MISSION.md), [uart/setup-interactive](missions/uart/MISSION.md) |
 | Yosys logical synthesis integration | [taxi/lint-synth](missions/taxi/MISSION.md) |

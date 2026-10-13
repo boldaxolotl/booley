@@ -95,8 +95,8 @@ Intent: honest lint/synthesis outcomes; physical timing never faked.
 Try:
 - Verilator `lint_mac_10g` (default warning set, flat wrapper top) is clean. Verible
   `lint_mac_10g_verible` fails with the syntax error at `taxi_axis_xgmii_rx_64.sv:589`, reported
-  as a syntax error naming Verible. Clean, warning, syntax-error and missing-tool inputs give
-  distinct outcomes. A cross-Target duplicate is one finding with provenance; a native waiver waives
+  as a syntax error naming Verible. On `lint_mac_10g`, clean, warning, syntax-error and
+  missing-tool inputs give distinct outcomes. A cross-Target duplicate is one finding with provenance; a native waiver waives
   only its finding; nonfatal warnings keep rc and report distinct; a file scope lints only those
   files; restoring gives a fresh clean result.
 - `synth_mac_10g` is logical Yosys with slang; its top is a Project-owned flat wrapper around
@@ -234,7 +234,7 @@ Try:
   `$booley-goal` plus `goals/repair.md` and only bounded visible diagnostics.
   Require the child's fresh reproduction before editing and evidence-based diagnosis.
 - Repair must be byte-identical to upstream; both full sims and elaborations
-  pass, lint is clean, logical cells +0%, physical cells/critical path +0% with
+  pass, `lint_mac_10g` is clean, logical cells +0%, physical cells/critical path +0% with
   identical SDC/library/recipe. RTL bugs review is clean; protocol/spec reviews done.
 - Finish, save package/history and integrate the printed branches using the shared rules. On failure explicitly
   abandon, keep checkpoint/report/diff in evidence and restore post-observability state.
@@ -275,16 +275,19 @@ Try:
   sampling the SlotStore: overlap >1 and ≤3 counting the outer job, each `qa-shared-name.txt` in its
   own attempt, pass/fail/pass in manifest order with strict `fail`. Cross-check with
   `validate_parallel.py`; record the sampled timeline in the format its module docstring defines.
-- Kill the owned producer mid Taxi Cocotb multi-test batch; resume from the manifest → one new
-  attempt rerunning the whole batch. The same ordered `test` array over MCP → typed artifact references, ≤32
-  observations, exact truncation metadata, same exit code (cross-check `validate_phase5.py`).
+- Kill the owned producer mid Taxi Cocotb multi-test batch and copy the interrupted attempt's
+  `attempt.json`; resume from the manifest → one new attempt rerunning the whole batch
+  (cross-check `validate_phase5.py` with the Campaign directory and that copy). The same ordered
+  `test` array over MCP → authenticated artifact references, ≤32 observations, exact truncation
+  metadata, same exit code; keep the MCP run's report invocation directory and pass it to
+  `validate_phase5.py`.
 Look for: per-test rebuilds, cap overshoot, cross-attempt files, fail-fast omissions.
 
 ### 13. final-regression — Final state (~20 min)
 Depends on: area 10 merged; else use the latest trustworthy state and say which.
 Try:
-- Rerun plain/deep Doctor, both sims, Verible, logical and fresh physical synthesis, B-Wave PFC
-  checks. Pre-existing Taxi bytes match the pin; only `qa/taxi_eth_mac_10g/` and the ordinary
+- Rerun plain/deep Doctor, both sims, `lint_mac_10g` (clean), `lint_mac_10g_verible` (the
+  expected syntax error), logical and fresh physical synthesis, B-Wave PFC checks. Pre-existing Taxi bytes match the pin; only `qa/taxi_eth_mac_10g/` and the ordinary
   Target changed.
 
 ### 14. cleanup — Product cleanup (~20 min)
@@ -302,8 +305,8 @@ Try:
   paths, not `.f` hops.
 - slang is mandatory (sv2v cannot handle the interfaces). `estimated_fmax_mhz` is not physical
   timing.
-- `taxi_eth_mac_10g` has interface ports, so slang cannot take it as a top: synthesis and lint use
-  a Project-owned flat wrapper. slang also rejects `$size` of an interface array and some static
+- `taxi_eth_mac_10g` has interface ports, so slang cannot take it as a top: synthesis uses a
+  Project-owned flat wrapper, and `lint_mac_10g` lints that same top so both check one hierarchy. slang also rejects `$size` of an interface array and some static
   functions; Project-owned synthesis-only copies of those files are allowed, with the diff
   recorded as a stated deviation. Taxi files stay untouched.
 - cocotb 2.0.1 from upstream `tox.ini` does not install on the Sandbox's Python 3.14; the
