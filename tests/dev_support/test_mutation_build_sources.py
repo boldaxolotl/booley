@@ -273,8 +273,17 @@ def test_identical_basename_dependency_uses_declaring_core_identity(tmp_path, de
     assert dependency_export.read_bytes() == dependency_source.read_bytes() == source.read_bytes()
 
 
-def test_every_proven_alias_and_duplicate_entry_is_mutated_once(tmp_path):
-    source, staged, variants, resolved, edam = _fixture(tmp_path)
+@pytest.mark.parametrize("newline", [b"\n", b"\r\n"])
+def test_every_proven_alias_and_duplicate_entry_is_mutated_once(tmp_path, newline):
+    source, staged, _variants, resolved, edam = _fixture(tmp_path)
+    pristine = b"assign y = a + b;" + newline
+    source.write_bytes(pristine)
+    staged.write_bytes(pristine)
+    variants = MutationVariantPlan.resolve(
+        [MutationSpec(1, "operator", "nested/rtl/dut.sv", 1, "a + b", "a - b")],
+        tmp_path,
+        ["nested/rtl/dut.sv"],
+    )
     core = tmp_path / "nested/dut.core"
     data = yaml.safe_load(core.read_text())
     data["filesets"]["alias"] = {"files": [{"rtl/dut.sv": {"copyto": "alias/dut.sv"}}]}
@@ -288,8 +297,8 @@ def test_every_proven_alias_and_duplicate_entry_is_mutated_once(tmp_path):
     with (Path(resolved.build_root) / "dut.scr").open("a") as stream:
         stream.write("\nalias/dut.sv")
     materialize_build_mutation(variants, 1, tmp_path, resolved)
-    assert staged.read_bytes() == alias.read_bytes() == b"assign y = a - b;\n"
-    assert source.read_bytes() == b"assign y = a + b;\n"
+    assert staged.read_bytes() == alias.read_bytes() == pristine.replace(b"a + b", b"a - b")
+    assert source.read_bytes() == pristine
 
 
 @pytest.mark.parametrize("declared", ["acme:lib:dut", "dut"])
@@ -309,8 +318,8 @@ def test_shorthand_core_identity_is_canonicalized(tmp_path, declared):
     resolved.edam_path.write_text(yaml.safe_dump(edam))
     (Path(resolved.build_root) / "dut.scr").write_text(name)
     materialize_build_mutation(variants, 1, tmp_path, resolved)
-    assert new_staged.read_bytes() == b"assign y = a - b;\n"
-    assert source.read_bytes() == b"assign y = a + b;\n"
+    assert new_staged.read_bytes() == staged.read_bytes().replace(b"a + b", b"a - b")
+    assert source.read_bytes() == staged.read_bytes()
 
 
 @pytest.mark.parametrize("shadow_location", ["include", "source", "working_directory"])
@@ -351,3 +360,20 @@ def test_posix_response_tokens_keep_escaped_space_contract():
     assert _response_tokens(r"src/private\ core/dut.sv", windows=False) == [
         "src/private core/dut.sv"
     ]
+
+
+def test_equivalent_edam_path_spelling_keeps_declaring_core_provenance(tmp_path):
+    source, staged, variants, resolved, edam = _fixture(tmp_path)
+    edam["files"][0]["name"] = "src//acme_lib_dut_1/./rtl/dut.sv"
+    resolved.edam_path.write_text(yaml.safe_dump(edam))
+    materialize_build_mutation(variants, 1, tmp_path, resolved)
+    assert staged.read_bytes() == source.read_bytes().replace(b"a + b", b"a - b")
+
+
+def test_equivalent_alias_owned_by_another_core_is_rejected(tmp_path):
+    source, staged, variants, resolved, edam = _fixture(tmp_path)
+    edam["files"].append({"name": "src//acme_lib_dut_1/./rtl/dut.sv", "core": "other:lib:dut:1"})
+    resolved.edam_path.write_text(yaml.safe_dump(edam))
+    with pytest.raises(MutationVariantError, match="ambiguous compiler alias provenance"):
+        materialize_build_mutation(variants, 1, tmp_path, resolved)
+    assert staged.read_bytes() == source.read_bytes()

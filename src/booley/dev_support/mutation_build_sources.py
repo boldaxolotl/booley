@@ -155,11 +155,15 @@ def materialize_build_mutation(
         entries = [
             entry
             for entry in edam["files"]
-            if entry.get("core") == vlnv and entry.get("name") == name
+            if entry.get("core") == vlnv and Path(entry.get("name", "")) == Path(name)
         ]
         if not entries:
             continue  # A declaration in an unselected fileset is not consumed.
-        owners = {entry.get("core") for entry in edam["files"] if entry.get("name") == name}
+        owners = {
+            entry.get("core")
+            for entry in edam["files"]
+            if Path(entry.get("name", "")) == Path(name)
+        }
         if owners != {vlnv}:
             raise MutationVariantError(f"ambiguous compiler alias provenance: {name}")
         path = _private_path(root, name)
