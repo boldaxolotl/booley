@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
 
 from booley.core.boundary import as_str
-from booley.criteria.evidence_ledger import validated_evidence_records
+from booley.criteria.evidence_ledger import AcceptanceLedgerError, validated_evidence_records
+from booley.criteria.state import DevelopmentState
+from booley.flows.campaign_results import CampaignResultsReader
+from booley.goals import campaign_accounting
 from booley.goals.apply_barrier import pending_applies
 from booley.goals.change_policy import conflict
 from booley.goals.checkout import CheckoutError, GoalCheckout, branch_ref
@@ -24,7 +29,14 @@ from booley.goals.proposals import ProposalView, list_proposals
 from booley.goals.recorder import GOAL_SCOPE
 from booley.goals.state_store import load_goal_state
 from booley.goals.store import GoalStore, GoalStoreError
+from booley.goals.test_run_freezing import TargetPlans, ensure_test_run_resolutions
+from booley.goals.test_run_goals import names_test_runs
+from booley.goals.test_run_status import TestRunJudgement, judge_test_runs
 from booley.goals.warnings import goal_warnings, protected_warnings
+
+_STATE_CONFLICT = "state conflicts with immutable evidence"
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -35,6 +47,11 @@ class GoalStatus:
     status: Literal["met", "unmet", "stale"]
     evidence_summary: str
     reason: str = ""
+    #: The Goal's frozen Test Runs with their outcomes (ADR 0072); ``None``
+    #: for a Goal that is not judged by Test Runs.
+    test_runs: TestRunJudgement | None = None
+    #: The Goal state differs from its selected immutable observation.
+    state_conflict: bool = False
     presentation: GoalPresentation | None = None
 
 
@@ -116,25 +133,9 @@ def _build_status(
     drift = ("Goal apply is interrupted; recovery is required" if interrupted else "") or (
         protected[0] if protected else checkout_violation(store, record, root)
     )
-    latest = _latest_evidence(paths.logs_dir, state)
-    goals = tuple(
-        replace(
-            _goal_status(
-                goal,
-                state.criteria.get(goal.spec.key),
-                latest.get(goal.spec.key),
-                record,
-                root,
-                drift,
-                resolvers,
-            ),
-            presentation=goal_presentation(
-                goal.spec,
-                _entry_facts(state.criteria.get(goal.spec.key)),
-            ),
-        )
-        for goal in record.goals
-    )
+    unaccounted = campaign_accounting.unaccounted_goals(store, record, state)
+    goals = _goal_statuses(record, state, paths.logs_dir, root, drift, resolvers, unaccounted)
+    goals = _with_unfinished_runs(goals, campaign_accounting.started_without_result(store, record))
     return GoalStatusView(
         record,
         goals,
@@ -143,6 +144,57 @@ def _build_status(
         proposals,
         _proposal_conflicts(proposals, record),
         interrupted,
+    )
+
+
+def _goal_statuses(
+    record: GoalRecord,
+    state: DevelopmentState,
+    logs_dir: Path,
+    root: Path,
+    drift: str,
+    resolvers: GoalFreshnessResolvers,
+    unaccounted: Mapping[str, str],
+) -> tuple[GoalStatus, ...]:
+    """Every Goal judged by its selected observation, then by its frozen Test Runs.
+
+    A Goal named in *unaccounted* has durable evidence that is not in its
+    ledger yet (ADR 0072): it is unmet with that reason whatever the ledger
+    says, because what is missing may be a failure.
+    """
+    history = validated_evidence_records(GOAL_SCOPE, logs_dir, state, {})
+    latest = {row["criterion"]: row for row in history if row["role"] == "candidate"}
+    plans = TargetPlans(root)
+    statuses: list[GoalStatus] = []
+    for goal in record.goals:
+        key = goal.spec.key
+        evidence = latest.get(key)
+        entry = state.criteria.get(key)
+        status = _goal_status(goal, entry, evidence, record, root, drift, resolvers)
+        status = _with_test_runs(status, goal, record, evidence, history, plans)
+        status = replace(status, presentation=goal_presentation(goal.spec, _entry_facts(entry)))
+        if key in unaccounted and status.status != "unmet":
+            status = replace(
+                status,
+                status="unmet",
+                evidence_summary="evidence is incomplete",
+                reason=unaccounted[key],
+            )
+        statuses.append(status)
+    return tuple(statuses)
+
+
+def _with_unfinished_runs(
+    goals: tuple[GoalStatus, ...], notes: Mapping[str, str]
+) -> tuple[GoalStatus, ...]:
+    """Say of an unmet Goal that a frozen run of it was started and left no result."""
+    return tuple(
+        replace(
+            goal, reason=f"{goal.reason}; {notes[goal.key]}" if goal.reason else notes[goal.key]
+        )
+        if goal.key in notes and goal.status == "unmet"
+        else goal
+        for goal in goals
     )
 
 
@@ -162,9 +214,30 @@ def _proposal_conflicts(
     )
 
 
-def _latest_evidence(logs_dir: Path, state: Any) -> dict[str, dict[str, Any]]:
-    records = validated_evidence_records(GOAL_SCOPE, logs_dir, state, {})
-    return {payload["criterion"]: payload for payload in records if payload["role"] == "candidate"}
+def _with_test_runs(
+    status: GoalStatus,
+    goal: RecordedGoal,
+    record: GoalRecord,
+    evidence: dict[str, Any] | None,
+    history: list[dict[str, Any]],
+    plans: TargetPlans,
+) -> GoalStatus:
+    """*status* judged by the Goal's frozen Test Runs as well (ADR 0072).
+
+    A Goal that is judged by Test Runs is met only when they allow it; when
+    they do not, it is unmet with the named reason. Two verdicts keep their
+    own reason: state that conflicts with its evidence, and stale evidence,
+    unless the frozen runs themselves can no longer be judged (pending,
+    gone or changed): rerunning cannot cure that.
+    """
+    if not names_test_runs(goal.spec):
+        return status
+    judgement = judge_test_runs(goal, record, evidence, history, plans)
+    stale = status.status == "stale" and not judgement.blocking
+    if not judgement.reason or status.state_conflict or stale:
+        return replace(status, test_runs=judgement)
+    summary = status.evidence_summary if status.status == "unmet" else "Test Runs do not pass"
+    return GoalStatus(status.key, "unmet", summary, judgement.reason, judgement)
 
 
 def _goal_status(
@@ -179,12 +252,8 @@ def _goal_status(
     key = goal.spec.key
     projection = "" if entry is None else _projection_violation(entry, evidence)
     if entry is not None and projection:
-        return GoalStatus(
-            key,
-            "stale" if entry.met else "unmet",
-            "state conflicts with immutable evidence",
-            projection,
-        )
+        verdict: Literal["stale", "unmet"] = "stale" if entry.met else "unmet"
+        return GoalStatus(key, verdict, _STATE_CONFLICT, projection, state_conflict=True)
     if entry is None or not entry.met:
         metric = (
             "no evidence"
@@ -232,8 +301,15 @@ def _revision_violation(
     return ""
 
 
-def select_status(store: GoalStore, work_dir: Path) -> GoalStatusSelection:
-    """Show this worktree's occupant, otherwise all occupying records; report corruption."""
+def select_status(
+    store: GoalStore, work_dir: Path, *, campaign_reader: CampaignResultsReader | None = None
+) -> GoalStatusSelection:
+    """Show this worktree's occupant, otherwise all occupying records; report corruption.
+
+    *campaign_reader* reads the finished results of Simulation Campaigns that
+    never published; the entry point supplies the Simulation Flow's. Without
+    it such campaigns stay unaccounted and their Goals read unmet.
+    """
     from booley.goals.store import GoalRecordCorruptError
 
     if not work_dir.is_dir():
@@ -241,11 +317,10 @@ def select_status(store: GoalStore, work_dir: Path) -> GoalStatusSelection:
     scan = store.list_active()
     if scan.corrupt:
         raise GoalRecordCorruptError(scan.corrupt)
-    record = (
-        store.active_for_worktree(work_dir)
-        if GoalCheckout(work_dir).containing_repository() is not None
-        else None
-    )
+    found = GoalCheckout(work_dir).containing_repository()
+    record = store.active_for_worktree(work_dir) if found is not None else None
+    if record is not None and found is not None:
+        record = _brought_up_to_date(store, record, found[0], campaign_reader)
     records = (record,) if record is not None else scan.records
     views = tuple(
         build_status(store, rec, work_dir=work_dir if rec is record else None) for rec in records
@@ -253,6 +328,39 @@ def select_status(store: GoalStore, work_dir: Path) -> GoalStatusSelection:
     return GoalStatusSelection(views, project_wide=record is None)
 
 
-def status_views(store: GoalStore, work_dir: Path) -> tuple[GoalStatusView, ...]:
-    """Retain the tuple-only interface for observational consumers."""
-    return select_status(store, work_dir).views
+def _brought_up_to_date(
+    store: GoalStore, record: GoalRecord, root: Path, campaign_reader: CampaignResultsReader | None
+) -> GoalRecord:
+    """Do what a status read of the worktree's own record may write (ADR 0072).
+
+    Two things, each under the record lock and each one atomic step at a
+    time: pending Test Run slots that can be resolved now are frozen in
+    ``record.json``, so status shows what a run would be judged against; and
+    evidence that earlier Simulation Campaigns durably observed but never
+    published is brought into the ledger and the Goal state. Neither adds a
+    way for a status read to fail: when one of them cannot be done the slots
+    read pending, the evidence unaccounted, and the next read tries again.
+    The read itself (:func:`build_status`) still takes the record lock and
+    raises when it cannot have it, as it always did.
+    """
+    try:
+        record = ensure_test_run_resolutions(store, record.id, root)
+    except GoalStoreError as exc:
+        logger.warning("Test Runs of Goal Mode %s were not resolved now: %s", record.id, exc)
+    try:
+        campaign_accounting.account_for_campaigns(store, record.id, reader=campaign_reader)
+    except (GoalStoreError, AcceptanceLedgerError) as exc:
+        logger.warning("evidence of Goal Mode %s was not accounted for now: %s", record.id, exc)
+    return record
+
+
+def status_views(
+    store: GoalStore, work_dir: Path, *, campaign_reader: CampaignResultsReader | None = None
+) -> tuple[GoalStatusView, ...]:
+    """The status of the worktree's Goal Mode, or of every occupying record.
+
+    Not a pure read for the worktree's own record: see :func:`select_status`,
+    which may freeze pending Test Run slots and account for unpublished
+    campaign evidence before it reads.
+    """
+    return select_status(store, work_dir, campaign_reader=campaign_reader).views

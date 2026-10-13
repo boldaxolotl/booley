@@ -30,6 +30,7 @@ from booley.goals.model import (
     TargetGoalArg,
     WorktreeIdentity,
     goal_arg_json_schema,
+    goal_arg_to_json,
     parse_goal_arg,
     parse_goal_args,
 )
@@ -417,3 +418,80 @@ def test_rooted_and_drive_relative_spec_paths_are_refused(spec: str) -> None:
         parse_goal_arg(
             {"family": "REVIEW", "review": "rtl_spec", "verdict": "clean", "spec": spec}
         )
+
+
+# ---------------------------------------------------------------------------
+# Goals that name Test Runs (ADR 0072)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("test", ["smoke", "stress+soak", "stress@7", "stress+soak@7", "s@x3"])
+def test_simulation_goal_accepts_one_test_run_selector(test: str) -> None:
+    goal = parse_goal_arg({"family": "SIM", "target": "tb", "test": test})
+    assert goal == TargetGoalArg(GoalFamily.SIM, "tb", test=test)
+    assert goal_arg_to_json(goal) == {
+        "family": "SIM",
+        "target": "tb",
+        "origin": "ad-hoc",
+        "test": test,
+    }
+
+
+def test_simulation_goal_without_a_test_is_the_target_goal() -> None:
+    goal = parse_goal_arg({"family": "SIM", "target": "tb"})
+    assert isinstance(goal, TargetGoalArg) and goal.test is None
+    assert "test" not in goal_arg_to_json(goal)
+
+
+@pytest.mark.parametrize(
+    ("test", "message"),
+    [
+        ("a+b+c", "more than one '\\+'"),
+        ("a@1@2", "more than one '@'"),
+        ("a@x0", "at least 1"),
+        ("a@x1001", "exceeds the limit"),
+        ("a@0", "out of range"),
+        ("default", "default"),
+        ("", "non-empty"),
+    ],
+)
+def test_simulation_goal_refuses_a_malformed_selector(test: str, message: str) -> None:
+    with pytest.raises(GoalArgError, match=message):
+        parse_goal_arg({"family": "SIM", "target": "tb", "test": test})
+
+
+@pytest.mark.parametrize("family", ["LINT", "ELAB"])
+def test_only_a_simulation_goal_names_a_test(family: str) -> None:
+    with pytest.raises(GoalArgError, match="unknown fields"):
+        parse_goal_arg({"family": family, "target": "tb", "test": "smoke"})
+
+
+def test_cycle_count_goal_accepts_a_pinned_run_and_refuses_a_seed_count() -> None:
+    raw = {"family": "CYCLE_COUNT", "target": "tb", "thresholds": {"cycle_count_max": 9}}
+    goal = parse_goal_arg({**raw, "test": "stress+soak@7"})
+    assert isinstance(goal, CycleCountGoalArg) and goal.test == "stress+soak@7"
+    with pytest.raises(GoalArgError, match="seed count"):
+        parse_goal_arg({**raw, "test": "stress@x3"})
+    with pytest.raises(GoalArgError, match="more than one"):
+        parse_goal_arg({**raw, "test": "a+b+c"})
+
+
+def test_coverage_goal_accepts_selectors_with_a_seed_count() -> None:
+    raw = {"family": "COVERAGE", "target": "tb", "metrics": {"line": 80}}
+    goal = parse_goal_arg({**raw, "tests": ["smoke", "stress+soak@x3", "stress@7"]})
+    assert isinstance(goal, CoverageGoalArg)
+    assert goal.tests == ("smoke", "stress+soak@x3", "stress@7")
+    with pytest.raises(GoalArgError, match=r"tests\[1\]"):
+        parse_goal_arg({**raw, "tests": ["smoke", "a@x0"]})
+
+
+def test_schema_describes_the_test_run_selectors() -> None:
+    variants = {v["properties"]["family"]["const"]: v for v in goal_arg_json_schema()["oneOf"]}
+    assert "test" in variants["SIM"]["properties"]
+    assert variants["SIM"]["required"] == ["family", "target"]
+    assert "@xN" in variants["SIM"]["properties"]["test"]["description"]
+    assert "test" not in variants["LINT"]["properties"]
+    assert "test" not in variants["ELAB"]["properties"]
+    assert "@xN" not in variants["CYCLE_COUNT"]["properties"]["test"]["description"]
+    selectors = variants["COVERAGE"]["properties"]["tests"]["oneOf"][1]
+    assert "@xN" in selectors["description"]

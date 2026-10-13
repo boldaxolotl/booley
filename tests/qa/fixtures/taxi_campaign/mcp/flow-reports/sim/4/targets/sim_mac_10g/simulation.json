@@ -1,0 +1,41 @@
+{
+  "$schema": "booley.simulation-projection/v2",
+  "campaign_id": "01c2dfb0-d995-40d7-8017-343ab574a219",
+  "campaign_manifest": {
+    "bytes": 20567,
+    "kind": "simulation_campaign_manifest",
+    "owner": "01c2dfb0-d995-40d7-8017-343ab574a219",
+    "path": "campaign/manifest.json",
+    "path_base": "origin_target",
+    "sha256": "sha256:641f969bdf86c64117ab84e8a4844414976ce46219846aba9b143e32b7d2ab36"
+  },
+  "complete": true,
+  "flow": "sim",
+  "inconclusive": false,
+  "mode": "simulate",
+  "passed": true,
+  "target": "sim_mac_10g",
+  "target_identity": "qa:taxi:mac_10g:0#sim_mac_10g",
+  "tests": [
+    {
+      "cycles": null,
+      "error_tail": "",
+      "execution": "completed",
+      "failure_kind": "",
+      "name": "run_test_rx/payload_lengths=size_list/payload_data=incrementing_payload/ifg=12",
+      "passed": true,
+      "sva_errors": 0,
+      "timed_out": false
+    },
+    {
+      "cycles": null,
+      "error_tail": "",
+      "execution": "completed",
+      "failure_kind": "",
+      "name": "run_test_tx/payload_lengths=size_list/payload_data=incrementing_payload/ifg=12",
+      "passed": true,
+      "sva_errors": 0,
+      "timed_out": false
+    }
+  ]
+}

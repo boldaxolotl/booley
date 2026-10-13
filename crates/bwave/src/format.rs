@@ -76,7 +76,7 @@ impl TimeToken {
 
     /// Resolve a physical instant to its earlier simulation tick, exactly.
     /// Cycle tokens require the caller's clock mapping.
-    pub fn raw_tick(&self, timescale_exponent: Option<i8>) -> Result<i64, String> {
+    pub fn resolve_to_tick(&self, timescale_exponent: Option<i8>) -> Result<i64, String> {
         let (value, unit) = match *self {
             Self::Tick(n) => return Ok(n),
             Self::Cycle(_) => return Err("cycle token requires clock-aware resolution".into()),
@@ -88,40 +88,6 @@ impl TimeToken {
         let exponent = timescale_exponent.ok_or("no VCD timescale available")?;
         i64::try_from(scale_time(value as i128, unit, exponent)?)
             .map_err(|_| "resolved time exceeds signed tick bounds".into())
-    }
-
-    /// Resolve a token using the current period-only cycle policy.
-    pub fn resolve_to_cycle(
-        &self,
-        timescale_exponent: Option<i8>,
-        clock_period_ticks: u64,
-    ) -> Result<i64, String> {
-        if let Self::Cycle(n) = *self {
-            return Ok(n);
-        }
-        if !matches!(self, Self::Tick(_)) && timescale_exponent.is_none() {
-            return Err("no VCD timescale available".into());
-        }
-        if clock_period_ticks == 0 {
-            return Err("cannot resolve time token to cycle: no clock detected".into());
-        }
-        Ok((self.raw_tick(timescale_exponent)? as i128 / clock_period_ticks as i128) as i64)
-    }
-
-    /// Resolve a token to a simulation tick for async queries.
-    pub fn resolve_to_tick(
-        &self,
-        timescale_exponent: Option<i8>,
-        clock_period_ticks: u64,
-    ) -> Result<i64, String> {
-        if let Self::Cycle(n) = *self {
-            if clock_period_ticks == 0 {
-                return Err("cannot resolve cycle-token to tick: no clock detected".into());
-            }
-            return i64::try_from(n as i128 * clock_period_ticks as i128)
-                .map_err(|_| "resolved cycle exceeds signed tick bounds".into());
-        }
-        self.raw_tick(timescale_exponent)
     }
 }
 
@@ -1323,12 +1289,12 @@ mod exact_time_tests {
     #[test]
     fn time_token_exact_integer_identity() {
         for n in (0..=100_000).chain([1_369_600, (1_i64 << 53) + 1, i64::MAX, i64::MIN]) {
-            assert_eq!(TimeToken::Pico(n).raw_tick(Some(-12)), Ok(n));
+            assert_eq!(TimeToken::Pico(n).resolve_to_tick(Some(-12)), Ok(n));
         }
         for power in 0..=18 {
             let n = 10_i64.pow(power);
             for value in [n - 1, n, n + 1] {
-                assert_eq!(TimeToken::Pico(value).raw_tick(Some(-12)), Ok(value));
+                assert_eq!(TimeToken::Pico(value).resolve_to_tick(Some(-12)), Ok(value));
             }
         }
     }
@@ -1348,24 +1314,24 @@ mod exact_time_tests {
                 } else {
                     1500 / 10_i64.pow((-delta) as u32)
                 };
-                assert_eq!(token.raw_tick(Some(exponent as i8)), Ok(expected));
+                assert_eq!(token.resolve_to_tick(Some(exponent as i8)), Ok(expected));
             }
         }
-        assert_eq!(TimeToken::Pico(1500).raw_tick(Some(-9)), Ok(1));
-        assert_eq!(TimeToken::Pico(-1500).raw_tick(Some(-9)), Ok(-2));
+        assert_eq!(TimeToken::Pico(1500).resolve_to_tick(Some(-9)), Ok(1));
+        assert_eq!(TimeToken::Pico(-1500).resolve_to_tick(Some(-9)), Ok(-2));
         assert_eq!(
-            TimeToken::Pico(i64::MIN).raw_tick(Some(-11)),
+            TimeToken::Pico(i64::MIN).resolve_to_tick(Some(-11)),
             Ok(-922_337_203_685_477_581)
         );
         for exponent in i8::MIN..=i8::MAX {
-            assert_eq!(TimeToken::Milli(0).raw_tick(Some(exponent)), Ok(0));
+            assert_eq!(TimeToken::Milli(0).resolve_to_tick(Some(exponent)), Ok(0));
         }
-        assert_eq!(TimeToken::Pico(1).raw_tick(Some(i8::MAX)), Ok(0));
-        assert_eq!(TimeToken::Pico(-1).raw_tick(Some(i8::MAX)), Ok(-1));
-        assert!(TimeToken::Milli(1).raw_tick(Some(i8::MIN)).is_err());
+        assert_eq!(TimeToken::Pico(1).resolve_to_tick(Some(i8::MAX)), Ok(0));
+        assert_eq!(TimeToken::Pico(-1).resolve_to_tick(Some(i8::MAX)), Ok(-1));
+        assert!(TimeToken::Milli(1).resolve_to_tick(Some(i8::MIN)).is_err());
         for exponent in [-11, -10] {
             assert_eq!(
-                TimeToken::Pico(100).raw_tick(Some(exponent)),
+                TimeToken::Pico(100).resolve_to_tick(Some(exponent)),
                 Ok(10_i64.pow((-12 - exponent + 2) as u32))
             );
         }
@@ -1373,10 +1339,15 @@ mod exact_time_tests {
 
     #[test]
     fn time_token_exact_destination_bounds_and_metadata() {
-        assert_eq!(TimeToken::Tick(i64::MIN).raw_tick(None), Ok(i64::MIN));
-        assert!(TimeToken::Nano(1).raw_tick(None).is_err());
-        assert!(TimeToken::Cycle(1).raw_tick(Some(-9)).is_err());
-        assert!(TimeToken::Nano(i64::MAX).raw_tick(Some(-12)).is_err());
+        assert_eq!(
+            TimeToken::Tick(i64::MIN).resolve_to_tick(None),
+            Ok(i64::MIN)
+        );
+        assert!(TimeToken::Nano(1).resolve_to_tick(None).is_err());
+        assert!(TimeToken::Cycle(1).resolve_to_tick(Some(-9)).is_err());
+        assert!(TimeToken::Nano(i64::MAX)
+            .resolve_to_tick(Some(-12))
+            .is_err());
         assert_eq!(
             nanoseconds_to_tick(10_000_000_000_000_000, Some(-12)),
             Ok(10_000_000_000_000_000_000)
@@ -1384,36 +1355,22 @@ mod exact_time_tests {
         assert_eq!(nanoseconds_to_tick(u64::MAX, Some(-9)), Ok(u64::MAX));
         assert!(nanoseconds_to_tick(u64::MAX / 1000 + 1, Some(-12)).is_err());
         assert_eq!(nanoseconds_to_tick(123, None), Ok(123));
-        assert_eq!(TimeToken::Tick(-5).resolve_to_cycle(None, 10), Ok(0));
-        assert_eq!(TimeToken::Pico(-1500).resolve_to_cycle(Some(-9), 10), Ok(0));
-        assert_eq!(
-            TimeToken::Tick(i64::MAX).resolve_to_cycle(None, u64::MAX),
-            Ok(0)
-        );
-        assert!(TimeToken::Cycle(i64::MAX)
-            .resolve_to_tick(Some(-9), 2)
-            .is_err());
-        assert!(TimeToken::Cycle(-1)
-            .resolve_to_tick(Some(-9), u64::MAX)
-            .is_err());
-        assert!(TimeToken::Nano(1)
-            .resolve_to_cycle(None, 0)
-            .unwrap_err()
-            .contains("timescale"));
-        assert!(TimeToken::Nano(1)
-            .resolve_to_cycle(Some(-9), 0)
-            .unwrap_err()
-            .contains("no clock"));
         assert!(TimeToken::parse("9223372036854775808ps", true).is_err());
     }
     #[test]
     fn time_token_exact_scaled_boundary_neighbors() {
         let max = i64::MAX / 1000;
-        assert_eq!(TimeToken::Nano(max).raw_tick(Some(-12)), Ok(max * 1000));
-        assert!(TimeToken::Nano(max + 1).raw_tick(Some(-12)).is_err());
+        assert_eq!(
+            TimeToken::Nano(max).resolve_to_tick(Some(-12)),
+            Ok(max * 1000)
+        );
+        assert!(TimeToken::Nano(max + 1).resolve_to_tick(Some(-12)).is_err());
         let min = i64::MIN / 1000;
-        assert_eq!(TimeToken::Nano(min).raw_tick(Some(-12)), Ok(min * 1000));
-        assert!(TimeToken::Nano(min - 1).raw_tick(Some(-12)).is_err());
+        assert_eq!(
+            TimeToken::Nano(min).resolve_to_tick(Some(-12)),
+            Ok(min * 1000)
+        );
+        assert!(TimeToken::Nano(min - 1).resolve_to_tick(Some(-12)).is_err());
         let max = u64::MAX / 1000;
         assert_eq!(nanoseconds_to_tick(max, Some(-12)), Ok(max * 1000));
         assert!(nanoseconds_to_tick(max + 1, Some(-12)).is_err());
@@ -1430,7 +1387,7 @@ mod exact_time_tests {
             i64::MAX,
         ] {
             assert_eq!(
-                TimeToken::Pico(n).raw_tick(Some(-9)),
+                TimeToken::Pico(n).resolve_to_tick(Some(-9)),
                 Ok(n.div_euclid(1000))
             );
         }

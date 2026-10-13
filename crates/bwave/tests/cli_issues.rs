@@ -3902,3 +3902,120 @@ fn issue_1423_find_json_edges() {
         }
     }
 }
+
+fn issue_1418_store(scale: &str, ticks: &[u64]) -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let vcd = dir.path().join("input.vcd");
+    let fst = dir.path().join("store.fst");
+    let mut trace = format!("$timescale {scale} $end\n$scope module tb $end\n$var wire 1 ! data $end\n$upscope $end\n$enddefinitions $end\n#0\n0!\n");
+    for (tick, value) in ticks.iter().zip([1, 0, 1, 0]) {
+        trace.push_str(&format!("#{tick}\n{value}!\n"));
+    }
+    trace.push_str(&format!("#{}\n", ticks[3] + 10000));
+    std::fs::write(&vcd, trace).unwrap();
+    let (_, err, code) = run(&["build", vcd.to_str().unwrap(), "-o", fst.to_str().unwrap()]);
+    assert_eq!(code, 0, "{err}");
+    (dir, fst)
+}
+
+fn issue_1418_wave(store: &str, options: &[&str], ticks: &[u64], values: &[&str]) {
+    let mut args = vec!["wave", store, "-s", "data%b"];
+    args.extend_from_slice(options);
+    let (out, err, code) = run(&args);
+    assert_eq!(code, 0, "{err}");
+    assert!(!err.contains("No data in range"), "{err}");
+    let rows: Vec<Vec<&str>> = out
+        .lines()
+        .map(|line| line.split_whitespace().collect())
+        .collect();
+    let headers = rows
+        .iter()
+        .find(|row| row.first() == Some(&"time"))
+        .expect(&out);
+    assert_eq!(
+        headers[1..],
+        ticks.iter().map(u64::to_string).collect::<Vec<_>>(),
+        "{out}"
+    );
+    let data = rows
+        .iter()
+        .find(|row| row.first() == Some(&"data"))
+        .expect(&out);
+    assert_eq!(&data[1..], values, "{out}");
+}
+
+#[test]
+fn issue_1418_async_ranges_and_cross_command_ticks() {
+    for (scale, ticks, windows) in [
+        (
+            "1ps",
+            [1369000, 1369600, 1369601, 1381000],
+            ["1360ns:1380ns", "1360000ps:1380000ps", "1360000t:1380000t"],
+        ),
+        (
+            "1ns",
+            [1369, 1370, 1371, 1381],
+            ["1360ns:1380ns", "1360000ps:1380000ps", "1360t:1380t"],
+        ),
+    ] {
+        let (_dir, fst) = issue_1418_store(scale, &ticks);
+        let p = fst.to_str().unwrap();
+        for window in windows {
+            issue_1418_wave(p, &["--async", "-t", window], &ticks[..3], &["1", "0", "1"]);
+            let (out, err, code) = run(&["signal", p, "--async", "-s", "data%b", "-t", window]);
+            assert_eq!(code, 0, "{err}");
+            let events: Vec<Vec<&str>> = out
+                .lines()
+                .map(|line| line.split_whitespace().collect())
+                .collect();
+            let expected: Vec<Vec<String>> = ticks[..3]
+                .iter()
+                .zip(["1", "0", "1"])
+                .map(|(tick, value)| vec![tick.to_string(), "data".into(), value.into()])
+                .collect();
+            assert_eq!(events, expected, "{out}");
+            for (tick, value) in ticks[..3].iter().zip(["1", "0", "1"]) {
+                let point = format!("{tick}t");
+                let (out, err, code) =
+                    run(&["value", p, "--async", "-s", "data%b", "--at", &point]);
+                assert_eq!(code, 0, "{err}");
+                assert!(
+                    out.lines()
+                        .any(|line| line.split_whitespace().collect::<Vec<_>>()
+                            == ["data", "=", value]),
+                    "{out}"
+                );
+            }
+        }
+        let tight = format!("{}t:{}t", ticks[0], ticks[2]);
+        issue_1418_wave(p, &["--async", "-t", &tight], &ticks[..3], &["1", "0", "1"]);
+        let omitted = format!("{}t:", ticks[2]);
+        issue_1418_wave(p, &["--async", "-t", &omitted], &ticks[2..], &["1", "0"]);
+    }
+}
+
+#[test]
+fn issue_1418_raw_headers_and_clockless_legacy_bounds() {
+    let ticks = [1369000, 1369600, 1369601, 1381000];
+    let (_dir, fst) = issue_1418_store("1ps", &ticks);
+    let p = fst.to_str().unwrap();
+    let all = [0, 1369000, 1369600, 1369601, 1381000];
+    issue_1418_wave(p, &["--async"], &all, &["0", "1", "0", "1", "0"]);
+    issue_1418_wave(p, &[], &all, &["0", "1", "0", "1", "0"]);
+    issue_1418_wave(p, &["-t", "1360c:1380c"], &ticks[..3], &["1", "0", "1"]);
+    for window in ["1360ns:1380ns", "1360000t:1380000t"] {
+        let (_, _, code) = run(&["wave", p, "-s", "data", "-t", window]);
+        assert_eq!(code, 2);
+    }
+}
+
+#[test]
+fn issue_1418_signed_bounds() {
+    let (_dir, fst) = issue_1418_store("1ps", &[1369000, 1369600, 1369601, 1381000]);
+    let p = fst.to_str().unwrap();
+    let (out, err, code) = run(&["wave", p, "--async", "-s", "data", "-t=-2t:-1t"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.is_empty(), "{out}");
+    assert!(err.contains("No data in range"), "{err}");
+    issue_1418_wave(p, &["--async", "-t=-1t:0t"], &[0], &["0"]);
+}
