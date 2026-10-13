@@ -48,6 +48,9 @@ from tests.goals.test_test_run_evidence import (
     _transaction,
 )
 
+# Each test enters Goal Mode in a real Git layout; Windows needs the headroom (#1202).
+pytestmark = pytest.mark.timeout(120)
+
 A, B = build_test_run("a", seed=1), build_test_run("b", seed=1)
 MANIFEST_SHA = f"sha256:{'c' * 64}"
 CAMPAIGN = "22222222-2222-4222-8222-222222222222"

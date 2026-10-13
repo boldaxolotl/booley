@@ -18,6 +18,9 @@ from booley.goals.test_run_freezing import ensure_test_run_resolutions
 from booley.goals.test_run_resolution import SUITE_SLOT
 from tests.goals.conftest import SIM_KEY, bind, enter_goals, write_tests_toml
 
+# Each test enters Goal Mode in a real Git layout; Windows needs the headroom (#1202).
+pytestmark = pytest.mark.timeout(120)
+
 LATER_KEY = "sim_pass_top_run_6c61746572_x"
 GOALS = (
     {"family": "SIM", "target": "top"},

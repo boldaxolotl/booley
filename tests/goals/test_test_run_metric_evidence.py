@@ -26,6 +26,9 @@ STRESS_TOML = b'[top]\ntests = ["smoke", "stress"]\ndefault_seed = 1\n'
 STRESS = build_test_run("stress", seed=5)
 OUTCOMES_ONLY = {OUTCOMES_ONLY_DETAIL_KEY: True}
 
+# Each test enters Goal Mode in a real Git layout; Windows needs the headroom (#1202).
+pytestmark = pytest.mark.timeout(120)
+
 
 @pytest.fixture
 def cycle(layout: SimpleNamespace) -> SimpleNamespace:

@@ -28,6 +28,9 @@ from tests.goals.conftest import (
 from tests.goals.test_proposals import approve
 from tests.goals.test_test_run_evidence import _record
 
+# Each test enters Goal Mode in a real Git layout; Windows needs the headroom (#1202).
+pytestmark = pytest.mark.timeout(120)
+
 SEEDS_KEY = "sim_pass_top_run_736d6f6b65_x"
 TARGET = {"family": "SIM", "target": "top"}
 
