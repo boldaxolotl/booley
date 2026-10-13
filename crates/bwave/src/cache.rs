@@ -97,6 +97,8 @@ pub struct ColumnCache {
     pub sim_start_tick: u64,
     pub sim_end_tick: u64,
     pub ticks_to_ns: f64,
+    /// Authoritative decimal seconds exponent for exact input conversion.
+    pub timescale_exponent: Option<i8>,
     pub clock_period_ticks: u64,
     pub first_rise_tick: u64,
     pub timescale_str: String,
@@ -141,6 +143,7 @@ impl ColumnCache {
         sim_start_tick: u64,
         sim_end_tick: u64,
         ticks_to_ns: f64,
+        timescale_exponent: Option<i8>,
         clock_period_ticks: u64,
         first_rise_tick: u64,
         timescale_str: String,
@@ -153,6 +156,7 @@ impl ColumnCache {
             sim_start_tick,
             sim_end_tick,
             ticks_to_ns,
+            timescale_exponent,
             clock_period_ticks,
             first_rise_tick,
             timescale_str,
@@ -2222,10 +2226,13 @@ pub fn snapshot_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         }
     } else if cfg.async_mode || cfg.at_time_is_cycle {
         unsigned_time
-    } else if cache.ticks_to_ns > 0.0 {
-        (at_time as f64 / cache.ticks_to_ns) as u64
     } else {
-        unsigned_time
+        crate::format::nanoseconds_to_tick(unsigned_time, cache.timescale_exponent).unwrap_or_else(
+            |error| {
+                eprintln!("ERROR: {error}");
+                std::process::exit(2);
+            },
+        )
     };
     if target_tick > cache.sim_end_tick {
         eprintln!("ERROR: value time {at_time} is beyond simulation range");
@@ -2365,10 +2372,8 @@ fn resolve_time_to_tick(
         }
     } else if cfg.diff_strs.is_some() {
         time
-    } else if cache.ticks_to_ns > 0.0 {
-        (time as f64 / cache.ticks_to_ns) as u64
     } else {
-        time
+        crate::format::nanoseconds_to_tick(time, cache.timescale_exponent).ok()?
     };
     (tick <= cache.sim_end_tick).then_some(tick)
 }
@@ -3733,21 +3738,27 @@ pub fn wave_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         );
     } else {
         // Async: need range-bounded decode, then collect tick set from results
-        let range_start_tick = if cache.ticks_to_ns > 0.0 {
-            (range_start as f64 / cache.ticks_to_ns) as u64
-        } else {
-            range_start as u64
-        };
-        let range_end_tick = match range_end_opt {
-            Some(e) => {
-                if cache.ticks_to_ns > 0.0 {
-                    (e as f64 / cache.ticks_to_ns) as u64
-                } else {
-                    e as u64
-                }
+        let raw_ticks = cfg.async_mode && cfg.time_str.is_some();
+        let bound_tick = |value: i64| {
+            let value = value.max(0) as u64;
+            if raw_ticks {
+                Ok(value)
+            } else {
+                crate::format::nanoseconds_to_tick(value, cache.timescale_exponent)
             }
-            None => cache.sim_end_tick,
         };
+        let range_start_tick = bound_tick(range_start).unwrap_or_else(|error| {
+            eprintln!("ERROR: {error}");
+            std::process::exit(2);
+        });
+        let range_end_tick = range_end_opt
+            .map(bound_tick)
+            .transpose()
+            .unwrap_or_else(|error| {
+                eprintln!("ERROR: {error}");
+                std::process::exit(2);
+            })
+            .unwrap_or(cache.sim_end_tick);
 
         cache.prefetch_window(&matched, range_end_tick);
         let range_results: Vec<(Option<String>, Vec<(u64, String)>)> = matched
@@ -4305,6 +4316,7 @@ $enddefinitions $end
     fn issue_1108_direct_diff_unit_provenance() {
         let mut cache = build_cache(BASIC_VCD);
         cache.ticks_to_ns = 0.001;
+        cache.timescale_exponent = Some(-12);
         cache.sim_end_tick = 100_000;
         let mut cfg = ExtractConfig {
             async_mode: true,
@@ -4333,5 +4345,65 @@ $enddefinitions $end
         let summary = distance_summary(&[u64::MAX, u64::MAX]);
         assert!(summary.contains("count=2"));
         assert!(summary.contains("mean=18446744073709551616.0  median=18446744073709551616.0"));
+    }
+    #[test]
+    fn time_token_exact_legacy_cache_bounds() {
+        let mut cache = build_cache("$timescale 1ps $end\n$scope module tb $end\n$var wire 1 ! data $end\n$upscope $end\n$enddefinitions $end\n#0\n0!\n#10000000000000000000\n1!\n");
+        let cfg = ExtractConfig::default();
+        assert_eq!(
+            resolve_time_to_tick(&cache, &cfg, 10_000_000_000_000_000, 0),
+            Some(10_000_000_000_000_000_000)
+        );
+        assert_eq!(resolve_time_to_tick(&cache, &cfg, i64::MAX, 0), None);
+        cache.timescale_exponent = None;
+        assert_eq!(resolve_time_to_tick(&cache, &cfg, 123, 0), Some(123));
+    }
+
+    #[test]
+    fn time_token_exact_legacy_snapshot_unsigned() {
+        const CHILD: &str = "BWAVE_EXACT_LEGACY_SNAPSHOT_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let cache = build_cache("$timescale 1ps $end\n$scope module tb $end\n$var wire 1 ! data $end\n$upscope $end\n$enddefinitions $end\n#0\n0!\n#10000000000000000000\n1!\n");
+            snapshot_from_cache(
+                &cache,
+                &ExtractConfig {
+                    at_time: Some(10_000_000_000_000_000),
+                    json_format: true,
+                    ..Default::default()
+                },
+            );
+            return;
+        }
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "cache::tests::time_token_exact_legacy_snapshot_unsigned",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while child.try_wait().unwrap().is_none() {
+            if std::time::Instant::now() >= deadline {
+                child.kill().unwrap();
+                panic!("snapshot timeout");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert!(
+            text.contains("\"target_tick\": 10000000000000000000"),
+            "{text}"
+        );
+        assert!(text.contains("\"value\": \"1\""), "{text}");
     }
 }

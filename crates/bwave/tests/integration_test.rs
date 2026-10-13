@@ -3033,3 +3033,210 @@ fn issue_1108_public_find_rejects_invalid_row_selector_without_panic() {
         }
     }
 }
+
+#[test]
+fn test_time_token_exact_transition() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("exact.vcd");
+    std::fs::write(&path, "$timescale 1ps $end\n$scope module tb $end\n$var wire 1 ! data $end\n$upscope $end\n$enddefinitions $end\n#0\n0!\n#1369600\n1!\n#1369700\n0!\n#1370000\n").unwrap();
+    let (out, err, code) = run_query(&[
+        "value",
+        path.to_str().unwrap(),
+        "--async",
+        "--at",
+        "1369600ps",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("\"target_tick\": 1369600"), "{out}");
+    assert!(out.contains("\"value\": \"1\""), "{out}");
+}
+
+/// Sparse exact-time fixture, built through the public VCD -> FST boundary.
+struct ExactTimeStore(tempfile::TempDir, PathBuf);
+impl ExactTimeStore {
+    fn new(timescale: Option<&str>, clock: bool, events: &str) -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let vcd = dir.path().join("input.vcd");
+        let fst = dir.path().join("input.fst");
+        let timescale = timescale
+            .map(|s| format!("$timescale {s} $end\n"))
+            .unwrap_or_default();
+        let clock_decl = if clock {
+            "$var wire 1 \" clk $end\n"
+        } else {
+            ""
+        };
+        std::fs::write(&vcd,format!("{timescale}$scope module tb $end\n$var wire 1 ! data $end\n{clock_decl}$upscope $end\n$enddefinitions $end\n{events}")).unwrap();
+        let (_, err, code) =
+            run_raw(&["build", vcd.to_str().unwrap(), "-o", fst.to_str().unwrap()]);
+        assert_eq!(code, 0, "{err}");
+        Self(dir, fst)
+    }
+    fn run(&self, command: &str, args: &[&str]) -> (String, String, i32) {
+        assert!(self.0.path().exists());
+        let mut full = vec![command, self.1.to_str().unwrap()];
+        full.extend_from_slice(args);
+        run_raw(&full)
+    }
+    fn query(&self, command: &str, args: &[&str]) -> String {
+        let (out, err, code) = self.run(command, args);
+        assert_eq!(code, 0, "{command} {args:?}: {err}");
+        out
+    }
+}
+
+#[test]
+fn test_time_token_exact_typed_destinations() {
+    let store = ExactTimeStore::new(
+        Some("1ps"),
+        true,
+        "#0\n0!\n0\"\n#100\n1\"\n#150\n0\"\n#200\n1\"\n#1369600\n1!\n#1369700\n0!\n#1370000\n",
+    );
+    for (command, extra) in [
+        ("signal", vec!["-s", "data"]),
+        ("find", vec!["data", "change"]),
+        ("sample", vec!["data", "change", "-s", "data"]),
+        ("distance", vec!["data", "change"]),
+        ("stats", vec!["-s", "data"]),
+    ] {
+        let mut physical = extra.clone();
+        physical.extend(["--async", "-t", "1369600ps:1369700ps"]);
+        let mut ticks = extra;
+        ticks.extend(["--async", "-t", "1369600t:1369700t"]);
+        let p = store.query(command, &physical);
+        let t = store.query(command, &ticks);
+        assert_eq!(p, t, "{command}");
+        match command {
+            "signal" | "find" | "sample" => assert_eq!(p, "1369600 data 1\n1369700 data 0\n"),
+            "distance" => assert!(p.contains("@ 1369600 -> @ 1369700  d=100"), "{p}"),
+            "stats" => assert!(p.contains("2 transitions"), "{p}"),
+            _ => unreachable!(),
+        }
+    }
+    let diff = store.query("diff", &["1369599ps", "1369600ps", "--async", "-s", "data"]);
+    assert_eq!(
+        diff,
+        store.query("diff", &["1369599t", "1369600t", "--async", "-s", "data"])
+    );
+    assert!(diff.contains("data"), "{diff}");
+    for async_flag in [vec![], vec!["--async"]] {
+        let mut p = vec!["--at", "1369600ps", "--format", "json"];
+        p.extend(&async_flag);
+        let mut t = vec!["--at", "1369600t", "--format", "json"];
+        t.extend(&async_flag);
+        assert_eq!(store.query("value", &p), store.query("value", &t));
+    }
+    let wave = store.query(
+        "wave",
+        &[
+            "--async",
+            "-s",
+            "data",
+            "-t",
+            "1369600ps:1369650ps",
+            "--marker",
+            "edge",
+            "1369600ps",
+        ],
+    );
+    let tick_wave = store.query(
+        "wave",
+        &[
+            "--async",
+            "-s",
+            "data",
+            "-t",
+            "1369600t:1369650t",
+            "--marker",
+            "edge",
+            "1369600t",
+        ],
+    );
+    assert_eq!(wave, tick_wave);
+    assert!(wave.contains("edge"), "{wave}");
+    let row = wave
+        .lines()
+        .find(|l| l.trim_start().starts_with("data"))
+        .unwrap();
+    assert_eq!(
+        row.split_whitespace().collect::<Vec<_>>(),
+        vec!["data", "1"],
+        "{wave}"
+    );
+}
+
+#[test]
+fn test_time_token_exact_cli_overflow() {
+    let store = ExactTimeStore::new(
+        Some("1ps"),
+        true,
+        "#0\n0!\n0\"\n#100\n1\"\n#150\n0\"\n#200\n1\"\n#1000\n1!\n",
+    );
+    for token in [
+        "9223372036854775808ps",
+        "9223372036854775807ns",
+        "9223372036854775807c",
+    ] {
+        for async_flag in [vec![], vec!["--async"]] {
+            let mut args = vec!["--at", token];
+            args.extend(async_flag);
+            let (out, err, code) = store.run("value", &args);
+            assert_eq!(code, 2, "{token}: {err}");
+            assert!(out.is_empty(), "{out}");
+            assert!(!err.contains("panicked"), "{err}");
+        }
+    }
+}
+
+#[test]
+fn test_time_token_exact_omitted_and_malformed_timescale_roundtrip() {
+    for (timescale, physical, tick) in [
+        (None, "1500ns", 1500),
+        (Some("2ns"), "1500ns", 1500),
+        (Some("10bad"), "15000ns", 1500),
+    ] {
+        let store = ExactTimeStore::new(timescale, false, "#0\n0!\n#1500\n1!\n#2000\n");
+        let out = store.query("value", &["--async", "--at", physical, "--format", "json"]);
+        let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(json["data"]["target_tick"], tick);
+        assert_eq!(json["data"]["signals"][0]["value"], "1");
+    }
+}
+
+#[test]
+fn test_time_token_exact_no_clock_wave_fallback() {
+    let store = ExactTimeStore::new(
+        Some("1ps"),
+        false,
+        "#0\n0!\n#2\n1!\n#4\n0!\n#2000\n1!\n#4000\n0!\n#6000\n",
+    );
+    let bare = store.query("wave", &["-s", "data", "-t", "1:5"]);
+    assert_eq!(bare, store.query("wave", &["-s", "data", "-t", "1c:5c"]));
+    let ticks = store.query("wave", &["--async", "-s", "data", "-t", "1t:5t"]);
+    assert!(
+        bare.lines()
+            .next()
+            .unwrap()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            == vec!["time", "2", "4"],
+        "{bare}"
+    );
+    assert!(
+        ticks
+            .lines()
+            .next()
+            .unwrap()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            == vec!["time", "0", "0"],
+        "{ticks}"
+    );
+    for token in ["1t", "1ps"] {
+        let (_, err, code) = store.run("value", &["--at", token]);
+        assert_eq!(code, 2, "{err}");
+        assert!(err.contains("no clock"), "{err}");
+    }
+}

@@ -109,7 +109,7 @@ impl Default for ExtractConfig {
 
 impl ExtractConfig {
     /// Parse the raw time-token strings (`time_str`, `at_str`, `diff_strs`)
-    /// against `ticks_to_ns` and `clock_period_ticks` from the cache header.
+    /// against `timescale_exponent` and `clock_period_ticks` from the cache header.
     /// Populates `time_min`, `time_max`, `at_time`, and `diff_points` in
     /// place. Returns a human-readable error on bad syntax or
     /// timescale-missing conditions. No-op when the relevant string field
@@ -119,16 +119,16 @@ impl ExtractConfig {
     /// raw simulation ticks; in sync mode they resolve to cycle numbers.
     pub fn resolve_time_tokens(
         &mut self,
-        ticks_to_ns: f64,
+        timescale_exponent: Option<i8>,
         clock_period_ticks: u64,
     ) -> Result<(), String> {
         use format::{parse_time_range, TimeToken};
 
         let resolve = |tok: &TimeToken| -> Result<i64, String> {
             if self.async_mode {
-                tok.resolve_to_tick(ticks_to_ns, clock_period_ticks)
+                tok.resolve_to_tick(timescale_exponent, clock_period_ticks)
             } else {
-                tok.resolve_to_cycle(ticks_to_ns, clock_period_ticks)
+                tok.resolve_to_cycle(timescale_exponent, clock_period_ticks)
             }
         };
 
@@ -181,5 +181,26 @@ impl ExtractConfig {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod exact_time_tests {
+    use super::*;
+    #[test]
+    fn time_token_exact_config_destinations() {
+        let mut cfg = ExtractConfig {
+            async_mode: true,
+            time_str: Some("1369600ps:1369700ps".into()),
+            at_str: Some("1369600ps".into()),
+            diff_strs: Some(("1369500ps".into(), "1369600ps".into())),
+            marker_tokens: vec![("edge".into(), format::TimeToken::Pico(1369600))],
+            ..Default::default()
+        };
+        cfg.resolve_time_tokens(Some(-12), 0).unwrap();
+        assert_eq!((cfg.time_min, cfg.time_max), (1369600, Some(1369700)));
+        assert_eq!(cfg.at_time, Some(1369600));
+        assert_eq!(cfg.diff_points, Some((1369500, 1369600)));
+        assert_eq!(cfg.markers, vec![("edge".into(), 1369600)]);
     }
 }

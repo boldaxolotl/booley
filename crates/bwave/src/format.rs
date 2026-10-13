@@ -74,77 +74,87 @@ impl TimeToken {
         }
     }
 
-    /// Resolve this token to a **cycle** number, using `ticks_to_ns` and
-    /// `clock_period_ticks` from the cache header.
-    ///
-    /// Async-mode callers should use [`Self::resolve_to_tick`] instead. This
-    /// method is the right call for sync-mode time bounds and `--at` snapshots.
+    /// Resolve a physical instant to its earlier simulation tick, exactly.
+    /// Cycle tokens require the caller's clock mapping.
+    pub fn raw_tick(&self, timescale_exponent: Option<i8>) -> Result<i64, String> {
+        let (value, unit) = match *self {
+            Self::Tick(n) => return Ok(n),
+            Self::Cycle(_) => return Err("cycle token requires clock-aware resolution".into()),
+            Self::Pico(n) => (n, -12),
+            Self::Nano(n) => (n, -9),
+            Self::Micro(n) => (n, -6),
+            Self::Milli(n) => (n, -3),
+        };
+        let exponent = timescale_exponent.ok_or("no VCD timescale available")?;
+        i64::try_from(scale_time(value as i128, unit, exponent)?)
+            .map_err(|_| "resolved time exceeds signed tick bounds".into())
+    }
+
+    /// Resolve a token using the current period-only cycle policy.
     pub fn resolve_to_cycle(
         &self,
-        ticks_to_ns: f64,
+        timescale_exponent: Option<i8>,
         clock_period_ticks: u64,
     ) -> Result<i64, String> {
-        match *self {
-            TimeToken::Cycle(n) => Ok(n),
-            TimeToken::Tick(n) => {
-                if clock_period_ticks == 0 {
-                    return Err("cannot resolve tick-token to cycle: no clock detected".to_string());
-                }
-                Ok(n / clock_period_ticks as i64)
-            }
-            TimeToken::Pico(n) | TimeToken::Nano(n) | TimeToken::Micro(n) | TimeToken::Milli(n) => {
-                let ns = self.to_ns().unwrap();
-                let _ = n; // silence unused warning when match cases collapse
-                if ticks_to_ns <= 0.0 {
-                    return Err("no VCD timescale available".to_string());
-                }
-                if clock_period_ticks == 0 {
-                    return Err(
-                        "cannot convert physical-time token to cycle: no clock detected"
-                            .to_string(),
-                    );
-                }
-                let ticks = (ns / ticks_to_ns) as i64;
-                Ok(ticks / clock_period_ticks as i64)
-            }
+        if let Self::Cycle(n) = *self {
+            return Ok(n);
         }
+        if !matches!(self, Self::Tick(_)) && timescale_exponent.is_none() {
+            return Err("no VCD timescale available".into());
+        }
+        if clock_period_ticks == 0 {
+            return Err("cannot resolve time token to cycle: no clock detected".into());
+        }
+        Ok((self.raw_tick(timescale_exponent)? as i128 / clock_period_ticks as i128) as i64)
     }
 
-    /// Resolve this token to a raw **simulation tick**, for async-mode use.
+    /// Resolve a token to a simulation tick for async queries.
     pub fn resolve_to_tick(
         &self,
-        ticks_to_ns: f64,
+        timescale_exponent: Option<i8>,
         clock_period_ticks: u64,
     ) -> Result<i64, String> {
-        match *self {
-            TimeToken::Tick(n) => Ok(n),
-            TimeToken::Cycle(n) => {
-                if clock_period_ticks == 0 {
-                    return Err("cannot resolve cycle-token to tick: no clock detected".to_string());
-                }
-                Ok(n * clock_period_ticks as i64)
+        if let Self::Cycle(n) = *self {
+            if clock_period_ticks == 0 {
+                return Err("cannot resolve cycle-token to tick: no clock detected".into());
             }
-            _ => {
-                let ns = self.to_ns().unwrap();
-                if ticks_to_ns <= 0.0 {
-                    return Err("no VCD timescale available".to_string());
-                }
-                Ok((ns / ticks_to_ns) as i64)
-            }
+            return i64::try_from(n as i128 * clock_period_ticks as i128)
+                .map_err(|_| "resolved cycle exceeds signed tick bounds".into());
         }
+        self.raw_tick(timescale_exponent)
     }
+}
 
-    /// Helper: convert physical-time tokens to nanoseconds. Returns None for
-    /// non-physical tokens (Cycle/Tick).
-    fn to_ns(&self) -> Option<f64> {
-        match *self {
-            TimeToken::Pico(n) => Some(n as f64 / 1_000.0),
-            TimeToken::Nano(n) => Some(n as f64),
-            TimeToken::Micro(n) => Some(n as f64 * 1_000.0),
-            TimeToken::Milli(n) => Some(n as f64 * 1_000_000.0),
-            _ => None,
+/// Scale an integer physical value to ticks, flooring fractional ticks.
+/// Bounded powers cover the entire i8 timescale range without float rounding.
+fn scale_time(value: i128, unit: i8, exponent: i8) -> Result<i128, String> {
+    if value == 0 {
+        return Ok(0);
+    }
+    let delta = i16::from(unit) - i16::from(exponent);
+    if delta >= 0 {
+        let factor = 10_i128
+            .checked_pow(delta as u32)
+            .ok_or("resolved time exceeds tick bounds")?;
+        value
+            .checked_mul(factor)
+            .ok_or_else(|| "resolved time exceeds tick bounds".into())
+    } else {
+        match 10_i128.checked_pow((-delta) as u32) {
+            Some(divisor) => Ok(value.div_euclid(divisor)),
+            None => Ok(if value < 0 { -1 } else { 0 }),
         }
     }
+}
+
+/// Convert legacy nonnegative integer nanoseconds using unsigned tick bounds.
+/// Missing metadata preserves the legacy raw-tick fallback.
+pub(crate) fn nanoseconds_to_tick(value: u64, exponent: Option<i8>) -> Result<u64, String> {
+    let Some(exponent) = exponent else {
+        return Ok(value);
+    };
+    u64::try_from(scale_time(value as i128, -9, exponent)?)
+        .map_err(|_| "resolved time exceeds unsigned tick bounds".into())
 }
 
 /// Split a time-token string into (numeric_prefix, unit_suffix).
@@ -1301,6 +1311,127 @@ mod tests {
             prop_assert!(
                 canonical_hex_eq(&hex, &back),
                 "roundtrip failed: {} -> {} -> {}", hex, bin, back
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod exact_time_tests {
+    use super::*;
+
+    #[test]
+    fn time_token_exact_integer_identity() {
+        for n in (0..=100_000).chain([1_369_600, (1_i64 << 53) + 1, i64::MAX, i64::MIN]) {
+            assert_eq!(TimeToken::Pico(n).raw_tick(Some(-12)), Ok(n));
+        }
+        for power in 0..=18 {
+            let n = 10_i64.pow(power);
+            for value in [n - 1, n, n + 1] {
+                assert_eq!(TimeToken::Pico(value).raw_tick(Some(-12)), Ok(value));
+            }
+        }
+    }
+
+    #[test]
+    fn time_token_exact_units_and_floor() {
+        for (token, unit) in [
+            (TimeToken::Pico(1500), -12),
+            (TimeToken::Nano(1500), -9),
+            (TimeToken::Micro(1500), -6),
+            (TimeToken::Milli(1500), -3),
+        ] {
+            for exponent in [-12, -9, -6] {
+                let delta: i32 = unit - exponent;
+                let expected = if delta >= 0 {
+                    1500 * 10_i64.pow(delta as u32)
+                } else {
+                    1500 / 10_i64.pow((-delta) as u32)
+                };
+                assert_eq!(token.raw_tick(Some(exponent as i8)), Ok(expected));
+            }
+        }
+        assert_eq!(TimeToken::Pico(1500).raw_tick(Some(-9)), Ok(1));
+        assert_eq!(TimeToken::Pico(-1500).raw_tick(Some(-9)), Ok(-2));
+        assert_eq!(
+            TimeToken::Pico(i64::MIN).raw_tick(Some(-11)),
+            Ok(-922_337_203_685_477_581)
+        );
+        for exponent in i8::MIN..=i8::MAX {
+            assert_eq!(TimeToken::Milli(0).raw_tick(Some(exponent)), Ok(0));
+        }
+        assert_eq!(TimeToken::Pico(1).raw_tick(Some(i8::MAX)), Ok(0));
+        assert_eq!(TimeToken::Pico(-1).raw_tick(Some(i8::MAX)), Ok(-1));
+        assert!(TimeToken::Milli(1).raw_tick(Some(i8::MIN)).is_err());
+        for exponent in [-11, -10] {
+            assert_eq!(
+                TimeToken::Pico(100).raw_tick(Some(exponent)),
+                Ok(10_i64.pow((-12 - exponent + 2) as u32))
+            );
+        }
+    }
+
+    #[test]
+    fn time_token_exact_destination_bounds_and_metadata() {
+        assert_eq!(TimeToken::Tick(i64::MIN).raw_tick(None), Ok(i64::MIN));
+        assert!(TimeToken::Nano(1).raw_tick(None).is_err());
+        assert!(TimeToken::Cycle(1).raw_tick(Some(-9)).is_err());
+        assert!(TimeToken::Nano(i64::MAX).raw_tick(Some(-12)).is_err());
+        assert_eq!(
+            nanoseconds_to_tick(10_000_000_000_000_000, Some(-12)),
+            Ok(10_000_000_000_000_000_000)
+        );
+        assert_eq!(nanoseconds_to_tick(u64::MAX, Some(-9)), Ok(u64::MAX));
+        assert!(nanoseconds_to_tick(u64::MAX / 1000 + 1, Some(-12)).is_err());
+        assert_eq!(nanoseconds_to_tick(123, None), Ok(123));
+        assert_eq!(TimeToken::Tick(-5).resolve_to_cycle(None, 10), Ok(0));
+        assert_eq!(TimeToken::Pico(-1500).resolve_to_cycle(Some(-9), 10), Ok(0));
+        assert_eq!(
+            TimeToken::Tick(i64::MAX).resolve_to_cycle(None, u64::MAX),
+            Ok(0)
+        );
+        assert!(TimeToken::Cycle(i64::MAX)
+            .resolve_to_tick(Some(-9), 2)
+            .is_err());
+        assert!(TimeToken::Cycle(-1)
+            .resolve_to_tick(Some(-9), u64::MAX)
+            .is_err());
+        assert!(TimeToken::Nano(1)
+            .resolve_to_cycle(None, 0)
+            .unwrap_err()
+            .contains("timescale"));
+        assert!(TimeToken::Nano(1)
+            .resolve_to_cycle(Some(-9), 0)
+            .unwrap_err()
+            .contains("no clock"));
+        assert!(TimeToken::parse("9223372036854775808ps", true).is_err());
+    }
+    #[test]
+    fn time_token_exact_scaled_boundary_neighbors() {
+        let max = i64::MAX / 1000;
+        assert_eq!(TimeToken::Nano(max).raw_tick(Some(-12)), Ok(max * 1000));
+        assert!(TimeToken::Nano(max + 1).raw_tick(Some(-12)).is_err());
+        let min = i64::MIN / 1000;
+        assert_eq!(TimeToken::Nano(min).raw_tick(Some(-12)), Ok(min * 1000));
+        assert!(TimeToken::Nano(min - 1).raw_tick(Some(-12)).is_err());
+        let max = u64::MAX / 1000;
+        assert_eq!(nanoseconds_to_tick(max, Some(-12)), Ok(max * 1000));
+        assert!(nanoseconds_to_tick(max + 1, Some(-12)).is_err());
+        for n in [
+            i64::MIN,
+            -1001,
+            -1000,
+            -999,
+            -1,
+            1,
+            999,
+            1000,
+            1001,
+            i64::MAX,
+        ] {
+            assert_eq!(
+                TimeToken::Pico(n).raw_tick(Some(-9)),
+                Ok(n.div_euclid(1000))
             );
         }
     }

@@ -31,6 +31,10 @@ simulation tick. Cross-unit resolution requires the
 clock period (`*ns -> cycle`, `*t -> cycle`); when the
 trace has no detected clock those forms error.
 
+### Physical precision and bounds
+
+Physical tokens are converted to simulation ticks with exact integer arithmetic before any cycle mapping. A physical instant between ticks selects the earlier tick: `1500ps` on a `1ns` timescale selects tick `1`, and `-1500ps` selects tick `-2`. A resolved tick outside the signed 64-bit range is an input error (exit code `2`), rather than a wrapped or saturated timestamp.
+
 ## Why bare integers are rejected in async mode
 
 Async mode requires explicit units to prevent an integer copied from

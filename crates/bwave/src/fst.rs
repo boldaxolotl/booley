@@ -792,6 +792,7 @@ pub fn load_fst(path: &Path) -> Option<ColumnCache> {
         sim_start_tick,
         sim_end_tick,
         ticks_to_ns,
+        Some(header.timescale_exponent),
         clock_period_ticks,
         first_rise_tick,
         timescale_str,
@@ -895,29 +896,6 @@ const FST_FLUSH_THRESHOLD: usize = 256 << 20;
 const SERIAL_VCD_CHUNK_TARGET: usize = 4 << 20;
 pub const PARALLEL_VCD_CHUNK_TARGET: usize = 4 << 20;
 pub const PARALLEL_FST_SECTION_TARGET: usize = 128 << 20;
-
-/// "10ps" -> -11. Mirrors the VCD `1|10|100 <unit>` timescale grammar.
-fn timescale_to_exponent(ts: &str) -> i8 {
-    let ts = ts.trim();
-    let digits: String = ts.chars().take_while(|c| c.is_ascii_digit()).collect();
-    let unit = ts[digits.len()..].trim();
-    let factor_exp: i8 = match digits.as_str() {
-        "1" | "" => 0,
-        "10" => 1,
-        "100" => 2,
-        _ => 0,
-    };
-    let unit_exp: i8 = match unit {
-        "s" => 0,
-        "ms" => -3,
-        "us" => -6,
-        "ns" => -9,
-        "ps" => -12,
-        "fs" => -15,
-        _ => -9,
-    };
-    unit_exp + factor_exp
-}
 
 fn var_type_of(vt: &str) -> fst_writer::FstVarType {
     use fst_writer::FstVarType as W;
@@ -2012,7 +1990,7 @@ impl FstBuildHandler {
 
         let info = fst_writer::FstInfo {
             start_time: 0,
-            timescale_exponent: timescale_to_exponent(&header.timescale_str),
+            timescale_exponent: header.timescale_exponent.unwrap_or(-9),
             version: format!("bwave {}", env!("CARGO_PKG_VERSION")),
             date: String::new(),
             file_type: fst_writer::FstFileType::Verilog,
@@ -3113,5 +3091,23 @@ $enddefinitions $end\n";
             vec![(0, "0".into()), (10, "1".into()), (20, "0".into())]
         );
         let _ = std::fs::remove_file(output);
+    }
+    #[test]
+    fn time_token_exact_fst_preserves_authoritative_exponent() {
+        for exponent in [i8::MIN, -16, -12, -9, 3, i8::MAX] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("exact.fst");
+            let mut reader=std::io::BufReader::new(b"$timescale 1ns $end\n$scope module tb $end\n$var wire 1 ! data $end\n$upscope $end\n$enddefinitions $end\n#0\n0!\n#10\n1!\n".as_slice());
+            let mut header = crate::parser::parse_header(&mut reader);
+            header.timescale_exponent = Some(exponent);
+            let mut handler = FstBuildHandler::new(&header, None, &path).unwrap();
+            handler.parse_bytes(&mut reader, None).unwrap();
+            handler.finalize_and_write().unwrap();
+            let cache = load_fst(&path).unwrap();
+            assert_eq!(cache.timescale_exponent, Some(exponent));
+            if exponent < -15 || exponent > 2 {
+                assert_eq!(cache.timescale_str, "1ns");
+            }
+        }
     }
 }
