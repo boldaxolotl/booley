@@ -49,7 +49,8 @@ from booley.audit.doctor_waivers import (
     warning,
 )
 from booley.config.jobs import parse_caps
-from booley.config.project_config import normalize_tests_toml
+from booley.config.project_config import TESTS_SECTION_KEYS, normalize_tests_toml
+from booley.config.tests_toml_rules import TEST_NAME_RULES
 from booley.core.boundary import (
     BoundaryError,
     is_str_list,
@@ -5451,19 +5452,23 @@ def _audit_native_dependencies(project: ProjectAudit, _pass: Check, _warn: Check
 
 
 def _audit_tests_toml(project: ProjectAudit, _pass: Check, _skip: Check, _fail: Fail) -> None:
-    """Validate the project's ``tests.toml`` selector templates."""
+    """Validate the project's ``tests.toml``: section keys, Test names, selectors."""
     tests_path = project.project_dir / "tests.toml"
     if not tests_path.exists():
-        _skip("tests.toml not present (test selection falls back to configs.toml)")
+        _skip("tests.toml not present (each sim Target runs its testbench's default test)")
         return
     try:
         with tests_path.open("rb") as f:
             raw = tomllib.load(f)
         sections = normalize_tests_toml(raw)
     except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
-        _fail(f"tests.toml invalid: {exc}", "fix the tests.toml select/test list")
+        _fail(
+            f"tests.toml invalid: {exc}",
+            "fix the tests.toml entry named above (a Target section holds only "
+            f"{', '.join(TESTS_SECTION_KEYS)}; {TEST_NAME_RULES})",
+        )
         return
-    _pass("tests.toml valid (single-token select templates well-formed)")
+    _pass("tests.toml valid (section keys, Test names and select templates well-formed)")
     _audit_tests_toml_targets(project, sections, _fail)
 
 
