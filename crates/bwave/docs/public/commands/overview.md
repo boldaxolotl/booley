@@ -2,7 +2,7 @@
 
 Every B-Wave invocation starts with a subcommand. There is
 no implicit fallback: `bwave foo.fst` is an error. Pick
-one of the fourteen commands below.
+one of the commands below.
 
 ## Build
 
@@ -37,6 +37,7 @@ These read the store but don't surface raw signal values.
 | Command | One-line |
 |---|---|
 | `list` | Signal tree: names, widths, var types. |
+| `overview` | Clock-grid verdict, stopped-stretch summary and trace metadata. |
 | `stats` | Transition counts, toggle %, time-in-state per signal. |
 | `stuck` | Signals that never changed (optionally pinned to a value). |
 
@@ -58,9 +59,11 @@ Available on every query/introspect subcommand:
 - `--reset PATTERN`: override the auto-detected reset.
 - `--with-reset`: include the reset phase in output
   (default skips it).
-- `--format text|json`: JSON for `list`, `value`, `find`,
-  `stats`; `signal`, `wave`, `sample`, `diff`, `distance`,
-  `stuck` are text-only and reject JSON with exit code 2.
+- `--format text|json`: JSON for `list`, `value`, `find`, `stats`, `signal`,
+  `wave`, `distance`, and `overview`. `sample`, `diff`, and `stuck` reject
+  JSON with exit code 2.
+- `--sample-mode post-edge|pre-edge`: read sync values after (default) or
+  just before each clock edge. See `reference/sync-vs-async`.
 - `--limit N`: max records (rows, signal blocks, or pairs);
   `wave` counts columns. Headers do not count. Default 2000.
 
@@ -75,6 +78,11 @@ Available on every query/introspect subcommand:
   Virtual Signal rows from one combined name set. Definitions
   that serve only as helpers are evaluated but not displayed.
 
+Clock-stop matching is `find`- and `sample`-only:
+
+- `--include-stopped`: literal triggers also match cycles inside a clock
+  stop. See `reference/sync-vs-async`.
+
 Native marker annotation is `wave`-only:
 
 - `--marker NAME TIME`: pin a named time for display in
@@ -87,5 +95,15 @@ Native marker annotation is `wave`-only:
 Every query/introspect subcommand requires a built `.fst`
 store as the first positional argument: `list`, `signal`,
 `wave`, `value`, `find`, `sample`, `diff`, `distance`,
-`stats`, and `stuck`. Pass a `.vcd` and you'll get exit code 2
+`stats`, `stuck`, and `overview`. Pass a `.vcd` and you'll get exit code 2
 with a `bwave build` hint. Only `build` reads VCD input.
+
+## The `overview` command
+
+`bwave overview STORE_FILE` prints the selected clock, its verdict, and the
+clock-stop summary without scanning the data signals. Run it before trusting
+cycle numbers.
+
+- Accepts `--clock`, `--reset`, and `--with-reset`; rejects `--sample-mode`.
+- `--format json` puts trace metadata in `data` and the verdict in
+  `clock_regularity`.
