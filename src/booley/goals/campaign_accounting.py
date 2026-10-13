@@ -1,8 +1,9 @@
 """Account for Goal evidence that was durably observed but never published (ADR 0072).
 
-A Goal that is judged by Test Runs must never read met while a matching run
-failed at the current file contents. A failure is only sticky once it is in
-the Goal's ledger, and two things can keep a durable observation out of it:
+A Goal that is judged by the outcomes of its Test Runs must never read met
+while a matching run failed at the current file contents. A failure is only
+sticky once it is in the Goal's ledger, and two things can keep a durable
+observation out of it:
 
 - a Simulation Campaign that was cancelled or killed after some of its work
   items finished: their authenticated results are on disk, but the campaign
@@ -45,8 +46,13 @@ it was registered, a scheduler holds its lock, or the read fails. An idle,
 readable campaign that ran only in part has its results adopted; its other
 runs simply stay missing, and it blocks nothing.
 
-A registration that cannot be decoded names every Goal that is judged by
-Test Runs, because what it holds cannot be told. The way out needs a human:
+A coverage Goal is judged by its coverage floors alone
+(:func:`~booley.goals.test_run_evidence.outcomes_decide`): no result a
+campaign left behind can change it, so campaigns are neither registered nor
+adopted for it, and no registration makes it unmet.
+
+A registration that cannot be decoded names every Goal that is judged by its
+Test Runs' outcomes, because what it holds cannot be told. The way out needs a human:
 when an approved Goal change is applied, unreadable registrations are moved
 to ``quarantine/`` beside the others (:func:`quarantine_unreadable`). The
 review package lists every registration that is open or quarantined
@@ -110,7 +116,7 @@ from booley.goals.state_store import (
     write_goal_state_file,
 )
 from booley.goals.store import GoalStore
-from booley.goals.test_run_evidence import goal_test_runs, judged_change
+from booley.goals.test_run_evidence import goal_test_runs, judged_change, outcomes_decide
 from booley.goals.test_run_goals import names_test_runs
 from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.timefmt import parse_timestamp, utc_now_rfc3339
@@ -344,17 +350,25 @@ def _relevant_keys(registration: CampaignRegistration, record: GoalRecord) -> tu
     """The Goals *registration* stamped that still have the revision its run was bound to.
 
     A Goal an approved change gave another revision started its evidence
-    again: nothing a campaign observed before counts for it either way.
+    again: nothing a campaign observed before counts for it either way. Nor
+    does it for a Goal its Test Runs' outcomes do not decide.
     """
     try:
         revisions = dict(registration.run_binding().spec_revisions)
     except GoalBindingError:
         revisions = {}
-    current = {goal.spec.key: goal.spec_revision for goal in record.goals}
+    current = {goal.spec.key: goal.spec_revision for goal in _outcome_goals(record)}
     return tuple(
         key
         for key in sorted(registration.stamps)
         if key in current and revisions.get(key, current[key]) == current[key]
+    )
+
+
+def _outcome_goals(record: GoalRecord) -> tuple[RecordedGoal, ...]:
+    """The Goals of *record* that a Test Run outcome outside their ledger could change."""
+    return tuple(
+        goal for goal in record.goals if names_test_runs(goal.spec) and outcomes_decide(goal)
     )
 
 
@@ -375,17 +389,17 @@ def register_campaign(
     *stamp* gives the source fingerprint detail of a Goal's dependent file
     contents now, or ``None`` when the run's evidence for that Goal would be
     discarded anyway. A baseline campaign, and one whose Target no Goal is
-    judged by, is not registered. A campaign that is registered already (it
+    judged by through its Test Runs' outcomes, is not registered. A campaign that is registered already (it
     is being resumed) keeps what was accounted and is open again.
     """
     if not campaign.candidate:
         return
     record = store.load(binding.record_id)
     stamps: dict[str, Mapping[str, Any]] = {}
-    for goal in record.goals:
+    for goal in _outcome_goals(record):
         admitted = binding.spec_revision(goal.spec.key) == goal.spec_revision
         named = goal.spec.target in campaign.target_names
-        if not names_test_runs(goal.spec) or not named or not admitted:
+        if not named or not admitted:
             continue
         stamped = stamp(goal)
         if stamped is not None:
@@ -459,10 +473,11 @@ def unaccounted_goals(
     Read-only. Names the Goals of every open registration whose results may
     still change or cannot be told (module docstring), of every acceptance
     transaction the state does not select, and, for a registration that
-    cannot be decoded, every Goal that is judged by Test Runs.
+    cannot be decoded, every Goal that is judged by its Test Runs' outcomes.
     """
     paths = record_paths(store.project_dir, record.id)
     everything = tuple(goal.spec.key for goal in record.goals if names_test_runs(goal.spec))
+    decided = tuple(goal.spec.key for goal in _outcome_goals(record))
     registrations, unreadable = _stored(paths)
     found = [
         _open_campaign(item, _relevant_keys(item, record), item.blocked)
@@ -471,7 +486,7 @@ def unaccounted_goals(
     ]
     found += [
         Unaccounted(
-            everything,
+            decided,
             f"campaign registration {path.name}",
             f"cannot be read ({reason})",
             "It is moved aside when a human approves a Goal change; nothing else clears it",
