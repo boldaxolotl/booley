@@ -5,14 +5,20 @@ from pathlib import Path
 import pytest
 
 from booley.criteria.state import DevelopmentState
+from booley.flows.frozen_test_runs import OUTCOMES_ONLY_DETAIL_KEY
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.request import SimRequest
 from booley.goals.entry import EntryRequest, enter_goal_mode
 from booley.goals.flow_execution import GoalFlowExecution
 from booley.goals.model import parse_goal_args
+from booley.goals.status import build_status
+from booley.goals.store import GoalStore
 from tests.flows.sim.test_coverage_invocation import project
 from tests.flows.sim.test_coverage_transaction import NativeExecution
 from tests.goals.conftest import bind, entry_environment, git
+
+# Each test enters Goal Mode in a real Git layout; Windows needs the headroom (#1202).
+pytestmark = pytest.mark.timeout(120)
 
 
 @pytest.mark.parametrize("simulation", ["pass", "fail"])
@@ -25,7 +31,7 @@ def test_bound_flow_records_both_verdicts(layout, monkeypatch, simulation, cover
     (root / ".booley_project/tests.toml").write_text('[top]\ntests = ["reset", "wrap"]\n')
     git(root, "add", "counter.core", "rtl/counter.sv")
     git(root, "commit", "-m", "simulation recipe")
-    enter_goal_mode(
+    record = enter_goal_mode(
         EntryRequest(
             work_dir=root,
             slug="verdicts",
@@ -42,7 +48,7 @@ def test_bound_flow_records_both_verdicts(layout, monkeypatch, simulation, cover
             ),
         ),
         entry_environment(layout),
-    )
+    ).record
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     adapter = GoalFlowExecution(bind(layout))
     result = SimulateFlow(
@@ -56,15 +62,20 @@ def test_bound_flow_records_both_verdicts(layout, monkeypatch, simulation, cover
     )
     saved = DevelopmentState.load(adapter.state_file)
     assert saved.criteria["sim_pass_top"].met is (simulation == "pass")
-    # A coverage Goal is judged by its frozen Test Runs too (ADR 0072): coverage
-    # collected from a failing Test Run does not meet it.
-    assert saved.criteria["coverage_top"].met is (coverage == "pass" and simulation == "pass")
-    if coverage == "pass" and simulation == "fail":
-        assert (
-            saved.criteria["coverage_top"]
-            .detail["goal_contract_violation"]
-            .startswith("Test Runs failed")
-        )
+    # A coverage Goal is judged by its coverage floors alone: a Test Run that failed
+    # its checks is the simulation Goal's concern, not the coverage Goal's.
+    entry = saved.criteria["coverage_top"]
+    assert entry.met is (coverage == "pass")
+    violation = entry.detail.get("goal_contract_violation", "")
+    assert "Test Runs failed" not in violation and "have not passed" not in violation
+    # The failing runs stay visible in what the Goal shows of its Test Runs.
+    outcomes = {run["outcome"] for run in entry.detail["test_run_ledger"]["runs"]}
+    assert outcomes == {"passed" if simulation == "pass" else "failed"}
+    view = build_status(GoalStore(layout.control), record, work_dir=root)
+    status = next(goal for goal in view.goals if goal.key == "coverage_top")
+    # (This substituted campaign records no waiver policy, so met evidence reads stale.)
+    assert (status.status == "unmet") is (coverage == "fail"), status
+    assert "goal-test-run-" not in status.reason
     assert result.exit_code == (0 if simulation == "pass" else 1), result.outcome
     assert len(saved.acceptance_transactions) == 1
 
@@ -123,7 +134,7 @@ def test_multi_seed_coverage_goal_is_met_only_by_a_campaign_of_exactly_its_froze
     entry = state.criteria["coverage_top"]
     assert entry.met is False and "evaluation" not in entry.detail
     assert [row["name"] for row in entry.detail["test_runs"]] == [frozen[0]]
-    assert "have not passed yet" in entry.detail["goal_contract_violation"]
+    assert "did not measure the Goal" in entry.detail["goal_contract_violation"]
 
     # ``reset@x2`` names the Goal's Target, Test Variant and N: it runs the frozen seeds.
     result, state = _coverage_run(layout, root, "frozen-seeds", "reset@x2")
@@ -134,6 +145,41 @@ def test_multi_seed_coverage_goal_is_met_only_by_a_campaign_of_exactly_its_froze
     outcomes = [run["outcome"] for run in entry.detail["test_run_ledger"]["runs"]]
     assert outcomes == ["passed", "passed"]
     assert "match no Goal" not in result.outcome.report_text
+
+
+@pytest.mark.parametrize("grade", ["pass", "fail"])
+def test_an_ordinary_run_never_changes_a_measured_coverage_verdict(layout, monkeypatch, grade):
+    """After the campaign measured the Goal, a frozen run's outcome elsewhere decides nothing."""
+    from types import SimpleNamespace
+
+    from tests.goals.conftest import run_row
+    from tests.goals.test_test_run_evidence import _record, _shown, _state_file, _status
+
+    goals = [{"family": "COVERAGE", "target": "top", "tests": "all", "metrics": {"line": 100}}]
+    root, record = _enter(layout, monkeypatch, goals)
+    mode = SimpleNamespace(**vars(layout), record=record)
+    frozen = record.test_run_resolutions["coverage_top"].test_runs
+    result, state = _coverage_run(layout, root, "campaign")
+    assert result.exit_code == 0, result.outcome
+    measured = state.criteria["coverage_top"].detail
+    before = _status(mode, "coverage_top")
+    # (This substituted campaign records no waiver policy, so met evidence reads stale.)
+    assert before.status != "unmet" and "goal-test-run-" not in before.reason
+
+    # An ordinary simulation at the same file contents runs one frozen Test Run.
+    ordinary = _record(
+        mode,
+        "ordinary",
+        [run_row(frozen[0], grade)],
+        key="coverage_top",
+        met=False,
+        extra={OUTCOMES_ONLY_DETAIL_KEY: True},
+    )
+    assert ordinary["evaluation"] == measured["evaluation"]  # the measurement, restated
+    after = _status(mode, "coverage_top")
+    assert (after.status, after.reason) == (before.status, before.reason)
+    assert DevelopmentState.load(_state_file(mode)).criteria["coverage_top"].met is True
+    assert set(_shown(after).values()) == {"passed"}  # the measuring campaign's outcomes
 
 
 def test_a_published_coverage_campaign_whose_acceptance_never_ran_is_accounted_for(

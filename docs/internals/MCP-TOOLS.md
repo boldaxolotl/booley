@@ -146,7 +146,7 @@ enabled = false                 # remove one discovered Specialist MCP tool
 - Custom Flows and MCP tools are scanned from `.booley_project/mcp_tools/*.py`.
 - `[flows.<name>].enabled = false` disables a Flow; `[specialists.<name>].enabled = false` disables a Specialist. Protocol utilities have no Project enable switch.
 - Interactive, non-nested servers list `goal_enter`, `goal_status`, `goal_propose_change`, and `goal_finish` without a rollout switch. These Goal tools bypass `BOOLEY_MCP_TOOLS`; default and nested servers do not list them.
-- For regular discovered tools, nested allowlists take precedence, followed by `BOOLEY_MCP_TOOLS`, then the `BOOLEY_MCP_MODE=interactive` filter. `tb_coder` is currently de-registered in all modes. These environment filters are separate from Project registration.
+- For regular discovered tools, nested allowlists take precedence, followed by `BOOLEY_MCP_TOOLS`, then the `BOOLEY_MCP_MODE=interactive` filter. These environment filters are separate from Project registration.
 - `booley flow` is the human diagnostic entry point for Booley Flows; the MCP tool diagnostic surface covers Specialists and non-Flow endpoints.
 
 ### Execution Boundary
@@ -634,7 +634,11 @@ def _disallowed_tools(self) -> list[str] | None:
     ]
 ```
 
-Category isolation is separate from write isolation. Some built-ins temporarily hide opposite-category sources through Booley's internal `workspace_isolation` helpers; `workspace_access = "read_only"` protects the real worktree from writes but does not hide files from the snapshot.
+Category isolation uses the same disposable snapshot as write isolation. A
+Specialist that selects `_workspace_isolation_category()` works in a copy with
+the opposite category's sources removed; shared prefixes stay visible and the
+live worktree keeps every source. `workspace_access = "read_only"` alone does
+not hide files.
 
 #### Find Its Logs
 

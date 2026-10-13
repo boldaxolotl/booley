@@ -22,9 +22,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 from uuid import uuid4
 
-from booley.agent_workspace.isolation import (
-    filter_state_file_for_category,
-)
+from booley.agent_workspace.state_projection import filter_state_file_for_category
 from booley.core.boundary import as_dict, as_str_list
 from booley.core.models import AgentCallParams
 from booley.criteria.freshness import review_policy_digest

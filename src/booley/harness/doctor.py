@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 
 import booley
 from booley.agent_workspace.isolation import get_category_dirs
+from booley.agent_workspace.legacy_stashes import legacy_stash_manifests
 from booley.audit import (
     design_size,
     eda_environment,
@@ -797,6 +798,7 @@ def _run_project_phase(
     project_dir, project = loaded.project_dir, loaded.project
     mode = readiness.ReadinessMode.INSPECT if read_only else readiness.ReadinessMode.RECONCILE
     _check_upgrade_review(project_dir, reporter)
+    _check_legacy_source_stashes(project_root, reporter)
     _check_goal_presence(project_root, project_dir, reporter)
     if project is None:
         reporter.skip_("project setup audit skipped - no valid project config")
@@ -818,6 +820,21 @@ def _run_project_phase(
         )
         reporter.diagnostics(readiness.check_stealth_cores(project, mode=mode))
     return docker_exe, project
+
+
+def _check_legacy_source_stashes(project_root: Path, reporter: _Reporter) -> None:
+    """Warn about interrupted old runs without changing any Project sources."""
+    for manifest in legacy_stash_manifests(project_root):
+        reporter.warn_(
+            warning(
+                "workspace.legacy-source-stash",
+                f"An older run left a source stash record at {manifest}",
+                subject=str(manifest),
+            ),
+            "Inspect the record before Sandbox rebuild or temp cleanup. See "
+            "TROUBLESHOOTING.md: Recover sources hidden by an interrupted older run. "
+            "Recovery is manual; never overwrite current sources.",
+        )
 
 
 def _check_project_data_destination_branch(project_root: Path, reporter: _Reporter) -> None:

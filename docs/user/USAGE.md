@@ -658,9 +658,7 @@ Proposal-locked mutation testing. A read-only LLM creator returns exact source r
 Call the `mutation_tester` Specialist from your Developer Agent session: `scope="<rtl-file,...>"` chooses mutation sites; `target="<sim-target>"` chooses exactly one complete runnable Target suite; `steer=["<context>"]` biases mutation selection. A valid lock is reused on later runs, so new steering takes effect only with `regen_lock=true`. The Target supplies the testbench top and complete RTL closure; they are not separate caller inputs.
 <!-- END GENERATED: flows -->
 
-`tb_coder` also exists but is hidden until it is ready (see
-[ROADMAP.md](../internals/ROADMAP.md)); for now, the Developer Agent writes testbenches
-itself.
+The Developer Agent writes testbenches directly.
 
 ### Running a Booley Flow directly
 

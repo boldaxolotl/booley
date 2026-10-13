@@ -45,7 +45,11 @@ def test_specialist_module_names_are_portable(monkeypatch, path_type) -> None:
     monkeypatch.setitem(globals(), "Path", path_type)
     modules = _specialist_modules.__wrapped__()
     assert "booley.specialists.reviewer" in modules
-    assert "booley.specialists.tb_coder" not in modules
+    assert modules == {
+        "booley.specialists.reviewer",
+        "booley.specialists.mutation_tester",
+        "booley.specialists.coverage_analyst",
+    }
 
 
 def _commands(text: str) -> list[tuple[int, list[str]]]:

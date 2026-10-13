@@ -1,10 +1,10 @@
 """Per-specialist nested-MCP capability matrix.
 
-When a specialist (e.g. ``tb_coder``, ``coverage_analyst``) invokes its
+When a specialist (e.g. ``coverage_analyst``) invokes its
 own Codex sub-agent inside the sandbox container, that sub-agent spawns a
 *nested* MCP server. Nested servers must NOT expose every Booley MCP tool — in
 particular they must never expose Specialist MCP tools, because that would
-let the sub-agent re-invoke its own parent (tb_coder → MCP → tb_coder →
+let the sub-agent re-invoke its own parent (Specialist → MCP → Specialist →
 … infinite recursion).
 
 This module is the single source of truth for "which MCP tools does
@@ -31,8 +31,6 @@ from __future__ import annotations
 NESTED_MCP_CAPABILITIES: dict[str, tuple[str, ...]] = {
     # The report-driven Analyst gets one Campaign-scoped, read-only evidence tool.
     "coverage_analyst": ("coverage_evidence",),
-    # Code-modifying specialist runs Simulation's pre-submit build-only mode.
-    "tb_coder": ("sim",),
     # No MCP needed for these — they reason over text, not the design.
     "reviewer": (),
     "mutation_tester": (),

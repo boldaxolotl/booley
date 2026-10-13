@@ -11,10 +11,13 @@ reason when they do not:
   declared arguments or environment changed: only an approved retarget
   freezes the Goal again;
 - a stored ledger that no longer equals its recomputation;
-- a required run that failed, or has not passed yet.
+- a required run that failed, or has not passed yet. Not for a coverage
+  Goal: it is judged by its coverage floors alone
+  (:func:`~booley.goals.test_run_evidence.outcomes_decide`).
 
 It also gives each frozen run its outcome and the command that runs it
-again, which status, the review package and the Dashboard show.
+again, which status, the review package and the Dashboard show. A coverage
+Goal's failing runs are shown the same way while the Goal is met.
 """
 
 from __future__ import annotations
@@ -35,6 +38,7 @@ from booley.goals.test_run_evidence import (
     ledger_defect,
     ledger_runs,
     outcome_defect,
+    outcomes_decide,
     requirement_defect,
 )
 from booley.goals.test_run_freezing import (
@@ -98,7 +102,8 @@ def judge_test_runs(
     *history* is every validated observation of the record. The reason is
     empty only when the Goal's resolution is complete and non-empty, every
     frozen run still is what the Target declares, the stored ledger equals
-    its recomputation, and every run passed.
+    its recomputation, and every run passed. Whether the runs passed is left
+    out for a Goal their outcomes do not decide (a coverage Goal).
     """
     key, target = goal.spec.key, goal.spec.target
     assert target is not None
@@ -116,11 +121,11 @@ def judge_test_runs(
     )
     blocking = defect is not None
     if defect is None and evidence is not None:
-        scope = LedgerScope(record.id, key, goal.spec_revision)
+        scope = LedgerScope.of(record, goal)
         defect = ledger_defect(evidence, history, scope, required)
         if defect is not None:
             outcomes = {}
-        elif stored is not None:
+        elif stored is not None and outcomes_decide(goal):
             defect = outcome_defect(stored)
     code, text = defect or ("", "")
     if defect is None and evidence is None:

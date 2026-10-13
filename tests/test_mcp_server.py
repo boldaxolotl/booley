@@ -966,15 +966,15 @@ class TestResolveTranscriptDir:
     def test_creates_dir_under_logs(self, tmp_path: Path, monkeypatch):
         monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path))
         counts = self._new_counts()
-        result = self._resolve("tb_coder", counts)
-        assert result == tmp_path / ".runtime" / "transcripts" / "tb_coder" / "1"
+        result = self._resolve("mutation_tester", counts)
+        assert result == tmp_path / ".runtime" / "transcripts" / "mutation_tester" / "1"
         assert result.is_dir()
 
     def test_sequential_numbering(self, tmp_path: Path, monkeypatch):
         monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path))
         counts = self._new_counts()
-        r1 = self._resolve("tb_coder", counts)
-        r2 = self._resolve("tb_coder", counts)
+        r1 = self._resolve("mutation_tester", counts)
+        r2 = self._resolve("mutation_tester", counts)
         assert r1.name == "1"
         assert r2.name == "2"
 
@@ -982,7 +982,7 @@ class TestResolveTranscriptDir:
         """Must still return a valid dir (not None) even without BOOLEY_LOGS_DIR."""
         monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
         counts = self._new_counts()
-        result = self._resolve("tb_coder", counts)
+        result = self._resolve("mutation_tester", counts)
         assert result.is_dir()
         assert "transcripts" in str(result)
 
@@ -1020,25 +1020,21 @@ class TestMcpExposureFiltering:
         monkeypatch.delenv("BOOLEY_MCP_MODE", raising=False)
         monkeypatch.delenv("BOOLEY_MCP_TOOLS", raising=False)
 
-        assert self._mcp_tool_visible("tb_coder")
+        assert self._mcp_tool_visible("mutation_tester")
         assert self._mcp_tool_visible("reviewer")
         assert self._mcp_tool_visible("sim")
         assert self._mcp_tool_visible("submit_run_report")
 
-    @pytest.mark.parametrize(
-        "mcp_tool_name",
-        ["tb_coder"],
-    )
-    def test_interactive_mode_hides_autonomous_only_tools(
-        self,
-        monkeypatch,
-        mcp_tool_name,
-    ):
+    def test_interactive_filter_hides_explicit_synthetic_tool(self, monkeypatch):
         monkeypatch.delenv("BOOLEY_NESTED_AGENT", raising=False)
+        monkeypatch.delenv("BOOLEY_NESTED_MCP_TOOLS", raising=False)
         monkeypatch.delenv("BOOLEY_MCP_TOOLS", raising=False)
         monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
-
-        assert not self._mcp_tool_visible(mcp_tool_name)
+        monkeypatch.setitem(
+            self._mcp_tool_visible.__globals__, "_INTERACTIVE_MCP_EXCLUDED", frozenset({"fixture"})
+        )
+        assert not self._mcp_tool_visible("fixture")
+        assert self._mcp_tool_visible("reviewer")
 
     def test_interactive_mode_keeps_interactive_tools(self, monkeypatch):
         monkeypatch.delenv("BOOLEY_NESTED_AGENT", raising=False)
@@ -1985,15 +1981,16 @@ class TestInteractiveHiddenNote:
         # The set is derived from the reasons — they cannot drift apart.
         assert self._excluded == frozenset(self._reasons)
 
-    @pytest.mark.parametrize("mcp_tool_name", ["tb_coder"])
-    def test_hidden_mcp_tool_explains_itself(self, monkeypatch, mcp_tool_name):
+    def test_explicit_hidden_reason_explains_itself(self, monkeypatch):
         monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
-
-        note = self._note(mcp_tool_name)
-
+        monkeypatch.setitem(
+            self._note.__globals__, "_INTERACTIVE_MCP_EXCLUDED", frozenset({"fixture"})
+        )
+        monkeypatch.setitem(self._reasons, "fixture", "fixture reason")
+        note = self._note("fixture")
         assert note is not None
         assert "hidden in Interactive Mode" in note
-        assert self._reasons[mcp_tool_name] in note
+        assert "fixture reason" in note
 
     def test_genuinely_unknown_mcp_tool_gets_no_excuse(self, monkeypatch):
         monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
