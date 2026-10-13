@@ -19,12 +19,12 @@ from textual.widgets import DataTable, Footer, Header, Static
 from booley.core.boundary import as_float
 from booley.goals.model import OCCUPYING_STATES
 from booley.goals.presentation import proposal_presentation
+from booley.harness.dashboard.jobs import TERMINAL_JOB_STATES, JobView, target_arg
 from booley.harness.dashboard.links import linked_text, open_in_editor
 from booley.harness.dashboard.model import DashboardSnapshot, GoalDetail, GoalView
 from booley.harness.dashboard.resources import Resources
 from booley.mcp.session_registry import Attribution, SessionRow, shares_worktree
 from booley.review.goal_package import observation_facts
-from booley.runtime.job_snapshot import TERMINAL_JOB_STATES, JobView, target_arg
 from booley.runtime.pid import ProcessState
 from booley.runtime.session_activity import UNKNOWN, WAITING_TOOL, Activity
 from booley.runtime.timefmt import parse_timestamp
