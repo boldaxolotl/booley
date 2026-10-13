@@ -46,8 +46,7 @@ over that severity bug with a project waiver.
 5. **Settle the git footprint** per the plan's decision row 16 — see below.
    This can create or change `doctor-waivers.toml`, so it precedes the final
    evidence runs.
-6. Run plain Doctor once on the **host** (`booley doctor` from the repo
-   root there). Each side checks what only it can see — host-side
+6. Run plain Doctor once on the **host** (`booley doctor` from the Project Root there). Each side checks what only it can see — host-side
    Docker/network/image checks never run in the container. Expect a few
    Sandbox-specific SKIPs on each side; a *FAIL* that exists on one side only
    is real. The host-session reminder is a PASS: Project Setup planning expects a

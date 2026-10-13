@@ -124,7 +124,7 @@ def test_fresher_published_store_beats_stale_cache(tmp_path):
 
 
 def test_equal_mtime_prefers_host_visible_published_store(tmp_path):
-    """copy2 preserves mtime; reports must name the project copy on that tie."""
+    """copy2 preserves mtime; reports must name the file copied into the Project on that tie."""
     cache_root = tmp_path / "bwave"
     work = tmp_path / "sim"
     work.mkdir()

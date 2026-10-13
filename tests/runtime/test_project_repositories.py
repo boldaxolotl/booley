@@ -1,4 +1,4 @@
-"""Tests for shared Project repository inspection."""
+"""Tests for shared Booley Directory's repository inspection."""
 
 from __future__ import annotations
 

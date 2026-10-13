@@ -2368,7 +2368,9 @@ def _docker_adapter() -> DockerPort:
 
 def _layout_alias_capable(image_id: str) -> bool:
     if not isinstance(image_id, str):
-        raise ImageLifecycleError("Sandbox image identity is unavailable for Project-data proof")
+        raise ImageLifecycleError(
+            "Sandbox image identity is unavailable for Booley Directory proof"
+        )
     try:
         return project_image.project_data_alias_capable(image_id)
     except project_image.DockerImageError as exc:
@@ -2479,17 +2481,19 @@ def _validate_layout_preparation(
         prepared.plan.project_root
     ):
         raise ImageLifecycleError(
-            "upstream image or Project-data topology inputs changed during layout preparation"
+            "upstream image or Booley Directory topology inputs changed during layout preparation"
         )
     has_layout = prepared.plan.nodes[-1].role is ImageRole.PROJECT_DATA_LAYOUT
     parent = prepared.candidates[-2 if has_layout else -1]
     if docker.image_id(parent.candidate_reference) != parent.image_id:
-        raise ImageLifecycleError("Project-data layout immutable prepared parent was substituted")
+        raise ImageLifecycleError(
+            "Booley Directory layout immutable prepared parent was substituted"
+        )
     if has_layout:
         expected = _layout_node(prepared.plan.project_root, before[-1], parent.image_id)
         if _snapshot((expected,)) != _snapshot((prepared.plan.nodes[-1],)):
             raise ImageLifecycleError(
-                "Project-data layout recipe or parent identity changed during preparation"
+                "Booley Directory layout recipe or parent identity changed during preparation"
             )
     elif _layout_alias_capable(parent.image_id):
         raise ImageLifecycleError("prepared alias image is missing its required layout derivative")

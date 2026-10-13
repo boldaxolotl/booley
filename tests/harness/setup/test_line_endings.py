@@ -1,4 +1,4 @@
-"""Boundary-level contracts for Project-repository line-ending reconciliation."""
+"""Boundary-level contracts for Project line-ending reconciliation."""
 
 from __future__ import annotations
 

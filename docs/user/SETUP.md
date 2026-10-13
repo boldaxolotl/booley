@@ -242,7 +242,7 @@ scaffold is written, the `booley-setup` skill takes it from here — see
 
 When the bootstrap finishes, the **`booley-setup`** skill is deployed into your
 Claude Code or Codex installation by [Host Bootstrap](#host-bootstrap--host). **Stay on the host**:
-invoke it in your Claude Code or Codex chat at the repo root.
+invoke it in your Claude Code or Codex chat at the Project Root.
 
 ---
 
@@ -308,7 +308,7 @@ bootstrap above) asked the four choices and wrote a working,
 green-by-construction project. So there's no feasibility triage and no config to
 author — the skill only has to finish the job.
 
-**Reopen in Container**, then run `/booley-setup new` from the repo root. It
+**Reopen in Container**, then run `/booley-setup new` from the Project Root. It
 detects the scaffolded repo, reads the choices the scaffold recorded into the
 config, and confirms them in one message rather than re-asking. Because the
 scaffold already wrote the config (Step 2) and the project adopts the built-in
@@ -358,13 +358,13 @@ anyway: it skips validation but not attribution rejection or sanitization
 project details leak into history). Stealth mode itself is covered in
 [CONFIG.md](CONFIG.md#stealth-mode-stealth).
 
-With Stealth enabled, init stores the Project checkout's line-ending default in
+With Stealth enabled, init stores the RTL repository's line-ending default in
 Git's common `info/attributes`, shared by linked worktrees and local to this
 repository; it does not travel through commits. Init repairs a missing local
 default even when `core.autocrlf` is already false. Any upstream attributes
 policy suppresses this default so its higher precedence cannot override user
-rules. Independent project-data repositories retain their root `.gitattributes`
-policy. The enabled choice is read from the resolved project-data directory,
+rules. Versioned Booley Directories retain their root `.gitattributes`
+policy. The enabled choice is read from the resolved Booley Directory,
 including relocated data.
 
 ## See also

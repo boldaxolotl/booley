@@ -126,7 +126,7 @@ def test_projects_discover_human_output_lists_remembered_roots(
     args = _parser().parse_args(["projects", "discover", str(tmp_path)])
 
     assert _run(args) == 0
-    assert f"Remembered 1 Project root(s):\n  {project}" in capsys.readouterr().out
+    assert f"Remembered 1 Project Root(s):\n  {project}" in capsys.readouterr().out
 
 
 def test_projects_forget_human_output_names_root(

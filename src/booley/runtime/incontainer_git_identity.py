@@ -26,7 +26,7 @@ class GitIdentityError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class GitIdentity:
-    """The default author and committer identity for one Project checkout."""
+    """The default author and committer identity for one Project Root."""
 
     name: str
     email: str

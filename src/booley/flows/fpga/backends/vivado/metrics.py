@@ -96,7 +96,7 @@ def _metrics_detail(
     A ``--baseline`` run happens inside a throwaway git worktree that is
     deleted on context exit, and its report paths were relativized against
     THAT root — so the same relative string, read back against the real
-    project root, lands on the CURRENT run's report files. Not a dangling
+    Project Root, lands on the CURRENT run's report files. Not a dangling
     path: a silently wrong one, which would make a baseline-vs-current
     comparison read two copies of the same numbers.
 

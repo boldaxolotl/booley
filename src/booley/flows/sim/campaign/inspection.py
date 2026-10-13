@@ -243,7 +243,7 @@ def recover_retained_campaign_resources(
     surviving_runs = _surviving_owned_run_directories(store, status.interrupted)
     if (unretired or surviving_runs) and project_data is None:
         raise SimulationCampaignIntegrityError(
-            "Project data is required to recover retained Campaign resources"
+            "Booley Directory is required to recover retained Campaign resources"
         )
     if project_data is None:
         return

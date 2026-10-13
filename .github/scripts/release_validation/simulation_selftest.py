@@ -33,7 +33,7 @@ def _doctor(project: Path, booley: Path) -> str:
 def _prepare_clone_state(project: Path) -> None:
     """Restore the local-only state that a fresh CI checkout cannot carry."""
     # Doctor's prune guard checks every repository that creates worktrees,
-    # including a standalone nested Project repository.
+    # including a standalone nested Booley Directory's repository.
     for repository in worktree_policy_repositories(project):
         result = subprocess.run(
             ["git", "config", "--local", "gc.worktreePruneExpire", "never"],

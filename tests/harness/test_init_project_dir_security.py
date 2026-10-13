@@ -1,4 +1,4 @@
-"""Project-data directory permissions required by Session issuance."""
+"""Booley Directory permissions required by Session issuance."""
 
 from pathlib import Path
 
@@ -30,7 +30,7 @@ def test_new_project_data_directory_is_private(tmp_path: Path) -> None:
 
 
 def test_project_data_scaffold_is_written_with_lf(tmp_path: Path) -> None:
-    """Windows text mode must not turn project-data scaffolds into CRLF (#609)."""
+    """Windows text mode must not turn Booley Directory scaffolds into CRLF (#609)."""
     ctx = InitContext(project_root=tmp_path)
     init_cmd._step_project_dir(ctx)
     project_dir = tmp_path / ".booley_project"

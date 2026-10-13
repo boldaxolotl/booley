@@ -3,7 +3,7 @@
 Use this concise Project-level `AGENTS.md` structure. Keep only facts that change
 RTL work; omit unknown or low-value details.
 
-Write it to canonical `<project_dir>/AGENTS.md`; the RTL repo root normally gets
+Write it to canonical `<project_dir>/AGENTS.md`; the Project Root normally gets
 generated links. An explicitly selected hybrid port/integration footprint instead
 tracks a content-identical root `AGENTS.md` (see `steps/3-agents-md.md`, Step 3).
 
@@ -29,5 +29,5 @@ says when to keep each.
 - Doctor during task work: verify changes with the relevant Booley Flows and, at most, plain `booley doctor`. `booley doctor --deep` belongs to Project Setup, `/booley-heal`, and Booley version changes; do not run it for task work or handoffs. Report findings your change did not cause (pre-existing, host-owned, or Sandbox provisioning) in the handoff instead of fixing them. Never edit `booley.toml`, `.core` files, `doctor-waivers.toml`, or Goal Records to silence such a finding. If the task itself changes project configuration, Targets, dependencies, or the Sandbox, fix the findings it caused or add a narrow, reviewed waiver for a deliberate constraint, and state that deep verification (`/booley-heal`) is due.
 - RISC-V reference docs (ISA, debug specification, ELF psABI) live at `$BOOLEY_RISCV_DOCS`; start with `INDEX.md` there.
 - Booley Specialists for deeper RTL work: `coverage_analyst`, `reviewer`, `mutation_tester`.
-- Another branch or commit: never use plain `git worktree add` or copy `.booley_project/`. Commit Project changes, then run `booley worktree new <name>` inside the Sandbox from the workspace root (`--help` explains naming). Pass `work_dir=<worktree path>` to a Flow to use that checkout; project config still comes from the canonical project dir. To remove a worktree, follow the steps the command printed; when it printed none, run `git worktree remove <worktree path>`. For QoR against a past commit, prefer `synth`/`fpga` `--baseline <git ref>`.
+- Another branch or commit: never use plain `git worktree add` or copy `.booley_project/`. Commit Project changes, then run `booley worktree new <name>` inside the Sandbox from the workspace root (`--help` explains naming). Pass `work_dir=<worktree path>` to a Flow to use that checkout; project config still comes from the canonical Booley Directory. To remove a worktree, follow the steps the command printed; when it printed none, run `git worktree remove <worktree path>`. For QoR against a past commit, prefer `synth`/`fpga` `--baseline <git ref>`.
 ```

@@ -9,7 +9,7 @@ The client waits for this process on every prompt and tool call, so it is a
 standalone, standard-library-only script: importing the ``booley`` package
 would cost about 0.1 s per event. It therefore repeats the few storage rules
 of ``booley.runtime.session_activity``, the Session Registry key formats and
-the Project directory resolution order of ``booley.core.project_dir``;
+the Booley Directory resolution order of ``booley.core.project_dir``;
 ``tests/harness/test_session_activity_hook.py`` holds the two in agreement.
 
 It prints nothing to stdout (clients feed hook output back to the model),
@@ -192,7 +192,7 @@ def record(
     if key is None:
         return False
     root = project / "runtime" / "session_activity"
-    # Refuse a store reached through a symlink below the Project directory.
+    # Refuse a store reached through a symlink below the Booley Directory.
     for part in (root, root.parent):
         if part.is_symlink():
             raise OSError(f"session activity storage is redirected: {part}")
@@ -223,7 +223,7 @@ def _toml_project_dir(directory: Path) -> Path | None:
 
 
 def resolve_project_dir(env: Mapping[str, str], cwd: Path) -> Path | None:
-    """The Project directory this session works in, or ``None`` outside a Project.
+    """The Booley Directory this session works in, or ``None`` outside a Project.
 
     Same order as Booley itself: ``BOOLEY_PROJECT_DIR`` (always set in a
     Sandbox), then the nearest booley.toml ``[project].dir``, then the nearest

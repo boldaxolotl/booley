@@ -12,7 +12,7 @@ One findings log serves two audiences without creating two reports by default:
   through :mod:`redact`. ``booley feedback export`` explicitly persists it as
   ``BOOLEY-FEEDBACK.md`` for manual sharing.
 
-The user report lives in ``<project_dir>/`` — inside Booley's state dir, never
+The user report lives in ``<project_dir>/`` — inside the Booley Directory, never
 in the RTL repo's tracked tree (the setup footprint guardrail). An explicit
 export lands there by default too. The one exception is the maintainer dogfood
 flow, which asks for the user report at a clone's root.
@@ -295,7 +295,7 @@ def render_user_report(
         f"# {title}",
         "",
         f"Generated {when} from `{log.path.name}`, {source}.",
-        "This file is **local**: it lives in Booley's state directory and is never",
+        "This file is **local**: it lives in the Booley Directory and is never",
         "published anywhere. Nothing is sent off this machine without you agreeing to it.",
         "",
         "## Summary",

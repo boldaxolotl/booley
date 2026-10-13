@@ -428,7 +428,7 @@ def test_paired_project_worktree_targets_belong_to_outer_checkout(tmp_path: Path
         """,
     )
     _git(project, "add", ".")
-    _git(project, "commit", "-m", "project data")
+    _git(project, "commit", "-m", "Booley Directory")
     _git(project, "worktree", "add", "--detach", str(outer / ".booley_project"), "HEAD")
 
     paired = paired_project_repository(outer)

@@ -49,7 +49,7 @@ and before the first collection call, stop the running server
 table, with `BOOLEY_MCP_MODE=interactive` and without `BOOLEY_NESTED_AGENT`,
 `BOOLEY_NESTED_MCP_TOOLS` or `BOOLEY_MCP_TOOLS` (as the container start does).
 Use `--operation rename`, the exact captured
-`/goals/<record-id>/booley_state.json` suffix, the resolved control Project as
+`/goals/<record-id>/booley_state.json` suffix, the resolved Main Booley Directory as
 `--owned`, `--gate acceptance`, the archived state as `--baseline-state`, a
 fresh control directory, the compiled `boundary.so` and a `--timeout` longer
 than the sim call. Confirm the server answers before the child calls it.

@@ -182,7 +182,7 @@ def test_target_cannot_escape_through_symlinked_parent(tmp_path: Path) -> None:
     except OSError:
         pytest.skip("symlink creation not permitted on this host")
 
-    with pytest.raises(ValueError, match="outside project root"):
+    with pytest.raises(ValueError, match="outside Project Root"):
         plan_init_filesystem(
             InitFilesystemRequest(
                 root=tmp_path,
