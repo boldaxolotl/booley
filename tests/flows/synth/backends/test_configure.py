@@ -422,3 +422,10 @@ def test_string_workdir_suffix_cannot_traverse(tmp_path):
         )
         assert path.parent == root
         assert len(path.name) < 80
+
+
+def test_typed_parameter_invalid_utf8_has_boundary_diagnostic():
+    from booley.flows.synth.backends.yosys.parsing import parse_params
+
+    with pytest.raises(SystemExit, match=r"ERROR: Invalid string parameter.*valid UTF-8"):
+        parse_params(["NAME=\udc80"], ["NAME=str"])

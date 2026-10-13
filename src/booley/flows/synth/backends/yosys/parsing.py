@@ -49,7 +49,10 @@ def parse_params(
         if not name:
             sys.exit(f"ERROR: Empty parameter name in '{p}'")
         if name in types:
-            sv_string_literal(value)
+            try:
+                sv_string_literal(value)
+            except ValueError as exc:
+                sys.exit(f"ERROR: Invalid string parameter {name!r}: {exc}")
             params[name] = ParameterValue(types[name], value)
         else:
             params[name] = value

@@ -2737,3 +2737,35 @@ def test_owned_empty_setup_rejects_producer_mismatch(tmp_path, monkeypatch, prod
     )
     with pytest.raises(fusesoc_registry.TargetResolutionError, match="was not preserved"):
         fusesoc_registry.resolve_target_handle(handle, build_root=tmp_path / "build")
+
+
+@pytest.mark.parametrize("value", [12, ""])
+def test_owned_setup_parameters_do_not_require_toplevel(tmp_path, value):
+    import yaml
+
+    from booley.fusesoc.fusesoc_registry import setup_command_for_handle
+    from booley.targets.catalog import TargetCatalog
+    from booley.targets.domain import MissingTargetToplevelError
+
+    (tmp_path / "proof.core").write_text(
+        "CAPI=2:\n"
+        + yaml.safe_dump(
+            {
+                "name": "proof:string:notop:1",
+                "parameters": {
+                    "NAME": {
+                        "datatype": "str" if value == "" else "int",
+                        "paramtype": "vlogparam",
+                        "default": value,
+                    }
+                },
+                "targets": {"lint": {"default_tool": "verilator", "parameters": ["NAME"]}},
+            }
+        )
+    )
+    catalog = TargetCatalog.build(tmp_path)
+    handle = catalog.select("lint")
+    with pytest.raises(MissingTargetToplevelError):
+        catalog.inspect(handle)
+    command = setup_command_for_handle(handle, build_root=tmp_path / "build")
+    assert ("--NAME=" in command) is (value == "")

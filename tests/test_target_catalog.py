@@ -850,6 +850,7 @@ def test_authored_flag_selects_empty_parameter_and_dependency(tmp_path):
 
     from booley.fusesoc import fusesoc_registry
 
+    (tmp_path / "dependency.sv").write_text("module dependency; endmodule\n")
     (tmp_path / "top.sv").write_text("module top; endmodule\n")
     (tmp_path / "conditional_tb.sv").write_text("module conditional_tb; endmodule\n")
 
@@ -861,7 +862,8 @@ def test_authored_flag_selects_empty_parameter_and_dependency(tmp_path):
                 "parameters": {
                     "NAME": {"datatype": "str", "paramtype": "vlogparam", "default": ""}
                 },
-                "targets": {"default": {"parameters": ["NAME"]}},
+                "filesets": {"rtl": {"files": ["dependency.sv"]}},
+                "targets": {"default": {"parameters": ["NAME"], "filesets": ["rtl"]}},
             }
         )
     )
@@ -893,7 +895,7 @@ def test_authored_flag_selects_empty_parameter_and_dependency(tmp_path):
     handle = catalog.select("sim", for_flow="sim")
     inspection = catalog.inspect(handle)
     assert inspection.parameters["NAME"]["default"] == ""
-    assert {item.path for item in inspection.inputs} == {"top.sv"}
+    assert {item.path for item in inspection.inputs} == {"top.sv", "dependency.sv"}
     ref = fusesoc_registry._resolve_ref(tmp_path, "sim")
     sources = fusesoc_registry.target_source_files_for_ref(tmp_path, ref)
     assert "conditional_tb.sv" in sources.tb_files

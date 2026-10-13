@@ -857,3 +857,70 @@ def test_actual_trace_resolution_preserves_owned_empty_and_authored_flags(
     finally:
         overlay.cleanup()
     assert hashlib.sha256(path.read_bytes()).hexdigest() == original
+
+
+def _legacy_receiver_project(tmp_path, tool, value):
+    declaration = 'parameter string NAME="X"' if tool == "verilator" else 'parameter NAME="X"'
+    source = f"""module top #({declaration})();
+initial begin
+ if (NAME!={_expected(value)}) $fatal(1,"legacy value mismatch");
+ $display("LEGACY_STRING_OK"); $finish;
+end
+endmodule
+"""
+    tops = "top"
+    if tool == "icarus":
+        source += source.replace("module top #", "module other #")
+        tops = ["top", "other"]
+    (tmp_path / "top.sv").write_text(source)
+    options = {"exe": False} if tool == "verilator" else {"iverilog_options": ["-g2012"]}
+    (tmp_path / "legacy.core").write_text(
+        "CAPI=2:\n"
+        + yaml.safe_dump(
+            {
+                "name": "proof:string:legacy:1",
+                "filesets": {"rtl": {"files": ["top.sv"], "file_type": "systemVerilogSource"}},
+                "parameters": {
+                    "NAME": {"datatype": "str", "paramtype": "vlogparam", "default": value}
+                },
+                "targets": {
+                    "sim": {
+                        "default_tool": tool,
+                        "tools": {tool: options},
+                        "filesets": ["rtl"],
+                        "parameters": ["NAME"],
+                        "toplevel": tops,
+                    }
+                },
+            }
+        )
+    )
+
+
+@pytest.mark.parametrize("tool", ["verilator", "icarus"])
+@pytest.mark.parametrize("value", ['a" b\\c', ""])
+def test_actual_legacy_default_tool_receiver(tmp_path, tool, value):
+    from booley.fusesoc.fusesoc_registry import resolve_target_handle
+
+    _legacy_receiver_project(tmp_path, tool, value)
+    core_hash = hashlib.sha256((tmp_path / "legacy.core").read_bytes()).hexdigest()
+    handle = TargetCatalog.build(tmp_path).select("sim", for_flow="sim")
+    resolved = resolve_target_handle(handle, build_root=tmp_path / "build")
+    assert resolved.parameters["NAME"]["datatype"] == "str"
+    assert resolved.parameters["NAME"]["default"] == value
+    root = resolved.build_root
+    suffix = ".vc" if tool == "verilator" else ".scr"
+    response = root / (resolved.configuration_name + suffix)
+    before = response.read_bytes()
+    normalize_parameter_records(resolved)
+    assert response.read_bytes() == before
+    if tool == "verilator":
+        _run(["verilator", "-f", response.name, "--binary", "--build", "--timing"], root)
+        output = _run([root / "Vtop"], root).stdout
+    else:
+        assert before.count(b"+parameter+") == 2
+        _run(["make", "-C", root], root)
+        output = _run(["vvp", root / resolved.configuration_name], root).stdout
+        assert output.count("LEGACY_STRING_OK") == 2
+    assert "LEGACY_STRING_OK" in output
+    assert hashlib.sha256((tmp_path / "legacy.core").read_bytes()).hexdigest() == core_hash

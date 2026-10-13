@@ -178,6 +178,19 @@ def _inspect_parameters(cores: list[Any], flags: Mapping[str, Any]) -> dict[str,
     return parameters
 
 
+def inspect_parameter_values(handle: TargetHandle) -> dict[str, Any]:
+    """Read selected source-owned parameters without requiring an RTL top."""
+    inspector = _TargetSourceInspector(handle.project_root)
+    flags = _inspection_flags(handle)
+    cores = inspector._cores(
+        identity=handle.identity,
+        vlnv=handle.vlnv,
+        core_file=handle.core_file,
+        flags=flags,
+    )
+    return _inspect_parameters(cores, flags)
+
+
 _TARGET_CONDITION_RE = re.compile(r"\btarget_(?P<name>[A-Za-z0-9_.-]+)\b")
 
 

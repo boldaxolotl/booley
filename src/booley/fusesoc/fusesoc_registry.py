@@ -2162,14 +2162,14 @@ def _owned_empty_parameter_arguments(
     handle: TargetHandle, backend_arguments: Sequence[str]
 ) -> tuple[str, ...]:
     """Replay only selected, explicitly authored empty string parameters."""
-    from booley.targets.catalog import TargetCatalog
+    from booley.fusesoc.target_inspection import inspect_parameter_values
 
     if handle.eda_tool in {"verible", "veriblelint"}:
         return ()
-    inspection = TargetCatalog.build(handle.project_root).inspect(handle)
+    parameters = inspect_parameter_values(handle)
     names = tuple(
         name
-        for name, metadata in inspection.parameters.items()
+        for name, metadata in parameters.items()
         if metadata.get("datatype") == "str"
         and metadata.get("paramtype") == "vlogparam"
         and metadata.get("default", None) == ""
