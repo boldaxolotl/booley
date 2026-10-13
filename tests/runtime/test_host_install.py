@@ -297,3 +297,103 @@ def test_each_identity_difference_requires_explicit_update(tmp_path, monkeypatch
     with pytest.raises(HostInstallationError, match="--update"):
         host_install.register_host_installation(source, path=state)
     assert host_install.load_host_installation(state) == candidate
+
+
+@pytest.mark.parametrize("update", [False, True])
+@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize(
+    "field",
+    [
+        "schema_version",
+        "executable",
+        "interpreter",
+        "distribution_root",
+        "version",
+        "revision",
+        "payload_fingerprint",
+    ],
+)
+def test_invalid_candidate_preserves_state(tmp_path, monkeypatch, update, existing, field):
+    state = tmp_path / "config" / "identity.json"
+    if existing:
+        state.parent.mkdir()
+        _write(state, _identity())
+    before = state.read_bytes() if existing else None
+    candidate = replace(_identity(), **{field: 2 if field == "schema_version" else ""})
+    monkeypatch.setattr(host_install, "_eligibility_error", lambda _source: None)
+    monkeypatch.setattr(host_install, "current_host_installation", lambda _source: candidate)
+    with pytest.raises(HostInstallationError) as caught:
+        host_install.register_host_installation(Path("/skills"), path=state, update=update)
+    assert ("schema" if field == "schema_version" else field) in str(caught.value)
+    assert ("complete source checkout" if field == "revision" else "valid build") in str(
+        caught.value
+    )
+    if existing:
+        assert state.read_bytes() == before
+        assert host_install.load_host_installation(state) == _identity()
+    else:
+        assert not state.parent.exists()
+
+
+@pytest.mark.parametrize("update", [False, True])
+def test_valid_build_can_explicitly_repair_invalid_record(tmp_path, monkeypatch, update):
+    state = tmp_path / "identity.json"
+    _write(state, replace(_identity(), revision=""))
+    before = state.read_bytes()
+    monkeypatch.setattr(host_install, "_eligibility_error", lambda _source: None)
+    monkeypatch.setattr(host_install, "current_host_installation", lambda _source: _identity())
+    if update:
+        assert (
+            host_install.register_host_installation(Path("/skills"), path=state, update=True)
+            == _identity()
+        )
+        assert host_install.load_host_installation(state) == _identity()
+    else:
+        with pytest.raises(HostInstallationError, match="revision"):
+            host_install.register_host_installation(Path("/skills"), path=state)
+        assert state.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "failure", ["temporary-validation", "write", "replace", "readback", "mismatch"]
+)
+def test_registration_cannot_succeed_without_persisted_validation(tmp_path, monkeypatch, failure):
+    state = tmp_path / "identity.json"
+    _write(state, _identity())
+    before = state.read_bytes()
+    candidate = replace(_identity(), revision="new")
+    monkeypatch.setattr(host_install, "_eligibility_error", lambda _source: None)
+    monkeypatch.setattr(host_install, "current_host_installation", lambda _source: candidate)
+    original_load = host_install.load_host_installation
+    original_write = Path.write_text
+    original_replace = Path.replace
+
+    def load(path=None):
+        if failure == "temporary-validation" and path != state:
+            raise HostInstallationError("temporary validation denied")
+        if path == state and failure == "readback":
+            raise HostInstallationError("persisted readback denied")
+        if path == state and failure == "mismatch":
+            return _identity()
+        return original_load(path)
+
+    def write(path, *args, **kwargs):
+        if failure == "write":
+            raise OSError("temporary write denied")
+        return original_write(path, *args, **kwargs)
+
+    def replace_path(path, *args, **kwargs):
+        if failure == "replace":
+            raise OSError("atomic replacement denied")
+        return original_replace(path, *args, **kwargs)
+
+    monkeypatch.setattr(host_install, "load_host_installation", load)
+    monkeypatch.setattr(Path, "write_text", write)
+    monkeypatch.setattr(Path, "replace", replace_path)
+    with pytest.raises(HostInstallationError):
+        host_install.register_host_installation(Path("/skills"), path=state, update=True)
+    if failure in {"temporary-validation", "write", "replace"}:
+        assert state.read_bytes() == before
+    else:
+        assert original_load(state) == candidate
+    assert not list(tmp_path.glob(".*.tmp"))
