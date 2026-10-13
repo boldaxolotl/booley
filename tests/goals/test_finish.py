@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import stat
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -589,7 +590,11 @@ def paired_publication_layout(layout, tmp_path, *, selected=None):
     return layout
 
 
-@pytest.mark.parametrize("boundary", [None, "local-artifacts", "finished"])
+# Windows measured 66.9s for the finished recovery case; retain 3x headroom.
+@pytest.mark.parametrize(
+    "boundary",
+    [None, "local-artifacts", pytest.param("finished", marks=pytest.mark.timeout(210))],
+)
 def test_nonexcluded_pair_finish_retry_and_next_entry_stay_local(layout, tmp_path, boundary):
     layout = paired_publication_layout(layout, tmp_path)
     paired = layout.worktree / ".booley_project"
@@ -688,6 +693,7 @@ def test_active_finish_refuses_broken_pair_without_changing_participants(layout,
     marker = paired / ".git"
     broken = b"gitdir: /nonexistent-paired-metadata\n"
     outer = git(layout.worktree, "rev-parse", "HEAD")
+    marker.chmod(marker.stat().st_mode | stat.S_IWRITE)
     marker.write_bytes(broken)
     with pytest.raises(LifecycleError, match="Paired Checkout is unavailable"):
         finish_goal(request(layout), environment(layout))

@@ -10,6 +10,7 @@ faked, so entry never needs FuseSoC.
 from __future__ import annotations
 
 import json
+import stat
 import subprocess
 from collections.abc import Callable
 from dataclasses import replace
@@ -748,6 +749,7 @@ def test_pair_breaking_during_entry_rolls_back_record_and_retains_effects(layout
 
     def break_pair(name):
         if name == "checked_out":
+            marker.chmod(marker.stat().st_mode | stat.S_IWRITE)
             marker.write_bytes(broken)
             raise RuntimeError("original entry failure")
 

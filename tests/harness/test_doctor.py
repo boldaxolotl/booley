@@ -7,6 +7,7 @@ import ast
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import tomllib
@@ -8314,7 +8315,9 @@ def test_goal_history_broken_pair_is_active_and_preserves_exclusion(tmp_path, ig
         'reason = "Preserve independent history and local summaries."\npermanent = true\n'
     )
     waivers = doctor.load_doctor_waivers(project)
-    (project / ".git").write_bytes(b"gitdir: /nonexistent-paired-metadata\n")
+    marker = project / ".git"
+    marker.chmod(marker.stat().st_mode | stat.S_IWRITE)
+    marker.write_bytes(b"gitdir: /nonexistent-paired-metadata\n")
     reporter = doctor._Reporter.create(waivers)
     doctor._check_goal_history_ignored(root, project, reporter.pass_, reporter.warn_)
     finding = reporter.findings[0]
