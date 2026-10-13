@@ -127,7 +127,7 @@ def _select_inputs(record: GoalRecord, root: Path) -> InputSelection:
         and _tracked_project(containing[0], project)
     ):
         raise InputSelectionError(
-            "Versioned Booley Directory is outside the pinned RTL/paired participants; use a Paired Checkout"
+            "Booley Directory has tracked inputs outside the pinned RTL/paired participants; use a Paired Checkout"
         )
     if (record.paired_project_base_sha is None) != (paired is None):
         raise InputSelectionError("Paired Checkout topology differs from Goal entry")
@@ -222,7 +222,7 @@ def capture_path_roots(root: Path, control_project: Path) -> dict[str, Any]:
 
 
 def snapshot_project(root: Path) -> dict[str, str | None] | None:
-    """Retain original non-versioned Booley Directory configuration for semantic base comparison."""
+    """Retain original untracked Project configuration for semantic base comparison."""
     project = resolve_checkout_project_dir(root).resolve()
     paired = paired_project_repository(root)
     selection = InputSelection(
@@ -438,7 +438,7 @@ def _write_snapshot(project: Path, scratch: Path, snapshot: Mapping[str, str | N
 
 
 def _project_versioned(selection: InputSelection) -> bool:
-    """A snapshot exception cannot hide a Versioned Booley Directory anchor."""
+    """A configuration snapshot cannot hide inputs tracked by a participating repository."""
     if selection.project.samefile(selection.rtl):
         return True
     project = contains(selection.project, project_dir=selection.rtl)
@@ -456,7 +456,7 @@ def _project_versioned(selection: InputSelection) -> bool:
 def _capture_nonversioned(view: CommittedView, record: GoalRecord, control_project: Path) -> None:
     """D7 inputs and checkout-local Project snapshots are explicit exceptions."""
     project = view.selection.project
-    # Snapshot configuration is permitted only for a non-versioned Booley Directory.
+    # Configuration snapshots are permitted only without a versioned input anchor.
     if not _project_versioned(view.selection):
         for name in PROJECT_SNAPSHOT_NAMES:
             path = project / name
@@ -493,7 +493,7 @@ def _capture_nonversioned(view: CommittedView, record: GoalRecord, control_proje
 
 
 def _capture_policy(view: CommittedView) -> None:
-    """A non-versioned Booley Directory policy is observed; versioned anchors require user commits."""
+    """Observe untracked Booley policy; versioned input anchors require user commits."""
     config, anchor = policy_location(view.selection.rtl)
     if config is None:
         return

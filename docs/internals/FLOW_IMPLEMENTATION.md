@@ -80,7 +80,7 @@ Every Flow command executes inside the Sandbox. Most EDA binaries ship
 in the Sandbox Image. A supported commercial tool may instead come from an
 administrator-registered host installation mounted read-only under a built-in
 policy. Project configuration requests host provisioning, while the exact host
-Grant selects the Installation Registration; Booley configuration cannot select a host
+Grant selects the Installation Registration; Project configuration cannot select a host
 path, command, execution location, or license server.
 The support matrix lives in
 [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md#built-in-flows). The per-Flow sections

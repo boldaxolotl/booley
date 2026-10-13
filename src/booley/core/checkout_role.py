@@ -8,7 +8,7 @@ from pathlib import Path
 try:
     from booley.core.boundary import as_dict
 except ModuleNotFoundError:
-    # Versioned Booley Directory hook bundles package this stdlib-only module and
+    # Project Git-hook bundles package this stdlib-only module and
     # boundary.py side by side.
     from boundary import as_dict  # pyright: ignore[reportMissingImports]
 

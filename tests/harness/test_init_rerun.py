@@ -551,7 +551,7 @@ _IDENTITY = ("-c", "user.name=t", "-c", "user.email=t@t")
 
 
 def _crlf_checkout_project_data(project_dir: Path, files: dict[str, bytes]) -> None:
-    """Commit LF Booley Directory, then re-check it out as Git for Windows would.
+    """Commit Booley configuration with LF line endings, then re-check it out as Git for Windows would.
 
     Git for Windows defaults to ``core.autocrlf=true``: every tracked file
     lands with CRLF while ``git status`` stays clean.
@@ -605,7 +605,7 @@ _CONFIG_WITHOUT_AGENT = b"# user config\n[flows.sim]\nenabled = true\n"
 def test_agent_selection_write_does_not_block_line_ending_repair(
     repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Init's own [agent] write to CRLF Booley Directory must not look like user work."""
+    """Init's own [agent] write to Booley configuration with CRLF line endings must not look like user work."""
     _stub_current_host(monkeypatch)
     project_dir = repo / ".booley_project"
     _crlf_checkout_project_data(
@@ -700,7 +700,7 @@ class TestWindowsProjectDataLineEndings:
     ) -> None:
         project_dir = repo / ".booley_project"
         # 1. A Windows checkout with Git for Windows' default autocrlf=true:
-        #    every tracked files in the Booley Directory file lands with CRLF, index clean.
+        #    every tracked file in the Booley Directory lands with CRLF, index clean.
         _crlf_checkout_project_data(
             project_dir,
             {"AGENTS.md": _GUIDANCE, "booley.toml": _AGENT_TABLE, "notes.md": b"# Notes\n"},

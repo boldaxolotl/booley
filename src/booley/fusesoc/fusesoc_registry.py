@@ -93,7 +93,7 @@ _IMPLICIT_TARGET = "default"
 # unearthed under these are resolution artifacts, not authored design-description.
 _BUILD_DIR_NAMES = frozenset({"build", "_build", ".runtime"})
 
-# Booley's own Booley Directory. It holds transient checkouts — per-ticket git
+# The Booley Directory. It holds transient checkouts — per-ticket git
 # worktrees (``.booley_project/worktrees/<name>``) and ephemeral baseline
 # worktrees (``.booley_project/.baseline-wt-*``) — each a full clone carrying a
 # COPY of the project's ``.core`` files with the same VLNV. A stale copy left

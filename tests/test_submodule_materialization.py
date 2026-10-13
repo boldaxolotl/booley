@@ -677,7 +677,9 @@ def test_standalone_default_requires_installed_project_destination(tmp_path: Pat
     _commit_file(project, "Project\n", "Project")
     destination = tmp_path / "destination"
     _add_worktree(source, destination)
-    with pytest.raises(SubmoduleMaterializationError, match="Paired Checkout is unavailable"):
+    with pytest.raises(
+        SubmoduleMaterializationError, match="Paired Checkout destination is unavailable"
+    ):
         materialize_project_submodules(source, destination)
 
 

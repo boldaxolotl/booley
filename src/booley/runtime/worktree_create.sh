@@ -15,12 +15,11 @@
 #                            worktree, or a half-created worktree.
 #                  "replace" treat the destination as a stale leftover:
 #                            force-remove the registered worktree and delete
-#                            the directory before creating a fresh one. Only
-#                            Ticket setup, which owns its per-Ticket
-#                            worktrees, passes this policy.
+#                            the directory before creating a fresh one.
+#                            Callers must own the worktree they replace.
 #
-# Shipped as runtime package data (booley/runtime/worktree_create.sh); the
-# Ticket setup stage and `booley worktree new` both invoke it.
+# Shipped as runtime package data (booley/runtime/worktree_create.sh);
+# `booley worktree new` invokes it.
 
 set -e
 
@@ -330,7 +329,7 @@ elif [[ "$NAME" == *--* ]]; then
     echo "Branch detected in name: $TARGET_BRANCH" >&2
 fi
 
-# Ticket Baseline callers attach their exact existing branch. Other callers
+# Callers supplying branch_ref attach that exact existing branch. Other callers
 # retain the generic detached-HEAD behavior and optional name convention.
 WORKTREE_ADD_TARGET=(--detach)
 if [ -n "$EXPLICIT_BRANCH" ]; then
@@ -524,14 +523,13 @@ fi
 
 # Root-level quarantine markers are commonly untracked by design, so git
 # worktree add cannot carry them. Preserve the same FuseSoC scan boundary in
-# every ticket checkout.
+# every linked worktree.
 if [ -f "$CWD/FUSESOC_IGNORE" ]; then
     cp "$CWD/FUSESOC_IGNORE" "$WORKTREE_DIR/FUSESOC_IGNORE"
 fi
 
-# Project-specific setup (sim symlinks, git hooks, DPI build, etc.) is
-# handled by the post-setup hook in .booley_project/hooks/.
-# See stage_01_setup.py for hook invocation.
+# Project-specific setup (sim symlinks, git hooks, DPI build, etc.) remains
+# for the caller after creation. This script does not invoke Project hooks.
 
 # Build succeeded — remove the mid-build marker so ERR trap won't nuke
 # the worktree on any later non-zero exit (there shouldn't be one after this,

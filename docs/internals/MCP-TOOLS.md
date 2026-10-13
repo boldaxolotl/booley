@@ -596,7 +596,7 @@ You do not need `booley session enter` when VS Code or your terminal is already 
 Ordinary `booley flow` and direct typed calls use standalone execution and do
 not capture a Goal Run Binding from the current worktree. They return diagnostic
 verdicts without persisting Goal evidence; Goal verification should use the MCP
-endpoint with explicit `work_dir`. Reports default to checkout-local Booley Directory (`flow-reports/` for Flows, `mcp-tool-reports/` for Specialists), unless the
+endpoint with explicit `work_dir`. Reports default to the checkout-local Booley Directory (`flow-reports/` for Flows, `mcp-tool-reports/` for Specialists), unless the
 caller supplies another report destination. Exit codes retain
 their normal meaning: 0 = criterion met, 1 = ran and failed, 2 = unable to reach
 a verdict.
@@ -756,7 +756,7 @@ The host authority stores three separate records:
 
 Project configuration can request only the supported EDA kind and provisioning
 source. The exact Project Grant is the sole selector for the opaque Installation
-Registration and any License Profile. Booley configuration cannot supply a host path,
+Registration and any License Profile. Project configuration cannot supply a host path,
 Docker mount, image override, wrapper, environment variable, license
 destination, or command.
 

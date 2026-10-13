@@ -1,4 +1,4 @@
-"""Materialize Git submodules from local Project repositories without network access."""
+"""Materialize Git submodules from local RTL and Booley Directory repositories offline."""
 
 from __future__ import annotations
 
@@ -102,7 +102,7 @@ def materialize_project_submodules(
     project_destination = destination_root / project_relative
     if not (project_destination / ".git").exists():
         raise SubmoduleMaterializationError(
-            f"Paired Checkout is unavailable: {project_destination}"
+            f"Paired Checkout destination is unavailable: {project_destination}"
         )
     materialize_submodules(
         source_root,

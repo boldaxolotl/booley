@@ -474,7 +474,7 @@ permanent = true
 
 [[waiver]]
 check = "project.core-file-untracked"
-reason = "The fixture is not a committed Booley Directory's repository."
+reason = "The fixture is not a committed RTL repository."
 permanent = true
 """,
         encoding="utf-8",

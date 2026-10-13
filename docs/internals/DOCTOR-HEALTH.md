@@ -44,7 +44,7 @@ deduplication, and interleaves verbose details without changing counts.
 
 Automatic (read-only) Doctor uses INSPECT; manual Doctor keeps its bounded
 repairs. Invalid configuration retains the resolved Booley Directory for later
-checks while skipping operations that require validated Booley configuration.
+checks while skipping operations that require validated Project configuration.
 
 ## Shared health
 

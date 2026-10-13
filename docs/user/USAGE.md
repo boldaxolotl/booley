@@ -787,10 +787,10 @@ behind. A non-versioned Booley Directory supplies a Snapshot. Run this command f
 the primary workspace; creating from a Paired Checkout is refused.
 The outer checkout starts detached unless `<branch>--<description>` selects an
 existing branch. To remove a paired workspace, remove the Paired Checkout
-first with `git -C <absolute-project-dir> worktree remove <absolute-worktree>/.booley_project`,
-then run `git -C <absolute-workspace-root> worktree remove <absolute-worktree>`.
+first with `git -C <absolute-booley-directory> worktree remove <absolute-worktree>/.booley_project`,
+then run `git -C <absolute-project-root> worktree remove <absolute-worktree>`.
 To reuse the name, preserve any Booley Directory commits you need, then delete its branch
-with `git -C <absolute-project-dir> branch -D booley-worktree/<name>`.
+with `git -C <absolute-booley-directory> branch -D booley-worktree/<name>`.
 The command prints these steps with absolute paths.
 
 Outside Goal Mode, `--baseline` uses the Paired Checkout branch's recorded

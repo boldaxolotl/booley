@@ -5,9 +5,9 @@ Usage:
   python validate_commit_msg.py "commit message"
   python validate_commit_msg.py --no-diff "commit message"
 
-Checks run only in a configured RTL repository.  The framework source
-repository has no project configuration, so this command is intentionally a
-no-op there.  In a RTL repository, the default also scans the staged diff
+Checks run in configured RTL repositories and in Versioned Booley Directories.
+The framework source repository has no Project configuration, so this command
+is intentionally a no-op there. The default also scans the staged diff
 (git diff --cached) for banned words.
 Use --no-diff to skip the diff check (e.g. for retroactive message validation).
 Exit code 0 = valid, 1 = invalid (errors printed to stderr).
@@ -105,7 +105,7 @@ _PROJECT_CONFIG_NAMES = ("booley.toml", "pipeline.toml")
 
 
 def _has_project_config(repo_root: Path) -> bool:
-    """Whether *repo_root* is a configured design or project-state repository."""
+    """Whether *repo_root* is a configured RTL repository or Booley Directory's repository."""
     if source_checkout_policy_owner(repo_root):
         return False
 

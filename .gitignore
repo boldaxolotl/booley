@@ -48,7 +48,7 @@ src/_test_one_mutant.py
 build/
 dist/
 
-# Legacy project dir (migrated to .booley_project/)
+# Legacy Booley Directory (migrated to .booley_project/)
 /project/
 
 # Agent artifacts

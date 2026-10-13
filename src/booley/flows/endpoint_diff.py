@@ -23,7 +23,7 @@ def read_source_dirs_from_toml(work_dir: Path) -> tuple[list[str], list[str]] | 
     delegates to :func:`fusesoc_registry.source_dirs_from_core`. The name is kept
     because it is a public re-export from ``mcp_tools.base`` and several callers
     import it. Returns ``(rtl_dirs, tb_dirs)`` — a file-vs-dir mix exactly as
-    ``[sources.*]`` used to yield (a flat-Project Root file appears verbatim) — or
+    ``[sources.*]`` used to yield (a file directly at the Project Root appears verbatim) — or
     ``None`` when no ``.core`` is authored under *work_dir* (callers then fall
     back to their own defaults).
     """

@@ -85,7 +85,7 @@ class ProjectTopology:
 def project_topology(
     checkout_root: Path, *, discover_paired: bool = True, discover_standalone: bool = True
 ) -> ProjectTopology:
-    """Inspect requested RTL and Booley Directory repository selections without changing their policy."""
+    """Inspect requested RTL repositories and Booley Directories without changing selection policy."""
     paired = _inspect_paired_project_repository(checkout_root) if discover_paired else None
     standalone = None
     if discover_standalone:

@@ -25,7 +25,7 @@ recipes live in `../../shared/coverage/RUNBOOK.md`; skim it before area 1.
 ## Staging the coverage fixture
 - Create a fresh disposable Project (add it to `resources.md`): copy `../../shared/coverage/project/` as its
   source, initialize it through the documented public route, and install `project-data/tests.toml` into the
-  Booley Directory Booley actually resolves (never assume `.booley_project`). Keep the rest of
+  resolved Booley Directory (never assume `.booley_project`). Keep the rest of
   initialization's config. Commit fixture and initialized Project files, including seeded Goalsets and
   managed `.gitignore`, before creating a Goal worktree.
 - Tools: pinned Verilator v5.052 (`ea338be98e1e838d3518809ce8899f85a009963c`) in the issued Sandbox, Yosys

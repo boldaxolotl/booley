@@ -163,7 +163,7 @@ _Avoid_: Project directory, Project checkout, repo root
 
 **Main Booley Directory**:
 The **Booley Directory** that owns a **Project**'s Goal Records, Goalsets, and lifecycle files. It is the main checkout's Booley Directory.
-_Avoid_: control Project, control Project directory
+_Avoid_: control Project, control Project directory, session Project
 
 **Worktree Booley Directory**:
 A linked worktree's own **Booley Directory**. It is either a **Paired Checkout** or a **Snapshot**.

@@ -149,7 +149,9 @@ def _remove_copy(worktree: Path) -> Path:
             f"Worktree Booley Directory escapes its containing worktree: {nested}"
         )
     if (nested / ".git").exists():
-        raise ProjectPairingError(f"refusing to replace a Versioned Booley Directory: {nested}")
+        raise ProjectPairingError(
+            f"refusing to replace a Booley Directory with a Git checkout: {nested}"
+        )
     if nested.exists():
         safe_rmtree(nested)
     return nested

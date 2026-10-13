@@ -28,7 +28,7 @@ Attachment paths remain as supplied and are not rebased by `-C`.
 For `report`, `export`, and `redact`, the selected checkout supplies repository
 identifiers for redaction: paths, remotes, committer identity, and `.core` names.
 Configured names and `[feedback]` / `[stealth]` redaction settings come from
-`booley.toml` in the feedback storage directory, which is the shared Booley Directory in the Sandbox; selecting a Paired Checkout does not select its settings.
+`booley.toml` in the feedback storage directory, which is the Main Booley Directory in the Sandbox; selecting a Paired Checkout does not select its settings.
 
 ## 1. Capture and classify
 

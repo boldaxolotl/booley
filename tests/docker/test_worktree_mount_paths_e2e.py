@@ -158,7 +158,7 @@ try:
 except OSError as exc:
     assert exc.errno == errno.EBUSY, exc
 else:
-    raise AssertionError('Project Root was replaceable despite its pinned mount')
+    raise AssertionError('Booley Directory was replaceable despite its pinned mount')
 for path in ['/tmp', '/']:
     result = subprocess.run(['git', '-C', path, 'rev-parse', '--show-toplevel'], capture_output=True, text=True)
     assert result.returncode != 0, result.stdout

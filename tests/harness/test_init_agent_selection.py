@@ -360,7 +360,7 @@ def test_persist_selection_preserves_existing_config_text(tmp_path):
 
 
 def test_persist_selection_writes_project_data_with_lf(tmp_path):
-    """Windows text mode must not turn booley.toml into CRLF Booley Directory (#609)."""
+    """Windows text mode must not turn booley.toml into Booley configuration with CRLF line endings (#609)."""
     project_dir = tmp_path / ".booley_project"
     project_dir.mkdir()
     config = project_dir / "booley.toml"
