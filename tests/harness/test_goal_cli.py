@@ -355,7 +355,9 @@ def test_goal_project_selection_main_without_occupant(
         assert all(record.id in captured.out for record in before)
         assert captured.err == ""
     else:
-        assert "ERROR:" in captured.err
+        assert captured.err == (
+            "ERROR: worktree hosts no Goal Mode; supply exact retry IDs for a closed operation\n"
+        )
     assert [store.load(mode.record.id) for mode in (goal_mode, other)] == before
 
 
