@@ -2083,6 +2083,50 @@ fn issue_1100_query(
 const ISSUE_1100_TIMELINE: &str = "#0\n0!\nb0000 #\n0$\n1%\n#5\n0!\nb0000 #\n#10\n1!\nb0001 #\n#15\n1!\nb0001 #\n#20\n0!\nb0011 #\n#30\n1!\nb0010 #\n#40\n0!\nb0000 #\n";
 
 #[test]
+fn issue_1431_same_timestamp_changes_preserve_store_policy() {
+    let body = "#0\nx!\nb0000 #\n0$\n1%\n#10\n0!\n#15\n1!\n0!\n#20\nx!\n#30\nz!\n#40\n0!\n1!\n0!\n1!\nb0011 #\n";
+    for engine in ["serial", "parallel"] {
+        let (_dir, store) = issue_1100_store(body, engine);
+        // FST retains individual writes; sample emits once per trigger tick.
+        for (command, expected, count) in [
+            ("find", "10 scalar 0\n15 scalar 1\n15 scalar 0\n20 scalar x\n30 scalar z\n40 scalar 0\n40 scalar 1\n40 scalar 0\n40 scalar 1", "9"),
+            ("sample", "10 bus 0\n15 bus 0\n20 bus 0\n30 bus 0\n40 bus 3", "5"),
+        ] {
+            let mut flags = vec!["--async"];
+            if command == "sample" {
+                flags.extend(["-s", "bus"]);
+            }
+            assert_eq!(
+                issue_1100_query(&store, command, "scalar", "change", &flags),
+                expected,
+                "{engine}: {command}"
+            );
+            flags.extend(["--count"]);
+            assert_eq!(
+                issue_1100_query(&store, command, "scalar", "change", &flags),
+                count
+            );
+            flags.extend(["-t", "20t:30t"]);
+            assert_eq!(
+                issue_1100_query(&store, command, "scalar", "change", &flags),
+                "2"
+            );
+        }
+        assert_eq!(
+            issue_1100_query(
+                &store,
+                "sample",
+                "scalar",
+                "change",
+                &["--async", "-t", "40t:40t", "-s", "bus"]
+            ),
+            "40 bus 3",
+            "{engine}: settled EOF snapshot"
+        );
+    }
+}
+
+#[test]
 fn issue_1100_scalar_change_count() {
     let (_dir, store) = issue_1100_store(ISSUE_1100_TIMELINE, "parallel");
     assert_eq!(
