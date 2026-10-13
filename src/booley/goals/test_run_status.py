@@ -23,9 +23,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from booley.config.tests_toml_rules import UnknownVariantError
-from booley.flows.target_test_plan import TargetTestPlan, UnknownTestError
-from booley.flows.test_runs import TestRun, UnseededTargetError, rerun_command
+from booley.flows.frozen_test_runs import current_declaration
+from booley.flows.test_runs import TestRun, rerun_command
 from booley.goals.model import GoalRecord, RecordedGoal
 from booley.goals.test_run_evidence import (
     REASON_CHANGED,
@@ -61,12 +60,21 @@ class TestRunJudgement:
 
     __test__ = False
 
-    reason: str = ""
+    #: The named reason the Goal is unmet (``goal-test-run-…``); empty when its
+    #: frozen runs allow it, and when nothing was recorded yet.
+    code: str = ""
+    #: What that reason says, for a person.
+    text: str = ""
     runs: tuple[TestRunView, ...] = ()
     pending: tuple[str, ...] = ()
     #: The frozen runs cannot be judged at all (pending, none, gone or
     #: changed); no rerun of the Flow can meet the Goal as it is.
     blocking: bool = False
+
+    @property
+    def reason(self) -> str:
+        """``code: text`` as status shows it; empty when the frozen runs allow the Goal."""
+        return f"{self.code}: {self.text}" if self.code else self.text
 
     @property
     def failed(self) -> tuple[TestRunView, ...]:
@@ -110,11 +118,12 @@ def judge_test_runs(
             outcomes = {}
         elif stored is not None:
             defect = outcome_defect(stored)
-    reason = "" if defect is None else f"{defect[0]}: {defect[1]}"
+    code, text = defect or ("", "")
     if defect is None and evidence is None:
-        reason = "no Test Run of the Goal has been recorded"
+        text = "no Test Run of the Goal has been recorded"
     return TestRunJudgement(
-        reason,
+        code,
+        text,
         _views(resolution, target, outcomes),
         () if resolution is None else resolution.pending,
         blocking,
@@ -146,7 +155,7 @@ def _views(
             item.run.name,
             outcomes.get((item.run.name, item.run.fingerprint), "missing"),
             rerun_command(target, item.run),
-            item.resolved_by == "deferred",
+            item.deferred,
         )
         for item in resolution.runs
     )
@@ -160,26 +169,16 @@ def _declaration_defect(
         plan = plans.plan(target)
     except TargetPlanError as exc:
         return REASON_MISSING, str(exc)
-    gone = [run.name for run in required if _current(plan, run) is None]
+    gone = [run.name for run in required if current_declaration(plan, run) is None]
     if gone:
         return REASON_MISSING, (
             f"Test Runs {', '.join(gone)} no longer exist on Target {target!r}; "
             "the Goal stays unmet until a human approves a retarget"
         )
-    changed = [run.name for run in required if _current(plan, run) != run]
+    changed = [run.name for run in required if current_declaration(plan, run) != run]
     if changed:
         return REASON_CHANGED, (
             f"the declared arguments or environment of {', '.join(changed)} changed since "
             "the Goal was frozen; it stays unmet until a human approves a retarget"
         )
     return None
-
-
-def _current(plan: TargetTestPlan | None, run: TestRun) -> TestRun | None:
-    """*run* as the Target declares it now, or ``None`` when it cannot run there."""
-    if plan is None or run.test in plan.skipped:
-        return None
-    try:
-        return plan.run(run.test, run.variant, run.seed)
-    except (UnknownTestError, UnknownVariantError, UnseededTargetError):
-        return None

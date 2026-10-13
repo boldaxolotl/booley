@@ -131,9 +131,8 @@ def _apply_goal_campaign(
             changes.extend(change for change in measured if change.key == goal.key)
             continue
         stamp = {SOURCE_FINGERPRINT_DETAIL_KEY: _freshness(plan, goal.key)}
-        met = goal.kind == "simulation" and goal.passed_by(matched)
         detail = {**common, **goal.outcomes_detail(matched), **stamp}
-        changes.extend(shadow.set_criterion(goal.key, met, detail=detail))
+        changes.extend(shadow.set_criterion(goal.key, goal.own_verdict(matched), detail=detail))
     return changes
 
 

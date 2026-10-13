@@ -63,7 +63,7 @@ from booley.criteria.evidence_ledger import (
     plain_json_value,
 )
 from booley.criteria.state import CriterionChange, DevelopmentState, StatePersistence
-from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
+from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY, SOURCE_INVALIDATED_REASON
 from booley.flows.campaign_results import CampaignResultsReader, StartedCampaign
 from booley.flows.execution_persistence import AcceptanceRecordingError
 from booley.goals import campaign_accounting
@@ -527,8 +527,7 @@ class GoalEvidenceRecorder:
         for change in changes:
             goal = goals.get(change.key)
             stamped = self._prepare_change(change, None if goal is None else goal.spec)
-            invalidated = not change.met and change.reason == "source-invalidated"
-            if goal is not None and names_test_runs(goal.spec) and not invalidated:
+            if goal is not None and names_test_runs(goal.spec) and not _invalidated(change):
                 if history is None:
                     history = self._history(state)
                 stamped = judged_change(stamped, goal, record, history)
@@ -575,7 +574,7 @@ class GoalEvidenceRecorder:
                     )
 
     def _prepare_change(self, change: CriterionChange, goal: GoalSpec | None) -> CriterionChange:
-        if not change.met and change.reason == "source-invalidated":
+        if _invalidated(change):
             return change  # The detail describes old evidence, not this producer's inputs.
         work_dir = self._binding.worktree_root
         resolvers = self._resolvers
@@ -597,6 +596,11 @@ class GoalEvidenceRecorder:
             target_surface=surface,
         )
         return replace(change, detail=detail)
+
+
+def _invalidated(change: CriterionChange) -> bool:
+    """Whether *change* only unmeets a Goal whose sources changed: it observed nothing."""
+    return not change.met and change.reason == SOURCE_INVALIDATED_REASON
 
 
 def _target_label(target: str | None) -> str:

@@ -17,7 +17,7 @@ Flow-neutral values and rules only; nothing here knows the Goal Record.
 
 from __future__ import annotations
 
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -36,6 +36,9 @@ __all__ = [
     "FrozenTestRuns",
     "GoalTestRuns",
     "SeedGroup",
+    "current_declaration",
+    "fold_test_run_outcomes",
+    "matching_test_run_rows",
     "resolve_goal_test_runs",
 ]
 
@@ -45,6 +48,62 @@ GoalRunsKind = Literal["simulation", "cycle_count", "coverage"]
 #: measurement of the Goal's metric (its Cycle Count or coverage): the runs'
 #: outcomes count for the Goal, the change says nothing about the metric.
 OUTCOMES_ONLY_DETAIL_KEY = "test_run_outcomes_only"
+
+
+def matching_test_run_rows(
+    rows: Iterable[Mapping[str, object]], runs: Sequence[TestRun]
+) -> list[dict[str, object]]:
+    """The rows of *rows* that are one of *runs*, in their order.
+
+    The one matching rule: a row is evidence of a Test Run only by that
+    run's resolved name and the fingerprint of its declared inputs.
+    """
+    wanted = {(run.name, run.fingerprint) for run in runs}
+    return [dict(row) for row in rows if (row.get("name"), row.get("fingerprint")) in wanted]
+
+
+def fold_test_run_outcomes(
+    rows: Iterable[Mapping[str, object]], required: Sequence[TestRun]
+) -> list[dict[str, str]]:
+    """The outcome of every run of *required* after *rows*, in required order.
+
+    The one verdict over frozen Test Runs. *rows* are Test Run rows
+    (``name``, ``fingerprint``, ``grade``) in the order they were observed.
+    A row counts only for the required run with its name and fingerprint.
+    ``fail`` makes the run ``failed`` for good; ``pass`` makes a ``missing``
+    run ``passed``; ``error`` and ``inconclusive`` observed nothing and
+    change nothing.
+    """
+    outcomes = {(run.name, run.fingerprint): "missing" for run in required}
+    for row in rows:
+        run = (str(row.get("name")), str(row.get("fingerprint")))
+        if run not in outcomes:
+            continue
+        grade = row.get("grade")
+        if grade == "fail":
+            outcomes[run] = "failed"
+        elif grade == "pass" and outcomes[run] == "missing":
+            outcomes[run] = "passed"
+    return [
+        {"name": name, "fingerprint": fingerprint, "outcome": outcome}
+        for (name, fingerprint), outcome in outcomes.items()
+    ]
+
+
+def current_declaration(plan: TargetTestPlan | None, run: TestRun) -> TestRun | None:
+    """A frozen *run* rebuilt from what its Target declares now; ``None`` if it cannot run.
+
+    The run keeps its frozen Test Variant and seed. When the declaration
+    changed, the rebuilt run has another fingerprint and is no longer the
+    frozen one. A run whose Target, Test or Test Variant is gone, whose Test
+    is skipped now, or whose seed the Target can no longer apply has none.
+    """
+    if plan is None or run.test in plan.skipped:
+        return None
+    try:
+        return plan.run(run.test, run.variant, run.seed)
+    except (UnknownTestError, UnknownVariantError, UnseededTargetError):
+        return None
 
 
 @dataclass(frozen=True)
@@ -79,9 +138,7 @@ class GoalTestRuns:
 
     def matching(self, rows: Sequence[Mapping[str, object]]) -> list[dict[str, object]]:
         """The Test Run rows of *rows* this Goal requires, in their order."""
-        return [
-            dict(row) for row in rows if self.requires(row.get("name"), row.get("fingerprint"))
-        ]
+        return matching_test_run_rows(rows, self.runs)
 
     def passed_by(self, matched: Sequence[Mapping[str, object]]) -> bool:
         """Whether *matched* rows alone show every required Test Run passing.
@@ -90,8 +147,17 @@ class GoalTestRuns:
         from every matching run recorded so far, which may pass runs this
         invocation did not run and holds a failure an earlier one recorded.
         """
-        passed = {row.get("name") for row in matched if row.get("grade") == "pass"}
-        return self.complete and bool(self.runs) and all(run.name in passed for run in self.runs)
+        outcomes = fold_test_run_outcomes(matched, self.runs)
+        passed = all(run["outcome"] == "passed" for run in outcomes)
+        return self.complete and bool(self.runs) and passed
+
+    def own_verdict(self, matched: Sequence[Mapping[str, object]]) -> bool:
+        """What a change that carries only *matched* runs' outcomes claims for this Goal.
+
+        A simulation Goal's runs are its whole verdict; a Cycle Count or
+        coverage Goal needs its metric too, which such a change does not carry.
+        """
+        return self.kind == "simulation" and self.passed_by(matched)
 
     def outcomes_detail(self, matched: Sequence[Mapping[str, object]]) -> dict[str, object]:
         """The detail of a change that only enters *matched* runs' outcomes for this Goal."""
@@ -200,14 +266,8 @@ def _frozen_suite(plan: TargetTestPlan, frozen: Sequence[TestRun]) -> tuple[Test
     another fingerprint and matches no Goal. A frozen run whose Test or Test
     Variant is gone, or is skipped now, does not run.
     """
-    runs: list[TestRun] = []
-    for run in frozen:
-        if run.test in plan.skipped:
-            continue
-        try:
-            runs.append(plan.run(run.test, run.variant, run.seed))
-        except (UnknownTestError, UnknownVariantError, UnseededTargetError):
-            continue
+    rebuilt = (current_declaration(plan, run) for run in frozen)
+    runs = [run for run in rebuilt if run is not None]
     known = {run.test for run in frozen}
     runs.extend(run for run in plan.default_runs() if run.test not in known)
     return tuple(dict.fromkeys(runs))

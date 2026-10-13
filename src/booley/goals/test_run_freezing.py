@@ -49,6 +49,7 @@ from booley.goals.test_run_goals import (
 )
 from booley.goals.test_run_plans import TargetPlanError, TargetPlans
 from booley.goals.test_run_resolution import (
+    DEFERRED,
     SUITE_SLOT,
     FrozenRun,
     ResolvedBy,
@@ -282,7 +283,7 @@ def resolution_obstacle(goal: GoalSpec, held: TestRunResolution, plans: TargetPl
     """
     assert goal.target is not None
     try:
-        resolve_pending(goal, held, plans.plan(goal.target), ResolutionRequest("deferred", ""))
+        resolve_pending(goal, held, plans.plan(goal.target), ResolutionRequest(DEFERRED, ""))
     except ValueError as exc:  # TargetPlanError and the Test Run error types
         return str(exc)
     return ""

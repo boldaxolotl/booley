@@ -32,7 +32,7 @@ def test_a_newly_parsed_request_resolves_its_own_test_runs(tmp_path, monkeypatch
     flow = _flow(tmp_path, monkeypatch, "--test", "stress+soak@9")
     assert _names(flow) == ["stress+soak@9"]
     assert _decide(flow) == ()
-    assert flow._test_runs.frozen_read
+    assert flow._test_runs.frozen == (None,)  # read once: nothing is frozen outside Goal Mode
 
     flow.parse_args(["--work-dir", str(tmp_path), "--target", "sim", "--test", "stress"])
 

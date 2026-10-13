@@ -28,7 +28,7 @@ one Test Run, and every required run is ``passed``.
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, cast
 
@@ -39,7 +39,6 @@ from booley.evidence.test_run_ledger import (
     LEDGER_DETAIL_KEY,
     LEDGER_SCHEMA,
     LedgerFormatError,
-    RunOutcome,
     decode_ledger,
 )
 from booley.flows.frozen_test_runs import (
@@ -48,11 +47,13 @@ from booley.flows.frozen_test_runs import (
     GoalRunsKind,
     GoalTestRuns,
     SeedGroup,
+    fold_test_run_outcomes,
+    matching_test_run_rows,
 )
 from booley.flows.test_runs import TestRun
 from booley.goals.freshness import goal_required_categories
 from booley.goals.model import GoalFamily, GoalRecord, RecordedGoal
-from booley.goals.test_run_freezing import seed_groups
+from booley.goals.test_run_freezing import goal_slots, seed_groups
 from booley.goals.test_run_goals import names_test_runs
 from booley.goals.test_run_resolution import SUITE_SLOT, TestRunResolution
 
@@ -115,8 +116,7 @@ def goal_test_runs(goal: RecordedGoal, resolution: TestRunResolution | None) -> 
         _KINDS[spec.family],
         spec.target,
         resolution.test_runs,
-        suite=any(item.slot == SUITE_SLOT for item in resolution.runs)
-        or SUITE_SLOT in resolution.pending,
+        suite=SUITE_SLOT in goal_slots(spec),
         complete=not resolution.pending,
         seed_groups=tuple(
             SeedGroup(test, variant, seeds)
@@ -130,35 +130,6 @@ def goal_test_runs(goal: RecordedGoal, resolution: TestRunResolution | None) -> 
 # ---------------------------------------------------------------------------
 
 
-def fold_test_run_outcomes(
-    rows: Iterable[Mapping[str, Any]], required: Sequence[TestRun]
-) -> list[dict[str, str]]:
-    """The outcome of every run of *required* after *rows*, in required order.
-
-    *rows* are Test Run rows (``name``, ``fingerprint``, ``grade``) in the
-    order they were observed. A row counts only for the required run with
-    its name and fingerprint. ``fail`` makes the run ``failed`` for good;
-    ``pass`` makes a ``missing`` run ``passed``; ``error`` and
-    ``inconclusive`` observed nothing and change nothing.
-    """
-    outcomes: dict[tuple[str, str], RunOutcome] = {
-        (run.name, run.fingerprint): "missing" for run in required
-    }
-    for row in rows:
-        run = (str(row.get("name")), str(row.get("fingerprint")))
-        if run not in outcomes:
-            continue
-        grade = row.get("grade")
-        if grade == "fail":
-            outcomes[run] = "failed"
-        elif grade == "pass" and outcomes[run] == "missing":
-            outcomes[run] = "passed"
-    return [
-        {"name": name, "fingerprint": fingerprint, "outcome": outcome}
-        for (name, fingerprint), outcome in outcomes.items()
-    ]
-
-
 def _rows(detail: Mapping[str, Any]) -> list[dict[str, Any]]:
     """The Test Run rows *detail* carries: every entry that is a mapping."""
     raw = detail.get("test_runs")
@@ -168,8 +139,7 @@ def _rows(detail: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 def matching_rows(detail: Mapping[str, Any], required: Sequence[TestRun]) -> list[dict[str, Any]]:
     """The Test Run rows of *detail* that are one of *required*, well formed or not at all."""
-    wanted = {(run.name, run.fingerprint) for run in required}
-    return [row for row in _rows(detail) if (row.get("name"), row.get("fingerprint")) in wanted]
+    return matching_test_run_rows(_rows(detail), required)
 
 
 def freshness_stamp(key: str, detail: Mapping[str, Any]) -> str | None:

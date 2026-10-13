@@ -188,10 +188,9 @@ class TestRunInvocation:
     #: Runs are resolved. Reports use it to tell a plain run from a seeded one.
     default_seeds: dict[str, int | None] = field(default_factory=dict)
     baseline: BaselineRuns = field(default_factory=BaselineRuns)
-    #: The Test Runs the run's Goals are frozen to (ADR 0072), read once;
-    #: ``None`` outside Goal Mode.
-    frozen: FrozenTestRuns | None = None
-    frozen_read: bool = False
+    #: The Test Runs the run's Goals are frozen to (ADR 0072): empty until
+    #: read, then the one reading of the invocation (``None`` outside Goal Mode).
+    frozen: tuple[FrozenTestRuns | None, ...] = ()
     #: ``@xN`` selectors that matched no Goal, by Target: their seeds were
     #: drawn for this invocation and their Test Runs are diagnostic.
     fresh_seed_selectors: dict[str, tuple[str, ...]] = field(default_factory=dict)

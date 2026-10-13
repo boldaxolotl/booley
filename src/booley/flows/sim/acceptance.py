@@ -935,9 +935,8 @@ def _goal_changes(
         elif goal.kind == "coverage" and goal.measured_by(ran) and outcome.complete:
             measured = _goal_coverage_change(outcome, shadow, target, goal, rows)
         if not measured:
-            met = goal.kind == "simulation" and goal.passed_by(matched)
             detail = {**_goal_simulation_detail(outcome, matched), **goal.outcomes_detail(matched)}
-            measured = shadow.set_criterion(goal.key, met, detail=detail)
+            measured = shadow.set_criterion(goal.key, goal.own_verdict(matched), detail=detail)
         changes.extend(measured)
     return changes
 

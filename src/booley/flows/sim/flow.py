@@ -6245,7 +6245,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             passed = sum(row["grade"] == "pass" for row in matched)
             self.set_criterion(
                 goal.key,
-                goal.kind == "simulation" and goal.passed_by(matched),
+                goal.own_verdict(matched),
                 source_target=target_result.target,
                 detail={
                     "mode": self._mode.value,
@@ -7015,10 +7015,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         Read once per invocation: what the invocation runs and what its
         report calls diagnostic come from one reading.
         """
-        if not self._test_runs.frozen_read:
-            self._test_runs.frozen = frozen_test_runs_for(self.context.execution_adapter)
-            self._test_runs.frozen_read = True
-        return self._test_runs.frozen
+        if not self._test_runs.frozen:
+            self._test_runs.frozen = (frozen_test_runs_for(self.context.execution_adapter),)
+        return self._test_runs.frozen[0]
 
     def _with_diagnostic_test_run_note(self, result: EndpointOutcome) -> EndpointOutcome:
         """Name the Test Runs of this invocation that are evidence for no Goal (ADR 0072).

@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from booley.criteria.categories import verification_fingerprint_categories
 from booley.criteria.state import CriterionChange
-from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
+from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY, SOURCE_INVALIDATED_REASON
 from booley.flows.criterion_freshness import build_criterion_freshness
 from booley.flows.endpoint_diff import (
     _classify_files,
@@ -466,7 +466,7 @@ def _record_final_acceptance(endpoint: EndpointState, outcome: EndpointOutcome) 
                 CriterionChange(
                     key,
                     endpoint.state.criteria[key].met,
-                    "source-invalidated",
+                    SOURCE_INVALIDATED_REASON,
                     dict(endpoint.state.criteria[key].detail),
                     endpoint.state.criteria[key].mandatory,
                     dict(endpoint.state.criteria[key].params),

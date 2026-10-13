@@ -35,7 +35,9 @@ from booley.runtime.timefmt import parse_timestamp
 SUITE_SLOT = "*"
 
 ResolvedBy = Literal["entry", "deferred", "change"]
-_RESOLVED_BY: tuple[ResolvedBy, ...] = ("entry", "deferred", "change")
+#: Frozen after Goal Mode entry, when the Target or Test first existed.
+DEFERRED: ResolvedBy = "deferred"
+_RESOLVED_BY: tuple[ResolvedBy, ...] = ("entry", DEFERRED, "change")
 
 
 class ResolutionFormatError(ValueError):
@@ -50,6 +52,11 @@ class FrozenRun:
     slot: str
     resolved_by: ResolvedBy
     resolved_at: str
+
+    @property
+    def deferred(self) -> bool:
+        """Whether the run was frozen after entry (the review package lists those)."""
+        return self.resolved_by == DEFERRED
 
     def to_json(self) -> dict[str, Any]:
         """The stored form: the Test Run record plus the resolution fields."""
@@ -79,7 +86,7 @@ class TestRunResolution:
     @property
     def deferred(self) -> tuple[FrozenRun, ...]:
         """Runs frozen after entry, which the review package lists."""
-        return tuple(item for item in self.runs if item.resolved_by == "deferred")
+        return tuple(item for item in self.runs if item.deferred)
 
     def to_json(self) -> dict[str, Any]:
         """The form stored under the Goal's key in ``record.json``."""

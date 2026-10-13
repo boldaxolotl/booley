@@ -29,6 +29,7 @@ from booley.goals.paths import record_paths
 from booley.goals.store import GoalStore, StaleRevisionError
 from booley.goals.test_run_freezing import ResolutionRequest, SeedDraw, freeze_goals
 from booley.goals.test_run_plans import TargetPlans
+from booley.goals.test_run_resolution import DEFERRED
 from booley.runtime.timefmt import utc_now_rfc3339
 
 # A resolver loses a save only to another writer of the same record; each
@@ -86,7 +87,7 @@ def _resolved(
         return None
     # Looked up here, not bound as a default: a caller without its own source
     # (a run being bound, a status read) draws from this module's.
-    request = ResolutionRequest("deferred", utc_now_rfc3339(), draw or draw_seeds)
+    request = ResolutionRequest(DEFERRED, utc_now_rfc3339(), draw or draw_seeds)
     frozen = freeze_goals(
         record.goals, record.test_run_resolutions, TargetPlans(work_dir), request, strict=False
     )

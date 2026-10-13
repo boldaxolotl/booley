@@ -10,6 +10,7 @@ from typing import Any, Literal
 
 from booley.core.boundary import as_str
 from booley.criteria.evidence_ledger import AcceptanceLedgerError, validated_evidence_records
+from booley.criteria.state import DevelopmentState
 from booley.flows.campaign_results import CampaignResultsReader
 from booley.goals import campaign_accounting
 from booley.goals.apply_barrier import pending_applies
@@ -49,6 +50,8 @@ class GoalStatus:
     #: The Goal's frozen Test Runs with their outcomes (ADR 0072); ``None``
     #: for a Goal that is not judged by Test Runs.
     test_runs: TestRunJudgement | None = None
+    #: The Goal state differs from its selected immutable observation.
+    state_conflict: bool = False
 
 
 @dataclass(frozen=True)
@@ -144,7 +147,7 @@ def _build_status(
 
 def _goal_statuses(
     record: GoalRecord,
-    state: Any,
+    state: DevelopmentState,
     logs_dir: Path,
     root: Path,
     drift: str,
@@ -209,9 +212,8 @@ def _with_test_runs(
     if not names_test_runs(goal.spec):
         return status
     judgement = judge_test_runs(goal, record, evidence, history, plans)
-    conflict = status.evidence_summary == _STATE_CONFLICT
     stale = status.status == "stale" and not judgement.blocking
-    if not judgement.reason or conflict or stale:
+    if not judgement.reason or status.state_conflict or stale:
         return replace(status, test_runs=judgement)
     summary = status.evidence_summary if status.status == "unmet" else "Test Runs do not pass"
     return GoalStatus(status.key, "unmet", summary, judgement.reason, judgement)
@@ -229,7 +231,8 @@ def _goal_status(
     key = goal.spec.key
     projection = "" if entry is None else _projection_violation(entry, evidence)
     if entry is not None and projection:
-        return GoalStatus(key, "stale" if entry.met else "unmet", _STATE_CONFLICT, projection)
+        verdict: Literal["stale", "unmet"] = "stale" if entry.met else "unmet"
+        return GoalStatus(key, verdict, _STATE_CONFLICT, projection, state_conflict=True)
     if entry is None or not entry.met:
         metric = (
             "no evidence"

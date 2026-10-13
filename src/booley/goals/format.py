@@ -8,6 +8,7 @@ from rich.console import Console
 from rich.table import Table
 
 from booley.evidence.timing import worst_fmax_from_json
+from booley.goals.test_run_resolution import SUITE_SLOT
 
 if TYPE_CHECKING:
     from booley.goals.status import GoalStatus, GoalStatusView
@@ -222,7 +223,9 @@ def test_run_lines(goal: GoalStatus) -> list[str]:
     more = f", and {len(runs) - _TEST_RUN_LIMIT} more" if len(runs) > _TEST_RUN_LIMIT else ""
     lines = [f"{goal.key}: {len(runs)} Test Runs ({counts or 'none'}): {shown or '—'}{more}"]
     if judgement.pending:
-        waiting = ", ".join("the Target" if slot == "*" else slot for slot in judgement.pending)
+        waiting = ", ".join(
+            "the Target" if slot == SUITE_SLOT else slot for slot in judgement.pending
+        )
         lines.append(f"  pending (does not exist yet): {waiting}")
     late = [run.name for run in runs if run.deferred]
     if late:
