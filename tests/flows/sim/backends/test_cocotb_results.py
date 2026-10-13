@@ -15,11 +15,13 @@ import pytest
 from booley.flows.sim.backends import cocotb_results as cr
 
 
-def test_timeout_progress_preserves_pass_active_and_not_run_verdicts():
-    output = """\
-0.00ns INFO cocotb.regression running test_a (1/3)
-1.00ns INFO cocotb.regression test_a passed
-1.00ns INFO cocotb.regression running test_b (2/3)
+@pytest.mark.parametrize("prefix", ["", "counter.", "tests.counter."])
+def test_timeout_progress_preserves_pass_active_and_not_run_verdicts(prefix):
+    # Cocotb 1.x logs bare names; 2.x logs <module>.<test>.
+    output = f"""\
+0.00ns INFO cocotb.regression running {prefix}test_a (1/3)
+1.00ns INFO cocotb.regression {prefix}test_a passed
+1.00ns INFO cocotb.regression running {prefix}test_b (2/3)
 """
 
     results = cr.recover_timeout_progress(output, ["test_a", "test_b", "test_c"])
@@ -29,6 +31,90 @@ def test_timeout_progress_preserves_pass_active_and_not_run_verdicts():
         ("test_a", cr.VERDICT_PASS, ""),
         ("test_b", cr.VERDICT_FAIL, cr.TIMEOUT_ACTIVE_DETAIL),
         ("test_c", cr.VERDICT_INCONCLUSIVE, cr.TIMEOUT_NOT_RUN_DETAIL),
+    ]
+
+
+@pytest.mark.parametrize("with_xml", [False, True])
+def test_timeout_progress_discovers_bare_names_without_duplicate_xml_entries(with_xml):
+    output = """\
+0.00ns INFO cocotb.regression running tests.counter.test_a (1/3)
+1.00ns INFO cocotb.regression tests.counter.test_a passed
+1.00ns INFO cocotb.regression running tests.counter.test_b (2/3)
+"""
+    parsed = (
+        cr.CocotbResults(
+            state=cr.STATE_OK,
+            tests=(cr.CocotbTest(name="test_a", module="tests.counter", status="pass"),),
+        )
+        if with_xml
+        else None
+    )
+
+    results = cr.recover_timeout_progress(output, [], parsed)
+
+    assert [test.name for test in results.tests] == ["test_a", "test_b"]
+    assert cr.reconcile(["test_a", "test_b"], results) == [
+        ("test_a", cr.VERDICT_PASS, ""),
+        ("test_b", cr.VERDICT_FAIL, cr.TIMEOUT_ACTIVE_DETAIL),
+    ]
+
+
+def test_timeout_progress_preserves_qualified_failure_and_matches_exact_test_names():
+    output = """\
+0.00ns INFO cocotb.regression running tests.counter.test_failed (1/4)
+1.00ns WARNING cocotb.regression tests.counter.test_failed failed
+1.00ns INFO cocotb.regression running tests.counter.test_active (2/4)
+1.00ns INFO cocotb.regression tests.counter.not_test_later passed
+1.00ns INFO cocotb.regression tests.counter.test_later_extra passed
+1.00ns INFO cocotb.regression tests.counter.testXcase passed
+"""
+    selected = ["test_failed", "test_active", "test_later", "test.case"]
+
+    results = cr.recover_timeout_progress(output, selected)
+
+    assert cr.reconcile(selected, results) == [
+        ("test_failed", cr.VERDICT_FAIL, "reported failed before the cocotb batch timed out"),
+        ("test_active", cr.VERDICT_FAIL, cr.TIMEOUT_ACTIVE_DETAIL),
+        ("test_later", cr.VERDICT_INCONCLUSIVE, cr.TIMEOUT_NOT_RUN_DETAIL),
+        ("test.case", cr.VERDICT_INCONCLUSIVE, cr.TIMEOUT_NOT_RUN_DETAIL),
+    ]
+
+
+# Console output of real batches killed mid-run; provenance lives beside them.
+_TIMEOUT_LOGS = Path(__file__).parents[3] / "fixtures/cocotb_timeout_progress/2.1.0"
+_MIXED_TESTS = ["test_done", "test_bad", "test_hang", "test_later"]
+
+
+@pytest.mark.parametrize("selected", [_MIXED_TESTS, []])
+def test_timeout_progress_recovers_captured_producer_batch(selected):
+    output = (_TIMEOUT_LOGS / "mixed.log").read_text(encoding="utf-8")
+
+    results = cr.recover_timeout_progress(output, list(selected))
+
+    verdicts = [
+        ("test_done", cr.VERDICT_PASS, ""),
+        ("test_bad", cr.VERDICT_FAIL, "reported failed before the cocotb batch timed out"),
+        ("test_hang", cr.VERDICT_FAIL, cr.TIMEOUT_ACTIVE_DETAIL),
+        ("test_later", cr.VERDICT_INCONCLUSIVE, cr.TIMEOUT_NOT_RUN_DETAIL),
+    ]
+    # An unfiltered run can only discover the tests that started.
+    expected = verdicts if selected else verdicts[:3]
+    names = [name for name, _, _ in expected]
+    assert [test.name for test in results.tests] == names
+    assert cr.reconcile(names, results) == expected
+
+
+@pytest.mark.parametrize("filtered", [True, False])
+def test_timeout_progress_keeps_dots_inside_captured_parametrized_names(filtered):
+    output = (_TIMEOUT_LOGS / "parametrized.log").read_text(encoding="utf-8")
+    names = ["test_gain/gain=0.5", "test_gain/gain=1.5"]
+
+    results = cr.recover_timeout_progress(output, list(names) if filtered else [])
+
+    assert [test.name for test in results.tests] == names
+    assert cr.reconcile(names, results) == [
+        (names[0], cr.VERDICT_PASS, ""),
+        (names[1], cr.VERDICT_FAIL, cr.TIMEOUT_ACTIVE_DETAIL),
     ]
 
 
