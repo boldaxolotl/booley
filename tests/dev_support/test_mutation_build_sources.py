@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 import yaml
+from fusesoc.vlnv import Vlnv
 
 from booley.dev_support.mutation_build_sources import (
     materialize_build_mutation,
@@ -245,7 +246,8 @@ def test_real_header_include_path_copyto_routing(tmp_path, copyto):
     assert "BASELINE" in source.read_text()
 
 
-def test_identical_basename_dependency_uses_declaring_core_identity(tmp_path):
+@pytest.mark.parametrize("dependency_name", ["other:lib:dut:1", "other:lib:dut", "other-dut"])
+def test_identical_basename_dependency_uses_declaring_core_identity(tmp_path, dependency_name):
     source, staged, variants, resolved, edam = _fixture(tmp_path)
     other = tmp_path / "dependency"
     (other / "rtl").mkdir(parents=True)
@@ -253,16 +255,15 @@ def test_identical_basename_dependency_uses_declaring_core_identity(tmp_path):
     dependency_source.write_bytes(source.read_bytes())
     (other / "dut.core").write_text(
         "CAPI=2:\n"
-        + yaml.safe_dump(
-            {"name": "other:lib:dut:1", "filesets": {"rtl": {"files": ["rtl/dut.sv"]}}}
-        )
+        + yaml.safe_dump({"name": dependency_name, "filesets": {"rtl": {"files": ["rtl/dut.sv"]}}})
     )
-    name = "src/other_lib_dut_1/rtl/dut.sv"
+    canonical = str(Vlnv(dependency_name))
+    name = f"src/{Vlnv(dependency_name).sanitized_name}/rtl/dut.sv"
     dependency_export = Path(resolved.build_root) / name
     dependency_export.parent.mkdir(parents=True)
     dependency_export.write_bytes(source.read_bytes())
-    edam["cores"]["other:lib:dut:1"] = {"core_file": "../dependency/dut.core"}
-    edam["files"].append({"core": "other:lib:dut:1", "name": name})
+    edam["cores"][canonical] = {"core_file": "../dependency/dut.core"}
+    edam["files"].append({"core": canonical, "name": name})
     resolved.edam_path.write_text(yaml.safe_dump(edam))
     with (Path(resolved.build_root) / "dut.scr").open("a") as stream:
         stream.write("\n" + name)
@@ -288,3 +289,43 @@ def test_every_proven_alias_and_duplicate_entry_is_mutated_once(tmp_path):
     materialize_build_mutation(variants, 1, tmp_path, resolved)
     assert staged.read_bytes() == alias.read_bytes() == b"assign y = a - b;\n"
     assert source.read_bytes() == b"assign y = a + b;\n"
+
+
+@pytest.mark.parametrize("declared", ["acme:lib:dut", "dut"])
+def test_shorthand_core_identity_is_canonicalized(tmp_path, declared):
+    source, staged, variants, resolved, edam = _fixture(tmp_path)
+    canonical = str(Vlnv(declared))
+    core = tmp_path / "nested/dut.core"
+    data = yaml.safe_load(core.read_text())
+    data["name"] = declared
+    core.write_text("CAPI=2:\n" + yaml.safe_dump(data))
+    new_staged = Path(resolved.build_root) / "src" / Vlnv(declared).sanitized_name / "rtl/dut.sv"
+    new_staged.parent.mkdir(parents=True)
+    new_staged.write_bytes(staged.read_bytes())
+    name = str(new_staged.relative_to(resolved.build_root))
+    edam["cores"] = {canonical: {"core_file": "../nested/dut.core"}}
+    edam["files"] = [{"name": name, "core": canonical}]
+    resolved.edam_path.write_text(yaml.safe_dump(edam))
+    (Path(resolved.build_root) / "dut.scr").write_text(name)
+    materialize_build_mutation(variants, 1, tmp_path, resolved)
+    assert new_staged.read_bytes() == b"assign y = a - b;\n"
+    assert source.read_bytes() == b"assign y = a + b;\n"
+
+
+@pytest.mark.parametrize("shadow_location", ["include", "source", "working_directory"])
+def test_competing_header_lookup_is_rejected_before_mutation(tmp_path, shadow_location):
+    source, staged, variants, resolved, _edam = _fixture(tmp_path, header=True)
+    root = Path(resolved.build_root)
+    directory = root if shadow_location == "working_directory" else root / "other"
+    directory.mkdir(exist_ok=True)
+    (directory / staged.name).write_bytes(staged.read_bytes())
+    response = "+incdir+" + str(staged.parent.relative_to(root))
+    if shadow_location == "include":
+        response = "+incdir+other\n" + response
+    elif shadow_location == "source":
+        (directory / "top.sv").write_text('`include "dut.svh"\n')
+        response += "\nother/top.sv"
+    (root / "dut.scr").write_text(response)
+    with pytest.raises(MutationVariantError, match="ambiguous private include lookup"):
+        materialize_build_mutation(variants, 1, tmp_path, resolved)
+    assert staged.read_bytes() == source.read_bytes()

@@ -59,7 +59,7 @@ def _source_aliases(
     for vlnv, metadata in edam.get("cores", {}).items():
         core_file = (root / metadata["core_file"]).resolve()
         data = fusesoc_registry.read_core(core_file)
-        if str(data.get("name")) != vlnv:
+        if str(Vlnv(str(data.get("name")))) != str(Vlnv(vlnv)):
             raise MutationVariantError(f"ambiguous core provenance: {vlnv}")
         files_root = fusesoc_registry.core_files_root(core_file, project)
         export_root = Path("src") / Vlnv(vlnv).sanitized_name
@@ -106,8 +106,32 @@ def _compiler_inputs(root: Path) -> tuple[set[Path], set[Path]]:
     return sources, includes
 
 
+def _validate_include_lookup(
+    root: Path, path: Path, entry: dict[str, Any], sources: set[Path], includes: set[Path]
+) -> None:
+    directory = _private_path(
+        root, entry.get("include_path") or str(path.relative_to(root).parent)
+    ).resolve()
+    if directory not in includes or path.resolve().parent != directory:
+        raise MutationVariantError(
+            f"unproven private include lookup for {path.name}; check include_path/copyto"
+        )
+    # Without parsing HDL include expressions, accept only an unambiguous
+    # basename across every compiler search location, including source-local
+    # and working-directory lookup. Search precedence cannot change identity.
+    search_dirs = includes | {source.parent for source in sources} | {root.resolve()}
+    candidates = {
+        (search / path.name).resolve() for search in search_dirs if (search / path.name).exists()
+    }
+    if candidates != {path.resolve()}:
+        raise MutationVariantError(f"ambiguous private include lookup for {path.name}")
+
+
 def materialize_build_mutation(
-    variants: MutationVariantPlan, index: int, work_dir: Path, resolved: Any
+    variants: MutationVariantPlan,
+    index: int,
+    work_dir: Path,
+    resolved: fusesoc_registry.ResolvedTarget,
 ) -> None:
     """Mutate every proven compiler alias, or reject the variant before make."""
     mutation = next(m for m in variants.mutations if m.index == index)
@@ -131,13 +155,7 @@ def materialize_build_mutation(
         path = _private_path(root, name)
         for entry in entries:
             if entry.get("is_include_file"):
-                directory = _private_path(
-                    root, entry.get("include_path") or str(Path(name).parent)
-                ).resolve()
-                if directory not in include_dirs or path.resolve().parent != directory:
-                    raise MutationVariantError(
-                        f"unproven private include lookup for {name}; check include_path/copyto"
-                    )
+                _validate_include_lookup(root, path, entry, compiler_sources, include_dirs)
             elif path.resolve() not in compiler_sources:
                 raise MutationVariantError(
                     f"compiler does not consume proven mutation source {name}"

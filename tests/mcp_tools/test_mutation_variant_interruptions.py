@@ -14,7 +14,12 @@ import types
 from pathlib import Path
 
 import pytest
+import yaml
 
+from booley.dev_support.mutation_build_sources import (
+    materialize_build_mutation,
+    validate_mutation_closure,
+)
 from booley.dev_support.mutation_variants import MutationVariantPlan
 from booley.mcp import job_results
 from booley.mcp.call_context import CallContext
@@ -94,9 +99,29 @@ def _child_sweep(worktree: str, fifo: str, stage: str) -> None:
             raise TimeoutError("parent did not interrupt the ready sweep")
 
     def elaborate(_target, _work_dir, build_dir, mutation):
-        staged = build_dir / "dut.sv"
+        core = root / "dut.core"
+        core.write_text(
+            "CAPI=2:\n"
+            + yaml.safe_dump({"name": "acme:test:dut:1", "filesets": {"rtl": {"files": [SCOPE]}}})
+        )
+        validate_mutation_closure(frozenset([core]))
+        staged = build_dir / "src/acme_test_dut_1" / SCOPE
+        staged.parent.mkdir(parents=True)
         staged.write_bytes(source.read_bytes())
-        mutation[0].materialize(mutation[1], [staged], build_dir)
+        name = str(staged.relative_to(build_dir))
+        edam = build_dir / "dut.eda.yml"
+        edam.write_text(
+            yaml.safe_dump(
+                {
+                    "cores": {"acme:test:dut:1": {"core_file": str(core)}},
+                    "files": [{"name": name, "core": "acme:test:dut:1"}],
+                }
+            )
+        )
+        (build_dir / "Makefile").write_text("iverilog -c dut.scr\n")
+        (build_dir / "dut.scr").write_text(name)
+        resolved = types.SimpleNamespace(build_root=build_dir, edam_path=edam)
+        materialize_build_mutation(mutation[0], mutation[1], root, resolved)
         assert b"a - b" in staged.read_bytes()
         if stage == "build":
             barrier()
