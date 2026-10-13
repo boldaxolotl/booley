@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 
 from booley.flows.progress_lifecycle import progress_document
-from booley.runtime import job_artifacts
 from booley.runtime.job_artifacts import JobArtifactCache
+from booley.runtime.job_observation import _artifacts as job_artifacts
 
 
 def report(root: Path, endpoint: str, number: int, namespace: str = "flow-reports") -> Path:
