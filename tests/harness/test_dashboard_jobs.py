@@ -442,7 +442,7 @@ def test_interactive_history_bounds_enumeration_before_selecting_newest(tmp_path
 
 
 def test_dashboard_job_view_preserves_every_observation_field(tmp_path, monkeypatch):
-    from dataclasses import fields
+    from dataclasses import MISSING, fields
 
     from booley.runtime.job_observation import JobObservation, JobObserver, ObservationSnapshot
 
@@ -465,6 +465,11 @@ def test_dashboard_job_view_preserves_every_observation_field(tmp_path, monkeypa
 
     snapshot = JobReader(tmp_path).read((), interactive_root=root)
 
+    # New fields must be given explicit non-default fixture values before this test passes.
+    assert all(field.default_factory is MISSING for field in fields(JobObservation))
+    assert all(
+        getattr(observation, field.name) != field.default for field in fields(JobObservation)
+    )
     assert all(
         getattr(snapshot.jobs[0], field.name) == getattr(observation, field.name)
         for field in fields(JobObservation)

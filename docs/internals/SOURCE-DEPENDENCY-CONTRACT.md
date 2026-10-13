@@ -100,12 +100,13 @@ groups remain unchanged. Named composition-hotspot fan-out is unchanged.
 The informative change is the removal of Runtime's Goal-policy direction and
 the explicit observation package, not a decrease in the total edge count.
 
-Reproduce the comparison against the current PR head with the same analyzer:
+Reproduce the comparison against extraction source commit `e8f262557` with the
+same analyzer (later documentation/test-only changes do not affect these counts):
 
 ```sh
 python3 tests/architecture/compare_report.py \
   --before-ref 2813cb2d952486995d3e79503dfdc5b1fad517d0 \
-  --after-ref HEAD --repo-root .
+  --after-ref e8f262557598ad6a32a26249120c48dc5a5e4a50 --repo-root .
 ```
 
 ## Config and Runtime boundary

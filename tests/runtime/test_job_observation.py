@@ -71,17 +71,30 @@ def test_metadata_validator_rejects_before_artifact_io_and_isolates_the_record(
 
 
 @pytest.mark.parametrize("error", [OSError, job_records.JobRecordError, RuntimeError])
-def test_unexpected_metadata_validator_errors_abort_the_refresh(tmp_path, error):
-    root = tmp_path / "jobs"
-    write_job(root, "one")
+def test_unexpected_metadata_validator_errors_abort_the_refresh(tmp_path, monkeypatch, error):
+    roots = [tmp_path / str(number) / "jobs" for number in range(2)]
+    for number, root in enumerate(roots):
+        write_job(root, str(number))
+    failing = False
 
     def validate(_record):
-        raise error("metadata adapter failed")
+        if failing:
+            raise error("metadata adapter failed")
 
     observer = JobObserver(tmp_path, validate_record=validate)
+    observer.read(roots)
+    failing = True
 
     with pytest.raises(error, match="metadata adapter failed"):
-        observer.read((root,))
+        observer.read(roots[:1])
+
+    failing = False
+    monkeypatch.setattr(
+        Path, "read_bytes", lambda _: pytest.fail("failed validator committed an empty generation")
+    )
+    restored = observer.read(roots)
+    assert len(restored.jobs) == 2
+    assert all(job.report is not None for job in restored.jobs)
 
 
 def test_failed_refresh_preserves_the_last_successful_generation(tmp_path, monkeypatch):
