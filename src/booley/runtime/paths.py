@@ -1,4 +1,4 @@
-"""Resolve paths to package data, project dir, and runtime dirs.
+"""Resolve paths to package data, Booley Directory, and runtime dirs.
 
 After packaging, reference docs, Docker configs, skills, and runtime assets
 live inside the installed package under data/. This module provides

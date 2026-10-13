@@ -124,7 +124,7 @@ def test_feedback_help_explains_checkout_context_and_shared_storage(capsys):
 
     for route in ((), ("doctor",)):
         help_text = " ".join(routes[route].format_help().split())
-        assert "Select the Project checkout (default: discover from cwd)" in help_text
+        assert "Select the Project Root (default: discover from cwd)" in help_text
         assert "shared Project Findings Log" not in help_text
 
 

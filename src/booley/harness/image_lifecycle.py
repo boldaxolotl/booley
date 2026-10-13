@@ -277,7 +277,7 @@ class _IncrementalBuildAdapter:
 
         if parent_id is None:
             raise ImageLifecycleError(
-                "Project-data layout parent is unavailable; run init or refresh"
+                "Booley Directory layout parent is unavailable; run init or refresh"
             )
         parent = self._validated_layout_parent(node, parent_id)
         tag = f"127.0.0.1:1/booley-lifecycle-{os.getpid()}-{uuid4().hex}-layout-parent:candidate"
@@ -286,13 +286,13 @@ class _IncrementalBuildAdapter:
             with tempfile.TemporaryDirectory(prefix="booley-layout-context-") as directory:
                 if self.docker.image_id(tag) != parent_id:
                     raise ImageLifecycleError(
-                        "Project-data layout parent tag changed before build"
+                        "Booley Directory layout parent tag changed before build"
                     )
                 spec, matching = self._layout_build_spec(node, candidate, parent, tag, directory)
                 result = docker_image._docker_build_image(context, spec)
                 if result != 0 or self.docker.image_id(tag) != parent_id:
                     raise ImageLifecycleError(
-                        "local-only Project-data layout build failed or parent was substituted"
+                        "local-only Booley Directory layout build failed or parent was substituted"
                     )
                 project_image.verify_layout_image(
                     parent, project_image.inspect_layout_image(candidate)
@@ -318,7 +318,7 @@ class _IncrementalBuildAdapter:
         except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
             raise ImageLifecycleError(str(exc)) from exc
         if parent.get("Id") != parent_id:
-            raise ImageLifecycleError("Project-data layout parent identity changed")
+            raise ImageLifecycleError("Booley Directory layout parent identity changed")
         labels = parent.get("Config", {}).get("Labels", {}) or {}
         wheel_sha = labels.get(runtime_lifecycle.LABEL_WHEEL_SHA256)
         if (
@@ -326,7 +326,9 @@ class _IncrementalBuildAdapter:
             or labels.get(runtime_lifecycle.LABEL_WHEEL_SOURCE_FINGERPRINT)
             != node.wheel_source_fingerprint
         ):
-            raise ImageLifecycleError("Project-data layout parent has no matching wheel identity")
+            raise ImageLifecycleError(
+                "Booley Directory layout parent has no matching wheel identity"
+            )
         self._wheel_sha256 = wheel_sha
         return parent
 
@@ -353,7 +355,7 @@ class _IncrementalBuildAdapter:
             network="none",
             capacity_request=current,
             capacity_plan=DockerBuildPlan((current, *tail)),
-            build_note="preparing Project-data directory layout",
+            build_note="preparing Booley Directory layout",
         )
         return spec, matching
 

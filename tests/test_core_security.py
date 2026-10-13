@@ -509,7 +509,7 @@ class TestFuseSocScopedAudit:
             ),
             encoding="utf-8",
         )
-        # Rogue core at the project root so its generator path resolves to the
+        # Rogue core at the Project Root so its generator path resolves to the
         # root-relative `rtl/rogue_gen.py` the write Scope (`rtl/*`) covers.
         (tmp_path / "rogue.core").write_text(
             textwrap.dedent(

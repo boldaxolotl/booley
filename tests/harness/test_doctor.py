@@ -474,7 +474,7 @@ permanent = true
 
 [[waiver]]
 check = "project.core-file-untracked"
-reason = "The fixture is not a committed project repository."
+reason = "The fixture is not a committed RTL repository."
 permanent = true
 """,
         encoding="utf-8",
@@ -785,7 +785,7 @@ def _history_git(repo: Path, *args: str) -> None:
 
 
 def _history_repo(tmp_path: Path, monkeypatch) -> Path:
-    """Return a project dir inside a fresh Git repository with one initial commit."""
+    """Return a Booley Directory inside a fresh Git repository with one initial commit."""
     for key, value in {
         "GIT_AUTHOR_NAME": "t",
         "GIT_AUTHOR_EMAIL": "t@example.invalid",
@@ -3662,7 +3662,7 @@ targets:
 
 
 def test_stealth_core_files_judged_against_state_repo(tmp_path):
-    """ADR 0036: a stealth core's files are tracked by the project dir's OWN
+    """ADR 0036: a stealth core's files are tracked by the Booley Directory's OWN
     repo — asking the host repo about them is guaranteed noise. Reach-through
     symlinks count as tracked for the content behind them (a clone ships the
     link, and the link's target is host-tracked upstream source)."""
@@ -5107,7 +5107,7 @@ class TestWorktreeCoreShadowGuard:
         rec = _Rec()
         doctor._check_worktree_core_shadow_guard(tmp_path, rec.p, rec.w)
         assert rec.kinds() == {"warn"}
-        assert "can shadow the repo-root source" in self._warns(rec)[0]
+        assert "can shadow the source at the Project Root" in self._warns(rec)[0]
 
     def test_authored_stealth_cores_are_not_shadow_threats(self, tmp_path: Path):
         # ADR 0036: .booley_project/cores/ holds authored sources scanned
@@ -6738,7 +6738,7 @@ def test_concise_reporter_suppresses_only_pass_rendering(capsys) -> None:
 class TestDisplayReportDir:
     """Deep-check FAIL hints must be readable where the user reads them.
 
-    Doctor may run inside the Sandbox, where the project dir is the
+    Doctor may run inside the Sandbox, where the Booley Directory is the
     /booley-project bind mount; printing that verbatim sent a host-side user
     ls-ing a path that only exists in the container (the real files sit at
     <repo>/.booley_project/tmp/...).
@@ -6753,7 +6753,7 @@ class TestDisplayReportDir:
         project = SimpleNamespace(project_dir=mount)
         report_dir = mount / "tmp" / "doctor" / "flow-reports"
         hint = doctor._display_report_dir(project, report_dir)
-        assert hint == ".booley_project/tmp/doctor/flow-reports (under the repo root)"
+        assert hint == ".booley_project/tmp/doctor/flow-reports (under the Project Root)"
 
     def test_host_path_is_printed_verbatim(self, tmp_path: Path):
         from types import SimpleNamespace
@@ -6973,9 +6973,9 @@ class TestLineEndingsCheck:
         )
 
         assert len(c.failed) == 1
-        assert "project data" in c.failed[0][0]
+        assert "Booley Directory" in c.failed[0][0]
         assert str(project_dir) in c.failed[0][0]
-        assert any("project checkout" in message for message in c.passed)
+        assert any("Project Root" in message for message in c.passed)
 
     def test_nested_autocrlf_warning_has_project_data_subject(self, tmp_path: Path):
         _disable_line_ending_stealth(tmp_path)
@@ -7879,13 +7879,13 @@ def test_containment_report_alias_and_symlinks(tmp_path, monkeypatch):
     project = SimpleNamespace(project_dir=root)
     assert (
         doctor._display_report_dir(project, alias / "reports")
-        == ".booley_project/reports (under the repo root)"
+        == ".booley_project/reports (under the Project Root)"
     )
     assert calls
     (root / "internal").symlink_to(root / "reports", target_is_directory=True)
     assert (
         doctor._display_report_dir(project, root / "internal")
-        == ".booley_project/reports (under the repo root)"
+        == ".booley_project/reports (under the Project Root)"
     )
     outside = tmp_path / "outside"
     outside.mkdir()
@@ -7910,14 +7910,14 @@ def test_containment_report_rebased_alias_child_symlink(tmp_path, monkeypatch):
     monkeypatch.setattr(doctor.dc, "PROJECT_DIR_TARGET", root.as_posix())
     assert (
         doctor._display_report_dir(SimpleNamespace(project_dir=root), alias / "input")
-        == ".booley_project/target (under the repo root)"
+        == ".booley_project/target (under the Project Root)"
     )
     (root / "target").rmdir()
     (root / "real").mkdir()
     (root / "target").symlink_to(root / "real", target_is_directory=True)
     assert (
         doctor._display_report_dir(SimpleNamespace(project_dir=root), alias / "input")
-        == ".booley_project/real (under the repo root)"
+        == ".booley_project/real (under the Project Root)"
     )
 
 

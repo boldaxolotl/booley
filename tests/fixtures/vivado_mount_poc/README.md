@@ -37,7 +37,7 @@ Security properties exercised by the test:
 - Vivado and `make` run as the non-root `agent` user;
 - the container has no network, no Linux capabilities, and
   `no-new-privileges`;
-- only the disposable project copy is writable;
+- only the disposable checkout of the Project is writable;
 
 This is an opt-in PoC, not the final user-facing mount configuration. A
 production design must keep host source-path approval outside the

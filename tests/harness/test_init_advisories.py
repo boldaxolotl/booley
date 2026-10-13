@@ -378,7 +378,7 @@ class TestAdvisorySendOff:
         _write(project, CONFIGURED_TOML)
 
         def _boom(*a, **k):
-            raise OSError("state dir is gone")
+            raise OSError("Booley Directory is gone")
 
         monkeypatch.setattr(init_cmd.doctor_stamp, "check_stamp_advisory", _boom)
         ctx = InitContext(project_root=project)

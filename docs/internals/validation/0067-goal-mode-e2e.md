@@ -628,7 +628,7 @@ controls passing. They cover large attribute queries through NUL-separated stdin
 destination-local summary staging, pre-fence publication prerequisites, typed
 participant recovery, exact conflicting-index preservation, abandonment capture
 changes, retained history and authority-only crashes, and qualified Target binding.
-Non-versioned Project snapshots now select original/final submodules before export
+Snapshots of non-versioned Booley Directories now select original/final submodules before export
 and cannot change during capture. Cleanliness reuses one pinned byte projection.
 
 Windows CI exposed fixture commits made with `core.autocrlf=false` while runtime

@@ -1778,7 +1778,7 @@ class TestLoadAgentSettingsFromToml:
 
     def test_claude_provider_from_project_dir(self, tmp_path, monkeypatch):
         # BOOLEY_PROJECT_DIR points at the .booley_project dir; the loader must
-        # resolve the *parent* as the repo root.
+        # resolve the *parent* as the Project Root.
         root = self._write_project(
             tmp_path,
             '[agent]\nprovider = "claude"\n',

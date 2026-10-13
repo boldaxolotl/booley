@@ -77,7 +77,7 @@ removed edge (all names are below `booley`):
 - Sandbox image selection and deterministic naming move to
   `booley.config.sandbox`; Runtime retains static image-operation compatibility
   entry points.
-- Project-directory and source-checkout classification primitives move to
+- Booley Directory and source-checkout classification primitives move to
   `booley.core`, below both Config and Runtime. Runtime paths remain static
   compatibility interfaces and continue to own transient directory creation.
 - User config-directory resolution moves to `booley.core.user_paths`, with the

@@ -64,10 +64,10 @@ SESSION_PIDS_LIMIT = 4096
 # ``.booley_project`` mounts; it is re-exported here for existing callers.
 AGENT_HOME = "/home/agent"  # non-root ``agent`` user (see data/docker/Dockerfile)
 
-# Workspace-relative basename of the project dir. ``[sandbox] mask_paths``
+# Workspace-relative basename of the Booley Directory. ``[sandbox] mask_paths``
 # needs it to notice entries that are visible through TWO container mounts:
 # the whole workspace binds at /work (so ``.booley_project/x`` shows up at
-# ``/work/.booley_project/x``) AND the project dir itself binds again at
+# ``/work/.booley_project/x``) AND the Booley Directory itself binds again at
 # PROJECT_DIR_TARGET — masking only the /work view would leave the same bytes
 # readable at ``/booley-project/x``.
 PROJECT_DIR_BASENAME = ".booley_project"
@@ -111,7 +111,7 @@ _TCL_EXTENSION = "bitwisecook.tcl"
 
 # Microsoft's Live Preview hosts static HTML and renders it in an embedded
 # VS Code tab. Installed for every app so human-facing reports (including the
-# review HTML under the separately mounted project dir) are viewable
+# review HTML under the separately mounted Booley Directory) are viewable
 # without a browser in the sandbox.
 _LIVE_PREVIEW_EXTENSION = "ms-vscode.live-server"
 
@@ -315,7 +315,7 @@ def _volume_mount(source: str, target: str) -> str:
 
 
 def canonical_project_id(project_root: Path) -> str:
-    """Stable collision-resistant identity for one canonical Project root."""
+    """Stable collision-resistant identity for one canonical Project Root."""
     return project_name_id(str(project_root.resolve(strict=True)))
 
 
@@ -614,11 +614,11 @@ def _mask_mounts(mask_paths: Sequence[str], mask_source: str) -> list[str]:
       a masked subtree would otherwise scribble into the shared empty dir.
 
     An entry under ``.booley_project/`` is masked a SECOND time under
-    ``/booley-project/<rest>``: the project dir is bind-mounted twice (the
+    ``/booley-project/<rest>``: the Booley Directory is bind-mounted twice (the
     workspace mount at /work plus its own mount at PROJECT_DIR_TARGET), and
     masking only one view leaves the same bytes readable through the other.
 
-    Callers must place these AFTER the project-dir mount in the ``mounts``
+    Callers must place these AFTER the Booley Directory mount in the ``mounts``
     list: the Dev Containers CLI and :func:`session_runtime.docker_run_argv`
     both emit workspaceMount first, then ``mounts`` in order, so a later mask
     over-mounts its parent instead of being buried by it.

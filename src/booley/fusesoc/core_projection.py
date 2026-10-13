@@ -1,4 +1,4 @@
-"""Stealth-only projection of authored FuseSoC cores into the project root.
+"""Stealth-only projection of authored FuseSoC cores into the Project Root.
 
 The authoritative cores stay versioned under ``.booley_project/cores/``.  A
 small generated copy at the RTL repository root gives FuseSoC the repository

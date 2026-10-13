@@ -84,7 +84,7 @@ Two project-side extension points:
 
 Run this subsection on the host only when approved plan row 14 selects a
 host-provisioned EDA installation. The plan must already name the opaque
-registration, canonical installation root, exact Project root, and whether an
+registration, canonical installation root, exact Project Root, and whether an
 approved License Profile is available.
 
 First put the provisioning request in `.booley_project/booley.toml`; for the
@@ -95,7 +95,7 @@ current policy:
 provisioning = "host"
 ```
 
-Then run the host-owned authority commands from the Project root. The Grant is
+Then run the host-owned authority commands from the Project Root. The Grant is
 the single source of truth selecting the planned Installation Registration:
 
 ```console
@@ -190,7 +190,7 @@ Use the ownership decision recorded in plan rows 2 and 16:
 | Git footprint | Native `.core` present? | Required action |
 | --- | --- | --- |
 | open | yes | Modify/modernize the appropriate native core; never create a parallel adapter core. |
-| open | no | Author a tracked project core at the repo root or beside the RTL. |
+| open | no | Author a tracked project core at the Project Root or beside the RTL. |
 | hidden | either | Leave every tracked native core unchanged and author a distinct-VLNV adapter under `.booley_project/cores/`. |
 
 In a native core, touch only the Targets the plan selects; unrelated historical
@@ -328,7 +328,7 @@ Authoring rules:
   `FUSESOC_IGNORE` marker file in their directory — Booley's `.core` scanner
   skips any directory carrying one (mirrors FuseSoC's own scanner).
 
-#### Authored cores in a hidden project directory
+#### Authored cores in a hidden Booley Directory
 
 When stealth mode keeps Booley state hidden, leave native tracked `.core` files
 byte-for-byte unchanged and place the adapter `.core` under
@@ -596,9 +596,9 @@ Rules that differ from SV Targets:
   `[sandbox].pip_requirements` at the project's own pin set (from its
   `tox.ini` / `requirements.txt`) and re-run `booley init` to build the
   project image. **`[sandbox].pip_requirements` is the only source of baked
-  deps — nothing is auto-discovered**, so a repo-root `requirements.txt` is
+  deps — nothing is auto-discovered**, so a `requirements.txt` at the Project Root is
   ignored until you list it here. Any path (any name, any depth, relative to
-  the repo root) works; `init` warns on an entry it can't find. Booley speaks
+  the Project Root) works; `init` warns on an entry it can't find. Booley speaks
   both dialects — it probes `cocotb-config --version` and emits `TESTCASE`
   instead of `COCOTB_TEST_FILTER` on 1.x, with no config from you.
   **Bake the FULL pinned stack, not the subset the TB seems to need.**
@@ -808,9 +808,9 @@ approved config is on disk.
 
 ## Goalsets
 
-Goal entry reads Goalsets from the main checkout's Project directory
+Goal entry reads Goalsets from the Main Booley Directory
 (`BOOLEY_PROJECT_DIR` in the Sandbox). Edit them there; an edit made only in a
-Project copy or snapshot inside a worktree is not used.
+Worktree Booley Directory inside a worktree is not used.
 
 Read the seeded `goalsets/{feature,bugfix,refactor,verification}.md` files and
 adapt their Goals to the Project's supported Targets and verification intent.

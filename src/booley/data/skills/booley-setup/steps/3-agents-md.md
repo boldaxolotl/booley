@@ -11,14 +11,14 @@ file is high leverage: do not auto-write, pad, or invent facts.
 
 **Location and linking**
 
-- The canonical file lives in the project data dir as `<project_dir>/AGENTS.md`
+- The canonical file lives in the Booley Directory as `<project_dir>/AGENTS.md`
   (usually `.booley_project/AGENTS.md`), so it is versioned with the rest of
-  the project config. Normally, do not write a real file at the repo root.
+  the project config. Normally, do not write a real file at the Project Root.
 - Exception: when plan row 16 selects the hybrid port/integration footprint,
   write and track a content-identical regular root `AGENTS.md` so a fresh clone
   remains self-describing while `.booley_project/` stays local. Init and Doctor
   preserve this matching tracked copy and refuse to overwrite a stale one.
-- The RTL repo root carries only generated `AGENTS.md` and `CLAUDE.md` links to
+- The Project Root carries only generated `AGENTS.md` and `CLAUDE.md` links to
   the canonical file. Plain `booley doctor` creates or repairs them after the
   canonical file is written.
 
@@ -31,7 +31,7 @@ file is high leverage: do not auto-write, pad, or invent facts.
 - Keep the template's Interactive Mode bullet and its two Sandbox bullets
   ("Inside the Sandbox…" and "If `booley_status` is absent…") verbatim. The
   Interactive Mode bullet establishes the editor as a user-visible surface for
-  files and diffs. The repo root's guidance links resolve on the host too, where
+  files and diffs. The Project Root's guidance links resolve on the host too, where
   none of the Booley Flows are registered; the Sandbox bullets explain why.
   Doctor warns if the "Inside the Sandbox" bullet goes missing.
 - When `booley.toml` selects `booley-sandbox-riscv`, keep the template's RISC-V
@@ -65,7 +65,7 @@ file is high leverage: do not auto-write, pad, or invent facts.
 ### 1. Inspect Stable Inputs
 
 - Existing canonical `<project_dir>/AGENTS.md`, if present (and any alternate
-  `AGENTS.md` at the repo root, to migrate its content into the canonical file)
+  `AGENTS.md` at the Project Root, to migrate its content into the canonical file)
 - `README.md`
 - `GLOSSARY-MAP.md`, if present, followed by the relevant context glossaries
 - `docs/GLOSSARY.md`, if present when no context map exists
@@ -106,7 +106,7 @@ approval question in either case beyond the plan-gap stop above.
    `CLAUDE.md` links and adds them to `.git/info/exclude`. If Doctor cannot run,
    create the two root symlinks to the canonical file by hand and add
    `/AGENTS.md` and `/CLAUDE.md` to the RTL repo's `.git/info/exclude`.
-   If the delegated environment makes the repo root read-only, do not loop on
+   If the delegated environment makes the Project Root read-only, do not loop on
    failed `ln` commands: preserve the canonical file, record the two links as
    pending, and have the host run `booley init --seed` or plain Doctor after
    the delegated step. A sandbox permission boundary is not evidence that the

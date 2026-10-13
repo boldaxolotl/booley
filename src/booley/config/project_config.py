@@ -1,13 +1,13 @@
 """Project configuration — single source of truth loaded from project/ TOMLs.
 
 Shared by simulation, synthesis, Flows, MCP tools, and pipeline scripts. Any config-related
-change should happen in booley.toml and configs.toml in the project dir.
+change should happen in booley.toml and configs.toml in the Booley Directory.
 """
 
 from __future__ import annotations
 
 # ---------------------------------------------------------------------------
-# Load booley.toml (project dir first, fallback to .booley/ root)
+# Load booley.toml (Booley Directory first, fallback to .booley/ root)
 # ---------------------------------------------------------------------------
 import logging as _logging
 import re
@@ -56,10 +56,10 @@ _LAZY_NAMES = frozenset(
 def _load_config() -> dict[str, Any]:
     """Load booley.toml + tests.toml and derive public config, memoized.
 
-    No filesystem I/O runs until the first call. When the project dir or TOMLs
+    No filesystem I/O runs until the first call. When the Booley Directory or TOMLs
     are absent (inside Docker without the project mounted, ``bwave --help``, or
     MCP schema discovery), falls back to empty config so that callers which do
-    not actually need project data keep working; callers that do get empty
+    not actually need the contents of the Booley Directory keep working; callers that do get empty
     defaults (``rtl_project`` name, human-in-the-loop on, no tests).
 
     ``tests.toml`` holds verification-intent (a ``(Target, plusarg)`` pair) keyed

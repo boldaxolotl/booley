@@ -812,7 +812,7 @@ def _run_project_phase(
 
 
 def _check_project_data_destination_branch(project_root: Path, reporter: _Reporter) -> None:
-    """Report whether implicit paired routing has a local Project-data destination."""
+    """Report whether implicit paired routing has a local Booley Directory destination."""
     project_repo = project_repositories.resolve_inner_project_repo(project_root)
     if project_repo is None:
         try:
@@ -828,7 +828,7 @@ def _check_project_data_destination_branch(project_root: Path, reporter: _Report
                 reporter,
             )
             return
-        reporter.skip_("Project-data branch alignment skipped - no standalone repository")
+        reporter.skip_("Booley Directory branch alignment skipped - no standalone repository")
         return
     outer_branch = _outer_branch_for_project_data(project_root, project_repo, reporter)
     if outer_branch is None:
@@ -836,13 +836,15 @@ def _check_project_data_destination_branch(project_root: Path, reporter: _Report
     expected_ref = f"refs/heads/{outer_branch}"
     project_head = project_repositories.run_git(project_repo, "symbolic-ref", "--quiet", "HEAD")
     if project_head.returncode == 0 and project_head.stdout.strip() == expected_ref:
-        reporter.pass_(f"Project-data destination branch matches outer branch {outer_branch!r}")
+        reporter.pass_(
+            f"Booley Directory destination branch matches outer branch {outer_branch!r}"
+        )
         return
     expected = project_repositories.run_git(
         project_repo, "rev-parse", "--verify", "--quiet", f"{expected_ref}^{{commit}}"
     )
     if expected.returncode == 0:
-        reporter.pass_(f"Project-data destination branch {outer_branch!r} exists")
+        reporter.pass_(f"Booley Directory destination branch {outer_branch!r} exists")
         return
     if expected.returncode != 1 or (expected.stderr or expected.stdout).strip():
         _warn_project_data_branch_unreadable(
@@ -869,12 +871,12 @@ def _warn_missing_project_data_branch(
     reporter: _Reporter,
 ) -> None:
     message = (
-        f"Project-data repository {project_repo} has no local branch {outer_branch!r}; "
-        "implicit paired Project routing will fail"
+        f"Booley Directory's repository {project_repo} has no local branch {outer_branch!r}; "
+        "implicit Paired Checkout routing will fail"
     )
     command = shlex.join(["git", "-C", str(project_repo), "switch", "-c", outer_branch])
     fix = (
-        f"commit or otherwise clean Project-data changes, then run `{command}` and rerun "
+        f"commit or otherwise clean changes to the Booley Directory, then run `{command}` and rerun "
         "Doctor; if branch names intentionally differ, set project_destination_ref explicitly"
     )
     if project_head.stdout.strip() == "refs/heads/master" and outer_branch == "main":
@@ -899,7 +901,7 @@ def _warn_project_data_branch_unreadable(
         "project-data.destination-branch-unreadable",
         subject="project-data",
     )(
-        f"could not inspect {probe} for Project-data repository {project_repo}: {detail}",
+        f"could not inspect {probe} for Booley Directory's repository {project_repo}: {detail}",
         f"inspect Git health at {project_repo} before relying on implicit paired routing",
     )
 
@@ -921,7 +923,9 @@ def _outer_branch_for_project_data(
             reporter,
         )
     else:
-        reporter.skip_("Project-data branch alignment skipped - outer checkout has detached HEAD")
+        reporter.skip_(
+            "Booley Directory branch alignment skipped - outer checkout has detached HEAD"
+        )
     return None
 
 
@@ -1206,7 +1210,7 @@ def _check_worktree_prune_guard(
             timeout=10,
         )
         if probe.returncode != 0:
-            _skip("worktree prune guard: project root is not a git repo")
+            _skip("worktree prune guard: Project Root is not a git repo")
             return
     except (FileNotFoundError, subprocess.SubprocessError):
         _skip("worktree prune guard: git unavailable")
@@ -1355,7 +1359,7 @@ def _check_line_endings(
         mode=LineEndingMode.INSPECT,
     )
     if report.status is LineEndingStatus.NOT_APPLICABLE:
-        _skip("line endings: project root is not a git repo")
+        _skip("line endings: Project Root is not a git repo")
         return
     for repository in report.repositories:
         _report_repository_line_endings(repository, _pass, _warn, _fail)
@@ -1376,7 +1380,7 @@ def _check_worktree_core_shadow_guard(
 
     Goal / baseline git worktrees under ``.booley_project/`` are full
     checkouts carrying COPIES of the project's ``.core`` files (same VLNV). A
-    stale copy shadows the repo-root source in FuseSoC's recursive
+    stale copy shadows the source at the Project Root in FuseSoC's recursive
     ``--cores-root`` scan — silently building the worktree's RTL, not ``/work``'s.
     ``booley init`` and ``worktree_create.sh`` drop the marker that suppresses
     this; catch a project that predates the fix (or whose marker was removed),
@@ -1385,7 +1389,9 @@ def _check_worktree_core_shadow_guard(
     _warn = _warning_sink(_warn, "fusesoc.worktree-core-shadow")
     marker = project_dir / "FUSESOC_IGNORE"
     if marker.is_file():
-        _pass("FUSESOC_IGNORE present (worktree .core copies can't shadow repo-root source)")
+        _pass(
+            "FUSESOC_IGNORE present (worktree .core copies can't shadow source at the Project Root)"
+        )
         return
     # Marker absent — is there an actual stale worktree .core to shadow right now?
     # Authored stealth cores (.booley_project/cores/, ADR 0036) are sources, not
@@ -1402,13 +1408,13 @@ def _check_worktree_core_shadow_guard(
     if shadow_cores:
         _warn(
             f".booley_project/FUSESOC_IGNORE missing and {len(shadow_cores)} "
-            "worktree .core copy/copies can shadow the repo-root source in "
+            "worktree .core copy/copies can shadow the source at the Project Root in "
             "FuseSoC's --cores-root scan; run `booley init` to add the marker"
         )
     else:
         _warn(
             ".booley_project/FUSESOC_IGNORE missing; a future worktree's "
-            ".core could shadow the repo-root source — run `booley init`"
+            ".core could shadow the source at the Project Root — run `booley init`"
         )
 
 
@@ -1423,7 +1429,7 @@ def _worktree_core_directory(project_dir: Path, project_root: Path | None) -> Pa
     return state / "worktrees"
 
 
-# State-dir subtrees that legitimately hold transient .core COPIES (worktree /
+# Booley Directory subtrees that legitimately hold transient .core COPIES (worktree /
 # baseline checkouts, build caches) — never authored sources, never "stranded".
 
 
@@ -1621,7 +1627,7 @@ def _check_slot_store_writable(_pass: Check, _fail: Fail) -> None:
     root = job_slots.slots_dir()
     if root is None:
         _fail(
-            "slot store root unresolvable (no project dir) — job admission cannot arbitrate",
+            "slot store root unresolvable (no Booley Directory) — job admission cannot arbitrate",
             "run doctor from the project workspace or set BOOLEY_PROJECT_DIR",
         )
         return
@@ -3218,7 +3224,7 @@ def _check_git_state(project_root: Path, _pass: Check, _note: Check, _fail: Fail
         _fail(f"git probe failed: {exc}", "install git and check repository state")
         return
     if result.returncode != 0:
-        _fail("not inside a git work tree", "run doctor from the project repository")
+        _fail("not inside a git work tree", "run doctor from the RTL repository")
         return
 
     _pass("git repository detected")
@@ -3892,7 +3898,7 @@ class _CoreAuditContext:
 
     @property
     def root(self) -> Path:
-        """Return the audited project root."""
+        """Return the audited Project Root."""
         return self.project.project_root
 
 
@@ -4863,8 +4869,8 @@ def _check_core_files_tracked(
     clone / CI checkout would lack it and the testbench would fail opaquely. A
     warn with the ``git add -f`` remedy, not a fail: the local run still works.
 
-    State-zone files (ADR 0036 stealth cores) are judged against the project
-    dir's *own* git repo — ``.booley_project/`` is invisible to the host repo by
+    Files in a Versioned Booley Directory (ADR 0036 stealth cores) are judged
+    against its own Git repository — ``.booley_project/`` is invisible to the host repo by
     design, so asking the host is guaranteed noise. No repo there → skip them
     (nothing knowable). Tracking is symlink-aware in both zones: a path whose
     ancestor is a tracked symlink (a stealth core's reach-through like
@@ -4956,7 +4962,7 @@ def _readmem_literal_targets(root: Path) -> list[str]:
     """Project-relative memory images named by a *literal* $readmemh/$readmemb.
 
     Scans the ``.core``-referenced HDL for ``$readmem[hb]("path")`` calls and
-    resolves each literal against the repo root and the calling file's own
+    resolves each literal against the Project Root and the calling file's own
     directory. Only plain literals are considered; a path built from a plusarg,
     a format specifier, or concatenation can't be resolved statically and is
     skipped. Used to catch memory images the testbench hardcodes but that no
@@ -6235,11 +6241,11 @@ def _configured_timeout_s(project: ProjectAudit, flow_name: str, floor: int) -> 
 def _display_report_dir(project: ProjectAudit, report_dir: Path) -> str:
     """Render *report_dir* so the hint is valid where it is READ, not where run.
 
-    Doctor may run inside the Sandbox, where the project dir is the
+    Doctor may run inside the Sandbox, where the Booley Directory is the
     ``/booley-project`` bind mount — a path that exists in no other runtime, while
     the FAIL hint is often read from the host (where the same files sit under
     ``<repo>/.booley_project/``). For that well-known mount, print the
-    repo-relative rendering that resolves on both host and runtime; any other project dir
+    repo-relative rendering that resolves on both host and runtime; any other Booley Directory
     (host default, or an explicit ``[project].dir`` override) is printed as-is.
     """
     if project.project_dir.as_posix() not in {dc.PROJECT_DIR_TARGET, "/work/.booley_project"}:
@@ -6248,7 +6254,7 @@ def _display_report_dir(project: ProjectAudit, report_dir: Path) -> str:
     if canonical is None:
         return str(report_dir)
     rel = canonical.relative_to(project.project_dir.resolve())
-    return f"{PROJECT_DIR_NAME}/{rel.as_posix()} (under the repo root)"
+    return f"{PROJECT_DIR_NAME}/{rel.as_posix()} (under the Project Root)"
 
 
 def _run_flow_check_subprocess(

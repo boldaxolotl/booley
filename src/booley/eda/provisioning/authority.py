@@ -215,7 +215,7 @@ def _add_grant_for_identity(
     installation: str | None = None,
     license_profile: str | None = None,
 ) -> ProjectGrant:
-    """Authorize an exact canonical Project root for installation/license use."""
+    """Authorize an exact canonical Project Root for installation/license use."""
     with _prepare_add_grant(
         project_root,
         kind,
@@ -499,7 +499,7 @@ def _canonical_project(project_root: Path) -> Path:
     try:
         project = project_root.resolve(strict=True)
     except OSError as exc:
-        raise AuthorityError(f"Project root is unavailable: {project_root} ({exc})") from exc
+        raise AuthorityError(f"Project Root is unavailable: {project_root} ({exc})") from exc
     anchor = Path(project.anchor)
     broad_system_roots = {anchor / name for name in _BROAD_SYSTEM_ROOT_NAMES}
     if (
@@ -507,7 +507,7 @@ def _canonical_project(project_root: Path) -> Path:
         or project in {anchor, Path.home().resolve()}
         or project in broad_system_roots
     ):
-        raise AuthorityError(f"unsafe Project root: {project}")
+        raise AuthorityError(f"unsafe Project Root: {project}")
     return project
 
 
@@ -519,7 +519,7 @@ def _revoke_project_identity(project_root: Path, kind: str, state: AuthorityStat
             return lexical
     if not project_root.exists():
         raise AuthorityError(
-            f"cannot match missing Project root {project_root}; use the absolute canonical "
+            f"cannot match missing Project Root {project_root}; use the absolute canonical "
             "path shown by `booley projects`"
         )
     project = _canonical_project(project_root)
@@ -536,11 +536,11 @@ def _validate_new_grant_project(project: Path) -> None:
         raise AuthorityError(str(exc)) from exc
     authority_root = state_dir().resolve()
     if _paths_overlap(project, authority_root):
-        raise AuthorityError(f"Project root overlaps the private EDA authority: {project}")
+        raise AuthorityError(f"Project Root overlaps the private EDA authority: {project}")
     if not any((project / marker).exists() for marker in _PROJECT_MARKERS):
         markers = " or ".join(_PROJECT_MARKERS)
         raise AuthorityError(
-            f"not a Booley Project root: {project} has no canonical {markers} marker"
+            f"not a Booley Project Root: {project} has no canonical {markers} marker"
         )
 
 

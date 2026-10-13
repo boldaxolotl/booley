@@ -1,4 +1,4 @@
-"""Implicit Flow roots reject detached Project data at the use boundary."""
+"""Implicit Flow roots reject detached Booley Directory at the use boundary."""
 
 import importlib
 

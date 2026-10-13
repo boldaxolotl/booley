@@ -4,7 +4,7 @@
   Record values, with strict parsing of agent input and persisted records.
 - :mod:`booley.goals.translate` — Goal arguments to Criteria, merging Goals for
   one key to the stricter Goal.
-- :mod:`booley.goals.paths` — the Goal Record layout in the Project directory.
+- :mod:`booley.goals.paths` — the Goal Record layout in the Booley Directory.
 - :mod:`booley.goals.store` — worktree identity, locks, and revisioned
   ``record.json`` writes.
 - :mod:`booley.goals.changes` — the append-only Change Log.

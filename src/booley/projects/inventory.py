@@ -52,7 +52,7 @@ class ProjectInventoryEntry:
 
 
 def remember_project(project_root: Path) -> Path:
-    """Remember one strictly resolved initialized Project root idempotently."""
+    """Remember one strictly resolved initialized Project Root idempotently."""
     project = _initialized_project(project_root)
     with _locked_roots() as roots:
         roots.add(str(project))
@@ -140,7 +140,7 @@ def _initialized_project(project_root: Path) -> Path:
         project = project_root.resolve(strict=True)
     except OSError as exc:
         raise ProjectInventoryError(
-            f"Project root is unavailable: {project_root} ({exc})"
+            f"Project Root is unavailable: {project_root} ({exc})"
         ) from exc
     if not project.is_dir() or not (project / ".booley_project").is_dir():
         raise ProjectInventoryError(f"not an initialized Booley Project: {project}")
@@ -206,7 +206,7 @@ def _remembered_identity(project_root: Path, roots: set[str]) -> str:
         canonical = str(project_root.resolve(strict=True))
         if canonical in roots:
             return canonical
-    raise ProjectInventoryError(f"Project root is not remembered: {project_root}")
+    raise ProjectInventoryError(f"Project Root is not remembered: {project_root}")
 
 
 def _load_roots() -> set[str]:

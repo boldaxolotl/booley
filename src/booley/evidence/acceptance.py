@@ -62,7 +62,7 @@ class AcceptanceTargetBinding:
 
 
 class PairedBaselineMode(Enum):
-    """Authority for selecting an installed paired Project baseline."""
+    """Authority for selecting an installed Paired Checkout baseline."""
 
     STANDALONE = "standalone"
     ABSENT = "absent"
@@ -73,7 +73,7 @@ class PairedBaselineMode(Enum):
 
 @dataclass(frozen=True)
 class PairedProjectBaseline:
-    """Explicit paired-Project baseline policy; ticket pins never fall back."""
+    """Explicit Paired Checkout baseline policy; ticket pins never fall back."""
 
     mode: PairedBaselineMode
     sha: str = ""
@@ -89,14 +89,14 @@ class PairedProjectBaseline:
     @classmethod
     def ticket_pinned(cls, sha: str) -> PairedProjectBaseline:
         if not sha:
-            raise ValueError("ticket-pinned paired Project baseline requires a commit")
+            raise ValueError("ticket-pinned Paired Checkout baseline requires a commit")
         return cls(PairedBaselineMode.TICKET_PINNED, sha)
 
     @classmethod
     def entry_pinned(cls, sha: str) -> PairedProjectBaseline:
-        """The paired Project revision recorded at Goal entry; never falls back."""
+        """The Paired Checkout revision recorded at Goal entry; never falls back."""
         if not sha:
-            raise ValueError("entry-pinned paired Project baseline requires a commit")
+            raise ValueError("entry-pinned Paired Checkout baseline requires a commit")
         return cls(PairedBaselineMode.ENTRY_PINNED, sha)
 
     @property

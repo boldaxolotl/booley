@@ -21,7 +21,7 @@ def work_root_for(
 ) -> Path:
     """Return the canonical per-(Flow, config[, variant]) build directory.
 
-    Preserve the checkout-local layout independently of ambient Project-directory
+    Preserve the checkout-local layout independently of ambient Booley Directory
     overrides so different worktrees cannot share mutable build caches. This only
     calculates a path; callers own directory creation, leasing and execution.
     """

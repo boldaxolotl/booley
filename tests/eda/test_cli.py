@@ -368,11 +368,11 @@ def test_project_binding_permission_error_is_clean(tmp_path, monkeypatch, capsys
     monkeypatch.setattr(authority, "_revoke_grant", lambda *a, **k: calls.append(a))
 
     def check(project):
-        raise PermissionError(f"Project checkout is unreadable: {project}")
+        raise PermissionError(f"Project Root is unreadable: {project}")
 
     monkeypatch.setattr(cli, "require_project_checkout", check)
     assert _run(_parse("grant", action, str(tmp_path), "--kind", "vivado"), tmp_path) == 2
-    assert "Project checkout is unreadable" in capsys.readouterr().err
+    assert "Project Root is unreadable" in capsys.readouterr().err
     assert calls == []
 
 

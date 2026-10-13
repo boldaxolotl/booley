@@ -629,7 +629,7 @@ def _docker_check_only(ctx: InitContext, exists: bool) -> None:
 
 
 def _local_build_inputs(ctx: InitContext, docker_dir: Path) -> tuple[Path, Path, Path] | None:
-    """Validate and return candidate Dockerfile, base Dockerfile, and repo root."""
+    """Validate and return candidate Dockerfile, base Dockerfile, and Booley repository root."""
     dockerfile = docker_dir / "Dockerfile"
     base_dockerfile = docker_dir / "Dockerfile.base"
     missing_dockerfile = next(
@@ -642,9 +642,9 @@ def _local_build_inputs(ctx: InitContext, docker_dir: Path) -> tuple[Path, Path,
 
     booley_root = docker_dir.parent.parent.parent.parent
     if not (booley_root / "pyproject.toml").is_file():
-        err("cannot determine Booley repo root for docker build context")
+        err("cannot determine Booley repository root for docker build context")
         info("  build manually: ./src/booley/data/docker/build.sh")
-        ctx.record("docker_image", "err", "repo root not found")
+        ctx.record("docker_image", "err", "Booley repository root not found")
         return None
     return dockerfile, base_dockerfile, booley_root
 
@@ -1177,10 +1177,10 @@ def _flavor_build(
     docker_dir = dockerfile.parent
     build = _DockerBuildSpec(
         dockerfile=dockerfile,
-        # Context is docker_dir, not the repo root build-riscv.sh passes: a
+        # Context is docker_dir, not the Booley repository root build-riscv.sh passes: a
         # flavor Dockerfile has no COPY (it only layers toolchains onto the
         # base), so the context is unused — and a pip-installed Booley has no
-        # repo root to point at while data/docker/ always exists. This is why
+        # Booley repository root to point at while data/docker/ always exists. This is why
         # flavor Dockerfiles must stay COPY-free.
         context=docker_dir,
         exists=exists,

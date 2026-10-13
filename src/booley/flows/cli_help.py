@@ -159,7 +159,7 @@ def shared_help(flow_name: str, *, target_required: bool) -> tuple[HelpGroup, ..
                 HelpOption(
                     "report_dir",
                     "When omitted, use the runtime report location, otherwise flow-reports "
-                    "under the resolved Project data directory.",
+                    "under the resolved Booley Directory.",
                 ),
             ),
         ),

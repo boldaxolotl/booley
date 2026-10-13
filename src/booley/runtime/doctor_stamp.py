@@ -66,7 +66,7 @@ def stamp_path(project_dir: Path) -> Path:
 
     Lives beside the developer probe and the slot store
     (``runtime/jobs/slots``) -- container-lifetime bookkeeping that both
-    contexts reach through the project-dir bind mount.
+    contexts reach through the Booley Directory bind mount.
     """
     return project_dir / "runtime" / STAMP_FILENAME
 
@@ -82,7 +82,7 @@ def _sha256_or_none(path: Path) -> str | None:
 def compute_fingerprint(project_dir: Path, project_root: Path) -> dict[str, str | None]:
     """Hash the config inputs whose drift should invalidate the stamp.
 
-    Both files are identical bytes on host and in-container (project dir and
+    Both files are identical bytes on host and in-container (Booley Directory and
     workspace are bind-mounted), so a fingerprint recorded on either side
     compares cleanly on the other.
     """
@@ -96,7 +96,7 @@ def compute_fingerprint(project_dir: Path, project_root: Path) -> dict[str, str 
 def record_clean_run(project_dir: Path, project_root: Path, *, deep: bool) -> Path | None:
     """Atomically record a fully clean Doctor run; returns the file written.
 
-    Fail-soft: a read-only or missing state dir returns None rather than
+    Fail-soft: a read-only or missing Booley Directory returns None rather than
     turning a green doctor run red.
     """
     import booley
@@ -238,7 +238,7 @@ def warn_if_stale(
     """Run the stamp check and hand any nag to *emit*; never raises.
 
     The one-call entry point for session start and the ticket sweep: the
-    stamp is advisory, so an unresolvable project dir (or any other surprise)
+    stamp is advisory, so an unresolvable Booley Directory (or any other surprise)
     silently skips the check rather than blocking real work.
     """
     try:

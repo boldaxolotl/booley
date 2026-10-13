@@ -7,7 +7,7 @@ the context that owns the work at hand.
 
 | Context | Canonical glossary | Owns |
 |---|---|---|
-| Shared Booley | [docs/GLOSSARY.md](docs/GLOSSARY.md) | Product lifecycle, execution modes, Sandbox, Projects, Targets, Booley Flows, EDA provisioning, simulation evidence, and presentation |
+| Shared Booley | [docs/GLOSSARY.md](docs/GLOSSARY.md) | Product lifecycle, execution modes, Sandbox, Projects, Booley Directory and Project Root, Targets, Booley Flows, EDA provisioning, simulation evidence, and presentation |
 | Goal Mode | [src/booley/goals/GLOSSARY.md](src/booley/goals/GLOSSARY.md) | Goal States, Worktree Identity, Goal Origins, Goal Changes, and Interrupted Applies inside one Goal Record |
 | B-Wave | [crates/bwave/GLOSSARY.md](crates/bwave/GLOSSARY.md) | Agent-facing waveform queries, virtual signals, markers, and human waveform viewing |
 | Simulation Coverage | [src/booley/flows/sim/GLOSSARY.md](src/booley/flows/sim/GLOSSARY.md) | Coverage campaigns, measurement points, evaluation policy, waivers, and analysis |
