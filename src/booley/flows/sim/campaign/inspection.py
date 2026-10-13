@@ -354,7 +354,21 @@ def _durable_results(store: CampaignStore, manifest_sha256: str) -> DurableCampa
         for fact in consumed
     )
     rows = tuple(observation_test_run_rows(manifest, observations))
-    return DurableCampaignResults(digest, str(manifest.document["campaign_id"]), results, rows)
+    started = set(recovery.interrupted)
+    unfinished = tuple(
+        (str(run["name"]), str(run["fingerprint"]))
+        for item in items
+        if item["work_item_id"] in started
+        for run in cast(tuple[Mapping[str, object], ...], item.get("test_runs", ()))
+    )
+    return DurableCampaignResults(
+        digest,
+        str(manifest.document["campaign_id"]),
+        results,
+        rows,
+        complete=not recovery.pending and not recovery.interrupted,
+        unfinished=unfinished,
+    )
 
 
 def _store_for_manifest(manifest_path: Path) -> CampaignStore:

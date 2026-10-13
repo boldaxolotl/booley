@@ -9,6 +9,7 @@ from typing import Any, cast
 
 from booley.criteria.evidence_ledger import canonical_json, validated_evidence_records
 from booley.criteria.state import DevelopmentState
+from booley.goals.campaign_accounting import unsettled_campaigns
 from booley.goals.changes import read_change_log
 from booley.goals.derivation import selected_observations
 from booley.goals.format import format_met_goal_metric
@@ -18,6 +19,7 @@ from booley.goals.model import GoalRecord
 from booley.goals.paths import record_paths
 from booley.goals.proposals import digest, list_proposals
 from booley.goals.recorder import GOAL_SCOPE
+from booley.goals.store import GoalStore
 from booley.goals.test_run_evidence import LEDGER_DETAIL_KEY
 from booley.review.goal_package import GoalCompletionPackage, GoalReviewContext
 
@@ -85,7 +87,17 @@ def build_goal_package(
         ],
         "session_summary": context.session_summary,
     }
-    return GoalCompletionPackage.from_json(facts)
+    return GoalCompletionPackage.from_json(facts | _unsettled(project_dir, record))
+
+
+def _unsettled(project_dir: Path, record: GoalRecord) -> dict[str, Any]:
+    """The Simulation Campaigns the reviewer should see were never fully accounted for.
+
+    Open ones, and registrations a human-approved change set aside because
+    nobody could read them (ADR 0072). No key at all when there is none.
+    """
+    listed = unsettled_campaigns(GoalStore(project_dir), record)
+    return {"unsettled_campaigns": listed} if listed else {}
 
 
 def _proposal_audit(root: Path) -> list[dict[str, Any]]:

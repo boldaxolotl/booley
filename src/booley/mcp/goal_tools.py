@@ -19,7 +19,7 @@ from typing import Any
 from mcp.types import TextContent
 
 from booley.criteria.evidence_ledger import AcceptanceLedgerError
-from booley.flows.sim.campaign import read_durable_results
+from booley.flows.sim.unpublished_results import read_unpublished_results
 from booley.goals.binding import GoalBindingError
 from booley.goals.checkout import CheckoutError, GoalCheckout
 from booley.goals.entry import (
@@ -127,7 +127,7 @@ def goal_enter_schema() -> dict[str, Any]:
 
 def _status_views(store: GoalStore, root: Path) -> tuple[GoalStatusView, ...]:
     """Status with the Simulation Flow's reader of unpublished campaign results."""
-    return status_views(store, root, campaign_reader=read_durable_results)
+    return status_views(store, root, campaign_reader=read_unpublished_results)
 
 
 async def dispatch_goal_tool(  # noqa: PLR0911 — four independent public Goal tools have distinct responses

@@ -207,7 +207,7 @@ def coverage_test_run_rows(
         test_run = frozen.get(run.test_run) or _bare_test_run(run)
         if test_run is None or test_run.fingerprint != run.fingerprint:
             continue
-        rows.append(test_run_row(test_run, _run_grade(run)))
+        rows.append(test_run_row(test_run, coverage_run_grade(run)))
     return rows
 
 
@@ -221,7 +221,7 @@ def _bare_test_run(run: CoverageRun) -> TestRun | None:
         return None
 
 
-def _run_grade(run: CoverageRun) -> str:
+def coverage_run_grade(run: CoverageRun) -> str:
     """Grade a coverage run."""
     return test_run_grade(
         passed=run.simulation_verdict == "pass",

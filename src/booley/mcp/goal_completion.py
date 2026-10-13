@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from booley.core.boundary import require_bool_value, require_str_value
-from booley.flows.sim.campaign import read_durable_results
+from booley.flows.sim.unpublished_results import read_unpublished_results
 from booley.goals.apply import ChangeEnvironment
 from booley.goals.entry import EntryEnvironment
 from booley.goals.finish import FinishEnvironment, finish_goal
@@ -41,7 +41,7 @@ def completion_environment(entry: EntryEnvironment) -> FinishEnvironment:
         ChangeEnvironment(entry),
         GOAL_FRESHNESS_RESOLVERS,
         waiver_factory=lambda record: GoalWaiverService(entry.project_dir, record),
-        campaign_reader=read_durable_results,
+        campaign_reader=read_unpublished_results,
         generated_inputs=lambda record, state, root: generated_inputs(
             entry.project_dir, record, state, root
         ),

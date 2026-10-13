@@ -76,7 +76,7 @@ def _validate_facts(facts: dict[str, Any]) -> None:
         *arrays,
     }
     if (
-        set(facts) not in (fields, fields | {"earlier_attempts"})
+        not fields <= set(facts) <= fields | {"earlier_attempts", "unsettled_campaigns"}
         or facts["purpose"] != "booley.goal-completion/v1"
     ):
         raise ValueError("artifact is not a complete Goal completion package")
@@ -224,7 +224,7 @@ def render_goal_briefing(package: GoalCompletionPackage) -> str:
         ("Input proof", "input_proof"),
     ):
         lines += ["", title, json.dumps(facts[key], indent=2, sort_keys=True, ensure_ascii=False)]
-    lines += _earlier_attempt_lines(facts)
+    lines += [*_unsettled_campaign_lines(facts), *_earlier_attempt_lines(facts)]
     return "\n".join(lines)
 
 
@@ -236,6 +236,18 @@ def render_goal_html(package: GoalCompletionPackage) -> str:
         + body
         + "</pre></body></html>"
     )
+
+
+def _unsettled_campaign_lines(facts: dict[str, Any]) -> list[str]:
+    """Simulation Campaigns whose results were never fully accounted for (ADR 0072)."""
+    if "unsettled_campaigns" not in facts:
+        return []
+    listed = require_list(facts["unsettled_campaigns"], field="unsettled_campaigns")
+    return [
+        "",
+        "Simulation Campaigns not fully accounted for",
+        json.dumps(listed, indent=2, sort_keys=True, ensure_ascii=False),
+    ]
 
 
 def _earlier_attempt_lines(facts: dict[str, Any]) -> list[str]:

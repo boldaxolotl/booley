@@ -94,6 +94,7 @@ from booley.flows.sim.live_progress import (
 from booley.flows.sim.request import SimRequest
 from booley.flows.sim.result import parse_summary_line
 from booley.flows.sim.run_guard import DEFAULT_SIM_TIME_GRACE_S
+from booley.flows.sim.unpublished_results import started_coverage_campaign
 from booley.flows.sim.verilator_coverage import SimulationExecutionPort
 from booley.flows.target_test_plan import (
     TargetTestPlan,
@@ -1050,6 +1051,37 @@ def _diagnostic_test_runs(
             if row.get("grade") == "fail":
                 failures.append(f"{selector}: {row['name']}")
     return diagnostic, failures
+
+
+def _with_frozen_runs_of_a_diagnostic_run(
+    result: EndpointOutcome, frozen: FrozenTestRuns, names: Callable[[str], Collection[str]]
+) -> EndpointOutcome:
+    """Say which Goals' frozen Test Runs a ``--diagnostic`` run executed, and which failed.
+
+    The run records nothing; the report must not let that pass unnoticed
+    when what ran is exactly what a Goal is judged by.
+    """
+    campaigns = result.detail.get("campaigns")
+    ran: dict[str, list[str]] = {}
+    failed: dict[str, list[str]] = {}
+    for selector, campaign in campaigns.items() if isinstance(campaigns, Mapping) else ():
+        rows = campaign.get("test_runs", ()) if isinstance(campaign, Mapping) else ()
+        for goal in frozen.of_target(names(str(selector))):
+            for row in goal.matching([row for row in rows if isinstance(row, Mapping)]):
+                ran.setdefault(goal.key, []).append(str(row["name"]))
+                if row.get("grade") == "fail":
+                    failed.setdefault(goal.key, []).append(str(row["name"]))
+    if not ran:
+        return result
+    result.detail["diagnostic_test_runs"] = {"goal_frozen_runs": ran, "goal_failures": failed}
+    lines = ["Diagnostic run: these frozen Test Runs of Goals ran and nothing was recorded:"]
+    lines += [f"  {key}: {', '.join(runs)}" for key, runs in ran.items()]
+    if failed:
+        lines.append("Diagnostic failures of Goals' frozen Test Runs (not recorded):")
+        lines += [f"  {key}: {', '.join(runs)}" for key, runs in failed.items()]
+    note = "\n".join(lines)
+    result.report_text = f"{result.report_text}\n{note}" if result.report_text else note
+    return result
 
 
 def _diagnostic_test_run_notes(
@@ -4350,11 +4382,26 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             result.detail["progress_error"] = str(exc)
             return result
 
+    def _register_coverage_campaign(self, target: CoverageTargetPlan, invocation: Path) -> None:
+        """Tell the run's Goals of a Coverage Campaign collected on its own, before it runs.
+
+        Like a Simulation Campaign (:meth:`_manifest_publisher`): if the
+        campaign is published but its acceptance never is, its Test Run
+        outcomes can still be accounted for.
+        """
+        adapter = getattr(self.context, "execution_adapter", None)
+        if not wants_campaigns(adapter) or self.args.diagnostic:
+            return
+        root = target_report_directory(invocation, target.handle.selector)
+        names = (target.handle.selector, target.handle.identity)
+        register_campaign_for(adapter, started_coverage_campaign(root, names))
+
     def _execute_coverage_target(
         self, target: CoverageTargetPlan, progress: CoverageProgress, started_at: str
     ) -> CoverageTargetOutcome:
         from booley.flows.sim.coverage_flow_context import coverage_acceptance
 
+        self._register_coverage_campaign(target, progress.invocation_dir)
         plan = replace(
             target,
             invocation_dir=progress.invocation_dir,
@@ -7027,8 +7074,10 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         a failing one prominently, but it blocks no Goal.
         """
         frozen = self._frozen_test_runs()
-        if frozen is None or self.args.diagnostic:
+        if frozen is None:
             return result
+        if self.args.diagnostic:
+            return _with_frozen_runs_of_a_diagnostic_run(result, frozen, self._target_names)
         fresh = [
             f"{target}: {selector}"
             for target, selectors in self._test_runs.fresh_seed_selectors.items()

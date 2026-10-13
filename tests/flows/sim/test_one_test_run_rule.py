@@ -71,7 +71,7 @@ def test_the_one_grade_table(passed, infrastructure, inconclusive, grade):
 
 def test_direct_results_and_coverage_runs_are_graded_by_the_campaign_table():
     """An infrastructure failure is an error on every path, even when inconclusive."""
-    from booley.flows.sim.coverage_acceptance import _run_grade
+    from booley.flows.sim.coverage_acceptance import coverage_run_grade
     from booley.flows.sim.flow import TestResult, _test_run_rows
 
     run = build_test_run("reset", seed=1)
@@ -82,7 +82,7 @@ def test_direct_results_and_coverage_runs_are_graded_by_the_campaign_table():
     coverage = SimpleNamespace(
         simulation_verdict="inconclusive", attributes={"failure_kind": "infrastructure"}
     )
-    assert _run_grade(coverage) == "error"  # type: ignore[arg-type]
+    assert coverage_run_grade(coverage) == "error"  # type: ignore[arg-type]
 
 
 def test_a_row_is_the_test_run_record_plus_its_grade():

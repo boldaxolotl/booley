@@ -31,12 +31,31 @@ the record lock,
 It runs before a run registers a campaign, before a recorder publishes, when
 status is read and before Finish. Reading a campaign's results is the
 Simulation Flow's business: the composing entry point supplies the reader
-(:data:`~booley.flows.campaign_results.CampaignResultsReader`), and without
-one nothing is adopted, so the campaign stays unaccounted. Whatever it cannot settle stays **unaccounted**:
-:func:`unaccounted_goals` names those Goals, and status reads them unmet
-until the campaign is resumed (its own publication settles it) or a human
-approves a retarget of the Goal, which starts its evidence again. There is
-no other way to drop an unaccounted campaign: none an agent can take alone.
+(:data:`~booley.flows.campaign_results.CampaignResultsReader`).
+
+A registration is **open** until nothing more can come out of its campaign:
+its acceptance was published, or every one of its work items has a durable
+result that was adopted. Only then it is **settled** and never read again.
+An open registration is read again on every pass, so results that appear
+later (the campaign had not started, was still running, or was resumed) are
+adopted then. While it is open it makes its Goals unmet
+(:func:`unaccounted_goals`, ``goal-campaign-unaccounted``) only as long as
+its results may still change or cannot be told: it has not been read since
+it was registered, a scheduler holds its lock, or the read fails. An idle,
+readable campaign that ran only in part has its results adopted; its other
+runs simply stay missing, and it blocks nothing.
+
+A registration that cannot be decoded names every Goal that is judged by
+Test Runs, because what it holds cannot be told. The way out needs a human:
+when an approved Goal change is applied, unreadable registrations are moved
+to ``quarantine/`` beside the others (:func:`quarantine_unreadable`). The
+review package lists every registration that is open or quarantined
+(:func:`unsettled_campaigns`).
+
+Residual risk. A campaign's work-item files are as writable as the worktree:
+a result deleted before it is adopted is not an integrity error, its run
+only reads as started without a result. Protecting those files belongs to
+protected inputs (issue #1111), not to this module.
 
 Crash safety. Adoption makes three durable writes, in this order:
 
@@ -102,6 +121,7 @@ REGISTRATION_SCHEMA = "booley.goal-campaign/v1"
 #: Detail key of an adopted observation: the campaign and results it was adopted from.
 ADOPTED_DETAIL_KEY = "adopted_campaign"
 REASON_UNACCOUNTED = "goal-campaign-unaccounted"
+_QUARANTINE = "quarantine"
 
 _FIELDS = frozenset(
     {
@@ -113,9 +133,14 @@ _FIELDS = frozenset(
         "stamps",
         "registered_at",
         "accounted",
+        "unfinished",
+        "blocked",
         "settled",
     }
 )
+
+# Why a registration that was never read keeps its Goals unmet.
+_NOT_READ = "has not been read since it was registered"
 
 
 class RegistrationFormatError(ValueError):
@@ -129,8 +154,11 @@ class CampaignRegistration:
     ``stamps`` holds, per Goal of the campaign's Target, the source
     fingerprint detail of the file contents the campaign started at.
     ``accounted`` names the work-item results (id, digest) whose outcomes the
-    ledger holds; ``settled`` says nothing of the campaign is left to adopt
-    until it runs again.
+    ledger holds, ``unfinished`` the Test Runs (name, fingerprint) that were
+    started and had no result when the campaign was last read. ``blocked``
+    says why the campaign's results may still change or cannot be told
+    (empty once it was read idle); ``settled`` says nothing more can come
+    out of the campaign.
     """
 
     campaign_id: str
@@ -140,6 +168,8 @@ class CampaignRegistration:
     stamps: Mapping[str, Mapping[str, Any]]
     registered_at: str
     accounted: tuple[tuple[str, str], ...] = ()
+    unfinished: tuple[tuple[str, str], ...] = ()
+    blocked: str = _NOT_READ
     settled: bool = False
 
     def run_binding(self) -> GoalRunBinding:
@@ -157,6 +187,8 @@ class CampaignRegistration:
             "stamps": {key: dict(stamp) for key, stamp in sorted(self.stamps.items())},
             "registered_at": self.registered_at,
             "accounted": [list(pair) for pair in self.accounted],
+            "unfinished": [list(pair) for pair in self.unfinished],
+            "blocked": self.blocked,
             "settled": self.settled,
         }
 
@@ -169,6 +201,10 @@ class CampaignRegistration:
                 raise RegistrationFormatError(f"{where} is not a campaign registration")
             stamps = require_dict(document["stamps"], field=f"{where}.stamps")
             accounted = require_list(document["accounted"], field=f"{where}.accounted")
+            unfinished = require_list(document["unfinished"], field=f"{where}.unfinished")
+            blocked = document["blocked"]
+            if not isinstance(blocked, str):
+                raise RegistrationFormatError(f"{where}.blocked must be a string")
             registration = cls(
                 require_str_value(document["campaign_id"], field=f"{where}.campaign_id"),
                 require_str_value(document["manifest_sha256"], field=f"{where}.manifest_sha256"),
@@ -180,6 +216,8 @@ class CampaignRegistration:
                 },
                 require_str_value(document["registered_at"], field=f"{where}.registered_at"),
                 tuple(_result_pair(pair, f"{where}.accounted") for pair in accounted),
+                tuple(_result_pair(pair, f"{where}.unfinished") for pair in unfinished),
+                blocked,
                 require_bool_value(document["settled"], field=f"{where}.settled"),
             )
             parse_timestamp(registration.registered_at)
@@ -193,7 +231,7 @@ class CampaignRegistration:
 def _result_pair(raw: object, where: str) -> tuple[str, str]:
     pair = require_list(raw, field=where)
     if len(pair) != 2 or not all(isinstance(item, str) and item for item in pair):
-        raise RegistrationFormatError(f"{where} must hold [work item, result digest] pairs")
+        raise RegistrationFormatError(f"{where} must hold pairs of two names")
     return str(pair[0]), str(pair[1])
 
 
@@ -204,12 +242,13 @@ class Unaccounted:
     goal_keys: tuple[str, ...]
     what: str
     reason: str
+    remedy: str = "Read status again once it has ended, or resume it"
 
     def text(self) -> str:
         """The reason a Goal it names reads unmet."""
         return (
-            f"{REASON_UNACCOUNTED}: {self.what} {self.reason}; its results are not in the "
-            "Goal's evidence. Resume it, or have a human approve a retarget of the Goal"
+            f"{REASON_UNACCOUNTED}: {self.what} {self.reason}; what it observed is not in "
+            f"the Goal's evidence. {self.remedy}"
         )
 
 
@@ -241,13 +280,64 @@ def _write(paths: GoalRecordPaths, registration: CampaignRegistration) -> None:
     atomic_replace_bytes(path, canonical_json(registration.to_json()) + b"\n")
 
 
-def _registrations(paths: GoalRecordPaths) -> list[CampaignRegistration]:
-    """Every stored registration, oldest first. Raises :class:`RegistrationFormatError`."""
+def _stored(paths: GoalRecordPaths) -> tuple[list[CampaignRegistration], list[tuple[Path, str]]]:
+    """Every stored registration, oldest first, and every file that cannot be decoded.
+
+    Each document is decoded on its own: one unreadable file does not hide
+    the others.
+    """
     directory = _directory(paths)
-    if not directory.is_dir():
-        return []
-    found = [_read(path) for path in sorted(directory.glob("*.json"))]
-    return sorted(found, key=lambda item: (item.registered_at, item.manifest_sha256))
+    found: list[CampaignRegistration] = []
+    unreadable: list[tuple[Path, str]] = []
+    for path in sorted(directory.glob("*.json")) if directory.is_dir() else ():
+        try:
+            found.append(_read(path))
+        except RegistrationFormatError as exc:
+            unreadable.append((path, str(exc)))
+    found.sort(key=lambda item: (item.registered_at, item.manifest_sha256))
+    return found, unreadable
+
+
+def quarantine_unreadable(store: GoalStore, record_id: str) -> tuple[str, ...]:
+    """Move every registration that cannot be decoded to ``quarantine/``; return their names.
+
+    Called when an approved Goal change is applied, under the record lock:
+    the human's approval is what lets an unreadable registration stop
+    blocking the Goals. Each move is one atomic rename, and a file that was
+    moved already is not there to move again.
+    """
+    paths = record_paths(store.project_dir, record_id)
+    _, unreadable = _stored(paths)
+    moved: list[str] = []
+    for path, _reason in unreadable:
+        target = _directory(paths) / _QUARANTINE / path.name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        path.replace(target)
+        moved.append(path.name)
+    return tuple(moved)
+
+
+def unsettled_campaigns(store: GoalStore, record: GoalRecord) -> list[dict[str, Any]]:
+    """What the review package lists: registrations that are open, unreadable or quarantined."""
+    paths = record_paths(store.project_dir, record.id)
+    found, unreadable = _stored(paths)
+    listed: list[dict[str, Any]] = [
+        {
+            "state": "open",
+            "campaign_id": item.campaign_id,
+            "manifest_path": item.manifest_path,
+            "blocked": item.blocked,
+            "started_without_result": [name for name, _ in item.unfinished],
+        }
+        for item in found
+        if not item.settled
+    ]
+    listed += [{"state": "unreadable", "file": path.name} for path, _ in unreadable]
+    quarantine = _directory(paths) / _QUARANTINE
+    if quarantine.is_dir():
+        names = sorted(path.name for path in quarantine.glob("*.json"))
+        listed += [{"state": "quarantined", "file": name} for name in names]
+    return listed
 
 
 def _relevant_keys(registration: CampaignRegistration, record: GoalRecord) -> tuple[str, ...]:
@@ -304,7 +394,7 @@ def register_campaign(
         return
     paths = record_paths(store.project_dir, binding.record_id)
     path = _path(paths, campaign.manifest_sha256)
-    accounted = _read(path).accounted if path.exists() else ()
+    accounted = _accounted_so_far(path)
     registration = CampaignRegistration(
         campaign.campaign_id,
         campaign.manifest_sha256,
@@ -317,6 +407,14 @@ def register_campaign(
     _write(paths, registration)
 
 
+def _accounted_so_far(path: Path) -> tuple[tuple[str, str], ...]:
+    """What an earlier registration of the same campaign already brought into the ledger."""
+    try:
+        return _read(path).accounted if path.exists() else ()
+    except RegistrationFormatError:
+        return ()  # unreadable: adopting its results again is harmless
+
+
 def mark_published(store: GoalStore, record_id: str, acceptance_facts: Mapping[str, Any]) -> None:
     """Settle the campaign whose acceptance transaction was just selected.
 
@@ -327,7 +425,10 @@ def mark_published(store: GoalStore, record_id: str, acceptance_facts: Mapping[s
     path = _path(paths, str(acceptance_facts.get("manifest_sha256")))
     if not path.exists():
         return
-    _write(paths, replace(_read(path), accounted=_consumed(acceptance_facts), settled=True))
+    published = replace(
+        _read(path), accounted=_consumed(acceptance_facts), unfinished=(), blocked="", settled=True
+    )
+    _write(paths, published)
 
 
 def _consumed(acceptance_facts: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
@@ -355,27 +456,60 @@ def unaccounted_goals(
 ) -> dict[str, str]:
     """Why each Goal with durable evidence outside its ledger reads unmet, by Goal key.
 
-    Read-only. Names the Goals of every registered campaign that is not
-    settled and of every acceptance transaction the state does not select.
-    A registration or transaction that cannot be read names every Goal that
-    is judged by Test Runs: what it holds cannot be told.
+    Read-only. Names the Goals of every open registration whose results may
+    still change or cannot be told (module docstring), of every acceptance
+    transaction the state does not select, and, for a registration that
+    cannot be decoded, every Goal that is judged by Test Runs.
     """
     paths = record_paths(store.project_dir, record.id)
-    found: list[Unaccounted] = []
     everything = tuple(goal.spec.key for goal in record.goals if names_test_runs(goal.spec))
+    registrations, unreadable = _stored(paths)
+    found = [
+        _open_campaign(item, _relevant_keys(item, record), item.blocked)
+        for item in registrations
+        if not item.settled and item.blocked
+    ]
+    found += [
+        Unaccounted(
+            everything,
+            f"campaign registration {path.name}",
+            f"cannot be read ({reason})",
+            "It is moved aside when a human approves a Goal change; nothing else clears it",
+        )
+        for path, reason in unreadable
+    ]
     try:
-        for registration in _registrations(paths):
-            if not registration.settled:
-                keys = _relevant_keys(registration, record)
-                found.append(_open_campaign(registration, keys, "ended without publishing"))
         found.extend(_unselected(record, paths, state))
-    except (RegistrationFormatError, AcceptanceLedgerError) as exc:
+    except AcceptanceLedgerError as exc:
         found.append(Unaccounted(everything, "recorded evidence", f"cannot be read ({exc})"))
     reasons: dict[str, str] = {}
     for item in found:
         for key in item.goal_keys:
             reasons.setdefault(key, item.text())
     return reasons
+
+
+def started_without_result(store: GoalStore, record: GoalRecord) -> dict[str, str]:
+    """A note per Goal whose frozen Test Run a campaign started and left without a result.
+
+    Such a run reads ``missing`` in the Goal's ledger; the note says that it
+    was not simply never run. Read-only, from the open registrations.
+    """
+    paths = record_paths(store.project_dir, record.id)
+    notes: dict[str, str] = {}
+    for item in _stored(paths)[0]:
+        left = set(item.unfinished)
+        for key in _relevant_keys(item, record) if left and not item.settled else ():
+            resolution = record.test_run_resolution(key)
+            runs = () if resolution is None else resolution.test_runs
+            names = [run.name for run in runs if (run.name, run.fingerprint) in left]
+            if names:
+                notes.setdefault(
+                    key,
+                    f"{', '.join(names)} started in Simulation Campaign {item.campaign_id} "
+                    f"({item.manifest_path}) and left no result",
+                )
+    return notes
 
 
 def _open_campaign(
@@ -396,6 +530,7 @@ def _unselected(
             tuple(pending.identity["goal_keys"]),
             f"acceptance transaction {pending.transaction_id[:12]}",
             "was recorded but never selected",
+            "A status read or the next recorded run completes it",
         )
         for pending in evidence_ledger.unselected_transactions(GOAL_SCOPE, paths.logs_dir, state)
         if _current_group(pending.identity, record)
@@ -481,11 +616,9 @@ def account_for_campaigns(
             return
         run = _Accounting(store, record, paths, reader)
         _complete_transactions(run)
-        try:
-            registrations = _registrations(paths)
-        except RegistrationFormatError as exc:
-            logger.warning("campaign registrations of Goal Mode %s: %s", record_id, exc)
-            return
+        registrations, unreadable = _stored(paths)
+        for path, reason in unreadable:
+            logger.warning("campaign registration %s of Goal Mode %s: %s", path, record_id, reason)
         for registration in registrations:
             if registration.settled or _run_id(registration) == own_run:
                 continue
@@ -528,15 +661,21 @@ def _run_id(registration: CampaignRegistration) -> str:
 
 
 def _settle(run: _Accounting, registration: CampaignRegistration) -> str:
-    """Adopt *registration*'s finished results and settle it; why not, when it cannot be."""
+    """Read an open *registration* again, adopt what is new, and say why it stays blocked.
+
+    The registration is settled only when its campaign is complete: every
+    work item has a result, and all of them are adopted. A campaign that is
+    idle and readable but ran only in part stays open and unblocked; one that
+    is running or cannot be read stays open and blocked (the returned text).
+    """
     if run.reader is None:
         return "this caller cannot read Simulation Campaigns"
     try:
         durable = run.reader(Path(registration.manifest_path), registration.manifest_sha256)
     except CampaignBusyError:
-        return "it is still running"
+        return _blocked(run, registration, "is still running")
     except ValueError as exc:  # the campaign's integrity error
-        return f"its results cannot be authenticated ({exc})"
+        return _blocked(run, registration, f"cannot be read ({exc})")
     if set(durable.results) - set(registration.accounted):
         keys = _relevant_keys(registration, run.record)
         trusted = bool(keys) and _publishable(registration, keys)
@@ -547,8 +686,23 @@ def _settle(run: _Accounting, registration: CampaignRegistration) -> str:
         ]
         if any(changed):
             write_goal_state_file(run.paths.state_file, state)
-    _write(run.paths, replace(registration, accounted=durable.results, settled=True))
+    read = replace(
+        registration,
+        accounted=durable.results,
+        unfinished=durable.unfinished,
+        blocked="",
+        settled=durable.complete,
+    )
+    if read != registration:
+        _write(run.paths, read)
     return ""
+
+
+def _blocked(run: _Accounting, registration: CampaignRegistration, reason: str) -> str:
+    """Record that *registration*'s results may still change or cannot be told."""
+    if registration.blocked != reason:
+        _write(run.paths, replace(registration, blocked=reason))
+    return reason
 
 
 def _publishable(registration: CampaignRegistration, keys: Sequence[str]) -> bool:

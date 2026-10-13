@@ -21,6 +21,7 @@ from booley.criteria.evidence_ledger import prepare_observations
 from booley.criteria.state import CriterionChange, CriterionEntry, DevelopmentState
 from booley.goals.apply_barrier import require_no_apply
 from booley.goals.apply_effects import FileEffect, read_bytes, require_destination
+from booley.goals.campaign_accounting import quarantine_unreadable
 from booley.goals.change_policy import conflict, validate_kind
 from booley.goals.changes import (
     ChangeEntry,
@@ -519,6 +520,9 @@ def _drive(
         env.checkpoint("applied")
     result = finalize(lock, view)
     env.checkpoint("finalized")
+    # The human approved a Goal change: registrations nobody can read stop blocking the
+    # Goals from here on (ADR 0072). A stop before this leaves them where they block.
+    quarantine_unreadable(env.store, lock.goal_id)
     return result
 
 

@@ -47,14 +47,19 @@ class DurableCampaignResults:
 
     ``results`` names every work item with a terminal result and that
     result's digest; ``rows`` are the Test Run rows of their observations
-    (``name``, ``test``, ``variant``, ``seed``, ``args``, ``env``,
-    ``fingerprint``, ``grade``), empty for a campaign that names no Test Runs.
+    (``name``, ``fingerprint`` and ``grade`` at least), empty for a campaign
+    that names no Test Runs. ``complete`` says every work item has a terminal
+    result: nothing more can come out of the campaign. ``unfinished`` names
+    the Test Runs (name, fingerprint) of work items that were started and
+    have no result.
     """
 
     manifest_sha256: str
     campaign_id: str
     results: tuple[tuple[str, str], ...]
     rows: tuple[Mapping[str, object], ...]
+    complete: bool = False
+    unfinished: tuple[tuple[str, str], ...] = ()
 
 
 #: Authenticate and return the terminal results of the campaign whose

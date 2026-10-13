@@ -133,3 +133,87 @@ def test_multi_seed_coverage_goal_is_met_only_by_a_campaign_of_exactly_its_froze
     outcomes = [run["outcome"] for run in entry.detail["test_run_ledger"]["runs"]]
     assert outcomes == ["passed", "passed"]
     assert "match no Goal" not in result.outcome.report_text
+
+
+def test_a_published_coverage_campaign_whose_acceptance_never_ran_is_accounted_for(
+    layout, monkeypatch
+):
+    """Collected on its own and published, then the process died: its failing run counts."""
+    from dataclasses import replace
+
+    from booley.flows.sim.coverage_invocation import (
+        CoverageInvocationRequest,
+        prepare_coverage_invocation,
+    )
+    from booley.flows.sim.coverage_transaction import run_coverage_target
+    from booley.flows.sim.unpublished_results import (
+        read_unpublished_results,
+        started_coverage_campaign,
+    )
+    from booley.flows.test_runs import build_test_run
+    from booley.goals.campaign_accounting import account_for_campaigns
+    from booley.goals.recorder import GoalEvidenceRecorder
+    from booley.goals.status import build_status
+    from booley.goals.store import GoalStore
+    from tests.flows.sim.test_coverage_transaction import Progress
+
+    root: Path = layout.worktree
+    context = replace(project(root), test_names={"top": ("reset", "wrap")})
+    core = root / "counter.core"
+    core.write_text(core.read_text().replace("sim_0", "top"))
+    (root / ".booley_project/tests.toml").write_text('[top]\ntests = ["reset", "wrap"]\n')
+    git(root, "add", "counter.core", "rtl/counter.sv")
+    git(root, "commit", "-m", "simulation recipe")
+    record = enter_goal_mode(
+        EntryRequest(
+            work_dir=root,
+            slug="killed",
+            goals=parse_goal_args([{"family": "sim", "target": "top"}]),
+        ),
+        entry_environment(layout),
+    ).record
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    frozen = record.test_run_resolutions["sim_pass_top"].test_runs
+    assert [run.name for run in frozen] == ["reset@1", "wrap@1"]
+    invocation = root / "reports" / "sim" / "1"
+    started = started_coverage_campaign(invocation / "targets" / "top", ("top",))
+    GoalEvidenceRecorder(bind(layout, "killed")).register_campaign(started)
+
+    prepared = prepare_coverage_invocation(CoverageInvocationRequest(("top",)), context)
+    assert prepared.plan is not None, prepared
+    plan = replace(
+        prepared.plan.targets[0],
+        invocation_dir=invocation,
+        test_runs=tuple(build_test_run(name, seed=1) for name in ("reset", "wrap")),
+    )
+    outcome = run_coverage_target(plan, NativeExecution(verdict="fail"), Progress())
+    assert outcome.campaign_path == started.manifest_path  # published; no acceptance ran
+
+    durable = read_unpublished_results(started.manifest_path, started.manifest_sha256)
+    assert durable.complete and [(row["name"], row["grade"]) for row in durable.rows] == [
+        ("reset@1", "fail"),
+        ("wrap@1", "fail"),
+    ]
+    store = GoalStore(layout.control)
+    account_for_campaigns(store, record.id, reader=read_unpublished_results)
+    (goal,) = build_status(store, record, work_dir=root).goals
+    assert goal.status == "unmet" and goal.reason.startswith("goal-test-run-failed")
+
+
+def test_unpublished_coverage_results_before_publication_and_of_another_campaign(tmp_path):
+    from booley.flows.sim.unpublished_results import (
+        read_unpublished_results,
+        started_coverage_campaign,
+    )
+
+    started = started_coverage_campaign(tmp_path / "targets" / "top", ("top", "lib#top"))
+    assert started.candidate and started.manifest_path.name == "coverage.json"
+    # Collection has not published yet: no result, and more may come.
+    nothing = read_unpublished_results(started.manifest_path, started.manifest_sha256)
+    assert (nothing.results, nothing.rows, nothing.complete) == ((), (), False)
+    with pytest.raises(ValueError, match="not the one that was registered"):
+        read_unpublished_results(started.manifest_path, "sha256:" + "0" * 64)
+    started.manifest_path.parent.mkdir(parents=True)
+    started.manifest_path.write_bytes(b"{not a campaign")
+    with pytest.raises(ValueError, match="cannot be authenticated"):
+        read_unpublished_results(started.manifest_path, started.manifest_sha256)

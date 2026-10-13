@@ -67,6 +67,9 @@ class _Campaign:
         self.layout = layout
         self.rows: list[dict[str, Any]] = []
         self.error: Exception | None = None
+        #: Every work item has a result: nothing more can come out of the campaign.
+        self.complete = False
+        self.unfinished: tuple[tuple[str, str], ...] = ()
         self.manifest = layout.control / "reports" / "campaign" / "manifest.json"
         layout.campaign_reader = self.read
 
@@ -77,7 +80,14 @@ class _Campaign:
         results = tuple(
             (f"item:{index:04d}", f"sha256:{index:064x}") for index in range(len(self.rows))
         )
-        return DurableCampaignResults(MANIFEST_SHA, CAMPAIGN, results, tuple(self.rows))
+        return DurableCampaignResults(
+            MANIFEST_SHA,
+            CAMPAIGN,
+            results,
+            tuple(self.rows),
+            complete=self.complete,
+            unfinished=self.unfinished,
+        )
 
     def start(self, run_id: str, *, candidate: bool = True) -> GoalEvidenceRecorder:
         """Bind a run and register the campaign as that run starts it."""
@@ -99,6 +109,13 @@ class _Campaign:
     def registration(self) -> CampaignRegistration:
         (only,) = self.registrations()
         return only
+
+    def registration_settled(self) -> bool:
+        """Whether this campaign's own registration is settled (others may be unreadable)."""
+        paths = record_paths(self.layout.control, self.layout.record.id)
+        found, _unreadable = campaign_accounting._stored(paths)
+        (only,) = found
+        return only.settled
 
 
 @pytest.fixture
@@ -130,7 +147,76 @@ def test_failure_of_a_killed_campaign_is_sticky_for_the_next_campaign(
     assert _outcomes(detail) == {"a@1": "failed", "b@1": "passed"}
     status = _status(two)
     assert status.status == "unmet" and status.reason.startswith("goal-test-run-failed")
+    # ``b`` never got a result: the campaign is not settled, and it blocks nothing.
+    registration = campaign.registration()
+    assert (registration.settled, registration.blocked) == (False, "")
+
+
+def test_a_campaign_read_before_it_started_is_read_again_after_it_failed(
+    two: SimpleNamespace, campaign: _Campaign
+) -> None:
+    """register -> status -> run -> fail -> SIGKILL before publication -> next run."""
+    campaign.start("run-1")
+    assert campaign.registration().blocked  # nothing has read it yet: its Goals are unmet
+    # A status read finds the campaign published but not started: no result yet.
+    store = GoalStore(two.control)
+    select_status(store, two.worktree, campaign_reader=campaign.read)
+    registration = campaign.registration()
+    assert (registration.settled, registration.blocked, registration.accounted) == (False, "", ())
+
+    # Now the scheduler takes the campaign: while it runs, the Goal cannot be met.
+    campaign.error = CampaignBusyError("running")
+    _record(two, "run-2", [run_row(A), run_row(B)])
+    status = _status(two)
+    assert status.status == "unmet" and "is still running" in status.reason
+
+    # ``a@1`` fails durably and the process is killed before any publication.
+    campaign.error = None
+    campaign.rows = [run_row(A, "fail")]
+    campaign.unfinished = ((B.name, B.fingerprint),)
+    detail = _record(two, "run-3", [run_row(A), run_row(B)])
+    assert _outcomes(detail) == {"a@1": "failed", "b@1": "passed"}
+    assert _status(two).reason.startswith("goal-test-run-failed")
+    # Still open: it is read again, and nothing is adopted twice.
+    again = _record(two, "run-4", [run_row(A), run_row(B)])
+    assert len(again[LEDGER_DETAIL_KEY]["source_evidence"]) == 3
+    assert campaign.registration().settled is False
+
+
+def test_a_complete_campaign_is_settled_and_never_read_again(
+    two: SimpleNamespace, campaign: _Campaign
+) -> None:
+    campaign.start("run-1")
+    campaign.rows = [run_row(A), run_row(B, "fail")]
+    campaign.complete = True
+    _account(two)
     assert campaign.registration().settled is True
+    campaign.error = AssertionError("a settled campaign was read again")
+    _account(two)
+    assert _status(two).reason.startswith("goal-test-run-failed")
+
+
+def test_a_frozen_run_that_was_started_and_left_no_result_is_named(
+    two: SimpleNamespace, campaign: _Campaign
+) -> None:
+    campaign.start("run-1")
+    campaign.rows = [run_row(A)]
+    campaign.unfinished = ((B.name, B.fingerprint),)
+    _account(two)
+    status = _status(two)
+    assert status.status == "unmet"
+    assert f"b@1 started in Simulation Campaign {CAMPAIGN}" in status.reason
+    assert "left no result" in status.reason
+    listed = campaign_accounting.unsettled_campaigns(GoalStore(two.control), two.record)
+    assert listed == [
+        {
+            "state": "open",
+            "campaign_id": CAMPAIGN,
+            "manifest_path": campaign.manifest.as_posix(),
+            "blocked": "",
+            "started_without_result": ["b@1"],
+        }
+    ]
 
 
 def test_seeds_that_passed_before_an_interruption_are_kept(
@@ -198,11 +284,11 @@ def test_adoption_is_idempotent_and_survives_a_stop_after_each_write(
     assert _entry(two)["detail"][LEDGER_DETAIL_KEY]["runs"][0]["outcome"] == "failed"
 
     _account(two)
-    _account(two)
+    _account(two)  # an open registration is read on every pass: nothing is adopted twice
     assert sorted(path.name for path in evidence.iterdir() if path.name[0].isdigit()) == (
         rows_after_stop
     )
-    assert campaign.registration().settled is True
+    assert (campaign.registration().settled, campaign.registration().blocked) == (False, "")
     assert _status(two).reason.startswith("goal-test-run-failed")
 
 
@@ -216,7 +302,7 @@ def test_a_campaign_that_cannot_be_read_keeps_its_goals_unmet_until_it_is_settle
     status = _status(two)
     assert status.status == "unmet"
     assert status.reason.startswith(REASON_UNACCOUNTED)
-    assert "Resume it, or have a human approve a retarget" in status.reason
+    assert "cannot be read (result.json is truncated)" in status.reason
     # A campaign a scheduler still owns is not final either.
     campaign.error = CampaignBusyError("running")
     _account(two)
@@ -261,7 +347,7 @@ def test_passes_are_not_adopted_once_the_starting_run_could_no_longer_publish(
     _account(two)
 
     assert _outcomes(_entry(two)["detail"]) == {"a@1": "missing", "b@1": "failed"}
-    assert campaign.registration().settled is True
+    assert campaign.registration().blocked == ""
 
 
 def test_a_published_campaign_is_settled_and_a_diagnostic_target_registers_nothing(
@@ -396,3 +482,97 @@ def test_durable_results_of_a_real_campaign_are_its_authenticated_rows(tmp_path:
     results[1].write_bytes(kept[: len(kept) // 2])
     with pytest.raises(SimulationCampaignIntegrityError):
         read_durable_results(outcome.manifest_path, digest)
+
+
+# --- A registration nobody can read -------------------------------------------------
+
+
+def test_an_unreadable_registration_blocks_until_an_approved_change_quarantines_it(
+    two: SimpleNamespace, campaign: _Campaign
+) -> None:
+    from booley.goals.apply import ChangeEnvironment
+    from booley.goals.change_service import create_proposal
+    from tests.goals.conftest import entry_environment
+    from tests.goals.test_proposals import approve
+
+    campaign.start("run-1")
+    campaign.complete = True
+    paths = record_paths(two.control, two.record.id)
+    directory = paths.logs_dir / "acceptance" / "campaigns"
+    broken = directory / ("f" * 64 + ".json")
+    broken.write_bytes(b"{torn")
+    _record(two, "run-2", [run_row(A), run_row(B)])  # the readable one is still accounted for
+    assert campaign.registration_settled()
+
+    status = _status(two)
+    assert status.status == "unmet" and status.reason.startswith(REASON_UNACCOUNTED)
+    assert f"campaign registration {broken.name} cannot be read" in status.reason
+    assert "moved aside when a human approves a Goal change" in status.reason
+    # More evidence and more accounting do not clear it.
+    _record(two, "run-3", [run_row(A), run_row(B)])
+    _account(two)
+    assert _status(two).reason.startswith(REASON_UNACCOUNTED)
+    store = GoalStore(two.control)
+    assert {"state": "unreadable", "file": broken.name} in campaign_accounting.unsettled_campaigns(
+        store, two.record
+    )
+
+    env = ChangeEnvironment(entry_environment(two))
+    arguments = {
+        "kind": "add",
+        "after": {"family": "sim", "target": "top", "test": "a@9"},
+        "rationale": "the human looked at the unreadable registration",
+    }
+    view = create_proposal(env, two.record.id, arguments, session_key="test-session")
+    assert approve(two, env, view.proposal.id).state == "applied"
+
+    assert not broken.exists() and (directory / "quarantine" / broken.name).is_file()
+    two.record = store.load(two.record.id)
+    assert _status(two).status == "met"  # judged by its evidence again
+    assert campaign_accounting.unsettled_campaigns(store, two.record) == [
+        {"state": "quarantined", "file": broken.name}
+    ]
+    assert campaign_accounting.quarantine_unreadable(store, two.record.id) == ()
+
+
+def test_the_review_package_lists_campaigns_that_were_never_fully_accounted_for() -> None:
+    from booley.review.goal_package import _unsettled_campaign_lines
+
+    assert _unsettled_campaign_lines({}) == []
+    listed = [{"state": "quarantined", "file": "x.json"}]
+    lines = _unsettled_campaign_lines({"unsettled_campaigns": listed})
+    assert lines[1] == "Simulation Campaigns not fully accounted for"
+    assert '"quarantined"' in lines[2]
+
+
+@pytest.mark.timeout(120)
+def test_finish_accounts_first_and_refuses_while_a_campaign_runs_or_cannot_be_read(
+    two: SimpleNamespace, campaign: _Campaign
+) -> None:
+    from dataclasses import replace
+
+    from booley.goals.finish import finish_goal
+    from booley.goals.lifecycle import LifecycleError
+    from tests.goals.conftest import git
+    from tests.goals.test_finish import environment, request
+
+    git(two.main, "config", "user.name", "Goal Test")
+    git(two.main, "config", "user.email", "goal@test.invalid")
+    _record(two, "run-0", [run_row(A), run_row(B)])
+    assert _status(two).status == "met"
+    campaign.start("run-1")
+    env = replace(environment(two), campaign_reader=campaign.read)
+
+    def refused() -> str:
+        with pytest.raises(LifecycleError, match="must be met and fresh before finish"):
+            finish_goal(request(two), env)
+        return _status(two).reason
+
+    campaign.error = CampaignBusyError("running")
+    assert "is still running" in refused()
+    campaign.error = ValueError("manifest is gone")
+    assert "cannot be read (manifest is gone)" in refused()
+    # Idle and readable: Finish adopts what it left, here a failure, and refuses for that.
+    campaign.error = None
+    campaign.rows = [run_row(A, "fail")]
+    assert refused().startswith("goal-test-run-failed")

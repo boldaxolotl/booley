@@ -133,6 +133,7 @@ def _build_status(
     )
     unaccounted = campaign_accounting.unaccounted_goals(store, record, state)
     goals = _goal_statuses(record, state, paths.logs_dir, root, drift, resolvers, unaccounted)
+    goals = _with_unfinished_runs(goals, campaign_accounting.started_without_result(store, record))
     return GoalStatusView(
         record,
         goals,
@@ -178,6 +179,20 @@ def _goal_statuses(
             )
         statuses.append(status)
     return tuple(statuses)
+
+
+def _with_unfinished_runs(
+    goals: tuple[GoalStatus, ...], notes: Mapping[str, str]
+) -> tuple[GoalStatus, ...]:
+    """Say of an unmet Goal that a frozen run of it was started and left no result."""
+    return tuple(
+        replace(
+            goal, reason=f"{goal.reason}; {notes[goal.key]}" if goal.reason else notes[goal.key]
+        )
+        if goal.key in notes and goal.status == "unmet"
+        else goal
+        for goal in goals
+    )
 
 
 def _proposal_conflicts(
@@ -315,9 +330,11 @@ def _brought_up_to_date(
     time: pending Test Run slots that can be resolved now are frozen in
     ``record.json``, so status shows what a run would be judged against; and
     evidence that earlier Simulation Campaigns durably observed but never
-    published is brought into the ledger and the Goal state. A status read
-    never fails because one of them could not be done: the slots then read
-    pending, the evidence unaccounted, and the next read tries again.
+    published is brought into the ledger and the Goal state. Neither adds a
+    way for a status read to fail: when one of them cannot be done the slots
+    read pending, the evidence unaccounted, and the next read tries again.
+    The read itself (:func:`build_status`) still takes the record lock and
+    raises when it cannot have it, as it always did.
     """
     try:
         record = ensure_test_run_resolutions(store, record.id, root)
