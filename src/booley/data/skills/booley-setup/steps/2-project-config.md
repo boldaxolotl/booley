@@ -21,7 +21,8 @@ owns verification-intent (what to verify) and Sandbox Policy:**
    (`vlogdefine`/`vlogparam`), the EDA tool (`flow_options.tool`), and the
    build targets themselves.
 2. **`.booley_project/tests.toml`** — *verification-intent*: per-Target test
-   lists and the run-time `select` plusarg template.
+   lists, the run-time `select` plusarg template, Test Variants, and the seed
+   mechanism.
 3. **`.booley_project/booley.toml`** (slimmed) — *execution policy + project
    meta*: each Booley Flow's `enabled` setting, the Sandbox Image,
    optional approved EDA provisioning, and `[project].name`.
@@ -614,15 +615,56 @@ Rules that differ from SV Targets:
 
 ### 2b. `tests.toml` (verification-intent)
 
-Per-Target test lists plus an optional run-time selector.
+Per-Target test lists, an optional run-time selector, Test Variants, and
+seeds. A **Test Run** is one Test Variant simulated with one seed, written
+`test[+variant][@seed]`; every key below decides which Test Runs a Target can
+run. Full rules: CONFIG.md → "Tests (`tests.toml`)".
 
 **Template:** `../TESTS_TEMPLATE.toml`.
 
+- A Target section holds only `tests`, `test_list`, `skip`, `select`, `env`,
+  `seed`, `default_seed`, and `variants`. Any other key fails to load.
+- A section sets `tests` **or** `test_list`, never both.
+- A Test or Test Variant name is not empty, is not `default`, does not start
+  with `-`, and contains no whitespace, control character, `+`, `@`, `<`, `>`,
+  quote or backslash. When the repository's own test names break this rule
+  (for example `axi+burst`), register a conforming name and map it to the
+  native one in the testbench or a Pre-Sim Command; record the mapping as a
+  finding.
 - `select` must be **exactly one well-formed option token** with no whitespace:
   either a plusarg (leading `+`) or a getopt argument (leading `-` / `--`).
-  Only `{index}` and `{name}` substitute. The default is `+test_id={index}`;
+  It must contain `{index}` or `{name}`, the only fields that substitute, and
+  cannot start with `++` or `+-`. The default is `+test_id={index}`;
   CPU harnesses may instead use forms such as `--meminit=ram,{name}`.
-- A section sets `tests` **or** `test_list`, never both.
+- **Seeds.** Every Test Run of a seeded Target gets an explicit seed, by
+  default `1` (the Default Seed). Check how each sim Target is seeded and write only what it
+  needs:
+  - Verilator, HDL testbench: Booley passes `+verilator+seed+<seed>`. Declare
+    `seed = "+seed={seed}"` (or the testbench's own option) only when the
+    testbench reads its seed from an argument of its own.
+  - Icarus, HDL testbench: seeded only through a `seed` template. Without one
+    the Target is unseeded and refuses every seed. Declare the template when
+    the testbench reads a seed argument; otherwise leave the Target unseeded
+    and say so in the plan.
+  - Cocotb Target: Booley sets cocotb's seed variable. Do **not** declare
+    `seed`; it is an error there.
+  - `default_seed` (1..2147483647) changes one Target's Default Seed. Set it
+    only when the repository's regression uses a fixed seed other than `1`.
+- **Test Variants.** When the repository runs one test with several argument
+  or environment sets (iteration counts, fault modes, a verbose flag), declare
+  each set as a Variant under `[<target>.variants.<test>]` and name one as
+  `default`. Do not register one Test per argument set, and do not move the
+  arguments into the Target. A Variant is a list of arguments, or a table with
+  `args` and `env`. A Variant argument cannot set the `select` option, the
+  `seed` option, `+verilator+seed+`, or a plusarg the `.core` Target declares
+  as a parameter. On a Cocotb Target a Variant carries `env` only.
+- An `env` table (Target or Variant) cannot set `MODULE`, `TESTCASE`,
+  `TOPLEVEL`, `TOPLEVEL_LANG`, `RANDOM_SEED`, `LIBPYTHON_LOC`, `PYTHONPATH`,
+  `LD_LIBRARY_PATH`, or any `BOOLEY_*`, `COCOTB_*`, `PYGPI_*` or `GPI_*` name. A
+  Variant's `env` also cannot set a variable the Target's `env` table sets.
+- Pre-Sim Commands that stage a different input per Variant or seed read
+  `BOOLEY_TEST_VARIANT`, `BOOLEY_TEST_SEED` and `BOOLEY_TEST_RUN_NAME`;
+  `BOOLEY_TEST_NAME` stays the bare Test name.
 
 ### 2c. The slimmed `booley.toml` (execution policy)
 
@@ -770,6 +812,9 @@ Before writing:
   project-unique, parameters use literal datatypes, and no `fpga` hooks
   / in-Scope imperative scripts are present (the security rules in 2a).
 - Confirm `tests.toml` `select` templates are single well-formed option tokens.
+- Confirm Doctor's `tests.toml` lines: the file is valid, and each sim Target
+  is reported as seeded through the mechanism you intended, or as unseeded
+  for the reason you recorded.
 - Run `booley doctor` (its "FuseSoC .core checks" phase runs exactly these
   audits). For a changed Target, use the focused `fusesoc run --setup` command
   above during iteration; Step 4 owns the final deep gate.

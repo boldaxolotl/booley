@@ -113,7 +113,7 @@ class SimArguments(BuiltinArguments):
             "--tests-file",
             type=Path,
             default=None,
-            help="Read exact test names from PATH, one per line; blanks and # comments ignored",
+            help="Read Test Run selectors from PATH, one per line; blanks and # comments ignored",
         )
 
     @staticmethod

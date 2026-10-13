@@ -64,7 +64,10 @@ _FLOW_KEY_CONTROLS: dict[str, str] = {
     "sim": (
         "`--mode elab-only` compiles, elaborates, and links without running tests; "
         "`--mode elab-only-standalone` adds the stronger module sweep. "
-        "Repeat `--test <name>` for an exact ordered suite or use `--tests-file <path>`; "
+        "Repeat `--test <test-run>` for an exact ordered suite or use `--tests-file <path>`; "
+        "a Test Run is `test`, `test+variant`, `test@seed`, `test+variant@seed`, or "
+        "`test[+variant]@xN` for N drawn seeds, and `--seed <N>|random` sets or draws the "
+        "seed of every selected Test Run; "
         "there is no CLI `--skip`, and configured skips apply only to unfiltered selection. "
         "MCP passes the same suite as a `test` array. Resume one exact durable "
         "Simulation Campaign with `--resume-from <exact-manifest.json>` (optionally with "

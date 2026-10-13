@@ -96,6 +96,22 @@ This is the identity half of the Booley Flow contract, and it matters for two re
 
 Because Targets and tests are data, not code, the same names mean the same thing to the Developer Agent, every Specialist, the Booley Flows, and you, across every run.
 
+Run-time arguments and seeds are declared the same way. A **Test Variant** in `tests.toml` gives one Test a named, fixed set of extra arguments and environment, and every **Test Run** of a seeded Target has an explicit seed that Booley passes to the simulator and records:
+
+```toml
+[sim.variants.test_edge_cases]
+default = "short"
+short = ["+iters=1000"]
+soak  = ["+iters=100000"]
+```
+
+```bash
+booley flow sim --target sim --test test_edge_cases+soak@42   # one Test Variant, one seed
+booley flow sim --target sim --test test_edge_cases@x20       # 20 drawn seeds
+```
+
+There is no option for free-form simulator arguments, so a pass always belongs to a declared configuration, and a failure prints the command that reruns it with the same seed. A simulation Goal can require a Test Run, or N seeds of one (`test+variant@xN`): Booley draws the seeds once at entry and the Goal is met when all of them have passed. Cycle Count and coverage Goals name Test Runs the same way and are decided by their thresholds and floors. See [Test Runs, Test Variants and seeds](FLOW_REFERENCE.md#test-runs-test-variants-and-seeds).
+
 The same model covers **cocotb (Python) testbenches**: a Target whose flow options declare a `cocotb_module` lists its `@cocotb.test()` function names in `tests.toml`, and `sim` runs the selected set batched in one sim process, taking per-test verdicts from cocotb's `results.xml`; `--test` filters the set the same way, and `SIM:{target}` keeps its meaning.
 
 ## Evidence-backed Goals

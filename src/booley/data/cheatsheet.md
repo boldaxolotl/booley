@@ -78,6 +78,31 @@ Worktree Booley Directory inside `work_dir` is not used. `default.md` applies
 unless the human explicitly skips it with a reason. Initialization seeds four
 create-only Goalsets and preserves edits.
 
+#### Test Runs
+
+A Test Run is one Test Variant simulated with one seed, written
+`test[+variant][@seed]`. Test Variants and the seed mechanism are declared per
+Target in `tests.toml`.
+
+| Form | Meaning |
+|------|---------|
+| `--test stress` | Default Test Variant at the Target's Default Seed (`1` unless `default_seed` is set) |
+| `--test stress+soak` | Test Variant `soak` at the Default Seed |
+| `--test stress+soak@42` | That Test Variant with seed 42 |
+| `--test stress@x20` | 20 Test Runs with different drawn seeds (N is 1 to 1000) |
+| `--seed 42` / `--seed random` | One seed for every selected Test Run / a drawn seed per Test Run; not with `@seed` or `@xN` |
+
+A request may run at most 1000 Test Runs of one Target. An unseeded Target
+refuses every seed: an HDL-testbench Target on Icarus without a `seed`
+template.
+Simulation Goals take the same selector in `test`, Cycle Count Goals in `test`
+without `@xN`, and coverage Goals in `tests`. Goal Mode freezes the Test Runs
+at entry, `@xN` seeds included; a simulation Goal is met when every frozen
+Test Run has passed, and a failure stays until the code changes. A coverage
+Goal is decided by its floors alone, whether or not its Test Runs passed.
+`goal_status` lists the frozen Test Runs with a rerun command per failure. A
+`--diagnostic` run records no Test Run outcome, frozen or not.
+
 ### Booley Flows
 
 <!-- BEGIN GENERATED: flows -->
@@ -94,7 +119,7 @@ Common controls: repeat `--target` or use comma-separated values; `--target a --
 
 Key Flow-specific controls:
 
-- `sim`: `--mode elab-only` compiles, elaborates, and links without running tests; `--mode elab-only-standalone` adds the stronger module sweep. Repeat `--test <name>` for an exact ordered suite or use `--tests-file <path>`; there is no CLI `--skip`, and configured skips apply only to unfiltered selection. MCP passes the same suite as a `test` array. Resume one exact durable Simulation Campaign with `--resume-from <exact-manifest.json>` (optionally with `--dry-run`): Cocotb retries the whole batch; a coverage Campaign resumes only after its collection finished (otherwise exit 2: start a new `--coverage` run). `--coverage` / `--cov` collects a native Coverage Campaign, and `--trace` captures waveforms for the simulation run. Focused Cocotb output summarizes unselected skips; pass `--result-verbosity full` to print every XML testcase entry (the complete XML and JSON artifacts are always retained)
+- `sim`: `--mode elab-only` compiles, elaborates, and links without running tests; `--mode elab-only-standalone` adds the stronger module sweep. Repeat `--test <test-run>` for an exact ordered suite or use `--tests-file <path>`; a Test Run is `test`, `test+variant`, `test@seed`, `test+variant@seed`, or `test[+variant]@xN` for N drawn seeds, and `--seed <N>|random` sets or draws the seed of every selected Test Run; there is no CLI `--skip`, and configured skips apply only to unfiltered selection. MCP passes the same suite as a `test` array. Resume one exact durable Simulation Campaign with `--resume-from <exact-manifest.json>` (optionally with `--dry-run`): Cocotb retries the whole batch; a coverage Campaign resumes only after its collection finished (otherwise exit 2: start a new `--coverage` run). `--coverage` / `--cov` collects a native Coverage Campaign, and `--trace` captures waveforms for the simulation run. Focused Cocotb output summarizes unselected skips; pass `--result-verbosity full` to print every XML testcase entry (the complete XML and JSON artifacts are always retained)
 - `lint`: `--scope <file,...>` filters reported findings to selected files
 - `synth`: `--baseline <ref>` compares metrics against a git revision; physical Targets must own an SDC fileset that creates a clock
 - `fpga`: `--baseline <ref>` compares metrics against a git revision; `--ppa-profile compact|balanced|max_frequency` selects portable optimization intent; `--no-cache` forces a fresh implementation
@@ -247,9 +272,9 @@ Goal argument examples:
 
 > Mutually exclusive: `critical_path_ps_max` ⊕ `fmax_mhz_min`.
 
-**Per-test `CYCLE_COUNT`**
+**`CYCLE_COUNT` of one Test Run**
 
-`CYCLE_COUNT:{target}` Goals name the Target with `target` and the registered test with `test`; put bounds in `thresholds`. All thresholds for that test must pass. Relative forms compare the same Target/test at the Goal base commit.
+`CYCLE_COUNT:{target}` Goals name the Target with `target` and one Test Run with `test` (`test`, `test+variant`, or either with `@seed`); put bounds in `thresholds`. All thresholds for that Test Run must pass. Relative forms compare the same Test Run of the same Target at the Goal base commit.
 
 ```json
 {"family": "CYCLE_COUNT", "target": "sim", "test": "smoke",
@@ -314,7 +339,7 @@ the design sources they describe.
 | File | Information | Affects |
 |------|-------------|---------|
 | `booley.toml` | Project, Flow, provider, Sandbox, and Job policy | All Flows and Specialists |
-| `tests.toml` | Per-Target tests, selectors, skips, and environment | `sim`, `mutation_tester` |
+| `tests.toml` | Per-Target Tests, Test Variants, seeds, skips, environment | `sim`, `mutation_tester` |
 | `goalsets/*.md` | Project-owned Goal bundles and optional default | `/booley-goal` |
 | `doctor-waivers.toml` | Reviewed warning waivers and expiry | No endpoint; `doctor` only |
 | `AGENTS.md` | Project instructions, ownership, and gotchas | Developer Agent and Specialists |
