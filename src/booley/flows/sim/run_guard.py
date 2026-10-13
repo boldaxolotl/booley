@@ -218,7 +218,9 @@ def install_parent_death_guard() -> None:
     import signal
 
     # Read before arming: a parent that is PID 1 from the start (Booley as a
-    # container's first process) is alive, not a sign of reparenting.
+    # container's first process) is alive, not a sign of reparenting. The cost:
+    # a parent that died before this line (during interpreter start-up) is not
+    # detected, because whoever adopted this process becomes the baseline.
     parent_at_entry = os.getppid()
 
     def _on_parent_death(signum: int, _frame: Any) -> None:
