@@ -197,3 +197,54 @@ def test_a_goal_its_target_refuses_stays_pending(waiting: SimpleNamespace) -> No
     record = ensure_test_run_resolutions(_store(waiting), waiting.record.id, waiting.worktree)
     assert record.test_run_resolution(LATER_KEY).pending == ("later@x2",)
     assert replace(record, revision=0) == replace(waiting.record, revision=0)
+
+
+def test_a_refused_goal_says_why_instead_of_waiting_for_its_test(
+    waiting: SimpleNamespace, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A broken ``tests.toml`` is its own reason, not "the Test does not exist yet"."""
+    from booley.goals.status import build_status
+
+    def reason() -> str:
+        view = build_status(_store(waiting), waiting.record, work_dir=waiting.worktree)
+        return next(goal for goal in view.goals if goal.key == LATER_KEY).reason
+
+    assert reason().startswith("goal-test-run-pending: ")
+    write_tests_toml(waiting, b'[top]\ntests = ["smoke", "later", "a+b"]\n')  # malformed
+    with caplog.at_level("WARNING"):
+        ensure_test_run_resolutions(_store(waiting), waiting.record.id, waiting.worktree)
+    assert f"Test Runs of Goal {LATER_KEY} on Target top stay pending" in caplog.text
+    assert reason().startswith("goal-test-run-unresolvable: the Test Runs of Target 'top'")
+    # The Test exists now, but the Target cannot apply the seeds the Goal needs.
+    write_tests_toml(waiting, b'[top]\ntests = ["smoke", "later"]\n')
+    from booley.flows import target_test_plan_loading
+
+    def unseeded(work_dir: Any, target: str) -> Any:
+        return target_test_plan_loading.load_target_test_plan(work_dir, target, adapter="icarus")
+
+    with pytest.MonkeyPatch.context() as patched:
+        patched.setattr(target_test_plan_loading, "load_checkout_target_test_plan", unseeded)
+        assert reason().startswith("goal-test-run-unresolvable: ")
+        assert "seed" in reason()
+
+
+@pytest.mark.parametrize("error", ["stale", "timeout"])
+def test_a_status_read_never_fails_because_its_resolution_could_not_be_saved(
+    waiting: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, error: str
+) -> None:
+    from booley.goals import status
+    from booley.goals.store import GoalLockTimeoutError, StaleRevisionError
+
+    write_tests_toml(waiting, b'[top]\ntests = ["smoke", "later"]\n')
+    raised = (
+        StaleRevisionError("kept changing") if error == "stale" else GoalLockTimeoutError("busy")
+    )
+
+    def refuse(*_args: object, **_kwargs: object) -> None:
+        raise raised
+
+    monkeypatch.setattr(status, "ensure_test_run_resolutions", refuse)
+    (view,) = status.status_views(_store(waiting), waiting.worktree)
+    goal = next(goal for goal in view.goals if goal.key == LATER_KEY)
+    assert goal.status == "unmet" and goal.reason.startswith("goal-test-run-pending: ")
+    assert goal.test_runs is not None and goal.test_runs.pending == ("later@x2",)

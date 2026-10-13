@@ -30,12 +30,15 @@ from booley.goals.model import GoalRecord, RecordedGoal
 from booley.goals.test_run_evidence import (
     REASON_CHANGED,
     REASON_MISSING,
+    REASON_UNRESOLVABLE,
+    LedgerFormatError,
     LedgerScope,
     ledger_defect,
     ledger_runs,
     outcome_defect,
     requirement_defect,
 )
+from booley.goals.test_run_freezing import resolution_obstacle, unresolved
 from booley.goals.test_run_plans import TargetPlanError, TargetPlans
 from booley.goals.test_run_resolution import TestRunResolution
 
@@ -89,9 +92,16 @@ def judge_test_runs(
     assert target is not None
     resolution = record.test_run_resolution(key)
     required = () if resolution is None else resolution.test_runs
-    stored = None if evidence is None else ledger_runs(evidence["detail"])
+    try:
+        stored = None if evidence is None else ledger_runs(evidence["detail"])
+    except LedgerFormatError:
+        stored = None  # ``ledger_defect`` names it below
     outcomes = {(run["name"], run["fingerprint"]): run["outcome"] for run in stored or ()}
-    defect = requirement_defect(resolution) or _declaration_defect(required, target, plans)
+    defect = (
+        _pending_defect(goal, resolution, plans)
+        or requirement_defect(resolution)
+        or _declaration_defect(required, target, plans)
+    )
     blocking = defect is not None
     if defect is None and evidence is not None:
         scope = LedgerScope(record.id, key, goal.spec_revision)
@@ -109,6 +119,21 @@ def judge_test_runs(
         () if resolution is None else resolution.pending,
         blocking,
     )
+
+
+def _pending_defect(
+    goal: RecordedGoal, resolution: TestRunResolution | None, plans: TargetPlans
+) -> tuple[str, str] | None:
+    """Why pending slots cannot be resolved, when it is not that they do not exist yet.
+
+    A ``tests.toml`` that cannot be applied, or a seed on a Target that
+    cannot apply seeds, is its own reason: waiting will not resolve it.
+    """
+    held = resolution or unresolved(goal.spec, goal.spec_revision)
+    if not held.pending:
+        return None
+    obstacle = resolution_obstacle(goal.spec, held, plans)
+    return (REASON_UNRESOLVABLE, obstacle) if obstacle else None
 
 
 def _views(

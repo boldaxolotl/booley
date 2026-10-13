@@ -30,11 +30,18 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import Any, Literal, cast
+from typing import Any, cast
 
 from booley.criteria.evidence_ledger import canonical_json
 from booley.criteria.state import CriterionChange
 from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
+from booley.evidence.test_run_ledger import (
+    LEDGER_DETAIL_KEY,
+    LEDGER_SCHEMA,
+    LedgerFormatError,
+    RunOutcome,
+    decode_ledger,
+)
 from booley.flows.frozen_test_runs import (
     OUTCOMES_ONLY_DETAIL_KEY,
     FrozenTestRuns,
@@ -49,12 +56,6 @@ from booley.goals.test_run_freezing import seed_groups
 from booley.goals.test_run_goals import names_test_runs
 from booley.goals.test_run_resolution import SUITE_SLOT, TestRunResolution
 
-#: Detail key of the materialized per-run outcomes of a Goal's frozen Test Runs.
-LEDGER_DETAIL_KEY = "test_run_ledger"
-LEDGER_SCHEMA = "booley.goal-test-run-ledger/v1"
-
-RunOutcome = Literal["passed", "failed", "missing"]
-
 # Named reasons a Goal that is judged by Test Runs is unmet.
 REASON_PENDING = "goal-test-run-pending"
 REASON_EMPTY = "goal-simulation-suite-empty"
@@ -65,6 +66,8 @@ REASON_NO_LEDGER = "goal-test-run-ledger-missing"
 REASON_MISSING = "goal-test-run-missing"
 REASON_CHANGED = "goal-test-run-changed"
 REASON_NOT_MEASURED = "goal-test-run-metric-missing"
+REASON_MALFORMED = "goal-test-run-ledger-malformed"
+REASON_UNRESOLVABLE = "goal-test-run-unresolvable"
 
 # What to run so that one invocation measures a Goal's metric, by family.
 _MEASURING_RUN: Mapping[GoalFamily, str] = {
@@ -257,9 +260,12 @@ def _graded(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def ledger_runs(detail: Mapping[str, Any]) -> list[dict[str, str]] | None:
-    """The per-run outcomes *detail* stores, or ``None`` when it stores no ledger."""
-    runs = _member(detail.get(LEDGER_DETAIL_KEY), "runs")
-    return cast("list[dict[str, str]]", runs) if isinstance(runs, list) else None
+    """The per-run outcomes *detail* stores, or ``None`` when it stores no ledger.
+
+    Raises :class:`LedgerFormatError` for a malformed ledger.
+    """
+    ledger = decode_ledger(detail)
+    return None if ledger is None else list(ledger.runs)
 
 
 def judged_change(
@@ -328,7 +334,11 @@ def _restated(
     if latest is None or not earlier or earlier[-1]["sequence"] != latest["sequence"]:
         return None
     selected = cast("Mapping[str, Any]", latest["detail"])
-    if ledger_runs(selected) != ledger["runs"]:
+    try:
+        unchanged = ledger_runs(selected) == ledger["runs"]
+    except LedgerFormatError:
+        unchanged = False  # a ledger that cannot be read is never restated
+    if not unchanged:
         return None
     again = build_ledger(earlier, _graded(matching_rows(selected, required)), required)
     detail = {**selected, LEDGER_DETAIL_KEY: again}
@@ -375,7 +385,10 @@ def ledger_defect(
     to *row*, and every contributor it links must still be the row it names.
     """
     detail = cast("Mapping[str, Any]", row["detail"])
-    stored = ledger_runs(detail)
+    try:
+        stored = decode_ledger(detail)
+    except LedgerFormatError as exc:
+        return REASON_MALFORMED, f"the recorded Test Run outcomes cannot be read: {exc}"
     if stored is None:
         return REASON_NO_LEDGER, (
             "the evidence predates Goals that name Test Runs; run the Simulation Flow again"
@@ -384,13 +397,11 @@ def ledger_defect(
     earlier = scope.accumulating(history, stamp, before=row["sequence"])
     recomputed = build_ledger(earlier, _graded(matching_rows(detail, required)), required)
     indexed = {item["sequence"]: item for item in history}
-    links = cast("list[Mapping[str, Any]]", detail[LEDGER_DETAIL_KEY].get("source_evidence") or [])
     substituted = any(
-        link.get("sequence") not in indexed
-        or row_digest(indexed[link["sequence"]]) != link.get("sha256")
-        for link in links
+        sequence not in indexed or row_digest(indexed[sequence]) != digest
+        for sequence, digest in stored.source_evidence
     )
-    if substituted or recomputed["runs"] != stored:
+    if substituted or recomputed["runs"] != list(stored.runs):
         return REASON_OUTDATED, (
             "the recorded Test Run outcomes no longer equal the recorded evidence; "
             "rerun the Simulation Flow"

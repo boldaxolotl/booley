@@ -22,6 +22,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
+from booley.flows.test_runs import draw_seeds
 from booley.goals.apply_barrier import pending_applies
 from booley.goals.model import GoalRecord, GoalState
 from booley.goals.paths import record_paths
@@ -83,9 +84,9 @@ def _resolved(
         return None
     if pending_applies(record_paths(store.project_dir, record.id).root):
         return None
-    request = ResolutionRequest("deferred", utc_now_rfc3339())
-    if draw is not None:
-        request = replace(request, draw=draw)
+    # Looked up here, not bound as a default: a caller without its own source
+    # (a run being bound, a status read) draws from this module's.
+    request = ResolutionRequest("deferred", utc_now_rfc3339(), draw or draw_seeds)
     frozen = freeze_goals(
         record.goals, record.test_run_resolutions, TargetPlans(work_dir), request, strict=False
     )

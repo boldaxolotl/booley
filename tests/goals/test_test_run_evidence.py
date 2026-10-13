@@ -584,3 +584,77 @@ def test_dashboard_goal_detail_lists_the_frozen_test_runs(two: SimpleNamespace) 
         "  rerun b@1: booley flow sim --target top --test=b@1",
     )
     assert _evidence_detail(detail).startswith(detail.test_runs[0] + "\n  rerun b@1: ")
+
+
+# --- A stored ledger is external input ---------------------------------------------
+
+
+def _ledger(**changes: Any) -> dict[str, Any]:
+    ledger = build_ledger([], [run_row(A)], [A])
+    return {LEDGER_DETAIL_KEY: {**ledger, **changes}}
+
+
+@pytest.mark.parametrize(
+    "broken",
+    [
+        {LEDGER_DETAIL_KEY: "passed"},
+        _ledger(schema="booley.goal-test-run-ledger/v0"),
+        _ledger(runs=[{"name": "a@1", "fingerprint": A.fingerprint}]),
+        _ledger(runs=[{"name": "a@1", "fingerprint": A.fingerprint, "outcome": "fine"}]),
+        _ledger(runs="all"),
+        _ledger(source_evidence=[{"sequence": "1", "sha256": "x"}]),
+        _ledger(source_evidence=[{"sequence": True, "sha256": "x"}]),
+        {LEDGER_DETAIL_KEY: {"runs": [], "source_evidence": []}},
+    ],
+)
+def test_a_malformed_stored_ledger_is_refused_by_name(broken: dict[str, Any]) -> None:
+    from booley.evidence.test_run_ledger import LedgerFormatError, decode_ledger
+
+    with pytest.raises(LedgerFormatError):
+        decode_ledger(broken)
+    assert decode_ledger({}) is None
+    decoded = decode_ledger(_ledger())
+    assert decoded is not None and decoded.runs[0]["outcome"] == "passed"
+
+
+def test_status_names_a_malformed_ledger_instead_of_crashing(two: SimpleNamespace) -> None:
+    _record(two, "run-1", [run_row(A), run_row(B)])
+    assert _status(two).status == "met"
+    # The observation and the state that mirrors it lose a field of one ledger entry.
+    for path, entry in ((_evidence_file(two, 1), None), (_state_file(two), SIM_KEY)):
+        document = json.loads(path.read_text(encoding="utf-8"))
+        holder = document if entry is None else document["criteria"][entry]
+        del holder["detail"][LEDGER_DETAIL_KEY]["runs"][0]["outcome"]
+        path.write_text(json.dumps(document), encoding="utf-8")
+    status = _status(two)
+    assert status.status == "unmet"
+    assert status.reason.startswith("goal-test-run-ledger-malformed: ")
+    assert _shown(status) == {"a@1": "missing", "b@1": "missing"}
+    # Recording over it does not trip on it either.
+    assert _outcomes(_record(two, "run-2", [run_row(A)])) == {"a@1": "passed", "b@1": "passed"}
+
+
+def test_briefing_reports_a_malformed_ledger() -> None:
+    from booley.review.goal_package import _test_run_lines
+
+    assert _test_run_lines(_ledger()) == ["  Test Runs: a@1 passed"]
+    (line,) = _test_run_lines(_ledger(runs=[{"name": "a@1"}]))
+    assert "cannot be read" in line
+    assert _test_run_lines({}) == []
+
+
+def test_a_frozen_run_needs_a_real_timestamp() -> None:
+    from booley.goals.test_run_resolution import (
+        FrozenRun,
+        ResolutionFormatError,
+        TestRunResolution,
+    )
+
+    good = TestRunResolution(1, (FrozenRun(A, "a", "entry", "2026-10-13T10:00:00Z"),))
+    assert TestRunResolution.from_json(good.to_json(), where="r") == good
+    stored = good.to_json()
+    stored["runs"][0]["resolved_at"] = "yesterday"
+    with pytest.raises(ResolutionFormatError, match="resolved_at is not a timestamp"):
+        TestRunResolution.from_json(stored, where="r")
+    with pytest.raises(ResolutionFormatError, match=r"r\.spec_revision"):
+        TestRunResolution.from_json({**good.to_json(), "spec_revision": 0}, where="r")

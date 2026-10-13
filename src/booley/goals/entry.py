@@ -61,6 +61,7 @@ from booley.flows.baseline_pins import (
     freeze_recipe_family,
     pin_cycle_count_baselines,
 )
+from booley.flows.test_runs import draw_seeds
 from booley.goals.checkout import CheckoutError, GoalCheckout, branch_name, branch_ref
 from booley.goals.goalsets import GOALSETS_DIR
 from booley.goals.model import (
@@ -86,7 +87,12 @@ from booley.goals.rules import goal_mode_rules
 from booley.goals.session_key import worktree_session_key
 from booley.goals.state_store import goal_criterion_params, review_categories
 from booley.goals.store import GoalStore, GoalStoreError
-from booley.goals.test_run_freezing import GoalResolutionError, ResolutionRequest, freeze_goals
+from booley.goals.test_run_freezing import (
+    GoalResolutionError,
+    ResolutionRequest,
+    SeedDraw,
+    freeze_goals,
+)
 from booley.goals.test_run_plans import TargetPlanError, TargetPlans
 from booley.goals.test_run_resolution import TestRunResolution
 from booley.goals.translate import GoalTranslationError, Translation, translate_goals
@@ -159,6 +165,9 @@ class EntryEnvironment:
     other_sessions: Callable[[WorktreeIdentity], Sequence[str]] = _no_other_sessions
     on_boundary: Callable[[str], None] | None = None
     lock_timeout_s: float = 30.0
+    #: Where the seeds of multi-seed Goals come from, at entry and for the
+    #: approved changes of the Goal Mode; tests supply a deterministic source.
+    draw_seeds: SeedDraw = draw_seeds
 
 
 @dataclass(frozen=True)
@@ -254,7 +263,8 @@ def enter_goal_mode(request: EntryRequest, env: EntryEnvironment) -> EntryResult
         assert identity is not None  # create=True always returns an identity
         with store.worktree_lock(identity) as lock:
             recovered = _recover_occupant(store, identity, checkout)
-            plan = _plan_entry(request, checkout, identity, translation, project_dir, plans)
+            freezing = _Freezing(plans, env.draw_seeds)
+            plan = _plan_entry(request, checkout, identity, translation, project_dir, freezing)
             created = store.create(lock, plan.record)
             _boundary(env, "created")
             try:
@@ -286,7 +296,7 @@ def _plan_entry(
     identity: WorktreeIdentity,
     translation: Translation,
     project_dir: Path,
-    plans: TargetPlans,
+    freezing: _Freezing,
 ) -> _EntryPlan:
     """Validate the checkout and the Goals under the lock; build the new record."""
     base_sha = checkout.head_sha()
@@ -314,7 +324,7 @@ def _plan_entry(
         entered_at=utc_now_rfc3339(),
         session_key=request.session_key or worktree_session_key(identity),
         goals=goals,
-        test_run_resolutions=_freeze_test_runs(goals, plans),
+        test_run_resolutions=_freeze_test_runs(goals, freezing),
         goalsets_used=request.goalsets_used,
         default_skipped=request.default_skipped,
         skip_reason=request.skip_reason,
@@ -413,17 +423,25 @@ def _translate(goals: Sequence[GoalArg], plans: TargetPlans) -> Translation:
         raise GoalEntryError(str(exc)) from None
 
 
+@dataclass(frozen=True)
+class _Freezing:
+    """What freezing the Goals' Test Runs reads: the Targets' plans and the seed source."""
+
+    plans: TargetPlans
+    draw: SeedDraw
+
+
 def _freeze_test_runs(
-    goals: Sequence[RecordedGoal], plans: TargetPlans
+    goals: Sequence[RecordedGoal], freezing: _Freezing
 ) -> dict[str, TestRunResolution]:
     """Freeze every Goal's Test Runs (ADR 0072); a Target or Test not there yet stays pending.
 
     A Goal its Target refuses, for example a seed on a Target that cannot
     apply seeds, fails the entry.
     """
-    request = ResolutionRequest("entry", utc_now_rfc3339())
+    request = ResolutionRequest("entry", utc_now_rfc3339(), freezing.draw)
     try:
-        return freeze_goals(goals, {}, plans, request, strict=True)
+        return freeze_goals(goals, {}, freezing.plans, request, strict=True)
     except GoalResolutionError as exc:
         raise GoalEntryError(str(exc)) from None
 

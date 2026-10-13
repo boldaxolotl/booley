@@ -7,12 +7,12 @@ import pytest
 from booley.criteria.state import DevelopmentState
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.request import SimRequest
-from booley.goals.entry import EntryEnvironment, EntryRequest, enter_goal_mode
+from booley.goals.entry import EntryRequest, enter_goal_mode
 from booley.goals.flow_execution import GoalFlowExecution
 from booley.goals.model import parse_goal_args
 from tests.flows.sim.test_coverage_invocation import project
 from tests.flows.sim.test_coverage_transaction import NativeExecution
-from tests.goals.conftest import bind, git
+from tests.goals.conftest import bind, entry_environment, git
 
 
 @pytest.mark.parametrize("simulation", ["pass", "fail"])
@@ -41,7 +41,7 @@ def test_bound_flow_records_both_verdicts(layout, monkeypatch, simulation, cover
                 ]
             ),
         ),
-        EntryEnvironment(project_dir=layout.control),
+        entry_environment(layout),
     )
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     adapter = GoalFlowExecution(bind(layout))
@@ -80,7 +80,7 @@ def _enter(layout, monkeypatch, goals):
     git(root, "commit", "-m", "simulation recipe")
     record = enter_goal_mode(
         EntryRequest(work_dir=root, slug="seeds", goals=parse_goal_args(goals)),
-        EntryEnvironment(project_dir=layout.control),
+        entry_environment(layout),
     ).record
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     return root, record

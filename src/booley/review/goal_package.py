@@ -5,9 +5,10 @@ from __future__ import annotations
 import html
 import json
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any
 
 from booley.core.boundary import require_dict, require_int, require_list, require_str_value
+from booley.evidence.test_run_ledger import LEDGER_DETAIL_KEY, LedgerFormatError, decode_ledger
 
 
 class GoalPackageError(ValueError):
@@ -142,7 +143,7 @@ def _validate_goal_row(row: dict[str, Any]) -> None:
     originals = require_list(row["original_observations"], field="original_observations")
     for original in originals:
         require_dict(original, field="original observation")
-    if originals and "test_run_ledger" not in detail:
+    if originals and LEDGER_DETAIL_KEY not in detail:
         require_dict(detail.get("goal_derivation"), field="goal_derivation")
     if row["selected_transaction"] is not None:
         require_dict(row["selected_transaction"], field="selected_transaction")
@@ -150,16 +151,13 @@ def _validate_goal_row(row: dict[str, Any]) -> None:
 
 def _test_run_lines(detail: dict[str, Any]) -> list[str]:
     """The frozen Test Runs a Goal was judged by, with the outcome of each (ADR 0072)."""
-    ledger = detail.get("test_run_ledger")
-    if not isinstance(ledger, dict):
+    try:
+        ledger = decode_ledger(detail)
+    except LedgerFormatError as exc:
+        return [f"  Test Runs: the recorded outcomes cannot be read ({exc})"]
+    if ledger is None:
         return []
-    runs = [
-        require_dict(run, field="test_run_ledger run")
-        for run in require_list(
-            cast("dict[str, Any]", ledger).get("runs"), field="test_run_ledger.runs"
-        )
-    ]
-    shown = ", ".join(f"{run['name']} {run['outcome']}" for run in runs)
+    shown = ", ".join(f"{run['name']} {run['outcome']}" for run in ledger.runs)
     return [f"  Test Runs: {shown}"]
 
 

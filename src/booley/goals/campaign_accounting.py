@@ -71,7 +71,7 @@ from booley.core.boundary import (
 )
 from booley.criteria import evidence_ledger
 from booley.criteria.evidence_ledger import AcceptanceLedgerError, canonical_json
-from booley.criteria.state import DevelopmentState
+from booley.criteria.state import CriterionChange, DevelopmentState
 from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
 from booley.flows.campaign_results import (
     CampaignBusyError,
@@ -474,33 +474,13 @@ def account_for_campaigns(
     be locked or read, and :class:`AcceptanceLedgerError` when its ledger
     cannot be read.
     """
-    from booley.goals.recorder import GOAL_SCOPE, GoalProjection
-
     with store.record_lock(record_id):
         record = store.load(record_id)
         paths = record_paths(store.project_dir, record_id)
         if record.state is not GoalState.ACTIVE or pending_applies(paths.root):
             return
         run = _Accounting(store, record, paths, reader)
-        state = run.state()
-        projection = GoalProjection(store, record_id)
-        for pending in evidence_ledger.unselected_transactions(GOAL_SCOPE, paths.logs_dir, state):
-            if not _current_group(pending.identity, record):
-                continue
-            try:
-                evidence_ledger.complete_transaction(
-                    GOAL_SCOPE, projection, paths.logs_dir, state, pending
-                )
-            except AcceptanceLedgerError as exc:
-                logger.warning(
-                    "acceptance transaction %s of Goal Mode %s cannot be completed: %s",
-                    pending.transaction_id,
-                    record_id,
-                    exc,
-                )
-                continue
-            if pending.acceptance_facts is not None:
-                mark_published(store, record_id, pending.acceptance_facts)
+        _complete_transactions(run)
         try:
             registrations = _registrations(paths)
         except RegistrationFormatError as exc:
@@ -517,6 +497,30 @@ def account_for_campaigns(
                     record_id,
                     problem,
                 )
+
+
+def _complete_transactions(run: _Accounting) -> None:
+    """Complete every live transaction the Goal state does not select; log what cannot be."""
+    from booley.goals.recorder import GOAL_SCOPE, GoalProjection
+
+    state = run.state()
+    logs_dir = run.paths.logs_dir
+    projection = GoalProjection(run.store, run.record.id)
+    for pending in evidence_ledger.unselected_transactions(GOAL_SCOPE, logs_dir, state):
+        if not _current_group(pending.identity, run.record):
+            continue
+        try:
+            evidence_ledger.complete_transaction(GOAL_SCOPE, projection, logs_dir, state, pending)
+        except AcceptanceLedgerError as exc:
+            logger.warning(
+                "acceptance transaction %s of Goal Mode %s cannot be completed: %s",
+                pending.transaction_id,
+                run.record.id,
+                exc,
+            )
+            continue
+        if pending.acceptance_facts is not None:
+            mark_published(run.store, run.record.id, pending.acceptance_facts)
 
 
 def _run_id(registration: CampaignRegistration) -> str:
@@ -570,7 +574,7 @@ def _adopt(
     Returns whether *state* changed. Without *passes* only failures are
     adopted: the run that started the campaign could not publish them now.
     """
-    from booley.goals.recorder import GOAL_SCOPE, goal_identity
+    from booley.goals.recorder import GOAL_SCOPE
 
     key = goal.spec.key
     frozen = goal_test_runs(goal, run.record.test_run_resolution(key))
@@ -578,14 +582,7 @@ def _adopt(
     rows = [row for row in frozen.matching(durable.rows) if row["grade"] in wanted]
     if not rows or key not in state.criteria:
         return False
-    marker = {
-        "campaign_id": registration.campaign_id,
-        "manifest_sha256": registration.manifest_sha256,
-        "results_sha256": hashlib.sha256(
-            canonical_json({"results": [list(pair) for pair in durable.results]})
-        ).hexdigest(),
-        "passes": passes,
-    }
+    marker = _marker(registration, durable, passes=passes)
     history = evidence_ledger.validated_evidence_records(GOAL_SCOPE, run.paths.logs_dir, state, {})
     mine = [row for row in history if row["criterion"] == key and row["role"] == "candidate"]
     adopted = [row for row in mine if row["detail"].get(ADOPTED_DETAIL_KEY) == marker]
@@ -600,6 +597,36 @@ def _adopt(
         **frozen.outcomes_detail(rows),
         SOURCE_FINGERPRINT_DETAIL_KEY: dict(registration.stamps[key]),
     }
+    change = _append(run, state, registration, goal, detail, history)
+    state.set_criterion(key, change.met, detail=dict(change.detail))
+    return True
+
+
+def _marker(
+    registration: CampaignRegistration, durable: DurableCampaignResults, *, passes: bool
+) -> dict[str, Any]:
+    """What identifies one adoption: the campaign, the results it held, what was taken."""
+    results = {"results": [list(pair) for pair in durable.results]}
+    return {
+        "campaign_id": registration.campaign_id,
+        "manifest_sha256": registration.manifest_sha256,
+        "results_sha256": hashlib.sha256(canonical_json(results)).hexdigest(),
+        "passes": passes,
+    }
+
+
+def _append(
+    run: _Accounting,
+    state: DevelopmentState,
+    registration: CampaignRegistration,
+    goal: RecordedGoal,
+    detail: dict[str, Any],
+    history: Sequence[Mapping[str, Any]],
+) -> CriterionChange:
+    """Judge an adopted observation by the Goal's ledger and append it to the evidence."""
+    from booley.goals.recorder import GOAL_SCOPE, goal_identity
+
+    key = goal.spec.key
     (change,) = deepcopy(state).set_criterion(key, False, detail=detail)
     change = judged_change(change, goal, run.record, history)
     evidence_ledger.record_changes(
@@ -612,8 +639,7 @@ def _adopt(
         execution_id="",
         identity=goal_identity(run.record.id, {key: goal.spec_revision}),
     )
-    state.set_criterion(key, change.met, detail=dict(change.detail))
-    return True
+    return change
 
 
 def _mirrors(state: DevelopmentState, key: str, met: object, detail: object) -> bool:

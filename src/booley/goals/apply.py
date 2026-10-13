@@ -19,7 +19,6 @@ from uuid import uuid4
 from booley.core.boundary import require_dict, require_list, require_uuid4
 from booley.criteria.evidence_ledger import prepare_observations
 from booley.criteria.state import CriterionChange, CriterionEntry, DevelopmentState
-from booley.flows.test_runs import draw_seeds
 from booley.goals.apply_barrier import require_no_apply
 from booley.goals.apply_effects import FileEffect, read_bytes, require_destination
 from booley.goals.change_policy import conflict, validate_kind
@@ -57,6 +56,7 @@ from booley.goals.test_run_freezing import (
 )
 from booley.goals.test_run_goals import names_test_runs
 from booley.goals.test_run_plans import TargetPlans
+from booley.goals.test_run_resolution import TestRunResolution
 from booley.runtime.atomic_files import atomic_write_once
 from booley.runtime.timefmt import utc_now_rfc3339
 
@@ -83,8 +83,11 @@ class ChangeEnvironment:
     entry: EntryEnvironment
     waivers: WaiverPort | None = None
     on_boundary: Callable[[str], None] | None = None
-    #: Where the seeds of a multi-seed Goal an approved change freezes come from.
-    draw_seeds: SeedDraw = draw_seeds
+
+    @property
+    def draw_seeds(self) -> SeedDraw:
+        """Where the seeds of a multi-seed Goal an approved change freezes come from."""
+        return self.entry.draw_seeds
 
     @property
     def store(self) -> GoalStore:
@@ -453,7 +456,7 @@ def _with_frozen_test_runs(
         if goal.spec.key not in changed
         and (held := record.test_run_resolution(goal.spec.key)) is not None
     }
-    resolutions = {key: held for key, (_, held) in siblings.items()}
+    resolutions: dict[str, TestRunResolution] = {}
     if names_test_runs(after.spec):
         held = record.test_run_resolution(proposal.goal_key)
         before = None if proposal.before is None or held is None else (proposal.before, held)
@@ -469,6 +472,7 @@ def _with_frozen_test_runs(
             )
         except GoalResolutionError as exc:
             raise ProposalError(str(exc)) from exc
+    resolutions |= {key: held for key, (_, held) in siblings.items()}
     frozen = GoalRecord.from_json(replace(updated, test_run_resolutions=resolutions).to_json())
     violation = frozen_run_violation(record, frozen)
     if violation:

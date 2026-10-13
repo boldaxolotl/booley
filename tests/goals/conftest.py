@@ -23,6 +23,7 @@ from booley.flows import target_test_plan_loading
 from booley.flows.target_test_plan import TargetTestPlan
 from booley.flows.test_runs import TestRun, build_test_run, test_run_document
 from booley.goals import entry as entry_module
+from booley.goals import test_run_resolving
 from booley.goals.binding import GoalRunBinding, bind_run
 from booley.goals.store import GoalStore
 from booley.targets.domain import UnknownTargetError
@@ -104,6 +105,9 @@ def layout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleNa
     monkeypatch.setattr(entry_module, "TargetCatalog", FakeCatalog)
     monkeypatch.setattr(target_test_plan_loading, "load_checkout_target_test_plan", fake_test_plan)
     monkeypatch.setattr(target_test_plan_loading, "checkout_target_identity", fake_target_identity)
+    # A run being bound and a status read resolve pending slots without a seed source of
+    # their own: give them a deterministic one.
+    monkeypatch.setattr(test_run_resolving, "draw_seeds", counting_draw(501))
     stamps = iter(f"{DATE}T12{minute:02d}00Z" for minute in range(60))
     monkeypatch.setattr(entry_module, "compact_utc_now", lambda: next(stamps))
     reset_cache()
@@ -162,6 +166,28 @@ SIM_KEY = "sim_pass_top"
 TESTS_TOML = b'[top]\ntests = ["smoke"]\n'
 
 
+def counting_draw(first: int = 101) -> Any:
+    """A seed source that hands out *first*, *first* + 1, ... and skips excluded seeds."""
+    counter = iter(range(first, first + 10_000))
+
+    def draw(count: int, *, exclude: Any = ()) -> tuple[int, ...]:
+        drawn: list[int] = []
+        while len(drawn) < count:
+            seed = next(counter)
+            if seed not in exclude:
+                drawn.append(seed)
+        return tuple(drawn)
+
+    return draw
+
+
+def entry_environment(layout: SimpleNamespace, **extra: Any) -> Any:
+    """The entry environment of *layout*, with a deterministic seed source."""
+    from booley.goals.entry import EntryEnvironment
+
+    return EntryEnvironment(project_dir=layout.control, draw_seeds=counting_draw(), **extra)
+
+
 def write_tests_toml(layout: SimpleNamespace, content: bytes) -> None:
     """Rewrite the worktree's ``tests.toml`` (bytes: digests match on every platform)."""
     (layout.worktree / ".booley_project" / "tests.toml").write_bytes(content)
@@ -174,7 +200,7 @@ def enter_goals(
     tests_toml: bytes = TESTS_TOML,
 ) -> Any:
     """Commit a ``top`` core and a ``tests.toml`` in the worktree, then enter Goal Mode."""
-    from booley.goals.entry import EntryEnvironment, EntryRequest, enter_goal_mode
+    from booley.goals.entry import EntryRequest, enter_goal_mode
     from booley.goals.model import parse_goal_args
 
     # Byte writes keep every digested file identical on every platform.
@@ -186,7 +212,7 @@ def enter_goals(
     request = EntryRequest(
         work_dir=layout.worktree, slug="evidence", goals=parse_goal_args(list(goals))
     )
-    return enter_goal_mode(request, EntryEnvironment(project_dir=layout.control)).record
+    return enter_goal_mode(request, entry_environment(layout)).record
 
 
 @pytest.fixture

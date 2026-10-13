@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 
@@ -12,12 +13,18 @@ from booley.goals.apply import ChangeEnvironment
 from booley.goals.change_policy import translate_after, validate_kind
 from booley.goals.change_service import create_proposal
 from booley.goals.changes import ChangeKind
-from booley.goals.entry import EntryEnvironment
 from booley.goals.model import GoalRecord
+from booley.goals.paths import record_paths
 from booley.goals.proposals import ProposalError
 from booley.goals.status import build_status
 from booley.goals.test_run_evidence import LEDGER_DETAIL_KEY
-from tests.goals.conftest import SIM_KEY, enter_goals, run_row, write_tests_toml
+from tests.goals.conftest import (
+    SIM_KEY,
+    enter_goals,
+    entry_environment,
+    run_row,
+    write_tests_toml,
+)
 from tests.goals.test_proposals import approve
 from tests.goals.test_test_run_evidence import _record
 
@@ -31,7 +38,7 @@ def _goal(test: str | None = None) -> dict[str, Any]:
 
 def _mode(layout: SimpleNamespace, *goals: dict[str, Any], **kwargs: Any) -> ChangeEnvironment:
     layout.record = enter_goals(layout, list(goals), **kwargs)
-    return ChangeEnvironment(EntryEnvironment(layout.control))
+    return ChangeEnvironment(entry_environment(layout))
 
 
 def _change(
@@ -98,7 +105,7 @@ def test_lowering_n_keeps_the_first_seeds_and_raising_n_draws_the_difference(
 ) -> None:
     env = _mode(layout, _goal("smoke@x3"))
     frozen = _seeds(layout.record, SEEDS_KEY)
-    assert len(set(frozen)) == 3
+    assert frozen == [101, 102, 103]  # the test seed source: nothing here is random
 
     lowered = _change(layout, env, "relax", SEEDS_KEY, _goal("smoke@x2"))
     assert _seeds(lowered, SEEDS_KEY) == frozen[:2]
@@ -107,7 +114,7 @@ def test_lowering_n_keeps_the_first_seeds_and_raising_n_draws_the_difference(
 
     raised = _change(layout, env, "retarget", SEEDS_KEY, _goal("smoke@x4"))
     seeds = _seeds(raised, SEEDS_KEY)
-    assert seeds[:2] == frozen[:2] and len(set(seeds)) == 4
+    assert seeds == [101, 102, 103, 104]  # 101 and 102 are taken: only the difference is drawn
     resolution = raised.test_run_resolution(SEEDS_KEY)
     # The kept runs stay as they were frozen; only the difference is new.
     assert [item.resolved_by for item in resolution.runs] == ["entry", "entry", "change", "change"]
@@ -185,3 +192,85 @@ def test_a_seeded_goal_cannot_be_added_to_an_unseeded_target(
     )
     with pytest.raises(ProposalError, match="seed"):
         approve(layout, env, view.proposal.id)
+
+
+def test_nothing_is_frozen_until_the_human_approves_and_an_approved_add_draws_its_seeds(
+    layout: SimpleNamespace,
+) -> None:
+    env = _mode(layout, TARGET)
+    record_file = record_paths(layout.control, layout.record.id).record_file
+    before = record_file.read_bytes()
+    arguments = {"kind": "add", "after": _goal("smoke@x2"), "rationale": "two more seeds"}
+    view = create_proposal(env, layout.record.id, arguments, session_key="test-session")
+    # A proposal changes nothing: no Goal, no frozen run, no drawn seed.
+    assert record_file.read_bytes() == before
+    assert SEEDS_KEY not in env.store.load(layout.record.id).test_run_resolutions
+
+    assert approve(layout, env, view.proposal.id).state == "applied"
+    added = env.store.load(layout.record.id)
+    assert _seeds(added, SEEDS_KEY) == [101, 102]
+    assert {item.resolved_by for item in added.test_run_resolution(SEEDS_KEY).runs} == {"change"}
+    assert added.test_run_resolutions[SIM_KEY] == layout.record.test_run_resolutions[SIM_KEY]
+
+
+def test_raising_n_through_approval_is_refused_when_the_frozen_variant_changed(
+    layout: SimpleNamespace,
+) -> None:
+    variants = b'[top]\ntests = ["smoke"]\n[top.variants.smoke]\ndefault = "v"\nv = ["+n=1"]\n'
+    env = _mode(layout, _goal("smoke@x2"), tests_toml=variants)
+    frozen = env.store.load(layout.record.id).test_run_resolution(SEEDS_KEY)
+    write_tests_toml(layout, variants.replace(b"+n=1", b"+n=2"))
+
+    arguments = {"kind": "retarget", "goal_key": SEEDS_KEY, "after": _goal("smoke@x3")}
+    view = create_proposal(
+        env, layout.record.id, {**arguments, "rationale": "more"}, session_key="test-session"
+    )
+    with pytest.raises(ProposalError, match="declared arguments or environment"):
+        approve(layout, env, view.proposal.id)
+    assert env.store.load(layout.record.id).test_run_resolution(SEEDS_KEY) == frozen
+
+
+def test_an_approved_change_cannot_touch_another_goals_frozen_runs(
+    layout: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The record effect is not saved through the store: its frozen-run rule applies anyway."""
+    from booley.goals import apply
+    from booley.goals.test_run_resolution import TestRunResolution
+
+    env = _mode(layout, TARGET, _goal("smoke@7"))
+    real = apply.refreeze_changed_goal
+
+    def losing_a_sibling(goal, before, plans, request, **kwargs):
+        # A defect in freezing that drops another Goal's frozen runs.
+        other, held = kwargs["siblings"][SIM_KEY]
+        kwargs["siblings"][SIM_KEY] = (other, TestRunResolution(held.spec_revision, (), ()))
+        return real(goal, before, plans, request, **kwargs)
+
+    monkeypatch.setattr(apply, "refreeze_changed_goal", losing_a_sibling)
+    arguments = {"kind": "add", "after": _goal("smoke@8"), "rationale": "one more"}
+    view = create_proposal(env, layout.record.id, arguments, session_key="test-session")
+    with pytest.raises(ProposalError, match="frozen Test Runs of Goal sim_pass_top cannot change"):
+        approve(layout, env, view.proposal.id)
+
+
+def test_a_transaction_prepared_for_a_decision_that_was_never_saved_is_collected(
+    layout: SimpleNamespace,
+) -> None:
+    class _StopError(Exception):
+        pass
+
+    def stop(boundary: str) -> None:
+        if boundary == "prepared":
+            raise _StopError(boundary)
+
+    env = _mode(layout, TARGET)
+    applies = record_paths(layout.control, layout.record.id).root / "applies"
+    arguments = {"kind": "add", "after": _goal("smoke@x2"), "rationale": "two more seeds"}
+    view = create_proposal(env, layout.record.id, arguments, session_key="test-session")
+    with pytest.raises(_StopError):
+        approve(layout, replace(env, on_boundary=stop), view.proposal.id)
+    (orphan,) = applies.glob("*.json")
+
+    assert approve(layout, env, view.proposal.id).state == "applied"
+    (kept,) = applies.glob("*.json")
+    assert kept != orphan  # the decision that was made owns the only transaction left
