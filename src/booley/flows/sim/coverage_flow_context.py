@@ -17,6 +17,7 @@ from booley.criteria.templates import find_retired_criteria
 from booley.flows.execution_persistence import (
     AcceptanceRecorder,
     EvidenceDiscarded,
+    GoalPresentationProvider,
     NoAcceptanceRecorder,
     execution_goal_name,
 )
@@ -27,6 +28,15 @@ from .coverage_acceptance import CoverageAcceptance
 from .coverage_campaign import DurableTargetIdentity
 from .coverage_invocation import CoverageProjectContext
 from .coverage_policy import CoverageCriterion, CoverageThreshold
+
+
+def coverage_context_for_execution(
+    root: Path, state: DevelopmentState, *, recorder: AcceptanceRecorder
+) -> CoverageProjectContext:
+    """Inject presentation only for executions with an admitted Goal presenter."""
+    if isinstance(recorder, GoalPresentationProvider):
+        return coverage_project_context(root, state, recorder=recorder)
+    return coverage_project_context(root, state)
 
 
 def coverage_project_context(

@@ -330,7 +330,7 @@ def test_corrupt_proposal_diagnostic_keeps_location_without_internal_family(goal
 def test_coverage_no_waivers_rejection_uses_admitted_goal_name(
     layout, monkeypatch, selector, alias
 ):
-    from booley.flows.sim.coverage_flow_context import coverage_project_context
+    from booley.flows.sim.coverage_flow_context import coverage_context_for_execution
     from booley.flows.sim.coverage_invocation import (
         CoverageInvocationRequest,
         prepare_coverage_invocation,
@@ -343,7 +343,7 @@ def test_coverage_no_waivers_rejection_uses_admitted_goal_name(
     key = layout.record.goals[0].spec.key
     if alias:
         state.flow_key_aliases["coverage_sim_0"] = [key]
-    context = coverage_project_context(layout.worktree, state, recorder=adapter)
+    context = coverage_context_for_execution(layout.worktree, state, recorder=adapter)
     result = prepare_coverage_invocation(
         CoverageInvocationRequest(("sim_0",), no_waivers=True), context
     )
