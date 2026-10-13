@@ -349,12 +349,15 @@ def _adds_nothing(
     Where outcomes decide the Goal (*decisive*), only while the change's
     *ledger* holds the outcomes the selected observation's ledger holds: a
     new outcome, a failure above all, must be recorded. Where they do not,
-    always: no outcome can change what the selected observation established.
+    whenever the selected observation measured the Goal: no outcome can
+    change what a measurement established. One that measured nothing
+    established nothing, and the change's own outcomes replace it.
     """
+    selected_detail = cast("Mapping[str, Any]", selected["detail"])
     if not decisive:
-        return True
+        return "goal_contract_violation" not in selected_detail
     try:
-        return ledger_runs(cast("Mapping[str, Any]", selected["detail"])) == ledger["runs"]
+        return ledger_runs(selected_detail) == ledger["runs"]
     except LedgerFormatError:
         return False  # a ledger that cannot be read is never restated
 

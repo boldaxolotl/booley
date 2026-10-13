@@ -181,6 +181,21 @@ def test_run_that_does_not_measure_coverage_restates_the_measurement(
     assert "evaluation" not in other and "did not measure" in other["goal_contract_violation"]
 
 
+def test_run_that_does_not_measure_coverage_restates_nothing_before_a_measurement(
+    coverage: SimpleNamespace,
+) -> None:
+    key = coverage.key
+    first = [run_row(STRESS, "fail")]
+    _record(coverage, "run-1", first, key=key, met=False, extra=OUTCOMES_ONLY)
+    # No campaign measured the Goal yet, so a later ordinary run shows its own outcomes.
+    later = _record(coverage, "run-2", [run_row("smoke")], key=key, met=False, extra=OUTCOMES_ONLY)
+    assert _outcomes(later) == {"stress@5": "missing", "smoke@1": "passed"}
+    assert "did not measure" in later["goal_contract_violation"]
+    status = _status(coverage, key)
+    assert status.status == "unmet" and "did not measure the Goal" in status.reason
+    assert _shown(status) == {"stress@5": "missing", "smoke@1": "passed"}
+
+
 def test_coverage_verdict_needs_exactly_the_frozen_runs_in_the_same_change(
     coverage: SimpleNamespace,
 ) -> None:
