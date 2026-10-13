@@ -633,20 +633,8 @@ pub fn load_fst(path: &Path) -> Option<ColumnCache> {
 
     // first two rising edges per clock candidate -> (period, first_rise)
     let rises = |transitions: &[(u64, String)]| -> (Option<u64>, Option<u64>) {
-        let mut prev = "x";
-        let (mut first, mut second) = (None, None);
-        for (t, v) in transitions {
-            if v == "1" && prev == "0" {
-                if first.is_none() {
-                    first = Some(*t);
-                } else if second.is_none() {
-                    second = Some(*t);
-                    break;
-                }
-            }
-            prev = v;
-        }
-        (first, second)
+        let rises = crate::clock::rising_ticks(transitions);
+        (rises.first().copied(), rises.get(1).copied())
     };
 
     // clock table, deduplicated by (period, phase) like the builder
@@ -758,7 +746,13 @@ pub fn load_fst(path: &Path) -> Option<ColumnCache> {
 
     let (clock_period_ticks, first_rise_tick, clock_id) = match primary_clock {
         Some((p, f, name)) => (p, f, name),
-        None => (0, 0, String::new()),
+        None => (
+            0,
+            0,
+            clock_candidates
+                .first()
+                .map_or(String::new(), |&i| vars[i].name.clone()),
+        ),
     };
 
     let ticks_to_ns = 10f64.powi(header.timescale_exponent as i32 + 9);

@@ -2263,3 +2263,25 @@ def test_issue_1108_invalid_legacy_modes_fail_before_dispatch(
     assert exc.value.code == 2
     assert diagnostic in capsys.readouterr().err
     assert captured == []
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["overview", "--format", "json", "--clock", "clk"],
+        ["value", "--at", "2", "--sample-mode", "pre-edge"],
+        ["find", "valid", "'h1", "--include-stopped"],
+        ["sample", "valid", "'h1", "--include-stopped", "--sample-mode", "pre-edge"],
+        ["signal", "--format", "json"],
+        ["wave", "--format", "json"],
+        ["distance", "valid", "change", "--format", "json"],
+    ],
+)
+def test_clock_grid_options_forward_to_registered_store(args):
+    from booley.bwave import cli as bwave
+
+    assert bwave._translate_to_subcommand(args, "trace.fst") == [
+        args[0],
+        "trace.fst",
+        *args[1:],
+    ]
