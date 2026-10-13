@@ -2451,7 +2451,7 @@ def _project_data_alias_capable(image_id: str) -> bool:
     from booley.runtime.project_image import DockerImageError, project_data_alias_capable
 
     if not isinstance(image_id, str):
-        raise SessionError("Sandbox image identity is unavailable for Project-data proof")
+        raise SessionError("Sandbox image identity is unavailable for Booley Directory proof")
     try:
         return project_data_alias_capable(image_id)
     except DockerImageError as exc:

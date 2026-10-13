@@ -107,7 +107,7 @@ def test_prepare_clone_state_restores_init_owned_local_state(tmp_path: Path) -> 
 
 
 def test_prepare_clone_state_guards_nested_project_repository(tmp_path: Path) -> None:
-    """Doctor's prune guard also checks a standalone nested Project repo (#915)."""
+    """Doctor's prune guard also checks a standalone nested Booley Directory's repository (#915)."""
     project = tmp_path / "project"
     project_dir = project / ".booley_project"
     project_dir.mkdir(parents=True)

@@ -429,7 +429,7 @@ def load_agent_settings(project_root: Path, *, project_dir: Path | None = None) 
     ``_DEFAULT_PROVIDER``). The developer and every specialist run on it.
     Auth mode, explicit model tiers, and sandbox config are also read from the
     TOML. ``project_dir`` lets callers that already resolved the canonical
-    Project directory avoid repeating path discovery. An explicitly *invalid*
+    Booley Directory avoid repeating path discovery. An explicitly *invalid*
     provider raises ``BackendConfigError`` — we never silently run a backend
     the project didn't ask for.
     """

@@ -25,7 +25,7 @@ undoes whatever the boundaries reached):
 8. Write ``booley_state.json`` with every Goal unmet and strict Criteria,
    flushed to disk.
 9. Revalidate: HEAD is the Goal Branch at the base commit, the worktree and
-   any paired Project checkout are clean, and the protected inputs still
+   any Paired Checkout are clean, and the protected inputs still
    match the step-6 snapshot. Then promote the record to ``active``.
 
 A failure inside steps 4-9, including a failed revalidation, rolls back at once. A process that dies there
@@ -144,7 +144,7 @@ def _no_other_sessions(_identity: WorktreeIdentity) -> Sequence[str]:
 class EntryEnvironment:
     """What entry needs from its caller besides the request.
 
-    ``project_dir`` is the control Project directory, resolved by the caller
+    ``project_dir`` is the Main Booley Directory, resolved by the caller
     for the session (never a worktree's copy). ``other_sessions`` names the
     other live sessions on a worktree, for the shared-worktree warning.
     ``on_boundary`` is called with each durable boundary's name after it is
@@ -291,7 +291,7 @@ def _plan_entry(
     paired = _paired_project_checkout(checkout.root)
     _require_clean(checkout, "the worktree")
     if paired is not None:
-        _require_clean(paired, "the paired Project checkout")
+        _require_clean(paired, "the Paired Checkout")
     _check_default_goalset(request, project_dir)
     timestamp = compact_utc_now()
     branch = f"{GOAL_BRANCH_PREFIX}{request.slug}-{timestamp[:8]}"
@@ -390,14 +390,14 @@ def _require_linked_worktree_root(work_dir: Path) -> Path:
 
 
 def _refuse_worktree_copy(project_dir: Path, work_dir: Path) -> None:
-    """Refuse a control Project directory inside the worktree: that is its copy (D9)."""
+    """Refuse a Main Booley Directory inside the worktree: that is its copy (D9)."""
     from booley.runtime.project_dir import contains
 
     if contains(project_dir, project_dir=work_dir) is None:
         return
     raise GoalEntryError(
-        f"the Project directory {project_dir} is the worktree's own copy; Goal Records "
-        "must live in the Project directory of the main checkout"
+        f"the Worktree Booley Directory {project_dir} cannot own Goal Records; they "
+        "must live in the Main Booley Directory"
     )
 
 
@@ -503,7 +503,7 @@ def _baseline_target(goal: GoalSpec) -> str | None:
 
 
 def _paired_project_checkout(work_dir: Path) -> GoalCheckout | None:
-    """The worktree's paired Project repository checkout, if it has one (A3)."""
+    """The worktree's Paired Checkout, if it has one (A3)."""
     try:
         repository = paired_project_repository(work_dir)
     except RepositoryCheckoutError as exc:
@@ -556,8 +556,8 @@ def _revalidate_before_activation(
     paired = _paired_project_checkout(checkout.root)
     if record.paired_project_base_sha is not None:
         if paired is None or paired.head_sha() != record.paired_project_base_sha:
-            raise GoalEntryError("the paired Project checkout moved while entering Goal Mode")
-        _require_clean(paired, "the paired Project checkout")
+            raise GoalEntryError("the Paired Checkout moved while entering Goal Mode")
+        _require_clean(paired, "the Paired Checkout")
     assert record.protected_digest is not None  # saved at step 6
     try:
         violations = protected_input_violations(

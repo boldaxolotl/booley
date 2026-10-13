@@ -2365,7 +2365,7 @@ class TestLineEndingsAutoFix:
 
     @staticmethod
     def _crlf_config_project(tmp_path: Path) -> Path:
-        """Project data checked out CRLF (autocrlf=true) with no [agent] table."""
+        """Booley Directory checked out CRLF (autocrlf=true) with no [agent] table."""
         _git_init(tmp_path)
         project_dir = tmp_path / ".booley_project"
         project_dir.mkdir()

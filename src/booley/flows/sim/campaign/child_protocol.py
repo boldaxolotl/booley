@@ -102,7 +102,7 @@ class ChildExecutionRegistry:
         manifest: SimulationCampaignManifest,
         project_data: Path,
     ) -> ChildExecutionRegistry:
-        """Bind recovery to an already resolved Project-data root."""
+        """Bind recovery to an already resolved Booley Directory root."""
         registry = cls.__new__(cls)
         registry._configure(store, manifest, project_data)
         return registry

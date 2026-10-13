@@ -41,7 +41,7 @@ Never describe one of those partial outcomes as healed.
 
 ## Guardrails
 
-- Run from the project repository root and inspect `git status --short` before
+- Run from the Project Root and inspect `git status --short` before
   changing anything. Preserve all pre-existing changes and never revert,
   overwrite, stage, or commit them.
 - Treat project submodules discovered from `.gitmodules` as read-only.

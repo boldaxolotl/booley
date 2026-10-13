@@ -127,7 +127,7 @@ def _resolve_main_repo_root(work_dir: Path) -> Path | None:
 
     In a git worktree, ``.git`` is a *file* containing ``gitdir: <path>``
     (pointing into the main repo's ``.git/worktrees/`` directory).
-    Returns the main repo root, or ``None`` if *work_dir* is already the
+    Returns the main Project Root, or ``None`` if *work_dir* is already the
     main repo or has no recognisable ``.git`` file.
     """
     git_path = work_dir / ".git"
@@ -154,7 +154,7 @@ def get_category_dirs(work_dir: Path | None = None) -> dict[str, tuple[str, ...]
 
     Reads the worktree's authored cores directly so isolation works even
     when the shared_infra module's CWD-based resolution would miss it.
-    Falls back to the main repo root (for git worktrees where
+    Falls back to the main Project Root (for git worktrees where
     .booley_project/ is gitignored), then shared_infra, then hardcoded defaults.
     Directory prefixes end in ``/``; root-level flat-repository files are exact
     paths so the isolation layer can move the file itself.
@@ -166,14 +166,14 @@ def get_category_dirs(work_dir: Path | None = None) -> dict[str, tuple[str, ...]
             parsed = read_source_dirs_from_toml(main_root)
             if parsed is not None:
                 logger.debug(
-                    "Resolved category dirs from main repo root %s "
+                    "Resolved category dirs from main Project Root %s "
                     "(worktree %s lacks .booley_project/)",
                     main_root,
                     work_dir,
                 )
     if parsed is None and work_dir is not None:
         # Caller explicitly scoped to work_dir and neither it nor its main
-        # repo root had usable TOML — use hardcoded defaults rather than
+        # Project Root had usable TOML — use hardcoded defaults rather than
         # falling back to a CWD-resolved config that may belong to a
         # different project entirely.
         return CATEGORY_DIRS_DEFAULT

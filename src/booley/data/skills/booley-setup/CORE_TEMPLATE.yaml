@@ -1,6 +1,6 @@
 # CORE_TEMPLATE — annotated CAPI2 `.core` (design-description) starting shape.
 #
-# Author the real file with a `.core` extension at the repo root or beside the
+# Author the real file with a `.core` extension at the Project Root or beside the
 # RTL; Booley discovers any `*.core` under the project. This template ships as
 # `.yaml` ON PURPOSE: `.core` discovery is a bare `rglob("*.core")`, so a
 # `*.core` template vendored under `.booley/` would be picked up as a real

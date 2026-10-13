@@ -16,7 +16,7 @@ the push on any of these offenses:
    straight past it. Push time is the first place both identities are
    readable, and it is also the only place that catches a fabricated author
    arriving via rebase, cherry-pick, or ``--no-verify``.
-3. **A repository-visible path into the project-state directory**, including
+3. **A repository-visible path into the Booley Directory**, including
    a symlink whose committed target resolves there.
 
 Packaged into the Project's ``.booley_project/.managed/project-git-hooks.pyz``

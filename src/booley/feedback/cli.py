@@ -49,7 +49,7 @@ def add_subparser(sub: argparse._SubParsersAction) -> None:
         "reports, optionally report a bug",
         description=(
             "In the Sandbox, a Project's worktrees share one Findings Log and the "
-            "default local report in the shared Project directory. -C/--project "
+            "default local report in the Main Booley Directory. -C/--project "
             "selects the checkout for context; it does not relocate that shared "
             "log or the default report. For redaction, repository identifiers come "
             "from the selected checkout; configured names and redaction settings "

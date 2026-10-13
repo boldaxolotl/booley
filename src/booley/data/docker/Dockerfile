@@ -9,7 +9,7 @@
 # binary is installed by the final stage). Building here rather than pulling
 # the binary from the wheel is what keeps `build.sh` working on a host with no
 # cargo — the base image can only be built from a source checkout
-# (init_docker_image._build_docker_image hard-errors without a repo root), but
+# (init_docker_image._build_docker_image hard-errors without a Booley repository root), but
 # that checkout is not guaranteed to have a Rust toolchain installed.
 #
 # Pinned to a *bookworm* builder on purpose: its glibc (2.36) is older than the

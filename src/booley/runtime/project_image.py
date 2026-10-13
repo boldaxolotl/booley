@@ -68,7 +68,7 @@ def is_managed_sandbox_image(project_root: Path, image: str) -> bool:
 
 
 def project_layout_prefix(project_root: Path) -> str:
-    """Namespace internal layout tags by the complete Project root identity."""
+    """Namespace internal layout tags by the complete Project Root identity."""
     owner = hashlib.sha256(str(project_root.resolve()).encode()).hexdigest()[:24]
     return f"{project_image_name(project_root)}-layout-{owner}-"
 
@@ -549,7 +549,7 @@ def docker_image_id(image: str) -> str | None:
 def _layout_layers(record: dict) -> object:
     rootfs = record.get("RootFS")
     if not isinstance(rootfs, dict):
-        raise RuntimeError("Project-data layout filesystem ancestry is missing")
+        raise RuntimeError("Booley Directory layout filesystem ancestry is missing")
     return rootfs.get("Layers")
 
 
@@ -587,10 +587,12 @@ def project_data_alias_capable(image_id: str) -> bool:
             timeout=30,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        raise DockerImageError(f"cannot probe Project-data layout of {image_id}: {exc}") from exc
+        raise DockerImageError(
+            f"cannot probe Booley Directory layout of {image_id}: {exc}"
+        ) from exc
     if result.returncode or result.stdout.strip() not in {"canonical-alias", "directory"}:
         raise DockerImageError(
-            f"cannot prove Project-data layout of {image_id}: {result.stderr.strip()}"
+            f"cannot prove Booley Directory layout of {image_id}: {result.stderr.strip()}"
         )
     return result.stdout.strip() == "canonical-alias"
 
@@ -602,7 +604,7 @@ def layout_identity(root: Path, parent_id: str, recipe_hash: str) -> tuple[str, 
     root = root.resolve()
     data = resolve_project_dir(root).resolve()
     if data.is_relative_to(root):
-        raise ValueError("Project-data layout derivative requires external directory topology")
+        raise ValueError("Booley Directory layout derivative requires external directory topology")
     identity = hashlib.sha256(
         f"{root}|external-directory|{data}|{parent_id}|{recipe_hash}".encode()
     ).hexdigest()
@@ -623,9 +625,9 @@ def inspect_layout_image(image: str, *, executable: str = "docker") -> dict:
         )
         rows = json.loads(result.stdout)
     except (OSError, subprocess.SubprocessError, ValueError) as exc:
-        raise RuntimeError(f"cannot inspect Project-data layout image {image}: {exc}") from exc
+        raise RuntimeError(f"cannot inspect Booley Directory layout image {image}: {exc}") from exc
     if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
-        raise RuntimeError(f"invalid Project-data layout image inspection: {image}")
+        raise RuntimeError(f"invalid Booley Directory layout image inspection: {image}")
     return rows[0]
 
 
@@ -636,7 +638,7 @@ def layout_image_user(parent: dict) -> str:
     if not isinstance(user, str) or (
         user and re.fullmatch(r"[A-Za-z0-9_.-]+(?::[A-Za-z0-9_.-]+)?", user) is None
     ):
-        raise RuntimeError("Project-data layout parent has an unsupported User configuration")
+        raise RuntimeError("Booley Directory layout parent has an unsupported User configuration")
     return user or "root"
 
 
@@ -644,18 +646,20 @@ def verify_layout_image(parent: dict, candidate: dict, *, executable: str = "doc
     """Reject changed runtime configuration or a substituted Docker parent."""
     original, actual = parent.get("Config"), candidate.get("Config")
     if not isinstance(original, dict) or not isinstance(actual, dict):
-        raise RuntimeError("Project-data layout image configuration is missing")
+        raise RuntimeError("Booley Directory layout image configuration is missing")
     _verify_layout_labels(original, actual)
     for key in ("Architecture", "Os", "Variant"):
         if parent.get(key) != candidate.get(key):
-            raise RuntimeError("Project-data layout derivative changed parent platform")
+            raise RuntimeError("Booley Directory layout derivative changed parent platform")
     left, right = dict(original), dict(actual)
     left.pop("Labels", None)
     right.pop("Labels", None)
     if not left.get("User") and right.get("User") == "root":
         left["User"] = "root"
     if left != right:
-        raise RuntimeError("Project-data layout derivative changed parent runtime configuration")
+        raise RuntimeError(
+            "Booley Directory layout derivative changed parent runtime configuration"
+        )
     before = _layout_layers(parent)
     after = _layout_layers(candidate)
     if (
@@ -664,7 +668,7 @@ def verify_layout_image(parent: dict, candidate: dict, *, executable: str = "doc
         or len(after) != len(before) + 1
         or after[: len(before)] != before
     ):
-        raise RuntimeError("Project-data layout derivative has a substituted parent")
+        raise RuntimeError("Booley Directory layout derivative has a substituted parent")
     parent_id, child_id = parent.get("Id"), candidate.get("Id")
     if (
         not isinstance(parent_id, str)
@@ -672,7 +676,7 @@ def verify_layout_image(parent: dict, candidate: dict, *, executable: str = "doc
         or not isinstance(child_id, str)
         or not child_id
     ):
-        raise RuntimeError("Project-data layout immutable identity is missing")
+        raise RuntimeError("Booley Directory layout immutable identity is missing")
     _verify_layout_history(parent_id, child_id, executable)
     _probe_layout_directory(child_id, executable=executable)
 
@@ -685,7 +689,7 @@ def verify_layout_parent_identity(
     parent = inspect_layout_image(parent_id, executable=executable)
     child = inspect_layout_image(image_id, executable=executable)
     if parent.get("Id") != parent_id or child.get("Id") != image_id:
-        raise RuntimeError("Project-data layout inspection changed immutable identity")
+        raise RuntimeError("Booley Directory layout inspection changed immutable identity")
     verify_layout_image(parent, child, executable=executable)
 
 
@@ -706,11 +710,11 @@ def _verify_layout_labels(original: dict, actual: dict) -> None:
     original_labels = original.get("Labels") or {}
     actual_labels = actual.get("Labels") or {}
     if not isinstance(original_labels, dict) or not isinstance(actual_labels, dict):
-        raise RuntimeError("Project-data layout image labels are invalid")
+        raise RuntimeError("Booley Directory layout image labels are invalid")
     retained = {key: value for key, value in original_labels.items() if key not in mutable_labels}
     resulting = {key: value for key, value in actual_labels.items() if key not in mutable_labels}
     if retained != resulting:
-        raise RuntimeError("Project-data layout derivative changed parent payload labels")
+        raise RuntimeError("Booley Directory layout derivative changed parent payload labels")
 
 
 def _probe_layout_directory(image_id: str, *, executable: str = "docker") -> None:
@@ -734,9 +738,11 @@ def _probe_layout_directory(image_id: str, *, executable: str = "docker") -> Non
             timeout=30,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        raise RuntimeError(f"cannot verify Project-data layout directory: {exc}") from exc
+        raise RuntimeError(f"cannot verify Booley Directory layout directory: {exc}") from exc
     if result.returncode:
-        raise RuntimeError("Project-data layout derivative lacks its root-owned alias directory")
+        raise RuntimeError(
+            "Booley Directory layout derivative lacks its root-owned alias directory"
+        )
 
 
 def _image_history(image_id: str, executable: str) -> list[str]:
@@ -749,9 +755,9 @@ def _image_history(image_id: str, executable: str) -> list[str]:
             timeout=30,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        raise RuntimeError(f"cannot verify Project-data layout build history: {exc}") from exc
+        raise RuntimeError(f"cannot verify Booley Directory layout build history: {exc}") from exc
     if len(result.stdout) > 1_048_576:
-        raise RuntimeError("Project-data layout build history exceeds bounds")
+        raise RuntimeError("Booley Directory layout build history exceeds bounds")
     return result.stdout.splitlines()
 
 
@@ -760,13 +766,13 @@ def _verify_layout_history(parent_id: str, image_id: str, executable: str) -> No
 
     before, after = _image_history(parent_id, executable), _image_history(image_id, executable)
     if not before or len(after) <= len(before) or after[-len(before) :] != before:
-        raise RuntimeError("Project-data layout build history has a substituted parent")
+        raise RuntimeError("Booley Directory layout build history has a substituted parent")
     try:
         recipe = (docker_data_dir() / "Dockerfile.project-data-layout").read_text()
         run = recipe.split("RUN ", 1)[1].split("\nUSER ", 1)[0].replace("\\\n", " ")
     except (OSError, IndexError, UnicodeError) as exc:
         raise RuntimeError(
-            "Project-data layout trusted recipe is unavailable or malformed"
+            "Booley Directory layout trusted recipe is unavailable or malformed"
         ) from exc
     expected = " ".join(run.split())
     commands = []
@@ -777,8 +783,10 @@ def _verify_layout_history(parent_id: str, image_id: str, executable: str) -> No
         if entry.startswith(("USER ", "ARG ", "LABEL ")):
             continue
         if "/bin/sh -c " not in entry:
-            raise RuntimeError("Project-data layout build history contains an unknown operation")
+            raise RuntimeError(
+                "Booley Directory layout build history contains an unknown operation"
+            )
         command = entry.split("/bin/sh -c ", 1)[1].removesuffix(" # buildkit")
         commands.append(" ".join(command.split()))
     if commands != [expected]:
-        raise RuntimeError("Project-data layout build history differs from its trusted recipe")
+        raise RuntimeError("Booley Directory layout build history differs from its trusted recipe")

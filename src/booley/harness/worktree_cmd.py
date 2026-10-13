@@ -1,4 +1,4 @@
-"""``booley worktree new <name>``: create a linked worktree with paired or snapshot Project inputs.
+"""``booley worktree new <name>``: create a linked worktree with a Worktree Booley Directory.
 
 The command wraps the packaged ``worktree_create.sh`` with its default
 ``refuse`` policy, so an existing destination (possibly an active worktree
@@ -6,8 +6,8 @@ holding someone's work) is never deleted. The worktree lands where Ticket
 setup puts its worktrees, ``.booley_project/worktrees/<name>``, on a detached
 HEAD at the workspace's current commit unless the name uses the
 ``<branch>--<description>`` convention to check out an existing branch.
-A standalone versioned Project gets a paired checkout on ``booley-worktree/<name>``
-at its clean HEAD; a non-versioned Project gets a clean snapshot.
+A Versioned Booley Directory gets a Paired Checkout on ``booley-worktree/<name>``
+at its clean HEAD; a non-versioned Booley Directory gets a Snapshot.
 """
 
 from __future__ import annotations
@@ -56,7 +56,7 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
     """Register ``booley worktree`` and its ``new`` command."""
     parser = subparsers.add_parser(
         "worktree",
-        help="Create a linked worktree with paired or snapshot Project inputs",
+        help="Create a linked worktree with a Worktree Booley Directory",
         description="Create linked Git worktrees for this Project.",
     )
     commands = parser.add_subparsers(dest="worktree_command", metavar="{new}", required=True)
@@ -65,8 +65,8 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
         help="Create .booley_project/worktrees/<name> and print its path",
         description=(
             "Create a linked Git worktree at .booley_project/worktrees/<name> with a "
-            "paired Project checkout on booley-worktree/<name> for a versioned "
-            "Project, or a clean .booley_project snapshot for a non-versioned Project "
+            "Paired Checkout on booley-worktree/<name> for a Versioned Booley Directory, "
+            "or a Snapshot for a non-versioned Booley Directory "
             "(live run and session state stays behind). The outer worktree starts on a "
             "detached HEAD at the current commit; a "
             "<branch>--<description> name checks out that existing branch instead. "

@@ -286,7 +286,7 @@ class _Recorder:
 
 @pytest.fixture
 def verilator_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Put the fake toolchain on PATH and return the project root."""
+    """Put the fake toolchain on PATH and return the Project Root."""
     pytest.importorskip("fusesoc")
     pytest.importorskip("edalize")
     verilator_bin = _write_fake_verilator(tmp_path)

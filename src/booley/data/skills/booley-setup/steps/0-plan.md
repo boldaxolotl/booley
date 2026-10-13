@@ -2,7 +2,7 @@
 
 > Part of the `booley-setup` skill. This step runs on the **host**, before the
 > devcontainer exists. It is **read-only with respect to the repository** — its
-> only write is `.booley_project/SETUP-PLAN.md` (the state dir; `booley init`
+> only write is `.booley_project/SETUP-PLAN.md` (the Booley Directory; `booley init`
 > created it). No project config is authored here; that is Steps 2–4, and they
 > run only against an approved plan.
 
@@ -172,7 +172,7 @@ any actual key in `booley.toml`/`tests.toml` (a `[sandbox].image`, `[stealth]`,
 `.booley_project/AGENTS.md` (and its second exclude block,
 `# Booley guidance links` → `/AGENTS.md`, `/CLAUDE.md`), an existing
 `SETUP-PLAN.md`, `<axis>_<subject>` targets in a `.core`, or a **tracked**
-`SETUP-REPORT.md` at the repo root. Then branch:
+`SETUP-REPORT.md` at the Project Root. Then branch:
 
 **The branches are not mutually exclusive — apply every one that matches.** A
 repo routinely lands in two at once (a hand-set knob *and* a tracked artifact);
@@ -441,7 +441,7 @@ script lines) as you go.
   rejects it with `Illegal character in core name`. `--cores-root` is a
   *global* flag and must come **before** `run` — after it, fusesoc 2.4.6 exits
   with `unrecognized arguments: --cores-root`. For a stealth authored core the
-  dir is `.booley_project/cores`; for an in-tree `.core` it is the repo root.
+  dir is `.booley_project/cores`; for an in-tree `.core` it is the Project Root.
 - **Git submodules.** Run `git submodule status` in the outer repository and,
   when `.booley_project` is a standalone Git repository, run
   `git -C .booley_project submodule status` too. If either has any, add a
@@ -462,7 +462,7 @@ script lines) as you go.
     only some outer-repository entries, set `[submodules].paths` in
     `booley.toml`; an explicit empty list selects none, and a non-empty list is
     intersected with the selected revision's gitlinks. Every top-level gitlink
-    in a paired project repo is materialized. Nested gitlinks are recursive.
+    in a Paired Checkout is materialized. Nested gitlinks are recursive.
   - Execution-time check: a Goal worktree comes up with the submodule
     populated (the main checkout looking fine proves only the precondition).
 - **Design scale.** Past ~250 files or ~150K LOC (`booley doctor` prints a
@@ -534,7 +534,7 @@ separate columns (see "How a row resolves"). The standard checklist:
      modern Target to that core; do not create a parallel Booley core. Preserve
      unrelated EDA-tool-API Targets unless the plan explicitly puts them in scope.
    - **Open footprint + no native `.core`:** author a normal tracked project
-     core at the repo root or beside its RTL.
+     core at the Project Root or beside its RTL.
    - **Stealth footprint:** never edit the repo's tracked native cores. Author a
      distinct-VLNV core under `.booley_project/cores/` with repository-root-relative
      fileset paths. Booley projects ignored root-level copies for FuseSoC; do
@@ -631,10 +631,9 @@ separate columns (see "How a row resolves"). The standard checklist:
    by every sim Target**, not per-Target knobs. Per-Target behavior has to come
    from *inside* the commands, branching on the exported `$BOOLEY_TARGET` (also
    `$BOOLEY_TEST_NAME`, `$BOOLEY_TEST_NAMES`, `$BOOLEY_RUN_CWD`). And `run_cwd`
-   is one directory for all sim Targets, relative to the repo root — if two
+   is one directory for all sim Targets, relative to the Project Root — if two
    Targets need different input dirs, the commands stage into the one `run_cwd`,
-   they do not each get their own. (The commands themselves run from the **repo
-   root**, not from `run_cwd`, and nothing auto-creates directories — a staging
+   they do not each get their own. (The commands themselves run from the **Project Root**, not from `run_cwd`, and nothing auto-creates directories — a staging
    script `mkdir -p`s its own target dir or `cd "$BOOLEY_RUN_CWD"` first.)
 7. **Sandbox image** — base `booley-sandbox`, prebuilt `booley-sandbox-riscv`,
    or a project Dockerfile; driven by the toolchain determinant (firmware
@@ -749,7 +748,7 @@ separate columns (see "How a row resolves"). The standard checklist:
     **Hidden without the scrub** is a follow-up only if the user volunteers
     that preference; never offer it unprompted. It is valid only for a
     config-only project: resolve row 20 `enabled = false`, flag that the hidden
-    project dir is versioned nowhere, and author no hidden cores. Hidden
+    Booley Directory is versioned nowhere, and author no hidden cores. Hidden
     authored cores require stealth's projection and scrub together.
     **Hybrid** is reserved for an explicitly requested port/integration policy:
     keep `.booley_project/` hidden and stealth enabled, but track only the named
@@ -810,8 +809,7 @@ separate columns (see "How a row resolves"). The standard checklist:
     Nobody consented to a commit-message rewrite, so hidden config alone never
     enables the scrub in unattended setup.
     `booley init` creates `.booley_project/`'s own inner git repo *only* while
-    `[stealth] enabled` is on. With the scrub off, a hidden-footprint project
-    dir is versioned nowhere until someone `git init`s it — flag that for
+    `[stealth] enabled` is on. With the scrub off, a hidden-footprint Booley Directory is versioned nowhere until someone `git init`s it — flag that for
     Step 4's footprint work rather than letting the combination pass silently.
 23. **Tech Cell Replacement** — one Project-wide mapping shared by all enabled
     synthesis Targets, with each Target recording only the subset it reaches.

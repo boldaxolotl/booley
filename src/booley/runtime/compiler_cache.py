@@ -1,4 +1,4 @@
-"""Fixed compiler-cache identity within the authorized Project-data mount.
+"""Fixed compiler-cache identity within the authorized Booley Directory mount.
 
 The Sandbox renderer, Session Issuance, the legacy-tree copier, and the
 Simulation Flow all derive cache locations from this module, so the layout is
@@ -15,7 +15,7 @@ from pathlib import Path
 from booley.runtime.sandbox_layout import PROJECT_DIR_TARGET
 
 COMPILER_CACHE_ROOT_ENV = "BOOLEY_COMPILER_CACHE_ROOT"
-# Directory names below the Project-data owner, outermost first.
+# Directory names below the Booley Directory owner, outermost first.
 COMPILER_CACHE_SEGMENTS = (".runtime", "compiler-cache", "ccache")
 COMPILER_CACHE_RELATIVE = "/".join(COMPILER_CACHE_SEGMENTS)
 # The only root Session Issuance hands to a Sandbox.

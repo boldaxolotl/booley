@@ -49,7 +49,7 @@ def test_doctor_prefers_linked_checkout_project_snapshot(tmp_path, monkeypatch):
 
 class TestStealthCoresCheck:
     """ADR 0036 contract: authored cores live in .booley_project/cores/ (and
-    nowhere else in the state dir), and never share a VLNV with a repo core."""
+    nowhere else in the Booley Directory), and never share a VLNV with a repo core."""
 
     def _project(self, tmp_path: Path) -> tuple[Path, Path]:
         root = tmp_path / "repo"
@@ -186,7 +186,7 @@ class TestStealthCoresCheck:
 class TestGuidanceVenueNote:
     """Guidance that names Booley Flows must scope them to the Sandbox.
 
-    The repo root's CLAUDE.md link resolves on the host too, so an unscoped
+    The Project Root's CLAUDE.md link resolves on the host too, so an unscoped
     file tells a host-side agent to call MCP tools that do not exist there.
     """
 
@@ -314,4 +314,4 @@ def test_project_audit_reports_a_missing_project_directory(tmp_path, monkeypatch
     loaded = readiness.load_project(tmp_path)
     assert loaded.project_dir is None
     assert loaded.project is None
-    assert any("project directory not found" in f.message for f in loaded.report.findings)
+    assert any("Booley Directory not found" in f.message for f in loaded.report.findings)

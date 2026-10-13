@@ -175,7 +175,7 @@ def plan_init_filesystem(
             raise ValueError(f"duplicate initialization target: {path}")
         seen.add(path)
         if not path.is_relative_to(root):
-            raise ValueError(f"initialization target is outside project root: {path}")
+            raise ValueError(f"initialization target is outside Project Root: {path}")
         observed = _observe(root, path, host_probe)
         actions.append(_classify(target, observed))
     return InitPlan(request=request, actions=tuple(actions), host_probe=host_probe)

@@ -387,7 +387,7 @@ class TestWorktreeCreateScript:
         assert _git(worktree, "status", "--short").returncode == 0
         # The worktree carries a copy of the project's .core files; the script
         # must drop FUSESOC_IGNORE so FuseSoC's --cores-root scan can't let a
-        # stale copy shadow the repo-root source (silently building wrong RTL).
+        # stale copy shadow the source at the Project Root (silently building wrong RTL).
         assert (project_data / "FUSESOC_IGNORE").is_file()
         assert (worktree / "FUSESOC_IGNORE").read_text(encoding="utf-8") == "quarantine\n"
 

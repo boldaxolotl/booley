@@ -43,8 +43,8 @@ deduplication, and interleaves verbose details without changing counts.
 | Project RECONCILE | Uses the guidance-link and core-projection owners to repair generated artifacts. It does not run Init or issue a Runtime. |
 
 Automatic (read-only) Doctor uses INSPECT; manual Doctor keeps its bounded
-repairs. Invalid configuration retains the resolved Project directory for later
-checks while skipping operations that require validated Project data.
+repairs. Invalid configuration retains the resolved Booley Directory for later
+checks while skipping operations that require validated Project configuration.
 
 ## Shared health
 

@@ -207,7 +207,7 @@ def test_grant_rejects_broad_or_system_root(
     if not root.exists():
         pytest.skip(f"system root absent on this platform: {root}")
 
-    with pytest.raises(authority.AuthorityError, match="unsafe Project root"):
+    with pytest.raises(authority.AuthorityError, match="unsafe Project Root"):
         authority._add_grant(root, "vivado", installation="vivado_2025_2")
 
 

@@ -185,7 +185,7 @@ class TestDiscovery:
     def test_skips_booley_project_state_tree(self, tmp_path: Path):
         # Per-ticket / baseline git worktrees under .booley_project/ carry stale
         # VLNV-colliding copies of the project's cores; they must never be
-        # enumerated (they'd shadow the repo-root source and drop its Targets).
+        # enumerated (they'd shadow the source at the Project Root and drop its Targets).
         _write_core(tmp_path / "ip")
         _write_core(tmp_path / ".booley_project" / "worktrees" / "scalar_1bfe1733")
         _write_core(tmp_path / ".booley_project" / ".baseline-wt-123-abc")
@@ -2224,7 +2224,7 @@ class TestFilesetsAppend:
 
     def test_target_source_files_rebases_stealth_core_paths(self, tmp_path: Path):
         """A CAPI2 fileset path is relative to its .core's directory. For a
-        state-zone core (ADR 0036 stealth cores) that is NOT the project root,
+        state-zone core (ADR 0036 stealth cores) that is NOT the Project Root,
         so returned paths must be re-based project-relative — consumers join
         them onto the root (doctor's sentinel scan, mutation_tester's DUT list)
         and used to silently read the wrong file, or none at all."""

@@ -88,7 +88,7 @@ def load_project(project_root: Path) -> ProjectLoadResult:
     try:
         project_dir = resolve_checkout_project_dir(project_root)
     except FileNotFoundError:
-        report.fail("project directory not found", "booley init")
+        report.fail("Booley Directory not found", "booley init")
         return ProjectLoadResult(report.report(), None, None)
     project = _check_project_setup(project_root, project_dir, report)
     return ProjectLoadResult(report.report(), project_dir, project)
@@ -357,7 +357,7 @@ def _check_project_setup(
     project_root: Path, project_dir: Path, report: Findings
 ) -> ProjectAudit | None:
     """Strictly parse and validate Booley project setup files."""
-    report.pass_(f"project directory found: {project_dir}")
+    report.pass_(f"Booley Directory found: {project_dir}")
 
     booley_toml = _load_toml(project_dir / "booley.toml", report)
     if booley_toml is None:
@@ -458,7 +458,7 @@ def _validate_booley_toml(data: dict[str, Any], project_dir: Path, report: Findi
     # [sources.*] table — those fields were retired (ADR 0026 follow-through).
 
     if not project_dir.exists():
-        report.fail(f"project directory missing: {project_dir}", "booley init")
+        report.fail(f"Booley Directory missing: {project_dir}", "booley init")
         valid = False
     return valid
 
@@ -492,7 +492,7 @@ def _add_config_audit(audit: config_common.ConfigTableAudit, report: Findings) -
 def _check_agents_md(project: ProjectAudit, report: Findings, *, repair: bool) -> None:
     """Check the canonical guidance file and ensure root links point to it.
 
-    The canonical AGENTS.md lives in the project data dir; the RTL repo root
+    The canonical AGENTS.md lives in the Booley Directory; the Project Root
     only carries generated AGENTS.md/CLAUDE.md links to it.
     """
     canon = project.project_dir / CANON_NAME
@@ -571,7 +571,7 @@ def _check_stealth_cores(
     if stranded:
         names = ", ".join(str(p.relative_to(project_dir)) for p in sorted(stranded))
         report.fail(
-            f"authored .core stranded in the state dir, invisible to Booley and FuseSoC: {names}",
+            f"authored .core stranded in the Booley Directory, invisible to Booley and FuseSoC: {names}",
             f"move it under {stealth_root} — the one scanned subtree of .booley_project/ (ADR 0036)",
         )
     else:

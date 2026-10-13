@@ -959,11 +959,11 @@ def _build_report_dict(
 def _baseline_self_compare_warning(project_root: Path, wt: Path) -> str | None:
     """Detect a no-op ``--baseline`` self-comparison and return an actionable warning.
 
-    An unpaired project may mirror live ``.booley_project/cores/`` (ADR 0036)
+    A Project without a Paired Checkout may mirror live ``.booley_project/cores/`` (ADR 0036)
     into the baseline worktree because the outer Git ref does not contain those
     files. A project whose RTL lives as real files below those cores can therefore
-    synthesize byte-identical sources on both sides. Paired project repositories
-    instead materialize their ticket fork, but can still compare identical RTL.
+    synthesize byte-identical sources on both sides. Paired Checkouts
+    instead materialize their pinned or fork-point revision, but can still compare identical RTL.
 
     Compare the canonical source fingerprint (:func:`compute_source_fingerprint`,
     the same ``_source_fingerprint`` the criteria records already stamp) of the

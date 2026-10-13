@@ -1,8 +1,8 @@
 """Project Initialization ownership of root guidance links.
 
-The canonical project guidance file (``AGENTS.md``) lives in the project data
-directory (``.booley_project/``), so it is versioned alongside the rest of the
-project config. The RTL repo root normally carries generated links —
+The canonical project guidance file (``AGENTS.md``) lives in the Booley
+Directory (``.booley_project/``), so it is versioned alongside the rest of the
+Project configuration. The Project Root normally carries generated links —
 ``AGENTS.md`` (for Codex / Booley) and ``CLAUDE.md`` (for Claude Code) — that
 point at the canonical file. An open-source repo may instead track a regular
 root guidance file so fresh clones receive it before Booley is initialized;
@@ -36,9 +36,9 @@ from booley.runtime.project_dir import PROJECT_DIR_NAME
 
 logger = logging.getLogger(__name__)
 
-# Canonical guidance file name, stored in the project data dir.
+# Canonical guidance file name, stored in the Booley Directory.
 CANON_NAME = "AGENTS.md"
-# Generated link names at the RTL repo root. AGENTS.md is read by Codex and
+# Generated link names at the Project Root. AGENTS.md is read by Codex and
 # Booley; CLAUDE.md is read by Claude Code — both resolve to the same canon.
 LINK_NAMES = ("AGENTS.md", "CLAUDE.md")
 
@@ -64,7 +64,7 @@ def ensure_guidance_links(
     """
     selected_plan = plan or plan_guidance_links(project_root, project_dir)
     if selected_plan.request.root.resolve() != project_root.resolve():
-        raise ValueError("guidance plan belongs to a different project root")
+        raise ValueError("guidance plan belongs to a different Project Root")
     conflicts = [
         action for action in selected_plan.blockers if action.ownership is Ownership.CONFLICT
     ]
@@ -204,7 +204,7 @@ def _read_tracking_status(project_root: Path, entry: Path) -> bool | None:
 def _portable_target(project_root: Path, canon: Path) -> Path:
     """The path a symlink should point at, valid in both launch contexts (F-13).
 
-    Inside the Sandbox the project dir is bind-mounted at
+    Inside the Sandbox the Booley Directory is bind-mounted at
     ``/booley-project``, outside the workspace — so a link relative to it reads
     ``../booley-project/AGENTS.md``, which on the host resolves to a sibling of
     the repo that does not exist. The host then sees two dangling links and an
@@ -212,7 +212,7 @@ def _portable_target(project_root: Path, canon: Path) -> Path:
 
     ``<project_root>/.booley_project/AGENTS.md`` names the same file in both
     contexts (the container reaches it through the workspace mount), so prefer it
-    whenever it exists. Falls back to *canon* for a relocated project dir
+    whenever it exists. Falls back to *canon* for a relocated Booley Directory
     (``[project].dir`` override), where no such repo-local path exists.
     """
     repo_local = project_root / PROJECT_DIR_NAME / CANON_NAME

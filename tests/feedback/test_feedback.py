@@ -46,7 +46,7 @@ def test_feedback_docs_explain_shared_storage_and_checkout_context(relative_path
     text = " ".join((root / relative_path).read_text(encoding="utf-8").split())
 
     assert "each Project has one Findings Log shared by all of its worktrees" in text
-    assert "shared Project directory" in text
+    assert "Main Booley Directory" in text
     assert "`-C` / `--project`" in text
     assert "does not move that shared log" in text
     assert "BOOLEY_PROJECT_DIR" in text
