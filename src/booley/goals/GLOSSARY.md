@@ -6,7 +6,8 @@ stored, changed, and bound to a worktree. **Goal Mode**, **Goal**,
 **Change Log**, **Protected Input**, **Review Package**, **Session**, and
 **Generated Build Artifact** are
 defined in the [shared glossary](../../../docs/GLOSSARY.md); this glossary
-uses them with that meaning. **Waiver Candidate** and **Provisional Coverage
+uses them with that meaning, as it does **Test**, **Test Variant**,
+**Test Run**, and **Default Seed**. **Waiver Candidate** and **Provisional Coverage
 Verdict** belong to the [Simulation Coverage glossary](../flows/sim/GLOSSARY.md);
 Goal Mode uses its proposal-and-approval workflow to promote a candidate.
 
@@ -51,6 +52,20 @@ and that record's revision, the Goal Branch, the specification revision of
 every Goal, and the Protected Inputs as the run started. The run's evidence
 is checked against it again when it is published; it is never re-resolved.
 _Avoid_: session binding, run context
+
+**Frozen Test Run**:
+A Test Run that a Goal requires, fixed in the Goal Record when the Goal is
+resolved: at entry, or later when the Target, Test or Test Variant it names
+first exists. It keeps its Test Variant, seed, and declared arguments and
+environment whatever `tests.toml` says afterwards; only a Goal Change
+freezes other Test Runs. Its outcome is `passed`, `failed`, or `missing`,
+and a failure stands until the files the Goal depends on change.
+_Avoid_: pinned test, locked seed, required test
+
+**Diagnostic Test Run**:
+A Test Run that is no Goal's Frozen Test Run. It is reported, records no
+evidence, and its failure blocks no Goal.
+_Avoid_: extra run, unofficial run
 
 **Discarded Evidence**:
 A run's evidence that was not published because its Run Binding no longer

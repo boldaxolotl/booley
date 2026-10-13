@@ -243,7 +243,7 @@ The seed that a **Test Run** uses when no seed is named: a Booley-wide constant 
 _Avoid_: simulator default seed, random seed
 
 **Test Run**:
-One **Test Variant** simulated with one seed, written `test+variant@seed` (without `@seed` on a Target that cannot apply seeds). It is the unit that simulation evidence records and that Goals name; a multi-seed Goal (`test+variant@xN`) names N Test Runs whose seeds are drawn at random once and frozen with the Goal. Only a Test Run that exactly matches a Goal's resolved form counts toward that Goal; every other Test Run is diagnostic.
+One **Test Variant** simulated with one seed, written `test+variant@seed`: `test@seed` for a **Test** without Variants, and without `@seed` on a Target that cannot apply seeds. It is the unit that simulation evidence records and that Goals name; a multi-seed Goal (`test+variant@xN`) names N Test Runs whose seeds are drawn at random once and frozen with the Goal. Only a Test Run that exactly matches a Goal's resolved form counts toward that Goal; every other Test Run is diagnostic.
 _Avoid_: run (bare), iteration, seed run, QA Run
 
 **Simulation Campaign**:

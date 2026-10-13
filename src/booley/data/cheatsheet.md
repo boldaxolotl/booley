@@ -78,6 +78,28 @@ Project copy or snapshot inside `work_dir` is not used. `default.md` applies
 unless the human explicitly skips it with a reason. Initialization seeds four
 create-only Goalsets and preserves edits.
 
+#### Test Runs
+
+A Test Run is one Test Variant simulated with one seed, written
+`test[+variant][@seed]`. Test Variants and the seed mechanism are declared per
+Target in `tests.toml`.
+
+| Form | Meaning |
+|------|---------|
+| `--test stress` | Default Test Variant at the Target's Default Seed (`1` unless `default_seed` is set) |
+| `--test stress+soak` | Test Variant `soak` at the Default Seed |
+| `--test stress+soak@42` | That Test Variant with seed 42 |
+| `--test stress@x20` | 20 Test Runs with different drawn seeds (N is 1 to 1000) |
+| `--seed 42` / `--seed random` | One seed for every selected Test Run / a drawn seed per Test Run; not with `@seed` or `@xN` |
+
+A request may run at most 1000 Test Runs of one Target. An unseeded Target
+(Icarus with an HDL testbench and no `seed` template) refuses every seed.
+Simulation Goals take the same selector in `test`, Cycle Count Goals in `test`
+without `@xN`, and coverage Goals in `tests`. Goal Mode freezes the Test Runs
+at entry, `@xN` seeds included; a simulation Goal is met when every frozen
+Test Run has passed, and a failure stays until the code changes.
+`goal_status` lists the frozen Test Runs with a rerun command per failure.
+
 ### Booley Flows
 
 <!-- BEGIN GENERATED: flows -->
@@ -340,7 +362,7 @@ the design sources they describe.
 | File | Information | Affects |
 |------|-------------|---------|
 | `booley.toml` | Project, Flow, provider, Sandbox, and Job policy | All Flows and Specialists |
-| `tests.toml` | Per-Target tests, selectors, skips, and environment | `sim`, `mutation_tester` |
+| `tests.toml` | Per-Target Tests, Test Variants, seeds, skips, environment | `sim`, `mutation_tester` |
 | `goalsets/*.md` | Project-owned Goal bundles and optional default | `/booley-goal` |
 | `doctor-waivers.toml` | Reviewed warning waivers and expiry | No endpoint; `doctor` only |
 | `AGENTS.md` | Project instructions, ownership, and gotchas | Developer Agent and Specialists |

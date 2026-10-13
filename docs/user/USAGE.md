@@ -9,7 +9,7 @@ with AI coding agents to follow it.
 2. [Check your setup](#first-verify-your-setup)
 3. [Choose how to work](#choose-how-to-work)
 4. [Interactive Mode](#interactive-mode): [first session](#open-your-first-developer-agent-session), [good prompts](#write-a-useful-prompt), [reviewing changes](#what-the-developer-agent-is-allowed-to-do), [waveforms](#viewing-waveforms)
-5. [Goal Mode](#goal-mode): [Goalsets](#goalsets-and-entry), [evidence](#working-with-evidence), [human decisions](#changes-and-human-decisions), [Finish](#finish-and-review)
+5. [Goal Mode](#goal-mode): [Goalsets](#goalsets-and-entry), [Test Runs](#goals-that-name-test-runs), [evidence](#working-with-evidence), [human decisions](#changes-and-human-decisions), [Finish](#finish-and-review)
 6. [Recovery and parallel work](#recovery-unattended-work-and-parallel-sessions), [without VS Code](#entering-the-sandbox-without-vs-code)
 
 7. [Auth & billing](#auth--billing)
@@ -398,6 +398,90 @@ A named `[SIM_CYCLES] <test> <count>` observation is gated evidence only when th
 Relative comparisons report an **observed Cycle Count change**. When declared workload inputs differ, review reports disclose the changes and do not attribute the result to RTL alone.
 <!-- END GENERATED: criteria-params -->
 
+### Goals that name Test Runs
+
+A **Test Run** is one Test Variant simulated with one seed, written
+`test[+variant][@seed]`
+([reference](FLOW_REFERENCE.md#test-runs-test-variants-and-seeds)). Simulation,
+Cycle Count and coverage Goals are judged by Test Runs, and each can name them
+with a selector:
+
+```json
+[
+  {"family": "sim", "target": "sim_fifo"},
+  {"family": "sim", "target": "sim_fifo", "test": "stress+soak"},
+  {"family": "sim", "target": "sim_fifo", "test": "stress+soak@42"},
+  {"family": "sim", "target": "sim_fifo", "test": "stress+soak@x20"},
+  {"family": "cycle_count", "target": "sim_fifo", "test": "burst@7",
+   "thresholds": {"cycle_count_max": 1000}},
+  {"family": "coverage", "target": "sim_fifo", "tests": ["reset", "stress@x5"],
+   "metrics": {"line": 90}}
+]
+```
+
+| Goal | `test` / `tests` | Requires |
+|---|---|---|
+| `sim` without `test` | none | The default Test Variant of every Test of the Target, each at the Default Seed. |
+| `sim` with `test` | `test`, `test+variant`, either with `@seed`, or either with `@xN` | That Test Run. `@xN` requires N Test Runs of the Test Variant with different seeds, N from 1 to 1000. |
+| `cycle_count` | `test`, `test+variant`, either with `@seed` | One Test Run. `@xN` is refused: a threshold applies to the Cycle Count of one Test Run. |
+| `coverage` | `"all"`, or a list of selectors, `@xN` included | Coverage floors over the merged coverage of the listed Test Runs. |
+
+A selector without a Test Variant means the Test's default Variant. A selector
+without a seed means the Target's Default Seed.
+
+**Freezing.** At entry Booley resolves every such Goal to exact Test Runs and
+stores them in the Goal Record. From then on the Goal requires those Test
+Runs. Editing a Test's `default` Variant or the Target's `default_seed` in
+`tests.toml` afterwards does not change what the Goal requires. For `@xN`
+Booley draws N distinct seeds at random at entry, so each Goal Mode samples
+new seeds, and reruns inside one Goal Mode use the same ones. Goals of one
+Target that name the same Test Variant with the same N share one set of
+seeds.
+
+Goals that resolve to the same Test Runs merge at entry, like other duplicate
+Goals. Of two `@xN` Goals on the same Test Variant, the larger N remains. A
+Goal with a pinned seed and an `@xN` Goal stay separate Goals. A Goal that
+names a seed on an unseeded Target is refused at entry.
+
+**Targets and Tests that do not exist yet.** A Goal can name a Target, Test or
+Test Variant that the work will add. That part of the Goal is *pending* and
+the Goal is unmet. Booley freezes it when it first exists, at the next Flow
+run or status read, with the defaults `tests.toml` declares at that moment. A
+Goal over a whole Target also freezes each Test that is added to the Target
+later. The Review Package lists every Test Run that was frozen after entry.
+
+**Evidence.** A Test Run counts for a Goal only when its name and its declared
+arguments and environment equal one of the Goal's frozen Test Runs. Each
+frozen Test Run is `passed`, `failed` or `missing`:
+
+- It becomes `passed` when it passes at the current contents of the files the
+  Goal depends on.
+- It becomes `failed` when it fails at those contents, and a later pass at the
+  same contents does not change that. A flaky seed therefore stays failed
+  until the code changes.
+- It is `missing` until it has run. An `error` or `inconclusive` Test Run
+  leaves the outcome as it was.
+
+A simulation Goal is met when every frozen Test Run is `passed`. They do not
+have to pass in one invocation: 20 seeds can pass over several runs and
+Simulation Campaigns, including after an interruption, and a run of a few
+named Test Runs adds their outcomes without disturbing the others. A Cycle
+Count Goal takes its measurement from a run of its frozen Test Run. A
+coverage Goal takes its measurement from one `--coverage` run that ran exactly
+its frozen Test Runs, because coverage is not merged across runs.
+
+If a frozen Test Run's Test or Test Variant is removed or skipped, or its
+declared arguments or environment change, the Goal stays unmet until you
+approve a retarget. See
+[A Goal that names Test Runs stays unmet](TROUBLESHOOTING.md#a-goal-that-names-test-runs-stays-unmet)
+for each reason `goal_status` can show.
+
+**Seeing the frozen Test Runs.** `goal_status`, `booley goal status` and the
+Dashboard list each Goal's frozen Test Runs with their outcomes, the parts
+still pending, the Test Runs frozen after entry, and a rerun command for every
+failed Test Run. The Review Package shows the frozen Test Runs and outcomes
+each Goal was judged by.
+
 ### Working with evidence
 
 The Developer Agent passes the absolute worktree root as `work_dir` to every tool that
@@ -439,6 +523,17 @@ approve or reject it with a reason. The client form is used when available;
 chat fallback records your quoted instruction against the saved proposal ID.
 Silence cannot approve a change. Approved changes appear in the Change Log.
 Coverage Waiver Candidates need your decision; the Analyst cannot approve them.
+
+Changing which Test Runs a Goal requires is a Goal change like any other:
+
+| Change | Kind | Frozen Test Runs |
+|---|---|---|
+| Add a Goal that names a Test Run | `add` | Frozen when the change is applied. |
+| Pin a seed, name another Test Variant, or raise N | `retarget` | Raising N keeps the frozen seeds and draws only the difference. |
+| Lower N | `relax` | The Goal keeps its first N frozen seeds. |
+| Retarget a Goal without changing how it is written | `retarget` | Frozen again from the Target as it is now. Use this when a frozen Test Run is gone or its declaration changed. |
+
+After any of these changes the Goal's Test Run outcomes start again.
 
 ### Finish and review
 
@@ -666,6 +761,7 @@ booley specialist reviewer --help            # shared and Specialist arguments
 booley flow                                  # list the Flows
 booley targets --for sim                     # Targets a Flow can use
 booley flow sim --target sim_soc --test reset
+booley flow sim --target sim_soc --test stress+soak@42   # a Test Variant with one seed
 booley flow sim --help                       # every option
 ```
 
