@@ -366,7 +366,7 @@ Goal entry argument is:
 
 ```json
 {
-  "family": "cycle_count",
+  "family": "CYCLE_COUNT",
   "target": "sim_coremark",
   "test": "coremark",
   "thresholds": {

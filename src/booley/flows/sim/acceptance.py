@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -25,7 +25,9 @@ from booley.flows.execution_persistence import (
     AcceptanceRecorder,
     AcceptanceRecordingError,
     NoAcceptanceRecorder,
+    frozen_test_runs_for,
 )
+from booley.flows.frozen_test_runs import FrozenTestRuns, GoalTestRuns
 from booley.flows.sim.campaign import (
     SIMULATION_PROJECTION_SCHEMA,
     CampaignOutcome,
@@ -69,6 +71,8 @@ class AcceptanceContext:
     baseline_refusals: Mapping[tuple[str, str], str] = field(default_factory=dict)
     observer: Callable[[list[CriterionChange]], None] | None = None
     detail_stamper: Callable[[CriterionChange, str], dict[str, Any]] | None = None
+    #: The Test Runs the run's Goals are frozen to; ``None`` outside Goal Mode.
+    frozen: FrozenTestRuns | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,16 +83,6 @@ class AcceptanceOutcome:
     transaction_id: str | None
     changes: tuple[CriterionChange, ...]
     reason: str
-
-
-class SeveralTestRunsOfOneTestError(SimulationCampaignIntegrityError):
-    """A Criterion names a Test that the campaign ran as several Test Runs.
-
-    A Criterion names a bare Test until Goals can name Test Runs (#1233 stage
-    S3), so it cannot be judged from several Test Runs of that Test. The
-    Simulation Flow keeps such a campaign diagnostic, which records no
-    Criteria; reaching this error means a caller reconciled it anyway.
-    """
 
 
 class _TestRunRows:
@@ -106,6 +100,12 @@ class _TestRunRows:
         named = (item.get("test_run") for item in observations if item is not None)
         return [dict(self._rows[name]) for name in named if name in self._rows]
 
+    def all(self) -> list[dict[str, object]]:
+        """Every Test Run row of the outcome."""
+        self.of(())
+        assert self._rows is not None
+        return [dict(row) for row in self._rows.values()]
+
 
 class SimulationAcceptanceCoordinator:
     """Derive and transactionally commit Criteria from campaign facts only."""
@@ -117,7 +117,9 @@ class SimulationAcceptanceCoordinator:
     ) -> AcceptanceOutcome:
         if context.diagnostic or context.state._file_path is None:
             return AcceptanceOutcome(False, None, (), "no_criteria")
-        changes = self._derive_changes(outcome, context.state, context.baseline_refusals)
+        changes = self._derive_changes(
+            outcome, context.state, context.baseline_refusals, context.frozen
+        )
         if context.detail_stamper is not None:
             selector = str(outcome.target["selector"])
             changes = [
@@ -148,6 +150,7 @@ class SimulationAcceptanceCoordinator:
         outcome: CampaignOutcome,
         state: DevelopmentState,
         baseline_refusals: Mapping[tuple[str, str], str] | None = None,
+        frozen: FrozenTestRuns | None = None,
     ) -> list[CriterionChange]:
         facts = outcome.acceptance_facts.document
         target = facts["target"]
@@ -156,6 +159,8 @@ class SimulationAcceptanceCoordinator:
         target_name = str(target["name"])
         shadow = deepcopy(state)
         rows = _TestRunRows(outcome)
+        if frozen is not None:
+            return _goal_changes(outcome, shadow, target, rows, baseline_refusals or {}, frozen)
         changes = _cycle_changes(outcome, shadow, target, rows, baseline_refusals or {})
         changes.extend(_coverage_changes(outcome, shadow, target, rows))
         changes.extend(_simulation_changes(outcome, shadow, target, target_name, rows))
@@ -274,26 +279,21 @@ def _candidate_simulation_observations(
 ) -> dict[object, Mapping[str, object]]:
     """Candidate observations by Test, for Criteria that name Tests.
 
-    A Criterion names a Test, so it has exactly one observation to judge only
-    when the campaign ran one Test Run of that Test. Several Test Runs of one
-    Test are refused rather than letting one stand in for the others; judging
-    them needs Goals that name Test Runs (#1233 stage S3).
-
-    Raises :class:`SeveralTestRunsOfOneTestError`.
+    Outside Goal Mode a Criterion names a Test, so it has one observation to
+    judge only when the campaign ran one Test Run of that Test. A Test the
+    campaign ran as several Test Runs is left out: no Criterion that needs
+    it is judged from this campaign, rather than letting one Test Run stand
+    in for the others. Goals name Test Runs and are judged by
+    :func:`_goal_changes` instead.
     """
     indexed: dict[object, Mapping[str, object]] = {}
-    names: dict[object, str] = {}
-    for name, item in _candidate_observations(facts, target).items():
+    several: set[object] = set()
+    for item in _candidate_observations(facts, target).values():
         test = item["test"]
         if test in indexed:
-            raise SeveralTestRunsOfOneTestError(
-                f"Test {test!r} has several Test Runs in this campaign "
-                f"({names[test]}, {name}); a Criterion that names the Test cannot "
-                "choose between them"
-            )
+            several.add(test)
         indexed[test] = item
-        names[test] = name
-    return indexed
+    return {test: item for test, item in indexed.items() if test not in several}
 
 
 def _criterion_observations(
@@ -405,10 +405,11 @@ def record_campaign_acceptance(
         endpoint.state,
         recorder,
         endpoint._invocation_id,
-        diagnostic=endpoint.records_no_evidence,
+        diagnostic=bool(getattr(endpoint.args, "diagnostic", False)),
         baseline_refusals=dict(baseline_refusals or {}),
         observer=endpoint.record_report_criteria,
         detail_stamper=_detail_stamper(endpoint),
+        frozen=None if endpoint.state._file_path is None else frozen_test_runs_for(recorder),
     )
     reconciler = SimulationAcceptanceCoordinator()
     keys: list[str] = []
@@ -675,6 +676,31 @@ def _plain_json(value: object) -> object:
     return value
 
 
+@dataclass(frozen=True, slots=True)
+class _CycleFacts:
+    """What a Cycle Count Criterion of one candidate Target is judged from."""
+
+    selector: str
+    identity: str
+    prerequisites: tuple[Mapping[str, object], ...]
+    refusals: Mapping[tuple[str, str], str]
+
+    @classmethod
+    def of(
+        cls,
+        outcome: CampaignOutcome,
+        target: Mapping[str, object],
+        refusals: Mapping[tuple[str, str], str],
+    ) -> _CycleFacts:
+        prerequisites = tuple(
+            item
+            for item in outcome.acceptance_facts.document["prerequisites"]  # type: ignore[union-attr]
+            if isinstance(item, Mapping)
+        )
+        identity = f"{target['vlnv']}#{target['name']}"
+        return cls(str(target["selector"]), identity, prerequisites, refusals)
+
+
 def _cycle_changes(
     outcome: CampaignOutcome,
     shadow: DevelopmentState,
@@ -682,49 +708,58 @@ def _cycle_changes(
     rows: _TestRunRows,
     refusals: Mapping[tuple[str, str], str],
 ) -> list[CriterionChange]:
-    identity = f"{target['vlnv']}#{target['name']}"
-    selector = str(target["selector"])
-    facts = outcome.acceptance_facts.document
-    observations = _candidate_cycle_observations(facts, target)
-    prerequisites = tuple(
-        item
-        for item in facts["prerequisites"]  # type: ignore[union-attr]
-        if isinstance(item, Mapping)
-    )
+    facts = _CycleFacts.of(outcome, target, refusals)
+    observations = _candidate_cycle_observations(outcome.acceptance_facts.document, target)
     changes: list[CriterionChange] = []
     for key, entry in shadow.criteria.items():
         params = entry.params or {}
         if not key.startswith("cycle_count_") or not criterion_matches_target(
-            params, identity=identity, selector=selector
+            params, identity=facts.identity, selector=facts.selector
         ):
             continue
-        test = params.get("test")
-        current = observations.get(test)
-        if _unobserved_infrastructure(current):
-            continue
-        baseline, baseline_state = _bound_baseline(prerequisites, params, test, current)
-        if _unobserved_infrastructure(baseline):
-            continue
-        current_cycles = _healthy_cycles(current)
-        baseline_cycles = baseline["cycle_count"] if baseline is not None else None
-        checks = _cycle_threshold_checks(params, current_cycles, baseline_cycles)
-        met = current_cycles is not None and all(check["pass"] for check in checks)
-        detail = _cycle_detail(
-            selector,
-            identity,
-            test,
-            current_cycles,
-            baseline_cycles,
-            baseline_state,
-            checks,
-        )
-        detail["test_runs"] = rows.of((current,))
-        if baseline_state == "mismatched":
-            run_name = current.get("test_run") if current is not None else None
-            refused_as = baseline_refusal_key(str(test), cast("str | None", run_name))
-            _name_baseline_refusal(detail, refusals.get((selector, refused_as)))
-        changes.extend(shadow.set_criterion(key, met, detail=detail))
+        current = observations.get(params.get("test"))
+        changes.extend(_cycle_change(shadow, key, current, facts, rows))
     return changes
+
+
+def _cycle_change(
+    shadow: DevelopmentState,
+    key: str,
+    current: Mapping[str, object] | None,
+    facts: _CycleFacts,
+    rows: _TestRunRows,
+) -> list[CriterionChange]:
+    """Judge Cycle Count Criterion *key* from the candidate observation *current*.
+
+    No change when the observation, or the baseline one it compares with,
+    was lost to infrastructure: that says nothing about the Cycle Count.
+    """
+    params = shadow.criteria[key].params or {}
+    test = params.get("test")
+    if _unobserved_infrastructure(current):
+        return []
+    baseline, baseline_state = _bound_baseline(facts.prerequisites, params, test, current)
+    if _unobserved_infrastructure(baseline):
+        return []
+    current_cycles = _healthy_cycles(current)
+    baseline_cycles = baseline["cycle_count"] if baseline is not None else None
+    checks = _cycle_threshold_checks(params, current_cycles, baseline_cycles)
+    met = current_cycles is not None and all(check["pass"] for check in checks)
+    detail = _cycle_detail(
+        facts.selector,
+        facts.identity,
+        test,
+        current_cycles,
+        baseline_cycles,
+        baseline_state,
+        checks,
+    )
+    detail["test_runs"] = rows.of((current,))
+    if baseline_state == "mismatched":
+        run_name = current.get("test_run") if current is not None else None
+        refused_as = baseline_refusal_key(str(test), cast("str | None", run_name))
+        _name_baseline_refusal(detail, facts.refusals.get((facts.selector, refused_as)))
+    return shadow.set_criterion(key, met, detail=detail)
 
 
 def _candidate_cycle_observations(
@@ -857,10 +892,126 @@ def _cycle_detail(
     }
 
 
+# ---------------------------------------------------------------------------
+# Goals: Criteria judged by frozen Test Runs (ADR 0072)
+# ---------------------------------------------------------------------------
+
+
+def _goal_changes(
+    outcome: CampaignOutcome,
+    shadow: DevelopmentState,
+    target: Mapping[str, object],
+    rows: _TestRunRows,
+    refusals: Mapping[tuple[str, str], str],
+    frozen: FrozenTestRuns,
+) -> list[CriterionChange]:
+    """The Criterion changes of every Goal this campaign's Test Runs are evidence for.
+
+    A Test Run is evidence for a Goal only when its resolved name and its
+    declared-inputs fingerprint equal one of the Goal's frozen Test Runs.
+    A Goal none of whose frozen runs this campaign graded gets no change: for
+    that Goal the campaign is diagnostic. Every other Goal gets one change
+    that carries its matching runs, whatever else the campaign ran and
+    whether or not it ran to its end: a matching failure is never left out.
+    A Cycle Count or coverage Goal's change also carries the metric when
+    this campaign measured it (:meth:`GoalTestRuns.measured_by`).
+
+    Whether the Goal is met is decided by its recorder from every matching
+    run recorded so far; ``met`` here is this campaign's own verdict.
+    """
+    if target["role"] != "candidate":
+        return []
+    names = {f"{target['vlnv']}#{target['name']}", str(target["selector"])}
+    cycle = _CycleFacts.of(outcome, target, refusals)
+    ran = rows.all()
+    changes: list[CriterionChange] = []
+    for goal in frozen.of_target(names):
+        matched = goal.matching(ran)
+        if goal.key not in shadow.criteria or not _graded(matched):
+            continue
+        measured: list[CriterionChange] = []
+        if goal.kind == "cycle_count" and goal.measured_by(ran):
+            measured = _goal_cycle_change(outcome, shadow, goal, matched, cycle, rows)
+        elif goal.kind == "coverage" and goal.measured_by(ran) and outcome.complete:
+            measured = _goal_coverage_change(outcome, shadow, target, goal, rows)
+        if not measured:
+            detail = {**_goal_simulation_detail(outcome, matched), **goal.outcomes_detail(matched)}
+            measured = shadow.set_criterion(goal.key, goal.own_verdict(matched), detail=detail)
+        changes.extend(measured)
+    return changes
+
+
+def _graded(rows: Sequence[Mapping[str, object]]) -> bool:
+    """Whether any of *rows* observed its Test Run pass or fail."""
+    return any(row["grade"] in {"pass", "fail"} for row in rows)
+
+
+def _goal_simulation_detail(
+    outcome: CampaignOutcome, matched: list[dict[str, object]]
+) -> dict[str, object]:
+    """What one campaign observed of a simulation Goal's frozen Test Runs."""
+    facts = outcome.acceptance_facts.document
+    names = [str(row["name"]) for row in matched]
+    passed = [str(row["name"]) for row in matched if row["grade"] == "pass"]
+    return {
+        "campaign_id": facts["campaign_id"],
+        "manifest_sha256": facts["manifest_sha256"],
+        "acceptance_facts_sha256": outcome.acceptance_facts.sha256,
+        "aggregate_grade": outcome.aggregate_grade,
+        "tests_passed": len(passed),
+        "tests_total": len(names),
+        "selected_tests": names,
+        "passed_tests": passed,
+        "failed_tests": [name for name in names if name not in passed],
+        "skipped_tests": [],
+        "test_runs": matched,
+    }
+
+
+def _goal_cycle_change(
+    outcome: CampaignOutcome,
+    shadow: DevelopmentState,
+    goal: GoalTestRuns,
+    matched: list[dict[str, object]],
+    cycle: _CycleFacts,
+    rows: _TestRunRows,
+) -> list[CriterionChange]:
+    """Judge a Cycle Count Goal from the observation of its one frozen Test Run.
+
+    Nothing when that observation, or its baseline one, cannot be judged.
+    """
+    observations = _candidate_observations(outcome.acceptance_facts.document, outcome.target)
+    current = observations.get(str(matched[0]["name"]))
+    if current is None:
+        return []
+    return _cycle_change(shadow, goal.key, current, cycle, rows)
+
+
+def _goal_coverage_change(
+    outcome: CampaignOutcome,
+    shadow: DevelopmentState,
+    target: Mapping[str, object],
+    goal: GoalTestRuns,
+    rows: _TestRunRows,
+) -> list[CriterionChange]:
+    """Judge a coverage Goal from a coverage campaign that ran exactly its frozen Test Runs.
+
+    Coverage is merged over the campaign's Test Runs, so only such a campaign
+    measured the Goal's coverage; it is never merged across campaigns.
+    Nothing when the campaign collected no coverage.
+    """
+    if outcome.coverage_reference is None:
+        return []
+    return [
+        change
+        for change in _coverage_changes(outcome, shadow, target, rows)
+        if change.key == goal.key
+    ]
+
+
 __all__ = [
     "AcceptanceContext",
     "AcceptanceOutcome",
-    "SeveralTestRunsOfOneTestError",
     "SimulationAcceptanceCoordinator",
     "record_campaign_acceptance",
 ]
