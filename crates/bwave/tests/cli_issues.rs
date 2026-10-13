@@ -3480,13 +3480,13 @@ fn issue_1418_async_ranges_and_cross_command_ticks() {
                 .lines()
                 .map(|line| line.split_whitespace().collect())
                 .collect();
+            let expected: Vec<Vec<String>> = ticks[..3]
+                .iter()
+                .zip(["1", "0", "1"])
+                .map(|(tick, value)| vec![tick.to_string(), "data".into(), value.into()])
+                .collect();
+            assert_eq!(events, expected, "{out}");
             for (tick, value) in ticks[..3].iter().zip(["1", "0", "1"]) {
-                assert!(
-                    events
-                        .iter()
-                        .any(|row| row == &[&tick.to_string(), "data", value]),
-                    "{out}"
-                );
                 let point = format!("{tick}t");
                 let (out, err, code) =
                     run(&["value", p, "--async", "-s", "data%b", "--at", &point]);
