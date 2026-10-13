@@ -680,3 +680,33 @@ def test_nonexcluded_pair_finish_retry_preserves_concurrent_inner_dirt(layout, t
     if dirt == "staged":
         git(paired, "reset", "-q", "HEAD", "--", path.name)
     assert finish_goal(call, environment(layout))["status"] == "finished"
+
+
+def test_active_finish_refuses_broken_pair_without_changing_participants(layout, tmp_path):
+    layout = paired_publication_layout(layout, tmp_path)
+    paired = layout.worktree / ".booley_project"
+    marker = paired / ".git"
+    broken = b"gitdir: /nonexistent-paired-metadata\n"
+    outer = git(layout.worktree, "rev-parse", "HEAD")
+    marker.write_bytes(broken)
+    with pytest.raises(LifecycleError, match="Paired Checkout is unavailable"):
+        finish_goal(request(layout), environment(layout))
+    assert marker.read_bytes() == broken
+    assert git(layout.worktree, "rev-parse", "HEAD") == outer
+    assert (paired / "booley.toml").exists()
+
+
+@pytest.mark.parametrize("stealth", [False, True])
+@pytest.mark.parametrize("excluded", [False, True])
+def test_new_paired_skip_reason_precedes_stealth_and_exclusion(
+    layout, tmp_path, stealth, excluded
+):
+    from booley.goals.finish import _skip_publication
+    from tests.goals.conftest import install_paired_project
+
+    paired = install_paired_project(layout, tmp_path)
+    (paired / "booley.toml").write_text(f"[stealth]\nenabled = {str(stealth).lower()}\n")
+    (layout.main / ".git/info/exclude").write_bytes(b"/.booley_project\n" if excluded else b"")
+    assert _skip_publication(layout.worktree, paired, ".booley_project/goals/history/test.md") == (
+        "summary kept local; Paired Checkout preserves independent Booley history"
+    )

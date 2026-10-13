@@ -680,7 +680,11 @@ def rollback_entering(
     record = store.load(goal_id)
     if record.state is not GoalState.ENTERING:
         return record
-    notes = [reason, *_undo_goal_branch(checkout, record)]
+    try:
+        effects = _undo_goal_branch(checkout, record)
+    except CheckoutError as exc:
+        effects = [f"could not inspect entry-owned Git effects ({exc}); branch and files retained"]
+    notes = [reason, *effects]
     return _save(
         store, record, state=GoalState.FAILED, failure="; ".join(notes), ended_at=utc_now_rfc3339()
     )

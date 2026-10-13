@@ -8122,6 +8122,15 @@ def test_goal_history_exclusion_diagnostic_preserves_explicit_git_policy(tmp_pat
         assert [(finding.severity, finding.check_id) for finding in findings] == [
             ("warn", "goals.history-ignored")
         ]
+        assert findings[0].subject is None
+        assert findings[0].message == (
+            "Goal Session Summary path .booley_project/goals/history/doctor-probe.md is "
+            "gitignored; summaries remain local. Exclusion: .git/info/exclude:1:"
+            ".booley_project/\t.booley_project/goals/history/doctor-probe.md"
+        )
+        assert findings[0].fix == (
+            "edit the reported exclusion when publication is wanted, then rerun booley doctor"
+        )
     else:
         assert [finding.severity for finding in findings] == ["pass"]
     assert exclude.read_bytes() == before
@@ -8212,9 +8221,7 @@ def test_unanchored_evidence_workarounds_receive_canonical_init_repair(tmp_path)
     assert [f.severity for f in _gitignore_probe(tmp_path)] == ["pass"]
 
 
-@pytest.mark.parametrize("linked", [False, True])
-@pytest.mark.parametrize("ignored", [False, True])
-def test_goal_history_versioned_hint_preserves_history_and_policy(tmp_path, linked, ignored):
+def _versioned_history_layout(tmp_path, *, linked, ignored):
     from tests.goals.conftest import git
 
     root = tmp_path / "rtl"
@@ -8234,6 +8241,18 @@ def test_goal_history_versioned_hint_preserves_history_and_policy(tmp_path, link
         git(owner, "worktree", "add", "-q", "--detach", str(project))
     exclude = root / ".git/info/exclude"
     exclude.write_bytes(b".booley_project/\n" if ignored else b"")
+    return root, project, exclude
+
+
+@pytest.mark.parametrize("linked", [False, True])
+@pytest.mark.parametrize("ignored", [False, True])
+@pytest.mark.parametrize("inspection", ["exception", "returncode"])
+def test_goal_history_versioned_hint_preserves_history_and_policy(
+    tmp_path, linked, ignored, monkeypatch, inspection
+):
+    from tests.goals.conftest import git
+
+    root, project, exclude = _versioned_history_layout(tmp_path, linked=linked, ignored=ignored)
     before = exclude.read_bytes()
     head = git(project, "rev-parse", "HEAD")
     reporter = doctor._Reporter.create()
@@ -8241,12 +8260,65 @@ def test_goal_history_versioned_hint_preserves_history_and_policy(tmp_path, link
     finding = reporter.findings[0]
     if ignored:
         assert finding.check_id == "goals.history-ignored"
+        assert finding.subject == "independent-booley-history"
         assert "Independently versioned" in finding.message
         assert "retain the outer exclusion" in finding.fix
         assert finding.fix.index("history into the RTL repository first") < finding.fix.index(
             "remove the exclusion"
         )
+        (project / "doctor-waivers.toml").write_text(
+            'version = 1\n[[waiver]]\ncheck = "goals.history-ignored"\n'
+            'subject = "independent-booley-history"\n'
+            'reason = "Preserve independent history and local summaries."\npermanent = true\n'
+        )
+        git(project, "add", "doctor-waivers.toml")
+        git(project, "commit", "-qm", "Accepted independent history policy")
+        assert git(project, "status", "--porcelain=v1") == ""
+        waivers = doctor.load_doctor_waivers(project)
+        waived = doctor._Reporter.create(waivers)
+        doctor._check_goal_history_ignored(root, project, waived.pass_, waived.warn_)
+        assert waived.findings[0].severity == "waived"
+        original = doctor.subprocess.run
+
+        def cannot_inspect(args, **kwargs):
+            if "check-ignore" in args:
+                if inspection == "exception":
+                    raise OSError("inspection unavailable")
+                return subprocess.CompletedProcess(args, 128, "", "inspection unavailable")
+            return original(args, **kwargs)
+
+        monkeypatch.setattr(doctor.subprocess, "run", cannot_inspect)
+        unreadable = doctor._Reporter.create(doctor.load_doctor_waivers(project))
+        doctor._check_goal_history_ignored(root, project, unreadable.pass_, unreadable.warn_)
+        assert unreadable.findings[0].severity == "warn"
+        assert unreadable.findings[0].subject is None
     else:
         assert finding.severity == "pass"
+        expected = (
+            "Goal summaries remain local; Paired Checkout preserves independent Booley history"
+            if linked
+            else "Goal history is eligible for commits"
+        )
+        assert finding.message == expected
+        assert git(project, "rev-parse", "HEAD") == head
     assert exclude.read_bytes() == before
-    assert git(project, "rev-parse", "HEAD") == head
+
+
+@pytest.mark.parametrize("ignored", [False, True])
+def test_goal_history_broken_pair_is_active_and_preserves_exclusion(tmp_path, ignored):
+    root, project, exclude = _versioned_history_layout(tmp_path, linked=True, ignored=ignored)
+    before = exclude.read_bytes()
+    (project / "doctor-waivers.toml").write_text(
+        'version = 1\n[[waiver]]\ncheck = "goals.history-ignored"\n'
+        'subject = "independent-booley-history"\n'
+        'reason = "Preserve independent history and local summaries."\npermanent = true\n'
+    )
+    waivers = doctor.load_doctor_waivers(project)
+    (project / ".git").write_bytes(b"gitdir: /nonexistent-paired-metadata\n")
+    reporter = doctor._Reporter.create(waivers)
+    doctor._check_goal_history_ignored(root, project, reporter.pass_, reporter.warn_)
+    finding = reporter.findings[0]
+    assert finding.severity == "warn"
+    assert finding.check_id == "goals.history-layout-unreadable"
+    assert "repair" in finding.fix and "remove" not in finding.fix
+    assert exclude.read_bytes() == before

@@ -83,7 +83,7 @@ The mandatory prose report the Developer Agent writes when its session finishes 
 _Avoid_: Developer Report, run report, Goal Report
 
 **Goal Record**:
-The local, uncommitted state of one Goal Mode in the **Main Booley Directory**: state, worktree, Goal Branch, base commit, Goals, protected-input digests, change log, evidence, and the Session Summary. Outside Stealth its committed counterpart is the summary file on the Goal Branch when that path is Git-trackable and owned by the RTL repository; independently versioned Booley Directory summaries remain local.
+The local, uncommitted state of one Goal Mode in the **Main Booley Directory**: state, worktree, Goal Branch, base commit, Goals, protected-input digests, change log, evidence, and the Session Summary. Outside Stealth its committed counterpart is the summary file on the Goal Branch when that path is Git-trackable and owned by the RTL repository; Paired Checkout summaries remain local.
 _Avoid_: ticket record, board entry, goal file
 
 **Goal Change Proposal**:

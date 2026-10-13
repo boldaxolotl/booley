@@ -240,11 +240,26 @@ allowlist exactly—hybrid does not authorize committing operational state.
   and `git -C .booley_project status --short`. Existing commits, remotes, or
   intentional staged history require a human decision about preservation or
   migration; row 16 does not authorize deleting that history.
-- When preserving an independently versioned Booley Directory, retain the outer
-  exclusion and its Git metadata. Goal summaries stay local. This branch is
-  complete once the independent history and exclusion are preserved and Doctor
-  has been rerun. Continue below only after the human's chosen history migration
-  into the RTL repository is complete.
+- When preserving an independently versioned Booley Directory, retain its Git
+  metadata and the outer exclusion when present; leave an already absent
+  exclusion absent. Read the current checkout's non-concise Doctor result:
+  - For an actual `goals.history-ignored:independent-booley-history` **WARN**,
+    record the accepted preservation policy using **Using Doctor waivers**:
+    copy that exact check and subject into a waiver, explain the independent
+    history and local-summary policy, and use `permanent = true` for that stable
+    project decision. Commit the waiver in the independent Booley repository so
+    future Paired Checkouts receive it and their inner checkout stays clean.
+    Rerun the warning's original command and verify `WARN` becomes `WAIVED`.
+  - An unexcluded authenticated Paired Checkout reports **PASS**:
+    `Goal summaries remain local; Paired Checkout preserves independent Booley history`.
+    That result needs no preservation waiver. A standalone current checkout's
+    unchanged `Goal history is eligible for commits` **PASS** also needs no
+    waiver; it describes that checkout, not a later Paired Checkout. If the
+    preservation warning became a PASS, remove its now-unmatched waiver using
+    the existing waiver cleanup and commit that change in independent history.
+  Complete the existing final Doctor invocations with zero failures and active
+  warnings. Continue below only after the human's chosen history migration into
+  the RTL repository is complete.
 - If the inner repository has no history, move its `.git` metadata to a uniquely
   named backup under the parent repo's `$(git rev-parse --git-common-dir)` (verify
   the destination is absent first) and report that recovery path. Preserve the
@@ -252,8 +267,12 @@ allowlist exactly—hybrid does not authorize committing operational state.
 - Once the files belong to the RTL repository, drop the `/.booley_project` line
   from `.git/info/exclude` (leave `/.devcontainer` and `/.claude` there unless the
   user asks otherwise — those are machine-specific runtime config).
-- Then `git add .booley_project && git commit`. Do **not** move the exclusion into
-  `.gitignore`; the point is to track the directory, not to re-hide it.
+- After migration, ensure the inner Git metadata is backed up outside these
+  files: the RTL repository must track regular files, not an embedded-repository
+  gitlink. Then `git add .booley_project`; inspect `git ls-files --stage
+  .booley_project` and require regular-file entries rather than mode `160000`
+  before committing. Do **not** move the exclusion into `.gitignore`; the point
+  is to track the directory, not to re-hide it.
 - Verify what landed with `git ls-files .booley_project | head`: the inner
   `.gitignore` should have kept `tmp/`, `.runtime/`, `worktrees/`, and the
   Goal logs/locks out. If transient state slipped in, unstage it and fix the

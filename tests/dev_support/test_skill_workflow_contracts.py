@@ -681,11 +681,18 @@ def test_heal_requires_user_decision_for_ticket_leftovers():
 
 def test_setup_open_footprint_preserves_history_before_changing_exclusions():
     text = _skill_text("booley-setup", "steps/4-doctor.md")
-    section = text.split("**Open —", 1)[1].split("Either way,", 1)[0]
-    assert section.index("Before changing exclusions") < section.index(
-        "drop the `/.booley_project` line"
-    )
-    assert section.index("retain the outer") < section.index("drop the `/.booley_project` line")
+    section = " ".join(text.split("**Open —", 1)[1].split("Either way,", 1)[0].split())
+    drop = section.index("drop the `/.booley_project` line")
+    assert section.index("Before changing exclusions") < drop
+    assert section.index("the outer exclusion when present") < drop
     assert "human's chosen history migration" in section
+    final_gate = section.index("zero failures and active warnings")
+    assert section.index("For an actual `goals.history-ignored") < section.index("copy that exact")
+    assert section.index("Commit the waiver") < final_gate
+    assert section.index("unexcluded authenticated Paired Checkout") < final_gate
+    assert section.index("standalone current checkout") < final_gate
+    assert section.index("remove its now-unmatched waiver") < final_gate
+    assert "leave an already absent" in section
+    assert section.index("regular-file entries") < section.index("before committing")
     assert "missing-exclusion waiver" in section
     assert "git info/exclude missing Booley entry" not in section

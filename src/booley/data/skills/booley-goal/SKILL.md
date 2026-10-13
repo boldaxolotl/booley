@@ -112,7 +112,7 @@ require a second approval to finish. Completion does not authorize merging,
 publishing, or deleting the branch or worktree. Outside Stealth, the Session
 Summary is committed under `.booley_project/goals/history/` in the Goal
 worktree when that path is Git-trackable and owned by the RTL repository;
-otherwise it stays local, including an independently versioned Booley Directory.
+otherwise it stays local. Paired Checkout summaries always stay local.
 
 ## Resume or abandon
 

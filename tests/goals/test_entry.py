@@ -669,9 +669,10 @@ def test_nonexcluded_unpaired_root_is_not_exempt(layout, tmp_path, nested):
         git(project, "commit", "-qm", "independent")
     elif nested == "broken":
         (project / ".git").write_bytes(b"gitdir: /nonexistent-paired-metadata\n")
-    with pytest.raises(
-        GoalEntryError, match=r"uncommitted changes|Paired Checkout is unavailable"
-    ):
+    if nested != "broken":
+        assert git(layout.worktree, "status", "--porcelain=v1") == "?? .booley_project/"
+    message = "Paired Checkout is unavailable" if nested == "broken" else "uncommitted changes"
+    with pytest.raises(GoalEntryError, match=message):
         enter_goal_mode(_request(layout), _env(layout))
 
 
@@ -698,6 +699,9 @@ def test_doctor_retain_exclusion_hint_leaves_linked_goal_entry_working(layout, t
     from booley.harness import doctor
 
     paired = install_paired_project(layout, tmp_path)
+    empty = tmp_path / "empty-excludes"
+    empty.write_bytes(b"")
+    git(layout.worktree, "config", "core.excludesFile", str(empty))
     (paired / "booley.toml").write_bytes(b"[stealth]\nenabled = false\n")
     git(paired, "add", "booley.toml")
     git(paired, "commit", "-qm", "open configuration")
@@ -706,7 +710,77 @@ def test_doctor_retain_exclusion_hint_leaves_linked_goal_entry_working(layout, t
     reporter = doctor._Reporter.create()
     doctor._check_goal_history_ignored(layout.worktree, paired, reporter.pass_, reporter.warn_)
     assert "retain the outer exclusion" in reporter.findings[0].fix
-    # Follow the preserve-history branch: retain the exclusion and rerun Doctor.
+    # Follow preservation: commit its exact waiver in independent history before final checks.
+    finding = reporter.findings[0]
+    (paired / "doctor-waivers.toml").write_text(
+        f'version = 1\n[[waiver]]\ncheck = "{finding.check_id}"\n'
+        f'subject = "{finding.subject}"\n'
+        'reason = "Preserve independent history and local summaries."\npermanent = true\n'
+    )
+    git(paired, "add", "doctor-waivers.toml")
+    git(paired, "commit", "-qm", "Accepted preservation policy")
+    reporter = doctor._Reporter.create(doctor.load_doctor_waivers(paired))
     doctor._check_goal_history_ignored(layout.worktree, paired, reporter.pass_, reporter.warn_)
+    assert reporter.findings[0].severity == "waived"
+    assert git(paired, "status", "--porcelain=v1") == ""
     assert exclude.read_bytes() == before
     assert enter_goal_mode(_request(layout), _env(layout)).record.state is GoalState.ACTIVE
+    next_root = tmp_path / "next-worktree"
+    git(layout.main, "worktree", "add", "-q", "--detach", str(next_root), "main")
+    next_pair = next_root / ".booley_project"
+    git(paired, "worktree", "add", "-q", "--detach", str(next_pair), "HEAD")
+    reporter = doctor._Reporter.create(doctor.load_doctor_waivers(next_pair))
+    doctor._check_goal_history_ignored(next_root, next_pair, reporter.pass_, reporter.warn_)
+    assert reporter.findings[0].severity == "waived"
+    assert git(next_pair, "status", "--porcelain=v1") == ""
+    assert (
+        enter_goal_mode(
+            _request(layout, work_dir=next_root, slug="next-preserved"), _env(layout)
+        ).record.state
+        is GoalState.ACTIVE
+    )
+
+
+def test_pair_breaking_during_entry_rolls_back_record_and_retains_effects(layout, tmp_path):
+    paired = install_paired_project(layout, tmp_path)
+    marker = paired / ".git"
+    broken = b"gitdir: /nonexistent-paired-metadata\n"
+
+    def break_pair(name):
+        if name == "checked_out":
+            marker.write_bytes(broken)
+            raise RuntimeError("original entry failure")
+
+    with pytest.raises(GoalEntryError, match="original entry failure"):
+        enter_goal_mode(_request(layout), _env(layout, break_pair))
+    (record,) = _store(layout).list_records().records
+    assert record.state is GoalState.FAILED
+    assert "could not inspect" in record.failure
+    assert BRANCH in _branches(layout.main)
+    assert _head_ref(layout.worktree) == "refs/heads/" + BRANCH
+    assert marker.read_bytes() == broken
+    assert (paired / "booley.toml").exists()
+
+
+@pytest.mark.parametrize("committed", [False, True])
+def test_paired_root_gitlink_is_not_exempt_from_entry(layout, tmp_path, committed):
+    paired = install_paired_project(layout, tmp_path)
+    git(
+        layout.worktree,
+        "update-index",
+        "--add",
+        "--cacheinfo",
+        "160000",
+        git(paired, "rev-parse", "HEAD"),
+        ".booley_project",
+    )
+    if committed:
+        git(layout.worktree, "commit", "-qm", "tracked paired gitlink")
+        (paired / "booley.toml").write_bytes(b"user work\n")
+    git(layout.worktree, "config", "diff.ignoreSubmodules", "all")
+    status = git(layout.worktree, "status", "--porcelain=v1", "--ignore-submodules=none")
+    assert status.endswith(".booley_project") and not status.startswith("??")
+    with pytest.raises(GoalEntryError, match=r"the worktree has uncommitted changes"):
+        enter_goal_mode(_request(layout), _env(layout))
+    if committed:
+        assert (paired / "booley.toml").read_bytes() == b"user work\n"
