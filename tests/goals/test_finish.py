@@ -590,10 +590,14 @@ def paired_publication_layout(layout, tmp_path, *, selected=None):
     return layout
 
 
-# Windows measured 66.9s for the finished recovery case; retain 3x headroom.
+# Windows measured 60.3s (None) and 66.9s (finished); retain 3x headroom.
 @pytest.mark.parametrize(
     "boundary",
-    [None, "local-artifacts", pytest.param("finished", marks=pytest.mark.timeout(210))],
+    [
+        pytest.param(None, marks=pytest.mark.timeout(210)),
+        "local-artifacts",
+        pytest.param("finished", marks=pytest.mark.timeout(210)),
+    ],
 )
 def test_nonexcluded_pair_finish_retry_and_next_entry_stay_local(layout, tmp_path, boundary):
     layout = paired_publication_layout(layout, tmp_path)
