@@ -3222,9 +3222,11 @@ fn test_time_token_phase_async_cli_and_ranges() {
             assert_eq!(code, 0, "{err}");
             assert_eq!(out, expected);
         }
-        let typed = "25ns:35t";
         let cycles = if included { "3:4" } else { "1:2" };
-        for command in ["signal", "wave", "stats"] {
+        for (command, typed) in ["signal", "wave", "stats"]
+            .into_iter()
+            .flat_map(|command| ["25ns:35ns", "25t:35t", "25ns:35t"].map(|typed| (command, typed)))
+        {
             let mut a = vec![
                 command, bp, "--clock", "qa.clk", "--reset", "qa.rstn", "-t", typed, "-s",
                 "qa.data",
@@ -3295,17 +3297,19 @@ fn test_time_token_phase_consumers_round_trip() {
         assert_eq!(code, 0, "{err}");
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["data"]["total_ticks"], 10);
-        let mut args = vec![
-            "wave", bp, "-t", "25ns:35t", "-s", "qa.data", "--marker", "here", "35t", "--marker",
-            "here", "25ns",
-        ];
-        args.extend(&common);
-        let (out, err, code) = run_bwave(&args);
-        assert_eq!(code, 0, "{err}");
-        assert_eq!(
-            out,
-            format!("       here   \ncycle     {c}  {}\n data     3  4\n", c + 1)
-        );
+        for (range, marker) in [("25ns:35ns", "25ns"), ("25t:35t", "25t")] {
+            let mut args = vec![
+                "wave", bp, "-t", range, "-s", "qa.data", "--marker", "here", "35t", "--marker",
+                "here", marker,
+            ];
+            args.extend(&common);
+            let (out, err, code) = run_bwave(&args);
+            assert_eq!(code, 0, "{err}");
+            assert_eq!(
+                out,
+                format!("       here   \ncycle     {c}  {}\n data     3  4\n", c + 1)
+            );
+        }
         for async_mode in [false, true] {
             let mut a = vec!["diff", bp, "35t", "25ns", "-s", "qa.data"];
             a.extend(&common);
