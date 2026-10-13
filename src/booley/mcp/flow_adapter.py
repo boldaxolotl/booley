@@ -4,6 +4,7 @@ from typing import Any
 
 from booley.flows.base import BuiltinFlow
 from booley.flows.builtin_cli import build_parser
+from booley.flows.test_runs import MAX_SEED, SEED_REQUEST_RANDOM
 from booley.mcp.schema_extractor import SPECIALIST_CLI_ONLY_DESTS, extract_schema
 
 
@@ -45,4 +46,12 @@ def flow_schema(endpoint: Any) -> dict[str, Any]:
         properties.pop("tests_file", None)
         properties["test"].update(minItems=1, uniqueItems=True)
         properties["test"]["items"]["minLength"] = 1
+        # One seed for every selected Test Run, or a fresh draw per Test Run.
+        properties["seed"] = {
+            "description": properties["seed"]["description"],
+            "oneOf": [
+                {"type": "integer", "minimum": 1, "maximum": MAX_SEED},
+                {"type": "string", "enum": [SEED_REQUEST_RANDOM]},
+            ],
+        }
     return schema

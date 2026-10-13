@@ -1,19 +1,18 @@
 """Project names, shared lists, selectors, and environment tables."""
 
 import logging
+import tomllib
 from pathlib import Path
 
 import pytest
 
 from booley.config import project_config
 from booley.config.project_config import (
-    DEFAULT_TEST_SELECT,
     TESTS_SECTION_KEYS,
     load_test_configuration,
     normalize_configs_toml,
     normalize_tests_toml,
     project_name,
-    render_test_selector,
 )
 from booley.config.tests_toml_rules import TEST_NAME_RULES
 
@@ -254,14 +253,23 @@ class TestTestsTomlClosedKeySet:
     """A Target section holds only keys the Simulation Flow applies."""
 
     def test_section_keys_are_exactly_the_documented_set(self):
-        assert TESTS_SECTION_KEYS == ("tests", "test_list", "skip", "select", "env")
+        assert TESTS_SECTION_KEYS == (
+            "tests",
+            "test_list",
+            "skip",
+            "select",
+            "env",
+            "seed",
+            "default_seed",
+            "variants",
+        )
 
     @pytest.mark.parametrize(
         ("key", "value"),
         [
-            ("variants", {"stress": {"default": "short", "short": ["+iters=1000"]}}),
-            ("seed", "+seed={seed}"),
-            ("default_seed", 7),
+            ("variant", {"stress": {"default": "short", "short": ["+iters=1000"]}}),
+            ("seeds", [1, 2]),
+            ("plusargs", ["+a"]),
             ("test", ["reset"]),
             ("Tests", ["reset"]),
             ("timeout", 30),
@@ -272,7 +280,7 @@ class TestTestsTomlClosedKeySet:
             normalize_tests_toml({"sim": {"tests": ["reset", "stress"], key: value}})
         assert str(excinfo.value) == (
             f"tests.toml [sim] has unknown key {key!r}; a Target section holds "
-            "only: tests, test_list, skip, select, env"
+            "only: tests, test_list, skip, select, env, seed, default_seed, variants"
         )
 
     def test_unknown_key_names_the_qualified_target_section(self):
@@ -287,6 +295,245 @@ class TestTestsTomlClosedKeySet:
         assert normalize_configs_toml(raw) == {
             "default": {"defines": [], "tb_top": "tb", "tests": ["a+b", "default"]},
         }
+
+
+def _section(**keys: object) -> dict[str, object]:
+    return {"sim": {"tests": ["reset", "stress"], **keys}}
+
+
+_VARIANTS = {
+    "stress": {
+        "default": "short",
+        "short": ["+iters=1000"],
+        "fault": {"args": ["+err_rate=5"], "env": {"FAULT_MODE": "1"}},
+    }
+}
+
+
+class TestTestsTomlVariantsAndSeeds:
+    """`variants`, `seed` and `default_seed` load, with every refusal (ADR 0072)."""
+
+    def test_accepts_the_adr_example(self):
+        raw = _section(
+            select="+test_id={name}", seed="+seed={seed}", default_seed=7, variants=_VARIANTS
+        )
+        section = normalize_tests_toml(raw)["sim"]
+        assert section["seed"] == "+seed={seed}"
+        assert section["default_seed"] == 7
+        assert section["variants"] == _VARIANTS
+
+    def test_empty_default_variant_is_the_migration_path(self):
+        variants = {"stress": {"default": "plain", "plain": []}}
+        assert normalize_tests_toml(_section(variants=variants))["sim"]["variants"] == variants
+
+    @pytest.mark.parametrize(
+        ("variants", "message"),
+        [
+            (
+                {"ghost": {"default": "a", "a": []}},
+                "tests.toml [sim].variants.ghost declares Test Variants for 'ghost', which "
+                "is not one of the Target's tests (reset, stress)",
+            ),
+            (
+                {"stress": {"a": []}},
+                "tests.toml [sim].variants.stress must name its default Test Variant: "
+                'add default = "<variant>"',
+            ),
+            (
+                {"stress": {"default": "b", "a": []}},
+                "tests.toml [sim].variants.stress.default names 'b', which is not a "
+                "declared Test Variant (declared: a)",
+            ),
+            (
+                {"stress": {"default": "a", "a": ["iters=1"]}},
+                "tests.toml [sim].variants.stress.a argument 'iters=1' must start with '+' or '-'",
+            ),
+            (
+                {"stress": {"default": "a", "a": ["+a b"]}},
+                "tests.toml [sim].variants.stress.a argument '+a b' must be one token "
+                "without whitespace or NUL; declare each argument as its own list entry",
+            ),
+            (
+                {"stress": {"default": "a", "a": {"args": [], "plusargs": []}}},
+                "tests.toml [sim].variants.stress.a has unknown key 'plusargs'; a Test "
+                "Variant table holds only args and env",
+            ),
+            (
+                {"stress": {"default": "a", "a": ["+test_id=3"]}},
+                "tests.toml [sim].variants.stress.a argument '+test_id=3' is not "
+                "allowed: the select template sets it",
+            ),
+            (
+                {"stress": {"default": "a", "a": ["+verilator+seed+5"]}},
+                "tests.toml [sim].variants.stress.a argument '+verilator+seed+5' is not "
+                "allowed: Booley passes the Verilator seed option itself",
+            ),
+            (
+                {"stress": {"default": "a", "a": {"env": {"FLAVOR": "x"}}}},
+                "tests.toml [sim].variants.stress.a.env may not set FLAVOR: the Target's "
+                "env table already sets it, and the Target owns that value",
+            ),
+        ],
+    )
+    def test_variant_refusals(self, variants: dict, message: str):
+        with pytest.raises(ValueError) as excinfo:
+            normalize_tests_toml(_section(env={"FLAVOR": "base"}, variants=variants))
+        assert str(excinfo.value) == message
+
+    def test_variant_may_not_repeat_the_seed_option(self):
+        variants = {"stress": {"default": "a", "a": ["+seed=9"]}}
+        with pytest.raises(ValueError) as excinfo:
+            normalize_tests_toml(_section(seed="+seed={seed}", variants=variants))
+        assert str(excinfo.value) == (
+            "tests.toml [sim].variants.stress.a argument '+seed=9' is not allowed: "
+            "the seed template sets it"
+        )
+
+    def test_variant_name_obeys_the_test_name_rule(self):
+        variants = {"stress": {"default": "a", "a": [], "b+c": []}}
+        with pytest.raises(ValueError, match=r"variants\.stress: Test Variant name 'b\+c'"):
+            normalize_tests_toml(_section(variants=variants))
+
+    def test_target_without_tests_cannot_have_variants(self):
+        with pytest.raises(ValueError, match=r"not one of the Target's tests \(none declared\)"):
+            normalize_tests_toml({"sim": {"variants": {"x": {"default": "a", "a": []}}}})
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "BOOLEY_TARGET",
+            "COCOTB_RANDOM_SEED",
+            "COCOTB_TEST_FILTER",
+            "MODULE",
+            "TESTCASE",
+            "TOPLEVEL",
+            "TOPLEVEL_LANG",
+            "RANDOM_SEED",
+            "LIBPYTHON_LOC",
+            "PYGPI_PYTHON_BIN",
+            "GPI_USERS",
+            "PYTHONPATH",
+            "LD_LIBRARY_PATH",
+        ],
+    )
+    def test_reserved_environment_names_are_refused_in_both_tables(self, name: str):
+        variants = {"stress": {"default": "a", "a": {"env": {name: "1"}}}}
+        with pytest.raises(ValueError, match=rf"variants\.stress\.a\.env may not set {name}: "):
+            normalize_tests_toml(_section(variants=variants))
+        with pytest.raises(ValueError, match=rf"tests\.toml \[sim\]\.env may not set {name}: "):
+            normalize_tests_toml(_section(env={name: "1"}))
+
+    def test_ordinary_environment_names_still_load(self):
+        section = normalize_tests_toml(_section(env={"FLAVOR": "a", "BOOLEYISH": "b"}))["sim"]
+        assert section["env"] == {"FLAVOR": "a", "BOOLEYISH": "b"}
+
+    @pytest.mark.parametrize(
+        ("template", "message"),
+        [
+            ("", "tests.toml [sim].seed must be a non-empty string"),
+            (
+                "+seed=1",
+                "tests.toml [sim].seed template '+seed=1' must contain the plain {seed} "
+                "field exactly once and no other field, conversion or format",
+            ),
+            (
+                "+a={seed}+b={seed}",
+                "tests.toml [sim].seed template '+a={seed}+b={seed}' must contain the "
+                "plain {seed} field exactly once and no other field, conversion or format",
+            ),
+            (
+                "+seed={seed}{name}",
+                "tests.toml [sim].seed template '+seed={seed}{name}' must contain the "
+                "plain {seed} field exactly once and no other field, conversion or format",
+            ),
+            (
+                "+seed={{seed}}",
+                "tests.toml [sim].seed template '+seed={{seed}}' must contain the "
+                "plain {seed} field exactly once and no other field, conversion or format",
+            ),
+            (
+                "+seed {seed}",
+                "tests.toml [sim].seed template '+seed {seed}' must be one token without "
+                "whitespace or NUL; declare each argument as its own list entry",
+            ),
+            (
+                "seed={seed}",
+                "tests.toml [sim].seed template 'seed={seed}' must start with '+' or '-'",
+            ),
+            (
+                "+verilator+seed+{seed}",
+                "tests.toml [sim].seed may not be +verilator+seed+: Booley passes the "
+                "Verilator seed option itself",
+            ),
+            (
+                "+test_id={seed}",
+                "tests.toml [sim].seed sets the same option as the select template "
+                "(+test_id); the seed needs its own option",
+            ),
+        ],
+    )
+    def test_seed_template_refusals(self, template: str, message: str):
+        with pytest.raises(ValueError) as excinfo:
+            normalize_tests_toml(_section(seed=template))
+        assert str(excinfo.value) == message
+
+    def test_seed_template_accepts_a_getopt_argument(self):
+        assert normalize_tests_toml(_section(seed="--seed={seed}"))["sim"]["seed"] == (
+            "--seed={seed}"
+        )
+
+    @pytest.mark.parametrize("value", [1, 7, 2**31 - 1])
+    def test_default_seed_accepts_the_whole_range(self, value: int):
+        assert normalize_tests_toml(_section(default_seed=value))["sim"]["default_seed"] == value
+
+    @pytest.mark.parametrize("value", [0, -1, 2**31, True, "7", 1.0])
+    def test_default_seed_refusals(self, value: object):
+        with pytest.raises(ValueError, match=r"tests\.toml \[sim\]\.default_seed"):
+            normalize_tests_toml(_section(default_seed=value))
+
+
+class TestShippedTestsTemplate:
+    """The annotated template the setup skill reads must itself load."""
+
+    _TEMPLATE = (
+        Path(project_config.__file__).parents[1]
+        / "data"
+        / "skills"
+        / "booley-setup"
+        / "TESTS_TEMPLATE.toml"
+    )
+
+    def test_template_loads_as_written(self):
+        sections = normalize_tests_toml(tomllib.loads(self._TEMPLATE.read_text(encoding="utf-8")))
+        assert sections["sim"]["tests"] == ["reset", "basic", "stress"]
+
+    def test_commented_seed_and_variant_examples_load_when_enabled(self):
+        text = self._TEMPLATE.read_text(encoding="utf-8")
+        for example in (
+            '# seed = "+seed={seed}"',
+            "# default_seed = 7",
+            "# [sim.variants.stress]",
+            '# default = "short"',
+            '# short = ["+iters=1000"]',
+            '# soak  = ["+iters=100000"]',
+            '# fault = { args = ["+err_rate=5"], env = { FAULT_MODE = "1" } }',
+        ):
+            assert text.count(example) == 1, example
+            text = text.replace(example, example.removeprefix("# "))
+        # The Variant table must follow the [sim] keys it belongs to.
+        head, variants = text.split("[sim.variants.stress]")
+        table, rest = variants.split("[sim_fast]")
+        sections = normalize_tests_toml(
+            tomllib.loads(head + "[sim_fast]" + rest + "[sim.variants.stress]" + table)
+        )
+        assert sections["sim"]["seed"] == "+seed={seed}"
+        assert sections["sim"]["default_seed"] == 7
+        assert sorted(sections["sim"]["variants"]["stress"]) == [
+            "default",
+            "fault",
+            "short",
+            "soak",
+        ]
 
 
 class TestSelectTemplateValidation:
@@ -321,21 +568,6 @@ class TestSelectTemplateValidation:
     def test_rejects_empty_template(self):
         with pytest.raises(ValueError, match="non-empty string"):
             normalize_tests_toml({"k": {"select": "  "}})
-
-
-class TestRenderTestSelector:
-    """`render_test_selector` renders a Target's template, default `+test_id`."""
-
-    def test_default_template_when_target_unknown(self):
-        # No tests.toml in the test project → module TEST_SELECT empty → default.
-        assert render_test_selector("nope", 3, "boot") == "+test_id=3"
-        assert DEFAULT_TEST_SELECT == "+test_id={index}"
-
-    def test_renders_declared_template(self, monkeypatch):
-        from booley.config import project_config
-
-        monkeypatch.setitem(project_config.TEST_SELECT, "lite", "+test={name}")
-        assert render_test_selector("lite", 1, "stress") == "+test=stress"
 
 
 class TestEnvTableValidation:

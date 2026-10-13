@@ -20,8 +20,7 @@ from booley.core.boundary import BoundaryError
 from booley.flows.sim import waiver_candidates as store
 from booley.flows.sim.coverage_campaign import CoverageCampaign
 from booley.flows.sim.coverage_campaign_store import (
-    CAMPAIGN_SCHEMA_V3,
-    CAMPAIGN_SCHEMA_V4,
+    POINT_STORE_CAMPAIGN_SCHEMAS,
     CoverageCampaignSummary,
 )
 from booley.flows.sim.coverage_provisional import (
@@ -72,9 +71,9 @@ def _binding(
     campaign_path: Path,
     flow_reports_root: Path,
 ) -> store.CampaignBinding:
-    if summary is None or summary.source_schema not in {CAMPAIGN_SCHEMA_V3, CAMPAIGN_SCHEMA_V4}:
-        raise ValueError("only point-store Campaigns (V3/V4) can bind Waiver Candidates")
-    assert summary.point_store is not None  # V3/V4 always carry a point store
+    if summary is None or summary.source_schema not in POINT_STORE_CAMPAIGN_SCHEMAS:
+        raise ValueError("only point-store Campaigns (V3 and later) can bind Waiver Candidates")
+    assert summary.point_store is not None  # every point-store version carries a point store
     try:
         relative = canonical_project_alias_path(campaign_path.absolute()).relative_to(
             canonical_project_alias_path(flow_reports_root.absolute())

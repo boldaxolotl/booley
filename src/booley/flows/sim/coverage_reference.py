@@ -16,9 +16,8 @@ from typing import TYPE_CHECKING, cast
 from booley.core.boundary import BoundaryError, require_dict, require_int, require_str_value
 from booley.flows.sim.campaign_durability import durable_create
 from booley.flows.sim.coverage_campaign_store import (
-    CAMPAIGN_SCHEMA_V3,
-    CAMPAIGN_SCHEMA_V4,
     MAX_MANIFEST_BYTES,
+    POINT_STORE_CAMPAIGN_SCHEMAS,
     LoadedCoverageCampaign,
     load_coverage_campaign_bytes,
 )
@@ -356,10 +355,9 @@ def _validate_reference(value: Mapping[str, object]) -> None:
 
 
 def _validate_nested_reference(nested: Mapping[str, object]) -> None:
-    if nested["path_base"] != "origin_target" or nested["schema"] not in {
-        CAMPAIGN_SCHEMA_V3,
-        CAMPAIGN_SCHEMA_V4,
-    }:
+    if nested["path_base"] != "origin_target" or nested["schema"] not in (
+        POINT_STORE_CAMPAIGN_SCHEMAS
+    ):
         raise CoverageCampaignReferenceError("coverage_campaign storage contract is invalid")
     nested_path = _relative_path(nested["path"])
     nested_parts = Path(nested_path).parts

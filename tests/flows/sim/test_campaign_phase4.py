@@ -1069,7 +1069,7 @@ class _ParallelExecution:
         self.state = state
 
     @contextmanager
-    def ordinary_group(self, _handle, names):
+    def ordinary_group(self, _handle, names, _test_runs=None):
         yield _ParallelGroup(self.state, names)
 
 

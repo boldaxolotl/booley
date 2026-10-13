@@ -763,14 +763,14 @@ def test_migrated_v1_result_references_hash_original_stored_bytes(
     monkeypatch.setattr("booley.flows.sim.campaign.coordinator.CampaignStore", lambda _root: store)
     monkeypatch.setattr(
         "booley.flows.sim.campaign.coordinator._authenticate_prerequisite_manifest",
-        lambda *_args: (manifest, "smoke"),
+        lambda *_args: (manifest, "smoke", None),
     )
     monkeypatch.setattr(
         "booley.flows.sim.campaign.coordinator._selected_prerequisite_result",
         lambda *_args: recovered,
     )
 
-    prerequisite = _prerequisite_facts(store, manifest)[0]["result"]
+    prerequisite = _prerequisite_facts(store, manifest, names_test_runs=False)[0]["result"]
     assert prerequisite["bytes"] == len(raw)
     assert prerequisite["sha256"] == _digest(raw)
 
