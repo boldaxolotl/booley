@@ -933,7 +933,7 @@ fn query_bwave(bwave_path: &str, mut cfg: ExtractConfig) {
         }
     }
     // Resolve time tokens now that we have the cache header.
-    resolve_time_tokens_or_exit(&mut cfg, cache.ticks_to_ns, cache.clock_period_ticks);
+    resolve_time_tokens_or_exit(&mut cfg, &cache);
     if cfg.wave_mode {
         wave_from_cache(&cache, &cfg);
     } else if cfg.diff_points.is_some() {
@@ -1321,8 +1321,8 @@ fn run_stuck(args: StuckArgs) {
 /// `diff_strs`) against the simulation's timescale. Exits with code 2 on
 /// any parse / unit-resolution failure. Logged as a `--time` / `--at` /
 /// `diff` error to make the offending argument obvious.
-fn resolve_time_tokens_or_exit(cfg: &mut ExtractConfig, ticks_to_ns: f64, clock_period_ticks: u64) {
-    if let Err(e) = cfg.resolve_time_tokens(ticks_to_ns, clock_period_ticks) {
+fn resolve_time_tokens_or_exit(cfg: &mut ExtractConfig, cache: &ColumnCache) {
+    if let Err(e) = cfg.resolve_time_tokens(cache) {
         eprintln!("ERROR: {}", e);
         process::exit(2);
     }
