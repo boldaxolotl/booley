@@ -203,24 +203,31 @@ def recover_timeout_progress(
     parsed: CocotbResults | None = None,
 ) -> CocotbResults:
     """Recover completed, active, and not-run tests from cocotb progress lines."""
+    # Cocotb 2.x logs <module>.<test>, while XML and selected tests use bare
+    # names. Accept the module prefix without widening the test-name match;
+    # bare progress names remain valid for cocotb 1.x.
     if not selected:
         xml_names = [test.name for test in parsed.tests] if parsed is not None else []
-        running_names = re.findall(r"cocotb\.regression\s+running\s+(\S+)\s+\(", output)
+        running_names = [
+            name.rsplit(".", 1)[-1]
+            for name in re.findall(r"cocotb\.regression\s+running\s+(\S+)\s+\(", output)
+        ]
         selected = list(dict.fromkeys((*xml_names, *running_names)))
+    patterns = {name: rf"(?:\w+\.)*{re.escape(name)}" for name in selected}
     passed = {
         name
         for name in selected
-        if re.search(rf"cocotb\.regression\s+{re.escape(name)}\s+passed\b", output)
+        if re.search(rf"cocotb\.regression\s+{patterns[name]}\s+passed\b", output)
     }
     failed = {
         name
         for name in selected
-        if re.search(rf"cocotb\.regression\s+{re.escape(name)}\s+failed\b", output)
+        if re.search(rf"cocotb\.regression\s+{patterns[name]}\s+failed\b", output)
     }
     started = [
         name
         for name in selected
-        if re.search(rf"cocotb\.regression\s+running\s+{re.escape(name)}\s+\(", output)
+        if re.search(rf"cocotb\.regression\s+running\s+{patterns[name]}\s+\(", output)
     ]
     active = next((name for name in reversed(started) if name not in passed | failed), None)
     parsed_by_name = {
