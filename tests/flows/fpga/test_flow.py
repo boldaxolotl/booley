@@ -33,6 +33,7 @@ from booley.flows.implementation_comparison import (
     TargetExecutionRef,
     target_pair_plans_for_handles,
 )
+from booley.flows.target_parameters import ParameterValue
 from booley.fusesoc import fusesoc_registry
 from booley.fusesoc.fusesoc_registry import ResolvedFile, ResolvedTarget
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
@@ -841,7 +842,7 @@ class TestFpgaResolution:
         # Sources are absolute (under work_dir = the EDAM workspace_root).
         assert all(Path(s).is_absolute() for s in sv + v)
         assert "CFG_DEFAULT" in captured["defines"]  # vlogdefine, default true
-        assert captured["vlogparams"] == {"WIDTH": 8}
+        assert captured["vlogparams"] == {"WIDTH": ParameterValue("int", "8")}
         # Part and XDC both come from the Target and reach
         # build_fpga_edam as a one-element list.
         assert captured["part"] == "xc7a200tfbg484-1"
@@ -1145,7 +1146,7 @@ class TestTargetRecipeBoundary:
         assert any(d.endswith("rtl/include") for d in inc)
         # The vlogdefine param reached the EDAM defines.
         assert "SYNTH" in captured["defines"]
-        assert captured["vlogparams"] == {"WIDTH": 8}
+        assert captured["vlogparams"] == {"WIDTH": ParameterValue("int", "8")}
         assert prepared.recipe_snapshot["ppa_profile"]["name"] == "compact"
         # Resolved build dir lives under the worktree and is relocatable — no
         # absolute workspace path (in either separator form) leaked into the EDAM.
