@@ -75,6 +75,8 @@ enum Command {
     /// Per-signal transition counts and time-in-state
     #[command(long_about = include_str!("../docs/public/commands/stats.md"))]
     Stats(StatsArgs),
+    /// Clock-grid verdict and trace metadata without walking data signals
+    Overview(OverviewArgs),
     /// Find signals stuck at a constant value
     #[command(long_about = include_str!("../docs/public/commands/stuck.md"))]
     Stuck(StuckArgs),
@@ -122,6 +124,10 @@ struct GlobalOpts {
     #[arg(long)]
     clock: Option<String>,
 
+    /// Sync observation before or after the edge (default: post-edge)
+    #[arg(long, value_parser = ["post-edge", "pre-edge"], conflicts_with = "async_mode")]
+    sample_mode: Option<String>,
+
     /// Reset signal pattern for sync mode (default: auto *rst*)
     #[arg(long)]
     reset: Option<String>,
@@ -152,7 +158,7 @@ fn positive_limit(value: &str) -> Result<usize, String> {
 
 fn text_format_only(command: &str, g: &GlobalOpts) {
     if g.format == "json" {
-        eprintln!("ERROR: JSON output is not implemented for {command}; use find/value/stats/list");
+        eprintln!("ERROR: JSON output is not implemented for {command}; use find/value/stats/list/signal/wave/distance/overview");
         process::exit(2);
     }
 }
@@ -162,6 +168,7 @@ impl Default for GlobalOpts {
         Self {
             async_mode: false,
             clock: None,
+            sample_mode: None,
             reset: None,
             with_reset: false,
             format: "text".to_string(),
@@ -247,6 +254,14 @@ struct BuildArgs {
 enum BuildEngine {
     Serial,
     Parallel,
+}
+
+#[derive(Args, Debug)]
+struct OverviewArgs {
+    #[arg(value_name = "STORE_FILE")]
+    bwave: String,
+    #[command(flatten)]
+    global: GlobalOpts,
 }
 
 #[derive(Args, Debug)]
@@ -371,6 +386,9 @@ struct MatchModifiers {
 
 #[derive(Args, Debug)]
 struct FindArgs {
+    /// Include interior stopped grid points in literal trigger matching
+    #[arg(long)]
+    include_stopped: bool,
     #[arg(value_name = "STORE_FILE")]
     bwave: String,
 
@@ -395,6 +413,9 @@ struct FindArgs {
 
 #[derive(Args, Debug)]
 struct SampleArgs {
+    /// Include interior stopped grid points in literal trigger matching
+    #[arg(long)]
+    include_stopped: bool,
     #[arg(value_name = "STORE_FILE")]
     bwave: String,
 
@@ -758,6 +779,21 @@ fn build_bwave_from_reader(
         process::exit(1);
     }
     let _ = std::fs::remove_file(&heartbeat);
+    if let Some(cache) = ColumnCache::load_from_file(out) {
+        let cfg = bwave::cache::clock_query_config(
+            &cache,
+            &ExtractConfig {
+                with_reset: true,
+                json_format: true,
+                ..Default::default()
+            },
+        );
+        if let Some(verdict) = cfg.clock_regularity {
+            eprintln!("{}", bwave::clock::verdict_text(&verdict));
+        }
+    } else {
+        eprintln!("# clock summary unavailable; store conversion succeeded");
+    }
 }
 
 fn default_build_jobs() -> usize {
@@ -922,7 +958,15 @@ fn query_bwave(bwave_path: &str, mut cfg: ExtractConfig) {
     }
     if let Some(ref clk_pat) = cfg.clock_pattern {
         match cache.detect_clock_from_pattern(clk_pat) {
-            Ok((period, first_rise, name)) => cache.override_clock(period, first_rise, &name),
+            Ok((period, first_rise, name)) => {
+                cache.override_clock(period, first_rise, &name);
+                if !cfg.json_format {
+                    eprintln!(
+                        "# clock override: {} (period={} ticks, first_rise={})",
+                        name, period, first_rise
+                    );
+                }
+            }
             Err(e) => {
                 eprintln!("ERROR: {}", e);
                 // A --clock pattern that doesn't fit this trace is caller
@@ -931,6 +975,10 @@ fn query_bwave(bwave_path: &str, mut cfg: ExtractConfig) {
                 process::exit(2);
             }
         }
+    }
+    if cfg.pre_edge && cache.clock_period_ticks == 0 {
+        eprintln!("ERROR: --sample-mode pre-edge requires a usable clock");
+        process::exit(2);
     }
     // Resolve time tokens now that we have the cache header.
     resolve_time_tokens_or_exit(&mut cfg, &cache);
@@ -959,8 +1007,60 @@ fn query_bwave(bwave_path: &str, mut cfg: ExtractConfig) {
 //   Subcommand handlers
 // ===================================================================
 
+fn reject_sample_mode(command: &str, g: &GlobalOpts) {
+    if g.sample_mode.is_some() {
+        eprintln!("ERROR: --sample-mode is not supported for {command}");
+        process::exit(2);
+    }
+}
+
+fn run_overview(args: OverviewArgs) {
+    let g = args.global;
+    reject_sample_mode("overview", &g);
+    require_bwave(&args.bwave, "bwave overview");
+    let mut cache = ColumnCache::load_from_file(Path::new(&args.bwave)).unwrap_or_else(|| {
+        eprintln!("ERROR: cannot load waveform store '{}'", args.bwave);
+        process::exit(1);
+    });
+    if let Some(pattern) = g.clock {
+        let (period, first, name) = cache
+            .detect_clock_from_pattern(&pattern)
+            .unwrap_or_else(|e| {
+                eprintln!("ERROR: {e}");
+                process::exit(2);
+            });
+        cache.override_clock(period, first, &name);
+    }
+    let cfg = bwave::cache::clock_query_config(
+        &cache,
+        &ExtractConfig {
+            json_format: true,
+            with_reset: g.with_reset,
+            reset_pattern: g.reset,
+            ..Default::default()
+        },
+    );
+    if g.format == "json" {
+        bwave::output::emit_clock_json(
+            "overview",
+            bwave::output::OverviewData {
+                total_ticks: cache.sim_end_tick,
+                signal_count: cache.unique_signal_count(),
+                period_ticks: cache.clock_period_ticks,
+                first_rise_tick: cache.first_rise_tick,
+            },
+            bwave::output::merge_warnings(cfg.warnings, &g.wrapper_warning),
+            cfg.clock_regularity,
+            cfg.clock_stopped,
+        );
+    } else if let Some(verdict) = cfg.clock_regularity {
+        println!("{}", bwave::clock::verdict_text(&verdict));
+    }
+}
+
 fn run_list(args: ListArgs) {
     let g = args.global;
+    reject_sample_mode("list", &g);
     let json_format = g.format == "json";
     let (patterns, _radixes) = split_patterns_and_radixes(&args.signals);
     if args.tree && json_format {
@@ -977,7 +1077,15 @@ fn run_list(args: ListArgs) {
     };
     if let Some(ref clock) = g.clock {
         match cache.detect_clock_from_pattern(clock) {
-            Ok((period, rise, name)) => cache.override_clock(period, rise, &name),
+            Ok((period, rise, name)) => {
+                cache.override_clock(period, rise, &name);
+                if !json_format {
+                    eprintln!(
+                        "# clock override: {} (period={} ticks, first_rise={})",
+                        name, period, rise
+                    );
+                }
+            }
             Err(error) => {
                 eprintln!("ERROR: {error}");
                 process::exit(2);
@@ -996,7 +1104,6 @@ fn run_list(args: ListArgs) {
 
 fn run_signal(args: SignalArgs) {
     let g = args.global;
-    text_format_only("signal", &g);
     require_bwave(&args.bwave, "bwave signal");
     let (patterns, signal_radixes) = split_patterns_and_radixes(&args.signals);
 
@@ -1005,6 +1112,7 @@ fn run_signal(args: SignalArgs) {
         signal_radixes,
         explicit_selectors: !args.signals.is_empty(),
         async_mode: g.async_mode,
+        pre_edge: g.sample_mode.as_deref() == Some("pre-edge"),
         clock_pattern: g.clock,
         reset_pattern: g.reset,
         with_reset: g.with_reset,
@@ -1019,7 +1127,6 @@ fn run_signal(args: SignalArgs) {
 
 fn run_wave(args: WaveArgs) {
     let g = args.global;
-    text_format_only("wave", &g);
     let marker_tokens = parse_markers(&args.marker.markers, g.async_mode).unwrap_or_else(|error| {
         eprintln!("ERROR: {error}");
         process::exit(2);
@@ -1035,6 +1142,7 @@ fn run_wave(args: WaveArgs) {
         wave_mode: true,
         wave_rle: args.rle,
         async_mode: g.async_mode,
+        pre_edge: g.sample_mode.as_deref() == Some("pre-edge"),
         clock_pattern: g.clock,
         reset_pattern: g.reset,
         with_reset: g.with_reset,
@@ -1063,6 +1171,7 @@ fn run_value(args: ValueArgs) {
         // resolve_time_tokens() before snapshot_from_cache consumes them.
         at_time_is_cycle: !g.async_mode,
         async_mode: g.async_mode,
+        pre_edge: g.sample_mode.as_deref() == Some("pre-edge"),
         clock_pattern: g.clock,
         reset_pattern: g.reset,
         with_reset: g.with_reset,
@@ -1143,10 +1252,12 @@ fn run_find(args: FindArgs) {
         signal_radixes,
         find_pattern: Some(args.pattern),
         find_value: Some(value),
+        include_stopped: args.include_stopped,
         first_match: modifiers.first_match,
         last_match: modifiers.last_match,
         count_only: modifiers.count_only,
         async_mode: g.async_mode,
+        pre_edge: g.sample_mode.as_deref() == Some("pre-edge"),
         clock_pattern: g.clock,
         reset_pattern: g.reset,
         with_reset: g.with_reset,
@@ -1177,10 +1288,12 @@ fn run_sample(args: SampleArgs) {
         explicit_selectors: !args.signals.is_empty(),
         sample_at_pattern: Some(args.trigger),
         sample_at_value: Some(value),
+        include_stopped: args.include_stopped,
         first_match: modifiers.first_match,
         last_match: modifiers.last_match,
         count_only: modifiers.count_only,
         async_mode: g.async_mode,
+        pre_edge: g.sample_mode.as_deref() == Some("pre-edge"),
         clock_pattern: g.clock,
         reset_pattern: g.reset,
         with_reset: g.with_reset,
@@ -1209,6 +1322,7 @@ fn run_diff(args: DiffArgs) {
         explicit_selectors: !args.signals.is_empty(),
         diff_strs: Some((args.t1, args.t2)),
         async_mode: g.async_mode,
+        pre_edge: g.sample_mode.as_deref() == Some("pre-edge"),
         clock_pattern: g.clock,
         reset_pattern: g.reset,
         with_reset: g.with_reset,
@@ -1222,7 +1336,6 @@ fn run_diff(args: DiffArgs) {
 
 fn run_distance(args: DistanceArgs) {
     let g = args.global;
-    text_format_only("distance", &g);
     if !args.signals.is_empty() {
         eprintln!("ERROR: distance does not support -s; positional event selectors select events");
         process::exit(2);
@@ -1247,6 +1360,7 @@ fn run_distance(args: DistanceArgs) {
         distance_b,
         stats_mode: args.stats,
         async_mode: g.async_mode,
+        pre_edge: g.sample_mode.as_deref() == Some("pre-edge"),
         clock_pattern: g.clock,
         reset_pattern: g.reset,
         with_reset: g.with_reset,
@@ -1271,6 +1385,7 @@ fn run_stats(args: StatsArgs) {
         explicit_selectors: !args.signals.is_empty(),
         stats_mode: true,
         async_mode: g.async_mode,
+        pre_edge: g.sample_mode.as_deref() == Some("pre-edge"),
         clock_pattern: g.clock,
         reset_pattern: g.reset,
         with_reset: g.with_reset,
@@ -1285,6 +1400,7 @@ fn run_stats(args: StatsArgs) {
 
 fn run_stuck(args: StuckArgs) {
     let g = args.global;
+    reject_sample_mode("stuck", &g);
     text_format_only("stuck", &g);
     require_bwave(&args.bwave, "bwave stuck");
     let (patterns, signal_radixes) = split_patterns_and_radixes(&args.signals);
@@ -1302,6 +1418,7 @@ fn run_stuck(args: StuckArgs) {
         explicit_selectors: !args.signals.is_empty(),
         find_stuck,
         async_mode: g.async_mode,
+        pre_edge: g.sample_mode.as_deref() == Some("pre-edge"),
         clock_pattern: g.clock,
         reset_pattern: g.reset,
         with_reset: g.with_reset,
@@ -1386,6 +1503,7 @@ fn main() {
         Command::Diff(a) => run_diff(a),
         Command::Distance(a) => run_distance(a),
         Command::Stats(a) => run_stats(a),
+        Command::Overview(a) => run_overview(a),
         Command::Stuck(a) => run_stuck(a),
         Command::Schema => run_schema(),
         Command::Docs(a) => run_docs(a),

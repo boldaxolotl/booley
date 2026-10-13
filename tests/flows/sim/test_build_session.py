@@ -814,3 +814,31 @@ def test_generation_snapshot_sees_mode_and_empty_directory_changes(tmp_path: Pat
     (build / "empty").mkdir()
     assert snapshot_generation_files(prepared) != after_chmod
     assert snapshot_build_inputs(prepared) == inputs
+
+
+def test_generated_parameter_normalization_changes_build_identity(tmp_path):
+    from booley.flows.parameter_transport import normalize_parameter_records
+
+    with SimulationBuildSession(_handle(tmp_path)) as session:
+        work = session.new_generation()
+        build = work / "build"
+        build.mkdir()
+        response = build / "top.vc"
+        response.write_text('-GNAME=\\"a" b\\c\\"\n')
+        resolved = SimpleNamespace(
+            build_root=build,
+            configured_eda_tool="verilator",
+            toplevel="top",
+            parameters={
+                "NAME": {"datatype": "str", "paramtype": "vlogparam", "default": 'a" b\\c'}
+            },
+        )
+        prepared = SimpleNamespace(work_root=work, build_root=build, resolved=resolved)
+        before = session.capture_inputs(prepared)
+        normalize_parameter_records(resolved)
+        after = session.capture_inputs(prepared)
+        assert after["build/top.vc"] != before["build/top.vc"]
+        with pytest.raises(SimulationBuildSlotError, match="input changed"):
+            session.authorize_fresh_image(prepared, before)
+        normalize_parameter_records(resolved)
+        assert session.capture_inputs(prepared) == after

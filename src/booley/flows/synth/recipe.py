@@ -179,6 +179,17 @@ def synthesis_recipe_snapshot(
     return {
         "schema": 5 if synth_mode.runs_openroad else 4,
         "flow": "synth",
+        **(
+            {"parameter_transport_revision": 1}
+            if any(
+                isinstance(metadata, Mapping)
+                and metadata.get("paramtype") == "vlogparam"
+                and metadata.get("datatype") in ("str", "file")
+                and "default" in metadata
+                for metadata in resolved.parameters.values()
+            )
+            else {}
+        ),
         "target": target,
         "vlnv": resolved.vlnv,
         "toplevel": resolved.toplevel,

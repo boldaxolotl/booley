@@ -37,10 +37,17 @@ corpus) → `bwave schema` (JSON Schema for `--format json`).
 - **Virtual signals**: `--virtual "name = expr"` (Verilog-subset boolean
   expressions), on `wave`, `find`, `sample`, `distance`, `value` only. See
   `bwave docs show reference/virtual-signals`.
-- **JSON envelope**: `list`, `value`, `find` and `stats` wrap output in
-  `{$schema, command, data, warnings}`; every other command emits text only.
+- **JSON envelope**: `list`, `value`, `find`, `stats`, `signal`, `wave`,
+  `distance`, and `overview` wrap output in `{$schema, command, data, warnings}`.
   The envelope is the contract for programmatic callers (`bwave schema` has the
   full grammar). Text output is for humans — do not pattern-match it.
+- **Clock check**: cycle numbers assume a regular clock. Run `bwave overview`
+  (JSON: `clock_regularity`) before trusting them; when it warns, use
+  `--async` with tick/time bounds. See `bwave docs show reference/sync-vs-async`.
+- **Clock stops**: informational, listed in JSON `clock_stopped`. Literal
+  `find`/`sample` triggers skip stopped cycles unless `--include-stopped` is set.
+- **Pre-edge sampling**: `--sample-mode pre-edge` shows what flops captured on
+  each edge, with the same cycle numbers. Post-edge is the default.
 
 ## Reach for `wave` first
 

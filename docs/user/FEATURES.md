@@ -96,6 +96,22 @@ This is the identity half of the Booley Flow contract, and it matters for two re
 
 Because Targets and tests are data, not code, the same names mean the same thing to the Developer Agent, every Specialist, the Booley Flows, and you, across every run.
 
+Run-time arguments and seeds are declared the same way. A **Test Variant** in `tests.toml` gives one Test a named, fixed set of extra arguments and environment, and every **Test Run** of a seeded Target has an explicit seed that Booley passes to the simulator and records:
+
+```toml
+[sim.variants.test_edge_cases]
+default = "short"
+short = ["+iters=1000"]
+soak  = ["+iters=100000"]
+```
+
+```bash
+booley flow sim --target sim --test test_edge_cases+soak@42   # one Test Variant, one seed
+booley flow sim --target sim --test test_edge_cases@x20       # 20 drawn seeds
+```
+
+There is no option for free-form simulator arguments, so a pass always belongs to a declared configuration, and a failure prints the command that reruns it with the same seed. A simulation Goal can require a Test Run, or N seeds of one (`test+variant@xN`): Booley draws the seeds once at entry and the Goal is met when all of them have passed. Cycle Count and coverage Goals name Test Runs the same way and are decided by their thresholds and floors. See [Test Runs, Test Variants and seeds](FLOW_REFERENCE.md#test-runs-test-variants-and-seeds).
+
 The same model covers **cocotb (Python) testbenches**: a Target whose flow options declare a `cocotb_module` lists its `@cocotb.test()` function names in `tests.toml`, and `sim` runs the selected set batched in one sim process, taking per-test verdicts from cocotb's `results.xml`; `--test` filters the set the same way, and `SIM:{target}` keeps its meaning.
 
 ## Evidence-backed Goals
@@ -120,7 +136,7 @@ Long single-context Developer Agent sessions degrade: the model loses the thread
 
 For debugging, Booley **observes actual simulation behavior** through a custom-built Rust waveform EDA tool (`bwave`) instead of just reasoning about the code. It can query signal values at specific time ranges, use one signal as a trigger for sampling another, and trace data through the design: systematic debugging instead of guesswork.
 
-**FST trace store.** Raw VCD files from complex designs can reach 10 GB+, so Booley's successful trace artifact is FST: the open, transition-based waveform format, typically 10-50x smaller than the source VCD and readable by any off-the-shelf viewer (GTKWave, VaporView). `bwave gui` puts a scoped view straight into the user's VS Code window. Booley reads a Target's authored native FST directly. When the Target has no trace generation, Booley adds VCD tracing and streams the VCD through a named pipe (FIFO) to `bwave`, which converts it to FST in parallel. The reasoning is in [WHY.md: Why FST is the trace contract](../internals/WHY.md#why-fst-is-the-trace-contract).
+**FST trace store.** Raw VCD files from complex designs can reach 10 GB+, so Booley's successful trace artifact is FST: the open, transition-based waveform format, typically 10-50x smaller than the source VCD and readable by any off-the-shelf viewer (GTKWave, VaporView). `bwave gui` puts a scoped view straight into the user's VS Code window. Booley reads a Target's authored native FST directly. When the Target has no trace generation, Booley adds VCD tracing and streams the VCD through a named pipe (FIFO) to `bwave`, which converts it to FST in parallel. A Cocotb Target always traces through a VCD file that Booley converts to FST after the run; see [Tracing a Cocotb Target](CONFIG.md#tracing-a-cocotb-target). The reasoning is in [WHY.md: Why FST is the trace contract](../internals/WHY.md#why-fst-is-the-trace-contract).
 
 ## Goal recovery
 

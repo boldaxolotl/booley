@@ -3663,7 +3663,14 @@ fn test_time_token_phase_async_cli_and_ranges() {
             a[8] = tick;
             let (expected, err, code) = run_bwave(&a);
             assert_eq!(code, 0, "{err}");
-            assert_eq!(out, expected);
+            let mut payload: serde_json::Value = serde_json::from_str(&out).unwrap();
+            let mut reference: serde_json::Value = serde_json::from_str(&expected).unwrap();
+            payload.as_object_mut().unwrap().remove("clock_regularity");
+            reference
+                .as_object_mut()
+                .unwrap()
+                .remove("clock_regularity");
+            assert_eq!(payload, reference);
         }
         for command in ["signal", "wave", "stats"] {
             let tick_range = if included { "5t:25t" } else { "25t:45t" };

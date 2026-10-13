@@ -2,16 +2,16 @@
 //!
 //! Every JSON emission goes through `emit_json`, which wraps a typed
 //! payload in the canonical `{$schema, command, data, warnings}` envelope.
-//! The schema URL is pinned to a git tag; the schema itself lives at
+//! The schema URL is pinned to an immutable commit; the schema itself lives at
 //! `schema/bwave.json` and is served by the `bwave schema` subcommand.
 
 use std::io::{self, BufWriter, Write};
 
 use serde::Serialize;
 
-/// Pinned `$schema` URL. Bump alongside the git tag at release-cut time.
+/// Immutable commit containing this schema revision; update after committing schema changes.
 pub const SCHEMA_URL: &str =
-    "https://raw.githubusercontent.com/boldaxolotl/booley/v0.3.0/crates/bwave/schema/bwave.json";
+    "https://raw.githubusercontent.com/boldaxolotl/booley/9f6ee6a81995e7b45d79da37f58744cce1034585/crates/bwave/schema/bwave.json";
 
 /// Canonical envelope. Every `--format json` payload is wrapped in this shape.
 #[derive(Serialize)]
@@ -21,16 +21,32 @@ pub struct JsonEnvelope<'a, T: Serialize> {
     pub command: &'a str,
     pub data: T,
     pub warnings: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clock_regularity: Option<crate::clock::ClockVerdict>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub clock_stopped: Vec<crate::clock::StoppedRange>,
 }
 
 /// Serialize and write the envelope to stdout (pretty-printed, trailing newline).
 /// Errors are swallowed — the harness already exits non-zero on upstream failure.
 pub fn emit_json<T: Serialize>(command: &str, data: T, warnings: Vec<String>) {
+    emit_clock_json(command, data, warnings, None, Vec::new());
+}
+
+pub fn emit_clock_json<T: Serialize>(
+    command: &str,
+    data: T,
+    warnings: Vec<String>,
+    clock_regularity: Option<crate::clock::ClockVerdict>,
+    clock_stopped: Vec<crate::clock::StoppedRange>,
+) {
     let env = JsonEnvelope {
         schema: SCHEMA_URL,
         command,
         data,
         warnings,
+        clock_regularity,
+        clock_stopped,
     };
     let stdout = io::stdout();
     let mut out = BufWriter::new(stdout.lock());
@@ -76,9 +92,10 @@ pub struct SignalEntry {
 #[derive(Serialize)]
 pub struct ValueData {
     pub scope_prefix: String,
-    pub mode: String,       // "sync" | "async"
-    pub at: i64,            // user-provided time/cycle
-    pub at_unit: String,    // "cycle" | "tick" ("ns" for legacy unresolved input)
+    pub mode: String,    // "sync" | "async"
+    pub at: i64,         // user-provided time/cycle
+    pub at_unit: String, // "cycle" | "tick" ("ns" for legacy unresolved input)
+    pub sample_tick: Option<u64>,
     pub target_tick: u64,   // resolved cache tick
     pub time_label: String, // matches the text-mode "# Snapshot at ..." label
     pub signals: Vec<SignalValue>,
@@ -148,6 +165,8 @@ pub struct JsonStatsEntry {
     /// Same data as `time_in_state_ticks` but converted to ns via the cache
     /// timescale. `None` only when no timescale is recorded in the VCD.
     pub time_in_state_ns: Option<std::collections::BTreeMap<String, i64>>,
+    pub time_in_state_clocked_cycles: Option<std::collections::BTreeMap<String, u64>>,
+    pub time_in_state_stopped_cycles: Option<std::collections::BTreeMap<String, u64>>,
 }
 
 /// Combine diagnostics once without process-global state.
@@ -158,4 +177,60 @@ pub fn merge_warnings(mut warnings: Vec<String>, inherited: &[String]) -> Vec<St
         }
     }
     warnings
+}
+
+#[derive(Serialize)]
+pub struct OverviewData {
+    pub total_ticks: u64,
+    pub signal_count: usize,
+    pub period_ticks: u64,
+    pub first_rise_tick: u64,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SignalRecord {
+    Value {
+        time: u64,
+        name: String,
+        value: String,
+    },
+    ClockStopped {
+        from_cycle: u64,
+        to_cycle: u64,
+    },
+}
+
+#[derive(Serialize)]
+pub struct SignalData {
+    pub mode: String,
+    pub records: Vec<SignalRecord>,
+    pub truncated: bool,
+}
+
+#[derive(Serialize)]
+pub struct WaveData<'a> {
+    pub mode: String,
+    pub columns: &'a [String],
+    pub ticks: &'a [u64],
+    pub names: &'a [String],
+    pub values: &'a [Vec<String>],
+}
+
+#[derive(Serialize)]
+pub struct DistancePair {
+    pub from: u64,
+    pub to: u64,
+    pub elapsed: u64,
+    pub stopped_cycles: u64,
+}
+
+#[derive(Serialize)]
+pub struct DistanceData {
+    pub unit: String,
+    pub count: u64,
+    pub pairs: Vec<DistancePair>,
+    pub summary: Option<String>,
+    pub stopped_cycles: u128,
+    pub truncated: bool,
 }

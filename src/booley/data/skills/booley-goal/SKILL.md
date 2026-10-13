@@ -42,7 +42,9 @@ Use it for human-steered or unattended work inside the Sandbox.
    `COVERAGE`, `MUTATION`, `REVIEW`); names render as `SIM:sim_core` or
    `REVIEW:rtl_bugs`, with requirements in parentheses. Expand each
    `<target>` for the Targets that family applies to, and `<spec>` for the
-   specification. Set each Goal's `origin` to its Goalset name; ad-hoc Goals
+   specification. When a Goalset or the human asks for a particular Test
+   Variant, seed, or number of seeds, write it as a Test Run selector; see
+   [Goals that name Test Runs](#goals-that-name-test-runs). Set each Goal's `origin` to its Goalset name; ad-hoc Goals
    may omit it. Do not merge duplicates yourself: the tool chooses the stricter
    Goal and reports merges. Show the final Goals to the human before entry; proceed when their
    existing instruction settles the choices.
@@ -52,6 +54,66 @@ Use it for human-steered or unattended work inside the Sandbox.
    Save the returned record ID and Goal Branch. Read and follow the returned
    rules and warnings. On refusal, resolve the named cause; never retry with
    weakened Goals just to obtain entry.
+
+## Goals that name Test Runs
+
+A Test Run is one Test Variant simulated with one seed, written
+`test[+variant][@seed]`. Test Variants are declared per Test in `tests.toml`;
+a bare Test name means its default Variant, and no seed means the Target's
+Default Seed.
+
+| `family` | Argument | Accepts |
+|---|---|---|
+| `SIM` | optional `test` | `test`, `test+variant`, either with `@seed`, or either with `@xN` (N Test Runs with different seeds, N from 1 to 1000). Without `test`: every Test of the Target that is not skipped, each as its default Variant at the Default Seed. |
+| `CYCLE_COUNT` | `test` | `test`, `test+variant`, either with `@seed`. `@xN` is refused. |
+| `COVERAGE` | `tests` | `"all"` or a list of the `SIM` selector forms. |
+
+```json
+{"family": "SIM", "target": "sim_fifo", "test": "stress+soak@x20"}
+```
+
+- Entry resolves each such Goal to exact Test Runs and freezes them in the
+  Goal Record, including the N seeds Booley draws for `@xN`. Later
+  `tests.toml` edits to a default Variant or `default_seed` do not change the
+  Goal. A seed on an unseeded Target fails entry: report it; do not drop the
+  seed yourself.
+- A Target, Test or Variant that does not exist yet is pending. Booley
+  freezes it when it first exists. Until then the Goal is unmet.
+- Only a Test Run with a frozen name and unchanged declared arguments and
+  environment counts. `flow sim` on the Target without `test` takes its
+  Test Runs from the Target's Goal that covers every Test (`SIM` without
+  `test`, or `COVERAGE` with `tests="all"`); with no such Goal it runs the
+  default Test Run of each Test. `test="test+variant@xN"` runs the frozen seeds of the Goal with
+  that Target, Variant and N. For any other Goal, pass each frozen Test Run
+  name from `goal_status` in `test`. Any other Test Run is diagnostic: it
+  records no evidence and its failure blocks no Goal.
+- A `diagnostic=true` run records nothing even for frozen Test Runs; its
+  report names the Goals whose frozen Test Runs ran and failed. Use it to
+  debug. A failure it shows is real: fix the cause, then run without
+  `diagnostic` to record the outcome. Never report a Goal's Test Runs as
+  passing on the strength of a diagnostic run.
+- Each frozen Test Run is `passed`, `failed` or `missing` in `goal_status`. A
+  simulation Goal is met when all are `passed`; they may pass in separate
+  runs. A failure stays until the code changes: do not rerun a failed seed
+  hoping for a pass. Reproduce it with the rerun command `goal_status`
+  prints, then fix the cause.
+- A Cycle Count Goal is measured by a run of its frozen Test Run, which must
+  pass. A coverage Goal is measured by one `coverage=true` run of exactly its
+  frozen Test Runs and is decided by its coverage floors alone: it can be met
+  while one of those Test Runs fails. Report such a failure to the human; do
+  not present a met coverage Goal as proof that its Test Runs pass.
+- Never edit `tests.toml` to make a frozen Test Run easier: changing or
+  removing its Variant leaves the Goal unmet (`goal-test-run-changed`,
+  `goal-test-run-missing`) until the human approves a retarget.
+- Adding a Goal that names a Test Run is an `add`. Pinning a seed, naming
+  another Variant, or raising N is a `retarget`; lowering N is a `relax`. All
+  need human approval through `goal_propose_change`, and the Goal's outcomes
+  start again. When a diagnostic Test Run fails on a real bug, tell the human
+  and offer to propose it as a Goal.
+
+For an unmet reason you do not recognize, read "A Goal that names Test Runs
+stays unmet" in the packaged troubleshooting guide:
+`python3 -c "from booley.runtime.paths import troubleshooting_path; print(troubleshooting_path())"`.
 
 ## Work and evidence
 

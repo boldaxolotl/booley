@@ -43,6 +43,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import IO, Any
 
+from booley.flows.target_parameters import ParameterValue
 from booley.runtime.file_lock import (
     LockContentionError,
     acquire_file_lock,
@@ -229,6 +230,15 @@ def _define_param(define: str) -> tuple[str, dict[str, Any]]:
 
 def _vlogparam(value: Any) -> dict[str, Any]:
     """Map a parameter value to an EDAM ``vlogparam`` (``-GNAME=VALUE``)."""
+    if isinstance(value, ParameterValue):
+        default: Any = value.value
+        if value.datatype == "bool":
+            default = value.value == "1"
+        elif value.datatype == "int":
+            default = int(value.value)
+        elif value.datatype == "real":
+            default = float(value.value)
+        return {"datatype": value.datatype, "paramtype": "vlogparam", "default": default}
     datatype, val = _infer_datatype(value)
     return {"datatype": datatype, "paramtype": "vlogparam", "default": val}
 

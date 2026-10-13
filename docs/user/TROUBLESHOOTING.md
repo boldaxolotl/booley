@@ -478,6 +478,84 @@ new one) is in
 [SUPPORTED-EDA-TOOLS.md](https://github.com/boldaxolotl/Booley/blob/main/docs/user/SUPPORTED-EDA-TOOLS.md#synth-rtl-frontend-sv2v-vs-slang).
 If you don't need `slang`, stay on the default `sv2v` frontend.
 
+## `flow sim` refuses a seed, a Test Variant or a Test Run selector
+
+A Test Run is one Test Variant simulated with one seed, written
+`test[+variant][@seed]`. `booley flow sim` checks every `--test` selector and
+`--seed` before it builds anything. See
+[Test Runs, Test Variants and seeds](https://github.com/boldaxolotl/Booley/blob/main/docs/user/FLOW_REFERENCE.md#test-runs-test-variants-and-seeds)
+for the forms it accepts.
+
+| Message | Cause | Fix |
+|---|---|---|
+| `--seed cannot be combined with a --test that names a seed` | The request names a seed twice: `--seed` and `test@seed` or `test@xN`. | Name the seed in one place. |
+| `--seed applies to simulation, not to an elaboration mode` | `--seed` with `--mode elab-only` or `elab-only-standalone`. | Drop `--seed`. |
+| `Target '<t>' is unseeded` | The Target cannot apply a seed: it is an Icarus Target with an HDL testbench and no `seed` template in `tests.toml`. | Add a `seed` template that the testbench reads, for example `seed = "+seed={seed}"`, or drop the seed. |
+| `has no Test Variant` / `declares no Test Variants` | The selector names a Variant that `tests.toml` does not declare for that Test. | Use a declared Variant, or declare one under `[<target>.variants.<test>]`. |
+| `selects Test Run '<name>' more than once` | Two selectors resolve to the same Test Run, such as `stress` and its default Variant `stress+short`. | Name each Test Run once. |
+| `asks for more than 1000 Test Runs of Target` | One request may run at most 1000 Test Runs of one Target. | Split the request into several. |
+| `seed count <N> exceeds the limit of 1000` | `test@xN` accepts N from 1 to 1000. | Use a smaller N. |
+| `seed <n> is out of range` / `must not have leading zeros` | A seed is a decimal number from 1 to 2147483647 without a sign or leading zeros. | Write the seed in that form. |
+
+`booley doctor` reports a `tests.toml` that cannot be loaded, or that a Target
+cannot apply, as a `tests.toml` failure that names the Target and the key. The
+rules are in [Tests (`tests.toml`)](https://github.com/boldaxolotl/Booley/blob/main/docs/user/CONFIG.md#tests-teststoml).
+
+## A Goal that names Test Runs stays unmet
+
+Simulation, Cycle Count and coverage Goals require exact Test Runs that Goal
+Mode freezes at entry
+([Goals that name Test Runs](https://github.com/boldaxolotl/Booley/blob/main/docs/user/USAGE.md#goals-that-name-test-runs)).
+`goal_status` shows each Goal's frozen Test Runs with their outcomes, and one
+of these reasons when the Goal is unmet. A coverage Goal is decided by its
+coverage floors alone, so it never shows `goal-test-run-incomplete`,
+`goal-test-run-failed` or `goal-campaign-unaccounted`; it can be met while
+`goal_status` lists a failed Test Run under it.
+
+| Reason | Meaning | What to do |
+|---|---|---|
+| `goal-test-run-incomplete` | Some frozen Test Runs have not passed yet. | Run them. For a Goal that covers every Test of its Target, run the whole Target. For a Goal with a `test@xN` selector, run `--test` with that selector. For any other Goal, run `--test` with each frozen Test Run name that `goal_status` lists. |
+| `goal-test-run-failed` | A frozen Test Run failed at the current file contents. A later pass at the same contents does not clear it. | Fix the cause and run again. `goal_status` prints a rerun command for each failed Test Run. |
+| `goal-test-run-pending` | The Goal names a Target, Test or Test Variant that does not exist yet. | Add it. Booley freezes the Test Run at the next Flow run or status read. |
+| `goal-test-run-unresolvable` | The pending part cannot be frozen: `tests.toml` cannot be loaded or applied to the Target, or the Goal names a seed and the Target is unseeded. | Fix `tests.toml` as the message says, or ask for a Goal change. |
+| `goal-simulation-suite-empty` | The Goal covers every Test of its Target, and the Target runs none: every registered Test is skipped. | Register a Test, or remove it from `skip`. |
+| `goal-test-run-missing` | A frozen Test Run's Target, Test or Test Variant is gone, its Test is skipped, or the Target cannot apply its seed. | Restore the declaration, or ask the Developer Agent to propose a `retarget`. |
+| `goal-test-run-changed` | The declared arguments or environment of a frozen Test Run changed in `tests.toml`. | Restore them, or ask the Developer Agent to propose a `retarget`. |
+| `goal-test-run-metric-missing` | The latest run recorded Test Run outcomes but did not measure the Goal's Cycle Count or coverage. | Cycle Count: run the Goal's frozen Test Run. Coverage: run exactly the Goal's frozen Test Runs in one `--coverage` run. |
+| `goal-test-run-ledger-missing` | The Goal's evidence carries no Test Run outcomes. | Run the Simulation Flow again. |
+| `goal-test-run-ledger-outdated` | The recorded Test Run outcomes differ from the recorded evidence, for example after an interrupted run was recovered. | Run the Simulation Flow again. |
+| `goal-test-run-ledger-malformed` | The recorded Test Run outcomes cannot be read. | Run the Simulation Flow again. |
+| `goal-campaign-unaccounted` | A Simulation Campaign that ran the Goal's Test Runs is still running, or its results cannot be read, so what it observed is not in the Goal's evidence yet. | Wait for the run to finish, or resume it, then read status again. A Simulation Campaign registration that cannot be read is moved aside only when you approve a Goal change. |
+
+A `retarget` that leaves the Goal as written freezes its Test Runs again from
+the Target as it is now. Like every Goal change it needs your approval, and
+the Goal's Test Run outcomes start again.
+
+A failing Test Run that is not one of a Goal's frozen Test Runs is
+**diagnostic**. The Flow report lists it under `Diagnostic failures`, and it
+blocks no Goal. Ask for a Goal change if that Test Run should become required.
+
+A run with `--diagnostic` records nothing, so a frozen Test Run that passes or
+fails in it keeps the outcome `goal_status` showed before. The Flow report
+names the Goals whose frozen Test Runs ran and the ones that failed. Run again
+without `--diagnostic` to record them.
+
+Inside Goal Mode, Booley registers a Simulation Campaign before its first
+Test Run starts when its Target has a simulation or Cycle Count Goal: one
+`booley.goal-campaign/v1` document per Simulation Campaign under
+`logs/acceptance/campaigns/` of the Goal Record. Booley does not register a
+baseline Simulation Campaign. When a registered
+Simulation Campaign is cancelled or killed, the next Flow run or status read
+reads the results it finished and adds them to the Test Run outcomes of
+simulation and Cycle Count Goals; a failure it saw counts. Do not edit or delete these documents. One that cannot
+be read gives every simulation and Cycle Count Goal the reason
+`goal-campaign-unaccounted`, and Booley moves it to `quarantine/` beside the
+others when you approve a Goal change.
+
+The Review Package lists the Test Runs that Booley froze after entry, under
+the heading `Test Runs resolved after entry`, and every Simulation Campaign
+whose results were never fully accounted for.
+
 ## Simulation stalls at time zero without results
 
 cocotb's VPI/VHPI run loop is compiled against the simulator, so pinning a prior

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -18,7 +19,12 @@ async def test_cli_and_mcp_adapters_return_equivalent_structured_outcomes(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Both public invocation paths preserve one failed lint verdict."""
+    """Unknown-Target diagnostic parity with an explicit Project-directory stub."""
+    project = tmp_path / ".booley_project"
+    project.mkdir()
+    (tmp_path / "booley.toml").write_text('[project]\ndir=".booley_project"\n')
+    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project))
+    monkeypatch.delenv("BOOLEY_RUNTIME_DIR", raising=False)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "logs"))
@@ -30,6 +36,14 @@ async def test_cli_and_mcp_adapters_return_equivalent_structured_outcomes(
     monkeypatch.delenv("BOOLEY_STATE_FILE", raising=False)
 
     cli_result = LintFlow().execute_cli(["--target", "missing", "--diagnostic"])
+
+    diagnostic = "lint Target selection failed: Unknown target 'missing'; selectable Targets: (none authored)"
+    assert cli_result.outcome.report_text == diagnostic
+    reports = list((project / "flow-reports" / "lint").glob("*/report.json"))
+    assert len(reports) == 1
+    published = json.loads(reports[0].read_text())
+    assert published["report_text"] == diagnostic
+    assert published["exit_code"] == EXIT_ERROR
 
     definition = {
         "name": "lint",
@@ -61,5 +75,6 @@ async def test_cli_and_mcp_adapters_return_equivalent_structured_outcomes(
     report = mcp_result.structured_content["reports"][0]
     assert report["flow"] == "lint"
     assert report["exit_code"] == cli_result.outcome.exit_code
-    assert report.get("report_text", "") == cli_result.outcome.report_text
+    assert report["report_text"] == diagnostic
+    assert report["report_text"] == cli_result.outcome.report_text
     assert report["detail"] == cli_result.outcome.detail

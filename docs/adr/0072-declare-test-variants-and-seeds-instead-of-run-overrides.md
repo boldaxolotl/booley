@@ -52,7 +52,8 @@ never stand in for the declared Test. Implementation waits for Goal Mode
   environment or seed never share a simulator process. A cocotb batch holds
   only Test Runs with the same effective environment and seed.
 - **Pre-Sim Commands** receive the resolved Test Run names, so a hook can
-  stage per-Variant inputs such as firmware.
+  stage per-Variant inputs such as firmware. They arrive in the
+  `BOOLEY_TEST_RUN_*` variables (amended 2026-10-13, see Amendments).
 - **Seeds.** Booley never relies on a simulator's own default seed. A Test
   Run that names no seed uses the **Default Seed**: a Booley-wide constant
   that a Target can override in `tests.toml`. Booley uses the simulator's
@@ -63,7 +64,8 @@ never stand in for the declared Test. Implementation waits for Goal Mode
   mechanism has unseeded Test Runs: they are written without `@seed`, record
   no seed, and Booley refuses any seed for them. Each seed mapping is proven
   by a test in which the same seed repeats the random values and a different
-  seed changes them. `tests.toml` declares no seed lists.
+  seed changes them. `tests.toml` declares no seed lists. Xcelium's native
+  seed option is deferred (amended 2026-10-13, see Amendments).
 - **Random seeds.** For `--seed random`, Booley picks a concrete seed before
   it publishes the Simulation Campaign manifest. The seed is part of each
   work item's identity, so resume reuses it.
@@ -98,8 +100,8 @@ never stand in for the declared Test. Implementation waits for Goal Mode
   Goal Mode it always draws N new seeds before it publishes the Simulation
   Campaign manifest. `--seed` together with an `@` form in `--test` is refused
   rather than letting one override the other; the MCP tool validates the
-  same rule. One request can span more than one Simulation Campaign, which
-  keeps the campaign work-item limit.
+  same rule. A request for more than 1000 Test Runs of one Target is
+  refused (amended 2026-10-13, see Amendments).
 - **Multi-seed evidence, per seed.** A frozen seed counts as passed when it
   has a passing Test Run at the current dependent file contents (ADR 0067)
   and no failing Test Run at those contents. A failure at the same contents
@@ -161,3 +163,53 @@ never stand in for the declared Test. Implementation waits for Goal Mode
   configuration loading and in Doctor.
 - Changing the Booley-wide Default Seed changes every resolved Test Run
   without a seed, so it needs a release note.
+
+## Amendments (2026-10-13)
+
+Recorded while implementing issue #1233. Each item is a maintainer decision
+of 2026-10-11 unless it names another date.
+
+- **A request over the Test Run limit is refused.** The Decision said "One
+  request can span more than one Simulation Campaign, which keeps the
+  campaign work-item limit". That sentence is replaced. A request that
+  resolves to more than 1000 Test Runs of one Target is refused before
+  anything is planned, and the message tells the user to split it. The limit
+  is the Simulation Campaign work-item limit, counted per Target per request;
+  `@xN` accepts N up to the same 1000. One request therefore maps to exactly
+  one Simulation Campaign per Target, so resume, reports and Goal evidence
+  never have to join several campaigns of one request.
+- **Pre-Sim Commands keep the bare-name variables and gain Test Run
+  variables.** `BOOLEY_TEST_NAME` and `BOOLEY_TEST_NAMES` keep the bare Test
+  names, because existing hooks index their inputs (such as firmware images)
+  by Test. The resolved names arrive in new variables:
+  `BOOLEY_TEST_RUN_NAMES` (space-joined) for every firing, and for a firing
+  of exactly one Test Run `BOOLEY_TEST_RUN_NAME`, `BOOLEY_TEST_VARIANT` (when
+  the Test declares Variants) and `BOOLEY_TEST_SEED` (when the Target is
+  seeded).
+- **Xcelium's native seed is deferred.** "Booley uses the simulator's native
+  seed option where one exists" does not yet cover Xcelium (`-svseed`): the
+  Simulation Flow has no Xcelium launch path, so there is no command to pass
+  the option on. The implemented mechanisms are Verilator's
+  `+verilator+seed+<seed>`, the cocotb seed variable, and the `seed`
+  template on Verilator and Icarus. A Target of any other simulator is
+  unseeded. The Xcelium option belongs to the change that adds its launch
+  path.
+- **A `--diagnostic` run records nothing, frozen Test Runs included**
+  (decided 2026-10-13). "A failure of a matching Test Run is never cancelled
+  by a later pass" applies to runs that record evidence. A `--diagnostic` run
+  that executes a Goal's frozen Test Runs enters neither their passes nor
+  their failures. Its report names the Goals whose frozen Test Runs ran and
+  the ones that failed, so the result cannot pass unnoticed. Recording
+  failures from diagnostic runs was considered and rejected: `--diagnostic`
+  stays the one mode that never changes Goal state.
+- **A coverage Goal is decided by its coverage floors alone** (decided
+  2026-10-13). "A failure of a matching Test Run is never cancelled by a
+  later pass" holds for simulation and Cycle Count Goals. A failed Test Run
+  is a simulation concern: a coverage Goal is met when one coverage run of
+  exactly its frozen Test Runs reaches the floors, whether or not those runs
+  passed, in that run or in any other. Its Test Run outcomes are those of the
+  measuring run and are shown for information. A run that does not measure
+  the Goal never changes a measurement at the same file contents, and
+  Simulation Campaign accounting leaves coverage Goals out. The stricter
+  rule, unmet while any frozen run is failed, was implemented first and
+  reversed.

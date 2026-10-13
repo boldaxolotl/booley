@@ -91,6 +91,17 @@ The **Project checks** section validates Project Git state, configuration,
 custom endpoints, and Goal presence. Goal warnings distinguish active records
 from quiet attributable session presence; quiet does not prove abandonment.
 
+- `tests.toml`: one line says whether the file loads (section keys, Test and
+  Test Variant names, `select` and `seed` templates). A failure names the
+  Target and the key. For each sim Target, one more line says how its Test
+  Runs are seeded and with which Default Seed, for example `Target 'sim' Test
+  Runs are seeded through Verilator +verilator+seed+<seed> (Default Seed 1)`,
+  or that they are unseeded and why. An unseeded Target is reported as a
+  fact, not as a problem. A `tests.toml` entry that the Target cannot apply
+  fails: a Test Variant argument that overrides a plusarg the Target
+  declares, arguments or a `seed` template on a Cocotb Target, or
+  `default_seed` on an unseeded Target. See
+  [Tests (`tests.toml`)](CONFIG.md#tests-teststoml).
 - `tickets.leftover-board`: nonempty `tickets/board`, `tickets/state`,
   `tickets/logs`, `tickets/locks`, or `tickets/waiver-candidates` is reported
   by directory name. Preserve needed work, then delete that directory. Empty
