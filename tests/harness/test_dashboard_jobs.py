@@ -533,7 +533,8 @@ def test_dashboard_goal_rows_and_job_history_share_one_enumeration(tmp_path, mon
     paths = record_paths(tmp_path, record.id)
     paths.root.mkdir(parents=True)
     paths.record_file.write_text(json.dumps(record.to_json()))
-    paths.lock_file.touch()
+    # Windows read-only observation requires the producer's initialized lock byte.
+    paths.lock_file.write_bytes(b"\0")
     job_records.write_record(rec("retained", status="done"), paths.jobs_dir)
     original = GoalStore.list_records
     calls = []
