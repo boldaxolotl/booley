@@ -205,11 +205,7 @@ def _format_validation_error(error: ValidationError) -> str:
     path = "$"
     for part in error.absolute_path:
         path += f"[{part}]" if isinstance(part, int) else f".{part}"
-    if (
-        error.validator == "oneOf"
-        and isinstance(error.instance, dict)
-        and "family" in error.instance
-    ):
+    if error.validator == "oneOf":
         # Goal schemas expose public capabilities only. jsonschema's oneOf message
         # echoes the rejected object, including internal family names and nested values.
         capabilities = [

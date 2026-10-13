@@ -220,21 +220,36 @@ def test_admitted_producer_name_does_not_follow_a_later_retarget(goal_mode):
     assert "new_target" not in adapter.present_criterion(old.key, {}).label
 
 
-def test_goal_schema_errors_never_echo_rejected_internal_names():
+@pytest.mark.parametrize(
+    "raw",
+    [
+        {
+            "family": "synthesis_ok",
+            "target": "secret_sentinel",
+            "nested": {"key": "opaque_sentinel"},
+        },
+        {"synthesis_ok": {"target": "secret_sentinel", "key": "opaque_sentinel"}},
+        {"target": "secret_sentinel", "goal_key": "sim_pass_u16x73656e74696e656c"},
+        "synthesis_ok",
+        ["sim_pass_u16x73656e74696e656c"],
+        None,
+    ],
+)
+def test_goal_schema_errors_never_echo_rejected_internal_names(raw):
     from jsonschema import Draft202012Validator
 
     from booley.goals.model import goal_arg_json_schema
     from booley.mcp.application import _format_validation_error
 
-    raw = {
-        "family": "synthesis_ok",
-        "target": "secret_sentinel",
-        "nested": {"key": "opaque_sentinel"},
-    }
     error = next(Draft202012Validator(goal_arg_json_schema()).iter_errors(raw))
     message = _format_validation_error(error)
     assert "SYNTH" in message
-    for value in ("synthesis_ok", "secret_sentinel", "opaque_sentinel"):
+    for value in (
+        "synthesis_ok",
+        "secret_sentinel",
+        "opaque_sentinel",
+        "sim_pass_u16x73656e74696e656c",
+    ):
         assert value not in message
 
 
@@ -308,3 +323,66 @@ def test_corrupt_proposal_diagnostic_keeps_location_without_internal_family(goal
     assert "synthesis_ok" not in result.value[0].text
     diagnostic = DashboardReader(goal_mode.worktree, goal_mode.control).read().goals[0].diagnostic
     assert str(directory) in diagnostic and "synthesis_ok" not in diagnostic
+
+
+@pytest.mark.parametrize("selector", ["sim_0", "acme:demo:counter:1#sim_0"])
+@pytest.mark.parametrize("alias", [False, True])
+def test_coverage_no_waivers_rejection_uses_admitted_goal_name(
+    layout, monkeypatch, selector, alias
+):
+    from booley.flows.sim.coverage_flow_context import coverage_project_context
+    from booley.flows.sim.coverage_invocation import (
+        CoverageInvocationRequest,
+        prepare_coverage_invocation,
+    )
+    from booley.goals.state_store import load_goal_state
+
+    _admit_coverage_goal(layout, monkeypatch, selector)
+    adapter = GoalFlowExecution(bind(layout))
+    state = load_goal_state(GoalStore(layout.control), layout.record)
+    key = layout.record.goals[0].spec.key
+    if alias:
+        state.flow_key_aliases["coverage_sim_0"] = [key]
+    context = coverage_project_context(layout.worktree, state, recorder=adapter)
+    result = prepare_coverage_invocation(
+        CoverageInvocationRequest(("sim_0",), no_waivers=True), context
+    )
+    assert result.plan is None
+    assert len(result.findings) == 1 and result.findings[0].code == "COV_NO_WAIVERS_CRITERION"
+    message = result.findings[0].message
+    assert "COVERAGE:sim_0" in message
+    assert layout.record.goals[0].spec.key not in message
+    assert set(context.criteria) == {"coverage_sim_0" if alias else key}
+
+
+def _admit_coverage_goal(layout, monkeypatch, selector):
+    from booley.goals import entry
+    from booley.goals.model import parse_goal_args
+    from booley.targets.catalog import TargetCatalog
+    from tests.flows.sim.test_coverage_invocation import project
+    from tests.goals.conftest import git
+
+    project(layout.worktree)
+    (layout.worktree / ".booley_project/tests.toml").write_text(
+        '[sim_0]\ntests = ["reset", "wrap"]\n'
+    )
+    git(layout.worktree, "add", "counter.core", "rtl")
+    git(layout.worktree, "commit", "-qm", "coverage Target")
+    monkeypatch.setattr(entry, "TargetCatalog", TargetCatalog)
+    layout.record = entry.enter_goal_mode(
+        entry.EntryRequest(
+            work_dir=layout.worktree,
+            slug="coverage",
+            goals=parse_goal_args(
+                [
+                    {
+                        "family": "COVERAGE",
+                        "target": selector,
+                        "tests": "all",
+                        "metrics": {"line": 100},
+                    }
+                ]
+            ),
+        ),
+        entry.EntryEnvironment(project_dir=layout.control),
+    ).record

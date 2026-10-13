@@ -49,10 +49,12 @@ class CoverageProjectContext:
     waiver_config: CoverageWaiverConfig | None = None
 
     skipped_tests: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    criterion_names: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "test_names", immutable_mapping(self.test_names))
         object.__setattr__(self, "criteria", MappingProxyType(dict(self.criteria)))
+        object.__setattr__(self, "criterion_names", MappingProxyType(dict(self.criterion_names)))
         object.__setattr__(
             self,
             "skipped_tests",
@@ -156,7 +158,8 @@ def _prepare_target(
         return None, _finding(
             "COV_NO_WAIVERS_CRITERION",
             f"{handle.selector}: --no-waivers skips the approved waivers that "
-            f"Coverage Criterion {key} is evaluated with; add --diagnostic for a "
+            f"{context.criterion_names.get(key, 'Coverage Criterion ' + key)} is evaluated with; "
+            "add --diagnostic for a "
             "non-acceptance run with raw numbers, or drop --no-waivers",
             "/no_waivers",
         )

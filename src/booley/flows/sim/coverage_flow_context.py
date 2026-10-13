@@ -55,6 +55,15 @@ def coverage_project_context(
         policies,
         waivers,
         load_test_configuration_field(root, "skip"),
+        criterion_names={}
+        if recorder is None
+        else {
+            key: ", ".join(
+                execution_goal_name(recorder, goal_key)
+                for goal_key in state.flow_key_aliases.get(key) or [key]
+            )
+            for key in policies
+        },
     )
 
 

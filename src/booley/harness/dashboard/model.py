@@ -15,6 +15,7 @@ from booley.criteria.evidence_ledger import validated_evidence_records
 from booley.criteria.presentation import CriterionPresentation
 from booley.goals.binding import GoalBindingError, GoalRunBinding
 from booley.goals.diagnostics import is_unnamable_error, unavailable_diagnostic
+from booley.goals.lifecycle import read_sealed_artifact
 from booley.goals.model import OCCUPYING_STATES, GoalRecord, GoalSpec
 from booley.goals.naming import apply_names, optional_names, read_names
 from booley.goals.paths import REVIEW_PACKAGE_FILE, record_paths
@@ -145,23 +146,18 @@ def _completion_names(directory: Path, record: GoalRecord) -> dict[str, str]:
     names = read_names(directory)
     if not (directory / "goal-names.json").is_file():
         raise ValueError(UNAVAILABLE_GOAL)
-    authority = require_dict(
-        json.loads((directory / "goal-names.authority.json").read_bytes()),
-        field="Goal naming authority",
-    )
     request = require_dict(
         json.loads((directory / "request.json").read_bytes()), field="Goal naming request"
     )
     request_digest = request.pop("payload_digest", None)
     if (
-        authority.get("value") != names
-        or authority.get("digest") != digest(names)
-        or request_digest != digest(request)
-        or authority.get("request_digest") != request_digest
+        request_digest != digest(request)
         or request.get("record_id") != record.id
         or request.get("operation_id") != record.finish_operation
         or request.get("worktree") != record.worktree.to_json()
     ):
+        raise ValueError(UNAVAILABLE_GOAL)
+    if read_sealed_artifact(directory, "goal-names", request, record) != names:
         raise ValueError(UNAVAILABLE_GOAL)
     return names
 
