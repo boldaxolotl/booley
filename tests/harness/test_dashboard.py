@@ -15,10 +15,10 @@ from booley.criteria.presentation import CriterionPresentation
 from booley.harness import upgrade_review
 from booley.harness.dashboard import model
 from booley.harness.dashboard.app import DashboardApp, Navigation
+from booley.harness.dashboard.jobs import JobSnapshot, JobView
 from booley.mcp.session_registry import Attribution, RecentCall, SessionRow
 from booley.runtime import health
 from booley.runtime.job_records import JobRecord
-from booley.runtime.job_snapshot import JobSnapshot, JobView
 
 STAMP = "2026-10-08T10:00:00Z"
 

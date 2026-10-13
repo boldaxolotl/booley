@@ -181,8 +181,8 @@ def test_goal_evidence_states_checking_and_artifact_projection(tmp_path, monkeyp
     from booley.goals.model import GoalFamily, GoalSpec, RecordedGoal
     from booley.goals.status import GoalStatus
     from booley.harness.dashboard.app import _evidence_detail
+    from booley.harness.dashboard.jobs import JobSnapshot, JobView
     from booley.runtime.job_records import JobRecord
-    from booley.runtime.job_snapshot import JobSnapshot, JobView
 
     keys = ("lint_clean_a", "lint_clean_b", "lint_clean_c", "lint_clean_d")
     rec = replace(
