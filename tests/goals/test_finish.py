@@ -590,12 +590,13 @@ def paired_publication_layout(layout, tmp_path, *, selected=None):
     return layout
 
 
-# Windows measured 60.3s (None) and 66.9s (finished); retain 3x headroom.
+# Windows measured 60.3s (None), 42.845s (local-artifacts), and 66.9s (finished).
+# Budgets retain 3x headroom, rounded to the next 30-second multiple.
 @pytest.mark.parametrize(
     "boundary",
     [
         pytest.param(None, marks=pytest.mark.timeout(210)),
-        "local-artifacts",
+        pytest.param("local-artifacts", marks=pytest.mark.timeout(150)),
         pytest.param("finished", marks=pytest.mark.timeout(210)),
     ],
 )
