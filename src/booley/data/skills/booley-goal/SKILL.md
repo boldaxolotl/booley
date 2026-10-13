@@ -80,9 +80,10 @@ Default Seed.
 - A Target, Test or Variant that does not exist yet is pending. Booley
   freezes it when it first exists. Until then the Goal is unmet.
 - Only a Test Run with a frozen name and unchanged declared arguments and
-  environment counts. `flow sim` on the Target without `test` runs the frozen
-  Test Runs of the Target's simulation Goal that has no `test`, and of no
-  other Goal. `test="test+variant@xN"` runs the frozen seeds of the Goal with
+  environment counts. `flow sim` on the Target without `test` takes its
+  Test Runs from the Target's Goal that covers every Test (`SIM` without
+  `test`, or `COVERAGE` with `tests="all"`); with no such Goal it runs the
+  default Test Run of each Test. `test="test+variant@xN"` runs the frozen seeds of the Goal with
   that Target, Variant and N. For any other Goal, pass each frozen Test Run
   name from `goal_status` in `test`. Any other Test Run is diagnostic: it
   records no evidence and its failure blocks no Goal.

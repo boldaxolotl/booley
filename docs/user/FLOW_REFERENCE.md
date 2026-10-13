@@ -324,7 +324,6 @@ How the seed reaches the simulation:
 |---|---|
 | Verilator, HDL testbench | `+verilator+seed+<seed>`, plus the Target's `seed` template when it declares one |
 | Icarus, HDL testbench | the Target's `seed` template; unseeded without one |
-| Another simulator, HDL testbench | none: the Target is unseeded |
 | Cocotb Target | cocotb's seed variable (`COCOTB_RANDOM_SEED` on cocotb 2.x, `RANDOM_SEED` on 1.x) |
 
 Test Runs that differ in arguments, environment or seed never share a
@@ -420,9 +419,12 @@ Test Run is evidence for a Goal only when it is one of the Goal's frozen Test
 Runs with the same declared arguments and environment. Inside the Goal
 worktree:
 
-- `booley flow sim --target sim_core` runs the frozen Test Runs of the
-  simulation Goal without `test`, and the default Test Run of any Test added
-  to the Target since. It does not run the Test Runs of a Goal with `test`.
+- `booley flow sim --target sim_core` takes its Test Runs from the Target's
+  Goal that covers every Test (a simulation Goal without `test`, or a
+  coverage Goal with `tests = "all"`): its frozen Test Runs, and the default
+  Test Run of any Test added to the Target since. With no such Goal it runs
+  the default Test Run of each Test. A Goal that names a Test Run gets
+  evidence from this run only when that Test Run is among them.
 - `--test` with the name of a frozen Test Run, as `goal_status` lists it,
   runs that Test Run.
 - `--test stress+soak@x20` runs the 20 frozen seeds of the Goal with the same

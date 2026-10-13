@@ -94,7 +94,7 @@ Target in `tests.toml`.
 
 A request may run at most 1000 Test Runs of one Target. An unseeded Target
 refuses every seed: an HDL-testbench Target on Icarus without a `seed`
-template, or on any simulator other than Verilator and Icarus.
+template.
 Simulation Goals take the same selector in `test`, Cycle Count Goals in `test`
 without `@xN`, and coverage Goals in `tests`. Goal Mode freezes the Test Runs
 at entry, `@xN` seeds included; a simulation Goal is met when every frozen

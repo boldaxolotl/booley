@@ -43,9 +43,8 @@ Packaged release history starts at 0.2.7. For older changes, see
   - Booley passes the seed itself: `+verilator+seed+<seed>` on Verilator,
     cocotb's seed variable on Cocotb Targets, and the new `tests.toml` `seed`
     argument template on Verilator and Icarus. An Icarus HDL-testbench Target
-    without a `seed` template is unseeded and refuses every seed. So is an
-    HDL-testbench Target of any other simulator, with or without a template.
-    A seeded Target can set its own `default_seed`.
+    without a `seed` template is unseeded and refuses every seed. A seeded
+    Target can set its own `default_seed`.
   - Reports list each Test Run with its outcome and print, for every failed
     Test Run, the command that reruns it with the same seed. `simulation.json`
     gains `test_runs[]` rows.
@@ -87,8 +86,7 @@ Packaged release history starts at 0.2.7. For older changes, see
   testbenches that use random values can see different stimulus than before
   the upgrade. To keep a Target on another fixed seed, set `default_seed` in
   its `tests.toml` section. Icarus HDL-testbench Targets are unchanged until
-  they declare a `seed` template. HDL-testbench Targets of other simulators
-  are unchanged.
+  they declare a `seed` template.
 - **`tests.toml` is validated more strictly** (#1233). `booley doctor` reports
   the first entry that fails to load, so run it again after each fix until
   `tests.toml` loads. Fix these before the next run:
@@ -125,7 +123,7 @@ Packaged release history starts at 0.2.7. For older changes, see
 - **An older Booley cannot read a Goal Record written by this version**
   (#1233). The record carries the frozen Test Runs, and an older Booley
   refuses it as written by a newer Booley. This holds for finished and
-  abandoned Goal Records too, because every saved record carries them.
+  abandoned Goal Records too.
 - **A partial run no longer makes a Target's simulation Goal unmet** (#1233).
   `SIM:{target}` is met when every frozen Test Run has passed at the
   current file contents. Running a few Tests with `--test` adds their

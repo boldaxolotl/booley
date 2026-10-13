@@ -1851,7 +1851,6 @@ the Target:
 |---|---|
 | Verilator, HDL testbench | `+verilator+seed+<seed>`, and the rendered `seed` template when the Target declares one |
 | Icarus, HDL testbench | the rendered `seed` template; without a template the Target is **unseeded** |
-| Another simulator, HDL testbench | nothing: the Target is **unseeded**, with or without a `seed` template |
 | Cocotb Target | cocotb's seed variable: `COCOTB_RANDOM_SEED` on cocotb 2.x, `RANDOM_SEED` on cocotb 1.x |
 
 ```toml
@@ -1872,8 +1871,7 @@ default_seed = 7             # optional: this Target's Default Seed
 - An **unseeded** Target cannot apply a seed. Its Test Runs are written
   without `@seed`, and Booley refuses `--seed`, `test@seed`, `test@xN` and a
   `default_seed` key for it. To seed an Icarus Target, declare a `seed`
-  template that the testbench reads. An HDL-testbench Target of a simulator
-  other than Verilator and Icarus stays unseeded.
+  template that the testbench reads.
 
 On the simulator command the arguments appear in this order: the Target's
 plusarg parameters, the `select` argument, the Variant's arguments, then the
