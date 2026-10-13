@@ -371,8 +371,16 @@ class TestBoundaryOutput:
 
         assert outcome.diagnostics.warnings.total_warnings == 3
         assert outcome.diagnostics.structural.complete is True
-        assert outcome.diagnostics.structural.comb_loops == 1
+        assert outcome.diagnostics.structural.comb_loops == 0
         assert outcome.diagnostics.structural.multi_driven == 1
+        assert outcome.diagnostics.warnings.advisory_warnings == 2
+        loop = next(
+            group
+            for group in outcome.diagnostics.warnings.representatives
+            if group.category == "combinational_loop"
+        )
+        assert "\\feedback" in loop.message
+        assert "completed final netlist check" in loop.rationale
         assert "--- check_dut.txt ---" in outcome.text
 
     def test_stale_final_check_is_not_complete(self, tmp_path: Path):
