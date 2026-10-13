@@ -23,8 +23,9 @@ Checked against main `7bf0fdefd` before removal:
 
 Names below refer to the deleted unit tests. Existing CLI tests are in
 `tests/integration_test.rs` unless a `cli_issues.rs` prefix is shown. All queries
-in those suites use built stores. New `issue_1431_*` tests passed both before
-and after removal, preserving the current store behavior.
+in those suites use built stores. The new async-sampling and clock-selection
+tests passed both before and after removal. The same-timestamp regression
+added during review pins the current store behavior after removal.
 
 | Removed test | Store behavior coverage or reason for dropping |
 |---|---|
@@ -51,7 +52,7 @@ and after removal, preserving the current store behavior.
 | `test_find_value_with_wide_signal` | `test_wide_signals_find_value_256bit`. |
 | `test_finalize_time_in_state_correct_totals` | Combined stats/stuck finalization is private and unreachable from the CLI. Store occupancy totals are covered by `issue_1098_occupancy_edges_without_clock_or_reset` and `issue_1098_stats_reset_window_and_initial_occupancy`. |
 | `issue_1100_legacy_raw_pulses_completed_snapshots_tail_and_count` | `cli_issues.rs: issue_1100_raw_pulses_unknowns_virtuals_and_fallback` covers raw pulses, settled snapshots, tail events, and counts. |
-| `issue_1100_legacy_final_timestamp_and_observed_unknowns` | `cli_issues.rs: issue_1100_raw_pulses_unknowns_virtuals_and_fallback` covers settled same-timestamp changes, X/Z, and inclusive bounds. |
+| `issue_1100_legacy_final_timestamp_and_observed_unknowns` | The extractor collapsed repeated writes at one timestamp to their settled net change; FST retains those writes. New `cli_issues.rs: issue_1431_same_timestamp_changes_preserve_store_policy` pins this distinct store policy through both build engines: find reports each write, sample deduplicates trigger ticks, EOF samples include the completed bus update, and inclusive bounds/counts preserve X/Z events. The extractor's no-op-pulse suppression needs no replacement because it is not store behavior. |
 | `issue_1100_legacy_signal_major_first_last_and_limits` | `cli_issues.rs: issue_1100_reset_cutoff_reassert_unknown_and_first_last_limit` covers ordering and selectors; it preserves the store's global last result, rather than the extractor's private buffered event list. |
 | `issue_1100_legacy_reset_origin_unknown_reassert_never_and_no_period` | `cli_issues.rs: issue_1100_reset_cutoff_reassert_unknown_and_first_last_limit` and `issue_1100_raw_pulses_unknowns_virtuals_and_fallback` cover reset cutoffs, unknown resets, never-deasserted reset, and clockless fallback. |
 | `issue_1100_spool_cap_io_errors_propagate_and_cleanup` | Removed private temporary spool, error injection, and cleanup; store queries do not use it. |
