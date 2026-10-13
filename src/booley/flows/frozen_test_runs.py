@@ -32,6 +32,7 @@ from booley.flows.test_runs import (
 )
 
 __all__ = [
+    "OUTCOMES_ONLY_DETAIL_KEY",
     "FrozenTestRuns",
     "GoalTestRuns",
     "SeedGroup",
@@ -39,6 +40,11 @@ __all__ = [
 ]
 
 GoalRunsKind = Literal["simulation", "cycle_count", "coverage"]
+
+#: Detail key of a change that carries a Goal's matching Test Runs but no
+#: measurement of the Goal's metric (its Cycle Count or coverage): the runs'
+#: outcomes count for the Goal, the change says nothing about the metric.
+OUTCOMES_ONLY_DETAIL_KEY = "test_run_outcomes_only"
 
 
 @dataclass(frozen=True)
@@ -86,6 +92,31 @@ class GoalTestRuns:
         """
         passed = {row.get("name") for row in matched if row.get("grade") == "pass"}
         return self.complete and bool(self.runs) and all(run.name in passed for run in self.runs)
+
+    def outcomes_detail(self, matched: Sequence[Mapping[str, object]]) -> dict[str, object]:
+        """The detail of a change that only enters *matched* runs' outcomes for this Goal."""
+        rows = [dict(row) for row in matched]
+        if self.kind == "simulation":
+            return {"test_runs": rows}
+        return {"test_runs": rows, OUTCOMES_ONLY_DETAIL_KEY: True}
+
+    def measured_by(self, rows: Sequence[Mapping[str, object]]) -> bool:
+        """Whether an invocation that ran exactly *rows* measured this Goal's metric.
+
+        *rows* are all the Test Runs of one invocation. A simulation Goal has
+        no metric beyond its runs' outcomes. A Cycle Count is the count of
+        the Goal's one frozen run, so that run must be among *rows*. Coverage
+        is merged over an invocation's runs, so *rows* must be exactly the
+        frozen runs: fewer, more or other runs measured something else. The
+        metric of any other invocation says nothing about the Goal.
+        """
+        if self.kind == "simulation":
+            return True
+        graded = [row for row in self.matching(rows) if row.get("grade") in {"pass", "fail"}]
+        covered = {row.get("name") for row in graded} == {run.name for run in self.runs}
+        if not (self.complete and self.runs and covered):
+            return False
+        return self.kind == "cycle_count" or len(rows) == len(graded) == len(self.runs)
 
 
 @dataclass(frozen=True)

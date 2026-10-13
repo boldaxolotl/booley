@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -909,29 +909,42 @@ def _goal_changes(
 
     A Test Run is evidence for a Goal only when its resolved name and its
     declared-inputs fingerprint equal one of the Goal's frozen Test Runs.
-    A Goal none of whose frozen runs this campaign ran gets no change: for
-    that Goal the campaign is diagnostic. Whether the Goal is met is decided
-    by its recorder from every matching run recorded so far; ``met`` here
-    only says whether this campaign alone passed every frozen run.
+    A Goal none of whose frozen runs this campaign graded gets no change: for
+    that Goal the campaign is diagnostic. Every other Goal gets one change
+    that carries its matching runs, whatever else the campaign ran and
+    whether or not it ran to its end: a matching failure is never left out.
+    A Cycle Count or coverage Goal's change also carries the metric when
+    this campaign measured it (:meth:`GoalTestRuns.measured_by`).
+
+    Whether the Goal is met is decided by its recorder from every matching
+    run recorded so far; ``met`` here is this campaign's own verdict.
     """
     if target["role"] != "candidate":
         return []
     names = {f"{target['vlnv']}#{target['name']}", str(target["selector"])}
     cycle = _CycleFacts.of(outcome, target, refusals)
+    ran = rows.all()
     changes: list[CriterionChange] = []
     for goal in frozen.of_target(names):
-        if goal.key not in shadow.criteria:
+        matched = goal.matching(ran)
+        if goal.key not in shadow.criteria or not _graded(matched):
             continue
-        matched = goal.matching(rows.all())
-        if goal.kind == "cycle_count":
-            changes.extend(_goal_cycle_change(outcome, shadow, goal, matched, cycle, rows))
-        elif goal.kind == "coverage":
-            changes.extend(_goal_coverage_change(outcome, shadow, target, goal, matched, rows))
-        elif outcome.complete and any(row["grade"] in {"pass", "fail"} for row in matched):
-            detail = _goal_simulation_detail(outcome, matched)
-            met = goal.passed_by(matched)
-            changes.extend(shadow.set_criterion(goal.key, met, detail=detail))
+        measured: list[CriterionChange] = []
+        if goal.kind == "cycle_count" and goal.measured_by(ran):
+            measured = _goal_cycle_change(outcome, shadow, goal, matched, cycle, rows)
+        elif goal.kind == "coverage" and goal.measured_by(ran) and outcome.complete:
+            measured = _goal_coverage_change(outcome, shadow, target, goal, rows)
+        if not measured:
+            met = goal.kind == "simulation" and goal.passed_by(matched)
+            detail = {**_goal_simulation_detail(outcome, matched), **goal.outcomes_detail(matched)}
+            measured = shadow.set_criterion(goal.key, met, detail=detail)
+        changes.extend(measured)
     return changes
+
+
+def _graded(rows: Sequence[Mapping[str, object]]) -> bool:
+    """Whether any of *rows* observed its Test Run pass or fail."""
+    return any(row["grade"] in {"pass", "fail"} for row in rows)
 
 
 def _goal_simulation_detail(
@@ -964,9 +977,10 @@ def _goal_cycle_change(
     cycle: _CycleFacts,
     rows: _TestRunRows,
 ) -> list[CriterionChange]:
-    """Judge a Cycle Count Goal from the observation of its one frozen Test Run."""
-    if len(matched) != 1:
-        return []
+    """Judge a Cycle Count Goal from the observation of its one frozen Test Run.
+
+    Nothing when that observation, or its baseline one, cannot be judged.
+    """
     observations = _candidate_observations(outcome.acceptance_facts.document, outcome.target)
     current = observations.get(str(matched[0]["name"]))
     if current is None:
@@ -979,19 +993,15 @@ def _goal_coverage_change(
     shadow: DevelopmentState,
     target: Mapping[str, object],
     goal: GoalTestRuns,
-    matched: list[dict[str, object]],
     rows: _TestRunRows,
 ) -> list[CriterionChange]:
     """Judge a coverage Goal from a coverage campaign that ran exactly its frozen Test Runs.
 
-    Coverage is merged over the campaign's Test Runs, so a campaign that ran
-    fewer runs, more runs or other runs measured something else and is
-    diagnostic for the Goal. Coverage is never merged across campaigns.
+    Coverage is merged over the campaign's Test Runs, so only such a campaign
+    measured the Goal's coverage; it is never merged across campaigns.
+    Nothing when the campaign collected no coverage.
     """
-    ran = rows.all()
-    if outcome.coverage_reference is None or not goal.runs:
-        return []
-    if len(matched) != len(goal.runs) or len(ran) != len(goal.runs):
+    if outcome.coverage_reference is None:
         return []
     return [
         change

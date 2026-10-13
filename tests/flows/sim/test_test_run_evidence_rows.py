@@ -10,7 +10,7 @@ import pytest
 
 from booley.criteria.state import DevelopmentState
 from booley.criteria.templates import cycle_count_criterion_key
-from booley.flows.frozen_test_runs import FrozenTestRuns, GoalTestRuns
+from booley.flows.frozen_test_runs import OUTCOMES_ONLY_DETAIL_KEY, FrozenTestRuns, GoalTestRuns
 from booley.flows.sim.acceptance import (
     SimulationAcceptanceCoordinator,
     _campaign_projection,
@@ -243,11 +243,38 @@ def test_cycle_count_goal_is_judged_from_its_frozen_test_run_only(tmp_path):
     assert _goal_changes(outcome, state, _goal(outcome, key, other, kind="cycle_count")) == []
 
 
-def test_coverage_goal_needs_a_coverage_campaign(tmp_path):
+def test_coverage_goal_takes_run_outcomes_but_no_metric_from_an_ordinary_campaign(tmp_path):
     outcome = _outcome(tmp_path, _RESET)
     state = _state(tmp_path, outcome)
     goal = _goal(outcome, f"sim_pass_{outcome.target['name']}", _RESET, kind="coverage")
-    assert _goal_changes(outcome, state, goal) == []
+    # The campaign collected no coverage, but it ran (and failed) the Goal's frozen run:
+    # that outcome is evidence for the Goal, its coverage is not measured.
+    (change,) = _goal_changes(outcome, state, goal)
+    assert change.met is False
+    assert change.detail["test_runs"] == _rows(_RESET)
+    assert change.detail[OUTCOMES_ONLY_DETAIL_KEY] is True
+
+
+def test_cycle_count_goal_keeps_a_failing_frozen_run_without_a_cycle_observation(
+    tmp_path, monkeypatch
+):
+    from booley.flows.sim import acceptance
+
+    outcome = _outcome(tmp_path, _COUNT)
+    state = _state(tmp_path, outcome, cycle_test="count")
+    key = cycle_count_criterion_key(str(outcome.target["name"]), "count")
+    monkeypatch.setattr(acceptance, "_candidate_observations", lambda *_args: {})
+    (change,) = _goal_changes(outcome, state, _goal(outcome, key, _COUNT, kind="cycle_count"))
+    assert (change.key, change.met) == (key, False)
+    assert change.detail["test_runs"] == _rows(_COUNT)
+    assert change.detail[OUTCOMES_ONLY_DETAIL_KEY] is True
+
+
+def test_an_incomplete_campaign_still_records_its_matching_failure(tmp_path):
+    outcome = replace(_outcome(tmp_path, _RESET), complete=False)
+    key = f"sim_pass_{outcome.target['name']}"
+    (change,) = _goal_changes(outcome, _state(tmp_path, outcome), _goal(outcome, key, _RESET))
+    assert change.met is False and change.detail["test_runs"] == _rows(_RESET)
 
 
 def test_facts_that_name_no_test_runs_have_no_rows(tmp_path: Path):

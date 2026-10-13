@@ -35,7 +35,13 @@ from typing import Any, Literal, cast
 from booley.criteria.evidence_ledger import canonical_json
 from booley.criteria.state import CriterionChange
 from booley.evidence.fields import SOURCE_FINGERPRINT_DETAIL_KEY
-from booley.flows.frozen_test_runs import FrozenTestRuns, GoalRunsKind, GoalTestRuns, SeedGroup
+from booley.flows.frozen_test_runs import (
+    OUTCOMES_ONLY_DETAIL_KEY,
+    FrozenTestRuns,
+    GoalRunsKind,
+    GoalTestRuns,
+    SeedGroup,
+)
 from booley.flows.test_runs import SeedCount, TestRun, parse_test_selector
 from booley.goals.freshness import goal_required_categories
 from booley.goals.model import GoalFamily, GoalRecord, RecordedGoal
@@ -57,6 +63,15 @@ REASON_OUTDATED = "goal-test-run-ledger-outdated"
 REASON_NO_LEDGER = "goal-test-run-ledger-missing"
 REASON_MISSING = "goal-test-run-missing"
 REASON_CHANGED = "goal-test-run-changed"
+REASON_NOT_MEASURED = "goal-test-run-metric-missing"
+
+# What to run so that one invocation measures a Goal's metric, by family.
+_MEASURING_RUN: Mapping[GoalFamily, str] = {
+    GoalFamily.CYCLE_COUNT: "run the Goal's frozen Test Run to measure its Cycle Count",
+    GoalFamily.COVERAGE: (
+        "run exactly the Goal's frozen Test Runs in one coverage campaign to measure coverage"
+    ),
+}
 
 _KINDS: Mapping[GoalFamily, GoalRunsKind] = {
     GoalFamily.SIM: "simulation",
@@ -81,26 +96,26 @@ def flow_test_runs(record: GoalRecord, revisions: Mapping[str, int]) -> FrozenTe
         spec = goal.spec
         if not names_test_runs(spec) or revisions.get(spec.key) != goal.spec_revision:
             continue
-        assert spec.target is not None
-        resolution = record.test_run_resolution(spec.key)
-        if resolution is None:
-            goals.append(
-                GoalTestRuns(spec.key, _KINDS[spec.family], spec.target, (), False, False)
-            )
-            continue
-        goals.append(
-            GoalTestRuns(
-                spec.key,
-                _KINDS[spec.family],
-                spec.target,
-                resolution.test_runs,
-                suite=any(item.slot == SUITE_SLOT for item in resolution.runs)
-                or SUITE_SLOT in resolution.pending,
-                complete=not resolution.pending,
-                seed_groups=_seed_groups(resolution),
-            )
-        )
+        goals.append(goal_test_runs(goal, record.test_run_resolution(spec.key)))
     return FrozenTestRuns(tuple(goals))
+
+
+def goal_test_runs(goal: RecordedGoal, resolution: TestRunResolution | None) -> GoalTestRuns:
+    """The frozen Test Runs of *goal* as a Flow reads them; nothing while unresolved."""
+    spec = goal.spec
+    assert spec.target is not None
+    if resolution is None:
+        return GoalTestRuns(spec.key, _KINDS[spec.family], spec.target, (), False, False)
+    return GoalTestRuns(
+        spec.key,
+        _KINDS[spec.family],
+        spec.target,
+        resolution.test_runs,
+        suite=any(item.slot == SUITE_SLOT for item in resolution.runs)
+        or SUITE_SLOT in resolution.pending,
+        complete=not resolution.pending,
+        seed_groups=_seed_groups(resolution),
+    )
 
 
 def _seed_groups(resolution: TestRunResolution) -> tuple[SeedGroup, ...]:
@@ -150,16 +165,17 @@ def fold_test_run_outcomes(
     ]
 
 
+def _rows(detail: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The Test Run rows *detail* carries: every entry that is a mapping."""
+    raw = detail.get("test_runs")
+    rows = cast("list[object]", raw) if isinstance(raw, list) else []
+    return [dict(cast("Mapping[str, Any]", row)) for row in rows if isinstance(row, Mapping)]
+
+
 def matching_rows(detail: Mapping[str, Any], required: Sequence[TestRun]) -> list[dict[str, Any]]:
     """The Test Run rows of *detail* that are one of *required*, well formed or not at all."""
     wanted = {(run.name, run.fingerprint) for run in required}
-    raw = detail.get("test_runs")
-    rows = cast("list[Any]", raw) if isinstance(raw, list) else []
-    return [
-        dict(cast("Mapping[str, Any]", row))
-        for row in rows
-        if isinstance(row, Mapping) and (row.get("name"), row.get("fingerprint")) in wanted  # pyright: ignore[reportUnknownMemberType]
-    ]
+    return [row for row in _rows(detail) if (row.get("name"), row.get("fingerprint")) in wanted]
 
 
 def freshness_stamp(key: str, detail: Mapping[str, Any]) -> str | None:
@@ -265,25 +281,67 @@ def judged_change(
 
     A simulation Goal is met exactly when every frozen run is ``passed`` in
     the ledger: what one invocation ran does not decide it. A Cycle Count or
-    coverage Goal additionally keeps its producer's verdict on thresholds.
+    coverage Goal additionally needs its producer's verdict on thresholds,
+    and that verdict counts only when this same change carries the frozen
+    runs that produced the metric (:meth:`GoalTestRuns.measured_by`). A
+    change that does not measure the metric still enters its matching runs'
+    outcomes into the ledger; it never supplies a verdict.
     """
     key = goal.spec.key
     resolution = record.test_run_resolution(key)
-    required = () if resolution is None else resolution.test_runs
+    frozen = goal_test_runs(goal, resolution)
     detail = dict(change.detail)
-    own = matching_rows(detail, required)
+    measured = not detail.get(OUTCOMES_ONLY_DETAIL_KEY) and frozen.measured_by(_rows(detail))
+    own = matching_rows(detail, frozen.runs)
     detail["test_runs"] = own
     scope = LedgerScope(record.id, key, goal.spec_revision)
     earlier = scope.accumulating(history, freshness_stamp(key, detail), before=None)
-    ledger = build_ledger(earlier, _graded(own), required)
+    ledger = build_ledger(earlier, _graded(own), frozen.runs)
+    restated = None if measured else _restated(change, key, history, earlier, ledger, frozen.runs)
+    if restated is not None:
+        return restated
     detail[LEDGER_DETAIL_KEY] = ledger
     defect = requirement_defect(resolution) or outcome_defect(ledger["runs"])
-    produced = change.met or goal.spec.family is GoalFamily.SIM
+    if defect is None and not measured:
+        how = _MEASURING_RUN[goal.spec.family]
+        defect = REASON_NOT_MEASURED, f"this run did not measure the Goal; {how}"
+    produced = frozen.kind == "simulation" or change.met
     if defect is None:
         return replace(change, met=produced, reason="outcome", detail=detail)
     detail["goal_contract_violation"] = defect[1]
-    reason = defect[0] if produced else change.reason
+    # A measured threshold the producer found unmet keeps the producer's reason.
+    reason = defect[0] if produced or not measured else change.reason
     return replace(change, met=False, reason=reason, detail=detail)
+
+
+def _restated(
+    change: CriterionChange,
+    key: str,
+    history: Sequence[Mapping[str, Any]],
+    earlier: Sequence[Mapping[str, Any]],
+    ledger: Mapping[str, Any],
+    required: Sequence[TestRun],
+) -> CriterionChange | None:
+    """The Goal's selected observation again, when *change* adds nothing to it.
+
+    A change that does not measure the Goal's metric would otherwise replace
+    a measured observation and unmeet the Goal although nothing was learnt:
+    its runs' outcomes are already what the selected observation's ledger
+    holds, at the same specification revision and file contents. Then the
+    selected observation is recorded again, with its own rows and verdict.
+    ``None`` when the change does add an outcome, or there is nothing at
+    these contents to restate.
+    """
+    candidates = [row for row in history if row["criterion"] == key and row["role"] == "candidate"]
+    latest = max(candidates, key=lambda row: row["sequence"], default=None)
+    if latest is None or not earlier or earlier[-1]["sequence"] != latest["sequence"]:
+        return None
+    selected = cast("Mapping[str, Any]", latest["detail"])
+    if ledger_runs(selected) != ledger["runs"]:
+        return None
+    again = build_ledger(earlier, _graded(matching_rows(selected, required)), required)
+    detail = {**selected, LEDGER_DETAIL_KEY: again}
+    return replace(change, met=bool(latest["met"]), reason="outcome", detail=detail)
 
 
 def requirement_defect(resolution: TestRunResolution | None) -> tuple[str, str] | None:

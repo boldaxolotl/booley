@@ -117,9 +117,12 @@ def test_multi_seed_coverage_goal_is_met_only_by_a_campaign_of_exactly_its_froze
     assert state.criteria["coverage_top"].detail == {}
     assert "match no Goal" in result.outcome.report_text
     # One frozen seed alone is not the Goal's campaign either: coverage is not merged
-    # across campaigns.
+    # across campaigns. Its outcome is recorded for the Goal, its coverage is not.
     _result, state = _coverage_run(layout, root, "one-seed", frozen[0])
-    assert state.criteria["coverage_top"].detail == {}
+    entry = state.criteria["coverage_top"]
+    assert entry.met is False and "evaluation" not in entry.detail
+    assert [row["name"] for row in entry.detail["test_runs"]] == [frozen[0]]
+    assert "have not passed yet" in entry.detail["goal_contract_violation"]
 
     # ``reset@x2`` names the Goal's Target, Test Variant and N: it runs the frozen seeds.
     result, state = _coverage_run(layout, root, "frozen-seeds", "reset@x2")

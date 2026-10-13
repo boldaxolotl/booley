@@ -242,3 +242,74 @@ def test_direct_recording_gives_a_test_goal_only_its_matching_runs(tmp_path, mon
     standalone.set_criterion = MagicMock()
     standalone._record_test_goal_criteria(target)
     standalone.set_criterion.assert_not_called()
+
+
+def _cycle_goal_flow(tmp_path, monkeypatch, goal: GoalTestRuns) -> SimulateFlow:
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    flow = _goal_flow(tmp_path, monkeypatch, _frozen(goal))
+    flow.args.state_file = "state.json"
+    entry = SimpleNamespace(params={"target": "sim", "test": "stress", "cycle_count_max": 900})
+    flow._state = SimpleNamespace(criteria={goal.key: entry})
+    flow.set_criterion = MagicMock()
+    return flow
+
+
+def test_direct_cycle_count_goal_is_graded_from_its_frozen_run_not_the_bare_test(
+    tmp_path, monkeypatch
+):
+    """A fast default-seed run of the Test never lends its Cycle Count to the pinned Goal."""
+    from booley.flows.sim.flow import TargetResult, TestResult
+
+    pinned = _run("stress", "short", 7)
+    goal = GoalTestRuns("cycle_count_sim_x", "cycle_count", "sim", (pinned,))
+
+    def result(run, cycles: int) -> TestResult:
+        return TestResult(
+            name=run.test, passed=True, cycles=cycles, cycle_status="observed", test_run=run
+        )
+
+    # Only the default-seed run ran: no evidence for the Goal at all.
+    flow = _cycle_goal_flow(tmp_path, monkeypatch, goal)
+    default = TargetResult(
+        target="sim", passed=True, tests=[result(_run("stress", "short", 1), 9)]
+    )
+    flow._record_cycle_count_criteria(default)
+    flow.set_criterion.assert_not_called()
+
+    # Several Test Runs of the Test ran: the Goal is graded from its frozen one.
+    both = TargetResult(
+        target="sim",
+        passed=True,
+        tests=[result(pinned, 1500), result(_run("stress", "short", 1), 9)],
+    )
+    flow._record_cycle_count_criteria(both)
+    flow.set_criterion.assert_called_once()
+    detail = flow.set_criterion.call_args.kwargs["detail"]
+    assert detail["cycles"] == 1500
+    assert [row["name"] for row in detail["test_runs"]] == ["stress+short@7"]
+
+
+def test_direct_recording_enters_a_coverage_goals_matching_failure_as_outcomes_only(
+    tmp_path, monkeypatch
+):
+    from unittest.mock import MagicMock
+
+    from booley.flows.frozen_test_runs import OUTCOMES_ONLY_DETAIL_KEY
+    from booley.flows.sim.flow import TargetResult, TestResult
+
+    run = _run("stress", "soak", 5)
+    goal = GoalTestRuns("coverage_sim", "coverage", "sim", (run,))
+    flow = _goal_flow(tmp_path, monkeypatch, _frozen(goal))
+    flow.set_criterion = MagicMock()
+    failed = TestResult(name="stress", passed=False, test_run=run)
+    flow._record_test_goal_criteria(TargetResult(target="sim", passed=False, tests=[failed]))
+
+    flow.set_criterion.assert_called_once()
+    assert flow.set_criterion.call_args.args == ("coverage_sim", False)
+    detail = flow.set_criterion.call_args.kwargs["detail"]
+    assert detail[OUTCOMES_ONLY_DETAIL_KEY] is True
+    assert [(row["name"], row["grade"]) for row in detail["test_runs"]] == [
+        ("stress+soak@5", "fail")
+    ]

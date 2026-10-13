@@ -6210,9 +6210,12 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         """Record this Target's Test Runs for the Goals that name Test Runs (ADR 0072).
 
         The Target Goal is recorded under ``sim_pass_<target>`` by
-        :meth:`_record_sim_criterion`. A Goal that names a selector has its own
-        key and takes the runs that match its frozen Test Runs; without a
-        matching run this invocation is diagnostic for it.
+        :meth:`_record_sim_criterion`, and a Cycle Count Goal whose frozen run
+        ran by :meth:`_record_cycle_count_criteria`. Every other Goal with a
+        graded matching run gets that run's outcome here: a Goal that names
+        a selector as its verdict, a coverage Goal as outcomes only (this
+        path measures no coverage). Without a matching run this invocation
+        is diagnostic for the Goal.
         """
         frozen = self._frozen_test_runs()
         if frozen is None or target_result.inconclusive:
@@ -6221,18 +6224,20 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         for goal in frozen.of_target(self._target_names(target_result.target)):
             matched = goal.matching(rows)
             graded = any(row["grade"] in {"pass", "fail"} for row in matched)
-            if goal.kind != "simulation" or goal.suite or not graded:
+            if goal.kind == "cycle_count" or (goal.suite and goal.kind == "simulation"):
+                continue
+            if not graded:
                 continue
             passed = sum(row["grade"] == "pass" for row in matched)
             self.set_criterion(
                 goal.key,
-                goal.passed_by(matched),
+                goal.kind == "simulation" and goal.passed_by(matched),
                 source_target=target_result.target,
                 detail={
                     "mode": self._mode.value,
                     "tests_passed": passed,
                     "tests_total": len(matched),
-                    "test_runs": matched,
+                    **goal.outcomes_detail(matched),
                 },
             )
 
@@ -6240,7 +6245,6 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         """Grade every declared Criterion bound to this Target and named test."""
         if self.args.state_file is None:
             return
-        tests = {test.name: test for test in target_result.tests}
         for key, entry in self.state.criteria.items():
             params = entry.params or {}
             if not key.startswith("cycle_count_") or not criterion_matches_target(
@@ -6250,30 +6254,58 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             ):
                 continue
             test_name = params.get("test")
-            current = tests.get(test_name) if isinstance(test_name, str) else None
-            relative = has_relative_threshold(params)
-            baseline = (
-                self._baseline_cycle_test(target_result, params, current) if relative else None
-            )
-            met, reason = _admissible_cycle_evidence(current, "current")
-            if met and relative:
-                met, reason = _admissible_cycle_evidence(baseline, "baseline")
-            detail = self._direct_cycle_detail(target_result, test_name, current, baseline)
-            if baseline is None and not relative:
-                detail["baseline_observation"] = "not_required"
-            refusal = self._baseline_refusal_for(target_result, test_name, current)
-            if relative and baseline is None and refusal is not None:
-                # The comparison could not be made at all: say why, by name.
-                detail["baseline_observation"] = "inapplicable"
-                met, reason = False, (reason if reason.startswith("current") else refusal)
-            if reason:
-                detail["reason"] = reason
-            self.set_criterion(
-                key,
-                met,
-                source_target=target_result.target,
-                detail=detail,
-            )
+            judged, current = self._cycle_observation(key, test_name, target_result)
+            if judged:
+                self._record_cycle_count_criterion(key, params, target_result, current)
+
+    def _cycle_observation(
+        self, key: str, test_name: object, target_result: TargetResult
+    ) -> tuple[bool, TestResult | None]:
+        """Whether Cycle Count Criterion *key* is graded on this Target, and from which result.
+
+        Outside Goal Mode a Criterion names a Test and is always graded: from
+        that Test's result, or as missing when the Test did not run. Inside
+        Goal Mode a Goal requires one frozen Test Run (ADR 0072): only the
+        result of that run, by resolved name and fingerprint, is its
+        observation. Another Test Run of the same Test is evidence of
+        nothing for the Goal, which then is not graded at all.
+        """
+        frozen = self._frozen_test_runs()
+        if frozen is None:
+            named = [test for test in target_result.tests if test.name == test_name]
+            return True, (named[-1] if named else None)
+        goal = next((item for item in frozen.goals if item.key == key), None)
+        for test in target_result.tests if goal is not None else ():
+            run = test.test_run
+            if run is not None and goal is not None and goal.requires(run.name, run.fingerprint):
+                return True, test
+        return False, None
+
+    def _record_cycle_count_criterion(
+        self,
+        key: str,
+        params: dict[str, Any],
+        target_result: TargetResult,
+        current: TestResult | None,
+    ) -> None:
+        """Grade Cycle Count Criterion *key* from *current* and its baseline observation."""
+        test_name = params.get("test")
+        relative = has_relative_threshold(params)
+        baseline = self._baseline_cycle_test(target_result, params, current) if relative else None
+        met, reason = _admissible_cycle_evidence(current, "current")
+        if met and relative:
+            met, reason = _admissible_cycle_evidence(baseline, "baseline")
+        detail = self._direct_cycle_detail(target_result, test_name, current, baseline)
+        if baseline is None and not relative:
+            detail["baseline_observation"] = "not_required"
+        refusal = self._baseline_refusal_for(target_result, test_name, current)
+        if relative and baseline is None and refusal is not None:
+            # The comparison could not be made at all: say why, by name.
+            detail["baseline_observation"] = "inapplicable"
+            met, reason = False, (reason if reason.startswith("current") else refusal)
+        if reason:
+            detail["reason"] = reason
+        self.set_criterion(key, met, source_target=target_result.target, detail=detail)
 
     def _direct_cycle_detail(
         self,

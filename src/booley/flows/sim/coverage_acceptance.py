@@ -111,26 +111,29 @@ def _apply_goal_campaign(
     """Judge the Goals this campaign's Test Runs are evidence for (ADR 0072).
 
     A Test Run counts for a Goal only by its resolved name and fingerprint.
-    A coverage Goal is judged only by a campaign that ran exactly its frozen
-    Test Runs: coverage merged over other runs measures something else. A
-    simulation Goal takes the campaign's matching runs. A Goal this campaign
-    matches in neither way gets no change: for it the campaign is diagnostic.
+    Every Goal with a graded matching run gets one change carrying those
+    runs, so a matching failure is never left out. A coverage Goal's change
+    carries the coverage only when the campaign ran exactly its frozen Test
+    Runs (:meth:`GoalTestRuns.measured_by`): coverage merged over other runs
+    measures something else. A Goal without a graded matching run gets no
+    change: for it the campaign is diagnostic.
     """
     rows = cast("list[dict[str, object]]", common["test_runs"])
-    conclusive = all(run.simulation_verdict != "inconclusive" for run in campaign.runs)
     coverage_keys = {plan.criterion_key, *shadow.flow_key_aliases.get(plan.criterion_key, [])}
     changes: list[CriterionChange] = []
     for goal in frozen.of_target({plan.handle.identity, plan.handle.selector}):
         matched = goal.matching(rows)
-        if goal.kind == "coverage":
-            exact = bool(goal.runs) and len(matched) == len(goal.runs) == len(campaign.runs)
-            if exact and goal.key in coverage_keys:
-                changes.extend(_apply_coverage_criterion(shadow, plan, campaign, common))
-        elif goal.kind == "simulation" and conclusive and matched and goal.key in shadow.criteria:
-            stamp = {SOURCE_FINGERPRINT_DETAIL_KEY: _freshness(plan, goal.key)}
-            met = goal.passed_by(matched)
-            detail = {**common, "test_runs": matched, **stamp}
-            changes.extend(shadow.set_criterion(goal.key, met, detail=detail))
+        graded = any(row["grade"] in {"pass", "fail"} for row in matched)
+        if goal.key not in shadow.criteria or not graded:
+            continue
+        if goal.kind == "coverage" and goal.key in coverage_keys and goal.measured_by(rows):
+            measured = _apply_coverage_criterion(shadow, plan, campaign, common)
+            changes.extend(change for change in measured if change.key == goal.key)
+            continue
+        stamp = {SOURCE_FINGERPRINT_DETAIL_KEY: _freshness(plan, goal.key)}
+        met = goal.kind == "simulation" and goal.passed_by(matched)
+        detail = {**common, **goal.outcomes_detail(matched), **stamp}
+        changes.extend(shadow.set_criterion(goal.key, met, detail=detail))
     return changes
 
 
