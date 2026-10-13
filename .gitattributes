@@ -14,3 +14,6 @@ qa/** -text
 # Captured Campaign documents are authenticated by size and digest, so their
 # bytes, including trailing blank lines in run logs, stay as captured.
 tests/qa/fixtures/** -text -whitespace
+
+# Captured Cocotb console output keeps the producer's trailing spaces.
+tests/fixtures/cocotb_timeout_progress/2.1.0/*.log -text -whitespace

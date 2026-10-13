@@ -197,30 +197,51 @@ def parse_results_xml(path: Path | str) -> CocotbResults:
     return CocotbResults(state=STATE_OK, tests=tests)
 
 
+# Dotted module path cocotb 2.x prepends to a test name in progress lines.
+_MODULE_PREFIX = r"(?:\w+\.)*"
+
+
+def _bare_progress_name(logged: str) -> str:
+    """Strip the leading module path, keeping dots inside the test name itself.
+
+    A parametrized cocotb 2.x test logs ``pkg.mod.test_gain/gain=0.5``. Only
+    the identifier segments before the test name are module path, so splitting
+    at the last dot would return ``5``.
+    """
+    return re.sub(rf"^{_MODULE_PREFIX}", "", logged)
+
+
 def recover_timeout_progress(
     output: str,
     selected: list[str],
     parsed: CocotbResults | None = None,
 ) -> CocotbResults:
     """Recover completed, active, and not-run tests from cocotb progress lines."""
+    # Cocotb 2.x logs <module>.<test>, while XML and selected tests use bare
+    # names. Accept the module prefix without widening the test-name match;
+    # bare progress names remain valid for cocotb 1.x.
     if not selected:
         xml_names = [test.name for test in parsed.tests] if parsed is not None else []
-        running_names = re.findall(r"cocotb\.regression\s+running\s+(\S+)\s+\(", output)
+        running_names = [
+            _bare_progress_name(name)
+            for name in re.findall(r"cocotb\.regression\s+running\s+(\S+)\s+\(", output)
+        ]
         selected = list(dict.fromkeys((*xml_names, *running_names)))
+    patterns = {name: rf"{_MODULE_PREFIX}{re.escape(name)}" for name in selected}
     passed = {
         name
         for name in selected
-        if re.search(rf"cocotb\.regression\s+{re.escape(name)}\s+passed\b", output)
+        if re.search(rf"cocotb\.regression\s+{patterns[name]}\s+passed\b", output)
     }
     failed = {
         name
         for name in selected
-        if re.search(rf"cocotb\.regression\s+{re.escape(name)}\s+failed\b", output)
+        if re.search(rf"cocotb\.regression\s+{patterns[name]}\s+failed\b", output)
     }
     started = [
         name
         for name in selected
-        if re.search(rf"cocotb\.regression\s+running\s+{re.escape(name)}\s+\(", output)
+        if re.search(rf"cocotb\.regression\s+running\s+{patterns[name]}\s+\(", output)
     ]
     active = next((name for name in reversed(started) if name not in passed | failed), None)
     parsed_by_name = {
