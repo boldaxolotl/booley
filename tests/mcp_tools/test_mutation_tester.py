@@ -11,7 +11,7 @@ import json
 import os
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -23,6 +23,7 @@ from booley.criteria.state import DevelopmentState
 from booley.flows.sim.backends.cocotb import _parse_args as parse_cocotb_run_args
 from booley.flows.sim.build import PreparedSimulationBuild, SimulationBuildPreparationError
 from booley.flows.sim.target_tests import NoRunnableTestsError
+from booley.fusesoc import fusesoc_registry
 from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS, McpToolResult
 from booley.specialists.mutation_tester import (
     MutationResult,
@@ -40,6 +41,7 @@ from booley.specialists.mutation_tester import (
 )
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import IncompatibleTargetError
+from tests.conftest import require_symlinks, symlink_or_skip
 
 # The parameters the fake ``.core`` Target declares; a test may add plusargs.
 _TARGET_PARAMETERS: dict[str, Any] = {}
@@ -1923,3 +1925,72 @@ def test_pristine_baseline_reports_missing_literal_run_cwd_before_elaboration(
     assert ".gitkeep" in result.report_text
     assert result.detail["phase"] == "baseline_run_cwd"
     elab.assert_not_called()
+
+
+@pytest.mark.parametrize("layout", ["recursive", "declared"])
+def test_scope_accepts_canonical_rtl_through_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, layout: str
+) -> None:
+    require_symlinks(tmp_path)
+    _author_scope_core(tmp_path)
+    if layout == "recursive":
+        (tmp_path / "lib").mkdir()
+        symlink_or_skip(tmp_path / "lib/self", Path(".."), target_is_directory=True)
+        assert (tmp_path / "lib/self").is_dir()
+        assert (tmp_path / "lib/self").resolve() == tmp_path.resolve()
+        expected = "lib/self/rtl/counter.sv"
+        original_plan = fusesoc_registry.prepare_core_library_plan
+
+        def with_alias_library(project_root):
+            plan = original_plan(project_root)
+            return replace(
+                plan,
+                roots=(*plan.roots, tmp_path / "lib/self"),
+                ignored_dirs=(*plan.ignored_dirs, frozenset({str((tmp_path / "lib").resolve())})),
+            )
+
+        # Real duplicate-core discovery, independent of platform traversal order.
+        monkeypatch.setattr(fusesoc_registry, "prepare_core_library_plan", with_alias_library)
+    else:
+        symlink_or_skip(tmp_path / "design", "rtl", target_is_directory=True)
+        core = tmp_path / "design.core"
+        core.write_text(core.read_text().replace("rtl/", "design/"))
+        expected = "design/counter.sv"
+    catalog = TargetCatalog.build(tmp_path)
+    inspection = catalog.inspect(catalog.select("sim"))
+    assert expected in inspection.rtl_files
+    endpoint = _make_endpoint(tmp_path, target="sim")
+    assert endpoint._validate_scope_against_target(["rtl/counter.sv"]) is None
+    rejected = endpoint._validate_scope_against_target(["tb/tb_counter.sv"])
+    assert rejected is not None
+    assert "does not match" in rejected.report_text
+    assert expected in rejected.report_text
+
+
+def test_scope_rejects_rtl_symlink_outside_project(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    _author_scope_core(root)
+    external = tmp_path / "external.sv"
+    external.write_text("module counter; endmodule\n")
+    source = root / "rtl/counter.sv"
+    source.unlink()
+    symlink_or_skip(source, external)
+    endpoint = _make_endpoint(root, target="sim")
+    rejected = endpoint._validate_scope_against_target([str(external)])
+    assert rejected is not None
+    assert "does not match" in rejected.report_text
+
+
+def test_scope_fails_open_when_identity_resolution_fails(tmp_path: Path) -> None:
+    _author_scope_core(tmp_path)
+    endpoint = _make_endpoint(tmp_path, target="sim")
+    catalog = TargetCatalog.build(tmp_path)
+    inspection = catalog.inspect(catalog.select("sim"))
+    with (
+        patch.object(TargetCatalog, "inspect", return_value=inspection),
+        patch.object(
+            fusesoc_registry, "canonical_project_path", side_effect=OSError("unreadable")
+        ),
+    ):
+        assert endpoint._validate_scope_against_target(["rtl/counter.sv"]) is None
