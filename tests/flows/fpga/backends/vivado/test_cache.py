@@ -340,3 +340,17 @@ def test_cached_reports_cannot_replace_missing_route_witness(tmp_path):
             )
             is None
         )
+
+
+def test_string_guard_precedes_cache_lookup(tmp_path, monkeypatch):
+    resolved = replace(
+        _resolved(tmp_path),
+        parameters={"NAME": {"datatype": "str", "paramtype": "vlogparam", "default": "MAC"}},
+    )
+    flow = _flow(tmp_path)
+    monkeypatch.setattr(flow, "_resolve_fpga_target", lambda *_args, **_kwargs: resolved)
+    monkeypatch.setattr(
+        fpga_cache, "load", lambda *_args, **_kwargs: pytest.fail("string reached cache")
+    )
+    with pytest.raises(ValueError, match="Vivado does not support string/file"):
+        flow._prepare_fpga_command("fpga_demo")

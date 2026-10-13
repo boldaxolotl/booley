@@ -72,3 +72,35 @@ def test_run_evidence_reuses_preflight_source_evidence(tmp_path, monkeypatch):
 
     assert evidence.source_revision == source.source_revision == "a" * 40
     assert evidence.source_sha256 == source.source_sha256
+
+
+def test_declared_file_resource_changes_source_evidence_without_parameter_edit(tmp_path):
+    (tmp_path / "top.sv").write_text("module top; endmodule\n")
+    resource = tmp_path / "data.mem"
+    resource.write_text("11\n")
+    core = tmp_path / "proof.core"
+    core.write_text("""CAPI=2:
+name: proof:string:file:1
+filesets:
+  rtl:
+    files: [top.sv]
+    file_type: systemVerilogSource
+  data:
+    files: [data.mem]
+    file_type: user
+parameters:
+  FILE: {datatype: file, paramtype: vlogparam, default: data.mem}
+targets:
+  synth:
+    flow: generic
+    flow_options: {tool: yosys, arch: xilinx}
+    filesets: [rtl, data]
+    parameters: [FILE]
+    toplevel: top
+""")
+    before = run_evidence.capture_flow_source_evidence(tmp_path, "synth")
+    definition = core.read_bytes()
+    resource.write_text("a5\n")
+    after = run_evidence.capture_flow_source_evidence(tmp_path, "synth")
+    assert after.source_sha256 != before.source_sha256
+    assert core.read_bytes() == definition
