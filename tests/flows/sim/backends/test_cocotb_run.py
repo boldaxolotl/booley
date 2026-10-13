@@ -125,6 +125,102 @@ def _stub_cocotb_config_v2_0(arg_sets):
     ]
 
 
+def _stub_cocotb_config_no_version(arg_sets):
+    """A cocotb-config whose ``--version`` prints nothing parseable."""
+    return [
+        "unknown" if tuple(args) == ("--version",) else _CONFIG_ANSWERS[tuple(args)]
+        for args in arg_sets
+    ]
+
+
+class TestCocotbSeedEnvironment:
+    """One seed variable is set: the one the installed cocotb reads (ADR 0072)."""
+
+    def _env(self, tmp_path: Path, stub, seed: int | None, ambient: dict[str, str]):
+        with (
+            patch.dict(os.environ, ambient, clear=True),
+            patch.object(crun, "_cocotb_config", side_effect=stub),
+        ):
+            return crun._build_cocotb_env(tmp_path, "m", ["a"], tmp_path / "r.xml", seed)
+
+    @pytest.mark.parametrize("seed", [1, 2**31 - 1])
+    def test_cocotb2_sets_cocotb_random_seed(self, tmp_path: Path, seed: int):
+        env = self._env(tmp_path, _stub_cocotb_config, seed, {})
+        assert env["COCOTB_RANDOM_SEED"] == str(seed)
+        assert "RANDOM_SEED" not in env
+
+    @pytest.mark.parametrize("seed", [1, 2**31 - 1])
+    def test_cocotb1_sets_random_seed(self, tmp_path: Path, seed: int):
+        env = self._env(tmp_path, _stub_cocotb_config_v1, seed, {})
+        assert env["RANDOM_SEED"] == str(seed)
+        assert "COCOTB_RANDOM_SEED" not in env
+
+    def test_an_inherited_seed_never_survives_a_seeded_run(self, tmp_path: Path):
+        ambient = {"RANDOM_SEED": "111", "COCOTB_RANDOM_SEED": "222"}
+        env2 = self._env(tmp_path, _stub_cocotb_config, 5, ambient)
+        assert (env2["COCOTB_RANDOM_SEED"], env2.get("RANDOM_SEED")) == ("5", None)
+        env1 = self._env(tmp_path, _stub_cocotb_config_v1, 5, ambient)
+        assert (env1["RANDOM_SEED"], env1.get("COCOTB_RANDOM_SEED")) == ("5", None)
+
+    def test_an_unseeded_run_leaves_the_environment_alone(self, tmp_path: Path):
+        env = self._env(tmp_path, _stub_cocotb_config, None, {"RANDOM_SEED": "111"})
+        assert env["RANDOM_SEED"] == "111"
+        assert "COCOTB_RANDOM_SEED" not in env
+
+    def test_a_failed_version_probe_is_an_error_for_a_seeded_run(self, tmp_path: Path):
+        with pytest.raises(crun.CocotbSeedError) as excinfo:
+            self._env(tmp_path, _stub_cocotb_config_no_version, 5, {})
+        assert str(excinfo.value) == (
+            "cannot seed the Cocotb run with 5: `cocotb-config --version` did not report "
+            "a version, so the seed variable of the installed cocotb is unknown"
+        )
+
+    def test_a_failed_version_probe_keeps_the_fallback_for_an_unseeded_run(self, tmp_path: Path):
+        env = self._env(tmp_path, _stub_cocotb_config_no_version, None, {})
+        assert "COCOTB_TEST_FILTER" in env
+
+    def test_a_failed_probe_is_reported_as_infrastructure_not_a_verdict(
+        self, tmp_path: Path, capsys
+    ):
+        with patch.object(crun, "_cocotb_config", side_effect=_stub_cocotb_config_no_version):
+            prepared = crun._prepare_invocation(
+                build_dir=tmp_path,
+                eda_tool="icarus",
+                cocotb_module="m",
+                tests=["a"],
+                results_file=tmp_path / "r.xml",
+                work_dir=tmp_path,
+                plusargs=[],
+                vcd=False,
+                seed=5,
+            )
+        assert isinstance(prepared, str) and prepared.startswith("cannot seed the Cocotb run")
+        assert "[SIM_INFRA_ERROR]" in capsys.readouterr().out
+
+    def test_the_command_line_seed_reaches_the_environment(self):
+        assert (
+            crun._parse_args(
+                [
+                    "--build-dir",
+                    "b",
+                    "--eda-tool",
+                    "icarus",
+                    "--cocotb-module",
+                    "m",
+                    "--seed",
+                    "42",
+                ]
+            ).seed
+            == 42
+        )
+        assert (
+            crun._parse_args(
+                ["--build-dir", "b", "--eda-tool", "icarus", "--cocotb-module", "m"]
+            ).seed
+            is None
+        )
+
+
 class TestBuildCocotbEnv:
     def test_env_golden(self, tmp_path: Path):
         with (

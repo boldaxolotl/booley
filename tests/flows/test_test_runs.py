@@ -10,7 +10,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from booley.config.tests_toml_rules import TestRunNameError
-from booley.flows.builtin_cli import build_parser, parse_request
+from booley.flows.builtin_cli import parse_request
 from booley.flows.sim.campaign.planning import canonical_sha256
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.test_runs import (
@@ -547,14 +547,16 @@ def test_rerun_command_is_accepted_by_the_real_sim_parser(
     flow = SimulateFlow()
     argv = shlex.split(rerun_command(target, run))
     assert argv[:3] == ["booley", "flow", flow.name]
-    if "--seed" in argv and "--seed" not in build_parser(flow).format_help():
-        # `flow sim --seed` is added with seeded Test Runs (ADR 0072, #1233
-        # stage S2). Until the option exists the unnamed seeded rerun command
-        # cannot be parsed; this case runs by itself once it does.
-        pytest.skip("flow sim has no --seed option yet (arrives in #1233 stage S2)")
+    if run.test is not None and run.test.startswith("-"):
+        # The renderer keeps such a name one token, and the parser then
+        # refuses it by the name rule instead of reading it as an option.
+        with pytest.raises(SystemExit):
+            parse_request(flow, argv[3:])
+        return
     request = parse_request(flow, argv[3:])
     assert request.target == target
     assert request.test == (None if run.test is None else (run.name,))
+    assert request.seed == (run.seed if run.test is None else None)
 
 
 def test_rerun_command_is_plain_text_for_ordinary_names() -> None:

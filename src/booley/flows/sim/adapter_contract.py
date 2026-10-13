@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from booley.flows.test_runs import TestRun
+
 AdapterKind = Literal["verilator", "icarus", "cocotb"]
 
 
@@ -20,6 +22,16 @@ class PreparedSimulationWork:
     eda_tool: str = ""
     max_rundir_bytes: int = 0
     plusargs: tuple[str, ...] = ()
+    #: Environment of this launch only (a Test Variant's ``env``); never a build input.
+    environment: tuple[tuple[str, str], ...] = ()
+    #: Seed the Cocotb adapter exports through cocotb's own seed variable.
+    cocotb_seed: int | None = None
+    #: The concrete Test Runs this process executes, aligned with ``tests``
+    #: (one unnamed run when ``tests`` is empty).
+    test_runs: tuple[TestRun, ...] = ()
+    #: Directory name of this process's evidence among its Target's: the Test
+    #: Run name, or the batch label of a Cocotb batch.
+    artifact_group: str = ""
     trace: bool = False
     trace_mode: str = "vcd_fifo"
     trace_scope: str = ""

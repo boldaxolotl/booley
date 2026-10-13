@@ -192,6 +192,7 @@ BOOLEY_TOML_SKELETON = """\
 # the selected test's firmware)? Declare it as Pre-Sim Commands (ADR 0039) —
 # shell lines run inside the Sandbox immediately before each sim run, under
 # the BOOLEY_* env contract (BOOLEY_TEST_NAME, BOOLEY_TEST_NAMES,
+# BOOLEY_TEST_RUN_NAME, BOOLEY_TEST_VARIANT, BOOLEY_TEST_SEED,
 # BOOLEY_RUN_CWD, BOOLEY_BUILD_ROOT, ...; see docs/user/CONFIG.md):
 #
 # [flows.sim]
@@ -206,7 +207,7 @@ BOOLEY_TOML_SKELETON = """\
 # (F-5). Scaffold nothing to declare instead; the template stays package data
 # for the booley-setup skill to read.
 TESTS_TOML_SKELETON = """\
-# tests.toml - per-Target verification-intent test lists.
+# tests.toml - per-Target Tests, Test Variants and seeds (verification intent).
 #
 # Intentionally left empty by `booley init`.
 # Populate this file with the booley-setup skill (Step 2, project config), which

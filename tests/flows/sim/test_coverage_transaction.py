@@ -7,7 +7,11 @@ from pathlib import Path
 import pytest
 
 from booley.flows.sim.campaign_retention import _coverage_owned_files
-from booley.flows.sim.coverage_campaign import DurableTargetIdentity, freeze_coverage_mapping
+from booley.flows.sim.coverage_campaign import (
+    NO_DECLARED_INPUTS_FINGERPRINT,
+    DurableTargetIdentity,
+    freeze_coverage_mapping,
+)
 from booley.flows.sim.coverage_campaign_store import (
     CoverageCampaignStoreError,
     load_coverage_campaign,
@@ -88,7 +92,7 @@ def test_ungated_target_persists_valid_campaign_and_independent_simulation(tmp_p
     assert outcome.exit_code == 0
     assert len(execution.runs) == 2
     document = json.loads(outcome.campaign_path.read_text())
-    assert document["$schema"] == "booley.coverage-campaign/v4"
+    assert document["$schema"] == "booley.coverage-campaign/v5"
     assert document["scoring"] == {"status": "valid", "reason": None}
     assert document["source_rollups"]
     assert "points" not in document
@@ -97,7 +101,7 @@ def test_ungated_target_persists_valid_campaign_and_independent_simulation(tmp_p
     ).campaign
     assert campaign.evaluation["status"] == "not_requested"
     assert campaign.rollups[0].eligible_points == 1
-    assert campaign.points[0].hits_by_run == {"run:001:reset": 2, "run:002:wrap": 2}
+    assert campaign.points[0].hits_by_run == {"run:001:reset@1": 2, "run:002:wrap@1": 2}
     simulation = json.loads(outcome.simulation_path.read_text())
     assert simulation["passed"] is True
     assert simulation["coverage_campaign"] == "coverage.json"
@@ -167,6 +171,10 @@ def test_missing_input_is_a_design_failure_with_structured_abort_projection(
     assert simulation["collection"] == "incomplete"
     assert simulation["tests"][0] == {
         "name": "reset",
+        "test_run": "reset@1",
+        "variant": None,
+        "seed": 1,
+        "fingerprint": NO_DECLARED_INPUTS_FINGERPRINT,
         "verdict": "fail",
         "passed": False,
         "collection": "collector_error",
@@ -307,7 +315,7 @@ class InvalidHookExecution(NativeExecution):
 def _assert_invalid_hook_campaign(outcome, plan, events, expected_finding, gated) -> None:
     assert outcome.exit_code == 2
     document = json.loads(outcome.campaign_path.read_text(encoding="utf-8"))
-    assert document["$schema"] == "booley.coverage-campaign/v4"
+    assert document["$schema"] == "booley.coverage-campaign/v5"
     assert document["collection"]["status"] == "collector_error"
     assert document["scoring"] == {"status": "invalid", "reason": "collector_error"}
     assert document["rollups"] == []

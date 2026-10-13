@@ -42,6 +42,9 @@ from booley.specialists.mutation_tester import (
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import IncompatibleTargetError
 
+# The parameters the fake ``.core`` Target declares; a test may add plusargs.
+_TARGET_PARAMETERS: dict[str, Any] = {}
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -87,6 +90,14 @@ def _write_dut_top(tmp_path: Path, top: str = "design_top") -> Path:
         encoding="utf-8",
     )
     return f
+
+
+def _write_tests_toml(root: Path, text: str) -> None:
+    """Give the checkout at *root* a Project directory with this ``tests.toml``."""
+    project = root / ".booley_project"
+    project.mkdir(exist_ok=True)
+    (project / "booley.toml").write_text('[project]\nname = "demo"\n', encoding="utf-8")
+    (project / "tests.toml").write_text(text, encoding="utf-8")
 
 
 def _make_endpoint(
@@ -650,7 +661,10 @@ def _patch_resolve_target(monkeypatch, *, eda_tool: str | None = "verilator"):
                 {
                     "select": lambda _self, target, **kwargs: _fake_select(
                         work_dir, target, **kwargs
-                    )
+                    ),
+                    "inspect": lambda _self, _handle: SimpleNamespace(
+                        parameters=dict(_TARGET_PARAMETERS)
+                    ),
                 },
             )()
         ),
@@ -754,7 +768,9 @@ def test_elab_uses_shared_preparer_and_its_exact_command(tmp_path: Path, monkeyp
 
     result = endpoint._run_elab("default", tmp_path, build_dir)
 
-    prepare.assert_called_once_with(handle, build_root=build_dir, lane_kind="unreserved")
+    prepare.assert_called_once_with(
+        handle, build_root=build_dir, lane_kind="unreserved", environment={}
+    )
     assert captured == [["custom-build", "--exact-command"]]
     assert result.returncode == 0
 
@@ -871,13 +887,9 @@ def test_sim_runs_every_configured_test_selector(tmp_path: Path, monkeypatch):
         "booley.specialists.mutation_tester.subprocess.run",
         _fake_run,
     )
-    monkeypatch.setattr(
-        "booley.specialists.mutation_tester.project_config.TEST_NAMES",
-        {"default": ["coremark.elf", "smoke.elf"]},
-    )
-    monkeypatch.setattr(
-        "booley.specialists.mutation_tester.project_config.render_test_selector",
-        lambda target, index, name: f"--meminit=ram,{name}",
+    _write_tests_toml(
+        tmp_path,
+        '[default]\ntests = ["coremark.elf", "smoke.elf"]\nselect = "--meminit=ram,{name}"\n',
     )
 
     endpoint = _make_endpoint(tmp_path, monkeypatch)
@@ -890,6 +902,131 @@ def test_sim_runs_every_configured_test_selector(tmp_path: Path, monkeypatch):
     assert [run.test_name for run in runs] == ["coremark.elf", "smoke.elf"]
     assert "--plusarg=--meminit=ram,coremark.elf" in sim_cmds[0]
     assert "--plusarg=--meminit=ram,smoke.elf" in sim_cmds[1]
+
+
+def _mutation_sim_runs(tmp_path: Path, monkeypatch, tests_toml: str, eda_tool: str | None = None):
+    """Run the declared suite of ``default`` once; return ``(argv, env)`` per sim."""
+    captured: list[tuple[list[str], dict[str, str]]] = []
+
+    def _fake_run(cmd, *args, **kwargs):
+        captured.append((list(cmd), dict(kwargs.get("env") or {})))
+        return _fake_proc(rc=0, stdout="[ok]", stderr="")
+
+    _patch_resolve_target(monkeypatch)
+    monkeypatch.setattr("booley.specialists.mutation_tester.subprocess.run", _fake_run)
+    _write_tests_toml(tmp_path, tests_toml)
+    endpoint = _make_endpoint(tmp_path, monkeypatch)
+    if eda_tool is not None:
+        monkeypatch.setattr(endpoint, "target_eda_tool", lambda *_args, **_kwargs: eda_tool)
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+    endpoint._run_elab("default", tmp_path, build_dir)
+    endpoint._run_target_test_suite("default", tmp_path, build_dir, "tb")
+    return captured[1:]
+
+
+_MUTATION_VARIANTS = """
+[default]
+tests = ["reset", "stress"]
+select = "+test={name}"
+default_seed = 7
+
+[default.variants.stress]
+default = "short"
+short = { args = ["+iters=1000"], env = { STRESS_MODE = "short" } }
+soak = ["+iters=100000"]
+"""
+
+
+def test_sim_runs_the_default_variant_at_the_default_seed(tmp_path: Path, monkeypatch):
+    """A mutant is graded by the same Test Runs a plain Simulation Flow run uses."""
+    monkeypatch.delenv("STRESS_MODE", raising=False)
+    runs = _mutation_sim_runs(tmp_path, monkeypatch, _MUTATION_VARIANTS, "verilator")
+
+    plusargs = [[word for word in cmd if word.startswith("--plusarg=")] for cmd, _env in runs]
+    assert plusargs == [
+        ["--plusarg=test=reset", "--plusarg=verilator+seed+7"],
+        ["--plusarg=test=stress", "--plusarg=iters=1000", "--plusarg=verilator+seed+7"],
+    ]
+    assert [env.get("STRESS_MODE") for _cmd, env in runs] == [None, "short"]
+
+
+def test_sim_passes_the_target_plusargs_like_the_simulation_flow(tmp_path: Path, monkeypatch):
+    """The Target's plusargs come first; ``select`` replaces one that sets its option."""
+    monkeypatch.setitem(_TARGET_PARAMETERS, "depth", {"paramtype": "plusarg", "default": 4})
+    monkeypatch.setitem(_TARGET_PARAMETERS, "test", {"paramtype": "plusarg", "default": "none"})
+    runs = _mutation_sim_runs(tmp_path, monkeypatch, _MUTATION_VARIANTS, "verilator")
+
+    plusargs = [[word for word in cmd if word.startswith("--plusarg=")] for cmd, _env in runs]
+    assert plusargs == [
+        ["--plusarg=depth=4", "--plusarg=test=reset", "--plusarg=verilator+seed+7"],
+        [
+            "--plusarg=depth=4",
+            "--plusarg=test=stress",
+            "--plusarg=iters=1000",
+            "--plusarg=verilator+seed+7",
+        ],
+    ]
+
+
+def test_sim_refuses_a_variant_argument_the_target_owns(tmp_path: Path, monkeypatch):
+    """The plan is built against the Target's declared plusargs, as in the Flow."""
+    monkeypatch.setitem(_TARGET_PARAMETERS, "iters", {"paramtype": "plusarg", "default": 1})
+    with pytest.raises(UnsupportedSimTargetError, match="overrides a plusarg the Target declares"):
+        _mutation_sim_runs(tmp_path, monkeypatch, _MUTATION_VARIANTS, "verilator")
+
+
+def test_mutant_builds_and_runs_under_the_target_environment(tmp_path: Path, monkeypatch):
+    """Regression: the Target's tests.toml env table never reached a mutant.
+
+    The Simulation Flow builds and launches under that table, so a mutant
+    graded without it runs a different testbench configuration.
+    """
+    monkeypatch.delenv("FLAVOR", raising=False)
+    monkeypatch.delenv("STRESS_MODE", raising=False)
+    import booley.specialists.mutation_tester as mutation_tester_module
+
+    prepared_with: list[dict[str, str]] = []
+
+    tests_toml = _MUTATION_VARIANTS.replace(
+        "default_seed = 7", 'default_seed = 7\nenv = { FLAVOR = "wide" }'
+    )
+    _patch_resolve_target(monkeypatch)
+    patched = mutation_tester_module.prepare_simulation_build
+
+    def recording_prepare(handle, **kwargs):
+        prepared_with.append(dict(kwargs.get("environment") or {}))
+        return patched(handle, **kwargs)
+
+    monkeypatch.setattr(mutation_tester_module, "prepare_simulation_build", recording_prepare)
+    captured: list[dict[str, str]] = []
+
+    def _fake_run(cmd, *args, **kwargs):
+        captured.append(dict(kwargs.get("env") or {}))
+        return _fake_proc(rc=0, stdout="[ok]", stderr="")
+
+    monkeypatch.setattr("booley.specialists.mutation_tester.subprocess.run", _fake_run)
+    _write_tests_toml(tmp_path, tests_toml)
+    endpoint = _make_endpoint(tmp_path, monkeypatch)
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+    endpoint._run_elab("default", tmp_path, build_dir)
+    endpoint._run_target_test_suite("default", tmp_path, build_dir, "tb")
+
+    assert prepared_with and all(env == {"FLAVOR": "wide"} for env in prepared_with)
+    runs = captured[1:]
+    assert [env.get("FLAVOR") for env in runs] == ["wide", "wide"]
+    # The Test Variant's variable is added on top, for its own run only.
+    assert [env.get("STRESS_MODE") for env in runs] == [None, "short"]
+
+
+def test_sim_on_an_unseeded_target_passes_no_seed(tmp_path: Path, monkeypatch):
+    runs = _mutation_sim_runs(
+        tmp_path, monkeypatch, '[default]\ntests = ["reset"]\nselect = "+test={name}"\n', "icarus"
+    )
+    assert [word for word in runs[0][0] if word.startswith("--plusarg=")] == [
+        "--plusarg=test=reset"
+    ]
 
 
 def test_sim_selector_resolves_vlnv_qualified_target(tmp_path: Path, monkeypatch):
@@ -911,13 +1048,9 @@ def test_sim_selector_resolves_vlnv_qualified_target(tmp_path: Path, monkeypatch
         "booley.specialists.mutation_tester.subprocess.run",
         _fake_run,
     )
-    monkeypatch.setattr(
-        "booley.specialists.mutation_tester.project_config.TEST_NAMES",
-        {"default": ["coremark.elf", "smoke.elf"]},
-    )
-    monkeypatch.setattr(
-        "booley.specialists.mutation_tester.project_config.render_test_selector",
-        lambda target, index, name: f"--meminit=ram,{name}",
+    _write_tests_toml(
+        tmp_path,
+        '[default]\ntests = ["coremark.elf", "smoke.elf"]\nselect = "--meminit=ram,{name}"\n',
     )
 
     endpoint = _make_endpoint(tmp_path, monkeypatch)
@@ -932,10 +1065,7 @@ def test_sim_selector_resolves_vlnv_qualified_target(tmp_path: Path, monkeypatch
 
 
 def test_target_suite_accepts_vlnv_qualified_target(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr(
-        "booley.specialists.mutation_tester.project_config.TEST_NAMES",
-        {"default": ["test_a", "test_b"]},
-    )
+    _write_tests_toml(tmp_path, '[default]\ntests = ["test_a", "test_b"]\n')
     endpoint = _make_endpoint(tmp_path, monkeypatch)
     assert endpoint._target_test_suite("lib:ip:core#default").tests == (
         "test_a",
@@ -1541,7 +1671,10 @@ def _patch_cocotb_target(monkeypatch, *, module: str | None, eda_tool: str | Non
                 },
             )()
 
-        return type("FakeCatalog", (), {"select": select})()
+        def inspect(_self, _handle):
+            return SimpleNamespace(parameters=dict(_TARGET_PARAMETERS))
+
+        return type("FakeCatalog", (), {"select": select, "inspect": inspect})()
 
     monkeypatch.setattr(
         TargetCatalog,
@@ -1652,10 +1785,7 @@ class TestCocotbSimDispatch:
         )
         _patch_resolve_target(monkeypatch)
         _patch_cocotb_target(monkeypatch, module="tb.test_noc")
-        monkeypatch.setattr(
-            "booley.specialists.mutation_tester.project_config.TEST_NAMES",
-            {"default": ["test_a", "test_b"]},
-        )
+        _write_tests_toml(tmp_path, '[default]\ntests = ["test_a", "test_b"]\n')
 
         endpoint = _make_endpoint(tmp_path, monkeypatch)
         build_dir = tmp_path / "build"
@@ -1665,6 +1795,56 @@ class TestCocotbSimDispatch:
 
         assert "--test=test_a" in captured[-1]
         assert "--test=test_b" in captured[-1]
+
+    def test_cocotb_suite_whose_default_variants_differ_in_env_runs_in_batches(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """Regression: such a suite raised UnsupportedSimTargetError before any run.
+
+        The Simulation Flow runs it as one process per environment; a mutant
+        is graded the same way, each batch under its own Test Variant's
+        environment and the Default Seed.
+        """
+        monkeypatch.delenv("MODE", raising=False)
+        captured: list[tuple[list[str], dict[str, str]]] = []
+        monkeypatch.setattr(
+            "booley.specialists.mutation_tester.subprocess.run",
+            lambda cmd, *a, **k: (
+                captured.append((list(cmd), dict(k.get("env") or {}))),
+                _fake_proc(rc=0),
+            )[1],
+        )
+        _patch_resolve_target(monkeypatch)
+        _patch_cocotb_target(monkeypatch, module="tb.test_noc")
+        _write_tests_toml(
+            tmp_path,
+            '[default]\ntests = ["test_a", "test_b", "test_c"]\ndefault_seed = 9\n'
+            '[default.variants.test_a]\ndefault = "x"\nx = { env = { MODE = "A" } }\n'
+            '[default.variants.test_b]\ndefault = "y"\ny = { env = { MODE = "B" } }\n',
+        )
+        endpoint = _make_endpoint(tmp_path, monkeypatch)
+        build_dir = tmp_path / "build"
+        build_dir.mkdir()
+        endpoint._run_elab("default", tmp_path, build_dir)
+
+        runs = endpoint._run_target_test_suite("default", tmp_path, build_dir, "tb")
+
+        launched = [
+            ([word for word in cmd if word.startswith("--test=")], env.get("MODE"))
+            for cmd, env in captured[-3:]
+        ]
+        assert launched == [
+            (["--test=test_a"], "A"),
+            (["--test=test_b"], "B"),
+            (["--test=test_c"], None),
+        ]
+        for cmd, _env in captured[-3:]:
+            assert cmd[cmd.index("--seed") + 1] == "9"
+        assert [run.test_name for run in runs] == [
+            "<cocotb-suite 1/3>",
+            "<cocotb-suite 2/3>",
+            "<cocotb-suite 3/3>",
+        ]
 
     def test_individual_test_flag_was_removed(self, tmp_path: Path, monkeypatch):
         with pytest.raises(SystemExit):

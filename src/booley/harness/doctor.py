@@ -49,7 +49,11 @@ from booley.audit.doctor_waivers import (
     warning,
 )
 from booley.config.jobs import parse_caps
-from booley.config.project_config import TESTS_SECTION_KEYS, normalize_tests_toml
+from booley.config.project_config import (
+    TESTS_SECTION_KEYS,
+    lookup_target_section,
+    normalize_tests_toml,
+)
 from booley.config.tests_toml_rules import TEST_NAME_RULES
 from booley.core.boundary import (
     BoundaryError,
@@ -71,6 +75,8 @@ from booley.flows.sim.config import (
     resolve_run_cwd,
     resolve_trace_files,
 )
+from booley.flows.sim.edam import normalize_eda_tool
+from booley.flows.target_test_plan import TargetTestPlan, build_target_test_plan
 from booley.fusesoc import (
     core_security,
     fusesoc_registry,
@@ -5468,8 +5474,77 @@ def _audit_tests_toml(project: ProjectAudit, _pass: Check, _skip: Check, _fail: 
             f"{', '.join(TESTS_SECTION_KEYS)}; {TEST_NAME_RULES})",
         )
         return
-    _pass("tests.toml valid (section keys, Test names and select templates well-formed)")
+    _pass(
+        "tests.toml valid (section keys, Test names, Test Variants, select and seed "
+        "templates well-formed)"
+    )
     _audit_tests_toml_targets(project, sections, _fail)
+    _audit_test_run_plans(project, sections, _pass, _fail)
+
+
+def _audit_test_run_plans(
+    project: ProjectAudit, sections: dict, _pass: Check, _fail: Fail
+) -> None:
+    """Check each sim Target can apply what tests.toml declares for it (ADR 0072).
+
+    These are the checks the loader cannot make without the resolved ``.core``
+    Target: a Test Variant that overrides a Target plusarg, arguments or a
+    ``seed`` template on a Cocotb Target, ``default_seed`` on a Target that
+    cannot be seeded. A Target that passes gets one line naming how its Test
+    Runs are seeded; "unseeded" is a fact about the Target, not a problem.
+    """
+    try:
+        catalog = TargetCatalog.build(project.project_root)
+        handles = catalog.list(for_flow="sim")
+    except FuseSocError:
+        return  # enumeration failure is already reported by the structural audit
+    for handle in handles:
+        try:
+            inspection = catalog.inspect(handle)
+        except FuseSocError:
+            continue  # the resolve check reports a Target that does not inspect
+        adapter = (
+            "cocotb"
+            if inspection.flow_options.get("cocotb_module")
+            else _eda_family(inspection.eda_tool)
+        )
+        plusargs = [
+            str(name)
+            for name, spec in inspection.parameters.items()
+            if isinstance(spec, Mapping) and spec.get("paramtype") == "plusarg"
+        ]
+        try:
+            plan = build_target_test_plan(
+                handle.selector,
+                lookup_target_section(sections, handle.selector),
+                adapter=adapter,
+                target_plusargs=plusargs,
+            )
+        except ValueError as exc:
+            _fail(
+                f"tests.toml cannot apply to Target '{handle.selector}': {exc}",
+                "fix the tests.toml entry named above",
+            )
+            continue
+        _pass(_test_run_plan_line(handle.selector, plan))
+
+
+def _eda_family(eda_tool: str | None) -> str:
+    """The simulator family of a Target, or its raw tool name when unknown."""
+    try:
+        return normalize_eda_tool(eda_tool)
+    except ValueError:
+        return str(eda_tool or "")
+
+
+def _test_run_plan_line(selector: str, plan: TargetTestPlan) -> str:
+    """One PASS line: how *selector*'s Test Runs are seeded."""
+    if not plan.mechanism.seeded:
+        return f"Target '{selector}' Test Runs are unseeded ({plan.unseeded_cause()})"
+    return (
+        f"Target '{selector}' Test Runs are seeded through {plan.mechanism.describe()} "
+        f"(Default Seed {plan.default_seed})"
+    )
 
 
 def _audit_tests_toml_targets(project: ProjectAudit, sections: dict, _fail: Fail) -> None:

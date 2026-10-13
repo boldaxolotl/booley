@@ -599,6 +599,7 @@ def _tests(campaign: CoverageCampaign) -> dict[str, object]:
         {
             "id": run.id,
             "test": run.test,
+            "test_run": run.test_run,
             "simulation_verdict": run.simulation_verdict,
             "collection": run.collection,
         }

@@ -9,10 +9,12 @@ from booley.flows.execution_persistence import AcceptanceRecordingError
 from booley.runtime.timefmt import utc_now_rfc3339
 
 from .campaign_reports import target_report_directory, write_campaign_json
+from .coverage_acceptance import coverage_test_run_rows
 from .coverage_campaign import (
     CoverageCampaign,
     CoverageCampaignValidationError,
     CoverageCollector,
+    CoverageRun,
     CoverageTarget,
     FrozenJson,
     derive_coverage_rollups,
@@ -404,6 +406,7 @@ def _simulation_projection(
         "simulation": _simulation_status(result) if passed is not None else "not_run",
         "abort_remaining": result.infrastructure_error,
         "tests": tests,
+        "test_runs": coverage_test_run_rows(plan.test_runs, result.runs),
         "collection": _public_collection_status(campaign, result),
         "evaluation": campaign.evaluation["status"],
         "coverage_campaign": "coverage.json",
@@ -427,9 +430,14 @@ def _public_collection_status(
     return campaign.collection["status"]
 
 
-def _coverage_test_projection(run) -> dict[str, object]:
+def _coverage_test_projection(run: CoverageRun) -> dict[str, object]:
+    """One per-run row: the bare Test, its Test Run, Test Variant, seed and verdict."""
     entry: dict[str, object] = {
         "name": run.test,
+        "test_run": run.test_run,
+        "variant": run.variant,
+        "seed": run.seed,
+        "fingerprint": run.fingerprint,
         "verdict": run.simulation_verdict,
         "passed": run.simulation_verdict == "pass",
         "collection": run.collection,
