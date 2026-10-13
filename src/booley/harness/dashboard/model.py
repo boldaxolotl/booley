@@ -15,6 +15,7 @@ from booley.criteria.evidence_ledger import validated_evidence_records
 from booley.criteria.presentation import CriterionPresentation
 from booley.goals.binding import GoalBindingError, GoalRunBinding
 from booley.goals.diagnostics import is_unnamable_error, unavailable_diagnostic
+from booley.goals.format import test_run_lines
 from booley.goals.lifecycle import read_sealed_artifact
 from booley.goals.model import OCCUPYING_STATES, GoalRecord, GoalSpec
 from booley.goals.naming import apply_names, optional_names, read_names
@@ -48,6 +49,8 @@ class GoalDetail:
     provenance: tuple[dict[str, Any], ...] = ()
     checking: bool = False
     artifacts: tuple[str, ...] = ()
+    #: The Goal's frozen Test Runs with their outcomes and rerun commands (ADR 0072).
+    test_runs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -205,6 +208,7 @@ def project_goal(store: GoalStore, record: GoalRecord) -> GoalView:
                     )
                     if goal.key in selected
                     else (),
+                    test_runs=tuple(test_run_lines(goal)),
                 )
             )
         return GoalView(current.id, current, status, _goal_artifacts(details, current, store))

@@ -19,6 +19,7 @@ from typing import Any
 from mcp.types import TextContent
 
 from booley.criteria.evidence_ledger import AcceptanceLedgerError
+from booley.flows.sim.unpublished_results import read_unpublished_results
 from booley.goals.binding import GoalBindingError
 from booley.goals.checkout import CheckoutError, GoalCheckout
 from booley.goals.diagnostics import is_unnamable_error, unavailable_diagnostic
@@ -128,6 +129,11 @@ def goal_enter_schema() -> dict[str, Any]:
     }
 
 
+def _status_views(store: GoalStore, root: Path) -> tuple[GoalStatusView, ...]:
+    """Status with the Simulation Flow's reader of unpublished campaign results."""
+    return status_views(store, root, campaign_reader=read_unpublished_results)
+
+
 async def dispatch_goal_tool(  # noqa: PLR0911 — four independent public Goal tools have distinct responses
     name: str,
     arguments: Mapping[str, Any],
@@ -148,7 +154,7 @@ async def dispatch_goal_tool(  # noqa: PLR0911 — four independent public Goal 
             return await asyncio.to_thread(propose_change, arguments, env, request_context)
         if name == GOAL_STATUS:
             root = Path(str(arguments.get("work_dir") or Path.cwd()))
-            views = await asyncio.to_thread(status_views, store, root)
+            views = await asyncio.to_thread(_status_views, store, root)
             aware = await asyncio.to_thread(_status_has_caller, views, root, request_context)
             text = render_status(views) if views else "No active Goal Mode."
             if arguments.get("rules") is True:
