@@ -4636,6 +4636,33 @@ fn issue_1421_same_tick_samples_zero_window_and_reset_round_trip() {
             ),
             "7"
         );
+        for extra in [vec![], vec!["--to", "scalar", "rising"]] {
+            let mut args = vec!["distance", &store, "scalar", "rising", "--with-reset"];
+            args.extend(extra.iter().copied());
+            let (out, err, code) = issue_1100_run(&args);
+            assert_eq!(code, 0, "{err}");
+            let expected = if extra.is_empty() {
+                "# no pairs found (need at least 2 events, found 1)"
+            } else {
+                "# no pairs found"
+            };
+            assert!(out.lines().any(|line| line == expected), "{out}");
+        }
+        for (trigger, expected) in [
+            ("change", "15 scalar 0\n25 scalar 1"),
+            ("'h1", "25 scalar 1"),
+        ] {
+            assert_eq!(
+                issue_1100_query(
+                    &store,
+                    "sample",
+                    "scalar",
+                    trigger,
+                    &["--async", "--with-reset", "-s", "scalar"]
+                ),
+                expected
+            );
+        }
         for (cycle, value) in [("2c", "0"), ("3c", "1")] {
             let (out, err, code) = issue_1100_run(&[
                 "value",

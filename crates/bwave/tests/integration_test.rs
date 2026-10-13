@@ -3379,7 +3379,14 @@ fn test_time_token_phase_consumers_round_trip() {
             assert_eq!(out, expected);
             assert!(!out.is_empty(), "{command}");
             if command == "sample" {
-                assert_eq!(out, format!("{c} data 3\n{} data 4\n", c + 1));
+                // Reset-relative cycle 1 is the first eligible sampled baseline;
+                // with reset included, cycle 3 has a preceding sampled value.
+                let expected = if included {
+                    format!("{c} data 3\n{} data 4\n", c + 1)
+                } else {
+                    format!("{} data 4\n", c + 1)
+                };
+                assert_eq!(out, expected);
             }
         }
         let mut args = vec!["stats", bp, "-t", "25ns:35t", "--format", "json"];
