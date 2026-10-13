@@ -10,7 +10,7 @@ identifiers we can enumerate, plus a diff for the human to read* — never
 What gets scrubbed, in order (longest match first, so a path is consumed before
 the bare directory name inside it):
 
-1. Absolute paths — the repo root, the user's home, and any ``/home/<user>``,
+1. Absolute paths — the Project Root, the user's home, and any ``/home/<user>``,
    ``/Users/<user>``, or ``C:\\Users\\<user>`` prefix anywhere in the text.
 2. Git remotes — the URL and its ``org/repo`` slug.
 3. The committer identity from ``git config``.
@@ -248,8 +248,8 @@ def build_plan(project_root: Path, project_dir: Path | None = None) -> Redaction
     """Assemble the substitutions for *project_root*.
 
     Args:
-        project_root: The RTL repo root — the thing whose identity is at stake.
-        project_dir: Booley's state dir, holding ``booley.toml``. Defaults to
+        project_root: The Project Root — the thing whose identity is at stake.
+        project_dir: The Booley Directory, holding ``booley.toml``. Defaults to
             ``<project_root>/.booley_project``.
     """
     project_dir = project_dir or (project_root / ".booley_project")

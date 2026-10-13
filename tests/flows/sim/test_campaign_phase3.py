@@ -437,7 +437,7 @@ def _failed_shared_executor(
 
     class FailedExecution:
         @contextmanager
-        def ordinary_group(self, _handle, _names):
+        def ordinary_group(self, _handle, _names, _test_runs=None):
             yield FailedGroup()
 
     return OrdinaryHdlSerialExecutor(
@@ -530,7 +530,7 @@ def _shared_executor(build_root, run_log, handle, launches, compile_count, bindi
 
     class FakeExecution:
         @contextmanager
-        def ordinary_group(self, _handle, names):
+        def ordinary_group(self, _handle, names, _test_runs=None):
             yield FakeGroup(names)
 
     return OrdinaryHdlSerialExecutor(

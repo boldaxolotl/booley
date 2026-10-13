@@ -3443,7 +3443,7 @@ def test_init_reports_layout_probe_failure_without_traceback(tmp_path, monkeypat
     ctx = InitContext(project_root=tmp_path)
     assert init_cmd._step_image_lifecycle(ctx) is None
     assert ctx.results[-1].status == "err"
-    assert "cannot probe Project-data layout" in ctx.results[-1].detail
+    assert "cannot probe Booley Directory layout" in ctx.results[-1].detail
 
 
 def test_layout_parent_inspection_failure_uses_lifecycle_error_boundary(tmp_path, monkeypatch):
@@ -3467,7 +3467,7 @@ def test_layout_history_and_directory_transport_failure_are_controlled(monkeypat
         raise subprocess.CalledProcessError(1, "docker")
 
     monkeypatch.setattr(lifecycle.project_image.subprocess, "run", unavailable)
-    with pytest.raises(RuntimeError, match="cannot verify Project-data layout"):
+    with pytest.raises(RuntimeError, match="cannot verify Booley Directory layout"):
         getattr(lifecycle.project_image, operation)(
             "image", "docker"
         ) if operation == "_image_history" else getattr(lifecycle.project_image, operation)(

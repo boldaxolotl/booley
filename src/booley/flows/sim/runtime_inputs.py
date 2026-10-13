@@ -274,7 +274,7 @@ def materialize_campaign_runtime_inputs(
                 pass
             except OSError:
                 # A consumer-created sibling is not owned by this attempt.
-                # Never recurse through a literal Project directory to remove it.
+                # Never recurse through a literal Booley Directory to remove it.
                 pass
 
 

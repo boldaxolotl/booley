@@ -92,7 +92,7 @@ Host provisioning is an administrative startup operation, not an MCP
 execution route:
 
 1. A host administrator registers a supported installation and grants one
-   exact Project root access.
+   exact Project Root access.
 2. The Project requests host provisioning without naming an installation.
 3. Booley validates and stamps a runtime specification containing the fixed
    image, read-only mount, wrapper, labels, and optional licensing topology.
@@ -232,7 +232,7 @@ Every MCP tool inherits a base argument set. A concrete implementation adds only
 
 | Arg | Meaning |
 |-----|---------|
-| `-C/--project PATH` | Human CLI Project checkout selection; transport parser and MCP keep `work_dir` |
+| `-C/--project PATH` | Human CLI Project Root selection; transport parser and MCP keep `work_dir` |
 | `--report-dir` | Where `report.json` lands; bound Goal runs default to the record's runtime reports |
 | `--target` | Which project Target to operate on (comma-separated). This is what `self.args.target` reads in the examples below |
 
@@ -455,7 +455,7 @@ endpoint may support a host-side, read-only diagnostic entry point, but must not
 use it to expose Flow or EDA execution. There is no configurable
 execution-location contract for a custom endpoint.
 
-The entire project root is mounted at `/work` in Docker, so custom MCP tool files are accessible inside the container without additional mount configuration.
+The entire Project Root is mounted at `/work` in Docker, so custom MCP tool files are accessible inside the container without additional mount configuration.
 
 ### Implementation Examples
 
@@ -596,8 +596,7 @@ You do not need `booley session enter` when VS Code or your terminal is already 
 Ordinary `booley flow` and direct typed calls use standalone execution and do
 not capture a Goal Run Binding from the current worktree. They return diagnostic
 verdicts without persisting Goal evidence; Goal verification should use the MCP
-endpoint with explicit `work_dir`. Reports default to checkout-local Project
-data (`flow-reports/` for Flows, `mcp-tool-reports/` for Specialists), unless the
+endpoint with explicit `work_dir`. Reports default to the checkout-local Booley Directory (`flow-reports/` for Flows, `mcp-tool-reports/` for Specialists), unless the
 caller supplies another report destination. Exit codes retain
 their normal meaning: 0 = criterion met, 1 = ran and failed, 2 = unable to reach
 a verdict.
@@ -752,12 +751,12 @@ The host authority stores three separate records:
 - an **Installation Registration** identifies one supported tool release;
 - an optional **License Profile** identifies one built-in, fixed licensing
   topology;
-- an exact **Project Grant** authorizes one canonical Project root to use those
+- an exact **Project Grant** authorizes one canonical Project Root to use those
   opaque records.
 
 Project configuration can request only the supported EDA kind and provisioning
 source. The exact Project Grant is the sole selector for the opaque Installation
-Registration and any License Profile. Project data cannot supply a host path,
+Registration and any License Profile. Project configuration cannot supply a host path,
 Docker mount, image override, wrapper, environment variable, license
 destination, or command.
 
@@ -989,7 +988,7 @@ Invalid input or
 malformed/model-incomplete output is an execution error; a valid advisory report
 succeeds even when its Campaign records simulation failure or a coverage miss.
 
-The wrapper checks canonical invocation/Target identity, the complete V3/V4
+The wrapper checks canonical invocation/Target identity, the complete point-store
 manifest/point-store relationship, and a matching completed Simulation projection
 before model invocation. The deep module is
 `analyze_coverage_campaign(campaign, sources, instruction)`; `CoverageAnalyzer`
@@ -1013,7 +1012,7 @@ cumulative byte budgets; later `points` or `source` queries may pass delivered v
 as `point_refs`. The host privately resolves them back to exact Campaign IDs before
 publishing an advisory report. Point records include their complete eligible,
 unscored, or waived disposition and Approved Waiver provenance. The host first
-deep-validates the complete V3/V4 manifest/point-store pair, so paging and reference
+deep-validates the complete manifest/point-store pair, so paging and reference
 resolution never weaken Campaign integrity. No other MCP tool is visible to this
 model. The validated session retains references to immutable
 Coverage Points rather than encoded population copies, uses an exact-ID index, derives

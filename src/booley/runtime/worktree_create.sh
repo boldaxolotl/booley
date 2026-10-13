@@ -15,12 +15,11 @@
 #                            worktree, or a half-created worktree.
 #                  "replace" treat the destination as a stale leftover:
 #                            force-remove the registered worktree and delete
-#                            the directory before creating a fresh one. Only
-#                            Ticket setup, which owns its per-Ticket
-#                            worktrees, passes this policy.
+#                            the directory before creating a fresh one.
+#                            Callers must own the worktree they replace.
 #
-# Shipped as runtime package data (booley/runtime/worktree_create.sh); the
-# Ticket setup stage and `booley worktree new` both invoke it.
+# Shipped as runtime package data (booley/runtime/worktree_create.sh);
+# `booley worktree new` invokes it.
 
 set -e
 
@@ -104,21 +103,21 @@ CREATING_MARKER="$WORKTREE_DIR/.creating"
 # Keep this worktree's .core copies out of FuseSoC's recursive --cores-root
 # scan. Each worktree is a full checkout carrying the project's .core files
 # (same VLNV as /work); without this marker FuseSoC's scan lets a stale copy
-# shadow the repo-root source and silently build the wrong RTL. `booley init`
+# shadow the source at the Project Root and silently build the wrong RTL. `booley init`
 # also drops this marker, but a worktree can be created against a project that
 # predates the fix — so guarantee it here whenever a worktree exists. The
 # marker suppresses .core DISCOVERY only; source files a baseline fileset
 # references under .booley_project/ are still read.
 mkdir -p "$CWD/.booley_project"
 FUSESOC_IGNORE_MARKER="$CWD/.booley_project/FUSESOC_IGNORE"
-# A standalone Project may have no committed root marker. Quarantine its
+# A Versioned Booley Directory may have no committed root marker. Quarantine its
 # transient worktrees without adding an untracked input to the clean source.
 if [ "${BOOLEY_WORKTREE_PAIRED_PROJECT:-}" = "1" ] && [ ! -f "$FUSESOC_IGNORE_MARKER" ]; then
     mkdir -p "$CWD/.booley_project/worktrees"
     FUSESOC_IGNORE_MARKER="$CWD/.booley_project/worktrees/FUSESOC_IGNORE"
 fi
 if [ ! -f "$FUSESOC_IGNORE_MARKER" ]; then
-    printf '# Booley state dir: keep transient worktree .core copies out of FuseSoC/Booley core discovery.\n' \
+    printf '# Booley Directory: keep transient worktree .core copies out of FuseSoC/Booley core discovery.\n' \
         > "$FUSESOC_IGNORE_MARKER" 2>/dev/null || true
 fi
 
@@ -301,7 +300,7 @@ if [ "$ON_EXISTING" = "refuse" ]; then
         _parent_lock_release
         echo "ERROR: worktree destination is not free ($_destination_problem): $WORKTREE_DIR" >&2
         if [ -f "$WORKTREE_DIR/.booley_project/.git" ]; then
-            echo "ERROR: remove the paired Project first, then the outer worktree, once its work is safe" >&2
+            echo "ERROR: remove the Paired Checkout first, then the outer worktree, once its work is safe" >&2
         fi
         echo "ERROR: choose another name, or remove the old worktree once its work is safe" >&2
         exit 1
@@ -330,7 +329,7 @@ elif [[ "$NAME" == *--* ]]; then
     echo "Branch detected in name: $TARGET_BRANCH" >&2
 fi
 
-# Ticket Baseline callers attach their exact existing branch. Other callers
+# Callers supplying branch_ref attach that exact existing branch. Other callers
 # retain the generic detached-HEAD behavior and optional name convention.
 WORKTREE_ADD_TARGET=(--detach)
 if [ -n "$EXPLICIT_BRANCH" ]; then
@@ -397,7 +396,7 @@ git_wt() {
     git --git-dir="$WORKTREE_GIT_DIR" --work-tree="$WORKTREE_DIR" "$@"
 }
 
-# Resolve project dir: env var -> sibling .booley_project/ -> legacy project/
+# Resolve Booley Directory: env var -> sibling .booley_project/ -> legacy project/
 PIPELINE_DIR="$CWD/.booley"
 if [ -n "${BOOLEY_PROJECT_DIR:-}" ]; then
     BOOLEY_PROJECT_DIR_RESOLVED="$BOOLEY_PROJECT_DIR"
@@ -524,14 +523,13 @@ fi
 
 # Root-level quarantine markers are commonly untracked by design, so git
 # worktree add cannot carry them. Preserve the same FuseSoC scan boundary in
-# every ticket checkout.
+# every linked worktree.
 if [ -f "$CWD/FUSESOC_IGNORE" ]; then
     cp "$CWD/FUSESOC_IGNORE" "$WORKTREE_DIR/FUSESOC_IGNORE"
 fi
 
-# Project-specific setup (sim symlinks, git hooks, DPI build, etc.) is
-# handled by the post-setup hook in .booley_project/hooks/.
-# See stage_01_setup.py for hook invocation.
+# Project-specific setup (sim symlinks, git hooks, DPI build, etc.) remains
+# for the caller after creation. This script does not invoke Project hooks.
 
 # Build succeeded — remove the mid-build marker so ERR trap won't nuke
 # the worktree on any later non-zero exit (there shouldn't be one after this,

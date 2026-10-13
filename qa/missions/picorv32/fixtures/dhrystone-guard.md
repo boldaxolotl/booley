@@ -1,7 +1,6 @@
 ### Dhrystone negative guard
 
-After the continuity Goal finishes and the outer branch and any printed paired Project-data branch are integrated, use a disposable
-Project copy at that source. The operator commits the negative seed; a Goal child
+After the continuity Goal finishes and the outer branch and any printed Paired Checkout branch are integrated, use a disposable checkout of the Project at that source. The operator commits the negative seed; a Goal child
 collects evidence in a linked worktree.
 
 Try:

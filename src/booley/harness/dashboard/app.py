@@ -18,11 +18,13 @@ from textual.widgets import DataTable, Footer, Header, Static
 
 from booley.core.boundary import as_float
 from booley.goals.model import OCCUPYING_STATES
+from booley.goals.presentation import proposal_presentation
+from booley.harness.dashboard.jobs import TERMINAL_JOB_STATES, JobView, target_arg
 from booley.harness.dashboard.links import linked_text, open_in_editor
 from booley.harness.dashboard.model import DashboardSnapshot, GoalDetail, GoalView
 from booley.harness.dashboard.resources import Resources
 from booley.mcp.session_registry import Attribution, SessionRow, shares_worktree
-from booley.runtime.job_snapshot import TERMINAL_JOB_STATES, JobView, target_arg
+from booley.review.goal_package import observation_facts
 from booley.runtime.pid import ProcessState
 from booley.runtime.session_activity import UNKNOWN, WAITING_TOOL, Activity
 from booley.runtime.timefmt import parse_timestamp
@@ -212,15 +214,17 @@ def _reported_metrics(report: dict[str, Any]) -> str:
 
 
 def _evidence_detail(goal: GoalDetail) -> str:
+    frozen = "".join(f"{line}\n" for line in goal.test_runs)
     if goal.evidence is None:
-        return "Last check: unavailable · Evidence unavailable"
+        return frozen + "Last check: unavailable · Evidence unavailable"
     facts = goal.evidence
     return (
-        f"Last check: {facts.get('recorded_at', 'unavailable')}\n"
+        frozen
+        + f"Last check: {facts.get('recorded_at', 'unavailable')}\n"
         + "Observations: "
-        + json.dumps(facts.get("detail", {}), indent=2)[:8000]
+        + json.dumps(observation_facts(facts).get("observations", {}), indent=2)[:8000]
         + "\nImmutable derivation provenance: "
-        + json.dumps(goal.provenance, indent=2)[:8000]
+        + json.dumps([observation_facts(row) for row in goal.provenance], indent=2)[:8000]
         + "\nAvailable evidence paths:\n"
         + ("\n".join(goal.artifacts) or "—")
     )
@@ -495,7 +499,7 @@ class DashboardApp(App[None]):
         columns = max(1, min(3, self.size.width // 60))
         self.goal_columns = columns
         keys, cells = [], []
-        if goal is not None and not goal.diagnostic:
+        if goal is not None:
             ordered = sorted(
                 goal.goals,
                 key=lambda item: {
@@ -531,7 +535,7 @@ class DashboardApp(App[None]):
             activities.extend(
                 (
                     "proposal:" + view.proposal.id,
-                    "Pending proposal: " + json.dumps(view.proposal.to_json()),
+                    "Pending proposal: " + json.dumps(proposal_presentation(view)),
                 )
                 for view in goal.status.proposals
                 if view.state == "pending" and not view.closed_by_abandonment
@@ -707,7 +711,7 @@ class DashboardApp(App[None]):
         )
         if view is None:
             return "Proposal unavailable"
-        return json.dumps(view.proposal.to_json(), indent=2) + "\nApproval remains in chat."
+        return json.dumps(proposal_presentation(view), indent=2) + "\nApproval remains in chat."
 
     def _detail_content(self) -> tuple[str, tuple[str, ...]]:
         """Detail text for the current view and the published paths it may link."""

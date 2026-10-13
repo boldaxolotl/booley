@@ -7,8 +7,8 @@
    body in place so authored rationale survives.
 3. Validate via validate_commit_msg.validate_message().
 
-Project Initialization packages this module into the standalone Project Git-hook
-bundle; Ticket worktrees receive the same source through harness/setup/workspace.py.
+Project Initialization packages this module into the Project Git-hook
+bundle used by the RTL repository and its linked worktrees.
 
 **Bodies are kept.** They used to be truncated away on every non-merge commit
 ("single-line messages only"), which quietly destroyed authored work: a long
@@ -178,8 +178,7 @@ def _notify_if_redacted(
         )
         changed = True
     if changed:
-        # Names the knob but not the config file: the file is <project
-        # dir>/booley.toml, and spelling that out would print a banned word —
+        # Names the knob but not the config file: the file is <booley-directory>/booley.toml, and spelling that out would print a banned word —
         # the exact thing these notices promise not to echo back.
         print(
             "commit-msg: stealth mode did this — opt out with [stealth] "

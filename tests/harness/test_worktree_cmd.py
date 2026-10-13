@@ -126,7 +126,7 @@ def project(tmp_path: Path, monkeypatch) -> Path:
     _write(data / "goals" / "history" / "old-20260101T000000Z.md", "committed summary\n")
     assert _git(root, "add", "-f", "README.md", ".booley_project/goals/history").returncode == 0
     assert _git(root, "commit", "-m", "init").returncode == 0
-    # Untracked Project data: configuration that must be copied ...
+    # Untracked files in the Booley Directory: configuration that must be copied ...
     _write(data / "booley.toml", "[submodules]\npaths = []\n")
     # ... and live Goal / session state that must stay behind.
     goal_dir = data / "goals" / "axi-20261006T120000Z"
@@ -136,7 +136,7 @@ def project(tmp_path: Path, monkeypatch) -> Path:
     _write(data / "goals" / "locks" / "worktree-abc.lock", "")
     _write(data / "goals" / "history" / "untracked-20261006T000000Z.md", "local only\n")
     _write(data / "runtime" / "sessions" / "s1" / "state.json", "{}\n")
-    # Nested directories that merely share those names are ordinary Project data.
+    # Nested directories that merely share those names are ordinary contents of the Booley Directory.
     _write(data / "cores" / "goals" / "goals.core", "CAPI=2:\n")
     _write(data / "mcp_tools" / "runtime" / "sessions" / "helper.py", "# helper\n")
     return root
@@ -239,7 +239,7 @@ def test_help_never_names_the_preview_surface(capsys) -> None:
 
 @pytest.fixture
 def versioned_project(tmp_path):
-    """A clean Stealth outer repository with a standalone Project at its HEAD."""
+    """A clean Stealth outer repository with a Versioned Booley Directory at its HEAD."""
     from booley.runtime.project_gitignore import PROJECT_GITIGNORE
     from tests.goals.conftest import git
     from tests.goals.stealth_support import CORE
@@ -309,7 +309,7 @@ def test_user_command_pairs_committed_project_and_prints_removal(versioned_proje
     assert git(source, "config", "extensions.worktreeConfig") == "true"
     assert git(source, "config", "gc.worktreePruneExpire") == "never"
     assert _new("real-paired", root) == 1
-    assert "Remove the paired Project first" in capsys.readouterr().err
+    assert "Remove the Paired Checkout first" in capsys.readouterr().err
 
 
 def test_python_pairing_accepts_detached_project_head(versioned_project, python_outer):
@@ -386,7 +386,7 @@ def test_unborn_project_refuses_and_rolls_back(tmp_path, python_outer, capsys):
     _write(source / ".gitignore", "worktrees/\n")
     git(source, "init", "-q")
     assert _new("unborn", root) == 1
-    assert "commit the Project repository first" in capsys.readouterr().err
+    assert "commit the Booley Directory's repository first" in capsys.readouterr().err
     _assert_creation_absent(root, "unborn")
 
 
@@ -740,7 +740,7 @@ def test_goal_entry_and_finish_use_real_user_worktree(versioned_project, monkeyp
         reconcile_projected_cores(worktree)
         record = enter_goal_mode(
             EntryRequest(
-                worktree, "user-goal", parse_goal_args([{"family": "lint", "target": "top"}])
+                worktree, "user-goal", parse_goal_args([{"family": "LINT", "target": "top"}])
             ),
             EntryEnvironment(control),
         ).record
@@ -1000,7 +1000,7 @@ def test_corrupt_project_git_directory_inside_workspace_is_refused(tmp_path, mon
         worktree_cmd, "_create_outer", lambda *_a, **_kw: pytest.fail("broken repo copied")
     )
     assert _new("broken", tmp_path) == 1
-    assert "cannot read the Project repository" in capsys.readouterr().err
+    assert "cannot read the Booley Directory's repository" in capsys.readouterr().err
 
 
 def test_existing_project_registration_is_refused_and_preserved(
@@ -1200,7 +1200,7 @@ def test_unrelated_missing_pattern_preserves_per_path_input_group(per_path_proje
         _per_path_observation(source, "flow-reports/report.json", None)
     assert _new("per-path", root) == 1
     error = capsys.readouterr().err
-    expected = "Project repository has uncommitted changes; "
+    expected = "Booley Directory's repository has uncommitted changes; "
     if mixed:
         expected += (
             "transient state: flow-reports/report.json; Project .gitignore is missing "

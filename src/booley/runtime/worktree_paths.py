@@ -1,4 +1,4 @@
-"""Select one physical Project-data namespace for linked worktrees."""
+"""Select one physical Booley Directory namespace for linked worktrees."""
 
 from __future__ import annotations
 

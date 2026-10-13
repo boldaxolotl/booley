@@ -31,6 +31,7 @@ from booley.specialists.coverage_analysis import CoverageAnalysisError
 from booley.specialists.coverage_analyst import CoverageAnalystSpecialist
 from tests.flows.sim.coverage_campaign_test_support import (
     corrupt_v3_campaign_with_duplicate_negative_point,
+    rewrite_manifest_as_older_schema,
 )
 from tests.flows.sim.test_coverage_campaign import _valid_document
 
@@ -234,8 +235,7 @@ def test_persisted_current_analysis_does_not_encode_the_complete_campaign(tmp_pa
 def test_retained_v3_analysis_uses_bounded_evidence_envelope(tmp_path: Path) -> None:
     path = persist_campaign(tmp_path)
     manifest = json.loads(path.read_text())
-    manifest["$schema"] = "booley.coverage-campaign/v3"
-    del manifest["scoring"]
+    rewrite_manifest_as_older_schema(manifest, 3)
     path.write_text(json.dumps(manifest))
     model = Model()
 

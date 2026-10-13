@@ -107,6 +107,12 @@ pub struct ColumnCache {
     fst: crate::fst::FstBacking,
 }
 
+struct SignalSelection {
+    stored: Vec<usize>,
+    extra: Vec<usize>,
+    warnings: Vec<String>,
+}
+
 impl ColumnCache {
     /// Load a waveform store. Delegates to the FST loader; returns `None`
     /// if the file is missing or not a readable FST.
@@ -300,7 +306,8 @@ impl ColumnCache {
         patterns: &[String],
         extra_names: &[String],
     ) -> (Vec<usize>, Vec<usize>) {
-        self.select_signals_with_names(patterns, extra_names, true)
+        let selection = self.select_signals_with_names(patterns, extra_names, true);
+        (selection.stored, selection.extra)
     }
 
     fn select_signals_with_names(
@@ -308,7 +315,7 @@ impl ColumnCache {
         patterns: &[String],
         extra_names: &[String],
         report: bool,
-    ) -> (Vec<usize>, Vec<usize>) {
+    ) -> SignalSelection {
         let matchers = match compile_patterns(patterns) {
             Ok(m) => m,
             Err(e) => {
@@ -361,7 +368,15 @@ impl ColumnCache {
                 results.is_empty() && extra_results.is_empty(),
             );
         }
-        (results, extra_results)
+        SignalSelection {
+            warnings: unmatched_pattern_warnings(
+                patterns,
+                &pattern_hit,
+                results.is_empty() && extra_results.is_empty(),
+            ),
+            stored: results,
+            extra: extra_results,
+        }
     }
 }
 
@@ -408,7 +423,7 @@ fn alias_warnings(
     budget: &mut AliasBudget,
 ) -> Vec<String> {
     let mut warnings = Vec::new();
-    let (rows, _) = cache.select_signals_with_names(patterns, &[], false);
+    let rows = cache.select_signals_with_names(patterns, &[], false).stored;
     for pattern in patterns.iter().filter(|p| explicit_glob(p)) {
         let matchers = compile_patterns(std::slice::from_ref(pattern)).unwrap_or_else(|error| {
             eprintln!("ERROR: {error}");
@@ -534,6 +549,33 @@ fn record_limit(cfg: &ExtractConfig, count: usize) -> Vec<String> {
     }
 }
 
+fn unmatched_pattern_message(pattern: &str) -> String {
+    format!("no signals match '{}' — filter dropped", pattern)
+}
+
+fn array_element_hint(pattern: &str) -> String {
+    format!("(indexed element: simulators do not dump unpacked array/memory elements by default — probe the element into a wire, or check `bwave list -s '*{}*'` for what was dumped)", array_base_name(pattern))
+}
+
+fn unmatched_pattern_warnings(patterns: &[String], hit: &[bool], all_empty: bool) -> Vec<String> {
+    if all_empty {
+        return Vec::new();
+    }
+    patterns
+        .iter()
+        .zip(hit)
+        .filter(|(_, hit)| !**hit)
+        .map(|(pat, _)| {
+            let mut warning = unmatched_pattern_message(pat);
+            if looks_like_array_element(pat) {
+                warning.push(' ');
+                warning.push_str(&array_element_hint(pat));
+            }
+            warning
+        })
+        .collect()
+}
+
 /// Warn (once per query) about `-s` patterns that matched no signal.
 ///
 /// Silent when every pattern matched, and silent when *nothing* matched at
@@ -557,19 +599,9 @@ fn report_unmatched_patterns(patterns: &[String], hit: &[bool], all_empty: bool)
     // would otherwise print 16 near-identical hint blocks.
     let mut hinted_bases = std::collections::HashSet::new();
     for pat in &misses {
-        let _ = writeln!(
-            err,
-            "# WARNING: no signals match '{}' — filter dropped",
-            pat
-        );
+        let _ = writeln!(err, "# WARNING: {}", unmatched_pattern_message(pat));
         if looks_like_array_element(pat) && hinted_bases.insert(array_base_name(pat)) {
-            let _ = writeln!(
-                err,
-                "#   (indexed element: simulators do not dump unpacked \
-                 array/memory elements by default — probe the element into a \
-                 wire, or check `bwave list -s '*{}*'` for what was dumped)",
-                array_base_name(pat)
-            );
+            let _ = writeln!(err, "#   {}", array_element_hint(pat));
         }
     }
     let _ = writeln!(
@@ -751,10 +783,11 @@ fn build_radix_map(
     cache: &ColumnCache,
     matched: &[usize],
     cfg: &ExtractConfig,
-) -> HashMap<usize, Radix> {
+) -> (HashMap<usize, Radix>, Vec<String>) {
     let mut map = HashMap::new();
+    let mut warnings = Vec::new();
     if cfg.signal_radixes.is_empty() {
-        return map;
+        return (map, warnings);
     }
     // Track explicit radix requests so collisions include an explicit Hex.
     let mut requested: HashMap<usize, Vec<Radix>> = HashMap::new();
@@ -804,17 +837,17 @@ fn build_radix_map(
             }
         }
         if distinct.len() > 1 {
-            let _ = writeln!(
-                err,
-                "# WARNING: signal '{}' matched by multiple -s patterns with different radixes ({:?}); using last: {:?}",
-                cache.signals[idx].name,
-                distinct,
+            let warning = format!(
+                "signal '{}' matched by multiple -s patterns with different radixes ({:?}); using last: {:?}",
+                cache.signals[idx].name, distinct,
                 map.get(&idx).copied().unwrap_or(Radix::Hex),
             );
+            let _ = writeln!(err, "# WARNING: {}", warning);
+            warnings.push(warning);
         }
     }
     let _ = err.flush();
-    map
+    (map, warnings)
 }
 
 /// Format a value for display, applying per-signal radix if set.
@@ -989,6 +1022,18 @@ pub fn stats_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     let matched = cache.match_signals(&cfg.patterns);
     let virtuals = build_virtuals(cache, cfg);
 
+    let mut json_warnings = if cfg.json_format {
+        let names: Vec<String> = resolve_virtuals(cache, cfg)
+            .iter()
+            .map(|v| v.name.clone())
+            .collect();
+        cache
+            .select_signals_with_names(&cfg.patterns, &names, false)
+            .warnings
+    } else {
+        Vec::new()
+    };
+
     let sync_mode = !cfg.async_mode;
     let reset_deassert_tick = query_reset_deassert_tick(cache, cfg);
     let reset_start = reset_deassert_tick.unwrap_or(0);
@@ -1025,7 +1070,8 @@ pub fn stats_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         }
         exit_no_signal_match(&cfg.patterns, cache.unique_signal_count());
     }
-    let radix_map = build_radix_map(cache, &matched, cfg);
+    let (radix_map, radix_warnings) = build_radix_map(cache, &matched, cfg);
+    json_warnings.extend(radix_warnings);
     let stdout = io::stdout();
     let mut out = BufWriter::new(stdout.lock());
     let stderr = io::stderr();
@@ -1107,7 +1153,7 @@ pub fn stats_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     // Sort by transitions descending
     entries.sort_by(|a, b| b.transitions.cmp(&a.transitions).then(a.name.cmp(&b.name)));
 
-    let limit_warnings = record_limit(cfg, entries.len());
+    json_warnings.extend(record_limit(cfg, entries.len()));
     entries.truncate(cfg.max_lines);
 
     // JSON output mode — wrap in envelope and return early.
@@ -1189,7 +1235,7 @@ pub fn stats_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
                 clock_period_ns,
                 signals: json_entries,
             },
-            limit_warnings,
+            json_warnings,
         );
         return;
     }
@@ -1287,7 +1333,7 @@ pub fn find_stuck_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     let effective_start = reset_deassert_tick.unwrap_or(0);
     let total_ticks = cache.sim_end_tick.saturating_sub(effective_start);
 
-    let radix_map = build_radix_map(cache, &matched, cfg);
+    let (radix_map, _) = build_radix_map(cache, &matched, cfg);
     let stdout = io::stdout();
     let mut out = BufWriter::new(stdout.lock());
 
@@ -1429,6 +1475,22 @@ pub fn find_value_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         .filter(|ve| match_signal(&ve.name, &find_matchers))
         .collect();
 
+    // A missing target historically emits its error envelope before validating
+    // watched selectors unless query_config already validated explicit selectors.
+    let target_empty = target_indices.is_empty() && virtual_matches.is_empty();
+    let mut json_warnings =
+        if cfg.json_format && (!target_empty || compile_patterns(&cfg.patterns).is_ok()) {
+            let virtual_names: Vec<String> = resolve_virtuals(cache, cfg)
+                .iter()
+                .map(|v| v.name.clone())
+                .collect();
+            cache
+                .select_signals_with_names(&cfg.patterns, &virtual_names, false)
+                .warnings
+        } else {
+            Vec::new()
+        };
+
     if target_indices.is_empty() && virtual_matches.is_empty() {
         if cfg.json_format {
             // Emit an empty envelope so consumers get valid JSON to parse.
@@ -1449,7 +1511,11 @@ pub fn find_value_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
                     last_only: cfg.last_match,
                     count_only: cfg.count_only,
                 },
-                vec![format!("no signals match pattern '{}'", find_pattern)],
+                {
+                    let mut warnings = vec![format!("no signals match pattern '{}'", find_pattern)];
+                    warnings.extend(json_warnings);
+                    warnings
+                },
             );
         }
         // Total miss is a hard error either way; JSON consumers got their
@@ -1460,7 +1526,8 @@ pub fn find_value_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         );
     }
 
-    let radix_map = build_radix_map(cache, &target_indices, cfg);
+    let (radix_map, radix_warnings) = build_radix_map(cache, &target_indices, cfg);
+    json_warnings.extend(radix_warnings);
     let mode = TriggerMode::classify(find_value_str);
     let sync_mode = !cfg.async_mode;
 
@@ -1471,7 +1538,7 @@ pub fn find_value_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     };
     let effective_start = reset_deassert_tick.unwrap_or(0);
 
-    // Compute display names from watched patterns (matches Extractor's display_name)
+    // Strip the common scope prefix from matched names for display.
     let watched = cache.match_signals(&cfg.patterns);
     let all_names: Vec<String> = watched
         .iter()
@@ -1800,10 +1867,11 @@ pub fn find_value_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
                 last_only: cfg.last_match,
                 count_only: cfg.count_only,
             },
-            if truncated {
-                vec![limit_warning(cfg.max_lines)]
-            } else {
-                Vec::new()
+            {
+                if truncated {
+                    json_warnings.push(limit_warning(cfg.max_lines));
+                }
+                json_warnings
             },
         );
         return;
@@ -1882,7 +1950,7 @@ pub fn sample_at_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     );
 
     // Read trigger signal transitions and identify trigger ticks.
-    // For level mode in sync: check every cycle, like the Extractor does.
+    // For level mode in sync: check the held value at every clock-grid tick.
     let mut trigger_ticks: Vec<u64> = Vec::new();
 
     if level_mode && sync_mode && cache.clock_period_ticks > 0 && cb > 0 {
@@ -1899,7 +1967,7 @@ pub fn sample_at_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         }
     } else if level_mode && !sync_mode {
         // Async level mode: trigger at every watched-signal-change timestamp
-        // where the trigger value matches (mirrors Extractor's timestamp callback)
+        // where the settled trigger value matches.
         let mut change_ticks: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
         for &w_idx in &watched_indices {
             for (tick, _) in &cache.read_transitions(w_idx) {
@@ -1962,7 +2030,7 @@ pub fn sample_at_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     }
 
     // For each trigger tick, sample all watched signals
-    let radix_map = build_radix_map(cache, &watched_indices, cfg);
+    let (radix_map, _) = build_radix_map(cache, &watched_indices, cfg);
     let all_names: Vec<String> = watched_indices
         .iter()
         .map(|&i| cache.signals[i].name.clone())
@@ -2058,7 +2126,9 @@ pub fn snapshot_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         .iter()
         .map(|entry| entry.name.clone())
         .collect();
-    let (matched, matched_virtuals) = cache.match_signals_with_names(&cfg.patterns, &virtual_names);
+    let selection = cache.select_signals_with_names(&cfg.patterns, &virtual_names, true);
+    let matched = selection.stored;
+    let matched_virtuals = selection.extra;
     if matched.is_empty() && matched_virtuals.is_empty() {
         if cfg.json_format {
             let mode = if cfg.async_mode { "async" } else { "sync" };
@@ -2098,7 +2168,7 @@ pub fn snapshot_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
 
     // JSON mode collects diagnostics into the envelope's `warnings` instead
     // of streaming `# ...` lines to stderr.
-    let mut json_warnings: Vec<String> = Vec::new();
+    let mut json_warnings = selection.warnings;
 
     if !prefix.is_empty() {
         if cfg.json_format {
@@ -2182,7 +2252,8 @@ pub fn snapshot_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         format!("{}", at_time)
     };
 
-    let radix_map = build_radix_map(cache, &matched, cfg);
+    let (radix_map, radix_warnings) = build_radix_map(cache, &matched, cfg);
+    json_warnings.extend(radix_warnings);
     cache.prefetch_window(&matched, target_tick);
     let values: Vec<String> = matched
         .par_iter()
@@ -2359,7 +2430,7 @@ pub fn diff_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
     let label = if sync_mode { "cycle" } else { "time" };
     let _ = writeln!(out, "# diff {} {} vs {}", label, t1, t2);
 
-    let radix_map = build_radix_map(cache, &matched, cfg);
+    let (radix_map, _) = build_radix_map(cache, &matched, cfg);
     cache.prefetch_window(&matched, tick1.max(tick2));
     let values: Vec<(String, String)> = matched
         .par_iter()
@@ -2789,7 +2860,7 @@ pub fn trace_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         // prevent. (Use wave/stats/find to inspect virtual signals.)
         exit_no_signal_match(&cfg.patterns, cache.unique_signal_count());
     }
-    let radix_map = build_radix_map(cache, &matched, cfg);
+    let (radix_map, _) = build_radix_map(cache, &matched, cfg);
 
     let sync_mode = !cfg.async_mode;
 
@@ -3085,6 +3156,20 @@ pub fn list_signals_from_cache(
         } else {
             Vec::new()
         };
+        let hits: Vec<bool> = matchers
+            .iter()
+            .map(|matcher| {
+                cache
+                    .signals
+                    .iter()
+                    .any(|signal| match_signal(&signal.name, std::slice::from_ref(matcher)))
+            })
+            .collect();
+        warnings.extend(unmatched_pattern_warnings(
+            patterns,
+            &hits,
+            matched.is_empty(),
+        ));
         if stripped.len() > limit {
             warnings.push(limit_warning(limit));
         }
@@ -3160,9 +3245,8 @@ pub(crate) fn tick_to_cycle(tick: u64, cycle_base_tick: u64, clock_period: u64) 
     (tick - cycle_base_tick) / clock_period + 1
 }
 
-/// Compute the tick of the first rising edge at or after effective_start.
-/// Matches Extractor's cycle counting which starts at the first on_rising_edge
-/// after reset deassert.
+/// Compute the first clock-grid tick at or after effective_start.
+/// Cycle 1 starts there; later cycles advance by the detected clock period.
 fn cycle_base(cache: &ColumnCache, effective_start: u64) -> u64 {
     if cache.clock_period_ticks == 0 {
         return effective_start;
@@ -3195,7 +3279,7 @@ fn value_at_tick(transitions: &[(u64, String)], tick: u64) -> String {
     }
 }
 
-/// Find the best reset signal index, matching Extractor's depth-based selection.
+/// Find the best reset signal index.
 /// With explicit pattern: glob match. Without: contains("rst") on leaf name.
 /// Among matches, prefer shallowest scope depth, then lexicographic.
 fn find_best_reset_idx(cache: &ColumnCache, cfg: &ExtractConfig) -> Option<usize> {
@@ -3494,7 +3578,7 @@ pub fn wave_from_cache(cache: &ColumnCache, cfg: &ExtractConfig) {
         .iter()
         .map(|&idx| &all_virtuals[idx])
         .collect();
-    let radix_map = build_radix_map(cache, &matched, cfg);
+    let (radix_map, _) = build_radix_map(cache, &matched, cfg);
 
     let sync_mode = !cfg.async_mode && cache.clock_period_ticks > 0;
 

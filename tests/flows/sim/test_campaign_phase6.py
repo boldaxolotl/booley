@@ -49,8 +49,8 @@ from booley.flows.sim.campaign.coordinator import (
     SimulationCampaignCancellationError,
     WorkExecutionRequest,
     _acceptance_ready,
-    _collected_result_facts,
     _prerequisite_facts,
+    collected_result_facts,
 )
 from booley.flows.sim.campaign.facts import AcceptanceFacts
 from booley.flows.sim.campaign.model import SimulationResult, create_simulation_campaign_plan
@@ -747,7 +747,7 @@ def test_migrated_v1_result_references_hash_original_stored_bytes(
     recovery = SimpleNamespace(items=(recovered,))
     item = {"role": "functional", "revision": "current", "target": "sim"}
 
-    consumed, _observations = _collected_result_facts(
+    consumed, _observations = collected_result_facts(
         store, recovery, {recovered.work_item_id: item}
     )
     assert consumed[0]["result"]["bytes"] == len(raw)
@@ -763,14 +763,14 @@ def test_migrated_v1_result_references_hash_original_stored_bytes(
     monkeypatch.setattr("booley.flows.sim.campaign.coordinator.CampaignStore", lambda _root: store)
     monkeypatch.setattr(
         "booley.flows.sim.campaign.coordinator._authenticate_prerequisite_manifest",
-        lambda *_args: (manifest, "smoke"),
+        lambda *_args: (manifest, "smoke", None),
     )
     monkeypatch.setattr(
         "booley.flows.sim.campaign.coordinator._selected_prerequisite_result",
         lambda *_args: recovered,
     )
 
-    prerequisite = _prerequisite_facts(store, manifest)[0]["result"]
+    prerequisite = _prerequisite_facts(store, manifest, names_test_runs=False)[0]["result"]
     assert prerequisite["bytes"] == len(raw)
     assert prerequisite["sha256"] == _digest(raw)
 

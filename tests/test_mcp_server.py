@@ -523,6 +523,20 @@ class TestMcpToolTimeoutSeconds:
         assert timeout == 2 * 3600 + 10 + 30
         assert resolve_units.call_args.args[-1] is SimulationMode.ELAB_ONLY_STANDALONE
 
+    def test_watchdog_sizing_sees_the_requested_seed(self):
+        """``--seed random`` splits Cocotb batches, so sizing must know about it."""
+        with patch(
+            "booley.flows.sim.flow._resolve_sim_campaign_work_units",
+            return_value=3,
+        ) as resolve_units:
+            self._mcp_tool_timeout_seconds(
+                "sim",
+                {"target": "a", "seed": "random", "test": ["x", "y"], "timeout_ms": 10_000},
+                {"default_timeout": 1},
+            )
+        assert resolve_units.call_args.kwargs == {"seed": "random"}
+        assert resolve_units.call_args.args[2] == ["x", "y"]
+
     def test_elab_only_budget_counts_only_target_builds(self):
         timeout = self._mcp_tool_timeout_seconds(
             "sim",
@@ -1778,7 +1792,7 @@ class TestLoadAgentSettingsFromToml:
 
     def test_claude_provider_from_project_dir(self, tmp_path, monkeypatch):
         # BOOLEY_PROJECT_DIR points at the .booley_project dir; the loader must
-        # resolve the *parent* as the repo root.
+        # resolve the *parent* as the Project Root.
         root = self._write_project(
             tmp_path,
             '[agent]\nprovider = "claude"\n',

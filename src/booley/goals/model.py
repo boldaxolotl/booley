@@ -20,7 +20,10 @@ and only as optional fields: a record that lacks one (written by an older
 Booley) loads it as its default, while a record with a field this code does
 not know (written by a newer Booley) is refused with that explanation rather
 than having the field silently dropped on the next save. Required fields stay
-required.
+required. A field that changes what a Goal requires is written by every save,
+its default included, so that an older Booley refuses the record instead of
+judging its Goals by rules it does not know: ``test_run_resolutions`` (the
+Test Runs each Goal is frozen to, ADR 0072) is such a field.
 
 Nothing here touches the filesystem or Git; :mod:`booley.goals.store` owns
 persistence and :mod:`booley.goals.translate` owns GoalArg-to-Goal translation.
@@ -48,7 +51,14 @@ from booley.core.boundary import (
 )
 from booley.criteria.templates import FPGA_IMPL_OK_PARAMS, SYNTHESIS_OK_PARAMS
 from booley.criteria.thresholds import CYCLE_COUNT_PARAMS
+from booley.flows.test_runs import SeedCount, parse_test_selector
 from booley.goals.declared_inputs import DeclaredCapture
+from booley.goals.test_run_resolution import (
+    ResolutionFormatError,
+    TestRunResolution,
+    resolutions_from_json,
+    resolutions_to_json,
+)
 from booley.runtime.timefmt import parse_timestamp
 
 # ---------------------------------------------------------------------------
@@ -158,11 +168,18 @@ class GoalRecordFormatError(ValueError):
 
 @dataclass(frozen=True)
 class TargetGoalArg:
-    """A lint, sim, or elab Goal: the named Target passes that Booley Flow."""
+    """A lint, sim, or elab Goal: the named Target passes that Booley Flow.
+
+    A sim Goal may name one Test Run selector in ``test`` (ADR 0072):
+    ``test``, ``test+variant``, either with ``@seed``, or either with ``@xN``
+    for N Test Runs with different seeds. Without ``test`` the Goal is the
+    Target Goal: every Test of the Target, each as its default Test Variant.
+    """
 
     family: Literal[GoalFamily.LINT, GoalFamily.SIM, GoalFamily.ELAB]
     target: str
     origin: str = AD_HOC_ORIGIN
+    test: str | None = None
 
 
 @dataclass(frozen=True)
@@ -183,7 +200,11 @@ class ImplementationGoalArg:
 
 @dataclass(frozen=True)
 class CycleCountGoalArg:
-    """A Cycle Count Goal: one named test of one Target meets every threshold."""
+    """A Cycle Count Goal: one Test Run of one Target meets every threshold.
+
+    ``test`` is a Test Run selector without a seed count: a threshold applies
+    to the Cycle Count of one Test Run.
+    """
 
     target: str
     test: str
@@ -194,7 +215,10 @@ class CycleCountGoalArg:
 
 @dataclass(frozen=True)
 class CoverageGoalArg:
-    """A coverage Goal: per-metric floors (percent) over ``tests`` of one Target."""
+    """A coverage Goal: per-metric floors (percent) over ``tests`` of one Target.
+
+    ``tests`` is ``"all"`` or Test Run selectors, ``test@xN`` included.
+    """
 
     target: str
     metrics: Mapping[str, Any]
@@ -250,6 +274,7 @@ def goal_arg_to_json(goal: GoalArg) -> dict[str, Any]:
     }
     if isinstance(goal, MutationGoalArg):
         result.update(result.pop("params"))
+    result["family"] = goal.family.name
     return result
 
 
@@ -343,10 +368,31 @@ def _origin(raw: Mapping[str, Any], where: str) -> str:
     return _required_text(raw, "origin", where) if "origin" in raw else AD_HOC_ORIGIN
 
 
+def _test_selector(text: str, where: str, *, seed_count: bool) -> str:
+    """One written Test Run selector, checked against the Test Run grammar.
+
+    The text is kept as written: Goal keys come from the written form.
+    """
+    try:
+        selector = parse_test_selector(text)
+    except ValueError as exc:  # TestRunNameError, TestRunLimitError
+        raise GoalArgError(f"{where}: {exc}") from None
+    if not seed_count and isinstance(selector.seed_form, SeedCount):
+        raise GoalArgError(
+            f"{where} {text!r} must name one Test Run: a seed count (@xN) is not accepted here"
+        )
+    return text
+
+
 def _parse_target_goal(raw: Mapping[str, Any], family: GoalFamily, where: str) -> TargetGoalArg:
-    _reject_unknown(raw, frozenset({"family", "target", "origin"}), where)
+    simulation = family is GoalFamily.SIM
+    allowed = ("family", "target", "origin", *(("test",) if simulation else ()))
+    _reject_unknown(raw, frozenset(allowed), where)
     assert family in (GoalFamily.LINT, GoalFamily.SIM, GoalFamily.ELAB)
-    return TargetGoalArg(family, _target_name(raw, "target", where), _origin(raw, where))
+    test = None
+    if "test" in raw:
+        test = _test_selector(_required_text(raw, "test", where), f"{where}.test", seed_count=True)
+    return TargetGoalArg(family, _target_name(raw, "target", where), _origin(raw, where), test)
 
 
 def _parse_implementation_goal(
@@ -378,7 +424,7 @@ def _parse_cycle_count_goal(raw: Mapping[str, Any], where: str) -> CycleCountGoa
     )
     return CycleCountGoalArg(
         _target_name(raw, "target", where),
-        _required_text(raw, "test", where),
+        _test_selector(_required_text(raw, "test", where), f"{where}.test", seed_count=False),
         thresholds,
         _origin(raw, where),
     )
@@ -396,7 +442,10 @@ def _coverage_tests(raw: Mapping[str, Any], where: str) -> Literal["all"] | tupl
         raise GoalArgError(f"{where}.tests must be 'all' or a list of test names") from None
     if not items or not all(isinstance(item, str) and item.strip() for item in items):
         raise GoalArgError(f"{where}.tests must be 'all' or a non-empty list of test names")
-    return tuple(str(item).strip() for item in items)
+    return tuple(
+        _test_selector(str(item).strip(), f"{where}.tests[{index}]", seed_count=True)
+        for index, item in enumerate(items)
+    )
 
 
 def _parse_coverage_goal(raw: Mapping[str, Any], where: str) -> CoverageGoalArg:
@@ -452,10 +501,20 @@ def _spec_path(raw: Mapping[str, Any], where: str) -> str:
 def _family(raw: Mapping[str, Any], where: str) -> GoalFamily:
     name = _required_text(raw, "family", where)
     try:
-        return GoalFamily(name)
+        return GoalFamily[name]
+    except KeyError:
+        families = [family.name for family in GoalFamily]
+        raise GoalArgError(f"{where}.family must be one of {families}") from None
+
+
+def parse_stored_goal_arg(raw: object) -> GoalArg:
+    """Read legacy argument spelling without changing its digested persisted bytes."""
+    mapping = require_dict(raw, field="stored Goal argument")
+    try:
+        family = GoalFamily(mapping.get("family"))
     except ValueError:
-        families = [family.value for family in GoalFamily]
-        raise GoalArgError(f"{where}.family must be one of {families}, got {name!r}") from None
+        raise GoalArgError("unsupported stored Goal capability") from None
+    return parse_goal_arg({**mapping, "family": family.name})
 
 
 def parse_goal_arg(raw: object, *, where: str = "goal") -> GoalArg:
@@ -505,12 +564,17 @@ _ORIGIN = {
     "description": f"Goalset the Goal came from, or {AD_HOC_ORIGIN!r} (default).",
 }
 _THRESHOLD_VALUE = {"type": ["number", "string"]}
+_TEST_RUN = (
+    "a Test Run selector: 'test', 'test+variant', or either with '@seed' "
+    "(no seed means the Target's Default Seed)"
+)
+_SEED_COUNT = "; 'test@xN' or 'test+variant@xN' requires N Test Runs with different seeds"
 
 
 def _object(family: GoalFamily, properties: dict[str, Any], required: list[str]) -> dict[str, Any]:
     return {
         "type": "object",
-        "properties": {"family": {"const": family.value}, **properties, "origin": _ORIGIN},
+        "properties": {"family": {"const": family.name}, **properties, "origin": _ORIGIN},
         "required": ["family", *required],
         "additionalProperties": False,
     }
@@ -535,30 +599,51 @@ def _thresholds(params: frozenset[str], *, clock_scoped: bool) -> dict[str, Any]
     }
 
 
-def goal_arg_json_schema() -> dict[str, Any]:
-    """The JSON schema of one Goal argument: a ``oneOf`` tagged by ``family``."""
-    target = {**_STRING, "description": "Target the Goal binds to; it may not exist yet."}
-    variants = [
-        _object(family, {"target": target}, ["target"])
-        for family in (GoalFamily.LINT, GoalFamily.SIM, GoalFamily.ELAB)
+def _target_schema() -> dict[str, Any]:
+    return {**_STRING, "description": "Target the Goal binds to; it may not exist yet."}
+
+
+def _flow_goal_schemas() -> list[dict[str, Any]]:
+    """lint, sim, and elab: a Target, and for sim an optional Test Run selector."""
+    target = _target_schema()
+    sim_test = {
+        **_STRING,
+        "description": (
+            f"Optional: {_TEST_RUN}{_SEED_COUNT}. Without it the Goal covers every "
+            "Test of the Target, each as its default Test Variant."
+        ),
+    }
+    return [
+        _object(GoalFamily.LINT, {"target": target}, ["target"]),
+        _object(GoalFamily.SIM, {"target": target, "test": sim_test}, ["target"]),
+        _object(GoalFamily.ELAB, {"target": target}, ["target"]),
     ]
+
+
+def _implementation_goal_schemas() -> list[dict[str, Any]]:
+    schemas: list[dict[str, Any]] = []
     for family, params in (
         (GoalFamily.SYNTH, SYNTHESIS_OK_PARAMS),
         (GoalFamily.FPGA, FPGA_IMPL_OK_PARAMS),
     ):
         baseline = {**_STRING, "description": "Baseline Target at the base commit."}
         properties = {
-            "target": target,
+            "target": _target_schema(),
             "baseline": baseline,
             "thresholds": _thresholds(params, clock_scoped=True),
         }
-        variants.append(_object(family, properties, ["target"]))
+        schemas.append(_object(family, properties, ["target"]))
+    return schemas
+
+
+def _test_goal_schemas() -> list[dict[str, Any]]:
+    """Cycle Count and coverage: the families that name Test Runs beside thresholds."""
+    target = _target_schema()
     cycle = {
         "target": target,
-        "test": _STRING,
+        "test": {**_STRING, "description": f"One Test Run: {_TEST_RUN}."},
         "thresholds": _thresholds(CYCLE_COUNT_PARAMS, clock_scoped=False),
     }
-    variants.append(_object(GoalFamily.CYCLE_COUNT, cycle, ["target", "test", "thresholds"]))
     metrics = {
         "type": "object",
         "properties": {metric: {"type": "number"} for metric in COVERAGE_METRICS},
@@ -566,11 +651,28 @@ def goal_arg_json_schema() -> dict[str, Any]:
         "minProperties": 1,
         "description": "Coverage metric to minimum percent in (0, 100].",
     }
-    tests = {"oneOf": [{"const": "all"}, {"type": "array", "items": _STRING, "minItems": 1}]}
-    coverage = {"target": target, "metrics": metrics, "tests": tests}
-    variants.append(_object(GoalFamily.COVERAGE, coverage, ["target", "metrics", "tests"]))
-    mutation = {
+    selectors = {
+        "type": "array",
+        "items": _STRING,
+        "minItems": 1,
+        "description": f"Each item is {_TEST_RUN}{_SEED_COUNT}.",
+    }
+    coverage = {
         "target": target,
+        "metrics": metrics,
+        "tests": {"oneOf": [{"const": "all"}, selectors]},
+    }
+    return [
+        _object(GoalFamily.CYCLE_COUNT, cycle, ["target", "test", "thresholds"]),
+        _object(GoalFamily.COVERAGE, coverage, ["target", "metrics", "tests"]),
+    ]
+
+
+def goal_arg_json_schema() -> dict[str, Any]:
+    """The JSON schema of one Goal argument: a ``oneOf`` tagged by ``family``."""
+    variants = [*_flow_goal_schemas(), *_implementation_goal_schemas(), *_test_goal_schemas()]
+    mutation = {
+        "target": _target_schema(),
         "scope": {"type": "array", "items": _STRING, "minItems": 1},
         "min_detected": {"type": "integer", "minimum": 1},
         "total": {"type": "integer", "minimum": 1},
@@ -606,6 +708,8 @@ class GoalSpec:
     target: str | None
     params: dict[str, Any]
     origins: tuple[str, ...]
+    # Observational decoration restored from separate naming metadata; never serialized.
+    display_target: str | None = field(default=None, compare=False, repr=False)
 
     def to_json(self) -> dict[str, Any]:
         """The JSON form stored in ``record.json`` and the change log."""
@@ -724,10 +828,13 @@ class GoalRecord:
     declarations and per-file working/HEAD properties for diagnostics.
     ``session_key`` is the entering session, an audit field only (D3).
     ``failure`` explains a ``failed`` record, for example a branch left behind.
-    ``paired_project_base_sha`` is the commit a paired Project repository
+    ``paired_project_base_sha`` is the commit a Paired Checkout
     (Stealth's separate ``.booley_project`` repository, checked out inside the
     worktree) was on at entry; baseline checkouts use it instead of guessing
-    a fork point. ``None`` when the worktree has no paired Project repository.
+    a fork point. ``None`` when the worktree has no Paired Checkout.
+    ``test_run_resolutions`` holds, by Goal key, the Test Runs each Goal that
+    is judged by Test Runs is frozen to (ADR 0072); a Goal without an entry
+    has not been resolved yet.
     """
 
     id: str
@@ -762,6 +869,22 @@ class GoalRecord:
     finish_operation: str | None = None
     end_instruction_quote: str | None = None
     abandon_operation: str | None = None
+    test_run_resolutions: Mapping[str, TestRunResolution] = field(
+        default_factory=dict[str, TestRunResolution]
+    )
+
+    def test_run_resolution(self, key: str) -> TestRunResolution | None:
+        """The frozen Test Runs of Goal *key* at its current specification revision.
+
+        ``None`` when the Goal was never resolved at that revision: a record
+        an older Booley created, or a Goal whose revision moved without a
+        new resolution.
+        """
+        resolution = self.test_run_resolutions.get(key)
+        revisions = {goal.spec.key: goal.spec_revision for goal in self.goals}
+        if resolution is None or revisions.get(key) != resolution.spec_revision:
+            return None
+        return resolution
 
     def to_json(self) -> dict[str, Any]:
         """The JSON form stored in ``record.json``."""
@@ -803,6 +926,7 @@ class GoalRecord:
             "finish_operation": self.finish_operation,
             "end_instruction_quote": self.end_instruction_quote,
             "abandon_operation": self.abandon_operation,
+            "test_run_resolutions": resolutions_to_json(self.test_run_resolutions),
         }
 
     @classmethod
@@ -824,7 +948,12 @@ class GoalRecord:
             raise GoalRecordFormatError("publication_floor must be within record revisions")
         stale = [goal.spec.key for goal in record.goals if goal.spec_revision > record.revision]
         if stale:
-            raise GoalRecordFormatError(f"record.goals {stale} are newer than the record")
+            raise GoalRecordFormatError(
+                "record.goals have specification revisions newer than the record"
+            )
+        orphans = sorted(set(record.test_run_resolutions) - {g.spec.key for g in record.goals})
+        if orphans:
+            raise GoalRecordFormatError(f"test_run_resolutions {orphans} name no Goal")
         return record
 
 
@@ -867,6 +996,7 @@ _RECORD_DEFAULTS: Mapping[str, Any] = MappingProxyType(
         "finish_operation": None,
         "end_instruction_quote": None,
         "abandon_operation": None,
+        "test_run_resolutions": {},
     }
 )
 
@@ -945,6 +1075,7 @@ def _lifecycle_fields(mapping: dict[str, Any]) -> dict[str, Any]:
         "end_instruction_quote": _record_opt_str(
             mapping["end_instruction_quote"], "end_instruction_quote"
         ),
+        "test_run_resolutions": _record_resolutions(mapping["test_run_resolutions"]),
     }
 
 
@@ -1064,6 +1195,13 @@ def _record_project_snapshot(raw: object) -> dict[str, str | None] | None:
                 raise GoalRecordFormatError("project_snapshot must contain hex bytes") from exc
         result[name] = text
     return result
+
+
+def _record_resolutions(raw: object) -> dict[str, TestRunResolution]:
+    try:
+        return resolutions_from_json(raw)
+    except ResolutionFormatError as exc:
+        raise GoalRecordFormatError(str(exc)) from exc
 
 
 def _record_commit(raw: object, where: str) -> str:

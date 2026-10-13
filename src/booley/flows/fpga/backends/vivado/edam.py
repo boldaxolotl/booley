@@ -58,7 +58,7 @@ def build_fpga_edam(
 
     Mirrors ``sim_edam.build_sim_edam``: resolved Booley inputs in, a flow-API
     EDAM out, with file names relative to *work_root* so the materialized
-    project directory is relocatable within the Sandbox workspace.
+    Vivado build directory is relocatable within the Sandbox workspace.
 
     ``part`` is the only edalize ``vivado`` flow option Booley forwards by
     default (it is in the :mod:`edam` whitelist and unambiguously safe). The XDC

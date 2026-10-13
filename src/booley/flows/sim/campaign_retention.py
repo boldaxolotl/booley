@@ -776,7 +776,7 @@ def _preflight_campaign_resources(root: Path, project_data: Path | None) -> None
         if not children.exists():
             if status.interrupted and project_data is None:
                 raise CampaignRetentionError(
-                    "Project data is required to recover interrupted Simulation Campaign resources"
+                    "Booley Directory is required to recover interrupted Simulation Campaign resources"
                 )
             continue
         entry_manifests = campaign_child_entry_manifests(children)
@@ -787,7 +787,7 @@ def _preflight_campaign_resources(root: Path, project_data: Path | None) -> None
                 resolved = _owner_project_data(owner, project_data)
         if status.interrupted and resolved is None:
             raise CampaignRetentionError(
-                "Project data is required to recover interrupted Simulation Campaign resources"
+                "Booley Directory is required to recover interrupted Simulation Campaign resources"
             )
         ownership = _child_ownership_root(children, retained_campaign_child_manifests)
         if ownership is None:
@@ -796,11 +796,11 @@ def _preflight_campaign_resources(root: Path, project_data: Path | None) -> None
         inferred = _infer_project_data(ownership)
         if inferred is None:
             raise CampaignRetentionError(
-                "Simulation Campaign child ownership cannot resolve its Project data"
+                "Simulation Campaign child ownership cannot resolve its Booley Directory"
             )
         if project_data is not None and Path(project_data).resolve() != inferred.resolve():
             raise CampaignRetentionError(
-                "Project data disagrees with the canonical Simulation Campaign owner"
+                "Booley Directory disagrees with the canonical Simulation Campaign owner"
             )
 
 
@@ -824,12 +824,12 @@ def _release_child_indexes(root: Path, project_data: Path | None) -> None:
                 inferred = _infer_project_data(ownership_root)
                 if inferred is None:
                     raise CampaignRetentionError(
-                        "Simulation Campaign child ownership cannot resolve its Project data"
+                        "Simulation Campaign child ownership cannot resolve its Booley Directory"
                     )
                 resolved = Path(project_data).resolve() if project_data else inferred
                 if resolved != inferred.resolve():
                     raise CampaignRetentionError(
-                        "Project data disagrees with the canonical Simulation Campaign owner"
+                        "Booley Directory disagrees with the canonical Simulation Campaign owner"
                     )
                 release_retired_campaign_children(resolved, children)
     except (OSError, ValueError) as exc:
@@ -902,13 +902,13 @@ def _recover_campaign_resources(
 
 
 def _owner_project_data(owner: Path, project_data: Path | None) -> Path | None:
-    """Resolve Project data for a canonical owner; an explicit value must agree."""
+    """Resolve Booley Directory for a canonical owner; an explicit value must agree."""
     inferred = _infer_project_data(owner)
     if inferred is None:
         return project_data
     if project_data is not None and Path(project_data).resolve() != inferred.resolve():
         raise CampaignRetentionError(
-            "Project data disagrees with the canonical Simulation Campaign owner"
+            "Booley Directory disagrees with the canonical Simulation Campaign owner"
         )
     return inferred
 
@@ -1354,7 +1354,7 @@ def main() -> None:
         "--project-data",
         type=Path,
         help=(
-            "Resolved project-data root used only to verify canonical ownership for "
+            "Resolved Booley Directory root used only to verify canonical ownership for "
             "--full; it never grants a detached copy authority to release shared "
             "indexes and is not required for --native-target"
         ),

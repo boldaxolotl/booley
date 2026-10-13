@@ -84,7 +84,7 @@ Two project-side extension points:
 
 Run this subsection on the host only when approved plan row 14 selects a
 host-provisioned EDA installation. The plan must already name the opaque
-registration, canonical installation root, exact Project root, and whether an
+registration, canonical installation root, exact Project Root, and whether an
 approved License Profile is available.
 
 First put the provisioning request in `.booley_project/booley.toml`; for the
@@ -95,7 +95,7 @@ current policy:
 provisioning = "host"
 ```
 
-Then run the host-owned authority commands from the Project root. The Grant is
+Then run the host-owned authority commands from the Project Root. The Grant is
 the single source of truth selecting the planned Installation Registration:
 
 ```console
@@ -190,7 +190,7 @@ Use the ownership decision recorded in plan rows 2 and 16:
 | Git footprint | Native `.core` present? | Required action |
 | --- | --- | --- |
 | open | yes | Modify/modernize the appropriate native core; never create a parallel adapter core. |
-| open | no | Author a tracked project core at the repo root or beside the RTL. |
+| open | no | Author a tracked project core at the Project Root or beside the RTL. |
 | hidden | either | Leave every tracked native core unchanged and author a distinct-VLNV adapter under `.booley_project/cores/`. |
 
 In a native core, touch only the Targets the plan selects; unrelated historical
@@ -236,7 +236,7 @@ Authoring rules:
 - **Target names are project-unique**, follow `<axis>_<subject>` (`sim_`,
   `lint_`, `synth_`, `fpga_`, then a distinguishing subject,
   coarse to fine — `sim_soc`, `synth_matmul_b8`), and become the `<target>` in
-  `sim_pass_<target>` / `lint_clean_<target>` / `synthesis_ok_<target>` and the value a
+  `SIM:{target}` / `LINT:{target}` / `SYNTH:{target}` and the value a
   Booley Flow passes as `--target`. The axis leads because nothing in CAPI2
   distinguishes an ASIC Target from an FPGA one — both resolve as `generic`.
   `booley doctor` notes names that don't. Do not author a `default` target
@@ -245,13 +245,13 @@ Authoring rules:
   dead one (drop it from a depended-on core and that core silently
   contributes zero filesets).
 - **Per-Target Flow families:** the `fpga` name axis is authoritative:
-  `fpga`/`fpga_*` ⇒ `fpga_impl_ok`, regardless of the resolution tool. The
+  `fpga`/`fpga_*` ⇒ `FPGA:{target}`, regardless of the resolution tool. The
   FPGA Flow rebuilds those resolved inputs for its fixed Vivado backend, so an
   FPGA-axis Target does not also carry sim/lint/synth Criteria. Unprefixed
   vendored Targets retain `tool: vivado` as a compatibility fallback. Other
   families follow their declared flow/tool: Verilator or Icarus simulation ⇒
-  `sim_pass`; Verilator or Verible lint ⇒ `lint_clean`; Yosys synthesis ⇒
-  `synthesis_ok`. Split intents into separate Targets when one design needs
+  `SIM:{target}`; Verilator or Verible lint ⇒ `LINT:{target}`; Yosys synthesis ⇒
+  `SYNTH:{target}`. Split intents into separate Targets when one design needs
   several.
 - **Verilator 5 sim Targets need timing options.** Any event-driven Verilog
   TB (delays, `@(...)` waits — i.e. the normal self-checking TB this skill
@@ -273,7 +273,7 @@ Authoring rules:
   plan's row 11 says yes: author a **second** lint Target (suggested name
   `lint_style`) with `flow: lint` + `flow_options: {tool: verible}` over the
   RTL fileset; it runs `verible-verilog-lint` in the sandbox and sets
-  `lint_clean_lint_style`. Optional tuning is design-description in the
+  `LINT:lint_style`. Optional tuning is design-description in the
   `.core`: a single `file_type: veribleLintRules` rules-config file and/or
   `file_type: veribleLintWaiver` waiver files in the Target's fileset
   (analogous to Verilator's `.vlt`). Never change existing Target shapes.
@@ -328,7 +328,7 @@ Authoring rules:
   `FUSESOC_IGNORE` marker file in their directory — Booley's `.core` scanner
   skips any directory carrying one (mirrors FuseSoC's own scanner).
 
-#### Authored cores in a hidden project directory
+#### Authored cores in a hidden Booley Directory
 
 When stealth mode keeps Booley state hidden, leave native tracked `.core` files
 byte-for-byte unchanged and place the adapter `.core` under
@@ -596,9 +596,9 @@ Rules that differ from SV Targets:
   `[sandbox].pip_requirements` at the project's own pin set (from its
   `tox.ini` / `requirements.txt`) and re-run `booley init` to build the
   project image. **`[sandbox].pip_requirements` is the only source of baked
-  deps — nothing is auto-discovered**, so a repo-root `requirements.txt` is
+  deps — nothing is auto-discovered**, so a `requirements.txt` at the Project Root is
   ignored until you list it here. Any path (any name, any depth, relative to
-  the repo root) works; `init` warns on an entry it can't find. Booley speaks
+  the Project Root) works; `init` warns on an entry it can't find. Booley speaks
   both dialects — it probes `cocotb-config --version` and emits `TESTCASE`
   instead of `COCOTB_TEST_FILTER` on 1.x, with no config from you.
   **Bake the FULL pinned stack, not the subset the TB seems to need.**
@@ -808,9 +808,9 @@ approved config is on disk.
 
 ## Goalsets
 
-Goal entry reads Goalsets from the main checkout's Project directory
+Goal entry reads Goalsets from the Main Booley Directory
 (`BOOLEY_PROJECT_DIR` in the Sandbox). Edit them there; an edit made only in a
-Project copy or snapshot inside a worktree is not used.
+Worktree Booley Directory inside a worktree is not used.
 
 Read the seeded `goalsets/{feature,bugfix,refactor,verification}.md` files and
 adapt their Goals to the Project's supported Targets and verification intent.

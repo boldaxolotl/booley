@@ -2215,6 +2215,7 @@ def _sim_mcp_tool_timeout_seconds(
             arguments.get("test"),
             None,
             mode,
+            seed=arguments.get("seed"),
         )
     except Exception:  # noqa: BLE001 — malformed project input is graded by the child
         work_units = target_count
@@ -2801,7 +2802,7 @@ def _maybe_configure_interactive_logs_dir() -> None:
 
     Interactive Mode is detected by:
       - ``BOOLEY_LOGS_DIR`` not already set;
-      - ``.booley_project/`` present in CWD (the project root the outer agent
+      - ``.booley_project/`` present in CWD (the Project Root the outer agent
         bind-mounted into the container at ``/work``).
 
     Logs accumulate at ``.booley_project/.interactive_logs/<session-id>/``
@@ -2833,7 +2834,7 @@ def _load_agent_settings_from_toml() -> None:
     so they no longer silently fall back to a default provider either.)
 
     ``BOOLEY_PROJECT_DIR`` points at the ``.booley_project`` dir when set, but
-    ``load_agent_settings`` wants the repo root that *contains* it, so use the
+    ``load_agent_settings`` wants the Project Root that *contains* it, so use the
     parent (else CWD). A missing/unparseable booley.toml is handled inside
     ``load_agent_settings`` (defaults preserved); the broad guard only covers
     import-time surprises so a config hiccup never blocks server startup.

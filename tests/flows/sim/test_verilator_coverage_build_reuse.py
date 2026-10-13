@@ -29,7 +29,7 @@ from booley.flows.sim.verilator_coverage import (
     PINNED_VERILATOR,
     VERILATOR_COVERAGE_INSTRUMENTATION,
     CoverageTarget,
-    SelectedCoverageTest,
+    SelectedCoverageRun,
     SimulationBuildRequest,
     SimulationBuildResult,
     SimulationBuildVariant,
@@ -92,7 +92,7 @@ class _Invoker:
 
 @pytest.fixture
 def coverage_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Install the fake toolchain on PATH and return the Project root."""
+    """Install the fake toolchain on PATH and return the Project Root."""
     pytest.importorskip("fusesoc")
     pytest.importorskip("edalize")
     verilator_bin = engine._write_fake_verilator(tmp_path)
@@ -150,7 +150,7 @@ def _run_request(project: Path) -> SimulationRunRequest:
     raw_path = project.parent / "artifacts" / "raw.dat"
     return SimulationRunRequest(
         target=_target(project),
-        test=SelectedCoverageTest("smoke"),
+        test=SelectedCoverageRun("smoke"),
         run_id="run:001:smoke",
         raw_path=raw_path,
         hook_evidence_path=None,

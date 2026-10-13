@@ -95,7 +95,7 @@ def test_missing_nonversioned_project_during_finishing_is_typed_revalidation(lay
     from tests.goals.conftest import enter_goals
     from tests.goals.test_status import publish
 
-    complete.record = enter_goals(complete, [{"family": "lint", "target": "top"}])
+    complete.record = enter_goals(complete, [{"family": "LINT", "target": "top"}])
     publish(complete)
     call = request(complete)
 
@@ -115,7 +115,7 @@ def test_new_external_versioned_project_during_finishing_revalidates(layout):
     from tests.goals.conftest import enter_goals
     from tests.goals.test_status import publish
 
-    layout.record = enter_goals(layout, [{"family": "lint", "target": "top"}])
+    layout.record = enter_goals(layout, [{"family": "LINT", "target": "top"}])
     publish(layout)
     call = request(layout)
 
@@ -126,11 +126,11 @@ def test_new_external_versioned_project_during_finishing_revalidates(layout):
     with pytest.raises(Crash):
         finish_goal(call, environment(layout, stop))
     project = layout.worktree / ".booley_project"
-    # A separate repository in the literal Project directory changes participants
+    # A separate repository in the literal Booley Directory changes participants
     # without introducing a publication-path symlink that must independently refuse.
     git(project, "init", "-q", "-b", "main")
     git(project, "add", ".")
-    git(project, "commit", "-qm", "external versioned Project")
+    git(project, "commit", "-qm", "external Versioned Booley Directory")
     result = finish_goal(call, environment(layout))
     assert result["status"] == "revalidation_required"
     assert "outside the pinned" in result["reason"]
@@ -190,7 +190,7 @@ def test_completion_marks_canonical_bound_target_from_qualified_selector(
     from tests.goals.conftest import bind, enter_goals
 
     monkeypatch.setattr(entry, "TargetCatalog", TargetCatalog)
-    layout.record = enter_goals(layout, [{"family": "lint", "target": selector}])
+    layout.record = enter_goals(layout, [{"family": "LINT", "target": selector}])
     core = layout.worktree / "top.core"
     core.write_bytes(
         core.read_bytes().replace(b"toplevel: top}", b"toplevel: top, parameters: [FEATURE]}")

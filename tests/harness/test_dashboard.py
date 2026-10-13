@@ -12,15 +12,62 @@ from textual.widgets import DataTable, Static
 
 from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport, Severity
 from booley.criteria.presentation import CriterionPresentation
+from booley.goals.model import GoalFamily, GoalSpec
 from booley.harness import upgrade_review
 from booley.harness.dashboard import model
 from booley.harness.dashboard.app import DashboardApp, Navigation
+from booley.harness.dashboard.jobs import JobSnapshot, JobView
 from booley.mcp.session_registry import Attribution, RecentCall, SessionRow
 from booley.runtime import health
 from booley.runtime.job_records import JobRecord
-from booley.runtime.job_snapshot import JobSnapshot, JobView
 
 STAMP = "2026-10-08T10:00:00Z"
+
+
+@pytest.mark.asyncio
+async def test_terminal_naming_failure_keeps_selectable_evidence_and_artifacts(tmp_path):
+    artifact = str(tmp_path / "evidence.txt")
+    diagnostic = "Goal unavailable (unsupported record)"
+    detail = model.GoalDetail(
+        "opaque_key_sentinel",
+        "passing",
+        CriterionPresentation(diagnostic, "", "", "", ""),
+        {"recorded_at": STAMP, "detail": {"warnings": 0}},
+        artifacts=(artifact,),
+    )
+    record = SimpleNamespace(
+        worktree=SimpleNamespace(key="wt0"),
+        state=SimpleNamespace(value="finished"),
+        session_key="codex:00",
+        branch="goal/fixture",
+    )
+    goal = model.GoalView(
+        "fixture",
+        record=record,
+        goals=(detail,),
+        diagnostic=diagnostic,
+        terminal_summary="Completed work remains visible.",
+    )
+    current = replace(snapshot(1), goals=(goal,))
+    opened = []
+    app = DashboardApp(lambda: current, lambda path: opened.append(path) or "")
+    app.snapshot = current
+    app.navigation = Navigation("session", "codex:00")
+    async with app.run_test(size=(max(90, len(artifact) + 10), 40)) as pilot:
+        app.render_snapshot()
+        assert "opaque_key_sentinel" in app.row_keys
+        assert diagnostic in str(app.query_one("#orientation", Static).render())
+        table = app.query_one(DataTable)
+        table.move_cursor(row=0, column=0, animate=False)
+        table.focus()
+        await pilot.pause()
+        await pilot.press("enter")
+        assert app.navigation.view == "goal"
+        text = str(app.query_one("#detail", Static).render())
+        assert diagnostic in text and "warnings" in text
+        assert "opaque_key_sentinel" not in text
+        await pilot.click("#detail", offset=(3, text.split("\n").index(artifact)))
+        assert opened == [artifact]
 
 
 def snapshot(count=12):
@@ -48,9 +95,18 @@ async def test_pilot_sessions_beyond_nine_scope_back_help_and_disconnect(monkeyp
     proposal = SimpleNamespace(
         proposal=SimpleNamespace(
             id="change",
-            to_json=lambda: {"kind": "relax", "threshold": 10, "reason": "[/untrusted]"},
+            before=None,
+            after=GoalSpec("lint_clean_top", GoalFamily.LINT, "top", {}, ("ad-hoc",)),
+            to_json=lambda: {
+                "id": "change",
+                "kind": "relax",
+                "before": None,
+                "after": {},
+                "rationale": "[/untrusted]",
+            },
         ),
         state="pending",
+        decision=None,
         closed_by_abandonment=False,
     )
     goal = model.GoalView(
@@ -428,11 +484,9 @@ async def test_refresh_failure_is_stale_and_next_read_recovers(monkeypatch, fail
 
 
 @pytest.mark.asyncio
-async def test_published_paths_open_in_editor_on_click_and_report_failures():
-    # Short fixed paths: a path as long as a pytest temporary directory would need a
-    # terminal of 120 columns or more, where Enter keeps the split Jobs view.
-    report = str(Path("/published/report.json"))
-    log = str(Path("/published/sim.log"))
+async def test_published_paths_open_in_editor_on_click_and_report_failures(tmp_path):
+    report = str(tmp_path / "report.json")
+    log = str(tmp_path / "sim.log")
     job = JobView(
         Path("/jobs"),
         JobRecord("one", "sim", STAMP, 60, status="done"),
@@ -448,9 +502,11 @@ async def test_published_paths_open_in_editor_on_click_and_report_failures():
         return hint[0]
 
     app = DashboardApp(lambda: current, opener)
-    async with app.run_test(size=(90, 40)) as pilot:
-        await pilot.press("r", "enter")
-        assert app.navigation.view == "job"
+    async with app.run_test(size=(max(90, 2 * max(len(report), len(log)) + 40), 40)) as pilot:
+        await pilot.press("r")
+        await pilot.pause()
+        await pilot.press("enter")
+        assert app.navigation.view == ("job" if app.size.width < 120 else "jobs")
         detail = app.query_one("#detail", Static)
         lines = str(detail.render()).split("\n")
         await pilot.click("#detail", offset=(3, lines.index(report)))

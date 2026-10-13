@@ -70,14 +70,30 @@ class TargetCampaign:
                 return criterion.params
         return MappingProxyType({})
 
-    def execution_units(self, *, batched: bool = False) -> tuple[CampaignUnit, ...]:
-        """Describe physical invocations for individual or batched runners."""
-        if batched:
-            selected = tuple(test for test in self.suite.tests if test is not None)
-            return (CampaignUnit(None, "<cocotb-suite>", selected),)
+    def execution_units(
+        self,
+        *,
+        batched: bool = False,
+        batches: Sequence[tuple[str, ...]] | None = None,
+    ) -> tuple[CampaignUnit, ...]:
+        """Describe physical invocations for individual or batched runners.
+
+        A batched runner launches one process per entry of *batches* (the
+        Tests each process runs); without *batches* it launches one process
+        for the whole suite.
+        """
+        if not batched:
+            return tuple(
+                CampaignUnit(test, test if test is not None else "<default>")
+                for test in self.suite.tests
+            )
+        if batches is None:
+            batches = (tuple(test for test in self.suite.tests if test is not None),)
+        if len(batches) == 1:
+            return (CampaignUnit(None, "<cocotb-suite>", batches[0]),)
         return tuple(
-            CampaignUnit(test, test if test is not None else "<default>")
-            for test in self.suite.tests
+            CampaignUnit(None, f"<cocotb-suite {index}/{len(batches)}>", batch)
+            for index, batch in enumerate(batches, start=1)
         )
 
     def execute(
@@ -85,11 +101,12 @@ class TargetCampaign:
         behavior: Callable[[CampaignUnit], _ResultT],
         *,
         batched: bool = False,
+        batches: Sequence[tuple[str, ...]] | None = None,
     ) -> CampaignResults[_ResultT]:
         """Execute campaign units through injected metric-specific behavior."""
         results = tuple(
             CampaignUnitResult(unit, behavior(unit))
-            for unit in self.execution_units(batched=batched)
+            for unit in self.execution_units(batched=batched, batches=batches)
         )
         return CampaignResults(results)
 

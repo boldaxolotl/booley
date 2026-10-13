@@ -854,7 +854,7 @@ class TestFpgaResolution:
         tmp_path: Path,
         state_file: Path,
     ) -> None:
-        """_resolve_target gets the config name, the project root, and an isolated
+        """_resolve_target gets the config name, the Project Root, and an isolated
         per-variant build dir distinct from the vivado configure() work_root."""
         _write_project_config(tmp_path)
         flow = _flow(tmp_path, state_file)
@@ -1610,7 +1610,7 @@ class TestArtifactPointers:
     def test_baseline_metrics_carry_no_artifacts(self):
         """A baseline runs in a throwaway worktree that is deleted on exit,
         and its report paths were relativized against THAT root — so the same
-        string read against the real project root resolves to the CURRENT
+        string read against the real Project Root resolves to the CURRENT
         run's report files. Silently wrong, not merely dangling: a
         baseline-vs-current comparison would read the same numbers twice.
         """

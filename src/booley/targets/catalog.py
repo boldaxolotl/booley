@@ -30,12 +30,22 @@ from booley.targets.domain import (
     TargetRef,
     flow_can_drive,
 )
-from booley.targets.selection import minimal_selector, resolve, split_selector
+from booley.targets.selection import minimal_selector, resolve, split_selector, vlnv_matches
 
 
 def selector_names_match(first: str, second: str) -> bool:
     """Compare selector names without claiming their core identities match."""
     return split_selector(first)[1] == split_selector(second)[1]
+
+
+def selector_is_alias(authored: str, displayed: str) -> bool:
+    """Check a display abbreviation preserves the authored Target's name and core."""
+    qualifier, name = split_selector(authored)
+    display_qualifier, display_name = split_selector(displayed)
+    return name == display_name and (
+        display_qualifier is None
+        or (qualifier is not None and vlnv_matches(qualifier, display_qualifier))
+    )
 
 
 def _doctor_private_authority() -> bool:
@@ -89,7 +99,7 @@ class PreparedTargetSelection:
 
 @dataclass(frozen=True)
 class TargetCatalog:
-    """One immutable Target declaration snapshot for one Project checkout."""
+    """One immutable Target declaration snapshot for one Project Root."""
 
     project_root: Path
     snapshot_id: str
@@ -351,4 +361,4 @@ def _canonical_flow(flow: str | None) -> str | None:
     return result
 
 
-__all__ = ["TargetCatalog", "TargetCompileSurface", "selector_names_match"]
+__all__ = ["TargetCatalog", "TargetCompileSurface", "selector_is_alias", "selector_names_match"]

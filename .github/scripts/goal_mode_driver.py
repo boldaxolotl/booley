@@ -2,8 +2,8 @@
 
 Readiness leaves the Goal Mode active in a disposable workspace. Caller inputs
 are only cloned. ``booley worktree new`` creates the outer checkout and its
-paired Project checkout through the same path used in Interactive Mode.
-The control Project is the main checkout's directory. Preview is explicitly
+Paired Checkout through the same path used in Interactive Mode.
+The Main Booley Directory is the main checkout's directory. Preview is explicitly
 enabled here for 7a; 7b removes it.
 """
 
@@ -28,6 +28,8 @@ from mcp import Client, StdioServerParameters
 
 from booley.dev_support.demo_contract_codec import load_contract
 from booley.goals.model import GoalArg, GoalFamily, GoalRecord, GoalState, goal_arg_to_json
+from booley.goals.naming import resolve_spelling
+from booley.goals.presentation import goal_presentation
 from booley.goals.store import GoalStore
 from booley.goals.translate import translate_goals
 from booley.runtime.atomic_files import atomic_replace_bytes
@@ -122,7 +124,11 @@ def status_rows(text: str, record_id: str, keys: Sequence[str]) -> dict[str, str
     header = re.search(
         rf"^{re.escape(record_id)} \(active\) · (\d+)/(\d+) met$", text, re.MULTILINE
     )
-    matches = re.findall(r"^\s*(\S+)\s+(met|unmet|stale)(?:\s|$)", text, re.MULTILINE)
+    matches = re.findall(
+        r"^\s*(\S+)(?:[ \t]+\([^\n]*\))?[ \t]+(met|unmet|stale)(?:\s|$)",
+        text,
+        re.MULTILINE,
+    )
     rows = dict(matches)
     if len(matches) != len(keys):
         raise GoalDriverError(f"goal_status has missing or duplicate rows: {text}")
@@ -165,8 +171,12 @@ async def _status(
     session: ToolSession, worktree: Path, entry: dict[str, Any], goals: Sequence[GoalArg]
 ) -> dict[str, Any]:
     text = await tool_text(session, "goal_status", {"work_dir": str(worktree)})
-    keys = [goal.key for goal in translate_goals(goals).goals]
-    rows = status_rows(text, entry["record_id"], keys)
+    names = {
+        goal.key: goal_presentation(resolve_spelling(goal, worktree)).name
+        for goal in translate_goals(goals).goals
+    }
+    public_rows = status_rows(text, entry["record_id"], list(names.values()))
+    rows = {key: public_rows[name] for key, name in names.items()}
     return {
         "record_id": entry["record_id"],
         "goals": rows,
@@ -288,7 +298,7 @@ def _clone_project(
         )
     if not (primary / ".booley_project/booley.toml").is_file():
         raise GoalDriverError(
-            "Project inputs must be versioned in the source or a Project repository"
+            "Project inputs must be versioned in the source or a Versioned Booley Directory"
         )
     return paired
 

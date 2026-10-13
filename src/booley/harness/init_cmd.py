@@ -1,7 +1,7 @@
 """booley init / booley doctor — project setup and health checks.
 
 Replaces bootstrap.py with package-aware logic. Uses booley.runtime.paths for all
-package data resolution and booley.runtime.project_dir for project directory discovery.
+package data resolution and booley.runtime.project_dir for Booley Directory discovery.
 
 Idempotent — safe to re-run. Each step checks preconditions and skips if
 already satisfied. A first init defaults to Claude with automatic credential
@@ -14,7 +14,7 @@ contiguous; identity lives in the ``record`` key, not the number.
 
     - Host bootstrap preflight (git, Docker, VS Code); unavailable Docker aborts
     - Scaffold a new IP from scratch (``--scaffold`` only)
-    - Project directory (.booley_project/ with config skeletons)
+    - Booley Directory (.booley_project/ with config skeletons)
     - Project Goalsets
     - Agent authentication setup
     - Skill deployment (system-level ~/.agents/ or ~/.claude/)
@@ -192,6 +192,7 @@ BOOLEY_TOML_SKELETON = """\
 # the selected test's firmware)? Declare it as Pre-Sim Commands (ADR 0039) —
 # shell lines run inside the Sandbox immediately before each sim run, under
 # the BOOLEY_* env contract (BOOLEY_TEST_NAME, BOOLEY_TEST_NAMES,
+# BOOLEY_TEST_RUN_NAME, BOOLEY_TEST_VARIANT, BOOLEY_TEST_SEED,
 # BOOLEY_RUN_CWD, BOOLEY_BUILD_ROOT, ...; see docs/user/CONFIG.md):
 #
 # [flows.sim]
@@ -206,7 +207,7 @@ BOOLEY_TOML_SKELETON = """\
 # (F-5). Scaffold nothing to declare instead; the template stays package data
 # for the booley-setup skill to read.
 TESTS_TOML_SKELETON = """\
-# tests.toml - per-Target verification-intent test lists.
+# tests.toml - per-Target Tests, Test Variants and seeds (verification intent).
 #
 # Intentionally left empty by `booley init`.
 # Populate this file with the booley-setup skill (Step 2, project config), which
@@ -215,7 +216,7 @@ TESTS_TOML_SKELETON = """\
 
 
 # ---------------------------------------------------------------------------
-# Init step: project directory (record key: project_dir)
+# Init step: Booley Directory (record key: project_dir)
 # ---------------------------------------------------------------------------
 
 
@@ -290,7 +291,7 @@ FUSESOC_IGNORE_BODY = (
     "# directory carrying this file. .booley_project/ holds transient git\n"
     "# worktrees whose .core copies share the project's VLNV — without this\n"
     "# marker FuseSoC's recursive --cores-root scan would let a stale worktree\n"
-    "# core shadow the repo-root source and silently build the wrong RTL.\n"
+    "# core shadow the source at the Project Root and silently build the wrong RTL.\n"
     "#\n"
     "# One subtree is exempt BY DESIGN: cores/ (stealth authored cores, ADR\n"
     "# 0036). Booley scans it as a second root, so this marker never applies\n"
@@ -320,7 +321,7 @@ def _backfill_fusesoc_ignore(project_dir: Path, ctx: InitContext) -> None:
 
 
 def _step_project_dir(ctx: InitContext) -> None:
-    ctx.step_banner("project directory")
+    ctx.step_banner("Booley Directory")
     info(f"initializing project at {ctx.project_root}")
 
     # Init only ever creates/backfills .booley_project/ at the top-level repo dir
@@ -335,7 +336,7 @@ def _step_project_dir(ctx: InitContext) -> None:
         permissions_pending = False
         if os.name != "nt" and stat.S_IMODE(target.stat().st_mode) != 0o700:
             if ctx.check_only:
-                warn(f"would secure project directory permissions on {target} to 0700")
+                warn(f"would secure Booley Directory permissions on {target} to 0700")
                 permissions_pending = True
                 if not os.access(target, os.R_OK | os.X_OK):
                     warn(
@@ -346,8 +347,8 @@ def _step_project_dir(ctx: InitContext) -> None:
                     return
             else:
                 target.chmod(0o700)
-                ok(f"secured project directory permissions on {target} to 0700")
-        skip(f"project directory found at {target}")
+                ok(f"secured Booley Directory permissions on {target} to 0700")
+        skip(f"Booley Directory found at {target}")
         _backfill_config_skeletons(target, ctx)
         _backfill_project_gitignore(target, ctx)
         _backfill_fusesoc_ignore(target, ctx)
@@ -376,7 +377,7 @@ def _step_project_dir(ctx: InitContext) -> None:
     _init_project_git_repo(target, ctx)
 
     reset_cache()
-    ok(f"project directory created at {target}")
+    ok(f"Booley Directory created at {target}")
     info(
         "  config skeletons created; run the booley-setup skill starting at "
         "Step 0 (planning). Its Step 2 fills these files."
@@ -387,8 +388,8 @@ def _step_project_dir(ctx: InitContext) -> None:
 def _init_project_git_repo(target: Path, ctx: InitContext) -> None:
     """Give a stealth ``.booley_project/`` its own git repo (F-5, ADR 0036).
 
-    A stealth project dir is excluded from the host repo via
-    ``.git/info/exclude``, so ADR 0036's "versioned by the project dir's own
+    A stealth Booley Directory is excluded from the host repo via
+    ``.git/info/exclude``, so ADR 0036's "versioned by the Booley Directory's own
     git repo" only holds if that repo exists — but init never created it, so a
     fresh stealth setup was versioned *nowhere* until the user ran `git init` by
     hand. Do it for them, guarded:
@@ -663,8 +664,8 @@ def _step_agent_config(ctx: InitContext, selection: AgentSelection, path: Path) 
         ctx.record("agent_config", "warn", f"{selection.provider}/{selection.auth}")
         return True
     if not path.parent.is_dir():
-        err(f"cannot persist agent selection: project directory is missing at {path.parent}")
-        ctx.record("agent_config", "err", "project directory missing")
+        err(f"cannot persist agent selection: Booley Directory is missing at {path.parent}")
+        ctx.record("agent_config", "err", "Booley Directory missing")
         return False
     content = path.read_text(encoding="utf-8") if path.is_file() else ""
     updated = _insert_agent_fields(content, fields)
@@ -1325,8 +1326,8 @@ def _interactive_precondition_failed(
         ctx,
         init_will_create_project_dir=init_will_create_project_dir,
     ):
-        warn("would seed the Sandbox after creating the private project directory")
-        ctx.record("interactive", "warn", "project directory would be created first")
+        warn("would seed the Sandbox after creating the private Booley Directory")
+        ctx.record("interactive", "warn", "Booley Directory would be created first")
         return True
     if nangate_pdk_root is None:
         err("Sandbox not seeded because the Nangate45 setup download failed")
@@ -1340,7 +1341,7 @@ def _init_owned_project_dir_missing(
     *,
     init_will_create_project_dir: bool,
 ) -> bool:
-    """Return whether full init owns the one unavailable Project-data source."""
+    """Return whether full init owns the one unavailable Booley Directory source."""
     if not ctx.check_only or not init_will_create_project_dir:
         return False
     target = project_dir_for_init(ctx.project_root)
@@ -1552,7 +1553,7 @@ def _print_configured_advisory(ctx: InitContext) -> None:
 #: right send-off without a Booley release.
 _PUBLISHED_PROJECT_ORIGIN_PREFIX = "github.com/boldaxolotl/booley-prj-"
 
-#: Paths (relative to the Project directory) where a new untracked file changes
+#: Paths (relative to the Booley Directory) where a new untracked file changes
 #: the published setup — an added core is a new Target. Untracked files
 #: elsewhere are ignored on purpose: init writes its own (``.managed/``,
 #: ``goalsets/``) and ordinary use leaves reports and notes behind, so counting
@@ -1796,7 +1797,7 @@ def _step_project_inventory(ctx: InitContext) -> None:
     try:
         project_root = remember_project(ctx.project_root)
     except ProjectInventoryError as exc:
-        err(f"could not remember Project root: {exc}")
+        err(f"could not remember Project Root: {exc}")
         ctx.record(
             "project_inventory",
             "err",
@@ -1879,7 +1880,7 @@ BOOLEY_MASCOT = r"""
 def _step_guidance_links(ctx: InitContext, planned: InitPlan | None = None) -> None:
     """Create/repair the root AGENTS.md & CLAUDE.md links, host-side (F-13).
 
-    The project dir lives at ``/booley-project`` inside the Sandbox, so
+    The Booley Directory lives at ``/booley-project`` inside the Sandbox, so
     a link written relative to that mount dangles on the host. A host-side
     editor or agent then reads no guidance at all. ``ensure_guidance_links``
     targets a repo-local path valid on both host and runtime and falls back to a
@@ -1973,7 +1974,7 @@ def _print_init_banner(ctx: InitContext) -> None:
     print(BOOLEY_MASCOT)
     print(bold_chrome("  Booley project setup"))
     print()
-    info(f"project root  : {ctx.project_root}")
+    info(f"Project Root  : {ctx.project_root}")
     info(f"version       : {__version__}")
     info(f"platform      : {'Windows' if IS_WINDOWS else 'POSIX'}")
 
@@ -1990,7 +1991,7 @@ def _init_context(args: argparse.Namespace, project_root: Path) -> InitContext:
 
 
 def _line_ending_project_dir(project_root: Path) -> Path | None:
-    """Resolve project data only when init has materialized or found it."""
+    """Resolve Booley Directory only when init has materialized or found it."""
     try:
         return resolve_project_dir(project_root)
     except FileNotFoundError:
@@ -2025,7 +2026,7 @@ def _release_guidance_for_line_endings(ctx: InitContext, project_dir: Path | Non
 
 
 def _sample_line_ending_baseline(ctx: InitContext) -> dict[Path, bool | None] | None:
-    """Record Project repository cleanliness before init writes Project data.
+    """Record repository cleanliness before init writes Booley configuration.
 
     Check-only never repairs, so it needs no baseline.
     """
@@ -2045,7 +2046,7 @@ def _step_line_endings_and_guidance(
     """Normalize line endings, then recreate the root guidance links.
 
     ``clean_baseline`` (from :func:`_sample_line_ending_baseline`) lets the
-    repair ignore Booley's own earlier LF edits to tracked Project data while
+    repair ignore Booley's own earlier LF edits to tracked files in the Booley Directory while
     still refusing a tree the user had left dirty.
     """
     project_dir = _line_ending_project_dir(ctx.project_root)

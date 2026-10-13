@@ -1,7 +1,7 @@
 """Entering Goal Mode: refusals, the Goal Branch, protected inputs, and crash recovery.
 
 Every test drives real Git in a throwaway repository laid out like a Booley
-Project: the control Project directory ``<main>/.booley_project`` (excluded
+Project: the Main Booley Directory ``<main>/.booley_project`` (excluded
 from Git, as ``init`` does), and a linked worktree under its ``worktrees/``
 carrying a copied ``.booley_project`` snapshot. Only the Target catalog is
 faked, so entry never needs FuseSoC.
@@ -41,7 +41,7 @@ class _Crash(BaseException):
 
 
 def _request(layout: SimpleNamespace, goals: list[dict[str, Any]] | None = None, **fields: Any):
-    raw_goals = goals if goals is not None else [{"family": "lint", "target": "top"}]
+    raw_goals = goals if goals is not None else [{"family": "LINT", "target": "top"}]
     return EntryRequest(
         work_dir=fields.pop("work_dir", layout.worktree),
         slug=fields.pop("slug", "uart-fix"),
@@ -73,7 +73,7 @@ def _branches(path: Path) -> set[str]:
 
 def test_entry_creates_branch_record_and_unmet_strict_state(layout: SimpleNamespace) -> None:
     base = git(layout.worktree, "rev-parse", "HEAD")
-    goals = [{"family": "lint", "target": "top"}, {"family": "sim", "target": "top"}]
+    goals = [{"family": "LINT", "target": "top"}, {"family": "SIM", "target": "top"}]
 
     result = enter_goal_mode(_request(layout, goals), _env(layout))
 
@@ -109,7 +109,7 @@ def test_entry_works_from_a_detached_head(layout: SimpleNamespace) -> None:
 
 
 def test_missing_work_dir_is_refused() -> None:
-    goals = [{"family": "lint", "target": "top"}]
+    goals = [{"family": "LINT", "target": "top"}]
     with pytest.raises(GoalEntryError, match="needs work_dir"):
         parse_entry_request({"slug": "uart-fix", "goals": goals}, session_key=None)
     with pytest.raises(GoalEntryError, match="needs work_dir"):
@@ -145,7 +145,7 @@ def test_second_entry_on_an_active_worktree_is_refused(layout: SimpleNamespace) 
 
 def test_project_dir_inside_the_worktree_is_refused(layout: SimpleNamespace) -> None:
     env = EntryEnvironment(project_dir=layout.worktree / ".booley_project")
-    with pytest.raises(GoalEntryError, match="worktree's own copy"):
+    with pytest.raises(GoalEntryError, match=r"Worktree Booley Directory.*Main Booley Directory"):
         enter_goal_mode(_request(layout), env)
 
 
@@ -194,7 +194,7 @@ def test_default_goalset_applied_or_skipped_enters(
 
 def test_candidate_target_that_does_not_exist_warns(layout: SimpleNamespace) -> None:
     result = enter_goal_mode(
-        _request(layout, [{"family": "lint", "target": "new_block"}]), _env(layout)
+        _request(layout, [{"family": "LINT", "target": "new_block"}]), _env(layout)
     )
 
     assert result.record.state is GoalState.ACTIVE
@@ -203,7 +203,7 @@ def test_candidate_target_that_does_not_exist_warns(layout: SimpleNamespace) -> 
 
 def test_baseline_target_missing_at_head_is_refused(layout: SimpleNamespace) -> None:
     goal = {
-        "family": "synth",
+        "family": "SYNTH",
         "target": "top",
         "baseline": "gone",
         "thresholds": {"area_increase_at_most": "5%"},
@@ -214,7 +214,7 @@ def test_baseline_target_missing_at_head_is_refused(layout: SimpleNamespace) -> 
 
 
 def test_spec_review_needs_its_spec_file(layout: SimpleNamespace) -> None:
-    missing = {"family": "review", "review": "rtl_spec", "verdict": "clean", "spec": "nope.md"}
+    missing = {"family": "REVIEW", "review": "rtl_spec", "verdict": "clean", "spec": "nope.md"}
     with pytest.raises(GoalEntryError, match=r"spec file 'nope\.md'"):
         enter_goal_mode(_request(layout, [missing]), _env(layout))
 
@@ -232,8 +232,8 @@ def test_existing_goal_branch_name_is_refused(layout: SimpleNamespace) -> None:
 
 def test_conflicting_goals_are_refused_before_any_write(layout: SimpleNamespace) -> None:
     goals = [
-        {"family": "review", "review": "rtl_spec", "verdict": "clean", "spec": "a.md"},
-        {"family": "review", "review": "rtl_spec", "verdict": "done", "spec": "b.md"},
+        {"family": "REVIEW", "review": "rtl_spec", "verdict": "clean", "spec": "a.md"},
+        {"family": "REVIEW", "review": "rtl_spec", "verdict": "done", "spec": "b.md"},
     ]
     with pytest.raises(GoalEntryError, match="different spec files"):
         enter_goal_mode(_request(layout, goals), _env(layout))
@@ -400,14 +400,14 @@ def test_shared_worktree_warning_names_other_sessions(layout: SimpleNamespace) -
 
 
 # ---------------------------------------------------------------------------
-# Baseline pinning with a paired Project repository (A3)
+# Baseline pinning with a Paired Checkout (A3)
 # ---------------------------------------------------------------------------
 
 
 def test_relative_goal_pins_the_paired_project_revision_seen_at_entry(
     layout: SimpleNamespace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A paired Project repository without an upstream is pinned at its entry commit."""
+    """A Paired Checkout without an upstream is pinned at its entry commit."""
     from contextlib import contextmanager
 
     from booley.evidence.acceptance import PairedProjectBaseline
@@ -436,7 +436,7 @@ def test_relative_goal_pins_the_paired_project_revision_seen_at_entry(
         "synthesis_ok_", "Synthesis", lambda _resolved, selector: {"target": selector}
     )
     env = replace(_env(layout), recipe_families=(family,))
-    goal = {"family": "synth", "target": "top", "thresholds": {"area_increase_at_most": "5%"}}
+    goal = {"family": "SYNTH", "target": "top", "thresholds": {"area_increase_at_most": "5%"}}
 
     record = enter_goal_mode(_request(layout, [goal]), env).record
 
@@ -534,7 +534,7 @@ def test_a_dirty_paired_project_checkout_is_refused(
     paired = install_paired_project(layout, tmp_path)
     (paired / "booley.toml").write_text("[project]\nname = 'wip'\n", encoding="utf-8")
 
-    with pytest.raises(GoalEntryError, match="paired Project checkout has uncommitted"):
+    with pytest.raises(GoalEntryError, match="Paired Checkout has uncommitted"):
         enter_goal_mode(_request(layout), _env(layout))
     assert _store(layout).list_records().records == ()
 
@@ -596,7 +596,7 @@ def test_a_paired_project_commit_while_pinning_is_refused(
     def commit() -> None:
         git(paired, "commit", "-q", "--allow-empty", "-m", "moved")
 
-    with pytest.raises(GoalEntryError, match="paired Project checkout moved"):
+    with pytest.raises(GoalEntryError, match="Paired Checkout moved"):
         enter_goal_mode(_request(layout), _env(layout, _during_pinning(commit)))
 
 

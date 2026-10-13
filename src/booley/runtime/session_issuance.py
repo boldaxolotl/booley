@@ -587,7 +587,7 @@ def _prepare_spec(
     )
     _pin_devcontainer_mount(spec, project)
     digest = _seal_with_requirements(project, spec, project_data_path, requirements.runtime)
-    # The Project-data layout is derived from the sealed spec (and the pinned
+    # The Booley Directory layout is derived from the sealed spec (and the pinned
     # image's alias capability), so it belongs to the prospective issuance, not
     # to the host inputs: issue_prepared re-derives the issuance and compares
     # it, while a fresh authority snapshot can never observe a derived layout.
@@ -1111,7 +1111,9 @@ def _validate_generated_spec(
     if issuance.project_data_layout == "canonical-alias" and not _project_data_alias_capable(
         issuance.image_id
     ):
-        raise RuntimeSpecError("issued image no longer proves the canonical Project-data alias")
+        raise RuntimeSpecError(
+            "issued image no longer proves the canonical Booley Directory alias"
+        )
     _validate_state_volume(mounts, app, project)
     _require_exact_readonly_mount(mounts, expected_devcontainer_mount(project), last=True)
     vivado_mounts = [item for item in mounts if _mount_target(item) == CONTAINER_TARGET]
@@ -1361,7 +1363,7 @@ def _validate_bind_sources(mounts: list[str]) -> None:
 
 
 def authorized_project_data_source(project_root: Path) -> Path:
-    """Return the sole host-authorized Project-data directory for issuance."""
+    """Return the sole host-authorized Booley Directory for issuance."""
     project = project_root.resolve(strict=True)
     configured = os.environ.get("BOOLEY_PROJECT_DIR")
     if configured:
@@ -1405,18 +1407,20 @@ def _validate_project_data_source(
     if not candidate.is_absolute():
         raise RuntimeSpecError("BOOLEY_PROJECT_DIR must be an absolute host path")
     if any(char == "," or ord(char) < 32 for char in str(candidate)):
-        raise RuntimeSpecError("Project-data path contains unsafe Docker mount grammar")
+        raise RuntimeSpecError("Booley Directory path contains unsafe Docker mount grammar")
     if any(part.is_symlink() for part in (candidate, *candidate.parents)):
-        raise RuntimeSpecError("Project-data mount source or its ancestry must not be a symlink")
+        raise RuntimeSpecError(
+            "Booley Directory mount source or its ancestry must not be a symlink"
+        )
     try:
         source = candidate.resolve(strict=True)
         info = source.stat()
     except OSError as exc:
         raise RuntimeSpecError(
-            f"Project-data mount source is unavailable: {candidate}: {exc}"
+            f"Booley Directory mount source is unavailable: {candidate}: {exc}"
         ) from exc
     if not source.is_dir():
-        raise RuntimeSpecError(f"Project-data mount source is not a directory: {source}")
+        raise RuntimeSpecError(f"Booley Directory mount source is not a directory: {source}")
     home = Path.home().resolve()
     broad = source == Path(source.anchor) or source == home or source.parent == Path(source.anchor)
     local = source == project / ".booley_project"
@@ -1425,11 +1429,11 @@ def _validate_project_data_source(
     )
     if broad or overlaps:
         raise RuntimeSpecError(
-            f"Project-data mount source is too broad or overlaps the Project: {source}"
+            f"Booley Directory mount source is too broad or overlaps the Project: {source}"
         )
     if os.name != "nt" and info.st_uid != os.getuid():
         raise RuntimeSpecError(
-            f"Project-data mount source is not owned by the host user: {source}"
+            f"Booley Directory mount source is not owned by the host user: {source}"
         )
     return source
 
@@ -1444,24 +1448,24 @@ def _pin_project_data_mount(
         index for index, raw in enumerate(mounts) if _mount_target(raw) == "/booley-project"
     ]
     if len(indexes) != 1:
-        raise RuntimeSpecError("Project-data target must have one exact writable bind")
+        raise RuntimeSpecError("Booley Directory target must have one exact writable bind")
     index = indexes[0]
     allowed = {
         "source=${localWorkspaceFolder}/.booley_project,target=/booley-project,type=bind",
         f"source={expected_source},target=/booley-project,type=bind",
     }
     if mounts[index] not in allowed:
-        raise RuntimeSpecError("Project-data mount source was not authorized by the host")
+        raise RuntimeSpecError("Booley Directory mount source was not authorized by the host")
     mounts[index] = f"source={expected_source},target=/booley-project,type=bind"
     shadow_target = _project_data_shadow_target(project, project_data)
     if shadow_target is None:
         if _project_data_alias_capable(_resolve_image_id(str(spec.get("image", "")))):
             raise RuntimeSpecError(
-                "selected image alias hides the external Project-data source; managed images require init or refresh; for an explicitly selected external image, select an image with an ordinary /booley-project directory"
+                "selected image alias hides the external Booley Directory source; managed images require init or refresh; for an explicitly selected external image, select an image with an ordinary /booley-project directory"
             )
         return
     if any(_mount_target(raw) == shadow_target for raw in mounts):
-        raise RuntimeSpecError("Project-data workspace view is already mounted")
+        raise RuntimeSpecError("Booley Directory workspace view is already mounted")
     shadow_source = expected_source
     mounts.insert(index + 1, f"source={shadow_source},target={shadow_target},type=bind")
     if _project_data_alias_capable(_resolve_image_id(str(spec.get("image", "")))):
@@ -1712,17 +1716,19 @@ def _require_project_data_mount(
     layout: str = "legacy",
 ) -> str | None:
     if not source:
-        raise RuntimeSpecError("host issuance lacks an authorized Project-data mount source")
+        raise RuntimeSpecError("host issuance lacks an authorized Booley Directory mount source")
     project = Path(source)
     canonical = _validate_project_data_bind_source(project_root, project)
     if canonical != project:
-        raise RuntimeSpecError("issued Project-data mount source is no longer canonical")
+        raise RuntimeSpecError("issued Booley Directory mount source is no longer canonical")
     expected_source = docker_mount_path(project)
     expected = f"source={expected_source},target=/booley-project,type=bind"
     matches = [item for item in mounts if _mount_target(item) == "/booley-project"]
     if layout == "canonical-alias":
         if project != project_root / ".booley_project":
-            raise RuntimeSpecError("canonical alias layout requires checkout-local Project data")
+            raise RuntimeSpecError(
+                "canonical alias layout requires checkout-local Booley Directory"
+            )
         if any(
             _mount_target(raw) == "/booley-project"
             or str(_mount_target(raw)).startswith("/booley-project/")
@@ -1730,7 +1736,7 @@ def _require_project_data_mount(
         ):
             raise RuntimeSpecError("canonical alias layout forbids alias-subtree mounts")
     elif layout != "legacy" or matches != [expected]:
-        raise RuntimeSpecError("Project-data target must have one exact host-authorized bind")
+        raise RuntimeSpecError("Booley Directory target must have one exact host-authorized bind")
     shadow_target = _project_data_shadow_target(project_root, project)
     if shadow_target is None:
         return None
@@ -1740,7 +1746,7 @@ def _require_project_data_mount(
         layout != "canonical-alias" and mounts.index(expected_shadow) < mounts.index(expected)
     ):
         raise RuntimeSpecError(
-            "Project-data workspace view must be pinned by the exact host-authorized bind"
+            "Booley Directory workspace view must be pinned by the exact host-authorized bind"
         )
     return shadow_target
 
@@ -2003,7 +2009,7 @@ def _project_data_alias_capable(image_id: str) -> bool:
     from booley.runtime.project_image import DockerImageError, project_data_alias_capable
 
     if not isinstance(image_id, str):
-        raise RuntimeSpecError("Sandbox image identity is unavailable for Project-data proof")
+        raise RuntimeSpecError("Sandbox image identity is unavailable for Booley Directory proof")
     try:
         return project_data_alias_capable(image_id)
     except DockerImageError as exc:

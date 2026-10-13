@@ -253,7 +253,7 @@ def _locations(ctx: InitContext) -> _Locations | None:
         ctx.record("project_git_hooks", "skip", "Git hooks path resolution timed out")
         return None
     if result.returncode != 0 or not result.stdout.strip():
-        skip("project root is not a git repo — Project Git policy skipped")
+        skip("Project Root is not a git repo — Project Git policy skipped")
         ctx.record("project_git_hooks", "skip", "not a git repo")
         return None
     project_dir = resolve_project_dir(ctx.project_root)

@@ -245,7 +245,7 @@ def capture_core_closure(edam_path: Path, project_root: Path) -> dict[str, str] 
     Call while Booley's trace and coverage overlay cores still exist: they are
     removed right after preparation, before the reuse key is computed. Every
     Booley FuseSoC library root (Project, stealth cores, projections, isolated
-    registry) lives under the Project root, so a core outside it declines.
+    registry) lives under the Project Root, so a core outside it declines.
     """
     try:
         edam = yaml.safe_load(edam_path.read_text(encoding="utf-8"))

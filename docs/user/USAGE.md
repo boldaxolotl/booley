@@ -14,7 +14,7 @@ with AI coding agents to follow it.
 
 7. [Auth & billing](#auth--billing)
 8. [Reporting problems and feedback](#when-booley-itself-misbehaves)
-9. Reference: [Flows & Specialists](#booley-flows--specialists), [Criteria catalog](#criteria-catalog), [CLI](#cli-reference)
+9. Reference: [Flows & Specialists](#booley-flows--specialists), [Goal catalog](#goal-catalog), [CLI](#cli-reference)
 
 ## Read this first
 
@@ -83,7 +83,7 @@ Use the selector once, at the root, command, or nested operation. It also works 
 and do not accept the new selector. Full option names are stable; ambiguous
 abbreviations produce an error. Arguments after a command's payload `--` stay opaque.
 
-Selection chooses the checkout, while `BOOLEY_PROJECT_DIR` chooses Project data;
+Selection chooses the checkout, while `BOOLEY_PROJECT_DIR` chooses the Booley Directory;
 an external data override remains supported. Checkout-local data configuration and
 initialization's destination scope keep their existing precedence. A selector
 requires an existing directory; `init` accepts an uninitialized directory.
@@ -285,31 +285,32 @@ explicit instruction and reason. Setup can create this file; initialization
 does not seed it. You can also add Goals for this particular change. Duplicate
 Goals merge to the stricter condition, and entry reports every merge.
 
-Goalsets, including `default.md`, come from the **main checkout's Project
-directory**. In the Sandbox that is `BOOLEY_PROJECT_DIR`, even when the
-directory lives outside the main checkout. A Project copy or snapshot inside
+Goalsets, including `default.md`, come from the **Main Booley Directory**. In the Sandbox that is `BOOLEY_PROJECT_DIR`, even when the
+directory lives outside the main checkout. The Worktree Booley Directory inside
 the Goal worktree is not used: a `default.md` that exists only there does not
 apply. `work_dir` selects the worktree, not the Goalsets.
 
 A session started inside a worktree without `BOOLEY_PROJECT_DIR` can resolve
 that worktree's copy instead. Start the session with `BOOLEY_PROJECT_DIR` set
-to the main checkout's Project directory; entry refuses a Project directory
+to the Main Booley Directory; entry refuses a Booley Directory
 inside the Goal worktree.
 
-A Goal names a Flow or review family and the applicable Target, tests, and
-thresholds. Every Goal is mandatory. For example, a Goalset excerpt can ask for:
+A Goal has one name, `CAPABILITY:target`, for example `SIM:sim_fifo`.
+Review Goals use `REVIEW:rtl_bugs`. Details such as tests, thresholds and the
+review requirement follow the name in parentheses. Goal arguments use the
+uppercase capability as `family`. Every Goal is mandatory. For example, a Goalset excerpt can ask for:
 
 ```json
 [
-  {"family": "lint", "target": "lint_fifo"},
-  {"family": "sim", "target": "sim_fifo"},
-  {"family": "review", "review": "rtl_bugs", "verdict": "clean"},
-  {"family": "synth", "target": "synth_fifo", "thresholds": {"area_increase_at_most": "10%"}}
+  {"family": "LINT", "target": "lint_fifo"},
+  {"family": "SIM", "target": "sim_fifo"},
+  {"family": "REVIEW", "review": "rtl_bugs", "verdict": "clean"},
+  {"family": "SYNTH", "target": "synth_fifo", "thresholds": {"area_increase_at_most": "10%"}}
 ]
 ```
 
-Use the [Criteria catalog](#criteria-catalog) and `booley cheat --criteria` for
-the evidence keys and threshold parameters used by Goals. A new Target can be
+Use the [Goal catalog](#goal-catalog) and `booley cheat --criteria` for
+the public Goal names and threshold parameters. A new Target can be
 named at entry but stays unmet until it exists. Spec reviews name a spec file
 relative to the worktree.
 
@@ -332,15 +333,15 @@ For a relative threshold on a new Target, set `baseline` to an existing Target. 
 Goal argument examples:
 
 ```json
-{"family": "synth", "target": "asic_small", "baseline": "asic_base",
+{"family": "SYNTH", "target": "asic_small", "baseline": "asic_base",
  "thresholds": {"cell_count_reduce_at_least": "8%"}}
 ```
 
 ```json
-{"family": "fpga", "target": "fpga_top", "thresholds": {"lut_count_max": 5000}}
+{"family": "FPGA", "target": "fpga_top", "thresholds": {"lut_count_max": 5000}}
 ```
 
-**`synthesis_ok` (ASIC)**
+**`SYNTH:{target}` (ASIC)**
 
 | Metric | _max | _min | _increase_at_most | _reduce_at_least |
 |--------|:---:|:---:|:---:|:---:|
@@ -358,7 +359,7 @@ Goal argument examples:
 
 > Mutually exclusive: `critical_path_ps_max` ⊕ `fmax_mhz_min`.
 
-**`fpga_impl_ok` (FPGA)**
+**`FPGA:{target}` (FPGA)**
 
 | Metric | _max | _min | _increase_at_most | _reduce_at_least |
 |--------|:---:|:---:|:---:|:---:|
@@ -373,10 +374,10 @@ Goal argument examples:
 
 **Per-test `CYCLE_COUNT`**
 
-`cycle_count` Goals name the Target with `target` and the registered test with `test`; put bounds in `thresholds`. All thresholds for that test must pass. Relative forms compare the same Target/test at the Goal base commit.
+`CYCLE_COUNT:{target}` Goals name the Target with `target` and the registered test with `test`; put bounds in `thresholds`. All thresholds for that test must pass. Relative forms compare the same Target/test at the Goal base commit.
 
 ```json
-{"family": "cycle_count", "target": "sim", "test": "smoke",
+{"family": "CYCLE_COUNT", "target": "sim", "test": "smoke",
  "thresholds": {"cycle_count_max": 1000, "cycle_count_reduce_at_least": "8%"}}
 ```
 
@@ -393,7 +394,7 @@ Goal argument examples:
 | `cycle_count_reduce_at_least_cycles` | yes | cycles | baseline - current ≥ N |
 | `cycle_count_reduce_at_most_cycles` | yes | cycles | baseline - current ≤ N |
 
-A named `[SIM_CYCLES] <test> <count>` observation is gated evidence only when that exact test passes. Missing, malformed, duplicate, unnamed, failed, or inconclusive evidence fails closed. Without a `cycle_count` Criterion, existing Cycle Count records remain observational.
+A named `[SIM_CYCLES] <test> <count>` observation is gated evidence only when that exact test passes. Missing, malformed, duplicate, unnamed, failed, or inconclusive evidence fails closed. Without a `CYCLE_COUNT:{target}` Goal, existing Cycle Count records remain observational.
 
 Relative comparisons report an **observed Cycle Count change**. When declared workload inputs differ, review reports disclose the changes and do not attribute the result to RTL alone.
 <!-- END GENERATED: criteria-params -->
@@ -439,6 +440,11 @@ approve or reject it with a reason. The client form is used when available;
 chat fallback records your quoted instruction against the saved proposal ID.
 Silence cannot approve a change. Approved changes appear in the Change Log.
 Coverage Waiver Candidates need your decision; the Analyst cannot approve them.
+
+Goal Mode clients must expose MCP `structuredContent` to the Developer Agent.
+Entry and status return the internal `goal_key` change addresses there, separately
+from human Goal names. A client that forwards only text can read status but cannot
+address an existing Goal for a change.
 
 ### Finish and review
 
@@ -564,8 +570,8 @@ It doesn't have to be a bug. Confusing behavior, praise, complaints, wishes, or
 `/booley-feedback`. See [CONFIG.md](CONFIG.md#feedback-feedback).
 
 In the Sandbox, each Project has one Findings Log shared by all of its worktrees.
-The log and default local report stay in the shared Project directory, even
-when a worktree has its own paired Project checkout. When the skill uses the
+The log and default local report stay in the Main Booley Directory, even
+when a worktree has its own Paired Checkout. When the skill uses the
 feedback CLI, its `-C` / `--project` option selects the checkout used for context;
 it does not move that shared log or the default report. For Projects, the
 `BOOLEY_PROJECT_DIR` environment variable selects shared storage. Outside the
@@ -589,10 +595,10 @@ Deterministic end-to-end orchestration; no LLM:
 
 | Booley Flow | Purpose | Sets |
 |--------|---------|------|
-| `sim` | Run RTL simulation for one or more Targets | — |
-| `lint` | Run lint for one or more Targets | `lint_clean` |
-| `synth` | Run ASIC synthesis for one or more Targets with optional baseline comparison | `synthesis_ok` |
-| `fpga` | Run FPGA implementation for one or more Targets with optional baseline comparison | `fpga_impl_ok` |
+| `sim` | Run RTL simulation for one or more Targets | `ELAB:{target}`, `SIM:{target}`, `CYCLE_COUNT:{target}`, `COVERAGE:{target}` |
+| `lint` | Run lint for one or more Targets | `LINT:{target}` |
+| `synth` | Run ASIC synthesis for one or more Targets with optional baseline comparison | `SYNTH:{target}` |
+| `fpga` | Run FPGA implementation for one or more Targets with optional baseline comparison | `FPGA:{target}` |
 
 Every Flow's options and results are in [FLOW_REFERENCE.md](FLOW_REFERENCE.md), and its report files in [FLOW_REPORTS.md](../internals/FLOW_REPORTS.md); `booley flow <name> --help` prints the options too.
 
@@ -607,8 +613,8 @@ For example: `booley specialist reviewer --category rtl --focus bugs --scope rtl
 | Specialist | Purpose | Sets | Modifies code |
 |------------|---------|------|:-------------:|
 | `coverage_analyst` | Explain one exact coverage.json Campaign and propose advisory next steps | — | — |
-| `mutation_tester` | Proposal-locked mutation testing: creator selects exact replacements, tester builds isolated variants | `mutation_score` | — |
-| `reviewer` | Single-focus code review: reports issues by severity | `review_*` | — |
+| `mutation_tester` | Proposal-locked mutation testing: creator selects exact replacements, tester builds isolated variants | `MUTATION:{target}` | — |
+| `reviewer` | Single-focus code review: reports issues by severity | `REVIEW:rtl_spec`, `REVIEW:rtl_bugs`, `REVIEW:rtl_protocol`, `REVIEW:tb_quality`, `REVIEW:rtl_security`, `REVIEW:rtl_optimization`, `REVIEW:rtl_code_style` | — |
 
 #### `coverage_analyst`
 
@@ -624,13 +630,13 @@ Call the `reviewer` Specialist from your Developer Agent session with `scope="<f
 
 | Category | Focus | What it checks | Sets |
 |----------|-------|----------------|------|
-| `rtl` | `bugs` | Functional bug patterns, synthesis hazards, reset/width/signing mistakes, and ifdef/config consistency | `review_rtl_bugs` |
-| `rtl` | `protocol` | Bus/protocol rule compliance, handshake behavior, ordering, and clock-domain crossings (CDC) | `review_rtl_protocol` |
-| `rtl` | `spec` | Spec compliance: the RTL implements what the change request/spec requires, no more and no less | `review_rtl_spec` |
-| `rtl` | `code_style` | Comments, naming, readability, maintainability, magic values, and assertion/cover-point quality | `review_rtl_code_style` |
-| `rtl` | `optimization` | Unused/dead RTL and strict power/performance/area improvements with no functional or engineering trade-off | `review_rtl_optimization` |
-| `rtl` | `security` | Fault-injection resistance, simple power/timing leakage, secret exposure, and unsafe failure behavior | `review_rtl_security` |
-| `tb` | `quality` | False-pass paths in scoped testbench sources, missing checks and edge cases, coverage gaps, timing/sampling mistakes, and TB code quality | `review_tb_quality` |
+| `rtl` | `bugs` | Functional bug patterns, synthesis hazards, reset/width/signing mistakes, and ifdef/config consistency | `REVIEW:rtl_bugs` |
+| `rtl` | `protocol` | Bus/protocol rule compliance, handshake behavior, ordering, and clock-domain crossings (CDC) | `REVIEW:rtl_protocol` |
+| `rtl` | `spec` | Spec compliance: the RTL implements what the change request/spec requires, no more and no less | `REVIEW:rtl_spec` |
+| `rtl` | `code_style` | Comments, naming, readability, maintainability, magic values, and assertion/cover-point quality | `REVIEW:rtl_code_style` |
+| `rtl` | `optimization` | Unused/dead RTL and strict power/performance/area improvements with no functional or engineering trade-off | `REVIEW:rtl_optimization` |
+| `rtl` | `security` | Fault-injection resistance, simple power/timing leakage, secret exposure, and unsafe failure behavior | `REVIEW:rtl_security` |
+| `tb` | `quality` | False-pass paths in scoped testbench sources, missing checks and edge cases, coverage gaps, timing/sampling mistakes, and TB code quality | `REVIEW:tb_quality` |
 
 Arguments: required `scope="<file,...>"` selects files; `steer=["<context>"]` adds review context; `dry_run=true` validates and previews without invoking a Specialist. The `spec` focus needs specification text: use `spec="<path>"` or the spec file named by the Review Goal.
 
@@ -689,64 +695,36 @@ The Analyst may screen Waiver Candidates; approving one requires your decision
 through `goal_propose_change`. Rerun coverage after approval to obtain fresh
 strict evidence. See [coverage waivers at review](FLOW_REFERENCE.md#coverage-waivers-at-review).
 
-## Criteria catalog
+## Goal catalog
 
-Every built-in Criterion under the name Booley uses in evidence reports.
-Goals use these keys after entry translates their family arguments.
-`{target}` means one Criterion per Target, for example `sim_pass_sim_core`.
-Criteria are defined in `criteria.toml`, where custom tools can add their own.
+Every supported Goal has the same name in status, proposals, the Dashboard and
+Review Package. `{target}` is its bare name when unique, or its qualified selector otherwise.
 
 <!-- BEGIN GENERATED: criteria -->
-#### Build & Elaborate
+| Goal | Requirement | Evidence producer |
+|------|-------------|-------------------|
+| `LINT:{target}` | The Target's linter passes with no unwaived findings | `lint` |
+| `SIM:{target}` | RTL simulation passes all tests | `sim` |
+| `ELAB:{target}` | RTL/TB compiles and elaborates cleanly (no simulation) | `sim` (`mode="elab-only"`) |
+| `SYNTH:{target}` | ASIC synthesis completes within area/timing budgets | `synth` |
+| `FPGA:{target}` | FPGA implementation completes within resource/timing budgets | `fpga` |
+| `CYCLE_COUNT:{target}` | A named test passes and its observed Cycle Count meets every declared threshold | `sim` |
+| `COVERAGE:{target}` | Native Coverage Campaign policy for one Simulation Target | `sim` (`coverage=true`) |
+| `MUTATION:{target}` | Mutation testing achieves minimum kill rate | `mutation_tester` |
+| `REVIEW:rtl_spec` | RTL review: spec compliance (RTL matches the Goal/spec, no more, no less) | `reviewer` (`category="rtl"`, `focus="spec"`) |
+| `REVIEW:rtl_bugs` | RTL review: bug patterns, synthesis hazards, and ifdef/config consistency (the RTL as hardware, not against the spec) | `reviewer` (`category="rtl"`, `focus="bugs"`) |
+| `REVIEW:rtl_protocol` | RTL review: bus/protocol compliance and clock-domain crossings (CDC) | `reviewer` (`category="rtl"`, `focus="protocol"`) |
+| `REVIEW:rtl_security` | RTL review: hardware attack resistance to fault injection, simple power/timing analysis, and secret exposure (post-sim) | `reviewer` (`category="rtl"`, `focus="security"`) |
+| `REVIEW:rtl_optimization` | RTL review: unused/dead code and missed power/performance/area wins, strict improvements only (post-sim) | `reviewer` (`category="rtl"`, `focus="optimization"`) |
+| `REVIEW:rtl_code_style` | RTL review: comments, naming, readability, and assertion coverage (post-sim) | `reviewer` (`category="rtl"`, `focus="code_style"`) |
+| `REVIEW:tb_quality` | Source-scoped TB review: false-pass detection, coverage gaps, and TB code quality | `reviewer` (`category="tb"`, `focus="quality"`) |
 
-| Criterion | Description | Set by | Workflow Region |
-|-----------|-------------|--------|-------|
-| `elab_pass_{target}` | RTL/TB compiles and elaborates cleanly (no simulation) | `sim` (`mode="elab-only"`) | pre-sim |
-| `elaborate_standalone` | Every module in the Targets' RTL source scope elaborates standalone from its declaring file (shared package/interface files auto-included, parameter defaults) | `sim` (`mode="elab-only-standalone"`) | pre-sim |
-| `lint_clean_{target}` | The Target's linter passes with no unwaived findings | `lint` | pre-sim |
+`{target}` is the bare Target name when unique, or its qualified selector otherwise. Details (thresholds, tests, baseline,
+review verdict and spec) follow the name in parentheses. Review Goals require
+`clean` or `done`; the name is identical for both requirements.
 
-#### RTL Code Review
-
-| Criterion | Description | Set by | Workflow Region |
-|-----------|-------------|--------|-------|
-| `review_rtl_bugs` | RTL review: bug patterns, synthesis hazards, and ifdef/config consistency (the RTL as hardware, not against the spec) | `reviewer` (`category="rtl"`, `focus="bugs"`) | pre-sim |
-| `review_rtl_protocol` | RTL review: bus/protocol compliance and clock-domain crossings (CDC) | `reviewer` (`category="rtl"`, `focus="protocol"`) | pre-sim |
-| `review_rtl_spec` | RTL review: spec compliance (RTL matches the Goal/spec, no more, no less) | `reviewer` (`category="rtl"`, `focus="spec"`) | pre-sim |
-| `review_rtl_code_style` | RTL review: comments, naming, readability, and assertion coverage (post-sim) | `reviewer` (`category="rtl"`, `focus="code_style"`) | post-sim |
-| `review_rtl_optimization` | RTL review: unused/dead code and missed power/performance/area wins, strict improvements only (post-sim) | `reviewer` (`category="rtl"`, `focus="optimization"`) | post-sim |
-| `review_rtl_security` | RTL review: hardware attack resistance to fault injection, simple power/timing analysis, and secret exposure (post-sim) | `reviewer` (`category="rtl"`, `focus="security"`) | post-sim |
-
-#### Testbench Review
-
-| Criterion | Description | Set by | Workflow Region |
-|-----------|-------------|--------|-------|
-| `review_tb_quality` | Source-scoped TB review: false-pass detection, coverage gaps, and TB code quality | `reviewer` (`category="tb"`, `focus="quality"`) | pre-sim |
-
-#### Simulation
-
-| Criterion | Description | Set by | Workflow Region |
-|-----------|-------------|--------|-------|
-| `cycle_count_{target,test}` | A named test passes and its observed Cycle Count meets every declared threshold | `sim` | sim loop |
-| `sim_pass_{target}` | RTL simulation passes all tests | `sim` | sim loop |
-
-#### Coverage
-
-| Criterion | Description | Set by | Workflow Region |
-|-----------|-------------|--------|-------|
-| `coverage_{target}` | Native Coverage Campaign policy for one Simulation Target | `sim` (`coverage=true`) | post-sim |
-
-#### Verification Quality
-
-| Criterion | Description | Set by | Workflow Region |
-|-----------|-------------|--------|-------|
-| `mutation_score_{target}` | Mutation testing achieves minimum kill rate | `mutation_tester` | post-sim |
-
-#### Implementation & PPA
-
-| Criterion | Description | Set by | Workflow Region |
-|-----------|-------------|--------|-------|
-| `fpga_impl_ok_{target}` | FPGA implementation completes within resource/timing budgets | `fpga` | post-sim |
-| `synthesis_ok_{target}` | ASIC synthesis completes within area/timing budgets | `synth` | post-sim |
+Goal argument `family` uses the uppercase capability before the colon.
+Internal evidence keys and Project-defined evidence bindings are not Goal names.
 <!-- END GENERATED: criteria -->
 
 ## CLI reference
@@ -761,7 +739,7 @@ booley goal status                # this worktree's Goal Mode, or every active G
 booley dashboard                  # sessions, Goals, and Jobs
 
 # Worktrees (container)
-booley worktree new <name>        # .booley_project/worktrees/<name>, paired Project or clean snapshot
+booley worktree new <name>        # .booley_project/worktrees/<name>, Paired Checkout or Snapshot
 
 # Quick reference
 booley cheat                      # the whole cheatsheet
@@ -780,21 +758,21 @@ booley projects                   # list known projects
 booley projects discover <dir>    # find existing projects under <dir>
 ```
 
-`booley worktree new <name>` gives a versioned `.booley_project` repository a
-paired checkout on `booley-worktree/<name>` at its current HEAD. Commit tracked
-changes and untracked files in the Project repository first; an unborn
-repository and an existing Project branch are refused. Ignored state stays
-behind. A non-versioned Project gets a clean snapshot. Run this command from
-the primary workspace; creating from a paired Project checkout is refused.
+`booley worktree new <name>` gives a Versioned Booley Directory a
+Paired Checkout on `booley-worktree/<name>` at its current HEAD. Commit tracked
+changes and untracked files in the Booley Directory's repository first; an unborn
+repository and an existing Booley Directory branch are refused. Ignored state stays
+behind. A non-versioned Booley Directory supplies a Snapshot. Run this command from
+the primary workspace; creating from a Paired Checkout is refused.
 The outer checkout starts detached unless `<branch>--<description>` selects an
-existing branch. To remove a paired workspace, remove the Project checkout
-first with `git -C <absolute-project-dir> worktree remove <absolute-worktree>/.booley_project`,
-then run `git -C <absolute-workspace-root> worktree remove <absolute-worktree>`.
-To reuse the name, preserve any Project commits you need, then delete its branch
-with `git -C <absolute-project-dir> branch -D booley-worktree/<name>`.
+existing branch. To remove a paired workspace, remove the Paired Checkout
+first with `git -C <absolute-booley-directory> worktree remove <absolute-worktree>/.booley_project`,
+then run `git -C <absolute-project-root> worktree remove <absolute-worktree>`.
+To reuse the name, preserve any Booley Directory commits you need, then delete its branch
+with `git -C <absolute-booley-directory> branch -D booley-worktree/<name>`.
 The command prints these steps with absolute paths.
 
-Outside Goal Mode, `--baseline` uses the paired Project branch's recorded
+Outside Goal Mode, `--baseline` uses the Paired Checkout branch's recorded
 creation base ahead of its upstream. Pushing, merging or rebasing newer Project
 changes does not update that recorded commit: the Project baseline is its
 merge-base with the current HEAD. Rewriting history can therefore select an
@@ -803,7 +781,7 @@ upstream's merge-base with HEAD; a branch with neither refuses. An invalid
 recorded base refuses even when an upstream exists. A detached paired HEAD
 uses its checked-out commit, including during a rebase or bisect. Baseline
 preparation progress names the rule and commit. Goal Mode keeps the exact
-paired Project commit pinned at entry.
+Paired Checkout commit pinned at entry.
 
 `booley projects discover` stops descending at each initialized Project to
 avoid scanning its RTL, vendor, and build trees. Nested Projects are not imported

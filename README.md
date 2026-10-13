@@ -44,11 +44,11 @@ The Developer Agent translates its prose into concrete Goals at entry. For examp
 
 ```json
 [
-  {"family": "lint", "target": "lint_fifo", "origin": "fifo-feature"},
-  {"family": "sim", "target": "sim_fifo", "origin": "fifo-feature"},
-  {"family": "coverage", "target": "sim_fifo", "tests": "all", "metrics": {"line": 90}, "origin": "fifo-feature"},
-  {"family": "review", "review": "rtl_bugs", "verdict": "clean", "origin": "fifo-feature"},
-  {"family": "synth", "target": "synth_fifo", "thresholds": {"area_increase_at_most": "10%"}, "origin": "fifo-feature"}
+  {"family": "LINT", "target": "lint_fifo", "origin": "fifo-feature"},
+  {"family": "SIM", "target": "sim_fifo", "origin": "fifo-feature"},
+  {"family": "COVERAGE", "target": "sim_fifo", "tests": "all", "metrics": {"line": 90}, "origin": "fifo-feature"},
+  {"family": "REVIEW", "review": "rtl_bugs", "verdict": "clean", "origin": "fifo-feature"},
+  {"family": "SYNTH", "target": "synth_fifo", "thresholds": {"area_increase_at_most": "10%"}, "origin": "fifo-feature"}
 ]
 ```
 

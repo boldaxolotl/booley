@@ -69,6 +69,11 @@ A named, mandatory boolean condition held by a session in Goal Mode, met only by
 The internal [Criterion](#execution-and-evidence) vocabulary remains in shared evaluation code; use Goal for the public success condition.
 _Avoid_: Criterion, acceptance criterion, optional criterion, check, gate
 
+**Goal Name**:
+The single human-visible name of a **Goal**: its uppercase capability and Target,
+or its review kind for a review Goal. Requirements appear beside the name.
+_Avoid_: Criterion key, family key, encoded key, Goal label
+
 **Goalset**:
 A named, Project-owned bundle of Goals, written as free-form prose that the Developer Agent translates into Goals when entering Goal Mode.
 _Avoid_: Ticket Creation Guidance, criteria defaults, goal profile
@@ -78,7 +83,7 @@ The mandatory prose report the Developer Agent writes when its session finishes 
 _Avoid_: Developer Report, run report, Goal Report
 
 **Goal Record**:
-The local, uncommitted state of one Goal Mode under `.booley_project/goals/<goal-id>/` in the Project directory: state, worktree, Goal Branch, base commit, Goals, protected-input digests, change log, evidence, and the Session Summary. Outside Stealth its committed counterpart is the summary file on the Goal Branch.
+The local, uncommitted state of one Goal Mode in the **Main Booley Directory**: state, worktree, Goal Branch, base commit, Goals, protected-input digests, change log, evidence, and the Session Summary. Outside Stealth its committed counterpart is the summary file on the Goal Branch.
 _Avoid_: ticket record, board entry, goal file
 
 **Goal Change Proposal**:
@@ -90,7 +95,7 @@ The append-only record inside a Goal Record of every approved Goal Change Propos
 _Avoid_: audit log, history, journal
 
 **Protected Input**:
-A file that decides how evidence is produced and is therefore digested at Goal Mode entry: Project configuration and checkout-root `booley.toml`, their legacy `pipeline.toml` siblings, `FUSESOC_IGNORE`, the `hooks`, `.managed`, `generators`, and `mcp_tools` directories at their consumer roots, and files the Project declares in `[project].protected_inputs`. The snapshot covers the session Project, worktree, and main-checkout copies that consumers can read (see [Goal baselines](internals/FLOW_IMPLEMENTATION.md#goal-baselines-and-editable-design-inputs)). Editing one warns at once and blocks Finish until reverted.
+A file that decides how evidence is produced and is therefore digested at Goal Mode entry: Project configuration and checkout-root `booley.toml`, their legacy `pipeline.toml` siblings, `FUSESOC_IGNORE`, the `hooks`, `.managed`, `generators`, and `mcp_tools` directories at their consumer roots, and files the Project declares in `[project].protected_inputs`. The Protected Input digests cover the **Main Booley Directory**, **Worktree Booley Directory**, and Project Root files that consumers can read (see [Goal baselines](internals/FLOW_IMPLEMENTATION.md#goal-baselines-and-editable-design-inputs)). Editing one warns at once and blocks Finish until reverted.
 _Avoid_: frozen file, locked config, Scope
 
 **Review Package**:
@@ -150,11 +155,39 @@ _Avoid_: tier, weight, pool, semaphore
 The design-description primitives Booley references but does not own. **Target** is the load-bearing one: almost every other entry binds to a Target by name.
 
 **Project**:
-A codebase initialized with `booley init`, containing a `.booley_project/` directory with Goalsets, Goal Records, configuration, and logs. Booley discovers the active project by walking up the directory tree.
+A codebase initialized with `booley init`, with a **Booley Directory** for its configuration and state.
 _Avoid_: repo, workspace
 
+**Booley Directory**:
+The directory that holds everything Booley keeps for a **Project**: configuration, Goalsets, Goal Records, evidence, logs, and worktrees. Its default location is `.booley_project/` at the **Project Root**; a Project may select another location.
+_Avoid_: Project directory, Project dir, Project data, Project data directory, state dir
+
+**Project Root**:
+The top directory of a **Project**'s codebase checkout, and the default home of its **Booley Directory**.
+_Avoid_: Project directory, Project checkout, repo root
+
+**Main Booley Directory**:
+The **Booley Directory** that owns a **Project**'s Goal Records, Goalsets, and lifecycle files. It is the main checkout's Booley Directory.
+_Avoid_: control Project, control Project directory, session Project
+
+**Worktree Booley Directory**:
+A linked worktree's own **Booley Directory**. It is either a **Paired Checkout** or a **Snapshot**.
+_Avoid_: session Project, paired copy
+
+**Paired Checkout**:
+The **Worktree Booley Directory** of a **Versioned Booley Directory**: a Git checkout on the worktree's own branch.
+_Avoid_: paired Project checkout, paired Project repository
+
+**Snapshot**:
+The **Worktree Booley Directory** of a non-versioned **Booley Directory**: a plain copy taken when the worktree is created.
+_Avoid_: clean snapshot, project copy
+
+**Versioned Booley Directory**:
+A **Booley Directory** that is its own Git repository, separate from the RTL repository.
+_Avoid_: Project repository, versioned Project
+
 **Project Inventory**:
-The host-owned catalog of canonical Project paths and their **Project Grants**, including paths whose Project data is missing or uninitialized.
+The host-owned catalog of canonical Project paths and their **Project Grants**, including Projects whose **Booley Directory** is missing or uninitialized.
 _Avoid_: Project registry, workspace list, filesystem scan
 
 **EDA Installation Registration**:
@@ -162,7 +195,7 @@ A host-owned record of one approved **Host-Provisioned Sandbox EDA Tool** instal
 _Avoid_: tool enrollment, mount registration, host tool
 
 **License Profile**:
-A host-owned record of one approved commercial-license topology, including its fixed server identity, literal upstream address, and license-manager ports. A **Project Grant** authorizes it for one Project root and EDA kind independently of how the EDA installation is provisioned; Project configuration never selects one directly.
+A host-owned record of one approved commercial-license topology, including its fixed server identity, literal upstream address, and license-manager ports. A **Project Grant** authorizes it for one Project Root and EDA kind independently of how the EDA installation is provisioned; Project configuration never selects one directly.
 _Avoid_: project license config, forwarded license environment, license server setting
 
 **Project Grant**:

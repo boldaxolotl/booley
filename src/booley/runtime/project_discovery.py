@@ -1,4 +1,4 @@
-"""Infer a checkout without mistaking its Project data for design sources."""
+"""Infer a checkout without mistaking its Booley Directory for design sources."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from booley.runtime.sandbox_layout import PROJECT_DIR_TARGET, WORK_DIR
 
 
 class ProjectRootDiscoveryError(RuntimeError):
-    """A Project data directory cannot prove its owning checkout."""
+    """A Booley Directory cannot prove its owning checkout."""
 
 
 def has_git_worktree_marker(path: Path) -> bool:
@@ -138,8 +138,8 @@ def discover_project_root(
         if len(owners) == 1 and explicit is None:
             return owners.pop()
         raise ProjectRootDiscoveryError(
-            "Cannot determine Project checkout from Project data directory; "
-            "run from the Project checkout or set RTL_PROJECT_ROOT to it."
+            "Cannot determine Project Root from Booley Directory; "
+            "run from the Project Root or set RTL_PROJECT_ROOT to it."
         )
     if checkouts:
         return checkouts[0]

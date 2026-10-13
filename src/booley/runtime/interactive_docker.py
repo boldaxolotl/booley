@@ -467,7 +467,7 @@ def _docker_src_dir(booley_root: Path) -> Path:
     """Build context for the sidecar/reaper images.
 
     Their sources live in ``src/booley/docker/``; we use that as the build
-    context (not the repo root) because the repo-root ``.dockerignore`` is
+    context (not the Booley repository root) because the ``.dockerignore`` at the Booley repository root is
     whitelist-style and strips ``src/`` — it only ships the wheel for the
     sandbox image. The Dockerfiles therefore COPY by bare filename.
     """

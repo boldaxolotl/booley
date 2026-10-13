@@ -25,6 +25,10 @@ def test_coverage_per_test_projection_strips_stream_tails_and_preserves_metadata
     }
     run = SimpleNamespace(
         test="smoke",
+        test_run="smoke+fast@7",
+        variant="fast",
+        seed=7,
+        fingerprint="sha256:" + "0" * 64,
         simulation_verdict="pass",
         collection="complete",
         attributes={"pre_sim": evidence},
@@ -34,6 +38,8 @@ def test_coverage_per_test_projection_strips_stream_tails_and_preserves_metadata
     assert "stderr_tail" not in projection["pre_sim"]
     assert projection["pre_sim"]["returncode"] == 0
     assert projection["pre_sim"]["command_count"] == 2
+    assert (projection["name"], projection["test_run"]) == ("smoke", "smoke+fast@7")
+    assert (projection["variant"], projection["seed"]) == ("fast", 7)
 
 
 def _evaluation(**changes: object) -> dict[str, object]:

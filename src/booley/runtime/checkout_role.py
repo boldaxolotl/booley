@@ -1,4 +1,4 @@
-"""Compatibility interface for Project checkout classification.
+"""Compatibility interface for Project Root classification.
 
 The dependency-light implementation lives below Config and Runtime so both may
 enforce the same source-checkout protection without a Config-to-Runtime edge.

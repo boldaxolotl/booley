@@ -13,7 +13,7 @@ receives a nested detached worktree at the recorded creation base's merge-base
 with HEAD, falling back to upstream only without a recorded base. A detached
 paired HEAD uses its checked-out commit; explicit pins use their exact commit.
 That preserves the baseline revision's Target definitions and recipe instead of
-mirroring live project data into both comparisons.
+mirroring the live contents of the Booley Directory into both comparisons.
 """
 
 from __future__ import annotations
@@ -210,16 +210,14 @@ def _install_paired_project_baseline(
     wt_dir: Path,
     policy: PairedProjectBaseline,
 ) -> Path | None:
-    """Check out the paired project repository at its pinned revision or fork point."""
+    """Check out the Paired Checkout at its pinned revision or fork point."""
     repository = paired_project_repository(project_root)
     if repository is None:
         if policy.pinned:
-            raise BaselineWorktreeError(
-                f"{policy.mode.value} paired Project repository is unavailable"
-            )
+            raise BaselineWorktreeError(f"{policy.mode.value} Paired Checkout is unavailable")
         return None
     if policy.mode is PairedBaselineMode.ABSENT:
-        raise BaselineWorktreeError("unexpected paired Project repository in Ticket execution")
+        raise BaselineWorktreeError("unexpected Paired Checkout in Ticket execution")
     base_sha = policy.sha if policy.pinned else _paired_project_base_sha(repository.worktree)
     destination = wt_dir / ".booley_project"
     source = repository.worktree.resolve()
@@ -240,21 +238,21 @@ def _install_paired_project_baseline(
     if add.returncode != 0:
         detail = (add.stderr or add.stdout or "").strip()
         raise BaselineWorktreeError(
-            f"could not materialize paired project baseline {base_sha[:12]}: "
+            f"could not materialize Paired Checkout baseline {base_sha[:12]}: "
             f"{detail or add.returncode}"
         )
     return destination
 
 
 def _paired_project_base_sha(project_worktree: Path) -> str:
-    """Resolve and announce the standalone paired Project baseline, refusing probe failures."""
+    """Resolve and announce the standalone Paired Checkout baseline, refusing probe failures."""
     try:
         branch = _git(project_worktree, "symbolic-ref", "--quiet", "HEAD", timeout=30)
         ref = branch.stdout.strip()
         if branch.returncode == 1 and not ref and not branch.stderr.strip():
             rule = "detached HEAD"
             sha = _paired_project_commit(
-                project_worktree, "HEAD", "cannot resolve paired Project HEAD"
+                project_worktree, "HEAD", "cannot resolve Paired Checkout HEAD"
             )
         elif branch.returncode == 0 and ref.startswith("refs/heads/"):
             rule, source = _paired_project_branch_base(
@@ -262,17 +260,19 @@ def _paired_project_base_sha(project_worktree: Path) -> str:
             )
             merge_base = _git(project_worktree, "merge-base", source, "HEAD", timeout=30)
             if merge_base.returncode != 0 or not merge_base.stdout.strip():
-                raise BaselineWorktreeError("could not resolve paired Project baseline fork point")
+                raise BaselineWorktreeError(
+                    "could not resolve Paired Checkout baseline fork point"
+                )
             sha = merge_base.stdout.strip()
         else:
             raise BaselineWorktreeError(
-                "could not inspect paired Project branch: "
+                "could not inspect Paired Checkout branch: "
                 f"{branch.stderr.strip() or 'HEAD is not a branch or detached commit'}"
             )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise BaselineWorktreeError(f"could not resolve paired Project baseline: {exc}") from exc
-    logger.info("paired Project baseline: %s -> %s", rule, sha)
-    announce_unit(f"baseline: paired Project {rule} -> {sha}")
+        raise BaselineWorktreeError(f"could not resolve Paired Checkout baseline: {exc}") from exc
+    logger.info("Paired Checkout baseline: %s -> %s", rule, sha)
+    announce_unit(f"baseline: Paired Checkout {rule} -> {sha}")
     return sha
 
 
@@ -280,14 +280,14 @@ def _paired_project_branch_base(project_worktree: Path, branch: str) -> tuple[st
     base = _git(project_worktree, "config", "--get", f"branch.{branch}.booleyBase", timeout=30)
     ref = base.stdout.strip()
     if base.returncode == 1 and not ref and not base.stderr.strip():
-        message = "paired Project branch has no baseline upstream or recorded pairing base"
+        message = "Paired Checkout branch has no baseline upstream or recorded pairing base"
         return "upstream", _paired_project_commit(project_worktree, "@{upstream}", message)
     if base.returncode != 0:
         raise BaselineWorktreeError(
-            f"could not read paired Project recorded base: {base.stderr.strip() or base.returncode}"
+            f"could not read Paired Checkout recorded base: {base.stderr.strip() or base.returncode}"
         )
     message = (
-        "paired Project branch has an invalid recorded pairing base; expected a full commit ID"
+        "Paired Checkout branch has an invalid recorded pairing base; expected a full commit ID"
     )
     if re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", ref) is None:
         raise BaselineWorktreeError(message)
@@ -312,7 +312,7 @@ def _remove_paired_project_baseline(project_root: Path, baseline: Path) -> None:
     """Remove the nested project worktree before its outer worktree disappears."""
     repository = paired_project_repository(project_root)
     if repository is None:
-        logger.warning("paired project repository disappeared before baseline cleanup")
+        logger.warning("Paired Checkout disappeared before baseline cleanup")
         return
     result = _git(
         repository.worktree,
@@ -324,7 +324,7 @@ def _remove_paired_project_baseline(project_root: Path, baseline: Path) -> None:
     )
     if result.returncode != 0:
         logger.warning(
-            "paired project baseline cleanup failed for %s: %s",
+            "Paired Checkout baseline cleanup failed for %s: %s",
             baseline,
             (result.stderr or result.stdout or "").strip(),
         )
@@ -343,9 +343,9 @@ def _copy_stealth_cores(project_root: Path, wt_dir: Path, ref: str) -> None:
     ``.booley_project/`` is git-excluded, so a fresh ``git worktree add``
     checkout carries no ``.booley_project/cores/`` — and the baseline run
     scans cores relative to the *worktree*, so stealth-only projects would
-    silently compare against zero cores. For an unpaired project, copying the
+    silently compare against zero cores. Without a Paired Checkout, copying the
     *live* stealth cores is the pragmatic choice: Flow config is likewise read
-    from the live project dir, not the baseline ref. Paired project repositories
+    from the live Booley Directory, not the baseline ref. Paired Checkouts
     take the separate fork-point worktree path before this helper is called.
 
     Symlinks are copied **as symlinks**. A stealth ``.core`` resolves its
@@ -431,11 +431,11 @@ def _retarget_links(project_root: Path, wt_dir: Path, src: Path, dst: Path) -> l
     - **Inside the mirrored ``cores/`` tree**: re-pointed at the copy, which
       holds the same content. A relative link already resolves there and only
       gets its own text back; an absolute one stops naming the live tree.
-    - **Elsewhere in the state dir** (ADR 0036 blesses ``cores/worktrees ->
+    - **Elsewhere in the Booley Directory** (ADR 0036 blesses ``cores/worktrees ->
       ../worktrees``, e.g. a core pinning a frozen checkout): re-pointed at the
-      LIVE state dir. ``.booley_project/`` is git-excluded, so no checkout of any
+      LIVE Booley Directory. ``.booley_project/`` is git-excluded, so no checkout of any
       ref has one — and that storage is deliberately ref-independent, like the
-      Flow config a baseline run likewise reads from the live project dir.
+      Flow config a baseline run likewise reads from the live Booley Directory.
     - **Repo content** (``cores/rtl -> ../../rtl``): re-pointed at the
       worktree's copy, which is the whole point of delta mode. A relative link
       already resolves there; an absolute one (``/home/me/prj/rtl``) still names

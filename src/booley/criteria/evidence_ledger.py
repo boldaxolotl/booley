@@ -49,6 +49,7 @@ from uuid import UUID
 
 from booley.core.file_lock import release_file_lock, wait_for_file_lock
 from booley.criteria.state import CriterionChange, DevelopmentState
+from booley.evidence.fields import ACCEPTANCE_FACTS_SCHEMAS
 from booley.runtime.atomic_files import WriteOnceConflictError, atomic_write_once
 from booley.runtime.timefmt import utc_now_rfc3339
 
@@ -353,7 +354,7 @@ def _acceptance_fact_identity(
         },
         "Simulation acceptance facts",
     )
-    if facts.get("$schema") != "booley.simulation-acceptance-facts/v1":
+    if facts.get("$schema") not in ACCEPTANCE_FACTS_SCHEMAS:
         raise AcceptanceLedgerError("unsupported Simulation acceptance facts schema")
     campaign_id = _campaign_uuid(facts.get("campaign_id"))
     manifest_sha256 = _sha256_field(facts.get("manifest_sha256"), "manifest_sha256")
@@ -1273,6 +1274,123 @@ def record_or_verify_transaction(
         wait_for_file_lock(handle, timeout_s=5)
         try:
             return _reconcile_transaction_locked(plan, state)
+        finally:
+            release_file_lock(handle)
+
+
+# ---------------------------------------------------------------------------
+# Transactions that were recorded but never selected
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class UnselectedTransaction:
+    """A transaction with durable intent or records that *state* does not select.
+
+    ``acceptance_facts`` holds the frozen facts of a Simulation Campaign
+    transaction (its intent); it is ``None`` for V1 records appended under a
+    transaction id whose writer stopped before it selected them.
+    """
+
+    transaction_id: str
+    identity: dict[str, Any]
+    acceptance_facts: dict[str, Any] | None
+
+
+def unselected_transactions(
+    scope: EvidenceScope, log_dir: Path, state: DevelopmentState
+) -> tuple[UnselectedTransaction, ...]:
+    """Every transaction under *log_dir* that *state* does not select, oldest sequence last.
+
+    A Simulation Campaign transaction counts from its frozen intent on,
+    whether or not its records and commit were published. V1 records under a
+    transaction id count when no intent and no commit names that id. The
+    caller serializes with the ledger's writers (it holds their record lock).
+
+    Raises :class:`AcceptanceLedgerError` for a malformed intent or record.
+    """
+    root = Path(log_dir) / "acceptance"
+    selected = set(state.acceptance_transactions)
+    intents: dict[str, UnselectedTransaction] = {}
+    for path in sorted((root / "intents").glob("*.json")):
+        raw = read_json_document(path, _MAX_INTENT_BYTES, "acceptance intent")
+        lookup_key = raw.get("lookup_key")
+        if not isinstance(lookup_key, dict) or _intent_path(log_dir, lookup_key) != path:
+            raise AcceptanceLedgerError("acceptance intent lookup key mismatch")
+        intent = _read_intent(scope, path, cast("dict[str, Any]", lookup_key))
+        transaction_id = hashlib.sha256(canonical_json(intent["envelope"])).hexdigest()
+        identity = cast("dict[str, Any]", lookup_key)[scope.codec.identity_field]
+        intents[transaction_id] = UnselectedTransaction(
+            transaction_id, identity, dict(intent["acceptance_facts"])
+        )
+    pending = [item for key, item in intents.items() if key not in selected]
+    pending.extend(_unselected_appends(scope, root, selected | set(intents)))
+    return tuple(pending)
+
+
+def _unselected_appends(
+    scope: EvidenceScope, root: Path, known: set[str]
+) -> list[UnselectedTransaction]:
+    """V1 transactions under *root* no commit names and *known* does not hold."""
+    evidence_root = root / "evidence"
+    if not evidence_root.is_dir():
+        return []
+    names = {
+        directory.name.partition(".tx.")[2]
+        for directory in evidence_root.iterdir()
+        if directory.is_dir() and ".tx." in directory.name and not directory.name.startswith(".")
+    }
+    found: list[UnselectedTransaction] = []
+    for transaction_id in sorted(names - known):
+        if (root / "transactions" / f"{transaction_id}.json").exists():
+            continue  # a committed transaction is completed through its intent
+        records = legacy_transaction_records(evidence_root, transaction_id)
+        identities = [record.get(scope.codec.identity_field) for record in records]
+        if not isinstance(identities[0], dict) or any(
+            item != identities[0] for item in identities
+        ):
+            raise AcceptanceLedgerError("appended transaction records name different identities")
+        found.append(
+            UnselectedTransaction(transaction_id, cast("dict[str, Any]", identities[0]), None)
+        )
+    return found
+
+
+def complete_transaction(
+    scope: EvidenceScope,
+    projection: EvidenceProjection,
+    log_dir: Path,
+    state: DevelopmentState,
+    pending: UnselectedTransaction,
+) -> None:
+    """Finish *pending* as its writer would have, and select it into *state*.
+
+    A Simulation Campaign transaction is completed by the recovery its
+    writer runs when it is called again: :func:`record_or_verify_transaction`
+    with the frozen intent's facts, which publishes what is missing, commits
+    and selects. Appended V1 records only lack their selection.
+
+    Raises :class:`AcceptanceLedgerError` when the transaction cannot be
+    verified or its projection refuses it.
+    """
+    if pending.acceptance_facts is not None:
+        record_or_verify_transaction(
+            log_dir,
+            state,
+            [],
+            scope=scope,
+            projection=projection,
+            acceptance_facts=pending.acceptance_facts,
+            identity=pending.identity,
+        )
+        return
+    evidence_root = Path(log_dir) / "acceptance" / "evidence"
+    with (evidence_root / ".sequence.lock").open("a+", encoding="utf-8") as handle:
+        wait_for_file_lock(handle, timeout_s=5)
+        try:
+            _select_transaction(
+                scope, projection, Path(log_dir), state, pending.transaction_id, pending.identity
+            )
         finally:
             release_file_lock(handle)
 

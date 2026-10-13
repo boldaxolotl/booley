@@ -25,6 +25,7 @@ import pytest
 
 import booley
 from booley.audit import host_environment
+from booley.config.tests_toml_rules import TEST_NAME_RULES
 from booley.fusesoc import fusesoc_registry
 from booley.harness import doctor
 from booley.runtime import agent_config as runtime_agent_config
@@ -314,6 +315,250 @@ class TestAuditTestsTomlTargets:
         rec = _Rec()
         doctor._audit_tests_toml_targets(project, {"sim_ghost": {}}, rec.f)
         assert rec.events == []
+
+
+# ---------------------------------------------------------------------------
+# _audit_tests_toml — Test Run name rules and the closed section key set
+# ---------------------------------------------------------------------------
+
+
+_TESTS_TOML_VALID = (
+    "tests.toml valid (section keys, Test names, Test Variants, select and seed "
+    "templates well-formed)"
+)
+
+
+class TestAuditTestsTomlRules:
+    """Loader refusals (ADR 0072) reach the user as one Doctor FAIL with a fix."""
+
+    def _run(self, tmp_path: Path, text: str | None) -> tuple[_Rec, list[str]]:
+        project = _mk_audit(tmp_path)
+        if text is not None:
+            (project.project_dir / "tests.toml").write_text(text, encoding="utf-8")
+        rec = _Rec()
+        fixes: list[str] = []
+
+        def fail(message: str, fix: str = "") -> None:
+            rec.f(message)
+            fixes.append(fix)
+
+        doctor._audit_tests_toml(project, rec.p, rec.s, fail)
+        return rec, fixes
+
+    @pytest.mark.parametrize(
+        ("text", "finding"),
+        [
+            (
+                '[sim_fast]\ntests = ["reset", "smoke+fast"]\n',
+                "tests.toml invalid: tests.toml [sim_fast].tests: Test name "
+                "'smoke+fast' is invalid: it contains '+'",
+            ),
+            (
+                '[sim_fast]\ntests = ["default"]\n',
+                "tests.toml invalid: tests.toml [sim_fast].tests: Test name "
+                "'default' is invalid: 'default' is reserved",
+            ),
+            (
+                '[sim_fast]\ntests = ["-trace"]\n',
+                "tests.toml invalid: tests.toml [sim_fast].tests: Test name "
+                "'-trace' is invalid: it starts with '-'",
+            ),
+            (
+                '[sim_fast]\ntests = ["reset"]\nskip = ["my test"]\n',
+                "tests.toml invalid: tests.toml [sim_fast].skip: Test name "
+                "'my test' is invalid: it contains whitespace",
+            ),
+            (
+                '[sim_fast]\ntests = ["reset", "reset"]\n',
+                "tests.toml invalid: tests.toml [sim_fast].tests names Test "
+                "'reset' more than once",
+            ),
+            (
+                '[sim_fast]\ntests = ["reset"]\nskip = ["reset", "reset"]\n',
+                "tests.toml invalid: tests.toml [sim_fast].skip names Test 'reset' more than once",
+            ),
+        ],
+    )
+    def test_name_refusal_fails_with_a_fix_hint(self, tmp_path, text, finding):
+        rec, fixes = self._run(tmp_path, text)
+        assert [level for level, _ in rec.events] == ["fail"]
+        assert rec.fails()[0].startswith(finding)
+        # The hint quotes the rule sentence the validator itself reports.
+        assert fixes[0] == (
+            "fix the tests.toml entry named above (a Target section holds only "
+            f"tests, test_list, skip, select, env, seed, default_seed, variants; "
+            f"{TEST_NAME_RULES})"
+        )
+
+    def test_name_refusal_message_and_hint_state_the_same_rule(self, tmp_path):
+        rec, fixes = self._run(tmp_path, '[sim_fast]\ntests = ["a@b"]\n')
+        assert rec.fails()[0].endswith(f"Rule: {TEST_NAME_RULES}")
+        assert TEST_NAME_RULES in fixes[0]
+
+    @pytest.mark.parametrize("key", ["variant", "seeds", "plusargs"])
+    def test_unknown_section_key_fails_with_a_fix_hint(self, tmp_path, key):
+        rec, fixes = self._run(tmp_path, f'[sim_fast]\ntests = ["stress"]\n{key} = 1\n')
+        assert [level for level, _ in rec.events] == ["fail"]
+        keys = "tests, test_list, skip, select, env, seed, default_seed, variants"
+        assert rec.fails()[0] == (
+            f"tests.toml invalid: tests.toml [sim_fast] has unknown key {key!r}; "
+            f"a Target section holds only: {keys}"
+        )
+        assert f"a Target section holds only {keys}" in fixes[0]
+
+    @pytest.mark.parametrize(
+        ("text", "finding"),
+        [
+            (
+                '[sim_fast]\ntests = ["stress"]\n[sim_fast.variants.stress]\na = []\n',
+                "tests.toml invalid: tests.toml [sim_fast].variants.stress must name "
+                "its default Test Variant",
+            ),
+            (
+                '[sim_fast]\ntests = ["stress"]\nseed = "+seed=1"\n',
+                "tests.toml invalid: tests.toml [sim_fast].seed template '+seed=1' must "
+                "contain the plain {seed} field exactly once",
+            ),
+            (
+                '[sim_fast]\ntests = ["stress"]\ndefault_seed = 0\n',
+                "tests.toml invalid: tests.toml [sim_fast].default_seed 0 is out of range",
+            ),
+            (
+                '[sim_fast]\ntests = ["stress"]\nenv = { BOOLEY_X = "1" }\n',
+                "tests.toml invalid: tests.toml [sim_fast].env may not set BOOLEY_X",
+            ),
+        ],
+    )
+    def test_variant_and_seed_refusals_fail(self, tmp_path, text, finding):
+        rec, _fixes = self._run(tmp_path, text)
+        assert [level for level, _ in rec.events] == ["fail"]
+        assert rec.fails()[0].startswith(finding)
+
+    def test_valid_file_passes(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            doctor.TargetCatalog,
+            "build",
+            classmethod(lambda _cls, _root: SimpleNamespace(list=lambda **_kwargs: ())),
+        )
+        text = '[sim_fast]\ntests = ["reset", "slow-first"]\nselect = "+test={name}"\n'
+        rec, fixes = self._run(tmp_path, text)
+        assert rec.events == [("pass", _TESTS_TOML_VALID)]
+        assert fixes == []
+
+    def _run_with_targets(self, tmp_path, monkeypatch, text, targets):
+        """Audit *text* against fake sim Targets: ``{selector: (tool, cocotb, plusargs)}``."""
+        handles = tuple(
+            SimpleNamespace(selector=name, name=name, identity=name) for name in targets
+        )
+
+        def inspect(handle):
+            tool, cocotb, plusargs = targets[handle.selector]
+            return SimpleNamespace(
+                eda_tool=tool,
+                flow_options={"cocotb_module": "tb"} if cocotb else {},
+                parameters={name: {"paramtype": "plusarg"} for name in plusargs},
+            )
+
+        catalog = SimpleNamespace(list=lambda **_kwargs: handles, inspect=inspect)
+        monkeypatch.setattr(
+            doctor.TargetCatalog, "build", classmethod(lambda _cls, _root: catalog)
+        )
+        return self._run(tmp_path, text)
+
+    def test_pass_line_names_each_targets_seed_mechanism(self, tmp_path, monkeypatch):
+        text = (
+            '[vl]\ntests = ["a"]\ndefault_seed = 7\n'
+            '[vl_tpl]\ntests = ["a"]\nseed = "+seed={seed}"\n'
+            '[iv]\ntests = ["a"]\n'
+            '[iv_tpl]\ntests = ["a"]\nseed = "+seed={seed}"\n'
+            '[cc]\ntests = ["a"]\n'
+        )
+        targets = {
+            "vl": ("verilator", False, ()),
+            "vl_tpl": ("verilator", False, ()),
+            "iv": ("iverilog", False, ()),
+            "iv_tpl": ("icarus", False, ()),
+            "cc": ("icarus", True, ()),
+        }
+        rec, fixes = self._run_with_targets(tmp_path, monkeypatch, text, targets)
+        assert fixes == []
+        assert rec.events == [
+            ("pass", _TESTS_TOML_VALID),
+            (
+                "pass",
+                "Target 'vl' Test Runs are seeded through Verilator +verilator+seed+<seed> "
+                "(Default Seed 7)",
+            ),
+            (
+                "pass",
+                "Target 'vl_tpl' Test Runs are seeded through Verilator "
+                "+verilator+seed+<seed> and seed template +seed={seed} (Default Seed 1)",
+            ),
+            (
+                "pass",
+                "Target 'iv' Test Runs are unseeded (icarus without a seed template in "
+                "tests.toml)",
+            ),
+            (
+                "pass",
+                "Target 'iv_tpl' Test Runs are seeded through seed template +seed={seed} "
+                "(Default Seed 1)",
+            ),
+            (
+                "pass",
+                "Target 'cc' Test Runs are seeded through cocotb seed variable "
+                "(COCOTB_RANDOM_SEED on 2.x, RANDOM_SEED on 1.x) (Default Seed 1)",
+            ),
+        ]
+
+    @pytest.mark.parametrize(
+        ("text", "target", "finding"),
+        [
+            (
+                '[sim]\ntests = ["a"]\n[sim.variants.a]\ndefault = "v"\nv = ["+iters=1"]\n',
+                ("verilator", False, ("iters",)),
+                "tests.toml cannot apply to Target 'sim': tests.toml [sim].variants.a.v "
+                "argument '+iters=1' overrides a plusarg the Target declares; the Target "
+                "owns its parameter values",
+            ),
+            (
+                '[sim]\ntests = ["a"]\n[sim.variants.a]\ndefault = "v"\nv = ["+iters=1"]\n',
+                ("icarus", True, ()),
+                "tests.toml cannot apply to Target 'sim': tests.toml [sim].variants.a.v "
+                "carries arguments, but a Cocotb Target's Test Variants carry environment "
+                "only; move the values into env",
+            ),
+            (
+                '[sim]\ntests = ["a"]\nseed = "+seed={seed}"\n',
+                ("icarus", True, ()),
+                "tests.toml cannot apply to Target 'sim': tests.toml [sim].seed is not "
+                "allowed on a Cocotb Target: Booley seeds cocotb through its seed "
+                "variable; remove the seed template",
+            ),
+        ],
+    )
+    def test_target_checks_fail_with_the_reason(
+        self, tmp_path, monkeypatch, text, target, finding
+    ):
+        rec, fixes = self._run_with_targets(tmp_path, monkeypatch, text, {"sim": target})
+        assert rec.events == [("pass", _TESTS_TOML_VALID), ("fail", finding)]
+        assert fixes == ["fix the tests.toml entry named above"]
+
+    def test_default_seed_on_an_unseeded_target_fails(self, tmp_path, monkeypatch):
+        text = '[sim]\ntests = ["a"]\ndefault_seed = 7\n'
+        rec, _fixes = self._run_with_targets(
+            tmp_path, monkeypatch, text, {"sim": ("icarus", False, ())}
+        )
+        assert rec.fails()[0].startswith(
+            "tests.toml cannot apply to Target 'sim': tests.toml [sim].default_seed "
+            "cannot apply. Target 'sim' is unseeded"
+        )
+
+    def test_absent_file_skips_without_naming_a_fallback_file(self, tmp_path):
+        rec, _fixes = self._run(tmp_path, None)
+        assert rec.events == [
+            ("skip", "tests.toml not present (each sim Target runs its testbench's default test)")
+        ]
 
 
 # ---------------------------------------------------------------------------

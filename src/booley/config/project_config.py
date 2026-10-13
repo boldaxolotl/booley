@@ -1,21 +1,35 @@
 """Project configuration — single source of truth loaded from project/ TOMLs.
 
 Shared by simulation, synthesis, Flows, MCP tools, and pipeline scripts. Any config-related
-change should happen in booley.toml and configs.toml in the project dir.
+change should happen in booley.toml and configs.toml in the Booley Directory.
 """
 
 from __future__ import annotations
 
 # ---------------------------------------------------------------------------
-# Load booley.toml (project dir first, fallback to .booley/ root)
+# Load booley.toml (Booley Directory first, fallback to .booley/ root)
 # ---------------------------------------------------------------------------
 import logging as _logging
-import re
 import tomllib
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from booley.config.tests_toml_rules import (
+    DEFAULT_SEED,
+    VERILATOR_SEED_OPTION,
+    TestRunNameError,
+    TestVariant,
+    argument_token_problem,
+    option_key,
+    parse_test_variants,
+    template_fields,
+    validate_declared_env_names,
+    validate_env_table,
+    validate_seed,
+    validate_seed_template,
+    validate_test_or_variant_name,
+)
 from booley.core.boundary import as_dict, as_str, is_str_list
 from booley.core.checkout_role import SourceCheckoutProjectError
 from booley.core.config_paths import resolve_toml
@@ -56,10 +70,10 @@ _LAZY_NAMES = frozenset(
 def _load_config() -> dict[str, Any]:
     """Load booley.toml + tests.toml and derive public config, memoized.
 
-    No filesystem I/O runs until the first call. When the project dir or TOMLs
+    No filesystem I/O runs until the first call. When the Booley Directory or TOMLs
     are absent (inside Docker without the project mounted, ``bwave --help``, or
     MCP schema discovery), falls back to empty config so that callers which do
-    not actually need project data keep working; callers that do get empty
+    not actually need the contents of the Booley Directory keep working; callers that do get empty
     defaults (``rtl_project`` name, human-in-the-loop on, no tests).
 
     ``tests.toml`` holds verification-intent (a ``(Target, plusarg)`` pair) keyed
@@ -253,6 +267,35 @@ def _normalize_config_section(
 DEFAULT_TEST_SELECT = "+test_id={index}"
 
 
+_SELECT_FIELDS = ("index", "name")
+
+
+def _render_select_probe(target: str, template: str) -> str:
+    """Render *template* once, refusing fields that do not select a Test.
+
+    The fields are read with the format parser: an escaped ``{{name}}`` is
+    literal text, would render the same argument for every Test, and is
+    refused like a template without any field.
+    """
+    unknown = ValueError(
+        f"tests.toml [{target}].select template {template!r} uses an unknown "
+        "field; only {index} and {name} are supported"
+    )
+    try:
+        fields = template_fields(template)
+        probe = template.format(index=0, name="probe")
+    except (KeyError, IndexError, ValueError) as exc:
+        raise unknown from exc
+    if any(name not in _SELECT_FIELDS or conversion for name, _spec, conversion in fields):
+        raise unknown
+    if not fields:
+        raise ValueError(
+            f"tests.toml [{target}].select template {template!r} selects no Test: "
+            "it must contain the {index} or the {name} field"
+        )
+    return probe
+
+
 def _validate_select_template(target: str, template: Any) -> str:
     """Validate a tests.toml ``select`` runtime-arg template (decision 16).
 
@@ -273,13 +316,7 @@ def _validate_select_template(target: str, template: Any) -> str:
     """
     if not isinstance(template, str) or not template.strip():
         raise ValueError(f"tests.toml [{target}].select must be a non-empty string")
-    try:
-        probe = template.format(index=0, name="probe")
-    except (KeyError, IndexError, ValueError) as exc:
-        raise ValueError(
-            f"tests.toml [{target}].select template {template!r} uses an unknown "
-            "field; only {index} and {name} are supported"
-        ) from exc
+    probe = _render_select_probe(target, template)
     tokens = probe.split()
     if len(tokens) != 1 or not tokens[0].startswith(("+", "-")):
         raise ValueError(
@@ -287,6 +324,9 @@ def _validate_select_template(target: str, template: Any) -> str:
             f"plusarg ('+…') or a getopt argument ('-…' / '--…') with no embedded "
             f"whitespace, got {template!r}"
         )
+    problem = argument_token_problem(probe)
+    if problem:
+        raise ValueError(f"tests.toml [{target}].select template {template!r} {problem}")
     return template
 
 
@@ -299,10 +339,16 @@ def normalize_tests_toml(raw: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     option template, an optional ``skip = [...]`` known-hang exclusion list, and an
     optional ``env = { NAME = "value" }`` table injected into the simulator
     process. ``[test_lists]`` is a reserved top-level table.
+
+    A section holds only those keys, and every Test name obeys the Test Run
+    name rules (ADR 0072); anything else raises ``ValueError`` naming the
+    section, so no declared configuration is silently ignored.
     """
     if not isinstance(raw, Mapping):
         raise ValueError("tests.toml must contain TOML tables")
     test_lists = _normalize_test_lists(raw.get(TEST_LISTS_TABLE, {}), source="tests.toml")
+    for list_name, names in test_lists.items():
+        _validate_test_names(f"[{TEST_LISTS_TABLE}].{list_name}", names)
     return {
         target: _normalize_tests_section(target, section, test_lists)
         for target, section in raw.items()
@@ -366,6 +412,72 @@ def load_test_configuration_field(
     }
 
 
+# Every key a Target section of tests.toml may hold. The set is closed: a key
+# the Simulation Flow would not apply must fail to load rather than be ignored.
+TESTS_SECTION_KEYS = (
+    "tests",
+    "test_list",
+    "skip",
+    "select",
+    "env",
+    "seed",
+    "default_seed",
+    "variants",
+)
+
+
+def _validate_test_names(where: str, names: list[str]) -> None:
+    """Refuse a Test name that breaks the Test Run name rules (ADR 0072)."""
+    for name in names:
+        try:
+            validate_test_or_variant_name(name, kind="Test")
+        except TestRunNameError as exc:
+            raise ValueError(f"tests.toml {where}: {exc}") from exc
+
+
+def _validate_tests_section_keys(target: str, section: Mapping[str, Any]) -> None:
+    """Refuse a Target section key outside :data:`TESTS_SECTION_KEYS`."""
+    for key in section:
+        if key not in TESTS_SECTION_KEYS:
+            raise ValueError(
+                f"tests.toml [{target}] has unknown key {key!r}; a Target section "
+                f"holds only: {', '.join(TESTS_SECTION_KEYS)}"
+            )
+
+
+def _validate_unique_tests(where: str, names: list[str]) -> None:
+    """Refuse a Test named twice in one Target's ``tests`` or ``skip`` list."""
+    seen: set[str] = set()
+    for name in names:
+        if name in seen:
+            raise ValueError(
+                f"tests.toml {where} names Test {name!r} more than once; each "
+                "Test name must be unique within a Target"
+            )
+        seen.add(name)
+
+
+def _resolve_test_list(
+    target: str,
+    normalized: dict[str, Any],
+    test_lists: Mapping[str, list[str]],
+) -> str | None:
+    """Replace ``test_list`` by the shared list's ``tests``; return the list name."""
+    list_ref = normalized.pop("test_list", None)
+    if list_ref is None:
+        return None
+    if "tests" in normalized:
+        raise ValueError(f"tests.toml [{target}] must not set both tests and test_list")
+    if not isinstance(list_ref, str) or not list_ref.strip():
+        raise ValueError(f"tests.toml [{target}].test_list must be a non-empty string")
+    if list_ref not in test_lists:
+        raise ValueError(
+            f"tests.toml [{target}].test_list references unknown test list '{list_ref}'"
+        )
+    normalized["tests"] = list(test_lists[list_ref])
+    return list_ref
+
+
 def _normalize_tests_section(
     target: str,
     section: Any,
@@ -373,63 +485,125 @@ def _normalize_tests_section(
 ) -> dict[str, Any]:
     if not isinstance(section, Mapping):
         raise ValueError(f"tests.toml [{target}] must be a table")
+    _validate_tests_section_keys(target, section)
     normalized = dict(section)
-
-    list_ref = normalized.pop("test_list", None)
-    if list_ref is not None:
-        if "tests" in normalized:
-            raise ValueError(f"tests.toml [{target}] must not set both tests and test_list")
-        if not isinstance(list_ref, str) or not list_ref.strip():
-            raise ValueError(f"tests.toml [{target}].test_list must be a non-empty string")
-        if list_ref not in test_lists:
-            raise ValueError(
-                f"tests.toml [{target}].test_list references unknown test list '{list_ref}'"
-            )
-        normalized["tests"] = list(test_lists[list_ref])
+    list_ref = _resolve_test_list(target, normalized, test_lists)
+    # Say where a Test name was written: a shared list is not the section's own key.
+    tests_where = (
+        f"[{target}].tests"
+        if list_ref is None
+        else f"[{target}].test_list = {list_ref!r} ([{TEST_LISTS_TABLE}].{list_ref})"
+    )
 
     if "tests" in normalized and not is_str_list(normalized["tests"]):
         raise ValueError(f"tests.toml [{target}].tests must be list[str]")
     if "skip" in normalized and not is_str_list(normalized["skip"]):
         raise ValueError(f"tests.toml [{target}].skip must be list[str]")
+    if "tests" in normalized:
+        _validate_test_names(tests_where, normalized["tests"])
+        _validate_unique_tests(tests_where, normalized["tests"])
+    if "skip" in normalized:
+        _validate_test_names(f"[{target}].skip", normalized["skip"])
+        _validate_unique_tests(f"[{target}].skip", normalized["skip"])
     if "select" in normalized:
         normalized["select"] = _validate_select_template(target, normalized["select"])
     if "env" in normalized:
-        normalized["env"] = _validate_env_table(target, normalized["env"])
+        # Verification-intent, like ``select``: an env-parameterized testbench
+        # (a cocotb module reading ``os.getenv("FLAVOR")``) declares here what
+        # the simulator process must see. ``EnvTableError`` is a ``ValueError``.
+        normalized["env"] = validate_declared_env_names(
+            validate_env_table(normalized["env"], where=f"tests.toml [{target}].env"),
+            where=f"tests.toml [{target}].env",
+        )
+    _normalize_seed_keys(target, normalized)
+    if "variants" in normalized:
+        normalized["variants"] = _validate_variants(target, normalized)
     return normalized
 
 
-# Environment variable names are conventionally ``[A-Za-z_][A-Za-z0-9_]*``;
-# anything else cannot be exported by a POSIX shell, so reject it at the config
-# boundary rather than emitting a shell line that silently fails to parse.
-_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+def _normalize_seed_keys(target: str, normalized: dict[str, Any]) -> None:
+    """Validate the ``seed`` argument template and ``default_seed`` (ADR 0072)."""
+    if "seed" in normalized:
+        normalized["seed"] = validate_seed_template(
+            normalized["seed"], where=f"tests.toml [{target}].seed"
+        )
+        select_key = _select_option_key(normalized)
+        if option_key(normalized["seed"].format(seed=DEFAULT_SEED)) == select_key:
+            raise ValueError(
+                f"tests.toml [{target}].seed sets the same option as the select "
+                f"template ({select_key}); the seed needs its own option"
+            )
+    if "default_seed" in normalized:
+        normalized["default_seed"] = validate_seed(
+            normalized["default_seed"], where=f"tests.toml [{target}].default_seed"
+        )
 
 
-def _validate_env_table(target: str, raw: Any) -> dict[str, str]:
-    """Validate a tests.toml ``env`` table — the per-Target simulator env.
+def _select_option_key(normalized: Mapping[str, Any]) -> str:
+    """The option the Target's effective ``select`` template sets."""
+    template = normalized.get("select", DEFAULT_TEST_SELECT)
+    return option_key(template.format(index=0, name="probe"))
 
-    Verification-intent, like ``select``: an env-parameterized testbench (a
-    cocotb module reading ``os.getenv("FLAVOR")``) declares here what the
-    simulator process must see, instead of the port being forced to rewrite a
-    testbench it does not own. Values must be strings — a TOML integer would
-    invite ``FLAVOR = 1`` to mean something different from ``"1"`` on the shell
-    side — and names must be shell-exportable identifiers.
+
+def _reserved_option_keys(normalized: Mapping[str, Any]) -> dict[str, str]:
+    """Options a Test Variant may not set, each with the reason."""
+    reserved = {
+        _select_option_key(normalized): "the select template sets it",
+        VERILATOR_SEED_OPTION: "Booley passes the Verilator seed option itself",
+    }
+    if "seed" in normalized:
+        seed_key = option_key(normalized["seed"].format(seed=DEFAULT_SEED))
+        reserved[seed_key] = "the seed template sets it"
+    return reserved
+
+
+def _validate_variants(target: str, normalized: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate every Test's Variant table against the rest of the section.
+
+    Returns the tables as written (plain TOML data, keyed by Test); readers
+    rebuild the typed form with ``parse_test_variants``. A Variant belongs to a
+    Test the Target runs, may not repeat the ``select`` or seed option, and may
+    not set an environment variable the Target's own ``env`` table sets: the
+    Target owns that value, and Target ``env`` is a build input.
     """
-    if not isinstance(raw, Mapping):
-        raise ValueError(f'tests.toml [{target}].env must be a table of NAME = "value" pairs')
-    env: dict[str, str] = {}
-    for name, value in raw.items():
-        if not isinstance(name, str) or not _ENV_NAME_RE.match(name):
+    where = f"tests.toml [{target}].variants"
+    tables = as_dict(normalized["variants"])
+    if tables is None:
+        raise ValueError(f"{where} must be a table of Test names")
+    tests = normalized.get("tests") or []
+    reserved = _reserved_option_keys(normalized)
+    target_env = normalized.get("env") or {}
+    for test, raw in tables.items():
+        if test not in tests:
             raise ValueError(
-                f"tests.toml [{target}].env key {name!r} is not a valid environment "
-                "variable name ([A-Za-z_][A-Za-z0-9_]*)"
+                f"{where}.{test} declares Test Variants for {test!r}, which is not "
+                f"one of the Target's tests ({', '.join(tests) or 'none declared'})"
             )
-        if not isinstance(value, str):
+        table = parse_test_variants(test, raw, where=f"{where}.{test}")
+        for variant in table.variants:
+            _validate_variant_inputs(
+                f"{where}.{test}.{variant.name}", variant, reserved, target_env
+            )
+    return dict(tables)
+
+
+def _validate_variant_inputs(
+    where: str,
+    variant: TestVariant,
+    reserved: Mapping[str, str],
+    target_env: Mapping[str, str],
+) -> None:
+    """Refuse a Variant argument or variable that something else already owns."""
+    for argument in variant.args:
+        reason = reserved.get(option_key(argument))
+        if reason is not None:
+            raise ValueError(f"{where} argument {argument!r} is not allowed: {reason}")
+    for name, _value in variant.env:
+        if name in target_env:
             raise ValueError(
-                f"tests.toml [{target}].env.{name} must be a string — quote the "
-                f"value (got {type(value).__name__})"
+                f"{where}.env may not set {name}: the Target's env table already "
+                "sets it, and the Target owns that value"
             )
-        env[name] = value
-    return env
 
 
 # ---------------------------------------------------------------------------
@@ -474,29 +648,3 @@ def resolve_test_name(target: str, name: str) -> int:
         )
 
     return matches[0][0]
-
-
-def render_test_selector(
-    target: str,
-    index: int,
-    name: str,
-    *,
-    work_dir: Path | str | None = None,
-) -> str:
-    """Render the per-Target plusarg that selects test ``index`` (decision 16).
-
-    Booley renders the Target's ``select`` template (from tests.toml) into the
-    concrete plusarg forwarded to the sim — e.g. ``"+test_id={index}"`` →
-    ``"+test_id=3"``.  Targets without a declared template use
-    :data:`DEFAULT_TEST_SELECT`, preserving the legacy ``+test_id=N`` contract.
-    The returned string is the full plusarg, leading ``+`` included.
-    """
-    templates = (
-        _get("TEST_SELECT")
-        if work_dir is None
-        else load_test_configuration_field(work_dir, "select")
-    )
-    template = lookup_target_section(templates, target)
-    if template is None:
-        template = DEFAULT_TEST_SELECT
-    return template.format(index=index, name=name)

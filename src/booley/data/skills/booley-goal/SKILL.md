@@ -21,13 +21,11 @@ Use it for human-steered or unattended work inside the Sandbox.
    `booley_targets` may omit it), and Project-defined endpoints must declare
    `work_dir` to run. `booley_status`, `booley_poll`, `booley_cancel`,
    `booley_sleep`, `coverage_evidence`, and `bwave` accept no `work_dir`.
-3. Read the selected `*.md` Goalsets from `goalsets/` in the main checkout's
-   Project directory: `BOOLEY_PROJECT_DIR` in the Sandbox, the same directory
-   where entry checks `default.md`. Never read them from a Project copy or
-   snapshot inside `work_dir`; a `default.md` present only there does not
+3. Read the selected `*.md` Goalsets from `goalsets/` in the Main Booley Directory: `BOOLEY_PROJECT_DIR` in the Sandbox, the same directory
+   where entry checks `default.md`. Never read them from a Worktree Booley Directory inside `work_dir`; a `default.md` present only there does not
    apply. If `BOOLEY_PROJECT_DIR` is unset or points inside `work_dir`, stop
-   and ask the human to restart the session with it set to the main
-   checkout's Project directory; changing it mid-session does not change
+   and ask the human to restart the session with it set to the
+   Main Booley Directory; changing it mid-session does not change
    what entry checks.
    Initialization seeds `feature`, `bugfix`, `refactor`, and `verification`
    create-only. The Project owns their prose and may add others.
@@ -39,7 +37,10 @@ Use it for human-steered or unattended work inside the Sandbox.
    be named at entry but remains unmet until it exists. A spec review names a
    spec file relative to the worktree. Clarify unresolved choices together;
    do not re-ask decisions the human has already made.
-5. Translate Goalset prose into concrete `goals` arguments. Expand each
+5. Translate Goalset prose into concrete `goals` arguments. Use uppercase
+   `family` capabilities (`LINT`, `SIM`, `ELAB`, `SYNTH`, `FPGA`, `CYCLE_COUNT`,
+   `COVERAGE`, `MUTATION`, `REVIEW`); names render as `SIM:sim_core` or
+   `REVIEW:rtl_bugs`, with requirements in parentheses. Expand each
    `<target>` for the Targets that family applies to, and `<spec>` for the
    specification. Set each Goal's `origin` to its Goalset name; ad-hoc Goals
    may omit it. Do not merge duplicates yourself: the tool chooses the stricter
@@ -78,7 +79,10 @@ an infrastructure failure.
 
 Use `goal_propose_change(operation="create", kind=..., rationale=...)` for
 `add`, `relax`, `retarget`, or `waiver`. Show the exact before/after Goal and
-why it is needed. A waiver names a screened Coverage Waiver Candidate with
+why it is needed. Read the exact "goal_key" from entry or status
+structured output for an existing Goal; the MCP client must expose `structuredContent`
+to the agent. Use that machine address in a change
+request and its public name when describing it to the human. A waiver names a screened Coverage Waiver Candidate with
 `candidate_id`; the Coverage Analyst cannot approve it. Save `proposal_id` and
 use `operation="resume"` with that exact ID after interruption.
 

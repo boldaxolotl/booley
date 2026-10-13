@@ -123,7 +123,7 @@ is `sim --resume-from`, which takes its Target from the Campaign it resumes.)
 | Option | Effect |
 |---|---|
 | `--target <name,...>` | Targets to run (see above). |
-| `-C/--project PATH` | Select the Project checkout or worktree; nested paths discover their owning checkout. Omission preserves cwd discovery. |
+| `-C/--project PATH` | Select the Project Root or worktree; nested paths discover their owning checkout. Omission preserves cwd discovery. |
 | `--report-dir <path>` | Write reports here instead of the default report root. |
 | `--diagnostic` | Run diagnostically without recording Goal evidence. |
 | `--dry-run` | Resolve and validate the work, print the plan, and stop. No EDA tool runs and no state changes. |
@@ -147,8 +147,7 @@ exclude hidden endpoints. Host listing and help work; execution requires the
 Sandbox, for example `booley session enter -- booley specialist reviewer ...`.
 
 Specialists share `-C/--project PATH`, `--report-dir`, `--diagnostic`, and `--target`
-where supported. Reports default to `mcp-tool-reports/` under resolved Project
-data, or the runtime directory when supplied; an explicit flag takes precedence.
+where supported. Reports default to `mcp-tool-reports/` under the resolved Booley Directory, or the runtime directory when supplied; an explicit flag takes precedence.
 `--model` selects a tier subject to the Specialist floor and configured role pin;
 `--max-turns` accepts a positive integer. These and `--timeout` are CLI-only:
 MCP rejects `model`, `max_turns`, `timeout`, and `timeout_ms` for Specialists.
@@ -191,14 +190,14 @@ Every built-in Flow uses the same exit codes:
 | `2` | The Flow could not reach a verdict: bad configuration, missing tool, crash, tool or build timeout. | Fix the setup; the result says nothing about the design. |
 
 A simulation run that exceeds its run budget gets a `timeout` verdict and exits
-`1`; it fails `sim_pass_*`. Investigate a possible RTL/testbench deadlock, or
+`1`; it fails `SIM:{target}`. Investigate a possible RTL/testbench deadlock, or
 raise `--timeout` or `[flows.sim].timeout_ms` if the test legitimately needs
 longer. Build, Elaboration Check, and Pre-Sim Command timeouts instead exit `2`.
 
 The CLI prints a final verdict card: stdout on success, stderr on failure.
 
 **Reports.** Each run writes a structured JSON report and complete logs. By
-default they go under `flow-reports/` in the project-data directory (Goal and
+default they go under `flow-reports/` in the Booley Directory (Goal and
 Specialist runs use their runtime directory). `--report-dir` overrides this. Booley
 never writes reports into the RTL checkout. The verdict card and the report both
 point at the exact log and artifact paths, so you rarely need to go looking.
@@ -234,6 +233,7 @@ booley flow sim --target sim_soc --test irq --coverage    # collect coverage (Ve
 | Option | Effect |
 |---|---|
 | `--test <name>` | Run one registered test by exact name. Repeat for more. |
+| `--seed <N\|random>` | Use seed `N` (1..2147483647) for every selected Test Run, or `random` to draw one seed per Test Run. Cannot be combined with a `--test` that names a seed (`test@seed`, `test@xN`). |
 | `--tests-file <path>` | Read exact test names from a file, one per line (blank lines and `#` comments ignored). Cannot be combined with `--test`. |
 | `--mode <simulate\|elab-only\|elab-only-standalone>` | Run tests (default), or only elaborate (see [Elaboration checks](#elaboration-checks)). |
 | `--trace` | Capture a waveform. Use it to debug a failure, not for pass/fail checks. |
@@ -249,7 +249,10 @@ Test selection rules:
 - Coverage selections use deterministic sorted test-name order, regardless of
   the `--test` or `--tests-file` input order. This stabilizes Campaign identity
   and run numbering: `--test gap --test full --coverage` assigns
-  `run:001:full`, then `run:002:gap`.
+  `run:001:full@1`, then `run:002:gap@1`. A run id ends in its Test Run name.
+  Several Test Runs of one Test (two Test Variants, or `test@xN`) stay
+  together in the order you named them, each in its own simulator process;
+  the merged coverage is the union over all of them.
 - Plain selections preserve explicit input order; an unfiltered suite follows
   the registry order in `tests.toml`. HDL tests are scheduled in that order.
   cocotb batches filter the selected set within one simulator process; cocotb
@@ -275,9 +278,9 @@ Each test gets one verdict:
   fail the test.
 - A test that exits cleanly without a valid verdict is **inconclusive**, never a
   pass. So is a `--trace` run that produced no fresh waveform. An inconclusive
-  run exits `1` and skips the `sim_pass_*` Criterion.
+  run exits `1` and skips the `SIM:{target}` Criterion.
 - A simulation run that exceeds its run budget gets a **timeout** verdict,
-  exits `1`, and fails `sim_pass_*`.
+  exits `1`, and fails `SIM:{target}`.
 - A test stopped by a Booley guard stays **aborted** even if the simulator
   exits `0`. An infrastructure abort is exit `2`. A `$readmemh` input file that
   is missing and not declared in the Target is a design failure
@@ -293,17 +296,17 @@ absolute root as `work_dir` to Booley Flows, Specialists, Goal tools,
 [worktree routing](USAGE.md#working-with-evidence) for the full inventory and
 when `work_dir` is required.
 
-- `sim_pass_<target>` requires the Target's full registered simulation suite.
+- `SIM:{target}` requires the Target's full registered simulation suite.
   Passing a hand-picked subset does not meet this Goal.
 - `cycle_count_<target>_<test>` requires one named passing test and all its
   Cycle Count thresholds.
-- `elab_pass_<target>` requires a successful build; see below.
+- `ELAB:{target}` requires a successful build; see below.
 
 For example, entry can include:
 
 ```json
-[{"family": "sim", "target": "sim_core"},
- {"family": "cycle_count", "target": "sim_core", "test": "smoke",
+[{"family": "SIM", "target": "sim_core"},
+ {"family": "CYCLE_COUNT", "target": "sim_core", "test": "smoke",
   "thresholds": {"cycle_count_max": 100}}]
 ```
 
@@ -321,7 +324,7 @@ The Target build in either mode uses the shared
 [`build_timeout_ms`](CONFIG.md#simulation-build-pre-sim-and-run-timeouts)
 budget rather than `--timeout`.
 
-In Goal Mode, a successful build satisfies `elab_pass_<target>`, whether it
+In Goal Mode, a successful build satisfies `ELAB:{target}`, whether it
 comes from `--mode elab-only` or from the build step of a normal run. It is
 recorded as soon as the build succeeds, so a later test failure does not erase
 it.
@@ -456,7 +459,7 @@ and testbench improvements. The verdict card prints the exact
   the partial points and nothing is waived.
 - **Ungated** (no Coverage Criterion): Booley collects and stores the Campaign
   with evaluation `not_requested`. Use it to explore.
-- **Gated** (Goal Mode with a `coverage_<target>` Goal): Booley also checks
+- **Gated** (Goal Mode with a `COVERAGE:{target}` Goal): Booley also checks
   the thresholds. Only a persisted `pass` satisfies
   the Criterion. A Goal remains unmet until strict evidence passes; see
   [Coverage waivers at review](#coverage-waivers-at-review).
@@ -477,7 +480,7 @@ explicitly.
 A coverage Goal declares thresholds per Target:
 
 ```json
-{"family": "coverage", "target": "sim_counter", "tests": "all",
+{"family": "COVERAGE", "target": "sim_counter", "tests": "all",
  "metrics": {"line": 90, "branch": 80}}
 ```
 
@@ -540,7 +543,7 @@ numbered report directory (qualified Target selectors are percent-encoded):
     work-items/<item>/attempts/<attempt>/coverage-campaign/
       coverage.json          current Coverage Campaign manifest
       coverage-points.jsonl.gz
-      native/raw/            per-test Verilator databases
+      native/raw/            one Verilator database per Test Run
       native/merged/         merged Verilator database
       hooks/                 hook evidence, when collected
 ```
@@ -599,7 +602,7 @@ python -m booley.flows.sim.campaign_retention \
 
 - `--full` refuses when later resumed runs depend on this one; add
   `--include-dependents` to remove them together.
-- If reports live outside the standard project-data locations, `--full` may ask
+- If reports live outside the standard Booley Directory locations, `--full` may ask
   for `--project-data "$PROJECT_DATA"`.
 - Pruning refuses runs that are still active, and files it did not produce.
   An interrupted cleanup is safe to retry with the same arguments.
@@ -621,7 +624,7 @@ For Target recipes, see [Verilator lint Target](CONFIG.md#verilator-lint-target)
 
 - `--scope <file,...>` limits reported findings to the listed files.
 - `[flows.lint].warnings_as_errors` decides whether warnings fail the exit code.
-  Either way the report keeps the real counts, and `lint_clean_<target>` is only
+  Either way the report keeps the real counts, and `LINT:{target}` is only
   satisfied with zero findings.
 
 The report lists deduplicated findings by file, line, rule, and message, and
@@ -667,7 +670,7 @@ Expert options, for tuning experiments:
 **Verdict.** The report gives area, cells, per-clock timing and Fmax, latches,
 and warning counts. Combinational loops and multiple drivers in the final netlist
 fail the run. Other actionable warnings give a `warn` grade but still exit `0`;
-known-benign warnings are counted with a rationale. `synthesis_ok_<target>` is
+known-benign warnings are counted with a rationale. `SYNTH:{target}` is
 satisfied only when synthesis completes, the final structural check ran, and
 every configured threshold passes.
 
@@ -698,6 +701,6 @@ fields select Edalize engines; they are not Vivado strategy overrides.
 
 **Verdict.** The report gives LUT/FF/BRAM/DSP utilization, routed per-clock
 timing and Fmax, and critical conditions (latches, combinational loops,
-multi-driven nets). `fpga_impl_ok_<target>` is satisfied only when metrics are
+multi-driven nets). `FPGA:{target}` is satisfied only when metrics are
 complete, timing and configured thresholds pass, and no critical condition is
 present. Power is not measured.

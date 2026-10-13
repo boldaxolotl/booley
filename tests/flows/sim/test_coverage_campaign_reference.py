@@ -35,6 +35,7 @@ from booley.flows.sim.coverage_reference import (
 )
 from tests.flows.sim.coverage_campaign_test_support import (
     corrupt_v3_campaign_with_duplicate_negative_point,
+    rewrite_manifest_as_older_schema,
 )
 from tests.flows.sim.test_coverage_campaign import _valid_document
 from tests.runtime.test_sandbox_layout import project_alias
@@ -375,8 +376,7 @@ def test_reference_authenticates_retained_valid_v3_nested_campaign(tmp_path: Pat
     target = tmp_path / "targets" / _TARGET_SELECTOR
     nested = _nested_campaign(target)
     manifest = json.loads(nested.read_text())
-    manifest["$schema"] = CAMPAIGN_SCHEMA_V3
-    del manifest["scoring"]
+    rewrite_manifest_as_older_schema(manifest, 3)
     nested.write_text(json.dumps(manifest))
     path = target / "coverage.json"
     publish_coverage_campaign_reference(path, _reference(target, nested))
@@ -390,8 +390,7 @@ def test_reference_rejects_score_bearing_invalid_v3_nested_campaign(tmp_path: Pa
     target = tmp_path / "targets" / _TARGET_SELECTOR
     nested = _nested_campaign(target)
     manifest = json.loads(nested.read_text())
-    manifest["$schema"] = CAMPAIGN_SCHEMA_V3
-    del manifest["scoring"]
+    rewrite_manifest_as_older_schema(manifest, 3)
     manifest["collection"]["status"] = "collector_error"
     manifest["normalization"]["status"] = "partial"
     nested.write_text(json.dumps(manifest))

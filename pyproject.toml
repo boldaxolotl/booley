@@ -344,6 +344,13 @@ include = [
     "src/booley/runtime/project_dir.py",
     "src/booley/flows/sim/backends/cocotb_results.py",
     "src/booley/flows/sim/result.py",
+    # Test Run names, selectors and seeds: the identity simulation evidence records.
+    "src/booley/config/tests_toml_rules.py",
+    "src/booley/flows/test_runs.py",
+    "src/booley/flows/target_test_plan.py",
+    "src/booley/flows/target_test_plan_loading.py",
+    "src/booley/flows/frozen_test_runs.py",
+    "src/booley/flows/simulator_family.py",
     # Goal Mode records and the Goal argument trust boundary.
     "src/booley/goals",
     "src/booley/runtime/session_paths.py",
@@ -358,13 +365,19 @@ include = [
     "src/booley/runtime/pinned_history.py",
 ]
 strict = [
-    # External-input coercion and the project-directory trust boundary.
+    # External-input coercion and the Booley Directory trust boundary.
     "src/booley/core/boundary.py",
     "src/booley/targets",
     "src/booley/runtime/project_dir.py",
     # Persisted simulator-result structures and verdict parsing.
     "src/booley/flows/sim/backends/cocotb_results.py",
     "src/booley/flows/sim/result.py",
+    "src/booley/config/tests_toml_rules.py",
+    "src/booley/flows/test_runs.py",
+    "src/booley/flows/target_test_plan.py",
+    "src/booley/flows/target_test_plan_loading.py",
+    "src/booley/flows/frozen_test_runs.py",
+    "src/booley/flows/simulator_family.py",
     "src/booley/goals",
     "src/booley/mcp/goal_changes.py",
     "src/booley/mcp/goal_waivers.py",

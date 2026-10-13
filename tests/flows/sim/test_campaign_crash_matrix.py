@@ -157,7 +157,7 @@ class _CrashExecution:
         self.group = group
 
     @contextmanager
-    def ordinary_group(self, handle, names):
+    def ordinary_group(self, handle, names, _test_runs=None):
         del handle
         assert names == ()
         yield self.group

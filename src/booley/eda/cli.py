@@ -223,9 +223,7 @@ def _require_grant_checkout(project: Path, *, allow_missing: bool) -> None:
                 return
         require_project_checkout(project)
     except PermissionError as exc:
-        raise authority.AuthorityError(
-            f"cannot inspect Project checkout {project}: {exc}"
-        ) from exc
+        raise authority.AuthorityError(f"cannot inspect Project Root {project}: {exc}") from exc
 
 
 def _render_human(args: argparse.Namespace, value: _Result) -> None:

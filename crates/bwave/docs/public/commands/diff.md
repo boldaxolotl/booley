@@ -21,9 +21,6 @@ swaps them internally so the smaller becomes the
 "before" column. In sync mode bare integers are cycles;
 async mode requires a unit suffix (`100t`, `100ns`).
 
-`diff` strictly requires a built `.fst` store. It cannot
-run against raw VCD.
-
 ## Defaults and requiredness
 
 - `<FST_FILE>`, `<T1>`, `<T2>` all required.
@@ -45,8 +42,7 @@ b                                        @0=0            @5000=2
 
 ## Common errors
 
-- **`requires a built waveform store`**: `diff` does not
-  have a VCD fallback. Build one first:
+- **`requires a built waveform store`**: build one first:
   `bwave build <vcd> -o trace.fst`.
 - **Empty output**: nothing changed between `T1` and
   `T2`. Verify the cycle window with `bwave signal` or

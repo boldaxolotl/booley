@@ -8,6 +8,7 @@ from typing import Any
 
 from booley.core.boundary import require_dict, require_str_value
 from booley.goals.lifecycle import LifecycleOperation
+from booley.goals.presentation import present_spec
 from booley.goals.proposals import encode
 from booley.review.goal_package import GoalCompletionPackage, render_goal_html
 from booley.review.goal_presentation_v1 import render_goal_html as legacy_html
@@ -33,7 +34,11 @@ def response(operation: LifecycleOperation, frozen: dict[str, Any]) -> dict[str,
 
 def freeze_presentation(operation: LifecycleOperation, frozen: dict[str, Any]) -> None:
     """Freeze requested HTML and the complete saved response before the publication fence."""
-    html = render_goal_html(GoalCompletionPackage.from_json(frozen["package"])).encode("utf-8")
+    names = operation.read_sealed("goal-names")
+    html = render_goal_html(
+        GoalCompletionPackage.from_json(frozen["package"]),
+        present=lambda raw: present_spec(raw, names=names),
+    ).encode("utf-8")
     frozen["presentation"] = {
         "recipe": "booley.goal-presentation/v2",
         "html_hex": html.hex() if operation.request.explain_html else None,

@@ -110,6 +110,8 @@ impl std::error::Error for VcdParseError {
 }
 
 /// Callback trait for streaming VCD events.
+/// Retained for the standalone parser throughput benchmark and fuzz target;
+/// waveform queries use FST stores, and build uses the VCD chunk parser.
 pub trait VcdHandler {
     /// Called after all value changes at timestamp T are settled.
     /// Return `ControlFlow::Break(())` to stop parsing.
@@ -317,7 +319,7 @@ fn split_timescale(s: &str) -> (&str, &str) {
 /// Calls handler methods for timestamps and value changes.
 /// Only dispatches events for signal IDs in `watched_ids`.
 /// `base_offset` is the absolute byte offset where this reader starts
-/// (post-header position), used for index building.
+/// (post-header position), reported to `on_time_update`.
 ///
 /// Callback ordering matches vcdvcd: all value changes at timestamp T
 /// are dispatched first, then on_timestamp(T) fires. This means

@@ -105,7 +105,7 @@ def test_detached_data_refuses_and_explicit_outer_disambiguates(tmp_path, monkey
     outer.mkdir()
     monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(data))
     monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
-    with pytest.raises(ProjectRootDiscoveryError, match="run from the Project checkout"):
+    with pytest.raises(ProjectRootDiscoveryError, match="run from the Project Root"):
         discover_project_root(data)
     monkeypatch.setenv("RTL_PROJECT_ROOT", str(data))
     with pytest.raises(ProjectRootDiscoveryError):
@@ -201,7 +201,7 @@ def test_explicit_external_data_symlink_is_refused(tmp_path, monkeypatch):
         subprocess.run(["git", "init", str(root)], check=True, capture_output=True, timeout=30)
     monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
     monkeypatch.setenv("RTL_PROJECT_ROOT", str(alias))
-    with pytest.raises(ProjectRootDiscoveryError, match="run from the Project checkout"):
+    with pytest.raises(ProjectRootDiscoveryError, match="run from the Project Root"):
         discover_project_root(outer)
 
 

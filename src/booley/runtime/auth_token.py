@@ -26,8 +26,7 @@ the mapping:
 
 Storage is OUTSIDE every repository and every bind mount
 (``~/.config/booley/``, mode 0600) rather than baked into the generated
-``.devcontainer/devcontainer.json``. A long-lived credential inside a project
-directory is one ``git add -f`` away from being published, and the
+``.devcontainer/devcontainer.json``. A long-lived credential inside the Project Root is one ``git add -f`` away from being published, and the
 ``.git/info/exclude`` that hides the spec does not travel with a clone. Booley
 reads the file and injects the value itself; the on-disk spec keeps the
 ``${localEnv:...}`` indirection and stays secret-free.

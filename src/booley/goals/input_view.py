@@ -36,6 +36,7 @@ from booley.goals.input_identity import (
 )
 from booley.goals.lifecycle import LifecycleError
 from booley.goals.model import PROJECT_SNAPSHOT_NAMES, GoalRecord
+from booley.goals.presentation import goal_presentation
 from booley.goals.proposals import digest
 from booley.goals.protected_inputs import ProtectedInputRoots, ProtectedPath
 from booley.goals.target_surface import target_surface_fingerprint
@@ -114,7 +115,7 @@ def select_inputs(record: GoalRecord, root: Path) -> InputSelection:
 
 
 def _select_inputs(record: GoalRecord, root: Path) -> InputSelection:
-    """Select the checkout-local Project, never the ambient/control Project."""
+    """Select the Worktree Booley Directory, never the Main Booley Directory."""
     project = resolve_checkout_project_dir(root).resolve()
     paired = paired_project_repository(root)
     project_repo = None if paired is None else paired.worktree.resolve()
@@ -127,10 +128,10 @@ def _select_inputs(record: GoalRecord, root: Path) -> InputSelection:
         and _tracked_project(containing[0], project)
     ):
         raise InputSelectionError(
-            "versioned Project is outside the pinned RTL/paired participants; use a paired Project checkout"
+            "Booley Directory has tracked inputs outside the pinned RTL/paired participants; use a Paired Checkout"
         )
     if (record.paired_project_base_sha is None) != (paired is None):
-        raise InputSelectionError("paired Project topology differs from Goal entry")
+        raise InputSelectionError("Paired Checkout topology differs from Goal entry")
     pin = GoalCheckout(root).head_sha()
     project_pin = None if project_repo is None else GoalCheckout(project_repo).head_sha()
     topology = topology_digest(root, project, project_repo)
@@ -144,7 +145,7 @@ def _select_inputs(record: GoalRecord, root: Path) -> InputSelection:
         )
     if project_repo is not None and record.input_topology_digest is None:
         raise InputSelectionError(
-            "legacy paired Project has no entry topology proof; abandon and re-enter before finish"
+            "legacy Paired Checkout has no entry topology proof; abandon and re-enter before finish"
         )
     for repository, commit in ((root, pin), (project_repo, project_pin)):
         if repository is not None and commit is not None:
@@ -222,7 +223,7 @@ def capture_path_roots(root: Path, control_project: Path) -> dict[str, Any]:
 
 
 def snapshot_project(root: Path) -> dict[str, str | None] | None:
-    """Retain original nonversioned Project configuration for semantic base comparison."""
+    """Retain original untracked Project configuration for semantic base comparison."""
     project = resolve_checkout_project_dir(root).resolve()
     paired = paired_project_repository(root)
     selection = InputSelection(
@@ -438,7 +439,7 @@ def _write_snapshot(project: Path, scratch: Path, snapshot: Mapping[str, str | N
 
 
 def _project_versioned(selection: InputSelection) -> bool:
-    """A snapshot exception cannot hide a versioned Project anchor."""
+    """A configuration snapshot cannot hide inputs tracked by a participating repository."""
     if selection.project.samefile(selection.rtl):
         return True
     project = contains(selection.project, project_dir=selection.rtl)
@@ -456,7 +457,7 @@ def _project_versioned(selection: InputSelection) -> bool:
 def _capture_nonversioned(view: CommittedView, record: GoalRecord, control_project: Path) -> None:
     """D7 inputs and checkout-local Project snapshots are explicit exceptions."""
     project = view.selection.project
-    # Snapshot configuration is permitted only for a non-versioned Project.
+    # Configuration snapshots are permitted only without a versioned input anchor.
     if not _project_versioned(view.selection):
         for name in PROJECT_SNAPSHOT_NAMES:
             path = project / name
@@ -493,7 +494,7 @@ def _capture_nonversioned(view: CommittedView, record: GoalRecord, control_proje
 
 
 def _capture_policy(view: CommittedView) -> None:
-    """A nonversioned Project policy is observed; versioned anchors require user commits."""
+    """Observe untracked Booley policy; versioned input anchors require user commits."""
     config, anchor = policy_location(view.selection.rtl)
     if config is None:
         return
@@ -691,7 +692,7 @@ def validate_committed(
         )
         if freshness.stale:
             raise LifecycleError(
-                f"committed evidence for {goal.spec.key} is stale: {freshness.reason}"
+                f"committed evidence for {goal_presentation(goal.spec).text} is stale: {freshness.reason}"
             )
     _require_versioned_policy(view)
 
