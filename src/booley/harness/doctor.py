@@ -97,6 +97,8 @@ from booley.harness.setup import readiness
 from booley.harness.setup.common import banner, err, info, note, ok, skip, warn
 from booley.harness.setup.docker_image import DOCKER_IMAGE, FLAVOR_IMAGES
 from booley.harness.setup.line_endings import (
+    LineEndingActionKind,
+    LineEndingActionState,
     LineEndingMode,
     LineEndingObservation,
     LineEndingObservationCode,
@@ -1292,6 +1294,38 @@ def _report_unreadable_line_endings(
     return True
 
 
+def _report_attributes_policy_risk(report, identity: str, _warn: Check) -> bool:
+    policy_risk = _line_ending_observation(
+        report,
+        LineEndingObservationCode.LOCAL_POLICY_MISSING,
+        LineEndingObservationCode.LEAKED_ROOT_POLICY,
+        LineEndingObservationCode.LOCAL_POLICY_CONFLICT,
+    )
+    if policy_risk is not None:
+        emit = _warning_sink(_warn, "git.line-endings-unreadable", subject=report.repository.role)
+        emit(
+            f"{identity}: {policy_risk.detail}",
+            "inspect attributes policy, then re-run booley init",
+        )
+        return True
+    return _report_unreadable_line_endings(report, identity, _warn)
+
+
+def _report_attributes_migration(report, identity: str, _warn: Check) -> bool:
+    if any(
+        action.kind is LineEndingActionKind.MIGRATE_ATTRIBUTES
+        and action.state is LineEndingActionState.PLANNED
+        for action in report.actions
+    ):
+        emit = _warning_sink(_warn, "git.line-ending-migration", subject=report.repository.role)
+        emit(
+            f"{identity}: repository-local line-ending default awaits Stealth opt-out migration",
+            "booley init   (migrates the local default to the root attributes policy)",
+        )
+        return True
+    return False
+
+
 def _report_repository_line_endings(
     report: RepositoryLineEndingReport,
     _pass: Check,
@@ -1325,20 +1359,7 @@ def _report_repository_line_endings(
             f"git -C {repository.root} config --local core.autocrlf false   (or re-run `booley init`)",
         )
         return
-    policy_risk = _line_ending_observation(
-        report,
-        LineEndingObservationCode.LOCAL_POLICY_MISSING,
-        LineEndingObservationCode.LEAKED_ROOT_POLICY,
-        LineEndingObservationCode.LOCAL_POLICY_CONFLICT,
-    )
-    if policy_risk is not None:
-        emit = _warning_sink(_warn, "git.line-endings-unreadable", subject=repository.role)
-        emit(
-            f"{identity}: {policy_risk.detail}",
-            "inspect attributes policy, then re-run booley init",
-        )
-        return
-    if _report_unreadable_line_endings(report, identity, _warn):
+    if _report_attributes_policy_risk(report, identity, _warn):
         return
     stale = _line_ending_observation(report, LineEndingObservationCode.STALE_INDEX)
     if stale is not None:
@@ -1346,6 +1367,8 @@ def _report_repository_line_endings(
             f"{identity}: tracked files have stale Git index metadata after line-ending repair — status reports modifications although staged and unstaged diffs are empty",
             "booley init   (refreshes the affected tracked index entries)",
         )
+        return
+    if _report_attributes_migration(report, identity, _warn):
         return
     _pass(f"{identity}: working tree is container-safe (no CRLF checkouts, autocrlf off)")
 
