@@ -228,13 +228,17 @@ booley flow sim --target sim_soc --test reset --test irq  # exact tests (see ord
 booley flow sim --target sim_soc --tests-file smoke.txt   # names from a file
 booley flow sim --target sim_soc --test irq --trace       # capture a waveform
 booley flow sim --target sim_soc --test irq --coverage    # collect coverage (Verilator only)
+booley flow sim --target sim_soc --test stress+soak       # a Test Variant
+booley flow sim --target sim_soc --test stress@42         # one seed
+booley flow sim --target sim_soc --test stress+soak@x20   # 20 drawn seeds
+booley flow sim --target sim_soc --seed random            # a drawn seed for every Test Run
 ```
 
 | Option | Effect |
 |---|---|
-| `--test <name>` | Run one registered test by exact name. Repeat for more. |
-| `--seed <N\|random>` | Use seed `N` (1..2147483647) for every selected Test Run, or `random` to draw one seed per Test Run. Cannot be combined with a `--test` that names a seed (`test@seed`, `test@xN`). |
-| `--tests-file <path>` | Read exact test names from a file, one per line (blank lines and `#` comments ignored). Cannot be combined with `--test`. |
+| `--test <test run>` | Run the named Test Runs: `test`, `test+variant`, `test@seed`, `test+variant@seed`, or `test[+variant]@xN` for N drawn seeds. Repeat for more. See [Test Runs, Test Variants and seeds](#test-runs-test-variants-and-seeds). |
+| `--seed <N\|random>` | Use seed `N` (1..2147483647) for every selected Test Run, or `random` to draw one seed per Test Run. Cannot be combined with a `--test` that names a seed (`test@seed`, `test@xN`), with an elaboration mode, or with `--resume-from`. |
+| `--tests-file <path>` | Read Test Run selectors from a file, one per line (blank lines and `#` comments ignored). Cannot be combined with `--test`. |
 | `--mode <simulate\|elab-only\|elab-only-standalone>` | Run tests (default), or only elaborate (see [Elaboration checks](#elaboration-checks)). |
 | `--trace` | Capture a waveform. Use it to debug a failure, not for pass/fail checks. |
 | `--coverage` / `--cov` | Collect coverage (see [Coverage](#coverage)). |
@@ -268,6 +272,97 @@ Multiple simulator processes can run in parallel up to `[jobs].max_heavy`
 (default `1`, i.e. serial). Tests sharing a literal `run_cwd` always run one at a
 time.
 
+### Test Runs, Test Variants and seeds
+
+A **Test Variant** is a Test with a fixed set of extra run-time arguments and
+environment, declared in
+[`tests.toml`](CONFIG.md#test-variants-variants). A **Test Run** is one Test
+Variant simulated with one seed. Every result, report row and Goal names a
+Test Run, written `test[+variant][@seed]`: `reset@1`, `stress+soak@42`.
+
+`--test` takes a selector that names one or more Test Runs:
+
+| Selector | Test Runs |
+|---|---|
+| `stress` | The default Test Variant of `stress` at the Target's Default Seed. |
+| `stress+soak` | The Test Variant `soak` at the Default Seed. |
+| `stress@42`, `stress+soak@42` | That Test Variant with seed 42. |
+| `stress@x20`, `stress+soak@x20` | 20 Test Runs of that Test Variant, each with a different seed that Booley draws at random. N is 1 to 1000. |
+
+A seed is a decimal number from 1 to 2147483647, written without a sign or
+leading zeros. The **Default Seed** is `1` unless the Target sets
+[`default_seed`](CONFIG.md#seeds-seed-default_seed). A run of the whole Target
+(no `--test`) runs the default Test Variant of every Test that is not skipped,
+each at the Default Seed.
+
+`--seed` sets the seed of every Test Run the request selects, including a run
+of the whole Target. `--seed 42` uses seed 42 for all of them. `--seed random`
+draws a separate seed for each Test Run. Booley draws every seed before the
+run starts and records it, so the report always names the seed that ran.
+
+Booley refuses these requests before anything builds:
+
+- `--seed` together with a `--test` that names a seed (`test@seed` or
+  `test@xN`). Name the seed in one place.
+- `--seed` together with `--mode elab-only`, `--mode elab-only-standalone` or
+  `--resume-from`.
+- A selector that names a Test Variant the Test does not declare, or a
+  Variant of a Test that declares none.
+- Two selectors that resolve to the same Test Run, such as `stress` and
+  `stress+short` when `short` is the default Variant.
+- More than 1000 Test Runs of one Target in one request. Split the request.
+- Any seed for an **unseeded** Target: `--seed`, `test@seed` or `test@xN`. An
+  Icarus Target with an HDL testbench is unseeded until its `tests.toml`
+  section declares a `seed` template, and the refusal says how to add one. An
+  HDL-testbench Target of any simulator other than Verilator and Icarus is
+  unseeded with or without a template. Test Runs of an unseeded Target are
+  written without `@seed`.
+
+How the seed reaches the simulation:
+
+| Target | Seed mechanism |
+|---|---|
+| Verilator, HDL testbench | `+verilator+seed+<seed>`, plus the Target's `seed` template when it declares one |
+| Icarus, HDL testbench | the Target's `seed` template; unseeded without one |
+| Cocotb Target | cocotb's seed variable (`COCOTB_RANDOM_SEED` on cocotb 2.x, `RANDOM_SEED` on 1.x) |
+
+Test Runs that differ in arguments, environment or seed never share a
+simulator process. An HDL-testbench Target starts one process per Test Run. A
+Cocotb Target batches the Test Runs that have the same environment and seed,
+so a request with two seeds runs at least two batches. Test Variants and seeds
+are run-time inputs: they reuse the Target's simulator build.
+
+**Report rows.** A Target's report lists its Test Runs, up to 32 rows, when
+any of them did not pass, ran with a seed other than the Default Seed, or
+belongs to a Test that declares Test Variants, or when a Test ran more than
+once:
+
+```text
+  Test Runs: 3 (2 passed, 1 failed)
+    PASS         stress+soak@1804289383
+    FAIL         stress+soak@846930886
+    PASS         stress+soak@1681692777
+  Rerun a failed Test Run with the same seed:
+    booley flow sim --target sim_soc --test=stress+soak@846930886
+```
+
+A row is `PASS`, `FAIL`, `ERROR` (an infrastructure problem stopped the run)
+or `INCONCLUSIVE`. Each failed Test Run gets a rerun command that selects
+exactly it. The machine-readable rows are `test_runs[]` in the Target's
+`simulation.json`, each with `name`, `test`, `variant`, `seed`, `args`, `env`,
+`fingerprint` and `grade`.
+
+**Directories and file names.** Per-run evidence is named by Test Run. An
+HDL-testbench Target writes each run log to
+`sim_<target>/tests/<test run>/run.log`, for example
+`tests/stress+soak@42/run.log`. A Cocotb Target writes one directory per
+batch: `tests/batch/` for the default Test Runs, and `tests/batch-<hex>/` for
+a batch with another seed, Variant or environment. Coverage run ids and native
+database names end in the Test Run name (`run:001:full@1`).
+
+**Pre-Sim Commands** receive the Test Run in
+[`BOOLEY_TEST_RUN_*` variables](CONFIG.md#pre-sim-commands-flowssimpre_run_commands).
+
 ### Verdicts and Criteria
 
 Each test gets one verdict:
@@ -296,22 +391,57 @@ absolute root as `work_dir` to Booley Flows, Specialists, Goal tools,
 [worktree routing](USAGE.md#working-with-evidence) for the full inventory and
 when `work_dir` is required.
 
-- `SIM:{target}` requires the Target's full registered simulation suite.
-  Passing a hand-picked subset does not meet this Goal.
-- `cycle_count_<target>_<test>` requires one named passing test and all its
-  Cycle Count thresholds.
+- `SIM:{target}` requires the default Test Variant of every Test of the
+  Target that is not skipped, each at the Default Seed.
+- A simulation Goal with a `test` selector requires the Test Runs that the
+  selector names: one Test Run, or N Test Runs with different seeds for
+  `test@xN`.
+- `CYCLE_COUNT:{target}` requires one passing Test Run and all its
+  Cycle Count thresholds. A relative threshold runs the same Test Run, with
+  the same Test Variant and seed, at the Goal base commit. If the base commit
+  cannot run it (the Test is not registered there, or the Target cannot apply
+  the seed or the Variant's arguments), the comparison is inconclusive and
+  the report names the reason.
 - `ELAB:{target}` requires a successful build; see below.
 
 For example, entry can include:
 
 ```json
 [{"family": "SIM", "target": "sim_core"},
+ {"family": "SIM", "target": "sim_core", "test": "stress+soak@x20"},
  {"family": "CYCLE_COUNT", "target": "sim_core", "test": "smoke",
   "thresholds": {"cycle_count_max": 100}}]
 ```
 
-Run the full suite for the simulation Goal. The named Cycle Count Goal uses
-that test's observed result. See [Goal Mode](USAGE.md#goal-mode).
+Goal Mode resolves each of these Goals to exact Test Runs at entry and
+**freezes** them, including the 20 seeds it draws for `stress+soak@x20`. A
+Test Run is evidence for a Goal only when it is one of the Goal's frozen Test
+Runs with the same declared arguments and environment. Inside the Goal
+worktree:
+
+- `booley flow sim --target sim_core` takes its Test Runs from the Target's
+  Goal that covers every Test (a simulation Goal without `test`, or a
+  coverage Goal with `tests = "all"`): its frozen Test Runs, and the default
+  Test Run of any Test added to the Target since. With no such Goal it runs
+  the default Test Run of each Test. A Goal that names a Test Run gets
+  evidence from this run only when that Test Run is among them.
+- `--test` with the name of a frozen Test Run, as `goal_status` lists it,
+  runs that Test Run.
+- `--test stress+soak@x20` runs the 20 frozen seeds of the Goal with the same
+  Target, Test Variant and N. With no such Goal, Booley draws 20 new seeds and
+  the report says that these Test Runs are diagnostic.
+- Every other Test Run is **diagnostic**: it is reported, it records no Goal
+  evidence, and its failure blocks no Goal. The report lists diagnostic
+  failures under their own heading.
+- `--diagnostic` records nothing, even when the run executes a Goal's frozen
+  Test Runs: a pass does not count for the Goal and a failure does not make
+  the frozen Test Run `failed`. The report names each Goal whose frozen Test
+  Runs ran and the ones that failed. Run again without `--diagnostic` to
+  record them.
+
+A simulation Goal is met when every one of its frozen Test Runs has passed at
+the current file contents. The Test Runs can pass in separate invocations. See
+[Goals that name Test Runs](USAGE.md#goals-that-name-test-runs).
 
 ### Elaboration checks
 
@@ -352,25 +482,28 @@ booley flow sim --resume-from \
 booley flow sim --resume-from <manifest.json> --dry-run   # show what is left
 ```
 
-- Target, tests, mode, coverage, trace, and `--no-waivers` come from the
-  manifest and cannot be given again. Resuming a `--no-waivers` run for a
-  Target with a Coverage Criterion also needs `--diagnostic`. Timeout and
-  output options may change.
+- Target, Test Runs, mode, coverage, trace, and `--no-waivers` come from the
+  manifest and cannot be given again. The manifest records every Test Run with
+  its Test Variant and seed, so a resumed run of `--seed random` or `test@xN`
+  continues with the seeds it drew at the start and never draws new ones.
+  Resuming a `--no-waivers` run for a Target with a Coverage Criterion also
+  needs `--diagnostic`. Timeout and output options may change.
 - One resume continues one Target. For a multi-Target run, resume each
   unfinished Target's manifest separately.
 - Within a Target, the retry unit is a work item:
 
   | Testbench | Work item | On resume |
   |---|---|---|
-  | HDL | one test | Only tests without a recorded result run again. |
+  | HDL | one Test Run | Only Test Runs without a recorded result run again. |
   | cocotb | the whole batch | An interrupted batch re-runs all of its tests. |
   | `--coverage` | the whole collection | Refused (exit `2`) until the collection has a recorded result; then only publication is finished. |
 
 - Resuming a coverage run whose collection never finished is refused with exit
   `2`, before anything builds or runs, and `--dry-run` reports the same
-  refusal. Start a new `booley flow sim --coverage` run instead. Resume
-  finishes a coverage run only when the interruption hit while results were
-  being published.
+  refusal. Start a new `booley flow sim --coverage` run instead: the refusal
+  prints the command, which names the interrupted run's Test Runs so that the
+  new run repeats their Test Variants and seeds. Resume finishes a coverage
+  run only when the interruption hit while results were being published.
 - A test with a recorded result is finished, even if it failed. Resume never
   re-runs failures; start a new run for that.
 - Resume refuses when the Target's sources or suite changed since the original
@@ -462,14 +595,20 @@ and testbench improvements. The verdict card prints the exact
 - **Gated** (Goal Mode with a `COVERAGE:{target}` Goal): Booley also checks
   the thresholds. Only a persisted `pass` satisfies
   the Criterion. A Goal remains unmet until strict evidence passes; see
-  [Coverage waivers at review](#coverage-waivers-at-review).
+  [Coverage waivers at review](#coverage-waivers-at-review). The thresholds
+  alone decide the Goal: a Test Run that fails its checks does not make it
+  unmet, as long as the run still wrote its coverage data.
 - **Raw numbers** (`--no-waivers`): applies no approved waivers. With a
   Coverage Criterion it needs `--diagnostic`; otherwise Booley exits 2 before
   anything builds. The thresholds are then evaluated on raw numbers, and no
   Criteria are recorded.
 
-Which tests run: the tests you name with `--test`/`--tests-file`, otherwise the
-Target's registered suite minus `tests.toml` skips, the same as any `sim` run. A
+Which tests run: the Test Runs you name with `--test`/`--tests-file`, otherwise the
+Target's registered suite minus `tests.toml` skips, the same as any `sim` run.
+A coverage run accepts every selector form, including several Test Runs of one
+Test (`--test stress+short --test stress+soak`, or `--test stress@x5`). Each
+Test Run is one simulator process with its own native database, and the
+merged coverage is the union over all of them. A
 Criterion's `tests` list never picks tests; it says which tests the evidence
 must come from. If what ran differs from that list, coverage is still collected
 but gated evaluation is blocked (suite mismatch), so pass the listed tests

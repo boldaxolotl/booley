@@ -215,11 +215,11 @@ _Avoid_: Design Configuration, build config, profile, named config
 A Project's documented mapping and design inputs for realizing technology-dependent RTL intent with cells from its selected physical-library family, including preserved direct instantiations and substitutions through Project hooks or adapters.
 
 **Cocotb Target**:
-A sim **Target** whose testbench is a cocotb Python module, declared in the Target's flow options rather than authored as HDL. Its `toplevel` is whatever the Python testbench attaches to: the DUT itself for a simple design, with no HDL testbench wrapper; or a thin HDL wrapper when the DUT's ports are SystemVerilog interfaces, since cocotb's bus interfaces bind to interface *instances*, which something must instantiate. Its tests are named cocotb test functions registered in `tests.toml`, executed batched in a single simulation, with per-test verdicts taken from cocotb's result file (`results.xml`) rather than from a **Simulation Sentinel** (defined below under Simulation evidence).
+A sim **Target** whose testbench is a cocotb Python module, declared in the Target's flow options rather than authored as HDL. Its `toplevel` is whatever the Python testbench attaches to: the DUT itself for a simple design, with no HDL testbench wrapper; or a thin HDL wrapper when the DUT's ports are SystemVerilog interfaces, since cocotb's bus interfaces bind to interface *instances*, which something must instantiate. Its **Tests** are named cocotb test functions registered in `tests.toml`. Booley executes its **Test Runs** in batches, one simulator process for Test Runs of different Tests that share an environment and a seed, with per-test verdicts taken from cocotb's result file (`results.xml`) rather than from a **Simulation Sentinel** (defined below under Simulation evidence).
 _Avoid_: python testbench config, cocotb core, cocotb suite
 
 **Pre-Sim Commands**:
-Project-declared shell commands that Booley executes inside the **Sandbox** immediately before each simulation run, with the run's test selection and authoritative run directory in the environment. For an HDL-testbench Target the hook fires once per test; for a **Cocotb Target** it fires once before the batched run. This is the sanctioned seam for non-RTL per-test build steps (per-case firmware compiles, vector staging) that FuseSoC cannot express.
+Project-declared shell commands that Booley executes inside the **Sandbox** immediately before each simulator process, with the **Test Runs** it prepares and the authoritative run directory in the environment. For an HDL-testbench Target the hook fires once per Test Run; for a **Cocotb Target** it fires once before each batch. This is the sanctioned seam for non-RTL per-test build steps (per-case firmware compiles, vector staging) that FuseSoC cannot express.
 _Avoid_: Pre-Run Commands, pre-test hook, prebuild adapter, test fixture script
 
 ### Flows, EDA tools, and MCP tools
@@ -276,7 +276,7 @@ The seed that a **Test Run** uses when no seed is named: a Booley-wide constant 
 _Avoid_: simulator default seed, random seed
 
 **Test Run**:
-One **Test Variant** simulated with one seed, written `test+variant@seed` (without `@seed` on a Target that cannot apply seeds). It is the unit that simulation evidence records and that Goals name; a multi-seed Goal (`test+variant@xN`) names N Test Runs whose seeds are drawn at random once and frozen with the Goal. Only a Test Run that exactly matches a Goal's resolved form counts toward that Goal; every other Test Run is diagnostic.
+One **Test Variant** simulated with one seed, written `test+variant@seed`: `test@seed` for a **Test** without Variants, and without `@seed` on a Target that cannot apply seeds. It is the unit that simulation evidence records and that Goals name; a multi-seed Goal (`test+variant@xN`) names N Test Runs whose seeds are drawn at random once and frozen with the Goal. Only a Test Run that exactly matches a Goal's resolved form counts toward that Goal; every other Test Run is diagnostic.
 _Avoid_: run (bare), iteration, seed run, QA Run
 
 **Simulation Campaign**:
@@ -316,7 +316,7 @@ A named boolean condition bound to the evidence and subject it evaluates.
 _Avoid_: check, gate, acceptance test
 
 **Cycle Count Criterion**:
-A Criterion requiring one named test to pass on one Target and its reported cycle count to meet one declared threshold.
+A Criterion requiring one **Test Run** to pass on one Target and its reported cycle count to meet one declared threshold.
 _Avoid_: cycle budget, synthesis criterion, benchmark score
 
 **Escalation**:

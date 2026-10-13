@@ -13,7 +13,11 @@ work. Use the returned package and file pointers; do not guess a latest record.
    and justification; a candidate is not an approval.
 4. Inspect Target changes, `.core` and `tests.toml` changes, and `.sdc`/`.xdc`
    constraint edits. Check that improved results come from the intended design
-   rather than weakened tests or constraints.
+   rather than weakened tests or constraints. For Goals that name Test Runs,
+   read the frozen Test Runs and their outcomes, the list "Test Runs resolved
+   after entry" (their defaults were taken from `tests.toml` during the work),
+   and any "Simulation Campaigns not fully accounted for". Check that the
+   testbench does not special-case a frozen seed.
 5. Present the package paths and a concise account of the result. A finished
    Goal is evidence-backed completion; merging or publishing remains a separate
    human instruction. Open `done` findings need no second approval for Finish.
