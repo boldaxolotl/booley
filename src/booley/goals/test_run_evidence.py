@@ -21,8 +21,17 @@ inside it may predate a failure recorded in between. Such an observation no
 longer equals its recomputation and the Goal is unmet until the Flow runs
 again, which folds the failure in.
 
-The Goal is met only when its resolution is complete, it requires at least
-one Test Run, and every required run is ``passed``.
+A simulation or Cycle Count Goal is met only when its resolution is complete,
+it requires at least one Test Run, and every required run is ``passed``.
+
+A coverage Goal is judged by its coverage floors alone
+(:func:`outcomes_decide`). Its frozen Test Runs say which runs one coverage
+campaign must run to measure it (:meth:`GoalTestRuns.measured_by`); whether
+those runs passed is another Goal's concern and never makes it unmet. Its
+ledger therefore accumulates nothing: it holds the outcomes of the runs of
+the invocation its observation records, for people to read. An invocation
+that does not measure the Goal changes nothing a measurement at the same
+file contents established.
 """
 
 from __future__ import annotations
@@ -159,6 +168,16 @@ def freshness_stamp(key: str, detail: Mapping[str, Any]) -> str | None:
     return hashlib.sha256(canonical_json(digests)).hexdigest()
 
 
+def outcomes_decide(goal: RecordedGoal) -> bool:
+    """Whether the pass/fail outcomes of *goal*'s frozen Test Runs decide it.
+
+    They do not for a coverage Goal: a Test Run that fails its checks is a
+    simulation concern, and the Goal is met when a campaign of exactly its
+    frozen runs reaches the coverage floors.
+    """
+    return goal.spec.family is not GoalFamily.COVERAGE
+
+
 def _member(value: object, name: str) -> object:
     """``value[name]`` when *value* is a mapping, else ``None``."""
     return cast("Mapping[str, object]", value).get(name) if isinstance(value, Mapping) else None
@@ -166,13 +185,29 @@ def _member(value: object, name: str) -> object:
 
 @dataclass(frozen=True)
 class LedgerScope:
-    """Which observations accumulate with one another: one Goal at one revision."""
+    """Which observations accumulate with one another: one Goal at one revision.
+
+    ``accumulates`` is false for a Goal its runs' outcomes do not decide
+    (:func:`outcomes_decide`): each of its ledgers folds one invocation only.
+    """
 
     record_id: str
     key: str
     spec_revision: int
+    accumulates: bool = True
+
+    @classmethod
+    def of(cls, record: GoalRecord, goal: RecordedGoal) -> LedgerScope:
+        """The scope of *goal* in *record* at its current specification revision."""
+        return cls(record.id, goal.spec.key, goal.spec_revision, outcomes_decide(goal))
 
     def accumulating(
+        self, history: Sequence[Mapping[str, Any]], stamp: str | None, *, before: int | None
+    ) -> list[Mapping[str, Any]]:
+        """The earlier observations a ledger at *stamp* folds: none unless it accumulates."""
+        return self.at_contents(history, stamp, before=before) if self.accumulates else []
+
+    def at_contents(
         self, history: Sequence[Mapping[str, Any]], stamp: str | None, *, before: int | None
     ) -> list[Mapping[str, Any]]:
         """Candidate rows of this Goal at *stamp* with a sequence below *before*, in order."""
@@ -247,12 +282,17 @@ def judged_change(
     """*change* with its matching Test Run rows, its ledger, and the verdict they allow.
 
     A simulation Goal is met exactly when every frozen run is ``passed`` in
-    the ledger: what one invocation ran does not decide it. A Cycle Count or
-    coverage Goal additionally needs its producer's verdict on thresholds,
-    and that verdict counts only when this same change carries the frozen
-    runs that produced the metric (:meth:`GoalTestRuns.measured_by`). A
-    change that does not measure the metric still enters its matching runs'
-    outcomes into the ledger; it never supplies a verdict.
+    the ledger: what one invocation ran does not decide it. A Cycle Count
+    Goal additionally needs its producer's verdict on thresholds. A coverage
+    Goal needs only its producer's verdict on the coverage floors: its runs'
+    outcomes are recorded and decide nothing (:func:`outcomes_decide`).
+
+    A producer's verdict counts only when this same change carries the
+    frozen runs that produced the metric (:meth:`GoalTestRuns.measured_by`).
+    A change that does not measure the metric never supplies a verdict. When
+    it adds nothing to the Goal's selected observation, that observation is
+    recorded again (:func:`_restated`); otherwise the change is recorded with
+    its matching runs' outcomes and the Goal is unmet.
     """
     key = goal.spec.key
     resolution = record.test_run_resolution(key)
@@ -261,14 +301,18 @@ def judged_change(
     measured = not detail.get(OUTCOMES_ONLY_DETAIL_KEY) and frozen.measured_by(_rows(detail))
     own = matching_rows(detail, frozen.runs)
     detail["test_runs"] = own
-    scope = LedgerScope(record.id, key, goal.spec_revision)
-    earlier = scope.accumulating(history, freshness_stamp(key, detail), before=None)
+    scope = LedgerScope.of(record, goal)
+    here = scope.at_contents(history, freshness_stamp(key, detail), before=None)
+    earlier = here if scope.accumulates else []
     ledger = build_ledger(earlier, _graded(own), frozen.runs)
-    restated = None if measured else _restated(change, key, history, earlier, ledger, frozen.runs)
-    if restated is not None:
-        return restated
+    if not measured:
+        selected = _selected(key, history, here)
+        if selected is not None and _adds_nothing(selected, ledger, decisive=scope.accumulates):
+            return _restated(change, selected, earlier, frozen.runs)
     detail[LEDGER_DETAIL_KEY] = ledger
-    defect = requirement_defect(resolution) or outcome_defect(ledger["runs"])
+    defect = requirement_defect(resolution)
+    if defect is None and scope.accumulates:
+        defect = outcome_defect(ledger["runs"])
     if defect is None and not measured:
         how = _MEASURING_RUN[goal.spec.family]
         defect = REASON_NOT_MEASURED, f"this run did not measure the Goal; {how}"
@@ -281,38 +325,67 @@ def judged_change(
     return replace(change, met=False, reason=reason, detail=detail)
 
 
-def _restated(
-    change: CriterionChange,
-    key: str,
-    history: Sequence[Mapping[str, Any]],
-    earlier: Sequence[Mapping[str, Any]],
-    ledger: Mapping[str, Any],
-    required: Sequence[TestRun],
-) -> CriterionChange | None:
-    """The Goal's selected observation again, when *change* adds nothing to it.
+def _selected(
+    key: str, history: Sequence[Mapping[str, Any]], here: Sequence[Mapping[str, Any]]
+) -> Mapping[str, Any] | None:
+    """Goal *key*'s selected observation, when it is the newest of *here*.
 
-    A change that does not measure the Goal's metric would otherwise replace
-    a measured observation and unmeet the Goal although nothing was learnt:
-    its runs' outcomes are already what the selected observation's ledger
-    holds, at the same specification revision and file contents. Then the
-    selected observation is recorded again, with its own rows and verdict.
-    ``None`` when the change does add an outcome, or there is nothing at
-    these contents to restate.
+    *here* are the Goal's observations at the specification revision and file
+    contents of the change being judged. ``None`` when the selected
+    observation is not one of them, or there is none.
     """
     candidates = [row for row in history if row["criterion"] == key and row["role"] == "candidate"]
     latest = max(candidates, key=lambda row: row["sequence"], default=None)
-    if latest is None or not earlier or earlier[-1]["sequence"] != latest["sequence"]:
+    if latest is None or not here or here[-1]["sequence"] != latest["sequence"]:
         return None
-    selected = cast("Mapping[str, Any]", latest["detail"])
+    return latest
+
+
+def _adds_nothing(
+    selected: Mapping[str, Any], ledger: Mapping[str, Any], *, decisive: bool
+) -> bool:
+    """Whether a change that measures nothing leaves the Goal as *selected* judged it.
+
+    Where outcomes decide the Goal (*decisive*), only while the change's
+    *ledger* holds the outcomes the selected observation's ledger holds: a
+    new outcome, a failure above all, must be recorded. Where they do not,
+    whenever the selected observation measured the Goal: no outcome can
+    change what a measurement established. One that measured nothing
+    established nothing, and the change's own outcomes replace it. A
+    measurement is an observation recorded with a ledger and no defect.
+    """
+    selected_detail = cast("Mapping[str, Any]", selected["detail"])
     try:
-        unchanged = ledger_runs(selected) == ledger["runs"]
+        recorded = ledger_runs(selected_detail)
     except LedgerFormatError:
-        unchanged = False  # a ledger that cannot be read is never restated
-    if not unchanged:
-        return None
-    again = build_ledger(earlier, _graded(matching_rows(selected, required)), required)
-    detail = {**selected, LEDGER_DETAIL_KEY: again}
-    return replace(change, met=bool(latest["met"]), reason="outcome", detail=detail)
+        return False  # a ledger that cannot be read is never restated
+    if decisive:
+        return recorded == ledger["runs"]
+    # Evidence without a ledger predates Goals that name Test Runs: no measurement.
+    return recorded is not None and "goal_contract_violation" not in selected_detail
+
+
+def _restated(
+    change: CriterionChange,
+    selected: Mapping[str, Any],
+    earlier: Sequence[Mapping[str, Any]],
+    required: Sequence[TestRun],
+) -> CriterionChange:
+    """The Goal's *selected* observation again, in place of a *change* that adds nothing.
+
+    A change that does not measure the Goal's metric would otherwise replace
+    a measured observation and unmeet the Goal although nothing was learnt.
+    The selected observation is recorded again, with its own rows and
+    verdict, at the same specification revision and file contents.
+    """
+    detail = cast("Mapping[str, Any]", selected["detail"])
+    again = build_ledger(earlier, _graded(matching_rows(detail, required)), required)
+    return replace(
+        change,
+        met=bool(selected["met"]),
+        reason="outcome",
+        detail={**detail, LEDGER_DETAIL_KEY: again},
+    )
 
 
 def requirement_defect(resolution: TestRunResolution | None) -> tuple[str, str] | None:
@@ -333,7 +406,7 @@ def requirement_defect(resolution: TestRunResolution | None) -> tuple[str, str] 
 
 
 def outcome_defect(runs: Sequence[Mapping[str, str]]) -> tuple[str, str] | None:
-    """Why a ledger with *runs* does not meet its Goal: (reason, text)."""
+    """Why a ledger with *runs* does not meet a Goal its outcomes decide: (reason, text)."""
     failed = [run["name"] for run in runs if run["outcome"] == "failed"]
     if failed:
         return REASON_FAILED, f"Test Runs failed at these file contents: {', '.join(failed)}"
