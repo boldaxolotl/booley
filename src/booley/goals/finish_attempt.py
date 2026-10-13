@@ -81,6 +81,7 @@ def validate_attempt(frozen: dict[str, Any], operation: LifecycleOperation) -> N
             None,
             "summary kept local; Stealth publication is skipped",
             "summary kept local; `.booley_project` is git-excluded",
+            "summary kept local; Paired Checkout preserves independent Booley history",
         }:
             raise ValueError("invalid publication skip identity")
         for row in require_list(frozen["running_jobs"], field="running_jobs"):

@@ -235,45 +235,51 @@ allowlist exactly—hybrid does not authorize committing operational state.
 
 **Open — commit `.booley_project/` to the RTL repo.**
 
-- Drop the `/.booley_project` line from `.git/info/exclude` (leave
-  `/.devcontainer` and `/.claude` there unless the user asks otherwise — those
-  are machine-specific runtime config, not project config).
-- Before `git add`, check whether `.booley_project/.git` exists. `booley init`
-  normally creates that inner repository for hidden mode, but an open footprint
-  must track the files themselves, not an embedded-repository gitlink. Inspect
-  it with `git -C .booley_project rev-list --all --count`, `git -C
-  .booley_project remote -v`, and `git -C .booley_project status --short`. If it
-  has commits, a remote, or intentional staged history, stop and ask how that
-  history should be preserved or migrated; row 16 does not authorize deleting
-  it. If it has no history, move its `.git` metadata to a uniquely named backup
-  under the parent repo's `$(git rev-parse --git-common-dir)` (verify the
-  destination is absent first) and report that recovery path. Do not delete it.
-- Then `git add .booley_project && git commit`. Do **not** move the exclusion into
-  `.gitignore`; the point is to track the directory, not to re-hide it.
+- Before changing exclusions, inspect `.booley_project/.git`, if present, with
+  `git -C .booley_project rev-list --all --count`, `git -C .booley_project remote -v`,
+  and `git -C .booley_project status --short`. Existing commits, remotes, or
+  intentional staged history require a human decision about preservation or
+  migration; row 16 does not authorize deleting that history.
+- When preserving an independently versioned Booley Directory, retain its Git
+  metadata and the outer exclusion when present; leave an already absent
+  exclusion absent. Read the current checkout's non-concise Doctor result:
+  - For an actual `goals.history-ignored:independent-booley-history` **WARN**,
+    record the accepted preservation policy using **Using Doctor waivers**:
+    copy that exact check and subject into a waiver, explain the independent
+    history and local-summary policy, and use `permanent = true` for that stable
+    project decision. Commit the waiver in the independent Booley repository so
+    future Paired Checkouts receive it and their inner checkout stays clean.
+    Rerun the warning's original command and verify `WARN` becomes `WAIVED`.
+  - An unexcluded authenticated Paired Checkout reports **PASS**:
+    `Goal summaries remain local; Paired Checkout preserves independent Booley history`.
+    That result needs no preservation waiver. A standalone current checkout's
+    unchanged `Goal history is eligible for commits` **PASS** also needs no
+    waiver; it describes that checkout, not a later Paired Checkout. If the
+    preservation warning became a PASS, remove its now-unmatched waiver using
+    the existing waiver cleanup and commit that change in independent history.
+  Complete the existing final Doctor invocations with zero failures and active
+  warnings. Continue below only after the human's chosen history migration into
+  the RTL repository is complete.
+- If the inner repository has no history, move its `.git` metadata to a uniquely
+  named backup under the parent repo's `$(git rev-parse --git-common-dir)` (verify
+  the destination is absent first) and report that recovery path. Preserve the
+  backup.
+- Once the files belong to the RTL repository, drop the `/.booley_project` line
+  from `.git/info/exclude` (leave `/.devcontainer` and `/.claude` there unless the
+  user asks otherwise — those are machine-specific runtime config).
+- After migration, ensure the inner Git metadata is backed up outside these
+  files: the RTL repository must track regular files, not an embedded-repository
+  gitlink. Then `git add .booley_project`; inspect `git ls-files --stage
+  .booley_project` and require regular-file entries rather than mode `160000`
+  before committing. Do **not** move the exclusion into `.gitignore`; the point
+  is to track the directory, not to re-hide it.
 - Verify what landed with `git ls-files .booley_project | head`: the inner
   `.gitignore` should have kept `tmp/`, `.runtime/`, `worktrees/`, and the
   Goal logs/locks out. If transient state slipped in, unstage it and fix the
   inner `.gitignore` before committing — a committed `.runtime/` churns every
   run.
-- Expect one **WARN**, not a FAIL, on the next doctor run: `git info/exclude
-  missing Booley entry: .booley_project`. That check assumes the hidden
-  footprint. For an approved open footprint, append this deliberate exception
-  to `doctor-waivers.toml` and confirm it appears as `WAIVED`. If the file does
-  not exist, create it using the complete example below. If it exists, keep its
-  single `version = 1` header and append only the `[[waiver]]` table—never add a
-  second version key or overwrite existing entries.
-
-  ```toml
-  version = 1
-
-  [[waiver]]
-  check = "project.git-excludes-missing"
-  subject = ".booley_project"
-  reason = "The approved open footprint tracks .booley_project in the parent repository."
-  permanent = true
-  ```
-
-  Do not "fix" it by re-excluding the directory you just committed.
+- Rerun Doctor. With Stealth off, removing the Booley exclusion requires no
+  missing-exclusion waiver.
 - `SETUP-PLAN.md` lives under `.booley_project/` and will be committed with
   it. That is fine — it is the setup audit trail. Say so in the report so
   nobody is surprised to find it in the tracked tree.

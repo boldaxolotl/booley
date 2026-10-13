@@ -1,5 +1,6 @@
 """Shared abandonment state matrix, exact operations and interrupted proposal authority."""
 
+import stat
 from dataclasses import replace
 from uuid import uuid4
 
@@ -253,3 +254,76 @@ def test_abandon_lost_terminal_response_retains_entering_classification(layout):
         finish_goal(call, FinishEnvironment(ChangeEnvironment(EntryEnvironment(layout.control))))
         == result
     )
+
+
+@pytest.mark.parametrize("interrupted", [False, True])
+@pytest.mark.parametrize("dirt", [False, True])
+def test_nonexcluded_pair_abandon_retains_and_classifies_entry(
+    layout, tmp_path, interrupted, dirt
+):
+    from booley.goals.apply import ChangeEnvironment
+    from booley.goals.entry import enter_goal_mode
+    from tests.goals.conftest import install_paired_project
+    from tests.goals.test_entry import _Crash, _crash_at, _env, _request, _store
+
+    paired = install_paired_project(layout, tmp_path)
+    empty = tmp_path / "empty-excludes"
+    empty.write_bytes(b"")
+    git(layout.worktree, "config", "core.excludesFile", str(empty))
+    (layout.main / ".git/info/exclude").write_bytes(b"")
+    if interrupted:
+        with pytest.raises(_Crash):
+            enter_goal_mode(_request(layout), _env(layout, _crash_at("checked_out")))
+        (record,) = _store(layout).list_records().records
+    else:
+        record = enter_goal_mode(_request(layout), _env(layout)).record
+    if dirt:
+        (layout.worktree / "rtl.v").write_bytes(b"retain user work\n")
+    head = git(paired, "rev-parse", "HEAD")
+    result = abandon_goal(
+        _store(layout),
+        layout.worktree,
+        FinishEnvironment(ChangeEnvironment(_env(layout))),
+        record_id=record.id,
+        instruction_quote="Retain this work",
+    )
+    assert result["status"] == "abandoned"
+    if interrupted:
+        assert ("uncommitted work" in result["message"]) == dirt
+    assert git(paired, "rev-parse", "HEAD") == head
+    if dirt:
+        assert (layout.worktree / "rtl.v").read_bytes() == b"retain user work\n"
+
+
+def test_interrupted_abandon_retains_effects_when_pair_metadata_breaks(layout, tmp_path):
+    from booley.goals.apply import ChangeEnvironment
+    from booley.goals.entry import enter_goal_mode
+    from tests.goals.conftest import install_paired_project
+    from tests.goals.test_entry import _Crash, _crash_at, _env, _request, _store
+
+    paired = install_paired_project(layout, tmp_path)
+    with pytest.raises(_Crash):
+        enter_goal_mode(_request(layout), _env(layout, _crash_at("checked_out")))
+    (record,) = _store(layout).list_records().records
+    marker = paired / ".git"
+    broken = b"gitdir: /nonexistent-paired-metadata\n"
+    # Replace Git's owned pointer: Windows hidden attributes can block truncation.
+    marker.chmod(marker.stat().st_mode | stat.S_IWRITE)
+    marker.unlink()
+    marker.write_bytes(broken)
+    (layout.worktree / "rtl.v").write_bytes(b"retain user work\n")
+    branch = git(layout.worktree, "symbolic-ref", "HEAD")
+    result = abandon_goal(
+        _store(layout),
+        layout.worktree,
+        FinishEnvironment(ChangeEnvironment(_env(layout))),
+        record_id=record.id,
+        instruction_quote="Retain interrupted work",
+    )
+    assert result["status"] == "abandoned"
+    assert "could not inspect" in result["message"]
+    assert _store(layout).load(record.id).state is GoalState.ABANDONED
+    assert git(layout.worktree, "symbolic-ref", "HEAD") == branch
+    assert marker.read_bytes() == broken
+    assert (layout.worktree / "rtl.v").read_bytes() == b"retain user work\n"
+    assert (paired / "booley.toml").exists()

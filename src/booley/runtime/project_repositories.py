@@ -133,6 +133,13 @@ def _inspect_paired_project_repository(checkout_root: Path) -> RepositoryCheckou
     return RepositoryCheckout(nested, PROJECT_DIR_NAME)
 
 
+def is_paired_root_change(
+    change: ProjectRepositoryChange, paired: RepositoryCheckout | None
+) -> bool:
+    """Only an untracked authenticated Paired Checkout root belongs to its own repository."""
+    return paired is not None and change.status == "??" and change.path == f"{paired.path_prefix}/"
+
+
 def common_git_dir(worktree: Path) -> Path | None:
     result = run_git(worktree, "rev-parse", "--git-common-dir")
     if result.returncode != 0 or not result.stdout.strip():

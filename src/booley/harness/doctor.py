@@ -3218,6 +3218,24 @@ def _check_project_gitignore(project_dir: Path, _pass: Check, _warn: Check) -> N
     _pass("transient Booley state is gitignored")
 
 
+def _goal_history_layout_advice(root: Path) -> tuple[str, str]:
+    from booley.runtime.project_dir import PROJECT_DIR_NAME
+    from booley.runtime.project_repositories import RepositoryCheckoutError, is_git_worktree_root
+
+    project = root / PROJECT_DIR_NAME
+    healthy = is_git_worktree_root(project)
+    if (project / ".git").exists() and not healthy:
+        raise RepositoryCheckoutError(f"Booley repository metadata is unavailable at {project}")
+    if healthy:
+        return (
+            " Independently versioned Booley Directory preserves its own history.",
+            "retain the outer exclusion while preserving independent Booley history; "
+            "to publish through RTL, preserve or migrate that history into the RTL repository first, "
+            "then remove the exclusion and rerun booley doctor",
+        )
+    return "", "edit the reported exclusion when publication is wanted, then rerun booley doctor"
+
+
 def _check_goal_history_ignored(root: Path, project_dir: Path, _pass: Check, _warn: Warn) -> None:
     """Report preserved explicit exclusions which keep non-Stealth Goal history local."""
     from booley.commit_policy import stealth_enabled
@@ -3226,7 +3244,7 @@ def _check_goal_history_ignored(root: Path, project_dir: Path, _pass: Check, _wa
     if stealth_enabled(root, project_dir=project_dir):
         return
     relative = (Path(PROJECT_DIR_NAME) / "goals/history/doctor-probe.md").as_posix()
-    _warn = _warning_sink(_warn, "goals.history-ignored")
+    inspect_warning = _warning_sink(_warn, "goals.history-ignored")
     try:
         result = subprocess.run(
             ["git", "check-ignore", "--no-index", "-v", "--", relative],
@@ -3237,24 +3255,52 @@ def _check_goal_history_ignored(root: Path, project_dir: Path, _pass: Check, _wa
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        _warn(
+        inspect_warning(
             f"cannot inspect Goal history exclusions: {exc}",
             "check Git exclusions and rerun booley doctor",
         )
         return
-    if result.returncode == 0:
-        _warn(
-            f"Goal Session Summary path {relative} is gitignored; summaries remain local. "
-            f"Exclusion: {result.stdout.strip()}",
-            "edit the reported exclusion when publication is wanted, then rerun booley doctor",
-        )
-    elif result.returncode == 1:
-        _pass("Goal history is eligible for commits")
-    else:
-        _warn(
+    _report_goal_history_policy(root, relative, result, _pass, _warn)
+
+
+def _report_goal_history_policy(
+    root: Path, relative: str, result: subprocess.CompletedProcess[str], _pass: Check, _warn: Warn
+) -> None:
+    from booley.runtime.project_repositories import (
+        RepositoryCheckoutError,
+        paired_project_repository,
+    )
+
+    if result.returncode not in {0, 1}:
+        _warning_sink(_warn, "goals.history-ignored")(
             f"cannot inspect Goal history exclusions: {result.stderr.strip()}",
             "check Git exclusions and rerun booley doctor",
         )
+        return
+    try:
+        paired = paired_project_repository(root)
+        layout, hint = _goal_history_layout_advice(root)
+    except RepositoryCheckoutError as exc:
+        _warning_sink(_warn, "goals.history-layout-unreadable")(
+            f"cannot inspect Goal history repository layout: {exc}",
+            "preserve the exclusion and independent history; repair Booley repository metadata "
+            "and rerun booley doctor",
+        )
+        return
+    if result.returncode == 1:
+        _pass(
+            "Goal summaries remain local; Paired Checkout preserves independent Booley history"
+            if paired is not None
+            else "Goal history is eligible for commits"
+        )
+        return
+    _warning_sink(
+        _warn, "goals.history-ignored", subject="independent-booley-history" if layout else None
+    )(
+        f"Goal Session Summary path {relative} is gitignored; summaries remain local. "
+        f"Exclusion: {result.stdout.strip()}{layout}",
+        hint,
+    )
 
 
 def _check_git_state(project_root: Path, _pass: Check, _note: Check, _fail: Fail) -> None:
