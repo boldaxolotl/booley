@@ -288,9 +288,15 @@ def test_source_launcher_runs_from_unrelated_cwd(tmp_path):
 def test_unresolvable_checkout_preserves_dist(
     checkout, tmp_path, monkeypatch, capsys, existing_dist, layout
 ):
-    shutil.rmtree(checkout / ".git")
+    if layout not in {"redirected", "spoofed-root"}:
+        shutil.rmtree(checkout / ".git")
     if layout == "nested-export":
-        init_git(tmp_path)
+        outer = tmp_path / "outer"
+        outer.mkdir()
+        init_git(outer)
+        relocated = outer / "checkout"
+        checkout.rename(relocated)
+        checkout = relocated
     elif layout == "no-head":
         subprocess.run(["git", "init", str(checkout)], check=True, capture_output=True, timeout=10)
     elif layout in {"redirected", "spoofed-root"}:
@@ -314,6 +320,8 @@ def test_unresolvable_checkout_preserves_dist(
     output = capsys.readouterr()
     assert output.out == ""
     assert "revision" in output.err
+    if layout in {"redirected", "spoofed-root"}:
+        assert "Git repository differs" in output.err
     assert "complete source checkout" in output.err
     assert not calls
     assert dist.exists() == existing_dist
@@ -321,11 +329,13 @@ def test_unresolvable_checkout_preserves_dist(
     assert_clean(checkout)
 
 
-def test_unresolved_stamp_return_prevents_frontend(checkout, monkeypatch, capsys):
+@pytest.mark.parametrize("existing_dist", [False, True])
+def test_unresolved_stamp_return_prevents_frontend(checkout, monkeypatch, capsys, existing_dist):
     dist = checkout / "dist"
-    dist.mkdir()
     prior = dist / WHEEL
-    prior.write_bytes(b"previous")
+    if existing_dist:
+        dist.mkdir()
+        prior.write_bytes(b"previous")
     calls = []
     module = wire_frontend(monkeypatch, lambda *args: calls.append(args))
     original = module.write_build_stamp
@@ -338,7 +348,11 @@ def test_unresolved_stamp_return_prevents_frontend(checkout, monkeypatch, capsys
     assert module.main(checkout) != 0
     assert capsys.readouterr().out == ""
     assert not calls
-    assert prior.read_bytes() == b"previous"
+    if existing_dist:
+        assert prior.read_bytes() == b"previous"
+    else:
+        assert dist.is_dir()
+        assert not list(dist.iterdir())
     assert_clean(checkout)
 
 

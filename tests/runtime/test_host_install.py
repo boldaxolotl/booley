@@ -394,4 +394,6 @@ def test_registration_cannot_succeed_without_persisted_validation(tmp_path, monk
         host_install.register_host_installation(Path("/skills"), path=state, update=True)
     if failure in {"temporary-validation", "write", "replace"}:
         assert state.read_bytes() == before
+    else:
+        assert original_load(state) == candidate
     assert not list(tmp_path.glob(".*.tmp"))

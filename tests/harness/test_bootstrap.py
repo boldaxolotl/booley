@@ -1721,3 +1721,4 @@ def test_cli_invalid_registration_never_prints_update_success(
         assert host_install.load_host_installation(state) == identity
     else:
         assert "persisted validation failed" in output
+        assert original(state).revision == "new"
