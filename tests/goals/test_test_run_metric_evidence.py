@@ -1,9 +1,11 @@
 """Cycle Count and coverage Goals: whose metric counts, and whose outcomes (ADR 0072).
 
 A metric verdict counts only when the change that carries it also carries the
-Goal's frozen Test Runs that produced the metric. Any other change with a
-matching run enters that run's outcome into the Goal's ledger and nothing
-else: a failure is sticky, and a pass never borrows another run's metric.
+Goal's frozen Test Runs that produced the metric. For a Cycle Count Goal any
+other change with a matching run enters that run's outcome into the Goal's
+ledger and nothing else: a failure is sticky, and a pass never borrows another
+run's metric. A coverage Goal is judged by its coverage floors alone: whether
+its Test Runs passed never decides it.
 """
 
 from __future__ import annotations
@@ -13,12 +15,20 @@ from typing import Any
 
 import pytest
 
+from booley.criteria.state import DevelopmentState
 from booley.criteria.templates import cycle_count_criterion_key
 from booley.flows.frozen_test_runs import OUTCOMES_ONLY_DETAIL_KEY
 from booley.flows.test_runs import build_test_run
-from booley.goals.test_run_evidence import REASON_FAILED
+from booley.goals.test_run_evidence import LEDGER_DETAIL_KEY, REASON_FAILED, REASON_INCOMPLETE
 from tests.goals.conftest import enter_goals, run_row
-from tests.goals.test_test_run_evidence import _outcomes, _record, _status
+from tests.goals.test_test_run_evidence import (
+    _edit_rtl,
+    _outcomes,
+    _record,
+    _shown,
+    _state_file,
+    _status,
+)
 
 PINNED = build_test_run("smoke", seed=7)
 CYCLE_KEY = cycle_count_criterion_key("top", "smoke@7")
@@ -105,19 +115,70 @@ def coverage(layout: SimpleNamespace) -> SimpleNamespace:
     return SimpleNamespace(**vars(layout), record=record, key=key)
 
 
-def test_failure_from_an_ordinary_simulation_blocks_a_later_coverage_campaign(
+def test_failure_from_an_ordinary_simulation_does_not_block_a_later_coverage_campaign(
     coverage: SimpleNamespace,
 ) -> None:
     key = coverage.key
     rows = [run_row(STRESS, "fail")]
     failed = _record(coverage, "run-1", rows, key=key, met=False, extra=OUTCOMES_ONLY)
     assert _outcomes(failed) == {"stress@5": "failed", "smoke@1": "missing"}
+    # A failing or missing run is never why a coverage Goal is unmet: it is not measured yet.
+    status = _status(coverage, key)
+    assert status.status == "unmet" and "did not measure the Goal" in status.reason
+    assert REASON_FAILED not in status.reason and REASON_INCOMPLETE not in status.reason
+    assert _shown(status) == {"stress@5": "failed", "smoke@1": "missing"}
     # The coverage campaign runs exactly the frozen runs and reaches the floors.
     campaign = [run_row(STRESS), run_row("smoke")]
     detail = _record(coverage, "run-2", campaign, key=key, met=True)
-    assert _outcomes(detail)["stress@5"] == "failed"
+    # Its ledger holds its own runs' outcomes; the earlier failure is not folded in.
+    assert _outcomes(detail) == {"stress@5": "passed", "smoke@1": "passed"}
+    assert detail[LEDGER_DETAIL_KEY]["source_evidence"] == []
+    assert "goal_contract_violation" not in detail
+    assert _status(coverage, key).status == "stale"  # this bare detail has no coverage stamp
+
+
+def test_coverage_floors_decide_a_campaign_whose_test_runs_failed(
+    coverage: SimpleNamespace,
+) -> None:
+    key = coverage.key
+    campaign = [run_row(STRESS, "fail"), run_row("smoke")]
+    met = _record(coverage, "run-1", campaign, key=key, met=True)
+    assert "goal_contract_violation" not in met
+    assert _outcomes(met) == {"stress@5": "failed", "smoke@1": "passed"}
     status = _status(coverage, key)
-    assert status.status == "unmet" and status.reason.startswith(REASON_FAILED)
+    assert status.status == "stale" and "goal-test-run-" not in status.reason
+    # The failing run is still shown, with the command that runs it again.
+    assert status.test_runs is not None
+    assert [run.name for run in status.test_runs.failed] == ["stress@5"]
+    # Floors the producer found unmet keep the Goal unmet, whatever the runs did.
+    unmet = _record(coverage, "run-2", [run_row(STRESS), run_row("smoke")], key=key, met=False)
+    assert "goal_contract_violation" not in unmet
+    assert _status(coverage, key).status == "unmet"
+
+
+@pytest.mark.parametrize("grade", ["pass", "fail"])
+def test_run_that_does_not_measure_coverage_restates_the_measurement(
+    coverage: SimpleNamespace, grade: str
+) -> None:
+    key = coverage.key
+    campaign = [run_row(STRESS), run_row("smoke")]
+    _record(coverage, "run-1", campaign, key=key, met=True, extra={"evaluation": "kept"})
+    # An ordinary simulation of one frozen run, passing or failing, at the same contents.
+    again = _record(
+        coverage, "run-2", [run_row(STRESS, grade)], key=key, met=False, extra=OUTCOMES_ONLY
+    )
+    assert again["evaluation"] == "kept" and OUTCOMES_ONLY_DETAIL_KEY not in again
+    assert _outcomes(again) == {"stress@5": "passed", "smoke@1": "passed"}
+    state = DevelopmentState.load(_state_file(coverage))
+    assert state.criteria[key].met is True
+    # Status recomputes the ledger and finds nothing outdated, failed or incomplete.
+    assert "goal-test-run-" not in _status(coverage, key).reason
+    # At other file contents nothing is restated: the Goal is not measured there.
+    _edit_rtl(coverage, "module top; wire changed; endmodule\n")
+    other = _record(
+        coverage, "run-3", [run_row(STRESS, grade)], key=key, met=False, extra=OUTCOMES_ONLY
+    )
+    assert "evaluation" not in other and "did not measure" in other["goal_contract_violation"]
 
 
 def test_coverage_verdict_needs_exactly_the_frozen_runs_in_the_same_change(
