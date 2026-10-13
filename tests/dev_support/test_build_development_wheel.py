@@ -289,7 +289,7 @@ def test_unresolvable_checkout_preserves_dist(
     checkout, tmp_path, monkeypatch, capsys, existing_dist, layout
 ):
     if layout not in {"redirected", "spoofed-root"}:
-        shutil.rmtree(checkout / ".git")
+        (checkout / ".git").rename(tmp_path / "removed-checkout-git")
     if layout == "nested-export":
         outer = tmp_path / "outer"
         outer.mkdir()
