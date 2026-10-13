@@ -1,9 +1,7 @@
 pub mod cache;
 pub mod docs;
-pub mod extract;
 pub mod format;
 pub mod fst;
-pub mod index;
 pub mod output;
 pub mod parser;
 mod profile;

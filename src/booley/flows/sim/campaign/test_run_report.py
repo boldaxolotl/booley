@@ -34,6 +34,7 @@ __all__ = [
     "campaign_test_run_rows",
     "evidence_test_run_rows",
     "informative_test_run_lines",
+    "observation_test_run_rows",
     "test_run_grade",
     "test_run_report_lines",
     "test_run_row",
@@ -193,6 +194,20 @@ def evidence_test_run_rows(outcome: _EvidenceOutcome) -> list[dict[str, object]]
         raise SimulationCampaignIntegrityError(
             "Simulation Campaign manifest is not the one its acceptance facts name"
         )
+    return observation_test_run_rows(manifest, observations)
+
+
+def observation_test_run_rows(
+    manifest: SimulationCampaignManifest, observations: Sequence[Mapping[str, object]]
+) -> list[dict[str, object]]:
+    """One row per observation fact, from the Test Runs the authenticated *manifest* records.
+
+    Observation facts that do not name Test Runs have no rows. Raises
+    :class:`SimulationCampaignIntegrityError` when an observation has no
+    recorded Test Run with the fingerprint it bound.
+    """
+    if any("test_run" not in observation for observation in observations):
+        return []
     recorded = _manifest_test_runs(manifest)
     rows: list[dict[str, object]] = []
     for observation in observations:

@@ -151,10 +151,10 @@ def _assert_openroad(state: DevelopmentState) -> None:
 async def _success(workspace: Workspace) -> None:
     worktree = workspace.worktree
     goals = [
-        {"family": "lint", "target": "lint_smoke"},
-        {"family": "sim", "target": "sim_smoke"},
+        {"family": "LINT", "target": "lint_smoke"},
+        {"family": "SIM", "target": "sim_smoke"},
         {
-            "family": "synth",
+            "family": "SYNTH",
             "target": "synth_smoke",
             "thresholds": {
                 "cell_count_max": 500,
@@ -162,12 +162,14 @@ async def _success(workspace: Workspace) -> None:
             },
         },
     ]
-    keys = ["lint_clean_lint_smoke", "sim_pass_sim_smoke", "synthesis_ok_synth_smoke"]
+    keys = ["LINT:lint_smoke", "SIM:sim_smoke", "SYNTH:synth_smoke"]
     async with client_session(workspace) as client:
         record_id = await _enter(client, workspace, goals)
         for goal in goals:
             await run_flow(
-                client, goal["family"], {"target": goal["target"], "work_dir": str(worktree)}
+                client,
+                goal["family"].lower(),
+                {"target": goal["target"], "work_dir": str(worktree)},
             )
         status = await tool_text(client, "goal_status", {"work_dir": str(worktree)})
         assert set(status_rows(status, record_id, keys).values()) == {"met"}
@@ -177,8 +179,8 @@ async def _success(workspace: Workspace) -> None:
         stale = status_rows(
             await tool_text(client, "goal_status", {"work_dir": str(worktree)}), record_id, keys
         )
-        assert stale["sim_pass_sim_smoke"] == "stale"
-        assert stale["lint_clean_lint_smoke"] == stale["synthesis_ok_synth_smoke"] == "met"
+        assert stale["SIM:sim_smoke"] == "stale"
+        assert stale["LINT:lint_smoke"] == stale["SYNTH:synth_smoke"] == "met"
         _run_git(worktree, "add", "tb/tb_dut.sv")
         _run_git(worktree, "commit", "-m", "test: add freshness probe")
         await run_flow(client, "sim", {"target": "sim_smoke", "work_dir": str(worktree)})
@@ -202,19 +204,17 @@ def test_goal_mode_success_staleness_and_openroad(tmp_path: Path) -> None:
 async def _failure(workspace: Workspace) -> None:
     worktree = workspace.worktree
     async with client_session(workspace) as client:
-        record_id = await _enter(client, workspace, [{"family": "sim", "target": "sim_fail"}])
+        record_id = await _enter(client, workspace, [{"family": "SIM", "target": "sim_fail"}])
         text = await run_flow(
             client, "sim", {"target": "sim_fail", "work_dir": str(worktree)}, expected_exit_code=1
         )
         assert "EXIT_CODE: 1" in text and "intentional Goal Mode smoke failure" in text
         status = await tool_text(client, "goal_status", {"work_dir": str(worktree)})
-        assert status_rows(status, record_id, ["sim_pass_sim_fail"]) == {
-            "sim_pass_sim_fail": "unmet"
-        }
+        assert status_rows(status, record_id, ["SIM:sim_fail"]) == {"SIM:sim_fail": "unmet"}
         before = _run_git(worktree, "rev-parse", "HEAD").stdout
         with pytest.raises(GoalToolRefusalError) as refusal:
             await finish(client, worktree, record_id)
-        assert "sim_pass_sim_fail" in str(refusal.value)
+        assert "SIM:sim_fail" in str(refusal.value)
         assert _run_git(worktree, "rev-parse", "HEAD").stdout == before
         assert GoalStore(workspace.project_dir).load(record_id).state is GoalState.ACTIVE
 

@@ -8,7 +8,9 @@ import pytest
 from booley.flows.sim import waiver_candidates as store
 from booley.flows.sim.coverage_analysis_input import read_coverage_campaign
 from booley.goals.binding import GoalBindingError
+from booley.goals.flow_execution import GoalFlowExecution
 from booley.goals.paths import record_paths
+from booley.mcp.call_context import binding_from_environment
 from booley.specialists.coverage_candidate_recording import (
     GoalCandidateContext,
     record_goal_candidates,
@@ -30,16 +32,16 @@ def environment(goal_mode):
 
 
 def test_goal_context_ignores_ticket_slug_and_environment_roots(goal_mode):
-    env, paths = environment(goal_mode)
-    context = GoalCandidateContext.from_environment("wrong-ticket", env)
+    _env, paths = environment(goal_mode)
+    context = GoalCandidateContext.from_recorder(GoalFlowExecution(bind(goal_mode)))
     assert context.slug == goal_mode.record.id
     assert context.record_dir == paths.root
     assert context.flow_reports_root == paths.runtime_dir / "flow-reports"
 
 
 def test_goal_candidate_record_retains_campaign_target_under_bound_record(goal_mode, tmp_path):
-    env, paths = environment(goal_mode)
-    context = GoalCandidateContext.from_environment("wrong-ticket", env)
+    _env, paths = environment(goal_mode)
+    context = GoalCandidateContext.from_recorder(GoalFlowExecution(bind(goal_mode)))
     fixture = tmp_path / "campaign-fixture"
     original = source_project(fixture)
     shutil.copytree(fixture / "reports", context.flow_reports_root, dirs_exist_ok=True)
@@ -82,12 +84,16 @@ def test_goal_candidate_record_retains_campaign_target_under_bound_record(goal_m
     assert len(store.load(context.record_dir, context.slug).candidates) == 1
 
 
-@pytest.mark.parametrize("raw", [None, "{not-json", "[]", "{}"])
-def test_goal_candidate_context_requires_a_valid_admission_binding(goal_mode, raw):
+@pytest.mark.parametrize("raw", ["{not-json", "[]", "{}"])
+def test_goal_candidate_context_requires_a_valid_admission_binding(goal_mode, raw, monkeypatch):
     env, _ = environment(goal_mode)
     if raw is None:
         env.pop("BOOLEY_GOAL_RUN_BINDING")
     else:
         env["BOOLEY_GOAL_RUN_BINDING"] = raw
     with pytest.raises((ValueError, GoalBindingError), match=r"binding|JSON|Expecting"):
-        GoalCandidateContext.from_environment("ticket", env)
+        for name, value in env.items():
+            monkeypatch.setenv(name, value)
+        if raw is None:
+            monkeypatch.delenv("BOOLEY_GOAL_RUN_BINDING", raising=False)
+        binding_from_environment()

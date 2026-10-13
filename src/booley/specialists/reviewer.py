@@ -43,7 +43,10 @@ from booley.evidence.review_vocabulary import (
     DISPOSITION_SUPERSEDED,
 )
 from booley.flows.cli_help import CliHelp
-from booley.flows.execution_persistence import done_findings_require_approval_for
+from booley.flows.execution_persistence import (
+    done_findings_require_approval_for,
+    execution_goal_name,
+)
 from booley.mcp.base import (
     EXIT_ERROR,
     EXIT_FAILURE,
@@ -1733,26 +1736,28 @@ object, even after calling the capability.
 
     def _already_clean_result(self, crit_key: str) -> McpToolResult:
         msg = (
-            f"{crit_key} already met for the current source fingerprint. "
+            f"{execution_goal_name(self._acceptance_recorder, crit_key)} already met for the current source fingerprint. "
             "Do not call this reviewer again; proceed with remaining work."
         )
         return McpToolResult(
             exit_code=EXIT_SUCCESS,
             report_text=msg,
-            display_lines=[f"SKIPPED: {crit_key} already met (done — do not retry)"],
+            display_lines=[
+                f"SKIPPED: {execution_goal_name(self._acceptance_recorder, crit_key)} already met (done — do not retry)"
+            ],
         )
 
     def _clean_verify_limit(self, crit_key: str, prior_detail: dict[str, Any]):
         if prior_detail.get("verify_attempts", 0) >= 2:
             msg = (
-                f"{crit_key}: 2 verify attempts exhausted — unresolved findings remain. "
+                f"{execution_goal_name(self._acceptance_recorder, crit_key)}: 2 verify attempts exhausted — unresolved findings remain. "
                 "Fix them or propose explicit, justified review waivers; findings are never "
                 "waived automatically."
             )
             return McpToolResult(exit_code=EXIT_FAILURE, report_text=msg)
         if prior_detail.get("total_verify_cycles", 0) >= 3:
             msg = (
-                f"{crit_key}: 3 review/resolve cycles exhausted — unresolved findings "
+                f"{execution_goal_name(self._acceptance_recorder, crit_key)}: 3 review/resolve cycles exhausted — unresolved findings "
                 "remain. Blocking without creating an automatic waiver."
             )
             return McpToolResult(exit_code=EXIT_FAILURE, report_text=msg)
@@ -1868,7 +1873,7 @@ object, even after calling the capability.
         outcome = "REVIEWED WITH FINDINGS" if issues else "REVIEWED — NO FINDINGS"
 
         lines = [
-            f"{crit_key} already completed for the current source, so this call "
+            f"{execution_goal_name(self._acceptance_recorder, crit_key)} already completed for the current source, so this call "
             "did NOT re-run the review.",
             "Replaying the recorded verdict verbatim:",
             f"\nRESULT: {outcome} ({count_str})",
@@ -1879,7 +1884,7 @@ object, even after calling the capability.
             "\nThis review is already completed for the current source. Calling "
             "`reviewer` again only replays this verdict while the reviewed source remains "
             "current. A later source edit makes the criterion stale and requires "
-            "a new final review. Use a `_clean` review criterion when findings "
+            "a new final review. Use a review Goal requiring `clean` when findings "
             "must be fixed or explicitly waived and re-verified."
         )
         report_text = "\n".join(lines)
@@ -1891,7 +1896,7 @@ object, even after calling the capability.
             criterion_met=True,
             detail=dict(prior),
             display_lines=[
-                f"SKIPPED: {crit_key} already completed for current source — prior verdict replayed"
+                f"SKIPPED: {execution_goal_name(self._acceptance_recorder, crit_key)} already completed for current source — prior verdict replayed"
             ],
             report_text=report_text,
         )

@@ -17,6 +17,12 @@ the stricter Goal (D11) and every merge is reported as a warning:
   over ``done`` (a terminal advisory review whose findings may stay open).
 - Coverage floors and the mutation ``min_detected`` count are lower bounds:
   the larger wins (mutation only when scope, total, and auto agree).
+- Goals that name Test Runs (ADR 0072) merge by what they resolve to, not by
+  how they are written: with a :data:`CanonicalNames`, ``stress`` and
+  ``stress+short`` are one Goal when ``short`` is the default Test Variant.
+  Two multi-seed Goals on one Test Variant merge to the larger N; a pinned
+  seed and a seed count stay separate Goals. The merged Goal keeps the key of
+  the written form that won.
 - Settings that are not bounds have no stricter value: a different baseline
   Target (among Goals with a relative threshold, the only ones that read a
   baseline), coverage test selection, spec file, or mutation scope, total,
@@ -37,6 +43,8 @@ from booley.criteria.templates import (
     has_relative_qor_threshold,
 )
 from booley.criteria.thresholds import describe_threshold
+from booley.flows.test_runs import SeedCount, TestSelector, parse_test_selector
+from booley.goals.capabilities import CRITERION_FOR_FAMILY
 from booley.goals.model import (
     CoverageGoalArg,
     CycleCountGoalArg,
@@ -48,17 +56,14 @@ from booley.goals.model import (
     ReviewGoalArg,
     TargetGoalArg,
 )
-
-# Criterion family each per-Target Goal family is judged by.
-CRITERION_FOR_FAMILY: Mapping[GoalFamily, str] = {
-    GoalFamily.LINT: "lint_clean",
-    GoalFamily.SIM: "sim_pass",
-    GoalFamily.ELAB: "elab_pass",
-    GoalFamily.SYNTH: "synthesis_ok",
-    GoalFamily.FPGA: "fpga_impl_ok",
-    GoalFamily.COVERAGE: "coverage",
-    GoalFamily.MUTATION: "mutation_score",
-}
+from booley.goals.presentation import goal_presentation
+from booley.goals.test_run_goals import (
+    TEST_RUN_FAMILIES,
+    CanonicalNames,
+    canonical_identity,
+    selector_text,
+    simulation_run_key,
+)
 
 _ArgT = TypeVar("_ArgT")
 
@@ -87,7 +92,8 @@ class Translation:
 def criterion_spec(goal: GoalSpec) -> CriterionSpec:
     """The mandatory Criterion that judges *goal*; it expands to ``goal.key``."""
     params = dict(goal.params)
-    if goal.family in (GoalFamily.CYCLE_COUNT, GoalFamily.REVIEW):
+    names_test_run = goal.family is GoalFamily.SIM and "test" in params
+    if goal.family in (GoalFamily.CYCLE_COUNT, GoalFamily.REVIEW) or names_test_run:
         return CriterionSpec(goal.key, params=params)
     assert goal.target is not None, f"per-Target Goal {goal.key} has no Target"
     return CriterionSpec(
@@ -98,25 +104,50 @@ def criterion_spec(goal: GoalSpec) -> CriterionSpec:
     )
 
 
-def translate_goals(args: Sequence[GoalArg]) -> Translation:
+def translate_goals(
+    args: Sequence[GoalArg],
+    *,
+    resolver: CanonicalNames | None = None,
+    target_spelling: Callable[[GoalSpec], GoalSpec] | None = None,
+) -> Translation:
     """Translate entry arguments into merged Goals.
+
+    *resolver* gives the canonical form of a Test Run selector on its Target
+    (entry passes the Target's Test Run plan); without it Goals that name
+    Test Runs merge by their written form only.
 
     Raises :class:`GoalTranslationError` naming the argument when one breaks a
     Criteria rule, and :class:`GoalConflictError` when Goals for one key
     cannot merge.
     """
-    groups: dict[str, list[tuple[GoalArg, GoalSpec]]] = {}
+    groups: dict[object, list[tuple[GoalArg, GoalSpec]]] = {}
     for index, arg in enumerate(args):
-        goal = _translate_one(arg, where=f"goals[{index}]")
-        groups.setdefault(_merge_group(arg, goal), []).append((arg, goal))
+        goal = _translate_one(arg, where=f"goals[{index}]", target_spelling=target_spelling)
+        if target_spelling is not None:
+            goal = target_spelling(goal)
+        groups.setdefault(_merge_group(arg, goal, resolver), []).append((arg, goal))
     goals: list[GoalSpec] = []
     warnings: list[str] = []
     for members in groups.values():
-        goal, warning = _merge(members)
+        goal, warning = _merge(members, resolver)
         goals.append(goal)
         if warning is not None:
             warnings.append(warning)
+    _require_distinct_keys(goals)
     return Translation(tuple(goals), tuple(warnings))
+
+
+def _require_distinct_keys(goals: Sequence[GoalSpec]) -> None:
+    """Refuse two different Goals under one key.
+
+    Goals merge by what they name, and a Test Goal's key is built from its
+    Target and selector; a Target whose own name has that shape could give a
+    Target Goal the key of another Target's Test Goal.
+    """
+    keys = [goal.key for goal in goals]
+    repeated = sorted({key for key in keys if keys.count(key) > 1})
+    if repeated:
+        raise GoalConflictError(f"different Goals share the key {', '.join(repeated)}")
 
 
 # ---------------------------------------------------------------------------
@@ -145,13 +176,20 @@ def _authoring_entry(arg: GoalArg) -> tuple[str, Any]:
     return f"review_{arg.review}_{arg.verdict}", None
 
 
-def _translate_one(arg: GoalArg, *, where: str) -> GoalSpec:
+def _translate_one(
+    arg: GoalArg, *, where: str, target_spelling: Callable[[GoalSpec], GoalSpec] | None = None
+) -> GoalSpec:
     """Translate one argument through the Criteria authoring rules."""
+    if isinstance(arg, TargetGoalArg) and arg.test is not None:
+        # A Test Goal has no Criterion authoring entry: its key names the
+        # written selector and its one parameter is that selector.
+        key = simulation_run_key(arg.target, parse_test_selector(arg.test))
+        return GoalSpec(key, arg.family, arg.target, {"test": arg.test}, (arg.origin,))
     key, value = _authoring_entry(arg)
     try:
         specs = CriteriaTemplate.from_yaml({"mandatory": {key: value}}).specs
     except ValueError as exc:
-        raise GoalTranslationError(f"{where} ({_describe(arg)}): {exc}") from None
+        raise GoalTranslationError(f"{where} ({_describe(arg, target_spelling)}): {exc}") from None
     assert len(specs) == 1, f"{where} translated to {len(specs)} Criteria"
     expanded = specs[0].expand([])
     assert len(expanded) == 1, f"{where} expanded to {len(expanded)} Criterion keys"
@@ -162,17 +200,42 @@ def _translate_one(arg: GoalArg, *, where: str) -> GoalSpec:
     return GoalSpec(expanded[0][0], arg.family, target, params, (arg.origin,))
 
 
-def _describe(arg: GoalArg) -> str:
-    if isinstance(arg, ReviewGoalArg):
-        return f"review {arg.review} {arg.verdict}"
-    return f"{arg.family.value} {arg.target}"
+def _describe(arg: GoalArg, target_spelling: Callable[[GoalSpec], GoalSpec] | None = None) -> str:
+    key, _value = _authoring_entry(arg)
+    goal = GoalSpec(
+        key, arg.family, None if isinstance(arg, ReviewGoalArg) else arg.target, {}, (arg.origin,)
+    )
+    if target_spelling is not None:
+        goal = target_spelling(goal)
+    presentation = goal_presentation(goal)
+    return presentation.text if isinstance(arg, ReviewGoalArg) else presentation.name
 
 
-def _merge_group(arg: GoalArg, goal: GoalSpec) -> str:
-    """Goals in one group merge; review Goals group by review, others by key."""
+def _merge_group(arg: GoalArg, goal: GoalSpec, resolver: CanonicalNames | None) -> object:
+    """Goals in one group merge.
+
+    Review Goals group by review, Goals that name one Test Run selector by
+    what the selector resolves to, other Goals judged by Test Runs by the
+    identity of their Target, every other Goal by key.
+    """
     if isinstance(arg, ReviewGoalArg):
         return f"review_{arg.review}"
+    selector = _one_selector(arg)
+    if selector is not None:
+        return (arg.family, *canonical_identity(arg.target, selector, resolver))
+    if resolver is not None and goal.family in TEST_RUN_FAMILIES and goal.target is not None:
+        # However the Target is written, it is one Target with one set of frozen Test Runs.
+        return (arg.family, resolver.target(goal.target))
     return goal.key
+
+
+def _one_selector(arg: GoalArg) -> TestSelector | None:
+    """The one Test Run selector a simulation or Cycle Count Goal names, if any."""
+    if isinstance(arg, CycleCountGoalArg):
+        return parse_test_selector(arg.test)
+    if isinstance(arg, TargetGoalArg) and arg.test is not None:
+        return parse_test_selector(arg.test)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -183,7 +246,7 @@ def _merge_group(arg: GoalArg, goal: GoalSpec) -> str:
 Members = list[tuple[GoalArg, GoalSpec]]
 
 
-def _merge(members: Members) -> tuple[GoalSpec, str | None]:
+def _merge(members: Members, resolver: CanonicalNames | None) -> tuple[GoalSpec, str | None]:
     """Merge one group to its stricter Goal and describe the merge."""
     first_arg, first_goal = members[0]
     if len(members) == 1:
@@ -191,23 +254,47 @@ def _merge(members: Members) -> tuple[GoalSpec, str | None]:
     if len({arg.family for arg, _ in members}) > 1:
         raise GoalConflictError(f"cannot merge {_group_name(members)}: different Goal families")
     origins = tuple(dict.fromkeys(o for _, goal in members for o in goal.origins))
-    merged_arg, decisions = _MERGERS[first_arg.family](members)
+    merged_arg, decisions = _MERGERS[first_arg.family](members, resolver)
+    decisions = [*decisions, *_same_test_run_note(members)]
     if merged_arg is first_arg:
         merged = first_goal
     else:
         try:
-            merged = _translate_one(merged_arg, where=_group_name(members))
+            merged = _translate_one(
+                merged_arg,
+                where=_group_name(members),
+                target_spelling=lambda goal: replace(
+                    goal, display_target=first_goal.display_target
+                ),
+            )
         except GoalTranslationError as exc:
             raise GoalConflictError(f"cannot merge {_group_name(members)}: {exc}") from None
-    merged = replace(merged, origins=origins)
+    merged = replace(merged, origins=origins, display_target=first_goal.display_target)
     identical = all(goal.params == first_goal.params for _, goal in members)
     assert identical or decisions, f"{merged.key} merged differing Goals without a decision"
     detail = "; ".join(decisions) if decisions else "identical Goals"
-    return merged, f"Goal {merged.key} from {', '.join(origins)} merged: {detail}"
+    return (
+        merged,
+        f"Goal {goal_presentation(merged).text} from {', '.join(origins)} merged: {detail}",
+    )
+
+
+def _same_test_run_note(members: Members) -> list[str]:
+    """Say that differently written selectors were merged as one Test Run."""
+    written = list(
+        dict.fromkeys(
+            selector_text(selector)
+            for arg, _ in members
+            if (selector := _one_selector(arg)) is not None
+        )
+    )
+    if len(written) < 2:
+        return []
+    return [f"{' and '.join(written)} name the same Test Runs"]
 
 
 def _group_name(members: Members) -> str:
-    keys = ", ".join(dict.fromkeys(goal.key for _, goal in members))
+    keys = ", ".join(dict.fromkeys(goal_presentation(goal).text for _, goal in members))
     origins = ", ".join(dict.fromkeys(o for _, goal in members for o in goal.origins))
     return f"Goals {keys} (from {origins})"
 
@@ -280,12 +367,31 @@ def stricter_threshold(param: str, candidate: Any, current: Any) -> bool:
     return sign * candidate > sign * current
 
 
-def _merge_identical(members: Members) -> tuple[GoalArg, list[str]]:
-    """lint, sim, and elab Goals for one key are identical by construction."""
+def _merge_identical(
+    members: Members, _resolver: CanonicalNames | None
+) -> tuple[GoalArg, list[str]]:
+    """lint and elab Goals for one key are identical by construction."""
     return members[0][0], []
 
 
-def _merge_review(members: Members) -> tuple[GoalArg, list[str]]:
+def _merge_simulation(
+    members: Members, _resolver: CanonicalNames | None
+) -> tuple[GoalArg, list[str]]:
+    """Target Goals are identical; of two multi-seed Goals the larger N is stricter."""
+    counts = [
+        (arg, selector.seed_form.count)
+        for arg, _ in members
+        if (selector := _one_selector(arg)) is not None
+        and isinstance(selector.seed_form, SeedCount)
+    ]
+    if len({count for _, count in counts}) < 2:
+        return members[0][0], []
+    winner, largest = max(counts, key=lambda item: item[1])
+    described = ", ".join(f"{count} (from {arg.origin})" for arg, count in counts)
+    return winner, [f"seed counts {described} -> stricter {largest}"]
+
+
+def _merge_review(members: Members, _resolver: CanonicalNames | None) -> tuple[GoalArg, list[str]]:
     reviews = [arg for arg, _ in members if isinstance(arg, ReviewGoalArg)]
     _require_equal(members, "spec files", lambda arg: _as(arg, ReviewGoalArg).spec)
     clean = [arg for arg in reviews if arg.verdict == "clean"]
@@ -312,7 +418,9 @@ def _baseline_opinion(arg: GoalArg) -> str | None:
     return goal.target if has_relative_qor_threshold(dict(goal.thresholds)) else None
 
 
-def _merge_implementation(members: Members) -> tuple[GoalArg, list[str]]:
+def _merge_implementation(
+    members: Members, _resolver: CanonicalNames | None
+) -> tuple[GoalArg, list[str]]:
     opinions = [(arg, goal) for arg, goal in members if _baseline_opinion(arg) is not None]
     _require_equal(opinions, "baseline Targets", _baseline_opinion)
     first = _as(members[0][0], ImplementationGoalArg)
@@ -327,7 +435,9 @@ def _merge_implementation(members: Members) -> tuple[GoalArg, list[str]]:
     return replace(first, thresholds=thresholds, baseline=merged_baseline), decisions
 
 
-def _merge_cycle_count(members: Members) -> tuple[GoalArg, list[str]]:
+def _merge_cycle_count(
+    members: Members, _resolver: CanonicalNames | None
+) -> tuple[GoalArg, list[str]]:
     thresholds, decisions = _merge_values(
         members,
         lambda arg: _as(arg, CycleCountGoalArg).thresholds,
@@ -337,12 +447,14 @@ def _merge_cycle_count(members: Members) -> tuple[GoalArg, list[str]]:
     return replace(_as(members[0][0], CycleCountGoalArg), thresholds=thresholds), decisions
 
 
-def _merge_coverage(members: Members) -> tuple[GoalArg, list[str]]:
+def _merge_coverage(
+    members: Members, resolver: CanonicalNames | None
+) -> tuple[GoalArg, list[str]]:
     # A coverage floor is a minimum percentage: the larger floor is stricter.
     _require_equal(
         members,
         "coverage test selections",
-        lambda arg: _coverage_tests_key(_as(arg, CoverageGoalArg)),
+        lambda arg: _coverage_tests_key(_as(arg, CoverageGoalArg), resolver),
     )
     floors, decisions = _merge_values(
         members,
@@ -350,17 +462,32 @@ def _merge_coverage(members: Members) -> tuple[GoalArg, list[str]]:
         lambda goal, name: goal.params["metrics"][name]["min_pct"],
         lambda _name, candidate, current: candidate > current,
     )
+    written = list(dict.fromkeys(repr(_as(arg, CoverageGoalArg).tests) for arg, _ in members))
+    if len(written) > 1:
+        decisions.append(f"test selections {' and '.join(written)} name the same Test Runs")
     return replace(_as(members[0][0], CoverageGoalArg), metrics=floors), decisions
 
 
-def _coverage_tests_key(arg: CoverageGoalArg) -> object:
-    return arg.tests if arg.tests == "all" else sorted(arg.tests)
+def _coverage_tests_key(arg: CoverageGoalArg, resolver: CanonicalNames | None) -> object:
+    """The selection as the Test Runs it names; a seed count keeps its N."""
+    if arg.tests == "all":
+        return "all"
+    selectors = [parse_test_selector(text) for text in arg.tests]
+    return sorted(
+        (
+            *canonical_identity(arg.target, selector, resolver),
+            selector.seed_form.count if isinstance(selector.seed_form, SeedCount) else 0,
+        )
+        for selector in selectors
+    )
 
 
 _MUTATION_FIXED = ("scope", "total", "auto")
 
 
-def _merge_mutation(members: Members) -> tuple[GoalArg, list[str]]:
+def _merge_mutation(
+    members: Members, _resolver: CanonicalNames | None
+) -> tuple[GoalArg, list[str]]:
     # Scope, total and auto have no defined stricter value and must agree.
     # With them equal, more detected mutants out of the same total is stricter.
     _require_equal(
@@ -388,9 +515,10 @@ def _as(arg: GoalArg, kind: type[_ArgT]) -> _ArgT:
     return arg
 
 
-_MERGERS: Mapping[GoalFamily, Callable[[Members], tuple[GoalArg, list[str]]]] = {
+_Merger = Callable[[Members, CanonicalNames | None], tuple[GoalArg, list[str]]]
+_MERGERS: Mapping[GoalFamily, _Merger] = {
     GoalFamily.LINT: _merge_identical,
-    GoalFamily.SIM: _merge_identical,
+    GoalFamily.SIM: _merge_simulation,
     GoalFamily.ELAB: _merge_identical,
     GoalFamily.SYNTH: _merge_implementation,
     GoalFamily.FPGA: _merge_implementation,

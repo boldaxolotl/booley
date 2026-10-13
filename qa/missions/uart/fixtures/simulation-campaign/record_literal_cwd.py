@@ -11,7 +11,7 @@ test = os.environ["BOOLEY_TEST_NAME"]
 run_cwd = Path(os.environ["BOOLEY_RUN_CWD"])
 start_ns = time.monotonic_ns()
 (run_cwd / "qa-literal-owner.txt").write_text(test + "\n", encoding="utf-8")
-time.sleep(0.25)
+time.sleep(2.0)
 end_ns = time.monotonic_ns()
 print(
     "QA_LITERAL_CWD="

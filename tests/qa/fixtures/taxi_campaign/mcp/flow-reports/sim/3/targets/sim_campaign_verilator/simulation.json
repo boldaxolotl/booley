@@ -1,0 +1,51 @@
+{
+  "$schema": "booley.simulation-projection/v2",
+  "campaign_id": "c37cba48-7128-4aa8-a2a2-1a4220793161",
+  "campaign_manifest": {
+    "bytes": 7886,
+    "kind": "simulation_campaign_manifest",
+    "owner": "c37cba48-7128-4aa8-a2a2-1a4220793161",
+    "path": "campaign/manifest.json",
+    "path_base": "origin_target",
+    "sha256": "sha256:9a294772a33637b10f4e4ba27d9d120d50edc6e6f6f6bd0d4b9b5a43af97cc90"
+  },
+  "complete": true,
+  "flow": "sim",
+  "inconclusive": false,
+  "mode": "simulate",
+  "passed": false,
+  "target": "sim_campaign_verilator",
+  "target_identity": "booley:qa:taxi_simulation_campaign:1#sim_campaign_verilator",
+  "tests": [
+    {
+      "cycles": null,
+      "error_tail": "",
+      "execution": "completed",
+      "failure_kind": "",
+      "name": "slow-first",
+      "passed": true,
+      "sva_errors": 0,
+      "timed_out": false
+    },
+    {
+      "cycles": null,
+      "error_tail": "_timing.o verilated_threads.o Vcampaign_tb__ALL.a    -pthread -lpthread -latomic   -o Vcampaign_tb\nrm Vcampaign_tb__ALL.verilator_deplist.tmp\nmake[1]: Leaving directory '/work/.booley_project/.runtime/edalize/sim/2bd10fdb825252fb0ebb/g/4d2fb9119230a17f/booley_qa_taxi_simulation_campaign_1/sim_campaign_verilator'\nmake: Leaving directory '/work/.booley_project/.runtime/edalize/sim/2bd10fdb825252fb0ebb/g/4d2fb9119230a17f/booley_qa_taxi_simulation_campaign_1/sim_campaign_verilator'\nBOOLEY_BUILD_STAGE token=d5cfd6987d468126776f289d42933a66 rc=0 duration_ms=507\nBOOLEY_BUILD_MILLISECONDS: 507\nBOOLEY_BUILD_SECONDS: 0\n\n\n============================================================\n[Verilator simulation: campaign_tb]\n============================================================\nCWD: /work/.booley-qa/campaign/c37cba48-7128-4aa8-a2a2-1a4220793161/0002-3ac778310874645b/0001-4c053d42-c4ee-40f0-9b66-6e2549d5c7af\nCMD: /work/.booley_project/.interactive_logs/4c4252cb984e/.runtime/flow-reports/sim/3/targets/sim_campaign_verilator/campaign/work-items/0002-3ac778310874645b/attempts/0001-4c053d42-c4ee-40f0-9b66-6e2549d5c7af/snapshot/Vcampaign_tb +test=slow-fail\n\nQA_VERILATOR_CAMPAIGN_TEST=slow-fail\n[SIM_RESULT] FAILED\n- src/booley_qa_taxi_simulation_campaign_1/campaign_tb.sv:19: Verilog $finish\n[SIM_RESULT] PASSED\n- src/booley_qa_taxi_simulation_campaign_1/campaign_tb.sv:22: Verilog $finish\nBOOLEY_SIM_CPU_SECONDS: user=0.003927 system=0.001963\n[SIM_SUMMARY] {\"passed\":false,\"sva_errors\":0}\n\nVerilator sim FAILED (fail sentinel matched)",
+      "execution": "completed",
+      "failure_kind": "design",
+      "name": "slow-fail",
+      "passed": false,
+      "sva_errors": 0,
+      "timed_out": false
+    },
+    {
+      "cycles": null,
+      "error_tail": "",
+      "execution": "completed",
+      "failure_kind": "",
+      "name": "slow-last",
+      "passed": true,
+      "sva_errors": 0,
+      "timed_out": false
+    }
+  ]
+}

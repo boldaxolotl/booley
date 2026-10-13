@@ -10,8 +10,8 @@ import pytest
 
 from booley.criteria.state import DevelopmentState
 from booley.criteria.templates import cycle_count_criterion_key
+from booley.flows.frozen_test_runs import OUTCOMES_ONLY_DETAIL_KEY, FrozenTestRuns, GoalTestRuns
 from booley.flows.sim.acceptance import (
-    SeveralTestRunsOfOneTestError,
     SimulationAcceptanceCoordinator,
     _campaign_projection,
 )
@@ -153,15 +153,128 @@ def test_criterion_detail_rows_come_from_the_authenticated_manifest(tmp_path: Pa
         SimulationAcceptanceCoordinator._derive_changes(outcome, state)
 
 
-def test_several_test_runs_of_one_test_are_a_typed_refusal_not_an_assertion(tmp_path: Path):
+def test_outside_goal_mode_a_test_with_several_test_runs_judges_no_criterion(tmp_path: Path):
+    """A Criterion names a Test; several Test Runs of it leave nothing single to judge."""
     outcome = _outcome(tmp_path, _RESET, _SOAK, _FAULT)
     state = _state(tmp_path, outcome)
-    with pytest.raises(SeveralTestRunsOfOneTestError, match="cannot choose between them"):
-        SimulationAcceptanceCoordinator._derive_changes(outcome, state)
-    # Existing handlers of a campaign refusal keep catching it.
-    assert issubclass(SeveralTestRunsOfOneTestError, SimulationCampaignIntegrityError)
-    assert issubclass(SeveralTestRunsOfOneTestError, ValueError)
-    assert not issubclass(SeveralTestRunsOfOneTestError, AssertionError)
+    assert SimulationAcceptanceCoordinator._derive_changes(outcome, state) == []
+
+
+# --- Inside Goal Mode: evidence matches frozen Test Runs (ADR 0072) ---------------------
+
+
+def _goal(outcome, key: str, *runs, kind: str = "simulation", **extra) -> GoalTestRuns:
+    return GoalTestRuns(key, kind, str(outcome.target["selector"]), tuple(runs), **extra)  # type: ignore[arg-type]
+
+
+def _goal_changes(outcome, state, *goals: GoalTestRuns):
+    frozen = FrozenTestRuns(tuple(goals))
+    return SimulationAcceptanceCoordinator._derive_changes(outcome, state, frozen=frozen)
+
+
+def _graded(monkeypatch, grades: dict[str, str]) -> None:
+    """Grade the campaign's Test Run rows by name (the fake executor fails every run)."""
+    from booley.flows.sim import acceptance
+
+    def rows(outcome):
+        return [
+            {**row, "grade": grades.get(str(row["name"]), row["grade"])}
+            for row in evidence_test_run_rows(outcome)
+        ]
+
+    monkeypatch.setattr(acceptance, "evidence_test_run_rows", rows)
+
+
+def test_goal_evidence_is_the_runs_that_match_by_name_and_fingerprint(tmp_path, monkeypatch):
+    outcome = _outcome(tmp_path, _RESET, _SOAK, _FAULT)
+    key = f"sim_pass_{outcome.target['name']}"
+    state = _state(tmp_path, outcome)
+    _graded(monkeypatch, {_RESET.name: "pass", _SOAK.name: "pass"})
+    # The Goal requires reset and soak; ``_FAULT`` failed but no Goal names it.
+    (change,) = _goal_changes(outcome, state, _goal(outcome, key, _RESET, _SOAK))
+    assert (change.key, change.met) == (key, True)
+    assert [row["name"] for row in change.detail["test_runs"]] == [_RESET.name, _SOAK.name]
+    assert change.detail["failed_tests"] == []
+
+
+def test_same_name_with_other_declared_inputs_is_not_evidence(tmp_path, monkeypatch):
+    outcome = _outcome(tmp_path, _RESET, _SOAK)
+    key = f"sim_pass_{outcome.target['name']}"
+    state = _state(tmp_path, outcome)
+    _graded(monkeypatch, {_RESET.name: "pass", _SOAK.name: "pass"})
+    other_args = build_test_run(
+        _SOAK.test, variant=_SOAK.variant, seed=_SOAK.seed, args=("+other=1",)
+    )
+    assert other_args.name == _SOAK.name and other_args.fingerprint != _SOAK.fingerprint
+    # Only a run of another seed and one with other arguments: the campaign is diagnostic.
+    other_seed = build_test_run("reset", seed=99)
+    assert _goal_changes(outcome, state, _goal(outcome, key, other_args, other_seed)) == []
+
+
+def test_partial_run_is_evidence_but_does_not_claim_the_goal(tmp_path, monkeypatch):
+    outcome = _outcome(tmp_path, _RESET)
+    key = f"sim_pass_{outcome.target['name']}"
+    state = _state(tmp_path, outcome)
+    _graded(monkeypatch, {_RESET.name: "pass"})
+    (change,) = _goal_changes(outcome, state, _goal(outcome, key, _RESET, _SOAK))
+    # The Goal's recorder folds this run into the ledger; this campaign alone meets nothing.
+    assert change.met is False
+    assert [row["name"] for row in change.detail["test_runs"]] == [_RESET.name]
+
+
+def test_goal_of_another_target_and_an_unobserved_run_get_no_change(tmp_path, monkeypatch):
+    outcome = _outcome(tmp_path, _RESET)
+    key = f"sim_pass_{outcome.target['name']}"
+    state = _state(tmp_path, outcome)
+    elsewhere = GoalTestRuns(key, "simulation", "another_target", (_RESET,))
+    assert _goal_changes(outcome, state, elsewhere) == []
+    _graded(monkeypatch, {_RESET.name: "error"})  # infrastructure: nothing was observed
+    assert _goal_changes(outcome, state, _goal(outcome, key, _RESET)) == []
+
+
+def test_cycle_count_goal_is_judged_from_its_frozen_test_run_only(tmp_path):
+    outcome = _outcome(tmp_path, _RESET, _COUNT)
+    state = _state(tmp_path, outcome, cycle_test="count")
+    key = cycle_count_criterion_key(str(outcome.target["name"]), "count")
+    (change,) = _goal_changes(outcome, state, _goal(outcome, key, _COUNT, kind="cycle_count"))
+    assert change.key == key and change.detail["test_runs"] == _rows(_COUNT)
+    # Another seed of the same Test is not the Goal's Test Run: no evidence.
+    other = build_test_run("count", variant="soak", seed=7, args=("+iters=9",))
+    assert _goal_changes(outcome, state, _goal(outcome, key, other, kind="cycle_count")) == []
+
+
+def test_coverage_goal_takes_run_outcomes_but_no_metric_from_an_ordinary_campaign(tmp_path):
+    outcome = _outcome(tmp_path, _RESET)
+    state = _state(tmp_path, outcome)
+    goal = _goal(outcome, f"sim_pass_{outcome.target['name']}", _RESET, kind="coverage")
+    # The campaign collected no coverage, but it ran (and failed) the Goal's frozen run:
+    # that outcome is evidence for the Goal, its coverage is not measured.
+    (change,) = _goal_changes(outcome, state, goal)
+    assert change.met is False
+    assert change.detail["test_runs"] == _rows(_RESET)
+    assert change.detail[OUTCOMES_ONLY_DETAIL_KEY] is True
+
+
+def test_cycle_count_goal_keeps_a_failing_frozen_run_without_a_cycle_observation(
+    tmp_path, monkeypatch
+):
+    from booley.flows.sim import acceptance
+
+    outcome = _outcome(tmp_path, _COUNT)
+    state = _state(tmp_path, outcome, cycle_test="count")
+    key = cycle_count_criterion_key(str(outcome.target["name"]), "count")
+    monkeypatch.setattr(acceptance, "_candidate_observations", lambda *_args: {})
+    (change,) = _goal_changes(outcome, state, _goal(outcome, key, _COUNT, kind="cycle_count"))
+    assert (change.key, change.met) == (key, False)
+    assert change.detail["test_runs"] == _rows(_COUNT)
+    assert change.detail[OUTCOMES_ONLY_DETAIL_KEY] is True
+
+
+def test_an_incomplete_campaign_still_records_its_matching_failure(tmp_path):
+    outcome = replace(_outcome(tmp_path, _RESET), complete=False)
+    key = f"sim_pass_{outcome.target['name']}"
+    (change,) = _goal_changes(outcome, _state(tmp_path, outcome), _goal(outcome, key, _RESET))
+    assert change.met is False and change.detail["test_runs"] == _rows(_RESET)
 
 
 def test_facts_that_name_no_test_runs_have_no_rows(tmp_path: Path):

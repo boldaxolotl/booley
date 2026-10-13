@@ -16,7 +16,9 @@ Each rendered Goalset carries exactly one fenced ``json`` block: the Goal
 argument list for that Goalset, with ``<target>`` standing for each Target the
 change touches (and ``<spec>`` for a spec review's spec file). Substituting
 those placeholders yields input that :func:`~booley.goals.model.parse_goal_args`
-and :func:`~booley.goals.translate.translate_goals` accept.
+and :func:`~booley.goals.translate.translate_goals` accept. A Goalset with a
+simulation Goal also shows, as inline examples, how to write a Goal that
+names a Test Run (ADR 0072).
 """
 
 from __future__ import annotations
@@ -28,8 +30,8 @@ from pathlib import Path
 from typing import Any
 
 from booley.criteria.templates import TEMPLATE_REGISTRY, CriterionSpec
+from booley.goals.capabilities import CRITERION_FOR_FAMILY
 from booley.goals.model import REVIEW_KINDS, REVIEW_VERDICTS, SPEC_REVIEW_KIND, GoalFamily
-from booley.goals.translate import CRITERION_FOR_FAMILY
 from booley.runtime.guarded_write import WriteOutcome, guarded_write
 
 # Directory, inside the Booley Directory, that holds every Goalset.
@@ -108,8 +110,36 @@ def render_goalset(name: str, specs: Sequence[CriterionSpec]) -> str:
         *(f"- {_describe(goal)}" for goal in goals),
         "",
         *_arguments_section(goals),
+        *_test_run_examples(goals),
     ]
     return "\n".join(lines) + "\n"
+
+
+def _test_run_examples(goals: Sequence[Mapping[str, Any]]) -> list[str]:
+    """How to write a Goal that names Test Runs, for a Goalset with a simulation Goal.
+
+    Examples only, as inline code: the Goalset's one fenced block stays its
+    Goal argument list.
+    """
+    if not any(goal["family"] == GoalFamily.SIM.name for goal in goals):
+        return []
+    sim = f'{{"family": "SIM", "target": "{TARGET_PLACEHOLDER}", "test": '
+    return [
+        "",
+        "## Goals that name Test Runs",
+        "",
+        "A `SIM` Goal without `test` covers every Test of its Target, each as its",
+        "default Test Variant at the Target's Default Seed. Add `test` to require",
+        "one configuration instead:",
+        "",
+        f'- `{sim}"stress+soak"}}`: the Test Variant `soak` of the Test `stress`.',
+        f'- `{sim}"stress+soak@7"}}`: that Test Variant with seed 7.',
+        f'- `{sim}"stress@x20"}}`: 20 Test Runs of `stress`, each with a different seed.',
+        "  Booley draws the seeds when Goal Mode is entered and keeps them for the session.",
+        "",
+        "A `CYCLE_COUNT` Goal accepts the first two forms in `test`, and a `COVERAGE`",
+        "Goal accepts all three in `tests`. Test Variants are declared in `tests.toml`.",
+    ]
 
 
 def _header(name: str) -> list[str]:
@@ -154,7 +184,7 @@ def _goal_argument(spec: CriterionSpec, *, origin: str) -> dict[str, Any]:
     """The Goal argument (entry tool input) one template Criterion stands for."""
     family = _FAMILY_FOR_CRITERION.get(spec.name)
     if spec.per_target and family is not None:
-        goal: dict[str, Any] = {"family": family.value, "target": TARGET_PLACEHOLDER}
+        goal: dict[str, Any] = {"family": family.name, "target": TARGET_PLACEHOLDER}
         if spec.params:
             if family not in (GoalFamily.SYNTH, GoalFamily.FPGA):
                 raise GoalsetTemplateError(
@@ -164,7 +194,7 @@ def _goal_argument(spec: CriterionSpec, *, origin: str) -> dict[str, Any]:
         return {**goal, "origin": origin}
     review = _REVIEW_NAME.fullmatch(spec.name)
     if review is not None and not spec.per_target and not spec.params:
-        goal = {"family": GoalFamily.REVIEW.value, **review.groupdict()}
+        goal = {"family": GoalFamily.REVIEW.name, **review.groupdict()}
         if review["review"] == SPEC_REVIEW_KIND:
             goal["spec"] = SPEC_PLACEHOLDER
         return {**goal, "origin": origin}
@@ -173,13 +203,13 @@ def _goal_argument(spec: CriterionSpec, *, origin: str) -> dict[str, Any]:
 
 def _describe(goal: Mapping[str, Any]) -> str:
     """One prose line for a Goal argument built by :func:`_goal_argument`."""
-    family = GoalFamily(goal["family"])
+    family = GoalFamily[goal["family"]]
     if family is GoalFamily.REVIEW:
-        line = f"`review`: the `{goal['review']}` review {_VERDICT_PROSE[goal['verdict']]}"
+        line = f"`REVIEW:{goal['review']}`: the review {_VERDICT_PROSE[goal['verdict']]}"
         if "spec" in goal:
             line += ", judged against the spec file the Goal names"
         return line + "."
-    line = f"`{family.value}`: every Target the change touches {_PER_TARGET_PROSE[family]}"
+    line = f"`{family.name}:{TARGET_PLACEHOLDER}`: every Target the change touches {_PER_TARGET_PROSE[family]}"
     thresholds = goal.get("thresholds")
     if thresholds:
         line += " within " + ", ".join(f"`{key}` {value}" for key, value in thresholds.items())

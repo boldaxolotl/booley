@@ -2210,7 +2210,7 @@ class TestFileBasedInterpretation:
             assert criterion.met is False
             assert criterion.detail["total_warnings"] == 2
 
-    def test_yosys_loop_fails_even_when_final_check_is_clean(self, flow_and_state, tmp_path: Path):
+    def test_earlier_loop_warns_when_final_check_is_clean(self, flow_and_state, tmp_path: Path):
         flow, state_file = flow_and_state
         build_dir = self._build_dir(tmp_path)
 
@@ -2218,15 +2218,19 @@ class TestFileBasedInterpretation:
             build_dir.mkdir(parents=True, exist_ok=True)
             (build_dir / "yosys.log").write_text(
                 "Warning: found logic loop in module dut:\n"
+                "    cell $add$rtl.sv:7$1\n"
                 "    wire \\feedback\n"
                 "Chip area for top module '\\dut': 6400.0\n"
                 "Number of cells: 100\n",
                 encoding="utf-8",
             )
-            (build_dir / "stat_dut.txt").write_text("Number of cells: 100\n", encoding="utf-8")
+            (build_dir / "stat_dut.txt").write_text(
+                "Number of cells: 100\nChip area for top module dut: 6400.0\n", encoding="utf-8"
+            )
             (build_dir / "check_dut.txt").write_text(
                 "Found and reported 0 problems.\n", encoding="utf-8"
             )
+            (build_dir / "synth_dut.v").write_text("module dut; endmodule\n")
             fresh = time.time() + 1
             for artifact in build_dir.iterdir():
                 os.utime(artifact, (fresh, fresh))
@@ -2235,19 +2239,27 @@ class TestFileBasedInterpretation:
         with patch.object(flow, "_execute", side_effect=mock_execute):
             result = flow._run()
 
-        assert result.exit_code == EXIT_FAILURE
-        assert "CRITICAL -- 1 comb loop" in result.report_text
+        assert result.exit_code == EXIT_SUCCESS
+        assert "RESULT: WARN" in result.report_text
+        assert "CRITICAL" not in result.report_text
+        for evidence in (
+            "$add$rtl.sv:7$1",
+            "\\feedback",
+            "completed final netlist check reports no combinational loops",
+        ):
+            assert evidence in result.report_text
         target = result.detail["lite"]
-        assert target["comb_loops"] == 1
-        assert target["passed"] is False
+        assert target["comb_loops"] == 0
+        assert target["passed"] is True
         report = json.loads((tmp_path / "reports" / "synth_lite.json").read_text())
-        assert report["returncode"] == 1
-        assert report["termination"] == "design_failure"
-        assert report["passed"] is False
-        assert report["implementation"]["conditions"]["has_critical"] is True
+        assert report["returncode"] == 0
+        assert report["passed"] is True
+        assert report["structural_checks_complete"] is True
+        assert report["implementation"]["status"]["grade"] == "warn"
+        assert report["implementation"]["conditions"]["has_critical"] is False
         criterion = DevelopmentState.load(state_file).criteria["synthesis_ok_lite"]
-        assert criterion.met is False
-        assert criterion.detail["comb_loops"] == 1
+        assert criterion.met is True
+        assert criterion.detail["comb_loops"] == 0
 
     def test_advisory_warning_yields_warn_grade_without_failing(
         self, flow_and_state, tmp_path: Path
@@ -4809,6 +4821,10 @@ def _run_latch_case(flow_and_state, tmp_path, case):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(text)
             os.utime(path, (100, 100))
+        if case.get("missing_check"):
+            (plan.build_dir / "check_dut.txt").unlink()
+        if case.get("stale_check"):
+            os.utime(plan.build_dir / "check_dut.txt", (0, 0))
         if case.get("missing_netlist"):
             (plan.build_dir / "synth_dut.v").unlink()
         return SubprocessResult(dispatched_unix=99, **case.get("process", {"returncode": 0}))
@@ -5588,3 +5604,97 @@ def test_fanout_reservation_failure_keeps_metadata_and_reports_diagnostic(tmp_pa
     assert metrics.fanout_policy["worst_check"]["max_fanout"] == 50
     assert "native_check_artifact" not in metrics.fanout_policy["worst_check"]
     assert "could not publish numbered synth fanout evidence" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "final", ["Found and reported 0 problems.\n", "Checking module dut...\n", None, "stale"]
+)
+def test_earlier_loop_physical_native_boundary(flow_and_state, tmp_path, final):
+    loop = (
+        "Warning: found logic loop in module dut:\n    cell $add$rtl.sv:7$1\n    wire \\feedback\n"
+    )
+    artifacts = {
+        "yosys.log": loop,
+        "stat_dut.txt": "=== dut ===\n  16 36.176 cells\n  16 36.176 NAND2\n",
+        "openroad_dut.v": "module dut; endmodule\n",
+        "reports/timing/overall.rpt": "timing report\n",
+        "reports/timing/overall.csv.rpt": "",
+        "reports/fanout/policy.json": '{"configured_max_fanout":null,"suppression_reason":null,"design_rule":{"scope":"current_design","max_fanout":null,"source":"booley_default"},"status":"no_applicable_driver","worst_check":null}',
+        "reports/fanout/worst.rpt": "",
+    }
+    if final is not None:
+        artifacts["check_dut.txt"] = (
+            "Found and reported 0 problems.\n" if final == "stale" else final
+        )
+    result, report = _run_latch_case(
+        flow_and_state,
+        tmp_path,
+        {
+            "mode": "physical",
+            "cell": "NAND2",
+            "artifacts": artifacts,
+            "missing_check": final is None,
+            "stale_check": final == "stale",
+            "openroad": "STA_WORST_SLACK_NS: 0.000000\nSTA_PERCLOCK: name=clk period_ns=100.000000 wns_ns=0.000000 whs_ns=0.1\nDesign area 63 u^2 50% utilization.\n",
+        },
+    )
+    clean = final == "Found and reported 0 problems.\n"
+    available = final not in (None, "stale")
+    assert report["yosys_complete"] is available
+    assert report["timing_complete"] is available
+    assert report["ppa_complete"] is available
+    assert report["structural_checks_complete"] is clean
+    assert report["passed"] is clean
+    assert result.exit_code == (
+        EXIT_SUCCESS if clean else EXIT_FAILURE if available else EXIT_ERROR
+    )
+    assert (
+        "completed final netlist check reports no combinational loops" in result.report_text
+    ) is clean
+    if clean:
+        assert report["implementation"]["status"]["grade"] == "warn"
+        assert "RESULT: WARN" in result.report_text
+
+
+@pytest.mark.parametrize("mode", ["logical", "physical"])
+@pytest.mark.parametrize("huge", [False, True])
+def test_earlier_loop_report_survives_representative_saturation(
+    flow_and_state, tmp_path, mode, huge
+):
+    flow, _ = flow_and_state
+    padding = " x" * 2000 if huge else ""
+    loop = f"Warning: found logic loop in module dut:\n    cell $add$rtl.sv:7$1{padding}\n    wire \\feedback\n"
+    raw = tmp_path / "run.log"
+    raw.write_text(loop)
+    diagnostics = parse_synth_diagnostics(
+        {
+            "yosys": loop + "".join(f"ABC: Warning: unrelated {n}\n" for n in range(12)),
+            "final_check": "Found and reported 0 problems.\n",
+        }
+    )
+    metrics = SynthMetrics(
+        synth_mode=SynthMode(mode),
+        area_um2=500,
+        cells=100,
+        warning_summary=diagnostics.warnings,
+        log_path=str(raw),
+        per_clock={"clk": make_clock_timing("clk", 2, 0.75, 0.1)},
+        wns_ns=0.25,
+    )
+    result = flow._aggregate_results(["lite"], {"lite": metrics}, {}, None)
+    assert result.exit_code == EXIT_SUCCESS
+    assert "RESULT: WARN" in result.report_text
+    assert "CRITICAL" not in result.report_text
+    assert "$add$rtl.sv:7$1" in result.report_text
+    assert "completed final netlist check reports no combinational loops" in result.report_text
+    assert str(raw) in result.report_text
+    groups = result.detail["lite"]["warning_summary"]["representatives"]
+    assert len(groups) == 8
+    loop_group = groups[0]
+    assert loop_group["category"] == "combinational_loop"
+    assert loop_group["truncated"] is huge
+    assert len(loop_group["message"].encode()) <= 2048
+    assert "\\feedback" in raw.read_text()
+    if not huge:
+        assert "\\feedback" in result.report_text
+    assert result.detail["implementation"]["results"]["lite"]["status"]["grade"] == "warn"

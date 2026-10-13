@@ -25,7 +25,7 @@ async def approve_review_relaxation(layout, monkeypatch):
                 "operation": "create",
                 "kind": "relax",
                 "goal_key": "review_rtl_bugs_clean",
-                "after": {"family": "review", "review": "rtl_bugs", "verdict": "done"},
+                "after": {"family": "REVIEW", "review": "rtl_bugs", "verdict": "done"},
                 "rationale": "accept the completed review",
             },
         )
@@ -73,7 +73,7 @@ def test_modern_review_relaxation_preserves_actual_specialist_receipt(
 ):
     monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
     layout.record = enter_goals(
-        layout, [{"family": "review", "review": "rtl_bugs", "verdict": "clean"}]
+        layout, [{"family": "REVIEW", "review": "rtl_bugs", "verdict": "clean"}]
     )
     endpoint, provider = _goal_reviewer_endpoint(layout, monkeypatch)
     issues = review_issues(has_finding)
