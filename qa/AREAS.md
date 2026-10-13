@@ -74,7 +74,7 @@ timebox. A row whose areas are all optional is not covered by a primary run.
 | Verilator simulation integration | [coverage/cov-collect](missions/coverage/MISSION.md), [taxi/baseline](missions/taxi/MISSION.md), [taxi/campaign](missions/taxi/MISSION.md) |
 | Verilator lint integration | [picorv32/setup](missions/picorv32/MISSION.md) |
 | Icarus simulation integration | [picorv32/setup](missions/picorv32/MISSION.md) |
-| Verible lint integration | [taxi/lint-synth](missions/taxi/MISSION.md) |
+| Verible lint integration | [taxi/lint-synth](missions/taxi/MISSION.md), [uart/setup-interactive](missions/uart/MISSION.md) |
 | Yosys logical synthesis integration | [taxi/lint-synth](missions/taxi/MISSION.md) |
 | Slang integration | [taxi/lint-synth](missions/taxi/MISSION.md) |
 | Yosys physical synthesis integration | [picorv32/setup](missions/picorv32/MISSION.md), [taxi/lint-synth](missions/taxi/MISSION.md) |

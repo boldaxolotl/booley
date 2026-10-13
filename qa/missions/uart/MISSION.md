@@ -100,8 +100,9 @@ Try:
   deep (verifies the counter) and plain Doctor again are all clean.
 - Copy `spec/` (never `evaluator/`) into the Project and give an Interactive
   child `prompts/interactive.md`: `qa_uart` interface plus minimal CTRL
-  reset/read/write, an MMIO smoke test, and `sim_uart`, `lint_uart`, `synth_uart`.
-  Through MCP/Flows the smoke sim self-checks and passes, lint is clean, Yosys
+  reset/read/write, an MMIO smoke test, and `sim_uart`, `lint_uart`, `lint_uart_verible`,
+  `synth_uart`. Through MCP/Flows the smoke sim self-checks and passes, Verilator and Verible
+  lint are clean, Yosys
   gives a fresh netlist and reports, then Doctor is clean.
 - A fresh trace read back through B-Wave matches the stimulus. Commit the clean
   baseline before area 4. Run this Interactive area with no active Goal in the Project.
@@ -171,7 +172,8 @@ Look for: weakened checks, edited Protected Inputs, new regressions or a repair
 that succeeds only on the bounded-feedback subset.
 
 ### 7. final-regression — Final tree health (~15 min)
-Try: on the final accepted tree, run the full developer sim, Verilator lint, Yosys synthesis and
+Try: on the final accepted tree, run the full developer sim, Verilator and Verible lint, Yosys
+synthesis and
 Doctor. In Git, confirm a clean accepted commit, the local merge, ordinary source and core
 paths, and literal commit messages (Stealth is off).
 Look for: stale reports, Doctor drift after Goal work.

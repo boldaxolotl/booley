@@ -44,45 +44,75 @@ def _taxi_batch_files(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
             "$schema": "booley.simulation-attempt/v1",
             "work_item_id": "item:0000:batch",
             "attempt_id": "first",
+            "attempt_ordinal": 1,
         },
     )
     interrupted_result = tmp_path / "interrupted-result.json"
     resumed_value = {
+        "$schema": "booley.simulation-result/v2",
         "work_item_id": "item:0000:batch",
         "attempt_id": "second",
+        "attempt_ordinal": 2,
         "state": "completed",
+        "grade": "pass",
         "observations": [{"test": "alpha"}, {"test": "beta"}],
     }
     resumed = _write(tmp_path / "resumed.json", resumed_value)
     return manifest, interrupted_attempt, interrupted_result, resumed
 
 
-def _mcp_response(tmp_path: Path) -> Path:
+CAMPAIGN_ID = "c37cba48-7128-4aa8-a2a2-1a4220793161"
+
+
+def _artifact(kind: str, path: str) -> dict[str, object]:
+    return {
+        "bytes": 2869,
+        "kind": kind,
+        "owner": CAMPAIGN_ID,
+        "path": path,
+        "path_base": "report_invocation",
+        "sha256": "sha256:" + "5" * 64,
+    }
+
+
+def _mcp_response(tmp_path: Path, structured_key: str = "structured_content") -> Path:
     return _write(
         tmp_path / "mcp.json",
         {
+            "meta": None,
             "content": [{"type": "text", "text": "EXIT_CODE: 0\nPASS"}],
-            "structuredContent": {
+            "is_error": False,
+            structured_key: {
                 "reports": [
                     {
                         "exit_code": 0,
                         "detail": {
                             "campaigns": {
                                 "taxi": {
-                                    "manifest": "campaign/manifest.json",
-                                    "summary": "campaign/summary.json",
-                                    "simulation": "simulation.json",
-                                    "coverage": None,
+                                    "campaign_id": CAMPAIGN_ID,
+                                    "manifest_sha256": "sha256:" + "b" * 64,
+                                    "artifacts": {
+                                        "manifest": _artifact(
+                                            "simulation_campaign_manifest",
+                                            "targets/taxi/campaign/manifest.json",
+                                        ),
+                                        "simulation": _artifact(
+                                            "simulation_projection",
+                                            "targets/taxi/simulation.json",
+                                        ),
+                                    },
                                     "grade": "pass",
                                     "complete": True,
                                     "observations": [
                                         {
                                             "test": name,
                                             "execution": "completed",
+                                            "failure_class": None,
                                             "functional": "pass",
                                             "assertions": "clean",
                                             "assertion_count": 0,
-                                            "detail": {"text": name},
+                                            "cycle_count": None,
+                                            "detail": {"reason": name},
                                         }
                                         for name in ("alpha", "beta")
                                     ],
@@ -93,6 +123,8 @@ def _mcp_response(tmp_path: Path) -> Path:
                                         "functional": {"pass": 2},
                                         "assertions": {"clean": 2},
                                     },
+                                    "termination_counts": {},
+                                    "build_stage": [],
                                 }
                             }
                         },
@@ -114,7 +146,7 @@ def test_taxi_phase5_validator_checks_batch_retry_and_mcp_bound(tmp_path: Path) 
     with pytest.raises(ValueError, match="declared bound"):
         module.validate_mcp_response(response, response.stat().st_size - 1)
     document = json.loads(response.read_text())
-    campaign = document["structuredContent"]["reports"][0]["detail"]["campaigns"]["taxi"]
+    campaign = document["structured_content"]["reports"][0]["detail"]["campaigns"]["taxi"]
     campaign["observations"] *= 17
     campaign["observation_total"] = 34
     campaign["observations_truncated"] = True
@@ -124,11 +156,78 @@ def test_taxi_phase5_validator_checks_batch_retry_and_mcp_bound(tmp_path: Path) 
     _write(response, document)
     with pytest.raises(ValueError, match="preview length"):
         module.validate_mcp_response(response, response.stat().st_size)
+    camel_case = _mcp_response(tmp_path, "structuredContent")
+    module.validate_mcp_response(camel_case, camel_case.stat().st_size)
 
 
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [
+        (lambda resumed: resumed.update(attempt_id="first"), "reused an attempt"),
+        (lambda resumed: resumed.update(state="aborted"), "did not complete"),
+        (lambda resumed: resumed["observations"].pop(), "no per-test observations"),
+        (lambda resumed: resumed["observations"].reverse(), "differ from exact selection"),
+        (lambda resumed: resumed.update(work_item_id="item:0001:other"), "one batch work item"),
+    ],
+)
+def test_taxi_batch_validator_rejects_partial_or_reused_retry(
+    tmp_path: Path, mutation: Callable[[dict[str, object]], object], message: str
+) -> None:
+    module = _module(
+        ROOT / "qa/missions/taxi/fixtures/simulation-campaign/validate_phase5.py",
+        "taxi_phase5_batch",
+    )
+    manifest, attempt, interrupted_result, resumed = _taxi_batch_files(tmp_path)
+    document = json.loads(resumed.read_text())
+    mutation(document)
+    _write(resumed, document)
+    with pytest.raises(ValueError, match=message):
+        module.validate_cocotb_batch(manifest, attempt, interrupted_result, resumed)
+
+
+def _retype_manifest(campaign) -> None:
+    campaign["artifacts"]["manifest"]["kind"] = "simulation_projection"
+
+
+def _escape_projection(campaign) -> None:
+    campaign["artifacts"]["simulation"]["path"] = "../simulation.json"
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (lambda campaign: campaign["artifacts"].pop("manifest"), "manifest pointer is missing"),
+        (
+            lambda campaign: campaign["artifacts"].update(manifest="campaign/manifest.json"),
+            "not a typed artifact reference",
+        ),
+        (_retype_manifest, "manifest pointer kind differs"),
+        (
+            lambda campaign: campaign["artifacts"]["simulation"].update(owner="other"),
+            "simulation pointer owner differs",
+        ),
+        (_escape_projection, "simulation pointer path escapes"),
+        (
+            lambda campaign: campaign["artifacts"]["simulation"].update(sha256="sha256:0"),
+            "simulation pointer digest is invalid",
+        ),
+        (
+            lambda campaign: campaign["artifacts"]["manifest"].update(bytes=0),
+            "manifest pointer size is invalid",
+        ),
+        (
+            lambda campaign: campaign["artifacts"].update(summary=_artifact("summary", "s.json")),
+            "artifacts are unexpected",
+        ),
+        (lambda campaign: campaign["observations"][0].pop("cycle_count"), "fields differ"),
+        (
+            lambda campaign: campaign["observations"][0].update(failure_class="flaky"),
+            "failure class is invalid",
+        ),
+        (
+            lambda campaign: campaign["observations"][0].update(cycle_count=-1),
+            "cycle count is invalid",
+        ),
         (lambda campaign: campaign.update(observation_total=3), "preview length"),
         (lambda campaign: campaign.update(observations_truncated=True), "truncation flag"),
         (lambda campaign: campaign["observations"][0].pop("detail"), "fields differ"),
@@ -147,7 +246,7 @@ def test_taxi_mcp_validator_rejects_inconsistent_observation_preview(
     )
     response = _mcp_response(tmp_path)
     document = json.loads(response.read_text())
-    campaign = document["structuredContent"]["reports"][0]["detail"]["campaigns"]["taxi"]
+    campaign = document["structured_content"]["reports"][0]["detail"]["campaigns"]["taxi"]
     mutation(campaign)
     _write(response, document)
     with pytest.raises(ValueError, match=message):

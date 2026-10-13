@@ -39,7 +39,8 @@ Try:
 - Record `booley --version` and import origin; `booley bootstrap --check-only` reports ready.
 - Run `booley init`, then give one Setup agent `prompts/setup.md`; no second approval request
   (`SETUP-PLAN.md` is a record, not a gate). Expect Targets `sim_mac_10g`, `lint_mac_10g`,
-  `synth_mac_10g`, `synth_mac_10g_physical`; a derived image from the full pinned `tox.ini` stack;
+  `lint_mac_10g_verible`, `synth_mac_10g`, `synth_mac_10g_physical`; a derived image from the
+  pinned `tox.ini` stack with cocotb at 2.1.0;
   explicit `[stealth] enabled = false`; `fixtures/taxi_mac_10g.sdc` as Project-owned config.
 - Copy the full text of `prompts/setup.md` into outer `docs/taxi-contract.md`
   and verify the bytes match: the spec reviewer inlines this file, not linked
@@ -61,20 +62,21 @@ scope), implicit stealth, symlink loops, stale Session Runtime after `init` rebu
 Intent: discovery shows exactly what will run, and CLI and MCP agree.
 Try:
 - `sim_mac_10g` uses the upstream `test_taxi_eth_mac_10g.sv` wrapper and `.py` module, the full
-  closure of `taxi_eth_mac_10g.f`, and Verilator Cocotb with native `trace.fst`. All 7 tests are
-  registered: rx, tx, tx-alignment, tx-underrun, tx-user-error, lfc and pfc.
+  closure of `taxi_eth_mac_10g.f`, and Verilator Cocotb; a traced run yields `trace.fst`. All 7
+  tests are registered: rx, tx, tx-alignment, tx-underrun, tx-user-error, lfc and pfc.
 - Applicable Targets carry all `prompts/setup.md` parameters; logical and physical synth Targets
   share sources, top, parameters.
-- `booley targets` list/filter/detail/JSON agree with MCP on identity, selectors, EDA programs, top,
-  parameters and inputs. Use one fully qualified selector. Changing run-owned config refreshes
-  discovery without touching Taxi.
+- `booley targets` list/filter/JSON agree with MCP on identity, selectors, EDA programs and top.
+  Resolved parameters and inputs come from the CLI detail view alone. Use one fully qualified
+  selector. Changing run-owned config refreshes discovery without touching Taxi.
 - Negatives: a colliding bare name is rejected, the qualified name picks the exact core; an invented
   per-call parameter override is rejected; two Targets with different values report their own; a
   restored valid selector runs.
 - Deep Doctor runs only selected Targets; the bad selftest is hidden in listings yet evidenced in
   deep Doctor; authored and vendored names are kept. A many-core fixture lists the exact qualified
   set; an invalid core behind `FUSESOC_IGNORE` is excluded while the valid one resolves.
-- Plain, deep, plain Doctor: warning-free, no waivers. Break config, Doctor, restore: clean.
+- Plain, deep, plain Doctor: warning-free, no waivers (`lint_mac_10g_verible` is not
+  Doctor-selected). Break config, Doctor, restore: clean.
 Look for: CLI/MCP mismatch, dropped tests/params, ambiguous identities, Doctor passing unrun checks.
 
 ### 3. baseline — Upstream simulation and Cocotb result handling (~25 min)
@@ -91,12 +93,15 @@ Look for: skips counted as passes, import errors hidden as "results.xml not foun
 ### 4. lint-synth — Lint, logical and physical synthesis (~35 min)
 Intent: honest lint/synthesis outcomes; physical timing never faked.
 Try:
-- Verible `lint_mac_10g` is clean. Clean, warning, syntax-error and missing-tool inputs give
+- Verilator `lint_mac_10g` (default warning set, flat wrapper top) is clean. Verible
+  `lint_mac_10g_verible` fails with the syntax error at `taxi_axis_xgmii_rx_64.sv:589`, reported
+  as a syntax error naming Verible. Clean, warning, syntax-error and missing-tool inputs give
   distinct outcomes. A cross-Target duplicate is one finding with provenance; a native waiver waives
   only its finding; nonfatal warnings keep rc and report distinct; a file scope lints only those
   files; restoring gives a fresh clean result.
-- `synth_mac_10g` is logical Yosys with slang, top `taxi_eth_mac_10g`. It reports fresh metrics and
-  the real tool provenance, and makes no STA claim.
+- `synth_mac_10g` is logical Yosys with slang; its top is a Project-owned flat wrapper around
+  `taxi_eth_mac_10g`. It reports fresh metrics and the real tool provenance, and makes no STA
+  claim. Every synthesis-only source copy has its diff against the Taxi file recorded.
 - Faults: missing or incompatible frontend → correct failure; latch fixture → critical; timing miss
   without threshold → advisory; violated threshold → design failure; baseline vs candidate → delta
   with both identities; restore → valid fresh metrics.
@@ -130,17 +135,17 @@ Look for: child writes, cancels shown as failures, lost `run_id`s, disagreeing c
 ### 6. bwave — FST traces, B-Wave queries and the Waveform Viewer (~35 min)
 Intent: B-Wave is right on a real trace and a known oracle, and loud on bad input.
 Try:
-- Real trace: focused-PFC FST is fresh, nonempty, native, expected scopes/counts. Register alias and
-  `_last`; alias resolves in a new context; stale/missing ones rejected. Create/list/resolve/delete
+- Real trace: focused-PFC FST is fresh, nonempty, queryable, expected scopes/counts. Register
+  alias and `_last`; alias resolves in a new context; stale/missing ones rejected. Create/list/resolve/delete
   markers.
 - Run `list`, `signal`, `wave`, `value`, `find`, `sample`, `diff`, `distance`, `stats`, `stuck` on
   PFC request, frame start, XGMII, timestamp, reset and statistics signals, with sync/async views,
   explicit clock/reset, cycle tokens and typed time. Cross-check one request-to-frame latency with
   Cocotb.
-- Oracle `fixtures/known-trace.vcd` (truth: `fixtures/known-trace-events.json`): `--json` on `list`,
-  `find`, `value`, `stats` gives the documented envelope matching the oracle, other queries fall
-  back to text; markers resolve via `value --at`, `diff`, `wave`; alias replace and in-place trace
-  regeneration are picked up.
+- Oracle `fixtures/known-trace.vcd` (truth: `fixtures/known-trace-events.json`): `--format json` on
+  `list`, `find`, `value`, `stats` gives the documented envelope matching the oracle; `signal`,
+  `wave`, `sample`, `diff`, `distance`, `stuck` reject it with exit 2; markers resolve via
+  `value --at`, `diff`, `wave`; alias replace and in-place trace regeneration are picked up.
 - Time model: physical, cycle and tick tokens hit the same event; reset include/skip work; literals
   and bit slices work; a bare async time, bad literal, unknown signal and width mismatch each give
   the documented error, then work once fixed.
@@ -269,9 +274,9 @@ Try:
 - Apply `parallel.toml` with `max_heavy = 3`; run `slow-first`, `slow-fail`, `slow-last` while
   sampling the SlotStore: overlap >1 and ≤3 counting the outer job, each `qa-shared-name.txt` in its
   own attempt, pass/fail/pass in manifest order with strict `fail`. Cross-check with
-  `validate_parallel.py`.
+  `validate_parallel.py`; record the sampled timeline in the format its module docstring defines.
 - Kill the owned producer mid Taxi Cocotb multi-test batch; resume from the manifest → one new
-  attempt rerunning the whole batch. The same ordered `test` array over MCP → nonempty pointers, ≤32
+  attempt rerunning the whole batch. The same ordered `test` array over MCP → typed artifact references, ≤32
   observations, exact truncation metadata, same exit code (cross-check `validate_phase5.py`).
 Look for: per-test rebuilds, cap overshoot, cross-attempt files, fail-fast omissions.
 
@@ -297,3 +302,14 @@ Try:
   paths, not `.f` hops.
 - slang is mandatory (sv2v cannot handle the interfaces). `estimated_fmax_mhz` is not physical
   timing.
+- `taxi_eth_mac_10g` has interface ports, so slang cannot take it as a top: synthesis and lint use
+  a Project-owned flat wrapper. slang also rejects `$size` of an interface array and some static
+  functions; Project-owned synthesis-only copies of those files are allowed, with the diff
+  recorded as a stated deviation. Taxi files stay untouched.
+- cocotb 2.0.1 from upstream `tox.ini` does not install on the Sandbox's Python 3.14; the
+  contract pins 2.1.0.
+- No clean Verible run exists on the pinned RTL: Verible cannot parse the concatenation select at
+  `taxi_axis_xgmii_rx_64.sv:589`. Verilator with `-Wall` adds about 360 style warnings; the clean
+  baseline is Verilator's default warning set on the flat wrapper.
+- Cocotb Targets trace through a VCD that Booley converts to FST and reject `--trace-fst`.
+- MCP Target discovery has no resolved view; resolved parameters and inputs are CLI-only.

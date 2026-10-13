@@ -1,13 +1,34 @@
-"""Validate retained Taxi bounded-parallel Simulation Campaign evidence."""
+"""Validate retained Taxi bounded-parallel Simulation Campaign evidence.
+
+The timeline document is the operator's own measurement of one parallel run:
+
+- ``outer_execution_id``: execution id of the outer Job that owns the Campaign.
+- ``slot_samples``: timestamp-ordered SlotStore samples, each with ``at_ns``,
+  ``heavy_holders``, and ``heavy_waiters`` (lists of execution ids).
+- ``final_slot_state``: holders and waiters after the Campaign exited.
+- ``claim_transitions``: ``submitted``/``promoted``/``released`` events with
+  ``at_ns`` and ``child_execution_id``, one triple per child heavy claim.
+- ``intervals``: one measured simulator process per Simulation Attempt with
+  ``test``, ``start_ns``, ``end_ns``, ``work_item_id``, ``attempt_id``,
+  ``child_execution_id`` (``null`` for an attempt that ran on the outer Job's
+  own slot), ``run_directory``, ``relative_output``, ``token``,
+  ``output_text``, and ``output`` (``path`` and ``sha256`` of the retained
+  copy of the attempt's output file, relative to the timeline document).
+
+Every other input is a document Booley wrote, read in place or from a copy.
+"""
 
 from __future__ import annotations
 
 import hashlib
 import json
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
+_EVIDENCE_FIELDS = {"path", "bytes", "sha256", "kind", "owner"}
+_SHARED_OUTPUT = "qa-shared-name.txt"
+_EXPECTED_TESTS = ["slow-first", "slow-fail", "slow-last"]
 
 
 def _load(path: Path) -> dict[str, object]:
@@ -22,6 +43,14 @@ def _need(condition: bool, message: str) -> None:
         raise ValueError(message)
 
 
+def _file_digest(raw: bytes) -> str:
+    return "sha256:" + hashlib.sha256(raw).hexdigest()
+
+
+def _is_digest(value: object) -> bool:
+    return isinstance(value, str) and _DIGEST.fullmatch(value) is not None
+
+
 def _intervals(document: dict[str, object]) -> list[dict[str, object]]:
     value = document.get("intervals")
     _need(isinstance(value, list) and value, "process intervals are missing")
@@ -34,6 +63,8 @@ def _intervals(document: dict[str, object]) -> list[dict[str, object]]:
             and item["start_ns"] < item["end_ns"],
             "process interval bounds are invalid",
         )
+        child = item.get("child_execution_id")
+        _need(child is None or (isinstance(child, str) and child), "child identity is invalid")
         intervals.append(item)
     return intervals
 
@@ -58,11 +89,32 @@ def validate_heavy_cap(timeline_path: Path, max_heavy: int) -> dict[str, int]:
     intervals = _intervals(timeline)
     peak = _peak_overlap(intervals)
     _need(1 < peak <= max_heavy, "simulator overlap does not prove the heavy cap")
-    samples = timeline.get("slot_samples")
-    _need(isinstance(samples, list) and samples, "SlotStore samples are missing")
     outer_id = timeline.get("outer_execution_id")
     _need(isinstance(outer_id, str) and outer_id, "outer execution identity is missing")
-    child_samples: set[str] = set()
+    samples = _slot_samples(timeline, max_heavy)
+    final = timeline.get("final_slot_state")
+    _need(
+        final == {"heavy_holders": [], "heavy_waiters": []},
+        "final SlotStore inspection is not empty",
+    )
+    transitioned = _validate_claim_transitions(timeline)
+    _need(outer_id not in transitioned, "outer Job is recorded as a child claim")
+    child_samples = {
+        value
+        for sample in samples
+        for value in sample["heavy_holders"] + sample["heavy_waiters"]
+        if value != outer_id
+    }
+    _need(child_samples == set(transitioned), "SlotStore samples do not account for every child")
+    _validate_sample_accounting(samples, outer_id, transitioned)
+    _validate_outer_coverage(samples, outer_id, intervals)
+    _validate_interval_accounting(intervals, transitioned)
+    return {"max_heavy": max_heavy, "peak_simulators": peak}
+
+
+def _slot_samples(timeline: dict[str, object], max_heavy: int) -> list[dict[str, object]]:
+    samples = timeline.get("slot_samples")
+    _need(isinstance(samples, list) and samples, "SlotStore samples are missing")
     previous_sample = -1
     for sample in samples:
         _need(isinstance(sample, dict), "SlotStore sample is invalid")
@@ -78,18 +130,7 @@ def validate_heavy_cap(timeline_path: Path, max_heavy: int) -> dict[str, int]:
             len(set(holders + waiters)) == len(holders + waiters), "slot sample duplicates a claim"
         )
         _need(len(holders) <= max_heavy, "SlotStore heavy holders exceed max_heavy")
-        _need(outer_id in holders, "SlotStore sample omits the borrowed outer Job")
-        child_samples.update(value for value in holders + waiters if value != outer_id)
-    final = timeline.get("final_slot_state")
-    _need(
-        final == {"heavy_holders": [], "heavy_waiters": []},
-        "final SlotStore inspection is not empty",
-    )
-    transitioned = _validate_claim_transitions(timeline)
-    _need(child_samples == set(transitioned), "SlotStore samples do not account for every child")
-    _validate_sample_accounting(samples, outer_id, transitioned)
-    _validate_interval_accounting(timeline, transitioned)
-    return {"max_heavy": max_heavy, "peak_simulators": peak}
+    return samples
 
 
 def _validate_claim_transitions(
@@ -135,79 +176,221 @@ def _validate_sample_accounting(samples, outer_id, transitions) -> None:
         actual_waiters = set(sample["heavy_waiters"])
         _need(actual_holders == expected_holders, "holder sample contradicts transitions")
         _need(actual_waiters == expected_waiters, "waiter sample contradicts transitions")
+        _need(outer_id not in actual_waiters, "outer Job waits behind its own Campaign")
 
 
-def _validate_interval_accounting(timeline: dict[str, object], transitions) -> None:
-    intervals = _intervals(timeline)
-    interval_children = {item.get("child_execution_id") for item in intervals}
-    _need(interval_children == set(transitions), "process intervals do not bind every exact child")
+def _validate_outer_coverage(samples, outer_id, intervals) -> None:
+    """Require the outer Job to hold its slot while its Campaign uses capacity."""
+    for sample in samples:
+        children = set(sample["heavy_holders"] + sample["heavy_waiters"]) - {outer_id}
+        running = any(item["start_ns"] <= sample["at_ns"] <= item["end_ns"] for item in intervals)
+        _need(
+            outer_id in sample["heavy_holders"] or not (children or running),
+            "SlotStore sample omits the borrowed outer Job",
+        )
+    for interval in intervals:
+        _need(
+            any(
+                interval["start_ns"] <= sample["at_ns"] <= interval["end_ns"] for sample in samples
+            ),
+            "no SlotStore sample observed a simulator process",
+        )
+
+
+def _validate_interval_accounting(intervals: list[dict[str, object]], transitions) -> None:
+    """Bind each process to its own child claim or to the outer Job's one slot."""
     _need(
         len({item.get("attempt_id") for item in intervals}) == len(intervals), "attempt ids repeat"
     )
-    for interval in intervals:
-        child = interval["child_execution_id"]
-        events = transitions[child]
+    claimed = [item for item in intervals if item["child_execution_id"] is not None]
+    borrowed = [item for item in intervals if item["child_execution_id"] is None]
+    children = [item["child_execution_id"] for item in claimed]
+    _need(len(set(children)) == len(children), "process intervals reuse a child identity")
+    _need(set(children) == set(transitions), "process intervals do not bind every exact child")
+    _need(bool(borrowed), "no process ran on the borrowed outer slot")
+    _need(_peak_overlap(borrowed) == 1, "processes overlap on the borrowed outer slot")
+    for interval in claimed:
+        events = transitions[interval["child_execution_id"]]
         _need(events[1]["at_ns"] <= interval["start_ns"], "process started before promotion")
         _need(events[2]["at_ns"] >= interval["end_ns"], "claim released before process exit")
 
 
-def validate_attempt_isolation(timeline_path: Path) -> None:
-    """Require one common relative output name with distinct owned content."""
+def validate_attempt_isolation(timeline_path: Path, campaign_path: Path) -> None:
+    """Require one common relative output name with distinct attempt-owned content.
+
+    ``campaign_path`` is the Campaign directory holding ``manifest.json`` and
+    ``work-items/``.
+    """
     intervals = _intervals(_load(timeline_path))
     _need(len(intervals) >= 3, "attempt-isolation case requires at least three attempts")
     relative_paths = {item.get("relative_output") for item in intervals}
-    _need(relative_paths == {"qa-shared-name.txt"}, "relative output names differ")
+    _need(relative_paths == {_SHARED_OUTPUT}, "relative output names differ")
     directories = [item.get("run_directory") for item in intervals]
     tokens = [item.get("token") for item in intervals]
+    work_items = [item.get("work_item_id") for item in intervals]
     _need(
         all(isinstance(value, str) and value for value in directories), "run directory is missing"
     )
     _need(all(isinstance(value, str) and value for value in tokens), "attempt token is missing")
+    _need(
+        all(isinstance(value, str) and value for value in work_items),
+        "work-item identity is missing",
+    )
     _need(len(set(directories)) == len(directories), "parallel run directories collide")
     _need(len(set(tokens)) == len(tokens), "parallel attempt tokens collide")
-    children: set[str] = set()
-    work_items: set[str] = set()
+    _need(len(set(work_items)) == len(intervals), "process intervals reuse a work item")
+    attempts = _attempt_directories(campaign_path)
     for item in intervals:
         _need(item.get("token") == item.get("output_text"), "attempt output is contaminated")
-        child = item.get("child_execution_id")
-        work_item = item.get("work_item_id")
-        _need(isinstance(child, str) and child, "exact child identity is missing")
-        _need(isinstance(work_item, str) and work_item, "work-item identity is missing")
-        children.add(child)
-        work_items.add(work_item)
-        _validate_isolated_artifacts(item, timeline_path.parent)
-    _need(len(children) == len(intervals), "process intervals reuse a child identity")
-    _need(len(work_items) == len(intervals), "process intervals reuse a work item")
+        attempt_id = item.get("attempt_id")
+        _need(
+            isinstance(attempt_id, str) and attempt_id in attempts,
+            "Simulation Attempt identity is missing",
+        )
+        _validate_owned_run_directory(item, attempts[attempt_id])
+        _validate_retained_output(item, timeline_path.parent)
+        _validate_attempt_log(item, attempts[attempt_id], tokens)
 
 
-def _validate_isolated_artifacts(item: dict[str, object], evidence_root: Path) -> None:
-    token = item.get("token")
-    attempt = item.get("attempt_id")
-    _need(isinstance(attempt, str) and attempt, "Simulation Attempt identity is missing")
-    for kind in ("output", "log", "trace", "runtime_input"):
-        artifact = item.get(kind)
-        _need(isinstance(artifact, dict), f"{kind} evidence is missing")
-        _need(artifact.get("token") == token, f"{kind} evidence is contaminated")
-        path = artifact.get("path")
-        digest = artifact.get("sha256")
-        _need(isinstance(path, str) and attempt in path, f"{kind} path is not attempt-scoped")
-        _need(isinstance(digest, str) and _DIGEST.fullmatch(digest), f"{kind} digest is invalid")
-        relative = Path(path)
-        _need(not relative.is_absolute() and ".." not in relative.parts, f"{kind} path escapes")
-        retained = evidence_root / relative
-        _need(retained.is_file() and not retained.is_symlink(), f"{kind} file is not retained")
-        raw = retained.read_bytes()
-        actual = "sha256:" + hashlib.sha256(raw).hexdigest()
-        _need(actual == digest, f"{kind} retained digest differs")
-        _need(raw.rstrip(b"\n") == str(token).encode(), f"{kind} retained token differs")
+def _attempt_directories(campaign_path: Path) -> dict[str, Path]:
+    """Index the Campaign's Simulation Attempt directories by attempt id."""
+    attempts: dict[str, Path] = {}
+    for path in sorted(campaign_path.glob("work-items/*/attempts/*/attempt.json")):
+        attempt_id = _load(path).get("attempt_id")
+        _need(
+            isinstance(attempt_id, str) and path.parent.name.endswith(f"-{attempt_id}"),
+            "attempt directory does not name its Simulation Attempt",
+        )
+        _need(attempt_id not in attempts, "Simulation Attempt identity repeats")
+        attempts[attempt_id] = path.parent
+    _need(bool(attempts), "Campaign has no Simulation Attempts")
+    return attempts
+
+
+def _validate_owned_run_directory(item: dict[str, object], attempt_directory: Path) -> None:
+    attempt = _load(attempt_directory / "attempt.json")
+    _need(
+        attempt.get("$schema") == "booley.simulation-attempt/v1",
+        "Simulation Attempt schema differs",
+    )
+    _need(attempt.get("work_item_id") == item["work_item_id"], "attempt work item differs")
+    _need(
+        attempt.get("child_execution_id") == item["child_execution_id"],
+        "attempt child identity differs",
+    )
+    run = attempt.get("run_directory")
+    _need(isinstance(run, dict), "attempt run directory is missing")
+    _need(run.get("owned") is True, "run directory is not attempt-owned")
+    resolved = run.get("resolved")
+    _need(resolved == item["run_directory"], "measured run directory differs from the attempt")
+    _need(
+        str(item["attempt_id"]) in PurePosixPath(str(resolved)).name,
+        "run directory is not attempt-scoped",
+    )
+
+
+def _validate_retained_output(item: dict[str, object], evidence_root: Path) -> None:
+    token = item["token"]
+    artifact = item.get("output")
+    _need(isinstance(artifact, dict), "output evidence is missing")
+    path = artifact.get("path")
+    digest = artifact.get("sha256")
+    _need(
+        isinstance(path, str) and str(item["attempt_id"]) in path,
+        "output path is not attempt-scoped",
+    )
+    _need(_is_digest(digest), "output digest is invalid")
+    relative = Path(path)
+    _need(not relative.is_absolute() and ".." not in relative.parts, "output path escapes")
+    retained = evidence_root / relative
+    _need(retained.is_file() and not retained.is_symlink(), "output file is not retained")
+    raw = retained.read_bytes()
+    _need(_file_digest(raw) == digest, "output retained digest differs")
+    _need(raw.rstrip(b"\n") == str(token).encode(), "output retained token differs")
+
+
+def _validate_attempt_log(
+    item: dict[str, object], attempt_directory: Path, tokens: list[object]
+) -> None:
+    """Authenticate the attempt's own run log and require only its own token in it."""
+    result = _load(attempt_directory.parents[1] / "result.json")
+    attempt_id = item["attempt_id"]
+    _need(result.get("attempt_id") == attempt_id, "Simulation Result names another attempt")
+    _need(result.get("work_item_id") == item["work_item_id"], "result work item differs")
+    evidence = result.get("evidence")
+    _need(isinstance(evidence, list), "Simulation Result evidence is missing")
+    logs = [
+        entry
+        for entry in evidence
+        if isinstance(entry, dict) and entry.get("kind") == "live_run_log"
+    ]
+    _need(len(logs) == 1, "Simulation Result does not reference one run log")
+    raw = _read_attempt_evidence(logs[0], attempt_id, attempt_directory)
+    text = raw.decode(errors="replace")
+    _need(f"+test={item['token']}" in text, "log evidence omits the attempt token")
+    _need(
+        not any(f"+test={other}" in text for other in tokens if other != item["token"]),
+        "log evidence is contaminated",
+    )
+
+
+def _need_attempt_evidence(reference: object, attempt_id: object) -> None:
+    """Check one attempt-relative typed artifact reference without reading its file."""
+    _need(
+        isinstance(reference, dict) and set(reference) == _EVIDENCE_FIELDS,
+        "evidence is not a typed artifact reference",
+    )
+    _need(reference["owner"] == attempt_id, "evidence owner differs from the attempt")
+    _need(isinstance(reference["kind"], str) and reference["kind"], "evidence kind is missing")
+    path = reference["path"]
+    _need(isinstance(path, str) and path, "evidence path is missing")
+    relative = PurePosixPath(path)
+    _need(not relative.is_absolute() and ".." not in relative.parts, "evidence path escapes")
+    _need(type(reference["bytes"]) is int and reference["bytes"] > 0, "evidence size is invalid")
+    _need(_is_digest(reference["sha256"]), "evidence digest is invalid")
+
+
+def _read_attempt_evidence(
+    reference: object, attempt_id: object, attempt_directory: Path
+) -> bytes:
+    _need_attempt_evidence(reference, attempt_id)
+    retained = attempt_directory / reference["path"]
+    _need(retained.is_file() and not retained.is_symlink(), "log file is not retained")
+    raw = retained.read_bytes()
+    _need(len(raw) == reference["bytes"], "log retained size differs")
+    _need(_file_digest(raw) == reference["sha256"], "log retained digest differs")
+    return raw
 
 
 def validate_continue_after_failure(
     manifest_path: Path, summary_path: Path, result_paths: list[Path]
 ) -> None:
     """Require pass/fail/pass terminals rendered in immutable manifest order."""
-    expected = ["slow-first", "slow-fail", "slow-last"]
+    manifest_raw = manifest_path.read_bytes()
     manifest = _load(manifest_path)
+    expected_ids = _manifest_work_item_ids(manifest)
+    results = [_load(path) for path in result_paths]
+    _need(len(results) == 3, "not every work item published a terminal result")
+    result_order = [_single_observation(item).get("test") for item in results]
+    grades = [item.get("grade") for item in results]
+    _need(result_order == _EXPECTED_TESTS, "result order differs from the manifest")
+    _need(grades == ["pass", "fail", "pass"], "terminal grades differ")
+    # Durable records bind the manifest by its bytes without the trailing newline.
+    manifest_digest = _file_digest(manifest_raw.rstrip(b"\n"))
+    identity = {
+        "campaign_id": manifest.get("campaign_id"),
+        "manifest_sha256": manifest_digest,
+        "workload_sha256": _workload_digest(manifest),
+    }
+    _need(isinstance(identity["campaign_id"], str), "manifest Campaign identity is missing")
+    for result, work_item_id in zip(results, expected_ids, strict=True):
+        _validate_result_identity(result, work_item_id, identity)
+    attempt_ids = [result["attempt_id"] for result in results]
+    _need(len(set(attempt_ids)) == len(attempt_ids), "Simulation Results share an attempt")
+    _validate_summary(_load(summary_path), expected_ids, identity)
+
+
+def _manifest_work_item_ids(manifest: dict[str, object]) -> list[object]:
     work_items = manifest.get("work_items")
     _need(isinstance(work_items, list), "manifest work items are missing")
     manifest_order = []
@@ -216,32 +399,73 @@ def validate_continue_after_failure(
         selection = item.get("selection")
         _need(isinstance(selection, dict), "manifest selection is missing")
         manifest_order.extend(selection.get("names", []))
-    _need(manifest_order == expected, "manifest order differs from pass/fail/pass")
-    results = [_load(path) for path in result_paths]
-    _need(len(results) == 3, "not every work item published a terminal result")
-    result_order = [item.get("test") for item in results]
-    grades = [item.get("grade") for item in results]
-    _need(result_order == expected, "result order differs from the manifest")
-    _need(grades == ["pass", "fail", "pass"], "terminal grades differ")
-    manifest_digest = manifest.get("manifest_sha256")
+    _need(manifest_order == _EXPECTED_TESTS, "manifest order differs from pass/fail/pass")
+    return [item.get("work_item_id") for item in work_items]
+
+
+def _workload_digest(manifest: dict[str, object]) -> object:
+    fingerprints = manifest.get("fingerprints")
+    _need(isinstance(fingerprints, dict), "manifest fingerprints are missing")
+    digest = fingerprints.get("workload_sha256")
+    _need(_is_digest(digest), "manifest workload fingerprint is missing")
+    return digest
+
+
+def _single_observation(result: dict[str, object]) -> dict[str, object]:
+    observations = result.get("observations")
     _need(
-        isinstance(manifest_digest, str) and _DIGEST.fullmatch(manifest_digest),
-        "manifest digest is missing",
+        isinstance(observations, list)
+        and len(observations) == 1
+        and isinstance(observations[0], dict),
+        "Simulation Result does not carry one observation",
     )
-    expected_ids = [item.get("work_item_id") for item in work_items]
+    return observations[0]
+
+
+def _validate_result_identity(
+    result: dict[str, object], work_item_id: object, identity: dict[str, object]
+) -> None:
     _need(
-        all(
-            result.get("manifest_sha256") == manifest_digest
-            and result.get("work_item_id") == work_item_id
-            and isinstance(result.get("attempt_id"), str)
-            and isinstance(result.get("result_sha256"), str)
-            and _DIGEST.fullmatch(result["result_sha256"])
-            for result, work_item_id in zip(results, expected_ids, strict=True)
-        ),
+        result.get("$schema") == "booley.simulation-result/v2", "Simulation Result schema differs"
+    )
+    _need(result.get("state") == "completed", "Simulation Result is not a completed terminal")
+    attempt_id = result.get("attempt_id")
+    evidence = result.get("evidence")
+    _need(
+        all(result.get(key) == value for key, value in identity.items())
+        and result.get("work_item_id") == work_item_id
+        and isinstance(attempt_id, str)
+        and bool(attempt_id)
+        and isinstance(evidence, list)
+        and bool(evidence),
         "Simulation Results do not authenticate manifest/work-item/attempt identity",
     )
-    summary = _load(summary_path)
-    _need(summary.get("ordered_tests") == expected, "summary order differs")
-    _need(summary.get("strict_grade") == "fail", "summary is not a strict failure")
-    _need(summary.get("manifest_sha256") == manifest_digest, "summary manifest digest differs")
+    for reference in evidence:
+        _need_attempt_evidence(reference, attempt_id)
+
+
+def _validate_summary(
+    summary: dict[str, object], expected_ids: list[object], identity: dict[str, object]
+) -> None:
+    _need(
+        summary.get("$schema") == "booley.simulation-campaign-summary/v1",
+        "summary schema differs",
+    )
+    _need(summary.get("aggregate_grade") == "fail", "summary is not a strict failure")
+    _need(
+        summary.get("manifest_sha256") == identity["manifest_sha256"],
+        "summary manifest digest differs",
+    )
+    _need(
+        summary.get("campaign_id") == identity["campaign_id"]
+        and summary.get("workload_sha256") == identity["workload_sha256"],
+        "summary identifies a different Simulation Campaign",
+    )
+    # ``completed`` lists work items in manifest order; it is the summary's ordering.
     _need(summary.get("completed") == expected_ids, "summary completion identities differ")
+    _need(
+        summary.get("complete") is True
+        and summary.get("pending") == []
+        and summary.get("interrupted") == [],
+        "summary reports unfinished work",
+    )

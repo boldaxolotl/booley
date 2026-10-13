@@ -3,18 +3,30 @@
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
+_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _OBSERVATION_PREVIEW_LIMIT = 32
 _OBSERVATION_FIELDS = {
     "test",
     "execution",
+    "failure_class",
     "functional",
     "assertions",
     "assertion_count",
+    "cycle_count",
     "detail",
 }
+_ARTIFACT_FIELDS = {"path_base", "path", "bytes", "sha256", "kind", "owner"}
+_ARTIFACT_BASES = {"report_invocation", "reports_root", "external_origin_target"}
+# Campaign artifact name -> typed reference kind; ``coverage`` exists only for coverage runs.
+_REQUIRED_ARTIFACTS = {
+    "manifest": "simulation_campaign_manifest",
+    "simulation": "simulation_projection",
+}
+_OPTIONAL_ARTIFACTS = {"coverage": "coverage_campaign_reference"}
 
 
 def _load(path: Path) -> dict[str, object]:
@@ -83,7 +95,7 @@ def validate_cocotb_batch(
 
 
 def validate_mcp_response(response_path: Path, max_bytes: int) -> None:
-    """Require bounded structured pointers and independent observation fields."""
+    """Require bounded typed artifact references and independent observation fields."""
     raw = response_path.read_bytes()
     _need(0 < len(raw) <= max_bytes, "MCP response exceeds the declared bound")
     response = _load(response_path)
@@ -92,7 +104,8 @@ def validate_mcp_response(response_path: Path, max_bytes: int) -> None:
     content = envelope.get("content")
     _need(isinstance(content, list) and content, "MCP text card is missing")
     text = "\n".join(item.get("text", "") for item in content if isinstance(item, dict))
-    structured = envelope.get("structuredContent")
+    # MCP clients serialize the structured payload under either spelling.
+    structured = envelope.get("structuredContent", envelope.get("structured_content"))
     _need(isinstance(structured, dict), "MCP structured output is missing")
     reports = structured.get("reports")
     _need(isinstance(reports, list) and reports, "MCP structured report is missing")
@@ -111,15 +124,60 @@ def validate_mcp_response(response_path: Path, max_bytes: int) -> None:
 
 def _validate_mcp_campaign(value: object) -> None:
     _need(isinstance(value, dict), "MCP campaign detail is invalid")
-    for key in ("manifest", "summary", "simulation"):
-        pointer = value.get(key)
-        _need(isinstance(pointer, str) and pointer, f"MCP {key} pointer is missing")
+    _validate_mcp_artifacts(value)
     _need(
-        value.get("coverage") is None or isinstance(value.get("coverage"), str),
-        "MCP coverage pointer is invalid",
+        value.get("grade") in {"pass", "fail", "error", "inconclusive"},
+        "MCP campaign grade is invalid",
     )
-    _need(value.get("grade") in {"pass", "fail", "error"}, "MCP campaign grade is invalid")
     _need(isinstance(value.get("complete"), bool), "MCP campaign completion is missing")
+    _validate_mcp_observations(value)
+
+
+def _validate_mcp_artifacts(campaign: dict[str, object]) -> None:
+    owner = campaign.get("campaign_id")
+    _need(isinstance(owner, str) and owner, "MCP campaign identity is missing")
+    digest = campaign.get("manifest_sha256")
+    _need(
+        isinstance(digest, str) and _DIGEST.fullmatch(digest) is not None,
+        "MCP manifest digest is invalid",
+    )
+    artifacts = campaign.get("artifacts")
+    _need(isinstance(artifacts, dict), "MCP campaign artifacts are missing")
+    known = _REQUIRED_ARTIFACTS | _OPTIONAL_ARTIFACTS
+    _need(set(artifacts) <= set(known), "MCP campaign artifacts are unexpected")
+    for key in _REQUIRED_ARTIFACTS:
+        _need(key in artifacts, f"MCP {key} pointer is missing")
+    for key, reference in artifacts.items():
+        _validate_mcp_artifact(key, reference, known[key], owner)
+
+
+def _validate_mcp_artifact(key: str, reference: object, kind: str, owner: str) -> None:
+    _need(
+        isinstance(reference, dict) and set(reference) == _ARTIFACT_FIELDS,
+        f"MCP {key} pointer is not a typed artifact reference",
+    )
+    _need(reference["path_base"] in _ARTIFACT_BASES, f"MCP {key} pointer base is invalid")
+    _need(reference["kind"] == kind, f"MCP {key} pointer kind differs")
+    _need(reference["owner"] == owner, f"MCP {key} pointer owner differs")
+    path = reference["path"]
+    _need(isinstance(path, str) and path, f"MCP {key} pointer path is missing")
+    relative = PurePosixPath(path)
+    _need(
+        not relative.is_absolute() and ".." not in relative.parts,
+        f"MCP {key} pointer path escapes",
+    )
+    _need(
+        type(reference["bytes"]) is int and reference["bytes"] > 0,
+        f"MCP {key} pointer size is invalid",
+    )
+    digest = reference["sha256"]
+    _need(
+        isinstance(digest, str) and _DIGEST.fullmatch(digest) is not None,
+        f"MCP {key} pointer digest is invalid",
+    )
+
+
+def _validate_mcp_observations(value: dict[str, object]) -> None:
     observations = value.get("observations")
     total = value.get("observation_total")
     truncated = value.get("observations_truncated")
@@ -181,6 +239,10 @@ def _validate_mcp_observation(value: object) -> None:
         "MCP execution observation is invalid",
     )
     _need(
+        value["failure_class"] in {None, "design", "infrastructure"},
+        "MCP failure class is invalid",
+    )
+    _need(
         value["functional"] in {"pass", "fail", "inconclusive", "not_observed"},
         "MCP functional observation is invalid",
     )
@@ -192,5 +254,10 @@ def _validate_mcp_observation(value: object) -> None:
     _need(
         isinstance(count, int) and not isinstance(count, bool) and count >= 0,
         "MCP assertion count is invalid",
+    )
+    cycles = value["cycle_count"]
+    _need(
+        cycles is None or (type(cycles) is int and cycles >= 0),
+        "MCP cycle count is invalid",
     )
     _need(isinstance(value["detail"], dict), "MCP observation detail is invalid")
