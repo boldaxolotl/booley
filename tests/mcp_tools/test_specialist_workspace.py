@@ -222,3 +222,182 @@ def test_snapshot_omits_ignored_managed_bundle_and_retains_authored_inputs(tmp_p
         assert (copied / "booley.toml").read_bytes() == (data / "booley.toml").read_bytes()
         assert (copied / "hooks/check.py").read_bytes() == (data / "hooks/check.py").read_bytes()
     assert bundle.is_file()
+
+
+def _mutation_endpoint(repo: Path, monkeypatch):
+    from booley.specialists.mutation_tester import MutationTesterSpecialist
+
+    endpoint = MutationTesterSpecialist()
+    endpoint.parse_args(["--work-dir", str(repo), "--target", "sim", "--scope", "rtl/dut.sv"])
+    monkeypatch.setattr(endpoint, "_resolve_model", lambda: "test")
+    monkeypatch.setattr(endpoint, "_session_file_path", lambda _key: repo.parent / "session")
+    monkeypatch.setattr(
+        "booley.specialists.specialist.parent_death_watchdog", lambda *_: nullcontext()
+    )
+    return endpoint
+
+
+def _mutation_repo(tmp_path: Path, *, tb_dir="tb"):
+    from tests.agent_workspace.test_isolation import _write_core
+
+    repo = _repo(tmp_path)
+    _write_core(repo, tb_dirs=[tb_dir])
+    for rel, text in [
+        ("rtl/dut.sv", "assign x = a + b;\n"),
+        (f"{tb_dir}/tb.sv", "// testbench\n"),
+    ]:
+        path = repo / rel
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(text)
+    _git(["add", "."], repo)
+    _git(
+        ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "sources"],
+        repo,
+    )
+    (repo / "rtl/dut.sv").write_text("assign x = live + b;\n")
+    (repo / "rtl/new.sv").write_text("// untracked RTL\n")
+    return repo
+
+
+def _mutation_output(path: str):
+    import json
+
+    return json.dumps(
+        {
+            "mutations": [
+                {
+                    "index": 1,
+                    "category": "operator",
+                    "file": path,
+                    "line": 1,
+                    "original_code": "live + b",
+                    "mutated_code": "live - b",
+                }
+            ]
+        }
+    )
+
+
+def _mutation_plan(repo):
+    from booley.specialists.mutation_tester import MutationRunPlan
+
+    return MutationRunPlan(
+        scope_files=["rtl/dut.sv"],
+        scope_hashes={},
+        work_dir=repo,
+        target="sim",
+        tb_top="tb",
+        report_dir=None,
+        min_detected=1,
+        count=1,
+        auto_mode=False,
+        formula_count=1,
+        source_size_budget=None,
+    )
+
+
+@pytest.mark.parametrize("tb_dir", ["tb", "verification"])
+@pytest.mark.parametrize("absolute", [False, True])
+def test_mutation_snapshot_proposals_resolve_live_wip(tmp_path, monkeypatch, tb_dir, absolute):
+    repo = _mutation_repo(tmp_path, tb_dir=tb_dir)
+    endpoint = _mutation_endpoint(repo, monkeypatch)
+    snapshots = []
+    before = sorted(str(p.relative_to(repo)) for p in repo.rglob("*") if ".git" not in p.parts)
+
+    def provider(params, *, on_event):
+        root = Path(params.cwd)
+        snapshots.append(root)
+        assert root != repo
+        assert (repo / tb_dir / "tb.sv").is_file()
+        assert (
+            sorted(str(p.relative_to(repo)) for p in repo.rglob("*") if ".git" not in p.parts)
+            == before
+        )
+        assert not (root / tb_dir).exists()
+        assert (root / "rtl/new.sv").read_text() == "// untracked RTL\n"
+        assert (root / "rtl/dut.sv").read_text() == "assign x = live + b;\n"
+        assert params.allowed_agent_capabilities == ["Read", "Grep", "Glob"]
+        assert str(root / "rtl/dut.sv") in params.prompt
+        (root / "rtl/dut.sv").write_text("snapshot edit\n")
+        # A concurrent author must survive proposer cleanup too.
+        (repo / "tracked.sv").write_text("concurrent author\n")
+        path = str(root / "rtl/dut.sv") if absolute else "rtl/dut.sv"
+        return AgentResult(output=_mutation_output(path), session_id="resume-id")
+
+    monkeypatch.setattr("booley.specialists.specialist._call_agent_sync", provider)
+    specs, _, error = endpoint._proposal_round(f"Read {repo / 'rtl/dut.sv'}", 1)
+    assert error is None
+    assert specs[0].file == "rtl/dut.sv"
+    resolved, problem = endpoint._resolve_proposals(specs, _mutation_plan(repo))
+    assert problem == "" and resolved is not None
+    assert resolved.mutations[0].original == b"live + b"
+    assert resolved.mutations[0].line == 1
+    assert (repo / "rtl/dut.sv").read_text() == "assign x = live + b;\n"
+    assert (repo / "tracked.sv").read_text() == "concurrent author\n"
+    assert all(not root.exists() for root in snapshots)
+
+
+@pytest.mark.parametrize("returned_path", ["current", "stale", "outside"])
+def test_mutation_snapshot_resume_paths(tmp_path, monkeypatch, returned_path):
+    repo = _mutation_repo(tmp_path)
+    endpoint = _mutation_endpoint(repo, monkeypatch)
+    snapshots = []
+
+    def provider(params, *, on_event):
+        root = Path(params.cwd)
+        assert root != repo
+        assert (repo / "tb/tb.sv").is_file()
+        assert not (root / "tb").exists()
+        if snapshots:
+            assert params.resume_session and params.session_id == "resume-id"
+            assert not snapshots[0].exists()
+            assert root != snapshots[0]
+        snapshots.append(root)
+        path = root / "rtl/dut.sv"
+        if len(snapshots) == 2 and returned_path == "stale":
+            path = snapshots[0] / "rtl/dut.sv"
+        elif len(snapshots) == 2 and returned_path == "outside":
+            path = tmp_path / "outside.sv"
+        return AgentResult(output=_mutation_output(str(path)), session_id="resume-id")
+
+    monkeypatch.setattr("booley.specialists.specialist._call_agent_sync", provider)
+    for round_idx in (1, 2):
+        specs, _, error = endpoint._proposal_round("propose", round_idx)
+        assert error is None
+        resolved, problem = endpoint._resolve_proposals(specs, _mutation_plan(repo))
+        if round_idx == 2 and returned_path != "current":
+            assert resolved is None and "escapes scope" in problem
+        else:
+            assert resolved is not None and problem == ""
+    assert all(not root.exists() for root in snapshots)
+
+
+def test_mutation_snapshot_cleanup_on_provider_exception(tmp_path, monkeypatch):
+    repo = _mutation_repo(tmp_path)
+    endpoint = _mutation_endpoint(repo, monkeypatch)
+    snapshots = []
+
+    def provider(params, *, on_event):
+        snapshots.append(Path(params.cwd))
+        assert Path(params.cwd) != repo
+        assert (repo / "tb/tb.sv").is_file()
+        raise RuntimeError("provider failed")
+
+    monkeypatch.setattr("booley.specialists.specialist._call_agent_sync", provider)
+    specs, elapsed, error = endpoint._proposal_round("propose", 1)
+    assert specs == [] and elapsed == 0 and error.exit_code == 2
+    assert (repo / "tb/tb.sv").is_file()
+    assert all(not root.exists() for root in snapshots)
+
+
+def test_result_json_windows_snapshot_paths_are_restored():
+    import json
+
+    from booley.specialists.specialist_workspace import WorkspaceSnapshot
+
+    snapshot = WorkspaceSnapshot(
+        real_root=Path(r"C:\live"), snapshot_root=Path(r"D:\temp\snapshot")
+    )
+    result = AgentResult(output=json.dumps({"file": str(snapshot.snapshot_root) + r"\rtl\dut.sv"}))
+    restored = restore_result_paths(result, snapshot)
+    assert json.loads(restored.output)["file"] == str(snapshot.real_root) + r"\rtl\dut.sv"
