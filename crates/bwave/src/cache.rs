@@ -3675,10 +3675,11 @@ fn value_at_tick(transitions: &[(u64, String)], tick: u64) -> String {
     if transitions.is_empty() {
         return "x".to_string();
     }
-    match transitions.binary_search_by_key(&tick, |(t, _)| *t) {
-        Ok(i) => transitions[i].1.clone(),
-        Err(0) => "x".to_string(),
-        Err(i) => transitions[i - 1].1.clone(),
+    let end = transitions.partition_point(|(t, _)| *t <= tick);
+    if end == 0 {
+        "x".to_string()
+    } else {
+        transitions[end - 1].1.clone()
     }
 }
 
@@ -4350,8 +4351,6 @@ mod tests {
 
     static TEST_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-    /// Build an FST store from VCD text via the streaming build handler and
-    /// load it back through the query-facing `ColumnCache` interface.
     #[test]
     fn issue_1421_sampling_uses_last_same_tick_write() {
         let transitions = vec![
@@ -4469,6 +4468,8 @@ mod tests {
         }
     }
 
+    /// Build an FST store from VCD text via the streaming build handler and
+    /// load it back through the query-facing `ColumnCache` interface.
     fn build_cache(vcd_text: &str) -> ColumnCache {
         let n = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
         let path =

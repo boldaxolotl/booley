@@ -4636,6 +4636,19 @@ fn issue_1421_same_tick_samples_zero_window_and_reset_round_trip() {
             ),
             "7"
         );
+        for (cycle, value) in [("2c", "0"), ("3c", "1")] {
+            let (out, err, code) = issue_1100_run(&[
+                "value",
+                &store,
+                "--with-reset",
+                "--at",
+                cycle,
+                "-s",
+                "scalar",
+            ]);
+            assert_eq!(code, 0, "{err}");
+            assert!(out.lines().any(|line| line.starts_with("scalar") && line.ends_with(&format!("= {value}"))), "{out}");
+        }
         let reset = ISSUE_1421_TIMELINE
             .replace("1%\n", "0%\n")
             .replace("#21\n", "#21\n1%\n");
