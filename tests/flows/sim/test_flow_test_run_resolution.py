@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from booley.config.project_config import normalize_tests_toml
+from booley.criteria.presentation import CriterionPresentation
 from booley.flows.execution_persistence import StandaloneFlowExecution
 from booley.flows.frozen_test_runs import FrozenTestRuns, GoalTestRuns, SeedGroup
 from booley.flows.sim.execution import DefaultSelection, SelectedTestRuns
@@ -99,6 +100,12 @@ class _GoalAdapter(StandaloneFlowExecution):
     def frozen_test_runs(self) -> FrozenTestRuns:
         self.reads += 1
         return self._frozen
+
+    def present_criterion(self, key: str, entry: object) -> CriterionPresentation:
+        """The public Goal name the execution owner pins for *key*."""
+        return CriterionPresentation(
+            f"SIM:{key.removeprefix('sim_pass_')}", "tests pass", "", "", ""
+        )
 
 
 def _goal_flow(tmp_path, monkeypatch, frozen: FrozenTestRuns, *argv: str) -> SimulateFlow:
@@ -453,9 +460,15 @@ def test_a_diagnostic_run_names_the_goals_whose_frozen_runs_it_ran(tmp_path, mon
         "goal_failures": {"sim_pass_sim": ["stress+soak@5"]},
     }
     assert "these frozen Test Runs of Goals ran and nothing was recorded" in result.report_text
-    assert "Diagnostic failures of Goals' frozen Test Runs (not recorded):\n  sim_pass_sim: " in (
-        result.report_text
+    # The report names the Goal by its public name; only ``detail`` keeps the key.
+    assert result.report_text == (
+        "sim: ran\n"
+        "Diagnostic run: these frozen Test Runs of Goals ran and nothing was recorded:\n"
+        "  SIM:sim (tests pass): stress+soak@5\n"
+        "Diagnostic failures of Goals' frozen Test Runs (not recorded):\n"
+        "  SIM:sim (tests pass): stress+soak@5"
     )
+    assert "sim_pass_sim" not in result.report_text
     # A diagnostic run of other Test Runs only says nothing more.
     plain = EndpointOutcome(
         report_text="sim: ran", detail={"campaigns": {"sim": {"test_runs": [other]}}}
