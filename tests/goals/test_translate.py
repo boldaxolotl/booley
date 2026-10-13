@@ -477,3 +477,201 @@ def test_goal_key_and_target_always_follow_the_goal_argument(raw: dict[str, Any]
     else:
         assert spec.targets == ["wanted"]
         assert goal.key.endswith("_wanted")
+
+
+# --- Goals that name Test Runs (ADR 0072) -----------------------------------------
+
+
+def _resolver(default_variant: str | None = "short", default_seed: int | None = 1):
+    """Canonical selectors of a Target whose Tests default to *default_variant*."""
+    from booley.flows.test_runs import PinnedSeed, TestSelector, UnpinnedSeed
+    from booley.goals.test_run_goals import CanonicalNames
+
+    def resolve(_target: str, selector: TestSelector) -> TestSelector | None:
+        if selector.test == "later":
+            return None  # the Test does not exist yet
+        form = selector.seed_form
+        if isinstance(form, UnpinnedSeed) and default_seed is not None:
+            form = PinnedSeed(default_seed)
+        return TestSelector(selector.test, selector.variant or default_variant, form)
+
+    # ``tb`` and ``lib#tb`` are one Target.
+    return CanonicalNames(resolve, lambda target: f"lib#{target.rpartition('#')[2]}")
+
+
+def test_one_target_written_two_ways_is_one_goal_with_one_set_of_seeds() -> None:
+    """Aliases of a Target merge before any seed is drawn (the larger N wins)."""
+    args = parse_goal_args(
+        [
+            {"family": "SIM", "target": "tb", "test": "stress@x2", "origin": "a"},
+            {"family": "SIM", "target": "lib#tb", "test": "stress@x3", "origin": "b"},
+            {"family": "SIM", "target": "tb", "origin": "a"},
+            {"family": "SIM", "target": "lib#tb", "origin": "b"},
+            {
+                "family": "COVERAGE",
+                "target": "tb",
+                "tests": "all",
+                "metrics": {"line": 80},
+                "origin": "a",
+            },
+            {
+                "family": "COVERAGE",
+                "target": "lib#tb",
+                "tests": "all",
+                "metrics": {"line": 90},
+                "origin": "b",
+            },
+        ]
+    )
+    assert len(translate_goals(args).goals) == 6  # nothing says the two names are one Target
+    merged = translate_goals(args, resolver=_resolver())
+    assert [(goal.key, goal.target, goal.origins) for goal in merged.goals] == [
+        ("sim_pass_lib#tb_run_737472657373_x", "lib#tb", ("a", "b")),
+        ("sim_pass_tb", "tb", ("a", "b")),
+        ("coverage_tb", "tb", ("a", "b")),
+    ]
+    assert merged.goals[0].params == {"test": "stress@x3"}
+    assert merged.goals[2].params["metrics"]["line"]["min_pct"] == 90
+
+
+@pytest.mark.parametrize(
+    ("test", "key"),
+    [
+        ("smoke", "sim_pass_tb_run_736d6f6b65_d"),
+        ("stress+soak", "sim_pass_tb_run_7374726573732b736f616b_d"),
+        ("stress+soak@7", "sim_pass_tb_run_7374726573732b736f616b_s7"),
+        ("stress@x5", "sim_pass_tb_run_737472657373_x"),
+    ],
+)
+def test_test_goal_key_comes_from_the_written_selector(test: str, key: str) -> None:
+    (goal,) = translate({"family": "SIM", "target": "tb", "test": test}).goals
+    assert (goal.key, goal.family, goal.target) == (key, GoalFamily.SIM, "tb")
+    assert goal.params == {"test": test}
+    assert criterion_spec(goal).expand([])[0][0] == key
+
+
+def test_target_goal_and_bare_cycle_count_keys_are_unchanged() -> None:
+    goals = translate(
+        {"family": "SIM", "target": "tb"},
+        {"family": "CYCLE_COUNT", "target": "tb", "test": "smoke", "thresholds": CYCLE},
+    ).goals
+    assert [goal.key for goal in goals] == [
+        "sim_pass_tb",
+        cycle_count_criterion_key("tb", "smoke"),
+    ]
+
+
+CYCLE = {"cycle_count_max": 900}
+
+
+def test_cycle_count_key_is_built_from_the_written_selector() -> None:
+    (goal,) = translate(
+        {"family": "CYCLE_COUNT", "target": "tb", "test": "stress+soak@7", "thresholds": CYCLE}
+    ).goals
+    assert goal.key == cycle_count_criterion_key("tb", "stress+soak@7")
+    assert goal.params["test"] == "stress+soak@7"
+
+
+def test_goals_that_resolve_to_one_test_run_merge_and_union_their_origins() -> None:
+    args = parse_goal_args(
+        [
+            {"family": "SIM", "target": "tb", "test": "stress", "origin": "a"},
+            {"family": "SIM", "target": "tb", "test": "stress+short", "origin": "b"},
+            {"family": "SIM", "target": "tb", "test": "stress@1", "origin": "c"},
+        ]
+    )
+    unresolved = translate_goals(args)
+    assert len(unresolved.goals) == 3  # written forms differ; nothing says they are one run
+    merged = translate_goals(args, resolver=_resolver())
+    (goal,) = merged.goals
+    assert goal.key == "sim_pass_tb_run_737472657373_d"  # the first written form
+    assert goal.origins == ("a", "b", "c")
+    assert "name the same Test Runs" in merged.warnings[0]
+
+
+def test_two_multi_seed_goals_merge_to_the_larger_count() -> None:
+    merged = translate_goals(
+        parse_goal_args(
+            [
+                {"family": "SIM", "target": "tb", "test": "stress@x3", "origin": "a"},
+                {"family": "SIM", "target": "tb", "test": "stress+short@x5", "origin": "b"},
+            ]
+        ),
+        resolver=_resolver(),
+    )
+    (goal,) = merged.goals
+    assert goal.params == {"test": "stress+short@x5"}
+    assert goal.origins == ("a", "b")
+    assert "seed counts 3 (from a), 5 (from b) -> stricter 5" in merged.warnings[0]
+
+
+def test_same_written_multi_seed_goals_merge_without_a_resolver() -> None:
+    (goal,) = translate(
+        {"family": "SIM", "target": "tb", "test": "stress@x3"},
+        {"family": "SIM", "target": "tb", "test": "stress@x2", "origin": "b"},
+    ).goals
+    assert goal.params == {"test": "stress@x3"}
+
+
+def test_pinned_and_multi_seed_goals_on_one_variant_stay_separate() -> None:
+    goals = translate_goals(
+        parse_goal_args(
+            [
+                {"family": "SIM", "target": "tb", "test": "stress@x3"},
+                {"family": "SIM", "target": "tb", "test": "stress@7"},
+                {"family": "SIM", "target": "tb", "test": "stress"},
+                {"family": "SIM", "target": "tb"},
+            ]
+        ),
+        resolver=_resolver(),
+    ).goals
+    assert len(goals) == 4
+
+
+def test_a_test_that_does_not_exist_yet_keeps_its_written_identity() -> None:
+    goals = translate_goals(
+        parse_goal_args(
+            [
+                {"family": "SIM", "target": "tb", "test": "later"},
+                {"family": "SIM", "target": "tb", "test": "later+short"},
+            ]
+        ),
+        resolver=_resolver(),
+    ).goals
+    assert len(goals) == 2
+
+
+def test_cycle_count_goals_on_one_test_run_merge_to_the_stricter_threshold() -> None:
+    merged = translate_goals(
+        parse_goal_args(
+            [
+                {"family": "CYCLE_COUNT", "target": "tb", "test": "stress", "thresholds": CYCLE},
+                {
+                    "family": "CYCLE_COUNT",
+                    "target": "tb",
+                    "test": "stress+short@1",
+                    "thresholds": {"cycle_count_max": 800},
+                    "origin": "b",
+                },
+            ]
+        ),
+        resolver=_resolver(),
+    )
+    (goal,) = merged.goals
+    assert goal.key == cycle_count_criterion_key("tb", "stress")
+    assert goal.params["cycle_count_max"] == 800
+
+
+def test_coverage_selections_compare_by_resolved_test_runs() -> None:
+    metrics = {"line": 80}
+    same = [
+        {"family": "COVERAGE", "target": "tb", "metrics": metrics, "tests": ["a", "s@x3"]},
+        {"family": "COVERAGE", "target": "tb", "metrics": metrics, "tests": ["s+short@x3", "a@1"]},
+    ]
+    (goal,) = translate_goals(parse_goal_args(same), resolver=_resolver()).goals
+    assert goal.params["tests"] == ["a", "s@x3"]
+    with pytest.raises(GoalConflictError, match="coverage test selections"):
+        translate_goals(parse_goal_args(same))
+    other_count = [same[0], {**same[1], "tests": ["s+short@x4", "a@1"]}]
+    with pytest.raises(GoalConflictError, match="coverage test selections"):
+        translate_goals(parse_goal_args(other_count), resolver=_resolver())

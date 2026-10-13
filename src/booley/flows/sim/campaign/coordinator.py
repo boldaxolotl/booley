@@ -1014,7 +1014,7 @@ def _acceptance_facts(
 ) -> tuple[AcceptanceFacts, tuple[Mapping[str, object], ...]]:
     items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
     by_id = {item["work_item_id"]: item for item in items}
-    consumed, observations = _collected_result_facts(store, recovery, by_id)
+    consumed, observations = collected_result_facts(store, recovery, by_id)
     suite = cast(Mapping[str, object], manifest.document["required_suite"])
     names_test_runs = all("test_runs" in item for item in items)
     facts = AcceptanceFacts(
@@ -1065,11 +1065,16 @@ def _coverage_acceptance_reference(
     }
 
 
-def _collected_result_facts(
+def collected_result_facts(
     store: CampaignStore,
     recovery: CampaignRecovery,
     by_id: Mapping[object, Mapping[str, object]],
 ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    """The consumed-result and observation facts of every terminal result in *recovery*.
+
+    A work item without a result contributes nothing, so the facts of an
+    interrupted campaign are those of the work that finished.
+    """
     consumed: list[dict[str, object]] = []
     observations: list[dict[str, object]] = []
     for recovered in recovery.items:

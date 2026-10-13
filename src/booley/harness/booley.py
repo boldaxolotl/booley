@@ -806,7 +806,13 @@ def _cmd_goal(args: argparse.Namespace, _project_root: Path) -> int:
         from booley.runtime.project_dir import resolve_project_dir
 
         try:
-            selection = select_status(GoalStore(resolve_project_dir(_project_root)), Path.cwd())
+            from booley.flows.sim.unpublished_results import read_unpublished_results
+
+            selection = select_status(
+                GoalStore(resolve_project_dir(_project_root)),
+                Path.cwd(),
+                campaign_reader=read_unpublished_results,
+            )
             short = True if args.short else False if args.long else None
             print(
                 render_status(selection.views, short=short, project_wide=selection.project_wide)
