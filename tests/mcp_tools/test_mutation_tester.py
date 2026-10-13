@@ -1935,7 +1935,9 @@ def test_scope_accepts_canonical_rtl_through_symlink(
     _author_scope_core(tmp_path)
     if layout == "recursive":
         (tmp_path / "lib").mkdir()
-        symlink_or_skip(tmp_path / "lib/self", "../", target_is_directory=True)
+        symlink_or_skip(tmp_path / "lib/self", Path(".."), target_is_directory=True)
+        assert (tmp_path / "lib/self").is_dir()
+        assert (tmp_path / "lib/self").resolve() == tmp_path.resolve()
         expected = "lib/self/rtl/counter.sv"
         original_plan = fusesoc_registry.prepare_core_library_plan
 

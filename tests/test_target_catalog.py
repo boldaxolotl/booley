@@ -659,7 +659,9 @@ def _author_alias_core(root: Path, layout: str) -> tuple[str, str]:
         require_symlinks(root)
         if layout == "recursive":
             (root / "lib").mkdir()
-            symlink_or_skip(root / "lib/self", "../", target_is_directory=True)
+            symlink_or_skip(root / "lib/self", Path(".."), target_is_directory=True)
+            assert (root / "lib/self").is_dir()
+            assert (root / "lib/self").resolve() == root.resolve()
             prefix = "lib/self/"
         else:
             symlink_or_skip(root / "rtl/tblink", "../tb", target_is_directory=True)
