@@ -651,8 +651,7 @@ def test_stealth_sparse_index_only_attributes_are_preserved(tmp_path: Path):
     assert _snapshot(_index_path(tmp_path)) == before
 
 
-@pytest.mark.parametrize("opt_out", [False, True])
-def test_local_default_warns_after_upstream_policy_or_opt_out(tmp_path: Path, opt_out):
+def test_local_default_warns_after_upstream_policy(tmp_path: Path):
     data = _stealth_repo(tmp_path)
     assert (
         reconcile_project_line_endings(tmp_path, data, mode=LineEndingMode.REPAIR).status
@@ -661,8 +660,6 @@ def test_local_default_warns_after_upstream_policy_or_opt_out(tmp_path: Path, op
     attrs = tmp_path / ".git/info/attributes"
     before = _snapshot(attrs)
     _commit_file(tmp_path, "sub/.gitattributes", b"*.txt text eol=crlf\n")
-    if opt_out:
-        (data / "booley.toml").write_text("[stealth]\nenabled = false\n")
     report = reconcile_project_line_endings(tmp_path, data, mode=LineEndingMode.REPAIR)
     assert report.status is LineEndingStatus.UNSAFE
     assert _snapshot(attrs) == before
@@ -1040,9 +1037,11 @@ def test_later_user_policy_conflicts_conservatively_with_existing_default(
     (data / "booley.toml").write_text("[stealth]\nenabled = false\n")
     assert (
         reconcile_project_line_endings(root, data, mode=LineEndingMode.REPAIR).status
-        is LineEndingStatus.UNSAFE
+        is LineEndingStatus.SAFE
     )
-    assert _snapshot(local) == before
+    assert not local.exists()
+    assert (root / ".gitattributes").read_bytes() == b"* text=auto eol=lf\n"
+    assert attrs.read_bytes() == content
 
 
 @pytest.mark.parametrize("change", ["create", "selection", "symlink"])
@@ -1161,8 +1160,8 @@ def test_non_stealth_root_publication_preserves_unsafe_common_attributes(tmp_pat
 
     report = reconcile_project_line_endings(root, data, mode=LineEndingMode.REPAIR)
 
-    assert report.status is LineEndingStatus.SAFE
-    assert (root / ".gitattributes").read_bytes() == b"* text=auto eol=lf\n"
+    assert report.status is LineEndingStatus.UNSAFE
+    assert not (root / ".gitattributes").exists()
     assert attrs.is_dir()
 
 
@@ -1433,3 +1432,285 @@ def test_init_repair_attribute_queries_ignore_attribute_source_oid(tmp_path, mon
     assert report.status is LineEndingStatus.SAFE
     assert observed and all(state[1] == expected[1] for state in observed)
     assert (root / "a.v").read_bytes() == b"module a;\nendmodule\n"
+
+
+def test_opt_out_migration_publishes_root_when_already_pinned(tmp_path):
+    data = _stealth_repo(tmp_path)
+    first = reconcile_project_line_endings(tmp_path, data, mode=LineEndingMode.REPAIR)
+    assert first.status is LineEndingStatus.SAFE
+    source = tmp_path / ".git/info/attributes"
+    assert (
+        _git(tmp_path, "check-attr", "eol", "--", ".gitignore").stdout == b".gitignore: eol: lf\n"
+    )
+    (data / "booley.toml").write_text("[stealth]\nenabled = false\n")
+    before = {p: _snapshot(p) for p in [source, _index_path(tmp_path), tmp_path / ".git/config"]}
+    inspected = reconcile_project_line_endings(tmp_path, data, mode=LineEndingMode.INSPECT)
+    assert inspected.status is LineEndingStatus.SAFE
+    assert any(
+        a.kind.value == "migrate-attributes" and a.state is LineEndingActionState.PLANNED
+        for a in inspected.repositories[0].actions
+    )
+    assert {p: _snapshot(p) for p in before} == before
+    assert not (tmp_path / ".gitattributes").exists()
+    repaired = reconcile_project_line_endings(tmp_path, data, mode=LineEndingMode.REPAIR)
+    assert repaired.status is LineEndingStatus.SAFE
+    assert not source.exists()
+    assert (tmp_path / ".gitattributes").read_bytes() == GITATTRIBUTES_RULE.encode() + b"\n"
+    assert (
+        _git(tmp_path, "check-attr", "eol", "--", ".gitignore").stdout == b".gitignore: eol: lf\n"
+    )
+    assert (
+        reconcile_project_line_endings(tmp_path, data, mode=LineEndingMode.REPAIR)
+        .repositories[0]
+        .actions
+        == ()
+    )
+
+
+def _opt_out_repo(root):
+    data = _stealth_repo(root)
+    assert (
+        reconcile_project_line_endings(root, data, mode=LineEndingMode.REPAIR).status
+        is LineEndingStatus.SAFE
+    )
+    (data / "booley.toml").write_text("[stealth]\nenabled = false\n")
+    return data, root / ".git/info/attributes"
+
+
+@pytest.mark.parametrize(
+    "extras",
+    [
+        b"",
+        b"# comment\r\n\r\n",
+        b"# local\r\narchive export-ignore\r\nother -export-subst",
+        b"# vt\vff\f\r\n",
+    ],
+)
+def test_opt_out_migration_retains_raw_extras_and_mode(tmp_path, extras):
+    data, source = _opt_out_repo(tmp_path)
+    source.write_bytes(b" \t* text=auto eol=lf\r\n" + extras)
+    source.chmod(0o600)
+    mode = source.stat().st_mode
+    report = reconcile_project_line_endings(tmp_path, data, mode=LineEndingMode.REPAIR)
+    assert report.status is LineEndingStatus.SAFE
+    if extras:
+        assert source.read_bytes() == extras
+        assert source.stat().st_mode == mode
+    else:
+        assert not source.exists()
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        b"* text=auto eol=lf\n*.v -text\n",
+        b"* text=auto eol=lf\n* text=auto eol=lf\n",
+        b"* text=auto eol=lf\n*.txt text eol=crlf\n",
+    ],
+)
+def test_opt_out_migration_refuses_nonreplayable_content(tmp_path, content):
+    data, source = _opt_out_repo(tmp_path)
+    source.write_bytes(content)
+    before = _snapshot(source)
+    report = reconcile_project_line_endings(tmp_path, data, mode=LineEndingMode.REPAIR)
+    assert report.status is LineEndingStatus.UNSAFE
+    assert _snapshot(source) == before
+    assert not (tmp_path / ".gitattributes").exists()
+
+
+@pytest.mark.parametrize(
+    "policy, expected",
+    [
+        (b"* text eol=crlf\n*.bat -text\n", b"* text eol=crlf\n*.bat -text\n"),
+        (b"# root\n*.txt text eol=crlf\n", b"* text=auto eol=lf\n# root\n*.txt text eol=crlf\n"),
+    ],
+)
+def test_opt_out_migration_preserves_root_policy(tmp_path, policy, expected):
+    data, source = _opt_out_repo(tmp_path)
+    root = tmp_path / ".gitattributes"
+    root.write_bytes(policy)
+    report = reconcile_project_line_endings(tmp_path, data, mode=LineEndingMode.REPAIR)
+    assert report.status is LineEndingStatus.SAFE
+    assert root.read_bytes() == expected
+    assert not source.exists()
+
+
+def test_opt_out_migration_subdirectory_policy_does_not_suppress_root(tmp_path):
+    data, source = _opt_out_repo(tmp_path)
+    _commit_file(tmp_path, "sub/.gitattributes", b"*.txt text eol=crlf\n")
+    report = reconcile_project_line_endings(tmp_path, data, mode=LineEndingMode.REPAIR)
+    assert report.status is LineEndingStatus.SAFE
+    assert not source.exists()
+    assert (tmp_path / ".gitattributes").read_bytes().startswith(GITATTRIBUTES_RULE.encode())
+    assert (
+        _git(tmp_path, "check-attr", "eol", "--", "sub/a.txt").stdout == b"sub/a.txt: eol: crlf\n"
+    )
+
+
+def test_opt_out_migration_linked_worktree_selected_root_only(tmp_path):
+    root = tmp_path / "main"
+    data, source = _opt_out_repo(root)
+    (data / "booley.toml").write_text("[stealth]\nenabled = true\n")
+    sibling = tmp_path / "linked"
+    assert _git(root, "worktree", "add", "-qb", "linked", str(sibling)).returncode == 0
+    selected_data = sibling / ".booley_project"
+    selected_data.mkdir()
+    (selected_data / "booley.toml").write_text("[stealth]\nenabled = false\n")
+    before = {p: _snapshot(p) for p in [root / ".gitignore", data / "booley.toml"]}
+    assert _git(root, "check-attr", "eol", "--", ".gitignore").stdout == b".gitignore: eol: lf\n"
+    report = reconcile_project_line_endings(sibling, selected_data, mode=LineEndingMode.REPAIR)
+    assert report.status is LineEndingStatus.SAFE
+    assert not source.exists()
+    assert (sibling / ".gitattributes").read_bytes() == GITATTRIBUTES_RULE.encode() + b"\n"
+    assert not (root / ".gitattributes").exists()
+    assert {p: _snapshot(p) for p in before} == before
+    assert (
+        _git(sibling, "check-attr", "eol", "--", ".gitignore").stdout == b".gitignore: eol: lf\n"
+    )
+    assert (
+        _git(root, "check-attr", "eol", "--", ".gitignore").stdout
+        == b".gitignore: eol: unspecified\n"
+    )
+    assert (
+        reconcile_project_line_endings(sibling, selected_data, mode=LineEndingMode.REPAIR)
+        .repositories[0]
+        .actions
+        == ()
+    )
+
+
+@pytest.mark.parametrize("failure", ["root", "unlink", "replace"])
+def test_opt_out_migration_failures_are_recoverable(tmp_path, monkeypatch, failure):
+    data, source = _opt_out_repo(tmp_path)
+    if failure == "replace":
+        source.write_bytes(source.read_bytes() + b"# retained\r\n")
+    before = source.read_bytes()
+    original_unlink, original_replace = Path.unlink, Path.replace
+    with monkeypatch.context() as m:
+        if failure == "root":
+            m.setattr(line_endings, "_create_attributes", lambda *args: "injected root failure")
+        elif failure == "unlink":
+
+            def unlink(path, *args, **kwargs):
+                if path == source:
+                    raise PermissionError("injected cleanup failure")
+                return original_unlink(path, *args, **kwargs)
+
+            m.setattr(Path, "unlink", unlink)
+        else:
+
+            def replace(path, target):
+                if target == source:
+                    raise PermissionError("injected cleanup failure")
+                return original_replace(path, target)
+
+            m.setattr(Path, "replace", replace)
+        report = reconcile_project_line_endings(tmp_path, data, mode=LineEndingMode.REPAIR)
+    assert report.status is LineEndingStatus.UNSAFE
+    assert any(
+        a.kind is LineEndingActionKind.MIGRATE_ATTRIBUTES
+        and a.state is LineEndingActionState.FAILED
+        for a in report.repositories[0].actions
+    )
+    assert source.read_bytes() == before
+    assert (tmp_path / ".gitattributes").exists() == (failure != "root")
+    retry = reconcile_project_line_endings(tmp_path, data, mode=LineEndingMode.REPAIR)
+    assert retry.status is LineEndingStatus.SAFE
+    if failure == "replace":
+        assert source.read_bytes() == b"# retained\r\n"
+    else:
+        assert not source.exists()
+
+
+@pytest.mark.parametrize("changed", ["source", "root", "symlink", "destination"])
+def test_opt_out_migration_refuses_changed_inputs(tmp_path, monkeypatch, changed):
+    data, source = _opt_out_repo(tmp_path)
+    root = tmp_path / ".gitattributes"
+    original = line_endings._repair_actions
+    foreign = tmp_path / "foreign"
+    foreign.write_bytes(b"user bytes\n")
+
+    def raced(plan):
+        if changed == "source":
+            source.write_bytes(b"user bytes\n")
+        elif changed == "root":
+            root.write_bytes(b"*.v -text\n")
+        elif changed == "symlink":
+            source.unlink()
+            source.symlink_to(foreign)
+        else:
+            monkeypatch.setattr(line_endings, "_common_attributes", lambda root: foreign)
+        return original(plan)
+
+    monkeypatch.setattr(line_endings, "_repair_actions", raced)
+    report = reconcile_project_line_endings(tmp_path, data, mode=LineEndingMode.REPAIR)
+    assert report.status is LineEndingStatus.UNSAFE
+    assert any(
+        a.kind is LineEndingActionKind.MIGRATE_ATTRIBUTES
+        and a.state is LineEndingActionState.REFUSED
+        for a in report.repositories[0].actions
+    )
+    if changed == "source":
+        assert source.read_bytes() == b"user bytes\n"
+    elif changed == "root":
+        assert root.read_bytes() == b"*.v -text\n"
+    elif changed == "symlink":
+        assert source.is_symlink() and foreign.read_bytes() == b"user bytes\n"
+    else:
+        assert source.read_bytes() == GITATTRIBUTES_RULE.encode() + b"\n"
+
+
+@pytest.mark.parametrize("changed", ["source", "root"])
+def test_opt_out_migration_revalidates_at_cleanup_boundary(tmp_path, monkeypatch, changed):
+    data, source = _opt_out_repo(tmp_path)
+    source.write_bytes(source.read_bytes() + b"# retained\n")
+    root = tmp_path / ".gitattributes"
+    stage = line_endings._stage_atomic_content
+
+    def staged(path, content, **kwargs):
+        result = stage(path, content, **kwargs)
+        if path == source:
+            (source if changed == "source" else root).write_bytes(b"user mutation\n")
+        return result
+
+    monkeypatch.setattr(line_endings, "_stage_atomic_content", staged)
+    report = reconcile_project_line_endings(tmp_path, data, mode=LineEndingMode.REPAIR)
+    assert report.status is LineEndingStatus.UNSAFE
+    assert (source if changed == "source" else root).read_bytes() == b"user mutation\n"
+    if changed == "root":
+        assert source.read_bytes() == GITATTRIBUTES_RULE.encode() + b"\n# retained\n"
+
+
+def test_opt_out_migration_normalizes_tracked_root_before_publication(tmp_path):
+    data, source = _opt_out_repo(tmp_path)
+    root = tmp_path / ".gitattributes"
+    _commit_file(tmp_path, ".gitattributes", b"# root\n*.bat -text\n")
+    root.write_bytes(b"# root\r\n*.bat -text\r\n")
+    report = reconcile_project_line_endings(
+        tmp_path, data, mode=LineEndingMode.REPAIR, clean_baseline={tmp_path: True}
+    )
+    assert report.status is LineEndingStatus.SAFE, report
+    assert root.read_bytes() == b"* text=auto eol=lf\n# root\n*.bat -text\n"
+    assert not source.exists()
+
+
+@pytest.mark.parametrize("changed", ["source", "root"])
+def test_opt_out_migration_revalidates_before_root_publication(tmp_path, monkeypatch, changed):
+    data, source = _opt_out_repo(tmp_path)
+    root = tmp_path / ".gitattributes"
+    stage = line_endings._stage_atomic_content
+
+    def staged(path, content, **kwargs):
+        result = stage(path, content, **kwargs)
+        if path == root:
+            (source if changed == "source" else root).write_bytes(b"user mutation\n")
+        return result
+
+    monkeypatch.setattr(line_endings, "_stage_atomic_content", staged)
+    report = reconcile_project_line_endings(tmp_path, data, mode=LineEndingMode.REPAIR)
+    assert report.status is LineEndingStatus.UNSAFE
+    assert (source if changed == "source" else root).read_bytes() == b"user mutation\n"
+    if changed == "source":
+        assert not root.exists()
+    else:
+        assert source.read_bytes() == GITATTRIBUTES_RULE.encode() + b"\n"

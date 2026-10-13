@@ -3144,3 +3144,63 @@ def test_tracked_bundle_broken_gitfile_reports_diagnostic(tmp_path, monkeypatch,
     assert _tracking_git(owner, "ls-files", "--stage", "-z") == index
     assert bundle.is_file()
     reset_cache()
+
+
+def test_opt_out_migration_init_check_is_read_only_and_renders_paths(tmp_path, capsys):
+    _git_init(tmp_path)
+    data = tmp_path / ".booley_project"
+    data.mkdir()
+    config = data / "booley.toml"
+    config.write_text("[stealth]\nenabled = true\n")
+    git_hooks._step_line_endings(_ctx(tmp_path), data)
+    capsys.readouterr()
+    config.write_text("[stealth]\nenabled = false\n")
+    source = tmp_path / ".git/info/attributes"
+    before = source.read_bytes(), source.stat().st_mtime_ns
+    ctx = _ctx(tmp_path, check_only=True)
+    git_hooks._step_line_endings(ctx, data)
+    planned = capsys.readouterr().out
+    assert "would migrate" in planned
+    assert str(source) in planned and str(tmp_path / ".gitattributes") in planned
+    assert (source.read_bytes(), source.stat().st_mtime_ns) == before
+    assert not (tmp_path / ".gitattributes").exists()
+    git_hooks._step_line_endings(_ctx(tmp_path), data)
+    completed = capsys.readouterr().out
+    assert "migrated line-ending default" in completed
+    assert not source.exists()
+
+
+@pytest.mark.parametrize("failure", ["root", "cleanup"])
+def test_opt_out_migration_init_failure_summary(tmp_path, monkeypatch, capsys, failure):
+    from booley.harness.setup import line_endings
+
+    _git_init(tmp_path)
+    data = tmp_path / ".booley_project"
+    data.mkdir()
+    config = data / "booley.toml"
+    config.write_text("[stealth]\nenabled = true\n")
+    git_hooks._step_line_endings(_ctx(tmp_path), data)
+    capsys.readouterr()
+    config.write_text("[stealth]\nenabled = false\n")
+    if failure == "root":
+        monkeypatch.setattr(
+            line_endings, "_create_attributes", lambda *args: "injected root failure"
+        )
+    else:
+        original = Path.unlink
+
+        def unlink(path, *args, **kwargs):
+            if path == tmp_path / ".git/info/attributes":
+                raise PermissionError("injected cleanup failure")
+            return original(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", unlink)
+    ctx = _ctx(tmp_path)
+    git_hooks._step_line_endings(ctx, data)
+    assert any(
+        result.name == "line_endings"
+        and result.status == "err"
+        and result.detail == "attributes migration failed"
+        for result in ctx.results
+    )
+    assert "attributes migration failed" in capsys.readouterr().out
