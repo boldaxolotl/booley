@@ -49,7 +49,7 @@ def set_criterion(
     source_target: str | None = None,
 ) -> None:
     """Set a criterion and persist state. No-op when state has no file."""
-    if getattr(endpoint.args, "diagnostic", False):
+    if endpoint.records_no_evidence:
         logger.info("Diagnostic run: not recording criterion %s", key)
         return
     key = endpoint._criterion_key_for_source(key, source_target)

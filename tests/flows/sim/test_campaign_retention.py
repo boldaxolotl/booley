@@ -377,7 +377,7 @@ def test_native_pruning_validates_every_path_before_deleting(tmp_path, defect):
         outcome.campaign_path.write_text(json.dumps(document))
     with pytest.raises(CampaignRetentionError):
         prune_native_payload(tmp_path / "reports", 1, "sim_0")
-    assert (native / "raw/001-reset.dat").is_file()
+    assert (native / "raw/001-reset@1.dat").is_file()
     assert not (root / "availability.json").exists()
 
 
@@ -495,7 +495,7 @@ def test_native_pruning_does_not_adopt_unexplained_retention_state(tmp_path, def
     outcome = campaign(tmp_path)
     root = outcome.campaign_path.parent
     if defect == "missing":
-        (root / "native/raw/001-reset.dat").unlink()
+        (root / "native/raw/001-reset@1.dat").unlink()
     elif defect == "unidentified_quarantine":
         (root / "native").rename(root / ".native-pruned")
     else:
@@ -557,9 +557,9 @@ def test_maintenance_cli_requires_exact_selection_and_executes_both_modes(tmp_pa
 @pytest.mark.parametrize(
     ("defect", "relative", "expected_code"),
     [
-        ("changed", "targets/sim_0/native/raw/001-reset.dat", 0),
+        ("changed", "targets/sim_0/native/raw/001-reset@1.dat", 0),
         ("extra_native", "targets/sim_0/native/raw/999-extra.dat", 2),
-        ("missing", "targets/sim_0/native/raw/001-reset.dat", 0),
+        ("missing", "targets/sim_0/native/raw/001-reset@1.dat", 0),
         ("extra_invocation", "stray.txt", 2),
     ],
 )

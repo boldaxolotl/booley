@@ -9,10 +9,27 @@ from typing import Any
 
 from booley.flows.cli_arguments import BuiltinArguments
 from booley.flows.cli_help import HelpGroup, HelpOption, SurfaceHelp
+from booley.flows.test_runs import (
+    MAX_SEED,
+    SEED_WITH_SEEDED_SELECTOR,
+    TestRunLimitError,
+    TestRunNameError,
+    UnpinnedSeed,
+    parse_seed_request,
+    parse_test_selector,
+)
 
 from .mode import SimulationMode, parse_simulation_mode
 
 logger = logging.getLogger(__name__)
+
+
+def parse_seed_argument(value: str) -> int | str:
+    """argparse type of ``--seed``: a seed in range, or ``random``."""
+    try:
+        return parse_seed_request(value)
+    except TestRunNameError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
 class SimArguments(BuiltinArguments):
@@ -46,6 +63,10 @@ class SimArguments(BuiltinArguments):
                     "When omitted, use the configured suite and skip policy; on resume the manifest owns test selection. Cannot combine with --tests-file or --resume-from.",
                 ),
                 HelpOption(
+                    "seed",
+                    "When omitted, each Test Run uses the seed its --test names, else the Target's Default Seed. Cannot combine with a --test that names a seed, or with --resume-from.",
+                ),
+                HelpOption(
                     "tests_file",
                     "When omitted, use --test or the configured suite and skip policy. Cannot combine with --test or --resume-from.",
                 ),
@@ -58,6 +79,42 @@ class SimArguments(BuiltinArguments):
             ),
         ),
     )
+
+    @staticmethod
+    def _add_test_run_args(parser: Any) -> None:
+        """What to run: Test Run selectors, the seed, and a selector file."""
+        parser.add_argument(
+            "--test",
+            action="append",
+            default=None,
+            metavar="TEST_RUN",
+            help=SurfaceHelp(
+                "Select Test Runs: test, test+variant, test@seed, test+variant@seed, or "
+                "test[+variant]@xN for N drawn seeds; a bare test means its default Test "
+                "Variant (coverage: deterministic sorted order; plain: input order; "
+                "CLI: repeat; MCP: array)",
+                cli=(
+                    "Run only the named Test Runs: test, test+variant, test@seed, "
+                    "test+variant@seed, or test[+variant]@xN for N drawn seeds; a bare test "
+                    "means its default Test Variant; repeat the flag for more. With --coverage "
+                    "they run in sorted order, otherwise in the order given"
+                ),
+            ),
+        )
+        parser.add_argument(
+            "--seed",
+            type=parse_seed_argument,
+            default=None,
+            metavar="{N,random}",
+            help=f"Seed for every selected Test Run (1..{MAX_SEED}), or 'random' to draw "
+            "one seed per Test Run",
+        )
+        parser.add_argument(
+            "--tests-file",
+            type=Path,
+            default=None,
+            help="Read exact test names from PATH, one per line; blanks and # comments ignored",
+        )
 
     @staticmethod
     def add_args(parser: Any) -> None:
@@ -77,26 +134,7 @@ class SimArguments(BuiltinArguments):
             "with a Coverage Criterion also requires --diagnostic",
         )
         SimArguments._add_elaboration_args(parser)
-        parser.add_argument(
-            "--test",
-            action="append",
-            default=None,
-            metavar="NAME",
-            help=SurfaceHelp(
-                "Select exact registered tests (coverage: deterministic sorted order; "
-                "plain: input order; CLI: repeat; MCP: array)",
-                cli=(
-                    "Run only the named registered tests; repeat the flag for more. "
-                    "With --coverage they run in sorted order, otherwise in the order given"
-                ),
-            ),
-        )
-        parser.add_argument(
-            "--tests-file",
-            type=Path,
-            default=None,
-            help="Read exact test names from PATH, one per line; blanks and # comments ignored",
-        )
+        SimArguments._add_test_run_args(parser)
         parser.add_argument(
             "--resume-from",
             type=Path,
@@ -157,6 +195,8 @@ class SimArguments(BuiltinArguments):
             args.mode = SimulationMode.ELAB_ONLY
         if args.test and args.tests_file is not None:
             parser.error("--test and --tests-file are mutually exclusive")
+        if args.seed is not None and args.mode is not None and args.mode.elaborates_only:
+            parser.error("--seed applies to simulation, not to an elaboration mode")
         if args.resume_from is not None:
             conflicts = SimArguments._resume_conflicts(args)
             if conflicts:
@@ -172,8 +212,23 @@ class SimArguments(BuiltinArguments):
             parser.error("duplicate exact test name(s): " + ", ".join(duplicates))
         if args.test is not None:
             args.test = tuple(args.test)
+        SimArguments._check_test_run_selection(args, parser)
         vars(args).pop("_legacy_elab_only")
         vars(args).pop("_legacy_standalone")
+
+    @staticmethod
+    def _check_test_run_selection(
+        args: argparse.Namespace, parser: argparse.ArgumentParser
+    ) -> None:
+        """Refuse a malformed selector, and ``--seed`` beside a seeded selector."""
+        try:
+            selectors = [parse_test_selector(text) for text in args.test or ()]
+        except (TestRunNameError, TestRunLimitError) as exc:
+            parser.error(str(exc))
+        if args.seed is not None and any(
+            not isinstance(selector.seed_form, UnpinnedSeed) for selector in selectors
+        ):
+            parser.error(SEED_WITH_SEEDED_SELECTOR)
 
     @staticmethod
     def _resume_conflicts(args: argparse.Namespace) -> list[str]:
@@ -183,6 +238,7 @@ class SimArguments(BuiltinArguments):
                 (bool(args.target), "--target"),
                 (args.test is not None, "--test"),
                 (args.tests_file is not None, "--tests-file"),
+                (args.seed is not None, "--seed"),
                 (args.mode is not None, "--mode"),
                 (args.coverage, "--coverage"),
                 (args.no_waivers, "--no-waivers"),

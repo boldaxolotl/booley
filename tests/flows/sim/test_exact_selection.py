@@ -110,7 +110,7 @@ def test_mcp_schema_accepts_only_array_test_shape() -> None:
     assert schema["properties"]["test"] == {
         "type": "array",
         "items": {"type": "string", "minLength": 1},
-        "description": "Select exact registered tests (coverage: deterministic sorted order; plain: input order; CLI: repeat; MCP: array)",
+        "description": "Select Test Runs: test, test+variant, test@seed, test+variant@seed, or test[+variant]@xN for N drawn seeds; a bare test means its default Test Variant (coverage: deterministic sorted order; plain: input order; CLI: repeat; MCP: array)",
         "minItems": 1,
         "uniqueItems": True,
     }

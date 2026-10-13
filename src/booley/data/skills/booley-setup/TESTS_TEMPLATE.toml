@@ -19,6 +19,35 @@ smoke = ["reset", "basic"]
 tests = ["reset", "basic", "stress"]
 select = "+test_id={index}"  # exactly one plusarg; {index} (0-based) or {name}
 
+# --- Seeds (ADR 0072) ------------------------------------------------------
+# Every Test Run has an explicit seed where the Target can apply one. A run
+# that names no seed uses the Default Seed, 1. Booley passes the seed itself:
+#   Verilator      -> +verilator+seed+<seed>
+#   Cocotb Target  -> cocotb's seed variable (do NOT declare `seed` there)
+#   Icarus         -> only through the `seed` template below; without it the
+#                     Target's Test Runs are unseeded and refuse any seed
+# Declare `seed` when the testbench reads its own seed argument. On Verilator
+# the template is passed in addition to +verilator+seed+<seed>.
+#
+# seed = "+seed={seed}"      # exactly one option token; {seed} exactly once
+# default_seed = 7           # this Target's Default Seed (1..2147483647)
+
+# --- Test Variants (ADR 0072) ----------------------------------------------
+# A Test Variant is the same Test with extra run-time arguments and/or
+# environment. Name one Variant as the default: `--test stress` and a plain
+# Target run use it; the others run only when named (`--test stress+soak`).
+# Variant and Test names cannot contain `+` or `@`, and `default` is reserved.
+# A Variant cannot repeat the `select` or seed option, cannot override a
+# plusarg the .core Target declares, and cannot set BOOLEY_*, COCOTB_* or the
+# other variables Booley and the simulator integration own. On a Cocotb
+# Target a Variant carries `env` only.
+#
+# [sim.variants.stress]
+# default = "short"
+# short = ["+iters=1000"]
+# soak  = ["+iters=100000"]
+# fault = { args = ["+err_rate=5"], env = { FAULT_MODE = "1" } }
+
 [sim_fast]
 test_list = "smoke"          # reference a shared list instead of inlining
 

@@ -535,6 +535,23 @@ def test_target_changed_during_the_run_is_discarded(goal_mode: SimpleNamespace) 
     assert not (recorder.log_dir / "acceptance").exists()
 
 
+def _coverage_run(test: str, verdict: str) -> object:
+    from booley.flows.sim.coverage_campaign import NO_DECLARED_INPUTS_FINGERPRINT, CoverageRun
+
+    return CoverageRun(  # type: ignore[arg-type]
+        "001-" + test,
+        test,
+        verdict,
+        "collected",
+        None,
+        {},
+        test,
+        NO_DECLARED_INPUTS_FINGERPRINT,
+        None,
+        None,
+    )
+
+
 def test_complete_coverage_campaign_detail_stays_met(goal_mode: SimpleNamespace) -> None:
     """The Coverage producer's ``sim_pass`` detail satisfies the Goal simulation contract.
 
@@ -549,10 +566,9 @@ def test_complete_coverage_campaign_detail_stays_met(goal_mode: SimpleNamespace)
         handle=SimpleNamespace(identity="::top:0#top"),
         selected_tests=("smoke",),
         declared_tests=("smoke",),
+        test_runs=(),
     )
-    campaign = SimpleNamespace(
-        campaign_id="c" * 32, runs=[SimpleNamespace(test="smoke", simulation_verdict="pass")]
-    )
+    campaign = SimpleNamespace(campaign_id="c" * 32, runs=[_coverage_run("smoke", "pass")])
     detail = _simulation_detail(plan, campaign, Path("unused"))  # type: ignore[arg-type]
 
     state = _v1(goal_mode, GoalEvidenceRecorder(bind(goal_mode)), SIM_KEY, True, detail)

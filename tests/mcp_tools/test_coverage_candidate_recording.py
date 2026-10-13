@@ -155,7 +155,7 @@ def test_legacy_campaign_without_point_store_is_refused(record_context) -> None:
     )
 
     assert section["status"] == "failed"
-    assert "V3/V4" in section["reason"]
+    assert "only point-store Campaigns" in section["reason"]
 
 
 def test_corrupt_candidate_record_is_reported_not_raised(record_context) -> None:

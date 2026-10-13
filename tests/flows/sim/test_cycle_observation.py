@@ -9,6 +9,7 @@ import pytest
 from booley.criteria.state import DevelopmentState
 from booley.criteria.templates import CriteriaTemplate
 from booley.flows.plan import FlowPlan, WorkUnitPlan, WorkUnitRole
+from booley.flows.sim.execution import SelectedTestRuns
 from booley.flows.sim.flow import (
     SimulateFlow,
     TargetResult,
@@ -17,12 +18,17 @@ from booley.flows.sim.flow import (
 )
 from booley.flows.sim.flow import TestResult as SimTestResult
 from booley.flows.sim.mode import SimulationMode
+from booley.flows.target_test_plan import build_target_test_plan
+from booley.flows.test_runs import build_test_run
 from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import AmbiguousTargetError
 
 _TARGET_IDENTITY = "vendor:library:core#sim_core"
 _TARGET_SELECTOR = "sim_core"
+
+
+_COREMARK_RUN = build_test_run("coremark", seed=1)
 
 
 def _install_baseline_plan(
@@ -105,6 +111,8 @@ def test_baseline_planning_uses_ephemeral_tree_and_reports_identity_drift(
         {_TARGET_SELECTOR: ["coremark"]},
         role="baseline",
         revision=baseline_ref,
+        # The baseline runs the candidate's Test Run of the compared Test.
+        selections={_TARGET_SELECTOR: SelectedTestRuns((_COREMARK_RUN,))},
     )
 
 
@@ -170,6 +178,7 @@ def _criterion_flow(*, relative: bool = False) -> tuple[SimulateFlow, str]:
     flow._args = MagicMock(
         state_file="state.json",
         test=None,
+        seed=None,
         work_dir=".",
         mode=SimulationMode.SIMULATE,
     )
@@ -181,6 +190,10 @@ def _criterion_flow(*, relative: bool = False) -> tuple[SimulateFlow, str]:
         )
     }
     flow.set_criterion = MagicMock()
+    # Both revisions register the compared Test on a seeded Target.
+    flow._target_test_plan = lambda target: build_target_test_plan(
+        target, {"tests": ["coremark"]}, adapter="verilator"
+    )
     return flow, next(iter(state.criteria))
 
 
@@ -221,6 +234,10 @@ def _sealed_criterion_flow(*, relative: bool = False) -> tuple[SimulateFlow, str
         )
     }
     flow.set_criterion = MagicMock()
+    # Both revisions register the compared Test on a seeded Target.
+    flow._target_test_plan = lambda target: build_target_test_plan(
+        target, {"tests": ["coremark"]}, adapter="verilator"
+    )
     return flow, next(iter(state.criteria))
 
 
@@ -267,10 +284,43 @@ def test_relative_cycle_criterion_uses_declared_baseline_target(monkeypatch) -> 
     observed = SimTestResult(name="coremark", passed=True, cycles=100, cycle_status="observed")
     baseline = TargetResult(target="sim_old", passed=True, tests=[observed])
     flow._baseline_results = {"sim_old": baseline}
-    assert flow._baseline_cycle_tests(
-        TargetResult(target="sim_core", passed=True, tests=[]),
-        flow.state.criteria[key].params,
-    ) == {"coremark": observed}
+    candidate = TargetResult(target="sim_core", passed=True, tests=[])
+    params = flow.state.criteria[key].params
+    current = SimTestResult(name="coremark", passed=True, cycles=120, cycle_status="observed")
+    assert flow._baseline_cycle_test(candidate, params, current) is observed
+    # No candidate observation, nothing to compare.
+    assert flow._baseline_cycle_test(candidate, params, None) is None
+
+
+def test_relative_cycle_baseline_must_be_the_candidates_test_run(monkeypatch) -> None:
+    """A baseline result of the same Test with another seed is not comparable."""
+    from booley.flows.test_runs import build_test_run
+
+    flow, key = _criterion_flow(relative=True)
+    params = flow.state.criteria[key].params
+    seven = build_test_run("coremark", seed=7)
+    other = SimTestResult(
+        name="coremark",
+        passed=True,
+        cycles=90,
+        cycle_status="observed",
+        test_run=build_test_run("coremark", seed=1),
+    )
+    same = SimTestResult(
+        name="coremark", passed=True, cycles=100, cycle_status="observed", test_run=seven
+    )
+    current = SimTestResult(
+        name="coremark", passed=True, cycles=120, cycle_status="observed", test_run=seven
+    )
+    candidate = TargetResult(target="sim_core", passed=True, tests=[current])
+    flow._baseline_results = {
+        "sim_core": TargetResult(target="sim_core", passed=True, tests=[other, same])
+    }
+    assert flow._baseline_cycle_test(candidate, params, current) is same
+    flow._baseline_results = {
+        "sim_core": TargetResult(target="sim_core", passed=True, tests=[other])
+    }
+    assert flow._baseline_cycle_test(candidate, params, current) is None
 
 
 def test_schema_four_relative_cycle_criterion_selects_callable_target(monkeypatch) -> None:
@@ -590,7 +640,8 @@ def test_cycle_baseline_planning_materializes_project_topologies(tmp_path, monke
     _pin_baseline(flow, revision)
     roots = []
 
-    def preview(targets, tests, *, role, revision):
+    def preview(targets, tests, *, role, revision, selections):
+        assert selections == {"sim_core": SelectedTestRuns((_COREMARK_RUN,))}
         baseline = Path(flow.args.work_dir)
         _assert_topology_baseline(baseline, root, "sim_core")
         roots.append(baseline)
