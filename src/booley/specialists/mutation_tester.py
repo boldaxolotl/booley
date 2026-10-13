@@ -4,8 +4,8 @@ Cold start (no valid proposal lock):
   1. A read-only creator proposes N exact source replacements as JSON.
   2. Booley validates each replacement against the pristine source bytes.
   3. The untouched project is built and run as the campaign baseline.
-  4. Each proposal is applied alone, built in its own directory, simulated,
-     and then restored.  The compiler—not a partial HDL parser—decides whether
+  4. Each proposal is applied only to private build source copies and simulated.
+     The compiler decides whether
      the proposed variant is valid.
   5. Valid proposals are persisted in the lock for later reuse.
 
@@ -45,6 +45,10 @@ from booley.config import project_config
 from booley.core.boundary import BoundaryError, as_int, as_str, require_int, require_str
 from booley.core.models import AgentCallParams
 from booley.dev_support import mutation_lock as lock_mod
+from booley.dev_support.mutation_build_sources import (
+    materialize_build_mutation,
+    validate_mutation_closure,
+)
 from booley.dev_support.mutation_variants import MutationVariantError, MutationVariantPlan
 from booley.flows import artifacts as _artifacts
 from booley.flows.cli_help import CliHelp, SurfaceHelp
@@ -673,7 +677,7 @@ class MutationTesterSpecialist(Specialist):
             "(mutations) are injected into the RTL files in --scope, the Simulation "
             "Target's tests run against each one, and the report says how many were "
             "detected. Use it once the tests pass, to find checks the testbench is "
-            "missing. Mutations are built in isolated copies; your sources are not changed."
+            "missing. Mutations are built in private staged copies; your sources are not changed."
         ),
         example="booley specialist mutation_tester --target sim_soc --scope rtl/fifo.sv",
     )
@@ -798,7 +802,7 @@ For each mutation k = 1 .. {count}:
 4. Distribute proposals across the authorized scope files.
 
 Booley applies one exact replacement at a time, compiles that isolated source
-variant, runs the complete Target suite, and restores the pristine bytes. The
+variant in private build source copies and runs the complete Target suite. The
 untouched project—not a selector branch—is the campaign baseline."""
 
     def _mutation_boundary_section(self) -> str:
@@ -1674,21 +1678,11 @@ replacement must differ, and every proposal must remain a single source edit.
         target: str,
         work_dir: Path,
         build_path: Path,
+        mutation: tuple[MutationVariantPlan, int] | None = None,
     ) -> subprocess.CompletedProcess:
-        """Build the source currently present in the worktree.
-
-        The caller chooses whether that source is pristine or has one exact
-        replacement applied.  FuseSoC copy-stages that snapshot into
-        *build_path*, so every variant has an independent simulation image.
-        The resolved binary dir and EDA-tool family are recorded in markers
-        for the matching run step.
-
-        Returns the ``make`` :class:`~subprocess.CompletedProcess`; if FuseSoC
-        resolution itself fails, a synthetic ``rc=1`` result carries the error
-        so the callers' ``returncode`` / ``stdout+stderr`` checks are unchanged.
-        """
+        """Build pristine source or one replacement in private exported copies."""
         try:
-            _handle, prepared = self._resolve_elab_target(target, work_dir, build_path)
+            _handle, prepared = self._resolve_elab_target(target, work_dir, build_path, mutation)
         except (
             Exception  # noqa: BLE001 — isolate resolve failure; surface as return code 1
         ) as exc:
@@ -1721,15 +1715,23 @@ replacement must differ, and every proposal must remain a single source edit.
 
     @staticmethod
     def _resolve_elab_target(
-        target: str, work_dir: Path, build_path: Path
+        target: str,
+        work_dir: Path,
+        build_path: Path,
+        mutation: tuple[MutationVariantPlan, int] | None = None,
     ) -> tuple[Any, PreparedSimulationBuild]:
         """Resolve one mutation Target without swallowing tool-authority errors."""
-        handle = TargetCatalog.build(work_dir).select(target, for_flow="sim")
+        catalog = TargetCatalog.build(work_dir)
+        handle = catalog.select(target, for_flow="sim")
+        if mutation is not None:
+            validate_mutation_closure(catalog.core_closure((handle,)) or frozenset())
         prepared = prepare_simulation_build(
             handle,
             build_root=build_path,
             lane_kind="unreserved",
         )
+        if mutation is not None:
+            materialize_build_mutation(mutation[0], mutation[1], work_dir, prepared.resolved)
         return handle, prepared
 
     def cocotb_target(self, target: str, work_dir: Path) -> CocotbSimTarget | None:
@@ -1840,7 +1842,11 @@ replacement must differ, and every proposal must remain a single source edit.
         marker = build_path / _EDALIZE_BINDIR_MARKER
         if marker.exists():
             return marker.read_text(encoding="utf-8").strip()
-        # Defensive: marker lost (e.g. external cleanup) — re-resolve.
+        if build_path.name.startswith("mutant_"):
+            raise UnsupportedSimTargetError(
+                "private mutation build marker missing; rerun the mutation sweep"
+            )
+        # Defensive: baseline marker lost — re-resolve.
         _handle, prepared = self._resolve_elab_target(
             target,
             work_dir,
@@ -2314,26 +2320,25 @@ replacement must differ, and every proposal must remain a single source edit.
         build_path = lock_mod.variant_build_dir(spec.index)
         shutil.rmtree(build_path, ignore_errors=True)
         build_path.mkdir(parents=True, exist_ok=True)
-        with variants.applied(spec.index):
-            elab = self._run_elab(plan.target, plan.work_dir, build_path)
-            elab_output = (elab.stdout or "") + (elab.stderr or "")
-            if elab.returncode != 0:
-                return (
-                    MutationResult(
-                        index=spec.index,
-                        invalid=True,
-                        sim_output_snippet="variant did not elaborate: "
-                        + _tail(elab_output, 5)[-200:],
-                        log_path=self._persist_mutant_log(spec.index, elab_output),
-                    ),
-                    "",
-                )
-            runs = self._run_target_test_suite(
-                plan.target,
-                plan.work_dir,
-                build_path,
-                plan.tb_top,
+        elab = self._run_elab(plan.target, plan.work_dir, build_path, (variants, spec.index))
+        elab_output = (elab.stdout or "") + (elab.stderr or "")
+        if elab.returncode != 0:
+            return (
+                MutationResult(
+                    index=spec.index,
+                    invalid=True,
+                    sim_output_snippet="variant did not elaborate: "
+                    + _tail(elab_output, 5)[-200:],
+                    log_path=self._persist_mutant_log(spec.index, elab_output),
+                ),
+                "",
             )
+        runs = self._run_target_test_suite(
+            plan.target,
+            plan.work_dir,
+            build_path,
+            plan.tb_top,
+        )
         combined = self._suite_output(runs)
         verdict = self._classify_variant_suite(runs)
         snippet = (

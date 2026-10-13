@@ -621,7 +621,45 @@ def _patch_resolve_target(monkeypatch, *, eda_tool: str | None = "verilator"):
 
     def _fake_prepare(handle, *, build_root, lane_kind, **kwargs):
         assert lane_kind == "unreserved"
+        import yaml
+
+        root = Path(build_root)
+        root.mkdir(parents=True, exist_ok=True)
+        project = Path(handle.project_root)
+        core_file = project / "fixture.core"
+        sources = sorted((project / "rtl").glob("*.sv"))
+        core_file.write_text(
+            "CAPI=2:\n"
+            + yaml.safe_dump(
+                {
+                    "name": "acme:test:fixture:1",
+                    "filesets": {
+                        "rtl": {"files": [str(path.relative_to(project)) for path in sources]}
+                    },
+                    "targets": {},
+                }
+            )
+        )
+        entries = []
+        for source in sources:
+            name = "src/acme_test_fixture_1/" + str(source.relative_to(project))
+            staged = root / name
+            staged.parent.mkdir(parents=True, exist_ok=True)
+            staged.write_bytes(source.read_bytes())
+            entries.append({"name": name, "core": "acme:test:fixture:1"})
+        edam_path = root / "fixture.eda.yml"
+        edam_path.write_text(
+            yaml.safe_dump(
+                {
+                    "cores": {"acme:test:fixture:1": {"core_file": str(core_file)}},
+                    "files": entries,
+                }
+            )
+        )
+        (root / "Makefile").write_text("verilator -f fixture.vc\n")
+        (root / "fixture.vc").write_text("\n".join(entry["name"] for entry in entries))
         resolved = types.SimpleNamespace(
+            edam_path=edam_path,
             build_root=Path(build_root),
             toplevel="tb",
             eda_tool=eda_tool,
@@ -650,7 +688,8 @@ def _patch_resolve_target(monkeypatch, *, eda_tool: str | None = "verilator"):
                 {
                     "select": lambda _self, target, **kwargs: _fake_select(
                         work_dir, target, **kwargs
-                    )
+                    ),
+                    "core_closure": lambda _self, _handles: frozenset(),
                 },
             )()
         ),
