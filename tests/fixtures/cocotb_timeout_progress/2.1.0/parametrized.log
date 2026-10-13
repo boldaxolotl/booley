@@ -1,0 +1,16 @@
+rm -f results.xml
+rm -f results.xml
+COCOTB_TEST_MODULES=parametrized_cases COCOTB_TESTCASE=  COCOTB_TOPLEVEL=capture TOPLEVEL_LANG=verilog COCOTB_RANDOM_SEED=1      \
+	 /usr/local/bin/vvp -m /usr/local/lib/python3.14/dist-packages/cocotb/libs/libcocotbvpi_icarus.so   sim_build/sim.vvp   
+     -.--ns INFO     gpi                                ../gpi/GpiCommon.cpp:242  in gpi_load_users                  Loaded entry library: '/usr/lib/x86_64-linux-gnu/libpython3.14.so.1.0'
+     -.--ns INFO     gpi                                ../gpi/GpiCommon.cpp:233  in gpi_load_users                  Running entry func 'initialize' from loaded library '/usr/local/lib/python3.14/dist-packages/cocotb/simulator.cpython-314-x86_64-linux-gnu.so'
+     -.--ns INFO     pygpi                              ..ib/pygpi/embed.cpp:114  in initialize                      Using Python 3.14.0 interpreter at /usr/bin/python
+     -.--ns INFO     gpi                                ../gpi/GpiCommon.cpp:74   in gpi_print_registered_impl       GPI: VPI support registered
+     0.00ns INFO     cocotb.initialize                  Seeding Python random module with 1
+     0.00ns INFO     cocotb.initialize                  Initialized cocotb v2.1.0 from /usr/local/lib/python3.14/dist-packages/cocotb
+     0.00ns INFO     cocotb.initialize                  Running on Icarus Verilog version 13.0 (stable)
+     0.00ns INFO     cocotb.regression                  Running tests
+     0.00ns INFO     cocotb.regression                  running parametrized_cases.test_gain/gain=0.5 (1/2)
+    30.00ns INFO     cocotb.regression                  parametrized_cases.test_gain/gain=0.5 passed
+    30.00ns INFO     cocotb.regression                  running parametrized_cases.test_gain/gain=1.5 (2/2)
+Killed
