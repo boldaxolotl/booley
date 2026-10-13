@@ -998,6 +998,8 @@ def test_initial_authored_scaffolding_remains_uncommitted(repo):
     assert b"booley.toml" in _managed_git(data, "status", "--porcelain", "--untracked-files=all")
 
 
+# Windows CI measured 36.0s; 120s preserves the required timeout headroom.
+@pytest.mark.timeout(120)
 @pytest.mark.parametrize("topology", ["standalone", "nested"])
 def test_managed_bundle_publication_leaves_versioned_project_clean(repo, topology):
     if topology == "nested":

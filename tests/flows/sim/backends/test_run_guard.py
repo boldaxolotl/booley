@@ -625,6 +625,100 @@ def test_supervise_child_is_idempotent():
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="PDEATHSIG is Linux-only")
+def test_parent_death_guard_keeps_a_run_whose_parent_is_pid_1(monkeypatch):
+    """Booley as a container's first process is a live parent with PID 1."""
+    armed = []
+    monkeypatch.setattr(rg.os, "getppid", lambda: 1)
+    monkeypatch.setattr(rg, "_set_pdeathsig", lambda sig: armed.append(sig) or True)
+    monkeypatch.setattr("signal.signal", lambda _signum, _handler: None)
+
+    rg.install_parent_death_guard()
+
+    # Still armed: the run survives its start, not the death of its parent.
+    assert armed == [15]
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="PDEATHSIG is Linux-only")
+def test_parent_death_guard_exits_when_the_parent_changed_while_arming(monkeypatch):
+    """A parent lost between entry and prctl is caught by the one manual check."""
+    parents = iter([4242, 1])
+    monkeypatch.setattr(rg.os, "getppid", lambda: next(parents))
+    monkeypatch.setattr(rg, "_set_pdeathsig", lambda _signal: True)
+    monkeypatch.setattr("signal.signal", lambda _signum, _handler: None)
+    monkeypatch.setattr("booley.runtime.platform_paths.kill_process_tree", lambda _proc: None)
+
+    with pytest.raises(SystemExit) as exit_info:
+        rg.install_parent_death_guard()
+
+    assert exit_info.value.code == 143
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="PDEATHSIG is Linux-only")
+def test_parent_death_guard_stops_a_real_run_half_when_its_launcher_dies(tmp_path):
+    """Unmocked: kill the launcher, and the guarded process under it exits 143."""
+    import subprocess
+    import textwrap
+
+    exit_file = tmp_path / "run_half_exit"
+    # A "run-half" that installs the guard, reports that it is armed, then
+    # blocks. The handler leaves through SystemExit, whose code it records.
+    # The signal can arrive as soon as "armed" is out, so the report is inside
+    # the try; the code is renamed into place so it is never read half written.
+    run_half_src = textwrap.dedent(
+        f"""
+        import os, time
+        from booley.flows.sim.run_guard import install_parent_death_guard
+        install_parent_death_guard()
+        try:
+            print("armed", flush=True)
+            time.sleep(60)
+        except SystemExit as exc:
+            with open({str(exit_file) + ".part"!r}, "w") as part:
+                part.write(str(exc.code))
+            os.replace({str(exit_file) + ".part"!r}, {str(exit_file)!r})
+            raise
+        """
+    )
+    # A "launcher" that starts the run-half on its own stdout, then blocks.
+    launcher_src = textwrap.dedent(
+        """
+        import subprocess, sys, time
+        subprocess.Popen([sys.executable, "-c", sys.argv[1]])
+        time.sleep(60)
+        """
+    )
+    launcher = subprocess.Popen(
+        [sys.executable, "-c", launcher_src, run_half_src],
+        stdout=subprocess.PIPE,
+        text=True,
+        env={
+            **os.environ,
+            "PYTHONPATH": os.pathsep.join(
+                [
+                    str(Path(__file__).resolve().parents[4] / "src"),
+                    os.environ.get("PYTHONPATH", ""),
+                ]
+            ),
+        },
+    )
+    try:
+        assert launcher.stdout.readline().strip() == "armed"
+        launcher.kill()
+        launcher.wait(timeout=10)
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline and not exit_file.exists():
+            time.sleep(0.05)
+        assert exit_file.exists(), "the guarded process did not leave through the handler"
+        assert exit_file.read_text() == "143"
+    finally:
+        if launcher.poll() is None:
+            launcher.kill()
+            launcher.wait(timeout=10)
+        if launcher.stdout is not None:
+            launcher.stdout.close()
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="PDEATHSIG is Linux-only")
 def test_parent_death_guard_kills_the_whole_tree(monkeypatch):
     """SIGTERM from the guard tears the registered children down, then exits."""
     import signal
