@@ -164,12 +164,7 @@ logging.basicConfig(
 # the outer client, so exposing these just adds noise and invites the wrong
 # workflow. Keeping the reason next to the name is not decoration: these MCP tools
 # are filtered from the outer client so discovery explains the available surface.
-_INTERACTIVE_HIDDEN_REASONS = {
-    "tb_coder": (
-        "it writes testbench code for autonomous development — "
-        "interactively, edit the testbench directly"
-    ),
-}
+_INTERACTIVE_HIDDEN_REASONS: dict[str, str] = {}
 _INTERACTIVE_MCP_EXCLUDED = frozenset(_INTERACTIVE_HIDDEN_REASONS)
 _STATUS_MCP_TOOL_NAME = "booley_status"
 _STATUS_MCP_TOOL_DESCRIPTION = "Show whether Booley Interactive Mode is ready in this tab."

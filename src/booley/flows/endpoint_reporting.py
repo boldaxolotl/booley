@@ -146,7 +146,7 @@ class _StdoutWitness:
         """Whether *text* was printed to stdout as a block of whole lines.
 
         Line-anchored on purpose. An unanchored substring scan over a megabyte
-        of stdout tail is far too eager: a short report_text — tb_coder's bare
+        of stdout tail is far too eager: a short report_text — a bare
         ``"BLOCKED"``, or any ``str(exc)`` — matches the moment those
         characters appear anywhere inside a streamed agent log, and then the
         stderr echo, the only place that failure reason exists, disappears.

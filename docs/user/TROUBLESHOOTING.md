@@ -108,7 +108,7 @@ a Booley Flow from Developer Agent discovery and autonomous execution, set
 `[specialists.<name>].enabled = false`. Protocol utilities have no Project
 enable switch.
 
-Submit a Goal's Session Summary through `goal_finish`. `tb_coder` is de-registered while the Developer Agent
+Submit a Goal's Session Summary through `goal_finish`. The Developer Agent
 writes testbench code directly. Direct Flow diagnostics can list endpoints
 independently of the project discovery filter. An individual Flow may still
 report its configured flow as disabled when invoked directly.
@@ -792,3 +792,18 @@ the Campaign-bound evidence tool.
   the current source and Campaign. Do not copy candidate bytes into approval files.
 - Approval succeeded but the Goal is unmet: rerun coverage for fresh strict
   evidence, then inspect `goal_status`. Approval alone cannot satisfy it.
+
+## Recover sources hidden by an interrupted older run
+
+Doctor WARNs with `workspace.legacy-source-stash` when a stash record names this
+worktree. It only reads the record. Recover manually inside the original
+Sandbox, before rebuilding it or clearing its temp directory:
+
+1. Back up the worktree, including untracked files.
+2. Open the reported `booley_isolation_*.manifest.json` or
+   `booley_hide_files_*.manifest.json`, including `.retired` records. Each
+   `moved` pair lists the original path, then the stashed path under
+   `stash_dir`.
+3. If the stash directory has mode `000`, run `chmod u+rwx <stash-dir>`. Copy
+   back only missing sources; never overwrite a present one.
+4. Delete the stash and its record once the sources are confirmed.
