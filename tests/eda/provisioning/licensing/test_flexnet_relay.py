@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import logging
+import socket
 
 import pytest
 
@@ -257,19 +258,27 @@ async def test_connection_limit_rejects_excess_without_upstream_attempt(caplog) 
 
 @pytest.mark.asyncio
 async def test_unreachable_upstream_fails_closed_without_destination_in_logs(caplog) -> None:
-    reservation = await _start_server(_half_close_echo)
-    port = reservation.sockets[0].getsockname()[1]
-    reservation.close()
-    await reservation.wait_closed()
+    # A bound socket that never listens refuses every connection, and holding it
+    # keeps a parallel test from taking the port and answering in its place.
+    reservation = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        reservation.bind(("127.0.0.1", 0))
+    except OSError as exc:
+        reservation.close()
+        pytest.skip(f"loopback sockets unavailable: {exc}")
+    port = reservation.getsockname()[1]
     relay = FlexNetRelay(_test_config((port, port + 1)))
     caplog.set_level(logging.WARNING)
-    await relay.start()
     try:
-        reader, writer = await asyncio.open_connection("127.0.0.1", relay.bound_ports[0])
-        assert await asyncio.wait_for(reader.read(), timeout=1) == b""
-        writer.close()
-        await writer.wait_closed()
+        await relay.start()
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", relay.bound_ports[0])
+            assert await asyncio.wait_for(reader.read(), timeout=1) == b""
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            await relay.close()
     finally:
-        await relay.close()
+        reservation.close()
     assert "upstream failed" in caplog.text
     assert "127.0.0.1" not in caplog.text
