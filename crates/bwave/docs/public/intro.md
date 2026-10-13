@@ -14,9 +14,8 @@ store, and then you query the store instead of re-parsing
 the VCD on every question. The store is a plain FST file:
 it also opens directly in GTKWave and VaporView.
 
-`.fst` stores are compressed and seek-indexed. Queries
-that would take seconds against the raw VCD return in
-milliseconds against the store.
+`.fst` stores are compressed and seek-indexed, so repeated
+queries do not scan the VCD input.
 
 ## Subcommand families
 
