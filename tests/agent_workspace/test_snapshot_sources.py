@@ -38,8 +38,8 @@ def test_flat_and_nested_sources_and_discovery_links(snapshot):
     (nested / "nested.sv").write_text("// nested TB\n")
     cores = root / ".booley_project/cores"
     cores.mkdir()
-    symlink_or_skip(cores / "tb", "../../tb", target_is_directory=True)
-    symlink_or_skip(cores / "rtl", "../../rtl", target_is_directory=True)
+    symlink_or_skip(cores / "tb", Path("../..") / "tb", target_is_directory=True)
+    symlink_or_skip(cores / "rtl", Path("../..") / "rtl", target_is_directory=True)
     hide_opposite_sources(
         snapshot,
         "rtl",

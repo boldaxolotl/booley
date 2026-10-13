@@ -1476,9 +1476,7 @@ mutation_tester = "light"            # …or a tier name
 
 A tier name resolves through the `[models]` table (and tracks any override of
 it); anything else is passed to the provider verbatim. Specialist roles include `reviewer`, `mutation_tester`, `coverage_analyst`. An unknown
-role FAILs `booley doctor`. Remove `[models.roles]` pins for names outside the
-supported role list before upgrading; unrecognized pins are rejected rather
-than silently ignored.
+role FAILs `booley doctor`.
 
 A pin overrides a Specialist's minimum-tier floor and sets the **model only**;
 reasoning effort still follows the tier the Specialist would otherwise use (a no-op

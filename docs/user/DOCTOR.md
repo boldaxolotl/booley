@@ -104,8 +104,6 @@ Both IDs are stable and waivable through `doctor-waivers.toml`. Doctor also
 WARNs on ignored `[developer]` settings and `[jobs].max_tickets` with a delete
 fix. These settings do not configure Goal Mode.
 
-Doctor also warns with `workspace.legacy-source-stash` when an older interrupted
-run left a source stash record for this worktree in the Sandbox system temp
-directory. Run Doctor inside the original Sandbox to inspect its records;
-host-side Doctor only sees host temp records. This check is read-only. Follow [manual source recovery](TROUBLESHOOTING.md#recover-sources-hidden-by-an-interrupted-older-run)
-before rebuilding the Sandbox or clearing its temp directory.
+Doctor WARNs with `workspace.legacy-source-stash` when an interrupted run left
+a source stash record for this worktree; see
+[manual source recovery](TROUBLESHOOTING.md#recover-sources-hidden-by-an-interrupted-older-run).

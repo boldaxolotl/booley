@@ -634,19 +634,11 @@ def _disallowed_tools(self) -> list[str] | None:
     ]
 ```
 
-Category isolation uses the same disposable snapshot as write isolation. The
-Reviewer selects its review category; MutationTester's proposer selects `rtl`.
-Booley resolves source directories from the live Project, copies its current
-sources, and removes the opposite category only inside the copy. Shared source
-prefixes remain visible. The snapshot's Git baseline is created after removal,
-so its history cannot reveal the removed files. The live worktree retains all
-sources throughout the call, and the snapshot is discarded afterwards.
-
-`workspace_access = "read_only"` alone protects the real worktree from writes;
-a Specialist must also select `_workspace_isolation_category()` to apply the
-category wall. Reviewer state-file projection is a separate mechanism that
-still temporarily filters opposite-category findings and restores the original
-state bytes afterwards.
+Category isolation uses the same disposable snapshot as write isolation. A
+Specialist that selects `_workspace_isolation_category()` works in a copy with
+the opposite category's sources removed; shared prefixes stay visible and the
+live worktree keeps every source. `workspace_access = "read_only"` alone does
+not hide files.
 
 #### Find Its Logs
 
