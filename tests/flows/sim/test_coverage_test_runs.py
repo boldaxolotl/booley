@@ -279,42 +279,9 @@ def _ticket_coverage_result(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *te
 def test_default_coverage_runs_keep_recording_goal_evidence(tmp_path, monkeypatch, tests):
     result, state_path, initial_state = _ticket_coverage_result(tmp_path, monkeypatch, *tests)
 
-    assert "test_run_goal_guard" not in result.outcome.detail
+    assert "diagnostic_test_runs" not in result.outcome.detail  # outside Goal Mode
     assert state_path.read_bytes() != initial_state
     assert len(DevelopmentState.load(state_path).acceptance_transactions) == 1
-
-
-def test_coverage_of_non_default_runs_records_no_goal_evidence(tmp_path, monkeypatch):
-    result, state_path, _initial = _ticket_coverage_result(tmp_path, monkeypatch, "gap@7")
-
-    assert result.outcome.detail["test_run_goal_guard"] == {
-        "diagnostic": True,
-        "test_runs": ["sim_custom: gap@7"],
-    }
-    assert "it records no Goal evidence" in result.outcome.report_text
-    # The campaign ran and collected coverage; only the evidence is withheld.
-    nested = next((tmp_path / "reports").rglob("coverage-campaign/coverage.json"))
-    assert [run["test_run"] for run in json.loads(nested.read_text())["tests"]["runs"]] == [
-        "gap@7"
-    ]
-    saved = DevelopmentState.load(state_path)
-    assert not saved.acceptance_transactions
-    assert all(entry.met is not True for entry in saved.criteria.values())
-
-
-def test_ticket_coverage_of_several_runs_of_one_test_is_diagnostic_not_an_error(
-    tmp_path, monkeypatch
-):
-    """The interim guard keeps the per-Test acceptance refusal unreachable."""
-    result, state_path, _initial = _ticket_coverage_result(tmp_path, monkeypatch, "gap", "gap@7")
-
-    # Both runs simulated (this fixture's canned merge covers one run only, so
-    # its collection verdict is not the subject here).
-    rows = result.outcome.detail["campaigns"]["sim_custom"]["test_runs"]
-    assert [(row["name"], row["grade"]) for row in rows] == [("gap@1", "pass"), ("gap@7", "pass")]
-    assert result.outcome.detail["test_run_goal_guard"]["test_runs"] == ["sim_custom: gap@7"]
-    assert "several Test Runs" not in result.outcome.report_text
-    assert not DevelopmentState.load(state_path).acceptance_transactions
 
 
 def test_flow_fails_when_one_of_several_runs_of_a_test_fails(tmp_path, monkeypatch):
@@ -467,9 +434,6 @@ def test_resumed_multi_run_coverage_replays_the_frozen_test_runs_byte_identicall
 
     assert resumed.exit_code == 0, resumed.outcome.report_text
     assert manifest.read_bytes() == frozen
-    # The resumed campaign is as diagnostic as the request that froze it.
-    assert len(resumed.outcome.detail["test_run_goal_guard"]["test_runs"]) == 4
-    assert "it records no Goal evidence" in resumed.outcome.report_text
     # Nothing ran again, and every published record names the frozen Test Runs.
     assert [request.test.run_name for request in execution.runs] == launched
     rows = resumed.outcome.detail["campaigns"]["sim_0"]["test_runs"]

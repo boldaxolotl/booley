@@ -11,8 +11,11 @@ from typing import Any
 
 from booley.commit_policy import stealth_enabled
 from booley.core.boundary import BoundaryError, require_str_value
+from booley.criteria.evidence_ledger import AcceptanceLedgerError
 from booley.criteria.state import DevelopmentState
+from booley.flows.campaign_results import CampaignResultsReader
 from booley.goals.apply import ChangeEnvironment, WaiverPort, recover_locked
+from booley.goals.campaign_accounting import account_for_campaigns
 from booley.goals.checkout import CheckoutError, GoalCheckout, branch_ref
 from booley.goals.completion_capture import legacy_materialization_buffers, public_capture
 from booley.goals.completion_history import (
@@ -106,6 +109,8 @@ class FinishEnvironment:
     resolvers: GoalFreshnessResolvers = DEFAULT_RESOLVERS
     on_boundary: Callable[[str], None] | None = None
     waiver_factory: Callable[[GoalRecord], WaiverPort] | None = None
+    #: Reads the finished results of Simulation Campaigns that never published.
+    campaign_reader: CampaignResultsReader | None = None
     generated_inputs: (
         Callable[[GoalRecord, DevelopmentState, Path], tuple[GeneratedBuildInput, ...]] | None
     ) = None
@@ -215,6 +220,13 @@ def _attempt_authority_current(
 def _freeze(
     operation: LifecycleOperation, record: GoalRecord, env: FinishEnvironment
 ) -> dict[str, Any]:
+    # Finish judges the Goals by their ledger: bring in what earlier Simulation
+    # Campaigns durably observed but never published first (ADR 0072). Whatever
+    # stays unaccounted reads unmet below.
+    try:
+        account_for_campaigns(operation.store, record.id, reader=env.campaign_reader)
+    except AcceptanceLedgerError as exc:
+        raise LifecycleError(f"Goal evidence cannot be accounted for: {exc}") from exc
     selection = select_inputs(record, operation.root)
     if record.declared_protected_inputs is not None:
         violations = protected_warnings(record, operation.store.project_dir, operation.root)

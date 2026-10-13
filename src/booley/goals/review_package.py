@@ -9,6 +9,7 @@ from typing import Any, cast
 
 from booley.criteria.evidence_ledger import canonical_json, validated_evidence_records
 from booley.criteria.state import DevelopmentState
+from booley.goals.campaign_accounting import unsettled_campaigns
 from booley.goals.changes import read_change_log
 from booley.goals.derivation import selected_observations
 from booley.goals.format import format_met_goal_metric
@@ -19,6 +20,8 @@ from booley.goals.paths import record_paths
 from booley.goals.presentation import goal_presentation
 from booley.goals.proposals import digest, list_proposals
 from booley.goals.recorder import GOAL_SCOPE
+from booley.goals.store import GoalStore
+from booley.goals.test_run_evidence import LEDGER_DETAIL_KEY
 from booley.review.goal_package import GoalCompletionPackage, GoalReviewContext
 
 
@@ -85,7 +88,17 @@ def build_goal_package(
         ],
         "session_summary": context.session_summary,
     }
-    return GoalCompletionPackage.from_json(facts)
+    return GoalCompletionPackage.from_json(facts | _unsettled(project_dir, record))
+
+
+def _unsettled(project_dir: Path, record: GoalRecord) -> dict[str, Any]:
+    """The Simulation Campaigns the reviewer should see were never fully accounted for.
+
+    Open ones, and registrations a human-approved change set aside because
+    nobody could read them (ADR 0072). No key at all when there is none.
+    """
+    listed = unsettled_campaigns(GoalStore(project_dir), record)
+    return {"unsettled_campaigns": listed} if listed else {}
 
 
 def _proposal_audit(root: Path) -> list[dict[str, Any]]:
@@ -147,9 +160,15 @@ def _row_digest(row: dict[str, Any]) -> str:
 def original_observations(
     row: dict[str, Any], indexed: dict[int, dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    """Digest-verified linked producer observations, including chained derivations."""
+    """Digest-verified linked producer observations, including chained derivations.
+
+    An observation links the observation an approved change derived it from
+    (``goal_derivation``) and the earlier observations its Test Run ledger
+    accumulated (``test_run_ledger``, ADR 0072). Every linked row must still
+    have the digest its link names.
+    """
     originals: list[dict[str, Any]] = []
-    pending = list(row["detail"].get("goal_derivation", {}).get("source_evidence", []))
+    pending = _linked_evidence(row)
     seen = {row["sequence"]}
     while pending:
         reference = pending.pop(0)
@@ -161,10 +180,17 @@ def original_observations(
         if original["sequence"] not in seen:
             seen.add(original["sequence"])
             originals.append(original)
-            pending.extend(
-                original["detail"].get("goal_derivation", {}).get("source_evidence", [])
-            )
+            pending.extend(_linked_evidence(original))
     return originals
+
+
+def _linked_evidence(row: dict[str, Any]) -> list[dict[str, Any]]:
+    """The ``{sequence, sha256}`` links of *row* to the observations it was built from."""
+    detail = row["detail"]
+    return [
+        *detail.get("goal_derivation", {}).get("source_evidence", []),
+        *detail.get(LEDGER_DETAIL_KEY, {}).get("source_evidence", []),
+    ]
 
 
 def _transactions(

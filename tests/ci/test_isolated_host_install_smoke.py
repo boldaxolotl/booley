@@ -16,11 +16,6 @@ README = Path("README.md").read_text()
 
 def test_readme_commands_are_the_smoke_input():
     commands = smoke.read_commands(README)
-    assert commands["prepare"] == (
-        "sudo apt-get update",
-        "sudo apt-get install -y pipx",
-        "pipx ensurepath",
-    )
     assert commands["install"] == ("pipx install booley-rtl", "booley bootstrap")
     assert commands["upgrade"] == ("pipx upgrade booley-rtl", "booley bootstrap --update")
 
@@ -30,8 +25,8 @@ def test_readme_commands_are_the_smoke_input():
     [
         ("pipx install booley-rtl", "pipx install other"),
         ("booley bootstrap\n```", "booley bootstrap --update\n```"),
-        ("sudo apt-get update", "sudo apt-get update -q"),
-        ("<!-- booley-smoke:prepare -->", "<!-- booley-smoke:unexpected -->"),
+        ("pipx upgrade booley-rtl", "pipx upgrade other"),
+        ("<!-- booley-smoke:upgrade -->", "<!-- booley-smoke:unexpected -->"),
         ("<!-- booley-smoke:install -->", ""),
         ("<!-- /booley-smoke:install -->", ""),
     ],
@@ -101,7 +96,7 @@ def test_inside_executes_readme_and_only_exempts_full_bootstrap(tmp_path, monkey
         ["useradd", "--create-home", "--shell", "/bin/bash", "smoke"],
     ]
     assert f"booley-rtl @ {wheel.as_uri()}\n" in writes
-    assert all(command in commands for command in smoke.COMMANDS["prepare"])
+    assert all(command in commands for command in smoke.PIPX_PREPARATION)
     assert "pipx install booley-rtl" in commands
     assert smoke.BOOTSTRAP_EXEMPTION == "booley bootstrap"
     assert "booley bootstrap" not in commands

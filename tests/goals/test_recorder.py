@@ -29,9 +29,6 @@ from booley.goals.recorder import (
     goal_identity,
     validate_goal_identity,
 )
-from booley.goals.simulation import GOAL_SUITE_DETAIL_KEY
-from booley.goals.status import build_status
-from booley.goals.store import GoalStore
 from tests.criteria.ledger_support import FixtureIdentity
 from tests.goals.conftest import (
     LINT_KEY,
@@ -40,11 +37,12 @@ from tests.goals.conftest import (
     bump_spec,
     campaign_facts,
     enter_goals,
+    passing_sim,
 )
 from tests.golden.conftest import assert_matches_golden, normalize_work_dir
 
 FIXED_NOW = "2026-10-07T08:00:00Z"
-PASSING_SIM = {"required_tests": ["smoke"], "passed_tests": ["smoke"]}
+PASSING_SIM = passing_sim()
 BOUNDARIES = (
     "before:acceptance_intent",
     "after:acceptance_intent",
@@ -131,61 +129,6 @@ def test_v1_records_a_stamped_observation_under_its_identity_group(
     disk = _disk_state(goal_mode)["criteria"][LINT_KEY]
     assert disk["met"] is True
     assert disk["detail"] == record["detail"]
-
-
-def test_v1_partial_simulation_pass_is_recorded_unmet(goal_mode: SimpleNamespace) -> None:
-    recorder = GoalEvidenceRecorder(bind(goal_mode))
-
-    state = _v1(
-        goal_mode,
-        recorder,
-        SIM_KEY,
-        True,
-        {"required_tests": [], "passed_tests": [], "tests_passed": 1, "tests_total": 1},
-    )
-
-    entry = state.criteria[SIM_KEY]
-    assert entry.met is False
-    assert entry.detail[GOAL_SUITE_DETAIL_KEY] == ["smoke"]
-    assert "complete resolved suite" in entry.detail["goal_contract_violation"]
-    assert _disk_state(goal_mode)["criteria"][SIM_KEY]["met"] is False
-    goal = next(
-        g
-        for g in build_status(GoalStore(goal_mode.control), goal_mode.record).goals
-        if g.key == SIM_KEY
-    )
-    assert goal.status == "unmet"
-    assert goal.evidence_summary == "1/1 tests"
-    assert goal.reason == entry.detail["goal_contract_violation"]
-
-    _v1(
-        goal_mode,
-        GoalEvidenceRecorder(bind(goal_mode, "run-2")),
-        SIM_KEY,
-        False,
-        {**PASSING_SIM, "passed_tests": [], "tests_passed": 0, "tests_total": 1},
-    )
-    goal = next(
-        g
-        for g in build_status(GoalStore(goal_mode.control), goal_mode.record).goals
-        if g.key == SIM_KEY
-    )
-    assert (goal.status, goal.evidence_summary, goal.reason) == ("unmet", "0/1 tests", "")
-
-
-def test_v1_complete_simulation_pass_records_its_suite(goal_mode: SimpleNamespace) -> None:
-    recorder = GoalEvidenceRecorder(bind(goal_mode))
-
-    state = _v1(goal_mode, recorder, SIM_KEY, True, dict(PASSING_SIM))
-
-    assert state.criteria[SIM_KEY].met is True
-    assert state.criteria[SIM_KEY].detail[GOAL_SUITE_DETAIL_KEY] == ["smoke"]
-    goal = next(
-        g
-        for g in build_status(GoalStore(goal_mode.control), goal_mode.record).goals
-        if g.key == SIM_KEY
-    )
-    assert (goal.status, goal.reason) == ("met", "")
 
 
 def test_v2_transaction_selects_its_identity_group(goal_mode: SimpleNamespace) -> None:
@@ -506,9 +449,13 @@ def test_recovery_from_a_stale_instance_keeps_a_concurrently_selected_observatio
     second = concurrent.record_or_verify_transaction(
         other, changes, acceptance_facts=campaign_facts(), identity={}
     )
-    assert _disk_state(goal_mode)["acceptance_transactions"] == [second.transaction_id]
+    # Before it recorded anything, the concurrent run completed the crashed transaction
+    # (ADR 0072: no new evidence while an earlier transaction is left unselected).
+    first, last = _disk_state(goal_mode)["acceptance_transactions"]
+    assert last == second.transaction_id
 
     state, recovered = _v2(goal_mode, recovering, stale)
+    assert recovered.transaction_id == first
 
     assert state.criteria[LINT_KEY].met is False
     assert state.criteria[LINT_KEY].detail["warnings"] == 9
@@ -533,93 +480,3 @@ def test_target_changed_during_the_run_is_discarded(goal_mode: SimpleNamespace) 
 
     assert _paths(goal_mode).state_file.read_bytes() == before
     assert not (recorder.log_dir / "acceptance").exists()
-
-
-def _coverage_run(test: str, verdict: str) -> object:
-    from booley.flows.sim.coverage_campaign import NO_DECLARED_INPUTS_FINGERPRINT, CoverageRun
-
-    return CoverageRun(  # type: ignore[arg-type]
-        "001-" + test,
-        test,
-        verdict,
-        "collected",
-        None,
-        {},
-        test,
-        NO_DECLARED_INPUTS_FINGERPRINT,
-        None,
-        None,
-    )
-
-
-def test_complete_coverage_campaign_detail_stays_met(goal_mode: SimpleNamespace) -> None:
-    """The Coverage producer's ``sim_pass`` detail satisfies the Goal simulation contract.
-
-    Coverage names no ``required_tests`` (its Ticket detail is unchanged); the
-    contract reads the ``selected_tests`` it ran instead.
-    """
-    from booley.flows.sim.coverage_acceptance import (
-        _simulation_detail,  # pyright: ignore[reportPrivateUsage]
-    )
-
-    plan = SimpleNamespace(
-        handle=SimpleNamespace(identity="::top:0#top"),
-        selected_tests=("smoke",),
-        declared_tests=("smoke",),
-        test_runs=(),
-    )
-    campaign = SimpleNamespace(campaign_id="c" * 32, runs=[_coverage_run("smoke", "pass")])
-    detail = _simulation_detail(plan, campaign, Path("unused"))  # type: ignore[arg-type]
-
-    state = _v1(goal_mode, GoalEvidenceRecorder(bind(goal_mode)), SIM_KEY, True, detail)
-
-    assert state.criteria[SIM_KEY].met is True
-    assert "goal_contract_violation" not in state.criteria[SIM_KEY].detail
-
-
-def test_v2_partial_simulation_reason_survives_projection(goal_mode):
-    recorder = GoalEvidenceRecorder(bind(goal_mode))
-    state = _load(goal_mode, recorder)
-    shadow = DevelopmentState.from_json_object(state.to_dict())
-    changes = shadow.set_criterion(
-        SIM_KEY,
-        True,
-        detail={
-            "required_tests": [],
-            "passed_tests": [],
-            "tests_passed": 1,
-            "tests_total": 1,
-        },
-    )
-    recorder.record_or_verify_transaction(
-        state, changes, acceptance_facts=campaign_facts(), identity={}
-    )
-    goal = next(
-        g
-        for g in build_status(GoalStore(goal_mode.control), goal_mode.record).goals
-        if g.key == SIM_KEY
-    )
-    assert (goal.status, goal.evidence_summary) == ("unmet", "1/1 tests")
-    assert (
-        goal.reason
-        == _disk_state(goal_mode)["criteria"][SIM_KEY]["detail"]["goal_contract_violation"]
-    )
-
-
-@pytest.mark.parametrize("met", [False, True])
-def test_unresolvable_simulation_suite_exposes_reason(goal_mode, met):
-    def unresolved(_root, _target):
-        raise ValueError("suite unavailable")
-
-    recorder = GoalEvidenceRecorder(
-        bind(goal_mode), resolvers=GoalFreshnessResolvers(simulation_suite=unresolved)
-    )
-    state = _v1(goal_mode, recorder, SIM_KEY, met, dict(PASSING_SIM))
-    goal = next(
-        g
-        for g in build_status(GoalStore(goal_mode.control), goal_mode.record).goals
-        if g.key == SIM_KEY
-    )
-    assert goal.status == "unmet"
-    assert goal.reason == state.criteria[SIM_KEY].detail["goal_contract_violation"]
-    assert "suite unavailable" in goal.reason

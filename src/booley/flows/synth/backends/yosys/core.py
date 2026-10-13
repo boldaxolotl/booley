@@ -428,8 +428,8 @@ def _build_yosys_script(
     # ``synth`` runs CHECK internally more than once, so its log can contain
     # repeated loop/driver warnings. Keeping this pass quiet and in its own
     # artifact gives result interpretation an exact final count without
-    # duplicating it in yosys.log. Any earlier loop warning remains fatal even
-    # if absent here.
+    # duplicating it in yosys.log. The completed final check supplies authoritative
+    # structural counts; earlier-only loops remain advisory.
     check_out = q(out_dir + "/check_" + design_name + ".txt")
     final_check = [
         "select -assert-none =A:booley_check_library=1",

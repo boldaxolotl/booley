@@ -202,6 +202,26 @@ async def _inspect_goals_and_proposal(app, pilot):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("reader_fails", [False, True])
+async def test_refresh_tick_after_shutdown_is_a_no_op(reader_fails):
+    current = snapshot(1)
+    failing = False
+
+    def reader():
+        if failing:
+            raise OSError("registry unreadable")
+        return current
+
+    app = DashboardApp(reader)
+    async with app.run_test(size=(130, 30)) as pilot:
+        await pilot.pause()
+
+    # The interval may fire once more after the widgets are gone.
+    failing = reader_fails
+    await app.refresh_snapshot()
+
+
+@pytest.mark.asyncio
 async def test_pilot_wide_aside_narrow_detail_and_terminal_selection():
     current = snapshot(1)
     extra = tuple(

@@ -20,6 +20,7 @@ from booley.flows.execution_persistence import (
     GoalPresentationProvider,
     NoAcceptanceRecorder,
     execution_goal_name,
+    frozen_test_runs_for,
 )
 from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.targets.catalog import TargetCatalog
@@ -87,7 +88,9 @@ def coverage_acceptance(
 ) -> CoverageAcceptance | None:
     if diagnostic or state._file_path is None or isinstance(recorder, NoAcceptanceRecorder):
         return None
-    return CoverageAcceptance(state, recorder, observer, on_discard)
+    return CoverageAcceptance(
+        state, recorder, observer, on_discard, frozen_test_runs_for(recorder)
+    )
 
 
 def _coverage_policies(

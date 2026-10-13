@@ -215,7 +215,7 @@ def test_admitted_producer_name_does_not_follow_a_later_retarget(goal_mode):
     old = recorded.spec
     changed = replace(recorded, spec=replace(old, target="new_target"), spec_revision=2)
     with store.record_lock(goal_mode.record.id) as lock:
-        store.save(lock, replace(goal_mode.record, goals=(changed,)))
+        store.save(lock, replace(goal_mode.record, goals=(changed, *goal_mode.record.goals[1:])))
     assert adapter.present_criterion(old.key, {}).label == "LINT:top"
     assert "new_target" not in adapter.present_criterion(old.key, {}).label
 
