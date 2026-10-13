@@ -20,8 +20,8 @@ from tests.goals.conftest import SIM_KEY, bind, enter_goals, write_tests_toml
 
 LATER_KEY = "sim_pass_top_run_6c61746572_x"
 GOALS = (
-    {"family": "sim", "target": "top"},
-    {"family": "sim", "target": "top", "test": "later@x2"},
+    {"family": "SIM", "target": "top"},
+    {"family": "SIM", "target": "top", "test": "later@x2"},
 )
 GROWN = b'[top]\ntests = ["smoke", "later"]\n'
 
@@ -152,7 +152,7 @@ def test_pending_target_resolves_when_the_target_first_exists(
 ) -> None:
     from tests.goals import conftest
 
-    record = enter_goals(layout, [*GOALS, {"family": "sim", "target": "soon"}])
+    record = enter_goals(layout, [*GOALS, {"family": "SIM", "target": "soon"}])
     assert record.test_run_resolution("sim_pass_soon").pending == (SUITE_SLOT,)
     monkeypatch.setattr(conftest, "KNOWN_TARGETS", frozenset({"top", "base", "soon"}))
     write_tests_toml(layout, b'[top]\ntests = ["smoke"]\n[soon]\ntests = ["a", "b"]\n')

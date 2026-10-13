@@ -32,7 +32,7 @@ def test_open_done_findings_finish_without_ticket_assessment_or_second_approval(
     monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
     layout.record = enter_goals(
         layout,
-        [{"family": "review", "review": "rtl_bugs", "verdict": "clean" if derived else "done"}],
+        [{"family": "REVIEW", "review": "rtl_bugs", "verdict": "clean" if derived else "done"}],
     )
     endpoint, provider = _goal_reviewer_endpoint(layout, monkeypatch)
     provider.return_value.output = json.dumps({"issues": review_issues(True)})
@@ -59,6 +59,9 @@ def test_open_done_findings_finish_without_ticket_assessment_or_second_approval(
     assert facts["goals"][0]["selected_observation"] == selected
     assert "fixture finding" in result["message"]
     assert "fixture finding" in Path(result["html"]).read_text()
+    for text in (replay_result.report_text, result["message"], Path(result["html"]).read_text()):
+        assert "REVIEW:rtl_bugs" in text
+        assert "review_rtl_bugs_clean" not in text and "review_rtl_bugs_done" not in text
     assert "SemanticAssessment" not in Path(result["package"]).read_text()
     assert "approval before acceptance" not in result["message"]
     assert GoalCompletionPackage.from_json(facts).to_json() == facts
@@ -73,7 +76,7 @@ def test_modern_mcp_finish_requires_stable_binding_and_preserves_response_retry(
 ):
     from tests.goals.test_status import publish
 
-    layout.record = enter_goals(layout, [{"family": "lint", "target": "top"}])
+    layout.record = enter_goals(layout, [{"family": "LINT", "target": "top"}])
     publish(layout)
     operation = str(uuid4())
     arguments = {
@@ -136,7 +139,7 @@ def test_derived_sibling_and_rejected_agent_decision_are_frozen_separately(layou
 def test_modern_abandon_quote_binding_and_saved_retry_after_replacement(layout, monkeypatch):
     from booley.goals.paths import record_paths
 
-    layout.record = enter_goals(layout, [{"family": "lint", "target": "top"}])
+    layout.record = enter_goals(layout, [{"family": "LINT", "target": "top"}])
     arguments = {
         "work_dir": str(layout.worktree),
         "record_id": layout.record.id,
@@ -160,7 +163,7 @@ def test_modern_abandon_quote_binding_and_saved_retry_after_replacement(layout, 
                 EntryRequest(
                     layout.worktree,
                     "replacement",
-                    parse_goal_args([{"family": "lint", "target": "top"}]),
+                    parse_goal_args([{"family": "LINT", "target": "top"}]),
                 ),
                 EntryEnvironment(layout.control),
             ).record
@@ -183,7 +186,7 @@ def test_attempt_frozen_survives_real_status_and_reviewer_activity_without_new_e
 
     monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
     layout.record = enter_goals(
-        layout, [{"family": "review", "review": "rtl_bugs", "verdict": "done"}]
+        layout, [{"family": "REVIEW", "review": "rtl_bugs", "verdict": "done"}]
     )
     endpoint, provider = _goal_reviewer_endpoint(layout, monkeypatch)
     provider.return_value.output = json.dumps({"issues": review_issues(True)})
@@ -244,7 +247,7 @@ def test_elaboration_and_custom_producer_metric_finish(layout, family, detail, e
     from booley.goals.store import GoalStore
     from tests.goals.conftest import bind
 
-    layout.record = enter_goals(layout, [{"family": family, "target": "top"}])
+    layout.record = enter_goals(layout, [{"family": family.upper(), "target": "top"}])
     adapter = GoalFlowExecution(bind(layout))
     key = layout.record.goals[0].spec.key
     endpoint = SimpleNamespace(
@@ -324,9 +327,14 @@ def metric_package(layout, monkeypatch, family, key, detail):
     from booley.review.goal_package import GoalReviewContext
 
     # Opaque keys exercise package compatibility, not Goal entry policy.
-    layout.record = enter_goals(layout, [{"family": "lint", "target": "top"}])
+    layout.record = enter_goals(layout, [{"family": "LINT", "target": "top"}])
     goal = layout.record.goals[0]
-    spec = replace(goal.spec, family=GoalFamily(family), key=key)
+    spec = replace(
+        goal.spec,
+        family=GoalFamily(family),
+        key=key,
+        target=None if family == "review" else goal.spec.target,
+    )
     record = replace(layout.record, goals=(replace(goal, spec=spec),))
     state = DevelopmentState()
     state.set_criterion(key, True, detail=detail)
@@ -478,8 +486,8 @@ def test_obsolete_simulation_after_approved_retarget_omits_inventory_without_rew
     _source, _old_manifest, old_transaction = classified(
         layout,
         goals=[
-            {"family": "sim", "target": "top"},
-            {"family": "review", "review": "rtl_bugs", "verdict": "clean"},
+            {"family": "SIM", "target": "top"},
+            {"family": "REVIEW", "review": "rtl_bugs", "verdict": "clean"},
         ],
         criterion=SIM_KEY,
         criterion_detail=passing_sim(),
@@ -497,7 +505,7 @@ def test_obsolete_simulation_after_approved_retarget_omits_inventory_without_rew
         {
             "kind": "retarget",
             "goal_key": SIM_KEY,
-            "after": {"family": "sim", "target": "base"},
+            "after": {"family": "SIM", "target": "base"},
             "rationale": "validate replacement target",
         },
         session_key="test-session",

@@ -154,7 +154,9 @@ def test_v2_whole_transaction_is_rejected_when_one_member_changed(
     recorder = GoalEvidenceRecorder(bind(goal_mode))
     bump_spec(goal_mode, SIM_KEY)
 
-    with pytest.raises(EvidenceDiscarded, match=f"Goal {SIM_KEY} changed"):
+    with pytest.raises(
+        EvidenceDiscarded, match=r"Goal SIM:top \(all selected tests pass\) changed"
+    ):
         _v2(goal_mode, recorder)
 
     assert not (recorder.log_dir / "acceptance").exists()
@@ -217,7 +219,9 @@ def test_replay_and_projection_under_a_stale_spec_are_rejected(
     bump_spec(goal_mode, SIM_KEY)
     projection = recorder.projection()
 
-    with pytest.raises(EvidenceDiscarded, match=f"Goal {SIM_KEY} changed"):
+    with pytest.raises(
+        EvidenceDiscarded, match=r"Goal SIM:top \(all selected tests pass\) changed"
+    ):
         _v2(goal_mode, recorder, state)
     with pytest.raises(AcceptanceLedgerError, match="recorded under specification revision 1"):
         evidence_ledger.replay_projection(

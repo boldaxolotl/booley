@@ -25,7 +25,7 @@ from tests.goals.conftest import enter_goals
 from tests.goals.test_proposal_wire import sdk
 from tests.goals.test_proposals import observations
 
-MUTATION = {"family": "mutation", "target": "top", "scope": ["rtl.v"]}
+MUTATION = {"family": "MUTATION", "target": "top", "scope": ["rtl.v"]}
 KEY = "mutation_score_top"
 
 

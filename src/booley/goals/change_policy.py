@@ -17,7 +17,8 @@ specification revision, so its Test Run outcomes start again.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,7 @@ from booley.goals.changes import ChangeKind
 from booley.goals.checkout import GoalCheckout
 from booley.goals.entry import EntryEnvironment, check_goal_targets, pin_goal_baselines
 from booley.goals.model import GoalFamily, GoalRecord, GoalSpec, parse_goal_arg
+from booley.goals.naming import resolve_spelling
 from booley.goals.proposals import Proposal, ProposalError
 from booley.goals.state_store import goal_criterion_params, load_goal_state
 from booley.goals.store import GoalStore
@@ -38,9 +40,12 @@ from booley.goals.translate import stricter_threshold, translate_goals
 _SEED_COUNT = "seed_count"
 
 
-def translate_after(raw: Mapping[str, Any]) -> GoalSpec:
+def translate_after(raw: Mapping[str, Any], *, work_dir: Path | None = None) -> GoalSpec:
     """One typed public GoalArg, never an arbitrary internal specification."""
-    return translate_goals((parse_goal_arg(raw),)).goals[0]
+    spelling: Callable[[GoalSpec], GoalSpec] | None = None
+    if work_dir is not None:
+        spelling = partial(resolve_spelling, root=work_dir)
+    return translate_goals((parse_goal_arg(raw),), target_spelling=spelling).goals[0]
 
 
 def conflict(proposal: Proposal, record: GoalRecord) -> str:

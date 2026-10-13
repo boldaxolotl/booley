@@ -67,27 +67,27 @@ def record(**changes: Any) -> GoalRecord:
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
-        ({"family": "lint", "target": "lint_uart"}, TargetGoalArg(GoalFamily.LINT, "lint_uart")),
+        ({"family": "LINT", "target": "lint_uart"}, TargetGoalArg(GoalFamily.LINT, "lint_uart")),
         (
-            {"family": "sim", "target": "sim_uart", "origin": "bugfix"},
+            {"family": "SIM", "target": "sim_uart", "origin": "bugfix"},
             TargetGoalArg(GoalFamily.SIM, "sim_uart", "bugfix"),
         ),
-        ({"family": "elab", "target": "sim_uart"}, TargetGoalArg(GoalFamily.ELAB, "sim_uart")),
+        ({"family": "ELAB", "target": "sim_uart"}, TargetGoalArg(GoalFamily.ELAB, "sim_uart")),
         (
-            {"family": "synth", "target": "synth_uart", "thresholds": {"area_um2_max": 10}},
+            {"family": "SYNTH", "target": "synth_uart", "thresholds": {"area_um2_max": 10}},
             ImplementationGoalArg(GoalFamily.SYNTH, "synth_uart", {"area_um2_max": 10}),
         ),
         (
-            {"family": "fpga", "target": "fpga_new", "baseline": "fpga_old"},
+            {"family": "FPGA", "target": "fpga_new", "baseline": "fpga_old"},
             ImplementationGoalArg(GoalFamily.FPGA, "fpga_new", {}, "fpga_old"),
         ),
         (
-            {"family": "synth", "target": "synth_uart", "baseline": "synth_uart"},
+            {"family": "SYNTH", "target": "synth_uart", "baseline": "synth_uart"},
             ImplementationGoalArg(GoalFamily.SYNTH, "synth_uart"),
         ),
         (
             {
-                "family": "cycle_count",
+                "family": "CYCLE_COUNT",
                 "target": "sim_uart",
                 "test": "smoke",
                 "thresholds": {"cycle_count_max": 9},
@@ -95,23 +95,23 @@ def record(**changes: Any) -> GoalRecord:
             CycleCountGoalArg("sim_uart", "smoke", {"cycle_count_max": 9}),
         ),
         (
-            {"family": "coverage", "target": "sim_uart", "metrics": {"line": 80}, "tests": "all"},
+            {"family": "COVERAGE", "target": "sim_uart", "metrics": {"line": 80}, "tests": "all"},
             CoverageGoalArg("sim_uart", {"line": 80}, "all"),
         ),
         (
-            {"family": "coverage", "target": "sim_uart", "metrics": {"line": 80}, "tests": ["a"]},
+            {"family": "COVERAGE", "target": "sim_uart", "metrics": {"line": 80}, "tests": ["a"]},
             CoverageGoalArg("sim_uart", {"line": 80}, ("a",)),
         ),
         (
-            {"family": "mutation", "target": "sim_uart", "min_detected": 8, "total": 10},
+            {"family": "MUTATION", "target": "sim_uart", "min_detected": 8, "total": 10},
             MutationGoalArg("sim_uart", {"min_detected": 8, "total": 10}),
         ),
         (
-            {"family": "review", "review": "rtl_bugs", "verdict": "clean"},
+            {"family": "REVIEW", "review": "rtl_bugs", "verdict": "clean"},
             ReviewGoalArg("rtl_bugs", "clean"),
         ),
         (
-            {"family": "review", "review": "rtl_spec", "verdict": "done", "spec": "doc/uart.md"},
+            {"family": "REVIEW", "review": "rtl_spec", "verdict": "done", "spec": "doc/uart.md"},
             ReviewGoalArg("rtl_spec", "done", "doc/uart.md"),
         ),
     ],
@@ -125,22 +125,22 @@ def test_every_family_parses_to_its_shape(raw: dict[str, Any], expected: object)
     [
         ({"family": "formal", "target": "x"}, "family must be one of"),
         ({"target": "x"}, "family is required"),
-        ({"family": "lint"}, "target is required"),
-        ({"family": "sim", "target": "  "}, "non-empty"),
-        ({"family": "cycle_count", "test": "t", "thresholds": {}}, "target is required"),
-        ({"family": "coverage", "metrics": {"line": 1}, "tests": "all"}, "target is required"),
-        ({"family": "lint", "target": "a b"}, "whitespace"),
-        ({"family": "lint", "target": "tb@lint"}, "'@'"),
-        ({"family": "lint", "target": "x->y"}, "'->'"),
-        ({"family": "lint", "target": "x", "thresholds": {}}, "unknown fields"),
-        ({"family": "cycle_count", "target": "x", "test": "t"}, "thresholds is required"),
-        ({"family": "coverage", "target": "x", "metrics": {"line": 1}}, "tests is required"),
-        ({"family": "coverage", "target": "x", "metrics": {}, "tests": []}, "tests must be"),
-        ({"family": "review", "review": "rtl_magic", "verdict": "clean"}, "review must be"),
-        ({"family": "review", "review": "rtl_bugs", "verdict": "ok"}, "verdict must be"),
-        ({"family": "review", "review": "rtl_spec", "verdict": "clean"}, "spec is required"),
+        ({"family": "LINT"}, "target is required"),
+        ({"family": "SIM", "target": "  "}, "non-empty"),
+        ({"family": "CYCLE_COUNT", "test": "t", "thresholds": {}}, "target is required"),
+        ({"family": "COVERAGE", "metrics": {"line": 1}, "tests": "all"}, "target is required"),
+        ({"family": "LINT", "target": "a b"}, "whitespace"),
+        ({"family": "LINT", "target": "tb@lint"}, "'@'"),
+        ({"family": "LINT", "target": "x->y"}, "'->'"),
+        ({"family": "LINT", "target": "x", "thresholds": {}}, "unknown fields"),
+        ({"family": "CYCLE_COUNT", "target": "x", "test": "t"}, "thresholds is required"),
+        ({"family": "COVERAGE", "target": "x", "metrics": {"line": 1}}, "tests is required"),
+        ({"family": "COVERAGE", "target": "x", "metrics": {}, "tests": []}, "tests must be"),
+        ({"family": "REVIEW", "review": "rtl_magic", "verdict": "clean"}, "review must be"),
+        ({"family": "REVIEW", "review": "rtl_bugs", "verdict": "ok"}, "verdict must be"),
+        ({"family": "REVIEW", "review": "rtl_spec", "verdict": "clean"}, "spec is required"),
         (
-            {"family": "review", "review": "rtl_bugs", "verdict": "clean", "spec": "x.md"},
+            {"family": "REVIEW", "review": "rtl_bugs", "verdict": "clean", "spec": "x.md"},
             "spec is required",
         ),
         ("lint", "must be a mapping"),
@@ -153,9 +153,9 @@ def test_malformed_goal_arguments_are_rejected(raw: object, message: str) -> Non
 
 def test_goal_list_errors_name_the_index() -> None:
     with pytest.raises(GoalArgError, match=r"goals\[1\]\.target is required"):
-        parse_goal_args([{"family": "lint", "target": "a"}, {"family": "sim"}])
+        parse_goal_args([{"family": "LINT", "target": "a"}, {"family": "SIM"}])
     with pytest.raises(GoalArgError, match="must be a list"):
-        parse_goal_args({"family": "lint"})
+        parse_goal_args({"family": "LINT"})
 
 
 def test_review_kinds_match_the_base_review_criteria() -> None:
@@ -171,14 +171,14 @@ def test_vocabulary_matches_the_criteria_rules() -> None:
 def test_schema_has_one_variant_per_family_matching_the_parser() -> None:
     variants = goal_arg_json_schema()["oneOf"]
     by_family = {v["properties"]["family"]["const"]: v for v in variants}
-    assert set(by_family) == {family.value for family in GoalFamily}
+    assert set(by_family) == {family.name for family in GoalFamily}
     for family, variant in by_family.items():
         assert variant["additionalProperties"] is False
         raw = {name: _sample(name, family) for name in variant["required"]}
         raw["family"] = family
-        if family == "review":
+        if family == "REVIEW":
             raw.update(review="rtl_spec", spec="doc/spec.md")
-        assert parse_goal_arg(raw).family == family
+        assert parse_goal_arg(raw).family.name == family
         for extra in set(variant["properties"]) - set(raw):
             parse_goal_arg({**raw, extra: _sample(extra, family)})  # every schema field parses
     json.dumps(goal_arg_json_schema())  # serializable as an MCP input schema
@@ -195,7 +195,7 @@ def _sample(name: str, family: str) -> object:
         "total": 2,
         "auto": True,
     }
-    if name == "thresholds" and family in ("synth", "fpga"):
+    if name == "thresholds" and family in ("SYNTH", "FPGA"):
         return {"critical_path_ps_max": 900}
     return samples.get(name, "x_name")
 
@@ -324,7 +324,7 @@ def test_required_fields_stay_required(required: str) -> None:
 def test_spec_paths_may_not_escape_the_worktree(spec: str) -> None:
     with pytest.raises(GoalArgError, match="relative to the worktree"):
         parse_goal_arg(
-            {"family": "review", "review": "rtl_spec", "verdict": "clean", "spec": spec}
+            {"family": "REVIEW", "review": "rtl_spec", "verdict": "clean", "spec": spec}
         )
 
 
@@ -340,7 +340,7 @@ _STRUCTURAL = [
 ]
 
 
-@pytest.mark.parametrize("family", ["synth", "fpga"])
+@pytest.mark.parametrize("family", ["SYNTH", "FPGA"])
 @pytest.mark.parametrize(
     "name",
     [*_STRUCTURAL, "lut_or_area", "clk i.fmax_mhz_min", ".fmax_mhz_min", "a.b.fmax_mhz_min"],
@@ -354,14 +354,14 @@ def test_implementation_thresholds_accept_only_family_parameters(family: str, na
 def test_cycle_count_thresholds_accept_only_cycle_count_parameters(name: str) -> None:
     with pytest.raises(GoalArgError, match="unknown threshold"):
         parse_goal_arg(
-            {"family": "cycle_count", "target": "t", "test": "x", "thresholds": {name: 1}}
+            {"family": "CYCLE_COUNT", "target": "t", "test": "x", "thresholds": {name: 1}}
         )
 
 
 @pytest.mark.parametrize("clock", ["clk_i", "clk-out", "clk[0]", "u_pll/clk"])
 def test_clock_scoped_thresholds_accept_every_clock_name_criteria_accept(clock: str) -> None:
     name = f"{clock}.fmax_mhz_min"
-    arg = parse_goal_arg({"family": "synth", "target": "t", "thresholds": {name: 1}})
+    arg = parse_goal_arg({"family": "SYNTH", "target": "t", "thresholds": {name: 1}})
     assert isinstance(arg, ImplementationGoalArg)
     assert dict(arg.thresholds) == {name: 1}
     # The same entry is valid Criteria authoring, bound to the same Target.
@@ -375,14 +375,14 @@ def test_clock_scoped_thresholds_accept_every_clock_name_criteria_accept(clock: 
 @pytest.mark.parametrize("name", ["a.b.fmax_mhz_min", ".fmax_mhz_min", "clk i.fmax_mhz_min"])
 def test_malformed_clock_scopes_are_rejected(name: str) -> None:
     with pytest.raises(GoalArgError, match="unknown threshold"):
-        parse_goal_arg({"family": "synth", "target": "t", "thresholds": {name: 1}})
+        parse_goal_arg({"family": "SYNTH", "target": "t", "thresholds": {name: 1}})
 
 
 @pytest.mark.parametrize("name", ["targets", "tests", "statement"])
 def test_coverage_metrics_accept_only_coverage_metrics(name: str) -> None:
     with pytest.raises(GoalArgError, match="unknown metrics"):
         parse_goal_arg(
-            {"family": "coverage", "target": "t", "metrics": {name: 50}, "tests": "all"}
+            {"family": "COVERAGE", "target": "t", "metrics": {name: 50}, "tests": "all"}
         )
 
 
@@ -398,7 +398,7 @@ def test_schema_threshold_names_agree_with_the_parser() -> None:
         "lut_count_max",
         "x.cycle_count_max",
     ]
-    for family, extra in (("synth", {}), ("fpga", {}), ("cycle_count", {"test": "x"})):
+    for family, extra in (("SYNTH", {}), ("FPGA", {}), ("CYCLE_COUNT", {"test": "x"})):
         pattern = variants[family]["properties"]["thresholds"]["propertyNames"]["pattern"]
         for name in candidates:
             raw = {"family": family, "target": "t", "thresholds": {name: 1}, **extra}
@@ -416,7 +416,7 @@ def test_schema_threshold_names_agree_with_the_parser() -> None:
 def test_rooted_and_drive_relative_spec_paths_are_refused(spec: str) -> None:
     with pytest.raises(GoalArgError, match="relative to the worktree"):
         parse_goal_arg(
-            {"family": "review", "review": "rtl_spec", "verdict": "clean", "spec": spec}
+            {"family": "REVIEW", "review": "rtl_spec", "verdict": "clean", "spec": spec}
         )
 
 
@@ -427,10 +427,10 @@ def test_rooted_and_drive_relative_spec_paths_are_refused(spec: str) -> None:
 
 @pytest.mark.parametrize("test", ["smoke", "stress+soak", "stress@7", "stress+soak@7", "s@x3"])
 def test_simulation_goal_accepts_one_test_run_selector(test: str) -> None:
-    goal = parse_goal_arg({"family": "sim", "target": "tb", "test": test})
+    goal = parse_goal_arg({"family": "SIM", "target": "tb", "test": test})
     assert goal == TargetGoalArg(GoalFamily.SIM, "tb", test=test)
     assert goal_arg_to_json(goal) == {
-        "family": "sim",
+        "family": "SIM",
         "target": "tb",
         "origin": "ad-hoc",
         "test": test,
@@ -438,7 +438,7 @@ def test_simulation_goal_accepts_one_test_run_selector(test: str) -> None:
 
 
 def test_simulation_goal_without_a_test_is_the_target_goal() -> None:
-    goal = parse_goal_arg({"family": "sim", "target": "tb"})
+    goal = parse_goal_arg({"family": "SIM", "target": "tb"})
     assert isinstance(goal, TargetGoalArg) and goal.test is None
     assert "test" not in goal_arg_to_json(goal)
 
@@ -457,17 +457,17 @@ def test_simulation_goal_without_a_test_is_the_target_goal() -> None:
 )
 def test_simulation_goal_refuses_a_malformed_selector(test: str, message: str) -> None:
     with pytest.raises(GoalArgError, match=message):
-        parse_goal_arg({"family": "sim", "target": "tb", "test": test})
+        parse_goal_arg({"family": "SIM", "target": "tb", "test": test})
 
 
-@pytest.mark.parametrize("family", ["lint", "elab"])
+@pytest.mark.parametrize("family", ["LINT", "ELAB"])
 def test_only_a_simulation_goal_names_a_test(family: str) -> None:
     with pytest.raises(GoalArgError, match="unknown fields"):
         parse_goal_arg({"family": family, "target": "tb", "test": "smoke"})
 
 
 def test_cycle_count_goal_accepts_a_pinned_run_and_refuses_a_seed_count() -> None:
-    raw = {"family": "cycle_count", "target": "tb", "thresholds": {"cycle_count_max": 9}}
+    raw = {"family": "CYCLE_COUNT", "target": "tb", "thresholds": {"cycle_count_max": 9}}
     goal = parse_goal_arg({**raw, "test": "stress+soak@7"})
     assert isinstance(goal, CycleCountGoalArg) and goal.test == "stress+soak@7"
     with pytest.raises(GoalArgError, match="seed count"):
@@ -477,7 +477,7 @@ def test_cycle_count_goal_accepts_a_pinned_run_and_refuses_a_seed_count() -> Non
 
 
 def test_coverage_goal_accepts_selectors_with_a_seed_count() -> None:
-    raw = {"family": "coverage", "target": "tb", "metrics": {"line": 80}}
+    raw = {"family": "COVERAGE", "target": "tb", "metrics": {"line": 80}}
     goal = parse_goal_arg({**raw, "tests": ["smoke", "stress+soak@x3", "stress@7"]})
     assert isinstance(goal, CoverageGoalArg)
     assert goal.tests == ("smoke", "stress+soak@x3", "stress@7")
@@ -487,11 +487,11 @@ def test_coverage_goal_accepts_selectors_with_a_seed_count() -> None:
 
 def test_schema_describes_the_test_run_selectors() -> None:
     variants = {v["properties"]["family"]["const"]: v for v in goal_arg_json_schema()["oneOf"]}
-    assert "test" in variants["sim"]["properties"]
-    assert variants["sim"]["required"] == ["family", "target"]
-    assert "@xN" in variants["sim"]["properties"]["test"]["description"]
-    assert "test" not in variants["lint"]["properties"]
-    assert "test" not in variants["elab"]["properties"]
-    assert "@xN" not in variants["cycle_count"]["properties"]["test"]["description"]
-    selectors = variants["coverage"]["properties"]["tests"]["oneOf"][1]
+    assert "test" in variants["SIM"]["properties"]
+    assert variants["SIM"]["required"] == ["family", "target"]
+    assert "@xN" in variants["SIM"]["properties"]["test"]["description"]
+    assert "test" not in variants["LINT"]["properties"]
+    assert "test" not in variants["ELAB"]["properties"]
+    assert "@xN" not in variants["CYCLE_COUNT"]["properties"]["test"]["description"]
+    selectors = variants["COVERAGE"]["properties"]["tests"]["oneOf"][1]
     assert "@xN" in selectors["description"]

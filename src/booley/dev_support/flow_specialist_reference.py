@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from booley.goals.capabilities import evidence_goal_name
 from booley.mcp.registry import discover_mcp_tools
 
 BEGIN_MARKER = "<!-- BEGIN GENERATED: flows -->"
@@ -137,20 +138,9 @@ def _summarize(text: str) -> str:
 
 
 def _format_satisfies(satisfies: tuple[str, ...]) -> str:
-    """Render the criterion families an endpoint sets as ``name`` or ``prefix_*``.
-
-    An endpoint that sets one family shows it verbatim; an endpoint that sets several
-    (e.g. ``reviewer`` across focuses) collapses to their common ``prefix_*``.
-    """
-    if not satisfies:
-        return "—"
-    if len(satisfies) == 1:
-        return f"`{satisfies[0]}`"
-    prefix = satisfies[0]
-    for name in satisfies[1:]:
-        while not name.startswith(prefix):
-            prefix = prefix[:-1]
-    return f"`{prefix}*`" if prefix else "—"
+    """Present only supported Goal names, keeping producer metadata internal."""
+    names = dict.fromkeys(name for key in satisfies if (name := evidence_goal_name(key)))
+    return ", ".join(f"`{name}`" for name in names) or "—"
 
 
 def render_flow_reference(
@@ -248,7 +238,9 @@ def _render_reviewer_reference(satisfies_args: dict[str, str] | None) -> list[st
         parts = invocation.split()
         category = parts[parts.index("--category") + 1]
         focus = parts[parts.index("--focus") + 1]
-        lines.append(f"| `{category}` | `{focus}` | {description} | `{criterion}` |")
+        lines.append(
+            f"| `{category}` | `{focus}` | {description} | `{evidence_goal_name(criterion) or 'Goal unavailable'}` |"
+        )
     lines.extend(
         [
             "",

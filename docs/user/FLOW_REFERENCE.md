@@ -190,7 +190,7 @@ Every built-in Flow uses the same exit codes:
 | `2` | The Flow could not reach a verdict: bad configuration, missing tool, crash, tool or build timeout. | Fix the setup; the result says nothing about the design. |
 
 A simulation run that exceeds its run budget gets a `timeout` verdict and exits
-`1`; it fails `sim_pass_*`. Investigate a possible RTL/testbench deadlock, or
+`1`; it fails `SIM:{target}`. Investigate a possible RTL/testbench deadlock, or
 raise `--timeout` or `[flows.sim].timeout_ms` if the test legitimately needs
 longer. Build, Elaboration Check, and Pre-Sim Command timeouts instead exit `2`.
 
@@ -369,9 +369,9 @@ Each test gets one verdict:
   fail the test.
 - A test that exits cleanly without a valid verdict is **inconclusive**, never a
   pass. So is a `--trace` run that produced no fresh waveform. An inconclusive
-  run exits `1` and skips the `sim_pass_*` Criterion.
+  run exits `1` and skips the `SIM:{target}` Criterion.
 - A simulation run that exceeds its run budget gets a **timeout** verdict,
-  exits `1`, and fails `sim_pass_*`.
+  exits `1`, and fails `SIM:{target}`.
 - A test stopped by a Booley guard stays **aborted** even if the simulator
   exits `0`. An infrastructure abort is exit `2`. A `$readmemh` input file that
   is missing and not declared in the Target is a design failure
@@ -387,25 +387,25 @@ absolute root as `work_dir` to Booley Flows, Specialists, Goal tools,
 [worktree routing](USAGE.md#working-with-evidence) for the full inventory and
 when `work_dir` is required.
 
-- `sim_pass_<target>` requires the default Test Variant of every Test of the
+- `SIM:{target}` requires the default Test Variant of every Test of the
   Target, each at the Default Seed.
 - A simulation Goal with a `test` selector requires the Test Runs that the
   selector names: one Test Run, or N Test Runs with different seeds for
   `test@xN`.
-- `cycle_count_<target>_<test>` requires one passing Test Run and all its
+- `CYCLE_COUNT:{target}` requires one passing Test Run and all its
   Cycle Count thresholds. A relative threshold runs the same Test Run, with
   the same Test Variant and seed, at the Goal base commit. If the base commit
   cannot run it (the Test is not registered there, or the Target cannot apply
   the seed or the Variant's arguments), the comparison is inconclusive and
   the report names the reason.
-- `elab_pass_<target>` requires a successful build; see below.
+- `ELAB:{target}` requires a successful build; see below.
 
 For example, entry can include:
 
 ```json
-[{"family": "sim", "target": "sim_core"},
- {"family": "sim", "target": "sim_core", "test": "stress+soak@x20"},
- {"family": "cycle_count", "target": "sim_core", "test": "smoke",
+[{"family": "SIM", "target": "sim_core"},
+ {"family": "SIM", "target": "sim_core", "test": "stress+soak@x20"},
+ {"family": "CYCLE_COUNT", "target": "sim_core", "test": "smoke",
   "thresholds": {"cycle_count_max": 100}}]
 ```
 
@@ -416,7 +416,7 @@ Runs with the same declared arguments and environment. Inside the Goal
 worktree:
 
 - `booley flow sim --target sim_core` runs the frozen Test Runs of the
-  `sim_pass_sim_core` Goal, and the default Test Run of any Test added to the
+  `SIM:sim_core` Goal, and the default Test Run of any Test added to the
   Target since.
 - `--test stress+soak@x20` runs the 20 frozen seeds of the Goal with the same
   Target, Test Variant and N. With no such Goal, Booley draws 20 new seeds and
@@ -440,7 +440,7 @@ The Target build in either mode uses the shared
 [`build_timeout_ms`](CONFIG.md#simulation-build-pre-sim-and-run-timeouts)
 budget rather than `--timeout`.
 
-In Goal Mode, a successful build satisfies `elab_pass_<target>`, whether it
+In Goal Mode, a successful build satisfies `ELAB:{target}`, whether it
 comes from `--mode elab-only` or from the build step of a normal run. It is
 recorded as soon as the build succeeds, so a later test failure does not erase
 it.
@@ -578,7 +578,7 @@ and testbench improvements. The verdict card prints the exact
   the partial points and nothing is waived.
 - **Ungated** (no Coverage Criterion): Booley collects and stores the Campaign
   with evaluation `not_requested`. Use it to explore.
-- **Gated** (Goal Mode with a `coverage_<target>` Goal): Booley also checks
+- **Gated** (Goal Mode with a `COVERAGE:{target}` Goal): Booley also checks
   the thresholds. Only a persisted `pass` satisfies
   the Criterion. A Goal remains unmet until strict evidence passes; see
   [Coverage waivers at review](#coverage-waivers-at-review).
@@ -603,7 +603,7 @@ explicitly.
 A coverage Goal declares thresholds per Target:
 
 ```json
-{"family": "coverage", "target": "sim_counter", "tests": "all",
+{"family": "COVERAGE", "target": "sim_counter", "tests": "all",
  "metrics": {"line": 90, "branch": 80}}
 ```
 
@@ -747,7 +747,7 @@ For Target recipes, see [Verilator lint Target](CONFIG.md#verilator-lint-target)
 
 - `--scope <file,...>` limits reported findings to the listed files.
 - `[flows.lint].warnings_as_errors` decides whether warnings fail the exit code.
-  Either way the report keeps the real counts, and `lint_clean_<target>` is only
+  Either way the report keeps the real counts, and `LINT:{target}` is only
   satisfied with zero findings.
 
 The report lists deduplicated findings by file, line, rule, and message, and
@@ -793,7 +793,7 @@ Expert options, for tuning experiments:
 **Verdict.** The report gives area, cells, per-clock timing and Fmax, latches,
 and warning counts. Combinational loops and multiple drivers in the final netlist
 fail the run. Other actionable warnings give a `warn` grade but still exit `0`;
-known-benign warnings are counted with a rationale. `synthesis_ok_<target>` is
+known-benign warnings are counted with a rationale. `SYNTH:{target}` is
 satisfied only when synthesis completes, the final structural check ran, and
 every configured threshold passes.
 
@@ -824,6 +824,6 @@ fields select Edalize engines; they are not Vivado strategy overrides.
 
 **Verdict.** The report gives LUT/FF/BRAM/DSP utilization, routed per-clock
 timing and Fmax, and critical conditions (latches, combinational loops,
-multi-driven nets). `fpga_impl_ok_<target>` is satisfied only when metrics are
+multi-driven nets). `FPGA:{target}` is satisfied only when metrics are
 complete, timing and configured thresholds pass, and no critical condition is
 present. Power is not measured.

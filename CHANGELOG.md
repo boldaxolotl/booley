@@ -7,6 +7,13 @@ range from the packaged copy of this file.
 Packaged release history starts at 0.2.7. For older changes, see
 [GitHub Releases](https://github.com/boldaxolotl/Booley/releases).
 
+## Unreleased
+
+- Goals use one name everywhere, such as `SIM:sim_core` and `REVIEW:rtl_bugs`.
+  Goal arguments now require uppercase capabilities (`family: "SIM"`). Existing
+  Goal Records and pending proposals retain their stored identities. Project-owned
+  Goalsets stay untouched; translate their intent using the current tool schema.
+
 ## 0.3.1 - 05 OCT 2026
 
 ### Major features
@@ -111,7 +118,7 @@ Packaged release history starts at 0.2.7. For older changes, see
   `goal_status` shows `goal-test-run-ledger-missing` until the Flow has run
   again.
 - **A partial run no longer makes a Target's simulation Goal unmet** (#1233).
-  `sim_pass_<target>` is met when every frozen Test Run has passed at the
+  `SIM:{target}` is met when every frozen Test Run has passed at the
   current file contents. Running a few Tests with `--test` adds their
   outcomes and leaves the others as they were. A failed Test Run now stays
   failed until the code changes, even if a later run at the same contents

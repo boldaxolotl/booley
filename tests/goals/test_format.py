@@ -101,7 +101,8 @@ def test_status_defaults_to_summary_for_multiple_modes_and_preserves_warnings(go
     assert "Worktree:" not in compact
     assert "lint_clean_top" not in compact
     detailed = render_status((first, second), short=False)
-    assert "lint_clean_top" in detailed
+    assert "Goal unavailable" in detailed
+    assert "lint_clean_top" not in detailed
     assert "Pending proposals: 2" in detailed
     assert "Worktree:" in detailed
 
@@ -145,6 +146,18 @@ def test_met_metric_fallback_preserves_raw_empty_output(key):
     assert format_met_goal_metric(key, entry) == "evidence recorded"
 
 
+def _baseline_test_runs(console: Console, view: GoalStatusView) -> None:
+    """Added with Goals that name Test Runs (#1233): the frozen Test Runs follow the table.
+
+    Their lines are pinned by tests/goals/test_test_run_evidence.py.
+    """
+    frozen = [line for goal in view.goals for line in test_run_lines(goal)]
+    if frozen:
+        console.print("Test Runs")
+    for line in frozen:
+        console.print(f"  {line}", soft_wrap=True)
+
+
 # Frozen from 9da903961 plus the Test Runs section; independent of the production renderer.
 def baseline_render_status(views: tuple[GoalStatusView, ...], *, short: bool | None = None) -> str:
     """Render long detail for one Goal Mode, short rows for several by default."""
@@ -159,7 +172,15 @@ def baseline_render_status(views: tuple[GoalStatusView, ...], *, short: bool | N
         )
         if view.warning:
             console.print(view.warning)
-        if not compact:
+        if compact:
+            for goal in view.goals:
+                name = (
+                    goal.presentation.text
+                    if goal.presentation
+                    else "Goal unavailable (unsupported record)"
+                )
+                console.print(f"  {name}: {goal.status}")
+        else:
             console.print(f"Worktree: {view.record.worktree_path}")
             console.print(f"Branch: {view.record.branch}")
             table = Table("Goal", "Status", "Evidence", box=None, padding=(0, 1))
@@ -167,15 +188,15 @@ def baseline_render_status(views: tuple[GoalStatusView, ...], *, short: bool | N
                 evidence = goal.evidence_summary
                 if goal.status == "unmet" and goal.reason:
                     evidence += f" — {goal.reason}"
-                table.add_row(goal.key, goal.status, evidence)
+                table.add_row(
+                    goal.presentation.text
+                    if goal.presentation
+                    else "Goal unavailable (unsupported record)",
+                    goal.status,
+                    evidence,
+                )
             console.print(table)
-            # Added with Goals that name Test Runs (#1233): the frozen Test Runs follow
-            # the table. Their lines are pinned by tests/goals/test_test_run_evidence.py.
-            frozen = [line for goal in view.goals for line in test_run_lines(goal)]
-            if frozen:
-                console.print("Test Runs")
-            for line in frozen:
-                console.print(f"  {line}", soft_wrap=True)
+            _baseline_test_runs(console, view)
             console.print(f"Pending proposals: {view.pending_proposals}")
             conflicts = dict(view.proposal_conflicts)
             for proposal_view in view.proposals:

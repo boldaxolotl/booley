@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from booley.goals.binding import GoalBindingError
+from booley.goals.format import render_status
 from booley.goals.model import GoalState
 from booley.goals.paths import record_paths
 from booley.goals.store import GoalStore, GoalStoreError
@@ -150,9 +151,10 @@ def test_status_rules(goal_mode: SimpleNamespace) -> None:
         )
     )
     assert result.is_error is False
-    assert "lint_clean_top" in result.value[0].text
-    assert "Only Booley Flows" in result.value[0].text
-    assert "confirm the test fails" in result.value[0].text
+    assert "LINT:top" in result.value[0][0].text
+    assert result.value[1]["records"][0]["goals"][0]["goal_key"] == "lint_clean_top"
+    assert "Only Booley Flows" in result.value[0][0].text
+    assert "confirm the test fails" in result.value[0][0].text
 
 
 def test_two_goal_worktrees_and_interactive_restart_poll_cancel(goal_mode, monkeypatch, tmp_path):
@@ -247,7 +249,7 @@ def test_spec_from_declared_goal_is_forwarded(layout):
 
     layout.record = enter_goals(
         layout,
-        [{"family": "review", "review": "rtl_spec", "verdict": "done", "spec": "docs/spec.md"}],
+        [{"family": "REVIEW", "review": "rtl_spec", "verdict": "done", "spec": "docs/spec.md"}],
     )
     context = resolve_call_context({"work_dir": str(layout.worktree)})
     cmd = server._endpoint_command(
@@ -383,8 +385,8 @@ def test_reviewer_uses_goal_freshness_without_rewriting_producer_evidence(
     layout.record = enter_goals(
         layout,
         [
-            {"family": "lint", "target": "top"},
-            {"family": "review", "review": "rtl_bugs", "verdict": mode},
+            {"family": "LINT", "target": "top"},
+            {"family": "REVIEW", "review": "rtl_bugs", "verdict": mode},
         ],
     )
     producer = GoalFlowExecution(bind(layout))
@@ -474,7 +476,7 @@ def test_reviewer_interleaving_does_not_replay_or_save_obsolete_goal_receipt(
     from tests.goals.conftest import enter_goals
 
     layout.record = enter_goals(
-        layout, [{"family": "review", "review": "rtl_bugs", "verdict": mode}]
+        layout, [{"family": "REVIEW", "review": "rtl_bugs", "verdict": mode}]
     )
     initial, _ = _goal_reviewer_endpoint(layout, monkeypatch)
     assert initial._run().exit_code == 0
@@ -630,7 +632,7 @@ def test_goal_status_simulation_contract_explanation(goal_mode, met):
         )
     )
     assert not result.is_error
-    text = " ".join(result.value[0].text.split())
+    text = " ".join(result.value[0][0].text.split())
     assert f"{int(met)}/1 tests" in text
     assert state.criteria[SIM_KEY].met is False
     reason = "goal-test-run-incomplete" if met else "goal-test-run-failed"
@@ -642,7 +644,7 @@ def _review_artifact(layout, monkeypatch, *, scope=None):
 
     layout.record = enter_goals(
         layout,
-        [{"family": "review", "review": "tb_quality" if scope else "rtl_bugs", "verdict": "done"}],
+        [{"family": "REVIEW", "review": "tb_quality" if scope else "rtl_bugs", "verdict": "done"}],
     )
     name = "tb/artifact.py" if scope else "artifact.hex"
     artifact = layout.worktree / name
@@ -899,12 +901,11 @@ def test_undeclared_endpoint_criterion_does_not_discard_later_goal_evidence(
 def test_status_complete_text_and_metadata_unchanged(goal_mode, inside, rules):
     from booley.goals.rules import goal_mode_rules
     from booley.goals.status import status_views
-    from tests.goals.test_format import baseline_render_status
 
     location = goal_mode.worktree if inside else goal_mode.main
     views = status_views(GoalStore(goal_mode.control), location)
     assert [view.record.id for view in views] == [goal_mode.record.id]
-    expected = baseline_render_status(views)
+    expected = render_status(views)
     if rules:
         expected += "\n\n" + goal_mode_rules()
     result = asyncio.run(
@@ -916,8 +917,8 @@ def test_status_complete_text_and_metadata_unchanged(goal_mode, inside, rules):
     )
     assert result.is_error is False
     assert result.goal_aware is inside
-    assert len(result.value) == 1
-    assert result.value[0].model_dump() == {
+    assert len(result.value[0]) == 1
+    assert result.value[0][0].model_dump() == {
         "type": "text",
         "text": expected,
         "annotations": None,

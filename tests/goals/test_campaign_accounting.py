@@ -56,7 +56,7 @@ CAMPAIGN = "22222222-2222-4222-8222-222222222222"
 @pytest.fixture
 def two(layout: SimpleNamespace) -> SimpleNamespace:
     """An active Goal Mode whose simulation Target Goal is frozen to ``a@1`` and ``b@1``."""
-    record = enter_goals(layout, [{"family": "sim", "target": "top"}], tests_toml=TWO_TESTS)
+    record = enter_goals(layout, [{"family": "SIM", "target": "top"}], tests_toml=TWO_TESTS)
     return SimpleNamespace(**vars(layout), record=record)
 
 
@@ -520,7 +520,7 @@ def test_an_unreadable_registration_blocks_until_an_approved_change_quarantines_
     env = ChangeEnvironment(entry_environment(two))
     arguments = {
         "kind": "add",
-        "after": {"family": "sim", "target": "top", "test": "a@9"},
+        "after": {"family": "SIM", "target": "top", "test": "a@9"},
         "rationale": "the human looked at the unreadable registration",
     }
     view = create_proposal(env, two.record.id, arguments, session_key="test-session")

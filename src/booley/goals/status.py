@@ -24,6 +24,7 @@ from booley.goals.freshness import (
 )
 from booley.goals.model import GoalRecord, RecordedGoal
 from booley.goals.paths import record_paths
+from booley.goals.presentation import GoalPresentation, goal_presentation
 from booley.goals.proposals import ProposalView, list_proposals
 from booley.goals.recorder import GOAL_SCOPE
 from booley.goals.state_store import load_goal_state
@@ -51,6 +52,7 @@ class GoalStatus:
     test_runs: TestRunJudgement | None = None
     #: The Goal state differs from its selected immutable observation.
     state_conflict: bool = False
+    presentation: GoalPresentation | None = None
 
 
 @dataclass(frozen=True)
@@ -170,6 +172,7 @@ def _goal_statuses(
         entry = state.criteria.get(key)
         status = _goal_status(goal, entry, evidence, record, root, drift, resolvers)
         status = _with_test_runs(status, goal, record, evidence, history, plans)
+        status = replace(status, presentation=goal_presentation(goal.spec, _entry_facts(entry)))
         if key in unaccounted and status.status != "unmet":
             status = replace(
                 status,
@@ -193,6 +196,10 @@ def _with_unfinished_runs(
         else goal
         for goal in goals
     )
+
+
+def _entry_facts(entry: Any) -> dict[str, Any] | None:
+    return None if entry is None else entry.to_dict()
 
 
 def _proposal_conflicts(

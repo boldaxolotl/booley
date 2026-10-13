@@ -29,7 +29,7 @@ from tests.goals.test_proposals import approve
 from tests.goals.test_test_run_evidence import _record
 
 SEEDS_KEY = "sim_pass_top_run_736d6f6b65_x"
-TARGET = {"family": "sim", "target": "top"}
+TARGET = {"family": "SIM", "target": "top"}
 
 
 def _goal(test: str | None = None) -> dict[str, Any]:
@@ -92,7 +92,7 @@ def test_change_kinds_of_test_run_goals(
 
 
 def test_a_goal_that_names_no_test_runs_still_cannot_be_retargeted_to_itself() -> None:
-    lint = translate_after({"family": "lint", "target": "top"})
+    lint = translate_after({"family": "LINT", "target": "top"})
     with pytest.raises(ProposalError, match="does not change the Goal"):
         validate_kind(ChangeKind.RETARGET, lint, lint)
 

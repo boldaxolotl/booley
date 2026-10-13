@@ -75,7 +75,7 @@ def names(resolution: TestRunResolution) -> list[str]:
 
 
 def test_target_goal_freezes_every_test_as_its_default_variant_at_the_default_seed() -> None:
-    frozen = freeze(goal(family="sim"), plan())
+    frozen = freeze(goal(family="SIM"), plan())
     assert names(frozen) == ["reset@1", "stress+short@1"]
     assert frozen.pending == ()
     assert {item.slot for item in frozen.runs} == {SUITE_SLOT}
@@ -92,11 +92,11 @@ def test_target_goal_freezes_every_test_as_its_default_variant_at_the_default_se
     ],
 )
 def test_test_goal_freezes_its_one_test_run(test: str, expected: list[str]) -> None:
-    assert names(freeze(goal(family="sim", test=test), plan())) == expected
+    assert names(freeze(goal(family="SIM", test=test), plan())) == expected
 
 
 def test_multi_seed_goal_draws_distinct_seeds_once() -> None:
-    spec = goal(family="sim", test="stress+soak@x3")
+    spec = goal(family="SIM", test="stress+soak@x3")
     frozen = freeze(spec, plan(), draw=fixed_draw(11, 12, 13))
     assert names(frozen) == ["stress+soak@11", "stress+soak@12", "stress+soak@13"]
     # Resolving again draws nothing: a frozen run is never touched.
@@ -106,20 +106,20 @@ def test_multi_seed_goal_draws_distinct_seeds_once() -> None:
 
 def test_unseeded_target_freezes_runs_without_seeds_and_refuses_seeded_goals() -> None:
     unseeded = plan("icarus")
-    assert names(freeze(goal(family="sim"), unseeded)) == ["reset", "stress+short"]
+    assert names(freeze(goal(family="SIM"), unseeded)) == ["reset", "stress+short"]
     for test in ("stress@7", "stress@x2"):
         with pytest.raises(ValueError, match="seed"):
-            freeze(goal(family="sim", test=test), unseeded)
+            freeze(goal(family="SIM", test=test), unseeded)
 
 
 def test_missing_target_test_and_variant_stay_pending() -> None:
-    assert freeze(goal(family="sim"), None).pending == (SUITE_SLOT,)
-    assert freeze(goal(family="sim", test="later"), plan()).pending == ("later",)
-    assert freeze(goal(family="sim", test="stress+later"), plan()).pending == ("stress+later",)
+    assert freeze(goal(family="SIM"), None).pending == (SUITE_SLOT,)
+    assert freeze(goal(family="SIM", test="later"), plan()).pending == ("later",)
+    assert freeze(goal(family="SIM", test="stress+later"), plan()).pending == ("stress+later",)
 
 
 def test_pending_test_resolves_once_as_deferred() -> None:
-    spec = goal(family="sim", test="later@x2")
+    spec = goal(family="SIM", test="later@x2")
     waiting = freeze(spec, plan())
     grown = plan(tests=["reset", "stress", "later"])
     resolved = resolve_pending(spec, waiting, grown, request("deferred", draw=fixed_draw(5, 6)))
@@ -129,7 +129,7 @@ def test_pending_test_resolves_once_as_deferred() -> None:
 
 
 def test_test_added_to_a_target_goal_later_is_frozen_as_deferred() -> None:
-    spec = goal(family="sim")
+    spec = goal(family="SIM")
     frozen = freeze(spec, plan())
     grown = plan(tests=["reset", "stress", "late"], default_seed=5)
     later = resolve_pending(spec, frozen, grown, request("deferred"))
@@ -139,12 +139,12 @@ def test_test_added_to_a_target_goal_later_is_frozen_as_deferred() -> None:
 
 
 def test_empty_suite_is_resolved_and_empty_not_pending() -> None:
-    frozen = freeze(goal(family="sim"), plan(skip=["reset", "stress"]))
+    frozen = freeze(goal(family="SIM"), plan(skip=["reset", "stress"]))
     assert (frozen.runs, frozen.pending) == ((), ())
 
 
 def test_unpinned_goal_stays_on_its_frozen_run_after_default_edits() -> None:
-    spec = goal(family="sim", test="stress")
+    spec = goal(family="SIM", test="stress")
     frozen = freeze(spec, plan())
     moved = plan(
         default_seed=9,
@@ -154,26 +154,26 @@ def test_unpinned_goal_stays_on_its_frozen_run_after_default_edits() -> None:
 
 
 def test_cycle_count_and_coverage_goals_freeze_through_the_same_slots() -> None:
-    cycle = goal(family="cycle_count", test="stress+soak@7", thresholds={"cycle_count_max": 9})
+    cycle = goal(family="CYCLE_COUNT", test="stress+soak@7", thresholds={"cycle_count_max": 9})
     assert names(freeze(cycle, plan())) == ["stress+soak@7"]
     coverage = goal(
-        family="coverage", metrics={"line": 80}, tests=["reset", "stress@x2", "reset@1"]
+        family="COVERAGE", metrics={"line": 80}, tests=["reset", "stress@x2", "reset@1"]
     )
     assert goal_slots(coverage) == ("reset", "stress@x2", "reset@1")
     frozen = freeze(coverage, plan(), draw=fixed_draw(4, 5))
     # ``reset`` and ``reset@1`` are one Test Run; it is required once.
     assert names(frozen) == ["reset@1", "stress+short@4", "stress+short@5"]
-    whole = goal(family="coverage", metrics={"line": 80}, tests="all")
+    whole = goal(family="COVERAGE", metrics={"line": 80}, tests="all")
     assert names(freeze(whole, plan())) == ["reset@1", "stress+short@1"]
 
 
 def test_changed_goal_keeps_frozen_seeds_and_draws_or_drops_the_difference() -> None:
-    before = goal(family="sim", test="stress@x3")
+    before = goal(family="SIM", test="stress@x3")
     held = freeze(before, plan(), draw=fixed_draw(11, 12, 13))
     plans = TargetPlans(Path("unused"), loader=lambda _dir, _target: plan())
 
     def change(test: str, draw=fixed_draw()) -> list[str]:  # noqa: B008
-        after = RecordedGoal(goal(family="sim", test=test), 2)
+        after = RecordedGoal(goal(family="SIM", test=test), 2)
         frozen = refreeze_changed_goal(
             after, (before, held), plans, request("change", draw=draw), refreeze=False
         )
@@ -208,9 +208,9 @@ EDITED_ARGS = {"stress": {"default": "short", "short": ["+n=777"], "soak": ["+n=
 @pytest.mark.parametrize("variants", [MOVED_DEFAULT, EDITED_ARGS, {}])
 def test_lowering_n_keeps_the_first_frozen_runs_whatever_tests_toml_says_now(variants) -> None:
     """A smaller N never re-resolves: not the Test Variant, the seeds or the fingerprint."""
-    before = goal(family="sim", test="stress@x3")
+    before = goal(family="SIM", test="stress@x3")
     held = freeze(before, plan(), draw=fixed_draw(11, 12, 13))
-    after = goal(family="sim", test="stress@x2")
+    after = goal(family="SIM", test="stress@x2")
     lowered = _changed(before, held, after, plan(variants=variants))
     kept = [{**document, "slot": "stress@x2"} for document in _documents(held)[:2]]
     assert _documents(lowered) == kept
@@ -218,9 +218,9 @@ def test_lowering_n_keeps_the_first_frozen_runs_whatever_tests_toml_says_now(var
 
 
 def test_raising_n_keeps_every_frozen_run_and_draws_for_the_frozen_variant() -> None:
-    before = goal(family="sim", test="stress@x2")
+    before = goal(family="SIM", test="stress@x2")
     held = freeze(before, plan(), draw=fixed_draw(11, 12))
-    after = goal(family="sim", test="stress@x4")
+    after = goal(family="SIM", test="stress@x4")
     # A new Test was added and the default seed moved: neither touches the frozen Variant.
     grown = plan(tests=["reset", "stress", "later"], default_seed=5)
     raised = _changed(before, held, after, grown, draw=fixed_draw(21, 22))
@@ -239,9 +239,9 @@ def test_raising_n_keeps_every_frozen_run_and_draws_for_the_frozen_variant() -> 
     ],
 )
 def test_raising_n_is_refused_when_the_frozen_variant_is_gone_or_changed(variants, reason) -> None:
-    before = goal(family="sim", test="stress@x2")
+    before = goal(family="SIM", test="stress@x2")
     held = freeze(before, plan(), draw=fixed_draw(11, 12))
-    after = goal(family="sim", test="stress@x3")
+    after = goal(family="SIM", test="stress@x3")
     target_plan = plan(variants=variants)
     if reason is None:
         raised = _changed(before, held, after, target_plan, draw=fixed_draw(21))
@@ -257,17 +257,17 @@ def test_raising_n_is_refused_when_the_frozen_variant_is_gone_or_changed(variant
 
 
 def test_raising_n_of_a_coverage_goal_with_a_pin_draws_the_difference() -> None:
-    before = goal(family="coverage", tests=["stress@5", "stress@x3"], metrics={"line": 80})
+    before = goal(family="COVERAGE", tests=["stress@5", "stress@x3"], metrics={"line": 80})
     held = freeze(before, plan(), draw=fixed_draw(11, 12, 13))
     assert names(held) == [f"stress+short@{seed}" for seed in (5, 11, 12, 13)]
-    after = goal(family="coverage", tests=["stress@5", "stress@x4"], metrics={"line": 80})
+    after = goal(family="COVERAGE", tests=["stress@5", "stress@x4"], metrics={"line": 80})
     raised = _changed(before, held, after, plan(), draw=fixed_draw(21))
     assert names(raised) == [f"stress+short@{seed}" for seed in (5, 11, 12, 13, 21)]
     assert _documents(raised)[0] == _documents(held)[0]
 
 
 def test_a_drawn_seed_never_repeats_a_seed_the_goal_pins() -> None:
-    spec = goal(family="coverage", tests=["stress@x2", "stress@5"], metrics={"line": 80})
+    spec = goal(family="COVERAGE", tests=["stress@x2", "stress@5"], metrics={"line": 80})
     seen: list[set[int]] = []
 
     def draw(count: int, *, exclude=()) -> tuple[int, ...]:
@@ -283,14 +283,14 @@ def test_equal_multi_seed_slots_of_one_target_share_one_set_of_seeds() -> None:
     specs = translate_goals(
         parse_goal_args(
             [
-                {"family": "sim", "target": "tb", "test": "stress@x2"},
+                {"family": "SIM", "target": "tb", "test": "stress@x2"},
                 {
-                    "family": "coverage",
+                    "family": "COVERAGE",
                     "target": "lib#tb",
                     "tests": ["stress+short@x2"],
                     "metrics": {"line": 80},
                 },
-                {"family": "sim", "target": "other", "test": "stress@x2"},
+                {"family": "SIM", "target": "other", "test": "stress@x2"},
             ]
         )
     ).goals
@@ -306,7 +306,7 @@ def test_equal_multi_seed_slots_of_one_target_share_one_set_of_seeds() -> None:
 
 
 def test_first_registered_test_supersedes_the_unnamed_run_of_a_target_goal() -> None:
-    spec = goal(family="sim")
+    spec = goal(family="SIM")
     bare = build_target_test_plan(
         "tb", normalize_tests_toml({"tb": {}})["tb"], adapter="verilator"
     )
@@ -324,7 +324,7 @@ def test_first_registered_test_supersedes_the_unnamed_run_of_a_target_goal() -> 
     assert "cannot change" in resolution_update_violation(
         "k", later, replace(later, runs=later.runs[1:])
     )
-    selector = goal(family="sim", test="stress")
+    selector = goal(family="SIM", test="stress")
     frozen = freeze(selector, plan())
     assert "cannot change" in resolution_update_violation(
         "k", frozen, replace(frozen, runs=later.runs)
@@ -332,10 +332,10 @@ def test_first_registered_test_supersedes_the_unnamed_run_of_a_target_goal() -> 
 
 
 def test_relaxed_goal_keeps_frozen_runs_and_retargeted_goal_resolves_again() -> None:
-    before = goal(family="coverage", metrics={"line": 80}, tests="all")
+    before = goal(family="COVERAGE", metrics={"line": 80}, tests="all")
     held = freeze(before, plan())
     moved = TargetPlans(Path("unused"), loader=lambda _dir, _target: plan(default_seed=9))
-    relaxed = RecordedGoal(goal(family="coverage", metrics={"line": 70}, tests="all"), 2)
+    relaxed = RecordedGoal(goal(family="COVERAGE", metrics={"line": 70}, tests="all"), 2)
     kept = refreeze_changed_goal(relaxed, (before, held), moved, request("change"), refreeze=False)
     assert names(kept) == ["reset@1", "stress+short@1"]
     again = refreeze_changed_goal(relaxed, (before, held), moved, request("change"), refreeze=True)
@@ -355,9 +355,9 @@ def test_freeze_goals_is_strict_at_entry_and_lenient_when_deferred() -> None:
     specs = translate_goals(
         parse_goal_args(
             [
-                {"family": "sim", "target": "gone"},
-                {"family": "lint", "target": "tb"},
-                {"family": "sim", "target": "tb", "test": "stress@x2"},
+                {"family": "SIM", "target": "gone"},
+                {"family": "LINT", "target": "tb"},
+                {"family": "SIM", "target": "tb", "test": "stress@x2"},
             ]
         )
     ).goals
@@ -376,7 +376,7 @@ def test_freeze_goals_is_strict_at_entry_and_lenient_when_deferred() -> None:
 
 
 def test_resolution_round_trips_and_refuses_malformed_content() -> None:
-    frozen = {"k": freeze(goal(family="sim", test="stress@x2"), plan(), draw=fixed_draw(3, 4))}
+    frozen = {"k": freeze(goal(family="SIM", test="stress@x2"), plan(), draw=fixed_draw(3, 4))}
     stored = resolutions_to_json(frozen)
     assert resolutions_from_json(stored) == frozen
     row = stored["k"]["runs"][0]
@@ -394,14 +394,14 @@ def test_resolution_round_trips_and_refuses_malformed_content() -> None:
 
 
 def test_an_update_only_fills_pending_slots() -> None:
-    spec = goal(family="sim", test="later")
+    spec = goal(family="SIM", test="later")
     waiting = freeze(spec, plan())
     filled = resolve_pending(
         spec, waiting, plan(tests=["reset", "stress", "later"]), request("deferred")
     )
     assert resolution_update_violation("k", waiting, filled) == ""
     assert "cannot change" in resolution_update_violation("k", filled, waiting)
-    other = freeze(goal(family="sim", test="reset@5"), plan())
+    other = freeze(goal(family="SIM", test="reset@5"), plan())
     assert "cannot change" in resolution_update_violation("k", filled, other)
     assert "fills no pending slot" in resolution_update_violation(
         "k", filled, replace(filled, runs=(*filled.runs, *other.runs))
@@ -409,9 +409,9 @@ def test_an_update_only_fills_pending_slots() -> None:
     assert "cannot gain pending" in resolution_update_violation(
         "k", filled, replace(filled, pending=("x",))
     )
-    suite = freeze(goal(family="sim"), plan())
+    suite = freeze(goal(family="SIM"), plan())
     grown = resolve_pending(
-        goal(family="sim"), suite, plan(tests=["reset", "stress", "late"]), request("deferred")
+        goal(family="SIM"), suite, plan(tests=["reset", "stress", "late"]), request("deferred")
     )
     assert resolution_update_violation("k", suite, grown) == ""
     twice = replace(grown, runs=(*grown.runs, replace(other.runs[0], slot=SUITE_SLOT)))

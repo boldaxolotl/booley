@@ -112,7 +112,7 @@ booley flow sim --target sim --test test_edge_cases@x20       # 20 drawn seeds
 
 There is no option for free-form simulator arguments, so a pass always belongs to a declared configuration, and a failure prints the command that reruns it with the same seed. A Goal can require a Test Run, or N seeds of one (`test+variant@xN`): Booley draws the seeds once at entry and the Goal is met when all of them have passed. See [Test Runs, Test Variants and seeds](FLOW_REFERENCE.md#test-runs-test-variants-and-seeds).
 
-The same model covers **cocotb (Python) testbenches**: a Target whose flow options declare a `cocotb_module` lists its `@cocotb.test()` function names in `tests.toml`, and `sim` runs the selected set batched in one sim process, taking per-test verdicts from cocotb's `results.xml`; `--test` filters the set the same way, and `sim_pass_{target}` keeps its meaning.
+The same model covers **cocotb (Python) testbenches**: a Target whose flow options declare a `cocotb_module` lists its `@cocotb.test()` function names in `tests.toml`, and `sim` runs the selected set batched in one sim process, taking per-test verdicts from cocotb's `results.xml`; `--test` filters the set the same way, and `SIM:{target}` keeps its meaning.
 
 ## Evidence-backed Goals
 
@@ -154,7 +154,7 @@ Code review is split into focus categories with severity-stratified issue tracki
 - Findings are classified as CRITICAL, MAJOR, or MINOR. A `_clean` review requires every current finding, including MINOR, to be verified fixed or explicitly waived with user-visible justification. A terminal `_done` review reports findings without triggering fixes; advisory findings remain visible at Finish.
 - Testbench code gets its own separate review.
 
-The shipped reviewer is read-only: it reports issues by severity, and the Developer Agent resolves findings for `_clean` reviews. See [USAGE.md: RTL Code Review](USAGE.md#rtl-code-review) for the per-category criteria.
+The shipped reviewer is read-only: it reports issues by severity, and the Developer Agent resolves findings for reviews requiring a clean verdict. See [USAGE.md: reviewer](USAGE.md#reviewer) for the supported review kinds.
 
 ## Mutation Testing
 

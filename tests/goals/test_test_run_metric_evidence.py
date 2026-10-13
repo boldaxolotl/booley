@@ -31,7 +31,7 @@ OUTCOMES_ONLY = {OUTCOMES_ONLY_DETAIL_KEY: True}
 def cycle(layout: SimpleNamespace) -> SimpleNamespace:
     """A Cycle Count Goal on the pinned Test Run ``smoke@7`` (at most 900 cycles)."""
     goal = {
-        "family": "cycle_count",
+        "family": "CYCLE_COUNT",
         "target": "top",
         "test": "smoke@7",
         "thresholds": {"cycle_count_max": 900},
@@ -92,7 +92,7 @@ def test_outcomes_only_pass_keeps_a_measured_verdict_and_a_failure_unmeets_it(
 def coverage(layout: SimpleNamespace) -> SimpleNamespace:
     """A coverage Goal over the frozen Test Runs ``stress@5`` and ``smoke@1``."""
     goal = {
-        "family": "coverage",
+        "family": "COVERAGE",
         "target": "top",
         "tests": ["stress@5", "smoke"],
         "metrics": {"line": 80},

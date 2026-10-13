@@ -80,6 +80,25 @@ _D10_SIM_RULES = tuple(
 
 DIRECTION_RULES = (
     DirectionRule(
+        "D36",
+        (prefix("booley.runtime"),),
+        (prefix("booley.goals"),),
+        "Runtime consumes explicit execution inputs; Goal history and binding interpretation "
+        "belong to higher-level composition",
+    ),
+    DirectionRule(
+        "D37",
+        (prefix("booley.runtime.job_observation"),),
+        (prefix("booley.targets"),),
+        "Job observation owns process and artifact facts without interpreting Target policy",
+    ),
+    DirectionRule(
+        "D38",
+        (prefix("booley.flows"), prefix("booley.specialists")),
+        (prefix("booley.goals"),),
+        "evidence producers receive Goal presentation and candidate paths through neutral execution interfaces",
+    ),
+    DirectionRule(
         "D35",
         (prefix("booley.goals"),),
         (

@@ -34,8 +34,6 @@ use one decimal; an even median averages the two middle distances.
 Both `VALUE` and `--to`'s value accept Verilog literals
 and edge keywords.
 
-`distance` strictly requires a built `.fst` store.
-
 ## Defaults and requiredness
 
 - `<FST_FILE>`, `<PATTERN>`, `<VALUE>` required.
@@ -76,8 +74,8 @@ count=3  min=3000  max=15000  mean=8000.0  median=6000.0
 
 ## Common errors
 
-- **`requires a built waveform store`**: no VCD fallback.
-  Build one first: `bwave build <vcd> -o trace.fst`.
+- **`requires a built waveform store`**: build one first:
+  `bwave build <vcd> -o trace.fst`.
 - **B event has no matching A**: pairing is strictly
   A then the first B strictly later than A. Multiple A
   events can reuse the same B (overlapping is allowed).

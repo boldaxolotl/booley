@@ -76,7 +76,7 @@ def _group_sort_key(group: str) -> tuple[int, str]:
     return (_GROUP_ORDER.get(group, len(_GROUP_ORDER)), group)
 
 
-def _format_endpoint(command: str) -> str:
+def format_endpoint(command: str) -> str:
     """Show producer names and argument values without shell command syntax."""
     name, *arguments = shlex.split(command)
     controls: list[str] = []
@@ -144,7 +144,7 @@ def render_criteria_reference(
         for c in rows:
             binding = endpoint_catalog.binding_for(c.name)
             endpoint_command = binding.command if binding is not None else None
-            set_by = _format_endpoint(endpoint_command) if endpoint_command else "—"
+            set_by = format_endpoint(endpoint_command) if endpoint_command else "—"
             region = _REGION_LABEL.get(c.workflow_region, c.workflow_region)
             lines.append(f"| {_display_name(c)} | {_clean(c.description)} | {set_by} | {region} |")
         blocks.append("\n".join(lines))
@@ -191,12 +191,12 @@ def _implementation_params_intro() -> list[str]:
         "Goal argument examples:",
         "",
         "```json",
-        '{"family": "synth", "target": "asic_small", "baseline": "asic_base",',
+        '{"family": "SYNTH", "target": "asic_small", "baseline": "asic_base",',
         ' "thresholds": {"cell_count_reduce_at_least": "8%"}}',
         "```",
         "",
         "```json",
-        '{"family": "fpga", "target": "fpga_top", "thresholds": {"lut_count_max": 5000}}',
+        '{"family": "FPGA", "target": "fpga_top", "thresholds": {"lut_count_max": 5000}}',
         "```",
         "",
     ]
@@ -233,13 +233,13 @@ def _cycle_count_params_reference(descriptors) -> list[str]:
     lines = [
         "**Per-test `CYCLE_COUNT`**",
         "",
-        "`cycle_count` Goals name the Target with `target` and one Test Run with `test` "
+        "`CYCLE_COUNT:{target}` Goals name the Target with `target` and one Test Run with `test` "
         "(`test`, `test+variant`, or either with `@seed`); put bounds in `thresholds`. "
         "All thresholds for that Test Run must pass. Relative forms compare the same "
         "Test Run of the same Target at the Goal base commit.",
         "",
         "```json",
-        '{"family": "cycle_count", "target": "sim", "test": "smoke",',
+        '{"family": "CYCLE_COUNT", "target": "sim", "test": "smoke",',
         ' "thresholds": {"cycle_count_max": 1000, "cycle_count_reduce_at_least": "8%"}}',
         "```",
         "",
@@ -266,7 +266,7 @@ def _cycle_count_params_reference(descriptors) -> list[str]:
             "",
             "A named `[SIM_CYCLES] <test> <count>` observation is gated evidence only when "
             "that exact test passes. Missing, malformed, duplicate, unnamed, failed, "
-            "or inconclusive evidence fails closed. Without a `cycle_count` Criterion, existing "
+            "or inconclusive evidence fails closed. Without a `CYCLE_COUNT:{target}` Goal, existing "
             "Cycle Count records remain observational.",
             "",
             "Relative comparisons report an **observed Cycle Count change**. When declared "
@@ -289,13 +289,13 @@ def render_criteria_params_reference() -> str:
 
     families = (
         (
-            "`synthesis_ok` (ASIC)",
+            "`SYNTH:{target}` (ASIC)",
             SYNTHESIS_OK_PARAMS,
             SYNTHESIS_OK_MUTEX_PAIRS,
             "Absolute area caps pick a unit (`area_um2` / `area_kge`); the "
             "unit-agnostic `area` row carries the baseline-relative bounds only.",
         ),
-        ("`fpga_impl_ok` (FPGA)", FPGA_IMPL_OK_PARAMS, FPGA_IMPL_OK_MUTEX_PAIRS, ""),
+        ("`FPGA:{target}` (FPGA)", FPGA_IMPL_OK_PARAMS, FPGA_IMPL_OK_MUTEX_PAIRS, ""),
     )
     lines = _implementation_params_intro()
     lines.extend(_implementation_param_tables(families))

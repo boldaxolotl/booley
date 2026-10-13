@@ -164,11 +164,13 @@ TOP_CORE = (
 )
 #: The Goals the active Goal Mode fixture enters with.
 GOAL_ARGS = (
-    {"family": "lint", "target": "top"},
-    {"family": "sim", "target": "top"},
+    {"family": "LINT", "target": "top"},
+    {"family": "SIM", "target": "top"},
 )
 LINT_KEY = "lint_clean_top"
 SIM_KEY = "sim_pass_top"
+#: The public name of the Goal :data:`SIM_KEY` is the key of.
+SIM_NAME = "SIM:top (all selected tests pass)"
 
 
 TESTS_TOML = b'[top]\ntests = ["smoke"]\n'

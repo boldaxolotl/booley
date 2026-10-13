@@ -32,13 +32,13 @@ def _names(record: GoalRecord, key: str) -> list[str]:
 def test_entry_freezes_target_and_test_goals(layout: SimpleNamespace, monkeypatch: Any) -> None:
     monkeypatch.setattr(test_runs.secrets, "SystemRandom", lambda: test_runs.random.Random(7))
     goals = [
-        {"family": "lint", "target": "top"},
-        {"family": "sim", "target": "top"},
-        {"family": "sim", "target": "top", "test": "stress+soak@x3"},
-        {"family": "sim", "target": "top", "test": "stress", "origin": "a"},
-        {"family": "sim", "target": "top", "test": "stress+short@1", "origin": "b"},
-        {"family": "sim", "target": "later"},
-        {"family": "sim", "target": "top", "test": "later"},
+        {"family": "LINT", "target": "top"},
+        {"family": "SIM", "target": "top"},
+        {"family": "SIM", "target": "top", "test": "stress+soak@x3"},
+        {"family": "SIM", "target": "top", "test": "stress", "origin": "a"},
+        {"family": "SIM", "target": "top", "test": "stress+short@1", "origin": "b"},
+        {"family": "SIM", "target": "later"},
+        {"family": "SIM", "target": "top", "test": "later"},
     ]
     record = enter_goals(layout, goals, tests_toml=VARIANTS)
 
@@ -73,14 +73,14 @@ def test_entry_refuses_a_seeded_goal_on_a_target_that_cannot_apply_seeds(
     layout: SimpleNamespace, unseeded: None, test: str
 ) -> None:
     with pytest.raises(GoalEntryError, match="seed"):
-        enter_goals(layout, [{"family": "sim", "target": "top", "test": test}])
+        enter_goals(layout, [{"family": "SIM", "target": "top", "test": test}])
     assert GoalStore(layout.control).active_for_worktree(layout.worktree) is None
 
 
 def test_entry_freezes_runs_without_seeds_on_an_unseeded_target(
     layout: SimpleNamespace, unseeded: None
 ) -> None:
-    record = enter_goals(layout, [{"family": "sim", "target": "top"}])
+    record = enter_goals(layout, [{"family": "SIM", "target": "top"}])
     assert _names(record, SIM_KEY) == ["smoke"]
 
 
@@ -145,13 +145,13 @@ def test_cycle_count_and_coverage_goals_name_test_runs_and_their_criteria_name_t
 
     goals = [
         {
-            "family": "cycle_count",
+            "family": "CYCLE_COUNT",
             "target": "top",
             "test": "smoke@7",
             "thresholds": {"cycle_count_max": 900},
         },
         {
-            "family": "coverage",
+            "family": "COVERAGE",
             "target": "top",
             "tests": ["smoke@x2", "smoke"],
             "metrics": {"line": 80},

@@ -55,7 +55,9 @@ from booley.goals.lifecycle import (
     read_bound_request,
 )
 from booley.goals.model import GoalRecord, GoalState
+from booley.goals.naming import optional_names
 from booley.goals.paths import record_paths
+from booley.goals.presentation import present_spec
 from booley.goals.proposals import digest, encode
 from booley.goals.protected_inputs import ProtectedInputRoots, protected_input_violations
 from booley.goals.publication_destination import require_destination as _require_destination
@@ -238,7 +240,11 @@ def _freeze(
         work_dir=operation.root,
         resolvers=alias_resolvers(record, selection, operation.store.project_dir, env.resolvers),
     )
-    unmet = [row.key for row in status.goals if row.status != "met"]
+    unmet = [
+        row.presentation.text if row.presentation else "Goal unavailable"
+        for row in status.goals
+        if row.status != "met"
+    ]
     if unmet:
         raise LifecycleError("Goals must be met and fresh before finish: " + ", ".join(unmet))
     if status.pending_proposals:
@@ -249,13 +255,18 @@ def _freeze(
     if select_inputs(record, operation.root) != selection:
         raise LifecycleError("input participants moved while freezing completion")
     require_clean(selection, retained=retained_outputs(operation))
-    summary = render_goal_briefing(package).encode("utf-8")
+    names = optional_names(operation.lock.record_dir)
+    summary = render_goal_briefing(
+        package, present=lambda raw: present_spec(raw, names=names)
+    ).encode("utf-8")
     path = _publication_path(operation, record)
     _require_destination(operation.root / path, summary, allow_owned=False)
     skip = _skip_publication(operation.root, selection.project, path)
     if skip is None:
         _publication_preflight(operation, path, env)
-    return _frozen_attempt(operation, record, selection, package, capture, summary, path, skip)
+    return _frozen_attempt(
+        operation, record, selection, package, capture, summary, path, skip, names
+    )
 
 
 def _publication_preflight(
@@ -278,6 +289,7 @@ def _frozen_attempt(
     summary: bytes,
     path: str,
     skip: str | None,
+    names: dict[str, str],
 ) -> dict[str, Any]:
     frozen = {
         "schema": "booley.goal-finish-attempt/v2",
@@ -302,8 +314,9 @@ def _frozen_attempt(
             record_paths(operation.store.project_dir, record.id).jobs_dir
         ),
     }
-    freeze_presentation(operation, frozen)
     validate_canonical_ownership(operation, frozen)
+    operation.write_sealed("goal-names", names)
+    freeze_presentation(operation, frozen)
     return frozen
 
 

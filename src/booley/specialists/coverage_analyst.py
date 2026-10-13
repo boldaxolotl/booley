@@ -9,7 +9,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
 from collections.abc import Callable
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -140,7 +139,7 @@ class CoverageAnalystSpecialist(Specialist):
         self, document: dict[str, object], loaded: LoadedCoverageCampaign, campaign: Path
     ) -> str | None:
         """Record screened candidates for the Goal Record; return a summary line."""
-        context = GoalCandidateContext.from_environment(getattr(self.args, "slug", ""), os.environ)
+        context = GoalCandidateContext.from_recorder(self._acceptance_recorder)
         if context is None:
             return None
         screened = cast(list[dict[str, object]], document["waiver_candidates"])

@@ -237,7 +237,7 @@ Authoring rules:
 - **Target names are project-unique**, follow `<axis>_<subject>` (`sim_`,
   `lint_`, `synth_`, `fpga_`, then a distinguishing subject,
   coarse to fine — `sim_soc`, `synth_matmul_b8`), and become the `<target>` in
-  `sim_pass_<target>` / `lint_clean_<target>` / `synthesis_ok_<target>` and the value a
+  `SIM:{target}` / `LINT:{target}` / `SYNTH:{target}` and the value a
   Booley Flow passes as `--target`. The axis leads because nothing in CAPI2
   distinguishes an ASIC Target from an FPGA one — both resolve as `generic`.
   `booley doctor` notes names that don't. Do not author a `default` target
@@ -246,13 +246,13 @@ Authoring rules:
   dead one (drop it from a depended-on core and that core silently
   contributes zero filesets).
 - **Per-Target Flow families:** the `fpga` name axis is authoritative:
-  `fpga`/`fpga_*` ⇒ `fpga_impl_ok`, regardless of the resolution tool. The
+  `fpga`/`fpga_*` ⇒ `FPGA:{target}`, regardless of the resolution tool. The
   FPGA Flow rebuilds those resolved inputs for its fixed Vivado backend, so an
   FPGA-axis Target does not also carry sim/lint/synth Criteria. Unprefixed
   vendored Targets retain `tool: vivado` as a compatibility fallback. Other
   families follow their declared flow/tool: Verilator or Icarus simulation ⇒
-  `sim_pass`; Verilator or Verible lint ⇒ `lint_clean`; Yosys synthesis ⇒
-  `synthesis_ok`. Split intents into separate Targets when one design needs
+  `SIM:{target}`; Verilator or Verible lint ⇒ `LINT:{target}`; Yosys synthesis ⇒
+  `SYNTH:{target}`. Split intents into separate Targets when one design needs
   several.
 - **Verilator 5 sim Targets need timing options.** Any event-driven Verilog
   TB (delays, `@(...)` waits — i.e. the normal self-checking TB this skill
@@ -274,7 +274,7 @@ Authoring rules:
   plan's row 11 says yes: author a **second** lint Target (suggested name
   `lint_style`) with `flow: lint` + `flow_options: {tool: verible}` over the
   RTL fileset; it runs `verible-verilog-lint` in the sandbox and sets
-  `lint_clean_lint_style`. Optional tuning is design-description in the
+  `LINT:lint_style`. Optional tuning is design-description in the
   `.core`: a single `file_type: veribleLintRules` rules-config file and/or
   `file_type: veribleLintWaiver` waiver files in the Target's fileset
   (analogous to Verilator's `.vlt`). Never change existing Target shapes.
