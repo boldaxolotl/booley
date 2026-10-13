@@ -24,6 +24,40 @@ Packaged release history starts at 0.2.7. For older changes, see
   waiting for your input, as reported by Claude Code and Codex lifecycle
   hooks in the Sandbox Image. Report, artifact, and evidence paths open in
   the editor on click.
+- **Test Variants and seeded Test Runs** (#1233). A Project declares each
+  extra run-time configuration of a Test as a Test Variant in `tests.toml`
+  (`[<target>.variants.<test>]`: arguments, environment, and a required
+  `default`), and every Test Run has an explicit, recorded seed. A Test Run is
+  written `test[+variant][@seed]`.
+  - `booley flow sim --test` accepts `test`, `test+variant`, `test@seed`,
+    `test+variant@seed`, and `test[+variant]@xN` for N drawn seeds. The new
+    `--seed N|random` sets or draws the seed of every selected Test Run. The
+    `sim` MCP tool takes the same `test` forms and a `seed` argument.
+  - Booley passes the seed itself: `+verilator+seed+<seed>` on Verilator,
+    cocotb's seed variable on Cocotb Targets, and the new `tests.toml` `seed`
+    argument template on Verilator and Icarus. An Icarus HDL-testbench Target
+    without a `seed` template is unseeded and refuses every seed. A Target can
+    set its own `default_seed`.
+  - Reports list each Test Run with its outcome and print, for every failed
+    Test Run, the command that reruns it with the same seed. `simulation.json`
+    gains `test_runs[]` rows.
+  - Coverage runs accept every selector form, including several Test Runs of
+    one Test; the merged coverage is their union.
+  - Pre-Sim Commands receive `BOOLEY_TEST_RUN_NAMES`, and for a single Test
+    Run `BOOLEY_TEST_RUN_NAME`, `BOOLEY_TEST_VARIANT` and `BOOLEY_TEST_SEED`.
+    `BOOLEY_TEST_NAME` and `BOOLEY_TEST_NAMES` keep the bare Test names.
+  - Doctor prints how each sim Target's Test Runs are seeded.
+- **Goals can require Test Runs** (#1233). A simulation Goal takes an optional
+  `test` selector, including `test+variant@xN` for N seeds that must all
+  pass. Cycle Count Goals accept `test`, `test+variant` and `@seed` in `test`;
+  coverage Goals accept selectors, `@xN` included, in `tests`. Goal Mode
+  resolves these Goals to exact Test Runs at entry and freezes them, so later
+  `tests.toml` edits to defaults cannot change what a Goal requires. Seeds of
+  a multi-seed Goal can pass over several runs and Simulation Campaigns. A
+  failed Test Run stays failed until the code changes. Adding such a Goal,
+  pinning a seed or changing N needs human approval. `goal_status`, the
+  Dashboard and the Review Package show each Goal's frozen Test Runs, and
+  failures come with rerun commands.
 
 ### Bug fixes
 
@@ -36,6 +70,61 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 - Existing Review Goal evidence may need to be refreshed once after upgrading;
   re-run the Reviewer if it is reported stale.
+
+- **Every Test Run now has a seed, and the Default Seed is 1** (#1233). On
+  Verilator and Cocotb Targets, a run that names no seed is simulated with
+  seed `1` instead of the simulator's own default, so testbenches that use
+  random values can see different stimulus than before the upgrade. To keep a
+  Target on another fixed seed, set `default_seed` in its `tests.toml`
+  section. Icarus HDL-testbench Targets are unchanged until they declare a
+  `seed` template.
+- **`tests.toml` is validated more strictly** (#1233). `booley doctor` names
+  each entry that fails to load; fix these before the next run:
+  - A Test name must not be empty or `default`, must not start with `-`, and
+    must not contain whitespace, a control character, `+`, `@`, `<`, `>`, a
+    quote or a backslash. Rename such Tests and adapt the testbench or the
+    `select` template. A Test may appear only once in a Target's `tests` and
+    once in its `skip` list.
+  - A Target section accepts only `tests`, `test_list`, `skip`, `select`,
+    `env`, `seed`, `default_seed` and `variants`. Remove or rename any other
+    key; unknown keys used to be ignored.
+  - A Target's `env` table may not set `MODULE`, `TESTCASE`, `TOPLEVEL`,
+    `TOPLEVEL_LANG`, `RANDOM_SEED`, `LIBPYTHON_LOC`, `PYTHONPATH`,
+    `LD_LIBRARY_PATH`, or any `BOOLEY_*`, `COCOTB_*`, `PYGPI_*` or `GPI_*`
+    name. Booley and the simulator integration own these. To fix a seed, use
+    `default_seed` instead of `RANDOM_SEED` or `COCOTB_RANDOM_SEED`.
+  - A `select` template must contain `{index}` or `{name}`, and may not start
+    with `++` or `+-`.
+- **Simulation run directories and coverage file names changed** (#1233).
+  Per-run directories and coverage run ids are named by Test Run, so on a
+  seeded Target they gained `@seed` (`tests/reset@1/`, `run:001:reset@1`). A
+  Cocotb batch that is not the default suite at the Default Seed is written
+  to `tests/batch-<hex>/`. Update scripts that build these paths; read them
+  from `report.json` and `simulation.json` instead.
+- **A Simulation Campaign started before the upgrade cannot be resumed**
+  (#1233). `--resume-from` on such a manifest exits with "start a new
+  Simulation Campaign". Its reports stay readable.
+- **Active Goal Modes need one more Simulation Flow run** (#1233). A Goal
+  Record that is active across the upgrade has no frozen Test Runs. Booley
+  freezes them on the next Flow run or status read, and simulation, Cycle
+  Count and coverage evidence recorded before the upgrade does not count:
+  `goal_status` shows `goal-test-run-ledger-missing` until the Flow has run
+  again.
+- **A partial run no longer makes a Target's simulation Goal unmet** (#1233).
+  `sim_pass_<target>` is met when every frozen Test Run has passed at the
+  current file contents. Running a few Tests with `--test` adds their
+  outcomes and leaves the others as they were. A failed Test Run now stays
+  failed until the code changes, even if a later run at the same contents
+  passes.
+- **A run stopped by an infrastructure problem is graded `error`** (#1233) in
+  the per-Test-Run report rows, on every path, instead of `fail` or
+  `inconclusive`.
+- **Mutation Tester runs receive the Target's plusarg defaults and `env`
+  table** (#1233), as ordinary simulation runs do, and run each Test as its
+  default Test Variant at the Default Seed. Mutation scores of Targets that
+  rely on those inputs can change.
+- **One request runs at most 1000 Test Runs of one Target** (#1233). A larger
+  request is refused; split it.
 
 - Dashboard session activity needs the Sandbox Image's lifecycle hooks. Run
   `booley bootstrap --update`, then `booley init` and `booley session refresh`
