@@ -131,7 +131,12 @@ def goal_enter_schema() -> dict[str, Any]:
 
 def _status_views(store: GoalStore, root: Path) -> tuple[GoalStatusView, ...]:
     """Status with the Simulation Flow's reader of unpublished campaign results."""
-    return status_views(store, root, campaign_reader=read_unpublished_results)
+    from booley.mcp.sim_baseline_jobs import schedule_sim_baselines
+
+    views = status_views(store, root, campaign_reader=read_unpublished_results)
+    for view in views:
+        schedule_sim_baselines(store.project_dir, view.record)
+    return views
 
 
 async def dispatch_goal_tool(  # noqa: PLR0911 — four independent public Goal tools have distinct responses
@@ -151,7 +156,11 @@ async def dispatch_goal_tool(  # noqa: PLR0911 — four independent public Goal 
             return await _finish(arguments, project_dir, request_context)
         if name == GOAL_PROPOSE_CHANGE:
             env = _entry_environment(project_dir, request_context)
-            return await asyncio.to_thread(propose_change, arguments, env, request_context)
+            result = await asyncio.to_thread(propose_change, arguments, env, request_context)
+            record = store.active_for_worktree(Path(str(arguments["work_dir"])))
+            if record is not None and env.schedule_baselines is not None:
+                await asyncio.to_thread(env.schedule_baselines, record)
+            return result
         if name == GOAL_STATUS:
             root = Path(str(arguments.get("work_dir") or Path.cwd()))
             views = await asyncio.to_thread(_status_views, store, root)
@@ -295,10 +304,13 @@ def _text(
 
 
 def _entry_environment(project_dir: Path, context: McpRequestContext | None) -> EntryEnvironment:
+    from booley.mcp.sim_baseline_jobs import schedule_sim_baselines
+
     own = (context or McpRequestContext()).session_key()
     keys = tuple(key for key in context.other_session_keys if key != own) if context else ()
     return EntryEnvironment(
         project_dir=project_dir,
         recipe_families=_recipe_families(),
         other_sessions=lambda _identity: keys,
+        schedule_baselines=lambda record: schedule_sim_baselines(project_dir, record),
     )

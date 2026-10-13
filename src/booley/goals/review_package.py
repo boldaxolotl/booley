@@ -53,13 +53,11 @@ def build_goal_package(
     records = validated_evidence_records(GOAL_SCOPE, Path(context.log_dir), state, {})
     indexed = {row["sequence"]: row for row in records}
     rows = _package_rows(context, record, state, selected, indexed)
+    _add_baseline_reports(rows, record, selected, records, project_dir)
     transactions = _transactions(
         Path(context.log_dir), state, indexed, omitted_inputs=omitted_inputs
     )
-    for row in rows:
-        row["selected_transaction"] = _selected_transaction(
-            row["selected_observation"], transactions
-        )
+    _link_transactions(rows, transactions)
     decisions = _proposal_audit(paths.root)
     facts = {
         "purpose": "booley.goal-completion/v1",
@@ -89,6 +87,47 @@ def build_goal_package(
         "session_summary": context.session_summary,
     }
     return GoalCompletionPackage.from_json(facts | _unsettled(project_dir, record))
+
+
+def _link_transactions(rows: list[dict[str, Any]], transactions: list[dict[str, Any]]) -> None:
+    for row in rows:
+        row["selected_transaction"] = _selected_transaction(
+            row["selected_observation"], transactions
+        )
+
+
+def _add_baseline_reports(
+    rows: list[dict[str, Any]],
+    record: GoalRecord,
+    selected: dict[str, dict[str, Any]],
+    records: list[dict[str, Any]],
+    project_dir: Path,
+) -> None:
+    """Freeze observational SIM reports without contributing completion authority."""
+    from booley.goals.freshness import DEFAULT_RESOLVERS
+    from booley.goals.sim_baseline_store import sim_goals
+    from booley.goals.sim_transitions import goal_transitions, transition_summary
+
+    for goal in sim_goals(record):
+        transitions = goal_transitions(
+            project_dir,
+            record,
+            goal,
+            selected.get(goal.spec.key),
+            records,
+            Path(record.worktree_path),
+            DEFAULT_RESOLVERS,
+        )
+        row = next(row for row in rows if row["key"] == goal.spec.key)
+        row["simulation_baseline"] = {
+            "summary": transition_summary(transitions),
+            "runs": transitions,
+            "attention": [
+                run["name"]
+                for run in transitions
+                if run["transition"] in {"pass -> fail", "new (never seen failing) -> pass"}
+            ],
+        }
 
 
 def _unsettled(project_dir: Path, record: GoalRecord) -> dict[str, Any]:
