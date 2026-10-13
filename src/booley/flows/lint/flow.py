@@ -24,6 +24,7 @@ from typing import Any, ClassVar
 
 from booley.core.build_paths import work_root_for
 from booley.flows import eda_parsers
+from booley.flows.cli_help import CliHelp
 from booley.flows.eda_failures import (
     classify_eda_failure,
     new_attempt_token,
@@ -453,6 +454,15 @@ class LintFlow(BuiltinFlow[LintRequest]):
     description: str = (
         "Run lint for one or more Targets. The linter comes from the "
         "resolved Target's flow_options.tool (Verilator or Verible)."
+    )
+    cli_help: ClassVar[CliHelp | None] = CliHelp(
+        summary=(
+            "Run the linter over the RTL of one or more Targets and report its warnings "
+            "and errors. Use it before simulation or synthesis to catch coding mistakes "
+            "early. The linter (Verilator or Verible) is chosen by flow_options.tool "
+            "on the Target in its .core file."
+        ),
+        example="booley flow lint --target lint_soc",
     )
     code_modifying: bool = False
     satisfies: ClassVar[list[str]] = ["lint_clean"]

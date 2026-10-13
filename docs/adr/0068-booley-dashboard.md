@@ -1,6 +1,6 @@
 # Booley Dashboard replaces the Console
 
-Status: accepted (2026-10-06; proposed 2026-10-03; amended 2026-10-06: session identity, see Amendments)
+Status: accepted (2026-10-06; proposed 2026-10-03; amended 2026-10-06: session identity; amended 2026-10-11: open implementation choices, see Amendments)
 
 The Console showed one Ticket execution at a time. Goal Mode (ADR 0067)
 removes Ticket execution and runs several agent sessions, often unattended,
@@ -151,3 +151,77 @@ Recorded after the Phase 0
 - **Registry is presentational.** It feeds the Dashboard rows and ADR
   0067's shared-worktree warning only. No lifecycle rule reads it, and it
   never selects a Goal record or a `work_dir`.
+
+## Amendments (2026-10-11)
+
+Settles the three "implementation choices still open". The hook findings come
+from spikes on Claude Code 2.1.285/2.1.295 and Codex 0.160.0/0.162.0.
+
+- **Session activity comes from client lifecycle hooks.** The Sandbox Image
+  declares the hooks in the files that already carry its web policy:
+  `/etc/claude-code/managed-settings.json` and `/etc/codex/requirements.toml`.
+  Both clients treat hooks there as managed, so they run without per-user
+  hook trust and survive a fresh state volume. Every hook runs
+  `/usr/local/libexec/booley/session_activity_hook.py <client>`, which stores
+  the session's last event under `runtime/session_activity/` in the Project
+  directory. The client waits for the hook on every prompt and tool call, so
+  it has a 3 s timeout, prints nothing to stdout, reports a problem on stderr
+  only, and always exits 0.
+- **The hook does not import Booley.** It is a standalone standard-library
+  script in the runtime base image. Importing the `booley` package costs
+  about 0.1 s per event, which adds minutes to a long session. The script
+  repeats the event table, the registry key formats, the signal file layout
+  and the Project directory resolution order; tests hold it in agreement with
+  the package that reads the signals.
+- **Event mapping.** `UserPromptSubmit`, `PostToolUse` and
+  `PostToolUseFailure` mean working; `PreToolUse` means waiting for a tool
+  call; `PermissionRequest` and `Stop` mean waiting for user input;
+  `SessionEnd` removes the signal. The last event wins. Codex has no
+  failed-tool event; its next event after a failed call is `PostToolUse` or
+  `Stop`.
+- **Interrupted turns.** A turn the user interrupts ends without `Stop`.
+  Codex reports `Interrupt`, and Claude Code reports the `idle_prompt`,
+  `permission_prompt` and `elicitation_dialog` notifications; all mean
+  waiting for user input. These two rules follow the clients' documentation
+  and accepted configuration; neither event was observed firing in the
+  spikes. Where they do not fire, an interrupted session shows its last busy
+  state until the next event or the freshness limit.
+- **Accepted inaccuracies.** With parallel tool calls the first to finish
+  shows working. After an approval the session shows waiting for user input
+  until the tool finishes, because neither client reports that an approval
+  was resolved.
+- **Association with the session.** A Claude Code hook is a descendant of the
+  process that owns the session's MCP connections: `CLAUDE_PID` names that
+  process when it is an ancestor of the hook; otherwise the nearest ancestor
+  with a Session Registry row is used, and the search stops at a nearer
+  Claude Code process that has no row, so an inner client's events are never
+  credited to an outer session. A Codex hook payload carries the
+  thread id the registry keys on (`agent_id` for a subagent thread,
+  otherwise `session_id`). A hook that cannot name a session records nothing.
+  Worktree-fallback sessions therefore always show unknown activity.
+- **Freshness.** Working and waiting for a tool call become unknown after
+  7200 s without a new event, the longest Booley tool call: a client that
+  dies mid-turn sends no closing event. Waiting for user input does not go
+  stale while the session's row lives. Registry maintenance removes a signal
+  once its session has no row and the signal is older than the quiet
+  threshold. The hook and maintenance share no lock: maintenance re-examines
+  a signal immediately before removing it and spares one the hook has just
+  replaced. Losing the remaining instant shows unknown until the next event.
+- **Doctor.** Inside the Sandbox, Doctor warns when either client's hooks
+  are missing from the image; the Dashboard then shows unknown activity.
+- **Job history bounds and retention.** The Dashboard deletes nothing; Job
+  records stay with the interactive session or Goal Record that produced
+  them. One snapshot examines at most 16384 record files, in this order: the
+  caller's interactive session, every Goal Record, then the 64 newest older
+  interactive sessions. It reads the newest 4096 of those by modification
+  time and says what it cut. Past either bound the oldest interactive
+  history goes first. A record is rewritten when its Job changes state, so a
+  Job that has run unchanged while 4096 newer records were written drops out
+  of the snapshot; this is accepted. Recent lists the newest 50 results and
+  keeps the selected one listed; All lists every record in the snapshot.
+- **File links.** A report, artifact or evidence path on a line of its own
+  opens in the installed VS Code-family editor when clicked, through
+  `code --goto`. Opening a file is navigation: it starts a detached editor
+  process and changes no work. OSC 8 `file://` links are not used: VS Code's terminal,
+  where the Dashboard normally runs, does not open them. Without an editor
+  command the Dashboard says so and the path stays copyable.

@@ -29,12 +29,16 @@ Idempotent mechanical creation and reconciliation of Booley state and Sandbox in
 _Avoid_: Project bootstrap, Project enrollment, Project Setup
 
 **Project Setup**:
-Design-aware adaptation and validation of an initialized **Project**, including its design description, verification intent, and agent guidance.
+Design-aware adaptation and validation of an initialized **Project**, including its design description, verification intent, and Developer Agent guidance.
 _Avoid_: Project Initialization, onboarding, porting
 
 ### Execution
 
 How and where Booley work runs. The **Sandbox** is the execution environment; **Goal Mode** and **Interactive Mode** are the two execution modes; the remaining entries are the machinery inside.
+
+**Developer Agent**:
+The agent of an agent session (Claude Code or Codex) in a **Sandbox**. It authors code and chooses which **Booley Flows** and **Specialists** to use. It exists in **Interactive Mode** and in **Goal Mode**, whether a human is steering or the work is unattended.
+_Avoid_: coding agent, host agent, main agent, outer agent, the agent session in Goal Mode
 
 **Sandbox**:
 The isolated execution environment for one opened project folder, and the place where all Booley work executes. It owns filesystem access, shell execution, git operations, EDA subprocesses, MCP servers, logs, and secrets; the host may provision immutable EDA installation files and narrowly scoped license connectivity, but never execution authority. Goal Mode runs in a linked git worktree on its own Goal Branch inside the Sandbox; the branch and its commits are durable artifacts, while the worktree is Sandbox-scoped scratch. Docker is the default implementation, not the domain concept.
@@ -49,11 +53,11 @@ The host-owned act of sealing and vouching for one exact Sandbox specification, 
 _Avoid_: Session Runtime Issuance, EDA runtime spec, provisioning issuance
 
 **Interactive Mode**:
-Execution mode in which a human steers Claude Code or Codex inside a Sandbox, using the recommended CLI or an optional VS Code extension in a window attached to that Sandbox. The agent's filesystem access, shell execution, git operations, MCP servers, Booley Flows, and Specialists execute inside it; work outside Goal Mode has no persistent Goal tracking. The same session may enter Goal Mode when the human is ready to state machine-checked Goals.
+Execution mode in which a human steers the Developer Agent inside a Sandbox, using the recommended CLI or an optional VS Code extension in a window attached to that Sandbox. The Developer Agent's filesystem access, shell execution, git operations, MCP servers, Booley Flows, and Specialists execute inside it; work outside Goal Mode has no persistent Goal tracking. The same session may enter Goal Mode when the human is ready to state machine-checked Goals.
 _Avoid_: MCP Mode, Standalone Mode, Tab Mode, Booley Interactive
 
 **Goal Mode**:
-The execution mode an agent session enters in a linked worktree, on its own Goal Branch, in which its work is judged against its Goals until it finishes with all Goals met or is abandoned. It serves both human-steered and unattended work; the worktree owns its Goal Record.
+The execution mode the Developer Agent enters within its session in a linked worktree, on its own Goal Branch, in which its work is judged against its Goals until it finishes with all Goals met or is abandoned. It serves both human-steered and unattended work; the worktree owns its Goal Record.
 _Avoid_: ticket mode, ticket, goal session, objective
 
 **Goal Branch**:
@@ -61,16 +65,16 @@ The branch created from a clean worktree's HEAD when a session enters Goal Mode;
 _Avoid_: ticket branch, work branch
 
 **Goal**:
-A named, mandatory boolean condition held by a session in Goal Mode, met only by Booley Flow or Specialist evidence at the session's current code. The agent may ask to relax a Goal; only a human may approve it.
+A named, mandatory boolean condition held by a session in Goal Mode, met only by Booley Flow or Specialist evidence at the session's current code. The Developer Agent may ask to relax a Goal; only a human may approve it.
 The internal [Criterion](#execution-and-evidence) vocabulary remains in shared evaluation code; use Goal for the public success condition.
 _Avoid_: Criterion, acceptance criterion, optional criterion, check, gate
 
 **Goalset**:
-A named, Project-owned bundle of Goals, written as free-form prose that the agent translates into Goals when entering Goal Mode.
+A named, Project-owned bundle of Goals, written as free-form prose that the Developer Agent translates into Goals when entering Goal Mode.
 _Avoid_: Ticket Creation Guidance, criteria defaults, goal profile
 
 **Session Summary**:
-The mandatory prose report the agent writes when its session finishes Goal Mode: what changed and why, which Booley Flows and Specialists it used, and remaining uncertainties.
+The mandatory prose report the Developer Agent writes when its session finishes Goal Mode: what changed and why, which Booley Flows and Specialists it used, and remaining uncertainties.
 _Avoid_: Developer Report, run report, Goal Report
 
 **Goal Record**:
@@ -78,7 +82,7 @@ The local, uncommitted state of one Goal Mode under `.booley_project/goals/<goal
 _Avoid_: ticket record, board entry, goal file
 
 **Goal Change Proposal**:
-An agent's request, made through the proposal MCP tool, to change one Goal of an active Goal Mode: add it, relax it, retarget it to another Target, or waive coverage points through a Coverage Waiver Candidate. It is pending until a human approves or rejects it, either through the client's elicitation form or in chat with the agent recording the quoted words.
+A Developer Agent's request, made through the proposal MCP tool, to change one Goal of an active Goal Mode: add it, relax it, retarget it to another Target, or waive coverage points through a Coverage Waiver Candidate. It is pending until a human approves or rejects it, either through the client's elicitation form or in chat with the Developer Agent recording the quoted words.
 _Avoid_: amendment, Ticket Amendment, waiver request
 
 **Change Log**:
@@ -86,7 +90,7 @@ The append-only record inside a Goal Record of every approved Goal Change Propos
 _Avoid_: audit log, history, journal
 
 **Protected Input**:
-A file that decides how evidence is produced and is therefore digested at Goal Mode entry: Project configuration and checkout-root `booley.toml`, their legacy `pipeline.toml` siblings, `FUSESOC_IGNORE`, and the `hooks`, `.managed`, `generators`, and `mcp_tools` directories at their consumer roots. The snapshot covers the session Project, worktree, and main-checkout copies that consumers can read (see [Goal baselines](internals/FLOW_IMPLEMENTATION.md#goal-baselines-and-editable-design-inputs)). Editing one warns at once and blocks Finish until reverted.
+A file that decides how evidence is produced and is therefore digested at Goal Mode entry: Project configuration and checkout-root `booley.toml`, their legacy `pipeline.toml` siblings, `FUSESOC_IGNORE`, the `hooks`, `.managed`, `generators`, and `mcp_tools` directories at their consumer roots, and files the Project declares in `[project].protected_inputs`. The snapshot covers the session Project, worktree, and main-checkout copies that consumers can read (see [Goal baselines](internals/FLOW_IMPLEMENTATION.md#goal-baselines-and-editable-design-inputs)). Editing one warns at once and blocks Finish until reverted.
 _Avoid_: frozen file, locked config, Scope
 
 **Review Package**:
@@ -106,7 +110,7 @@ The diagnostic command for Booley's build and execution machinery in a **Project
 _Avoid_: design verification, Ticket Preflight, acceptance gate
 
 **Workflow Region**:
-An advisory cluster of agent activity, useful Specialists, Booley Flows, and intended outcomes. The three Workflow Regions are `pre_sim`, `core_loop`, and `post_sim`; each internal [Criterion](#execution-and-evidence) declares its region via the `workflow_region` key in criteria.toml, which drives advisory ordering only. Workflow Regions organize capability guidance without imposing mandatory order, mandatory Flow use, or hidden completion gates in Goal Mode.
+An advisory cluster of Developer Agent activity, useful Specialists, Booley Flows, and intended outcomes. The three Workflow Regions are `pre_sim`, `core_loop`, and `post_sim`; each internal [Criterion](#execution-and-evidence) declares its region via the `workflow_region` key in criteria.toml, which drives advisory ordering only. Workflow Regions organize capability guidance without imposing mandatory order, mandatory Flow use, or hidden completion gates in Goal Mode.
 _Avoid_: stage, phase, pipeline step
 
 **Sandbox Policy**:
@@ -213,7 +217,7 @@ A fast Simulation Flow mode that compiles, elaborates, and links a simulation Ta
 _Avoid_: syntax check, compile-only, Elaboration Flow, simulation substitute
 
 **Specialist**:
-An optional LLM-powered sub-agent invoked with fresh context for a single delegated task. Does not carry history from previous invocations. The active Specialists are Reviewer, Mutation Tester, and [Coverage Analyst](../src/booley/flows/sim/GLOSSARY.md) (the canonical list lives in [USAGE.md](user/USAGE.md#booley-flows--specialists)); TB Coder also exists but is hidden until it matures; the session's agent authors testbenches itself. Specialists are capabilities that agent may use, not mandatory stages in a fixed pipeline.
+An optional LLM-powered capability the **Developer Agent** invokes with fresh context for a single delegated task. Does not carry history from previous invocations. The active Specialists are Reviewer, Mutation Tester, and [Coverage Analyst](../src/booley/flows/sim/GLOSSARY.md) (the canonical list lives in [USAGE.md](user/USAGE.md#booley-flows--specialists)); TB Coder also exists but is hidden until it matures; the Developer Agent authors testbenches itself. Specialists are capabilities the Developer Agent may use, not mandatory stages in a fixed pipeline.
 _Avoid_: agentic MCP tool, agent, worker
 
 **Specialist Source Isolation**:
@@ -268,6 +272,10 @@ _Avoid_: regex, marker, exit-code-only verdict
 The read-only terminal view, one per Sandbox, of agent sessions, Goals, Booley Flow Jobs, and health signals in that Sandbox.
 _Avoid_: control room, console, monitor
 
+**Session activity**:
+What a session's agent client last reported through its lifecycle hooks: working, waiting for tool call, or waiting for user input. Unknown when nothing fresh was reported; never inferred from Booley calls or running Jobs. Presentational only.
+_Avoid_: session status, session state
+
 ## Execution and evidence
 
 **Criterion**:
@@ -292,8 +300,8 @@ You will not need these unless you are reading older work records, code, or docs
 - **Console** → **Booley Dashboard** for the live view; **none** for the old single-Ticket display: The Dashboard shows sessions, Goals, Jobs, and health across the Sandbox.
 
 - **"tool"**: Overloaded across Booley, agent clients, MCP, and EDA. Never use the bare word in Booley prose or identifiers: say **Booley Flow** for deterministic orchestration, **EDA tool** for the external program a Flow drives, and **MCP tool** only for the protocol-level invocation mechanism.
-- **"agent"**: Overloaded across Booley (Specialist), Claude Code (the outer agent), and the LLM industry generally. Use **Specialist** for Booley's LLM-powered sub-agents and **the agent session in Goal Mode** for the session driving Goal-bound work.
-- **"stage"**: Legacy framing for a mandatory pipeline. The agent session chooses Booley Flows and Specialists as needed; use **Workflow Region** only for advisory capability groupings.
+- **"agent"**: Name the **Developer Agent** in full at its first mention in a document or section, and in every sentence that discusses it alongside a **Specialist**. After that first mention, "the agent" is an allowed short form within the same section when no Specialist is a possible referent. Never use "agent" for a Specialist.
+- **"stage"**: Legacy framing for a mandatory pipeline. The Developer Agent chooses Booley Flows and Specialists as needed; use **Workflow Region** only for advisory capability groupings.
 - **"engine" / "core"**: Legacy names for retired orchestration infrastructure. No replacement umbrella term; name the capability or source module.
 - **"Design Configuration"**: Retired. The Booley-side bundle of EDA params no longer exists; design-description lives in a FuseSoC **Target**, and Booley only references it by name. Use **Target**.
 - **"Session ID"** as a Sandbox identity: Never implemented. Use **Session** for the presentational agent-client identity, **Worktree Identity** for the checkout, or **Goal Record** for the work being tracked; none is a per-Sandbox Session ID.

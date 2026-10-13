@@ -3,8 +3,12 @@
 
 [project]
 name = "<project>"
+# Extra files Goal Mode freezes: recipes and stimulus sources that hooks or
+# generators consume. Paths are relative to the repo root; keep generated
+# outputs out of the patterns. Add only with the human's agreement.
+# protected_inputs = ["Makefile", "firmware/**/*.c"]
 
-# Optional identity for agent-authored commits in Interactive and Goal Mode.
+# Optional identity for Developer Agent commits in Interactive and Goal Mode.
 # Values are applied to each checkout at worktree scope. Missing fields use the
 # neutral defaults `Dev` and `dev@localhost`.
 # [agent.git]

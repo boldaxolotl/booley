@@ -36,6 +36,7 @@ from booley.dev_support.commit_git_io import (
     _save_files_to_logs,
 )
 from booley.dev_support.commit_message_format import _auto_format_commit_message
+from booley.flows.cli_help import SurfaceHelp
 from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS, McpTool, McpToolResult
 from booley.runtime import job_slots
 from booley.runtime.agent_execution import configure_agent_call
@@ -124,25 +125,25 @@ class Specialist(McpTool):
         parser.add_argument(
             "--instruction",
             default="",
-            help="Freeform instruction for the agent (e.g. distilled plan)",
+            help="Freeform instruction for the Specialist (e.g. distilled plan)",
         )
         parser.add_argument(
             "--transcript-dir",
             type=Path,
             default=None,
-            help="Directory for agent transcript output",
+            help="Directory for Specialist transcript output",
         )
         parser.add_argument(
             "--max-turns",
             type=parse_positive_int_arg,
             default=self.default_max_turns,
-            help="Maximum agent conversation turns",
+            help="Maximum Specialist conversation turns",
         )
         parser.add_argument(
             "--timeout-ms",
             type=parse_positive_int_arg,
             default=self.default_timeout * 1000,
-            help="Agent model-call timeout in positive milliseconds",
+            help="Specialist model-call timeout in positive milliseconds",
         )
         self._add_agent_args(parser)
 
@@ -188,8 +189,9 @@ class Specialist(McpTool):
             "--steer",
             action="append",
             default=None,
-            help=(
-                f"{help_text} Repeatable; over MCP pass an array of strings, not a bare string."
+            help=SurfaceHelp(
+                f"{help_text} Repeatable; over MCP pass an array of strings, not a bare string.",
+                cli=f"{help_text} Repeat the flag to add more.",
             ),
         )
 
@@ -199,7 +201,7 @@ class Specialist(McpTool):
         parser.add_argument(
             "--dry-run",
             action="store_true",
-            help="Validate inputs and preview planned work without invoking agents or EDA tools",
+            help="Validate inputs and preview planned work without invoking Specialists or EDA tools",
         )
 
     def _dry_run_result(self, *, summary: str, detail: dict[str, Any]) -> McpToolResult:
@@ -482,9 +484,9 @@ class Specialist(McpTool):
         )
 
     def _agent_failure_result(self, exc: Exception, transcript: Path | None) -> McpToolResult:
-        log_exception(logger, exc, summary=f"Agent invocation failed for {self.name}")
+        log_exception(logger, exc, summary=f"Specialist invocation failed for {self.name}")
         diagnostic_path = self._write_provider_diagnostic(exc, transcript)
-        self.emit_progress("agent invocation failed")
+        self.emit_progress("Specialist invocation failed")
         return McpToolResult(
             exit_code=EXIT_ERROR,
             report_text=exception_report_text(self.name, exc, diagnostic_path),
@@ -508,7 +510,7 @@ class Specialist(McpTool):
         params = self._agent_call_params()
         tier = self._resolve_tier(self.args.model)
         logger.info(
-            "Invoking agent %s (model=%s, tier=%s, effort=%s, max_turns=%s, timeout=%dms)",
+            "Invoking Specialist %s (model=%s, tier=%s, effort=%s, max_turns=%s, timeout=%dms)",
             self.name,
             params.model,
             tier,
@@ -516,7 +518,7 @@ class Specialist(McpTool):
             self.args.max_turns,
             self.args.timeout_ms,
         )
-        self.emit_progress(f"invoking agent ({tier}, timeout={self.args.timeout_ms}ms)")
+        self.emit_progress(f"invoking Specialist ({tier}, timeout={self.args.timeout_ms}ms)")
 
         try:
             result = self._invoke_agent(params)
@@ -525,13 +527,13 @@ class Specialist(McpTool):
         finally:
             remove_shadow_package(self.args.work_dir)
 
-        self.emit_progress("agent completed, interpreting output")
+        self.emit_progress("Specialist completed, interpreting output")
         return self._interpret_output(result.output, result.structured)
 
     # --- Git commit helpers for code-modifying Specialists ---
 
     # Subclasses override to provide a Specialist-specific fallback message.
-    _default_commit_message: str = "wip: apply agent changes"
+    _default_commit_message: str = "wip: apply Specialist changes"
 
     # Shared commit-message guidance injected into code-modifying Specialist prompts.
     # NOTE: do not bake the banned-phrase list into this static string — the
@@ -642,7 +644,7 @@ class Specialist(McpTool):
         # Agent may have committed despite being told not to — use it.
         current_sha = _git_head_sha(work_dir)
         if before_sha and current_sha and current_sha != before_sha:
-            logger.info("Agent already committed — using existing commit")
+            logger.info("Specialist already committed — using existing commit")
             return _read_commit_info(work_dir, before_sha)
 
         # Stage selected files while preserving other authored changes
@@ -802,7 +804,7 @@ def _abort_orphaned_run(label: str, initial_ppid: int) -> None:
     of who happens to lead the group.
     """
     logger.error(
-        "%s: launching process %d is gone — aborting this run (agent detached, "
+        "%s: launching process %d is gone — aborting this run (Specialist detached, "
         "tokens still burning). Set %s=0 to disable this watchdog.",
         label,
         initial_ppid,

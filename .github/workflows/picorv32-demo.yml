@@ -15,6 +15,7 @@ on:
       - ".github/scripts/pull_image_identity.py"
       - ".github/scripts/verify_picorv32_demo.sh"
       - ".github/scripts/run_picorv32_ci_demo.sh"
+      - ".github/scripts/release_validation/goal_readiness.py"
       - ".github/workflows/picorv32-demo.yml"
       - "pyproject.toml"
       - "src/booley/__init__.py"
@@ -110,6 +111,7 @@ jobs:
           sudo chown -R 1000:1000 demo "${RUNNER_TEMP}/picorv32-demo"
 
       - name: Verify public demo contract with current Booley source
+        id: goal-readiness
         run: |
           docker run --init --rm --network none \
             --mount type=bind,src="${{ github.workspace }}",dst=/booley-source,readonly \
@@ -134,7 +136,7 @@ jobs:
           done
 
       - name: Retain Goal readiness evidence
-        if: always()
+        if: always() && (steps.goal-readiness.outcome == 'success' || steps.goal-readiness.outcome == 'failure')
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: picorv32-goal-readiness-${{ github.run_id }}-${{ github.run_attempt }}

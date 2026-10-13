@@ -71,6 +71,6 @@ def test_goalset_example_translates_through_the_real_goal_boundary():
 
 def test_installation_names_host_agent_cli_prerequisite():
     section = README.split("## Installation", 1)[1].split("\n## ", 1)[0]
-    assert "host agent CLI on PATH for Project Setup" in section
+    assert "Claude Code or Codex CLI on the host PATH for Project Setup" in section
     assert "[Claude Code](https://code.claude.com/docs/en/setup)" in section
     assert "[Codex](https://developers.openai.com/codex/cli)" in section

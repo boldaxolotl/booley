@@ -34,11 +34,18 @@ def test_agent_notice_names_role_and_purpose_on_stderr(capsys):
     assert "triage-report agent to prepare a review package" in output.err
 
 
-def test_doctor_probe_notice_names_doctor_not_specialist(capsys):
+def test_doctor_probe_notice_names_provider_authorization_not_developer_agent(capsys):
     announce_agent_dispatch(SimpleNamespace(label="doctor-developer-probe"))
     err = capsys.readouterr().err
     assert "for Doctor" in err
-    assert "Specialist" not in err
+    assert "provider probe" in err
+    assert "Specialist provider authorization" in err
+    assert "Developer Agent" not in err
+
+
+def test_specialist_notice_uses_canonical_actor_name(capsys):
+    announce_agent_dispatch(SimpleNamespace(label="reviewer"))
+    assert "reviewer Specialist" in capsys.readouterr().err
 
 
 from booley.runtime.agent_backend import (

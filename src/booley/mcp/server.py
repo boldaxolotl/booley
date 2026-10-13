@@ -22,18 +22,16 @@ from __future__ import annotations
 import asyncio
 import collections
 import contextlib
-import copy
 import json
 import logging
 import os
 import shlex
 import socket
 import sys
-import tempfile
 import time
 import uuid
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -59,8 +57,6 @@ from mcp.types import Tool as McpSdkTool
 if TYPE_CHECKING:
     from booley.flows.invocation import BudgetPlan
 
-from dataclasses import replace
-
 from booley import __version__
 from booley.core.boundary import BoundaryError, require_finite_number
 from booley.flows.endpoint_events import (
@@ -68,16 +64,11 @@ from booley.flows.endpoint_events import (
     _endpoint_start_event,
     _write_display_event,
 )
-from booley.flows.endpoint_reporting import _contains_whole_line_block
-from booley.flows.progress_lifecycle import (
-    read_progress_for_run,
-    repair_progress_after_reap,
-)
 from booley.flows.sim.coverage_evidence import COVERAGE_POINT_REFERENCE_PATTERN
 from booley.goals.binding import GoalBindingError, GoalRunBinding
-from booley.goals.paths import record_paths
 from booley.goals.store import GoalStore, GoalStoreError
 from booley.goals.warnings import goal_warnings
+from booley.mcp import call_context, endpoint_process, job_lifecycle, job_results, report_encoding
 from booley.mcp.application import (
     McpApplication,
     McpDispatchResult,
@@ -90,8 +81,6 @@ from booley.mcp.application import (
 )
 from booley.mcp.call_context import (
     CallContext,
-    container_jobs_root,
-    project_goal_store,
     resolve_call_context,
     resolve_work_dir,
 )
@@ -101,13 +90,15 @@ from booley.mcp.goal_tools import (
     dispatch_goal_tool,
     goal_tool_defs,
 )
+from booley.mcp.job_lifecycle import JobLifecycle, JobPoll, JobResult, _poll_status
+from booley.mcp.report_encoding import ReportEncoder
 from booley.mcp.session_observer import SessionMaintenanceApp, SessionObserver
 from booley.mcp.session_peer import PeerBoundary
 from booley.mcp.session_registry import Attribution
 from booley.runtime import job_records as jobrec
-from booley.runtime import job_slots, runtime_context
+from booley.runtime import pid, runtime_context
 from booley.runtime.build_metadata import format_status_line
-from booley.runtime.display_identity import DisplayIdentity, DisplayScope
+from booley.runtime.display_identity import DisplayIdentity
 from booley.runtime.endpoint_execution import EndpointOutcome
 from booley.runtime.git import is_linked_worktree
 from booley.runtime.heartbeat import REAPER_HEARTBEAT_PATH, touch_reaper_heartbeat
@@ -117,23 +108,48 @@ from booley.runtime.mcp_config import (
     HTTP_PORT_ENV,
     http_port,
 )
-from booley.runtime.pid import is_pid_alive
-from booley.runtime.process_group import (
-    ProcessGroup,
-    capture_process_group,
-    force_async_process_group,
-    force_async_process_group_now,
-    new_group_kwargs,
-    terminate_adopted_process_group,
-    terminate_async_process_group,
-)
 from booley.runtime.project_dir import resolve_project_dir
-from booley.runtime.python_artifacts import relocate_python_artifacts
 from booley.runtime.session_paths import logs_runtime_dir
-from booley.runtime.timefmt import compact_utc_now, format_human_datetime, utc_now_rfc3339
+from booley.runtime.timefmt import format_human_datetime
 
 if TYPE_CHECKING:
     from mcp.server.context import ServerRequestContext
+
+
+is_pid_alive = pid.is_pid_alive
+
+# Compatibility names delegate to the SDK-independent behavioral owners.
+_endpoint_subprocess_env = endpoint_process._endpoint_subprocess_env
+_read_tail = endpoint_process._read_tail
+_stderr_cap_bytes = endpoint_process._stderr_cap_bytes
+_stdout_cap_bytes = endpoint_process._stdout_cap_bytes
+_write_synthetic_endpoint_end = endpoint_process._write_synthetic_endpoint_end
+_KNOWN_JOB_ROOTS = job_results._KNOWN_JOB_ROOTS
+LocatedJob = job_results.LocatedJob
+_read_report_json = job_results._read_report_json
+container_jobs_root = call_context.container_jobs_root
+_attach_binding_key = job_results._attach_binding_key
+_endpoint_report_dirs = job_results._endpoint_report_dirs
+_gate_report_by_window = job_results._gate_report_by_window
+_job_binding = job_results._job_binding
+_strip_transcript_dir = job_results._strip_transcript_dir
+_DEFAULT_MAX_STDERR_BYTES = report_encoding._DEFAULT_MAX_STDERR_BYTES
+_DEFAULT_MAX_STDOUT_BYTES = report_encoding._DEFAULT_MAX_STDOUT_BYTES
+_MAX_STRUCTURED_REPORT_BYTES = report_encoding._MAX_STRUCTURED_REPORT_BYTES
+_compact_implementation = report_encoding._compact_implementation
+_compact_target_implementation = report_encoding._compact_target_implementation
+_max_stderr_bytes = report_encoding._max_stderr_bytes
+_max_stdout_bytes = report_encoding._max_stdout_bytes
+_payload_size = report_encoding._payload_size
+_report_artifacts = report_encoding._report_artifacts
+
+_minimum_target_implementation = report_encoding._minimum_target_implementation
+_fit_implementation_payload = report_encoding._fit_implementation_payload
+_enforce_structured_budget = report_encoding._enforce_structured_budget
+
+_REPORT_ENCODER = ReportEncoder()
+_structured_from_report = _REPORT_ENCODER.structured_report
+_format_mcp_tool_result = _REPORT_ENCODER.text_result
 
 logger = logging.getLogger(__name__)
 
@@ -143,12 +159,6 @@ logging.basicConfig(
     stream=sys.stderr,
     format="[mcp] %(levelname)s %(message)s",
 )
-
-# Max stdout/stderr bytes to include in MCP result (avoid blowing up context).
-# Env-overridable via BOOLEY_MCP_MAX_STDOUT_BYTES / BOOLEY_MCP_MAX_STDERR_BYTES
-# — see _max_stdout_bytes() / _max_stderr_bytes().
-_DEFAULT_MAX_STDOUT_BYTES = 12_000
-_DEFAULT_MAX_STDERR_BYTES = 4_000
 
 # MCP tools used only by autonomous development. Interactive Mode is driven by
 # the outer client, so exposing these just adds noise and invites the wrong
@@ -291,37 +301,6 @@ def _env_timeout_seconds(name: str, default: float | None) -> float | None:
     return value
 
 
-def _env_positive_int(name: str, default: int) -> int:
-    """Read a positive-integer env var; invalid or non-positive falls back.
-
-    Same tolerant style as ``_env_timeout_seconds`` (warn + default on garbage),
-    except non-positive values also fall back: a zero/negative byte cap would
-    render every MCP tool result empty, which is never what an operator wants.
-    """
-    raw = os.environ.get(name)
-    if raw is None or raw == "":
-        return default
-    try:
-        value = int(raw)
-    except ValueError:
-        logger.warning("Ignoring invalid %s=%r", name, raw)
-        return default
-    if value <= 0:
-        logger.warning("Ignoring non-positive %s=%r", name, raw)
-        return default
-    return value
-
-
-def _max_stdout_bytes() -> int:
-    """Byte cap for the stdout section of an MCP tool result."""
-    return _env_positive_int("BOOLEY_MCP_MAX_STDOUT_BYTES", _DEFAULT_MAX_STDOUT_BYTES)
-
-
-def _max_stderr_bytes() -> int:
-    """Byte cap for the stderr section of an MCP tool result."""
-    return _env_positive_int("BOOLEY_MCP_MAX_STDERR_BYTES", _DEFAULT_MAX_STDERR_BYTES)
-
-
 # The reaper (booley.docker.reaper) reads this epoch-seconds heartbeat via
 # ``docker exec`` to decide if a Sandbox is idle (ADR 0018 WS2/WS4).
 # Canonical path + touch helper live in booley.runtime.heartbeat; the module-level
@@ -423,49 +402,8 @@ class _McpLifetime:
 
 
 def _reconcile_orphaned_jobs() -> None:
-    """Make any 'running' job record with nothing behind it terminal (ADR 0027).
-
-    A detached job's background task dies with the server, and its subprocess is
-    SIGKILLed on shutdown — so after a restart a record left at ``running`` no
-    longer has anything running behind it. Marking it terminal here means a poll
-    (or status query) gets a definite answer instead of forever reporting a
-    ghost as in-flight. Liveness is judged by ``derive_status`` (PID + deadline
-    + argv identity, so a recycled PID cannot keep a ghost alive), and a dead
-    job whose *fresh* report proves the run actually completed adopts the run's
-    real exit code rather than a blanket failure. Same TOP_LEVEL gate as the
-    lock reconcile: nested specialist servers share the runtime tree and must
-    not adjudicate each other's records.
-    """
-    from booley.runtime.bootstrap_mode import should_run_outer_bookkeeping
-
-    if not should_run_outer_bookkeeping():
-        return
-    for located in (
-        LocatedJob(rec, root) for root in job_roots() for rec in jobrec.list_records(root=root)
-    ):
-        rec = located.record
-        jobs_root = located.root
-        if rec.status != jobrec.STATUS_RUNNING:
-            continue
-        if jobrec.derive_status(rec, is_pid_alive) == jobrec.STATUS_RUNNING:
-            continue  # genuinely survived the restart — leave it be
-        report, report_fresh = _job_report(rec)
-        report_exit = report.get("exit_code") if report_fresh and report else None
-        if isinstance(report_exit, int):
-            # The run finished and wrote this job's report; only the server
-            # died before recording. Adopt the run's real outcome instead of
-            # branding a completed (possibly passing) run as failed.
-            rec.exit_code = report_exit
-            rec.status = jobrec.terminal_status(report_exit, timed_out=False)
-        else:
-            rec.status = jobrec.STATUS_FAILED
-            if rec.exit_code is None:
-                rec.exit_code = 2
-        repair_progress_after_reap(
-            _endpoint_report_dirs(_locate_job(rec.run_id)), rec.endpoint, rec.run_id
-        )
-        jobrec.write_record(rec, root=jobs_root)
-        logger.info("Reconciled orphaned job %s from prior session", rec.run_id)
+    """Delegate startup reconciliation to the Job lifecycle owner."""
+    _JobManager().reconcile_orphaned()
 
 
 # ---------------------------------------------------------------------------
@@ -1068,47 +1006,10 @@ def _params_to_argv(params: dict[str, Any]) -> list[str]:
     return argv
 
 
-# Per-stream peak-memory caps for buffered subprocess output.
-# 4x the result-formatter caps so the existing "truncated" indicator still
-# fires for moderate overflow while catastrophic overflow (nested-agent JSONL
-# streams 10s-100s of MB) stays bounded. Derived from the *resolved* formatter
-# caps, so raising BOOLEY_MCP_MAX_STDOUT_BYTES scales the ring buffer with it.
-_STREAM_CAP_MULTIPLIER = 4
-
-
-def _stdout_cap_bytes() -> int:
-    """Peak-memory cap for the buffered stdout of a endpoint subprocess."""
-    return _max_stdout_bytes() * _STREAM_CAP_MULTIPLIER
-
-
-def _stderr_cap_bytes() -> int:
-    """Peak-memory cap for the buffered stderr of a endpoint subprocess."""
-    return _max_stderr_bytes() * _STREAM_CAP_MULTIPLIER
-
-
-async def _read_tail(stream: asyncio.StreamReader, cap: int) -> bytes:
-    """Drain *stream* to EOF, keeping only the last *cap* bytes.
-
-    Trims periodically so peak memory stays under ~2x cap regardless of
-    total output volume.
-    """
-    buf = bytearray()
-    while True:
-        chunk = await stream.read(8192)
-        if not chunk:
-            break
-        buf.extend(chunk)
-        if len(buf) > cap * 2:
-            del buf[:-cap]
-    if len(buf) > cap:
-        del buf[:-cap]
-    return bytes(buf)
-
-
 # Watchdog sampling interval while a child may be queued for its class slot.
 # Queue-state reads are a handful of small file stats/reads per tick; 5s keeps
 # the budget accounting within one tick of the truth without measurable IO.
-_WATCHDOG_TICK_SECONDS = 5.0
+_WATCHDOG_TICK_SECONDS = endpoint_process._WATCHDOG_TICK_SECONDS
 
 
 async def _wait_with_queue_credit(
@@ -1117,74 +1018,9 @@ async def _wait_with_queue_credit(
     is_queued: Callable[[], bool],
     on_first_active: Callable[[], None] | None,
 ) -> bool:
-    """Wait for *proc*, charging only non-queued time against *timeout*.
-
-    The child claims its concurrency slot INSIDE its own process (ADR 0028),
-    so wall-clock since spawn includes any queue wait — which can exceed the
-    endpoint's whole budget when a long run holds the class slot. Killing a job
-    for time it spent waiting in line defeats the queue, so the watchdog
-    samples the child's admission state each tick and only ticks the budget
-    down while the child is not QUEUED. ``on_first_active`` fires once, on
-    the first non-queued observation — the run-start stamp for the durable
-    record. Returns True when the process exited, False on (active-time)
-    timeout. State is sampled at tick granularity; a queued→active flip
-    mid-tick miscounts at most one tick.
-    """
-    active_used = 0.0
-    seen_active = False
-    while True:
-        # This probe performs only a handful of bounded local file reads.  A
-        # thread hop is more dangerous than those reads: repeatedly submitting
-        # through the default asyncio executor has hung on some runtimes during
-        # executor wake-up, wedging the watchdog before it can enforce its own
-        # timeout.  Keep the small admission-state sample on the event loop.
-        queued = is_queued()
-        if not queued and not seen_active:
-            seen_active = True
-            if on_first_active is not None:
-                with contextlib.suppress(Exception):
-                    on_first_active()
-        remaining = timeout - active_used
-        if not queued and remaining <= 0:
-            return False
-        tick = _WATCHDOG_TICK_SECONDS if queued else min(_WATCHDOG_TICK_SECONDS, remaining)
-        started = time.monotonic()
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=tick)
-            return True
-        except TimeoutError:
-            if not queued:
-                active_used += time.monotonic() - started
-
-
-def _endpoint_subprocess_env(
-    context: CallContext, *, pytest_scope: str = "endpoint", **overrides: str
-) -> dict[str, str]:
-    """Return the child environment after MCP composes runtime persistence.
-
-    The call context's overrides apply over the server environment, and the
-    per-run *overrides* apply over both.
-    """
-    from booley.flows.cli_selection import INVOCATION_ORIGIN_ENV
-
-    env = {**os.environ, **context.subprocess_env_overrides, **overrides}
-    env[INVOCATION_ORIGIN_ENV] = "transport"
-    logs_dir = env.get("BOOLEY_LOGS_DIR", "")
-    if logs_dir and not env.get("BOOLEY_RUNTIME_DIR"):
-        env["BOOLEY_RUNTIME_DIR"] = str(logs_runtime_dir(logs_dir))
-    runtime = env.get("BOOLEY_RUNTIME_DIR")
-    if runtime:
-        runtime_root = Path(runtime)
-    else:
-        try:
-            runtime_root = resolve_project_dir() / ".runtime"
-        except (OSError, RuntimeError, ValueError):
-            runtime_root = Path(tempfile.gettempdir()) / "booley-runtime"
-        env["BOOLEY_RUNTIME_DIR"] = str(runtime_root)
-    return relocate_python_artifacts(
-        env,
-        runtime_root / "python-artifacts",
-        pytest_scope=pytest_scope,
+    """Compatibility delegate to the queue-aware supervisor."""
+    return await endpoint_process._wait_with_queue_credit(
+        proc, timeout, is_queued, on_first_active, tick_seconds=_WATCHDOG_TICK_SECONDS
     )
 
 
@@ -1197,239 +1033,20 @@ async def _run_subprocess(
     is_queued: Callable[[], bool] | None = None,
     on_first_active: Callable[[], None] | None = None,
 ) -> tuple[int, str, str, bool]:
-    """Run a subprocess with bounded output buffering, off the event loop.
-
-    Uses asyncio subprocess so the MCP server stays protocol-responsive
-    during long MCP tool calls (otherwise a blocking subprocess.run pegs the
-    loop for the entire endpoint duration). Stdout/stderr are streamed through
-    a tail-only ring buffer (see ``_read_tail``) so a 30-min nested-agent
-    run can't blow the MCP server's RSS.
-
-    With ``is_queued`` set (async-job dispatch), *timeout* bounds ACTIVE time
-    only — see ``_wait_with_queue_credit``. Without it, the plain
-    wall-clock-since-spawn watchdog applies (synchronous endpoints are unclassed and
-    never queue).
-
-    Returns (exit_code, stdout, stderr, timed_out).
-    """
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=env,
-            **_async_process_group_kwargs(),
-        )
-    except OSError as e:
-        return 2, "", f"Subprocess launch failed for {cmd[0]!r}: {e}", False
-    group = capture_process_group(proc)
-
-    if on_spawn is not None:
-        # Hand the child PID to the caller (the JobManager stamps it into the
-        # durable job record) so a restarted server can judge liveness by PID.
-        with contextlib.suppress(Exception):
-            on_spawn(proc.pid)
-
-    assert proc.stdout is not None and proc.stderr is not None
-    stdout_task = asyncio.create_task(_read_tail(proc.stdout, _stdout_cap_bytes()))
-    stderr_task = asyncio.create_task(_read_tail(proc.stderr, _stderr_cap_bytes()))
-
-    try:
-        try:
-            await _await_supervised_process(
-                proc,
-                timeout,
-                is_queued=is_queued,
-                on_first_active=on_first_active,
-            )
-        except TimeoutError:
-            return await _timeout_subprocess_result(proc, group, timeout, stdout_task, stderr_task)
-        except asyncio.CancelledError:
-            # User cancellation is cooperative first: give the endpoint process
-            # group a bounded opportunity to release locks and clean up, then
-            # force down descendants that ignored SIGTERM.
-            await _cancel_async_process_tree(proc, group)
-            await _cancel_stream_tasks(stdout_task, stderr_task)
-            raise
-
-        stdout_bytes = await stdout_task
-        stderr_bytes = await stderr_task
-        return (
-            proc.returncode if proc.returncode is not None else 2,
-            stdout_bytes.decode("utf-8", errors="replace"),
-            stderr_bytes.decode("utf-8", errors="replace"),
-            False,
-        )
-    finally:
-        # If we're unwinding while the child is still alive, reap it. The common
-        # case is the MCP client interrupting the MCP tool call, which cancels this
-        # coroutine (CancelledError) at the ``await`` above. Without this, an
-        # interrupted `simulate` would leave an orphaned simulator running under
-        # its own session — still holding the sim lock and able to write a late
-        # report long after Claude has moved on. Kill is signal-only/synchronous
-        # because awaiting is unreliable during cancellation unwinding.
-        if proc.returncode is None:
-            _signal_kill_process_group(proc, group)
-            for t in (stdout_task, stderr_task):
-                if not t.done():
-                    t.cancel()
-
-
-async def _await_supervised_process(
-    proc: asyncio.subprocess.Process,
-    timeout: int,
-    *,
-    is_queued: Callable[[], bool] | None,
-    on_first_active: Callable[[], None] | None,
-) -> None:
-    """Wait for a child, charging either wall-clock or active-only time."""
-    if is_queued is None:
-        await asyncio.wait_for(proc.wait(), timeout=timeout)
-        return
-    if not await _wait_with_queue_credit(proc, timeout, is_queued, on_first_active):
-        raise TimeoutError
-
-
-async def _cancel_stream_tasks(*tasks: asyncio.Task[bytes]) -> None:
-    """Cancel and drain subprocess output readers."""
-    for task in tasks:
-        if not task.done():
-            task.cancel()
-        with contextlib.suppress(asyncio.CancelledError, Exception):
-            await task
-
-
-async def _timeout_subprocess_result(
-    proc: asyncio.subprocess.Process,
-    group: ProcessGroup,
-    timeout: int,
-    stdout_task: asyncio.Task[bytes],
-    stderr_task: asyncio.Task[bytes],
-) -> tuple[int, str, str, bool]:
-    """Kill a timed-out subprocess and construct its bounded diagnostic."""
-    snapshot = await _async_process_snapshot(proc.pid)
-    await _kill_async_process_tree(proc, group)
-    await _cancel_stream_tasks(stdout_task, stderr_task)
-    stderr = f"Subprocess timed out after {timeout}s"
-    if snapshot:
-        stderr += "\n\nProcess snapshot before kill:\n" + snapshot
-    return 2, "", stderr, True
-
-
-def _async_process_group_kwargs() -> dict[str, Any]:
-    """Popen kwargs for an asyncio child process group/session."""
-    return new_group_kwargs()
-
-
-async def _async_process_snapshot(pid: int) -> str:
-    """Best-effort process tree snapshot for timeout diagnostics."""
-    if sys.platform == "win32":
-        proc = await asyncio.create_subprocess_exec(
-            "tasklist",
-            "/FI",
-            f"PID eq {pid}",
-            "/FO",
-            "LIST",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        try:
-            stdout, _stderr = await asyncio.wait_for(proc.communicate(), timeout=2)
-        except TimeoutError:
-            return ""
-        return stdout.decode("utf-8", errors="replace").strip()
-
-    proc = await asyncio.create_subprocess_exec(
-        "ps",
-        "-eo",
-        "pid,ppid,stat,etime,cmd",
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL,
+    """Delegate process supervision with adapter-configured diagnostic timings."""
+    return await endpoint_process._run_subprocess(
+        cmd,
+        timeout=timeout,
+        on_spawn=on_spawn,
+        env=env,
+        is_queued=is_queued,
+        on_first_active=on_first_active,
+        watchdog_tick=_WATCHDOG_TICK_SECONDS,
+        cancel_grace=_CANCEL_GRACE_SECONDS,
     )
-    try:
-        stdout, _stderr = await asyncio.wait_for(proc.communicate(), timeout=2)
-    except TimeoutError:
-        return ""
-    rows = stdout.decode("utf-8", errors="replace").splitlines()
-    if not rows:
-        return ""
-    wanted = {str(pid)}
-    selected = [rows[0]]
-    changed = True
-    while changed:
-        changed = False
-        for row in rows[1:]:
-            parts = row.split(None, 4)
-            if len(parts) < 2:
-                continue
-            row_pid, row_ppid = parts[0], parts[1]
-            if row_pid in wanted or row_ppid in wanted:
-                if row not in selected:
-                    selected.append(row)
-                if row_pid not in wanted:
-                    wanted.add(row_pid)
-                    changed = True
-    return "\n".join(selected[:80])
 
 
-def _signal_kill_process_group(
-    proc: asyncio.subprocess.Process,
-    group: ProcessGroup,
-) -> None:
-    """Best-effort SIGKILL of the child's process group, no awaits.
-
-    Safe to call while this coroutine is being cancelled (unlike
-    :func:`_kill_async_process_tree`, which awaits and would immediately
-    re-raise the pending cancellation). The child is started with
-    ``start_new_session=True`` so it leads its own process group; killing the
-    group reaps the whole endpoint subprocess tree — e.g. the Python runner *and* the
-    simulator binary it spawned.
-    """
-    force_async_process_group_now(proc, group)
-
-
-async def _kill_async_process_tree(
-    proc: asyncio.subprocess.Process,
-    group: ProcessGroup,
-) -> None:
-    """Terminate an asyncio subprocess and its process group."""
-    await force_async_process_group(proc, group)
-
-
-_CANCEL_GRACE_SECONDS = 5.0
-
-
-async def _cancel_async_process_tree(
-    proc: asyncio.subprocess.Process,
-    group: ProcessGroup,
-) -> None:
-    """SIGTERM a endpoint process group, then SIGKILL it after a bounded grace."""
-    await terminate_async_process_group(proc, group, grace_seconds=_CANCEL_GRACE_SECONDS)
-
-
-def _write_synthetic_endpoint_end(
-    mcp_tool_name: str,
-    duration_s: int,
-    *,
-    identity: DisplayIdentity,
-    outcome: str = "timed_out",
-) -> None:
-    """Close presentation state when a killed child cannot publish its own end."""
-    exit_code = 130 if outcome == "cancelled" else 2
-    report_text = {
-        "cancelled": "Cancelled by request",
-        "aborted": "Endpoint supervisor stopped before completion",
-    }.get(outcome, f"Killed by MCP server after {duration_s}s timeout")
-    event: dict[str, Any] = {
-        "type": "endpoint_end",
-        "endpoint": mcp_tool_name,
-        "exit_code": exit_code,
-        "duration_s": duration_s,
-        "outcome": outcome,
-        "report_text": report_text,
-        "timestamp": utc_now_rfc3339(),
-    }
-    _write_display_event(identity.apply(event))
+_CANCEL_GRACE_SECONDS = endpoint_process._CANCEL_GRACE_SECONDS
 
 
 # One MCP tool call's MCP payload: plain text blocks, or the SDK's combination
@@ -1457,422 +1074,6 @@ def _error_result(message: str) -> McpDispatchResult:
     )
 
 
-# A report whose serialized ``reports`` payload exceeds this is not attached
-# in full as structuredContent — the agent still gets the text card, and a
-# compact scalar verdict replaces the heavy body (huge test lists / embedded
-# logs would otherwise bloat every conversation turn).
-_MAX_STRUCTURED_REPORT_BYTES = 64 * 1024
-
-
-def _implementation_from_report(report: dict[str, Any]) -> dict[str, Any] | None:
-    """Return the canonical implementation envelope from a target or aggregate."""
-    direct = report.get("implementation")
-    if isinstance(direct, dict):
-        return direct
-    detail = report.get("detail")
-    if isinstance(detail, dict) and isinstance(detail.get("implementation"), dict):
-        return detail["implementation"]
-    return None
-
-
-def _implementation_artifacts(implementation: dict[str, Any]) -> dict[str, Any]:
-    """Collect canonical target artifacts from a target or aggregate envelope."""
-    artifacts = implementation.get("artifacts")
-    if isinstance(artifacts, dict) and artifacts:
-        return artifacts
-    found: dict[str, Any] = {}
-    results = implementation.get("results")
-    if not isinstance(results, dict):
-        return found
-    for target, result in results.items():
-        nested = result.get("artifacts") if isinstance(result, dict) else None
-        if isinstance(nested, dict) and nested:
-            found[str(target)] = nested
-    return found
-
-
-def _report_artifacts(report: dict[str, Any]) -> dict[str, Any]:
-    """Pull the artifact pointers out of a run report, wherever an endpoint put them.
-
-    Endpoints emit ``artifacts`` at the top level of their per-target report and
-    inside ``detail`` (the copy that rides in the flat report this function
-    usually sees). Both are checked; the top-level one wins on a key clash
-    because it is the more specific of the two.
-
-    ``detail`` is also scanned ONE level deep, because a multi-target Flow
-    keys its detail by target and hangs the block off each entry
-    (``detail["sim_fast"]["artifacts"]`` — asic_synthesize's aggregate shape).
-    Without this the rescue silently found nothing for exactly the Flows whose
-    reports grow large enough to be truncated.
-
-    Values are paths, or (for a multi-target Flow such as ``simulate``) a
-    per-target mapping of them — either way a few hundred bytes, which is the
-    only property the truncation fallback depends on. Returns ``{}`` rather
-    than raising on a malformed report: this runs on an already-oversized
-    payload, where an exception would cost the agent the text card too.
-    """
-    found: dict[str, Any] = {}
-    implementation = _implementation_from_report(report)
-    if implementation is not None:
-        found.update(_implementation_artifacts(implementation))
-    detail = report.get("detail")
-    if isinstance(detail, dict):
-        for key, value in detail.items():
-            # One level down: a per-target entry carrying its own block.
-            if key != "artifacts" and isinstance(value, dict):
-                nested = value.get("artifacts")
-                if isinstance(nested, dict) and nested:
-                    found[key] = nested
-        if isinstance(detail.get("artifacts"), dict):
-            found.update(detail["artifacts"])
-    if isinstance(report.get("artifacts"), dict):
-        found.update(report["artifacts"])
-    return found
-
-
-def _compact_target_implementation(value: dict[str, Any]) -> dict[str, Any]:
-    """Keep target verdict, QoR, comparison, cache, provenance, and recovery paths."""
-    compact = {
-        key: copy.deepcopy(value[key])
-        for key in (
-            "schema_version",
-            "identity",
-            "status",
-            "metrics",
-            "conditions",
-            "recipe",
-            "provenance",
-            "comparison",
-            "cache",
-            "artifacts",
-        )
-        if key in value
-    }
-    status = compact.get("status")
-    if isinstance(status, dict):
-        status.pop("diagnostic_excerpt", None)
-    recipe = compact.get("recipe")
-    if isinstance(recipe, dict):
-        recipe.pop("snapshot", None)
-    comparison = compact.get("comparison")
-    if isinstance(comparison, dict):
-        baseline = comparison.get("baseline")
-        if isinstance(baseline, dict):
-            baseline.pop("recipe", None)
-    return compact
-
-
-def _compact_implementation(value: dict[str, Any]) -> dict[str, Any]:
-    """Build the deterministic high-value implementation fallback."""
-    results = value.get("results")
-    if not isinstance(results, dict):
-        return _compact_target_implementation(value)
-    compact = {
-        key: copy.deepcopy(value[key])
-        for key in ("schema_version", "targets", "grade", "passed", "baseline_ref")
-        if key in value
-    }
-    compact["results"] = {
-        str(target): _compact_target_implementation(result)
-        for target, result in results.items()
-        if isinstance(result, dict)
-    }
-    return compact
-
-
-def _payload_size(payload: dict[str, Any]) -> int:
-    return len(json.dumps(payload).encode("utf-8"))
-
-
-def _record_omitted_field(value: dict[str, Any], path: str) -> None:
-    fields = value.setdefault("omitted_fields", [])
-    if isinstance(fields, list) and path not in fields:
-        fields.append(path)
-
-
-def _drop_per_clock(value: dict[str, Any]) -> None:
-    metrics = value.get("metrics")
-    if isinstance(metrics, dict) and metrics.pop("per_clock", None) is not None:
-        _record_omitted_field(value, "metrics.per_clock")
-    comparison = value.get("comparison")
-    baseline = comparison.get("baseline") if isinstance(comparison, dict) else None
-    baseline_metrics = baseline.get("metrics") if isinstance(baseline, dict) else None
-    if isinstance(baseline_metrics, dict) and baseline_metrics.pop("per_clock", None) is not None:
-        _record_omitted_field(value, "comparison.baseline.metrics.per_clock")
-
-
-def _drop_warning_representatives(value: dict[str, Any]) -> None:
-    """Drop bounded diagnostic prose while retaining warning counts."""
-    conditions = value.get("conditions")
-    summary = conditions.get("warning_summary") if isinstance(conditions, dict) else None
-    if isinstance(summary, dict) and summary.pop("representatives", None) is not None:
-        _record_omitted_field(value, "conditions.warning_summary.representatives")
-    comparison = value.get("comparison")
-    baseline = comparison.get("baseline") if isinstance(comparison, dict) else None
-    baseline_conditions = baseline.get("conditions") if isinstance(baseline, dict) else None
-    baseline_summary = (
-        baseline_conditions.get("warning_summary")
-        if isinstance(baseline_conditions, dict)
-        else None
-    )
-    if (
-        isinstance(baseline_summary, dict)
-        and baseline_summary.pop("representatives", None) is not None
-    ):
-        _record_omitted_field(
-            value, "comparison.baseline.conditions.warning_summary.representatives"
-        )
-
-
-def _bounded_scalar_map(value: Any) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        return {}
-    scalars: dict[str, Any] = {}
-    for index, (key, item) in enumerate(value.items()):
-        if index >= 64:
-            break
-        bounded_key = str(key)[:200]
-        if item is None or isinstance(item, (bool, int, float)):
-            scalars[bounded_key] = item
-        elif isinstance(item, str):
-            scalars[bounded_key] = item[:1_000]
-    return scalars
-
-
-def _bounded_nested_map(value: Any) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        return {}
-    bounded: dict[str, Any] = {}
-    for index, (key, item) in enumerate(value.items()):
-        if index >= 64:
-            break
-        bounded_key = str(key)[:200]
-        if isinstance(item, dict):
-            bounded[bounded_key] = _bounded_scalar_map(item)
-        elif item is None or isinstance(item, (bool, int, float)):
-            bounded[bounded_key] = item
-        elif isinstance(item, str):
-            bounded[bounded_key] = item[:1_000]
-    return bounded
-
-
-def _minimum_target_implementation(value: dict[str, Any]) -> dict[str, Any]:
-    """Retain bounded verdict, scalar QoR, comparison, and recovery paths."""
-    minimum: dict[str, Any] = {}
-    if "schema_version" in value:
-        minimum["schema_version"] = value["schema_version"]
-    for key in ("identity", "status", "recipe", "cache"):
-        if key in value:
-            minimum[key] = _bounded_scalar_map(value[key])
-    minimum["metrics"] = _bounded_scalar_map(value.get("metrics"))
-    conditions = _minimum_conditions(value.get("conditions"))
-    if conditions:
-        minimum["conditions"] = conditions
-    if "artifacts" in value:
-        minimum["artifacts"] = _bounded_nested_map(value["artifacts"])
-    comparison = value.get("comparison")
-    if isinstance(comparison, dict):
-        minimum["comparison"] = _minimum_comparison(comparison)
-    if value.get("omitted_fields"):
-        minimum["omitted_fields"] = copy.deepcopy(value["omitted_fields"])
-    return minimum
-
-
-def _minimum_conditions(value: Any) -> dict[str, Any]:
-    """Retain scalar conditions and bounded warning-count maps."""
-    minimum = _bounded_scalar_map(value)
-    if not isinstance(value, dict):
-        return minimum
-    summary = value.get("warning_summary")
-    if not isinstance(summary, dict):
-        return minimum
-    bounded = _bounded_scalar_map(summary)
-    for key in ("by_tool", "by_category", "by_disposition"):
-        counts = _bounded_scalar_map(summary.get(key))
-        if counts:
-            bounded[key] = counts
-    minimum["warning_summary"] = bounded
-    return minimum
-
-
-def _minimum_comparison(value: dict[str, Any]) -> dict[str, Any]:
-    keep = (
-        "requested_ref",
-        "resolved_ref",
-        "baseline_target",
-        "candidate_target",
-        "basis_valid",
-    )
-    minimum = {key: copy.deepcopy(value[key]) for key in keep if key in value}
-    errors = value.get("basis_errors")
-    if isinstance(errors, list):
-        minimum["basis_errors"] = [str(error)[:1_000] for error in errors[:10]]
-    if "deltas" in value:
-        minimum["deltas"] = _bounded_nested_map(value["deltas"])
-    baseline = value.get("baseline")
-    if isinstance(baseline, dict):
-        minimum["baseline"] = {}
-        for key in ("status", "cache"):
-            if key in baseline:
-                minimum["baseline"][key] = _bounded_scalar_map(baseline[key])
-        if "artifacts" in baseline:
-            minimum["baseline"]["artifacts"] = _bounded_nested_map(baseline["artifacts"])
-        minimum["baseline"]["metrics"] = _bounded_scalar_map(baseline.get("metrics"))
-        conditions = _minimum_conditions(baseline.get("conditions"))
-        if conditions:
-            minimum["baseline"]["conditions"] = conditions
-    return minimum
-
-
-def _drop_result_expansions(results: dict[str, Any]) -> None:
-    for result in results.values():
-        if isinstance(result, dict):
-            _drop_warning_representatives(result)
-            _drop_per_clock(result)
-
-
-def _fit_implementation_payload(payload: dict[str, Any], implementation: dict[str, Any]) -> None:
-    """Attach canonical detail while respecting the structured-content cap."""
-    compact = _compact_implementation(implementation)
-    payload["implementation"] = compact
-    if _payload_size(payload) <= _MAX_STRUCTURED_REPORT_BYTES:
-        return
-    results = compact.get("results")
-    if not isinstance(results, dict):
-        _drop_warning_representatives(compact)
-        _drop_per_clock(compact)
-        payload["implementation"] = _minimum_target_implementation(compact)
-        if _payload_size(payload) <= _MAX_STRUCTURED_REPORT_BYTES:
-            return
-        payload.pop("implementation", None)
-        return
-    _drop_result_expansions(results)
-    omitted: list[str] = []
-    while len(results) > 1 and _payload_size(payload) > _MAX_STRUCTURED_REPORT_BYTES:
-        target = next(reversed(results))
-        results.pop(target)
-        omitted.insert(0, target)
-        compact["omitted_targets"] = omitted
-    if _payload_size(payload) > _MAX_STRUCTURED_REPORT_BYTES and results:
-        target = next(iter(results))
-        result = results[target]
-        if isinstance(result, dict):
-            results[target] = _minimum_target_implementation(result)
-    if _payload_size(payload) > _MAX_STRUCTURED_REPORT_BYTES:
-        payload.pop("implementation", None)
-
-
-def _enforce_structured_budget(payload: dict[str, Any]) -> None:
-    """Apply a deterministic final guard after all fallback fields are attached."""
-    if _payload_size(payload) <= _MAX_STRUCTURED_REPORT_BYTES:
-        return
-    artifacts = payload.get("artifacts")
-    omitted_count = 0
-    omitted_sample: list[str] = []
-    while (
-        isinstance(artifacts, dict)
-        and artifacts
-        and _payload_size(payload) > _MAX_STRUCTURED_REPORT_BYTES
-    ):
-        key = next(reversed(artifacts))
-        artifacts.pop(key)
-        omitted_count += 1
-        if len(omitted_sample) < 10:
-            omitted_sample.insert(0, key)
-        payload["omitted_artifact_entries"] = {
-            "count": omitted_count,
-            "sample": omitted_sample,
-        }
-    if _payload_size(payload) > _MAX_STRUCTURED_REPORT_BYTES:
-        payload.pop("artifacts", None)
-    if _payload_size(payload) > _MAX_STRUCTURED_REPORT_BYTES:
-        payload.pop("implementation", None)
-    if _payload_size(payload) > _MAX_STRUCTURED_REPORT_BYTES:
-        omission = payload.get("omitted_artifact_entries")
-        if isinstance(omission, dict):
-            omission["sample"] = []
-    if _payload_size(payload) > _MAX_STRUCTURED_REPORT_BYTES:
-        passed = payload.get("passed")
-        payload.clear()
-        payload.update({"reports": [], "truncated": True})
-        if isinstance(passed, bool):
-            payload["passed"] = passed
-
-
-def _simulation_transport_report(report: dict[str, Any]) -> dict[str, Any]:
-    if report.get("flow") == "sim" and isinstance(report.get("cycle_counts"), dict):
-        report = dict(report)
-        del report["cycle_counts"]
-    return report
-
-
-def _live_checkpoint_summary(report: dict[str, Any]) -> dict[str, Any] | None:
-    """Keep current owned log pointers when completed Target detail exceeds the cap."""
-    active = report.get("active")
-    if report.get("complete") is not False or not isinstance(active, list):
-        return None
-    summary = {
-        key: report[key]
-        for key in ("flow", "run_id", "timestamp", "phase", "complete", "partial")
-        if key in report
-    }
-    summary["active"] = [
-        {key: item[key] for key in ("target", "stage", "role", "operation", "log") if key in item}
-        for item in active
-        if isinstance(item, dict)
-    ]
-    omitted = 0
-    while summary["active"] and _payload_size(summary) > _MAX_STRUCTURED_REPORT_BYTES // 2:
-        summary["active"].pop()
-        omitted += 1
-    if omitted:
-        summary["omitted_active_entries"] = omitted
-    return summary
-
-
-def _structured_from_report(report: dict[str, Any] | None) -> dict[str, Any] | None:
-    """Bounded ``structuredContent`` payload for a run report, or None.
-
-    Never raises: structured attachment is a best-effort enrichment of the
-    text card, so any surprise (unserializable value, odd report shape)
-    degrades to text-only rather than failing the MCP tool call.
-    """
-    try:
-        if not isinstance(report, dict) or not report:
-            return None
-        report = _simulation_transport_report(report)
-        payload: dict[str, Any] = {"reports": [report]}
-        if isinstance(report.get("passed"), bool):
-            payload["passed"] = report["passed"]
-        if len(json.dumps(payload).encode("utf-8")) > _MAX_STRUCTURED_REPORT_BYTES:
-            # Oversized: keep the cheap scalar verdict, drop the heavy body.
-            payload = {"reports": [], "truncated": True}
-            live = _live_checkpoint_summary(report)
-            if live is not None:
-                payload.update(live)
-            for key in ("flow", "mcp_tool", "target", "exit_code"):
-                if report.get(key) is not None:
-                    payload[key] = report[key]
-            # ...but never drop the artifact pointers. They are a few hundred
-            # bytes and they are the whole recovery path: truncation happens on
-            # exactly the big, noisy runs where the agent most needs to open
-            # the log, and stripping the paths while keeping the verdict left
-            # it with a bare "FAIL" and nowhere to go.
-            artifacts = _report_artifacts(report)
-            if artifacts:
-                payload["artifacts"] = artifacts
-            implementation = _implementation_from_report(report)
-            if implementation is not None:
-                _fit_implementation_payload(payload, implementation)
-        if isinstance(report.get("passed"), bool):
-            payload["passed"] = report["passed"]
-        _enforce_structured_budget(payload)
-        return payload
-    except Exception:  # best-effort enrichment degrades to text-only
-        logger.debug("structuredContent attach failed; returning text-only", exc_info=True)
-        return None
-
-
 def _with_structured_report(
     content: list[TextContent],
     report: dict[str, Any] | None,
@@ -1888,194 +1089,21 @@ def _with_structured_report(
     return content, structured
 
 
-def _append_stream_section(
-    parts: list[str],
-    *,
-    label: str,
-    stream: str,
-    limit: int,
-    mark_truncation: bool,
-) -> tuple[str, bool]:
-    """Append one displayed stream tail and return its dedupe inputs."""
-    if not stream:
-        return "", False
-    truncated = len(stream) > limit
-    shown = stream[-limit:] if truncated else stream
-    rendered = shown
-    if truncated and mark_truncation:
-        rendered = f"... (truncated, showing last {limit} bytes)\n{shown}"
-    parts.append(f"\n--- {label} ---\n{rendered}")
-    return shown, truncated
-
-
-def _append_report_section(
-    parts: list[str],
-    report: dict[str, Any] | None,
-    *,
-    shown_stdout: str,
-    stdout_truncated: bool,
-    shown_stderr: str,
-    stderr_truncated: bool,
-) -> None:
-    """Append durable report fields not already visible in displayed streams."""
-    if not report:
-        return
-    report_lines = []
-    for field in ("status", "summary", "errors", "report_text"):
-        if field not in report:
-            continue
-        if field == "report_text":
-            report_text = str(report[field]).strip()
-            shown_in_stdout = _contains_whole_line_block(
-                shown_stdout,
-                report_text,
-                leading_truncated=stdout_truncated,
-            )
-            shown_in_stderr = _contains_whole_line_block(
-                shown_stderr,
-                report_text,
-                leading_truncated=stderr_truncated,
-            )
-            if shown_in_stdout or shown_in_stderr:
-                continue
-        report_lines.append(f"{field}: {report[field]}")
-    detail = report.get("detail")
-    if isinstance(detail, dict):
-        for field in ("reason", "error"):
-            if detail.get(field):
-                report_lines.append(f"detail.{field}: {detail[field]}")
-    if report_lines:
-        parts.append("\n--- report ---\n" + "\n".join(report_lines))
-
-
-def _format_mcp_tool_result(
-    exit_code: int,
-    stdout: str,
-    stderr: str,
-    report: dict[str, Any] | None = None,
-) -> str:
-    """Format hybrid MCP tool result (stdout + report fields)."""
-    parts = [f"EXIT_CODE: {exit_code}"]
-
-    shown_stdout, stdout_truncated = _append_stream_section(
-        parts,
-        label="stdout",
-        stream=stdout,
-        limit=_max_stdout_bytes(),
-        mark_truncation=True,
-    )
-    shown_stderr, stderr_truncated = _append_stream_section(
-        parts,
-        label="stderr",
-        stream=stderr,
-        limit=_max_stderr_bytes(),
-        mark_truncation=False,
-    )
-    _append_report_section(
-        parts,
-        report,
-        shown_stdout=shown_stdout,
-        stdout_truncated=stdout_truncated,
-        shown_stderr=shown_stderr,
-        stderr_truncated=stderr_truncated,
-    )
-
-    rendered = "\n".join(parts)
-    reason = (report or {}).get("detail", {}).get("evidence_discarded")
-    return f"evidence discarded: {reason}\n{rendered}" if reason else rendered
-
-
-def _endpoint_report_dirs(
-    located: LocatedJob | None = None, *, context: CallContext | None = None
-) -> tuple[Path, ...]:
-    """Return existing Flow and MCP endpoint report directories."""
-    if located is not None and located.record.binding is not None:
-        binding = _job_binding(located.record)
-        assert binding is not None
-        runtime_dir = record_paths(binding.project_dir, binding.record_id).runtime_dir
-    elif context is not None and context.runtime_dir is not None:
-        runtime_dir = context.runtime_dir
-    elif located is not None and located.root is not None:
-        runtime_dir = located.root.parent
-    else:
-        logs_dir = os.environ.get("BOOLEY_LOGS_DIR", "")
-        if not logs_dir:
-            return ()
-        runtime_env = os.environ.get("BOOLEY_RUNTIME_DIR", "")
-        runtime_dir = Path(runtime_env) if runtime_env else logs_runtime_dir(logs_dir)
-    candidates = (runtime_dir / "flow-reports", runtime_dir / "mcp-tool-reports")
-    return tuple(path for path in candidates if path.is_dir())
-
-
-def _read_report_json(path: Path) -> dict[str, Any] | None:
-    """Parse a report.json, logging (not raising) on malformed/unreadable."""
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as e:
-        logger.warning("Malformed report.json at %s: %s", path, e)
-        return None
-    except OSError as e:
-        logger.warning("Failed to read report.json at %s: %s", path, e)
-        return None
-
-
 def _latest_report(
     endpoint: str | None = None,
     *,
     located: LocatedJob | None = None,
     context: CallContext | None = None,
 ) -> dict[str, Any] | None:
-    """Read the most recent run report from disk.
-
-    With *endpoint* set, prefer that endpoint's flat ``<endpoint>.json`` (the latest copy
-    ``base.write_report`` refreshes each run), falling back to its newest
-    numbered ``<endpoint>/<N>/report.json``. Without *endpoint*, return the most recent
-    ``report.json`` across every endpoint (the inline dispatch behaviour).
-    """
-    report_dirs = _endpoint_report_dirs(located, context=context)
-    if not report_dirs:
-        return None
-
-    if endpoint:
-        flats = [reports / f"{endpoint}.json" for reports in report_dirs]
-        existing_flats = [path for path in flats if path.is_file()]
-        if existing_flats:
-            return _read_report_json(max(existing_flats, key=lambda path: path.stat().st_mtime))
-        numbered = sorted(
-            (
-                path
-                for reports in report_dirs
-                for path in reports.glob(f"{endpoint}/*/report.json")
-            ),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
-        return _read_report_json(numbered[0]) if numbered else None
-
-    latest: Path | None = None
-    latest_mtime = 0.0
-    for report_file in (path for reports in report_dirs for path in reports.rglob("report.json")):
-        mtime = report_file.stat().st_mtime
-        if mtime > latest_mtime:
-            latest_mtime = mtime
-            latest = report_file
-    return _read_report_json(latest) if latest else None
+    return _MCP_JOB_REPOSITORY.latest_report(endpoint, located=located, context=context)
 
 
 def _try_read_report() -> dict[str, Any] | None:
-    """Read the most recent report.json across all endpoints (inline dispatch)."""
-    return _latest_report(None)
+    return _latest_report()
 
 
 def _available_report_endpoints(*, context: CallContext | None = None) -> list[str]:
-    """Names of endpoints that have a flat report on disk."""
-    return sorted(
-        {
-            p.stem
-            for reports in _endpoint_report_dirs(context=context)
-            for p in reports.glob("*.json")
-        }
-    )
+    return job_results._available_report_endpoints(context=context)
 
 
 # ---------------------------------------------------------------------------
@@ -2365,7 +1393,7 @@ def _format_status_card(mcp_tool_names: list[str]) -> str:
     session_id = _interactive_session_id()
     mcp_tools_text = ", ".join(mcp_tool_names) if mcp_tool_names else "none"
     try:
-        from booley.harness.auto_doctor import current_summary
+        from booley.runtime.health_presentation import current_summary
 
         health = current_summary(Path.cwd())
     except Exception:  # noqa: BLE001 — status must survive corrupt/missing advisory state
@@ -2395,7 +1423,7 @@ def _prepend_changed_health_alert(content: McpToolContent) -> McpToolContent:
     if not _status_mcp_tool_visible():
         return content
     try:
-        from booley.harness.auto_doctor import consume_changed_summary
+        from booley.runtime.health_presentation import consume_changed_summary
 
         alert = consume_changed_summary(Path.cwd(), channel="mcp-tool", issues_only=True)
     except Exception:  # noqa: BLE001 — health reporting must never break a Booley Flow result
@@ -2608,54 +1636,13 @@ def _requested_poll_wait_seconds(arguments: dict[str, Any]) -> float:
     return float(min(max(seconds, 0), _POLL_WAIT_SECONDS_MAX))
 
 
-@dataclass(frozen=True)
-class LocatedJob:
-    """A durable Job and the exact root it was read from."""
-
-    record: jobrec.JobRecord
-    root: Path | None
-
-
 def job_roots() -> tuple[Path, ...]:
-    """Container jobs and every retained Goal Record, including terminal ones."""
-    roots = [container_jobs_root()]
-    store = project_goal_store()
-    if store is None:
-        return tuple(root for root in roots if root is not None)
-    roots.extend(
-        record_paths(store.project_dir, rec.id).jobs_dir for rec in store.list_records().records
-    )
-    return tuple(dict.fromkeys(root for root in roots if root is not None))
+    """Retained roots resolved by the durable Job owner."""
+    return job_results.job_roots(container_root=container_jobs_root)
 
 
 def _locate_job(run_id: str) -> LocatedJob | None:
-    """Find a unique run across roots; refuse even legacy collisions."""
-    roots: list[Path | None] = list(job_roots())
-    if run_id in _KNOWN_JOB_ROOTS and _KNOWN_JOB_ROOTS[run_id] not in roots:
-        roots.insert(0, _KNOWN_JOB_ROOTS[run_id])
-    found = [
-        LocatedJob(rec, root)
-        for root in roots
-        if (rec := jobrec.read_record(run_id, root=root)) is not None
-    ]
-    if len(found) > 1:
-        raise jobrec.JobRecordError(f"Ambiguous run_id {run_id!r}: present in multiple job roots")
-    if found:
-        _job_binding(found[0].record)
-    return found[0] if found else None
-
-
-_KNOWN_JOB_ROOTS: dict[str, Path | None] = {}
-
-
-def _job_binding(rec: jobrec.JobRecord) -> GoalRunBinding | None:
-    """Interpret a persisted Goal binding at the MCP composition boundary."""
-    if rec.binding is None:
-        return None
-    try:
-        return GoalRunBinding.from_json(rec.binding)
-    except GoalBindingError as exc:
-        raise jobrec.JobRecordError(f"Malformed Goal binding for Job {rec.run_id}: {exc}") from exc
+    return job_results._locate_job(run_id, roots=job_roots())
 
 
 def _job_record(run_id: str) -> jobrec.JobRecord | None:
@@ -2664,24 +1651,7 @@ def _job_record(run_id: str) -> jobrec.JobRecord | None:
 
 
 def _job_phase(run_id: str) -> str:
-    """Admission phase of a detached job: "RUNNING" or "QUEUED (position N)".
-
-    Derived from the child's own slot-store claim (ADR 0028): a waiter entry
-    means the child process is alive but idling for its class slot. Position
-    is 1-based for humans. Falls back to RUNNING when the store or claim is
-    unreadable — over-claiming "queued" would stall agents that should poll.
-    """
-    rec = _job_record(run_id)
-    root = job_slots.slots_dir()
-    if rec is None or rec.pid is None or root is None:
-        return "RUNNING"
-    try:
-        state = job_slots.SlotStore(root).state_for_pid(rec.pid)
-    except OSError:
-        return "RUNNING"
-    if state is not None and state.state == job_slots.QUEUED:
-        return f"QUEUED (position {(state.position or 0) + 1})"
-    return "RUNNING"
+    return _MCP_JOB_REPOSITORY.phase(run_id)
 
 
 def _format_job_attached(name: str, run_id: str) -> str:
@@ -2734,14 +1704,7 @@ def _format_job_running_poll(run_id: str) -> str:
 
 
 def _running_progress(run_id: str) -> dict[str, Any] | None:
-    """Return only this live job's run-scoped nonterminal checkpoint."""
-    rec = _job_record(run_id)
-    if rec is None:
-        return None
-    progress = _progress_for_run_id(rec.endpoint, rec.run_id)
-    if progress is None or progress.get("complete") is True:
-        return None
-    return progress
+    return _MCP_JOB_REPOSITORY.progress(run_id)
 
 
 def _running_poll_content(run_id: str) -> McpToolContent:
@@ -2755,507 +1718,63 @@ def _running_poll_content(run_id: str) -> McpToolContent:
     )
 
 
-def _report_for_run_id(endpoint: str, run_id: str) -> dict[str, Any] | None:
-    """Scan an endpoint's numbered report dirs for *run_id*'s report.
-
-    Fallback when the flat ``<endpoint>.json`` belongs to a different run.
-    """
-    reports = _endpoint_report_dirs(_locate_job(run_id))
-    if not reports:
-        return None
-    numbered = sorted(
-        (path for root in reports for path in root.glob(f"{endpoint}/*/report.json")),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
-    for path in numbered:
-        report = _read_report_json(path)
-        if report is not None and report.get("run_id") == run_id:
-            return report
-    return None
-
-
-def _progress_for_run_id(endpoint: str, run_id: str) -> dict[str, Any] | None:
-    """Newest run-scoped checkpoint when a killed matrix has no final report."""
-    reports = _endpoint_report_dirs(_locate_job(run_id))
-    if not reports:
-        return None
-    found = read_progress_for_run(reports, endpoint, run_id)
-    if found is None:
-        return None
-    _path, report = found
-    pending = report.get("pending_targets")
-    report["partial"] = report.get("phase") != "complete" or bool(pending)
-    return report
-
-
 def _job_report(rec: jobrec.JobRecord | None) -> tuple[dict[str, Any] | None, bool]:
-    """The report belonging to *rec*'s run, plus whether it provably is.
-
-    Returns ``(report, fresh)``. Identity first: a report stamped with a
-    ``run_id`` (written by the child from ``BOOLEY_RUN_ID``) either matches
-    the job — proof, ``fresh=True`` — or names a different concurrent run of
-    the same endpoint, in which case the numbered invocation dirs are scanned for
-    ours and the mismatched flat copy is never shown under this job's
-    EXIT_CODE. Time-window gating survives only for legacy reports with no
-    ``run_id``: the report's ``timestamp`` must fall inside
-    ``[started_at, run_start + timeout_s + slack]``, where ``run_start`` is
-    the observed ``run_started_at`` when the record has one — a job that
-    queued past its own budget (ADR 0028) still writes its report inside the
-    window. When a stamp is missing/unparseable we cannot judge: the report
-    is kept (matching the pre-ADR-0027 attach behaviour) but never counts as
-    fresh, so it can be shown yet never *vouches* for the run's outcome.
-    """
-    if rec is None:
-        report = _latest_report()
-        if report is None:
-            return None, False
-        return report, False
-
-    # Prefer identity-stamped invocation artifacts before consulting the
-    # last-writer-wins flat copy.  In particular, an old legacy flat report
-    # must not hide this run's durable progress checkpoint after a worker dies.
-    report = _report_for_run_id(rec.endpoint, rec.run_id)
-    if report is None:
-        report = _progress_for_run_id(rec.endpoint, rec.run_id)
-    if report is not None:
-        return report, True
-
-    report = _latest_report(rec.endpoint, located=_locate_job(rec.run_id))
-    if report is None:
-        return None, False
-
-    report_run_id = report.get("run_id")
-    if isinstance(report_run_id, str) and report_run_id:
-        return (report, True) if report_run_id == rec.run_id else (None, False)
-    return _gate_report_by_window(rec, report)
+    return job_results._job_report(rec, repository=_MCP_JOB_REPOSITORY)
 
 
-def _gate_report_by_window(
-    rec: jobrec.JobRecord,
-    report: dict[str, Any],
-) -> tuple[dict[str, Any] | None, bool]:
-    """Legacy freshness gate for reports with no ``run_id`` (see _job_report)."""
-    report_ts = jobrec.parse_stamp(report.get("timestamp"))
-    started_ts = jobrec.parse_stamp(rec.started_at)
-    if report_ts is None or started_ts is None:
-        return report, False
-    if report_ts < started_ts:
-        return None, False
-    run_start_ts = jobrec.parse_stamp(rec.run_started_at) or started_ts
-    if isinstance(rec.timeout_s, (int, float)) and (
-        report_ts > run_start_ts + rec.timeout_s + jobrec.DEADLINE_SLACK_SECONDS
-    ):
-        return None, False
-    return report, True
+class _McpJobRepository(job_results.JobRepository):
+    """Wire the adapter's existing private substitution points to shared lookup."""
 
+    def roots(self) -> tuple[Path, ...]:
+        return job_roots()
 
-class _JobManager:
-    """In-process registry for detached endpoint jobs. Narrates; never enforces.
+    def locate(self, run_id: str) -> LocatedJob | None:
+        return _locate_job(run_id)
 
-    Admission moved out of this class (ADR 0028): the spawned endpoint child
-    claims its own slot in the shared on-disk store (``booley.runtime.job_slots``)
-    from inside ``McpTool.main``, so concurrency is governed identically for MCP
-    dispatch, Developer Agents, Specialists, and bare CLI invocations — this
-    server included. A submit therefore always spawns the child immediately;
-    a child over its class cap idles in the queue (a live process holding its
-    claim — the cost ADR 0028 accepts for PID-native claim identity), and
-    submit/poll render QUEUED/RUNNING/result from the claim + record state.
-    """
-
-    def __init__(self, lifetime: _McpLifetime) -> None:
-        self._lifetime = lifetime
-        # run_id -> jobs root from the call context that started the job. A
-        # job keeps writing there even if the server environment changes.
-        self._job_roots: dict[str, Path | None] = {}
-        self._tasks: dict[str, asyncio.Task[None]] = {}
-        self._cancel_requested: set[str] = set()
-        # run_id -> (exit_code, stdout, stderr, timed_out) once finished.
-        self._results: dict[str, tuple[int, str, str, bool]] = {}
-        self._counter = 0
-
-    def _record_root(self, run_id: str) -> Path | None:
-        """Root for *run_id*'s record writes: pinned at start, else the container root."""
-        if run_id in self._job_roots:
-            return self._job_roots[run_id]
-        located = _locate_job(run_id)
-        return None if located is None else located.root
-
-    def _write_root(self, rec: jobrec.JobRecord) -> Path | None:
-        """Use the admitted binding for every Goal write, including completion."""
-        binding = _job_binding(rec)
-        if binding is not None:
-            return record_paths(binding.project_dir, binding.record_id).jobs_dir
-        return self._record_root(rec.run_id)
-
-    def _read_run(self, run_id: str) -> jobrec.JobRecord | None:
-        """Read *run_id*'s record where it is written: the pinned root, else ``_locate_job``."""
-        if run_id in self._job_roots:
-            return jobrec.read_record(run_id, root=self._job_roots[run_id])
+    def record(self, run_id: str) -> jobrec.JobRecord | None:
         return _job_record(run_id)
 
-    def _next_run_id(self, endpoint: str) -> str:
-        self._counter += 1
-        stamp = compact_utc_now()
-        return jobrec.make_run_id(endpoint, stamp, self._counter)
+    def report_dirs(
+        self, located: LocatedJob | None = None, *, context: CallContext | None = None
+    ) -> tuple[Path, ...]:
+        return _endpoint_report_dirs(located, context=context)
 
-    def _new_record(
-        self,
-        run_id: str,
-        name: str,
-        cmd: list[str],
-        timeout: int,
-    ) -> jobrec.JobRecord:
-        from booley.runtime.execution_lease import current_lease_id
 
-        return jobrec.JobRecord(
-            run_id=run_id,
-            endpoint=name,
-            started_at=utc_now_rfc3339(),
-            timeout_s=timeout,
-            argv=cmd,
-            lease_id=current_lease_id(),
-            display_scope=DisplayScope.current(),
-        )
+_MCP_JOB_REPOSITORY = _McpJobRepository()
+
+
+class _JobManager(JobLifecycle):
+    """MCP composition adapter; all lifecycle decisions belong to JobLifecycle."""
+
+    _repository = _MCP_JOB_REPOSITORY
 
     @staticmethod
-    def _stamp_context(rec: jobrec.JobRecord, context: CallContext) -> None:
-        rec.work_dir = (
-            str(context.work_dir)
-            if context.binding
-            else (str(context.explicit_work_dir) if context.explicit_work_dir else None)
-        )
-        rec.session_key = context.session_key
-        rec.binding = None if context.binding is None else context.binding.to_json()
-
-    def _stamp_pid(self, rec: jobrec.JobRecord, pid: int) -> None:
-        rec.pid = pid
-        from booley.runtime.pid import capture_process_identity
-
-        # The Dashboard observes Linux /proc; optional identity must not block on host ps.
-        identity = capture_process_identity(pid) if sys.platform == "linux" else None
-        rec.process_identity = None if identity is None else identity.to_payload()
-        jobrec.write_record(rec, root=self._write_root(rec))
-
-    def _child_is_queued(self, rec: jobrec.JobRecord) -> bool:
-        if rec.pid is None:
-            return False
-        root = job_slots.slots_dir()
-        if root is None:
-            return False
-        try:
-            state = job_slots.SlotStore(root).state_for_pid(rec.pid)
-        except OSError:
-            return False
-        return state is not None and state.state == job_slots.QUEUED
-
-    def _stamp_run_started(self, rec: jobrec.JobRecord) -> None:
-        rec.run_started_at = utc_now_rfc3339()
-        jobrec.write_record(rec, root=self._write_root(rec))
-
-    def _record_terminal(
-        self,
-        rec: jobrec.JobRecord,
-        exit_code: int,
-        *,
-        timed_out: bool,
-    ) -> None:
-        repair_progress_after_reap(
-            _endpoint_report_dirs(_locate_job(rec.run_id)), rec.endpoint, rec.run_id
-        )
-        rec.status = jobrec.terminal_status(exit_code, timed_out)
-        rec.exit_code = exit_code
-        rec.ended_at = utc_now_rfc3339()
-        jobrec.write_record(rec, root=self._write_root(rec))
+    def _is_alive(process_id: int) -> bool:
+        return is_pid_alive(process_id)
 
     @staticmethod
-    def _display_identity(rec: jobrec.JobRecord) -> DisplayIdentity:
-        return DisplayIdentity(rec.run_id, rec.display_scope)
+    async def _run_process(cmd: list[str], **kwargs: Any) -> tuple[int, str, str, bool]:
+        return await _run_subprocess(cmd, **kwargs)
 
-    def _forget_synchronous(self, rec: jobrec.JobRecord) -> None:
-        """Drop a finished inline run's record and its pinned root."""
-        jobrec.delete_record(rec.run_id, root=self._write_root(rec))
-        self._job_roots.pop(rec.run_id, None)
+    @staticmethod
+    def _write_end(name: str, duration_s: int, **kwargs: Any) -> None:
+        _write_synthetic_endpoint_end(name, duration_s, **kwargs)
 
-    def _abort_synchronous(self, rec: jobrec.JobRecord) -> None:
-        self._record_terminal(rec, 2, timed_out=False)
-        _write_synthetic_endpoint_end(
-            rec.endpoint,
-            0,
-            identity=self._display_identity(rec),
-            outcome="aborted",
-        )
-        self._forget_synchronous(rec)
+    @staticmethod
+    async def _cancel_process(pid: int) -> None:
+        await _cancel_adopted_process_group(pid)
 
-    def submit(
-        self,
-        name: str,
-        cmd: list[str],
-        timeout: int,
-        *,
-        context: CallContext,
-    ) -> str:
-        """Spawn *cmd* as a detached background job and return its run_id.
-
-        Always spawns: admission (queue or run) is the child's own slot-store
-        claim, not this server's decision. The record lives under the call
-        context's jobs root.
-        """
-        run_id = context.binding.invocation_id if context.binding else self._next_run_id(name)
-        rec = self._new_record(run_id, name, cmd, timeout)
-        self._stamp_context(rec, context)
-        self._job_roots[run_id] = context.jobs_root
-        _KNOWN_JOB_ROOTS[run_id] = context.jobs_root
-        jobrec.write_record(rec, root=self._write_root(rec))
-        # The submit CALL returns in seconds (mark_mcp_endpoint_end fires then), so hold
-        # the lifetime busy independently or the server idle-exits mid-run.
-        self._lifetime.mark_mcp_endpoint_start()
-        self._tasks[run_id] = asyncio.create_task(
-            self._run_and_record(run_id, name, cmd, timeout, rec, context),
-        )
-        return run_id
-
-    async def run_synchronous(
-        self,
-        name: str,
-        cmd: list[str],
-        timeout: int,
-        *,
-        context: CallContext,
-    ) -> tuple[int, str, str, bool]:
-        """Run an inline endpoint while publishing bounded status state."""
-        rec = self._new_record(
-            context.binding.invocation_id if context.binding else uuid.uuid4().hex,
-            name,
-            cmd,
-            timeout,
-        )
-        self._stamp_context(rec, context)
-        self._job_roots[rec.run_id] = context.jobs_root
-        _KNOWN_JOB_ROOTS[rec.run_id] = context.jobs_root
-        jobrec.write_record(rec, root=self._write_root(rec))
-        try:
-            result = await _run_subprocess(
-                cmd,
-                timeout=timeout,
-                on_spawn=lambda pid: self._stamp_pid(rec, pid),
-                env=_endpoint_subprocess_env(
-                    context,
-                    pytest_scope=name,
-                    BOOLEY_RUN_ID=rec.run_id,
-                    BOOLEY_DISPLAY_INVOCATION_ID=rec.run_id,
-                    BOOLEY_SLOT_TIMEOUT_S=str(timeout),
-                ),
-                is_queued=lambda: self._child_is_queued(rec),
-                on_first_active=lambda: self._stamp_run_started(rec),
-            )
-        except asyncio.CancelledError:
-            self._abort_synchronous(rec)
-            raise
-        except Exception:
-            self._abort_synchronous(rec)
-            raise
-        exit_code, _stdout, _stderr, timed_out = result
-        if timed_out:
-            _write_synthetic_endpoint_end(
-                name,
-                timeout,
-                identity=self._display_identity(rec),
-            )
-        self._record_terminal(rec, exit_code, timed_out=timed_out)
-        self._forget_synchronous(rec)
-        return result
-
-    async def _run_and_record(
-        self,
-        run_id: str,
-        name: str,
-        cmd: list[str],
-        timeout: int,
-        rec: jobrec.JobRecord,
-        context: CallContext,
-    ) -> None:
-        """Run the subprocess to completion and persist the terminal outcome."""
-        try:
-            exit_code, stdout, stderr, timed_out = await _run_subprocess(
-                cmd,
-                timeout=timeout,
-                on_spawn=lambda pid: self._stamp_pid(rec, pid),
-                # BOOLEY_RUN_ID lets the child stamp its report with the job
-                # identity (poll-side attribution); BOOLEY_SLOT_TIMEOUT_S
-                # carries the real watchdog budget to the child's slot claim
-                # so the holder-deadline reap has a sound anchor.
-                env=_endpoint_subprocess_env(
-                    context,
-                    pytest_scope=name,
-                    BOOLEY_RUN_ID=run_id,
-                    BOOLEY_SLOT_TIMEOUT_S=str(timeout),
-                ),
-                is_queued=lambda: self._child_is_queued(rec),
-                on_first_active=lambda: self._stamp_run_started(rec),
-            )
-            if timed_out:
-                _write_synthetic_endpoint_end(
-                    name,
-                    timeout,
-                    identity=self._display_identity(rec),
-                )
-            self._results[run_id] = (exit_code, stdout, stderr, timed_out)
-            self._record_terminal(rec, exit_code, timed_out=timed_out)
-        except asyncio.CancelledError:
-            if run_id not in self._cancel_requested:
-                _write_synthetic_endpoint_end(
-                    name,
-                    0,
-                    identity=self._display_identity(rec),
-                    outcome="aborted",
-                )
-                raise
-            self._record_user_cancellation(rec)
-        finally:
-            self._lifetime.mark_mcp_endpoint_end()
-
-    def _record_user_cancellation(self, rec: jobrec.JobRecord) -> None:
-        repair_progress_after_reap(
-            _endpoint_report_dirs(_locate_job(rec.run_id)), rec.endpoint, rec.run_id
-        )
-        rec.status = jobrec.STATUS_CANCELLED
-        rec.exit_code = 130
-        rec.ended_at = utc_now_rfc3339()
-        self._results[rec.run_id] = (
-            130,
-            "",
-            f"CANCELLED: job {rec.run_id} was stopped by request.",
-            False,
-        )
-        jobrec.write_record(rec, root=self._write_root(rec))
-        _write_synthetic_endpoint_end(
-            rec.endpoint,
-            0,
-            identity=self._display_identity(rec),
-            outcome="cancelled",
-        )
-
-    def _adopt_report_outcome(self, rec: jobrec.JobRecord) -> bool:
-        report, report_fresh = _job_report(rec)
-        report_exit = report.get("exit_code") if report_fresh and report else None
-        if not isinstance(report_exit, int):
-            return False
-        self._record_terminal(rec, report_exit, timed_out=False)
-        return True
-
-    def _cancel_waiter(self, rec: jobrec.JobRecord) -> bool:
-        root = job_slots.slots_dir()
-        if rec.pid is None or root is None:
-            return False
-        try:
-            return job_slots.SlotStore(root).cancel_waiter(rec.pid)
-        except OSError:
-            return False
-
-    async def _cancel_tracked_task(
-        self,
-        run_id: str,
-        task: asyncio.Task[None],
-    ) -> None:
-        if task.done():
-            return
-        self._cancel_requested.add(run_id)
-        if not task.cancel():
-            return
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
-
-    async def _cancel_adopted_job(self, rec: jobrec.JobRecord) -> None:
-        if self._adopt_report_outcome(rec):
-            return
-        if rec.pid is not None and not is_pid_alive(rec.pid):
-            self._record_terminal(rec, 2, timed_out=False)
-            return
-        if rec.pid is not None:
-            await _cancel_adopted_process_group(rec.pid)
-            if self._adopt_report_outcome(rec):
-                return
-        self._record_user_cancellation(rec)
-
-    async def cancel(self, run_id: str) -> str | None:
-        """Cancel a queued or running job; return its former phase.
-
-        In-process jobs cancel their supervising task, which terminates the
-        process tree before recording the outcome. Adopted jobs retain RUNNING
-        state until termination and fresh-report reconciliation complete.
-        """
-        rec = self._read_run(run_id)
-        if rec is None:
-            return None
-
-        if jobrec.derive_status(rec, is_pid_alive) != jobrec.STATUS_RUNNING:
-            return "finished"
-
-        was_queued = self._cancel_waiter(rec)
-        task = self._tasks.get(run_id)
-        if task is not None:
-            await self._cancel_tracked_task(run_id, task)
-        else:
-            await self._cancel_adopted_job(rec)
-        final = self._read_run(run_id)
-        if final is None or final.status != jobrec.STATUS_CANCELLED:
-            return "finished"
-        return "queued" if was_queued else "running"
-
-    async def wait(self, run_id: str, timeout: float) -> bool | None:
-        """Wait up to *timeout* seconds for a tracked job.
-
-        Returns True (finished), False (still running), or None when *run_id* is
-        not tracked in this server process (caller falls back to the durable
-        disk record). ``asyncio.wait`` never cancels the task on timeout, so a
-        poll that gives up leaves the job running.
-        """
-        task = self._tasks.get(run_id)
-        if task is None:
-            return None
-        if not task.done() and timeout > 0:
-            await asyncio.wait({task}, timeout=timeout)
-        return task.done()
-
-    def _result_parts(
-        self,
-        run_id: str,
-    ) -> tuple[int, str, str, dict[str, Any] | None, bool]:
-        """Resolve one terminal Job into authoritative rendering inputs."""
-        rec = self._read_run(run_id)
-        report, report_fresh = _job_report(rec)
-        finished = self._results.get(run_id)
-        if finished is not None:
-            exit_code, stdout, stderr, _timed_out = finished
-            return exit_code, stdout, stderr, report, report_fresh
-        if rec is not None and rec.status == jobrec.STATUS_CANCELLED:
-            return (
-                130,
-                "",
-                f"CANCELLED: job {run_id} was stopped by request.",
-                report,
-                report_fresh,
-            )
-        # Terminal-from-disk (server restarted): no captured stdout/stderr.
-        exit_code = rec.exit_code if rec and rec.exit_code is not None else None
-        if exit_code is None and report_fresh and isinstance(report.get("exit_code"), int):
-            # Orphan rescue: the run itself finished and wrote this job's
-            # report — only the server died before recording the outcome.
-            # Trust the report's exit code over a blanket failure, so a
-            # passing sim that outlived a SIGKILLed server still reads as a
-            # pass instead of "EXIT_CODE: 2" with a passing report below it.
-            exit_code = report["exit_code"]
-        if exit_code is None:
-            exit_code = 2
-        return exit_code, "", "", report, report_fresh
+    def _report(self, rec: jobrec.JobRecord | None) -> tuple[dict[str, Any] | None, bool]:
+        return _job_report(rec)
 
     def result_text(self, run_id: str) -> str:
         """Render a finished job's result exactly like the synchronous path."""
-        exit_code, stdout, stderr, report, _report_fresh = self._result_parts(run_id)
-        return _format_mcp_tool_result(exit_code, stdout, stderr, report)
+        result = self.terminal_result(run_id)
+        return _format_mcp_tool_result(
+            result.exit_code, result.stdout, result.stderr, result.report
+        )
 
-    def result_content(self, run_id: str) -> McpToolContent:
+    def result_content(self, run_id: str, *, result: JobResult | None = None) -> McpToolContent:
         """``result_text`` as MCP content, with structuredContent attached.
 
         Only a *fresh* report (one that provably belongs to this run, see
@@ -3263,7 +1782,14 @@ class _JobManager:
         the run's outcome, unlike the text card, which may show a non-fresh
         report with its caveats spelled out.
         """
-        exit_code, stdout, stderr, report, report_fresh = self._result_parts(run_id)
+        result = result or self.terminal_result(run_id)
+        exit_code, stdout, stderr, report, report_fresh = (
+            result.exit_code,
+            result.stdout,
+            result.stderr,
+            result.report,
+            result.report_fresh,
+        )
         content = [
             TextContent(
                 type="text",
@@ -3282,7 +1808,7 @@ class _JobManager:
 
 # Re-check cadence while long-polling a disk-only (adopted) job. Each check
 # is a couple of small file reads; 5s keeps the answer prompt without churn.
-_DISK_POLL_TICK_SECONDS = 5.0
+_DISK_POLL_TICK_SECONDS = job_lifecycle._DISK_POLL_TICK_SECONDS
 
 
 async def _poll_from_disk(
@@ -3290,55 +1816,37 @@ async def _poll_from_disk(
     jobs: _JobManager,
     wait_seconds: float = 0.0,
 ) -> McpToolContent:
-    """Resolve a poll for a job not tracked in this server, from the disk record.
-
-    Honors the long-poll budget: an adopted job (submitted by a previous
-    server generation) has no in-memory task for ``jobs.wait`` to block on,
-    so without this loop every poll after a server restart returned RUNNING
-    instantly — degrading the agent's one blocking call back into the chatty
-    poll-loop the long-poll exists to kill. Re-derives status from the record
-    each tick until terminal or out of budget.
-    """
-    deadline = time.monotonic() + max(0.0, wait_seconds)
-    while True:
-        rec = _job_record(run_id)
-        if rec is None:
-            return _error_result(
-                f"Unknown run_id {run_id!r}. It may belong to a different project "
-                f"run, or the job record has been cleaned up."
-            )
-        status = jobrec.derive_status(rec, is_pid_alive)
-        if status != jobrec.STATUS_RUNNING:
-            return jobs.result_content(run_id)
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            return _running_poll_content(run_id)
-        await asyncio.sleep(min(_DISK_POLL_TICK_SECONDS, remaining))
+    """Compose an adopted Job's SDK-independent poll outcome."""
+    state = await jobs.poll_from_disk(run_id, wait_seconds, disk_tick=_DISK_POLL_TICK_SECONDS)
+    return _render_job_poll(state, jobs)
 
 
-async def _dispatch_poll_impl(
-    arguments: dict[str, Any],
-    jobs: _JobManager,
-) -> McpToolContent:
-    """Handle the synthetic poll MCP tool: wait briefly, return status or result.
+def _render_job_poll(state: JobPoll, jobs: _JobManager) -> McpToolContent:
+    if state.status == "unknown":
+        return _error_result(
+            f"Unknown run_id {state.run_id!r}. It may belong to a different project "
+            f"run, or the job record has been cleaned up."
+        )
+    if state.status == "finished":
+        return jobs.result_content(state.run_id, result=state.result)
+    return _running_poll_content(state.run_id)
 
-    Long-poll: 'wait_seconds' bounds how long this call blocks for a running
-    job — the same ``jobs.wait`` mechanism the submit-side inline wait uses,
-    just with a caller-chosen budget (see _requested_poll_wait_seconds).
-    """
+
+async def _dispatch_poll_impl(arguments: dict[str, Any], jobs: _JobManager) -> McpToolContent:
+    """Validate wire inputs and compose the lifecycle's bounded poll outcome."""
     raw = arguments.get("run_id")
     run_id = raw.strip() if isinstance(raw, str) else ""
     if not run_id:
         return _error_result("Provide a 'run_id' (returned by an endpoint that reported RUNNING).")
-    wait_budget = _requested_poll_wait_seconds(arguments)
-    finished = await jobs.wait(run_id, wait_budget)
-    if finished is None:
-        # Not tracked here (previous server generation): long-poll the durable
-        # record with the same budget instead of answering instantly.
-        return await _poll_from_disk(run_id, jobs, wait_budget)
-    if finished:
-        return jobs.result_content(run_id)
-    return _running_poll_content(run_id)
+    state = await _poll_status(
+        run_id,
+        _requested_poll_wait_seconds(arguments),
+        jobs.wait,
+        _MCP_JOB_REPOSITORY,
+        is_pid_alive,
+        disk_tick=_DISK_POLL_TICK_SECONDS,
+    )
+    return _render_job_poll(state, jobs)
 
 
 async def _dispatch_sleep(arguments: dict[str, Any]) -> list[TextContent]:
@@ -3409,11 +1917,8 @@ async def _dispatch_sleep(arguments: dict[str, Any]) -> list[TextContent]:
 
 
 async def _cancel_adopted_process_group(pid: int) -> None:
-    """Cancel a disk-only job by its session-leader PID."""
-    await terminate_adopted_process_group(
-        ProcessGroup(pid),
-        grace_seconds=_CANCEL_GRACE_SECONDS,
-    )
+    """Delegate disk-only process-group cancellation."""
+    await endpoint_process._cancel_adopted_process_group(pid, grace_seconds=_CANCEL_GRACE_SECONDS)
 
 
 async def _dispatch_cancel_impl(
@@ -3425,11 +1930,10 @@ async def _dispatch_cancel_impl(
     run_id = raw.strip() if isinstance(raw, str) else ""
     if not run_id:
         return [TextContent(type="text", text="Provide the 'run_id' of a queued job.")]
-    rec = _job_record(run_id)
-    if rec is None:
+    phase = await jobs.cancel(run_id)
+    if phase is None:
         return [TextContent(type="text", text=f"Unknown run_id {run_id!r}.")]
-
-    if jobrec.derive_status(rec, is_pid_alive) != jobrec.STATUS_RUNNING:
+    if phase == "already_finished":
         return [
             TextContent(
                 type="text",
@@ -3437,10 +1941,6 @@ async def _dispatch_cancel_impl(
                 f"Fetch its result with '{_POLL_MCP_TOOL_NAME}'.",
             )
         ]
-
-    phase = await jobs.cancel(run_id)
-    if phase is None:
-        return [TextContent(type="text", text=f"Unknown run_id {run_id!r}.")]
     if phase == "finished":
         return [
             TextContent(
@@ -3470,119 +1970,37 @@ async def _dispatch_async_job(
     *,
     context: CallContext,
 ) -> McpToolContent:
-    """Submit a heavy endpoint as a background job; wait inline, else hand back a run_id.
-
-    Idempotent attach: a re-submit whose endpoint + argv exactly match a live
-    job — running **or queued** for its slot (ADR 0028) — joins that job
-    instead of spawning a duplicate. A duplicate submit is almost always an
-    agent that lost the first call's handle (client-side timeout, truncated
-    context) retrying; spawning again would relaunch a multi-minute EDA run
-    (or double-queue it). Live attach only; a *finished* identical job is
-    never replayed, since the workspace (RTL under edit) may have changed.
-
-    No admission here: the spawned child claims its own slot (McpTool.main) and
-    idles in queue when its class is at cap. BLOCKED survives only as the
-    child's queue-full refusal, which comes back through the normal result
-    path.
-    """
+    """Compose inline completion or a background handoff from the lifecycle."""
     try:
-        attach = _find_attachable_job(name, cmd, context=context)
+        submission = await jobs.submit_and_wait(
+            name, cmd, mcp_tool_timeout, context=context, wait_seconds=_job_inline_wait_seconds()
+        )
     except jobrec.JobRecordError as exc:
         return _error_result(str(exc))
-    if attach is not None:
-        return await _attach_to_job(name, attach, jobs)
-    run_id = jobs.submit(name, cmd, mcp_tool_timeout, context=context)
-    finished = await jobs.wait(run_id, _job_inline_wait_seconds())
-    if finished:
-        return jobs.result_content(run_id)
-    return _with_structured_report(
-        [TextContent(type="text", text=_format_job_running(name, run_id))],
-        _running_progress(run_id),
+    state = submission.poll
+    if state.status != "running" or (submission.attached and not state.tracked):
+        return _render_job_poll(state, jobs)
+    text = (
+        _format_job_attached(name, state.run_id)
+        if submission.attached
+        else _format_job_running(name, state.run_id)
     )
-
-
-def _strip_transcript_dir(argv: list[str]) -> list[str]:
-    """*argv* minus any ``--transcript-dir <path>`` pair.
-
-    The dispatch layer appends a per-call numbered transcript dir to every
-    specialist invocation, so two submits of the SAME logical call never have
-    equal raw argv — comparing without it is what makes idempotent attach
-    reachable for specialists at all (the endpoints whose duplicate submits
-    each burn a full LLM sub-agent run). Comparison only: records keep the
-    full argv, which the /proc identity guards need verbatim.
-    """
-    out: list[str] = []
-    skip_next = False
-    for arg in argv:
-        if skip_next:
-            skip_next = False
-            continue
-        if arg == "--transcript-dir":
-            skip_next = True
-            continue
-        out.append(arg)
-    return out
+    return _with_structured_report(
+        [TextContent(type="text", text=text)], _running_progress(state.run_id)
+    )
 
 
 def _find_attachable_job(
     name: str, cmd: list[str], *, context: CallContext | None = None
 ) -> str | None:
-    """run_id of a live (running or queued) job matching endpoint + argv, or None.
-
-    Scans the durable records rather than any in-process slot: the identical
-    job may have been submitted by a previous server generation. Liveness is
-    judged by ``derive_status`` (PID + deadline + argv identity), so a stale
-    record cannot capture the new submit. Argv is compared modulo the
-    per-call ``--transcript-dir`` (see ``_strip_transcript_dir``).
-    """
-    wanted = _strip_transcript_dir(cmd)
-    newest: jobrec.JobRecord | None = None
-    for rec in (rec for root in job_roots() for rec in jobrec.list_records(root=root)):
-        wanted_binding = (
-            None if context is None or context.binding is None else context.binding.to_json()
-        )
-        if _attach_binding_key(rec.binding) != _attach_binding_key(wanted_binding):
-            continue
-        if rec.endpoint != name or _strip_transcript_dir(rec.argv) != wanted:
-            continue
-        if rec.status != jobrec.STATUS_RUNNING:
-            continue
-        if not jobrec.is_active(rec, is_pid_alive):
-            continue
-        # started_at is a fixed-width ISO stamp: string order == time order.
-        if newest is None or rec.started_at > newest.started_at:
-            newest = rec
-    return newest.run_id if newest is not None else None
+    return job_results._find_attachable_job(name, cmd, context=context, roots=job_roots())
 
 
-def _attach_binding_key(binding: dict[str, Any] | None) -> dict[str, Any] | None:
-    if binding is None:
-        return None
-    try:
-        validated = GoalRunBinding.from_json(binding).to_json()
-    except GoalBindingError as exc:
-        raise jobrec.JobRecordError(f"Malformed Goal Job binding: {exc}") from exc
-    return {
-        key: value
-        for key, value in validated.items()
-        if key not in {"invocation_id", "record_revision"}
-    }
-
-
-async def _attach_to_job(
-    name: str,
-    run_id: str,
-    jobs: _JobManager,
-) -> McpToolContent:
-    """Resolve a duplicate submit against the identical live job."""
-    inline_wait = _job_inline_wait_seconds()
-    finished = await jobs.wait(run_id, inline_wait)
-    if finished is None:
-        # Adopted job (no in-memory task): long-poll the durable record with
-        # the same inline budget a fresh submit would have waited.
-        return await _poll_from_disk(run_id, jobs, inline_wait)
-    if finished:
-        return jobs.result_content(run_id)
+async def _attach_to_job(name: str, run_id: str, jobs: _JobManager) -> McpToolContent:
+    """Compose an attached live Job after the lifecycle's inline wait."""
+    state = await jobs.poll(run_id, _job_inline_wait_seconds(), disk_tick=_DISK_POLL_TICK_SECONDS)
+    if state.status != "running" or not state.tracked:
+        return _render_job_poll(state, jobs)
     return _with_structured_report(
         [TextContent(type="text", text=_format_job_attached(name, run_id))],
         _running_progress(run_id),

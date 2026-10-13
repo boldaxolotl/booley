@@ -332,6 +332,11 @@ def test_full_contract_readiness_records_resolved_targets_and_preserves_harmless
         spec.key: f"ci:demo:fixture:0#{spec.target}" for spec in specs
     }
     assert set(result["goals"].values()) == {"unmet"}
+    from release_validation.goal_readiness import validate as validate_readiness
+
+    evidence_path = readiness_workspace.primary / "goal-readiness.json"
+    driver.write_evidence(evidence_path, result)
+    validate_readiness(Path(".github/contracts/picorv32-demo.toml"), evidence_path)
     assert result["steps"]["goal_enter"]["warnings"] == ["Harmless advisory"]
 
 

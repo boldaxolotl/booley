@@ -224,6 +224,67 @@ def test_visible_cli_help_describes_current_version() -> None:
     assert not failures, "\n".join(failures)
 
 
+def test_public_documents_and_help_use_canonical_developer_agent_term() -> None:
+    rejected = re.compile(
+        r"\b(?:coding|host|main|outer)\s+agents?\b|the\s+agent\s+session\s+in\s+Goal\s+Mode",
+        re.IGNORECASE,
+    )
+    documents = {
+        path.relative_to(ROOT).as_posix(): path.read_text(encoding="utf-8")
+        for path in document_paths(ROOT)
+    }
+    documents.update(cli_help())
+    failures = []
+    for name, text in documents.items():
+        prose = "\n".join(line for line in text.splitlines() if not line.startswith("_Avoid_"))
+        if name == "docs/user/USAGE.md":
+            # The maintainer retained this generic introduction, not a Booley actor synonym.
+            introduction = "You don't need any experience\nwith AI coding agents to follow it."
+            assert prose.count(introduction) == 1
+            prose = prose.replace(introduction, "", 1)
+        for match in rejected.finditer(prose):
+            failures.append(f"{name}: {match.group()}")
+    assert not failures, "\n".join(failures)
+
+
+def test_shared_glossary_defines_developer_agent_outside_retired_terms() -> None:
+    text = (ROOT / "docs/GLOSSARY.md").read_text(encoding="utf-8")
+    active, retired = text.split("## Retired and ambiguous terminology", maxsplit=1)
+    definition = active.split("**Developer Agent**:\n", maxsplit=1)[1].split("\n\n", 1)[0]
+    for term in ("Sandbox", "Interactive Mode", "Goal Mode", "Booley Flows", "Specialists"):
+        assert term in definition
+    assert "whether a human is steering or the work is unattended" in definition
+    assert (
+        "_Avoid_: coding agent, host agent, main agent, outer agent, the agent session in Goal Mode"
+        in definition
+    )
+    assert "Developer Agent** →" not in retired
+    assert 'Never use "agent" for a Specialist' in retired
+
+
+def test_doctor_help_names_the_specialist_provider_probe() -> None:
+    help_text = " ".join(cli_help()["booley doctor"].split())
+    assert "Specialist provider authorization and memory probe" in help_text
+    assert "Developer Agent authorization" not in help_text
+
+
+def test_specialist_help_and_review_guides_name_the_delegated_actor() -> None:
+    texts = {
+        command: text
+        for command, text in cli_help().items()
+        if command.startswith("booley specialist ")
+    }
+    texts.update(
+        {
+            str(path.relative_to(ROOT)): path.read_text(encoding="utf-8")
+            for path in (ROOT / "src/booley/data/refs/code_review").rglob("*.md")
+        }
+    )
+    assert texts
+    for name, text in texts.items():
+        assert not re.search(r"(?<!Developer )\bagents?\b", text, re.IGNORECASE), name
+
+
 @pytest.mark.parametrize(
     "phrase",
     [

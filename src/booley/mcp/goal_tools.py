@@ -60,7 +60,9 @@ _ENTER_DESCRIPTION = (
     "Enter Goal Mode in one linked worktree: create the Goal Branch goal/<slug>-<date> at "
     "the current clean HEAD, record the Goals (every Goal is mandatory and starts unmet), "
     "and return the rules for working in Goal Mode. Translate the chosen Goalsets from "
-    "the Project directory's goalsets/ into concrete Goals yourself: every per-Target Goal names "
+    "goalsets/ in the main checkout's Project directory (BOOLEY_PROJECT_DIR in the Sandbox) "
+    "into concrete Goals yourself; a Project copy or snapshot inside work_dir is never the "
+    "source. Every per-Target Goal names "
     "its Target. If the Project has a default Goalset, apply it (list 'default' in "
     "goalsets_used) unless the human explicitly skips it, with their reason."
 )
@@ -148,7 +150,10 @@ async def dispatch_goal_tool(  # noqa: PLR0911 — four independent public Goal 
             aware = await asyncio.to_thread(_status_has_caller, views, root, request_context)
             text = render_status(views) if views else "No active Goal Mode."
             if arguments.get("rules") is True:
-                text += "\n\n" + goal_mode_rules()
+                for view in views:
+                    text += "\n\n" + goal_mode_rules(view.record.declared_protected_inputs)
+                if not views:
+                    text += "\n\n" + goal_mode_rules()
             return _text(text, is_error=False, goal_aware=aware)
     except (
         LifecycleError,

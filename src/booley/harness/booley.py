@@ -263,6 +263,13 @@ def _install_project_options(parser: argparse.ArgumentParser) -> None:
                     replacement.dest = dest
                     replacement.default = argparse.SUPPRESS
         add_project_option(node, dest, cheat=route == ("cheat",))
+        if route and route[0] == "feedback":
+            for option in ("-C", "--project"):
+                default = " (default: discover from cwd)" if option == "-C" else ""
+                node._option_string_actions[option].help = (
+                    f"Select the checkout for feedback context{default}; in the Sandbox, "
+                    "this does not move the shared Project Findings Log"
+                )
         for action in node._actions:
             if isinstance(action, argparse._SubParsersAction):
                 for name, child in action.choices.items():
@@ -467,9 +474,9 @@ def _add_doctor_subparser(sub) -> None:
     """Add setup and environment diagnostics."""
     doctor_p = sub.add_parser(
         "doctor",
-        help="Run setup and environment health checks [may invoke agent]",
+        help="Run setup and environment health checks [may invoke provider probe]",
         parents=[_project_root_parent()],
-        description="Check setup and environment health. Deep checks may invoke a Developer Agent authorization probe unless skipped.",
+        description="Check setup and environment health. Deep checks may invoke a Specialist provider authorization and memory probe unless skipped.",
     )
     output = doctor_p.add_mutually_exclusive_group()
     output.add_argument("--verbose", "-v", action="store_true")
@@ -488,7 +495,7 @@ def _add_doctor_subparser(sub) -> None:
         action="store_true",
         help=(
             "With --deep, skip agent credential inspection and the live "
-            "Developer authorization probe"
+            "Specialist provider authorization and memory probe"
         ),
     )
 
@@ -622,20 +629,32 @@ def _add_flow_subparser(sub) -> None:
     flow_p.add_argument(
         "endpoint_name",
         nargs="?",
+        metavar="flow",
         help="Flow to run (omit to list the available Flows)",
     )
     flow_p.add_argument(
         "endpoint_args",
         nargs=argparse.REMAINDER,
-        help="Arguments passed verbatim to the Flow",
+        metavar="args",
+        help="Arguments for the Flow; see `booley flow <flow> --help`",
     )
 
 
 def _add_specialist_subparser(sub) -> None:
     """Add direct Specialist selection and verbatim endpoint arguments."""
     parser = sub.add_parser("specialist", help="Run a Specialist directly inside the Sandbox")
-    parser.add_argument("endpoint_name", nargs="?", help="Specialist to run (omit to list)")
-    parser.add_argument("endpoint_args", nargs=argparse.REMAINDER, help="Specialist arguments")
+    parser.add_argument(
+        "endpoint_name",
+        nargs="?",
+        metavar="specialist",
+        help="Specialist to run (omit to list the available Specialists)",
+    )
+    parser.add_argument(
+        "endpoint_args",
+        nargs=argparse.REMAINDER,
+        metavar="args",
+        help="Arguments for the Specialist; see `booley specialist <specialist> --help`",
+    )
 
 
 def _add_session_subparser(sub) -> None:
@@ -1090,9 +1109,9 @@ def _cmd_cheat(args: argparse.Namespace, project_root: Path | None) -> int:
 
 def _report_session_health(project_root: Path, *, startup_due_reason: str | None = None) -> None:
     """Surface the result, or the scheduled check, after Sandbox start."""
-    from booley.harness import auto_doctor
+    from booley.runtime import health, health_presentation
 
-    due_reason = startup_due_reason or auto_doctor.due_reason(project_root)
+    due_reason = startup_due_reason or health.due_reason(project_root)
     if due_reason is not None:
         print(
             f"Automatic Doctor is running in the Sandbox ({due_reason}); "
@@ -1100,22 +1119,21 @@ def _report_session_health(project_root: Path, *, startup_due_reason: str | None
             file=sys.stderr,
         )
         return
-    summary = auto_doctor.consume_changed_summary(project_root, channel="session-up")
-    if summary:
-        report = auto_doctor.load_report(project_root) or {}
-        prefix = "warning: " if any(auto_doctor.issue_counts(report)) else ""
-        print(f"{prefix}{summary}", file=sys.stderr)
+    snapshot = health.consume_changed_snapshot(project_root, channel="session-up")
+    if snapshot is not None:
+        prefix = "" if snapshot.assessment.clean else "warning: "
+        print(f"{prefix}{health_presentation.brief_message(snapshot)}", file=sys.stderr)
         return
 
 
 def _session_up(args: argparse.Namespace, project_root: Path) -> int:
     """Create or resume the headless Sandbox."""
-    from booley.harness import auto_doctor
+    from booley.runtime import health
     from booley.runtime import session_runtime as sr
 
     _report_upgrade_before_session(project_root)
     vscode = sr.conflicting_vscode_session(project_root)
-    startup_due_reason = auto_doctor.due_reason(project_root)
+    startup_due_reason = health.due_reason(project_root)
     name = sr.up(project_root, rebuild=getattr(args, "rebuild", False))
     if vscode:
         print(
@@ -1152,14 +1170,14 @@ def _report_upgrade_before_session(project_root: Path) -> None:
 def _session_refresh(args: argparse.Namespace, project_root: Path) -> int:
     """Reconcile the Sandbox Image and replace its Sandbox."""
     configure_progress_output()
-    from booley.harness import auto_doctor
     from booley.harness.session_refresh import refresh
+    from booley.runtime import health
 
     verbose = getattr(args, "verbose", False)
     result = refresh(project_root, verbose=verbose)
     _report_session_health(
         project_root,
-        startup_due_reason=auto_doctor.due_reason(project_root),
+        startup_due_reason=health.due_reason(project_root),
     )
     print(f"Refreshed Sandbox: {result.selected_reference} ({result.selected_id})")
     return 0

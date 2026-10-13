@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from booley.flows.cli_arguments import BuiltinArguments
-from booley.flows.cli_help import HelpGroup, HelpOption
+from booley.flows.cli_help import HelpGroup, HelpOption, SurfaceHelp
 from booley.flows.test_runs import (
     MAX_SEED,
     SEED_WITH_SEEDED_SELECTOR,
@@ -88,9 +88,18 @@ class SimArguments(BuiltinArguments):
             action="append",
             default=None,
             metavar="TEST_RUN",
-            help="Select Test Runs: test, test+variant, test@seed, test+variant@seed, or "
-            "test[+variant]@xN for N drawn seeds; a bare test means its default Test Variant "
-            "(coverage: deterministic sorted order; plain: input order; CLI: repeat; MCP: array)",
+            help=SurfaceHelp(
+                "Select Test Runs: test, test+variant, test@seed, test+variant@seed, or "
+                "test[+variant]@xN for N drawn seeds; a bare test means its default Test "
+                "Variant (coverage: deterministic sorted order; plain: input order; "
+                "CLI: repeat; MCP: array)",
+                cli=(
+                    "Run only the named Test Runs: test, test+variant, test@seed, "
+                    "test+variant@seed, or test[+variant]@xN for N drawn seeds; a bare test "
+                    "means its default Test Variant. Repeat the flag for more. With --coverage "
+                    "they run in sorted order, otherwise in the order given"
+                ),
+            ),
         )
         parser.add_argument(
             "--seed",

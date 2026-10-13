@@ -168,7 +168,7 @@ may override the Python rows (see
 | sv2v | v0.0.13 |
 | OpenROAD | 26Q4 source commit `c4d317e4fa2398b9880920a1411c20258a2175a9` (the exact upstream OCI binary reports `26Q3-2927-gc4d317e4fa`) |
 | Verible | v0.0-4296-g0f262651 |
-| FuseSoC / Edalize | 2.4.6 / 0.6.8 |
+| FuseSoC / Edalize | 2.4.7 / 0.6.8 |
 | cocotb | 2.1.0, with `cocotbext-axi` 0.1.28, `cocotbext-uart` 0.1.4, `numpy` 2.5.3 |
 | Liberty / PDK | NangateOpenCellLibrary (typical CCS), fetched and SHA-256 verified by `booley bootstrap`, mounted read-only at `/opt/pdk/cell/lib` |
 

@@ -8,8 +8,11 @@ from pathlib import Path
 
 import pytest
 
-from booley.harness import auto_doctor, doctor, doctor_stamp
+from booley.audit.diagnostic_results import DiagnosticFinding, Severity
+from booley.harness import auto_doctor, doctor
+from booley.runtime import doctor_stamp, health, health_presentation
 from booley.runtime.project_dir import reset_cache
+from booley.runtime.timefmt import MACHINE_TIMESTAMP_FORMAT
 
 
 @pytest.fixture(autouse=True)
@@ -43,15 +46,17 @@ def _report(root: Path, *, clean: bool, checked_at: datetime) -> dict:
             }
         ]
     payload = {
-        "checked_at": checked_at.strftime(auto_doctor._TIME_FORMAT),
+        "checked_at": checked_at.strftime(MACHINE_TIMESTAMP_FORMAT),
         "clean": clean,
         "counts": counts,
         "findings": findings,
-        "fingerprint": auto_doctor.compute_fingerprint(project_dir, root),
+        "fingerprint": health.compute_fingerprint(project_dir, root),
     }
-    payload["finding_hash"] = auto_doctor._finding_hash(payload)
-    path = auto_doctor.report_path(project_dir)
+    path = health.report_path(project_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    # A report without a stored hash is identified by the hash of its active findings.
+    payload["finding_hash"] = health.read_health(root).finding_hash
     path.write_text(json.dumps(payload), encoding="utf-8")
     return payload
 
@@ -60,23 +65,23 @@ class TestDueReason:
     def test_missing_result_is_due_without_clean_manual_stamp(self, tmp_path: Path):
         _project(tmp_path)
 
-        assert auto_doctor.due_reason(tmp_path) == "no automatic Doctor result"
+        assert health.due_reason(tmp_path) == "no automatic Doctor result"
 
     def test_manual_stamp_does_not_replace_runtime_scoped_result(self, tmp_path: Path):
         project_dir = _project(tmp_path)
         doctor_stamp.record_clean_run(project_dir, tmp_path, deep=False)
 
-        assert auto_doctor.due_reason(tmp_path) == "no automatic Doctor result"
+        assert health.due_reason(tmp_path) == "no automatic Doctor result"
 
     def test_unhealthy_result_retries_daily(self, tmp_path: Path):
         _project(tmp_path)
         now = datetime.now(tz=UTC)
         _report(tmp_path, clean=False, checked_at=now - timedelta(hours=23))
 
-        assert auto_doctor.due_reason(tmp_path, now=now) is None
+        assert health.due_reason(tmp_path, now=now) is None
 
         _report(tmp_path, clean=False, checked_at=now - timedelta(hours=25))
-        assert auto_doctor.due_reason(tmp_path, now=now) == "automatic Doctor result expired"
+        assert health.due_reason(tmp_path, now=now) == "automatic Doctor result expired"
 
     def test_upgrade_only_warning_uses_weekly_cadence(self, tmp_path: Path):
         _project(tmp_path)
@@ -92,19 +97,19 @@ class TestDueReason:
                 "subject": None,
             }
         ]
-        payload["finding_hash"] = auto_doctor._finding_hash(payload)
-        auto_doctor.report_path(tmp_path / ".booley_project").write_text(
+        del payload["finding_hash"]  # the fixture hashed its earlier FAIL finding
+        health.report_path(tmp_path / ".booley_project").write_text(
             json.dumps(payload), encoding="utf-8"
         )
 
-        assert auto_doctor.due_reason(tmp_path, now=now) is None
+        assert health.due_reason(tmp_path, now=now) is None
 
     def test_config_change_invalidates_result(self, tmp_path: Path):
         project_dir = _project(tmp_path)
         _report(tmp_path, clean=True, checked_at=datetime.now(tz=UTC))
         (project_dir / "booley.toml").write_text("[project]\nname = 'edited'\n", encoding="utf-8")
 
-        assert auto_doctor.due_reason(tmp_path) == "Doctor inputs changed"
+        assert health.due_reason(tmp_path) == "Doctor inputs changed"
 
     def test_upgrade_review_state_change_invalidates_result(self, tmp_path: Path):
         project_dir = _project(tmp_path)
@@ -113,7 +118,7 @@ class TestDueReason:
         state.parent.mkdir(parents=True, exist_ok=True)
         state.write_text(json.dumps({"schema": 1, "reviewed_through": "1.0.0"}), encoding="utf-8")
 
-        assert auto_doctor.due_reason(tmp_path) == "Doctor inputs changed"
+        assert health.due_reason(tmp_path) == "Doctor inputs changed"
 
 
 def test_execute_persists_structured_report_and_transcript(tmp_path: Path, monkeypatch):
@@ -121,8 +126,8 @@ def test_execute_persists_structured_report_and_transcript(tmp_path: Path, monke
     result = doctor.DoctorRunResult(
         counts={"pass": 2, "fail": 0, "warn": 1, "waived": 0, "note": 0, "skip": 0},
         findings=(
-            doctor.DoctorFinding(
-                "warn", "license may expire", "renew it", "agent.credential", "claude"
+            DiagnosticFinding(
+                Severity.WARN, "license may expire", "renew it", "agent.credential", "claude"
             ),
         ),
         exit_code=0,
@@ -146,9 +151,9 @@ def test_execute_persists_structured_report_and_transcript(tmp_path: Path, monke
     assert payload["clean"] is False
     assert payload["trigger"] == "test"
     assert payload["findings"][0]["check_id"] == "agent.credential"
-    assert auto_doctor.load_report(tmp_path) == payload
-    assert auto_doctor.transcript_path(project_dir).is_file()
-    assert "captured Doctor finding" in auto_doctor.transcript_path(project_dir).read_text()
+    assert health.load_report(tmp_path) == payload
+    assert health.transcript_path(project_dir).is_file()
+    assert "captured Doctor finding" in health.transcript_path(project_dir).read_text()
     assert progress[0] == "host/project checks"
     assert progress[-1].startswith("completed in ")
     assert "transcript:" in progress[-1]
@@ -159,15 +164,15 @@ def test_manual_runtime_result_replaces_stale_automatic_status(tmp_path: Path):
     _report(tmp_path, clean=False, checked_at=datetime.now(tz=UTC))
     result = doctor.DoctorRunResult(
         counts={"pass": 3, "fail": 0, "warn": 0, "waived": 0, "note": 0, "skip": 0},
-        findings=(doctor.DoctorFinding("pass", "environment healthy"),),
+        findings=(DiagnosticFinding(Severity.PASS, "environment healthy"),),
         exit_code=0,
     )
 
-    payload = auto_doctor.record_manual_result(tmp_path, result)
+    payload = doctor.record_manual_result(tmp_path, result)
 
     assert payload is not None and payload["clean"] is True
     assert payload["trigger"] == "manual-doctor"
-    assert "clean" in auto_doctor.current_summary(tmp_path)
+    assert "clean" in health_presentation.current_summary(tmp_path)
 
 
 def test_manual_smoke_result_does_not_replace_health_status(tmp_path: Path):
@@ -175,24 +180,26 @@ def test_manual_smoke_result_does_not_replace_health_status(tmp_path: Path):
     previous = _report(tmp_path, clean=False, checked_at=datetime.now(tz=UTC))
     result = doctor.DoctorRunResult(
         counts={"pass": 3, "fail": 0, "warn": 0, "waived": 0, "note": 0, "skip": 3},
-        findings=(doctor.DoctorFinding("skip", "agent credential checks skipped"),),
+        findings=(DiagnosticFinding(Severity.SKIP, "agent credential checks skipped"),),
         exit_code=0,
         health_evidence=False,
     )
 
-    assert auto_doctor.record_manual_result(tmp_path, result) is None
-    assert auto_doctor.load_report(tmp_path) == previous
+    assert doctor.record_manual_result(tmp_path, result) is None
+    assert health.load_report(tmp_path) == previous
 
 
 def test_changed_summary_is_consumed_once_per_channel(tmp_path: Path):
     _project(tmp_path)
     report = _report(tmp_path, clean=False, checked_at=datetime.now(tz=UTC))
-    announcements = auto_doctor.state_dir(tmp_path / ".booley_project") / "announcements.json"
+    announcements = health.state_dir(tmp_path / ".booley_project") / "announcements.json"
     announcements.write_text(json.dumps({"ntfy": report["finding_hash"]}))
 
-    first = auto_doctor.consume_changed_summary(tmp_path, channel="mcp", issues_only=True)
-    second = auto_doctor.consume_changed_summary(tmp_path, channel="mcp", issues_only=True)
-    other = auto_doctor.consume_changed_summary(tmp_path, channel="runner", issues_only=True)
+    first = health_presentation.consume_changed_summary(tmp_path, channel="mcp", issues_only=True)
+    second = health_presentation.consume_changed_summary(tmp_path, channel="mcp", issues_only=True)
+    other = health_presentation.consume_changed_summary(
+        tmp_path, channel="runner", issues_only=True
+    )
 
     assert first is not None and "1 FAIL" in first
     assert second is None
@@ -247,7 +254,7 @@ def test_run_if_due_records_once_then_stays_current(tmp_path: Path, monkeypatch)
     assert auto_doctor.run_if_due(tmp_path, trigger="test") is None
     assert calls == ["test"]
     assert deliveries == []
-    assert auto_doctor.load_report(tmp_path) is not None
+    assert health.load_report(tmp_path) is not None
     assert progress == ["starting (no automatic Doctor result)"]
 
 
@@ -269,9 +276,9 @@ def test_containment_alias_core_exclusion(tmp_path, monkeypatch):
         return original(path, other)
 
     monkeypatch.setattr(Path, "samefile", samefile)
-    before = auto_doctor._core_digest(root, selected)
+    before = health._core_digest(root, selected)
     core.write_text("second")
-    assert auto_doctor._core_digest(root, selected) == before
+    assert health._core_digest(root, selected) == before
     assert calls
 
 
@@ -283,6 +290,6 @@ def test_containment_checkout_core_symlink_remains_fingerprinted(tmp_path):
     core = selected / "generated.core"
     core.write_text("first")
     (root / "duplicate.core").symlink_to(core)
-    before = auto_doctor._core_digest(root, selected)
+    before = health._core_digest(root, selected)
     core.write_text("second")
-    assert auto_doctor._core_digest(root, selected) != before
+    assert health._core_digest(root, selected) != before

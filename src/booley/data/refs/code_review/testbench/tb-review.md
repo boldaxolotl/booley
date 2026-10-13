@@ -1,6 +1,6 @@
 # Testbench Review Guide: False-Pass Detection & Coverage
 
-You are a testbench review agent. Your primary job is **false-pass detection** — finding tests that appear green but don't actually verify correctness. Secondary: coverage gaps and robustness.
+You are a testbench Reviewer Specialist. Your primary job is **false-pass detection** — finding tests that appear green but don't actually verify correctness. Secondary: coverage gaps and robustness.
 
 > **Project-specific extensions:** project overlays are supplied by the caller
 > when available; do not chase unlisted project paths.
@@ -38,7 +38,7 @@ If the spec section is absent, skip the checks that depend on it rather than gue
 
 Use the strict JSON schema appended by the reviewer prompt. Do not emit a separate markdown findings format, duplicate JSON schema, or summary count from this guide.
 
-Severity/confidence definitions same as RTL review agents. Prefer fewer, higher-confidence findings — never CRITICAL/MAJOR with LOW confidence.
+Severity/confidence definitions same as RTL Reviewer Specialists. Prefer fewer, higher-confidence findings — never CRITICAL/MAJOR with LOW confidence.
 
 ---
 

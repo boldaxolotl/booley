@@ -80,5 +80,7 @@ python3 .github/scripts/confidential_content_guard.py --repo . publish-pr review
 
 `edit` accepts a title file, body file, or both. `comment --edit-last` edits the
 author's last comment. Review verdicts are `approve`, `comment`, and
-`request-changes`. The older `pr-text` command remains available to check a
-draft without publishing it.
+`request-changes`. After a successful write, `publish-pr` prints
+`GitHub reference: <url>` when `gh` reports the URL of the created PR, comment,
+or review; record it to identify that write later. The older `pr-text` command
+remains available to check a draft without publishing it.

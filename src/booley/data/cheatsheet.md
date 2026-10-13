@@ -12,7 +12,7 @@ and nested actions.
 | `booley bootstrap` | Check or reconcile reusable host resources |
 | `booley init` | Initialize, scaffold, or reseed project integration |
 | `booley projects` | List remembered Project paths and their Grants |
-| `booley auth` | Configure or inspect agent credentials |
+| `booley auth` | Configure or inspect Developer Agent and Specialist credentials |
 | `booley eda` | Manage host commercial-EDA installations, grants, and licenses |
 | `booley session` | Start, enter, inspect, refresh, or stop the Sandbox |
 
@@ -33,7 +33,7 @@ Inside the Sandbox, for Interactive Mode, we recommend `booley` / `booley chat`,
 
 | Command | Location | Purpose |
 |---------|----------|---------|
-| `booley` | mixed | Host: help; Sandbox: open the configured agent CLI |
+| `booley` | mixed | Host: help; Sandbox: open the configured Developer Agent CLI |
 | `booley doctor` | either | Check project, Sandbox, and toolchain health |
 | `booley upgrade` | either | Inspect or acknowledge a pending Booley release review |
 | `booley targets` | mixed | List or filter Targets and show resolved details |
@@ -50,7 +50,7 @@ layer cache.
 
 ### Goal Mode
 
-Use `/booley-goal` in a Sandbox agent chat. One session owns a clean linked
+Use `/booley-goal` in a Developer Agent chat. One session owns a clean linked
 worktree and Goal Branch; every Goal is mandatory and judged by Flow or
 Specialist evidence at the current code.
 
@@ -64,12 +64,19 @@ Specialist evidence at the current code.
 | `booley goal status` | Inspect local records |
 | `booley dashboard` | Sessions, Goals, and Jobs inside the Sandbox |
 
-Pass `work_dir` on every Booley call. Resume saved proposal and Finish IDs
-rather than editing records. Protected Input changes block Finish until
-reverted. Open `done` review findings remain visible; Finish does not merge.
-Project-owned Goalsets live under `goalsets/`; `default.md` applies unless the
-human explicitly skips it with a reason. Initialization seeds four create-only
-Goalsets and preserves edits.
+Pass the absolute worktree root as `work_dir` to Booley Flows, Specialists,
+Goal tools, `booley_targets`, and `booley_report`. While a Goal Record
+occupies the Project, calls without it are refused (only `booley_targets` may
+omit it), and Project-defined endpoints must declare `work_dir` to run.
+`booley_status`, `booley_poll`, `booley_cancel`, `booley_sleep`,
+`coverage_evidence`, and `bwave` accept no `work_dir`. Resume saved proposal
+and Finish IDs rather than editing records. Protected Input changes block
+Finish until reverted. Open `done` review findings remain visible; Finish does not merge.
+Read Project-owned Goalsets, including `default.md`, from `goalsets/` in the
+main checkout's Project directory (`BOOLEY_PROJECT_DIR` in the Sandbox); a
+Project copy or snapshot inside `work_dir` is not used. `default.md` applies
+unless the human explicitly skips it with a reason. Initialization seeds four
+create-only Goalsets and preserves edits.
 
 ### Booley Flows
 
@@ -96,9 +103,9 @@ Key Flow-specific controls:
 ### Specialists
 
 <!-- BEGIN GENERATED: specialists -->
-LLM-backed sub-agents running in scoped, isolated workspaces:
+LLM-powered Specialists running in scoped, isolated workspaces:
 
-Ask your connected agent session to invoke a Specialist by name with the arguments below. Or run `booley specialist <name> [args...]` inside the Sandbox. `booley specialist` lists visible Specialists; `booley specialist <name> --help` shows their arguments. `--model`, `--max-turns`, and `--timeout` are CLI-only controls.
+Ask your Developer Agent session to invoke a Specialist by name with the arguments below. Or run `booley specialist <name> [args...]` inside the Sandbox. `booley specialist` lists visible Specialists; `booley specialist <name> --help` shows their arguments. `--model`, `--max-turns`, and `--timeout` are CLI-only controls.
 
 For example: `booley specialist reviewer --category rtl --focus bugs --scope rtl`. The supported module alternative is `python -m booley.specialists.reviewer` with the same flags. Common options are `-C/--project PATH`, `--report-dir`, `--diagnostic`, and `--target` where supported. `--timeout DURATION` accepts positive seconds (`90` or `90s`), minutes (`30m`), hours (`2h`), and combinations (`1h30m`). Model-call minimum budgets apply; seconds-only providers round up.
 
@@ -110,7 +117,7 @@ For example: `booley specialist reviewer --category rtl --focus bugs --scope rtl
 
 #### `coverage_analyst`
 
-Call the `coverage_analyst` Specialist from your connected agent session with `campaign="<exact-coverage.json>"` and optional `instruction="<question>"`. The Analyst explains retained native evidence and proposes advisory next steps; its model only reads evidence. It does not run Simulation, read waveforms, evaluate Criteria, or approve waivers. In Goal Mode, screened Waiver Candidates support a proposed Goal change, which needs human approval. Finish requires every Goal met; advisory reports do not mark strict coverage met. Verified Target sources are optional; stale sources give report-only analysis.
+Call the `coverage_analyst` Specialist from your Developer Agent session with `campaign="<exact-coverage.json>"` and optional `instruction="<question>"`. The Analyst explains retained native evidence and proposes advisory next steps; its model only reads evidence. It does not run Simulation, read waveforms, evaluate Criteria, or approve waivers. In Goal Mode, screened Waiver Candidates support a proposed Goal change, which needs human approval. Finish requires every Goal met; advisory reports do not mark strict coverage met. Verified Target sources are optional; stale sources give report-only analysis.
 
 #### `reviewer`
 
@@ -118,7 +125,7 @@ Read-only, single-focus code review. It reports `CRITICAL`, `MAJOR`, and `MINOR`
 
 The result links saved review evidence, including rejected proposals for inspection. Rejected proposals do not affect Criteria.
 
-Call the `reviewer` Specialist from your connected agent session with `scope="<file,...>"`, `category="<category>"`, and `focus="<focus>"`.
+Call the `reviewer` Specialist from your Developer Agent session with `scope="<file,...>"`, `category="<category>"`, and `focus="<focus>"`.
 
 | Category | Focus | What it checks | Sets |
 |----------|-------|----------------|------|
@@ -130,7 +137,7 @@ Call the `reviewer` Specialist from your connected agent session with `scope="<f
 | `rtl` | `security` | Fault-injection resistance, simple power/timing leakage, secret exposure, and unsafe failure behavior | `review_rtl_security` |
 | `tb` | `quality` | False-pass paths in scoped testbench sources, missing checks and edge cases, coverage gaps, timing/sampling mistakes, and TB code quality | `review_tb_quality` |
 
-Arguments: required `scope="<file,...>"` selects files; `steer=["<context>"]` adds review context; `dry_run=true` validates and previews without invoking an agent. The `spec` focus needs specification text: use `spec="<path>"` or the spec file named by the Review Goal.
+Arguments: required `scope="<file,...>"` selects files; `steer=["<context>"]` adds review context; `dry_run=true` validates and previews without invoking a Specialist. The `spec` focus needs specification text: use `spec="<path>"` or the spec file named by the Review Goal.
 
 #### `mutation_tester`
 
@@ -144,9 +151,9 @@ Proposal-locked mutation testing. A read-only LLM creator returns exact source r
 | Explicit fixed | add `total: N` and `min_detected: K` | `count="N"` requires all N; add `min_detected=K` to require K |
 | Size-scaled | add `auto: true` — choose 3-25 mutations from language-neutral source size and the time budget | `count="auto"`; add `min_detected=K` for an explicit threshold |
 
-`dry_run=true` validates Target metadata and prints the source-size breakdown and proposed auto count without invoking an agent or simulator.
+`dry_run=true` validates Target metadata and prints the source-size breakdown and proposed auto count without invoking a Specialist or simulator.
 
-Call the `mutation_tester` Specialist from your connected agent session: `scope="<rtl-file,...>"` chooses mutation sites; `target="<sim-target>"` chooses exactly one complete runnable Target suite; `steer=["<context>"]` biases mutation selection. A valid lock is reused on later runs, so new steering takes effect only with `regen_lock=true`. The Target supplies the testbench top and complete RTL closure; they are not separate caller inputs.
+Call the `mutation_tester` Specialist from your Developer Agent session: `scope="<rtl-file,...>"` chooses mutation sites; `target="<sim-target>"` chooses exactly one complete runnable Target suite; `steer=["<context>"]` biases mutation selection. A valid lock is reused on later runs, so new steering takes effect only with `regen_lock=true`. The Target supplies the testbench top and complete RTL closure; they are not separate caller inputs.
 <!-- END GENERATED: specialists -->
 
 Booley validates exact replacements and compiles each in isolation. It emits a
@@ -315,7 +322,7 @@ Example: `synthesis_ok: {targets: [<target>], clk_i.fmax_mhz_min: 400, clk_2x.cr
 | `booley targets 'sim_*'` | Glob filter over bare name or `vendor:lib:name#target` |
 | `booley targets <name>` | Resolved detail: parameters, file counts, SDC/XDC (runs `fusesoc`, container-side) |
 
-`--json` composes with all of the above; agents get the same listing via the `booley_targets` MCP tool.
+`--json` composes with all of the above; Developer Agents get the same listing via the `booley_targets` MCP tool.
 
 Booley-authored Targets are named `<axis>_<subject>`: axis token for the driving Booley Flow (`sim_`, `lint_`, `synth_`, `fpga_`), then a subject that distinguishes the Target from others, coarse to fine: `sim_smoke`, `synth_timing`. The axis leads because nothing else distinguishes a synth Target from an FPGA Target (CAPI2 has no synth flow). `booley doctor` warns on names that don't, and on a `default:` Target in a core nothing `depend:`s on; vendored upstream cores are exempt.
 
@@ -332,11 +339,11 @@ the design sources they describe.
 
 | File | Information | Affects |
 |------|-------------|---------|
-| `booley.toml` | Project, Flow, agent, sandbox, and job policy | All Flows and Specialists |
+| `booley.toml` | Project, Flow, provider, Sandbox, and Job policy | All Flows and Specialists |
 | `tests.toml` | Per-Target tests, selectors, skips, and environment | `sim`, `mutation_tester` |
 | `goalsets/*.md` | Project-owned Goal bundles and optional default | `/booley-goal` |
 | `doctor-waivers.toml` | Reviewed warning waivers and expiry | No endpoint; `doctor` only |
-| `AGENTS.md` | Project instructions, ownership, and gotchas | Agent sessions and Specialists |
+| `AGENTS.md` | Project instructions, ownership, and gotchas | Developer Agent and Specialists |
 | `rtl_style_guide.md` | Project RTL style overrides | `reviewer` RTL code-style focus |
 | `tb_style_guide.md` | Project testbench style overrides | `reviewer` TB quality focus |
 | `docker/Dockerfile` | Project image build steps and dependencies | Flows/Specialists in the Sandbox |
@@ -376,7 +383,7 @@ do not need these files.
 
 ### Sandbox & Docker
 
-The `booley-sandbox` image contains Booley's EDA toolchain, agent runtimes, and development dependencies. It backs the per-folder Sandbox (devcontainer) where all Booley work, Interactive Mode and Goal Mode alike, executes; a project image selected by `[sandbox].image` can extend it.
+The `booley-sandbox` image contains Booley's EDA toolchain, Developer Agent clients, and development dependencies. It backs the per-folder Sandbox (devcontainer) where all Booley work, Interactive Mode and Goal Mode alike, executes; a project image selected by `[sandbox].image` can extend it.
 
 | Command | What it does |
 |---------|-------------|
@@ -391,13 +398,13 @@ The `booley-sandbox` image contains Booley's EDA toolchain, agent runtimes, and 
 
 To extend the image, create `.booley_project/docker/Dockerfile` with `FROM booley-sandbox`, build it, then set `[sandbox].image` in `.booley_project/booley.toml`.
 
-Inside the Sandbox, `booley` / `booley chat` is a convenience alias for the selected agent command:
+Inside the Sandbox, `booley` / `booley chat` is a convenience alias for the selected Developer Agent command:
 it replaces itself with the native CLI. Invoke `claude` or `codex` directly to
 pass agent-specific options. The selected provider's VS Code extension is an
 optional alternative in the attached container window.
 
 **`booley chat`, `booley goal`, and `booley dashboard` run in the Sandbox.**
-Bare `booley` prints help on the host and starts the configured agent in the
+Bare `booley` prints help on the host and starts the configured Developer Agent in the
 Sandbox. For parallel Goal work, use one linked worktree per session. The
 Dashboard attach task defaults on; set `[sandbox].dashboard=false` to opt out.
 `booley init` and `booley session` run on the host; Doctor works on either side.

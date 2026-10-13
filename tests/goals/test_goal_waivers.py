@@ -9,6 +9,7 @@ import json
 from dataclasses import replace
 from datetime import UTC, datetime
 from fractions import Fraction
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -247,6 +248,8 @@ def public_change(layout, env, arguments):
     assert json.loads(applied.value[0].text)["state"] == "applied"
 
 
+# Slowest Windows CI duration is 31 s; the headroom rule asks for three times that.
+@pytest.mark.timeout(120)
 def test_public_relax_then_waive_preserves_current_bounds_on_reloaded_campaign(layout):
     env, candidate, _root = prepared(layout, covered=18, total=20)
     public_change(
@@ -452,7 +455,7 @@ def test_immediate_live_promotion_is_strict_and_other_unmet_goal_does_not_block(
     env, candidate, root = prepared(layout, anchor)
     head = git(layout.worktree, "rev-parse", "HEAD")
     view = propose(layout, env, candidate)
-    assert view.proposal.waiver["approval_root"] == str(root)
+    assert view.proposal.waiver.approval_root == str(root)
     approve(layout, env, view.proposal.id)
     assert git(layout.worktree, "rev-parse", "HEAD") == head
     assert list(root.rglob("*.toml")) and list(root.rglob("*.md"))
@@ -595,3 +598,32 @@ def test_numeric_coverage_relaxation_reevaluates_immutable_points_without_waiver
     assert entry.detail["evaluation"]["metrics"][0]["actual_percent"] == 50
     assert entry.detail["_source_fingerprint"] == before["_source_fingerprint"]
     assert not list(root.rglob("*.toml"))
+
+
+@pytest.mark.parametrize("drift", ["campaign", "candidate", "policy"])
+def test_recovery_uses_captured_binding_after_producer_drift(layout, drift):
+    import shutil
+
+    env, candidate, root = prepared(layout)
+    view = propose(layout, env, candidate)
+    _, transaction = interrupted_transaction(layout, env, view)
+    paths = record_paths(layout.control, layout.record.id)
+    if drift == "campaign":
+        shutil.rmtree(paths.runtime_dir / "flow-reports")
+    elif drift == "candidate":
+        path = paths.root / "waiver-candidates.json"
+        raw = json.loads(path.read_bytes())
+        next(iter(raw["candidates"].values()))["justification"] = "replaced after approval"
+        path.write_text(json.dumps(raw))
+    else:
+        config = layout.worktree / ".booley_project" / "booley.toml"
+        config.write_text(
+            "[project]\nname = 'demo'\n[coverage.waivers]\nanchor = 'rtl_repository'\ndirectory = 'new-approvals'\n"
+        )
+        (layout.worktree / "new-approvals").mkdir()
+    recover(env.store, layout.record.id, env)
+    assert load_proposal(paths.root, view.proposal.id).state == "applied"
+    for effect in transaction["effects"]:
+        assert Path(effect["path"]).read_bytes() == base64.b64decode(effect["after"])
+    assert list(root.rglob("*.toml"))
+    assert not list((layout.worktree / "new-approvals").glob("*"))

@@ -5,7 +5,7 @@ description: Enter, resume, and finish Booley Goal Mode for RTL work; translate 
 
 # Work in Goal Mode
 
-Goal Mode binds this agent session to one linked worktree and Goal Branch.
+Goal Mode binds this Developer Agent session to one linked worktree and Goal Branch.
 Only Booley Flow and Specialist evidence can meet its mandatory Goals.
 Use it for human-steered or unattended work inside the Sandbox.
 
@@ -15,11 +15,22 @@ Use it for human-steered or unattended work inside the Sandbox.
    `booley worktree new <name>` in the Sandbox. Goal Mode cannot enter in the
    main checkout. Preserve existing edits; obtain the human's direction before
    committing or stashing work that is not yours.
-2. Remember the absolute worktree root as `work_dir`. Pass `work_dir` on
-   every Booley call, including Flow, Specialist, and Goal calls.
-3. Read the selected `*.md` Goalsets under the resolved Project directory's
-   `goalsets/`. Initialization seeds `feature`, `bugfix`, `refactor`, and
-   `verification` create-only. The Project owns their prose and may add others.
+2. Remember the absolute worktree root as `work_dir`. Pass it to Booley Flows,
+   Specialists, Goal tools, `booley_targets`, and `booley_report`. While a
+   Goal Record occupies the Project, calls without it are refused (only
+   `booley_targets` may omit it), and Project-defined endpoints must declare
+   `work_dir` to run. `booley_status`, `booley_poll`, `booley_cancel`,
+   `booley_sleep`, `coverage_evidence`, and `bwave` accept no `work_dir`.
+3. Read the selected `*.md` Goalsets from `goalsets/` in the main checkout's
+   Project directory: `BOOLEY_PROJECT_DIR` in the Sandbox, the same directory
+   where entry checks `default.md`. Never read them from a Project copy or
+   snapshot inside `work_dir`; a `default.md` present only there does not
+   apply. If `BOOLEY_PROJECT_DIR` is unset or points inside `work_dir`, stop
+   and ask the human to restart the session with it set to the main
+   checkout's Project directory; changing it mid-session does not change
+   what entry checks.
+   Initialization seeds `feature`, `bugfix`, `refactor`, and `verification`
+   create-only. The Project owns their prose and may add others.
    If `default.md` exists, include it unless the human explicitly skips it;
    record `default_skipped=true` and their reason as `skip_reason`. With no
    default file, leave `default_skipped=false`.
@@ -45,7 +56,7 @@ Use it for human-steered or unattended work inside the Sandbox.
 
 Work only in the Goal worktree and commit on its Goal Branch. Use the relevant
 Booley Flows and Specialists, passing `work_dir` every time. Shell output,
-agent prose, and manually edited records cannot meet a Goal. Consult
+Developer Agent prose, and manually edited records cannot meet a Goal. Consult
 `goal_status` for unmet or stale Goals and rerun their producers after code
 changes. For a bug, reproduce the reported failure before fixing it; a setup
 failure or an already passing test is not evidence of the bug.
@@ -110,7 +121,7 @@ reported identity or protected-input problem.
 Abandon only on explicit human instruction. Call `goal_finish` with
 `abandon=true`, `instruction_quote` containing that instruction, the exact
 `record_id`, and a caller-stable `operation_id`. Retry with identical arguments.
-Do not abandon because the agent is stuck, quiet, or out of context. Abandonment
+Do not abandon because the Developer Agent is stuck, quiet, or out of context. Abandonment
 leaves the worktree and branch for the human to preserve or remove.
 
 ## Dashboard

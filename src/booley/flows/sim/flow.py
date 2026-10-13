@@ -32,6 +32,7 @@ from booley.core.boundary import BoundaryError, as_float, as_int, as_str_list
 from booley.core.build_paths import work_root_for
 from booley.criteria.templates import BASELINE_TARGET_PARAM
 from booley.criteria.thresholds import has_relative_threshold
+from booley.flows.cli_help import CliHelp
 from booley.flows.display import format_flow_display_label
 from booley.flows.eda_failures import find_missing_executable, new_attempt_token
 from booley.flows.endpoint_admission import AdmissionContext
@@ -2583,6 +2584,18 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         "Do NOT use --trace for initial pass/fail checks — tracing adds "
         "overhead and is only useful after a failure, when you need waveforms "
         "for debugging via the B-Wave (`bwave`) MCP tool."
+    )
+    cli_help: ClassVar[CliHelp | None] = CliHelp(
+        summary=(
+            "Compile and run the RTL simulation tests of one or more Targets and report "
+            "pass or fail for each test. Use it to check that a change still passes its tests. "
+            "Add --mode elab-only to check that the design compiles and elaborates "
+            "without running tests, or --mode elab-only-standalone to also sweep the "
+            "reusable modules on their own. Leave --trace off for pass/fail runs: "
+            "tracing slows simulation, so enable it only to capture waveforms of a "
+            "failing test, then inspect them with `bwave`."
+        ),
+        example="booley flow sim --target sim_soc --test reset",
     )
     code_modifying: bool = False
 

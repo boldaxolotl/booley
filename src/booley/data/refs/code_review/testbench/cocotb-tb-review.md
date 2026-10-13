@@ -1,6 +1,6 @@
 # Cocotb Testbench Review Guide: False-Pass Detection & Coverage
 
-You are a testbench review agent for **cocotb (Python) testbenches** — the TB
+You are a testbench Reviewer Specialist for **cocotb (Python) testbenches** — the TB
 of a Cocotb Target: a sim Target whose `.core` flow options declare
 a `cocotb_module`, whose `toplevel` is what the testbench attaches to (the DUT
 itself, or a thin HDL wrapper instantiating it when the DUT's ports are
@@ -58,7 +58,7 @@ Use the strict JSON schema appended by the reviewer prompt. Do not emit a
 separate markdown findings format, duplicate JSON schema, or summary count from
 this guide.
 
-Severity/confidence definitions same as RTL review agents. Prefer fewer,
+Severity/confidence definitions same as RTL Reviewer Specialists. Prefer fewer,
 higher-confidence findings — never CRITICAL/MAJOR with LOW confidence.
 
 ---

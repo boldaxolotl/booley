@@ -266,8 +266,9 @@ Authoring rules:
   in the design is wrong; the class was a warning when the code was written.
   The failure tail names the class in its `%Error-<CLASS>` token: copy it into
   `--Wno-<CLASS>` in that Target's `verilator_options` (or waive it in a `.vlt`
-  file in the fileset). Fix per Target, and note the waiver in AGENTS.md so a
-  later reader knows it is an era gap, not a silenced real bug.
+  file declared with `file_type: vlt` in one of that Target's filesets). Fix
+  per Target, and note the waiver in AGENTS.md so a later reader knows it is
+  an era gap, not a silenced real bug.
 - **Optional style lint (offer, never impose).** Only if the
   plan's row 11 says yes: author a **second** lint Target (suggested name
   `lint_style`) with `flow: lint` + `flow_options: {tool: verible}` over the
@@ -459,10 +460,10 @@ Author within these limits:
   a faithful `-G` vlogparam and Booley ships no evaluator, so
   resolve it to a literal, or express it as a `vlogdefine` whose value is the
   expression text.
-- **Imperative scripts stay out of the agent's write Scope.** Any
+- **Imperative scripts stay out of the Developer Agent's write Scope.** Any
   `generators`/`hooks` script files must live **outside** the writable
   category dirs (`rtl/`, `tb/`, …) — e.g. under `scripts/` — so the Scope
-  pre-commit hook makes them agent-immutable. Scripts the agent could edit
+  pre-commit hook makes them agent-immutable. Scripts the Developer Agent could edit
   are rejected.
 
 #### Data files & built artifacts
@@ -531,7 +532,7 @@ The project's testbench flavor — `sv`, `cocotb`, or `mixed` with a default —
 is a **project convention fixed at setup**, not a per-session choice
 and was decided in the plan's row 4 (a mandatory grill
 question in Step 0); read it from `SETUP-PLAN.md`, don't re-ask. Targets
-authored here embody it, and during Goal Mode the agent follows the
+authored here embody it, and during Goal Mode the Developer Agent follows the
 existing Target's shape.
 
 A **Cocotb Target** is an ordinary sim Target whose flow options declare the
@@ -629,6 +630,17 @@ Per-Target test lists plus an optional run-time selector.
 
 What goes here:
 
+- **Additional Protected Inputs — write only what the human agreed to.**
+  `[project].protected_inputs` lists the tracked recipe file a hook or generator
+  invokes and the stimulus sources that recipe consumes. Goal Mode freezes their
+  file set, contents, type, and executable bit; restoring a file clears the
+  violation. Write the entries that plan row 6 records. A candidate you find
+  only now is a decision-level deviation: propose it, explain the freeze, and
+  get approval before adding it. Before writing, confirm that every entry
+  matches tracked files and that no build output lands inside a pattern; prefer
+  `firmware/**/*.c` to `firmware/` when compilation writes into `firmware/`.
+  Keep existing entries. Entry forms and refusals: CONFIG.md → "Additional
+  Protected Inputs".
 - **Stealth mode — always write what rows 16 and 20 settled.** Step 0 row 16
   owns the merged git-history policy. Write the plan's `[stealth]` values
   exactly, including hand-set values, volunteered exceptions, and unattended
@@ -796,12 +808,16 @@ approved config is on disk.
 
 ## Goalsets
 
+Goal entry reads Goalsets from the main checkout's Project directory
+(`BOOLEY_PROJECT_DIR` in the Sandbox). Edit them there; an edit made only in a
+Project copy or snapshot inside a worktree is not used.
+
 Read the seeded `goalsets/{feature,bugfix,refactor,verification}.md` files and
 adapt their Goals to the Project's supported Targets and verification intent.
 Preserve existing Project edits. Offer to create `goalsets/default.md` for rules
 that should apply to every entry; create it only when the human selects that
 policy in the setup plan. Goalsets are free-form Markdown translated by the
-agent, with concrete family/Target examples for `/booley-goal`. Do not put
+Developer Agent, with concrete family/Target examples for `/booley-goal`. Do not put
 `[developer]` or `[jobs].max_tickets` in the Project configuration; Doctor treats
 them as ignored settings with delete fixes. Document `[sandbox].dashboard=false`
 when the human opts out of the default Dashboard attachment task.

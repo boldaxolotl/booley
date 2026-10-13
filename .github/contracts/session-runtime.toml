@@ -92,6 +92,7 @@ required_paths = [
   "/usr/local/share/verilator/include/verilated.h",
   "/usr/local/share/verilator/include/vltstd/vpi_user.h",
   "/usr/local/libexec/booley/base_package_inventory.py",
+  "/usr/local/libexec/booley/session_activity_hook.py",
   "/usr/local/share/booley/base-package-inventory.json",
 ]
 absent_paths = [

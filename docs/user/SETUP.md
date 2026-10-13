@@ -2,7 +2,7 @@
 
 This guide connects an installed Booley CLI to a specific RTL project. It
 assumes you have completed the [README installation](../../README.md#installation)
-and that `booley --version` works. Project Setup also requires a host agent CLI
+and that `booley --version` works. Project Setup also requires a Claude Code or Codex CLI on the host
 on PATH: [Claude Code](https://code.claude.com/docs/en/setup) (`claude`) or
 [Codex](https://developers.openai.com/codex/cli) (`codex`), signed in with your
 chosen credentials. `booley bootstrap` checks for this host prerequisite.
@@ -33,7 +33,7 @@ what each configuration field *means* (`booley.toml`, `.core`, `tests.toml`,
 sentinels—the log-pattern strings that decide a simulation's pass/fail
 verdict—and `enabled`/EDA provisioning), see [CONFIG.md](CONFIG.md).
 
-> This guide is written for a person setting up a project. An agent can follow
+> This guide is written for a person setting up a project. A Claude Code or Codex session can follow
 > it too: point it at this file. After the bootstrap it hands off to the
 > `booley-setup` skill. It assumes you've skimmed the
 > [README](../../README.md); the [context map](../../GLOSSARY-MAP.md) locates the
@@ -121,7 +121,7 @@ Sandbox split is described in [ARCHITECTURE.md](../internals/ARCHITECTURE.md#ove
 
 > **`booley init` is the host command; the workflow CLI is container-only.**
 > Bare `booley` prints help and a getting-started hint on the host; inside the
-> Sandbox it opens the Project’s configured agent. Explicit `booley chat`,
+> Sandbox it opens the Project’s configured Developer Agent. Explicit `booley chat`,
 > `booley goal`, `booley dashboard`, and `bwave`
 > refuse to run on the host (Reopen in Container); `booley init` refuses inside
 > the container, where there is no Docker. Either side fails fast with a message
@@ -241,21 +241,22 @@ scaffold is written, the `booley-setup` skill takes it from here — see
 [greenfield mode](#a-new-ip-greenfield-mode).
 
 When the bootstrap finishes, the **`booley-setup`** skill is deployed into your
-agent runtime by [Host Bootstrap](#host-bootstrap--host). **Stay on the host**:
-invoke it in your agent chat at the repo root.
+Claude Code or Codex installation by [Host Bootstrap](#host-bootstrap--host). **Stay on the host**:
+invoke it in your Claude Code or Codex chat at the repo root.
 
 ---
 
 ## The `booley-setup` skill
 
 Setup proper is driven by the skill. You invoke it **on the host** first; it
-tells you when to **Reopen in Container**, and you re-invoke it there to finish.
+tells you when to **Reopen in Container**, and you re-invoke it in the Developer
+Agent's chat to finish.
 
-> **Use the most capable model your agent runtime offers.** Setup is one of the
-> heaviest reasoning tasks Booley asks of an agent — feasibility triage, a
+> **Use the most capable model Claude Code or Codex offers.** Setup is one of the
+> heaviest reasoning tasks Booley asks of the setup session — feasibility triage, a
 > decision grill, and a config-authoring + doctor fix-loop that spans the
-> host/container boundary. Run the skill on the smartest model your agent
-> runtime offers (in Claude Code, select it with `/model` before invoking). A
+> host/container boundary. Run the skill on the smartest model Claude Code or Codex
+> offers (in Claude Code, select it with `/model` before invoking). A
 > weaker model is more likely to skip a decision or mis-author config and cost
 > you a round-trip.
 
@@ -278,7 +279,7 @@ Steps **5–7**:
 - **1 · Environment · host.** Applies the plan's sandbox-image decision if it
   made one (`booley init` re-run), then hands you into **Reopen in Container**.
 - **2 · Project config.** The `.core` Target(s), `tests.toml`, and `booley.toml`.
-- **3 · AGENTS.md.** A concise Project-level guidance file for RTL agents.
+- **3 · AGENTS.md.** A concise Project-level guidance file for Developer Agents.
 - **4 · Doctor.** `booley doctor` is Booley's built-in health check: it audits
   your config, `.core` Targets, toolchain, and sandbox and prints a `PASS`/`FAIL`
   line per check, each `FAIL` carrying a `fix:` hint. `--deep` goes further and

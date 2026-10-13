@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -20,15 +21,16 @@ from booley.goals.review_package import original_observations
 from booley.goals.state_store import load_goal_state
 from booley.goals.status import GoalStatusView, build_status
 from booley.goals.store import GoalStore
-from booley.harness import auto_doctor, upgrade_review
+from booley.harness import upgrade_review
 from booley.harness.dashboard.resources import ProcessSampler, Resources, ResourceSampler
 from booley.mcp.session_registry import SessionRegistry, SessionRow, namespace
 from booley.review.goal_package import GoalCompletionPackage
-from booley.runtime import job_slots
+from booley.runtime import health, health_presentation, job_slots
 from booley.runtime.artifact_paths import available_paths
 from booley.runtime.job_artifacts import JobArtifactCache
 from booley.runtime.job_snapshot import JobSnapshot, snapshot_jobs, target_arg
 from booley.runtime.pid import ProcessIdentity
+from booley.runtime.session_activity import Activity, ActivityStore, observed_activity
 
 
 @dataclass(frozen=True)
@@ -67,6 +69,8 @@ class DashboardSnapshot:
     health: tuple[str, ...] = ()
     diagnostics: tuple[str, ...] = ()
     observed_at: float = 0
+    # Reported activity by session key; a session without an entry is unknown.
+    activity: Mapping[str, Activity] = field(default_factory=dict)
 
 
 def _terminal(store: GoalStore, record: GoalRecord) -> GoalView:
@@ -195,19 +199,19 @@ def checking_goals(view: GoalView, jobs: JobSnapshot) -> GoalView:
     )
 
 
-def health_snapshot(root: Path, project_dir: Path) -> tuple[str, ...]:
+def health_lines(root: Path, project_dir: Path) -> tuple[str, ...]:
     """Non-consuming Doctor freshness and typed read-only upgrade-review projection."""
     lines = []
-    report = auto_doctor.load_report(root)
-    if report is not None and any(auto_doctor.issue_counts(report)):
-        due = auto_doctor.due_reason(root)
+    snapshot = health.read_health(root)
+    if snapshot is not None and not snapshot.assessment.clean:
         lines.append(
-            auto_doctor.current_summary(root) + (f" · stale: {due}" if due else " · current")
+            health_presentation.brief_message(snapshot)
+            + (f" · stale: {snapshot.due}" if snapshot.due else " · current")
         )
-    elif report is None:
+    elif snapshot is None:
         lines.append("Doctor health unavailable: no readable automatic result")
-    elif due := auto_doctor.due_reason(root):
-        lines.append("Doctor health stale: " + due)
+    elif snapshot.due:
+        lines.append("Doctor health stale: " + snapshot.due)
     review = upgrade_review.read_status(project_dir)
     if review.condition not in {
         upgrade_review.ReviewCondition.CURRENT,
@@ -270,7 +274,16 @@ class DashboardReader:
             tuple(checking_goals(goal, jobs) for goal in goals),
             replace(jobs, jobs=tuple(measured)),
             resources,
-            health_snapshot(self.root, self.project_dir),
+            health_lines(self.root, self.project_dir),
             sessions.diagnostics,
             now,
+            self._activity(sessions.rows, now),
         )
+
+    def _activity(self, rows: tuple[SessionRow, ...], now: float) -> dict[str, Activity]:
+        """Join each visible session with the last lifecycle event its client reported."""
+        store = ActivityStore(self.project_dir)
+        return {
+            row.attribution.key: observed_activity(store.read(row.attribution.key), now=now)
+            for row in rows
+        }

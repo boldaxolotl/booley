@@ -9,16 +9,31 @@ so the rules and the check cannot drift apart.
 
 from __future__ import annotations
 
+from booley.goals.declared_inputs import DeclaredCapture
 from booley.goals.protected_inputs import PROTECTED_INPUT_NAMES
 
+WORK_DIR_GUIDANCE = (
+    "Pass `work_dir` (the absolute worktree root) to Booley Flows, Specialists, "
+    "Goal tools, `booley_targets`, and `booley_report`. "
+    "`booley_status`, `booley_poll`, `booley_cancel`, `booley_sleep`, "
+    "`coverage_evidence`, and `bwave` accept no `work_dir`."
+)
 
-def goal_mode_rules() -> str:
+
+def goal_mode_rules(declared: DeclaredCapture | None = None) -> str:
     """The Goal Mode rules as Markdown bullets, ending with a newline."""
     protected = ", ".join(f"`{name}`" for name in PROTECTED_INPUT_NAMES)
+    if declared is not None:
+        protected += "; Project-declared files: " + ", ".join(
+            f"`{row.path}`" for row in declared.working
+        )
+        protected += ". Declarations: " + ", ".join(f"`{rule}`" for rule in declared.declarations)
+        protected += "; changing these declarations requires abandon and re-entry"
     bullets = (
-        "Pass `work_dir` (this worktree's root) on every Booley call. While any Goal "
-        "Mode is active, a Booley Flow, Specialist, or Goal call without `work_dir` is "
-        "refused.",
+        WORK_DIR_GUIDANCE + " While any Goal Record occupies the Project, Flows, "
+        "Specialists, Goal tools, and `booley_report` refuse a call without "
+        "`work_dir` (`booley_targets` may omit it), and Project-defined endpoints "
+        "must declare `work_dir` to run.",
         "Only Booley Flows and Specialists produce evidence. Nothing you write or "
         "report meets a Goal.",
         f"Protected inputs: {protected}. Editing one blocks Finish until it is "
