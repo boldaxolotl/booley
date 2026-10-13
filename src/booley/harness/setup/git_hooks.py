@@ -190,6 +190,7 @@ _FAILED_ACTION_DETAILS = {
     LineEndingActionKind.NORMALIZE_FILES: "normalization failed",
     LineEndingActionKind.REFRESH_INDEX: "normalization failed",
     LineEndingActionKind.PUBLISH_ATTRIBUTES: "attributes publication failed",
+    LineEndingActionKind.MIGRATE_ATTRIBUTES: "attributes migration failed",
 }
 
 _OBSERVATION_RESULT_DETAILS = (
@@ -224,6 +225,14 @@ def _render_line_ending_observations(report: RepositoryLineEndingReport) -> None
 
 
 def _render_line_ending_action(action: LineEndingActionResult) -> None:
+    if action.kind is LineEndingActionKind.MIGRATE_ATTRIBUTES:
+        if action.state is LineEndingActionState.PLANNED:
+            info(f"  would migrate line-ending default: {action.detail}")
+        elif action.state is LineEndingActionState.COMPLETED:
+            ok(f"migrated line-ending default: {action.detail}")
+        else:
+            warn(f"attributes migration {action.state}: {action.detail}")
+        return
     if (
         action.kind is LineEndingActionKind.PUBLISH_ATTRIBUTES
         and action.target

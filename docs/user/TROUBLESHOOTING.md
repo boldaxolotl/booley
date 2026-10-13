@@ -254,10 +254,13 @@ experiment, not a setup requirement.
   unless the root already owns a whole-tree policy. `text=auto` preserves Git's
   binary-file detection, and later rules in that file can override the default.
   **Commit only published root `.gitattributes` files** to share their policy.
-  Init warns about a prior untracked root default or a local default conflicting
-  with upstream rules or Stealth opt-out. Inspect those files and remove or
-  migrate the default if appropriate; init preserves them because ownership
-  cannot be proven.
+  On Stealth opt-out, init migrates its replayable local default to root
+  `.gitattributes`, unless the root already owns a whole-tree policy, and
+  preserves compatible comments and export attributes in the local file.
+  Init still warns about a prior untracked root default, a local default
+  conflicting with upstream rules while Stealth is enabled, or non-replayable
+  local content on opt-out. Inspect those files and remove or migrate the
+  default if appropriate; init preserves them because ownership cannot be proven.
 
   Files already on disk with CRLF are a separate matter. From a clean tracked
   tree, init stages Git-filtered LF replacements, verifies that the affected

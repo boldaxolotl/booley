@@ -8210,3 +8210,40 @@ def test_unanchored_evidence_workarounds_receive_canonical_init_repair(tmp_path)
     assert ignore.read_text().startswith(original)
     assert all(p in ignore.read_text().splitlines() for p in new)
     assert [f.severity for f in _gitignore_probe(tmp_path)] == ["pass"]
+
+
+def test_doctor_opt_out_migration_read_only_and_direct_init_hint(tmp_path):
+    from booley.harness.setup.line_endings import LineEndingMode, reconcile_project_line_endings
+
+    TestLineEndingsCheck._repo(tmp_path, autocrlf="false")
+    TestLineEndingsCheck._commit(tmp_path, ".gitignore", b".booley_project/\n")
+    data = tmp_path / ".booley_project"
+    data.mkdir()
+    config = data / "booley.toml"
+    config.write_text("[stealth]\nenabled = true\n")
+    reconcile_project_line_endings(tmp_path, data, mode=LineEndingMode.REPAIR)
+    config.write_text("[stealth]\nenabled = false\n")
+    paths = [
+        tmp_path / ".git/config",
+        tmp_path / ".git/index",
+        tmp_path / ".git/info/attributes",
+        config,
+    ]
+    before = [(p.read_bytes(), p.stat().st_mtime_ns) for p in paths]
+    c = _Collector()
+    hints = []
+
+    def warn(message, fix=""):
+        c._warn(message, fix)
+        hints.append(fix)
+
+    doctor._check_line_endings(tmp_path, c._pass, warn, c._skip, c._fail, project_dir=data)
+    assert c.warned and not c.failed and not c.passed
+    assert "migration" in c.warned[0]
+    assert "booley init" in hints[0]
+    assert "cannot prove ownership" not in c.warned[0]
+    assert [(p.read_bytes(), p.stat().st_mtime_ns) for p in paths] == before
+    reconcile_project_line_endings(tmp_path, data, mode=LineEndingMode.REPAIR)
+    c = _Collector()
+    doctor._check_line_endings(tmp_path, c._pass, c._warn, c._skip, c._fail, project_dir=data)
+    assert c.passed and not c.warned and not c.failed
