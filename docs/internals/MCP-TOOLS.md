@@ -146,7 +146,7 @@ enabled = false                 # remove one discovered Specialist MCP tool
 - Custom Flows and MCP tools are scanned from `.booley_project/mcp_tools/*.py`.
 - `[flows.<name>].enabled = false` disables a Flow; `[specialists.<name>].enabled = false` disables a Specialist. Protocol utilities have no Project enable switch.
 - Interactive, non-nested servers list `goal_enter`, `goal_status`, `goal_propose_change`, and `goal_finish` without a rollout switch. These Goal tools bypass `BOOLEY_MCP_TOOLS`; default and nested servers do not list them.
-- For regular discovered tools, nested allowlists take precedence, followed by `BOOLEY_MCP_TOOLS`, then the `BOOLEY_MCP_MODE=interactive` filter. `tb_coder` is currently de-registered in all modes. These environment filters are separate from Project registration.
+- For regular discovered tools, nested allowlists take precedence, followed by `BOOLEY_MCP_TOOLS`, then the `BOOLEY_MCP_MODE=interactive` filter. These environment filters are separate from Project registration.
 - `booley flow` is the human diagnostic entry point for Booley Flows; the MCP tool diagnostic surface covers Specialists and non-Flow endpoints.
 
 ### Execution Boundary
@@ -634,7 +634,19 @@ def _disallowed_tools(self) -> list[str] | None:
     ]
 ```
 
-Category isolation is separate from write isolation. Some built-ins temporarily hide opposite-category sources through Booley's internal `workspace_isolation` helpers; `workspace_access = "read_only"` protects the real worktree from writes but does not hide files from the snapshot.
+Category isolation uses the same disposable snapshot as write isolation. The
+Reviewer selects its review category; MutationTester's proposer selects `rtl`.
+Booley resolves source directories from the live Project, copies its current
+sources, and removes the opposite category only inside the copy. Shared source
+prefixes remain visible. The snapshot's Git baseline is created after removal,
+so its history cannot reveal the removed files. The live worktree retains all
+sources throughout the call, and the snapshot is discarded afterwards.
+
+`workspace_access = "read_only"` alone protects the real worktree from writes;
+a Specialist must also select `_workspace_isolation_category()` to apply the
+category wall. Reviewer state-file projection is a separate mechanism that
+still temporarily filters opposite-category findings and restores the original
+state bytes afterwards.
 
 #### Find Its Logs
 

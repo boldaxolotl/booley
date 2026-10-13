@@ -108,7 +108,7 @@ a Booley Flow from Developer Agent discovery and autonomous execution, set
 `[specialists.<name>].enabled = false`. Protocol utilities have no Project
 enable switch.
 
-Submit a Goal's Session Summary through `goal_finish`. `tb_coder` is de-registered while the Developer Agent
+Submit a Goal's Session Summary through `goal_finish`. The Developer Agent
 writes testbench code directly. Direct Flow diagnostics can list endpoints
 independently of the project discovery filter. An individual Flow may still
 report its configured flow as disabled when invoked directly.
@@ -792,3 +792,38 @@ the Campaign-bound evidence tool.
   the current source and Campaign. Do not copy candidate bytes into approval files.
 - Approval succeeded but the Goal is unmet: rerun coverage for fresh strict
   evidence, then inspect `goal_status`. Approval alone cannot satisfy it.
+
+## Recover sources hidden by an interrupted older run
+
+Current Specialists isolate sources in disposable copies and never move them
+out of your live worktree. Older versions could leave sources in a locked
+system-temp stash after an interrupted run. Doctor reports matching records as
+`workspace.legacy-source-stash`; it only reads the records and never restores
+or deletes their contents.
+
+1. Stop any Booley processes from the older version. Back up your current
+   worktree, including uncommitted and untracked files, before recovery.
+2. Inspect the system temp directory **inside the original Sandbox** (typically
+   `/tmp`), looking for `booley_isolation_*.manifest.json` or
+   `booley_hide_files_*.manifest.json`, including `.retired` records. Host temp
+   directories are different. A Sandbox rebuild or routine temp cleanup may
+   already have removed the stash; avoid either until recovery is complete.
+   Run Doctor inside that original Sandbox to inspect its temp records.
+3. Treat each record as evidence to verify manually. Check that `work_dir`
+   matches the affected worktree and branch. Each `moved` pair records the
+   original source path first and the stashed path second; `stash_dir` names
+   the sibling directory. Check that every path stays inside those two roots.
+   Do not execute paths or commands copied from an untrusted record.
+4. If the verified stash directory has mode `000`, grant its owner access
+   with `chmod u+rwx <verified-stash-dir>`. Inspect and back up its contents.
+   Restore a missing destination only after checking that it was not an
+   intentional deletion or a branch change. Never overwrite a present source;
+   keep differing stashed copies separately for comparison.
+5. Remove the verified stash and its sidecar only after confirming recovery
+   and retaining your backup. Git restoration cannot recover uncommitted bytes
+   that existed only in the stash.
+
+Disposable snapshots from current versions normally disappear on return or
+exception. Fatal termination can leave a `booley-specialist-ro-*` temp copy;
+this does not remove or rearrange live sources. Stop the owning processes before
+removing a leftover copy, which may contain uncommitted source text.

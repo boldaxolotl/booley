@@ -27,7 +27,7 @@ from booley.commit_policy import ALLOWED_TYPES, banned_phrases, stealth_enabled,
 from booley.core.boundary import parse_positive_int_arg
 from booley.core.models import AgentCallParams
 
-# Also re-exported for backward compatibility: tb_coder + tests import
+# Also re-exported for backward compatibility: tests import
 # _git_head_sha / _read_commit_info from this module.
 from booley.dev_support.commit_git_io import (
     _git_head_sha,
@@ -790,8 +790,9 @@ _PARENT_WATCHDOG_INTERVAL_S = 5.0
 def _abort_orphaned_run(label: str, initial_ppid: int) -> None:
     """Tear down this run after its launching process died.
 
-    SIGTERM (not ``os._exit``) so the Specialist's own cleanup still runs — the
-    isolation stash restore in particular.
+    SIGTERM allows installed handlers to restore projected state before exit.
+    Fatal termination may leave a disposable workspace for system temp cleanup;
+    source isolation never moves files out of the live worktree.
 
     The agent CLI is the expensive half and it is spawned as a plain child
     (``_codex_backend._codex_spawn`` passes no ``start_new_session``), so it
