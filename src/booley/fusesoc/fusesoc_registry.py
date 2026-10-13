@@ -1722,7 +1722,7 @@ def source_dirs_from_core(
 
     The directory-granularity view of :func:`classified_sources`, for consumers
     that need *where* sources live rather than *which* files they are — write
-    boundaries (tb_coder), workspace staging, fingerprint enumeration roots.
+    boundaries, workspace staging, fingerprint enumeration roots.
 
     Each entry is the project-relative **parent directory** of a declared file,
     except a **root-level** file (flat repo, ADR 0026), whose entry is the file
@@ -1736,7 +1736,7 @@ def source_dirs_from_core(
     A resolvable ``.core`` is a precondition for every Booley Flow (ADR 0039):
     a project with none raises rather than guessing — the old hardcoded
     ``(["rtl", "fw"], ["tb"])`` fallback silently fed a wrong partition into
-    the Specialist Source Isolation boundary (reviewer stash / mutation-tester
+    the Specialist Source Isolation boundary (Reviewer snapshot / MutationTester
     blindness). ``booley doctor`` FAILs the same condition up front.
     """
     root = Path(project_root)

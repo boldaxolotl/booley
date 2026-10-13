@@ -9,22 +9,18 @@ import subprocess
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Literal
 
-from booley.agent_workspace.isolation import get_category_dirs, hide_opposite_sources
+from booley.agent_workspace.isolation import (
+    WorkspaceSnapshot,
+    get_category_dirs,
+    hide_opposite_sources,
+)
 from booley.core.models import AgentCallParams, AgentResult
 
 WorkspaceAccess = Literal["read_only", "read_write"]
-
-
-@dataclass(frozen=True)
-class WorkspaceSnapshot:
-    """A disposable workspace plus the real path it represents."""
-
-    real_root: Path
-    snapshot_root: Path
 
 
 def _run_git(args: list[str], cwd: Path, *, text: bool = True) -> str | bytes:
@@ -102,6 +98,10 @@ def _populate_snapshot(real_root: Path, snapshot_root: Path) -> None:
             real_root,
             snapshot_root,
         )
+
+
+def _initialize_snapshot_git(snapshot_root: Path) -> None:
+    """Record only the sources the agent is allowed to read."""
     _run_git(["init", "--quiet"], snapshot_root)
     _run_git(["add", "--all"], snapshot_root)
     _run_git(
@@ -168,6 +168,15 @@ def isolated_agent_workspace(
     with tempfile.TemporaryDirectory(prefix="booley-specialist-ro-") as temp_dir:
         snapshot = WorkspaceSnapshot(real_root, Path(temp_dir).resolve())
         _populate_snapshot(real_root, snapshot.snapshot_root)
+        if category is not None:
+            assert category_dirs is not None
+            hide_opposite_sources(
+                snapshot,
+                category,
+                category_dirs=category_dirs,
+                cwd=snapshot.snapshot_root / relative_cwd,
+            )
+        _initialize_snapshot_git(snapshot.snapshot_root)
         old = str(real_root)
         new = str(snapshot.snapshot_root)
         isolated = replace(
@@ -176,8 +185,4 @@ def isolated_agent_workspace(
             prompt=_replace_path(params.prompt, old, new),
             system_prompt=_replace_path(params.system_prompt, old, new),
         )
-        if category is None:
-            yield isolated, snapshot
-            return
-        with hide_opposite_sources(snapshot.snapshot_root, category, category_dirs=category_dirs):
-            yield isolated, snapshot
+        yield isolated, snapshot
