@@ -548,6 +548,24 @@ def test_status_shows_frozen_runs_outcomes_and_a_rerun_command_per_failing_seed(
     assert "goal-test-run-failed" in text
 
 
+def test_status_keeps_a_long_goal_name_and_its_status_on_one_line(two: SimpleNamespace) -> None:
+    """A long unmet reason must not wrap the Goal name away from its status."""
+    from dataclasses import replace
+
+    from booley.goals.format import render_status
+    from booley.goals.presentation import GoalPresentation
+
+    view = build_status(GoalStore(two.control), two.record, work_dir=two.worktree)
+    long_name = GoalPresentation(
+        "SYNTH:synth_core", "cells increase ≤ 11% · critical path increase ≤ 3%"
+    )
+    (goal,) = view.goals
+    assert len(goal.reason) > 30
+    text = render_status((replace(view, goals=(replace(goal, presentation=long_name),)),))
+    assert f"{long_name.text} unmet" in " ".join(text.split())
+    assert any(long_name.text in line and "unmet" in line for line in text.splitlines())
+
+
 def test_status_lines_name_pending_slots_and_runs_resolved_after_entry(
     layout: SimpleNamespace,
 ) -> None:

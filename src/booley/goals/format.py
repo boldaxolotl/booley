@@ -285,7 +285,12 @@ def _render_long_status(console: Console, view: GoalStatusView) -> None:
     """Detailed Goal rows and recoverable proposal state."""
     console.print(f"Worktree: {view.record.worktree_path}")
     console.print(f"Branch: {view.record.branch}")
-    table = Table("Goal", "Status", "Evidence", box=None, padding=(0, 1))
+    # The Goal name and its status stay on one line however long the evidence is:
+    # clients read a row as "<name> <status>".
+    table = Table(box=None, padding=(0, 1))
+    table.add_column("Goal", no_wrap=True)
+    table.add_column("Status", no_wrap=True)
+    table.add_column("Evidence")
     for goal in view.goals:
         evidence = goal.evidence_summary
         if goal.status == "unmet" and goal.reason:
