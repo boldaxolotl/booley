@@ -146,6 +146,13 @@ bwave find sim.fst \
 
 ## Clock-grid behavior
 
-Literal level triggers skip interior stopped cycles by default; `--include-stopped` restores time-grid matching. Edge/change triggers keep their existing behavior. Counts and first/last selection use the same policy, including Virtual Signals. Overlapping stops are informational; JSON exposes `clock_stopped`. `--sample-mode pre-edge` changes observation values while retaining edge-cycle labels.
+- Literal level triggers (e.g. `'h1`) skip cycles inside a clock stop.
+  `--include-stopped` matches them too.
+- Edge and change triggers are unaffected.
+- `--count`, `--first`, `--last`, and Virtual Signals follow the same rule.
+- A stop overlapping the query window is reported as information, not a
+  warning. JSON lists it in `clock_stopped`.
+- `--sample-mode pre-edge` reads values just before each edge. Cycle numbers
+  do not change.
 
-See `reference/sync-vs-async` for the advisory verdict and sampling modes.
+See `reference/sync-vs-async` for the clock verdict and sampling modes.

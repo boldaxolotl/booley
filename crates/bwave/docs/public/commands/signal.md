@@ -102,6 +102,11 @@ bwave signal sim.fst -s "*valid*" -s "*ready*" -t 0t:1000t --async
 
 ## Clock-grid behavior
 
-A stopped stretch inserts a `# clk stopped A:B` comment on **stdout**, ordered with the value rows and counting toward `--limit`. Changes inside it retain their grid-cycle labels. Other diagnostics stay on stderr. JSON exposes an ordered `records` array of `kind: value` and `kind: clock_stopped` records. Row values use the selected display radix.
+- A clock stop prints a `# clk stopped A:B` line on **stdout**, in order with
+  the value rows. It counts toward `--limit`.
+- Changes inside the stop keep their grid-cycle numbers.
+- All other diagnostics go to stderr.
+- JSON `records` is an ordered array of `kind: value` and
+  `kind: clock_stopped` entries. Values use the selected display radix.
 
-See `reference/sync-vs-async` for the advisory verdict and sampling modes.
+See `reference/sync-vs-async` for the clock verdict and sampling modes.

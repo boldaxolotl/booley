@@ -125,6 +125,14 @@ bwave distance sim.fst \
 
 ## Clock-grid behavior
 
-Elapsed grid distance is preserved across stops. Each pair reports its stopped share in `(A,B]`, e.g. `d=1003 cycles (1000 stopped)`. JSON pair fields are `from`, `to`, `elapsed`, and `stopped_cycles`; `unit` identifies cycles or ticks. `--stats` adds total `stopped_cycles` across all measured pairs (overlaps counted per pair). Literal distance events keep their existing time-grid semantics, including stopped points.
+Distance counts every grid cycle, including cycles inside a clock stop:
 
-See `reference/sync-vs-async` for the advisory verdict and sampling modes.
+- Each pair reports the stopped cycles in `(A,B]`, e.g.
+  `d=1003 cycles (1000 stopped)`.
+- `--stats` adds `stopped_cycles`, summed per pair, so overlapping pairs
+  count a shared stop more than once.
+- Unlike `find`, literal events on stopped cycles still match.
+- JSON pairs carry `from`, `to`, `elapsed`, and `stopped_cycles`; `unit` is
+  `cycles` or `ticks`.
+
+See `reference/sync-vs-async` for the clock verdict and sampling modes.

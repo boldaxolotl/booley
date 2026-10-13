@@ -1,46 +1,65 @@
 # Clock detection and regularity
 
-Run `bwave overview trace.fst` or `bwave stats trace.fst -s clk` to inspect
-the clock verdict; `--format json` puts it in `clock_regularity`.
+Sync mode builds its cycle grid from one clock. Check which clock was picked
+and whether it fits the grid:
 
-| Reason | Meaning and next step |
-|---|---|
-| `regular` | Every real rising edge fits the grid. |
-| `stopped_stretches` | Interior grid points lack rising edges; inspect the summary and query notes. |
-| `off_grid_edge` | Frequency/phase change or jitter; warning names the first divergent tick. Use `--async` with tick/time bounds. |
-| `non_integer_period` | Inferred quantized fractional cadence; use `--async`. |
-| `unknown_clock` | Clock becomes X/Z after starting; use `--async` to inspect it. |
-| `insufficient_edges` | Fewer than two rising edges, so no period can be measured. Select another clock or use async. |
-| `multiple_clock_periods` | Candidate clocks have different periods. Select `--clock PATTERN` for the intended domain. |
+```bash
+bwave overview trace.fst
+```
 
-The fractional inference requires at least six gaps, two adjacent gap lengths
-with each appearing at least twice, and less than one tick of error to the
-rational line through the first and last rise. This recognizes quantization,
-but cannot prove simulator intent or distinguish every jitter pattern.
+`--format json` puts the verdict in `clock_regularity`. `bwave stats` prints
+the same header.
 
-Auto-detection considers one-bit signals whose bracket-stripped hierarchical name contains `clk`
-(case-insensitive), ordered by scope depth then name. The first candidate with two
-strict 0-to-1 transitions wins. An explicit pattern uses the first matching
-one-bit signal in the same order; a miss errors with exit 2, while an
-insufficient-edge selection reports an unavailable verdict. Use `list -s
-"*clk*"` to inspect candidates. A clock with an unconventional name can be
-selected explicitly:
+## Verdict reasons
+
+| Reason | Meaning | Next step |
+|---|---|---|
+| `regular` | Every rising edge fits the grid. | None. |
+| `stopped_stretches` | Some interior grid points have no rising edge. | Read the stop summary and query notes. |
+| `off_grid_edge` | Frequency change, phase change, or jitter. The warning names the first off-grid tick. | Use `--async` with tick/time bounds. |
+| `non_integer_period` | The period is fractional and the simulator rounded it to ticks. | Use `--async`. |
+| `unknown_clock` | The clock goes X/Z after starting. | Inspect it with `--async`. |
+| `insufficient_edges` | Fewer than two rising edges; no period to measure. | Select another clock or use `--async`. |
+| `multiple_clock_periods` | Candidate clocks have different periods. | Select the intended domain with `--clock PATTERN`. |
+
+`non_integer_period` is inferred, not proven. It needs:
+
+- at least six gaps between rising edges;
+- two adjacent gap lengths, each seen at least twice;
+- under one tick of error against the straight line from the first rise to
+  the last.
+
+This recognizes tick rounding, but cannot separate it from every jitter
+pattern.
+
+## How the clock is picked
+
+1. Candidates are one-bit signals whose hierarchical name, brackets
+   stripped, contains `clk` (case-insensitive).
+2. They are ordered by scope depth, then name.
+3. The first one with two 0-to-1 transitions wins.
+
+`--clock PATTERN` takes the first one-bit match in the same order. No match
+exits with code 2. A match with fewer than two rising edges gives an
+`unavailable` verdict.
+
+List the candidates with `bwave list trace.fst -s "*clk*"`. Select a clock
+with an unconventional name explicitly:
 
 ```bash
 bwave overview trace.fst --clock phi1
 bwave signal trace.fst -s state --clock core_clk
 ```
 
-The grid uses the first gap even when that gap contains a clock stop. Later
-edges can therefore fail the check. Late starts and final stops do not fail
-regularity; only interior gaps are marked. Stops are reported only up to the
-first off-grid or X/Z tick. Integer-multiple slowdowns fit the grid and look
-like repeated gating. Per-signal domain ownership is not inferred.
+## When the verdict warns
 
-The verdict never switches modes automatically. Async requests with cycle
-tokens (`-t 100c:200c`, `--at 10c`, markers) still depend on that same grid and
-retain invalid-clock warnings. Use tick/time tokens for an independent view:
+The verdict never switches modes for you. Async queries with cycle tokens
+(`-t 100c:200c`, `--at 10c`, markers) still use the same grid and keep the
+warning. Use tick/time tokens for a view that does not depend on the clock:
 
 ```bash
 bwave signal trace.fst -s state --async -t 0t:1000t
 ```
+
+See `reference/sync-vs-async` for what the check cannot tell: first-gap
+stops, late starts, integer-multiple slowdowns, and clock-domain ownership.

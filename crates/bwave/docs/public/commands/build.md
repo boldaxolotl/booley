@@ -113,6 +113,6 @@ my_simulator +vcd=/tmp/sim.vcd
 wait
 ```
 
-After conversion, build prints the detected clock regularity verdict and
-interior stopped-stretch summary to stderr. The verdict is advisory: the
-store is still built for async inspection when sync is unreliable.
+After conversion, `build` prints the clock verdict and clock-stop summary to
+stderr. A `warning` verdict does not fail the build: the store still serves
+`--async` queries. See `reference/sync-vs-async`.

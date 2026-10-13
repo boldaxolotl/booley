@@ -60,9 +60,10 @@ Available on every query/introspect subcommand:
 - `--with-reset`: include the reset phase in output
   (default skips it).
 - `--format text|json`: JSON for `list`, `value`, `find`, `stats`, `signal`,
-  `wave`, `distance`, `overview`. `sample`, `diff`, `stuck` reject JSON with exit 2.
-- `--sample-mode post-edge|pre-edge`: sync observation mode for value queries.
-- `--include-stopped`: find/sample literal triggers include stopped cycles.
+  `wave`, `distance`, and `overview`. `sample`, `diff`, and `stuck` reject
+  JSON with exit code 2.
+- `--sample-mode post-edge|pre-edge`: read sync values after (default) or
+  just before each clock edge. See `reference/sync-vs-async`.
 - `--limit N`: max records (rows, signal blocks, or pairs);
   `wave` counts columns. Headers do not count. Default 2000.
 
@@ -77,6 +78,11 @@ Available on every query/introspect subcommand:
   Virtual Signal rows from one combined name set. Definitions
   that serve only as helpers are evaluated but not displayed.
 
+Clock-stop matching is `find`- and `sample`-only:
+
+- `--include-stopped`: literal triggers also match cycles inside a clock
+  stop. See `reference/sync-vs-async`.
+
 Native marker annotation is `wave`-only:
 
 - `--marker NAME TIME`: pin a named time for display in
@@ -89,10 +95,15 @@ Native marker annotation is `wave`-only:
 Every query/introspect subcommand requires a built `.fst`
 store as the first positional argument: `list`, `signal`,
 `wave`, `value`, `find`, `sample`, `diff`, `distance`,
-`stats`, and `stuck`. Pass a `.vcd` and you'll get exit code 2
+`stats`, `stuck`, and `overview`. Pass a `.vcd` and you'll get exit code 2
 with a `bwave build` hint. Only `build` reads VCD input.
 
-`bwave overview STORE_FILE` reports the selected clock verdict and stopped
-summary without walking every data signal. It accepts clock/reset selection
-and `--with-reset`; JSON includes trace metadata in `data` and clock verdict
-in the envelope. `overview` rejects `--sample-mode`.
+## The `overview` command
+
+`bwave overview STORE_FILE` prints the selected clock, its verdict, and the
+clock-stop summary without scanning the data signals. Run it before trusting
+cycle numbers.
+
+- Accepts `--clock`, `--reset`, and `--with-reset`; rejects `--sample-mode`.
+- `--format json` puts trace metadata in `data` and the verdict in
+  `clock_regularity`.

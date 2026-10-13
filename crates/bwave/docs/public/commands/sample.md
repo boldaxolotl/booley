@@ -109,6 +109,11 @@ bwave sample sim.fst "*err" rising --count
 
 ## Clock-grid behavior
 
-Literal triggers skip interior stopped cycles by default; `--include-stopped` includes them. Edge/change triggers are unaffected by stop exclusion. `--sample-mode pre-edge` applies to both trigger and captured values (including Virtual Signals), with the same edge-cycle labels as post-edge.
+- Literal triggers skip cycles inside a clock stop. `--include-stopped`
+  matches them too.
+- Edge and change triggers are unaffected.
+- `--sample-mode pre-edge` reads both the trigger and the captured values
+  (Virtual Signals included) just before each edge. Cycle numbers do not
+  change.
 
-See `reference/sync-vs-async` for the advisory verdict and sampling modes.
+See `reference/sync-vs-async` for the clock verdict and sampling modes.

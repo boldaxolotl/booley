@@ -110,6 +110,11 @@ Both definitions are evaluated, but only `stalled` is printed.
 
 ## Clock-grid behavior
 
-A stopped stretch becomes one `clk stopped A:B` break column, counting as one column toward `--limit`. Breaks survive `--rle`; markers inside appear in the break label. Values inside a break are hidden: use `signal` or async to inspect changes there. JSON exposes `columns`, edge `ticks`, `names` and row `values`; JSON columns are uncompressed even with `--rle`.
+- A clock stop collapses into one `clk stopped A:B` column. It counts as one
+  column toward `--limit` and survives `--rle`.
+- Markers inside the stop appear in that column's label.
+- Values inside the stop are hidden. Use `signal` or `--async` to see them.
+- JSON has `columns`, edge `ticks`, `names`, and row `values`. JSON columns
+  are never run-length compressed, even with `--rle`.
 
-See `reference/sync-vs-async` for the advisory verdict and sampling modes.
+See `reference/sync-vs-async` for the clock verdict and sampling modes.

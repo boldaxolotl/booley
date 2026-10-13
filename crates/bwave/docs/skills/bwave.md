@@ -39,14 +39,15 @@ corpus) → `bwave schema` (JSON Schema for `--format json`).
   `bwave docs show reference/virtual-signals`.
 - **JSON envelope**: `list`, `value`, `find`, `stats`, `signal`, `wave`,
   `distance`, and `overview` wrap output in `{$schema, command, data, warnings}`.
-  Inspect `clock_regularity` before trusting cycle queries and `clock_stopped`
-  for overlapping interior stops; use raw tick/time bounds with `--async` when
-  regularity warns. Stops are informational. Literal find/sample triggers skip
-  stopped cycles unless `--include-stopped` is set. `--sample-mode pre-edge`
-  shows what flops captured, retaining edge labels; post-edge remains default.
-  See `reference/sync-vs-async` for detection limits and reset boundaries.
   The envelope is the contract for programmatic callers (`bwave schema` has the
   full grammar). Text output is for humans — do not pattern-match it.
+- **Clock check**: cycle numbers assume a regular clock. Run `bwave overview`
+  (JSON: `clock_regularity`) before trusting them; when it warns, use
+  `--async` with tick/time bounds. See `bwave docs show reference/sync-vs-async`.
+- **Clock stops**: informational, listed in JSON `clock_stopped`. Literal
+  `find`/`sample` triggers skip stopped cycles unless `--include-stopped` is set.
+- **Pre-edge sampling**: `--sample-mode pre-edge` shows what flops captured on
+  each edge, with the same cycle numbers. Post-edge is the default.
 
 ## Reach for `wave` first
 
