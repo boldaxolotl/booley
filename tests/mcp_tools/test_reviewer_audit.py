@@ -235,7 +235,7 @@ def test_failed_semantics_migration_archives_receipt_and_preserves_obligations(
         },
     ]
     reviewer.state.save()
-    output(reviewer, monkeypatch, {"issues": [None]})
+    contract_passes(reviewer, monkeypatch, [{"index": 1, "status": "STILL_PRESENT"}], [None])
     failed = reviewer._run()
     assert failed.exit_code == 2
     assert failed.detail["needs_discovery"] is True
@@ -243,11 +243,16 @@ def test_failed_semantics_migration_archives_receipt_and_preserves_obligations(
     assert failed.detail["resolved"] == old["resolved"]
     archive = json.loads(Path(failed.detail["receipt_history"][-1]).read_text())
     assert archive["resolved"] == old["resolved"]
-    output(reviewer, monkeypatch, {"issues": []})
+    calls = contract_passes(reviewer, monkeypatch, [{"index": 1, "status": "STILL_PRESENT"}], [])
     restarted = reviewer._run()
+    assert restarted.exit_code == 1
+    assert [phase for phase, _ in calls] == ["verify", "discovery"]
     assert restarted.criterion_met is False
-    assert restarted.detail["pending"] == first.detail["pending"]
+    assert restarted.detail["pending"] == [
+        {**first.detail["pending"][0], "status": "still_present"}
+    ]
     assert restarted.detail["resolved"] == old["resolved"]
+    assert "Reviewer evidence contract changed; restarting discovery." in restarted.report_text
 
 
 @pytest.mark.parametrize("version", [None, 3, 4])
@@ -581,3 +586,345 @@ def test_actual_reviewer_evidence_keeps_versioned_project_clean(
         assert_clean(root)
     finally:
         project_dir.reset_cache()
+
+
+def contract_passes(reviewer, monkeypatch, statuses, discoveries):
+    calls = []
+
+    def verify(params):
+        calls.append(("verify", params))
+        return MagicMock(output=json.dumps({"findings": statuses}))
+
+    def discover(params):
+        calls.append(("discovery", params))
+        return MagicMock(
+            output=json.dumps({"issues": discoveries}), captured_agent_capability_calls={}
+        )
+
+    monkeypatch.setattr(reviewer, "_invoke_agent_with_resume", verify)
+    monkeypatch.setattr(reviewer, "_invoke_agent", discover)
+    return calls
+
+
+def fixed_finding(index=1):
+    return {"index": index, "status": "FIXED", "evidence": "rtl/dut.sv:1 — corrected logic"}
+
+
+@pytest.mark.parametrize("change", ["steer", "decisions", "spec", "ticket"])
+def test_contract_change_verifies_fixed_findings_then_discovers(
+    reviewer, monkeypatch, change, capsys
+):
+    root = Path(reviewer.args.work_dir)
+    logs = root / "logs"
+    logs.mkdir()
+    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(logs))
+    document = logs / {
+        "decisions": "answered_questions.md",
+        "spec": "spec.md",
+        "ticket": "ticket.md",
+    }.get(change, "unused.md")
+    document.write_text("Original contract\n")
+    if change == "spec":
+        reviewer.args.spec = str(document)
+        reviewer.args.focus = "spec"
+        reviewer.state.init_criteria({"review_rtl_spec_clean": True})
+        reviewer.state.save()
+    output(reviewer, monkeypatch, {"issues": [proposal(category=reviewer.args.focus)]})
+    reviewer._run()
+    capsys.readouterr()
+    (root / "rtl/dut.sv").write_text("module dut; logic fixed; endmodule\n")
+    if change == "steer":
+        reviewer.args.steer = ["New context"]
+    else:
+        document.write_text("Updated contract\n")
+    calls = contract_passes(reviewer, monkeypatch, [fixed_finding()], [])
+
+    result = reviewer._run()
+
+    assert [phase for phase, _ in calls] == ["verify", "discovery"]
+    assert result.exit_code == 0
+    assert result.criterion_met is True
+    assert result.detail["pending"] == []
+    assert result.detail["resolved"][0]["status"] == "fixed"
+    assert result.detail["verify_attempts"] == 0
+    assert "total_verify_cycles" not in result.detail
+    assert "needs_discovery" not in result.detail
+    restart = "Reviewer scope or context changed; restarting discovery."
+    assert restart in result.report_text
+    assert restart in result.display_lines
+    assert result.report_text.index("[review-verify]") < result.report_text.index("new contract")
+    assert result.report_text.count("RESULT:") == 1
+    assert restart in capsys.readouterr().out
+    if change != "steer":
+        assert "Updated contract" in calls[0][1].prompt
+    if change == "ticket":
+        assert "Updated contract" in calls[1][1].prompt
+
+
+def test_contract_change_merges_verified_and_discovered_findings_by_id(reviewer, monkeypatch):
+    old = proposal(summary="Old open finding")
+    output(reviewer, monkeypatch, {"issues": [old, proposal(summary="Fixed finding")]})
+    reviewer._run()
+    reviewer.args.steer = ["Changed context"]
+    calls = contract_passes(
+        reviewer,
+        monkeypatch,
+        [{"index": 1, "status": "STILL_PRESENT"}, fixed_finding(2)],
+        [old, proposal(severity="MINOR", summary="New finding")],
+    )
+
+    result = reviewer._run()
+
+    assert [phase for phase, _ in calls] == ["verify", "discovery"]
+    assert result.exit_code == 1
+    assert len(result.detail["pending"]) == 2
+    assert len({row["finding_id"] for row in result.detail["pending"]}) == 2
+    assert result.detail["MAJOR"] == 1
+    assert result.detail["MINOR"] == 1
+    assert len(result.detail["resolved"]) == 1
+    assert result.report_text.count("RESULT:") == 1
+    for text in [result.report_text, "\n".join(result.display_lines)]:
+        assert text.count("Old open finding") == 1
+        assert text.count("New finding") == 1
+        assert "1 major, 1 minor" in text
+
+
+def test_narrowed_scope_still_verifies_prior_finding_outside_scope(reviewer, monkeypatch):
+    root = Path(reviewer.args.work_dir)
+    (root / "rtl/other.sv").write_text("module other; endmodule\n")
+    output(reviewer, monkeypatch, {"issues": [proposal()]})
+    reviewer._run()
+    reviewer.args.scope = "rtl/other.sv"
+    calls = contract_passes(reviewer, monkeypatch, [{"index": 1, "status": "STILL_PRESENT"}], [])
+
+    result = reviewer._run()
+
+    assert [phase for phase, _ in calls] == ["verify", "discovery"]
+    assert "rtl/dut.sv:1" in calls[0][1].prompt
+    assert "outside" in calls[0][1].prompt
+    assert "rtl/other.sv" in calls[1][1].prompt
+    assert result.detail["pending"][0]["file"] == "rtl/dut.sv"
+    assert result.detail["pending"][0]["status"] == "still_present"
+    assert "Missing [SIM_RESULT]" in result.report_text
+
+
+@pytest.mark.parametrize("status", ["FIXED", "WAIVED"])
+def test_new_contract_discovery_reopens_same_verified_finding(reviewer, monkeypatch, status):
+    output(reviewer, monkeypatch, {"issues": [proposal()]})
+    first = reviewer._run()
+    reviewer.args.steer = ["Changed context"]
+    disposition = {
+        **fixed_finding(),
+        "status": status,
+        "justification": "Previously accepted policy",
+    }
+    contract_passes(reviewer, monkeypatch, [disposition], [proposal()])
+
+    result = reviewer._run()
+
+    assert result.criterion_met is False
+    assert result.detail["pending"][0]["finding_id"] == first.detail["pending"][0]["finding_id"]
+    assert result.detail["resolved"][0]["status"] == status.lower()
+    assert collect_review_dispositions(reviewer.state.criteria)[0]["disposition"] == "open"
+    assert "[WAIVED" not in result.report_text
+    assert "[WAIVED" not in "\n".join(result.display_lines)
+
+
+@pytest.mark.parametrize("remaining", [False, True])
+def test_changed_contract_bypasses_and_resets_exhausted_budgets(reviewer, monkeypatch, remaining):
+    output(reviewer, monkeypatch, {"issues": [proposal()]})
+    reviewer._run()
+    entry = reviewer.state.criteria["review_rtl_bugs_clean"]
+    entry.detail.update(verify_attempts=2, total_verify_cycles=3)
+    reviewer.state.save()
+    reviewer.args.steer = ["New contract"]
+    statuses = [{"index": 1, "status": "STILL_PRESENT"}] if remaining else [fixed_finding()]
+    calls = contract_passes(reviewer, monkeypatch, statuses, [])
+
+    result = reviewer._run()
+
+    assert [phase for phase, _ in calls] == ["verify", "discovery"]
+    assert result.criterion_met is (not remaining)
+    assert result.detail["verify_attempts"] == 0
+    assert "total_verify_cycles" not in result.detail
+    assert "attempt 0/2" not in "\n".join(result.display_lines)
+
+
+def test_restart_without_open_findings_discovers_only(reviewer, monkeypatch):
+    reviewer._run()
+    reviewer.args.steer = ["New context"]
+    calls = contract_passes(reviewer, monkeypatch, [], [proposal()])
+
+    result = reviewer._run()
+
+    assert [phase for phase, _ in calls] == ["discovery"]
+    assert result.exit_code == 1
+    assert "restarting discovery" in result.report_text
+    assert any("restarting discovery" in line for line in result.display_lines)
+    assert "Missing [SIM_RESULT]" in result.report_text
+
+
+def test_unchanged_contract_verifies_only_and_increments_budgets(reviewer, monkeypatch):
+    output(reviewer, monkeypatch, {"issues": [proposal()]})
+    first = reviewer._run()
+    calls = contract_passes(reviewer, monkeypatch, [{"index": 1, "status": "STILL_PRESENT"}], [])
+
+    result = reviewer._run()
+
+    assert "[review-verify]" not in first.report_text
+    assert [phase for phase, _ in calls] == ["verify"]
+    assert result.detail["verify_attempts"] == 1
+    assert result.detail["total_verify_cycles"] == 1
+    assert "restarting discovery" not in result.report_text
+
+
+@pytest.mark.parametrize("failed_phase", ["verify", "discovery"])
+def test_changed_contract_phase_failure_retains_obligations_for_retry(
+    reviewer, monkeypatch, failed_phase
+):
+    output(reviewer, monkeypatch, {"issues": [proposal()]})
+    first = reviewer._run()
+    reviewer.args.steer = ["New context"]
+    calls = contract_passes(reviewer, monkeypatch, [fixed_finding()], [])
+
+    def fail(params):
+        calls.append((failed_phase, params))
+        raise RuntimeError("Provider unavailable")
+
+    method = "_invoke_agent_with_resume" if failed_phase == "verify" else "_invoke_agent"
+    monkeypatch.setattr(reviewer, method, fail)
+    result = reviewer._run()
+
+    assert result.exit_code == 2
+    assert result.detail["pending"] == first.detail["pending"]
+    assert result.detail["needs_discovery"] is True
+    assert "restarting discovery" in result.report_text
+    assert "[review-verify]" in result.report_text
+    assert [phase for phase, _ in calls] == (
+        ["verify"] if failed_phase == "verify" else ["verify", "discovery"]
+    )
+    retry_calls = contract_passes(reviewer, monkeypatch, [fixed_finding()], [])
+    retry = reviewer._run()
+    assert retry.exit_code == 0
+    assert [phase for phase, _ in retry_calls] == ["verify", "discovery"]
+
+
+def test_changed_tb_policy_and_decisions_reach_verification_prompt(reviewer, monkeypatch):
+    root = Path(reviewer.args.work_dir)
+    source = root / "tb/dut_tb.sv"
+    source.parent.mkdir()
+    source.write_text("module dut_tb; endmodule\n")
+    config = root / ".booley_project/booley.toml"
+    config.parent.mkdir()
+    config.write_text('[flows.sim]\npass_sentinels = ["OLD PASS"]\n')
+    spec = root / "spec.md"
+    spec.write_text("Testbench must verify reset.\n")
+    logs = root / "logs"
+    logs.mkdir()
+    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(logs))
+    reviewer.args.category = "tb"
+    reviewer.args.focus = "quality"
+    reviewer.args.scope = "tb/dut_tb.sv"
+    reviewer.args.spec = str(spec)
+    reviewer.state.init_criteria({"review_tb_quality_clean": True})
+    reviewer.state.save()
+    output(reviewer, monkeypatch, {"issues": [proposal(category="quality", file="tb/dut_tb.sv")]})
+    reviewer._run()
+    config.write_text('[flows.sim]\npass_sentinels = ["NEW PASS"]\n')
+    (logs / "answered_questions.md").write_text("Reset may take two cycles.\n")
+    calls = contract_passes(reviewer, monkeypatch, [fixed_finding()], [])
+
+    result = reviewer._run()
+
+    assert result.exit_code == 0
+    assert [phase for phase, _ in calls] == ["verify", "discovery"]
+    prompt = calls[0][1].prompt
+    assert "Testbench must verify reset." in prompt
+    assert "Reset may take two cycles." in prompt
+    assert "NEW PASS" in prompt
+    assert "OLD PASS" not in prompt
+
+
+def test_changed_contract_ignores_resolved_and_noncurrent_pending_rows(reviewer, monkeypatch):
+    output(reviewer, monkeypatch, {"issues": [proposal(summary="Open obligation")]})
+    reviewer._run()
+    entry = reviewer.state.criteria["review_rtl_bugs_clean"]
+    entry.detail["pending"].extend(
+        [
+            {**proposal(summary=status), "status": status}
+            for status in ["fixed", "waived", "excluded", "superseded"]
+        ]
+        + [proposal(summary="advisory", disposition="advisory")]
+    )
+    reviewer.state.save()
+    reviewer.args.steer = ["New context"]
+    calls = contract_passes(reviewer, monkeypatch, [fixed_finding()], [])
+
+    result = reviewer._run()
+
+    assert result.criterion_met is True
+    prompt = calls[0][1].prompt
+    assert "Open obligation" in prompt
+    assert "2. [" not in prompt
+    assert [row["summary"] for row in result.detail["resolved"]] == ["Open obligation"]
+
+
+def test_changed_steering_waiver_reaches_discovery_and_is_shown(reviewer, monkeypatch):
+    output(reviewer, monkeypatch, {"issues": [proposal()]})
+    reviewer._run()
+    reviewer.args.steer = ["Waive finding 1: the Goal deliberately requires this behavior"]
+    waiver = {
+        "index": 1,
+        "status": "WAIVED",
+        "justification": "The Goal deliberately requires this behavior",
+    }
+    calls = contract_passes(reviewer, monkeypatch, [waiver], [])
+
+    result = reviewer._run()
+
+    assert result.exit_code == 0
+    assert "Waivers accepted in the preceding verification pass" in calls[1][1].prompt
+    assert waiver["justification"] in calls[1][1].prompt
+    assert "[WAIVED MAJOR]" in result.report_text
+    assert "[WAIVED MAJOR]" in "\n".join(result.display_lines)
+    assert result.detail["resolved"][0]["justification"] == waiver["justification"]
+
+
+def test_next_verify_starts_fresh_after_combined_contract_call(reviewer, monkeypatch):
+    root = Path(reviewer.args.work_dir)
+    logs = root / "logs"
+    logs.mkdir()
+    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(logs))
+    (root / "rtl/other.sv").write_text("module other; endmodule\n")
+    output(reviewer, monkeypatch, {"issues": [proposal()]})
+    reviewer._run()
+    reviewer.args.scope = "rtl/other.sv"
+    contract_passes(reviewer, monkeypatch, [{"index": 1, "status": "STILL_PRESENT"}], [])
+    reviewer._last_session_id = "discovery-session"
+    result = reviewer._run()
+    assert result.exit_code == 1
+    assert not (logs / "reviewer-rtl-bugs.session_id").exists()
+    calls = contract_passes(reviewer, monkeypatch, [fixed_finding()], [])
+
+    result = reviewer._run()
+
+    assert result.exit_code == 0
+    assert [phase for phase, _ in calls] == ["verify"]
+    assert calls[0][1].resume_session is False
+    assert "Verify whether the following issues" in calls[0][1].prompt
+    assert "rtl/dut.sv:1" in calls[0][1].prompt
+
+
+def test_empty_pending_does_not_resurrect_legacy_findings_on_restart(reviewer, monkeypatch):
+    reviewer._run()
+    entry = reviewer.state.criteria["review_rtl_bugs_clean"]
+    entry.detail["issue_list"] = [proposal()]
+    reviewer.state.save()
+    reviewer.args.steer = ["Changed contract"]
+    calls = contract_passes(reviewer, monkeypatch, [], [])
+
+    result = reviewer._run()
+
+    assert result.exit_code == 0
+    assert [phase for phase, _ in calls] == ["discovery"]
+    assert result.detail["pending"] == []

@@ -226,6 +226,16 @@ def _render_reviewer_reference(satisfies_args: dict[str, str] | None) -> list[st
         "The result links saved review evidence, including rejected proposals for "
         "inspection. Rejected proposals do not affect Criteria.",
         "",
+        "For a `clean` Review Goal, open findings are verified against the current "
+        "source first, including findings outside a newly narrowed scope. Changing "
+        "the scope, steering, review mode, or the ticket, specification, decisions, "
+        "or testbench policy restarts discovery under the new contract after that "
+        "verification, in the same call, even when findings remain open. The output "
+        "explains the restart, separates verification from discovery, and lists "
+        "the combined findings in one final result. A first review or a restart "
+        "without open findings runs discovery only. Unchanged calls retain their "
+        "verify limits; a contract restart resets those budgets.",
+        "",
         'Call the `reviewer` Specialist from your Developer Agent session with `scope="<file,...>"`, `category="<category>"`, and `focus="<focus>"`.',
         "",
         "| Category | Focus | What it checks | Sets |",

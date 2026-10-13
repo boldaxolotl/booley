@@ -2781,9 +2781,25 @@ class TestCleanModeVerify:
         mock_agent,
         state_file: Path,
     ):
-        mock_agent.return_value = _make_agent_result(
-            [_make_issue_dict("MINOR", summary="New final-state issue")]
-        )
+        mock_agent.side_effect = [
+            MagicMock(
+                output=json.dumps(
+                    {
+                        "findings": [
+                            {
+                                "index": 1,
+                                "status": "FIXED",
+                                "evidence": "rtl/mod_a.sv:1 — fixed logic",
+                            }
+                        ]
+                    }
+                )
+            ),
+            _make_agent_result([_make_issue_dict("MINOR", summary="New final-state issue")]),
+        ]
+        source = state_file.parent / "rtl/mod_a.sv"
+        source.parent.mkdir()
+        source.write_text("module mod_a; endmodule\n")
         st = DevelopmentState.load(state_file)
         st.set_criterion(
             "review_rtl_bugs_clean",
@@ -2801,10 +2817,10 @@ class TestCleanModeVerify:
 
         endpoint = ReviewerSpecialist()
         endpoint.parse_args(_review_args())
-        endpoint.read_state()
+        _read_current_review_contract(endpoint, state_file)
         result = endpoint._run()
 
-        assert mock_agent.call_count == 1
+        assert mock_agent.call_count == 2
         assert result.exit_code == 1
         assert result.criterion_met is False
         assert result.detail["pending"][0]["summary"] == "New final-state issue"
