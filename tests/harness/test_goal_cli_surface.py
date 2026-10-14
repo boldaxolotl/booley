@@ -16,8 +16,9 @@ def test_goal_surface_matches_catalogs():
     assert set(sub.choices) == set(cli.COMMAND_PROJECT_BINDINGS)
     assert {"goal", "dashboard"} <= cli._CONTAINER_ONLY_COMMANDS
     assert not {"run", "board"} & set(sub.choices)
-    assert "goal" in str(sub.metavar)
-    assert "[Sandbox] Inspect or abandon" in parser.format_help()
+    assert "goal" not in str(sub.metavar)
+    assert "Inspect or abandon" not in parser.format_help()
+    assert "Inspect this worktree's Goal Mode" in sub.choices["goal"].format_help()
 
 
 def test_goal_status_flags_are_mutually_exclusive(capsys):
@@ -154,15 +155,18 @@ def test_usage_status_describes_both_selection_cases():
     from pathlib import Path
 
     usage = Path(__file__).parents[2] / "docs/user/USAGE.md"
-    line = next(
-        line for line in usage.read_text().splitlines() if line.startswith("booley goal status ")
+    paragraph = next(
+        paragraph
+        for paragraph in usage.read_text().split("\n\n")
+        if paragraph.startswith("For scripted inspection, `booley goal status`")
     )
-    assert "this worktree" in line
-    assert "every active Goal Mode in the Project" in line
-    assert "when this worktree hosts none" in line
+    text = " ".join(paragraph.split())
+    assert "this worktree" in text
+    assert "every active Goal Mode in the Project" in text
+    assert "when this worktree hosts none" in text
 
 
-def test_goal_group_description_and_catalog_describe_selection(capsys):
+def test_goal_group_help_describes_selection(capsys):
     root = cli._build_parser()
     commands = next(
         action
@@ -173,9 +177,7 @@ def test_goal_group_description_and_catalog_describe_selection(capsys):
     assert "every active Goal Mode in the Project" in goal.description
     assert "when this worktree hosts none" in goal.description
     with pytest.raises(SystemExit) as caught:
-        root.parse_args(["--help"])
+        root.parse_args(["goal", "--help"])
     assert caught.value.code == 0
     text = " ".join(capsys.readouterr().out.split())
-    assert (
-        "status shows every active Goal Mode in the Project when this worktree hosts none" in text
-    )
+    assert "every active Goal Mode in the Project when this worktree hosts none" in text

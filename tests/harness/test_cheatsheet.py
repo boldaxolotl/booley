@@ -165,14 +165,17 @@ class TestCheatCommand:
         assert tlr._cmd_cheat(self._parse(["cheat", "--commands"]), Path.cwd()) == 0
         out = " ".join(capsys.readouterr().out.split())
         assert "Sandbox-only commands" in out
-        assert "booley mixed Host: help; Sandbox: open the configured Developer Agent CLI" in out
+        assert "booley either Host: help; Sandbox: open the configured Developer Agent CLI" in out
         assert "booley chat Explicit spelling of the Sandbox default booley command" in out
 
     def test_commands_are_grouped_by_execution_location(self, capsys):
         assert tlr._cmd_cheat(self._parse(["cheat", "--commands"]), Path.cwd()) == 0
         out = capsys.readouterr().out
-        assert out.index("Host-only commands") < out.index("Sandbox-only commands")
-        assert out.index("Sandbox-only commands") < out.index("Either-location and mixed commands")
+        assert (
+            out.index("Sandbox-only commands")
+            < out.index("Either-location commands")
+            < out.index("Host-only commands")
+        )
 
     def test_criteria_flag_narrows_output(self, capsys):
         assert tlr._cmd_cheat(self._parse(["cheat", "--criteria"]), Path.cwd()) == 0
@@ -216,8 +219,6 @@ class TestCheatCommand:
         assert tlr._cmd_cheat(self._parse(["cheat", "--commands"]), Path.cwd()) == 0
         out = capsys.readouterr().out
         for command in public:
-            if command == "feedback":
-                continue  # Public docs route feedback through /booley-feedback.
             assert f"booley {command}" in out
         assert "booley mcp-tool" not in out
         assert "booley link-guidance" not in out
@@ -286,7 +287,9 @@ def test_command_table_matches_locations():
                 location = tail.split("|")[0].strip()
             assert command not in locations
             locations[command] = location
-    assert locations == {name: location.value for name, location in tlr.COMMAND_LOCATIONS.items()}
+    assert locations == {
+        name: location.value for name, location in tlr.command_locations().items()
+    }
 
 
 def test_skills_table_lists_every_packaged_skill():

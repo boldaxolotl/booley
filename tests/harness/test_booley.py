@@ -550,7 +550,9 @@ def _host_venue(monkeypatch):
 
 
 class TestEnforceVenue:
-    @pytest.mark.parametrize("command", ["goal", "chat", "dashboard"])
+    @pytest.mark.parametrize(
+        "command", ["goal", "chat", "dashboard", "worktree", "flow", "specialist"]
+    )
     def test_container_only_command_refused_on_host(self, command, monkeypatch, capsys):
         """Workflow commands on the host -> exit 2 with the actionable fix."""
         monkeypatch.setattr(sys, "argv", ["booley", command])
@@ -562,7 +564,9 @@ class TestEnforceVenue:
         assert "Sandbox" in err
         assert "Reopen in Container" in err  # names the fix, not just the rule
 
-    @pytest.mark.parametrize("command", ["goal", "chat", "dashboard"])
+    @pytest.mark.parametrize(
+        "command", ["goal", "chat", "dashboard", "worktree", "flow", "specialist"]
+    )
     def test_container_only_command_allowed_in_container(self, command, monkeypatch):
         monkeypatch.setenv("BOOLEY_CONTAINER", "1")
         tlr._enforce_runtime_location(command)  # must not raise
@@ -597,7 +601,14 @@ class TestEnforceVenue:
         `auth` is host-only too: it drives the host's browser OAuth flow and
         writes the host's ~/.config, neither of which exists in the sandbox.
         """
-        assert {"goal", "dashboard", "chat", "worktree"} == tlr._CONTAINER_ONLY_COMMANDS
+        assert {
+            "goal",
+            "dashboard",
+            "chat",
+            "worktree",
+            "flow",
+            "specialist",
+        } == tlr._CONTAINER_ONLY_COMMANDS
         assert {
             "bootstrap",
             "init",
@@ -610,10 +621,12 @@ class TestEnforceVenue:
     def test_top_level_help_labels_every_advertised_command_location(self):
         help_text = tlr._build_parser().format_help()
 
-        assert "goal" in help_text and "[Sandbox]" in help_text
+        assert "dashboard" in help_text and "[Sandbox]" in help_text
         assert "projects" in help_text and "[host]" in help_text
         assert "doctor" in help_text and "[either]" in help_text
-        assert "flow" in help_text and "[mixed]" in help_text
+        assert "flow" in help_text and "[Sandbox]" in help_text
+        assert "targets" in help_text and "[either]" in help_text
+        assert "[mixed]" not in help_text
         assert "Locations:" in help_text
 
     def test_runtime_guards_are_derived_from_command_location_catalog(self):
@@ -852,6 +865,7 @@ class TestCmdFlow:
 
     def test_bare_flow_main_lists_on_stdout(self, tmp_path, monkeypatch, capsys):
         args = self._args(["flow"])
+        monkeypatch.setattr(tlr.runtime_context, "inside_session_runtime", lambda: True)
         monkeypatch.setattr(tlr, "_parse_cli", lambda: args)
         monkeypatch.setattr(tlr, "find_project_root", lambda: tmp_path)
         monkeypatch.setattr(tlr, "_reject_source_project_command", lambda *_args: None)
@@ -893,10 +907,9 @@ class TestCmdFlow:
         assert "flow" in help_text
         assert "Run a Booley Flow directly" in help_text
 
-    def test_not_venue_guarded(self):
-        """Booley Flows do their own venue/job-slot admission in ``main``;
-        a second guard here would double-block them."""
-        assert "flow" not in tlr._CONTAINER_ONLY_COMMANDS
+    def test_flow_is_sandbox_only(self):
+        """Top-level dispatch refuses host execution before endpoint discovery."""
+        assert "flow" in tlr._CONTAINER_ONLY_COMMANDS
         assert "flow" not in tlr._HOST_ONLY_COMMANDS
 
 

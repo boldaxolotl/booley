@@ -61,6 +61,35 @@ def _endpoints() -> dict[str, object]:
 ENDPOINTS = _endpoints()
 
 
+@pytest.mark.parametrize("inside", [False, True])
+@pytest.mark.parametrize("prefix", [[], ["-C", "missing"], ["--project", "help"]])
+def test_help_command_matches_help_flag_without_project(
+    inside, prefix, tmp_path, monkeypatch, capsys
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: inside)
+
+    def unexpected(*_args, **_kwargs):
+        pytest.fail("help touched Project/runtime state")
+
+    monkeypatch.setattr(cli, "_selected_project_root", unexpected)
+    monkeypatch.setattr(cli, "_enforce_runtime_location", unexpected)
+    monkeypatch.setattr(cli.runtime_context, "ensure_proxy_env", unexpected)
+    outputs = []
+    for arguments in (["--help"], ["-h"], ["help"], ["help", "--help"], ["help", "-h"]):
+        monkeypatch.setattr("sys.argv", ["booley", *prefix, *arguments])
+        with pytest.raises(SystemExit) as exit_info:
+            cli.main()
+        assert exit_info.value.code == 0
+        captured = capsys.readouterr()
+        assert captured.err == ""
+        outputs.append(captured.out)
+
+    assert outputs[0].startswith("usage: booley ")
+    assert all(output == outputs[0] for output in outputs)
+    assert list(tmp_path.iterdir()) == []
+
+
 def _human_parser(endpoint: object) -> argparse.ArgumentParser:
     with invocation_context():
         if isinstance(endpoint, BuiltinFlow):
@@ -208,20 +237,41 @@ def test_extension_without_cli_wording_keeps_its_description() -> None:
 
 
 @pytest.mark.parametrize("command", sorted(ENDPOINTS))
-def test_help_from_the_booley_entry_point(command, tmp_path, monkeypatch, capsys) -> None:
+@pytest.mark.parametrize("inside", [False, True])
+@pytest.mark.parametrize("flag", ["-h", "--help"])
+@pytest.mark.parametrize("prefix", [[], ["--diagnostic"], ["--"]])
+def test_help_from_the_booley_entry_point(
+    command, inside, flag, prefix, tmp_path, monkeypatch, capsys
+) -> None:
     """The wording reaches a person who types the command inside a Project."""
     for name in ("RTL_PROJECT_ROOT", "BOOLEY_DIR", INVOCATION_ORIGIN_ENV):
         monkeypatch.delenv(name, raising=False)
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, timeout=10)
     (tmp_path / ".booley").mkdir()
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("sys.argv", [*command.split(), "--help"])
+    monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: inside)
+    monkeypatch.setattr("sys.argv", [*command.split(), *prefix, flag])
+    monkeypatch.setattr(
+        cli, "_invoke_endpoint", lambda *_args, **_kwargs: pytest.fail("help executed")
+    )
+    monkeypatch.setattr(
+        cli.runtime_context, "ensure_proxy_env", lambda: pytest.fail("help restored proxy")
+    )
+
+    with invocation_context(), pytest.raises(SystemExit) as baseline_exit:
+        ENDPOINTS[command].main([flag])
+    assert baseline_exit.value.code == 0
+    baseline = capsys.readouterr()
 
     with pytest.raises(SystemExit) as exit_info:
         cli.main()
 
     assert exit_info.value.code == 0
-    help_text = capsys.readouterr().out
+    captured = capsys.readouterr()
+    assert captured == baseline
+    help_text = captured.out
     assert help_text.startswith(f"usage: {command} ")
     assert f"{EXAMPLE_HEADING}\n  {ENDPOINTS[command].cli_help.example}\n" in help_text
     assert not BANNED.search(help_text.replace("violating-endpoint", ""))
+    if command.startswith("booley flow "):
+        assert "--quiet" in help_text

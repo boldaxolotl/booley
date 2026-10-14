@@ -9,6 +9,16 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- `booley help` (including `help -h` and `help --help`) now shows the same
+  top-level help as `booley --help`. Public commands are grouped as Sandbox,
+  either location, and host-only, with alphabetical ordering within each group.
+  `targets` works in either location; full detail resolution requires the Sandbox.
+  Flow and Specialist listing and execution are Sandbox-only, while their
+  help pages remain readable on the host in an initialized Project. Skill
+  adapters `goal`, `session`, `feedback`, `cleanup`, and `upgrade` remain
+  callable but are omitted from top-level help; use `booley cheat --skills`
+  for guided workflows.
+
 - The Booley Directory is now `.booley/`; use `BOOLEY_DIR` and
   `booley.runtime.booley_dir`. Full `booley init` migrates the previous directory
   and repairs linked RTL worktrees and Paired Checkouts. Finish or abandon all

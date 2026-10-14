@@ -39,14 +39,16 @@ def test_top_level_subcommand_metavar_matches_command_locations(
     parser: argparse.ArgumentParser,
 ) -> None:
     sub = _get_subparsers_action(parser)
-    assert _metavar_tokens(sub) == set(tlr.COMMAND_LOCATIONS)
+    assert _metavar_tokens(sub) == set(tlr.command_locations())
 
 
 def test_top_level_subcommand_metavar_matches_public_subparsers(
     parser: argparse.ArgumentParser,
 ) -> None:
     sub = _get_subparsers_action(parser)
-    assert _metavar_tokens(sub) == _public_commands(sub, hidden={"shell"})
+    assert _metavar_tokens(sub) == _public_commands(
+        sub, hidden={"shell", "feedback", "cleanup", "upgrade", "session", "goal"}
+    )
 
 
 def test_top_level_usage_includes_every_public_command(parser: argparse.ArgumentParser) -> None:
@@ -55,7 +57,7 @@ def test_top_level_usage_includes_every_public_command(parser: argparse.Argument
     assert "specialist" in usage_commands
     assert "shell" not in usage_commands
     assert "shell" not in usage
-    for command in tlr.COMMAND_LOCATIONS:
+    for command in tlr.command_locations():
         assert command in usage
 
 

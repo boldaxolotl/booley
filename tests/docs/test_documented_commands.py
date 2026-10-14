@@ -17,8 +17,15 @@ from booley.mcp.registry import discover_mcp_tools
 
 ROOT = Path(__file__).resolve().parents[2]
 COMMAND = re.compile(r"(?<![\w./-])(?:python -m booley\.[\w.]+|booley)(?=\s|$)")
-# No hidden commands are approved for current user/packaged documentation.
-HIDDEN_COMMAND_ALLOWLIST: set[tuple[str, ...]] = set()
+# Skill adapters may be documented without appearing in top-level human help.
+# This permits only the top-level groups; hidden nested operations stay blocked.
+HIDDEN_COMMAND_ALLOWLIST: set[tuple[str, ...]] = {
+    ("feedback",),
+    ("cleanup",),
+    ("upgrade",),
+    ("session",),
+    ("goal",),
+}
 
 
 @cache
@@ -138,7 +145,7 @@ def _command_error(tokens: list[str]) -> str | None:
     return f"undocumented module CLI {module}"
 
 
-def test_documented_command_paths_are_registered_and_public() -> None:
+def test_documented_command_paths_are_registered_and_allowed() -> None:
     failures = []
     count = 0
     for directory in (ROOT / "src/booley/data", ROOT / "docs/user"):
@@ -192,6 +199,11 @@ CLASSIFIED=$(python -m booley.flows.sim.campaign_retention --help)
     [
         "booley eda grant add /project --kind vivado",
         "booley eda installation list",
+        "booley feedback list",
+        "booley cleanup preview",
+        "booley upgrade status",
+        "booley session status",
+        "booley goal status",
     ],
 )
 def test_registered_documented_commands_pass(command: str) -> None:
