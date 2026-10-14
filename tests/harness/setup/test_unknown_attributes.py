@@ -156,12 +156,42 @@ def test_other_unknown_sources_are_not_policy(tmp_path, monkeypatch, default, so
     checkout = report.repositories[0]
     assert report.status is Status.SAFE
     assert _unknown(checkout)
+    if source == "nonregular-sibling":
+        assert "type and access" in _unknown(checkout)[0].detail
     assert not {
         Code.LOCAL_POLICY_CONFLICT,
         Code.LOCAL_POLICY_MISSING,
         Code.UPSTREAM_POLICY,
     }.intersection(o.code for o in checkout.observations)
     assert local.exists() is default
+
+
+@pytest.mark.parametrize("default", [False, True])
+def test_unknown_system_policy_is_reported_once_across_worktrees(
+    tmp_path, monkeypatch, capsys, default
+):
+    root, data, _local = _checkout(tmp_path, default=default)
+    sibling = tmp_path / "accessible sibling"
+    _git(root, "worktree", "add", "-qb", "sibling", str(sibling))
+    monkeypatch.delenv("GIT_ATTR_NOSYSTEM")
+    real_native = line_endings._native_attribute_path
+
+    def native(root, variable):
+        return (False, None) if variable == "GIT_ATTR_SYSTEM" else real_native(root, variable)
+
+    monkeypatch.setattr(line_endings, "_native_attribute_path", native)
+    report = line_endings.reconcile_project_line_endings(root, data, mode=Mode.INSPECT)
+    assert len(_unknown(report.repositories[0])) == 1
+    reporter = _reporter(data)
+    doctor._check_line_endings(
+        root, reporter.pass_, reporter.warn_, reporter.skip_, reporter.fail_, booley_dir=data
+    )
+    assert reporter.findings[0].message.count("system attributes path unresolved") == 1
+    capsys.readouterr()
+    ctx = InitContext(project_root=root, interactive=False)
+    git_hooks._step_line_endings(ctx, data)
+    assert capsys.readouterr().out.count("system attributes path unresolved") == 1
+    assert ctx.results[-1].detail.count("system attributes path unresolved") == 1
 
 
 @pytest.mark.parametrize("default", [False, True])

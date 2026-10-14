@@ -1137,12 +1137,14 @@ def _policy_unknown(inputs: dict[str, tuple[_FileIdentity | None, bytes]]) -> bo
 def _unknown_policy_observations(
     inputs: dict[str, tuple[_FileIdentity | None, bytes]],
 ) -> list[LineEndingObservation]:
-    return [
-        _observation(
-            LineEndingObservationCode.ATTRIBUTES_POLICY_UNKNOWN, detail=os.fsdecode(message)
-        )
+    messages = {
+        os.fsdecode(message)
         for name, (_, message) in inputs.items()
         if name.startswith("policy-unknown:")
+    }
+    return [
+        _observation(LineEndingObservationCode.ATTRIBUTES_POLICY_UNKNOWN, detail=message)
+        for message in sorted(messages)
     ]
 
 
@@ -1150,9 +1152,11 @@ def unknown_attributes_policy_details(report: RepositoryLineEndingReport) -> tup
     """Stable inspection limitations, independent of confirmed policy and repair results."""
     return tuple(
         sorted(
-            observation.detail or "attributes policy inspection incomplete"
-            for observation in report.observations
-            if observation.code is LineEndingObservationCode.ATTRIBUTES_POLICY_UNKNOWN
+            {
+                observation.detail or "attributes policy inspection incomplete"
+                for observation in report.observations
+                if observation.code is LineEndingObservationCode.ATTRIBUTES_POLICY_UNKNOWN
+            }
         )
     )
 
@@ -1249,16 +1253,23 @@ def _effective_user_inputs(root: Path) -> dict[str, tuple[_FileIdentity | None, 
     for sibling in roots:
         if not sibling.is_absolute():
             raise ValueError("Git worktree listing did not provide absolute paths")
+        available = False
         try:
-            if not sibling.is_dir():
+            available = sibling.is_dir()
+            if not available:
                 raise ValueError("worktree directory is unavailable")
             inputs.update(_worktree_user_inputs(sibling))
         except (OSError, ValueError, subprocess.SubprocessError) as exc:
             if sibling == root:
                 raise
+            guidance = (
+                "inspect this sibling's attributes selection, including the selected file's type and access"
+                if available
+                else "inspect its registered location from an environment where it is accessible (host if needed)"
+            )
             inputs["policy-unknown:sibling:" + str(sibling)] = (
                 None,
-                f"cannot inspect sibling worktree {sibling}: {exc}; inspect its registered location and selected user attributes file from an environment where they are accessible (host if needed); existing local attributes and registrations are preserved and new defaults are deferred".encode(
+                f"cannot inspect sibling worktree {sibling}: {exc}; {guidance}; existing local attributes and registrations are preserved and new defaults are deferred".encode(
                     errors="surrogateescape"
                 ),
             )
