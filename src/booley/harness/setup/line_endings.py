@@ -65,6 +65,7 @@ class LineEndingObservationCode(StrEnum):
     LEAKED_ROOT_POLICY = "leaked-root-policy"
     LOCAL_POLICY_CONFLICT = "local-policy-conflict"
     UPSTREAM_POLICY = "upstream-policy"
+    ATTRIBUTES_POLICY_UNKNOWN = "attributes-policy-unknown"
 
 
 class LineEndingActionKind(StrEnum):
@@ -1121,12 +1122,43 @@ def _upstream_attributes(root: Path) -> dict[str, tuple[_FileIdentity | None, by
 
 def _upstream_owned(inputs: dict[str, tuple[_FileIdentity | None, bytes]]) -> bool:
     for name, (_, raw_content) in inputs.items():
-        if name.startswith(("selection:", "link:")):
+        if name.startswith(("selection:", "link:", "policy-unknown:")):
             continue
         content = raw_content.partition(b"\0")[2] if name.startswith("index:") else raw_content
         if has_attribute_policy(content):
             return True
     return False
+
+
+def _policy_unknown(inputs: dict[str, tuple[_FileIdentity | None, bytes]]) -> bool:
+    return any(name.startswith("policy-unknown:") for name in inputs)
+
+
+def _unknown_policy_observations(
+    inputs: dict[str, tuple[_FileIdentity | None, bytes]],
+) -> list[LineEndingObservation]:
+    messages = {
+        message.decode("utf-8", errors="backslashreplace")
+        for name, (_, message) in inputs.items()
+        if name.startswith("policy-unknown:")
+    }
+    return [
+        _observation(LineEndingObservationCode.ATTRIBUTES_POLICY_UNKNOWN, detail=message)
+        for message in sorted(messages)
+    ]
+
+
+def unknown_attributes_policy_details(report: RepositoryLineEndingReport) -> tuple[str, ...]:
+    """Stable inspection limitations, independent of confirmed policy and repair results."""
+    return tuple(
+        sorted(
+            {
+                observation.detail or "attributes policy inspection incomplete"
+                for observation in report.observations
+                if observation.code is LineEndingObservationCode.ATTRIBUTES_POLICY_UNKNOWN
+            }
+        )
+    )
 
 
 def _crlf_index_dirt(root: Path) -> bool:
@@ -1199,7 +1231,7 @@ def _worktree_user_inputs(root: Path) -> dict[str, tuple[_FileIdentity | None, b
     if not supported:
         inputs["policy-unknown:system:" + str(root)] = (
             None,
-            b"system attributes path unresolved on this Git version; no local default installed",
+            b"system attributes path unresolved on this Git version; inspect system policy with a Git build that supports attributes path discovery; existing local attributes are preserved and new defaults are deferred",
         )
     elif system:
         inputs.update(_user_file_snapshots(system))
@@ -1221,16 +1253,23 @@ def _effective_user_inputs(root: Path) -> dict[str, tuple[_FileIdentity | None, 
     for sibling in roots:
         if not sibling.is_absolute():
             raise ValueError("Git worktree listing did not provide absolute paths")
+        available = False
         try:
-            if not sibling.is_dir():
+            available = sibling.is_dir()
+            if not available:
                 raise ValueError("worktree directory is unavailable")
             inputs.update(_worktree_user_inputs(sibling))
         except (OSError, ValueError, subprocess.SubprocessError) as exc:
             if sibling == root:
                 raise
+            guidance = (
+                "inspect this sibling's attributes selection, including the selected file's type and access"
+                if available
+                else "inspect its registered location from an environment where it is accessible (host if needed)"
+            )
             inputs["policy-unknown:sibling:" + str(sibling)] = (
                 None,
-                f"cannot inspect sibling worktree {sibling}: {exc}; no local default installed".encode(
+                f"cannot inspect sibling worktree {sibling}: {exc}; {guidance}; existing local attributes and registrations are preserved and new defaults are deferred".encode(
                     errors="surrogateescape"
                 ),
             )
@@ -1275,6 +1314,7 @@ def _attributes_plan(repository: LineEndingRepository, stealth: bool):
         common_identity, common_content = _policy_content(common)
         inputs = _upstream_attributes(repository.root)
         inputs.update(_effective_user_inputs(repository.root))
+        observations.extend(_unknown_policy_observations(inputs))
         upstream = _upstream_owned(inputs)
         default = has_managed_attributes(common_content)
         if default and upstream:
@@ -1296,7 +1336,8 @@ def _attributes_plan(repository: LineEndingRepository, stealth: bool):
         )
         inputs[str(common)] = (common_identity, common_content)
         owned = upstream or local_policy_owned(common_content)
-        return target, inputs, owned, not owned, observations, None, None
+        missing = not owned and not _policy_unknown(inputs)
+        return target, inputs, owned, missing, observations, None, None
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         return (
             target,
@@ -1321,13 +1362,6 @@ def _record_stealth_policy(
                 detail="untracked .gitattributes contains an old default; inspect and remove or migrate it manually if appropriate (Booley cannot prove ownership)",
             )
         )
-    for name, (_, message) in inputs.items():
-        if name.startswith("policy-unknown:"):
-            observations.append(
-                _observation(
-                    LineEndingObservationCode.UPSTREAM_POLICY, detail=os.fsdecode(message)
-                )
-            )
     if upstream:
         observations.append(
             _observation(
@@ -1335,7 +1369,7 @@ def _record_stealth_policy(
                 detail="existing upstream/user/system attributes policy is preserved; no local default installed",
             )
         )
-    elif not local_policy_owned(content):
+    elif not local_policy_owned(content) and not _policy_unknown(inputs):
         observations.append(
             _observation(
                 LineEndingObservationCode.LOCAL_POLICY_MISSING,
@@ -1517,12 +1551,9 @@ def _planned_actions(plan: _RepositoryPlan) -> tuple[LineEndingActionResult, ...
                 count=len(plan.phantom_paths),
             )
         )
-    needs_policy = bool(plan.crlf_paths) or any(
-        action.kind is LineEndingActionKind.PIN_AUTOCRLF for action in actions
-    )
     if plan.migration:
         actions.append(_migration_action(plan, LineEndingActionState.PLANNED))
-    elif (needs_policy or plan.local_missing) and not plan.owns_attributes_policy:
+    elif _attributes_publication_needed(plan):
         state = (
             LineEndingActionState.REFUSED
             if plan.attributes_error
@@ -1539,13 +1570,32 @@ def _planned_actions(plan: _RepositoryPlan) -> tuple[LineEndingActionResult, ...
     return tuple(actions)
 
 
+def _attributes_publication_needed(plan: _RepositoryPlan) -> bool:
+    needs_policy = (
+        bool(plan.crlf_paths)
+        or not plan.local_autocrlf.is_set
+        or plan.local_autocrlf.value
+        or plan.local_missing
+    )
+    return (
+        needs_policy
+        and not plan.owns_attributes_policy
+        and (plan.attributes_error is not None or not _policy_unknown(plan.policy_inputs))
+    )
+
+
 def _inspection_report(
     repository: LineEndingRepository, *, stealth: bool = False
 ) -> RepositoryLineEndingReport:
     plan, observations = _plan_repository(repository, stealth=stealth)
     actions = () if plan is None else _planned_actions(plan)
     unsafe = any(
-        item.code is not LineEndingObservationCode.UPSTREAM_POLICY for item in observations
+        item.code
+        not in (
+            LineEndingObservationCode.UPSTREAM_POLICY,
+            LineEndingObservationCode.ATTRIBUTES_POLICY_UNKNOWN,
+        )
+        for item in observations
     )
     status = LineEndingStatus.UNSAFE if unsafe else LineEndingStatus.SAFE
     return RepositoryLineEndingReport(repository, status, observations, actions)
@@ -1853,7 +1903,7 @@ def _repair_actions(plan: _RepositoryPlan) -> tuple[LineEndingActionResult, ...]
         actions.append(_refresh_action(plan))
     if plan.migration:
         actions.append(_migrate_attributes(plan, normalization))
-    elif (plan.crlf_paths or needs_pin or plan.local_missing) and not plan.owns_attributes_policy:
+    elif _attributes_publication_needed(plan):
         expected = plan.attributes
         if (
             not plan.target.local

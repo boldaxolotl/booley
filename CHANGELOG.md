@@ -13,6 +13,15 @@ Packaged release history starts at 0.2.7. For older changes, see
   Use combinable section flags to print selected sections, or `booley cheat --all`
   for the whole cheatsheet.
 
+- Doctor treats unavailable sibling attributes and unsupported system-attributes
+  discovery as unknown policy, rather than a conflict with a valid local rule.
+  Existing attributes and worktree registrations are preserved; new shared
+  defaults are deferred. `git.attributes-policy-unknown` can remain a warning
+  on supported older Git or in Sandboxes without sibling access. Normal init
+  remains nonfatal, but unknown-only `init --check` exits 1 and Doctor remains
+  unclean until inspection is complete or the limitation is explicitly waived.
+  Existing `git.line-endings-unreadable` waivers do not cover this new warning.
+
 - The Booley Directory is now `.booley/`; use `BOOLEY_DIR` and
   `booley.runtime.booley_dir`. Full `booley init` migrates the previous directory
   and repairs linked RTL worktrees and Paired Checkouts. Finish or abandon all
