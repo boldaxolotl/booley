@@ -791,7 +791,7 @@ Read-only, single-focus code review. It reports `CRITICAL`, `MAJOR`, and `MINOR`
 
 The result links saved review evidence, including rejected proposals for inspection. Rejected proposals do not affect Criteria.
 
-Call the `reviewer` Specialist from your Developer Agent session for discovery in Goal Mode with `category="<category>"` and `focus="<focus>"`. The Review Goal supplies scope and spec; caller `scope`, `spec` and `steer` are refused.
+Call the `reviewer` Specialist from your Developer Agent session with `category="<category>"` and `focus="<focus>"`.
 
 | Category | Focus | What it checks | Sets |
 |----------|-------|----------------|------|
@@ -803,17 +803,11 @@ Call the `reviewer` Specialist from your Developer Agent session for discovery i
 | `rtl` | `security` | Fault-injection resistance, simple power/timing leakage, secret exposure, and unsafe failure behavior | `REVIEW:rtl_security` |
 | `tb` | `quality` | False-pass paths in scoped testbench sources, missing checks and edge cases, coverage gaps, timing/sampling mistakes, and TB code quality | `REVIEW:tb_quality` |
 
-Interactive discovery requires `scope="<file,...>"`; `steer=["<context>"]` and `spec="<path>"` supply context. The `spec` focus requires a specification. `dry_run=true` previews discovery.
+**Interactive Mode:** also pass `scope="<file,...>"`. Add `spec="<path>"` (required for the `spec` focus) or `steer=["<context>"]` for context. `dry_run=true` previews the call. Each new review replaces the previous findings.
 
-Each Review Goal declares exactly one `target="<Target>"` or `paths=["<file>", ...]`. A Target selects only the Goal category in its filesets and dependency closure; paths are category-matching files relative to the Goal worktree.
+**Goal Mode:** the Review Goal fixes scope and spec, so `scope`, `spec` and `steer` are refused. Declare each Review Goal with exactly one `target` or `paths` (see the Goal catalog).
 
-After fixing findings, call `reviewer` with `verify=true` (CLI: `booley specialist reviewer --verify`). It checks only the latest review call's open findings, runs no discovery, and reports each as fixed, waived or still present. It passes with no open findings and is refused if none were open at the start.
-
-Only `waive=[["<finding-id>", "<justification>"], ...]` may accompany verify (CLI: repeat `--waive <finding-id> "<justification>"`). The Reviewer accepts or rejects each proposal. Category, focus, scope, spec, steer and dry_run are refused with verify. Finding IDs appear in the review result.
-
-In Goal Mode, resolve an open `clean` review before starting discovery for another focus; use verify. A passing verify meets `clean` at the current reviewed contents; later edits make it stale. Changed specification, policy or Target scope still require new discovery after resolution. `done` reviews need no verify call, and their findings never block another review. Optional verify leaves their completion evidence unchanged. Interactive discovery replaces the prior findings.
-
-Verify retains the existing two-attempt and three-cumulative-cycle limits. Exhaustion preserves findings and asks for a human decision; it never waives automatically.
+**Verify fixes (both modes):** after fixing findings, call `reviewer` with `verify=true` (CLI: `--verify`). It rechecks only the latest review's open findings, finds nothing new, and passes when none remain open. To argue a finding away, add `waive=[["<finding-id>", "<justification>"]]` (CLI: `--waive <finding-id> "<justification>"`, repeatable); the Reviewer accepts or rejects each. No other argument is accepted with verify. After repeated failed verifies, Goal Mode stops and asks you to change or abandon the Goal.
 
 #### `mutation_tester`
 
@@ -896,13 +890,10 @@ Review Package. `{target}` is its bare name when unique, or its qualified select
 `{target}` is the bare Target name when unique, or its qualified selector otherwise. Details (thresholds, tests, baseline,
 review verdict and spec) follow the name in parentheses. Review Goals require
 `clean` or `done`; the name is identical for both requirements.
-Each Review Goal requires exactly one `target` or `paths`. A Target selects
-its category files and dependency closure; paths are category-matching files
-relative to the Goal worktree. For example:
-`{"family":"REVIEW","review":"rtl_bugs","verdict":"clean","target":"top"}`
-or `{"family":"REVIEW","review":"tb_quality","verdict":"done","paths":["tb/top_tb.sv"]}`.
-Discovery uses category/focus only in Goal Mode. `reviewer --verify` checks
-the latest review's open findings; only repeatable `--waive` proposals may accompany it.
+Each Review Goal also names exactly one scope: `target` (that Target's RTL or TB
+files plus dependencies) or `paths` (files relative to the Goal worktree). Examples:
+`{"family":"REVIEW","review":"rtl_bugs","verdict":"clean","target":"top"}`,
+`{"family":"REVIEW","review":"tb_quality","verdict":"done","paths":["tb/top_tb.sv"]}`.
 
 Goal argument `family` uses the uppercase capability before the colon.
 Internal evidence keys and Project-defined evidence bindings are not Goal names.

@@ -153,9 +153,7 @@ def _header(name: str) -> list[str]:
         "When a session enters Goal Mode with this Goalset, the agent translates",
         "it into the entry tool's Goal arguments. Every Goal is mandatory. Write",
         "new Goals in the same vocabulary as the Goal arguments below.",
-        "Review Goals declare exactly one Target or category-matching worktree-relative paths.",
-        "Use category/focus for discovery, then reviewer --verify to check only open findings.",
-        "Only repeatable --waive <finding-id> <justification> proposals accompany verify.",
+        "Each Review Goal names exactly one scope: a `target` or worktree-relative `paths`.",
         "",
     ]
 

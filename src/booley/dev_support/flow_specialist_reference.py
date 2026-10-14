@@ -226,7 +226,7 @@ def _render_reviewer_reference(satisfies_args: dict[str, str] | None) -> list[st
         "The result links saved review evidence, including rejected proposals for "
         "inspection. Rejected proposals do not affect Criteria.",
         "",
-        'Call the `reviewer` Specialist from your Developer Agent session for discovery in Goal Mode with `category="<category>"` and `focus="<focus>"`. The Review Goal supplies scope and spec; caller `scope`, `spec` and `steer` are refused.',
+        'Call the `reviewer` Specialist from your Developer Agent session with `category="<category>"` and `focus="<focus>"`.',
         "",
         "| Category | Focus | What it checks | Sets |",
         "|----------|-------|----------------|------|",
@@ -244,17 +244,21 @@ def _render_reviewer_reference(satisfies_args: dict[str, str] | None) -> list[st
     lines.extend(
         [
             "",
-            'Interactive discovery requires `scope="<file,...>"`; `steer=["<context>"]` and `spec="<path>"` supply context. The `spec` focus requires a specification. `dry_run=true` previews discovery.',
+            '**Interactive Mode:** also pass `scope="<file,...>"`. Add `spec="<path>"` '
+            '(required for the `spec` focus) or `steer=["<context>"]` for context. '
+            "`dry_run=true` previews the call. Each new review replaces the previous findings.",
             "",
-            'Each Review Goal declares exactly one `target="<Target>"` or `paths=["<file>", ...]`. A Target selects only the Goal category in its filesets and dependency closure; paths are category-matching files relative to the Goal worktree.',
+            "**Goal Mode:** the Review Goal fixes scope and spec, so `scope`, `spec` and "
+            "`steer` are refused. Declare each Review Goal with exactly one `target` or "
+            "`paths` (see the Goal catalog).",
             "",
-            "After fixing findings, call `reviewer` with `verify=true` (CLI: `booley specialist reviewer --verify`). It checks only the latest review call's open findings, runs no discovery, and reports each as fixed, waived or still present. It passes with no open findings and is refused if none were open at the start.",
-            "",
-            'Only `waive=[["<finding-id>", "<justification>"], ...]` may accompany verify (CLI: repeat `--waive <finding-id> "<justification>"`). The Reviewer accepts or rejects each proposal. Category, focus, scope, spec, steer and dry_run are refused with verify. Finding IDs appear in the review result.',
-            "",
-            "In Goal Mode, resolve an open `clean` review before starting discovery for another focus; use verify. A passing verify meets `clean` at the current reviewed contents; later edits make it stale. Changed specification, policy or Target scope still require new discovery after resolution. `done` reviews need no verify call, and their findings never block another review. Optional verify leaves their completion evidence unchanged. Interactive discovery replaces the prior findings.",
-            "",
-            "Verify retains the existing two-attempt and three-cumulative-cycle limits. Exhaustion preserves findings and asks for a human decision; it never waives automatically.",
+            "**Verify fixes (both modes):** after fixing findings, call `reviewer` with "
+            "`verify=true` (CLI: `--verify`). It rechecks only the latest review's open "
+            "findings, finds nothing new, and passes when none remain open. To argue a "
+            'finding away, add `waive=[["<finding-id>", "<justification>"]]` (CLI: '
+            '`--waive <finding-id> "<justification>"`, repeatable); the Reviewer accepts '
+            "or rejects each. No other argument is accepted with verify. After repeated "
+            "failed verifies, Goal Mode stops and asks you to change or abandon the Goal.",
         ]
     )
     return lines
