@@ -821,7 +821,53 @@ def test_sealed_historical_directory_uses_recorded_path_flavor(tmp_path, prefix)
         }
     }
     current = tmp_path / NEW / "goals" / record.id
-    assert _record_directory(authority, current, record) == Path(stored)
+    assert str(_record_directory(authority, current, record)) == stored
     authority["record_directory"]["path"] = prefix + separator + "other-record"
     with pytest.raises(LifecycleError, match="identity was substituted"):
         _record_directory(authority, current, record)
+
+
+@pytest.mark.parametrize("flavor", ["posix", "windows"])
+def test_archival_artifact_confinement_preserves_logical_flavor(tmp_path, flavor):
+    from pathlib import PurePosixPath, PureWindowsPath
+    from types import SimpleNamespace
+
+    from booley.goals.lifecycle import (
+        LifecycleError,
+        LifecycleOperation,
+        LifecycleRequest,
+        _validate_result_paths,
+    )
+
+    _repository(tmp_path)
+    directory = tmp_path / NEW
+    record = _record(directory, GoalState.FINISHED, tmp_path)
+    store = GoalStore(directory)
+    request = LifecycleRequest(tmp_path, record.id, str(uuid.uuid4()))
+    record_dir = directory / "goals" / record.id
+    operation = LifecycleOperation(
+        store, SimpleNamespace(record_dir=record_dir), request, tmp_path
+    )
+    operation.directory.mkdir(parents=True)
+    logical = (
+        PureWindowsPath(r"C:\history") if flavor == "windows" else PurePosixPath("/history")
+    ) / record.id
+    authority = {
+        "record_directory": {
+            "path": str(logical),
+            "identity": {"record_id": record.id, "worktree": record.worktree.to_json()},
+        }
+    }
+    (operation.directory / "attempt.authority.json").write_text(json.dumps(authority))
+    original = logical / "operations" / request.operation_id
+    assert str(operation.sealed_directory("attempt")) == str(original)
+    saved = {
+        "status": "finished",
+        "package": str(original / "review-package.json"),
+        "summary": str(original / "SUMMARY.md"),
+        "html": None,
+    }
+    _validate_result_paths(saved, operation)
+    saved["summary"] = str(original / ".." / "SUMMARY.md")
+    with pytest.raises(LifecycleError, match="path differs"):
+        _validate_result_paths(saved, operation)

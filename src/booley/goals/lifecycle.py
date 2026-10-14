@@ -7,7 +7,7 @@ from collections.abc import Generator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from hashlib import sha256
-from pathlib import Path, PurePosixPath, PureWindowsPath
+from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from booley.core.boundary import (
@@ -120,7 +120,7 @@ class LifecycleOperation:
         record = self.store.load(self.request.record_id)
         return read_sealed_artifact(self.directory, name, self.request.payload(record), record)
 
-    def sealed_directory(self, name: str) -> Path:
+    def sealed_directory(self, name: str) -> PurePath:
         """The original logical storage prefix, for byte-identical restored responses."""
         authority = require_dict(
             json.loads((self.directory / (name + ".authority.json")).read_bytes()),
@@ -307,23 +307,25 @@ def _validate_result_paths(value: dict[str, Any], operation: LifecycleOperation)
                     operation.lock.record_dir,
                     operation.store.load(operation.request.record_id),
                 )
-                if path.is_relative_to(original):
-                    path = operation.lock.record_dir / path.relative_to(original)
+                logical = type(original)(value[key])
+                if logical.is_relative_to(original):
+                    suffix = logical.relative_to(original)
+                    path = operation.lock.record_dir.joinpath(*suffix.parts)
                     break
         mapped = contains(path, booley_dir=directory)
         if mapped is None or mapped != (directory / name).resolve():
             raise LifecycleError("saved lifecycle result path differs from its bound operation")
 
 
-def _record_directory(authority: dict[str, Any], current: Path, record: GoalRecord) -> Path:
+def _record_directory(authority: dict[str, Any], current: Path, record: GoalRecord) -> PurePath:
     binding = require_dict(authority.get("record_directory"), field="record_directory")
+    raw = require_str_value(binding.get("path"), field="record directory path")
+    windows = PureWindowsPath(raw)
+    original = windows if windows.is_absolute() else PurePosixPath(raw)
     if (
         set(binding) != {"path", "identity"}
-        or not isinstance(binding["path"], str)
-        or not any(
-            flavor(binding["path"]).is_absolute() and flavor(binding["path"]).name == record.id
-            for flavor in (PurePosixPath, PureWindowsPath)
-        )
+        or not original.is_absolute()
+        or original.name != record.id
         or current.name != record.id
     ):
         raise LifecycleError("immutable operation directory identity was substituted")
@@ -335,7 +337,7 @@ def _record_directory(authority: dict[str, Any], current: Path, record: GoalReco
             raise LifecycleError("invalid legacy operation directory identity")
     elif identity != {"record_id": record.id, "worktree": record.worktree.to_json()}:
         raise LifecycleError("operation directory belongs to a different logical record")
-    return Path(binding["path"])
+    return original
 
 
 def read_bound_request(operation: LifecycleOperation, operation_id: str) -> LifecycleRequest:
