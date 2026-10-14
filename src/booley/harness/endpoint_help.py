@@ -125,9 +125,10 @@ def _probe_parser(parser, visited: dict[int, argparse.ArgumentParser]) -> argpar
     visited[id(parser)] = wrapped
     for action in wrapped._actions:
         if isinstance(action, argparse._SubParsersAction):
-            action.choices = {
-                name: _probe_parser(child, visited) for name, child in action.choices.items()
-            }
+            # Dispatch and presentation share this mapping; retain its identity.
+            action.choices.update(
+                {name: _probe_parser(child, visited) for name, child in action.choices.items()}
+            )
     return wrapped
 
 

@@ -270,3 +270,83 @@ def test_missing_project_error_precedes_host_venue_error(
     err = capsys.readouterr().err
     assert "Project" in err
     assert "runs inside the Booley Sandbox" not in err
+
+
+class Nested(Custom):
+    def _add_args(self, parser):
+        commands = parser.add_subparsers(dest="operation")
+        nested = commands.add_parser("nested", aliases=["n"])
+        nested.add_argument("--number", type=int)
+
+
+@pytest.mark.parametrize("name", ["nested", "n"])
+def test_nested_help_uses_the_dispatched_parser(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    name: str,
+) -> None:
+    register_custom(monkeypatch, Nested)
+    monkeypatch.setattr("sys.argv", ["booley", "flow", "custom", name, "--help"])
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 0
+    captured = capsys.readouterr()
+    assert "nested" in captured.out
+    assert "--number" in captured.out
+    assert captured.err == ""
+
+
+def test_nested_syntax_error_is_reported_once(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    register_custom(monkeypatch, Nested)
+    monkeypatch.setattr(
+        "sys.argv", ["booley", "flow", "custom", "nested", "--number", "bad", "--help"]
+    )
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.count("usage:") == 1
+    assert "invalid int value" in captured.err
+    assert "runs inside" not in captured.err
+
+
+def test_nested_custom_action_runs_once_before_help(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls = []
+
+    class Hint(argparse.Action):
+        def __call__(
+            self,
+            parser: argparse.ArgumentParser,
+            namespace: argparse.Namespace,
+            values: Any,
+            option_string: str | None = None,
+        ) -> None:
+            calls.append("hint")
+
+    class Hinted(Nested):
+        def _add_args(self, parser):
+            super()._add_args(parser)
+            commands = next(
+                action
+                for action in parser._actions
+                if isinstance(action, argparse._SubParsersAction)
+            )
+            commands.choices["nested"].add_argument("--hint", action=Hint, nargs=0)
+
+    register_custom(monkeypatch, Hinted)
+    monkeypatch.setattr("sys.argv", ["booley", "flow", "custom", "nested", "--hint", "--help"])
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 0
+    assert capsys.readouterr().err == ""
+    assert calls == ["hint"]
