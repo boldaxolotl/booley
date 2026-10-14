@@ -5,17 +5,6 @@
 Every public top-level command; run `booley <command> --help` for its options
 and nested actions.
 
-#### Host-only commands
-
-| Command | Purpose |
-|---------|---------|
-| `booley bootstrap` | Check or reconcile reusable host resources |
-| `booley init` | Initialize, scaffold, or reseed project integration |
-| `booley projects` | List remembered Project paths and their Grants |
-| `booley auth` | Configure or inspect Developer Agent and Specialist credentials |
-| `booley eda` | Manage host commercial-EDA installations, grants, and licenses |
-| `booley session` | Start, enter, inspect, refresh, or stop the Sandbox |
-
 #### Sandbox-only commands
 
 On the host, bare `booley` prints help and a getting-started hint.
@@ -25,23 +14,36 @@ Inside the Sandbox, for Interactive Mode, we recommend `booley` / `booley chat`,
 | Command | Purpose |
 |---------|---------|
 | `booley chat` | Explicit spelling of the Sandbox default `booley` command |
-| `booley goal` | Inspect Goal Records, status, and abandonment |
 | `booley dashboard` | Show sessions, Goals, and Jobs |
+| `booley flow` | List or directly run deterministic Booley Flows |
+| `booley specialist` | List or directly run visible Specialists |
 | `booley worktree` | Create a linked worktree with a Paired Checkout or Snapshot |
 
-#### Either-location and mixed commands
+#### Either-location commands
+
+These commands work on the host and inside the Sandbox. Full Target resolution
+requires the Sandbox.
 
 | Command | Location | Purpose |
 |---------|----------|---------|
-| `booley` | mixed | Host: help; Sandbox: open the configured Developer Agent CLI |
-| `booley doctor` | either | Check project, Sandbox, and toolchain health |
-| `booley upgrade` | either | Inspect or acknowledge a pending Booley release review |
-| `booley targets` | mixed | List or filter Targets and show resolved details |
-| `booley flow` | mixed | List or directly run deterministic Booley Flows |
-| `booley specialist` | mixed | List visible Specialists; run inside the Sandbox |
-| `booley feedback` | mixed | Record findings, friction, and impressions |
-| `booley cleanup` | mixed | Preview or apply manifest-owned Project Setup cleanup |
+| `booley` | either | Host: help; Sandbox: open the configured Developer Agent CLI |
 | `booley cheat` | either | List sections; use section flags or `--all` to print the reference |
+| `booley doctor` | either | Check project, Sandbox, and toolchain health |
+| `booley help` | either | Show top-level help, same as `booley --help` |
+| `booley targets` | either | List or filter Targets; full detail resolution requires the Sandbox |
+
+#### Host-only commands
+
+| Command | Purpose |
+|---------|---------|
+| `booley auth` | Configure or inspect Developer Agent and Specialist credentials |
+| `booley bootstrap` | Check or reconcile reusable host resources |
+| `booley eda` | Manage host commercial-EDA installations, grants, and licenses |
+| `booley init` | Initialize, scaffold, or reseed project integration |
+| `booley projects` | List remembered Project paths and their Grants |
+
+Use the [Skills](#skills) for guided agent workflows such as Goal Mode, feedback,
+version review, Project Setup cleanup, and Sandbox lifecycle management.
 
 For Host Bootstrap, `--check-only` reports pending work without writing and
 `--force` refreshes Booley-managed resources while preserving caches and

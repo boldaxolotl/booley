@@ -225,7 +225,11 @@ def test_visible_cli_help_describes_current_version() -> None:
     assert {
         "booley",
         "booley doctor",
-        "booley session",
+        "booley help",
+        "booley projects",
+        "booley projects discover",
+        "booley eda grant add",
+        "booley worktree new",
         "booley flow sim",
         "booley flow synth",
         "booley flow lint",
@@ -233,7 +237,18 @@ def test_visible_cli_help_describes_current_version() -> None:
         "booley specialist reviewer",
         "bwave query help",
     } <= rendered.keys()
-    assert len(rendered) > 60
+    assert (
+        not {
+            "booley session",
+            "booley goal",
+            "booley feedback",
+            "booley cleanup",
+            "booley upgrade",
+        }
+        & rendered.keys()
+    )
+    # Skill-only groups are omitted; still exercise the nested public help tree.
+    assert len(rendered) > 40
     failures = history_failures(rendered)
     assert not failures, "\n".join(failures)
 

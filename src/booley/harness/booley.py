@@ -26,7 +26,7 @@ from collections.abc import Callable
 from contextlib import nullcontext
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from booley.feedback import cli as feedback_cli
 from booley.feedback.storage import feedback_storage_dir
@@ -57,12 +57,11 @@ if TYPE_CHECKING:
 
 
 class CommandLocation(Enum):
-    """Where one advertised top-level command is valid."""
+    """Where one top-level command is valid, including skill commands."""
 
     HOST = "host"
     SESSION_RUNTIME = "Sandbox"
     EITHER = "either"
-    MIXED = "mixed"
 
     @property
     def label(self) -> str:
@@ -70,6 +69,7 @@ class CommandLocation(Enum):
 
 
 COMMAND_LOCATIONS = {
+    "help": CommandLocation.EITHER,
     "goal": CommandLocation.SESSION_RUNTIME,
     "dashboard": CommandLocation.SESSION_RUNTIME,
     "chat": CommandLocation.SESSION_RUNTIME,
@@ -83,11 +83,18 @@ COMMAND_LOCATIONS = {
     "session": CommandLocation.HOST,
     "projects": CommandLocation.HOST,
     "upgrade": CommandLocation.EITHER,
-    "targets": CommandLocation.MIXED,
-    "flow": CommandLocation.MIXED,
-    "specialist": CommandLocation.MIXED,
-    "feedback": CommandLocation.MIXED,
-    "cleanup": CommandLocation.MIXED,
+    "targets": CommandLocation.EITHER,
+    "flow": CommandLocation.SESSION_RUNTIME,
+    "specialist": CommandLocation.SESSION_RUNTIME,
+    "feedback": CommandLocation.EITHER,
+    "cleanup": CommandLocation.EITHER,
+}
+
+_HIDDEN_COMMANDS = frozenset({"feedback", "cleanup", "upgrade", "session", "goal", "shell"})
+_COMMAND_LOCATION_ORDER = {
+    CommandLocation.SESSION_RUNTIME: 0,
+    CommandLocation.EITHER: 1,
+    CommandLocation.HOST: 2,
 }
 
 
@@ -102,6 +109,7 @@ class ProjectBinding(Enum):
 
 
 COMMAND_PROJECT_BINDINGS = {
+    "help": ProjectBinding.INDEPENDENT,
     "goal": ProjectBinding.REQUIRED,
     "dashboard": ProjectBinding.REQUIRED,
     "chat": ProjectBinding.REQUIRED,
@@ -131,8 +139,17 @@ RETIRED_COMMAND_POINTERS = {
 
 
 def command_locations() -> dict[str, CommandLocation]:
-    """Return the public command location catalog."""
-    return COMMAND_LOCATIONS
+    """Return human-facing commands in location order, then alphabetically."""
+    return dict(
+        sorted(
+            (
+                (command, location)
+                for command, location in COMMAND_LOCATIONS.items()
+                if command not in _HIDDEN_COMMANDS
+            ),
+            key=lambda item: (_COMMAND_LOCATION_ORDER[item[1]], item[0]),
+        )
+    )
 
 
 def command_project_bindings() -> dict[str, ProjectBinding]:
@@ -156,6 +173,28 @@ class _RetiredEdaToolOptionAction(argparse.Action):
             "--lint-tool": "--lint-eda-tool",
         }[str(option_string)]
         parser.error(f"{option_string} is retired; use {replacement}")
+
+
+class _RootHelpAction(argparse.Action):
+    def __init__(
+        self,
+        option_strings: list[str],
+        dest: str,
+        root_parser: argparse.ArgumentParser,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(option_strings, dest, nargs=0, **kwargs)
+        self._root_parser = root_parser
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: Any,
+        option_string: str | None = None,
+    ) -> None:
+        self._root_parser.print_help()
+        parser.exit()
 
 
 def _agent_auth_arg(value: str) -> str:
@@ -338,20 +377,11 @@ def _extract_endpoint_selection(parser, args) -> None:
 
 
 def _invoke_endpoint(endpoint, argv, args, **kwargs) -> int:
-    from booley.flows.base import BuiltinFlow
     from booley.flows.cli_selection import invocation_context
-    from booley.flows.endpoint_context import EndpointContext
+    from booley.harness.endpoint_help import supports_shared_cli
 
     selected = getattr(args, "_cli_endpoint_project", None)
-    supported = isinstance(endpoint, BuiltinFlow) or (
-        isinstance(endpoint, EndpointContext)
-        and type(endpoint).main is EndpointContext.main
-        and type(endpoint).parse_args is EndpointContext.parse_args
-        and type(endpoint).execute_cli is EndpointContext.execute_cli
-        and type(endpoint)._prepare_cli_execution is EndpointContext._prepare_cli_execution
-        and "--work-dir" in endpoint._parser._option_string_actions
-        and endpoint._parser._option_string_actions["--work-dir"].dest == "work_dir"
-    )
+    supported = supports_shared_cli(endpoint)
     if selected is not None and not supported:
         print(
             "ERROR: endpoint overrides the shared CLI entrypoint; implement the common parser "
@@ -371,8 +401,9 @@ def _build_parser() -> argparse.ArgumentParser:
         epilog=(
             "Run bare `booley` on the host for help, or inside the Sandbox to open "
             "this Project's configured agent CLI. "
-            "Locations: [host] host terminal only; [Sandbox] container only; "
-            "[either] either location; [mixed] depends on the nested operation."
+            "Locations: [Sandbox] inside the Sandbox only; [either] host or Sandbox; "
+            "[host] host terminal only. "
+            "See `booley cheat --skills` for guided agent workflows."
         ),
     )
     parser.add_argument(
@@ -389,6 +420,16 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar=f"{{{','.join(command_locations())}}}",
     )
 
+    help_parser = sub.add_parser(
+        "help", add_help=False, help="Show top-level help and exit (same as --help)"
+    )
+    help_parser.add_argument(
+        "-h",
+        "--help",
+        action=_RootHelpAction,
+        root_parser=parser,
+        help="Show top-level help and exit",
+    )
     add_worktree_subparser(sub)
     _add_utility_subparsers(sub)
     _add_goal_subparser(sub)
@@ -401,11 +442,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _decorate_command_help(subparsers: argparse._SubParsersAction) -> None:
-    """Prefix advertised command summaries from the location catalog."""
+    """Hide skill commands and order public summaries by execution location."""
+    locations = command_locations()
+    advertised = {action.dest: action for action in subparsers._choices_actions}
+    subparsers._choices_actions[:] = [advertised[name] for name in locations]
     for action in subparsers._choices_actions:
-        location = command_locations().get(action.dest)
-        if location is not None and action.help != argparse.SUPPRESS:
-            action.help = f"{location.label} {action.help}"
+        action.help = f"{locations[action.dest].label} {action.help}"
 
 
 def _project_root_parent() -> argparse.ArgumentParser:
@@ -745,7 +787,7 @@ def _add_utility_subparsers(sub) -> None:
     _add_specialist_subparser(sub)
     _add_targets_subparser(sub)
 
-    # Feedback spans runtime contexts: logging is in-container, submission host-only.
+    # Skill adapters stay registered; top-level help advertises human commands only.
     feedback_cli.add_subparser(sub)
     cleanup_cli.add_subparser(sub)
     project_inventory_cli.add_subparser(sub)
@@ -757,7 +799,7 @@ def _add_utility_subparsers(sub) -> None:
 def _add_goal_subparser(sub) -> None:
     """Add the Goal Mode group `booley goal` (ADR 0067 D13).
 
-    Registered in the public command catalog; see command_locations().
+    Kept available to the Goal Mode skill without advertising it in top-level help.
     """
     goal_p = cast(
         "argparse.ArgumentParser",
@@ -884,8 +926,7 @@ def _add_targets_subparser(sub) -> None:
     # listing, anything else selects one Target for the resolved detail view.
     targets_p = sub.add_parser(
         "targets",
-        help="List the project's .core Targets (a glob filters; a name shows "
-        "the resolved detail view)",
+        help="List or filter .core Targets; full detail resolution requires the Sandbox",
     )
     targets_p.add_argument(
         "selector",
@@ -997,7 +1038,11 @@ def _parse_cli() -> argparse.Namespace:
     command = _argv_command(sys.argv[1:], _global_options_parser())
     if command in RETIRED_COMMAND_POINTERS:
         parser.exit(2, RETIRED_COMMAND_POINTERS[command] + "\n")
-    return _normalize_args(parser, parser.parse_args())
+    args = parser.parse_args()
+    if args.command == "help":
+        parser.print_help()
+        parser.exit()
+    return _normalize_args(parser, args)
 
 
 def _live_criterion_endpoint_catalog(project_root: Path):
@@ -1474,6 +1519,8 @@ def _select_endpoint(args, endpoints: list[McpToolInfo], kind: str) -> McpToolIn
     info = next((item for item in choices if item.name == name), None)
     if info is not None:
         return info
+    if _endpoint_help_candidate(args):
+        _enforce_runtime_location(args.command)
     other = next((item for item in endpoints if item.name == canonical(raw_name)), None)
     suggestion = f" Use booley {other.kind} {other.name}." if other is not None else ""
     print(
@@ -1482,6 +1529,17 @@ def _select_endpoint(args, endpoints: list[McpToolInfo], kind: str) -> McpToolIn
         file=sys.stderr,
     )
     return 2
+
+
+def _endpoint_help_candidate(args: argparse.Namespace) -> bool:
+    """Recognize help-looking syntax; the real parser decides its meaning."""
+    if args.command not in {"flow", "specialist"} or not args.endpoint_name:
+        return False
+    return any(
+        word.startswith("--h")
+        or (word.startswith("-") and not word.startswith("--") and "h" in word[1:])
+        for word in args.endpoint_args
+    )
 
 
 def _dispatch_endpoint(args, info: McpToolInfo, *, flow: bool) -> int:
@@ -1501,6 +1559,19 @@ def _dispatch_endpoint(args, info: McpToolInfo, *, flow: bool) -> int:
     if argv and argv[0] == "--":
         argv = argv[1:]
     endpoint = endpoint_cls()
+    if _endpoint_help_candidate(args):
+        from booley.harness.endpoint_help import supports_shared_cli, try_render_help
+
+        if supports_shared_cli(endpoint):
+            try_render_help(endpoint, argv, getattr(args, "_cli_endpoint_project", None))
+        elif not runtime_context.inside_session_runtime():
+            print(
+                "ERROR: host help requires the shared CLI; inspect this custom command inside the Sandbox.",
+                file=sys.stderr,
+            )
+            return 2
+        _enforce_runtime_location(args.command)
+        runtime_context.ensure_proxy_env()
     return _invoke_endpoint(endpoint, argv, args)
 
 
@@ -1709,7 +1780,7 @@ def _enforce_runtime_location(command: str | None) -> None:
     if command is None:
         return
     error: str | None = None
-    location = command_locations().get(command)
+    location = COMMAND_LOCATIONS.get(command)
     if location is CommandLocation.SESSION_RUNTIME:
         argv = ["booley", *sys.argv[1:]]
         invocation = subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
@@ -1862,6 +1933,8 @@ def _dispatch_selected(
 ) -> int:
     """Dispatch an already validated selection under its host consumer admission."""
     default_chat = getattr(args, "default_chat", False)
+    if _endpoint_help_candidate(args):
+        return _dispatch_help_candidate(args, project_root)
     # Bootstrap has no Project and must not even discover one. Its host-only
     # venue guard still runs before configuration or reconciliation.
     if not default_chat:
@@ -1895,6 +1968,18 @@ def _dispatch_selected(
     if early is not None:
         return early
     raise AssertionError(f"unhandled command: {command}")
+
+
+def _dispatch_help_candidate(args: argparse.Namespace, project_root: Path) -> int:
+    """Keep metadata admission while avoiding execution-path runtime setup."""
+    from booley.runtime.layout_consumers import directory_consumer
+
+    if hasattr(args, "_cli_selection"):
+        args._cli_endpoint_project = project_root
+    with directory_consumer(project_root):
+        result = _handle_early_exits(args, project_root)
+    assert result is not None, "endpoint help command has no handler"
+    return result
 
 
 def main() -> int:

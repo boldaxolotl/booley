@@ -60,8 +60,9 @@ def container_only_error(what: str) -> str | None:
         f"  command in the integrated terminal. Or enter the Sandbox "
         f"from the host:\n"
         f"      booley session enter -- {what}\n\n"
-        f"  See `booley --help` for each command's host/Sandbox location "
-        f"(ADR 0049)."
+        f"  See `booley session enter --help` for Sandbox entry options, "
+        f"`booley --help` for public commands,\n"
+        f"  and `booley cheat --skills` for guided agent workflows."
     )
 
 
@@ -73,6 +74,6 @@ def host_only_error(what: str) -> str | None:
         f"ERROR: `{what}` is a host-side command and cannot run inside the "
         f"Booley container.\n\n"
         f"  Run it from a HOST terminal (outside the devcontainer).\n"
-        f"  See `booley --help` for each command's host/Sandbox location "
-        f"(ADR 0049)."
+        f"  See `booley --help` for public commands and "
+        f"`booley cheat --skills` for guided agent workflows."
     )

@@ -650,7 +650,9 @@ Press `s` for the session list, `j` for running Jobs, `r` for recent results,
 or `a` for all Jobs. From a session detail, Job shortcuts show that session's
 Jobs; press `u` to include all sessions and standalone Jobs. `Esc` returns to
 the previous view, and `?` shows help.
-Inspect records with `booley goal status`.
+
+For scripted inspection, `booley goal status` shows this worktree's Goal Mode,
+or every active Goal Mode in the Project when this worktree hosts none.
 
 ### Entering the Sandbox without VS Code
 
@@ -893,13 +895,25 @@ Internal evidence keys and Project-defined evidence bindings are not Goal names.
 
 ## CLI reference
 
-`booley --help` marks every command as `[host]`, `[Sandbox]`, `[either]`, or
-`[mixed]`. Sandbox commands run in a container terminal or through
-`booley session enter`.
+`booley help` and `booley --help` show the same public commands, grouped as
+`[Sandbox]` first, `[either]` next, and `[host]` last. Sandbox commands
+run in a container terminal. `[either]` commands work on the host and inside the
+Sandbox. Target listing works in either location, but full detail resolution
+requires the Sandbox. Flow and Specialist listing and
+execution are Sandbox-only; their `-h` / `--help` pages also work on
+the host inside an initialized Project.
+
+| Location | Public commands, in order |
+|---|---|
+| Sandbox | `chat`, `dashboard`, `flow`, `specialist`, `worktree` |
+| Either | `cheat`, `doctor`, `help`, `targets` |
+| Host-only | `auth`, `bootstrap`, `eda`, `init`, `projects` |
+
+Commands used by skills remain available but are omitted from top-level help.
+Use `booley cheat --skills` for guided agent workflows.
 
 ```bash
-# Goal inspection and Dashboard (Sandbox)
-booley goal status                # this worktree's Goal Mode, or every active Goal Mode in the Project when this worktree hosts none
+# Dashboard (Sandbox)
 booley dashboard                  # sessions, Goals, and Jobs
 
 # Worktrees (container)
