@@ -92,8 +92,6 @@ def seen_failing(
             and row["sequence"] < current["sequence"]
             and identity.get("record_id") == record.id
             and target == goal.spec.target
-            and old is not None
-            and old != stamp
             and any(
                 item.get("grade") == "fail" and item.get("functional_failure") is True
                 for item in matching_rows(row["detail"], (run,))

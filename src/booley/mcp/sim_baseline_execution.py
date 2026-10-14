@@ -7,6 +7,7 @@ or campaign registration is reachable from it.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 import signal
@@ -57,6 +58,8 @@ from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.runtime.worktree_paths import worktree_state_dir
 
 SIM_KEY = "sim_pass_baseline"
+# Digest of the canonical empty file list, for declaration-only fingerprint categories.
+EMPTY_CATEGORY_DIGEST = hashlib.sha256(b"[]").hexdigest()
 Execute = Callable[[Path, str, tuple[TestRun, ...], Path], dict[str, Any]]
 
 
@@ -269,7 +272,7 @@ def run_baseline(
         runs = request_runs(request)
         results, applicable = _classify_runs(plan, runs)
         declaration = DEFAULT_RESOLVERS.surface_fingerprint(checkout, None)
-        empty = {"digest": content_digest([]), "files": []}
+        empty = {"digest": EMPTY_CATEGORY_DIGEST, "files": []}
         declaration_proof = prove_base_contents(
             checkout, request, {"rtl": empty, "tb": empty, "target_surface": declaration}
         )

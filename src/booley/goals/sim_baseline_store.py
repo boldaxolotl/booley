@@ -36,7 +36,7 @@ def baseline_jobs_dir(project_dir: Path) -> Path:
     return baseline_root(project_dir) / ".runtime" / "jobs"
 
 
-def content_digest(value: object) -> str:
+def content_digest(value: Mapping[str, Any]) -> str:
     """Stable digest without physical checkout or process identity."""
     return hashlib.sha256(canonical_json(value)).hexdigest()
 
@@ -69,7 +69,8 @@ def capture_entry_inputs(project_dir: Path, record: GoalRecord) -> None:
     root = Path(record.worktree_path)
     try:
         project = resolve_checkout_project_dir(root)
-        files = {
+        # Values are hex contents; ``None`` marks a protected non-file entry.
+        files: dict[str, str | None] = {
             core.relative_to(root).as_posix(): core.read_bytes().hex()
             for core in discover_cores(root)
         }
@@ -240,7 +241,10 @@ def validate_results(project: Path, request: Mapping[str, Any]) -> None:
     found: set[tuple[str, str]] = set()
     for raw in rows:
         row = require_dict(raw, field="baseline result")
-        pair = (row.get("name"), row.get("fingerprint"))
+        pair = (
+            require_str_value(row.get("name"), field="baseline result name"),
+            require_str_value(row.get("fingerprint"), field="baseline result fingerprint"),
+        )
         if pair not in wanted or pair in found:
             raise ValueError("baseline result is not an exact requested Test Run")
         run = wanted[pair]
