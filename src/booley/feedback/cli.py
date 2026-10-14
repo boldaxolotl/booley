@@ -32,11 +32,16 @@ from booley.feedback.findings import (
     ORIGINS,
     SENTIMENTS,
     SEVERITIES,
+    AmbiguousFindingIdError,
+    CorruptFindingsLogError,
     Finding,
+    FindingsLockTimeoutError,
     FindingsLog,
+    UnknownFindingIdError,
     append,
     read_log,
     rewrite,
+    select_unique,
 )
 from booley.feedback.storage import feedback_storage_dir
 
@@ -363,17 +368,18 @@ def _cmd_say(args: argparse.Namespace, booley_dir: Path) -> int:
 
 def _cmd_filed(args: argparse.Namespace, booley_dir: Path) -> int:
     """Stamp findings as already reported, so no later batch re-publishes them."""
-    log = read_log(booley_dir)
-    if log.corrupt_lines:
-        return _refuse_lossy_rewrite(log)
-    by_id = {e.id: e for e in log.entries}
-    missing = [fid for fid in args.finding_ids if fid not in by_id]
-    if missing:
-        print(f"No finding(s) {', '.join(missing)} in {log.path}", file=sys.stderr)
+
+    def update(entries: list[Finding]) -> None:
+        log = FindingsLog(path=booley_dir / "findings.jsonl", entries=entries)
+        selected = [select_unique(log, finding_id) for finding_id in args.finding_ids]
+        for entry in selected:
+            entry.mark_filed(args.url)
+
+    try:
+        rewrite(update, booley_dir)
+    except (AmbiguousFindingIdError, UnknownFindingIdError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
         return 1
-    for finding_id in args.finding_ids:
-        by_id[finding_id].mark_filed(args.url)
-    rewrite(log.entries, booley_dir)
     print(f"Marked as filed ({args.url}): {', '.join(args.finding_ids)}")
     return 0
 
@@ -388,45 +394,37 @@ def _cmd_win(args: argparse.Namespace, booley_dir: Path) -> int:
 
 
 def _cmd_triage(args: argparse.Namespace, booley_dir: Path) -> int:
-    log = read_log(booley_dir)
-    if log.corrupt_lines:
-        return _refuse_lossy_rewrite(log)
-    target = next((e for e in log.entries if e.id == args.finding_id), None)
-    if target is None:
-        print(f"No finding {args.finding_id} in {log.path}", file=sys.stderr)
+    selected: list[Finding] = []
+
+    def update(entries: list[Finding]) -> None:
+        target = select_unique(
+            FindingsLog(path=booley_dir / "findings.jsonl", entries=entries), args.finding_id
+        )
+        for field_name in (
+            "bucket",
+            "severity",
+            "component",
+            "repro",
+            "observed",
+            "expected",
+            "notes",
+        ):
+            value = getattr(args, field_name, None)
+            if value is not None:
+                setattr(target, field_name, value)
+        if args.verified_against_source:
+            target.verified_against_source = True
+        target.attachments += [a for a in args.attach if a not in target.attachments]
+        selected.append(target)
+
+    try:
+        rewrite(update, booley_dir)
+    except (AmbiguousFindingIdError, UnknownFindingIdError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
         return 1
-    for field_name in (
-        "bucket",
-        "severity",
-        "component",
-        "repro",
-        "observed",
-        "expected",
-        "notes",
-    ):
-        value = getattr(args, field_name, None)
-        if value is not None:
-            setattr(target, field_name, value)
-    if args.verified_against_source:
-        target.verified_against_source = True
-    # Attachments accumulate rather than replace: triage is where a second
-    # transcript gets added to a finding, never where one gets dropped.
-    target.attachments += [a for a in args.attach if a not in target.attachments]
-    rewrite(log.entries, booley_dir)
+    target = selected[0]
     print(f"{target.id} → bucket={target.bucket}, severity={target.severity}")
     return 0
-
-
-def _refuse_lossy_rewrite(log: object) -> int:
-    """Explain why a mutating feedback command cannot safely continue."""
-    count = getattr(log, "corrupt_lines", 0)
-    path = getattr(log, "path", "findings.jsonl")
-    print(
-        f"Error: refusing to rewrite {path}: {count} unparseable line(s) "
-        "would be lost. Repair or preserve those raw lines first.",
-        file=sys.stderr,
-    )
-    return 2
 
 
 def _cmd_list(args: argparse.Namespace, booley_dir: Path) -> int:
@@ -523,7 +521,7 @@ def _select_findings(log: FindingsLog, finding_ids: list[str]) -> FindingsLog:
     missing = list(dict.fromkeys(fid for fid in finding_ids if fid not in by_id))
     if missing:
         raise _UnknownFindingIdsError(missing, log.path)
-    selected = [by_id[fid] for fid in dict.fromkeys(finding_ids)]
+    selected = [select_unique(log, fid) for fid in dict.fromkeys(finding_ids)]
     return FindingsLog(path=log.path, entries=selected, corrupt_lines=log.corrupt_lines)
 
 
@@ -543,7 +541,7 @@ def _export_report(
         return None
     try:
         selected = log if all_findings else _select_findings(log, finding_ids)
-    except _UnknownFindingIdsError as error:
+    except (_UnknownFindingIdsError, AmbiguousFindingIdError) as error:
         print(f"Error: {error}", file=sys.stderr)
         return None
     report = render.render_booley_report(selected, project_root, booley_dir=booley_dir, env=env)
@@ -639,4 +637,8 @@ def run(
     if environment_handler is not None:
         return environment_handler(args, project_root, booley_dir, env=env)
     assert handler is not None
-    return handler(args, project_root, booley_dir)
+    try:
+        return handler(args, project_root, booley_dir)
+    except (FindingsLockTimeoutError, CorruptFindingsLogError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2

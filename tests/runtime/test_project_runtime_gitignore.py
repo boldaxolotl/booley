@@ -115,18 +115,18 @@ def test_authored_inputs_remain_trackable(versioned_project, path):
 
 def test_findings_append_and_rewrite_are_local(versioned_project):
     _root, data, repo = versioned_project
-    entry = append(Finding(title="local observation"), data)
+    append(Finding(title="local observation"), data)
     assert (data / "findings.jsonl").is_file()
     assert_clean(repo)
-    entry.notes = "triaged"
-    rewritten = rewrite([entry], data)
+    assert (data / ".runtime" / "findings.lock").is_file()
+    rewritten = rewrite(lambda entries: setattr(entries[0], "notes", "triaged"), data)
     assert "triaged" in rewritten.read_text()
     assert_clean(repo)
 
 
 def test_interrupted_findings_rewrite_is_local(versioned_project, monkeypatch):
     _root, data, repo = versioned_project
-    entry = append(Finding(title="original"), data)
+    append(Finding(title="original"), data)
     before = (data / "findings.jsonl").read_bytes()
     original = Path.replace
 
@@ -137,7 +137,8 @@ def test_interrupted_findings_rewrite_is_local(versioned_project, monkeypatch):
 
     monkeypatch.setattr(Path, "replace", interrupted)
     with pytest.raises(OSError, match="interrupted replace"):
-        rewrite([entry], data)
+        rewrite(lambda entries: setattr(entries[0], "notes", "interrupted"), data)
+    assert (data / ".runtime" / "findings.lock").is_file()
     assert (data / "findings.jsonl.tmp").is_file()
     assert (data / "findings.jsonl").read_bytes() == before
     assert_clean(repo)

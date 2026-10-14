@@ -9,6 +9,8 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- Feedback additions now allocate distinct IDs across processes, and triage, filed stamps, and attachment materialization retain concurrent log additions through publication. Commands selecting a legacy duplicate ID refuse it and list its matches; busy writers fail after a bounded wait.
+
 - `booley help` (including `help -h` and `help --help`) now shows the same
   top-level help as `booley --help`. Public commands are grouped as Sandbox,
   either location, and host-only, with alphabetical ordering within each group.
