@@ -8,6 +8,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from booley.core.checkout_role import is_booley_source_checkout
+from booley.core.private_store import PrivateStore
 from booley.core.user_paths import config_dir
 
 BOOLEY_DIR_NAME = ".booley"
@@ -95,7 +96,7 @@ def git_common_directory(root: Path) -> Path | None:
     """Read the stable Git administration path, including temporarily broken links."""
     marker = root / ".git"
     if marker.is_file():
-        raw = marker.read_text().strip()
+        raw = marker.read_text(encoding="utf-8").strip()
         if not raw.startswith("gitdir: "):
             raise BooleyLayoutError(f"invalid Git worktree marker: {marker}")
         admin = Path(raw.removeprefix("gitdir: "))
@@ -106,7 +107,7 @@ def git_common_directory(root: Path) -> Path | None:
             )
         common = marker / "commondir"
         if common.is_file():
-            marker = (marker / common.read_text().strip()).resolve()
+            marker = (marker / common.read_text(encoding="utf-8").strip()).resolve()
         # Retain a missing administrative path: a stale pointer cannot prove no journal.
         return marker.resolve()
     return marker.resolve() if marker.is_dir() else None
@@ -119,6 +120,17 @@ def layout_metadata(root: Path) -> Path:
         return common / "booley"
     key = hashlib.sha256(str(root.resolve()).encode()).hexdigest()
     return config_dir() / "directory-migrations" / key
+
+
+def ensure_layout_metadata(root: Path) -> Path:
+    """Create coordination storage without weakening host-private config directories."""
+    directory = layout_metadata(root)
+    if git_common_directory(root) is None:
+        return PrivateStore(
+            directory, config_dir().parent, "directory migration", BooleyLayoutError
+        ).ensure_directory()
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
 
 
 def pending_journal(root: Path) -> Path | None:

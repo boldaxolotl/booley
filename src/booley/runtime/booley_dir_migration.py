@@ -20,6 +20,7 @@ from booley.core.booley_layout import (
     BooleyLayoutError,
     Layout,
     classify_layout,
+    ensure_layout_metadata,
     git_common_directory,
     layout_metadata,
     validate_environment,
@@ -404,7 +405,7 @@ def _save(migration: Migration) -> None:
 
 def apply_migration(plan: Migration) -> None:
     """Hold a stable layout lock, then rename and roll forward idempotently."""
-    plan.journal.parent.mkdir(parents=True, exist_ok=True)
+    ensure_layout_metadata(plan.root)
     with (plan.journal.parent / "directory-layout.lock").open("a+") as lock:
         wait_for_file_lock(lock, timeout_s=30)
         try:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from booley.core.boundary import require_dict, require_int, require_list, require_str_value
@@ -45,9 +45,9 @@ def parse_bindings(raw: object) -> dict[str, Any]:
         raise ValueError("invalid input path binding names")
     for name, raw_value in values.items():
         value = require_dict(raw_value, field=name + " binding")
-        if (
-            set(value) != {"path", "identity"}
-            or not Path(require_str_value(value["path"], field=name + " path")).is_absolute()
+        path = require_str_value(value.get("path"), field=name + " path")
+        if set(value) != {"path", "identity"} or not (
+            PurePosixPath(path).is_absolute() or PureWindowsPath(path).is_absolute()
         ):
             raise ValueError("invalid logical input root")
         identity = require_list(value["identity"], field=name + " identity")

@@ -57,6 +57,7 @@ def git(cwd: Path, *args: str) -> str:
         cwd=cwd,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=True,
         timeout=GIT_TIMEOUT_S,
     )

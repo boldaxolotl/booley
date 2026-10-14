@@ -94,7 +94,7 @@ def validate_attempt(frozen: dict[str, Any], operation: LifecycleOperation) -> N
             validate_capture(frozen["private_capture"], frozen["package"]["input_proof"])
             validate_presentation(operation, frozen)
         skip = frozen["skip_publication"]
-        historical_skip = {historical_skip_note()} if archived else set()
+        historical_skip: set[str] = {historical_skip_note()} if archived else set()
         if skip not in historical_skip | {
             None,
             "summary kept local; Stealth publication is skipped",

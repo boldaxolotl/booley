@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from booley.core.booley_layout import BooleyLayoutError
+from booley.core.booley_layout import BooleyLayoutError, git_common_directory
 from booley.runtime.safe_storage import refuse_symlinks
 from booley.runtime.worktrees import list_worktrees
 
@@ -22,6 +22,7 @@ def git(root: Path, *args: str) -> str:
         ["git", "-C", str(root), *args],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         env=env,
         timeout=30,
         check=False,
@@ -49,7 +50,25 @@ def primary_checkout(repository: Path) -> Path:
     if admin == common:
         return repository.resolve()
     raw = git(repository, "worktree", "list", "--porcelain").splitlines()[0]
-    return Path(raw.removeprefix("worktree ")).resolve()
+    candidate = Path(raw.removeprefix("worktree ")).resolve()
+    if git_common_directory(candidate) == common:
+        return candidate
+    configured = subprocess.run(
+        ["git", "--git-dir", str(common), "config", "--get", "core.worktree"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+        check=False,
+    )
+    if configured.returncode == 0:
+        candidate = (common / configured.stdout.strip()).resolve()
+        if git_common_directory(candidate) == common:
+            return candidate
+    raise BooleyLayoutError(
+        "cannot locate the primary Project Root from this linked checkout; "
+        f"run `booley init` in the checkout owning Git metadata at {common}"
+    )
 
 
 def registrations(repository: Path) -> list[dict[str, Any]]:
@@ -114,7 +133,7 @@ def pointer_edits(rows: list[dict[str, Any]], moves: list[dict[str, Any]]) -> li
             continue
         marker = checkout / ".git"
         if marker.is_file():
-            old = marker.read_text().strip().removeprefix("gitdir: ")
+            old = marker.read_text(encoding="utf-8").strip().removeprefix("gitdir: ")
             content = _pointer(
                 mapped(admin, moves),
                 mapped(checkout, moves),
@@ -133,7 +152,7 @@ def _linked_admin_edits(
     result = []
     for name, target in (("gitdir", marker), ("commondir", common_dir)):
         path = admin / name
-        previous = path.read_text().strip()
+        previous = path.read_text(encoding="utf-8").strip()
         result.append(
             edit(
                 path,
@@ -172,6 +191,7 @@ def _map_config(
         ["git", "config", "--file", str(config), "--get", key],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=30,
         check=False,
     )
@@ -183,6 +203,8 @@ def _map_config(
     absolute = previous if previous.is_absolute() else (base / previous).resolve()
     new = mapped(absolute, moves)
     spelling = str(new) if previous.is_absolute() else os.path.relpath(new, mapped(base, moves))
+    if Path(spelling) == previous:
+        return
     git(draft.parent, "config", "--file", str(draft), key, spelling.replace(os.sep, "/"))
 
 

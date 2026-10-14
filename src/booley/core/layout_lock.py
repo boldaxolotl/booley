@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from booley.core.booley_layout import (
-    layout_metadata,
+    ensure_layout_metadata,
     reject_retired_path,
     require_current_layout,
     validate_environment,
@@ -21,8 +21,7 @@ def layout_gate(root: Path, *, timeout_s: float = 30) -> Generator[None]:
     validate_environment()
     reject_retired_path(root.absolute())
     require_current_layout(root)
-    directory = layout_metadata(root)
-    directory.mkdir(parents=True, exist_ok=True)
+    directory = ensure_layout_metadata(root)
     with (directory / "directory-layout.lock").open("a+") as handle:
         wait_for_file_lock(handle, timeout_s=timeout_s)
         try:

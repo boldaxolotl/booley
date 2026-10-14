@@ -377,7 +377,7 @@ def _archived_status(store: GoalStore, record: GoalRecord) -> GoalStatusView:
     from booley.runtime.booley_dir_migration import archival_path
 
     state = load_goal_state(store, record)
-    rows = []
+    rows: list[GoalStatus] = []
     for goal in record.goals:
         entry = state.criteria.get(goal.spec.key)
         rows.append(

@@ -164,7 +164,7 @@ def test_moves_detached_worktree_and_nested_copy_or_pair(tmp_path, paired, relat
     assert migration.archival_path(tmp_path / NEW, outer, record_id=record.id) == moved
     if paired:
         assert "prunable" not in git(tmp_path / NEW, "worktree", "list", "--porcelain")
-        assert git(moved / NEW, "rev-parse", "--show-toplevel") == str(moved / NEW)
+        assert Path(git(moved / NEW, "rev-parse", "--show-toplevel")) == moved / NEW
     assert (tmp_path / ".git/info/exclude").read_text() == f"# personal\n/{NEW}\nkeep-me\n"
     after = _snapshot(tmp_path)
     assert _inspect(tmp_path) is None
@@ -227,7 +227,11 @@ def _linked_layout(tmp_path, paired, relative):
         git(old, "commit", "-qm", "Project inputs")
     outer = old / "worktrees" / "débug tree"
     flags = ["-c", f"worktree.useRelativePaths={'true' if relative else 'false'}"]
-    git(tmp_path, *flags, "worktree", "add", "--detach", str(outer))
+    # Keep the administrative name ASCII while exercising a Unicode checkout
+    # path: Git for Windows can sanitize its initial admin name differently.
+    initial = old / "worktrees" / "debug-tree"
+    git(tmp_path, *flags, "worktree", "add", "--detach", str(initial))
+    git(tmp_path, *flags, "worktree", "move", str(initial), str(outer))
     nested = outer / OLD
     if paired:
         git(old, *flags, "worktree", "add", "--detach", str(nested))
@@ -316,7 +320,7 @@ def test_migration_repairs_external_pair_without_moving_its_checkout(tmp_path):
     identity = resolve_worktree_identity(external)
     migration.apply_migration(_inspect(root))
     assert resolve_worktree_identity(external) == identity
-    assert git(external, "rev-parse", "--show-toplevel") == str(external)
+    assert Path(git(external, "rev-parse", "--show-toplevel")) == external
     assert git(external, "config", "core.hooksPath") == str(root / NEW / ".managed/hooks")
     assert "prunable" not in git(root / NEW, "worktree", "list", "--porcelain")
 
@@ -658,7 +662,7 @@ def test_primary_git_pointer_file_migrates_and_repairs_registered_worktree(tmp_p
     assert git(root, "config", "core.hooksPath") == str(root / NEW / ".managed/hooks")
     assert (common / "info/exclude").read_text() == f"/{NEW}\n"
     assert "prunable" not in git(root, "worktree", "list", "--porcelain")
-    assert git(moved, "rev-parse", "--show-toplevel") == str(moved)
+    assert Path(git(moved, "rev-parse", "--show-toplevel")) == moved
 
 
 def test_seed_on_retired_layout_reports_full_init_without_traceback_or_writes(tmp_path, capsys):
@@ -749,3 +753,54 @@ def test_dead_consumer_of_other_registered_root_does_not_block(tmp_path, monkeyp
     )
     migration.apply_migration(_inspect(tmp_path))
     assert (tmp_path / NEW).is_dir()
+
+
+def test_non_git_layout_gate_keeps_host_config_private(tmp_path, monkeypatch):
+    import os
+    import stat
+
+    from booley.core.layout_lock import layout_gate
+
+    config = tmp_path / "config"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
+    monkeypatch.setattr("booley.core.booley_layout.config_dir", lambda: config / "booley")
+    root = tmp_path / "project"
+    (root / NEW).mkdir(parents=True)
+    with layout_gate(root):
+        assert migration.metadata_root(root).is_dir()
+    if os.name != "nt":
+        assert stat.S_IMODE((config / "booley").stat().st_mode) == 0o700
+
+
+@pytest.mark.parametrize("path", ["/tmp/previous-project", r"C:\previous-project"])
+def test_historical_logical_input_roots_parse_across_platforms(path):
+    from booley.goals.input_identity import parse_bindings
+
+    bindings = {name: {"path": path, "identity": [1, 2]} for name in ("rtl", "project")}
+    assert parse_bindings(bindings) == bindings
+
+
+def test_linked_separate_git_root_reports_owner_instead_of_metadata_as_root(tmp_path):
+    root, metadata = tmp_path / "rtl", tmp_path / "metadata"
+    root.mkdir()
+    git(root, "init", "-q", "-b", "main", "--separate-git-dir", str(metadata))
+    git(root, "commit", "--allow-empty", "-qm", "base")
+    (root / OLD).mkdir()
+    linked = root / OLD / "worktrees/one"
+    git(root, "worktree", "add", "--detach", str(linked))
+    (linked / OLD).mkdir()
+    before = _snapshot(tmp_path)
+    with pytest.raises(BooleyLayoutError, match="checkout owning Git metadata"):
+        _inspect(linked)
+    assert _snapshot(tmp_path) == before
+
+
+def test_unmoved_git_config_keeps_custom_formatting(tmp_path):
+    _repository(tmp_path)
+    (tmp_path / OLD).mkdir()
+    config = tmp_path / ".git/config"
+    with config.open("a") as handle:
+        handle.write("[core]\n    hooksPath    =    custom/hooks\n")
+    before = config.read_bytes()
+    migration.apply_migration(_inspect(tmp_path))
+    assert config.read_bytes() == before
