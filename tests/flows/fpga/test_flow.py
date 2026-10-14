@@ -94,16 +94,16 @@ def _write_project_config(
     *execution_lines* can inject a retired spelling to exercise the hard
     migration error.
     """
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir(exist_ok=True)
-    (project_dir / "booley.toml").write_text(
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir(exist_ok=True)
+    (booley_dir / "booley.toml").write_text(
         "[sources.rtl]\n"
         'source_dirs = ["rtl"]\n'
         'include_dirs = ["rtl/include"]\n\n'
         "[flows.fpga]\n" + execution_lines,
         encoding="utf-8",
     )
-    (project_dir / "configs.toml").write_text(
+    (booley_dir / "configs.toml").write_text(
         '[default]\ntop_module = "dut_top"\ndefines = ["CFG_DEFAULT"]\n',
         encoding="utf-8",
     )
@@ -236,7 +236,7 @@ def test_paired_baseline_runs_baseline_target_and_keys_candidate(
     @contextmanager
     def fake_worktree(_project_root, _ref, *, paired_project):
         assert paired_project is flow._paired_project_baseline
-        baseline = tmp_path / ".booley_project" / ".baseline-wt-test"
+        baseline = tmp_path / ".booley" / ".baseline-wt-test"
         baseline.mkdir(parents=True, exist_ok=True)
         yield baseline
 
@@ -295,7 +295,7 @@ def test_baseline_plan_restores_candidate_execution_context(
     @contextmanager
     def fake_worktree(_project_root, _ref, *, paired_project):
         assert paired_project is flow._paired_project_baseline
-        worktree = tmp_path / ".booley_project" / ".baseline-plan"
+        worktree = tmp_path / ".booley" / ".baseline-plan"
         worktree.mkdir(parents=True)
         yield worktree
 
@@ -1093,9 +1093,9 @@ class TestTargetRecipeBoundary:
         (work_dir / "fpga_demo.core").write_text(_FPGA_CORE_TEXT, encoding="utf-8")
 
         # Part and XDC both ride the Target, not booley.toml.
-        project_dir = work_dir / ".booley_project"
-        project_dir.mkdir()
-        (project_dir / "booley.toml").write_text("[flows.fpga]\n", encoding="utf-8")
+        booley_dir = work_dir / ".booley"
+        booley_dir.mkdir()
+        (booley_dir / "booley.toml").write_text("[flows.fpga]\n", encoding="utf-8")
 
         flow = FpgaImplFlow()
         flow.parse_args(
@@ -1150,7 +1150,7 @@ class TestTargetRecipeBoundary:
         assert prepared.recipe_snapshot["ppa_profile"]["name"] == "compact"
         # Resolved build dir lives under the worktree and is relocatable — no
         # absolute workspace path (in either separator form) leaked into the EDAM.
-        edam = next((work_dir / ".booley_project" / ".runtime").rglob("*.eda.yml"))
+        edam = next((work_dir / ".booley" / ".runtime").rglob("*.eda.yml"))
         edam_text = edam.read_text(encoding="utf-8")
         assert str(work_dir) not in edam_text
         assert work_dir.as_posix() not in edam_text

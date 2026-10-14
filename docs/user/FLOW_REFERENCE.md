@@ -47,7 +47,7 @@ Redirected/non-TTY stderr, `TERM=dumb`, and short terminals use flushed newline
 records without terminal escapes or carriage-return rewrites. For example:
 
 ```text
-[booley-progress] 2026-10-05T13:00:00Z synth Target=synth_soc stage=candidate: synthesis elapsed=0s transcript=/work/.booley_project/.runtime/flow-console/invocation-abc/tool-output.log
+[booley-progress] 2026-10-05T13:00:00Z synth Target=synth_soc stage=candidate: synthesis elapsed=0s transcript=/work/.booley/.runtime/flow-console/invocation-abc/tool-output.log
 [booley-progress] 2026-10-05T13:00:05Z synth Target=synth_soc stage=yosys elapsed=5s heartbeat (elapsed time; process health unknown)
 [booley-progress] 2026-10-05T13:00:05Z synth Target=synth_soc stage=yosys elapsed=5s output: Executing synthesis passes.
 ```
@@ -84,7 +84,7 @@ Paths are **inside the Sandbox**. Follow the exact printed transcript path from
 a second terminal attached to that existing Sandbox:
 
 ```bash
-booley session enter -- tail -f /work/.booley_project/.runtime/flow-console/invocation-abc/tool-output.log
+booley session enter -- tail -f /work/.booley/.runtime/flow-console/invocation-abc/tool-output.log
 ```
 
 For a replaceable `run.log`, use `tail -F` and expect bounded snapshots rather

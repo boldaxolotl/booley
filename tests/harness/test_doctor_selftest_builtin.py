@@ -50,7 +50,7 @@ def _audit(
     enabled: bool | None = None,
     fixture: bool = True,
 ):
-    pd = tmp_path / ".booley_project"
+    pd = tmp_path / ".booley"
     pd.mkdir(exist_ok=True)
     sim: dict = {}
     if enabled is not None:
@@ -71,7 +71,7 @@ def _audit(
     )
     return doctor.ProjectAudit(
         project_root=tmp_path,
-        project_dir=pd,
+        booley_dir=pd,
         booley_toml={"flows": {"sim": sim, "lint": {"enabled": False}}},
         configs_toml={"sim_core": {}},
         first_target="sim_core",
@@ -133,7 +133,7 @@ def test_builtin_without_fixtures_warns(tmp_path, monkeypatch):
 
 
 def _lint_audit(tmp_path, *, fixture: bool = True):
-    pd = tmp_path / ".booley_project"
+    pd = tmp_path / ".booley"
     pd.mkdir(exist_ok=True)
     (tmp_path / "unit.core").write_text(
         "CAPI=2:\n"
@@ -156,7 +156,7 @@ def _lint_audit(tmp_path, *, fixture: bool = True):
         )
     return doctor.ProjectAudit(
         project_root=tmp_path,
-        project_dir=pd,
+        booley_dir=pd,
         booley_toml={
             "flows": {
                 "sim": {"enabled": False},
@@ -245,7 +245,7 @@ def test_unvalidated_warning_names_the_sim_footprint_tradeoff(tmp_path, monkeypa
     sim_warn = next(m for m in warns if m.startswith("sim fail-path unvalidated"))
     # Simulation's project-owned overlay stays out of public Flow behavior.
     assert "Footprint:" in sim_warn
-    assert ".booley_project/selftest/sim/bad-overlay/" in sim_warn
+    assert ".booley/selftest/sim/bad-overlay/" in sim_warn
 
 
 def test_footprint_note_exists_for_every_selftest_tool():

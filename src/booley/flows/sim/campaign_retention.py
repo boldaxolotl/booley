@@ -918,11 +918,11 @@ def _infer_project_data(root: Path) -> Path | None:
     if reports_root.name == "flow-reports" and reports_root.parent.name == ".runtime":
         return reports_root.parent.parent
     if reports_root.name == "flow-reports":
-        from booley.runtime.project_dir import resolve_project_dir
+        from booley.runtime.booley_dir import resolve_booley_dir
 
         candidate = reports_root.parent.resolve()
         try:
-            selected = resolve_project_dir().resolve()
+            selected = resolve_booley_dir().resolve()
         except (OSError, RuntimeError, ValueError):
             return None
         if candidate == selected:

@@ -20,10 +20,10 @@ owns verification-intent (what to verify) and Sandbox Policy:**
    (`filesets`), top modules (`toplevel`), build-time parameters/defines
    (`vlogdefine`/`vlogparam`), the EDA tool (`flow_options.tool`), and the
    build targets themselves.
-2. **`.booley_project/tests.toml`** — *verification-intent*: per-Target test
+2. **`.booley/tests.toml`** — *verification-intent*: per-Target test
    lists, the run-time `select` plusarg template, Test Variants, and the seed
    mechanism.
-3. **`.booley_project/booley.toml`** (slimmed) — *execution policy + project
+3. **`.booley/booley.toml`** (slimmed) — *execution policy + project
    meta*: each Booley Flow's `enabled` setting, the Sandbox Image,
    optional approved EDA provisioning, and `[project].name`.
 
@@ -70,14 +70,14 @@ python -c "import booley, pathlib; print(pathlib.Path(booley.__file__).parent / 
 
 Two project-side extension points:
 
-- **`post-setup` hook** — `.booley_project/hooks/post-setup.sh`, `….py`, or
+- **`post-setup` hook** — `.booley/hooks/post-setup.sh`, `….py`, or
   extensionless `post-setup` can be run from a new sandboxed worktree before
   Goal entry; `booley worktree new` does not invoke it automatically;
   it may install/build dependencies, copy files, create symlinks, or prepare
   generated inputs.
 - **Project image** — to add open-source tools and project dependencies that
   must exist in every Sandbox, build an image extending `booley-sandbox` from
-  `.booley_project/docker/Dockerfile` and point `[sandbox].image` at it.
+  `.booley/docker/Dockerfile` and point `[sandbox].image` at it.
   Commercial EDA tools require a built-in Booley provisioning policy; a custom
   Project image does not make one publicly supported.
 
@@ -88,7 +88,7 @@ host-provisioned EDA installation. The plan must already name the opaque
 registration, canonical installation root, exact Project Root, and whether an
 approved License Profile is available.
 
-First put the provisioning request in `.booley_project/booley.toml`; for the
+First put the provisioning request in `.booley/booley.toml`; for the
 current policy:
 
 ```toml
@@ -162,7 +162,7 @@ instead of silently widening the mapping.
   remedy in the evidence grid (bake the toolchain into a project image +
   rebuild on demand — see "Data files & built artifacts" below). **Never**
   compile it once and vendor the prebuilt blob.
-- Inspect `.booley_project/hooks/post-setup.*` if present — evidence of
+- Inspect `.booley/hooks/post-setup.*` if present — evidence of
   project-specific sandbox setup.
 - Inspect the sandbox build recipe (the bundled `data/docker/Dockerfile`
   above) and `docs/user/CONFIG.md` when considering image provisioning or the
@@ -170,8 +170,8 @@ instead of silently widening the mapping.
   as experimental until the required paid-site evidence exists.
 - Read representative RTL/testbench headers only as needed to identify source
   dirs, include dirs, top modules, packages, and testbench tops.
-- Read any existing `.core`, `.booley_project/tests.toml`, and
-  `.booley_project/booley.toml`.
+- Read any existing `.core`, `.booley/tests.toml`, and
+  `.booley/booley.toml`.
 
 Keep the evidence as a Markdown table with columns `Topic`, `Evidence`,
 `Chosen value`, `Source` (a `SETUP-PLAN.md` row, or this step's evidence);
@@ -192,7 +192,7 @@ Use the ownership decision recorded in plan rows 2 and 16:
 | --- | --- | --- |
 | open | yes | Modify/modernize the appropriate native core; never create a parallel adapter core. |
 | open | no | Author a tracked project core at the Project Root or beside the RTL. |
-| hidden | either | Leave every tracked native core unchanged and author a distinct-VLNV adapter under `.booley_project/cores/`. |
+| hidden | either | Leave every tracked native core unchanged and author a distinct-VLNV adapter under `.booley/cores/`. |
 
 In a native core, touch only the Targets the plan selects; unrelated historical
 or board Targets are not setup scope. If more than one native core is a credible
@@ -333,11 +333,11 @@ Authoring rules:
 
 When stealth mode keeps Booley state hidden, leave native tracked `.core` files
 byte-for-byte unchanged and place the adapter `.core` under
-`.booley_project/cores/`. Give it a distinct VLNV so it cannot collide with a
+`.booley/cores/`. Give it a distinct VLNV so it cannot collide with a
 native core. Author its filesets relative to the **repository root**:
 `rtl/top.sv` names upstream RTL directly, while a user-supplied constraints
 file (plan row 10) lives at a path such as
-`.booley_project/cores/constraints/core.sdc`. Do not create
+`.booley/cores/constraints/core.sdc`. Do not create
 resolution symlinks or use escaping `../../` paths. With explicit
 `[stealth] enabled = true`, `booley init` materializes ignored root-level core projections
 and every Booley resolution refreshes them. Validate raw FuseSoC only after the
@@ -488,15 +488,15 @@ staged into the build tree at that name.
        RISC-V spec set. Just set `[sandbox].image = "booley-sandbox-riscv"`:
        `booley init` recognises the name and builds/refreshes the image
        itself. If the repo also has Python deps to bake (ibex), extend it in
-       `.booley_project/docker/Dockerfile` with `FROM booley-sandbox-riscv`
+       `.booley/docker/Dockerfile` with `FROM booley-sandbox-riscv`
        (mark `# booley:keep`) and point `[sandbox].image` at that image.
      - **Other toolchains**: add them to a project image extending
-       `booley-sandbox` at `.booley_project/docker/Dockerfile` and point
+       `booley-sandbox` at `.booley/docker/Dockerfile` and point
        `[sandbox].image` at it. Tag it with a name *other* than the
        auto-generated `<slug>-booley-sandbox` (which `booley init` regenerates
        and would overwrite).
   2. Regenerate the artifact per worktree from a
-     `.booley_project/hooks/post-setup` hook (or a `.core` build step), e.g.
+     `.booley/hooks/post-setup` hook (or a `.core` build step), e.g.
      `make TOOLCHAIN_PREFIX=riscv64-unknown-elf- firmware/firmware.hex`, so
      every run builds it fresh from source rather than reading a stale
      committed blob.
@@ -702,7 +702,7 @@ What goes here:
   `redact_identifiers` settings; they affect only an explicit local export. See
   CONFIG.md → "Feedback".
 - **MCP tool availability — exactly what the plan decided.** Every installed
-  built-in and every valid MCP tool under `.booley_project/mcp_tools/` is discovered
+  built-in and every valid MCP tool under `.booley/mcp_tools/` is discovered
   automatically. Write `[flows.<name>].enabled = false` for an explicit Flow
   opt-out; use `[specialists.<name>].enabled = false` for a Specialist.
   Protocol utilities have no Project enable switch.
@@ -735,7 +735,7 @@ What goes here:
   Flow needs a conventional deliberately bad fixture that the Flow grades as a
   design failure; Doctor infers each known-good case from the Flow's configured
   first Doctor Target. For simulation, mirror replacement build-tree files beneath
-  `.booley_project/selftest/sim/bad-overlay/`; Doctor applies the overlay only
+  `.booley/selftest/sim/bad-overlay/`; Doctor applies the overlay only
   to its bad run, so do not leak this internal fixture through a
   `pre_run_commands` branch. Lint uses a Target named `lint_selftest_bad` in a
   dedicated `.core`, marked `flow_options.booley.doctor_selftest: true`, with a
@@ -744,7 +744,7 @@ What goes here:
   Target; Booley hides the marked Target from `booley targets`, its MCP
   equivalent, and ordinary Flow selection. The bad source is genuine project
   verification input, so keep it in the tracked RTL/TB tree and reference it
-  from the dedicated `.core`—never hide the source under `.booley_project/`.
+  from the dedicated `.core`—never hide the source under `.booley/`.
   Use the Target self-test conventions in Step 4, which
   consumes these fixtures; it must not be the first step to discover they were
   omitted.
@@ -786,7 +786,7 @@ and why those capabilities start disabled, then cover the project-specific bits:
   `booley doctor` can verify the actual image. Licensed EDA support exists only
   through a built-in provisioning policy (currently Vivado 2025.2), not an
   environment module or arbitrary Project extension.
-- Whether `.booley_project/hooks/post-setup.*` exists or should be proposed
+- Whether `.booley/hooks/post-setup.*` exists or should be proposed
   later to prepare project-specific sandbox dependencies.
 - Whether `[sandbox].image` is needed because the project depends on EDA tools
   that must be installed before any sandbox command starts.
@@ -854,7 +854,7 @@ approved config is on disk.
 ## Goalsets
 
 Goal entry reads Goalsets from the Main Booley Directory
-(`BOOLEY_PROJECT_DIR` in the Sandbox). Edit them there; an edit made only in a
+(`BOOLEY_DIR` in the Sandbox). Edit them there; an edit made only in a
 Worktree Booley Directory inside a worktree is not used.
 
 Read the seeded `goalsets/{feature,bugfix,refactor,verification}.md` files and

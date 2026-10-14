@@ -23,11 +23,11 @@ from booley.core.boundary import require_dict, require_list
 from booley.feedback import materialize
 from booley.feedback.render import Environment
 from booley.harness.feedback_environment import resolve_feedback_environment
+from booley.runtime.booley_dir import BOOLEY_DIR_NAME, contains, resolve_checkout_booley_dir
 from booley.runtime.process_group import ProcessGroup, is_process_group_alive
-from booley.runtime.project_dir import PROJECT_DIR_NAME, contains, resolve_checkout_project_dir
 
 MANIFEST_VERSION = 1
-SETUP_ROOT = Path(PROJECT_DIR_NAME)
+SETUP_ROOT = Path(BOOLEY_DIR_NAME)
 LEGACY_GROUPS = (Path(".runtime"), Path("tmp"), Path("logs"))
 Category = Literal["preserve", "remove", "evict-cache", "unresolved"]
 
@@ -199,15 +199,11 @@ def _project_root(root: Path | None) -> Path:
     """Resolve and validate the checkout containing the Booley Directory."""
     resolved = (root or Path.cwd()).resolve()
     try:
-        project_dir = resolve_checkout_project_dir(resolved)
+        booley_dir = resolve_checkout_booley_dir(resolved)
     except (OSError, ValueError) as exc:
         raise CleanupError(f"cannot resolve the Booley Directory: {exc}") from exc
-    if (
-        project_dir != resolved / SETUP_ROOT
-        or project_dir.is_symlink()
-        or not project_dir.is_dir()
-    ):
-        raise CleanupError("no .booley_project directory was found")
+    if booley_dir != resolved / SETUP_ROOT or booley_dir.is_symlink() or not booley_dir.is_dir():
+        raise CleanupError("no .booley directory was found")
     return resolved
 
 
@@ -224,15 +220,15 @@ def _safe_relative(root: Path, raw: str | Path) -> str:
         raise CleanupError(f"Git metadata is never a cleanup target: {raw}")
     absolute = root / normalized
     resolved = absolute.resolve(strict=False)
-    project_dir = root / SETUP_ROOT
-    if project_dir.is_symlink():
-        raise CleanupError(f"the Booley Directory must not be a symlink: {project_dir}")
-    project_dir = project_dir.resolve()
-    canonical = contains(resolved, project_dir=project_dir)
+    booley_dir = root / SETUP_ROOT
+    if booley_dir.is_symlink():
+        raise CleanupError(f"the Booley Directory must not be a symlink: {booley_dir}")
+    booley_dir = booley_dir.resolve()
+    canonical = contains(resolved, booley_dir=booley_dir)
     if canonical is None:
         raise CleanupError(f"path traverses outside {SETUP_ROOT}: {raw}")
-    if canonical == project_dir:
-        raise CleanupError("the .booley_project root is never a cleanup target")
+    if canonical == booley_dir:
+        raise CleanupError("the .booley root is never a cleanup target")
     return normalized.as_posix()
 
 
@@ -243,10 +239,10 @@ def _absolute(root: Path, relative: str) -> Path:
 
 def _reject_shared_boundary(root: Path, absolute: Path, manifest_path: Path) -> None:
     """Reject roots and control files that cannot be bounded as leaves."""
-    project_dir = root / SETUP_ROOT
-    forbidden = {project_dir, project_dir / "tmp", manifest_path.parent, manifest_path}
-    canonical = contains(absolute, project_dir=project_dir)
-    boundaries = {contains(path, project_dir=project_dir) for path in forbidden}
+    booley_dir = root / SETUP_ROOT
+    forbidden = {booley_dir, booley_dir / "tmp", manifest_path.parent, manifest_path}
+    canonical = contains(absolute, booley_dir=booley_dir)
+    boundaries = {contains(path, booley_dir=booley_dir) for path in forbidden}
     if canonical is None or None in boundaries or canonical in boundaries:
         raise CleanupError(f"shared or cleanup-control path is not a candidate: {absolute}")
 
@@ -324,9 +320,9 @@ def _load_manifest(path: Path, root: Path) -> dict[str, Any]:
 def _entry_path(root: Path, entry: ManifestEntry) -> Path:
     """Resolve an entry and reject unsafe final symlinks at mutation time."""
     path = _absolute(root, entry.path)
-    project_dir = (root / SETUP_ROOT).resolve()
+    booley_dir = (root / SETUP_ROOT).resolve()
     for parent in path.parents:
-        if parent == project_dir:
+        if parent == booley_dir:
             break
         if parent.is_symlink():
             raise CleanupBlockedError(f"candidate has a symlinked parent: {entry.path}")
@@ -516,14 +512,14 @@ def _size(path: Path) -> int:
 
 def _legacy_inventory(root: Path) -> tuple[CleanupItem, ...]:
     """Inventory obvious residue without adopting any path as owned."""
-    project_dir = root / SETUP_ROOT
+    booley_dir = root / SETUP_ROOT
     items: list[CleanupItem] = []
     for group in LEGACY_GROUPS:
-        path = project_dir / group
+        path = booley_dir / group
         if path.exists():
             relative = (SETUP_ROOT / group).as_posix()
             items.append(CleanupItem(relative, "unresolved", _size(path), "ownership unavailable"))
-    for path in project_dir.glob("*.log"):
+    for path in booley_dir.glob("*.log"):
         items.append(
             CleanupItem(
                 (SETUP_ROOT / path.name).as_posix(),

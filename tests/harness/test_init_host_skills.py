@@ -12,7 +12,7 @@ from tests.conftest import require_symlinks
 
 
 def _write_toml(project_root: Path, *, enabled: bool) -> None:
-    toml = project_root / ".booley_project" / "booley.toml"
+    toml = project_root / ".booley" / "booley.toml"
     toml.parent.mkdir(parents=True, exist_ok=True)
     body = "[sandbox]\n"
     if enabled:

@@ -30,10 +30,10 @@ from booley.config.tests_toml_rules import (
     validate_seed_template,
     validate_test_or_variant_name,
 )
+from booley.core.booley_dir import resolve_booley_dir, resolve_checkout_booley_dir
 from booley.core.boundary import as_dict, as_str, is_str_list
 from booley.core.checkout_role import SourceCheckoutProjectError
 from booley.core.config_paths import resolve_toml
-from booley.core.project_dir import resolve_checkout_project_dir, resolve_project_dir
 
 _logger = _logging.getLogger(__name__)
 
@@ -87,8 +87,8 @@ def _load_config() -> dict[str, Any]:
     toml: dict = {}
     tests_toml: dict = {}
     try:
-        project_dir = resolve_project_dir()
-        project_toml_path = resolve_toml(project_dir)
+        booley_dir = resolve_booley_dir()
+        project_toml_path = resolve_toml(booley_dir)
         root_toml_path = resolve_toml(_PIPELINE_DIR)
         toml_path = project_toml_path if project_toml_path.exists() else root_toml_path
         with toml_path.open("rb") as f:
@@ -105,10 +105,10 @@ def _load_config() -> dict[str, Any]:
         parse_protected_inputs(toml)
     except (FileNotFoundError, OSError, SourceCheckoutProjectError) as exc:
         _logger.debug("booley.toml not found -- using empty config: %s", exc)
-        project_dir = None
+        booley_dir = None
 
-    if project_dir is not None:
-        tests_toml_path = project_dir / "tests.toml"
+    if booley_dir is not None:
+        tests_toml_path = booley_dir / "tests.toml"
         if tests_toml_path.exists():
             with tests_toml_path.open("rb") as f:
                 tests_toml = tomllib.load(f)
@@ -176,8 +176,8 @@ def project_name(work_dir: Path | None = None) -> str:
     if work_dir is None:
         return str(_get("PROJECT_NAME"))
     try:
-        project_dir = resolve_checkout_project_dir(work_dir)
-        path = resolve_toml(project_dir)
+        booley_dir = resolve_checkout_booley_dir(work_dir)
+        path = resolve_toml(booley_dir)
         with path.open("rb") as stream:
             document = tomllib.load(stream)
     except FileNotFoundError:
@@ -393,8 +393,8 @@ def load_test_configuration(work_dir: Path | str) -> dict[str, dict[str, Any]]:
     Project, but cannot influence a root-scoped read.
     """
     try:
-        project_dir = resolve_checkout_project_dir(Path(work_dir))
-        with (project_dir / "tests.toml").open("rb") as stream:
+        booley_dir = resolve_checkout_booley_dir(Path(work_dir))
+        with (booley_dir / "tests.toml").open("rb") as stream:
             return normalize_tests_toml(tomllib.load(stream))
     except FileNotFoundError:
         return {}

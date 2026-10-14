@@ -105,7 +105,7 @@ def _active_surfaces(layout, record, key, monkeypatch, capsys):
     active = project_goal(store, layout.record)
     result = asyncio.run(
         dispatch_goal_tool(
-            "goal_status", {"work_dir": str(layout.worktree)}, project_dir=layout.control
+            "goal_status", {"work_dir": str(layout.worktree)}, booley_dir=layout.control
         )
     )
     assert not result.is_error
@@ -262,7 +262,7 @@ def test_corrupt_record_diagnostic_never_exports_goal_identity(goal_mode):
     paths.record_file.write_text(json.dumps(raw))
     result = asyncio.run(
         dispatch_goal_tool(
-            "goal_status", {"work_dir": str(goal_mode.worktree)}, project_dir=goal_mode.control
+            "goal_status", {"work_dir": str(goal_mode.worktree)}, booley_dir=goal_mode.control
         )
     )
     assert result.is_error
@@ -317,7 +317,7 @@ def test_corrupt_proposal_diagnostic_keeps_location_without_internal_family(goal
     directory.joinpath("payload.json").write_text(json.dumps(raw))
     result = asyncio.run(
         dispatch_goal_tool(
-            "goal_status", {"work_dir": str(goal_mode.worktree)}, project_dir=goal_mode.control
+            "goal_status", {"work_dir": str(goal_mode.worktree)}, booley_dir=goal_mode.control
         )
     )
     assert result.is_error
@@ -365,9 +365,7 @@ def _admit_coverage_goal(layout, monkeypatch, selector):
     from tests.goals.conftest import git
 
     project(layout.worktree)
-    (layout.worktree / ".booley_project/tests.toml").write_text(
-        '[sim_0]\ntests = ["reset", "wrap"]\n'
-    )
+    (layout.worktree / ".booley/tests.toml").write_text('[sim_0]\ntests = ["reset", "wrap"]\n')
     git(layout.worktree, "add", "counter.core", "rtl")
     git(layout.worktree, "commit", "-qm", "coverage Target")
     monkeypatch.setattr(entry, "TargetCatalog", TargetCatalog)
@@ -386,5 +384,5 @@ def _admit_coverage_goal(layout, monkeypatch, selector):
                 ]
             ),
         ),
-        entry.EntryEnvironment(project_dir=layout.control),
+        entry.EntryEnvironment(booley_dir=layout.control),
     ).record

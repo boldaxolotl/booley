@@ -176,6 +176,43 @@ def abandon_goal(
     on_bound: Callable[[LifecycleRequest], None] | None = None,
 ) -> dict[str, Any]:
     """Direct human selection/mint occurs once under the same worktree lock."""
+    if record_id is not None and operation_id is not None:
+        from booley.goals.lifecycle import archived_result
+
+        saved = archived_result(
+            store,
+            LifecycleRequest(
+                work_dir,
+                record_id,
+                operation_id,
+                abandon=True,
+                instruction_quote=instruction_quote,
+            ),
+        )
+        if saved is not None:
+            return saved
+    return _abandon_current(
+        store,
+        work_dir,
+        env,
+        record_id=record_id,
+        operation_id=operation_id,
+        instruction_quote=instruction_quote,
+        on_bound=on_bound,
+    )
+
+
+def _abandon_current(
+    store: GoalStore,
+    work_dir: Path,
+    env: FinishEnvironment,
+    *,
+    record_id: str | None,
+    operation_id: str | None,
+    instruction_quote: str,
+    on_bound: Callable[[LifecycleRequest], None] | None,
+) -> dict[str, Any]:
+    """Bind an unarchived operation to its surviving checkout."""
     found = GoalCheckout(work_dir).containing_repository()
     if found is None:
         raise LifecycleError("abandon must run inside a Goal worktree")

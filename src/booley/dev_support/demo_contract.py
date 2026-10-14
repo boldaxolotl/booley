@@ -151,12 +151,12 @@ def _validate_generated_input(
 def validate_demo(
     contract_path: Path | str,
     demo_root: Path | str,
-    project_dir: Path | str,
+    booley_dir: Path | str,
 ) -> list[str]:
     """Run the complete, idempotent public-demo readiness contract."""
     contract = load_contract(contract_path)
     root = Path(demo_root).resolve()
-    project = Path(project_dir).resolve()
+    project = Path(booley_dir).resolve()
     errors: list[str] = []
     try:
         _require_checkout_ref(root, contract.upstream_ref, "upstream")
@@ -196,10 +196,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--contract", required=True, type=Path)
     parser.add_argument("--demo-root", required=True, type=Path)
-    parser.add_argument("--project-dir", required=True, type=Path)
+    parser.add_argument("--booley-dir", required=True, type=Path)
     args = parser.parse_args(argv)
     try:
-        errors = validate_demo(args.contract, args.demo_root, args.project_dir)
+        errors = validate_demo(args.contract, args.demo_root, args.booley_dir)
     except DemoContractError as exc:
         errors = [str(exc)]
     if errors:

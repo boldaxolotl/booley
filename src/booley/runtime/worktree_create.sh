@@ -5,7 +5,7 @@
 #
 # Input JSON fields:
 #   name         (required) single safe path component; the worktree is
-#                created at <cwd>/.booley_project/worktrees/<name>.
+#                created at <cwd>/.booley/worktrees/<name>.
 #   cwd          (required) root of the Git repository to branch from.
 #   branch_ref   (optional) existing refs/heads/... branch to attach; without
 #                it the worktree starts on a detached HEAD at the current HEAD.
@@ -83,6 +83,10 @@ if ! git -C "$CWD_REAL" rev-parse --git-dir >/dev/null 2>&1; then
     exit 1
 fi
 CWD="$CWD_REAL"
+# Diagnose old/pending layouts before creating markers or taking creation locks.
+BOOLEY_PACKAGE_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
+PYTHONPATH="$BOOLEY_PACKAGE_ROOT${PYTHONPATH:+:$PYTHONPATH}" \
+    "${PY[@]}" -c 'import sys; from pathlib import Path; from booley.core.booley_layout import validate_environment,require_current_layout; validate_environment(); require_current_layout(Path(sys.argv[1]))' "$CWD"
 
 EXPLICIT_BRANCH=""
 if [ -n "$BRANCH_REF" ]; then
@@ -97,7 +101,7 @@ if [ -n "$BRANCH_REF" ]; then
     EXPLICIT_BRANCH="${BRANCH_REF#refs/heads/}"
 fi
 
-WORKTREE_DIR="$CWD/.booley_project/worktrees/$NAME"
+WORKTREE_DIR="$CWD/.booley/worktrees/$NAME"
 CREATING_MARKER="$WORKTREE_DIR/.creating"
 
 # Keep this worktree's .core copies out of FuseSoC's recursive --cores-root
@@ -107,14 +111,14 @@ CREATING_MARKER="$WORKTREE_DIR/.creating"
 # also drops this marker, but a worktree can be created against a project that
 # predates the fix — so guarantee it here whenever a worktree exists. The
 # marker suppresses .core DISCOVERY only; source files a baseline fileset
-# references under .booley_project/ are still read.
-mkdir -p "$CWD/.booley_project"
-FUSESOC_IGNORE_MARKER="$CWD/.booley_project/FUSESOC_IGNORE"
+# references under .booley/ are still read.
+mkdir -p "$CWD/.booley"
+FUSESOC_IGNORE_MARKER="$CWD/.booley/FUSESOC_IGNORE"
 # A Versioned Booley Directory may have no committed root marker. Quarantine its
 # transient worktrees without adding an untracked input to the clean source.
 if [ "${BOOLEY_WORKTREE_PAIRED_PROJECT:-}" = "1" ] && [ ! -f "$FUSESOC_IGNORE_MARKER" ]; then
-    mkdir -p "$CWD/.booley_project/worktrees"
-    FUSESOC_IGNORE_MARKER="$CWD/.booley_project/worktrees/FUSESOC_IGNORE"
+    mkdir -p "$CWD/.booley/worktrees"
+    FUSESOC_IGNORE_MARKER="$CWD/.booley/worktrees/FUSESOC_IGNORE"
 fi
 if [ ! -f "$FUSESOC_IGNORE_MARKER" ]; then
     printf '# Booley Directory: keep transient worktree .core copies out of FuseSoC/Booley core discovery.\n' \
@@ -143,7 +147,7 @@ trap cleanup_on_error ERR
 # Serialize concurrent invocations on the SAME worktree name. Different
 # worktrees still run in parallel (lockfile is per-name). Prevents racing
 # runners from blowing each other's directories away mid-build.
-LOCK_DIR="$CWD/.booley_project/worktrees/.locks"
+LOCK_DIR="$CWD/.booley/worktrees/.locks"
 mkdir -p "$LOCK_DIR"
 LOCKFILE="$LOCK_DIR/$NAME.lock"
 
@@ -299,7 +303,7 @@ if [ "$ON_EXISTING" = "refuse" ]; then
     if [ -n "$_destination_problem" ]; then
         _parent_lock_release
         echo "ERROR: worktree destination is not free ($_destination_problem): $WORKTREE_DIR" >&2
-        if [ -f "$WORKTREE_DIR/.booley_project/.git" ]; then
+        if [ -f "$WORKTREE_DIR/.booley/.git" ]; then
             echo "ERROR: remove the Paired Checkout first, then the outer worktree, once its work is safe" >&2
         fi
         echo "ERROR: choose another name, or remove the old worktree once its work is safe" >&2
@@ -396,14 +400,14 @@ git_wt() {
     git --git-dir="$WORKTREE_GIT_DIR" --work-tree="$WORKTREE_DIR" "$@"
 }
 
-# Resolve Booley Directory: env var -> sibling .booley_project/ -> legacy project/
+# Resolve the current Booley Directory; init is the only layout migrator.
 PIPELINE_DIR="$CWD/.booley"
-if [ -n "${BOOLEY_PROJECT_DIR:-}" ]; then
-    BOOLEY_PROJECT_DIR_RESOLVED="$BOOLEY_PROJECT_DIR"
-elif [ -d "$CWD/.booley_project" ]; then
-    BOOLEY_PROJECT_DIR_RESOLVED="$CWD/.booley_project"
+if [ -n "${BOOLEY_DIR:-}" ]; then
+    BOOLEY_DIR_RESOLVED="$BOOLEY_DIR"
+elif [ -d "$CWD/.booley" ]; then
+    BOOLEY_DIR_RESOLVED="$CWD/.booley"
 else
-    BOOLEY_PROJECT_DIR_RESOLVED="$PIPELINE_DIR/project"
+    BOOLEY_DIR_RESOLVED="$PIPELINE_DIR"
 fi
 
 # --- Critical section B: more parent .git/config writes ---
@@ -444,48 +448,28 @@ fi
 
 # Apply the same validated [agent.git] policy used by Interactive Mode. Older
 # layouts may keep booley.toml under .booley/, but pipeline.toml is never read.
-IDENTITY_PROJECT_DIR="$BOOLEY_PROJECT_DIR_RESOLVED"
-if [ ! -f "$IDENTITY_PROJECT_DIR/booley.toml" ] && [ -f "$PIPELINE_DIR/booley.toml" ]; then
-    IDENTITY_PROJECT_DIR="$PIPELINE_DIR"
+IDENTITY_BOOLEY_DIR="$BOOLEY_DIR_RESOLVED"
+if [ ! -f "$IDENTITY_BOOLEY_DIR/booley.toml" ] && [ -f "$PIPELINE_DIR/booley.toml" ]; then
+    IDENTITY_BOOLEY_DIR="$PIPELINE_DIR"
 fi
 BOOLEY_PACKAGE_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
 PYTHONPATH="$BOOLEY_PACKAGE_ROOT${PYTHONPATH:+:$PYTHONPATH}" \
-    BOOLEY_PROJECT_DIR="$IDENTITY_PROJECT_DIR" BOOLEY_GIT_CHECKOUT="$WORKTREE_DIR" \
+    BOOLEY_DIR="$IDENTITY_BOOLEY_DIR" BOOLEY_GIT_CHECKOUT="$WORKTREE_DIR" \
     "${PY[@]}" -m booley.runtime.incontainer_git_identity --ticket
 
 _parent_lock_release
 # --- End critical section B ---
 
-# Copy .booley/ into the worktree (scripts, templates, etc.).
-# Scripts like run_iverilog_sim.py derive project_root from __file__, so they must
-# exist inside the worktree for path resolution to work correctly.
-if [ -d "$CWD/.booley" ]; then
-    echo "Copying .booley/ into worktree..." >&2
-    mkdir -p "$WORKTREE_DIR/.booley"
-    tar -C "$CWD/.booley" \
-        --exclude='.git' \
-        --exclude='.venv' \
-        --exclude='worktrees' \
-        --exclude='tmp' \
-        --exclude='target' \
-        --exclude='.pytest_cache' \
-        --exclude='.ruff_cache' \
-        --exclude='__pycache__' \
-        --exclude='*.pyc' \
-        -cf - . | tar -C "$WORKTREE_DIR/.booley" -xf -
-    echo ".booley/ copied ($(du -sh "$WORKTREE_DIR/.booley" 2>/dev/null | cut -f1))" >&2
-fi
-
-# Copy .booley_project/ into worktree if it exists as a sibling (convention-based discovery).
+# Copy .booley/ into worktree if it exists as a sibling (convention-based discovery).
 # Live state stays behind: Ticket boards/logs/locks, Goal state under goals/
 # (records, locks, and history; committed Goal history reaches the worktree
 # through Git only), and per-session runtime state under runtime/sessions/.
 # The ./ patterns match only top-level members
 # (the archive is built from "."); a nested directory named goals is copied.
-if [ "${BOOLEY_WORKTREE_PAIRED_PROJECT:-0}" != "1" ] && [ -d "$CWD/.booley_project" ]; then
-    echo "Copying .booley_project/ into worktree..." >&2
-    mkdir -p "$WORKTREE_DIR/.booley_project"
-    tar -C "$CWD/.booley_project" --exclude='.git' \
+if [ "${BOOLEY_WORKTREE_PAIRED_PROJECT:-0}" != "1" ] && [ -d "$CWD/.booley" ]; then
+    echo "Copying .booley/ into worktree..." >&2
+    mkdir -p "$WORKTREE_DIR/.booley"
+    tar -C "$CWD/.booley" --exclude='.git' \
         --exclude='.venv' \
         --exclude='__pycache__' \
         --exclude='baselines' \
@@ -499,6 +483,7 @@ if [ "${BOOLEY_WORKTREE_PAIRED_PROJECT:-0}" != "1" ] && [ -d "$CWD/.booley_proje
         --exclude='tickets/board' \
         --exclude='tickets/logs' \
         --exclude='tickets/locks' \
+        --exclude='./.directory-relocation.json' \
         --exclude='./goals' \
         --exclude='./runtime/sessions' \
         --exclude='./runtime/doctor/*.lock' \
@@ -517,8 +502,8 @@ if [ "${BOOLEY_WORKTREE_PAIRED_PROJECT:-0}" != "1" ] && [ -d "$CWD/.booley_proje
         --exclude='eval_tmp' \
         --exclude='*_disabled_for_*' \
         --exclude='stale_workspace_snapshots_*' \
-        -cf - . | tar -C "$WORKTREE_DIR/.booley_project" -xf -
-    echo ".booley_project/ copied ($(du -sh "$WORKTREE_DIR/.booley_project" 2>/dev/null | cut -f1))" >&2
+        -cf - . | tar -C "$WORKTREE_DIR/.booley" -xf -
+    echo ".booley/ copied ($(du -sh "$WORKTREE_DIR/.booley" 2>/dev/null | cut -f1))" >&2
 fi
 
 # Root-level quarantine markers are commonly untracked by design, so git

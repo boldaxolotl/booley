@@ -9,7 +9,7 @@ at Booley, usually at handoffs: paired repos, evidence freshness, Grants, Sessio
 ## Pins and prerequisites
 - Booley: the candidate under test (set by the run skill; not pinned here).
 - Project: https://github.com/boldaxolotl/booley-prj-picorv32 @
-  `9e187ceae6357b47b50bdc835609b4570fd28832` (upstream RTL plus Stealth `.booley_project`).
+  `e53c1896ab02595aa4ebb3a56b5aa7bd109177f9` (upstream RTL plus Stealth `.booley`).
 - Upstream: https://github.com/YosysHQ/picorv32 @ `a473fc8fca393771d83b0ffcf0b14db3393339d8`.
 - Tools/host: Docker (≥6 GB free); the `booley init` Sandbox image (xPack GCC 15.2, srec_cat, dtc,
   Spike, `/opt/riscv-docs`, Icarus, Verilator, sv2v/Yosys/OpenROAD); a logged-in Codex or Claude
@@ -37,9 +37,9 @@ at Booley, usually at handoffs: paired repos, evidence freshness, Grants, Sessio
 ### 1. setup — Install, split repos, init, Stealth, Doctor, baseline (~70 min)
 Intent: a first setup succeeds from the public docs alone, and the unchanged demo passes every Flow.
 Try:
-- Clone both pins and confirm they are clean. Make `.booley_project` a standalone Git repo, then run
+- Clone both pins and confirm they are clean. Make `.booley` a standalone Git repo, then run
   `booley init` and follow the demo steps it prints (Sandbox, then
-  `bash .booley_project/hooks/post-setup.sh`). The demo ships preconfigured for sim, lint, and
+  `bash .booley/hooks/post-setup.sh`). The demo ships preconfigured for sim, lint, and
   synth. Configure it with the edits below, not with the `booley-setup` skill.
 - Booley Directory edits: set `[specialists.coverage_analyst] enabled = false` in `booley.toml` (the Icarus
   Targets can't produce Verilator Coverage Campaigns). If Vivado is present, also set
@@ -349,6 +349,6 @@ installations, images, and Sessions untouched. Record the final pin state. Nothi
 - Bare-metal Spike needs `tohost`/`fromhost` symbols to exit. A Linux `ecall` exit only works under
   `pk`.
 - Stealth cores resolve fileset paths from the repository root, not the core file. A fixture core
-  copied into `.booley_project/cores/<dir>/` must name its files as
-  `.booley_project/cores/<dir>/<file>`, or the Flow fails with `Project compile input is not a
+  copied into `.booley/cores/<dir>/` must name its files as
+  `.booley/cores/<dir>/<file>`, or the Flow fails with `Project compile input is not a
   file: /work/<file>`.

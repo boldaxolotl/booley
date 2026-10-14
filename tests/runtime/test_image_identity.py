@@ -383,8 +383,8 @@ def _layout_pair(monkeypatch, tmp_path):
     (root / ".git").mkdir()
     external = tmp_path / "external"
     external.mkdir()
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(external))
-    from booley.core.project_dir import reset_cache
+    monkeypatch.setenv("BOOLEY_DIR", str(external))
+    from booley.core.booley_dir import reset_cache
 
     reset_cache()
     recipe = resolve_recipe_fingerprint((docker_data_dir() / "Dockerfile.project-data-layout",))
@@ -583,12 +583,12 @@ def test_layout_verification_uses_configured_docker_executable(monkeypatch, tmp_
 
 
 def test_layout_rejects_matching_labels_for_local_data_topology(monkeypatch, tmp_path):
-    from booley.core.project_dir import reset_cache
+    from booley.core.booley_dir import reset_cache
 
     images, _records, _parent, _child = _layout_pair(monkeypatch, tmp_path)
     root = tmp_path / "project"
-    (root / ".booley_project").mkdir()
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(root / ".booley_project"))
+    (root / ".booley").mkdir()
+    monkeypatch.setenv("BOOLEY_DIR", str(root / ".booley"))
     reset_cache()
     result = identity.compare_logical_selection(
         "issued", "configured", images.get, project_root=root

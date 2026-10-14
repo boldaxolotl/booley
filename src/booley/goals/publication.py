@@ -71,7 +71,7 @@ class PublicationGate:
     @property
     def store(self) -> GoalStore:
         """The store of the bound record's Main Booley Directory."""
-        return GoalStore(self.binding.project_dir)
+        return GoalStore(self.binding.booley_dir)
 
     @property
     def discarded(self) -> str | None:
@@ -135,7 +135,7 @@ class PublicationGate:
     def _check_record(self, record: GoalRecord, affected: Collection[str]) -> None:
         binding = self.binding
         try:
-            require_no_apply(record_paths(binding.project_dir, record.id).root)
+            require_no_apply(record_paths(binding.booley_dir, record.id).root)
         except ProposalError as exc:
             raise EvidenceDiscarded(str(exc)) from exc
         if record.state is not GoalState.ACTIVE:

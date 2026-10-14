@@ -124,12 +124,10 @@ mount in both container and remote environments. Goal-bound and review
 subprocesses inherit it.
 Its presence/value participates in spec validation, digest/drift detection, and
 refresh; no new mount is introduced. Non-issued development resolves ownership
-through `resolve_project_dir` and selected configuration through
-`resolve_checkout_project_dir` plus `resolve_toml`.
+through `resolve_booley_dir` and selected configuration through
+`resolve_checkout_booley_dir` plus `resolve_toml`.
 
 The shared subtree is outside all mutable build generations and is never
 registered as a disposable `flow-cache` artifact. Setup cleanup preserves
-unowned legacy runtime residue. Legacy `.booley/project` resynchronization
-excludes precisely `project/.runtime/compiler-cache`, preserving adjacent
-runtime/authored content. Baseline core copying only copies the core subtree;
+unowned runtime residue. Baseline core copying only copies the core subtree;
 ordinary Project Git ignores exclude `.runtime` from source snapshots.

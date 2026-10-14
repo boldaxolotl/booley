@@ -18,6 +18,7 @@ from pathlib import Path
 
 from booley.core.boundary import as_str_list, require_dict
 from booley.core.config_paths import resolve_toml
+from booley.runtime.booley_dir import resolve_booley_dir, resolve_checkout_booley_dir
 from booley.runtime.compiler_cache import (
     COMPILER_CACHE_RELATIVE,
     COMPILER_CACHE_ROOT_ENV,
@@ -25,7 +26,6 @@ from booley.runtime.compiler_cache import (
     ISSUED_COMPILER_CACHE_ROOT,
     IssuedCacheIdentity,
 )
-from booley.runtime.project_dir import resolve_checkout_project_dir, resolve_project_dir
 from booley.targets.domain import TargetInspection
 
 logger = logging.getLogger(__name__)
@@ -99,7 +99,7 @@ class CompilerCachePolicy:
 
 def _read_compiler_cache_section(project_root: Path) -> dict:
     """Return the selected checkout's ``[flows.sim.compiler_cache]`` table."""
-    directory = resolve_checkout_project_dir(project_root)
+    directory = resolve_checkout_booley_dir(project_root)
     booley_toml = directory / "booley.toml"
     if booley_toml.is_symlink() and not booley_toml.exists():
         raise CompilerCacheConfigurationError(
@@ -184,7 +184,7 @@ def resolve_policy(
             return CompilerCachePolicy(
                 enabled, None, size, unavailable_reason=_MISSING_SANDBOX_IDENTITY
             )
-        owner_root = (owner or resolve_project_dir(project_root)).resolve()
+        owner_root = (owner or resolve_booley_dir(project_root)).resolve()
         return CompilerCachePolicy(enabled, owner_root / COMPILER_CACHE_RELATIVE, size)
     if issued.root != ISSUED_COMPILER_CACHE_ROOT:
         return CompilerCachePolicy(

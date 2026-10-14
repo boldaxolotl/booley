@@ -23,7 +23,7 @@ from booley.mcp.session_registry import (
     registered_worktree_presence,
     resolve_attribution,
 )
-from booley.runtime.project_dir import resolve_project_dir
+from booley.runtime.booley_dir import resolve_booley_dir
 from booley.runtime.session_activity import ActivityStore
 
 logger = logging.getLogger(__name__)
@@ -303,7 +303,7 @@ class SessionObserver:
             )
 
     def _registry(self) -> SessionRegistry:
-        project = resolve_project_dir()
+        project = resolve_booley_dir()
         return SessionRegistry(project, quiet_after=quiet_after(project))
 
     async def maintain(self) -> None:
@@ -321,7 +321,7 @@ class SessionObserver:
         held = registry.snapshot()
         if held.unavailable:
             return  # An unreadable row may still be a live session; keep its signal.
-        ActivityStore(registry.project_dir).prune(
+        ActivityStore(registry.booley_dir).prune(
             {row.attribution.key for row in held.rows},
             now=self.now(),
             quiet_after=registry.quiet_after,

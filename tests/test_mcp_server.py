@@ -683,10 +683,10 @@ class TestMcpToolTimeoutSeconds:
 
         Otherwise a config-only raise would be silently killed by the outer cap.
         """
-        from booley.runtime.project_dir import reset_cache
+        from booley.runtime.booley_dir import reset_cache
 
         reset_cache()
-        proj = tmp_path / ".booley_project"
+        proj = tmp_path / ".booley"
         proj.mkdir()
         (proj / "booley.toml").write_text(
             "[flows.sim]\ntimeout_ms = 1800000\n",
@@ -702,9 +702,9 @@ class TestMcpToolTimeoutSeconds:
     def test_lint_no_work_dir_honors_current_workspace_config(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        from booley.runtime.project_dir import reset_cache
+        from booley.runtime.booley_dir import reset_cache
 
-        project = tmp_path / ".booley_project"
+        project = tmp_path / ".booley"
         project.mkdir()
         (project / "booley.toml").write_text(
             "[flows.lint]\ntimeout_ms = 900000\n",
@@ -723,7 +723,7 @@ class TestMcpToolTimeoutSeconds:
 
     def test_simulate_no_timeout_arg_unconfigured_uses_default(self, tmp_path: Path):
         """No call override or config knob -> the wrapper default budget stands."""
-        from booley.runtime.project_dir import reset_cache
+        from booley.runtime.booley_dir import reset_cache
 
         reset_cache()
         # The wrapper default and builtin sim budget are both 600s, then the
@@ -736,10 +736,10 @@ class TestMcpToolTimeoutSeconds:
         assert timeout == 4830
 
     def test_simulate_custom_build_timeout_is_included_exactly(self, tmp_path: Path):
-        from booley.runtime.project_dir import reset_cache
+        from booley.runtime.booley_dir import reset_cache
 
         reset_cache()
-        project = tmp_path / ".booley_project"
+        project = tmp_path / ".booley"
         project.mkdir()
         (project / "booley.toml").write_text(
             "[flows.sim]\nbuild_timeout_ms = 7000\n",
@@ -755,7 +755,7 @@ class TestMcpToolTimeoutSeconds:
         assert timeout == 7 + 600 + 10 + 30
 
     def test_coverage_budget_counts_run_and_target_work_exactly(self, tmp_path: Path):
-        project = tmp_path / ".booley_project"
+        project = tmp_path / ".booley"
         project.mkdir()
         (project / "booley.toml").write_text(
             "[flows.sim]\nbuild_timeout_ms = 7000\n",
@@ -784,7 +784,7 @@ class TestMcpToolTimeoutSeconds:
         tmp_path: Path,
         value: object,
     ):
-        project = tmp_path / ".booley_project"
+        project = tmp_path / ".booley"
         project.mkdir()
         rendered = "true" if value is True else repr(value)
         (project / "booley.toml").write_text(
@@ -1758,6 +1758,8 @@ class TestLoadAgentSettingsFromToml:
 
     @pytest.fixture(autouse=True)
     def _import(self):
+        from booley.runtime.agent_config import get_backend_config, set_backend_config
+
         mcp_stubs = {
             "mcp": MagicMock(),
             "mcp.server": MagicMock(),
@@ -1768,7 +1770,6 @@ class TestLoadAgentSettingsFromToml:
         }
         with patch.dict(sys.modules, mcp_stubs):
             from booley.mcp.server import _load_agent_settings_from_toml
-            from booley.runtime.agent_config import get_backend_config, set_backend_config
 
             self._load = _load_agent_settings_from_toml
             self._get = get_backend_config
@@ -1781,19 +1782,19 @@ class TestLoadAgentSettingsFromToml:
                 self._set(None)
 
     def _write_project(self, tmp_path: Path, body: str) -> Path:
-        bp = tmp_path / ".booley_project"
+        bp = tmp_path / ".booley"
         bp.mkdir()
         (bp / "booley.toml").write_text(body)
         return tmp_path
 
-    def test_claude_provider_from_project_dir(self, tmp_path, monkeypatch):
-        # BOOLEY_PROJECT_DIR points at the .booley_project dir; the loader must
+    def test_claude_provider_from_booley_dir(self, tmp_path, monkeypatch):
+        # BOOLEY_DIR points at the .booley dir; the loader must
         # resolve the *parent* as the Project Root.
         root = self._write_project(
             tmp_path,
             '[agent]\nprovider = "claude"\n',
         )
-        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(root / ".booley_project"))
+        monkeypatch.setenv("BOOLEY_DIR", str(root / ".booley"))
 
         self._load()
 
@@ -1804,7 +1805,7 @@ class TestLoadAgentSettingsFromToml:
             tmp_path,
             '[agent]\nprovider = "claude"\n',
         )
-        monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+        monkeypatch.delenv("BOOLEY_DIR", raising=False)
         monkeypatch.chdir(root)
 
         self._load()
@@ -1812,8 +1813,8 @@ class TestLoadAgentSettingsFromToml:
         assert self._get().settings.provider == "claude"
 
     def test_missing_toml_does_not_raise(self, tmp_path, monkeypatch):
-        # No .booley_project/booley.toml at all — must not crash server startup.
-        monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+        # No .booley/booley.toml at all — must not crash server startup.
+        monkeypatch.delenv("BOOLEY_DIR", raising=False)
         monkeypatch.chdir(tmp_path)
 
         self._load()  # should be a no-op-ish, not an exception

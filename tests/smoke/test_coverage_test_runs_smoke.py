@@ -59,7 +59,7 @@ def _write_target(root: Path) -> None:
         encoding="utf-8",
     )
     _write_core(root, "tb/counter_tb.sv", "counter_tb", "[--timing, --main, --exe]", "")
-    data = root / ".booley_project"
+    data = root / ".booley"
     data.mkdir()
     (data / "tests.toml").write_text(_TESTS_TOML, encoding="utf-8")
 

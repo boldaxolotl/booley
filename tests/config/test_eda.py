@@ -15,8 +15,8 @@ from booley.config import eda, project_config, settings
 @pytest.fixture
 def document(tmp_path, monkeypatch):
     path = tmp_path / "booley.toml"
-    monkeypatch.setattr(eda, "resolve_project_dir", lambda _root: tmp_path)
-    monkeypatch.setattr(project_config, "resolve_project_dir", lambda: tmp_path)
+    monkeypatch.setattr(eda, "resolve_booley_dir", lambda _root: tmp_path)
+    monkeypatch.setattr(project_config, "resolve_booley_dir", lambda: tmp_path)
     monkeypatch.setattr(project_config, "_CONFIG_CACHE", None)
     monkeypatch.setattr(settings, "resolve_booley_toml", lambda _root: path)
     return path

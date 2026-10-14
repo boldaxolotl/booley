@@ -181,7 +181,7 @@ class TestBuildPlan:
         assert [run.name for run in plan.default_runs()] == ["<default>@1"]
 
     def test_load_reads_the_checkout_and_tolerates_a_qualified_target(self, tmp_path: Path):
-        project = tmp_path / ".booley_project"
+        project = tmp_path / ".booley"
         project.mkdir()
         (project / "booley.toml").write_text('[project]\nname = "demo"\n', encoding="utf-8")
         (project / "tests.toml").write_text(

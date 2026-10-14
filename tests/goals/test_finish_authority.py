@@ -57,7 +57,7 @@ def test_saved_attempt_path_tamper_refuses_before_any_effect(
         from tests.goals.test_status import publish
 
         if publication == "excluded":
-            for root in (layout.control, layout.worktree / ".booley_project"):
+            for root in (layout.control, layout.worktree / ".booley"):
                 (root / "booley.toml").write_bytes(b"[stealth]\nenabled=false\n")
         layout.record = enter_goals(layout, [{"family": "LINT", "target": "top"}])
         publish(layout)
@@ -69,7 +69,7 @@ def test_saved_attempt_path_tamper_refuses_before_any_effect(
         if spelling == "absolute"
         else "../../../outside-summary.md"
         if spelling == "traversal"
-        else ".booley_project/goals/history/foreign.md"
+        else ".booley/goals/history/foreign.md"
     )
     (operation / "attempt.json").write_text(json.dumps(attempt))
     index = Path(git(layout.worktree, "rev-parse", "--git-path", "index"))

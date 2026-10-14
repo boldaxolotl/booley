@@ -7,7 +7,7 @@ from collections.abc import Generator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from hashlib import sha256
-from pathlib import Path
+from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from booley.core.boundary import (
@@ -120,7 +120,7 @@ class LifecycleOperation:
         record = self.store.load(self.request.record_id)
         return read_sealed_artifact(self.directory, name, self.request.payload(record), record)
 
-    def sealed_directory(self, name: str) -> Path:
+    def sealed_directory(self, name: str) -> PurePath:
         """The original logical storage prefix, for byte-identical restored responses."""
         authority = require_dict(
             json.loads((self.directory / (name + ".authority.json")).read_bytes()),
@@ -160,6 +160,10 @@ def read_sealed_artifact(
             raise ValueError("immutable authority differs from the operation")
         _record_directory(authority, directory.parent.parent, record)
         path = directory / (name + ".json")
+        from booley.runtime.booley_dir_migration import is_archived_record
+
+        if is_archived_record(directory.parents[3], record.id) and not path.is_file():
+            raise ValueError("archived sealed artifact is missing")
         if path.exists() and json.loads(path.read_bytes()) != value:
             raise ValueError("persisted artifact differs from durable authority")
         return value
@@ -280,7 +284,7 @@ def _validate_result(value: dict[str, Any], operation: LifecycleOperation) -> No
 
 
 def _validate_result_paths(value: dict[str, Any], operation: LifecycleOperation) -> None:
-    from booley.runtime.project_dir import contains
+    from booley.runtime.booley_dir import contains
 
     origin = value.get("recovered_operation_id", operation.request.operation_id)
     directory = operation.lock.record_dir / "operations" / origin
@@ -303,21 +307,25 @@ def _validate_result_paths(value: dict[str, Any], operation: LifecycleOperation)
                     operation.lock.record_dir,
                     operation.store.load(operation.request.record_id),
                 )
-                if path.is_relative_to(original):
-                    path = operation.lock.record_dir / path.relative_to(original)
+                logical = type(original)(value[key])
+                if logical.is_relative_to(original):
+                    suffix = logical.relative_to(original)
+                    path = operation.lock.record_dir.joinpath(*suffix.parts)
                     break
-        mapped = contains(path, project_dir=directory)
+        mapped = contains(path, booley_dir=directory)
         if mapped is None or mapped != (directory / name).resolve():
             raise LifecycleError("saved lifecycle result path differs from its bound operation")
 
 
-def _record_directory(authority: dict[str, Any], current: Path, record: GoalRecord) -> Path:
+def _record_directory(authority: dict[str, Any], current: Path, record: GoalRecord) -> PurePath:
     binding = require_dict(authority.get("record_directory"), field="record_directory")
+    raw = require_str_value(binding.get("path"), field="record directory path")
+    windows = PureWindowsPath(raw)
+    original = windows if windows.is_absolute() else PurePosixPath(raw)
     if (
         set(binding) != {"path", "identity"}
-        or not isinstance(binding["path"], str)
-        or not Path(binding["path"]).is_absolute()
-        or Path(binding["path"]).name != record.id
+        or not original.is_absolute()
+        or original.name != record.id
         or current.name != record.id
     ):
         raise LifecycleError("immutable operation directory identity was substituted")
@@ -329,7 +337,7 @@ def _record_directory(authority: dict[str, Any], current: Path, record: GoalReco
             raise LifecycleError("invalid legacy operation directory identity")
     elif identity != {"record_id": record.id, "worktree": record.worktree.to_json()}:
         raise LifecycleError("operation directory belongs to a different logical record")
-    return Path(binding["path"])
+    return original
 
 
 def read_bound_request(operation: LifecycleOperation, operation_id: str) -> LifecycleRequest:
@@ -389,3 +397,23 @@ def _validate_finished_artifacts(result: dict[str, Any], operation: LifecycleOpe
     }
     if any(result[key] != value for key, value in expected.items()):
         raise LifecycleError("saved finished result differs from its frozen completion")
+
+
+def archived_result(store: GoalStore, request: LifecycleRequest) -> dict[str, Any] | None:
+    """Replay only a proven migrated terminal operation; no live checkout is required."""
+    from booley.runtime.booley_dir_migration import is_archived_record
+
+    validate_goal_id(request.record_id)
+    require_uuid4(request.operation_id, field="operation_id")
+    if not is_archived_record(store.booley_dir, request.record_id):
+        return None
+    record = store.load(request.record_id)
+    if record.state.value not in {"finished", "abandoned", "failed"}:
+        raise LifecycleError("archival replay requires a terminal Goal Record")
+    # Observational locking never creates storage, recovers operations or publishes state.
+    with store.record_lock(record.id, existing_only=True) as lock:
+        operation = LifecycleOperation(store, lock, request, Path(record.worktree_path))
+        saved = operation.saved_result()
+        if saved is None:
+            raise LifecycleError("archived operation has no sealed result")
+        return saved

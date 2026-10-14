@@ -63,7 +63,7 @@ def test_catalog_spelling_agrees_on_actual_entry_status_mcp_dashboard_and_produc
     status = build_status(store, loaded)
     mcp = asyncio.run(
         dispatch_goal_tool(
-            "goal_status", {"work_dir": str(layout.worktree)}, project_dir=layout.control
+            "goal_status", {"work_dir": str(layout.worktree)}, booley_dir=layout.control
         )
     )
     assert not mcp.is_error

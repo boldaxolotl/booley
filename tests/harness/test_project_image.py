@@ -28,16 +28,16 @@ class TestImageName:
 
 class TestProjectSandboxImage:
     def test_non_table_sandbox_uses_default(self, tmp_path):
-        project_dir = tmp_path / ".booley_project"
-        project_dir.mkdir()
-        (project_dir / "booley.toml").write_text('sandbox = "wrong shape"\n')
+        booley_dir = tmp_path / ".booley"
+        booley_dir.mkdir()
+        (booley_dir / "booley.toml").write_text('sandbox = "wrong shape"\n')
 
         assert pi.project_sandbox_image(tmp_path) == pi.project_image_name(tmp_path)
 
     def test_riscv_with_requirements_selects_generated_final_image(self, tmp_path):
-        project_dir = tmp_path / ".booley_project"
-        project_dir.mkdir()
-        (project_dir / "booley.toml").write_text(
+        booley_dir = tmp_path / ".booley"
+        booley_dir.mkdir()
+        (booley_dir / "booley.toml").write_text(
             '[sandbox]\nimage = "booley-sandbox-riscv"\npip_requirements = ["requirements.txt"]\n',
             encoding="utf-8",
         )

@@ -39,7 +39,7 @@ runs:
       with:
         repository: ${{ steps.contract.outputs.project_repository }}
         ref: ${{ steps.contract.outputs.project_ref }}
-        path: demo/.booley_project
+        path: demo/.booley
         fetch-depth: 0
         persist-credentials: false
 
@@ -51,7 +51,7 @@ runs:
       shell: bash
       run: |
         printf '%s\n' \
-          '/.booley_project' \
+          '/.booley' \
           '/.booley-projected-*.core' \
           >> demo/.git/info/exclude
 
@@ -59,9 +59,9 @@ runs:
       shell: bash
       run: |
         git -C demo merge-base --is-ancestor HEAD origin/main
-        git -C demo/.booley_project merge-base --is-ancestor HEAD origin/main
+        git -C demo/.booley merge-base --is-ancestor HEAD origin/main
         git -C demo branch --force main HEAD
-        git -C demo/.booley_project branch --force main HEAD
+        git -C demo/.booley branch --force main HEAD
 
     # Host preparation resolves the reviewed Targets using Booley dependencies.
     - name: Install Booley runtime dependencies
@@ -101,4 +101,4 @@ runs:
         python "${GITHUB_WORKSPACE}/.github/scripts/picorv32_demo_contract.py"
         --contract "${CONTRACT_PATH}"
         --demo-root demo
-        --project-dir demo/.booley_project
+        --booley-dir demo/.booley

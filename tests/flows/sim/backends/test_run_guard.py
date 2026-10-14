@@ -94,7 +94,7 @@ def test_readmemh_classification_distinguishes_staging_gap_from_design(tmp_path:
 
 
 def test_dir_size_bytes_sums_nested_files(tmp_path: Path):
-    run = tmp_path / "run"  # clean subdir (conftest seeds .booley_project in tmp_path)
+    run = tmp_path / "run"  # clean subdir (conftest seeds .booley in tmp_path)
     run.mkdir()
     (run / "a.txt").write_bytes(b"x" * 100)
     sub = run / "sub"

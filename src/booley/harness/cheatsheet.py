@@ -44,7 +44,7 @@ SECTIONS: tuple[Section, ...] = (
     Section(
         "project",
         "Project Files",
-        "Editable .booley_project files and affected capabilities",
+        "Editable .booley files and affected capabilities",
     ),
     Section("skills", "Skills", "Project and Goal workflow skills"),
     Section("artifacts", "Artifacts", "Where reports, logs, and state land"),

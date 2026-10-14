@@ -146,7 +146,7 @@ def test_detached_flow_is_bounded_and_never_accepts_submission_as_success() -> N
 
 def test_workspace_mutations_only_target_own_clone(tmp_path, monkeypatch) -> None:
     source = tmp_path / "source"
-    state = source / ".booley_project"
+    state = source / ".booley"
     state.mkdir(parents=True)
     (state / "booley.toml").write_text("[project]\n")
     (state / "goals").mkdir()
@@ -160,10 +160,10 @@ def test_workspace_mutations_only_target_own_clone(tmp_path, monkeypatch) -> Non
         if command[0] == "git" and command[1] == "clone":
             destination = Path(command[-1])
             (destination / ".git/info").mkdir(parents=True)
-            if destination.name == ".booley_project":
+            if destination.name == ".booley":
                 (destination / "booley.toml").write_text("[project]\n")
         elif command[1:5] == ["-m", "booley.harness.booley", "worktree", "new"]:
-            destination = cwd / ".booley_project/worktrees/ci-demo/.booley_project"
+            destination = cwd / ".booley/worktrees/ci-demo/.booley"
             destination.mkdir(parents=True)
             (destination / ".git").write_text("paired pointer")
         return ""
@@ -172,8 +172,8 @@ def test_workspace_mutations_only_target_own_clone(tmp_path, monkeypatch) -> Non
     monkeypatch.setattr(driver, "is_git_worktree_root", lambda _path: True)
     workspace = driver.create_workspace(source, state, owned)
     assert all(cwd == owned or owned in cwd.parents for _, cwd in commands)
-    assert (workspace.worktree / ".booley_project/.git").is_file()
-    assert workspace.project_dir == owned / "primary/.booley_project"
+    assert (workspace.worktree / ".booley/.git").is_file()
+    assert workspace.booley_dir == owned / "primary/.booley"
     assert (state / "goals/saved").read_text() == "retained"
     assert "--no-hardlinks" in commands[0][0]
     assert any(
@@ -238,12 +238,10 @@ def test_client_uses_modern_wire_preview_and_verifies_saved_state(
                     False,
                 )
             )
-    assert captured["store"] == tmp_path / "primary/.booley_project"
+    assert captured["store"] == tmp_path / "primary/.booley"
     assert captured["mode"] == "2026-07-28"
     assert captured["server"].env["BOOLEY_MCP_MODE"] == "interactive"
-    assert captured["server"].env["BOOLEY_PROJECT_DIR"] == str(
-        tmp_path / "primary/.booley_project"
-    )
+    assert captured["server"].env["BOOLEY_DIR"] == str(tmp_path / "primary/.booley")
 
 
 def test_entry_warnings_are_recorded_without_refusing_readiness() -> None:
@@ -265,8 +263,8 @@ def test_entry_warnings_are_recorded_without_refusing_readiness() -> None:
 def readiness_workspace(tmp_path_factory):
     root = tmp_path_factory.mktemp("readiness")
     worktree = root / "worktree"
-    (worktree / ".booley_project").mkdir(parents=True)
-    (worktree / ".booley_project/booley.toml").write_text("[stealth]\nenabled=false\n")
+    (worktree / ".booley").mkdir(parents=True)
+    (worktree / ".booley/booley.toml").write_text("[stealth]\nenabled=false\n")
     (worktree / "fixture.core").write_text(
         "CAPI=2:\nname: ci:demo:fixture:0\ntargets:\n"
         + "".join(
@@ -450,7 +448,7 @@ def test_stop_baseline_jobs_cancels_detached_job_before_workspace_cleanup(tmp_pa
     from booley.runtime.process_group import new_group_kwargs
     from booley.runtime.timefmt import utc_now_rfc3339
 
-    project = tmp_path / ".booley_project"
+    project = tmp_path / ".booley"
     jobs = baseline_jobs_dir(project)
     command = [sys.executable, "-c", "import time; time.sleep(120)"]
     process = subprocess.Popen(command, **new_group_kwargs())
@@ -468,7 +466,7 @@ def test_stop_baseline_jobs_cancels_detached_job_before_workspace_cleanup(tmp_pa
 
 
 def test_stop_baseline_jobs_without_jobs_returns_immediately(tmp_path) -> None:
-    driver.stop_baseline_jobs(tmp_path / ".booley_project", timeout_s=0)
+    driver.stop_baseline_jobs(tmp_path / ".booley", timeout_s=0)
 
 
 def test_stop_baseline_jobs_reports_jobs_that_outlive_the_bound(tmp_path, monkeypatch) -> None:

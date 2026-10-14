@@ -1,4 +1,4 @@
-# BOOLEY_TEMPLATE — annotated slimmed `.booley_project/booley.toml`
+# BOOLEY_TEMPLATE — annotated slimmed `.booley/booley.toml`
 # (execution policy + project meta).
 
 [project]

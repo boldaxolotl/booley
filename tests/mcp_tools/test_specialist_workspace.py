@@ -202,7 +202,7 @@ def test_snapshot_omits_ignored_managed_bundle_and_retains_authored_inputs(tmp_p
     from booley.runtime.project_gitignore import PROJECT_GITIGNORE
 
     repo = _repo(tmp_path)
-    data = repo / ".booley_project"
+    data = repo / ".booley"
     (data / "hooks").mkdir(parents=True)
     (data / ".gitignore").write_text(PROJECT_GITIGNORE)
     (data / "booley.toml").write_text("[project]\nname='fixture'\n")
@@ -217,9 +217,9 @@ def test_snapshot_omits_ignored_managed_bundle_and_retains_authored_inputs(tmp_p
             str(repo),
             "add",
             "-f",
-            ".booley_project/.gitignore",
-            ".booley_project/booley.toml",
-            ".booley_project/hooks/check.py",
+            ".booley/.gitignore",
+            ".booley/booley.toml",
+            ".booley/hooks/check.py",
         ],
         check=True,
         capture_output=True,
@@ -227,7 +227,7 @@ def test_snapshot_omits_ignored_managed_bundle_and_retains_authored_inputs(tmp_p
     )
     params = AgentCallParams(prompt="review", model="test", cwd=repo)
     with isolated_agent_workspace(params, "read_only") as (isolated, _snapshot):
-        copied = Path(isolated.cwd) / ".booley_project"
+        copied = Path(isolated.cwd) / ".booley"
         assert not (copied / ".managed/project-git-hooks.pyz").exists()
         assert (copied / "booley.toml").read_bytes() == (data / "booley.toml").read_bytes()
         assert (copied / "hooks/check.py").read_bytes() == (data / "hooks/check.py").read_bytes()

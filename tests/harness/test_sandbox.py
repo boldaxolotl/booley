@@ -73,9 +73,9 @@ class TestDockerRunnerBuildCmd:
 
     @patch("booley.runtime.platform_paths.IS_WINDOWS", False)
     def test_project_name_from_selected_checkout_reaches_label(self, tmp_path: Path):
-        project_dir = tmp_path / ".booley_project"
-        project_dir.mkdir()
-        (project_dir / "booley.toml").write_text(
+        booley_dir = tmp_path / ".booley"
+        booley_dir.mkdir()
+        (booley_dir / "booley.toml").write_text(
             '[project]\nname = "configured-project"\n',
             encoding="utf-8",
         )

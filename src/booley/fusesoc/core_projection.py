@@ -1,6 +1,6 @@
 """Stealth-only projection of authored FuseSoC cores into the Project Root.
 
-The authoritative cores stay versioned under ``.booley_project/cores/``.  A
+The authoritative cores stay versioned under ``.booley/cores/``.  A
 small generated copy at the RTL repository root gives FuseSoC the repository
 itself as the core root, so filesets can name pristine upstream sources
 directly instead of reaching them through a farm of resolution symlinks.
@@ -23,7 +23,7 @@ from booley.core.boundary import as_dict
 
 PROJECTED_CORE_PREFIX = ".booley-projected-"
 PROJECTED_CORE_GLOB = f"{PROJECTED_CORE_PREFIX}*.core"
-ISOLATED_REGISTRY_SUBDIR = Path(".booley_project/tmp/fusesoc-isolated-cores")
+ISOLATED_REGISTRY_SUBDIR = Path(".booley/tmp/fusesoc-isolated-cores")
 _ISOLATED_CORE_PREFIX = "booley-isolated-"
 _MARKER_PREFIX = "# Booley stealth core projection: "
 
@@ -59,7 +59,7 @@ def native_cores_ignored(project_root: Path | str) -> bool:
 
 
 def _stealth_config(project_root: Path | str) -> dict[str, Any]:
-    config = Path(project_root) / ".booley_project" / "booley.toml"
+    config = Path(project_root) / ".booley" / "booley.toml"
     try:
         with config.open("rb") as stream:
             stealth = tomllib.load(stream).get("stealth")
@@ -69,8 +69,8 @@ def _stealth_config(project_root: Path | str) -> dict[str, Any]:
 
 
 def authoritative_cores(project_root: Path | str) -> tuple[Path, ...]:
-    """Return projection-eligible cores under ``.booley_project/cores``."""
-    core_root = Path(project_root) / ".booley_project" / "cores"
+    """Return projection-eligible cores under ``.booley/cores``."""
+    core_root = Path(project_root) / ".booley" / "cores"
     if not core_root.is_dir() or (core_root / "FUSESOC_IGNORE").is_file():
         return ()
     cores = (path for path in core_root.rglob("*.core") if not _under_ignore(path, core_root))
@@ -80,7 +80,7 @@ def authoritative_cores(project_root: Path | str) -> tuple[Path, ...]:
 def projected_core_path(project_root: Path | str, core_file: Path) -> Path:
     """Return the deterministic root-level projection path for *core_file*."""
     root = Path(project_root)
-    core_root = root / ".booley_project" / "cores"
+    core_root = root / ".booley" / "cores"
     try:
         relative = core_file.relative_to(core_root).as_posix()
     except ValueError as exc:
@@ -115,7 +115,7 @@ def isolated_registry_root(project_root: Path | str) -> Path:
 def isolated_core_path(project_root: Path | str, core_file: Path) -> Path:
     """Return the private-registry projection for one authoritative core."""
     root = Path(project_root)
-    core_root = root / ".booley_project" / "cores"
+    core_root = root / ".booley" / "cores"
     try:
         relative = core_file.relative_to(core_root).as_posix()
     except ValueError as exc:
@@ -163,7 +163,7 @@ def is_generated_isolated_core(project_root: Path, path: Path) -> bool:
 
 def is_generated_projection(repository: Path, path: Path) -> bool:
     """Identify a projection owned by the repository's active stealth mode."""
-    project_root = repository.parent if repository.name == ".booley_project" else repository
+    project_root = repository.parent if repository.name == ".booley" else repository
     return is_generated_projected_core(project_root, path) or is_generated_isolated_core(
         project_root, path
     )
@@ -181,7 +181,7 @@ def _projection_source(project_root: Path, path: Path) -> Path | None:
         if raw_source.is_absolute():
             return None
         source = (project_root / raw_source).resolve(strict=False)
-        source.relative_to((project_root / ".booley_project" / "cores").resolve())
+        source.relative_to((project_root / ".booley" / "cores").resolve())
         return source
     except (OSError, UnicodeError, ValueError):
         return None

@@ -163,10 +163,10 @@ def test_submodule_dirty_or_changed_git_administration_refuses(tmp_path):
 
 def test_pinned_configured_selection_and_separately_owned_role(tmp_path):
     root = nested_modules(tmp_path)
-    project = root / ".booley_project"
+    project = root / ".booley"
     project.mkdir()
     (project / "booley.toml").write_text("[submodules]\npaths = []\n", newline="\n")
-    git(root, "add", "-f", ".booley_project")
+    git(root, "add", "-f", ".booley")
     git(root, "commit", "-qm", "pinned empty selection")
     scratch = tmp_path / "scratch"
     scratch.mkdir()
@@ -228,12 +228,12 @@ def paired_selection_fixture(tmp_path, outside):
     if outside:
         project = tmp_path / "outside-project"
         git(owner, "worktree", "add", "-q", "-b", "paired", str(project))
-        symlink_or_skip(root / ".booley_project", project, target_is_directory=True)
-        git(root, "add", "-f", ".booley_project")
+        symlink_or_skip(root / ".booley", project, target_is_directory=True)
+        git(root, "add", "-f", ".booley")
         (root / "booley.toml").write_text('[project]\ndir="../outside-project"\n', newline="\n")
         git(root, "add", "booley.toml")
     else:
-        project = root / ".booley_project"
+        project = root / ".booley"
         git(
             root,
             "-c",
@@ -243,7 +243,7 @@ def paired_selection_fixture(tmp_path, outside):
             "-q",
             "-f",
             str(owner),
-            ".booley_project",
+            ".booley",
         )
     git(project, "config", "core.autocrlf", "false")
     git(root, "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(leaf), "unused")
@@ -287,7 +287,7 @@ def test_committed_view_uses_original_and_final_paired_selection_without_live_fa
     (project / "booley.toml").write_text('[submodules]\npaths=["unused"]\n', newline="\n")
     git(project, "commit", "-qam", "final Project selection")
     if not outside:
-        git(root, "add", ".booley_project")
+        git(root, "add", ".booley")
         git(root, "commit", "-qm", "final paired pin")
     with committed_view(selection(), record, control_project=project, baseline=True) as view:
         assert not (view.root / "unused").exists()
@@ -312,11 +312,11 @@ def test_committed_view_uses_original_and_final_paired_selection_without_live_fa
 )
 def test_pinned_selection_invalid_policy_never_falls_back_to_live_inputs(tmp_path, policy):
     root = repository(tmp_path / "source")
-    project = root / ".booley_project"
+    project = root / ".booley"
     project.mkdir()
     (project / "booley.toml").write_text("[submodules]\n" + policy + "\n", newline="\n")
     (root / "rtl.v").write_text("module top; endmodule\n", newline="\n")
-    git(root, "add", "-f", ".booley_project")
+    git(root, "add", "-f", ".booley")
     git(root, "add", "rtl.v")
     git(root, "commit", "-qm", "invalid pinned selection")
     before = (root / ".git/index").read_bytes()
@@ -520,9 +520,9 @@ def test_local_submodule_with_paired_root_exports_but_real_dirt_blocks(tmp_path,
     (owner / "booley.toml").write_bytes(b"[project]\n")
     git(owner, "add", "-A")
     git(owner, "commit", "-qm", "independent")
-    paired = source / ".booley_project"
+    paired = source / ".booley"
     git(owner, "worktree", "add", "-q", "--detach", str(paired))
-    assert git(source, "status", "--porcelain=v1") == "?? .booley_project/"
+    assert git(source, "status", "--porcelain=v1") == "?? .booley/"
     git(root, "config", "diff.ignoreSubmodules", "all")
     if dirt:
         path = (
@@ -553,7 +553,7 @@ def test_local_submodule_standalone_nested_repo_is_not_exempt(tmp_path):
     empty = tmp_path / "empty-excludes"
     empty.write_bytes(b"")
     git(source, "config", "core.excludesFile", str(empty))
-    nested = repository(source / ".booley_project")
+    nested = repository(source / ".booley")
     (nested / "booley.toml").write_bytes(b"[project]\n")
     git(nested, "add", "-A")
     git(nested, "commit", "-qm", "standalone")

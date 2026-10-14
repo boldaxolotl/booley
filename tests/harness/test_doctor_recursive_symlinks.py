@@ -35,8 +35,8 @@ def _ancestor_links(root: Path, count: int) -> list[str]:
 def test_public_doctor_groups_54_links_with_complete_verbose_paths(
     tmp_path, monkeypatch, capsys, verbose, concise
 ):
-    project_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, project_dir)
+    booley_dir = _write_project(tmp_path)
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
     paths = _ancestor_links(tmp_path, 54)
 
     result = doctor.run_doctor_result(

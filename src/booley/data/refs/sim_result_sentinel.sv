@@ -13,7 +13,7 @@ initial begin
 end
 
 // Option 2 — keep your existing testbench wording and tell Booley about it in
-// .booley_project/booley.toml instead of editing the testbench:
+// .booley/booley.toml instead of editing the testbench:
 //
 //   [flows.sim]
 //   pass_sentinels = ["ALL TESTS PASSED."]

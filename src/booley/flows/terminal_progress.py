@@ -26,7 +26,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import BinaryIO, TextIO
 
-from booley.runtime.project_dir import runtime_dir
+from booley.runtime.booley_dir import runtime_dir
 from booley.runtime.timefmt import utc_now_rfc3339
 
 _CURRENT: contextvars.ContextVar[TerminalProgress | None] = contextvars.ContextVar(

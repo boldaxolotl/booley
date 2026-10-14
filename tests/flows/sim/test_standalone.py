@@ -13,12 +13,12 @@ from booley.flows.base import SubprocessResult
 from booley.flows.sim import standalone as standalone_mod
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.standalone import _scan_hdl_declarations
-from booley.runtime.project_dir import reset_cache
+from booley.runtime.booley_dir import reset_cache
 
 
 @pytest.fixture(autouse=True)
-def _reset_project_dir(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+def _reset_booley_dir(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
     reset_cache()
     yield
     reset_cache()
@@ -31,10 +31,10 @@ def _make_flow(
     criterion_met: bool = False,
     standalone: bool = True,
 ) -> SimulateFlow:
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir(exist_ok=True)
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir(exist_ok=True)
     if config:
-        (project_dir / "booley.toml").write_text(config, encoding="utf-8")
+        (booley_dir / "booley.toml").write_text(config, encoding="utf-8")
     state_file = tmp_path / "state.json"
     state = DevelopmentState.load(state_file)
     state.init_criteria({"elaborate_standalone": True})
@@ -42,7 +42,7 @@ def _make_flow(
     state.save()
     env = os.environ.copy()
     env.update(
-        BOOLEY_PROJECT_DIR=str(project_dir),
+        BOOLEY_DIR=str(booley_dir),
         BOOLEY_SLUG="standalone-test",
         BOOLEY_STATE_FILE=str(state_file),
     )
@@ -460,7 +460,7 @@ class TestStandaloneFrontend:
         )
         assert pinned._resolve_standalone_frontend() == "iverilog"
 
-        (tmp_path / ".booley_project" / "booley.toml").write_text(
+        (tmp_path / ".booley" / "booley.toml").write_text(
             '[flows.sim]\nstandalone_frontend = "vcs"\n',
             encoding="utf-8",
         )

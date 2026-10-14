@@ -11,7 +11,7 @@ def test_reference_docs_do_not_use_stale_paths_or_flags():
     text = "\n".join(path.read_text(encoding="utf-8") for path in REFS_DIR.rglob("*.md"))
 
     assert ".booley/docs/refs" not in text
-    assert ".booley_project/tmp" not in text
+    assert ".booley/tmp" not in text
     assert "../project/" not in text
     assert "--vcd" not in text
 

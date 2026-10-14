@@ -139,9 +139,9 @@ def _prepared_child(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     campaign_store.publish_manifest(manifest)
     project = tmp_path / "project"
     project.mkdir()
-    project_data = project / ".booley_project"
+    project_data = project / ".booley"
     project_data.mkdir()
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project_data))
+    monkeypatch.setenv("BOOLEY_DIR", str(project_data))
     item = manifest.document["work_items"][0]
     attempt_id = "550e8400-e29b-41d4-a716-446655440010"
     ordinal, attempt = campaign_store.allocate_attempt_directory(
@@ -169,9 +169,9 @@ def test_child_scope_keeps_whole_work_item_nonterminal_between_commands(
     scope = SupervisedExecutionScope(child_id, project_data, lambda: False)
     with supervised_execution_scope(scope):
         first = flow._execute_local([sys.executable, "-c", "print('first')"], timeout=5)
-        between = read_json(execution_paths(child_id, project_dir=project_data).record)
+        between = read_json(execution_paths(child_id, booley_dir=project_data).record)
         second = flow._execute_local([sys.executable, "-c", "print('second')"], timeout=5)
-    record = read_json(execution_paths(child_id, project_dir=project_data).record)
+    record = read_json(execution_paths(child_id, booley_dir=project_data).record)
     assert first.returncode == second.returncode == 0
     assert first.stdout.strip() == "first"
     assert second.stdout.strip() == "second"
@@ -180,7 +180,7 @@ def test_child_scope_keeps_whole_work_item_nonterminal_between_commands(
     assert record["state"] == "waiting"
     assert record["tree_terminal"] is False
     registry.mark_terminal(prepared, "completed")
-    terminal = read_json(execution_paths(child_id, project_dir=project_data).record)
+    terminal = read_json(execution_paths(child_id, booley_dir=project_data).record)
     assert terminal is not None and terminal["tree_terminal"] is True
 
 
@@ -243,7 +243,7 @@ def test_real_child_process_is_terminated_immediately_on_lease_loss(
             capacity.outer_permit(),
             capacity.child_permit("item", child_id) as permit,
         ):
-            record_path = execution_paths(child_id, project_dir=project_data).record
+            record_path = execution_paths(child_id, booley_dir=project_data).record
 
             def lose_lease() -> None:
                 assert child_registered.wait(timeout=2)
@@ -509,7 +509,7 @@ def test_resume_rejects_retirement_with_wrong_terminal_digest(tmp_path: Path) ->
     campaign_store.publish_manifest(manifest)
     project = tmp_path / "project"
     project.mkdir()
-    (project / ".booley_project").mkdir()
+    (project / ".booley").mkdir()
     item = manifest.document["work_items"][0]
     work_item_id = str(item["work_item_id"])
     attempt_id = "f" * 32
@@ -528,9 +528,7 @@ def test_resume_rejects_retirement_with_wrong_terminal_digest(tmp_path: Path) ->
     slot_store.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=execution_id)
     registry.recover_unretired(slot_store)
     project_retirement = (
-        project
-        / ".booley_project/.runtime/campaign-child-executions/retired"
-        / f"{execution_id}.json"
+        project / ".booley/.runtime/campaign-child-executions/retired" / f"{execution_id}.json"
     )
     campaign_retirement = campaign_store.root / "child-executions/retired" / f"{execution_id}.json"
     document = json.loads(project_retirement.read_text())
@@ -610,7 +608,7 @@ def test_child_protocol_crash_prefixes_recover_exactly(tmp_path: Path, boundary:
     campaign_store.publish_manifest(manifest)
     project = tmp_path / "project"
     project.mkdir()
-    (project / ".booley_project").mkdir()
+    (project / ".booley").mkdir()
     item = manifest.document["work_items"][0]
     work_item_id = str(item["work_item_id"])
     attempt_id = "f" * 32
@@ -626,7 +624,7 @@ def test_child_protocol_crash_prefixes_recover_exactly(tmp_path: Path, boundary:
         parent_execution_id="a" * 32,
     )
     slot_store = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=1))
-    paths = execution_paths(execution_id, project_dir=registry.project_data)
+    paths = execution_paths(execution_id, booley_dir=registry.project_data)
     if boundary == "campaign-entry":
         prepared.campaign_entry.unlink()
     elif boundary == "context":
@@ -655,7 +653,7 @@ def test_scheduler_excludes_equal_collision_keys_before_execution(tmp_path: Path
     campaign_store.publish_manifest(manifest)
     project = tmp_path / "project"
     project.mkdir()
-    (project / ".booley_project").mkdir()
+    (project / ".booley").mkdir()
     registry = ChildExecutionRegistry(campaign_store, manifest, project)
     slot_store = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=2))
     outer = slot_store.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
@@ -699,7 +697,7 @@ def test_child_context_fails_closed_when_project_entry_exists(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project_data, child_id, _registry, _prepared, _flow = _prepared_child(tmp_path, monkeypatch)
-    paths = execution_paths(child_id, project_dir=project_data)
+    paths = execution_paths(child_id, booley_dir=project_data)
     paths.context.unlink()
     assert child_context_matches(paths, child_id) is False
 
@@ -710,7 +708,7 @@ def test_normal_work_runtime_does_not_consume_shutdown_budget(tmp_path: Path) ->
     campaign_store.publish_manifest(manifest)
     project = tmp_path / "project"
     project.mkdir()
-    (project / ".booley_project").mkdir()
+    (project / ".booley").mkdir()
     registry = ChildExecutionRegistry(campaign_store, manifest, project)
     admission = AdmissionContext(
         "unmanaged", None, None, 1, "interactive", "a" * 32, 0.01, lambda: False
@@ -744,7 +742,7 @@ def test_shutdown_deadline_returns_bounded_but_retains_outer_until_worker_exits(
     campaign_store.publish_manifest(manifest)
     project = tmp_path / "project"
     project.mkdir()
-    (project / ".booley_project").mkdir()
+    (project / ".booley").mkdir()
     registry = ChildExecutionRegistry(campaign_store, manifest, project)
     slots = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=1))
     outer = slots.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
@@ -825,7 +823,7 @@ def test_cancel_recovery_never_rewrites_a_retired_child_terminal_record(
     worker.join(_PARALLEL_SYNC_TIMEOUT_S)
     assert not canceller.is_alive() and not worker.is_alive()
 
-    record = read_json(execution_paths(child_id, project_dir=project_data).record)
+    record = read_json(execution_paths(child_id, booley_dir=project_data).record)
     retired = json.loads(
         (registry._campaign_root / "retired" / f"{child_id}.json").read_text(encoding="utf-8")
     )
@@ -857,7 +855,7 @@ def test_shutdown_deadline_does_not_fail_when_every_worker_already_exited(
     campaign_store.publish_manifest(manifest)
     project = tmp_path / "project"
     project.mkdir()
-    (project / ".booley_project").mkdir()
+    (project / ".booley").mkdir()
     registry = ChildExecutionRegistry(campaign_store, manifest, project)
     # A zero budget means the shutdown deadline has always passed after the join.
     capacity = SimpleNamespace(
@@ -890,7 +888,7 @@ def test_attempt_is_published_before_real_child_waiter_and_cancel_retires_it(
     campaign_store.publish_manifest(manifest)
     project = tmp_path / "project"
     project.mkdir()
-    (project / ".booley_project").mkdir()
+    (project / ".booley").mkdir()
     registry = ChildExecutionRegistry(campaign_store, manifest, project)
     slots = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=1))
     outer = slots.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
@@ -1245,7 +1243,7 @@ def test_managed_campaign_bounds_overlap_keeps_order_and_cleans_child_claims(
 def _parallel_environment(tmp_path, first_finisher, schedule_seed):
     project = tmp_path / "project"
     project.mkdir()
-    (project / ".booley_project").mkdir()
+    (project / ".booley").mkdir()
     build_root = tmp_path / "engine-build"
     build_root.mkdir()
     (build_root / "simv").write_bytes(b"image")
@@ -1380,7 +1378,7 @@ def test_scheduler_preserves_terminal_cause_after_actual_child_lease_loss(
     campaign_store.publish_manifest(manifest)
     project = tmp_path / "project"
     project.mkdir()
-    (project / ".booley_project").mkdir()
+    (project / ".booley").mkdir()
     registry = ChildExecutionRegistry(campaign_store, manifest, project)
     slots = SlotStore(tmp_path / "slots", SlotCaps(max_heavy=2))
     outer = slots.acquire(CLASS_HEAVY, pid=os.getpid(), execution_id=ExecutionId("a" * 32))
@@ -1444,7 +1442,7 @@ def _lease_lost_execute(slots, child_finished, child_ids, scope_stop, tmp_path):
 def _assert_scheduler_terminal_cause(registry, campaign_store, child_ids, scope_stop):
     assert len(child_ids) == 1
     terminal = read_json(
-        execution_paths(ExecutionId(child_ids[0]), project_dir=registry.project_data).record
+        execution_paths(ExecutionId(child_ids[0]), booley_dir=registry.project_data).record
     )
     assert terminal["terminal_cause"] == ("lease_lost" if scope_stop else "campaign_error")
     retired = json.loads(

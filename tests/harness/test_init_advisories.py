@@ -2,7 +2,7 @@
 
 Init used to end every run with the full booley-setup checklist plus "Finish the
 setup skills above, then run Booley" — including on a project whose
-.booley_project/ was already complete (the demo-repo clone, where the user has
+.booley/ was already complete (the demo-repo clone, where the user has
 nothing to finish). These tests pin the per-step probe that replaced that, and
 the rule that keeps it honest: an explicit `enabled = false` is a deliberate
 "Flow disabled" (Doctor reads it that way), so it must not be nagged about.
@@ -41,16 +41,16 @@ enabled = false
 @pytest.fixture
 def project(tmp_path: Path, monkeypatch) -> Path:
     root = tmp_path / "proj"
-    (root / ".booley_project").mkdir(parents=True)
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
-    from booley.runtime.project_dir import reset_cache
+    (root / ".booley").mkdir(parents=True)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    from booley.runtime.booley_dir import reset_cache
 
     reset_cache()
     return root
 
 
 def _write(project: Path, toml: str, *, agents: bool = True) -> None:
-    (project / ".booley_project" / "booley.toml").write_text(toml, encoding="utf-8")
+    (project / ".booley" / "booley.toml").write_text(toml, encoding="utf-8")
     (project / "demo.core").write_text(
         "CAPI=2:\n"
         "name: ::demo:0\n"
@@ -70,7 +70,7 @@ def _write(project: Path, toml: str, *, agents: bool = True) -> None:
         encoding="utf-8",
     )
     if agents:
-        (project / ".booley_project" / "AGENTS.md").write_text("# guide\n", encoding="utf-8")
+        (project / ".booley" / "AGENTS.md").write_text("# guide\n", encoding="utf-8")
 
 
 class TestOutstandingSteps:
@@ -164,7 +164,7 @@ def _publish(project: Path, origin: str, toml: str, *, fetched: bool = True) -> 
     tests need neither the network nor a second repository.
     """
     _write(project, toml)
-    state_dir = project / ".booley_project"
+    state_dir = project / ".booley"
     (state_dir / "scripts").mkdir()
     (state_dir / "scripts" / "build.sh").write_text("exit 0\n", encoding="utf-8")
     _git(state_dir, "init", "-q", "-b", "main")
@@ -232,11 +232,11 @@ class TestAdvisorySendOff:
         init_cmd._step_advisories(ctx)
         assert "hooks/post-setup.sh" not in capsys.readouterr().out
 
-        hook = project / ".booley_project" / "hooks" / "post-setup.sh"
+        hook = project / ".booley" / "hooks" / "post-setup.sh"
         hook.parent.mkdir()
         hook.write_text("#!/bin/sh\n", encoding="utf-8")
         init_cmd._step_advisories(InitContext(project_root=project))
-        assert "bash .booley_project/hooks/post-setup.sh" in capsys.readouterr().out
+        assert "bash .booley/hooks/post-setup.sh" in capsys.readouterr().out
 
     @pytest.mark.parametrize(
         "origin",
@@ -256,7 +256,7 @@ class TestAdvisorySendOff:
         """Init appends to .gitignore and writes untracked state on every run;
         a re-run must not flip the send-off because of init's own writes."""
         _publish(project, PUBLISHED_ORIGIN, CONFIGURED_TOML)
-        state_dir = project / ".booley_project"
+        state_dir = project / ".booley"
         (state_dir / ".gitignore").write_text("goals/*/\n", encoding="utf-8")
         (state_dir / ".managed").mkdir()
         (state_dir / ".managed" / "project-git-hooks.pyz").write_bytes(b"")
@@ -267,7 +267,7 @@ class TestAdvisorySendOff:
         """Init records the provider/auth choice in booley.toml when the
         published file leaves it open; that is init's write, not a user edit."""
         _publish(project, PUBLISHED_ORIGIN, CONFIGURED_TOML)
-        toml = project / ".booley_project" / "booley.toml"
+        toml = project / ".booley" / "booley.toml"
         toml.write_text(
             init_cmd._insert_agent_fields(
                 toml.read_text(encoding="utf-8"),
@@ -285,7 +285,7 @@ class TestAdvisorySendOff:
     def test_locally_changed_project_is_no_longer_published(self, project, capsys, change):
         """A user who changed the published files owns them; the per-step probe decides."""
         _publish(project, PUBLISHED_ORIGIN, CONFIGURED_TOML)
-        state_dir = project / ".booley_project"
+        state_dir = project / ".booley"
         if change == "edit-toml":
             with (state_dir / "booley.toml").open("a", encoding="utf-8") as stream:
                 stream.write("\n[flows.formal]\n")
@@ -310,7 +310,7 @@ class TestAdvisorySendOff:
     def test_untracked_files_outside_the_setup_keep_the_checkout_published(self, project):
         """Reports and notes left by ordinary use are not setup changes."""
         _publish(project, PUBLISHED_ORIGIN, CONFIGURED_TOML)
-        (project / ".booley_project" / "SETUP-NOTES.md").write_text("x\n", encoding="utf-8")
+        (project / ".booley" / "SETUP-NOTES.md").write_text("x\n", encoding="utf-8")
 
         assert init_cmd._is_published_project(project) is True
 

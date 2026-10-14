@@ -47,7 +47,7 @@ from booley.fusesoc.fusesoc_registry import (
     discover_cores,
     read_core,
 )
-from booley.runtime.project_dir import resolve_checkout_project_dir
+from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.targets.catalog import TargetCatalog
 from booley.targets.declared_inputs import HDL_SUFFIXES, core_program_paths
 from booley.targets.domain import FuseSocError
@@ -127,7 +127,7 @@ def _cores(root: Path, target: str | None) -> list[Path]:
 
 def _tests_toml(root: Path) -> Path | None:
     try:
-        path = resolve_checkout_project_dir(root) / "tests.toml"
+        path = resolve_checkout_booley_dir(root) / "tests.toml"
     except FileNotFoundError:
         return None
     return path.resolve() if path.is_file() else None

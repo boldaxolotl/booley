@@ -48,7 +48,7 @@ src/_test_one_mutant.py
 build/
 dist/
 
-# Legacy Booley Directory (migrated to .booley_project/)
+# Legacy Booley Directory (migrated to .booley/)
 /project/
 
 # Agent artifacts
@@ -64,11 +64,11 @@ dist/
 /.runtime/
 !crates/bwave/tests/fixtures/native_verilator_counter.fst
 
-# This committed fixture must override user-global `.booley_project/` ignores.
-!/tests/fixtures/cocotb_counter/.booley_project/
-!/tests/fixtures/cocotb_counter/.booley_project/**
-!/tests/fixtures/goal_mode_smoke/.booley_project/
-!/tests/fixtures/goal_mode_smoke/.booley_project/**
+# This committed fixture must override user-global `.booley/` ignores.
+!/tests/fixtures/cocotb_counter/.booley/
+!/tests/fixtures/cocotb_counter/.booley/**
+!/tests/fixtures/goal_mode_smoke/.booley/
+!/tests/fixtures/goal_mode_smoke/.booley/**
 
 # Native bwave binary — built by CI into the wheel's package data (and by the
 # sandbox image build into the installed package). Never committed.

@@ -13,13 +13,13 @@ from booley.runtime.timefmt import utc_now_rfc3339
 PROBE_FILENAME = "synth_probe.json"
 
 
-def probe_path(project_dir: Path) -> Path:
-    return project_dir / "runtime" / PROBE_FILENAME
+def probe_path(booley_dir: Path) -> Path:
+    return booley_dir / "runtime" / PROBE_FILENAME
 
 
-def load_measurement(project_dir: Path) -> dict[str, Any] | None:
+def load_measurement(booley_dir: Path) -> dict[str, Any] | None:
     try:
-        data = json.loads(probe_path(project_dir).read_text(encoding="utf-8"))
+        data = json.loads(probe_path(booley_dir).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
     if not isinstance(data, dict):
@@ -34,17 +34,17 @@ def load_measurement(project_dir: Path) -> dict[str, Any] | None:
 
 
 def record_measurement(
-    project_dir: Path,
+    booley_dir: Path,
     target: str,
     peak_rss_mb: float,
     *,
     selected_targets: Collection[str] | None = None,
 ) -> Path:
     """Atomically retain the largest selected synthesis measurement."""
-    path = probe_path(project_dir)
+    path = probe_path(booley_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     peak_bytes = max(1, int(peak_rss_mb * 1024 * 1024))
-    previous = load_measurement(project_dir)
+    previous = load_measurement(booley_dir)
     previous_is_selected = selected_targets is None or (
         previous is not None and previous.get("target") in selected_targets
     )

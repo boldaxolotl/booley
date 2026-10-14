@@ -168,7 +168,7 @@ def test_installed_wheel_plans_and_prepares_hybrid_graph_without_checkout_access
     with zipfile.ZipFile(wheel) as archive:
         archive.extractall(installed)
     project = tmp_path / "project"
-    config = project / ".booley_project" / "booley.toml"
+    config = project / ".booley" / "booley.toml"
     config.parent.mkdir(parents=True)
     (project / "requirements.txt").write_text("cocotb==2.0.1\n", encoding="utf-8")
     config.write_text(

@@ -21,7 +21,7 @@ def _project(tmp_path: Path) -> tuple[Path, Path]:
     _git(root, "config", "user.name", "Test")
     _git(root, "config", "user.email", "test@example.invalid")
     (root / ".gitignore").write_text("/generated.hex\n", encoding="utf-8")
-    project = root / ".booley_project"
+    project = root / ".booley"
     (project / "hooks").mkdir(parents=True)
     (project / "hooks" / "post-setup.sh").write_text(
         "#!/bin/sh\nprintf 'firmware\\n' > generated.hex\n",
@@ -33,7 +33,7 @@ def _project(tmp_path: Path) -> tuple[Path, Path]:
 
 
 def test_prepare_project_is_idempotent_and_never_commits_generated_files(tmp_path: Path) -> None:
-    root, _project_dir = _project(tmp_path)
+    root, _booley_dir = _project(tmp_path)
     before = _git(root, "rev-parse", "HEAD")
 
     first = prepare_project(root, root, slug="demo", sim_flow_enabled=True)

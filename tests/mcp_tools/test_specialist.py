@@ -340,7 +340,7 @@ class TestSessionPersistence:
         endpoint._persist_session_id("k")
 
         assert endpoint._load_session_id("k") == "sess-xyz"
-        # The autouse _set_project_dir fixture pins BOOLEY_PROJECT_DIR=tmp_path.
+        # The autouse _set_booley_dir fixture pins BOOLEY_DIR=tmp_path.
         assert (tmp_path / ".runtime" / "sessions" / "k.session_id").exists()
         endpoint._clear_session_id("k")
         assert endpoint._load_session_id("k") is None
@@ -351,10 +351,10 @@ class TestSessionPersistence:
         monkeypatch: pytest.MonkeyPatch,
     ):
         """No ticket AND no project on disk — nowhere to persist, so None."""
-        from booley.runtime.project_dir import reset_cache
+        from booley.runtime.booley_dir import reset_cache
 
         monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
-        monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+        monkeypatch.delenv("BOOLEY_DIR", raising=False)
         empty = tmp_path / "no_project"
         empty.mkdir()
         monkeypatch.chdir(empty)
@@ -667,7 +667,7 @@ def test_privacy_note_tracks_audited_default_vocabulary() -> None:
 
 
 def test_specialist_note_describes_both_matching_tiers(tmp_path):
-    directory = tmp_path / ".booley_project"
+    directory = tmp_path / ".booley"
     directory.mkdir()
     (directory / "booley.toml").write_text(
         '[stealth]\nbanned_words = ["agent"]\nbanned_substrings = ["quokka"]\n'

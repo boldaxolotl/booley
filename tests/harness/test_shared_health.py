@@ -16,7 +16,7 @@ from booley.harness import booley as cli
 from booley.harness.dashboard import model as dashboard
 from booley.mcp import server
 from booley.runtime import health, health_presentation
-from booley.runtime.project_dir import reset_cache
+from booley.runtime.booley_dir import reset_cache
 from booley.runtime.timefmt import rfc3339_from_datetime
 
 NOW = datetime(2026, 10, 12, 12, tzinfo=UTC)
@@ -24,9 +24,9 @@ NOW = datetime(2026, 10, 12, 12, tzinfo=UTC)
 
 @pytest.fixture
 def project(tmp_path, monkeypatch):
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
     reset_cache()
-    directory = tmp_path / ".booley_project"
+    directory = tmp_path / ".booley"
     directory.mkdir()
     (directory / "booley.toml").write_text('[project]\nname="health-test"\n')
     yield tmp_path, directory

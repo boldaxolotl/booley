@@ -45,7 +45,7 @@ simulation, synthesis, linting, and ticket workflows.
   reported for `src/` or `tests/`, including pre-existing or unrelated
   findings. Before committing, run the complete Ruff command reported by
   Agent Readiness and make it pass; a changed-files-only check is insufficient.
-- Keep project-specific content in the directory resolved by `booley.runtime.project_dir`;
+- Keep project-specific content in the directory resolved by `booley.runtime.booley_dir`;
   framework code must not hardcode project paths or names.
 - Keep implementation plans under `docs/plans/`. Plans are local-only artifacts
   and must not be committed to version control.

@@ -312,7 +312,7 @@ def quarantine_unreadable(store: GoalStore, record_id: str) -> tuple[str, ...]:
     blocking the Goals. Each move is one atomic rename, and a file that was
     moved already is not there to move again.
     """
-    paths = record_paths(store.project_dir, record_id)
+    paths = record_paths(store.booley_dir, record_id)
     _, unreadable = _stored(paths)
     moved: list[str] = []
     for path, _reason in unreadable:
@@ -325,7 +325,7 @@ def quarantine_unreadable(store: GoalStore, record_id: str) -> tuple[str, ...]:
 
 def unsettled_campaigns(store: GoalStore, record: GoalRecord) -> list[dict[str, Any]]:
     """What the review package lists: registrations that are open, unreadable or quarantined."""
-    paths = record_paths(store.project_dir, record.id)
+    paths = record_paths(store.booley_dir, record.id)
     found, unreadable = _stored(paths)
     listed: list[dict[str, Any]] = [
         {
@@ -406,7 +406,7 @@ def register_campaign(
             stamps[goal.spec.key] = stamped
     if not stamps:
         return
-    paths = record_paths(store.project_dir, binding.record_id)
+    paths = record_paths(store.booley_dir, binding.record_id)
     path = _path(paths, campaign.manifest_sha256)
     accounted = _accounted_so_far(path)
     registration = CampaignRegistration(
@@ -435,7 +435,7 @@ def mark_published(store: GoalStore, record_id: str, acceptance_facts: Mapping[s
     The transaction consumed every result the campaign held when it returned
     its outcome. The caller holds the record lock.
     """
-    paths = record_paths(store.project_dir, record_id)
+    paths = record_paths(store.booley_dir, record_id)
     path = _path(paths, str(acceptance_facts.get("manifest_sha256")))
     if not path.exists():
         return
@@ -475,7 +475,7 @@ def unaccounted_goals(
     transaction the state does not select, and, for a registration that
     cannot be decoded, every Goal that is judged by its Test Runs' outcomes.
     """
-    paths = record_paths(store.project_dir, record.id)
+    paths = record_paths(store.booley_dir, record.id)
     everything = tuple(goal.spec.key for goal in record.goals if names_test_runs(goal.spec))
     decided = tuple(goal.spec.key for goal in _outcome_goals(record))
     registrations, unreadable = _stored(paths)
@@ -510,7 +510,7 @@ def started_without_result(store: GoalStore, record: GoalRecord) -> dict[str, st
     Such a run reads ``missing`` in the Goal's ledger; the note says that it
     was not simply never run. Read-only, from the open registrations.
     """
-    paths = record_paths(store.project_dir, record.id)
+    paths = record_paths(store.booley_dir, record.id)
     notes: dict[str, str] = {}
     for item in _stored(paths)[0]:
         left = set(item.unfinished)
@@ -626,7 +626,7 @@ def account_for_campaigns(
     """
     with store.record_lock(record_id):
         record = store.load(record_id)
-        paths = record_paths(store.project_dir, record_id)
+        paths = record_paths(store.booley_dir, record_id)
         if record.state is not GoalState.ACTIVE or pending_applies(paths.root):
             return
         run = _Accounting(store, record, paths, reader)

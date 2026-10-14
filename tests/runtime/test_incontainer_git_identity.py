@@ -32,9 +32,9 @@ def _git(path: Path, *args: str, env: dict[str, str] | None = None) -> str:
 
 def test_explicit_ticket_identity_overrides_copied_global_config(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
-    project_dir = tmp_path / "project-data"
+    booley_dir = tmp_path / "project-data"
     workspace.mkdir()
-    project_dir.mkdir()
+    booley_dir.mkdir()
     global_config = tmp_path / "global.gitconfig"
     subprocess.run(
         ["git", "config", "--file", str(global_config), "user.name", "Host Alias"],
@@ -53,13 +53,13 @@ def test_explicit_ticket_identity_overrides_copied_global_config(tmp_path: Path)
         check=True,
         timeout=10,
     )
-    (project_dir / "booley.toml").write_text(
+    (booley_dir / "booley.toml").write_text(
         '[agent.git]\nname = "Expected Developer"\nemail = "developer-identity.invalid"\n',
         encoding="utf-8",
     )
     _git(workspace, "init", "-q")
     env = os.environ.copy()
-    env["BOOLEY_PROJECT_DIR"] = str(project_dir)
+    env["BOOLEY_DIR"] = str(booley_dir)
     env["GIT_CONFIG_GLOBAL"] = str(global_config)
     source_root = str(Path(identity_setup.__file__).resolve().parents[2])
     env["PYTHONPATH"] = os.pathsep.join(
@@ -459,7 +459,7 @@ def test_sandbox_identity_preserves_host_and_waiver_guard(tmp_path, monkeypatch)
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    project = workspace / ".booley_project"
+    project = workspace / ".booley"
     project.mkdir()
     (project / "booley.toml").write_text('[agent.git]\nname="Dev"\nemail="dev@localhost"\n')
     _git(workspace, "init", "-q")
@@ -467,10 +467,10 @@ def test_sandbox_identity_preserves_host_and_waiver_guard(tmp_path, monkeypatch)
     _git(workspace, "config", "user.email", "human@example.invalid")
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     env.update(
-        BOOLEY_PROJECT_DIR=str(project),
+        BOOLEY_DIR=str(project),
         PYTHONPATH=str(Path(identity_setup.__file__).resolve().parents[2]),
     )
-    spec = build_devcontainer_spec(app="codex", image="test", project_dir_source=str(project))
+    spec = build_devcontainer_spec(app="codex", image="test", booley_dir_source=str(project))
     sandbox = {**env, **spec["containerEnv"]}
     subprocess.run(
         [sys.executable, *git_identity_command().split()[1:]],

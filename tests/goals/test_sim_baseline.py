@@ -441,7 +441,7 @@ def test_sim_goal_added_by_approved_change_schedules_at_original_base(layout, mo
                 "reason": "simulation required",
                 "approval_quote": "Add the SIM Goal.",
             },
-            project_dir=layout.control,
+            booley_dir=layout.control,
         )
     )
     assert result.is_error is False
@@ -519,7 +519,7 @@ def test_entry_launch_error_never_rolls_back_goal_mode(layout):
 
 
 def test_entry_cores_are_restored_after_a_stealth_edit(layout):
-    core = layout.worktree / ".booley_project/cores/bonus.core"
+    core = layout.worktree / ".booley/cores/bonus.core"
     core.parent.mkdir()
     original = b"CAPI=2:\nname: ::bonus:0\ntargets:\n  extra: {toplevel: before}\n"
     core.write_bytes(original)
@@ -528,7 +528,7 @@ def test_entry_cores_are_restored_after_a_stealth_edit(layout):
     mode = SimpleNamespace(**vars(layout), record=record, launches=[])
 
     def execute(checkout, target, runs, output):
-        assert (checkout / ".booley_project/cores/bonus.core").read_bytes() == original
+        assert (checkout / ".booley/cores/bonus.core").read_bytes() == original
         return _execute(checkout, target, runs, output)
 
     assert _complete(mode, execute)[0]["grade"] == "pass"
@@ -655,7 +655,7 @@ def test_real_detached_supervisor_publishes_without_a_goal_binding(layout):
 
 
 def test_unversioned_protected_program_is_captured_with_executable_state(layout):
-    hook = layout.worktree / ".booley_project/hooks/build.py"
+    hook = layout.worktree / ".booley/hooks/build.py"
     hook.parent.mkdir()
     hook.write_bytes(b"# entry program\n")
     hook.chmod(0o755)
@@ -664,7 +664,7 @@ def test_unversioned_protected_program_is_captured_with_executable_state(layout)
     mode = SimpleNamespace(**vars(layout), record=record, launches=[])
 
     def execute(checkout, target, runs, output):
-        copied = checkout / ".booley_project/hooks/build.py"
+        copied = checkout / ".booley/hooks/build.py"
         assert copied.read_bytes() == b"# entry program\n"
         if os.name != "nt":
             assert copied.stat().st_mode & 0o111
@@ -674,7 +674,7 @@ def test_unversioned_protected_program_is_captured_with_executable_state(layout)
 
 
 def test_protected_program_mutation_during_baseline_is_rejected(layout):
-    hook = layout.worktree / ".booley_project/hooks/build.py"
+    hook = layout.worktree / ".booley/hooks/build.py"
     hook.parent.mkdir()
     hook.write_bytes(b"# entry program\n")
     record = enter_goals(layout, [{"family": "SIM", "target": "top"}])
@@ -682,7 +682,7 @@ def test_protected_program_mutation_during_baseline_is_rejected(layout):
 
     def execute(checkout, target, runs, output):
         result = _execute(checkout, target, runs, output)
-        (checkout / ".booley_project/hooks/another.py").write_bytes(b"# different controls\n")
+        (checkout / ".booley/hooks/another.py").write_bytes(b"# different controls\n")
         return result
 
     with pytest.raises(ValueError, match="protected directory changed"):
@@ -710,8 +710,8 @@ def test_second_real_entry_on_same_base_reuses_baseline_without_launch(baseline)
     _complete(baseline)
     other = baseline.control / "worktrees" / "real-second"
     git(baseline.main, "worktree", "add", "--detach", "-q", str(other), baseline.record.base_sha)
-    write_project_files(other / ".booley_project")
-    (other / ".booley_project/tests.toml").write_bytes(b'[top]\ntests = ["smoke"]\n')
+    write_project_files(other / ".booley")
+    (other / ".booley/tests.toml").write_bytes(b'[top]\ntests = ["smoke"]\n')
     second = enter_goal_mode(
         EntryRequest(other, "second-real", parse_goal_args([{"family": "SIM", "target": "top"}])),
         EntryEnvironment(baseline.control),

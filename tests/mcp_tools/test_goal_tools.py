@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 from jsonschema import Draft202012Validator
 
-from booley.core.project_dir import reset_cache
+from booley.core.booley_dir import reset_cache
 from booley.goals.model import goal_arg_json_schema
 from booley.mcp import goal_tools
 from booley.mcp import server as mcp_server
@@ -28,9 +28,9 @@ def _plain_server_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         "BOOLEY_COVERAGE_CAMPAIGN",
     ):
         monkeypatch.delenv(name, raising=False)
-    project = tmp_path / ".booley_project"
+    project = tmp_path / ".booley"
     project.mkdir()
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project))
+    monkeypatch.setenv("BOOLEY_DIR", str(project))
     monkeypatch.setattr(mcp_server, "_bwave_mcp_tools_for_mode", lambda: [])
     reset_cache()
     yield

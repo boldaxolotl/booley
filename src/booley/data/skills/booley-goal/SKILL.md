@@ -21,9 +21,9 @@ Use it for human-steered or unattended work inside the Sandbox.
    `booley_targets` may omit it), and Project-defined endpoints must declare
    `work_dir` to run. `booley_status`, `booley_poll`, `booley_cancel`,
    `booley_sleep`, `coverage_evidence`, and `bwave` accept no `work_dir`.
-3. Read the selected `*.md` Goalsets from `goalsets/` in the Main Booley Directory: `BOOLEY_PROJECT_DIR` in the Sandbox, the same directory
+3. Read the selected `*.md` Goalsets from `goalsets/` in the Main Booley Directory: `BOOLEY_DIR` in the Sandbox, the same directory
    where entry checks `default.md`. Never read them from a Worktree Booley Directory inside `work_dir`; a `default.md` present only there does not
-   apply. If `BOOLEY_PROJECT_DIR` is unset or points inside `work_dir`, stop
+   apply. If `BOOLEY_DIR` is unset or points inside `work_dir`, stop
    and ask the human to restart the session with it set to the
    Main Booley Directory; changing it mid-session does not change
    what entry checks.
@@ -172,7 +172,7 @@ Read [review.md](review.md) when Finish returns the Review Package or the human
 asks to inspect it. Open `done` review findings remain visible and do not
 require a second approval to finish. Completion does not authorize merging,
 publishing, or deleting the branch or worktree. Outside Stealth, the Session
-Summary is committed under `.booley_project/goals/history/` in the Goal
+Summary is committed under `.booley/goals/history/` in the Goal
 worktree when that path is Git-trackable and owned by the RTL repository;
 otherwise it stays local. Paired Checkout summaries always stay local.
 

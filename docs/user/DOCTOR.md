@@ -71,12 +71,12 @@ Booley's normal startup path to restore the receipt.
 Missing, corrupt, unsupported, and plain-only stamps report no qualifying deep
 run recorded. Plain stamps with `deep: true` lack image and completeness
 proof and cannot establish currency. A qualifying new run establishes evidence.
-Deep records live at `<project_dir>/runtime/doctor_deep_stamp.json`, independently
+Deep records live at `<booley_dir>/runtime/doctor_deep_stamp.json`, independently
 of the existing plain stamp's configuration fingerprint and age policy.
 
 Plain Doctor and `booley session up` report **current** with version/date or
 **due** with all applicable reasons. Manual and automatic structured reports at
-`<project_dir>/runtime/doctor/last.json` include `deep_status` with the same status,
+`<booley_dir>/runtime/doctor/last.json` include `deep_status` with the same status,
 reason codes, historical success, and evidence-storage failure indicator.
 Storage failures are informational and do not claim new saved success. A known
 unsuccessful result still makes that invocation due when saving fails; later
@@ -109,7 +109,7 @@ from quiet attributable session presence; quiet does not prove abandonment.
   their own. `tickets/history/` is silent.
 - `tickets.leftover-guidance`: `ticket_creation.md` or `ticket_defaults.md`
   matches a shipped template, so delete it; if edited or unfamiliar, move its
-  rules into a Goalset under `.booley_project/goalsets/`, then delete it.
+  rules into a Goalset under `.booley/goalsets/`, then delete it.
 
 Both IDs are stable and waivable through `doctor-waivers.toml`. Doctor also
 WARNs on ignored `[developer]` settings and `[jobs].max_tickets` with a delete

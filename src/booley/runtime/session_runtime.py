@@ -1686,7 +1686,7 @@ def _inspected_container_serves_workspace(name: str, raw: str, workspace: Path) 
 def _project_data_mount_root_is_pinned(
     raw: str, workspace: Path, pending_project_data: Path, *, issuance: Issuance | None = None
 ) -> bool:
-    local_source = workspace.resolve() / ".booley_project"
+    local_source = workspace.resolve() / ".booley"
     if pending_project_data != local_source:
         return True
     state = _decode_container_inspect(raw)
@@ -1704,14 +1704,14 @@ def _project_data_mount_root_is_pinned(
         )
     ):
         by_target = {}
-    project_data = by_target.get("/work/.booley_project" if canonical_alias else "/booley-project")
+    project_data = by_target.get("/work/.booley" if canonical_alias else "/booley-project")
     if not _writable_bind(project_data):
         return False
     raw_source = project_data.get("Source", "")
     source = host_path_from_docker_mount(raw_source) if isinstance(raw_source, str) else None
     if source is None or source != local_source:
         return False
-    workspace_view = by_target.get("/work/.booley_project")
+    workspace_view = by_target.get("/work/.booley")
     if not _writable_bind(workspace_view):
         return False
     ws_raw = workspace_view.get("Source", "")

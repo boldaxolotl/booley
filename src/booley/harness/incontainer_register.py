@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 from booley.runtime import incontainer_setup
-from booley.runtime.project_dir import resolve_project_dir
+from booley.runtime.booley_dir import resolve_booley_dir
 
 
 def launch_auto_doctor(project_root: Path | None = None) -> str:
@@ -25,7 +25,7 @@ def observe_upgrade(project_root: Path | None = None) -> str:
     try:
         from booley.harness import upgrade_cli, upgrade_review
 
-        status = upgrade_review.observe(resolve_project_dir(project_root or Path.cwd()))
+        status = upgrade_review.observe(resolve_booley_dir(project_root or Path.cwd()))
         if status.condition is not upgrade_review.ReviewCondition.CURRENT:
             print(f"warning: {upgrade_cli.render_status(status)}", file=sys.stderr)
         return status.condition.value

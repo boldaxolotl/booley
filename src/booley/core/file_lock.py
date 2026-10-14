@@ -55,21 +55,21 @@ def _raise_lock_error(exc: OSError) -> None:
     raise exc
 
 
-def acquire_file_lock(handle: IO[Any]) -> None:
+def acquire_file_lock(handle: IO[Any], *, preserve_contents: bool = False) -> None:
     """Acquire an exclusive nonblocking lock or raise ``LockContentionError``.
 
-    Errors while preparing the file, and unexpected errors from the platform
-    lock API, are allowed to propagate so callers never mistake broken storage
-    for ordinary contention.
+    ``preserve_contents`` locks existing Windows byte ranges beyond EOF without
+    padding empty files. Errors from preparation or the platform API propagate,
+    so broken storage never becomes ordinary contention.
     """
     if sys.platform == "win32":
         import msvcrt
 
         try:
             handle.seek(0, os.SEEK_END)
-            if handle.tell() == 0:
-                # msvcrt locks a byte range, so an empty file needs one byte;
-                # write it in the handle's own mode (text or binary).
+            if handle.tell() == 0 and not preserve_contents:
+                # Keep the normal producer's sentinel byte. Observers can
+                # lock beyond EOF without padding the existing file.
                 handle.write("\0" if isinstance(handle, io.TextIOBase) else b"\0")
                 handle.flush()
             handle.seek(0)
@@ -105,6 +105,7 @@ def wait_for_file_lock(
     *,
     timeout_s: float,
     on_wait: Callable[[], None] | None = None,
+    preserve_contents: bool = False,
 ) -> None:
     """Acquire a lock within *timeout_s*, reporting contention periodically."""
     if not math.isfinite(timeout_s) or timeout_s < 0:
@@ -115,7 +116,10 @@ def wait_for_file_lock(
     while first_attempt or time.monotonic() <= deadline:
         first_attempt = False
         try:
-            acquire_file_lock(handle)
+            if preserve_contents:
+                acquire_file_lock(handle, preserve_contents=True)
+            else:
+                acquire_file_lock(handle)
             return
         except LockContentionError:
             now = time.monotonic()

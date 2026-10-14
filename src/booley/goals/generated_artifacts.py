@@ -16,9 +16,9 @@ from booley.flows.source_fingerprint import (
 )
 from booley.fusesoc.fusesoc_registry import core_files_root, discover_cores, read_core
 from booley.goals.target_surface import target_surface_fingerprint
+from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.runtime.git_ignore import ignored_paths as _ignored
 from booley.runtime.pinned_history import tree_rows
-from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.targets.catalog import TargetCatalog
 from booley.targets.declared_inputs import (
     HDL_SUFFIXES,
@@ -54,7 +54,7 @@ def committed_only_inputs(
                 include_missing=include_missing,
             )
         )
-    config = resolve_checkout_project_dir(root) / "booley.toml"
+    config = resolve_checkout_booley_dir(root) / "booley.toml"
     if config.is_file():
         paths.update(
             project_config_program_paths(

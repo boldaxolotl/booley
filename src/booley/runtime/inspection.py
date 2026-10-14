@@ -452,7 +452,7 @@ def _check_runtime_booley_version(docker_exe: str, image: str, report: Findings)
 
 def _check_runtime_isolation(report: Findings) -> bool:
     """Enforce authority absence and fixed Booley Directory identity in every runtime."""
-    if os.environ.get("BOOLEY_PROJECT_DIR") != "/booley-project":
+    if os.environ.get("BOOLEY_DIR") != "/booley-project":
         report.fail(
             "Sandbox Booley Directory identity differs from /booley-project",
             "reissue the spec on the host and recreate the Sandbox",

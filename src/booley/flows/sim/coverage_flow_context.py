@@ -22,7 +22,7 @@ from booley.flows.execution_persistence import (
     execution_goal_name,
     frozen_test_runs_for,
 )
-from booley.runtime.project_dir import resolve_checkout_project_dir
+from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.targets.catalog import TargetCatalog
 
 from .coverage_acceptance import CoverageAcceptance
@@ -43,7 +43,7 @@ def coverage_context_for_execution(
 def coverage_project_context(
     root: Path, state: DevelopmentState, *, recorder: AcceptanceRecorder | None = None
 ) -> CoverageProjectContext:
-    data = resolve_checkout_project_dir(root)
+    data = resolve_checkout_booley_dir(root)
     config_path = resolve_toml(data)
     config = tomllib.loads(config_path.read_text()) if config_path.exists() else {}
     flows = require_dict(config.get("flows", {}), field="flows")

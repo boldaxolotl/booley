@@ -193,7 +193,7 @@ def prepare_params(
     """Prepare new bindings against entry's original commits; retain old runtime pins on relax."""
     params = goal_criterion_params((after,))
     if preserve:
-        state = load_goal_state(GoalStore(env.project_dir), record)
+        state = load_goal_state(GoalStore(env.booley_dir), record)
         entry = state.criteria.get(old_key)
         if entry is None:
             raise ProposalError(

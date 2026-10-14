@@ -14,7 +14,7 @@ from booley.eda.config import (
     retired_config_error,
     validate_host_provisioning_platform,
 )
-from booley.runtime.project_dir import reset_cache
+from booley.runtime.booley_dir import reset_cache
 
 
 def test_absent_config_is_empty() -> None:
@@ -93,7 +93,7 @@ def test_load_eda_config_uses_external_project_data_dir(
         '[eda.vivado]\nprovisioning = "host"\n',
         encoding="utf-8",
     )
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(data))
+    monkeypatch.setenv("BOOLEY_DIR", str(data))
     monkeypatch.setattr("booley.eda.provisioning.configuration.sys.platform", "linux")
     reset_cache()
     try:

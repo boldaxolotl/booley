@@ -47,6 +47,7 @@ from booley.goals.sim_baseline_store import (
 )
 from booley.goals.test_run_evidence import freshness_stamp
 from booley.goals.test_run_freezing import TargetPlans
+from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.runtime.process_group import (
     ProcessGroup,
     capture_process_group,
@@ -54,7 +55,6 @@ from booley.runtime.process_group import (
     request_group_termination,
     terminate_process_group,
 )
-from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.runtime.worktree_paths import worktree_state_dir
 
 SIM_KEY = "sim_pass_baseline"
@@ -203,7 +203,7 @@ def _participant_pin(repository: Path, root: Path, record: GoalRecord) -> str:
     pin = GoalCheckout(repository).head_sha()
     if repository == root:
         return record.base_sha
-    if repository == resolve_checkout_project_dir(root):
+    if repository == resolve_checkout_booley_dir(root):
         if record.paired_project_base_sha != pin:
             raise ValueError("baseline paired Project commit differs")
         return pin
@@ -264,7 +264,7 @@ def run_baseline(
         request["owned_checkout"] = str(checkout)
         request["scratch_parent"] = str(checkout.parent)
         request["owned_paired_checkout"] = (
-            str(resolve_checkout_project_dir(checkout)) if record.paired_project_base_sha else None
+            str(resolve_checkout_booley_dir(checkout)) if record.paired_project_base_sha else None
         )
         write_document(path, request)
         plans = TargetPlans(checkout)
@@ -316,7 +316,7 @@ def _cache_lock_path(project: Path, proof: Mapping[str, Any]) -> Path:
 
 def _observe_missing(checkout, path, request, runs, proof, execute) -> list[dict[str, Any]]:
     project, target, stamp = (
-        Path(request["project_dir"]),
+        Path(request["booley_dir"]),
         request["identity"]["target"],
         proof["contents"],
     )

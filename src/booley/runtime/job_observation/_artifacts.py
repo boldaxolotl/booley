@@ -59,11 +59,11 @@ class JobArtifactCache:
         self._local_directories: tuple[Path, ...] = ()
         self.diagnostics: list[str] = []
 
-    def configure_project(self, project_dir: Path, *, max_endpoints: int = 4096) -> None:
+    def configure_project(self, booley_dir: Path, *, max_endpoints: int = 4096) -> None:
         """Set an inclusive lexical Project boundary and projection-derived capacity."""
         if max_endpoints < 1:
             raise ValueError("Job artifact endpoint capacity must be positive")
-        project = _absolute(project_dir)
+        project = _absolute(booley_dir)
         if (project, max_endpoints) != (self._project, self._max_endpoints):
             self._shards.clear()
             self._completed = None

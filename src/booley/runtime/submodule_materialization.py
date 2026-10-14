@@ -8,8 +8,8 @@ import tempfile
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from booley.config.settings import SubmoduleConfigError, load_submodule_config
+from booley.runtime.booley_dir import checkout_booley_dir_relative_to
 from booley.runtime.filesystem_utils import safe_rmtree
-from booley.runtime.project_dir import checkout_project_dir_relative_to
 from booley.runtime.project_repositories import RepositoryCheckoutError, project_topology
 
 _TIMEOUT_S = 300
@@ -95,7 +95,7 @@ def materialize_project_submodules(
         project_relative = (
             Path(topology.paired.path_prefix)
             if topology.paired and skip_standalone_project
-            else checkout_project_dir_relative_to(source_root)
+            else checkout_booley_dir_relative_to(source_root)
         )
     except (FileNotFoundError, ValueError) as exc:
         raise SubmoduleMaterializationError(f"Paired Checkout path is unavailable: {exc}") from exc

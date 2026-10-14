@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from booley.runtime.project_dir import reset_cache
+from booley.runtime.booley_dir import reset_cache
 
 
 @pytest.fixture(autouse=True)
@@ -32,9 +32,9 @@ def test_unsupported_git_and_linked_root_use_explicit_creation_fallback(tmp_path
     from booley.runtime import worktree_paths
 
     root = tmp_path / "project"
-    state = root / ".booley_project"
+    state = root / ".booley"
     state.mkdir(parents=True)
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(state))
+    monkeypatch.setenv("BOOLEY_DIR", str(state))
     # Another test in this worker may have cached a different Booley Directory.
     reset_cache()
     monkeypatch.setattr(worktree_paths, "_git_supports_relative_paths", lambda: False)
@@ -60,7 +60,7 @@ def test_external_state_never_enables_relative_metadata(
     root.mkdir()
     external = tmp_path / "external"
     external.mkdir()
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(external))
+    monkeypatch.setenv("BOOLEY_DIR", str(external))
     monkeypatch.setattr(worktree_paths, "_git_supports_relative_paths", lambda: True)
     reset_cache()
     assert not worktree_paths.relative_worktree_paths(root)

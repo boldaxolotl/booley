@@ -41,12 +41,12 @@ from booley.goals.proposals import digest
 from booley.goals.protected_inputs import ProtectedInputRoots, ProtectedPath
 from booley.goals.target_surface import target_surface_fingerprint
 from booley.goals.waiver_policy import policy_location, waiver_policy_fingerprint
-from booley.runtime.pinned_history import raw_git, tree_rows, validate_pin
-from booley.runtime.project_dir import (
+from booley.runtime.booley_dir import (
     committed_project_scope,
     contains,
-    resolve_checkout_project_dir,
+    resolve_checkout_booley_dir,
 )
+from booley.runtime.pinned_history import raw_git, tree_rows, validate_pin
 from booley.runtime.project_repositories import (
     RepositoryCheckoutError,
     is_paired_root_change,
@@ -121,7 +121,7 @@ def select_inputs(record: GoalRecord, root: Path) -> InputSelection:
 
 def _select_inputs(record: GoalRecord, root: Path) -> InputSelection:
     """Select the Worktree Booley Directory, never the Main Booley Directory."""
-    project = resolve_checkout_project_dir(root).resolve()
+    project = resolve_checkout_booley_dir(root).resolve()
     paired = paired_project_repository(root)
     project_repo = None if paired is None else paired.worktree.resolve()
     containing = GoalCheckout(project).containing_repository()
@@ -202,10 +202,10 @@ def _tracked_project(repository: Path, project: Path) -> bool:
 
 def topology_digest(root: Path, project: Path, paired: Path | None) -> str:
     """Physical directories and Git admin identities prevent topology substitution."""
-    mapped = contains(project, project_dir=root)
+    mapped = contains(project, booley_dir=root)
     value: dict[str, Any] = {
         "rtl_directory": directory_identity(root),
-        "project_directory": directory_identity(project),
+        "booley_directory": directory_identity(project),
         "project_relative": None
         if mapped is None
         else mapped.relative_to(root.resolve()).as_posix(),
@@ -229,7 +229,7 @@ def capture_path_roots(root: Path, control_project: Path) -> dict[str, Any]:
 
 def snapshot_project(root: Path) -> dict[str, str | None] | None:
     """Retain original untracked Project configuration for semantic base comparison."""
-    project = resolve_checkout_project_dir(root).resolve()
+    project = resolve_checkout_booley_dir(root).resolve()
     paired = paired_project_repository(root)
     selection = InputSelection(
         root,
@@ -326,7 +326,7 @@ class CommittedView:
         ):
             if path.is_relative_to(original):
                 return materialized / path.relative_to(original)
-            mapped = contains(path, project_dir=original)
+            mapped = contains(path, booley_dir=original)
             if mapped is not None:
                 return materialized / mapped.relative_to(original.resolve())
         raise LifecycleError(f"unclassified consumed input outside pinned participants: {path}")
@@ -411,7 +411,7 @@ def _export_participants(
     *,
     snapshot: Mapping[str, str | None] | None = None,
 ) -> tuple[Path, list[dict[str, Any]]]:
-    selected_project = contains(selection.project, project_dir=selection.rtl)
+    selected_project = contains(selection.project, booley_dir=selection.rtl)
     project = (
         root / selected_project.relative_to(selection.rtl.resolve())
         if selected_project is not None
@@ -466,7 +466,7 @@ def _project_versioned(selection: InputSelection) -> bool:
     """A configuration snapshot cannot hide inputs tracked by a participating repository."""
     if selection.project.samefile(selection.rtl):
         return True
-    project = contains(selection.project, project_dir=selection.rtl)
+    project = contains(selection.project, booley_dir=selection.rtl)
     return selection.project_repository is not None or (
         project is not None
         and any(

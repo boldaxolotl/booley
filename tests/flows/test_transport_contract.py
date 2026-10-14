@@ -159,12 +159,12 @@ def test_direct_simulation_invocations_share_report_numbering(runtime, monkeypat
 
 
 def test_uninitialized_flow_fails_before_state_or_execution(runtime, monkeypatch):
-    from booley.runtime.project_dir import reset_cache
+    from booley.runtime.booley_dir import reset_cache
 
     uninitialized = runtime / "uninitialized"
     uninitialized.mkdir()
     monkeypatch.chdir(uninitialized)
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR")
+    monkeypatch.delenv("BOOLEY_DIR")
     reset_cache()
     flow = LintFlow()
     monkeypatch.setattr(
@@ -264,9 +264,9 @@ def test_unbound_typed_request_never_acquires_a_job(flow_type, runtime, monkeypa
 def test_unbound_project_criterion_uses_active_endpoint_catalog(runtime, monkeypatch):
     from booley.criteria.state import DevelopmentState
 
-    project_dir = runtime / ".booley_project"
-    project_dir.mkdir()
-    (project_dir / "criteria.toml").write_text(
+    booley_dir = runtime / ".booley"
+    booley_dir.mkdir()
+    (booley_dir / "criteria.toml").write_text(
         """[project_check]
 description = "Run the Project check"
 workflow_region = "pre_sim"

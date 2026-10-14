@@ -177,27 +177,27 @@ def test_seed_dry_run_writes_nothing_not_even_the_directory(tmp_path: Path) -> N
 
 
 @pytest.fixture
-def project_dir(tmp_path: Path) -> Path:
-    path = tmp_path / ".booley_project"
+def booley_dir(tmp_path: Path) -> Path:
+    path = tmp_path / ".booley"
     path.mkdir()
     return path
 
 
-def _backfill(project_dir: Path, *, check_only: bool) -> None:
-    ctx = InitContext(project_root=project_dir.parent, check_only=check_only)
-    init_cmd._backfill_config_skeletons(project_dir, ctx)
+def _backfill(booley_dir: Path, *, check_only: bool) -> None:
+    ctx = InitContext(project_root=booley_dir.parent, check_only=check_only)
+    init_cmd._backfill_config_skeletons(booley_dir, ctx)
     init_cmd._step_goalsets(ctx)
 
 
 def test_init_seeds_the_goalsets(
-    project_dir: Path,
+    booley_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
 
-    _backfill(project_dir, check_only=False)
+    _backfill(booley_dir, check_only=False)
 
-    assert {path.name for path in (project_dir / GOALSETS_DIR).iterdir()} == EXPECTED_FILES
+    assert {path.name for path in (booley_dir / GOALSETS_DIR).iterdir()} == EXPECTED_FILES
     # Config skeletons and Goalsets each have one reconciliation step.
     output = capsys.readouterr().out
     assert "added 2 config skeleton file(s)" in output
@@ -206,14 +206,14 @@ def test_init_seeds_the_goalsets(
 
 
 def test_init_check_only_writes_nothing(
-    project_dir: Path,
+    booley_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
 
-    _backfill(project_dir, check_only=True)
+    _backfill(booley_dir, check_only=True)
 
-    assert list(project_dir.iterdir()) == []
+    assert list(booley_dir.iterdir()) == []
     output = capsys.readouterr().out
     assert "would add 2 config skeleton file(s)" in output
     assert output.count("4 missing Goalsets") == 1
@@ -223,19 +223,19 @@ def test_init_check_only_writes_nothing(
 def test_goalset_step_selects_init_destination_not_parent_project(
     tmp_path, monkeypatch, check_only
 ):
-    parent = tmp_path / ".booley_project"
+    parent = tmp_path / ".booley"
     parent.mkdir()
     child = tmp_path / "child"
     child.mkdir()
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
     ctx = InitContext(project_root=child, check_only=check_only)
     init_cmd._step_goalsets(ctx)
     assert not list(parent.iterdir())
     if check_only:
-        assert not (child / ".booley_project").exists()
+        assert not (child / ".booley").exists()
         assert ctx.results[-1].status == "warn"
     else:
-        assert {p.name for p in (child / ".booley_project/goalsets").iterdir()} == EXPECTED_FILES
+        assert {p.name for p in (child / ".booley/goalsets").iterdir()} == EXPECTED_FILES
         assert ctx.results[-1].status == "ok"
     init_cmd._step_goalsets(ctx)
     assert ctx.results[-1].status == ("warn" if check_only else "skip")

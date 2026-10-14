@@ -78,7 +78,7 @@ def _spec(
 
 
 def _build_dir(tmp_path: Path) -> Path:
-    return tmp_path / ".booley_project" / ".runtime" / "edalize" / "synth" / "s" / "synth"
+    return tmp_path / ".booley" / ".runtime" / "edalize" / "synth" / "s" / "synth"
 
 
 # ===========================================================================

@@ -320,12 +320,12 @@ def _parse_git_worktree_probe(
 
 
 def discover_line_ending_repositories(
-    project_root: Path, project_dir: Path | None = None
+    project_root: Path, booley_dir: Path | None = None
 ) -> RepositoryDiscovery:
     """Resolve the distinct Git worktrees that supply one Project's files."""
     candidates: list[tuple[LineEndingRole, Path]] = [("project-checkout", project_root)]
-    if project_dir is not None:
-        candidates.append(("project-data", project_dir))
+    if booley_dir is not None:
+        candidates.append(("project-data", booley_dir))
     repositories: list[LineEndingRepository] = []
     failures: list[RepositoryDiscoveryFailure] = []
     seen: set[str] = set()
@@ -383,10 +383,10 @@ def _crlf_worktree_files(project_root: Path) -> list[str] | None:
 
 
 def pending_normalization_paths(
-    project_root: Path, project_dir: Path | None = None
+    project_root: Path, booley_dir: Path | None = None
 ) -> tuple[Path, ...]:
     """Absolute tracked paths that a repair run would normalize to LF."""
-    discovery = discover_line_ending_repositories(project_root, project_dir)
+    discovery = discover_line_ending_repositories(project_root, booley_dir)
     paths: list[Path] = []
     for repository in discovery.repositories:
         names = _crlf_worktree_files(repository.root) or []
@@ -1897,7 +1897,7 @@ def _repair_repository(
 
 
 def sample_worktree_cleanliness(
-    project_root: Path, project_dir: Path | None = None
+    project_root: Path, booley_dir: Path | None = None
 ) -> dict[Path, bool | None]:
     """Record whether each RTL or Booley Directory's repository is clean before init writes anything.
 
@@ -1907,7 +1907,7 @@ def sample_worktree_cleanliness(
     changes" against this pre-write baseline. A repository dirty here still
     refuses normalization. None = Git could not answer for that repository.
     """
-    discovery = discover_line_ending_repositories(project_root, project_dir)
+    discovery = discover_line_ending_repositories(project_root, booley_dir)
     return {
         repository.root: _worktree_is_clean(repository.root)
         for repository in discovery.repositories
@@ -1916,7 +1916,7 @@ def sample_worktree_cleanliness(
 
 def reconcile_project_line_endings(
     project_root: Path,
-    project_dir: Path | None = None,
+    booley_dir: Path | None = None,
     *,
     mode: LineEndingMode,
     clean_baseline: Mapping[Path, bool | None] | None = None,
@@ -1927,11 +1927,11 @@ def reconcile_project_line_endings(
     before the caller wrote files in the Booley Directory. Repair uses it instead of the
     current ``git status`` for each repository it covers.
     """
-    discovery = discover_line_ending_repositories(project_root, project_dir)
+    discovery = discover_line_ending_repositories(project_root, booley_dir)
     if not discovery.repositories and not discovery.failures:
         return LineEndingReport(LineEndingStatus.NOT_APPLICABLE, (), ())
     baseline = clean_baseline or {}
-    stealth = stealth_enabled(project_root, project_dir=project_dir)
+    stealth = stealth_enabled(project_root, booley_dir=booley_dir)
     reports = tuple(
         _inspection_report(repository, stealth=stealth)
         if mode is LineEndingMode.INSPECT

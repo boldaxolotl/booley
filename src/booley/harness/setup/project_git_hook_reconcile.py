@@ -30,8 +30,8 @@ from booley.harness.setup.project_git_hook_bundle import (
     _source_package_root,
     build_project_git_hook_bundle,
 )
+from booley.runtime.booley_dir import resolve_booley_dir
 from booley.runtime.git_environment import inherited_git_environment
-from booley.runtime.project_dir import resolve_project_dir
 
 _LEGACY_MANAGED_HOOKS = (
     "boundary.py",
@@ -46,7 +46,7 @@ _LEGACY_MANAGED_HOOKS = (
 
 @dataclass(frozen=True, slots=True)
 class _Locations:
-    project_dir: Path
+    booley_dir: Path
     bundle_path: Path
     hooks_dir: Path
 
@@ -256,10 +256,10 @@ def _locations(ctx: InitContext) -> _Locations | None:
         skip("Project Root is not a git repo — Project Git policy skipped")
         ctx.record("project_git_hooks", "skip", "not a git repo")
         return None
-    project_dir = resolve_project_dir(ctx.project_root)
-    managed_dir = project_dir / ".managed"
+    booley_dir = resolve_booley_dir(ctx.project_root)
+    managed_dir = booley_dir / ".managed"
     return _Locations(
-        project_dir,
+        booley_dir,
         managed_dir / BUNDLE_NAME,
         (ctx.project_root / result.stdout.strip()).resolve(),
     )
@@ -545,7 +545,7 @@ def _tracking_git(directory: Path, *args: str) -> subprocess.CompletedProcess[st
 
 def _bundle_tracking_detail(locations: _Locations) -> str | None:
     """Return manual remediation only when the literal bundle is in the index."""
-    project = locations.project_dir.resolve()
+    project = locations.booley_dir.resolve()
     ancestor = next(path for path in (project, *project.parents) if path.is_dir())
     owner_probe = _tracking_git(ancestor, "rev-parse", "--show-toplevel")
     if owner_probe.returncode:
@@ -599,7 +599,7 @@ def step_project_git_hooks(ctx: InitContext) -> None:
             locations.bundle_path,
             bundle.content,
             adapters,
-            _legacy_detail(locations.project_dir / "hooks", current, previous),
+            _legacy_detail(locations.booley_dir / "hooks", current, previous),
         )
         if not details:
             skip("project Git-hook bundle and adapters are current")
@@ -616,7 +616,7 @@ def step_project_git_hooks(ctx: InitContext) -> None:
         _publish_bundle(locations.bundle_path, bundle.content)
         _apply_adapters(adapters, transaction)
         _verify_adapters(adapters)
-        errors = _cleanup_legacy(locations.project_dir / "hooks", current, previous, transaction)
+        errors = _cleanup_legacy(locations.booley_dir / "hooks", current, previous, transaction)
         if errors:
             raise RuntimeError("; ".join(errors))
     except (OSError, RuntimeError, ValueError, zipfile.BadZipFile) as exc:

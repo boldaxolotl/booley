@@ -194,8 +194,8 @@ endmodule
 
 
 def _project(root, value, *, explicit_empty=False):
-    (root / ".booley_project").mkdir()
-    (root / ".booley_project/booley.toml").write_text(
+    (root / ".booley").mkdir()
+    (root / ".booley/booley.toml").write_text(
         "[flows.sim]\nenabled=true\n[flows.synth]\nenabled=true\n"
     )
     (root / "dut.sv").write_text(f"""module dut #(parameter string NAME="X") (output ok);
@@ -286,7 +286,7 @@ def test_same_unchanged_core_simulation_and_synthesis_flows(
     tmp_path, monkeypatch, value, explicit_empty
 ):
     _project(tmp_path, value, explicit_empty=explicit_empty)
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path / ".booley_project"))
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
     _install_liberty(tmp_path, monkeypatch)
     original = hashlib.sha256((tmp_path / "shared.core").read_bytes()).hexdigest()
     sim = SimulateFlow()
@@ -373,7 +373,7 @@ def test_awkward_file_parameter_selects_declared_resource(tmp_path, monkeypatch)
         f"module top #(parameter string FILE={_expected(str(default))}) (output [7:0] value); reg [7:0] mem[0:0]; initial $readmemh(FILE,mem); assign value=mem[0]; endmodule\n"
     )
     _declare_file_consumer(tmp_path, selected)
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path / ".booley_project"))
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
     flow = AsicSynthesizeFlow()
     flow.parse_args(["--project", str(tmp_path), "--target", "synth"])
     command = flow._build_synth_cmd("synth")
@@ -526,8 +526,8 @@ def _build_and_run_simulation(flow, handle, root):
 
 def _declare_file_consumer(root, selected):
     """Declare resources while preserving an explicitly absolute file default."""
-    (root / ".booley_project").mkdir()
-    (root / ".booley_project" / "booley.toml").write_text("[flows.synth]\nenabled=true\n")
+    (root / ".booley").mkdir()
+    (root / ".booley" / "booley.toml").write_text("[flows.synth]\nenabled=true\n")
     data = {
         "name": "proof:string:resource:1",
         "filesets": {
@@ -646,8 +646,8 @@ def test_native_verilator_width_limit_and_explicit_target_option(
     (tmp_path / "top.sv").write_text(
         f'module top #(parameter string NAME="X") (output ok); assign ok=(NAME.len()=={size}); endmodule\n'
     )
-    (tmp_path / ".booley_project").mkdir()
-    (tmp_path / ".booley_project/booley.toml").write_text("[flows.lint]\nenabled=true\n")
+    (tmp_path / ".booley").mkdir()
+    (tmp_path / ".booley/booley.toml").write_text("[flows.lint]\nenabled=true\n")
     (tmp_path / "proof.core").write_text(
         "CAPI=2:\n"
         + yaml.safe_dump(
@@ -669,7 +669,7 @@ def test_native_verilator_width_limit_and_explicit_target_option(
             }
         )
     )
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path / ".booley_project"))
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
     flow = LintFlow()
     flow.parse_args(["--project", str(tmp_path), "--target", "lint"])
     handle = TargetCatalog.build(tmp_path).select("lint", for_flow="lint")
@@ -704,8 +704,8 @@ def test_actual_cocotb_target_receives_bytes_and_native_length(tmp_path, monkeyp
 
     from booley.flows.sim.backends.cocotb import _build_cocotb_env, _build_run_cmd
 
-    (tmp_path / ".booley_project").mkdir()
-    (tmp_path / ".booley_project/booley.toml").write_text("[flows.sim]\nenabled=true\n")
+    (tmp_path / ".booley").mkdir()
+    (tmp_path / ".booley/booley.toml").write_text("[flows.sim]\nenabled=true\n")
     byte_expression = (
         "{" + ",".join(f"NAME[{index}]" for index in range(len(value.encode()))) + "}"
         if value
@@ -726,7 +726,7 @@ async def exact_parameter(dut):
     assert int(dut.ok.value)==1
 """)
     _write_cocotb_core(tmp_path, value)
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path / ".booley_project"))
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
     handle = TargetCatalog.build(tmp_path).select("sim", for_flow="sim")
     flow = SimulateFlow()
     flow.parse_args(["--project", str(tmp_path), "--target", "sim", "--mode", "elab-only"])
@@ -832,7 +832,7 @@ def test_actual_trace_resolution_preserves_owned_parameters_and_authored_flags(
     from booley.flows.sim.trace_overlay import write_trace_overlay
 
     _project(tmp_path, value, explicit_empty=explicit_empty)
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path / ".booley_project"))
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
     path = tmp_path / "shared.core"
     data = yaml.safe_load(path.read_text().split("\n", 1)[1])
     data["targets"]["sim"]["flags"] = {"owned": True}
@@ -904,8 +904,8 @@ def test_actual_legacy_default_tool_receiver(tmp_path, monkeypatch, tool, value)
     from booley.flows.sim.build import prepare_simulation_build
 
     _legacy_receiver_project(tmp_path, tool, value)
-    (tmp_path / ".booley_project").mkdir()
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path / ".booley_project"))
+    (tmp_path / ".booley").mkdir()
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
     core_hash = hashlib.sha256((tmp_path / "legacy.core").read_bytes()).hexdigest()
     handle = TargetCatalog.build(tmp_path).select("sim", for_flow="sim")
     resolved = prepare_simulation_build(handle, build_root=tmp_path / "build").resolved

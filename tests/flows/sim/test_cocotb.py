@@ -80,7 +80,7 @@ def _write_test_registry(
     *,
     select: str = "",
 ) -> None:
-    project = tmp_path / ".booley_project"
+    project = tmp_path / ".booley"
     project.mkdir(exist_ok=True)
     rendered = ", ".join(json.dumps(name) for name in tests)
     select_line = f"select = {json.dumps(select)}\n" if select else ""

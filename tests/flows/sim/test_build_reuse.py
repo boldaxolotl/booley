@@ -219,7 +219,7 @@ def test_core_closure_hashes_every_dependency_core(tmp_path: Path) -> None:
     rtl = project / "rtl" / "rtl.core"
     adapter.write_text("CAPI=2:\nname: a:b:adapter:1\n", encoding="utf-8")
     rtl.write_text("CAPI=2:\nname: a:b:rtl:1\n", encoding="utf-8")
-    edam = _edam(project / ".booley_project" / "g", {"a:b:adapter:1": adapter, "a:b:rtl:1": rtl})
+    edam = _edam(project / ".booley" / "g", {"a:b:adapter:1": adapter, "a:b:rtl:1": rtl})
 
     closure = capture_core_closure(edam, project)
 
@@ -258,7 +258,7 @@ def test_core_closure_declines_unprovable_cores(tmp_path: Path, case: str) -> No
 def _fresh_build(tmp_path: Path) -> tuple[Path, Path, Path, VerilatorIdentity]:
     """A generation whose depfiles name staged, generated, and toolchain files."""
     project = tmp_path / "project"
-    work = project / ".booley_project" / "g" / "0123456789abcdef"
+    work = project / ".booley" / "g" / "0123456789abcdef"
     build = work
     (build / "src").mkdir(parents=True)
     identity = _identity(tmp_path)
@@ -536,7 +536,7 @@ def test_toolchain_identity_declines_without_compiler_or_installation(tmp_path: 
 
 
 def _handle(root: Path) -> TargetHandle:
-    (root / ".booley_project").mkdir(exist_ok=True)
+    (root / ".booley").mkdir(exist_ok=True)
     return cast(TargetHandle, SimpleNamespace(project_root=root, identity="acme:lib:demo:1#sim"))
 
 

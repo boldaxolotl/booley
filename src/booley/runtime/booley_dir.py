@@ -5,42 +5,42 @@ from __future__ import annotations
 from pathlib import Path
 from stat import S_ISDIR
 
-from booley.core.project_dir import (
-    PROJECT_DIR_NAME,
-    checkout_project_dir_relative_to,
+from booley.core.booley_dir import (
+    BOOLEY_DIR_NAME,
+    booley_dir_for_init,
+    checkout_booley_dir_relative_to,
     committed_project_scope,
-    init_project_dir_scope,
-    project_dir_for_init,
+    init_booley_dir_scope,
     reset_cache,
-    resolve_authoritative_project_dir,
-    resolve_checkout_project_dir,
-    resolve_project_dir,
+    resolve_authoritative_booley_dir,
+    resolve_booley_dir,
+    resolve_checkout_booley_dir,
 )
 
 __all__ = [
-    "PROJECT_DIR_NAME",
-    "checkout_project_dir_relative_to",
+    "BOOLEY_DIR_NAME",
+    "booley_dir_for_init",
+    "checkout_booley_dir_relative_to",
     "committed_project_scope",
     "contains",
-    "init_project_dir_scope",
-    "project_dir_for_init",
+    "init_booley_dir_scope",
     "reset_cache",
-    "resolve_authoritative_project_dir",
-    "resolve_checkout_project_dir",
-    "resolve_project_dir",
+    "resolve_authoritative_booley_dir",
+    "resolve_booley_dir",
+    "resolve_checkout_booley_dir",
 ]
 
 
 def checkout_runtime_dir(project_root: Path) -> Path:
     """Return the runtime tree anchored to one explicitly selected checkout."""
-    directory = resolve_checkout_project_dir(project_root) / ".runtime"
+    directory = resolve_checkout_booley_dir(project_root) / ".runtime"
     directory.mkdir(parents=True, exist_ok=True)
     return directory
 
 
 def runtime_dir(start: Path | None = None) -> Path:
     """Return and create the active Project's transient ``.runtime`` tree."""
-    directory = resolve_project_dir(start) / ".runtime"
+    directory = resolve_booley_dir(start) / ".runtime"
     directory.mkdir(parents=True, exist_ok=True)
     return directory
 
@@ -57,18 +57,18 @@ def _identity_suffix(candidate: Path, root: Path) -> Path | None:
     return None
 
 
-def contains(path: str | Path, *, project_dir: Path | None = None) -> Path | None:
+def contains(path: str | Path, *, booley_dir: Path | None = None) -> Path | None:
     """Return a selected-root Booley Directory path, or None if membership is unproven.
 
     Directory identity admits independent mount spellings, including missing
     descendants of an existing root. File hardlinks do not establish membership.
-    Explicit ``project_dir`` supplies authority independently of active selection.
+    Explicit ``booley_dir`` supplies authority independently of active selection.
     Resolve internal symlinks while retaining the selected root spelling for aliases.
     Rebasing selects root authority; asymmetric mounts need not preserve leaf identity.
     Filesystem errors fail closed; selection errors and malformed paths propagate.
     This predicate does not authorize mutation or provide a race-free file open.
     """
-    selected = resolve_project_dir() if project_dir is None else project_dir
+    selected = resolve_booley_dir() if booley_dir is None else booley_dir
     candidate = Path(path)
     try:
         root = selected.resolve()

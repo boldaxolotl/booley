@@ -10,9 +10,9 @@ from booley.core.boundary import require_dict, require_finite_number
 DEFAULT_QUIET_AFTER = 7200.0
 
 
-def quiet_after(project_dir: Path) -> float:
+def quiet_after(booley_dir: Path) -> float:
     """Read [goals].quiet_after in seconds, 60 through 604800 (default two hours)."""
-    path = project_dir / "booley.toml"
+    path = booley_dir / "booley.toml"
     if not path.exists():
         return DEFAULT_QUIET_AFTER
     with path.open("rb") as handle:

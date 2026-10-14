@@ -105,7 +105,7 @@ def test_missing_nonversioned_project_during_finishing_is_typed_revalidation(lay
 
     with pytest.raises(Crash):
         finish_goal(call, environment(complete, stop))
-    project = complete.worktree / ".booley_project"
+    project = complete.worktree / ".booley"
     project.rename(complete.worktree / "missing-project")
     result = finish_goal(call, environment(complete))
     assert result["status"] == "revalidation_required"
@@ -125,7 +125,7 @@ def test_new_external_versioned_project_during_finishing_revalidates(layout):
 
     with pytest.raises(Crash):
         finish_goal(call, environment(layout, stop))
-    project = layout.worktree / ".booley_project"
+    project = layout.worktree / ".booley"
     # A separate repository in the literal Booley Directory changes participants
     # without introducing a publication-path symlink that must independently refuse.
     git(project, "init", "-q", "-b", "main")
@@ -160,7 +160,7 @@ def test_publication_prerequisites_refuse_before_the_finishing_fence(
     else:
         from tests.goals.test_status import publish
 
-        policy = complete.worktree / ".booley_project/.gitignore"
+        policy = complete.worktree / ".booley/.gitignore"
         policy.write_bytes(policy.read_bytes().replace(b"goals/*/\n", b""))
         git(complete.worktree, "commit", "-qam", "missing transient ignore")
         publish(complete)
@@ -224,16 +224,14 @@ def test_later_finish_does_not_wedge_on_earlier_published_attempt(layout, earlie
     hook.write_bytes(original + b"# changed after publication\n")
     assert finish_goal(first, environment(complete))["status"] == "revalidation_required"
     hook.write_bytes(original)
-    path = complete.worktree / f".booley_project/goals/history/{first.record_id}.md"
+    path = complete.worktree / f".booley/goals/history/{first.record_id}.md"
     before = path.read_bytes()
     if earlier == "committed-edit":
         path.write_bytes(before + b"\nUser-committed historical annotation.\n")
         git(complete.worktree, "add", str(path.relative_to(complete.worktree)))
         git(complete.worktree, "commit", "-qm", "annotated historical summary")
     else:
-        assert "D  .booley_project/goals/history/" not in git(
-            complete.worktree, "status", "--porcelain"
-        )
+        assert "D  .booley/goals/history/" not in git(complete.worktree, "status", "--porcelain")
     retained = path.read_bytes()
     result = finish_goal(request(complete), environment(complete))
     assert result["status"] == "finished" and path.read_bytes() == retained
@@ -261,10 +259,10 @@ def snapshot_submodules(tmp_path):
     from tests.goals.test_committed_export import nested_modules
 
     root = nested_modules(tmp_path)
-    project = root / ".booley_project"
+    project = root / ".booley"
     project.mkdir()
     (project / "booley.toml").write_bytes(b"[submodules]\npaths=[]\n")
-    (root / ".git/info/exclude").write_bytes(b"/.booley_project\n")
+    (root / ".git/info/exclude").write_bytes(b"/.booley\n")
     record = SimpleNamespace(
         input_paths=capture_path_roots(root, project),
         protected_paths=(),
@@ -386,10 +384,7 @@ def test_authority_only_attempt_reserves_its_history_path(layout, monkeypatch):
     fresh = request(complete)
     result = finish_goal(fresh, environment(complete))
     assert result["status"] == "finished"
-    path = (
-        complete.worktree
-        / f".booley_project/goals/history/{fresh.record_id}-{fresh.operation_id}.md"
-    )
+    path = complete.worktree / f".booley/goals/history/{fresh.record_id}-{fresh.operation_id}.md"
     assert path.is_file()
     assert not path.with_name(f"{fresh.record_id}.md").exists()
     assert (operation / "attempt.authority.json").read_bytes() == captured
@@ -415,7 +410,7 @@ def test_published_summary_preserves_conflicting_index_entries_without_wedging(l
     call = request(complete)
     index = complete.main / ".git/worktrees/wt/index"
     saved = []
-    path = f".booley_project/goals/history/{call.record_id}.md"
+    path = f".booley/goals/history/{call.record_id}.md"
 
     def stage(boundary):
         if boundary != "ref-published":
@@ -427,7 +422,7 @@ def test_published_summary_preserves_conflicting_index_entries_without_wedging(l
                 "update-index",
                 "--add",
                 "--cacheinfo",
-                f"100644,{blob},.booley_project/goals/history",
+                f"100644,{blob},.booley/goals/history",
             )
         elif staging == "intent-to-add":
             git(complete.worktree, "add", "-N", "--", path)

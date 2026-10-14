@@ -84,9 +84,9 @@ def propose_change(
     preliminary = ChangeEnvironment(env)
     work_dir = Path(text(arguments.get("work_dir"), "work_dir"))
     record = resolve_record(preliminary, work_dir)
-    service = GoalWaiverService(env.project_dir, record)
+    service = GoalWaiverService(env.booley_dir, record)
     change_env = ChangeEnvironment(env, service)
-    acting = context.session_key(lambda: session_key(GoalStore(env.project_dir), work_dir))
+    acting = context.session_key(lambda: session_key(GoalStore(env.booley_dir), work_dir))
     if context.resume_state is not None:
         return _resume_decision(change_env, record.id, context, acting)
     operation = arguments.get("operation")

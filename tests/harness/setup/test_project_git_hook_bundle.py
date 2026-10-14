@@ -109,7 +109,7 @@ def test_archive_validation_rejects_invalid_manifest(
 
 def test_bundle_runs_without_ambient_booley_package(tmp_path: Path) -> None:
     project = tmp_path / "project"
-    managed = project / ".booley_project" / ".managed"
+    managed = project / ".booley" / ".managed"
     managed.mkdir(parents=True)
     subprocess.run(["git", "init", "-q", str(project)], check=True)
     bundle = managed / BUNDLE_NAME
@@ -183,7 +183,7 @@ def test_bundled_hook_accepts_destination_history_and_blocks_new_identity(
     base = git("rev-parse", "HEAD")
     destination = tmp_path / "destination.git"
     git("clone", "--bare", str(project), str(destination))
-    managed = project / ".booley_project" / ".managed"
+    managed = project / ".booley" / ".managed"
     managed.mkdir(parents=True)
     bundle = managed / BUNDLE_NAME
     bundle.write_bytes(build_project_git_hook_bundle().content)
@@ -258,7 +258,7 @@ def _bundled_hook_environment(minimum):
 
 def test_bundle_identifier_tiers_refresh_from_current_config(tmp_path):
     project = tmp_path / "project"
-    directory = project / ".booley_project"
+    directory = project / ".booley"
     directory.mkdir(parents=True)
     subprocess.run(["git", "init", "-q", str(project)], check=True, timeout=30)
     bundle = directory / BUNDLE_NAME

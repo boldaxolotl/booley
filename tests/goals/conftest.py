@@ -1,8 +1,8 @@
 """Goal Mode test support: a real Git repository laid out like a Booley Project.
 
-The Main Booley Directory is ``<main>/.booley_project`` (excluded from
+The Main Booley Directory is ``<main>/.booley`` (excluded from
 Git, as ``init`` does); the linked worktree lives under its ``worktrees/``
-and carries a copied ``.booley_project`` snapshot. Only the Target catalog is
+and carries a copied ``.booley`` snapshot. Only the Target catalog is
 faked, so entry never needs FuseSoC.
 """
 
@@ -19,7 +19,7 @@ from typing import Any
 
 import pytest
 
-from booley.core.project_dir import reset_cache
+from booley.core.booley_dir import reset_cache
 from booley.flows import target_test_plan_loading
 from booley.flows.target_test_plan import TargetTestPlan
 from booley.flows.test_runs import TestRun, build_test_run, test_run_document
@@ -61,6 +61,7 @@ def git(cwd: Path, *args: str) -> str:
         cwd=cwd,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=True,
         timeout=GIT_TIMEOUT_S,
     )
@@ -107,13 +108,13 @@ def layout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleNa
     (main / "docs" / "spec.md").write_text("spec\n", encoding="utf-8")
     git(main, "add", "-A")
     git(main, "commit", "-q", "-m", "base")
-    (main / ".git" / "info" / "exclude").write_text("/.booley_project\n", encoding="utf-8")
-    control = main / ".booley_project"
+    (main / ".git" / "info" / "exclude").write_text("/.booley\n", encoding="utf-8")
+    control = main / ".booley"
     write_project_files(control)
     worktree = control / "worktrees" / "wt"
     git(main, "worktree", "add", "-q", "-b", "work", str(worktree))
-    write_project_files(worktree / ".booley_project")
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(control))
+    write_project_files(worktree / ".booley")
+    monkeypatch.setenv("BOOLEY_DIR", str(control))
     monkeypatch.setattr(entry_module, "TargetCatalog", FakeCatalog)
     monkeypatch.setattr(target_test_plan_loading, "load_checkout_target_test_plan", fake_test_plan)
     monkeypatch.setattr(target_test_plan_loading, "checkout_target_identity", fake_target_identity)
@@ -141,11 +142,11 @@ def pending_baseline_launch(_path: Path, request: Mapping[str, Any]) -> None:
     )
 
 
-def write_project_files(project_dir: Path) -> None:
+def write_project_files(booley_dir: Path) -> None:
     """A minimal Booley Directory: configuration and one custom MCP tool."""
-    (project_dir / "mcp_tools").mkdir(parents=True)
-    (project_dir / "booley.toml").write_text("[project]\nname = 'demo'\n", encoding="utf-8")
-    (project_dir / "mcp_tools" / "tool.py").write_text("# custom tool\n", encoding="utf-8")
+    (booley_dir / "mcp_tools").mkdir(parents=True)
+    (booley_dir / "booley.toml").write_text("[project]\nname = 'demo'\n", encoding="utf-8")
+    (booley_dir / "mcp_tools" / "tool.py").write_text("# custom tool\n", encoding="utf-8")
 
 
 def install_paired_project(layout: SimpleNamespace, tmp_path: Path) -> Path:
@@ -160,7 +161,7 @@ def install_paired_project(layout: SimpleNamespace, tmp_path: Path) -> Path:
     (project_repo / "booley.toml").write_text("[project]\n", encoding="utf-8")
     git(project_repo, "add", "-A")
     git(project_repo, "commit", "-q", "-m", "project")
-    snapshot = layout.worktree / ".booley_project"
+    snapshot = layout.worktree / ".booley"
     for path in sorted(snapshot.rglob("*"), reverse=True):
         path.rmdir() if path.is_dir() else path.unlink()
     snapshot.rmdir()
@@ -213,12 +214,12 @@ def entry_environment(layout: SimpleNamespace, **extra: Any) -> Any:
     """The entry environment of *layout*, with a deterministic seed source."""
     from booley.goals.entry import EntryEnvironment
 
-    return EntryEnvironment(project_dir=layout.control, draw_seeds=counting_draw(), **extra)
+    return EntryEnvironment(booley_dir=layout.control, draw_seeds=counting_draw(), **extra)
 
 
 def write_tests_toml(layout: SimpleNamespace, content: bytes) -> None:
     """Rewrite the worktree's ``tests.toml`` (bytes: digests match on every platform)."""
-    (layout.worktree / ".booley_project" / "tests.toml").write_bytes(content)
+    (layout.worktree / ".booley" / "tests.toml").write_bytes(content)
 
 
 def enter_goals(

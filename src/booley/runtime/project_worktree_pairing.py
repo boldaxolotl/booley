@@ -8,6 +8,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+from booley.runtime.booley_dir import BOOLEY_DIR_NAME
 from booley.runtime.file_lock import release_file_lock, try_file_lock, wait_for_file_lock
 from booley.runtime.filesystem_utils import safe_rmtree
 from booley.runtime.incontainer_git_identity import (
@@ -15,7 +16,6 @@ from booley.runtime.incontainer_git_identity import (
     apply_git_identity,
     load_git_identity,
 )
-from booley.runtime.project_dir import PROJECT_DIR_NAME
 from booley.runtime.project_gitignore import missing_gitignore_patterns, project_transient_pattern
 from booley.runtime.project_repositories import (
     GitDirectoryInspectionError,
@@ -35,7 +35,7 @@ class ProjectPairingError(RuntimeError):
 
 def project_pairing_source(project_root: Path) -> Path | None:
     """Select a Versioned Booley Directory; refuse creation from a Paired Checkout."""
-    source = project_root / PROJECT_DIR_NAME
+    source = project_root / BOOLEY_DIR_NAME
     if (source / ".git").is_file():
         raise ProjectPairingError(
             "cannot create a worktree from a Paired Checkout; "
@@ -120,7 +120,7 @@ def _refuse_dirty_project(source: Path, changes: tuple[ProjectRepositoryChange, 
         )
     if inputs:
         remedies.append(
-            f"inputs: {_listed_paths(inputs)}; commit them in `{PROJECT_DIR_NAME}` first"
+            f"inputs: {_listed_paths(inputs)}; commit them in `{BOOLEY_DIR_NAME}` first"
         )
     raise ProjectPairingError(
         "Booley Directory's repository has uncommitted changes; " + "; ".join(remedies)
@@ -143,7 +143,7 @@ def _project_lock(source: Path) -> Iterator[None]:
 
 
 def _remove_copy(worktree: Path) -> Path:
-    nested = worktree / PROJECT_DIR_NAME
+    nested = worktree / BOOLEY_DIR_NAME
     if nested.is_symlink() or not nested.resolve().is_relative_to(worktree.resolve()):
         raise ProjectPairingError(
             f"Worktree Booley Directory escapes its containing worktree: {nested}"
@@ -224,7 +224,7 @@ def pair_project_worktree(
     branch = f"booley-worktree/{name}"
     with _project_lock(source):
         base = _require_base(source, branch)
-        _refuse_registered(source, worktree / PROJECT_DIR_NAME)
+        _refuse_registered(source, worktree / BOOLEY_DIR_NAME)
         nested = _remove_copy(worktree)
         try:
             _require_git(source, "config", "gc.worktreePruneExpire", "never")
@@ -269,13 +269,13 @@ def validate_project_pairing(source: Path | None, name: str) -> None:
 def worktree_removal_instructions(project_root: Path, worktree: Path, name: str) -> str:
     """Format absolute inner/outer removal and explicit Project branch cleanup."""
     root, outer = project_root.resolve(), worktree.resolve()
-    source = root / PROJECT_DIR_NAME
+    source = root / BOOLEY_DIR_NAME
 
     def quote(path: Path) -> str:
         return shlex.quote(str(path))
 
     return (
-        f"Remove the Paired Checkout first: git -C {quote(source)} worktree remove {quote(outer / PROJECT_DIR_NAME)}\n"
+        f"Remove the Paired Checkout first: git -C {quote(source)} worktree remove {quote(outer / BOOLEY_DIR_NAME)}\n"
         f"Then remove the outer worktree: git -C {quote(root)} worktree remove {quote(outer)}\n"
         f"To reuse the name, delete the Project branch after preserving its commits: "
         f"git -C {quote(source)} branch -D {shlex.quote(f'booley-worktree/{name}')}"
@@ -284,7 +284,7 @@ def worktree_removal_instructions(project_root: Path, worktree: Path, name: str)
 
 def remove_creation_lock(project_root: Path, name: str) -> None:
     """Remove this failed creation's per-name file only when it is unlocked."""
-    locks = project_root / PROJECT_DIR_NAME / "worktrees" / ".locks"
+    locks = project_root / BOOLEY_DIR_NAME / "worktrees" / ".locks"
     path = locks / f"{name}.lock"
     if not path.is_file() or (locks / f"{name}.mkdir.lock").exists():
         return

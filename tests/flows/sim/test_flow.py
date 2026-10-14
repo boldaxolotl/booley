@@ -517,7 +517,7 @@ def _make_flow(
     state_file = _make_state(tmp_path)
     report_dir = tmp_path / "reports"
     # Seed tb_top via a co-located .core the no-resolve tb_top_for_target reads
-    # (BOOLEY_PROJECT_DIR=tmp_path). Skip for multi/empty config (not a Target)
+    # (BOOLEY_DIR=tmp_path). Skip for multi/empty config (not a Target)
     # and when the caller authors its own .core (seed_core=False). Two distinct
     # cores sharing a Target name is legal now (ADR 0030, first-wins view), but
     # this helper still seeds only one to keep the resolved Target unambiguous.
@@ -549,9 +549,9 @@ def _make_flow(
     if extra_args:
         argv.extend(extra_args)
     env = _env_with_state(state_file)
-    project_dir = tmp_path / ".booley_project"
-    if project_dir.exists():
-        env["BOOLEY_PROJECT_DIR"] = str(project_dir)
+    booley_dir = tmp_path / ".booley"
+    if booley_dir.exists():
+        env["BOOLEY_DIR"] = str(booley_dir)
     flow = SimulateFlow()
     with patch.dict(os.environ, env):
         flow.parse_args(argv)
@@ -1618,7 +1618,7 @@ class TestCriterionSetting:
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX unreadable-directory regression")
-@pytest.mark.parametrize("relative", ["unreadable", ".booley_project/unreadable"])
+@pytest.mark.parametrize("relative", ["unreadable", ".booley/unreadable"])
 def test_unreadable_unrelated_directory_does_not_block_plain_simulation(
     tmp_path: Path, relative: str
 ) -> None:
@@ -1744,9 +1744,9 @@ class TestReportGeneration:
         _mock_tests,
         tmp_path: Path,
     ):
-        project_dir = tmp_path / ".booley_project"
-        project_dir.mkdir()
-        (project_dir / "booley.toml").write_text(
+        booley_dir = tmp_path / ".booley"
+        booley_dir.mkdir()
+        (booley_dir / "booley.toml").write_text(
             '[flows.sim]\ncycle_sentinels = ["CoreMark completed in:"]\n',
             encoding="utf-8",
         )
@@ -1939,13 +1939,13 @@ class TestReportGeneration:
         self, _mock_backend, _mock_tests, tmp_path: Path, monkeypatch
     ):
         from booley.flows.endpoint_session import _apply_default_endpoint_report_root
-        from booley.runtime.project_dir import reset_cache
+        from booley.runtime.booley_dir import reset_cache
 
         rtl = tmp_path / "rtl-checkout"
         rtl.mkdir()
         project_data = tmp_path / "project-data"
         project_data.mkdir()
-        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project_data))
+        monkeypatch.setenv("BOOLEY_DIR", str(project_data))
         reset_cache()
         state_file = _make_state(rtl)
         env = _env_with_state(state_file)
@@ -2401,14 +2401,7 @@ class TestTruncationResilientReport:
 
         flow = _make_flow(tmp_path, config="lite")
         build_root = (
-            tmp_path
-            / ".booley_project"
-            / ".runtime"
-            / "edalize"
-            / "sim"
-            / "lite"
-            / "demo_0"
-            / "lite"
+            tmp_path / ".booley" / ".runtime" / "edalize" / "sim" / "lite" / "demo_0" / "lite"
         )
         flow._record_run_log_dir("lite", build_root)
         write_run_log(build_root, "[SIM_RESULT] FAILED\n")
@@ -2769,7 +2762,7 @@ def _fake_sim_resolved(
 ):
     from booley.fusesoc.fusesoc_registry import ResolvedTarget
 
-    build_root = tmp_path / ".booley_project" / ".runtime" / "edalize" / "sim" / "lite"
+    build_root = tmp_path / ".booley" / ".runtime" / "edalize" / "sim" / "lite"
     build_root.mkdir(parents=True, exist_ok=True)
     return ResolvedTarget(
         name="lite",

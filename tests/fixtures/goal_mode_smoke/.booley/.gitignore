@@ -26,3 +26,5 @@ FEEDBACK-REPORT.md
 /setup-evidence/
 /PARITY-REPORT.md
 .managed/
+
+/.directory-relocation.json

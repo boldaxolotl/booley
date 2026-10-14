@@ -111,7 +111,7 @@ def lock_dir(logs_dir: Path | str | None = None) -> Path:
             # Ticket Mode does. Fall back to the relative path only when no
             # project is discoverable (direct test callers).
             try:
-                from booley.runtime.project_dir import runtime_dir
+                from booley.runtime.booley_dir import runtime_dir
 
                 logs_dir = str(runtime_dir())
             except (FileNotFoundError, ImportError):

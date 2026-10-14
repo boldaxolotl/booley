@@ -27,7 +27,7 @@ from booley.runtime import job_records
 
 
 def _project(tmp_path: Path) -> Path:
-    (tmp_path / ".booley_project").mkdir()
+    (tmp_path / ".booley").mkdir()
     return tmp_path
 
 
@@ -95,7 +95,7 @@ def test_diagnostic_retains_raw_evidence_but_minimal_removes_it(tmp_path: Path) 
 
 def test_legacy_plan_is_inventory_only_and_never_deletes(tmp_path: Path) -> None:
     root = _project(tmp_path)
-    residue = root / ".booley_project" / "tmp" / "doctor"
+    residue = root / ".booley" / "tmp" / "doctor"
     residue.mkdir(parents=True)
     marker = residue / "old.log"
     marker.write_text("old\n", encoding="utf-8")
@@ -177,11 +177,11 @@ def test_symlink_escape_is_rejected(tmp_path: Path) -> None:
 
 def test_attachment_is_materialized_before_source_deletion(tmp_path: Path) -> None:
     root = _project(tmp_path)
-    project_dir = root / ".booley_project"
+    booley_dir = root / ".booley"
     scratch = prepare_run(root, "run-attachment")
     source = scratch / "doctor.log"
     source.write_text("line 1\nline 2\n", encoding="utf-8")
-    finding = append(Finding(title="doctor finding", attachments=[str(source)]), project_dir)
+    finding = append(Finding(title="doctor finding", attachments=[str(source)]), booley_dir)
     record_artifact(
         root,
         "run-attachment",
@@ -194,22 +194,22 @@ def test_attachment_is_materialized_before_source_deletion(tmp_path: Path) -> No
 
     assert not source.exists()
     assert result.unresolved == ()
-    attachment = read_log(project_dir).entries[0].attachments[0]
+    attachment = read_log(booley_dir).entries[0].attachments[0]
     assert Path(attachment).exists()
     assert "line 2" in "\n".join(_attachment_block(attachment))
-    assert finding.id == read_log(project_dir).entries[0].id
+    assert finding.id == read_log(booley_dir).entries[0].id
 
 
 def test_corrupt_findings_log_blocks_only_referenced_source(tmp_path: Path) -> None:
     root = _project(tmp_path)
-    project_dir = root / ".booley_project"
+    booley_dir = root / ".booley"
     scratch = prepare_run(root, "run-corrupt")
     attached = scratch / "attached.log"
     unrelated = scratch / "unrelated.log"
     attached.write_text("attached\n", encoding="utf-8")
     unrelated.write_text("unrelated\n", encoding="utf-8")
-    append(Finding(title="attached", attachments=[str(attached)]), project_dir)
-    with (project_dir / "findings.jsonl").open("a", encoding="utf-8") as stream:
+    append(Finding(title="attached", attachments=[str(attached)]), booley_dir)
+    with (booley_dir / "findings.jsonl").open("a", encoding="utf-8") as stream:
         stream.write("not json\n")
     for path in (attached, unrelated):
         record_artifact(
@@ -271,7 +271,7 @@ def test_prepare_rejects_unsafe_run_ids(tmp_path: Path, run_id: str) -> None:
             {
                 "version": 1,
                 "run_id": "bad",
-                "entries": [{"path": ".booley_project/tmp/setup/bad/x"}],
+                "entries": [{"path": ".booley/tmp/setup/bad/x"}],
                 "journal": {},
             },
             "identity",
@@ -290,7 +290,7 @@ def test_manifest_validation_fails_closed(tmp_path: Path, payload: object, messa
 def test_manifest_entry_rejects_invalid_claim_fields() -> None:
     identity = {"kind": "file", "device": 1, "inode": 2, "size": 0, "mode": 0o600}
     base = {
-        "path": ".booley_project/tmp/setup/run/file",
+        "path": ".booley/tmp/setup/run/file",
         "identity": identity,
     }
     with pytest.raises(ValueError, match="dependencies"):
@@ -308,7 +308,7 @@ def test_record_rejects_missing_and_shared_paths(tmp_path: Path) -> None:
         record_artifact(
             root,
             "run-invalid",
-            root / ".booley_project" / "missing.log",
+            root / ".booley" / "missing.log",
             producer="doctor",
             artifact_class="capture",
         )
@@ -316,7 +316,7 @@ def test_record_rejects_missing_and_shared_paths(tmp_path: Path) -> None:
         record_artifact(
             root,
             "run-invalid",
-            root / ".booley_project" / "tmp",
+            root / ".booley" / "tmp",
             producer="doctor",
             artifact_class="capture",
         )
@@ -369,7 +369,7 @@ def test_flow_cache_uses_explicit_owner_for_eviction(tmp_path: Path) -> None:
     plan = preview_cleanup(root, run_id="run-cache", cache_disposition="evict-setup-touched")
     assert any(item.category == "evict-cache" for item in plan.items)
     result = apply_cleanup(plan, cache_evictor=lambda path: path.endswith("cache"))
-    assert result.evicted == (".booley_project/tmp/setup/run-cache/cache",)
+    assert result.evicted == (".booley/tmp/setup/run-cache/cache",)
     assert cache.exists()
 
 
@@ -413,7 +413,7 @@ def test_cleanup_rejects_invalid_modes_and_duplicate_runs(tmp_path: Path) -> Non
 
 def test_cleanup_uses_plan_ledger_and_inventories_legacy_logs(tmp_path: Path) -> None:
     root = _project(tmp_path)
-    project = root / ".booley_project"
+    project = root / ".booley"
     (project / "tmp" / "legacy").mkdir(parents=True)
     (project / "tmp" / "legacy" / "old.log").write_text("old\n", encoding="utf-8")
     (project / "existing.log").write_text("existing\n", encoding="utf-8")
@@ -431,7 +431,7 @@ def test_cleanup_rejects_unsafe_manifest_paths_and_root(tmp_path: Path) -> None:
     scratch = prepare_run(root, "run-paths")
     outside = tmp_path / "outside.log"
     outside.write_text("outside\n", encoding="utf-8")
-    for path in (outside, root / ".booley_project" / ".git"):
+    for path in (outside, root / ".booley" / ".git"):
         with pytest.raises(CleanupError):
             record_artifact(
                 root,
@@ -444,7 +444,7 @@ def test_cleanup_rejects_unsafe_manifest_paths_and_root(tmp_path: Path) -> None:
         record_artifact(
             root,
             "run-paths",
-            root / ".booley_project",
+            root / ".booley",
             producer="doctor",
             artifact_class="capture",
         )
@@ -459,13 +459,11 @@ def test_cleanup_rejects_unsafe_manifest_paths_and_root(tmp_path: Path) -> None:
 def test_cleanup_rejects_symlinked_project_and_final_candidate(tmp_path: Path) -> None:
     target = tmp_path / "target-project"
     target.mkdir()
-    (target / ".booley_project").mkdir()
+    (target / ".booley").mkdir()
     linked_root = tmp_path / "linked-root"
     linked_root.mkdir()
     try:
-        (linked_root / ".booley_project").symlink_to(
-            target / ".booley_project", target_is_directory=True
-        )
+        (linked_root / ".booley").symlink_to(target / ".booley", target_is_directory=True)
     except OSError:
         pytest.skip("symlink creation is unavailable")
     with pytest.raises(CleanupError):
@@ -531,7 +529,7 @@ def test_cleanup_classifies_unsupported_disposition(tmp_path: Path) -> None:
 
 def test_cleanup_discovers_quarantined_manifest_from_ledger(tmp_path: Path) -> None:
     root = _project(tmp_path)
-    project = root / ".booley_project"
+    project = root / ".booley"
     (project / "SETUP-PLAN.md").write_text(
         "ignored line\n- Run ID: `run-quarantine`\n", encoding="utf-8"
     )
@@ -589,7 +587,7 @@ def test_cleanup_entry_safety_branches_are_fail_closed(tmp_path: Path) -> None:
         pytest.skip("symlink creation is unavailable")
     identity = FileIdentity.from_path(target)
     linked_entry = ManifestEntry(
-        ".booley_project/tmp/setup/run-safety/linked/target.log",
+        ".booley/tmp/setup/run-safety/linked/target.log",
         "doctor",
         "capture",
         "remove",
@@ -599,7 +597,7 @@ def test_cleanup_entry_safety_branches_are_fail_closed(tmp_path: Path) -> None:
     assert item.category == "unresolved"
     final_link = scratch / "final-link"
     final_link.symlink_to(target)
-    final_entry = replace(linked_entry, path=".booley_project/tmp/setup/run-safety/final-link")
+    final_entry = replace(linked_entry, path=".booley/tmp/setup/run-safety/final-link")
     assert (
         cleanup_module._item_for_entry(root, final_entry, "minimal", "preserve").category
         == "unresolved"
@@ -646,7 +644,7 @@ def test_cleanup_summary_includes_apply_outcomes(tmp_path: Path) -> None:
 @pytest.mark.parametrize("suffix", ["", "tmp"])
 def test_containment_alias_shared_boundary(tmp_path, monkeypatch, suffix):
     root = _project(tmp_path)
-    selected = root / ".booley_project"
+    selected = root / ".booley"
     (selected / "tmp").mkdir()
     alias = tmp_path / "alias"
     (alias / "tmp").mkdir(parents=True)
@@ -671,15 +669,15 @@ def test_containment_alias_shared_boundary(tmp_path, monkeypatch, suffix):
 def test_containment_cleanup_prospective_and_escape(tmp_path):
     root = _project(tmp_path)
     assert (
-        cleanup_module._safe_relative(root, ".booley_project/tmp/setup/run/new")
-        == ".booley_project/tmp/setup/run/new"
+        cleanup_module._safe_relative(root, ".booley/tmp/setup/run/new")
+        == ".booley/tmp/setup/run/new"
     )
-    (root / ".booley_project" / "escape").symlink_to(tmp_path, target_is_directory=True)
+    (root / ".booley" / "escape").symlink_to(tmp_path, target_is_directory=True)
     for raw in (
-        ".booley_project/escape/outside",
-        ".booley_project/.git/file",
+        ".booley/escape/outside",
+        ".booley/.git/file",
         "../outside",
-        ".booley_project",
+        ".booley",
     ):
         with pytest.raises(CleanupError):
             cleanup_module._safe_relative(root, raw)

@@ -4,7 +4,7 @@ Runs the FULL init flow twice over a scratch git repo, hand-editing every
 scaffolded file in between, and asserts the ownership contract file by file:
 
 - user-owned skeletons (booley.toml, tests.toml, ticket_creation.md, FUSESOC_IGNORE,
-  .booley_project/.gitignore) keep their hand edits, and
+  .booley/.gitignore) keep their hand edits, and
 - fully-managed files (the Project Git-hook bundle, .git/hooks adapters,
   devcontainer.json) come back byte-identical to the first run — hand edits
   are deliberately regenerated away.
@@ -39,7 +39,7 @@ from booley.harness.setup.common import InitContext
 from booley.runtime import project_image as pi
 from booley.runtime import session_issuance as runtime_spec
 from booley.runtime import session_runtime as sr
-from booley.runtime.project_dir import reset_cache
+from booley.runtime.booley_dir import reset_cache
 
 HAND_EDIT = "# HAND EDIT — must survive re-init\n"
 
@@ -79,7 +79,7 @@ def repo(tmp_path: Path, monkeypatch) -> Path:
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
 
     trusted_booley_path = home / ".local" / "bin" / "booley"
     trusted_booley_path.parent.mkdir(parents=True)
@@ -232,9 +232,9 @@ class TestFullInitRerun:
         assert "this project is ready" not in output
 
     def test_foreign_root_guidance_blocks_before_any_filesystem_mutation(self, repo: Path):
-        project_dir = repo / ".booley_project"
-        project_dir.mkdir()
-        canon = project_dir / "AGENTS.md"
+        booley_dir = repo / ".booley"
+        booley_dir.mkdir()
+        canon = booley_dir / "AGENTS.md"
         canon.write_text("# canonical\n", encoding="utf-8")
         foreign = repo / "AGENTS.md"
         foreign.write_text("# user-owned\n", encoding="utf-8")
@@ -258,7 +258,7 @@ class TestFullInitRerun:
         rc1 = _run_full_init(repo)
         assert rc1 in (0, 2)  # 2: docker/vscode absent -> dependency-detection step errs
 
-        pdir = repo / ".booley_project"
+        pdir = repo / ".booley"
         hooks_dir = repo / ".git" / "hooks"
 
         # --- user-owned scaffolding: init must never touch these again -----
@@ -308,7 +308,7 @@ class TestFullInitRerun:
                 f"re-running init clobbered user-owned file {f}"
             )
         assert "my_custom_dir/" in gitignore.read_text(encoding="utf-8"), (
-            "re-running init dropped a user line from .booley_project/.gitignore"
+            "re-running init dropped a user line from .booley/.gitignore"
         )
         for f, expected in baseline.items():
             assert f.read_bytes() == expected, (
@@ -344,7 +344,7 @@ class TestFullInitRerun:
     @pytest.mark.timeout(120)
     def test_gitignore_selfheal_restores_deleted_booley_pattern(self, repo: Path):
         assert _run_full_init(repo) in (0, 2)
-        gitignore = repo / ".booley_project" / ".gitignore"
+        gitignore = repo / ".booley" / ".gitignore"
         lines = gitignore.read_text(encoding="utf-8").splitlines()
         assert ".runtime/" in [ln.strip() for ln in lines]
 
@@ -537,37 +537,37 @@ def _git(repository: Path, *args: str) -> str:
     return result.stdout
 
 
-def _crlf_project_data(project_dir: Path) -> list[str]:
+def _crlf_project_data(booley_dir: Path) -> list[str]:
     """Tracked or untracked files in the Booley Directory whose working-tree copy has CRLF.
 
     ``git ls-files --eol`` reports ``w/crlf`` (or ``w/mixed``) for such files;
     ignored runtime state is out of scope.
     """
-    listing = _git(project_dir, "ls-files", "--eol", "--cached", "--others", "--exclude-standard")
+    listing = _git(booley_dir, "ls-files", "--eol", "--cached", "--others", "--exclude-standard")
     return [line for line in listing.splitlines() if "w/crlf" in line or "w/mixed" in line]
 
 
 _IDENTITY = ("-c", "user.name=t", "-c", "user.email=t@t")
 
 
-def _crlf_checkout_project_data(project_dir: Path, files: dict[str, bytes]) -> None:
+def _crlf_checkout_project_data(booley_dir: Path, files: dict[str, bytes]) -> None:
     """Commit Booley configuration with LF line endings, then re-check it out as Git for Windows would.
 
     Git for Windows defaults to ``core.autocrlf=true``: every tracked file
     lands with CRLF while ``git status`` stays clean.
     """
-    project_dir.mkdir()
-    _git(project_dir, "init", "-q")
+    booley_dir.mkdir()
+    _git(booley_dir, "init", "-q")
     for name, data in files.items():
-        (project_dir / name).write_bytes(data)
-    _git(project_dir, "add", "-A")
-    _git(project_dir, *_IDENTITY, "commit", "-qm", "Booley Directory")
-    _git(project_dir, "config", "core.autocrlf", "true")
+        (booley_dir / name).write_bytes(data)
+    _git(booley_dir, "add", "-A")
+    _git(booley_dir, *_IDENTITY, "commit", "-qm", "Booley Directory")
+    _git(booley_dir, "config", "core.autocrlf", "true")
     for name in files:
-        (project_dir / name).unlink()
-    _git(project_dir, "checkout", "--", ".")
-    assert _crlf_project_data(project_dir)
-    assert _git(project_dir, "status", "--porcelain", "--untracked-files=no") == ""
+        (booley_dir / name).unlink()
+    _git(booley_dir, "checkout", "--", ".")
+    assert _crlf_project_data(booley_dir)
+    assert _git(booley_dir, "status", "--porcelain", "--untracked-files=no") == ""
 
 
 def _stub_current_host(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -607,18 +607,18 @@ def test_agent_selection_write_does_not_block_line_ending_repair(
 ) -> None:
     """Init's own [agent] write to Booley configuration with CRLF line endings must not look like user work."""
     _stub_current_host(monkeypatch)
-    project_dir = repo / ".booley_project"
+    booley_dir = repo / ".booley"
     _crlf_checkout_project_data(
-        project_dir, {"AGENTS.md": _GUIDANCE, "booley.toml": _CONFIG_WITHOUT_AGENT}
+        booley_dir, {"AGENTS.md": _GUIDANCE, "booley.toml": _CONFIG_WITHOUT_AGENT}
     )
 
     assert _run_full_init(repo) == 0
     assert "refusing to normalize" not in capsys.readouterr().out
 
-    config = (project_dir / "booley.toml").read_bytes()
+    config = (booley_dir / "booley.toml").read_bytes()
     assert config.startswith(_CONFIG_WITHOUT_AGENT)
     assert config.endswith(_AGENT_TABLE)
-    assert _crlf_project_data(project_dir) == []
+    assert _crlf_project_data(booley_dir) == []
     assert _check_only(repo) == 0
 
 
@@ -657,10 +657,10 @@ class TestWindowsProjectDataLineEndings:
         return request.param
 
     def _assert_safe_and_linked(self, repo: Path, *, hardlink: bool) -> None:
-        project_dir = repo / ".booley_project"
-        canonical = project_dir / "AGENTS.md"
+        booley_dir = repo / ".booley"
+        canonical = booley_dir / "AGENTS.md"
         assert b"\r" not in canonical.read_bytes()
-        assert _crlf_project_data(project_dir) == []
+        assert _crlf_project_data(booley_dir) == []
         for name in ("AGENTS.md", "CLAUDE.md"):
             entry = repo / name
             assert entry.samefile(canonical), name
@@ -674,18 +674,18 @@ class TestWindowsProjectDataLineEndings:
     def test_clean_windows_init_writes_lf_project_data_and_passes_check_only(
         self, repo: Path, force_hardlink_fallback: bool
     ) -> None:
-        project_dir = repo / ".booley_project"
-        project_dir.mkdir()
+        booley_dir = repo / ".booley"
+        booley_dir.mkdir()
         # booley-setup Step 3 authors the canonical guidance; init links it.
-        (project_dir / "AGENTS.md").write_bytes(_GUIDANCE)
+        (booley_dir / "AGENTS.md").write_bytes(_GUIDANCE)
 
         assert _run_full_init(repo) == 0
         self._assert_safe_and_linked(repo, hardlink=force_hardlink_fallback)
 
         # Committing the scaffolds keeps them LF in the index and worktree.
-        _git(project_dir, "add", "-A")
-        _git(project_dir, *_IDENTITY, "commit", "-qm", "setup")
-        eol = _git(project_dir, "ls-files", "--eol")
+        _git(booley_dir, "add", "-A")
+        _git(booley_dir, *_IDENTITY, "commit", "-qm", "setup")
+        eol = _git(booley_dir, "ls-files", "--eol")
         assert "booley.toml" in eol
         assert "i/crlf" not in eol
         self._assert_safe_and_linked(repo, hardlink=force_hardlink_fallback)
@@ -698,22 +698,22 @@ class TestWindowsProjectDataLineEndings:
         force_hardlink_fallback: bool,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        project_dir = repo / ".booley_project"
+        booley_dir = repo / ".booley"
         # 1. A Windows checkout with Git for Windows' default autocrlf=true:
         #    every tracked file in the Booley Directory lands with CRLF, index clean.
         _crlf_checkout_project_data(
-            project_dir,
+            booley_dir,
             {"AGENTS.md": _GUIDANCE, "booley.toml": _AGENT_TABLE, "notes.md": b"# Notes\n"},
         )
 
         # 2. An uncommitted user edit makes the line-ending repair refuse, so
         #    init reports setup incomplete (#611) -- yet the guidance step still
         #    links the root guidance to the CRLF canonical file.
-        with (project_dir / "notes.md").open("ab") as notes:
+        with (booley_dir / "notes.md").open("ab") as notes:
             notes.write(b"work in progress\r\n")
         assert _run_full_init(repo) == 2
         assert "refusing to normalize" in capsys.readouterr().out
-        canonical = project_dir / "AGENTS.md"
+        canonical = booley_dir / "AGENTS.md"
         assert b"\r\n" in canonical.read_bytes()
         assert (repo / "AGENTS.md").samefile(canonical)
         if force_hardlink_fallback:
@@ -723,14 +723,14 @@ class TestWindowsProjectDataLineEndings:
 
         # 3. The user commits the edit and re-runs init, as init instructs. The
         #    Booley-created hardlinks no longer block the repair (#609).
-        _git(project_dir, "add", "notes.md")
-        _git(project_dir, *_IDENTITY, "commit", "-qm", "notes")
+        _git(booley_dir, "add", "notes.md")
+        _git(booley_dir, *_IDENTITY, "commit", "-qm", "notes")
         capsys.readouterr()
         assert _run_full_init(repo) == 0
         output = capsys.readouterr().out
         if force_hardlink_fallback:
             assert "released guidance hardlink AGENTS.md" in output
-        assert _git(project_dir, "config", "--local", "core.autocrlf").strip() == "false"
+        assert _git(booley_dir, "config", "--local", "core.autocrlf").strip() == "false"
         self._assert_safe_and_linked(repo, hardlink=force_hardlink_fallback)
 
     def test_agent_selection_write_on_crlf_project_data_passes_check_only(
@@ -740,14 +740,14 @@ class TestWindowsProjectDataLineEndings:
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         """A tracked booley.toml without [agent]: init edits it, then repairs."""
-        project_dir = repo / ".booley_project"
+        booley_dir = repo / ".booley"
         _crlf_checkout_project_data(
-            project_dir, {"AGENTS.md": _GUIDANCE, "booley.toml": _CONFIG_WITHOUT_AGENT}
+            booley_dir, {"AGENTS.md": _GUIDANCE, "booley.toml": _CONFIG_WITHOUT_AGENT}
         )
 
         assert _run_full_init(repo) == 0
         assert "refusing to normalize" not in capsys.readouterr().out
-        assert (project_dir / "booley.toml").read_bytes().endswith(_AGENT_TABLE)
+        assert (booley_dir / "booley.toml").read_bytes().endswith(_AGENT_TABLE)
         self._assert_safe_and_linked(repo, hardlink=force_hardlink_fallback)
 
 
@@ -775,7 +775,7 @@ def test_image_convergence_reports_live_sandbox_drift(repo, monkeypatch, capsys,
 
 def test_init_does_not_scaffold_board_or_ticket_guidance(repo):
     assert _run_full_init(repo) in (0, 2)
-    project = repo / ".booley_project"
+    project = repo / ".booley"
     assert not (project / "tickets").exists()
     assert not (project / "ticket_creation.md").exists()
     assert not (project / "ticket_defaults.md").exists()
@@ -832,7 +832,7 @@ def _set_project_mode(target: Path, mode: int) -> None:
 
 
 def _stale_project(root: Path) -> Path:
-    target = root / ".booley_project"
+    target = root / ".booley"
     target.mkdir()
     (target / ".gitignore").write_bytes(b"# custom ignore\ntmp/\n")
     return target
@@ -873,7 +873,7 @@ def _assert_applied_backfills(repo: Path, target: Path, missing: list[str]) -> N
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission repair")
-def test_project_dir_check_reports_all_backfills_and_converges(repo, capsys):
+def test_booley_dir_check_reports_all_backfills_and_converges(repo, capsys):
     from booley.runtime.project_gitignore import missing_gitignore_patterns
 
     target = _stale_project(repo)
@@ -881,24 +881,24 @@ def test_project_dir_check_reports_all_backfills_and_converges(repo, capsys):
     missing = missing_gitignore_patterns((target / ".gitignore").read_text())
     before = _complete_snapshot(repo)
     ctx = InitContext(project_root=repo, check_only=True)
-    init_cmd._step_project_dir(ctx)
+    init_cmd._step_booley_dir(ctx)
     output = capsys.readouterr().out
     _assert_backfill_report(output, missing)
     assert "would secure Booley Directory permissions" in output
     assert [(r.name, r.status, r.detail) for r in ctx.results] == [
-        ("project_dir", "warn", "permissions need 0700")
+        ("booley_dir", "warn", "permissions need 0700")
     ]
     assert _complete_snapshot(repo) == before
-    init_cmd._step_project_dir(InitContext(project_root=repo))
+    init_cmd._step_booley_dir(InitContext(project_root=repo))
     _assert_applied_backfills(repo, target, missing)
     capsys.readouterr()
     ctx = InitContext(project_root=repo, check_only=True)
-    init_cmd._step_project_dir(ctx)
+    init_cmd._step_booley_dir(ctx)
     assert "would" not in capsys.readouterr().out
     assert [(r.status, r.detail) for r in ctx.results] == [("skip", "already present")]
 
 
-def test_project_dir_check_correct_permissions_keeps_skip(repo, capsys):
+def test_booley_dir_check_correct_permissions_keeps_skip(repo, capsys):
     from booley.runtime.project_gitignore import missing_gitignore_patterns
 
     target = _stale_project(repo)
@@ -907,7 +907,7 @@ def test_project_dir_check_correct_permissions_keeps_skip(repo, capsys):
     missing = missing_gitignore_patterns((target / ".gitignore").read_text())
     before = _complete_snapshot(repo)
     ctx = InitContext(project_root=repo, check_only=True)
-    init_cmd._step_project_dir(ctx)
+    init_cmd._step_booley_dir(ctx)
     output = capsys.readouterr().out
     _assert_backfill_report(output, missing)
     assert "Booley Directory found at" in output
@@ -917,7 +917,7 @@ def test_project_dir_check_correct_permissions_keeps_skip(repo, capsys):
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX directory search permissions")
-def test_project_dir_check_inaccessible_reports_incomplete(repo, capsys):
+def test_booley_dir_check_inaccessible_reports_incomplete(repo, capsys):
     target = _stale_project(repo)
     for name in ("booley.toml", "tests.toml", "FUSESOC_IGNORE"):
         (target / name).write_bytes(b"# custom\n")
@@ -927,7 +927,7 @@ def test_project_dir_check_inaccessible_reports_incomplete(repo, capsys):
         if os.access(target, os.R_OK | os.X_OK):
             pytest.skip("privileges bypass directory search permissions")
         ctx = InitContext(project_root=repo, check_only=True)
-        init_cmd._step_project_dir(ctx)
+        init_cmd._step_booley_dir(ctx)
         output = capsys.readouterr().out
         assert "would secure Booley Directory permissions" in output
         assert "backfill report is incomplete" in output
@@ -937,18 +937,18 @@ def test_project_dir_check_inaccessible_reports_incomplete(repo, capsys):
         assert stat.S_IMODE(target.stat().st_mode) == 0o600
     finally:
         target.chmod(0o700)
-    before[Path(".booley_project")] = (None, 0o700)
+    before[Path(".booley")] = (None, 0o700)
     assert _complete_snapshot(repo) == before
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission repair")
 @pytest.mark.timeout(120)
-def test_project_dir_check_full_init_reports_backfills_without_mutation(repo, monkeypatch, capsys):
+def test_booley_dir_check_full_init_reports_backfills_without_mutation(repo, monkeypatch, capsys):
     from booley.runtime.project_gitignore import missing_gitignore_patterns
 
     _stub_current_host(monkeypatch)
     assert _run_full_init(repo) == 0
-    target = repo / ".booley_project"
+    target = repo / ".booley"
     (target / "tests.toml").unlink()
     (target / "FUSESOC_IGNORE").unlink()
     (target / ".gitignore").write_bytes(b"# custom ignore\ntmp/\n")
@@ -967,10 +967,10 @@ def test_project_dir_check_full_init_reports_backfills_without_mutation(repo, mo
     after = _complete_snapshot(repo)
     changed = {p for p in before.keys() | after.keys() if before.get(p) != after.get(p)}
     assert changed == {
-        Path(".booley_project"),
-        Path(".booley_project/tests.toml"),
-        Path(".booley_project/FUSESOC_IGNORE"),
-        Path(".booley_project/.gitignore"),
+        Path(".booley"),
+        Path(".booley/tests.toml"),
+        Path(".booley/FUSESOC_IGNORE"),
+        Path(".booley/.gitignore"),
     }
     assert (target / "tests.toml").read_bytes() == init_cmd.TESTS_TOML_SKELETON.encode()
     assert (target / "FUSESOC_IGNORE").read_bytes() == init_cmd.FUSESOC_IGNORE_BODY.encode()
@@ -991,7 +991,7 @@ def _managed_git(root: Path, *args: str) -> bytes:
 def test_initial_authored_scaffolding_remains_uncommitted(repo):
     before = _managed_git(repo, "ls-files", "--stage", "-z")
     assert _run_full_init(repo) == 0
-    data = repo / ".booley_project"
+    data = repo / ".booley"
     assert (data / "booley.toml").is_file()
     assert _managed_git(repo, "ls-files", "--stage", "-z") == before
     assert not _managed_git(data, "ls-files", "--stage", "-z")
@@ -1003,11 +1003,11 @@ def test_initial_authored_scaffolding_remains_uncommitted(repo):
 @pytest.mark.parametrize("topology", ["standalone", "nested"])
 def test_managed_bundle_publication_leaves_versioned_project_clean(repo, topology):
     if topology == "nested":
-        initial = repo / ".booley_project"
+        initial = repo / ".booley"
         initial.mkdir(mode=0o700)
         (initial / "booley.toml").write_text("[stealth]\nenabled=false\n")
     assert _run_full_init(repo) == 0
-    data = repo / ".booley_project"
+    data = repo / ".booley"
     owner = data if topology == "standalone" else repo
     for repository in {repo, owner}:
         _managed_git(repository, "config", "user.name", "Fixture")
@@ -1032,7 +1032,7 @@ def test_managed_bundle_publication_leaves_versioned_project_clean(repo, topolog
 
 def test_managed_bundle_ignore_backfill_and_check(repo, capsys):
     assert _run_full_init(repo) == 0
-    data = repo / ".booley_project"
+    data = repo / ".booley"
     ignore = data / ".gitignore"
     stale = ignore.read_text().replace(".managed/\n", "") + "# custom policy\ncustom/\n"
     ignore.write_text(stale)
@@ -1043,18 +1043,18 @@ def test_managed_bundle_ignore_backfill_and_check(repo, capsys):
     before = _managed_git(data, "ls-files", "--stage", "-z")
     capsys.readouterr()
     ctx = InitContext(project_root=repo, check_only=True)
-    init_cmd._step_project_dir(ctx)
+    init_cmd._step_booley_dir(ctx)
     assert (
         "would add 1 missing ignore pattern(s) to .gitignore: .managed/" in capsys.readouterr().out
     )
     assert ignore.read_text() == stale
     assert _managed_git(data, "ls-files", "--stage", "-z") == before
-    init_cmd._step_project_dir(InitContext(project_root=repo))
+    init_cmd._step_booley_dir(InitContext(project_root=repo))
     repaired = ignore.read_text()
     assert repaired.startswith(stale)
     assert repaired.count(".managed/\n") == 1
     assert b".managed" not in _managed_git(data, "status", "--porcelain", "--untracked-files=all")
     assert b" M .gitignore" in _managed_git(data, "status", "--porcelain")
-    init_cmd._step_project_dir(InitContext(project_root=repo))
+    init_cmd._step_booley_dir(InitContext(project_root=repo))
     assert ignore.read_text() == repaired
     assert _managed_git(data, "ls-files", "--stage", "-z") == before

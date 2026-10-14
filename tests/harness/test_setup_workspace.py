@@ -13,13 +13,13 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _select_worktree_state(tmp_path: Path, monkeypatch, request):
-    from booley.core.project_dir import reset_cache
+    from booley.core.booley_dir import reset_cache
 
-    state = tmp_path / ".booley_project"
+    state = tmp_path / ".booley"
     if "rejects_cwd_outside_git_root" in request.node.name:
         return
     state.mkdir(exist_ok=True)
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(state))
+    monkeypatch.setenv("BOOLEY_DIR", str(state))
     reset_cache()
 
 
@@ -49,7 +49,7 @@ def _submodule_project(tmp_path: Path) -> tuple[Path, Path]:
     )
     assert added.returncode == 0, added.stderr
     _git(project_root, "commit", "-am", "add submodule")
-    project_data = project_root / ".booley_project"
+    project_data = project_root / ".booley"
     project_data.mkdir()
     (project_data / "booley.toml").write_text(
         '[submodules]\npaths = ["vendor/ip core"]\n', encoding="utf-8"
@@ -67,7 +67,7 @@ def _run_worktree_create(
     from booley.runtime.paths import worktree_create_script
     from booley.runtime.platform_paths import bash_bin
 
-    env = {k: v for k, v in os.environ.items() if k != "BOOLEY_PROJECT_DIR"}
+    env = {k: v for k, v in os.environ.items() if k != "BOOLEY_DIR"}
     env["BOOLEY_PYTHON"] = sys.executable
     payload = {"name": name, "cwd": str(project_root)}
     if branch_ref:
@@ -305,7 +305,7 @@ class TestWorktreeCreateScript:
             # Windows shells may expose only the Store python aliases (F-7);
             # pin the script to the suite's interpreter like the harness does.
             env={
-                **{k: v for k, v in os.environ.items() if k != "BOOLEY_PROJECT_DIR"},
+                **{k: v for k, v in os.environ.items() if k != "BOOLEY_DIR"},
                 "BOOLEY_PYTHON": sys.executable,
             },
         )
@@ -327,14 +327,14 @@ class TestWorktreeCreateScript:
             encoding="utf-8",
             check=False,
             env={
-                **{k: v for k, v in os.environ.items() if k != "BOOLEY_PROJECT_DIR"},
+                **{k: v for k, v in os.environ.items() if k != "BOOLEY_DIR"},
                 "BOOLEY_PYTHON": sys.executable,
             },
         )
 
         assert result.returncode == 1
         assert "must be the Git repository root" in result.stderr
-        assert not (tmp_path / ".booley_project").exists()
+        assert not (tmp_path / ".booley").exists()
 
     def test_leaves_gitlink_with_space_for_python_materialization(self, tmp_path: Path):
         """The shell creates only the outer worktree; Python fills gitlinks later."""
@@ -361,7 +361,7 @@ class TestWorktreeCreateScript:
         _git(project_root, "add", "README.md")
         _git(project_root, "commit", "-m", "init")
 
-        project_data = project_root / ".booley_project"
+        project_data = project_root / ".booley"
         project_data.mkdir()
         (project_data / "booley.toml").write_text("[submodules]\npaths = []\n", encoding="utf-8")
         (project_root / "FUSESOC_IGNORE").write_text("quarantine\n", encoding="utf-8")

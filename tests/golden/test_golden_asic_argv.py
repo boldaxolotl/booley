@@ -60,7 +60,7 @@ def _fake_synth_resolved(
     """A ResolvedTarget shaped like a real synth EDAM, under asic_synthesize's work root."""
     build_root = (
         Path(work_dir)
-        / ".booley_project"
+        / ".booley"
         / ".runtime"
         / "edalize"
         / "synth"
@@ -103,7 +103,7 @@ def _fake_synth_resolved(
         "SYNTHESIS": {"datatype": "bool", "paramtype": "vlogdefine", "default": True},
     }
     recipe: dict = {"tool": "yosys"}
-    recipe_path = Path(work_dir) / ".booley_project" / "target_recipe.toml"
+    recipe_path = Path(work_dir) / ".booley" / "target_recipe.toml"
     if recipe_path.is_file():
         with recipe_path.open("rb") as recipe_file:
             recipe.update(tomllib.load(recipe_file).get("recipe", {}))
@@ -151,9 +151,9 @@ targets:
 def _make_tool(tmp_path: Path, recipe_body: str | None = None) -> AsicSynthesizeFlow:
     """Build a parsed tool, optionally with Target flow-options recipe data."""
     if recipe_body is not None:
-        project_dir = tmp_path / ".booley_project"
-        project_dir.mkdir(exist_ok=True)
-        (project_dir / "target_recipe.toml").write_text(
+        booley_dir = tmp_path / ".booley"
+        booley_dir.mkdir(exist_ok=True)
+        (booley_dir / "target_recipe.toml").write_text(
             f"[recipe]\n{recipe_body}",
             encoding="utf-8",
         )

@@ -95,12 +95,12 @@ def test_artifact_root_prefers_runtime_then_project_then_fallback(tmp_path: Path
     runtime = tmp_path / "runtime"
 
     assert python_artifact_root({}, fallback) == fallback
-    assert python_artifact_root({"BOOLEY_PROJECT_DIR": str(project)}, fallback) == (
+    assert python_artifact_root({"BOOLEY_DIR": str(project)}, fallback) == (
         project / ".runtime" / "python-artifacts"
     )
     assert (
         python_artifact_root(
-            {"BOOLEY_PROJECT_DIR": str(project), "BOOLEY_RUNTIME_DIR": str(runtime)}, fallback
+            {"BOOLEY_DIR": str(project), "BOOLEY_RUNTIME_DIR": str(runtime)}, fallback
         )
         == runtime / "python-artifacts"
     )

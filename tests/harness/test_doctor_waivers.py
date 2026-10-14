@@ -178,7 +178,7 @@ def test_subject_waiver_does_not_hide_sibling_finding(tmp_path, capsys):
 version = 1
 [[waiver]]
 check = "project.git-excludes-missing"
-subject = ".booley_project"
+subject = ".booley"
 reason = "The project uses the approved open footprint."
 permanent = true
 """,
@@ -189,6 +189,6 @@ permanent = true
 
     output = capsys.readouterr().out
     assert "WARN  git info/exclude missing Booley entry: .devcontainer" in output
-    assert "WAIVED  git info/exclude missing Booley entry: .booley_project" in output
+    assert "WAIVED  git info/exclude missing Booley entry: .booley" in output
     assert reporter.counts["warn"] == 1
     assert reporter.counts["waived"] == 1

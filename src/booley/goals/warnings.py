@@ -12,7 +12,7 @@ from booley.goals.protected_inputs import (
 from booley.goals.rules import WORK_DIR_GUIDANCE
 
 
-def protected_warnings(record: GoalRecord, project_dir: Path, work_dir: Path) -> tuple[str, ...]:
+def protected_warnings(record: GoalRecord, booley_dir: Path, work_dir: Path) -> tuple[str, ...]:
     """Compare resolver paths, working contents, then tracked HEAD contents."""
     if not work_dir.is_dir():
         return (f"Goal worktree missing or unavailable: {work_dir}",)
@@ -22,7 +22,7 @@ def protected_warnings(record: GoalRecord, project_dir: Path, work_dir: Path) ->
                 record.protected_paths,
                 record.protected_digest or "",
                 record.protected_head_digest,
-                ProtectedInputRoots(work_dir, project_dir).with_input_paths(record.input_paths),
+                ProtectedInputRoots(work_dir, booley_dir).with_input_paths(record.input_paths),
                 record.declared_protected_inputs,
             )
         )
@@ -32,16 +32,14 @@ def protected_warnings(record: GoalRecord, project_dir: Path, work_dir: Path) ->
 
 def goal_warnings(
     record: GoalRecord,
-    project_dir: Path,
+    booley_dir: Path,
     *,
     work_dir: Path | None,
     session_key: str | None = None,
     other_sessions: Sequence[str] = (),
 ) -> str:
     """Render warnings shared by Flow, Specialist, and status responses."""
-    warnings = list(
-        protected_warnings(record, project_dir, work_dir or Path(record.worktree_path))
-    )
+    warnings = list(protected_warnings(record, booley_dir, work_dir or Path(record.worktree_path)))
     if any(key != session_key for key in other_sessions):
         warnings.append("another session shares this Goal worktree")
     if work_dir is None:

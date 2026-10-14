@@ -36,7 +36,7 @@ def write_design(
     debug: bool = False,
 ) -> None:
     root.mkdir(parents=True, exist_ok=True)
-    data = root / ".booley_project"
+    data = root / ".booley"
     data.mkdir(exist_ok=True)
     (data / "booley.toml").write_text(
         '[project]\nname="public-cache-acceptance"\n[flows.sim]\ntrace_files=["trace.vcd"]\n'
@@ -148,7 +148,7 @@ def stats() -> dict[str, int]:
 
 def instrument(root: Path) -> Path:
     """Measure generated C++ Make separately from setup, Verilation, and run."""
-    tooling = root / ".booley_project" / ".runtime" / "cache-measurement" / uuid.uuid4().hex
+    tooling = root / ".booley" / ".runtime" / "cache-measurement" / uuid.uuid4().hex
     tooling.mkdir(parents=True)
     make = tooling / "make"
     make.write_bytes(Path(__file__).with_name("compiler_cache_make_probe.py").read_bytes())
@@ -171,7 +171,7 @@ def measure(args: argparse.Namespace) -> dict:
     )
     os.environ["EXPECTED_REVISION"] = str(args.revision)
     # Native plusargs select only the independent testbench expectation.
-    data = args.project / ".booley_project"
+    data = args.project / ".booley"
     if args.harness != "cocotb":
         (data / "tests.toml").write_text(
             f'[sim]\ntests=["check"]\nselect="+REVISION={args.revision}"\n'

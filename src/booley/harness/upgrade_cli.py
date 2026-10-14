@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from booley.harness import upgrade_review
-from booley.runtime.project_dir import resolve_checkout_project_dir
+from booley.runtime.booley_dir import resolve_checkout_booley_dir
 
 
 @dataclass(frozen=True)
@@ -82,14 +82,14 @@ def render_status(status: upgrade_review.ReviewStatus) -> str:
 
 def run(args: argparse.Namespace, project_root: Path) -> int:
     """Execute one upgrade review subcommand."""
-    project_dir = resolve_checkout_project_dir(project_root)
+    booley_dir = resolve_checkout_booley_dir(project_root)
     command = getattr(args, "upgrade_command", None) or "status"
     is_status = command == "status"
     if is_status:
-        status = upgrade_review.observe(project_dir)
+        status = upgrade_review.observe(booley_dir)
     elif command == "acknowledge":
         try:
-            status = upgrade_review.acknowledge(project_dir, args.expected_target)
+            status = upgrade_review.acknowledge(booley_dir, args.expected_target)
         except upgrade_review.AcknowledgmentError as exc:
             if getattr(args, "json", False):
                 print(json.dumps({"acknowledged": False, "error": str(exc)}, indent=2))

@@ -205,8 +205,8 @@ def _write_fake_verilator(root: Path) -> Path:
 def _write_project(root: Path, *, options: str = "--timing") -> Path:
     """A Verilator Target with an include, an include dir, and a DPI source."""
     project = root / "project"
-    (project / ".booley_project").mkdir(parents=True)
-    (project / ".booley_project" / "booley.toml").write_text("", encoding="utf-8")
+    (project / ".booley").mkdir(parents=True)
+    (project / ".booley" / "booley.toml").write_text("", encoding="utf-8")
     for name, text in (
         ("rtl/tb.sv", '`include "defs.svh"\nmodule tb; // OLD\nendmodule\n'),
         ("inc/defs.svh", "// DEFS v1\n"),
@@ -436,7 +436,7 @@ def test_corrupt_retained_generation_forces_fresh_build(verilator_env: Path, tam
 
 
 def test_pre_sim_output_in_run_cwd_keeps_reuse(verilator_env: Path) -> None:
-    (verilator_env / ".booley_project" / "booley.toml").write_text(
+    (verilator_env / ".booley" / "booley.toml").write_text(
         '[flows.sim]\npre_run_commands = ["printf fw > \\"$BOOLEY_RUN_CWD/firmware.hex\\""]\n',
         encoding="utf-8",
     )
@@ -452,7 +452,7 @@ def test_pre_sim_output_in_run_cwd_keeps_reuse(verilator_env: Path) -> None:
 @pytest.mark.parametrize("name", ["firmware.hex", ".booley-adapter-x.json", ".a-x.json"])
 def test_pre_sim_output_in_build_root_forces_rebuild(verilator_env: Path, name: str) -> None:
     """Any write into the generation counts, even under a Booley-reserved name."""
-    (verilator_env / ".booley_project" / "booley.toml").write_text(
+    (verilator_env / ".booley" / "booley.toml").write_text(
         f'[flows.sim]\npre_run_commands = ["printf fw > \\"$BOOLEY_BUILD_ROOT/{name}\\""]\n',
         encoding="utf-8",
     )

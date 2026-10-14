@@ -33,8 +33,8 @@ from booley.flows.execution_persistence import FlowExecutionAdapter
 from booley.flows.invocation import resolve_timeout_ms
 from booley.flows.request import FlowRequest
 from booley.runtime import runtime_context
+from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome, ExecutionResult
-from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.runtime.python_artifacts import relocate_python_artifacts
 from booley.targets.catalog import PreparedTargetSelection
 from booley.targets.domain import TARGET_AWARE_FLOWS, FuseSocError, TargetHandle
@@ -368,7 +368,7 @@ class FlowMechanics:
         cwd = self._get_cwd()
         env = {**os.environ, **self._extra_subprocess_env()}
         try:
-            cache_root = resolve_checkout_project_dir(cwd) / ".runtime" / "python-artifacts"
+            cache_root = resolve_checkout_booley_dir(cwd) / ".runtime" / "python-artifacts"
         except (OSError, RuntimeError, ValueError):
             cache_root = Path(tempfile.gettempdir()) / "booley-python-artifacts"
         env = relocate_python_artifacts(

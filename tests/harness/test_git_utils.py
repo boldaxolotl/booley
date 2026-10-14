@@ -344,27 +344,27 @@ class TestAddGitExcludes:
         exclude = repo / ".git" / "info" / "exclude"
         before = exclude.read_bytes()
 
-        assert git_excludes_pending(repo, [".devcontainer", ".booley_project"])
+        assert git_excludes_pending(repo, [".devcontainer", ".booley"])
         assert exclude.read_bytes() == before
 
-        add_git_excludes(repo, [".devcontainer", ".booley_project"])
+        add_git_excludes(repo, [".devcontainer", ".booley"])
         current = exclude.read_bytes()
-        assert not git_excludes_pending(repo, [".devcontainer", ".booley_project"])
+        assert not git_excludes_pending(repo, [".devcontainer", ".booley"])
         assert exclude.read_bytes() == current
 
     def test_main_worktree_excludes_and_is_honored(self, tmp_path):
         repo = _init_repo(tmp_path / "repo")
 
-        modified = add_git_excludes(repo, [".devcontainer", ".booley_project"])
+        modified = add_git_excludes(repo, [".devcontainer", ".booley"])
 
         assert modified is True
         exclude = repo / ".git" / "info" / "exclude"
         body = exclude.read_text(encoding="utf-8")
         assert BOOLEY_EXCLUDE_HEADER in body
-        assert "/.devcontainer" in body and "/.booley_project" in body
+        assert "/.devcontainer" in body and "/.booley" in body
         # The entries must actually be honored by git.
         assert _is_ignored(repo, ".devcontainer/devcontainer.json")
-        assert _is_ignored(repo, ".booley_project/booley.toml")
+        assert _is_ignored(repo, ".booley/booley.toml")
 
     def test_idempotent(self, tmp_path):
         repo = _init_repo(tmp_path / "repo")
@@ -378,7 +378,7 @@ class TestAddGitExcludes:
     def test_later_entries_reuse_one_generated_block(self, tmp_path):
         repo = _init_repo(tmp_path / "repo")
 
-        add_git_excludes(repo, [".devcontainer", ".booley_project", ".claude"])
+        add_git_excludes(repo, [".devcontainer", ".booley", ".claude"])
         add_git_excludes(repo, [".booley-projected-*.core"])
 
         body = (repo / ".git" / "info" / "exclude").read_text(encoding="utf-8")
@@ -386,7 +386,7 @@ class TestAddGitExcludes:
         block = body.split(BOOLEY_EXCLUDE_HEADER, 1)[1].strip().splitlines()
         assert block == [
             "/.devcontainer",
-            "/.booley_project",
+            "/.booley",
             "/.claude",
             "/.booley-projected-*.core",
         ]

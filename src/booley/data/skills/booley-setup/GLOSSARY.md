@@ -64,7 +64,7 @@ ignored copies where FuseSoC can find them. Interactive setup enables it when
 you choose to keep Booley out of your git history.
 
 ## Hidden-core projection
-Booley keeps an authored build description under `.booley_project/cores/` and
+Booley keeps an authored build description under `.booley/cores/` and
 makes an ignored copy at the Project Root for FuseSoC to discover. The hidden
 copy remains authoritative, so you do not edit the projected copy.
 
@@ -98,10 +98,10 @@ tag so Developer Agents and Specialists treat them as read-only upstream input. 
 belong in your own cores rather than edits to that upstream code.
 
 ## Booley Directory
-Aliases: `.booley_project/`
+Aliases: `.booley/`
 The Booley Directory holds Booley's configuration, Goalsets, Goal Records,
 evidence, logs, and worktrees for your Project. It sits at the Project Root
-by default and is named `.booley_project/`; Stealth keeps it out of the RTL repository's
+by default and is named `.booley/`; Stealth keeps it out of the RTL repository's
 tracked files, while open setup commits its durable configuration.
 
 ## `.core`

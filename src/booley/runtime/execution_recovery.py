@@ -129,9 +129,9 @@ def _wait_for_empty(execution_id: ExecutionId, signum: int, timeout_s: float) ->
 
 
 def _publish_recovered_terminal(
-    execution_id: ExecutionId, *, project_dir: Path | None = None
+    execution_id: ExecutionId, *, booley_dir: Path | None = None
 ) -> None:
-    paths = execution_paths(execution_id, project_dir=project_dir)
+    paths = execution_paths(execution_id, booley_dir=booley_dir)
     current = read_json(paths.record) or {}
     exit_code = as_int(current.get("exit_code"), 125) or 125
     atomic_write_json(
@@ -152,31 +152,31 @@ def _recover_windows_execution(
     execution_id: ExecutionId,
     record: dict[str, object] | None,
     *,
-    project_dir: Path | None,
+    booley_dir: Path | None,
 ) -> bool:
     leader = ProcessIdentity.from_payload(record.get("leader") if record is not None else None)
     if leader is not None and observe_process(leader).state in {RUNNING, UNKNOWN}:
         return False
-    _publish_recovered_terminal(execution_id, project_dir=project_dir)
+    _publish_recovered_terminal(execution_id, booley_dir=booley_dir)
     return True
 
 
-def _recover_posix_execution(execution_id: ExecutionId, *, project_dir: Path | None) -> bool:
+def _recover_posix_execution(execution_id: ExecutionId, *, booley_dir: Path | None) -> bool:
     if os.environ.get(RUNTIME_EXECUTION_ENV) == execution_id:
         return False
     for signum, timeout_s in _RECOVERY_STAGES:
         if _wait_for_empty(execution_id, signum, timeout_s):
-            _publish_recovered_terminal(execution_id, project_dir=project_dir)
+            _publish_recovered_terminal(execution_id, booley_dir=booley_dir)
             return True
     return False
 
 
 def recover_execution(
-    raw_execution_id: str | ExecutionId, *, project_dir: Path | None = None
+    raw_execution_id: str | ExecutionId, *, booley_dir: Path | None = None
 ) -> bool:
     """Request cancellation and prove a failed supervisor's execution tree empty."""
     execution_id = ExecutionId(raw_execution_id)
-    paths = execution_paths(execution_id, project_dir=project_dir)
+    paths = execution_paths(execution_id, booley_dir=booley_dir)
     if not child_context_matches(paths, execution_id):
         return False
     record = read_json(paths.record)
@@ -189,8 +189,8 @@ def recover_execution(
     if supervisor is not None and observe_process(supervisor).state in {RUNNING, UNKNOWN}:
         return False
     if sys.platform == "win32":
-        return _recover_windows_execution(execution_id, record, project_dir=project_dir)
-    return _recover_posix_execution(execution_id, project_dir=project_dir)
+        return _recover_windows_execution(execution_id, record, booley_dir=booley_dir)
+    return _recover_posix_execution(execution_id, booley_dir=booley_dir)
 
 
 def _discover_owned_processes(owner: ProcessIdentity, known: dict[int, ProcessIdentity]) -> None:

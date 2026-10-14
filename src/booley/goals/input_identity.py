@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from booley.core.boundary import require_dict, require_int, require_list, require_str_value
+from booley.runtime.booley_dir import contains, resolve_checkout_booley_dir
 from booley.runtime.git import git_common_dir
-from booley.runtime.project_dir import contains, resolve_checkout_project_dir
 from booley.runtime.project_repositories import paired_project_repository
 
 
@@ -45,9 +45,9 @@ def parse_bindings(raw: object) -> dict[str, Any]:
         raise ValueError("invalid input path binding names")
     for name, raw_value in values.items():
         value = require_dict(raw_value, field=name + " binding")
-        if (
-            set(value) != {"path", "identity"}
-            or not Path(require_str_value(value["path"], field=name + " path")).is_absolute()
+        path = require_str_value(value.get("path"), field=name + " path")
+        if set(value) != {"path", "identity"} or not (
+            PurePosixPath(path).is_absolute() or PureWindowsPath(path).is_absolute()
         ):
             raise ValueError("invalid logical input root")
         identity = require_list(value["identity"], field=name + " identity")
@@ -85,7 +85,7 @@ def current_path(path: Path, current: Mapping[str, Any]) -> Path:
         current, key=lambda name: len(Path(current[name]["path"]).parts), reverse=True
     ):
         root = Path(current[name]["path"])
-        mapped = contains(path, project_dir=root)
+        mapped = contains(path, booley_dir=root)
         if mapped is not None:
             return mapped
     return path
@@ -114,7 +114,7 @@ def capture_roots(root: Path, control_project: Path) -> dict[str, Any]:
     """The input and control roots, including Git's actual primary checkout."""
     roots = {
         "rtl": root,
-        "project": resolve_checkout_project_dir(root).resolve(),
+        "project": resolve_checkout_booley_dir(root).resolve(),
         "control": control_project,
     }
     common = git_common_dir(root)

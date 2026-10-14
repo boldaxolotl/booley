@@ -37,10 +37,10 @@ The ten baseline edges are:
 - `config.agent → runtime.project_image`
 - `config.guidance_links → runtime.git`
 - `config.guidance_links → runtime.init_plan`
-- `config.guidance_links → runtime.project_dir`
+- `config.guidance_links → runtime.booley_dir`
 - `config.host_config → runtime.auth_token`
 - `config.project_config → runtime.checkout_role`
-- `config.project_config → runtime.project_dir`
+- `config.project_config → runtime.booley_dir`
 - `config.settings → runtime._retry`
 
 The legacy cyclic package group did not broaden. The Config/Runtime mutual pair
@@ -59,10 +59,10 @@ removed edge (all names are below `booley`):
 | `config.agent → runtime.project_image` | `config.agent → config.sandbox`; `runtime.project_image → config.sandbox` |
 | `config.guidance_links → runtime.git` | `harness.setup.guidance_links → runtime.git` |
 | `config.guidance_links → runtime.init_plan` | `harness.setup.guidance_links → runtime.init_plan` |
-| `config.guidance_links → runtime.project_dir` | `harness.setup.guidance_links → runtime.project_dir` |
+| `config.guidance_links → runtime.booley_dir` | `harness.setup.guidance_links → runtime.booley_dir` |
 | `config.host_config → runtime.auth_token` | `config.host_config → core.user_paths`; `runtime.auth_token → core.user_paths` |
 | `config.project_config → runtime.checkout_role` | `config.project_config → core.checkout_role`; `runtime.checkout_role → core.checkout_role` |
-| `config.project_config → runtime.project_dir` | `config.project_config → core.project_dir`; `runtime.project_dir → core.project_dir` |
+| `config.project_config → runtime.booley_dir` | `config.project_config → core.booley_dir`; `runtime.booley_dir → core.booley_dir` |
 | `config.settings → runtime._retry` | No production replacement edge: the facade was removed and its test consumers import `runtime._retry` directly. |
 
 ## Ownership and interface migrations

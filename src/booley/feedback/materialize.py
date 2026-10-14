@@ -26,16 +26,16 @@ class MaterializationError(RuntimeError):
     """Raised when attachment evidence cannot be snapshotted safely."""
 
 
-def normalize_attachment_path(raw: str, project_dir: Path) -> Path:
+def normalize_attachment_path(raw: str, booley_dir: Path) -> Path:
     """Resolve absolute, ``~``, and project-relative attachment spellings."""
     candidate = Path(raw).expanduser()
     if candidate.is_absolute():
         return candidate.resolve(strict=False)
-    for base in (project_dir.parent, project_dir, Path.cwd()):
+    for base in (booley_dir.parent, booley_dir, Path.cwd()):
         resolved = (base / candidate).resolve(strict=False)
         if resolved.exists():
             return resolved
-    return (project_dir.parent / candidate).resolve(strict=False)
+    return (booley_dir.parent / candidate).resolve(strict=False)
 
 
 def _excerpt(source: Path) -> tuple[str, dict[str, object]]:
@@ -81,15 +81,15 @@ def _snapshot_path(root: Path, finding: Finding, index: int, source: Path) -> Pa
     )
 
 
-def _attachment_matches(raw: str, project_dir: Path, sources: set[Path]) -> Path | None:
+def _attachment_matches(raw: str, booley_dir: Path, sources: set[Path]) -> Path | None:
     """Return the selected source represented by one Finding attachment."""
-    normalized = normalize_attachment_path(raw, project_dir)
+    normalized = normalize_attachment_path(raw, booley_dir)
     return normalized if normalized in sources else None
 
 
-def _rewrite_attachments_only(project_dir: Path, entries: list[Finding]) -> None:
+def _rewrite_attachments_only(booley_dir: Path, entries: list[Finding]) -> None:
     """Atomically update attachments while retaining newer JSON fields."""
-    path = log_path(project_dir)
+    path = log_path(booley_dir)
     replacements = {entry.id: entry.attachments for entry in entries}
     output: list[str] = []
     for raw_line in path.read_text(encoding="utf-8").splitlines(keepends=True):
@@ -107,7 +107,7 @@ def _rewrite_attachments_only(project_dir: Path, entries: list[Finding]) -> None
 
 
 def _rewrite_selected(
-    project_dir: Path,
+    booley_dir: Path,
     sources: set[Path],
     entries: list[Finding],
 ) -> tuple[set[Path], dict[str, list[str]]]:
@@ -121,18 +121,18 @@ def _rewrite_selected(
             line
             for attachment in finding.attachments
             for line in render._attachment_block(
-                str(normalize_attachment_path(attachment, project_dir))
+                str(normalize_attachment_path(attachment, booley_dir))
             )
         ]
         for index, attachment in enumerate(list(finding.attachments)):
-            source = _attachment_matches(attachment, project_dir, sources)
+            source = _attachment_matches(attachment, booley_dir, sources)
             if source is None:
                 continue
             try:
                 content, metadata = _excerpt(source)
             except OSError as exc:
                 raise MaterializationError(f"cannot read attachment {source}: {exc}") from exc
-            target = _snapshot_path(project_dir, finding, index, source)
+            target = _snapshot_path(booley_dir, finding, index, source)
             _write_snapshot(target, content, metadata)
             finding.attachments[index] = str(target)
             changed.add(source)
@@ -140,19 +140,19 @@ def _rewrite_selected(
 
 
 def _render_proofs(
-    project_dir: Path,
+    booley_dir: Path,
     entries: list[Finding],
     environment: render.Environment,
 ) -> tuple[str, str]:
     """Render both Feedback views so attachment migration proves equivalence."""
-    log = read_log(project_dir)
+    log = read_log(booley_dir)
     log.entries = entries
     origin = render.report_origin(log)
     local = render.render_user_report(log, env=environment, origin=origin)
     export_view = render.render_booley_report(
         log,
-        project_dir.parent,
-        project_dir=project_dir,
+        booley_dir.parent,
+        booley_dir=booley_dir,
         env=environment,
         origin=origin,
     ).body
@@ -160,7 +160,7 @@ def _render_proofs(
 
 
 def materialize_attachments(
-    project_dir: Path,
+    booley_dir: Path,
     sources: Iterable[Path],
     *,
     env: render.Environment | None = None,
@@ -169,30 +169,30 @@ def materialize_attachments(
     selected = {Path(source).expanduser().resolve(strict=False) for source in sources}
     if not selected:
         return ()
-    log = read_log(project_dir)
+    log = read_log(booley_dir)
     if log.corrupt_lines:
         raise CorruptFindingsLogError(
             f"refusing attachment materialization: {log.corrupt_lines} corrupt Findings Log line(s)"
         )
     environment = env or render.collect_environment()
-    before_proof = _render_proofs(project_dir, log.entries, environment)
-    changed, _ = _rewrite_selected(project_dir, selected, log.entries)
+    before_proof = _render_proofs(booley_dir, log.entries, environment)
+    changed, _ = _rewrite_selected(booley_dir, selected, log.entries)
     if not changed:
         return ()
-    if before_proof != _render_proofs(project_dir, log.entries, environment):
+    if before_proof != _render_proofs(booley_dir, log.entries, environment):
         raise MaterializationError("attachment report or export changed during materialization")
-    _rewrite_attachments_only(project_dir, log.entries)
+    _rewrite_attachments_only(booley_dir, log.entries)
     return tuple(sorted(changed))
 
 
-def referenced_sources(project_dir: Path, sources: Iterable[Path]) -> set[Path]:
+def referenced_sources(booley_dir: Path, sources: Iterable[Path]) -> set[Path]:
     """Find structured attachment references without requiring a clean log."""
     selected = {path.expanduser().resolve(strict=False) for path in sources}
-    log = read_log(project_dir)
+    log = read_log(booley_dir)
     found: set[Path] = set()
     for finding in log.entries:
         for attachment in finding.attachments:
-            normalized = normalize_attachment_path(attachment, project_dir)
+            normalized = normalize_attachment_path(attachment, booley_dir)
             if normalized in selected:
                 found.add(normalized)
     return found

@@ -87,7 +87,7 @@ def _hook_project(tmp_path, commands, live_commands):
 
     project = tmp_path / "project"
     project.mkdir()
-    config = project / ".booley_project"
+    config = project / ".booley"
     config.mkdir()
     (config / "booley.toml").write_text(
         "[flows.sim]\npre_run_commands = "
@@ -619,7 +619,7 @@ def test_cli_discloses_committed_manifest_before_executor(
 
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path, ("verilator",) * target_count)
-    data = tmp_path / ".booley_project"
+    data = tmp_path / ".booley"
     data.mkdir()
     (data / "tests.toml").write_text(
         "".join(f'[sim_{index}]\ntests = ["half"]\n' for index in range(target_count))
@@ -673,7 +673,7 @@ def test_cli_recovery_paths_survive_failures(
 
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path, ("verilator",))
-    data = tmp_path / ".booley_project"
+    data = tmp_path / ".booley"
     data.mkdir()
     (data / "tests.toml").write_text('[sim_0]\ntests = ["half"]\n')
     seen: list[str] = []
@@ -736,7 +736,7 @@ def test_typed_campaign_execution_is_silent(
 
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path, ("verilator",))
-    data = tmp_path / ".booley_project"
+    data = tmp_path / ".booley"
     data.mkdir()
     (data / "tests.toml").write_text('[sim_0]\ntests = ["half"]\n')
     flow = SimulateFlow(coverage_execution=lambda *_args: NativeExecution())
@@ -759,7 +759,7 @@ def test_same_flow_second_failure_does_not_reuse_manifest(
 
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path, ("verilator",))
-    data = tmp_path / ".booley_project"
+    data = tmp_path / ".booley"
     data.mkdir()
     (data / "tests.toml").write_text('[sim_0]\ntests = ["half"]\n')
     flow = SimulateFlow(coverage_execution=lambda *_args: NativeExecution())
@@ -933,7 +933,7 @@ def test_cli_manifest_is_flushed_before_execution(
 
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path, ("verilator",))
-    data = tmp_path / ".booley_project"
+    data = tmp_path / ".booley"
     data.mkdir()
     (data / "tests.toml").write_text('[sim_0]\ntests = ["half"]\n')
     stream = BufferedConsole()
@@ -971,7 +971,7 @@ def test_partial_publication_discloses_only_committed_target(
 
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path, ("verilator", "verilator"))
-    data = tmp_path / ".booley_project"
+    data = tmp_path / ".booley"
     data.mkdir()
     (data / "tests.toml").write_text('[sim_0]\ntests = ["half"]\n[sim_1]\ntests = ["half"]\n')
     commits = 0
@@ -1451,7 +1451,7 @@ def test_coverage_failure_persists_only_returned_outcomes(tmp_path, monkeypatch,
     core.write_text(
         core.read_text() + target.replace("sim_0:", "sim_1:") + target.replace("sim_0:", "sim_2:")
     )
-    (tmp_path / ".booley_project/tests.toml").write_text(
+    (tmp_path / ".booley/tests.toml").write_text(
         '[sim_0]\ntests=["reset"]\n[sim_1]\ntests=["reset"]\n[sim_2]\ntests=["reset"]\n'
     )
     original_run = SimulationCampaign.run
@@ -1530,10 +1530,10 @@ def _ordinary_public_hook_fixture(tmp_path, monkeypatch):
     )
 
     project, _source = _write_stale_compiler_fixture(tmp_path)
-    (project / ".booley_project/booley.toml").write_text(
+    (project / ".booley/booley.toml").write_text(
         "[flows.sim]\npre_run_commands = " + json.dumps(["echo public-hook"]) + "\n"
     )
-    (project / ".booley_project/tests.toml").write_text('[sim_a]\ntests = ["a", "b"]\n')
+    (project / ".booley/tests.toml").write_text('[sim_a]\ntests = ["a", "b"]\n')
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
     monkeypatch.setattr(
@@ -1795,7 +1795,7 @@ def test_prepared_ordinary_invoker_observes_owned_attempt_before_launch(
     from booley.flows.sim.request import SimRequest
 
     project, flow = _ordinary_public_hook_fixture(tmp_path, monkeypatch)
-    with (project / ".booley_project/booley.toml").open("a") as config:
+    with (project / ".booley/booley.toml").open("a") as config:
         config.write(f'pre_sim_build_access = "{access}"\n')
     original = flow._execute_boundary
     observations = []

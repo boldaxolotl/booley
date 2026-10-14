@@ -43,11 +43,11 @@ def job_roots(*, container_root: Callable[[], Path | None] | None = None) -> tup
         return tuple(root for root in roots if root is not None)
     from booley.goals.sim_baseline_store import baseline_jobs_dir
 
-    baseline = baseline_jobs_dir(store.project_dir)
+    baseline = baseline_jobs_dir(store.booley_dir)
     if baseline.is_dir():
         roots.append(baseline)
     roots.extend(
-        record_paths(store.project_dir, rec.id).jobs_dir for rec in store.list_records().records
+        record_paths(store.booley_dir, rec.id).jobs_dir for rec in store.list_records().records
     )
     return tuple(dict.fromkeys(root for root in roots if root is not None))
 
@@ -231,7 +231,7 @@ def _endpoint_report_dirs(
     if located is not None and located.record.binding is not None:
         binding = _job_binding(located.record)
         assert binding is not None
-        runtime_dir = record_paths(binding.project_dir, binding.record_id).runtime_dir
+        runtime_dir = record_paths(binding.booley_dir, binding.record_id).runtime_dir
     elif context is not None and context.runtime_dir is not None:
         runtime_dir = context.runtime_dir
     elif located is not None and located.root is not None:

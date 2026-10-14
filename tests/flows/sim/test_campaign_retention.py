@@ -662,11 +662,11 @@ def test_maintenance_cli_rejects_include_dependents_with_native_target(tmp_path)
 
 def test_project_data_inference_accepts_only_standard_report_roots(tmp_path, monkeypatch):
     from booley.flows.sim.campaign_retention import _infer_project_data
-    from booley.runtime.project_dir import reset_cache
+    from booley.runtime.booley_dir import reset_cache
 
     project_data = tmp_path / "project-data"
     project_data.mkdir()
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project_data))
+    monkeypatch.setenv("BOOLEY_DIR", str(project_data))
     reset_cache()
 
     assert _infer_project_data(project_data / ".runtime/flow-reports/sim/1") == project_data

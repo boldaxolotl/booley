@@ -34,7 +34,7 @@ def test_projects_json_has_a_versioned_nested_contract(
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     project = tmp_path / "project"
     (project / ".git").mkdir(parents=True)
-    (project / ".booley_project").mkdir()
+    (project / ".booley").mkdir()
     project_inventory.remember_project(project)
 
     args = _parser().parse_args(["projects", "--json"])
@@ -60,7 +60,7 @@ def test_projects_discover_accepts_json_after_the_subcommand(
     search_root = tmp_path / "workplace"
     project = search_root / "project"
     (project / ".git").mkdir(parents=True)
-    (project / ".booley_project").mkdir()
+    (project / ".booley").mkdir()
 
     args = _parser().parse_args(["projects", "discover", str(search_root), "--json"])
 
@@ -76,7 +76,7 @@ def test_projects_forget_reports_the_exact_root(
 ) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     project = tmp_path / "project"
-    (project / ".booley_project").mkdir(parents=True)
+    (project / ".booley").mkdir(parents=True)
     project_inventory.remember_project(project)
 
     args = _parser().parse_args(["projects", "forget", str(project), "--json"])
@@ -237,7 +237,7 @@ def test_public_forget_releases_only_own_unused_keeper(
     from booley.runtime.session_issuance import keeper_image
 
     project = tmp_path / "project"
-    (project / ".booley_project").mkdir(parents=True)
+    (project / ".booley").mkdir(parents=True)
     project_inventory.remember_project(project)
     own = keeper_image(project)
     other = keeper_image(tmp_path / "other")
@@ -263,7 +263,7 @@ def test_public_prune_preview_then_digest_confirmation(
     from booley.runtime.session_issuance import keeper_image
 
     project = tmp_path / "project"
-    (project / ".booley_project").mkdir(parents=True)
+    (project / ".booley").mkdir(parents=True)
     project_inventory.remember_project(project)
     own, orphan = keeper_image(project), keeper_image(tmp_path / "legacy")
     keeper_host.tags.update({own: "sha256:" + "a" * 64, orphan: "sha256:" + "b" * 64})
@@ -276,7 +276,7 @@ def test_public_prune_preview_then_digest_confirmation(
 
 def _remember(tmp_path):
     project = tmp_path / "project"
-    (project / ".booley_project").mkdir(parents=True)
+    (project / ".booley").mkdir(parents=True)
     project_inventory.remember_project(project)
     return project
 
@@ -383,8 +383,8 @@ def test_prune_inventory_absence_authorizes_historical_stamps(
     from booley.runtime.session_issuance import keeper_image
 
     project = tmp_path / "old"
-    (project / ".booley_project").mkdir(parents=True)
-    (project / ".booley_project" / stamp).write_text(json.dumps({"project_root": str(project)}))
+    (project / ".booley").mkdir(parents=True)
+    (project / ".booley" / stamp).write_text(json.dumps({"project_root": str(project)}))
     tag = keeper_image(project)
     keeper_host.tags[tag] = "sha256:" + "a" * 64
     _, preview = _prune(capsys)
@@ -420,7 +420,7 @@ def test_forget_uses_exact_stored_identity(
     own = keeper_image(project)
     keeper_host.tags[own] = "sha256:" + "a" * 64
     if change == "uninitialized":
-        shutil.rmtree(project / ".booley_project")
+        shutil.rmtree(project / ".booley")
     else:
         shutil.rmtree(project)
         if change == "replacement-symlink":
@@ -443,10 +443,10 @@ def test_prune_protects_missing_uninitialized_and_grant_only_roots(
 
     project = _remember(tmp_path)
     missing = tmp_path / "missing"
-    (missing / ".booley_project").mkdir(parents=True)
+    (missing / ".booley").mkdir(parents=True)
     project_inventory.remember_project(missing)
     shutil.rmtree(missing)
-    shutil.rmtree(project / ".booley_project")
+    shutil.rmtree(project / ".booley")
     grant_root = str(tmp_path / "grant-only")
     monkeypatch.setattr(
         project_inventory,
@@ -876,7 +876,7 @@ def test_inventory_commands_without_keeper_adapter_still_work(
     tmp_path: Path, keeper_host: FakeDocker, capsys: pytest.CaptureFixture[str]
 ) -> None:
     project = tmp_path / "discover"
-    (project / ".booley_project").mkdir(parents=True)
+    (project / ".booley").mkdir(parents=True)
     (project / ".git").mkdir()
     assert project_inventory_cli.run(_parser().parse_args(["projects", "--json"])) == 0
     assert json.loads(capsys.readouterr().out)["projects"] == []

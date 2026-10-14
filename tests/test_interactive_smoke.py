@@ -20,7 +20,7 @@ from unittest.mock import patch
 
 import pytest
 
-from booley.core.project_dir import reset_cache
+from booley.core.booley_dir import reset_cache
 from booley.flows.implementation_comparison import target_pair_plans_for_handles
 from booley.flows.sim.flow import SimulateFlow
 from booley.mcp.base import EXIT_ERROR, EXIT_SUCCESS
@@ -33,7 +33,7 @@ _BOOLEY_ENV_VARS = (
     "BOOLEY_STATE_FILE",
     "BOOLEY_LOGS_DIR",
     "BOOLEY_PROJECT_ROOT",
-    "BOOLEY_PROJECT_DIR",
+    "BOOLEY_DIR",
 )
 
 
@@ -186,9 +186,9 @@ class TestNoTicketDryRun:
 
 
 class TestInteractiveLogsDir:
-    """The MCP server promotes ``.booley_project/.interactive_logs/<id>/``
+    """The MCP server promotes ``.booley/.interactive_logs/<id>/``
     to ``BOOLEY_LOGS_DIR`` when (a) the env var is unset and (b) a
-    ``.booley_project/`` is present in CWD."""
+    ``.booley/`` is present in CWD."""
 
     def test_sets_logs_dir_when_project_present(
         self,
@@ -197,7 +197,7 @@ class TestInteractiveLogsDir:
     ) -> None:
         from booley.mcp import server as mcp_server
 
-        (tmp_path / ".booley_project").mkdir()
+        (tmp_path / ".booley").mkdir()
         monkeypatch.chdir(tmp_path)
         monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
 
@@ -209,7 +209,7 @@ class TestInteractiveLogsDir:
         assert logs_path.is_dir()
         assert ".interactive_logs" in logs_path.parts
         assert logs_path.parent.name == ".interactive_logs"
-        assert logs_path.parent.parent.name == ".booley_project"
+        assert logs_path.parent.parent.name == ".booley"
 
     def test_noop_when_logs_dir_already_set(
         self,
@@ -218,7 +218,7 @@ class TestInteractiveLogsDir:
     ) -> None:
         from booley.mcp import server as mcp_server
 
-        (tmp_path / ".booley_project").mkdir()
+        (tmp_path / ".booley").mkdir()
         monkeypatch.chdir(tmp_path)
         existing = tmp_path / "ticket_logs"
         existing.mkdir()
@@ -228,7 +228,7 @@ class TestInteractiveLogsDir:
 
         assert os.environ["BOOLEY_LOGS_DIR"] == str(existing)
 
-    def test_noop_when_no_project_dir(
+    def test_noop_when_no_booley_dir(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
@@ -282,7 +282,7 @@ class TestAsicSynthesizeBaselineInteractive:
         git("config", "user.name", "Test")
         marker = repo / "rtl.v"
         marker.write_text("// baseline version\n", encoding="utf-8")
-        cores_dir = repo / ".booley_project" / "cores"
+        cores_dir = repo / ".booley" / "cores"
         cores_dir.mkdir(parents=True)
         (cores_dir / "interactive.core").write_text(
             """CAPI=2:
@@ -428,7 +428,7 @@ def _fake_runtime_preview(project, build_spec, *, expected_image_id=None):
     from booley.runtime import session_issuance as runtime_spec
 
     project = project.resolve()
-    inputs = runtime_spec.SessionSpecInputs(project / ".booley_project", (), (), None, None)
+    inputs = runtime_spec.SessionSpecInputs(project / ".booley", (), (), None, None)
     spec = build_spec(inputs)
     del expected_image_id
     spec["image"] = "sha256:" + "a" * 64
@@ -528,7 +528,7 @@ class TestInitInteractive:
         from booley.harness import init_cmd
 
         subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
-        (tmp_path / ".booley_project").mkdir()
+        (tmp_path / ".booley").mkdir()
 
         # No docker; isolate from host app detection / creds.
         monkeypatch.setattr(init_cmd.shutil, "which", lambda _n: None)
@@ -544,7 +544,7 @@ class TestInitInteractive:
         # Excluded via git info/exclude, not .gitignore.
         assert not (tmp_path / ".gitignore").exists()
         exclude = (tmp_path / ".git" / "info" / "exclude").read_text(encoding="utf-8")
-        assert "/.devcontainer" in exclude and "/.booley_project" in exclude
+        assert "/.devcontainer" in exclude and "/.booley" in exclude
         assert "/.claude" in exclude
         # No host MCP artifacts.
         assert not (tmp_path / ".mcp.json").exists()
@@ -558,7 +558,7 @@ class TestInitInteractive:
         from booley.harness.nangate_pdk import CONTAINER_ROOT
 
         subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
-        (tmp_path / ".booley_project").mkdir()
+        (tmp_path / ".booley").mkdir()
         pdk = tmp_path / "host-cache" / "pdk"
         pdk.mkdir(parents=True)
         monkeypatch.setattr(init_cmd.shutil, "which", lambda _n: None)
@@ -597,17 +597,17 @@ class TestInitInteractive:
     def test_seeds_mask_mounts_from_sandbox_knob(self, tmp_path, monkeypatch):
         # [sandbox].mask_paths: each entry becomes a read-only empty bind over
         # its /work view — and over the /booley-project view for a
-        # .booley_project subtree — and init creates the empty source dir the
+        # .booley subtree — and init creates the empty source dir the
         # binds need (docker --mount refuses a missing bind source).
         import subprocess
 
         from booley.harness import init_cmd
 
         subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
-        pd = tmp_path / ".booley_project"
+        pd = tmp_path / ".booley"
         pd.mkdir()
         (pd / "booley.toml").write_text(
-            '[sandbox]\nmask_paths = ["secret/oracle", ".booley_project/lanes/b"]\n',
+            '[sandbox]\nmask_paths = ["secret/oracle", ".booley/lanes/b"]\n',
             encoding="utf-8",
         )
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
@@ -623,10 +623,7 @@ class TestInitInteractive:
         )
         source = init_cmd.docker_mount_path(empty)
         assert f"source={source},target=/work/secret/oracle,type=bind,readonly" in spec["mounts"]
-        assert (
-            f"source={source},target=/work/.booley_project/lanes/b,type=bind,readonly"
-            in spec["mounts"]
-        )
+        assert f"source={source},target=/work/.booley/lanes/b,type=bind,readonly" in spec["mounts"]
         assert (
             f"source={source},target=/booley-project/lanes/b,type=bind,readonly" in spec["mounts"]
         )
@@ -639,7 +636,7 @@ class TestInitInteractive:
         from booley.harness import init_cmd
 
         subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
-        pd = tmp_path / ".booley_project"
+        pd = tmp_path / ".booley"
         pd.mkdir()
         (pd / "booley.toml").write_text(
             '[sandbox]\nmask_paths = ["ok/path", "../escape"]\n',
@@ -696,8 +693,8 @@ class TestInitInteractive:
         from booley.runtime import session_issuance as runtime_spec
 
         subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
-        (tmp_path / ".booley_project").mkdir()
-        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path / ".booley_project"))
+        (tmp_path / ".booley").mkdir()
+        monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
         monkeypatch.setattr(init_cmd.shutil, "which", lambda _n: None)
         init_cmd._step_interactive(self._ctx(tmp_path), agent_app="none")
         monkeypatch.setattr(
@@ -716,9 +713,9 @@ class TestInitInteractive:
         from booley.harness import init_cmd
 
         _init_git_project(tmp_path)
-        project_dir = init_cmd.project_dir_for_init(tmp_path)
-        project_dir.mkdir()
-        monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+        booley_dir = init_cmd.booley_dir_for_init(tmp_path)
+        booley_dir.mkdir()
+        monkeypatch.delenv("BOOLEY_DIR", raising=False)
         monkeypatch.setattr(init_cmd, "_select_interactive_app", lambda *_: "none")
         ctx = init_cmd.InitContext(
             project_root=tmp_path, check_only=True, force=False, verbose=False, interactive=False
@@ -737,7 +734,7 @@ class TestInitInteractive:
         from booley.runtime import session_issuance as runtime_spec
 
         _init_git_project(tmp_path)
-        monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+        monkeypatch.delenv("BOOLEY_DIR", raising=False)
         _stub_full_init_dependencies(init_cmd, monkeypatch, tmp_path)
         monkeypatch.setattr(
             runtime_spec,
@@ -748,21 +745,21 @@ class TestInitInteractive:
         args = argparse.Namespace(seed=False, scaffold=None, skip_credentials=False)
         selection = init_cmd.AgentSelection("codex", "subscription")
 
-        with init_cmd.init_project_dir_scope(tmp_path):
+        with init_cmd.init_booley_dir_scope(tmp_path):
             rc = init_cmd._run_project_init_steps(
                 ctx,
                 args,
                 selection,
-                tmp_path / ".booley_project" / "booley.toml",
+                tmp_path / ".booley" / "booley.toml",
                 None,
             )
 
         results = {result.name: result for result in ctx.results}
         assert rc == 1
-        assert results["project_dir"].status == "warn"
+        assert results["booley_dir"].status == "warn"
         assert results["interactive"].status == "warn"
         assert results["interactive"].detail == "Booley Directory would be created first"
-        assert not (tmp_path / ".booley_project").exists()
+        assert not (tmp_path / ".booley").exists()
         assert not (tmp_path / ".devcontainer").exists()
 
     @pytest.mark.parametrize("explicit_override", [False, True])
@@ -773,11 +770,11 @@ class TestInitInteractive:
         from booley.runtime import session_issuance as runtime_spec
 
         _init_git_project(tmp_path)
-        project_dir = init_cmd.project_dir_for_init(tmp_path)
+        booley_dir = init_cmd.booley_dir_for_init(tmp_path)
         if explicit_override:
-            monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project_dir))
+            monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
         else:
-            monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+            monkeypatch.delenv("BOOLEY_DIR", raising=False)
         monkeypatch.setattr(init_cmd.nangate_pdk, "is_ready", lambda: True)
         monkeypatch.setattr(init_cmd.nangate_pdk, "cache_root", lambda: tmp_path / "pdk")
 
@@ -801,58 +798,56 @@ class TestInitInteractive:
         assert rc == 2
         assert ctx.results[-1].name == "interactive"
         assert ctx.results[-1].status == "err"
-        assert not project_dir.exists()
+        assert not booley_dir.exists()
         assert not (tmp_path / ".devcontainer").exists()
 
     def test_missing_init_owned_project_data_classification(self, tmp_path, monkeypatch):
         from booley.harness import init_cmd
 
         _init_git_project(tmp_path)
-        target = init_cmd.project_dir_for_init(tmp_path)
+        target = init_cmd.booley_dir_for_init(tmp_path)
         ctx = init_cmd.InitContext(project_root=tmp_path, check_only=True)
-        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(target))
+        monkeypatch.setenv("BOOLEY_DIR", str(target))
 
-        assert init_cmd._init_owned_project_dir_missing(ctx, init_will_create_project_dir=True)
-        assert not init_cmd._init_owned_project_dir_missing(
-            ctx, init_will_create_project_dir=False
-        )
+        assert init_cmd._init_owned_booley_dir_missing(ctx, init_will_create_booley_dir=True)
+        assert not init_cmd._init_owned_booley_dir_missing(ctx, init_will_create_booley_dir=False)
 
-        monkeypatch.setenv("BOOLEY_PROJECT_DIR", "")
-        assert init_cmd._init_owned_project_dir_missing(ctx, init_will_create_project_dir=True)
+        monkeypatch.setenv("BOOLEY_DIR", "")
+        assert init_cmd._init_owned_booley_dir_missing(ctx, init_will_create_booley_dir=True)
 
     @pytest.mark.parametrize("override", ["relative/project-data", "/external/project-data"])
     def test_nonlocal_project_data_is_not_init_owned(self, tmp_path, monkeypatch, override):
         from booley.harness import init_cmd
 
         _init_git_project(tmp_path)
-        monkeypatch.setenv("BOOLEY_PROJECT_DIR", override)
+        monkeypatch.setenv("BOOLEY_DIR", override)
         ctx = init_cmd.InitContext(project_root=tmp_path, check_only=True)
 
-        assert not init_cmd._init_owned_project_dir_missing(ctx, init_will_create_project_dir=True)
+        assert not init_cmd._init_owned_booley_dir_missing(ctx, init_will_create_booley_dir=True)
 
     @pytest.mark.parametrize("entry_kind", ["file", "symlink"])
     def test_existing_project_data_entry_is_not_missing(self, tmp_path, monkeypatch, entry_kind):
         from booley.harness import init_cmd
 
         _init_git_project(tmp_path)
-        target = init_cmd.project_dir_for_init(tmp_path)
+        target = init_cmd.booley_dir_for_init(tmp_path)
         if entry_kind == "file":
             target.write_text("not a directory", encoding="utf-8")
         else:
             destination = tmp_path / "project-data"
             destination.mkdir()
             symlink_or_skip(target, destination, target_is_directory=True)
-        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(target))
+        monkeypatch.setenv("BOOLEY_DIR", str(target))
         ctx = init_cmd.InitContext(project_root=tmp_path, check_only=True)
 
-        assert not init_cmd._init_owned_project_dir_missing(ctx, init_will_create_project_dir=True)
+        assert not init_cmd._init_owned_booley_dir_missing(ctx, init_will_create_booley_dir=True)
 
     def test_project_data_inspection_error_is_not_treated_as_missing(self, tmp_path, monkeypatch):
         from booley.harness import init_cmd
 
         _init_git_project(tmp_path)
-        target = init_cmd.project_dir_for_init(tmp_path)
-        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(target))
+        target = init_cmd.booley_dir_for_init(tmp_path)
+        monkeypatch.setenv("BOOLEY_DIR", str(target))
         original_lstat = Path.lstat
 
         def denied_lstat(path):
@@ -863,16 +858,16 @@ class TestInitInteractive:
         monkeypatch.setattr(Path, "lstat", denied_lstat)
         ctx = init_cmd.InitContext(project_root=tmp_path, check_only=True)
 
-        assert not init_cmd._init_owned_project_dir_missing(ctx, init_will_create_project_dir=True)
+        assert not init_cmd._init_owned_booley_dir_missing(ctx, init_will_create_booley_dir=True)
 
     def test_existing_project_data_preview_failure_remains_error(self, tmp_path, monkeypatch):
         from booley.harness import init_cmd
         from booley.runtime import session_issuance as runtime_spec
 
         _init_git_project(tmp_path)
-        project_dir = init_cmd.project_dir_for_init(tmp_path)
-        project_dir.mkdir()
-        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project_dir))
+        booley_dir = init_cmd.booley_dir_for_init(tmp_path)
+        booley_dir.mkdir()
+        monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
         monkeypatch.setattr(
             runtime_spec,
             "preview",
@@ -885,7 +880,7 @@ class TestInitInteractive:
         init_cmd._step_interactive(
             ctx,
             nangate_pdk_root=tmp_path / "pdk",
-            init_will_create_project_dir=True,
+            init_will_create_booley_dir=True,
         )
 
         assert ctx.results[-1].name == "interactive"
@@ -899,8 +894,8 @@ class TestInitInteractive:
         from booley.harness import init_cmd
 
         subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
-        (tmp_path / ".booley_project").mkdir()
-        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path / ".booley_project"))
+        (tmp_path / ".booley").mkdir()
+        monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
         monkeypatch.setattr(init_cmd.shutil, "which", lambda _n: None)
         monkeypatch.setattr(init_cmd, "_select_interactive_app", lambda *_: "none")
         init_cmd._step_interactive(self._ctx(tmp_path))
@@ -936,8 +931,8 @@ class TestInitInteractive:
         from booley.harness import init_cmd
 
         subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
-        (tmp_path / ".booley_project").mkdir()
-        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path / ".booley_project"))
+        (tmp_path / ".booley").mkdir()
+        monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
         monkeypatch.setattr(init_cmd.shutil, "which", lambda _n: None)
         init_cmd._step_interactive(self._ctx(tmp_path), agent_app="none")
         spec = tmp_path / ".devcontainer" / "devcontainer.json"
@@ -963,8 +958,8 @@ class TestInitInteractive:
         from booley.harness import init_cmd
 
         subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
-        (tmp_path / ".booley_project").mkdir()
-        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path / ".booley_project"))
+        (tmp_path / ".booley").mkdir()
+        monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
         monkeypatch.setattr(init_cmd.shutil, "which", lambda _n: None)
         init_cmd._step_interactive(self._ctx(tmp_path), agent_app="none")
         exclude = tmp_path / ".git" / "info" / "exclude"
@@ -987,8 +982,8 @@ class TestInitInteractive:
         from booley.harness.setup import interactive as interactive_init
 
         subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
-        (tmp_path / ".booley_project").mkdir()
-        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path / ".booley_project"))
+        (tmp_path / ".booley").mkdir()
+        monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
         monkeypatch.setattr(init_cmd.shutil, "which", lambda _n: None)
         init_cmd._step_interactive(self._ctx(tmp_path), agent_app="none")
         monkeypatch.setattr(
@@ -1017,8 +1012,8 @@ class TestInitInteractive:
         from booley.harness.setup import interactive as interactive_init
 
         subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
-        (tmp_path / ".booley_project").mkdir()
-        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path / ".booley_project"))
+        (tmp_path / ".booley").mkdir()
+        monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
         monkeypatch.setattr(init_cmd.shutil, "which", lambda _n: None)
         init_cmd._step_interactive(self._ctx(tmp_path), agent_app="none")
         monkeypatch.setattr(
@@ -1043,13 +1038,13 @@ class TestInitInteractive:
         from booley.harness import init_cmd
 
         subprocess.run(["git", "init", str(tmp_path)], capture_output=True, check=True)
-        project_dir = tmp_path / ".booley_project"
-        project_dir.mkdir()
-        (project_dir / "booley.toml").write_text(
+        booley_dir = tmp_path / ".booley"
+        booley_dir.mkdir()
+        (booley_dir / "booley.toml").write_text(
             '[sandbox]\nmask_paths = ["secret/oracle"]\n',
             encoding="utf-8",
         )
-        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project_dir))
+        monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
         monkeypatch.setattr(init_cmd.shutil, "which", lambda _n: None)
 
@@ -1070,9 +1065,9 @@ class TestInitInteractive:
     def test_app_selection_honors_project_provider(self, tmp_path, monkeypatch):
         from booley.harness import init_cmd
 
-        project_dir = tmp_path / ".booley_project"
-        project_dir.mkdir()
-        (project_dir / "booley.toml").write_text(
+        booley_dir = tmp_path / ".booley"
+        booley_dir.mkdir()
+        (booley_dir / "booley.toml").write_text(
             '[agent]\nprovider = "codex"\nauth = "subscription"\n',
             encoding="utf-8",
         )
@@ -1103,4 +1098,4 @@ class TestInitInteractive:
 
         assert rc == 2
         assert not (tmp_path / ".devcontainer" / "devcontainer.json").exists()
-        assert not (tmp_path / ".booley_project").exists()
+        assert not (tmp_path / ".booley").exists()

@@ -144,7 +144,7 @@ depending on the Ticket Board or Harness lifecycle.
 The sandbox image contains the EDA stack, so a hosted workflow needs no setup
 and takes only a handful of lines. Slow Targets can run nightly. [Stealth
 mode](../user/CONFIG.md#stealth-mode-stealth) keeps scheduling, structured results, and
-history in `.booley_project/`, with no hosted checks or files in the RTL
+history in `.booley/`, with no hosted checks or files in the RTL
 repository. Execution and reporting differ; Criteria, baselines, and regression
 limits stay the same.
 

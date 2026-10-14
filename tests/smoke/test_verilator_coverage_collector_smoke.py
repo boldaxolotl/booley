@@ -360,7 +360,7 @@ def test_real_coverage_flow_publishes_canonical_campaign(
         _write_custom_target(tmp_path)
     else:
         _write_generated_target(tmp_path, post_reset=harness == "post_reset")
-    data = tmp_path / ".booley_project"
+    data = tmp_path / ".booley"
     data.mkdir()
     (data / "tests.toml").write_text('[sim]\ntests = ["smoke"]\n')
     result = SimulateFlow().execute(
@@ -416,8 +416,8 @@ def _prepare_cocotb_cache_project(root: Path) -> Path:
             "async def check(", "async def another("
         )
     )
-    (root / ".booley_project/tests.toml").write_text('[sim]\ntests = ["check", "another"]\n')
-    (root / ".gitignore").write_text(".booley_project/.runtime/\nreports/\n", encoding="utf-8")
+    (root / ".booley/tests.toml").write_text('[sim]\ntests = ["check", "another"]\n')
+    (root / ".gitignore").write_text(".booley/.runtime/\nreports/\n", encoding="utf-8")
     subprocess.run(["git", "init", "-q"], cwd=root, check=True)
     subprocess.run(["git", "add", "."], cwd=root, check=True)
     subprocess.run(
@@ -507,7 +507,7 @@ def test_real_flow_preserves_all_four_build_variants(tmp_path: Path) -> None:
             "$dumpfile(tracefile); $dumpvars(0, top); end end",
         )
     )
-    (root / ".booley_project" / "tests.toml").write_text('[sim]\ntests = ["smoke"]\n')
+    (root / ".booley" / "tests.toml").write_text('[sim]\ntests = ["smoke"]\n')
     previous: set[str] = set()
     for coverage, trace in [(False, False), (False, True), (True, False), (True, True)]:
         result = SimulateFlow().execute(
@@ -572,7 +572,7 @@ def test_real_producing_inventory_reports_unused_sources_and_rejects_line_aliase
         )
         core = tmp_path / "counter.core"
         core.write_text(core.read_text().replace("--main, --exe]", "--main, --exe, --no-MMD]"))
-    data = tmp_path / ".booley_project"
+    data = tmp_path / ".booley"
     data.mkdir()
     (data / "tests.toml").write_text('[sim]\ntests = ["smoke"]\n')
     result = SimulateFlow().execute(

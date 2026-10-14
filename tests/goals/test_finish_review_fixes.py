@@ -28,7 +28,7 @@ def paired_publication(layout, tmp_path):
     (layout.main / ".git/info/exclude").write_bytes(b"")
     git(layout.worktree, "config", "core.excludesfile", str(layout.main / "no-global-excludes"))
     (layout.control / "booley.toml").write_bytes(b"[stealth]\nenabled = false\n")
-    project = layout.worktree / ".booley_project"
+    project = layout.worktree / ".booley"
     contents = {
         "booley.toml": b"[stealth]\nenabled = false\n",
         "tests.toml": b'[top]\ntests = ["smoke"]\n',
@@ -38,7 +38,7 @@ def paired_publication(layout, tmp_path):
     for name, content in contents.items():
         (project / name).parent.mkdir(parents=True, exist_ok=True)
         (project / name).write_bytes(content)
-    git(layout.worktree, "add", ".booley_project")
+    git(layout.worktree, "add", ".booley")
     git(layout.worktree, "commit", "-qm", "tracked project inputs")
     project = install_paired_project(layout, tmp_path)
     for name, content in contents.items():
@@ -83,7 +83,7 @@ def test_revalidated_publication_retains_history_through_next_commit(
         assert result["status"] == "abandoned"
     else:
         assert finish_goal(call, environment(complete))["status"] == "revalidation_required"
-    summary = f".booley_project/goals/history/{call.record_id}.md"
+    summary = f".booley/goals/history/{call.record_id}.md"
     retained = git(complete.worktree, "show", "HEAD:" + summary)
     assert "D  " + summary not in git(complete.worktree, "status", "--porcelain")
     (complete.worktree / "user-note.txt").write_bytes(b"next user commit\n")

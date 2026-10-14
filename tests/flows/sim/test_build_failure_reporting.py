@@ -217,8 +217,8 @@ def _run_private_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcom
     executor, request, invocation = crash_matrix._failed_build_case(
         tmp_path, monkeypatch, "compile_spawn", crash_matrix._CrashOnce("never")
     )
-    (request.project_root / ".booley_project").mkdir(exist_ok=True)
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(request.project_root / ".booley_project"))
+    (request.project_root / ".booley").mkdir(exist_ok=True)
+    monkeypatch.setenv("BOOLEY_DIR", str(request.project_root / ".booley"))
     return executor, request, invocation
 
 
@@ -229,8 +229,8 @@ def _run_shared_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome
     plan = create_simulation_campaign_plan(_named_manifest(("tail", "quick")))
     project = tmp_path / "project"
     project.mkdir()
-    (project / ".booley_project").mkdir()
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project / ".booley_project"))
+    (project / ".booley").mkdir()
+    monkeypatch.setenv("BOOLEY_DIR", str(project / ".booley"))
     handle = shared_handle(project)
     monkeypatch.setattr(
         "booley.flows.sim.campaign.serial_execution.TargetCatalog.build",

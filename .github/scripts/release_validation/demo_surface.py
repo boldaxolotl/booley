@@ -42,7 +42,7 @@ def validate(
     project = project.resolve()
     state = project_state.resolve()
     _require_image_version(python, project=project, state=state, expected=expected_version)
-    env = os.environ | {"BOOLEY_PROJECT_DIR": str(state), "BOOLEY_IN_SANDBOX": "1"}
+    env = os.environ | {"BOOLEY_DIR": str(state), "BOOLEY_IN_SANDBOX": "1"}
     _run(
         [str(python), "-I", "-m", "booley.runtime.incontainer_register"], project=project, env=env
     )
@@ -84,7 +84,7 @@ def _goal_checks(result: dict[str, object]) -> list[dict[str, str]]:
 
 def _require_image_version(python: Path, *, project: Path, state: Path, expected: str) -> None:
     """Refuse an image whose installed Booley is not the release candidate's version."""
-    env = os.environ | {"BOOLEY_PROJECT_DIR": str(state)}
+    env = os.environ | {"BOOLEY_DIR": str(state)}
     version_code = "import booley; print(booley.__version__)"
     version = _run([str(python), "-I", "-c", version_code], project=project, env=env)
     if version != expected:

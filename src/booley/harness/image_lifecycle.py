@@ -15,6 +15,7 @@ from uuid import uuid4
 
 from booley.runtime import image_lifecycle as runtime_lifecycle
 from booley.runtime import project_image
+from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.runtime.build_stamp import (
     embedded_official_release,
     extracted_development_context,
@@ -29,7 +30,6 @@ from booley.runtime.docker_capacity import (
 )
 from booley.runtime.image_build_contracts import source_image_build_contracts
 from booley.runtime.paths import docker_data_dir
-from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.runtime.version_attribution import VersionOrigin
 
 if TYPE_CHECKING:
@@ -381,7 +381,7 @@ class _IncrementalBuildAdapter:
             return
         if node.manual_parent is not None:
             return
-        root = resolve_checkout_project_dir(self.project_root)
+        root = resolve_checkout_booley_dir(self.project_root)
         docker_dir = root / "docker"
         docker_dir.mkdir(parents=True, exist_ok=True)
         for name, body in node.generated_files:
@@ -531,7 +531,7 @@ class _IncrementalBuildAdapter:
             return docker_data_dir(), (("booley-standard-substrate", parent),), ()
         if node.role in {ImageRole.PROJECT_SUBSTRATE, ImageRole.PROJECT_OVERLAY}:
             return (
-                resolve_checkout_project_dir(self.project_root) / "docker",
+                resolve_checkout_booley_dir(self.project_root) / "docker",
                 ((node.manual_parent or project_image.MANAGED_PROJECT_PARENT, parent),),
                 (),
             )
@@ -635,7 +635,7 @@ def _uses_managed_project_overlay(project_root: Path) -> bool:
     selected = runtime_lifecycle._selected_reference(project_root)
     if selected != project_image.project_image_name(project_root):
         return False
-    dockerfile = resolve_checkout_project_dir(project_root) / "docker" / "Dockerfile"
+    dockerfile = resolve_checkout_booley_dir(project_root) / "docker" / "Dockerfile"
     if runtime_lifecycle._manual_parent(project_root) is not None:
         return True
     return runtime_lifecycle._project_requirements_body(project_root) is not None and (

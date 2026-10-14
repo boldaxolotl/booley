@@ -118,7 +118,7 @@ def resume_proposal(env: ChangeEnvironment, record_id: str, proposal_id: str) ->
     store = env.store
     recover(store, record_id, env)
     with store.record_lock(record_id):
-        view = load_proposal(record_paths(env.entry.project_dir, record_id).root, proposal_id)
+        view = load_proposal(record_paths(env.entry.booley_dir, record_id).root, proposal_id)
         record = store.load(record_id)
         if view.proposal.record_id != record_id or view.proposal.worktree != record.worktree:
             raise ProposalError("proposal does not belong to this record/worktree")
@@ -169,7 +169,7 @@ def _require_inputs(record: GoalRecord, env: ChangeEnvironment) -> None:
     if env.store.identify_worktree(root) != record.worktree:
         raise ProposalError("the recorded Worktree Identity changed")
     reason = protected_drift(
-        record, snapshot_protected_inputs(ProtectedInputRoots(root, env.entry.project_dir))
+        record, snapshot_protected_inputs(ProtectedInputRoots(root, env.entry.booley_dir))
     )
     if reason:
         raise ProposalError(reason)

@@ -270,8 +270,8 @@ def _repository_id(common_dir: Path, *, create: bool) -> str | None:
 class WorktreeLock:
     """Proof that the caller holds the worktree lock of :attr:`identity`."""
 
-    def __init__(self, project_dir: Path, identity: WorktreeIdentity) -> None:
-        self.project_dir = project_dir
+    def __init__(self, booley_dir: Path, identity: WorktreeIdentity) -> None:
+        self.booley_dir = booley_dir
         self.identity = identity
         self.held = True
 
@@ -284,9 +284,9 @@ class RecordLock:
     """
 
     def __init__(
-        self, project_dir: Path, goal_id: str, file_key: LockFileKey, owner: LockOwner
+        self, booley_dir: Path, goal_id: str, file_key: LockFileKey, owner: LockOwner
     ) -> None:
-        self.project_dir = project_dir
+        self.booley_dir = booley_dir
         self.goal_id = goal_id
         self.file_key = file_key
         self.owner = owner
@@ -304,7 +304,7 @@ class RecordLock:
     @property
     def record_dir(self) -> Path:
         """The locked record's directory."""
-        return record_paths(self.project_dir, self.goal_id).root
+        return record_paths(self.booley_dir, self.goal_id).root
 
 
 @contextmanager
@@ -354,7 +354,7 @@ _CREATION_FIELDS = (
 class GoalStore:
     """Goal Records of one Booley Directory (resolved by the caller)."""
 
-    project_dir: Path
+    booley_dir: Path
     lock_timeout_s: float = DEFAULT_LOCK_TIMEOUT_S
 
     def identify_worktree(
@@ -389,8 +389,11 @@ class GoalStore:
         """Hold the worktree lock of *identity* (taken before any record lock)."""
         if _holds_record_lock(current_lock_owner()):
             raise LockOrderError("a worktree lock must be taken before any record lock")
-        lock = WorktreeLock(self.project_dir, identity)
-        path = worktree_lock_file(self.project_dir, identity)
+        from booley.core.booley_layout import validate_selection
+
+        validate_selection(self.booley_dir)
+        lock = WorktreeLock(self.booley_dir, identity)
+        path = worktree_lock_file(self.booley_dir, identity)
         path.parent.mkdir(parents=True, exist_ok=True)
         with _flock(path, self.lock_timeout_s):
             try:
@@ -409,15 +412,15 @@ class GoalStore:
         the lock open fail and raise :class:`GoalRecordNotFoundError` instead
         of leaving a lock-only directory behind.
         """
-        paths = record_paths(self.project_dir, goal_id)
+        from booley.core.booley_layout import validate_selection
+
+        validate_selection(self.booley_dir)
+        paths = record_paths(self.booley_dir, goal_id)
         if not paths.root.is_dir():
-            raise GoalRecordNotFoundError(f"no Goal Record {goal_id} in {self.project_dir}")
+            raise GoalRecordNotFoundError(f"no Goal Record {goal_id} in {self.booley_dir}")
         try:
-            if existing_only:
-                if paths.lock_file.is_symlink():
-                    raise GoalStoreError("observational Goal lock is a symlink")
-                if os.name == "nt" and paths.lock_file.stat().st_size == 0:
-                    raise GoalStoreError("empty observational Goal lock is unavailable on Windows")
+            if existing_only and paths.lock_file.is_symlink():
+                raise GoalStoreError("observational Goal lock is a symlink")
             handle = paths.lock_file.open("r+" if existing_only else "a+", encoding="utf-8")
         except FileNotFoundError as exc:
             raise GoalRecordNotFoundError(f"Goal Record {goal_id} disappeared") from exc
@@ -430,7 +433,9 @@ class GoalStore:
                 handle.close()  # re-entry: this open file must not hold a second flock
                 yield held
                 return
-            yield from self._hold_record_lock(handle, paths.lock_file, goal_id, key)
+            yield from self._hold_record_lock(
+                handle, paths.lock_file, goal_id, key, existing_only=existing_only
+            )
 
     def _hold_record_lock(
         self,
@@ -438,12 +443,16 @@ class GoalStore:
         path: Path,
         goal_id: str,
         key: tuple[LockFileKey, LockOwner],
+        *,
+        existing_only: bool = False,
     ) -> Generator[RecordLock]:
         try:
-            wait_for_file_lock(handle, timeout_s=self.lock_timeout_s)
+            wait_for_file_lock(
+                handle, timeout_s=self.lock_timeout_s, preserve_contents=existing_only
+            )
         except LockTimeoutError as exc:
             raise GoalLockTimeoutError(f"Goal lock {path} stayed busy: {exc}") from exc
-        lock = RecordLock(self.project_dir, goal_id, key[0], key[1])
+        lock = RecordLock(self.booley_dir, goal_id, key[0], key[1])
         with _held_record_locks_guard:
             _HELD_RECORD_LOCKS[key] = lock
         try:
@@ -475,8 +484,8 @@ class GoalStore:
         return self._publish(replace(record, revision=1))
 
     def _publish(self, created: GoalRecord) -> GoalRecord:
-        target = record_paths(self.project_dir, created.id).root
-        staging = goals_root(self.project_dir) / f"{STAGING_PREFIX}{created.id}-{uuid.uuid4().hex}"
+        target = record_paths(self.booley_dir, created.id).root
+        staging = goals_root(self.booley_dir) / f"{STAGING_PREFIX}{created.id}-{uuid.uuid4().hex}"
         staging.mkdir(parents=True)
         try:
             atomic_replace_bytes(staging / RECORD_FILE, _encode(created))
@@ -492,7 +501,7 @@ class GoalStore:
         return created
 
     def _lock_file_key(self, goal_id: str) -> LockFileKey:
-        path = record_paths(self.project_dir, goal_id).lock_file
+        path = record_paths(self.booley_dir, goal_id).lock_file
         try:
             return _file_key(path.stat(), path)
         except FileNotFoundError as exc:
@@ -500,7 +509,7 @@ class GoalStore:
 
     def _sweep_stale_staging(self) -> None:
         """Remove staging directories left by creates that died mid-publication."""
-        root = goals_root(self.project_dir)
+        root = goals_root(self.booley_dir)
         if not root.is_dir():
             return
         cutoff = time.time() - STAGING_MAX_AGE_S
@@ -515,7 +524,7 @@ class GoalStore:
                 shutil.rmtree(entry, ignore_errors=True)
 
     def _check_create(self, lock: WorktreeLock, record: GoalRecord) -> None:
-        if not lock.held or lock.project_dir != self.project_dir:
+        if not lock.held or lock.booley_dir != self.booley_dir:
             raise GoalStoreError("create needs this store's worktree lock, held")
         if lock.identity != record.worktree:
             raise GoalStoreError("the worktree lock does not belong to the record's worktree")
@@ -526,9 +535,9 @@ class GoalStore:
 
     def load(self, goal_id: str) -> GoalRecord:
         """Read Goal Record *goal_id*; corrupt content raises, never returns ``None``."""
-        paths = record_paths(self.project_dir, goal_id)
+        paths = record_paths(self.booley_dir, goal_id)
         if not paths.root.is_dir():
-            raise GoalRecordNotFoundError(f"no Goal Record {goal_id} in {self.project_dir}")
+            raise GoalRecordNotFoundError(f"no Goal Record {goal_id} in {self.booley_dir}")
         try:
             raw: Any = json.loads(paths.record_file.read_bytes().decode("utf-8"))
             record = GoalRecord.from_json(raw)
@@ -573,16 +582,16 @@ class GoalStore:
             raise InvalidRecordUpdateError(f"Goal Record {record.id}: {frozen}")
         saved = replace(record, revision=current.revision + 1)
         save_names(
-            record_paths(self.project_dir, record.id).root, (row.spec for row in saved.goals)
+            record_paths(self.booley_dir, record.id).root, (row.spec for row in saved.goals)
         )
         atomic_replace_bytes(
-            record_paths(self.project_dir, record.id).record_file, _validate_encodable(saved)
+            record_paths(self.booley_dir, record.id).record_file, _validate_encodable(saved)
         )
         return saved
 
     def list_records(self) -> RecordScan:
         """Every Goal Record in the Project, ordered by id, with the corrupt ones named."""
-        root = goals_root(self.project_dir)
+        root = goals_root(self.booley_dir)
         if not root.is_dir():
             return RecordScan((), ())
         ids = sorted(

@@ -33,7 +33,7 @@ def _alias_doctor_project(flow_project, tmp_path, monkeypatch, host):
 
     require_symlinks(tmp_path)
     data = tmp_path / "external-project-data"
-    shutil.copytree(flow_project / ".booley_project", data)
+    shutil.copytree(flow_project / ".booley", data)
     alias = tmp_path / "booley-project"
     symlink_or_skip(alias, data, target_is_directory=True)
     config = data / "booley.toml"
@@ -50,11 +50,11 @@ def _alias_doctor_project(flow_project, tmp_path, monkeypatch, host):
     bad = data / "selftest/sim/bad-overlay/src/acme_lib_demo_1/rtl"
     bad.mkdir(parents=True)
     (bad / "tb.sv").write_text("module tb; // BAD\nendmodule\n")
-    shutil.copytree(data, flow_project / ".booley_project", dirs_exist_ok=True)
+    shutil.copytree(data, flow_project / ".booley", dirs_exist_ok=True)
     _git_init(flow_project)
     _git_init(data)
     audit = ProjectAudit(flow_project, data, tomllib.loads(config.read_text()), {}, "sim")
-    monkeypatch.setattr(doctor.dc, "PROJECT_DIR_TARGET", str(alias))
+    monkeypatch.setattr(doctor.dc, "BOOLEY_DIR_TARGET", str(alias))
     from tests.runtime.test_sandbox_layout import configure_project_alias
 
     configure_project_alias(monkeypatch, alias, data)
@@ -114,7 +114,7 @@ def test_project_alias_doctor_executes_real_simulation(flow_project, tmp_path, m
 
 def _project(root):
     directory = _write_project(root, seed_interactive=False)
-    return SimpleNamespace(project_root=root, project_dir=directory, booley_toml={"flows": {}})
+    return SimpleNamespace(project_root=root, booley_dir=directory, booley_toml={"flows": {}})
 
 
 def _artifact(image=IMAGE, *, version=None, container="container"):
@@ -164,12 +164,12 @@ def test_waived_missing_selftest_warning_cannot_supply_execution(tmp_path, monke
     project = _project(tmp_path)
     from booley.audit.doctor_waivers import load_doctor_waivers
 
-    path = project.project_dir / "doctor-waivers.toml"
+    path = project.booley_dir / "doctor-waivers.toml"
     path.write_text(
         'version=1\n[[waiver]]\ncheck="flow.fail-path-unvalidated"\n'
         'reason="Reviewed exclusion"\npermanent=true\n'
     )
-    reporter = doctor._Reporter.create(load_doctor_waivers(project.project_dir))
+    reporter = doctor._Reporter.create(load_doctor_waivers(project.booley_dir))
     tracker = deep.DeepCheckTracker()
     monkeypatch.setattr(doctor, "_flow_enabled", lambda _project, flow: flow == "sim")
     doctor._run_selftest_checks(
@@ -499,7 +499,7 @@ def test_runtime_policy_full_doctor_qualification(
                 if item.check_id == "git.worktree-portability" and item.severity == "warn"
             ]
         ) is (data_policy == "false")
-    state = deep.load_deep_state(audit.project_dir)
+    state = deep.load_deep_state(audit.booley_dir)
     assert state.latest_completed_attempt.outcome is expected
     assert result.deep_status.current is (expected is deep.DeepOutcome.SUCCESS)
     assert result.clean is (

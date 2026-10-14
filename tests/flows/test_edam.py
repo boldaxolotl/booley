@@ -328,7 +328,7 @@ class TestRelativePaths:
 
     def test_work_root_for_layout_and_variant(self, ws: Path):
         wr = work_root_for(ws, "lint", "cfg/a")
-        assert wr == ws / ".booley_project" / ".runtime" / "edalize" / "lint" / "cfg_a"
+        assert wr == ws / ".booley" / ".runtime" / "edalize" / "lint" / "cfg_a"
         traced = work_root_for(ws, "sim", "cfg", variant="trace")
         assert traced.name == "cfg-trace"
 
@@ -342,11 +342,11 @@ class TestRelativePaths:
 
         with pytest.raises(RuntimeError, match="cannot be initialized or used as a Project"):
             work_root_for(source, "lint", "cfg")
-        assert not (source / ".booley_project").exists()
+        assert not (source / ".booley").exists()
 
     def test_relpath_for_make(self, ws: Path):
         wr = work_root_for(ws, "lint", "cfg")
-        assert relpath_for_make(wr, ws) == ".booley_project/.runtime/edalize/lint/cfg"
+        assert relpath_for_make(wr, ws) == ".booley/.runtime/edalize/lint/cfg"
 
     def test_relative_configure_relocatable(self, ws: Path):
         pytest.importorskip("edalize")

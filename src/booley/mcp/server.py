@@ -97,6 +97,7 @@ from booley.mcp.session_peer import PeerBoundary
 from booley.mcp.session_registry import Attribution
 from booley.runtime import job_records as jobrec
 from booley.runtime import pid, runtime_context
+from booley.runtime.booley_dir import resolve_booley_dir
 from booley.runtime.build_metadata import format_status_line
 from booley.runtime.display_identity import DisplayIdentity
 from booley.runtime.endpoint_execution import EndpointOutcome
@@ -108,7 +109,6 @@ from booley.runtime.mcp_config import (
     HTTP_PORT_ENV,
     http_port,
 )
-from booley.runtime.project_dir import resolve_project_dir
 from booley.runtime.session_paths import logs_runtime_dir
 from booley.runtime.timefmt import format_human_datetime
 
@@ -411,7 +411,7 @@ def _discover_booley_mcp_tools() -> tuple[list[dict[str, Any]], list[str]]:
 
     Uses ``discover_mcp_tools()`` for filtering (respects booley.toml allowlists),
     then imports + extracts schemas only for surviving endpoints.
-    Handles built-ins and custom endpoints from ``.booley_project/mcp_tools/``.
+    Handles built-ins and custom endpoints from ``.booley/mcp_tools/``.
 
     Returns (MCP tools, errors) where:
       - MCP tools: list of dicts {name, module, description, schema}
@@ -674,10 +674,10 @@ def get_project_mcp_tools_dir() -> Path | None:
     Public API: the harness CLI (booley.py) depends on this name rather than
     reaching into a peer module's private helper (principle 9).
     """
-    project_dir = os.environ.get("BOOLEY_PROJECT_DIR", "")
-    if project_dir:
-        d = Path(project_dir) / "mcp_tools"
-        legacy = Path(project_dir) / "tools"
+    booley_dir = os.environ.get("BOOLEY_DIR", "")
+    if booley_dir:
+        d = Path(booley_dir) / "mcp_tools"
+        legacy = Path(booley_dir) / "tools"
         if legacy.is_dir() and not d.is_dir():
             raise RuntimeError(
                 f"{legacy} is retired; rename it to {d} and migrate legacy `Tool` classes "
@@ -685,8 +685,8 @@ def get_project_mcp_tools_dir() -> Path | None:
             )
         return d if d.is_dir() else None
     cwd = Path.cwd()
-    d = cwd / ".booley_project" / "mcp_tools"
-    legacy = cwd / ".booley_project" / "tools"
+    d = cwd / ".booley" / "mcp_tools"
+    legacy = cwd / ".booley" / "tools"
     if legacy.is_dir() and not d.is_dir():
         raise RuntimeError(
             f"{legacy} is retired; rename it to {d} and migrate legacy `Tool` classes "
@@ -945,7 +945,7 @@ def _resolve_transcript_dir(
         from booley.runtime.checkout_role import SourceCheckoutProjectError
 
         try:
-            from booley.runtime.project_dir import runtime_dir as _project_runtime_dir
+            from booley.runtime.booley_dir import runtime_dir as _project_runtime_dir
 
             runtime_dir = _project_runtime_dir()
             logger.info(
@@ -2030,13 +2030,13 @@ def _validate_work_dir(value: Any) -> str | None:
         return (
             f"ERROR: work_dir {value!r} does not exist. Create a worktree "
             "first: `booley worktree new <name>` puts it under "
-            ".booley_project/worktrees/<name>."
+            ".booley/worktrees/<name>."
         )
     if not is_linked_worktree(resolved):
         return (
             f"ERROR: work_dir {value!r} is not the root of a linked git "
             "worktree (no .git pointer file). Pass the worktree root created "
-            "by `booley worktree new <name>` under .booley_project/worktrees/, "
+            "by `booley worktree new <name>` under .booley/worktrees/, "
             "or omit work_dir to run against the session workspace."
         )
     return None
@@ -2056,7 +2056,7 @@ def _endpoint_command(
         and name == "reviewer"
         and "spec" in str(arguments.get("focus", ""))
     ):
-        record = GoalStore(context.binding.project_dir).load(context.binding.record_id)
+        record = GoalStore(context.binding.booley_dir).load(context.binding.record_id)
         specs = {g.spec.params.get("spec") for g in record.goals if g.spec.params.get("spec")}
         if len(specs) == 1:
             arguments["spec"] = specs.pop()
@@ -2417,7 +2417,7 @@ async def _dispatch_special_mcp_tool(
         return await _dispatch_sleep(arguments)
     if name in GOAL_TOOL_NAMES and _goal_tools_visible():
         return await dispatch_goal_tool(
-            name, arguments, project_dir=resolve_project_dir(), request_context=request_context
+            name, arguments, booley_dir=resolve_booley_dir(), request_context=request_context
         )
     return None
 
@@ -2531,7 +2531,7 @@ def build_mcp_probe_payload() -> dict[str, Any]:
         "tools": [tool.name for tool in application.list_tools()],
         "errors": discovery_errors,
         "logs_dir": logs_dir,
-        "logs_dir_ok": "/.booley_project/.interactive_logs/" in logs_dir.replace("\\", "/"),
+        "logs_dir_ok": "/.booley/.interactive_logs/" in logs_dir.replace("\\", "/"),
     }
 
 
@@ -2797,19 +2797,19 @@ def _maybe_configure_interactive_logs_dir() -> None:
 
     Interactive Mode is detected by:
       - ``BOOLEY_LOGS_DIR`` not already set;
-      - ``.booley_project/`` present in CWD (the Project Root the outer agent
+      - ``.booley/`` present in CWD (the Project Root the outer agent
         bind-mounted into the container at ``/work``).
 
-    Logs accumulate at ``.booley_project/.interactive_logs/<session-id>/``
+    Logs accumulate at ``.booley/.interactive_logs/<session-id>/``
     (gitignored — see the template emitted by ``booley init``).
     """
     if os.environ.get("BOOLEY_LOGS_DIR"):
         return
-    project_dir = Path.cwd() / ".booley_project"
-    if not project_dir.is_dir():
+    booley_dir = Path.cwd() / ".booley"
+    if not booley_dir.is_dir():
         return
     session_id = _interactive_session_id()
-    logs_dir = project_dir / ".interactive_logs" / session_id
+    logs_dir = booley_dir / ".interactive_logs" / session_id
     logs_dir.mkdir(parents=True, exist_ok=True)
     os.environ["BOOLEY_LOGS_DIR"] = str(logs_dir)
     logger.info(
@@ -2825,10 +2825,10 @@ def _load_agent_settings_from_toml() -> None:
     Loading configuration here makes the server honor booley.toml consistently
     with ``booley doctor``. (Specialist endpoint
     subprocesses resolve the provider independently — ``get_backend_config()``
-    reads ``BOOLEY_PROJECT_DIR/booley.toml`` when the env hand-off is absent —
+    reads ``BOOLEY_DIR/booley.toml`` when the env hand-off is absent —
     so they no longer silently fall back to a default provider either.)
 
-    ``BOOLEY_PROJECT_DIR`` points at the ``.booley_project`` dir when set, but
+    ``BOOLEY_DIR`` points at the ``.booley`` dir when set, but
     ``load_agent_settings`` wants the Project Root that *contains* it, so use the
     parent (else CWD). A missing/unparseable booley.toml is handled inside
     ``load_agent_settings`` (defaults preserved); the broad guard only covers
@@ -2837,8 +2837,8 @@ def _load_agent_settings_from_toml() -> None:
     try:
         from booley.config.settings import load_agent_settings
 
-        project_dir = os.environ.get("BOOLEY_PROJECT_DIR", "")
-        project_root = Path(project_dir).parent if project_dir else Path.cwd()
+        booley_dir = os.environ.get("BOOLEY_DIR", "")
+        project_root = Path(booley_dir).parent if booley_dir else Path.cwd()
         load_agent_settings(project_root)
     except Exception:
         logger.debug("Failed to load agent settings from booley.toml", exc_info=True)
@@ -2972,8 +2972,8 @@ def _goal_warning_result(
         return result
     try:
         prefix = goal_warnings(
-            GoalStore(binding.project_dir).load(binding.record_id),
-            binding.project_dir,
+            GoalStore(binding.booley_dir).load(binding.record_id),
+            binding.booley_dir,
             work_dir=binding.worktree_root,
             session_key=session_key,
         )

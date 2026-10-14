@@ -37,8 +37,8 @@ from booley.eda.provisioning import session_requirements as eda_requirements
 from booley.eda.provisioning.policies.vivado import CONTAINER_TARGET
 from booley.runtime.compiler_cache import COMPILER_CACHE_ROOT_ENV, ISSUED_COMPILER_CACHE_ROOT
 from booley.runtime.devcontainer import (
+    BOOLEY_DIR_TARGET,
     EGRESS_NETWORK,
-    PROJECT_DIR_TARGET,
     devcontainer_path,
     render_devcontainer_json,
 )
@@ -116,7 +116,7 @@ _REQUIRED_REMOTE_ENV = frozenset(
         "https_proxy",
         "NO_PROXY",
         "BOOLEY_MCP_MODE",
-        "BOOLEY_PROJECT_DIR",
+        "BOOLEY_DIR",
         COMPILER_CACHE_ROOT_ENV,
         "BOOLEY_AGENT_APP",
     }
@@ -137,7 +137,7 @@ _FIXED_REMOTE_ENV = {
     "https_proxy": "http://booley-proxy:8080",
     "NO_PROXY": "localhost,127.0.0.1",
     "BOOLEY_MCP_MODE": "interactive",
-    "BOOLEY_PROJECT_DIR": PROJECT_DIR_TARGET,
+    "BOOLEY_DIR": BOOLEY_DIR_TARGET,
     COMPILER_CACHE_ROOT_ENV: ISSUED_COMPILER_CACHE_ROOT,
 }
 
@@ -1365,12 +1365,12 @@ def _validate_bind_sources(mounts: list[str]) -> None:
 def authorized_project_data_source(project_root: Path) -> Path:
     """Return the sole host-authorized Booley Directory for issuance."""
     project = project_root.resolve(strict=True)
-    configured = os.environ.get("BOOLEY_PROJECT_DIR")
+    configured = os.environ.get("BOOLEY_DIR")
     if configured:
         candidate = Path(configured).expanduser()
     else:
         _reject_project_authored_mount_override(project)
-        candidate = project / ".booley_project"
+        candidate = project / ".booley"
     return _validate_project_data_bind_source(project, candidate)
 
 
@@ -1396,7 +1396,7 @@ def _reject_project_authored_mount_override(project: Path) -> None:
     if isinstance(section, dict) and section.get("dir"):
         raise RuntimeSpecError(
             "Project-authored [project].dir cannot authorize a Sandbox host mount; "
-            "set BOOLEY_PROJECT_DIR in the trusted host environment"
+            "set BOOLEY_DIR in the trusted host environment"
         )
 
 
@@ -1405,7 +1405,7 @@ def _validate_project_data_source(
     candidate: Path,
 ) -> Path:
     if not candidate.is_absolute():
-        raise RuntimeSpecError("BOOLEY_PROJECT_DIR must be an absolute host path")
+        raise RuntimeSpecError("BOOLEY_DIR must be an absolute host path")
     if any(char == "," or ord(char) < 32 for char in str(candidate)):
         raise RuntimeSpecError("Booley Directory path contains unsafe Docker mount grammar")
     if any(part.is_symlink() for part in (candidate, *candidate.parents)):
@@ -1423,7 +1423,7 @@ def _validate_project_data_source(
         raise RuntimeSpecError(f"Booley Directory mount source is not a directory: {source}")
     home = Path.home().resolve()
     broad = source == Path(source.anchor) or source == home or source.parent == Path(source.anchor)
-    local = source == project / ".booley_project"
+    local = source == project / ".booley"
     overlaps = (
         source == project or source in project.parents or (project in source.parents and not local)
     )
@@ -1451,7 +1451,7 @@ def _pin_project_data_mount(
         raise RuntimeSpecError("Booley Directory target must have one exact writable bind")
     index = indexes[0]
     allowed = {
-        "source=${localWorkspaceFolder}/.booley_project,target=/booley-project,type=bind",
+        "source=${localWorkspaceFolder}/.booley,target=/booley-project,type=bind",
         f"source={expected_source},target=/booley-project,type=bind",
     }
     if mounts[index] not in allowed:
@@ -1725,7 +1725,7 @@ def _require_project_data_mount(
     expected = f"source={expected_source},target=/booley-project,type=bind"
     matches = [item for item in mounts if _mount_target(item) == "/booley-project"]
     if layout == "canonical-alias":
-        if project != project_root / ".booley_project":
+        if project != project_root / ".booley":
             raise RuntimeSpecError(
                 "canonical alias layout requires checkout-local Booley Directory"
             )

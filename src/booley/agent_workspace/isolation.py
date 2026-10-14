@@ -58,7 +58,7 @@ def get_category_dirs(work_dir: Path | None = None) -> dict[str, tuple[str, ...]
     Reads the worktree's authored cores directly so isolation works even
     when the shared_infra module's CWD-based resolution would miss it.
     Falls back to the main Project Root (for git worktrees where
-    .booley_project/ is gitignored), then shared_infra, then hardcoded defaults.
+    .booley/ is gitignored), then shared_infra, then hardcoded defaults.
     Directory prefixes end in ``/``; root-level flat-repository files are exact
     paths so snapshot isolation can remove the file itself.
     """
@@ -70,7 +70,7 @@ def get_category_dirs(work_dir: Path | None = None) -> dict[str, tuple[str, ...]
             if parsed is not None:
                 logger.debug(
                     "Resolved category dirs from main Project Root %s "
-                    "(worktree %s lacks .booley_project/)",
+                    "(worktree %s lacks .booley/)",
                     main_root,
                     work_dir,
                 )
@@ -116,13 +116,13 @@ def _find_nested_opposite_dirs(
     work_dir: Path,
     hide_prefixes: set[str],
 ) -> list[Path]:
-    """Find opposite-category dirs nested inside .booley_project/.
+    """Find opposite-category dirs nested inside .booley/.
 
     The top-level hide handles work_dir/rtl/ etc., but dirs like
-    .booley_project/eval_debug/*/rtl/ leak cross-category sources past
+    .booley/eval_debug/*/rtl/ leak cross-category sources past
     the guard.
     """
-    bp = work_dir / ".booley_project"
+    bp = work_dir / ".booley"
     if not bp.is_dir():
         return []
     nested: list[Path] = []

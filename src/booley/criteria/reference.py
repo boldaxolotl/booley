@@ -1,7 +1,7 @@
 """Canonical acceptance-criteria reference, rendered from the single source of truth.
 
 Single source of truth: ``data/criteria.toml`` (base) plus an optional project
-``.booley_project/criteria.toml``. The ``booley cheat`` CLI renders these blocks
+``.booley/criteria.toml``. The ``booley cheat`` CLI renders these blocks
 live, while ``docs/user/USAGE.md`` and ``data/cheatsheet.md`` embed committed copies
 between paired ``<!-- BEGIN GENERATED: <name> -->`` / ``<!-- END GENERATED: <name> -->``
 markers that a pytest keeps byte-identical to this renderer. Add, rename, or retire
@@ -104,7 +104,7 @@ def render_criteria_reference(
     within a group they sort by workflow region then name.
 
     Args:
-        project_criteria_path: Optional ``.booley_project/criteria.toml``; when it
+        project_criteria_path: Optional ``.booley/criteria.toml``; when it
             exists, its project-defined criteria are merged in so the table reflects
             the active project.
     """

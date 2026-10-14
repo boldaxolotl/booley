@@ -61,9 +61,9 @@ class TaskPlan:
         return bool(self.changes)
 
 
-def enabled(project_dir: Path) -> bool:
+def enabled(booley_dir: Path) -> bool:
     """Strict [sandbox].dashboard (default true)."""
-    path = project_dir / "booley.toml"
+    path = booley_dir / "booley.toml"
     data = tomllib.loads(path.read_bytes().decode("utf-8")) if path.exists() else {}
     return parse_dashboard(data)
 
@@ -86,14 +86,14 @@ def _opt_out(folder: Path) -> bool:
     )
 
 
-def inspect(root: Path, project_dir: Path) -> TaskPlan:
+def inspect(root: Path, booley_dir: Path) -> TaskPlan:
     """Refuse conflicts safely; preserve malformed, linked, unowned or user-edited content."""
     try:
         common_dir = git_directories(root).common_dir
     except GitDirectoryInspectionError:
         return TaskPlan()
     try:
-        return _inspect(root, project_dir, common_dir)
+        return _inspect(root, booley_dir, common_dir)
     except (OSError, ValueError, RuntimeError, UnicodeError) as exc:
         return TaskPlan(diagnostics=(f"Dashboard task unavailable: {exc}",))
 
@@ -101,7 +101,7 @@ def inspect(root: Path, project_dir: Path) -> TaskPlan:
 @dataclass(frozen=True)
 class _TaskFiles:
     root: Path
-    project_dir: Path
+    booley_dir: Path
     common_dir: Path
     before: bytes | None
     ownership: bytes | None
@@ -113,7 +113,7 @@ class _TaskFiles:
 
     @property
     def owner_path(self) -> Path:
-        return self.project_dir / "runtime/dashboard-task.json"
+        return self.booley_dir / "runtime/dashboard-task.json"
 
 
 def _task_file_tracked(root: Path) -> bool:
@@ -145,9 +145,9 @@ def _names_dashboard_task(path: Path) -> bool:
     return content is not None and json.dumps(LABEL).encode() in content
 
 
-def _inspect(root: Path, project_dir: Path, common_dir: Path) -> TaskPlan:
+def _inspect(root: Path, booley_dir: Path, common_dir: Path) -> TaskPlan:
     folder = root / ".vscode"
-    active = enabled(project_dir)
+    active = enabled(booley_dir)
     if _task_file_tracked(root):
         if not active or _names_dashboard_task(folder / "tasks.json"):
             return TaskPlan()
@@ -156,7 +156,7 @@ def _inspect(root: Path, project_dir: Path, common_dir: Path) -> TaskPlan:
             "add the task yourself or set [sandbox].dashboard = false"
         )
         return TaskPlan(notices=(notice,))
-    ownership = _bytes(project_dir / "runtime/dashboard-task.json")
+    ownership = _bytes(booley_dir / "runtime/dashboard-task.json")
     if not active and ownership is None:
         return TaskPlan()
     owner = (
@@ -167,7 +167,7 @@ def _inspect(root: Path, project_dir: Path, common_dir: Path) -> TaskPlan:
     if owner and (owner.get("schema") != 1 or owner.get("root") != str(root.resolve())):
         raise ValueError("unsupported or foreign Dashboard task ownership")
     files = _TaskFiles(
-        root, project_dir, common_dir, _bytes(folder / "tasks.json"), ownership, owner
+        root, booley_dir, common_dir, _bytes(folder / "tasks.json"), ownership, owner
     )
     desired = active and not _opt_out(folder)
     if files.before is None and not desired:
@@ -396,12 +396,12 @@ class TaskTransaction:
         self.applied.clear()
 
 
-def reconcile(root: Path, project_dir: Path) -> TaskTransaction:
+def reconcile(root: Path, booley_dir: Path) -> TaskTransaction:
     """Inspect and apply within a bounded, nonblocking writer lock."""
-    plan = inspect(root, project_dir)
+    plan = inspect(root, booley_dir)
     transaction = TaskTransaction(plan)
     if plan.pending:
-        lock = project_dir / "runtime" / "dashboard-task.lock"
+        lock = booley_dir / "runtime" / "dashboard-task.lock"
         refuse_symlinks(lock)
         lock.parent.mkdir(parents=True, exist_ok=True)
         try:

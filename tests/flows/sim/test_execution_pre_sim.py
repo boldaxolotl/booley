@@ -13,7 +13,7 @@ from booley.targets.domain import TargetHandle
 
 
 def _project(root: Path, marker: str) -> TargetHandle:
-    project = root / ".booley_project"
+    project = root / ".booley"
     project.mkdir(parents=True)
     (project / "booley.toml").write_text(
         f'[flows.sim]\npre_run_commands = ["printf {marker} > hook.txt"]\nrun_cwd = "."\n',
@@ -53,7 +53,7 @@ def test_test_registry_is_scoped_to_each_checkout(tmp_path: Path) -> None:
         (current, "now", "+test={name}"),
         (baseline, "then", "+case={index}"),
     ):
-        project = root / ".booley_project"
+        project = root / ".booley"
         project.mkdir(parents=True)
         (project / "tests.toml").write_text(
             f'[sim]\ntests = ["{name}"]\nselect = "{selector}"\n',
@@ -87,7 +87,7 @@ def test_legacy_two_groups_retain_both_real_hooks_after_second_integrity_failure
     pytest.importorskip("edalize")
     project, _ = _write_stale_compiler_fixture(tmp_path)
     command = 'echo actual-hook; if [ "$BOOLEY_TEST_NAME" = b ]; then sed -i s/OLD/NEW/ tb.sv; fi'
-    (project / ".booley_project/booley.toml").write_text(
+    (project / ".booley/booley.toml").write_text(
         "[flows.sim]\npre_run_commands = " + json.dumps([command]) + "\n"
     )
     monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")

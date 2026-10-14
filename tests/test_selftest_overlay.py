@@ -11,8 +11,8 @@ from booley.fusesoc import selftest_overlay
 
 
 def test_stage_bad_overlay_replaces_only_mirrored_build_files(tmp_path: Path) -> None:
-    project_dir = tmp_path / ".booley_project"
-    overlay = selftest_overlay.bad_overlay_dir(project_dir, "sim")
+    booley_dir = tmp_path / ".booley"
+    overlay = selftest_overlay.bad_overlay_dir(booley_dir, "sim")
     overlay_file = overlay / "firmware" / "firmware.hex"
     overlay_file.parent.mkdir(parents=True)
     overlay_file.write_text("bad\n", encoding="utf-8")
@@ -21,15 +21,15 @@ def test_stage_bad_overlay_replaces_only_mirrored_build_files(tmp_path: Path) ->
     staged.parent.mkdir(parents=True)
     staged.write_text("good\n", encoding="utf-8")
 
-    assert selftest_overlay.has_bad_overlay(project_dir, "sim")
-    assert selftest_overlay.stage_bad_overlay(project_dir, "sim", build_root) == 1
+    assert selftest_overlay.has_bad_overlay(booley_dir, "sim")
+    assert selftest_overlay.stage_bad_overlay(booley_dir, "sim", build_root) == 1
     assert staged.read_text(encoding="utf-8") == "bad\n"
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="GNU Make regression requires POSIX")
 def test_stage_bad_overlay_invalidates_newer_make_artifact(tmp_path: Path) -> None:
-    project_dir = tmp_path / ".booley_project"
-    overlay = selftest_overlay.bad_overlay_dir(project_dir, "sim") / "my_ip.sv"
+    booley_dir = tmp_path / ".booley"
+    overlay = selftest_overlay.bad_overlay_dir(booley_dir, "sim") / "my_ip.sv"
     overlay.parent.mkdir(parents=True)
     overlay.write_text("invalid HDL\n", encoding="utf-8")
     build_root = tmp_path / "build"
@@ -42,7 +42,7 @@ def test_stage_bad_overlay_invalidates_newer_make_artifact(tmp_path: Path) -> No
     os.utime(staged, (200, 200))
     os.utime(artifact, (300, 300))
 
-    assert selftest_overlay.stage_bad_overlay(project_dir, "sim", build_root) == 1
+    assert selftest_overlay.stage_bad_overlay(booley_dir, "sim", build_root) == 1
     assert staged.stat().st_mtime_ns > artifact.stat().st_mtime_ns
     result = subprocess.run(
         ["make", "-f", "-", "compiled.ok"],
@@ -59,21 +59,21 @@ def test_stage_bad_overlay_invalidates_newer_make_artifact(tmp_path: Path) -> No
 
 
 def test_stage_bad_overlay_rejects_symlinks(tmp_path: Path) -> None:
-    project_dir = tmp_path / ".booley_project"
-    overlay = selftest_overlay.bad_overlay_dir(project_dir, "sim")
+    booley_dir = tmp_path / ".booley"
+    overlay = selftest_overlay.bad_overlay_dir(booley_dir, "sim")
     overlay.mkdir(parents=True)
     (overlay / "redirect").symlink_to(tmp_path)
 
     with pytest.raises(selftest_overlay.SelftestOverlayError, match="symlink"):
-        selftest_overlay.stage_bad_overlay(project_dir, "sim", tmp_path / "build")
+        selftest_overlay.stage_bad_overlay(booley_dir, "sim", tmp_path / "build")
 
 
 def test_stage_bad_run_overlay_shadows_runtime_assets_without_mutating_them(
     tmp_path: Path,
 ) -> None:
-    project_dir = tmp_path / ".booley_project"
+    booley_dir = tmp_path / ".booley"
     overlay_file = (
-        selftest_overlay.bad_overlay_dir(project_dir, "sim") / "firmware" / "firmware.hex"
+        selftest_overlay.bad_overlay_dir(booley_dir, "sim") / "firmware" / "firmware.hex"
     )
     overlay_file.parent.mkdir(parents=True)
     overlay_file.write_text("bad\n", encoding="utf-8")
@@ -86,7 +86,7 @@ def test_stage_bad_run_overlay_shadows_runtime_assets_without_mutating_them(
     sibling.write_text("vector\n", encoding="utf-8")
     shadow = tmp_path / "build" / selftest_overlay.BAD_RUN_CWD_DIR
 
-    assert selftest_overlay.stage_bad_run_overlay(project_dir, "sim", run_cwd, shadow) == 1
+    assert selftest_overlay.stage_bad_run_overlay(booley_dir, "sim", run_cwd, shadow) == 1
 
     assert (shadow / "firmware" / "firmware.hex").read_text(encoding="utf-8") == "bad\n"
     assert (shadow / "vectors" / "input.hex").read_text(encoding="utf-8") == "vector\n"
@@ -98,19 +98,19 @@ def test_stage_bad_run_overlay_shadows_runtime_assets_without_mutating_them(
     sys.platform == "win32", reason="symlinks require elevated privileges on Windows"
 )
 def test_doctor_shadow_keeps_projected_core_outside_generation(tmp_path: Path) -> None:
-    project_dir = tmp_path / ".booley_project"
-    overlay = selftest_overlay.bad_overlay_dir(project_dir, "sim") / "fixture.hex"
+    booley_dir = tmp_path / ".booley"
+    overlay = selftest_overlay.bad_overlay_dir(booley_dir, "sim") / "fixture.hex"
     overlay.parent.mkdir(parents=True)
     overlay.write_text("bad\n", encoding="utf-8")
     projected = tmp_path / ".booley-projected-demo.core"
     projected.write_text("generated core\n", encoding="utf-8")
-    generation_parent = project_dir / ".runtime" / "edalize" / "sim" / "slot" / "g"
+    generation_parent = booley_dir / ".runtime" / "edalize" / "sim" / "slot" / "g"
     generation_parent.mkdir(parents=True)
     generation = generation_parent / "abcd"
     generation.mkdir()
     shadow = selftest_overlay.doctor_runtime_view_path(tmp_path, generation_parent, "a" * 32)
 
-    selftest_overlay.stage_bad_run_overlay(project_dir, "sim", tmp_path, shadow)
+    selftest_overlay.stage_bad_run_overlay(booley_dir, "sim", tmp_path, shadow)
 
     assert (shadow / projected.name).is_symlink()
     assert not any(generation.rglob("*.core"))
@@ -156,11 +156,11 @@ def test_doctor_shadow_rejects_symlinked_generation(tmp_path: Path) -> None:
 @pytest.mark.skipif(
     sys.platform == "win32", reason="symlinks require elevated privileges on Windows"
 )
-def test_stage_bad_run_overlay_excludes_project_dir_from_mirror(tmp_path: Path) -> None:
-    """The shadow must not symlink .booley_project — it is project infra, not a
+def test_stage_bad_run_overlay_excludes_booley_dir_from_mirror(tmp_path: Path) -> None:
+    """The shadow must not symlink .booley — it is project infra, not a
     runtime input, and FuseSoC chokes on a symlinked Booley Directory (#586)."""
-    project_dir = tmp_path / ".booley_project"
-    overlay_file = selftest_overlay.bad_overlay_dir(project_dir, "sim") / "fixture.hex"
+    booley_dir = tmp_path / ".booley"
+    overlay_file = selftest_overlay.bad_overlay_dir(booley_dir, "sim") / "fixture.hex"
     overlay_file.parent.mkdir(parents=True)
     overlay_file.write_text("bad\n", encoding="utf-8")
     run_cwd = tmp_path
@@ -168,27 +168,27 @@ def test_stage_bad_run_overlay_excludes_project_dir_from_mirror(tmp_path: Path) 
     (run_cwd / "vectors" / "input.hex").write_text("vec\n", encoding="utf-8")
     shadow = tmp_path / "build" / selftest_overlay.BAD_RUN_CWD_DIR
 
-    selftest_overlay.stage_bad_run_overlay(project_dir, "sim", run_cwd, shadow)
+    selftest_overlay.stage_bad_run_overlay(booley_dir, "sim", run_cwd, shadow)
 
     assert (shadow / "vectors").is_symlink()
-    assert not (shadow / ".booley_project").exists()
+    assert not (shadow / ".booley").exists()
 
 
 @pytest.mark.skipif(
     sys.platform == "win32", reason="symlinks require elevated privileges on Windows"
 )
-def test_stage_bad_run_overlay_excludes_configured_project_dir_from_mirror(
+def test_stage_bad_run_overlay_excludes_configured_booley_dir_from_mirror(
     tmp_path: Path,
 ) -> None:
-    project_dir = tmp_path / "project-control" / "data"
-    overlay_file = selftest_overlay.bad_overlay_dir(project_dir, "sim") / "fixture.hex"
+    booley_dir = tmp_path / "project-control" / "data"
+    overlay_file = selftest_overlay.bad_overlay_dir(booley_dir, "sim") / "fixture.hex"
     overlay_file.parent.mkdir(parents=True)
     overlay_file.write_text("bad\n", encoding="utf-8")
     shadow = tmp_path / "build" / selftest_overlay.BAD_RUN_CWD_DIR
 
-    selftest_overlay.stage_bad_run_overlay(project_dir, "sim", tmp_path, shadow)
+    selftest_overlay.stage_bad_run_overlay(booley_dir, "sim", tmp_path, shadow)
 
-    project_relative = project_dir.relative_to(tmp_path)
+    project_relative = booley_dir.relative_to(tmp_path)
     assert (shadow / project_relative.parent).is_dir()
     assert not (shadow / project_relative.parent).is_symlink()
     assert not (shadow / project_relative).exists()
@@ -197,26 +197,26 @@ def test_stage_bad_run_overlay_excludes_configured_project_dir_from_mirror(
 @pytest.mark.skipif(
     sys.platform == "win32", reason="symlinks require elevated privileges on Windows"
 )
-def test_stage_bad_run_overlay_rejects_symlinked_project_dir_ancestor(
+def test_stage_bad_run_overlay_rejects_symlinked_booley_dir_ancestor(
     tmp_path: Path,
 ) -> None:
     outside = tmp_path / "outside"
     outside.mkdir()
-    project_dir = tmp_path / "linked" / "data"
+    booley_dir = tmp_path / "linked" / "data"
     (tmp_path / "linked").symlink_to(outside, target_is_directory=True)
-    overlay_file = selftest_overlay.bad_overlay_dir(project_dir, "sim") / "fixture.hex"
+    overlay_file = selftest_overlay.bad_overlay_dir(booley_dir, "sim") / "fixture.hex"
     overlay_file.parent.mkdir(parents=True)
     overlay_file.write_text("bad\n", encoding="utf-8")
     shadow = tmp_path / "build" / selftest_overlay.BAD_RUN_CWD_DIR
 
     with pytest.raises(selftest_overlay.SelftestOverlayError, match="symlinked runtime path"):
-        selftest_overlay.stage_bad_run_overlay(project_dir, "sim", tmp_path, shadow)
+        selftest_overlay.stage_bad_run_overlay(booley_dir, "sim", tmp_path, shadow)
 
 
 def test_stage_bad_run_overlay_rejects_symlinked_overlay_ancestor(tmp_path: Path) -> None:
-    project_dir = tmp_path / ".booley_project"
+    booley_dir = tmp_path / ".booley"
     overlay_file = (
-        selftest_overlay.bad_overlay_dir(project_dir, "sim") / "firmware" / "firmware.hex"
+        selftest_overlay.bad_overlay_dir(booley_dir, "sim") / "firmware" / "firmware.hex"
     )
     overlay_file.parent.mkdir(parents=True)
     overlay_file.write_text("bad\n", encoding="utf-8")
@@ -226,7 +226,7 @@ def test_stage_bad_run_overlay_rejects_symlinked_overlay_ancestor(tmp_path: Path
 
     with pytest.raises(selftest_overlay.SelftestOverlayError, match="symlinked runtime path"):
         selftest_overlay.stage_bad_run_overlay(
-            project_dir,
+            booley_dir,
             "sim",
             run_cwd,
             tmp_path / "build" / selftest_overlay.BAD_RUN_CWD_DIR,
@@ -234,8 +234,8 @@ def test_stage_bad_run_overlay_rejects_symlinked_overlay_ancestor(tmp_path: Path
 
 
 def test_stage_bad_run_overlay_replaces_stale_shadow_forms(tmp_path: Path) -> None:
-    project_dir = tmp_path / ".booley_project"
-    overlay_file = selftest_overlay.bad_overlay_dir(project_dir, "sim") / "fixture.hex"
+    booley_dir = tmp_path / ".booley"
+    overlay_file = selftest_overlay.bad_overlay_dir(booley_dir, "sim") / "fixture.hex"
     overlay_file.parent.mkdir(parents=True)
     overlay_file.write_text("bad\n", encoding="utf-8")
     run_cwd = tmp_path / "runtime-assets"
@@ -244,32 +244,32 @@ def test_stage_bad_run_overlay_replaces_stale_shadow_forms(tmp_path: Path) -> No
     shadow.parent.mkdir()
     shadow.write_text("stale file\n", encoding="utf-8")
 
-    selftest_overlay.stage_bad_run_overlay(project_dir, "sim", run_cwd, shadow)
+    selftest_overlay.stage_bad_run_overlay(booley_dir, "sim", run_cwd, shadow)
     (shadow / "stale").write_text("stale directory\n", encoding="utf-8")
-    selftest_overlay.stage_bad_run_overlay(project_dir, "sim", run_cwd, shadow)
+    selftest_overlay.stage_bad_run_overlay(booley_dir, "sim", run_cwd, shadow)
 
     assert not (shadow / "stale").exists()
     assert (shadow / "fixture.hex").read_text(encoding="utf-8") == "bad\n"
 
 
 def test_stage_bad_run_overlay_materializes_missing_runtime_branch(tmp_path: Path) -> None:
-    project_dir = tmp_path / ".booley_project"
-    overlay_file = selftest_overlay.bad_overlay_dir(project_dir, "sim") / "new" / "fixture.hex"
+    booley_dir = tmp_path / ".booley"
+    overlay_file = selftest_overlay.bad_overlay_dir(booley_dir, "sim") / "new" / "fixture.hex"
     overlay_file.parent.mkdir(parents=True)
     overlay_file.write_text("bad\n", encoding="utf-8")
     run_cwd = tmp_path / "runtime-assets"
     run_cwd.mkdir()
     shadow = run_cwd / selftest_overlay.BAD_RUN_CWD_DIR
 
-    selftest_overlay.stage_bad_run_overlay(project_dir, "sim", run_cwd, shadow)
+    selftest_overlay.stage_bad_run_overlay(booley_dir, "sim", run_cwd, shadow)
 
     assert (shadow / "new" / "fixture.hex").read_text(encoding="utf-8") == "bad\n"
 
 
 def test_stage_bad_run_overlay_rejects_file_as_overlay_ancestor(tmp_path: Path) -> None:
-    project_dir = tmp_path / ".booley_project"
+    booley_dir = tmp_path / ".booley"
     overlay_file = (
-        selftest_overlay.bad_overlay_dir(project_dir, "sim") / "firmware" / "firmware.hex"
+        selftest_overlay.bad_overlay_dir(booley_dir, "sim") / "firmware" / "firmware.hex"
     )
     overlay_file.parent.mkdir(parents=True)
     overlay_file.write_text("bad\n", encoding="utf-8")
@@ -279,7 +279,7 @@ def test_stage_bad_run_overlay_rejects_file_as_overlay_ancestor(tmp_path: Path) 
 
     with pytest.raises(selftest_overlay.SelftestOverlayError, match="not a directory"):
         selftest_overlay.stage_bad_run_overlay(
-            project_dir,
+            booley_dir,
             "sim",
             run_cwd,
             tmp_path / "build" / selftest_overlay.BAD_RUN_CWD_DIR,
@@ -287,22 +287,22 @@ def test_stage_bad_run_overlay_rejects_file_as_overlay_ancestor(tmp_path: Path) 
 
 
 def test_stage_bad_run_overlay_handles_absent_fixture_and_runtime(tmp_path: Path) -> None:
-    project_dir = tmp_path / ".booley_project"
+    booley_dir = tmp_path / ".booley"
     shadow = tmp_path / "build" / selftest_overlay.BAD_RUN_CWD_DIR
 
     assert (
         selftest_overlay.stage_bad_run_overlay(
-            project_dir, "sim", tmp_path / "missing-runtime", shadow
+            booley_dir, "sim", tmp_path / "missing-runtime", shadow
         )
         == 0
     )
 
-    overlay_file = selftest_overlay.bad_overlay_dir(project_dir, "sim") / "fixture.hex"
+    overlay_file = selftest_overlay.bad_overlay_dir(booley_dir, "sim") / "fixture.hex"
     overlay_file.parent.mkdir(parents=True)
     overlay_file.write_text("bad\n", encoding="utf-8")
     with pytest.raises(selftest_overlay.SelftestOverlayError, match="not a directory"):
         selftest_overlay.stage_bad_run_overlay(
-            project_dir, "sim", tmp_path / "missing-runtime", shadow
+            booley_dir, "sim", tmp_path / "missing-runtime", shadow
         )
 
 
@@ -312,17 +312,17 @@ def test_stage_bad_run_overlay_handles_absent_fixture_and_runtime(tmp_path: Path
 def test_managed_runtime_view_removes_view_on_normal_and_exceptional_exit(
     tmp_path: Path,
 ) -> None:
-    project_dir = tmp_path / ".booley_project"
-    overlay = selftest_overlay.bad_overlay_dir(project_dir, "sim") / "fixture.hex"
+    booley_dir = tmp_path / ".booley"
+    overlay = selftest_overlay.bad_overlay_dir(booley_dir, "sim") / "fixture.hex"
     overlay.parent.mkdir(parents=True)
     overlay.write_text("bad\n", encoding="utf-8")
     run_cwd = tmp_path / "runtime-assets"
     run_cwd.mkdir()
-    generation_parent = tmp_path / ".booley_project" / ".runtime" / "g"
+    generation_parent = tmp_path / ".booley" / ".runtime" / "g"
     generation_parent.mkdir(parents=True)
 
     with selftest_overlay.managed_runtime_view(
-        tmp_path, project_dir, "sim", run_cwd, generation_parent, "a" * 32
+        tmp_path, booley_dir, "sim", run_cwd, generation_parent, "a" * 32
     ) as view:
         assert (view / "fixture.hex").read_text(encoding="utf-8") == "bad\n"
         assert view.is_dir()
@@ -331,7 +331,7 @@ def test_managed_runtime_view_removes_view_on_normal_and_exceptional_exit(
     with (
         pytest.raises(ValueError, match="body failure"),
         selftest_overlay.managed_runtime_view(
-            tmp_path, project_dir, "sim", run_cwd, generation_parent, "b" * 32
+            tmp_path, booley_dir, "sim", run_cwd, generation_parent, "b" * 32
         ) as view,
     ):
         assert view.is_dir()
@@ -342,8 +342,8 @@ def test_managed_runtime_view_removes_view_on_normal_and_exceptional_exit(
 def test_managed_runtime_view_removes_partial_staging(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
     generation_parent = tmp_path / "slot" / "g"
     generation_parent.mkdir(parents=True)
     view = generation_parent / f"{selftest_overlay.BAD_RUN_CWD_DIR}-a-{'a' * 32}"
@@ -358,7 +358,7 @@ def test_managed_runtime_view_removes_partial_staging(
         pytest.raises(selftest_overlay.SelftestOverlayError, match="staging failed"),
         selftest_overlay.managed_runtime_view(
             tmp_path,
-            project_dir,
+            booley_dir,
             "sim",
             tmp_path,
             generation_parent,
@@ -372,8 +372,8 @@ def test_managed_runtime_view_removes_partial_staging(
 def test_managed_runtime_view_retries_cleanup_and_preserves_body_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    project_dir = tmp_path / ".booley_project"
-    overlay = selftest_overlay.bad_overlay_dir(project_dir, "sim") / "fixture.hex"
+    booley_dir = tmp_path / ".booley"
+    overlay = selftest_overlay.bad_overlay_dir(booley_dir, "sim") / "fixture.hex"
     overlay.parent.mkdir(parents=True)
     overlay.write_text("bad\n", encoding="utf-8")
     run_cwd = tmp_path / "runtime-assets"
@@ -402,7 +402,7 @@ def test_managed_runtime_view_retries_cleanup_and_preserves_body_error(
     with (
         pytest.raises(ValueError, match="body failure") as error,
         selftest_overlay.managed_runtime_view(
-            tmp_path, project_dir, "sim", run_cwd, generation_parent, "a" * 32
+            tmp_path, booley_dir, "sim", run_cwd, generation_parent, "a" * 32
         ),
     ):
         raise ValueError("body failure")
@@ -412,7 +412,7 @@ def test_managed_runtime_view_retries_cleanup_and_preserves_body_error(
     monkeypatch.setattr(selftest_overlay, "stage_bad_run_overlay", original_stage)
 
     with selftest_overlay.managed_runtime_view(
-        tmp_path, project_dir, "sim", run_cwd, generation_parent, "b" * 32
+        tmp_path, booley_dir, "sim", run_cwd, generation_parent, "b" * 32
     ):
         pass
     assert not view.exists()
@@ -422,8 +422,8 @@ def test_managed_runtime_view_retries_cleanup_and_preserves_body_error(
     sys.platform == "win32", reason="symlinks require elevated privileges on Windows"
 )
 def test_managed_runtime_view_prunes_only_owned_siblings(tmp_path: Path) -> None:
-    project_dir = tmp_path / ".booley_project"
-    overlay = selftest_overlay.bad_overlay_dir(project_dir, "sim") / "fixture.hex"
+    booley_dir = tmp_path / ".booley"
+    overlay = selftest_overlay.bad_overlay_dir(booley_dir, "sim") / "fixture.hex"
     overlay.parent.mkdir(parents=True)
     overlay.write_text("bad\n", encoding="utf-8")
     run_cwd = tmp_path / "runtime-assets"
@@ -442,7 +442,7 @@ def test_managed_runtime_view_prunes_only_owned_siblings(tmp_path: Path) -> None
     (other_slot / f"{selftest_overlay.BAD_RUN_CWD_DIR}-0123456789abcdef").mkdir()
 
     with selftest_overlay.managed_runtime_view(
-        tmp_path, project_dir, "sim", run_cwd, generation_parent, "b" * 32
+        tmp_path, booley_dir, "sim", run_cwd, generation_parent, "b" * 32
     ):
         assert unrelated.is_dir()
         assert (other_slot / f"{selftest_overlay.BAD_RUN_CWD_DIR}-0123456789abcdef").is_dir()
@@ -458,17 +458,17 @@ def test_managed_runtime_view_prunes_only_owned_siblings(tmp_path: Path) -> None
 )
 def test_managed_runtime_view_validates_slot_against_checkout_root(tmp_path: Path) -> None:
     checkout = tmp_path / "checkout"
-    project_dir = tmp_path / "external-state" / ".booley_project"
-    overlay = selftest_overlay.bad_overlay_dir(project_dir, "sim") / "fixture.hex"
+    booley_dir = tmp_path / "external-state" / ".booley"
+    overlay = selftest_overlay.bad_overlay_dir(booley_dir, "sim") / "fixture.hex"
     overlay.parent.mkdir(parents=True)
     overlay.write_text("bad\n", encoding="utf-8")
     run_cwd = checkout / "runtime-assets"
     run_cwd.mkdir(parents=True)
-    generation_parent = checkout / ".booley_project" / ".runtime" / "g"
+    generation_parent = checkout / ".booley" / ".runtime" / "g"
     generation_parent.mkdir(parents=True)
 
     with selftest_overlay.managed_runtime_view(
-        checkout, project_dir, "sim", run_cwd, generation_parent, "c" * 32
+        checkout, booley_dir, "sim", run_cwd, generation_parent, "c" * 32
     ) as view:
         assert (view / "fixture.hex").read_text(encoding="utf-8") == "bad\n"
     assert not view.exists()

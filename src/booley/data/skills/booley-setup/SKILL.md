@@ -16,7 +16,7 @@ agent provider and authentication policy before this design-aware work begins.
 
 The model is **plan-first**: Step 0 gathers feasibility evidence and every
 decision the later steps need, refines them in a grilling session, and writes
-them to `.booley_project/SETUP-PLAN.md` for approval. Execution then runs
+them to `.booley/SETUP-PLAN.md` for approval. Execution then runs
 **gate-free** — no step stops to ask about anything the plan already decided.
 In unattended mode the plan file replaces the approval conversation entirely
 (see `steps/0-plan.md`).
@@ -42,7 +42,7 @@ without interruption.
 Step 4 is the gate: setup is not complete until plain `booley doctor` and
 `booley doctor --deep` both exit 0 **and report zero active (unwaived)
 warnings**. A deliberate project constraint may use a reviewed
-`.booley_project/doctor-waivers.toml` entry following Step 4's rules; an ignored
+`.booley/doctor-waivers.toml` entry following Step 4's rules; an ignored
 warning may not. **Steps 5–7 are post-gate** — Step 5
 validates the finished setup against the native build system, Step 6 reports on
 the run; Step 7 performs bounded cleanup. These steps do not block the gate (see
@@ -51,7 +51,7 @@ the run; Step 7 performs bounded cleanup. These steps do not block the gate (see
 ## The plan file
 
 `SETUP-PLAN.md` (template: `SETUP_PLAN_TEMPLATE.md`, written to
-`.booley_project/`) is the skill's single state file; every section below
+`.booley/`) is the skill's single state file; every section below
 refers to its parts:
 
 - **`status:`** — `draft` → `approved` | `auto-approved` → `executing` →
@@ -69,7 +69,7 @@ refers to its parts:
 
 ## Invocation and phase detection
 
-Read `$ARGUMENTS`, then `.booley_project/SETUP-PLAN.md` (if present) to find
+Read `$ARGUMENTS`, then `.booley/SETUP-PLAN.md` (if present) to find
 where setup stands:
 
 - **Empty `$ARGUMENTS`** → phase-detect from the plan's `status`:
@@ -226,7 +226,7 @@ plain-English reason it matters.
 ## Execution phase (after an approved plan)
 
 1. **Step 1 — environment · host.** Only if the plan's row 7 calls for it:
-   write `.booley_project/docker/Dockerfile` and/or set `[sandbox].image` in
+   write `.booley/docker/Dockerfile` and/or set `[sandbox].image` in
    the placeholder `booley.toml`, then re-run `booley init` (idempotent) so it
    builds/pulls the planned image and re-seeds the devcontainer config. Skip
    entirely when the plan keeps the base image.
@@ -247,13 +247,13 @@ plain-English reason it matters.
 6. **Step 5 — parity · optional.** Only if the plan's row 18 selects an oracle
    (≠ `none`): run `steps/5-parity.md` after the gate to diff Booley against the
    repo's native flow where the EDA tools match. It produces
-   `.booley_project/PARITY-REPORT.md` and a note in the final report; it never
+   `.booley/PARITY-REPORT.md` and a note in the final report; it never
    blocks completion and does not change `status`. Parity is the richest source
    of real Booley findings in the whole run — a number that differs from the
    native flow's is about as unambiguous as evidence gets — so log every
    discrepancy with `booley feedback add`, not just the ones you can explain.
 7. **Step 6 — findings.** Always: `steps/6-findings.md` triages the log, writes
-   `.booley_project/SETUP-REPORT.md`, and creates a redacted export only when the
+   `.booley/SETUP-REPORT.md`, and creates a redacted export only when the
    user explicitly requests one. Post-gate and non-blocking.
 8. **Step 7 — cleanup.** Always: `steps/7-cleanup.md` previews and applies the
    approved retention mode after the report exists. It uses only the current
@@ -266,12 +266,12 @@ Two rules that outrank any step's local convenience. A step may look like it
 wants you to break these; it doesn't.
 
 - **Stay out of the repo (minimal footprint).** All of Booley's operational
-  state lives under `.booley_project/` — config, hooks, Goalsets, the project
+  state lives under `.booley/` — config, hooks, Goalsets, the project
   `docker/` image, logs, and `SETUP-PLAN.md`. Do **not** add or commit
   Booley-generated files into the target repo's tracked tree: no
   `README.booley.md` / integration notes, no logs, no generated artifacts
   explaining the onboarding. **This includes Step 6's own output** — the
-  findings log and the one `SETUP-REPORT.md` live in `.booley_project/`; a
+  findings log and the one `SETUP-REPORT.md` live in `.booley/`; a
   report about the setup is still a Booley-generated file. A redacted
   `BOOLEY-FEEDBACK.md` exists only after an explicit `booley feedback export`.
   The only Booley-touched files that legitimately
@@ -280,12 +280,12 @@ wants you to break these; it doesn't.
   design-description: reuse/modernize the appropriate native core when one
   exists, and create a tracked core only when none exists. For a **hidden**
   stealth footprint, never edit native tracked cores; its core belongs under
-  `.booley_project/cores/` and uses repository-root-relative filesets. Booley
+  `.booley/cores/` and uses repository-root-relative filesets. Booley
   projects ignored root-level copies; do not create source symlinks. (The
   `booley_vcd_dump.sv` trace
   module is **not** one of them: the trace overlay supplies it from Booley's
   `refs/` at run time.) Notes for the next Developer Agent or the user go in
-  `.booley_project/`, not the repo. Whether `.booley_project/` **itself** is
+  `.booley/`, not the repo. Whether `.booley/` **itself** is
   tracked is the plan's row-16 call: **hidden** (default) keeps it out via the
   parent repo's `.git/info/exclude` — never `.gitignore`, which is tracked and
   would advertise Booley — and versions it in its own inner git repo; **open**
@@ -299,14 +299,14 @@ wants you to break these; it doesn't.
   --user-report-path SETUP-REPORT.md`) and commit it — the port *is* the
   deliverable there. When the enclosing workflow gives that instruction, write
   the root report **instead of** an inner copy. A normal setup leaves the report
-  in `.booley_project/` and never passes that flag. If you *find* a **tracked**
+  in `.booley/` and never passes that flag. If you *find* a **tracked**
   `SETUP-REPORT.md`, it is the fingerprint of a port — an earlier one, or **the
   one running right now** (on a dogfood repo it is usually created hours ago, with
   sections still waiting on the step you are about to run). Either way: record
   it, read it as evidence, leave it in place unless the enclosing port workflow
   explicitly owns and rerenders it, and follow the prior-footprint branch in
   `steps/0-plan.md`. An **untracked**
-  `.booley_project/SETUP-REPORT.md` is a different thing entirely — the previous
+  `.booley/SETUP-REPORT.md` is a different thing entirely — the previous
   setup run's own report, which Step 6 will simply overwrite.
 - **Ship the toolchain, not the artifact.** When a design needs a software
   build step to produce a simulation input (CPU-core firmware, a compiled

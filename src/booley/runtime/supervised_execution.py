@@ -55,7 +55,7 @@ class SupervisedProcessSet:
             self._processes.discard(process)
             active = bool(self._processes)
         if self._execution_id is not None and not active:
-            paths = execution_paths(self._execution_id, project_dir=self._project_data)
+            paths = execution_paths(self._execution_id, booley_dir=self._project_data)
             current = read_json(paths.record)
             if current is not None and current.get("state") == "running":
                 self._write_record("waiting", None, tree_terminal=False)
@@ -67,7 +67,7 @@ class SupervisedProcessSet:
             kill_process_tree(process)
 
     def _write_record(self, state: str, leader, *, tree_terminal: bool) -> None:
-        paths = execution_paths(self._execution_id, project_dir=self._project_data)
+        paths = execution_paths(self._execution_id, booley_dir=self._project_data)
         atomic_write_json(
             paths.record,
             {
@@ -141,7 +141,7 @@ class SupervisedCommandHeartbeat:
     """Advance the attachment heartbeat while one wrapped command runs."""
 
     def __init__(self, scope: SupervisedExecutionScope) -> None:
-        self._paths = execution_paths(scope.execution_id, project_dir=scope.project_data)
+        self._paths = execution_paths(scope.execution_id, booley_dir=scope.project_data)
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
 

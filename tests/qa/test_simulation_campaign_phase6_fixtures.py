@@ -136,8 +136,8 @@ def _goal_worktree(tmp_path: Path) -> tuple[Path, Path]:
     (main / "README.md").write_text("QA recovery fixture\n", encoding="utf-8")
     git(main, "add", "README.md")
     git(main, "commit", "-q", "-m", "fixture")
-    (main / ".git/info/exclude").write_text("/.booley_project\n", encoding="utf-8")
-    control = main / ".booley_project"
+    (main / ".git/info/exclude").write_text("/.booley\n", encoding="utf-8")
+    control = main / ".booley"
     control.mkdir()
     worktree = tmp_path / "worktree"
     git(main, "worktree", "add", "-q", "-b", "goal/qa-campaign-20260922", str(worktree))

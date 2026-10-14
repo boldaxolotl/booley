@@ -7,8 +7,8 @@ import re
 import tomllib
 from pathlib import Path
 
+from booley.core.booley_dir import resolve_checkout_booley_dir
 from booley.core.boundary import as_dict
-from booley.core.project_dir import resolve_checkout_project_dir
 
 SANDBOX_IMAGE = "booley-sandbox"
 
@@ -24,10 +24,10 @@ def project_image_name(project_root: Path) -> str:
 def project_sandbox_image(project_root: Path) -> str:
     """Return the validated Project-selected Sandbox Image or the default."""
     try:
-        project_dir = resolve_checkout_project_dir(project_root)
+        booley_dir = resolve_checkout_booley_dir(project_root)
     except FileNotFoundError:
         return project_image_name(project_root)
-    toml_path = project_dir / "booley.toml"
+    toml_path = booley_dir / "booley.toml"
     if not toml_path.is_file():
         return project_image_name(project_root)
     try:
@@ -36,12 +36,12 @@ def project_sandbox_image(project_root: Path) -> str:
     except (OSError, tomllib.TOMLDecodeError):
         return project_image_name(project_root)
     sandbox = as_dict(data.get("sandbox"), default={}) or {}
-    return _selected_from_config(project_root, project_dir, sandbox)
+    return _selected_from_config(project_root, booley_dir, sandbox)
 
 
 def _selected_from_config(
     project_root: Path,
-    project_dir: Path,
+    booley_dir: Path,
     sandbox: dict[str, object],
 ) -> str:
     raw = sandbox.get("image", "")

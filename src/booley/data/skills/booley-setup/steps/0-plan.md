@@ -2,7 +2,7 @@
 
 > Part of the `booley-setup` skill. This step runs on the **host**, before the
 > devcontainer exists. It is **read-only with respect to the repository** — its
-> only write is `.booley_project/SETUP-PLAN.md` (the Booley Directory; `booley init`
+> only write is `.booley/SETUP-PLAN.md` (the Booley Directory; `booley init`
 > created it). No project config is authored here; that is Steps 2–4, and they
 > run only against an approved plan.
 
@@ -151,12 +151,12 @@ overwrites the first one's decisions.
 prior port. A plain `init` (which already ran — it is what deployed this skill)
 leaves all of this on a blank slate:
 
-- `.booley_project/booley.toml` and `tests.toml` — **comment-only placeholders
+- `.booley/booley.toml` and `tests.toml` — **comment-only placeholders
   with zero keys**;
-- `.booley_project/.gitignore`, a `FUSESOC_IGNORE` marker, a managed
+- `.booley/.gitignore`, a `FUSESOC_IGNORE` marker, a managed
   `.managed/project-git-hooks.pyz` bundle, Project-authored `hooks/`, and four create-only
   `goalsets/{feature,bugfix,refactor,verification}.md` files;
-- an **inner git repo** at `.booley_project/.git`, with no commit in it — but
+- an **inner git repo** at `.booley/.git`, with no commit in it — but
   only when `[stealth] enabled` is on (the runtime fallback before setup makes
   its explicit choice); with the scrub explicitly off, init skips it and the
   dir is versioned nowhere;
@@ -164,12 +164,12 @@ leaves all of this on a blank slate:
   `.devcontainer/devcontainer.json`;
 - one generated block in `.git/info/exclude` under the header
   `# Booley (generated; local, uncommitted)`: `/.devcontainer`,
-  `/.booley_project`, `/.claude`, and `/.booley-projected-*.core`. Init consolidates repeated headers.
+  `/.booley`, `/.claude`, and `/.booley-projected-*.core`. Init consolidates repeated headers.
 
 Tell-tales of a **prior setup** are therefore only things init never writes:
 any actual key in `booley.toml`/`tests.toml` (a `[sandbox].image`, `[stealth]`,
-`[flows]`, or `[agent]` block), a `.booley_project/docker/` or `cores/` dir, a
-`.booley_project/AGENTS.md` (and its second exclude block,
+`[flows]`, or `[agent]` block), a `.booley/docker/` or `cores/` dir, a
+`.booley/AGENTS.md` (and its second exclude block,
 `# Booley guidance links` → `/AGENTS.md`, `/CLAUDE.md`), an existing
 `SETUP-PLAN.md`, `<axis>_<subject>` targets in a `.core`, or a **tracked**
 `SETUP-REPORT.md` at the Project Root. Then branch:
@@ -216,7 +216,7 @@ the only branch that short-circuits the rest is the first.
 `rg --files` inventories, reading docs/CI/Makefiles/filelists,
 `find . -type l`, counting `.core` files, license-daemon reachability. What
 you may NOT do yet: run EDA tools in the sandbox, resolve targets through real
-`fusesoc`, or write any file outside `.booley_project/SETUP-PLAN.md`. Where
+`fusesoc`, or write any file outside `.booley/SETUP-PLAN.md`. Where
 only an in-sandbox probe would settle a question, record the decision at its
 honest confidence and add the probe to the plan's **execution-time checks**
 list — Steps 2–4 run it, and the deviation rule catches a contradiction.
@@ -441,10 +441,10 @@ script lines) as you go.
   rejects it with `Illegal character in core name`. `--cores-root` is a
   *global* flag and must come **before** `run` — after it, fusesoc 2.4.6 exits
   with `unrecognized arguments: --cores-root`. For a stealth authored core the
-  dir is `.booley_project/cores`; for an in-tree `.core` it is the Project Root.
+  dir is `.booley/cores`; for an in-tree `.core` it is the Project Root.
 - **Git submodules.** Run `git submodule status` in the outer repository and,
-  when `.booley_project` is a standalone Git repository, run
-  `git -C .booley_project submodule status` too. If either has any, add a
+  when `.booley` is a standalone Git repository, run
+  `git -C .booley submodule status` too. If either has any, add a
   decision row — but a short one: Goal worktrees get their submodules
   reconstructed from local Git objects at the same repository path, never
   cloned, so private SSH URLs are not consulted (mechanics in CONFIG.md →
@@ -453,7 +453,7 @@ script lines) as you go.
   - Every selected submodule must be **present, clean, non-shallow, and contain
     the required pinned commit objects** in its owning repository before any
     Goal work — host-side `git submodule update --init --recursive` in the
-    outer repo and `git -C .booley_project submodule update --init --recursive`
+    outer repo and `git -C .booley submodule update --init --recursive`
     in a standalone paired repo, with no uncommitted submodule work left.
     Worktree setup hard-errors otherwise with the missing path, dirty checkout,
     shallow history, or incomplete local-object cause.
@@ -536,12 +536,12 @@ separate columns (see "How a row resolves"). The standard checklist:
    - **Open footprint + no native `.core`:** author a normal tracked project
      core at the Project Root or beside its RTL.
    - **Stealth footprint:** never edit the repo's tracked native cores. Author a
-     distinct-VLNV core under `.booley_project/cores/` with repository-root-relative
+     distinct-VLNV core under `.booley/cores/` with repository-root-relative
      fileset paths. Booley projects ignored root-level copies for FuseSoC; do
      not create source-resolution symlinks. Native-core modernization findings
      outside the Doctor-selected Target surface are notes, not setup work.
    - **Hybrid integration footprint:** use only when the user or an enclosing
-     port workflow explicitly requires it. Keep operational `.booley_project/`
+     port workflow explicitly requires it. Keep operational `.booley/`
      state local and ignored, while tracking the minimal repository-native
      integration artifacts the project must retain (selected `.core` Target
      edits, constraints, wrappers, and the setup/port report). This is not the
@@ -663,7 +663,7 @@ separate columns (see "How a row resolves"). The standard checklist:
     - **The user supplies it.** If the repo ships none, the Target is
       **blocked** until the user provides a file. Interactive: ask for it in
       the grill (a path, or file contents to place at
-      `.booley_project/cores/constraints/<target>.sdc` or `.xdc`). Record the
+      `.booley/cores/constraints/<target>.sdc` or `.xdc`). Record the
       exact file as `user-confirmed`. Copying a file the user supplied into
       the project is not authoring.
       Unattended: leave that Target unconfigured. Star the row `review`, and
@@ -730,14 +730,14 @@ separate columns (see "How a row resolves"). The standard checklist:
 16. **Git footprint — Keep Booley out of your git history?** **Always a grill
     question**, merged with row 20: ask exactly **"Keep Booley out of your git
     history?"** Explain both effects before taking the answer:
-    - **Yes (hidden):** `.booley_project/` stays **untracked** in the RTL repo,
+    - **Yes (hidden):** `.booley/` stays **untracked** in the RTL repo,
       excluded through the parent repo's `.git/info/exclude` (never tracked
       `.gitignore`), **and stealth mode turns on**: the commit-message scrub
       removes protected AI/tool names from new commit messages, and hidden-core
       projection makes ignored root copies when Booley authors cores.
       Row 16 = `hidden`, row 20 = `enabled = true`; both are `user-confirmed`
       from this one answer, including for hidden config-only projects.
-    - **No (open):** `.booley_project/` is **committed** to the RTL repo like
+    - **No (open):** `.booley/` is **committed** to the RTL repo like
       other project config, builds use tracked native cores, and row 20 =
       `enabled = false`. Both rows are `user-confirmed` from this answer.
     Recommend Yes/hidden for a port (matching `booley init`'s footprint), and
@@ -751,7 +751,7 @@ separate columns (see "How a row resolves"). The standard checklist:
     Booley Directory is versioned nowhere, and author no hidden cores. Hidden
     authored cores require stealth's projection and scrub together.
     **Hybrid** is reserved for an explicitly requested port/integration policy:
-    keep `.booley_project/` hidden and stealth enabled, but track only the named
+    keep `.booley/` hidden and stealth enabled, but track only the named
     native cores, constraints, wrappers, durable root `AGENTS.md`, and report
     required by that policy. Record the exact tracked allowlist in this row;
     keep operational state hidden.
@@ -803,12 +803,12 @@ separate columns (see "How a row resolves"). The standard checklist:
     `anthropic`, `codex`, `booley`, …) from new commit messages; it can also cap
     the body (`max_body_lines`) or allowlist author identities
     (`allowed_authors`). Authored hidden cores remain self-contained under
-    `.booley_project/cores/` and are projected into ignored RTL-root copies.
+    `.booley/cores/` and are projected into ignored RTL-root copies.
     **Unattended: write `enabled = false`** unless a hidden core is authored,
     which requires `enabled = true`; star the choice `review` unless pre-set.
     Nobody consented to a commit-message rewrite, so hidden config alone never
     enables the scrub in unattended setup.
-    `booley init` creates `.booley_project/`'s own inner git repo *only* while
+    `booley init` creates `.booley/`'s own inner git repo *only* while
     `[stealth] enabled` is on. With the scrub off, a hidden-footprint Booley Directory is versioned nowhere until someone `git init`s it — flag that for
     Step 4's footprint work rather than letting the combination pass silently.
 23. **Tech Cell Replacement** — one Project-wide mapping shared by all enabled
@@ -924,7 +924,7 @@ Part D before that confirmation.
 ## Part D — Write the plan and get approval
 
 Fill `../SETUP_PLAN_TEMPLATE.md` and write it to
-`.booley_project/SETUP-PLAN.md`:
+`.booley/SETUP-PLAN.md`:
 
 - **§1 Feasibility** — the per-flow verdict table + determinant evidence.
 - **§2 Decision sheet** — plain label first, with each Booley term defined
@@ -993,7 +993,7 @@ compile-flag probe.
    the project at it with the normal image selector:
 
    ```toml
-   # .booley_project/booley.toml
+   # .booley/booley.toml
    [sandbox]
    image = "booley-sandbox-riscv"
    ```
@@ -1008,7 +1008,7 @@ compile-flag probe.
    Make target):
 
    ```bash
-   # .booley_project/hooks/post-setup.sh — the riscv toolchain is on PATH
+   # .booley/hooks/post-setup.sh — the riscv toolchain is on PATH
    make -C <path/to/sw-build-dir> ARCH=rv32imc_zicsr   # e.g. Ibex's coremark make target
    ```
 
@@ -1019,7 +1019,7 @@ compile-flag probe.
 
    Keep the hook thin — have it call a **tracked** script in the repo
    (`booley/build_firmware.sh`) rather than holding the build recipe itself.
-   The hook lives under `.booley_project/hooks/`, which is ignored by
+   The hook lives under `.booley/hooks/`, which is ignored by
    convention, so a recipe written only there does not survive a fresh clone
    and the worktree comes up with no firmware.
 

@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import Any
 
 from booley.config.flow_enablement import retired_config_error
+from booley.core.booley_dir import resolve_booley_dir
 from booley.core.config_paths import resolve_toml
-from booley.core.project_dir import resolve_project_dir
 
 SUPPORTED_EDA_KINDS = frozenset({"vivado"})
 PROVISIONING_IMAGE = "image"
@@ -67,10 +67,10 @@ def _parse_kind(kind: str, section: Any) -> EdaConfig:
 def load_eda_config(project_root: Path) -> dict[str, EdaConfig]:
     """Load declarative EDA requests without host provisioning policy."""
     try:
-        project_dir = resolve_project_dir(project_root)
+        booley_dir = resolve_booley_dir(project_root)
     except FileNotFoundError:
         return {}
-    path = resolve_toml(project_dir)
+    path = resolve_toml(booley_dir)
     if not path.is_file():
         return {}
     try:

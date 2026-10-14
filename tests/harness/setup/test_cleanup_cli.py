@@ -22,7 +22,7 @@ def _parser() -> argparse.ArgumentParser:
 def test_cleanup_cli_runs_prepare_record_preview_and_apply(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    project = tmp_path / ".booley_project"
+    project = tmp_path / ".booley"
     project.mkdir()
     parser = _parser()
 
@@ -81,7 +81,7 @@ def test_cleanup_cli_runs_prepare_record_preview_and_apply(
 def test_cleanup_cli_reports_stale_digest(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    (tmp_path / ".booley_project").mkdir()
+    (tmp_path / ".booley").mkdir()
     prepare_run(tmp_path, "cli-stale")
     args = _parser().parse_args(
         [
@@ -103,7 +103,7 @@ def test_cleanup_cli_reports_stale_digest(
 def test_cleanup_cli_rejects_unknown_operation(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    (tmp_path / ".booley_project").mkdir()
+    (tmp_path / ".booley").mkdir()
     args = argparse.Namespace(cleanup_command="unknown", project_root="")
 
     assert cleanup_cli.run(args, tmp_path) == 2

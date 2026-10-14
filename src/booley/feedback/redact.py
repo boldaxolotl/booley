@@ -177,7 +177,7 @@ def _core_identifiers(project_root: Path) -> set[str]:
     for core in sorted(project_root.rglob("*.core")):
         # Skip anything under a Booley state or VCS dir — those hold copies, and
         # walking them doubles the work on a big repo for no new names.
-        if any(part in {".git", ".booley_project", ".runtime"} for part in core.parts):
+        if any(part in {".git", ".booley", ".runtime"} for part in core.parts):
             continue
         try:
             text = core.read_text(encoding="utf-8", errors="replace")
@@ -244,16 +244,16 @@ def redact_identifiers_enabled(booley_toml: dict) -> bool:
     return True
 
 
-def build_plan(project_root: Path, project_dir: Path | None = None) -> RedactionPlan:
+def build_plan(project_root: Path, booley_dir: Path | None = None) -> RedactionPlan:
     """Assemble the substitutions for *project_root*.
 
     Args:
         project_root: The Project Root — the thing whose identity is at stake.
-        project_dir: The Booley Directory, holding ``booley.toml``. Defaults to
-            ``<project_root>/.booley_project``.
+        booley_dir: The Booley Directory, holding ``booley.toml``. Defaults to
+            ``<project_root>/.booley``.
     """
-    project_dir = project_dir or (project_root / ".booley_project")
-    booley_toml = _load_toml(project_dir / "booley.toml")
+    booley_dir = booley_dir or (project_root / ".booley")
+    booley_toml = _load_toml(booley_dir / "booley.toml")
     plan = RedactionPlan()
 
     # 1. Absolute paths. Longest first is handled at apply time; register both
@@ -399,10 +399,10 @@ def _path_literal_pattern(secret: str) -> re.Pattern[str]:
 
 
 def redact(
-    text: str, project_root: Path, project_dir: Path | None = None
+    text: str, project_root: Path, booley_dir: Path | None = None
 ) -> tuple[str, dict[str, int]]:
     """Convenience wrapper: build the plan for *project_root* and apply it."""
-    return apply_plan(text, build_plan(project_root, project_dir))
+    return apply_plan(text, build_plan(project_root, booley_dir))
 
 
 def residual_risks(text: str, plan: RedactionPlan) -> list[str]:

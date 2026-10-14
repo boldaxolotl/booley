@@ -5,10 +5,10 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from booley.core.booley_dir import BOOLEY_DIR_NAME, resolve_authoritative_booley_dir
 from booley.core.checkout_role import SourceCheckoutProjectError, require_project_checkout
-from booley.core.project_dir import PROJECT_DIR_NAME, resolve_authoritative_project_dir
-from booley.runtime.project_dir import contains
-from booley.runtime.sandbox_layout import PROJECT_DIR_TARGET, WORK_DIR
+from booley.runtime.booley_dir import contains
+from booley.runtime.sandbox_layout import BOOLEY_DIR_TARGET, WORK_DIR
 
 
 class ProjectRootDiscoveryError(RuntimeError):
@@ -32,10 +32,7 @@ def has_git_worktree_marker(path: Path) -> bool:
 def _checkout_data(root: Path) -> Path:
     """Restrict ownership evidence to this checkout, excluding ancestor config."""
     root = require_project_checkout(root)
-    if (root / "booley.toml").is_file():
-        return resolve_authoritative_project_dir(root)
-    local = root / PROJECT_DIR_NAME
-    return local if local.is_dir() else root / ".booley" / "project"
+    return resolve_authoritative_booley_dir(root)
 
 
 def _owns(root: Path, data: Path) -> bool:
@@ -47,20 +44,20 @@ def _owns(root: Path, data: Path) -> bool:
 
 def _data_root(start: Path, checkouts: list[Path]) -> Path | None:
     for parent in (start, *start.parents):
-        if parent.name == PROJECT_DIR_NAME or (
-            parent.name == "project" and parent.parent.name == ".booley"
+        if parent.name == BOOLEY_DIR_NAME and (
+            parent != Path.home() / BOOLEY_DIR_NAME or has_git_worktree_marker(parent.parent)
         ):
             return parent
         if parent in checkouts:
             break
-    configured = [os.environ.get("BOOLEY_PROJECT_DIR")]
+    configured = [os.environ.get("BOOLEY_DIR")]
     if os.environ.get("BOOLEY_CONTAINER") == "1":
-        configured.append(PROJECT_DIR_TARGET)
+        configured.append(BOOLEY_DIR_TARGET)
     for value in configured:
         if value:
             data = Path(value).resolve()
-            if contains(start, project_dir=data) is not None and not any(
-                (canonical := contains(checkout, project_dir=data)) is not None
+            if contains(start, booley_dir=data) is not None and not any(
+                (canonical := contains(checkout, booley_dir=data)) is not None
                 and canonical != data.resolve()
                 for checkout in checkouts
             ):
@@ -70,9 +67,9 @@ def _data_root(start: Path, checkouts: list[Path]) -> Path | None:
             data = _checkout_data(checkout).resolve()
         except SourceCheckoutProjectError:
             continue
-        if contains(start, project_dir=data) is not None:
+        if contains(start, booley_dir=data) is not None:
             if any(
-                (canonical := contains(p, project_dir=data)) is not None
+                (canonical := contains(p, booley_dir=data)) is not None
                 and canonical != data.resolve()
                 for p in checkouts
             ):
@@ -94,7 +91,10 @@ def _checkout_candidates(start: Path | None) -> tuple[Path, list[Path]]:
     paths = (current, *current.parents, logical, *logical.parents)
     checkouts = list(
         dict.fromkeys(
-            p.resolve() for p in paths if p.name != ".booley" and has_git_worktree_marker(p)
+            p.resolve()
+            for p in paths
+            if (p.name != BOOLEY_DIR_NAME or not has_git_worktree_marker(p.parent))
+            and has_git_worktree_marker(p)
         )
     )
     return current, checkouts
@@ -105,7 +105,7 @@ def _owning_checkouts(candidates: list[Path], data: Path) -> set[Path]:
     return {
         p.resolve()
         for p in candidates
-        if contains(p, project_dir=data) is None and has_git_worktree_marker(p) and _owns(p, data)
+        if contains(p, booley_dir=data) is None and has_git_worktree_marker(p) and _owns(p, data)
     }
 
 

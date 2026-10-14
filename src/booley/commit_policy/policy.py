@@ -127,12 +127,12 @@ def parse_stealth_vocabulary(
     return _unique_terms(words + substrings), _unique_terms(identities + substrings)
 
 
-_TOML_SUBDIRS = [Path(".booley_project"), Path(".booley") / "project"]
+_TOML_SUBDIRS = [Path(".booley")]
 _TOML_NAMES = ("booley.toml", "pipeline.toml")
 
 
 def _load_booley_config(
-    project_root: Path | None = None, *, strict: bool = False, project_dir: Path | None = None
+    project_root: Path | None = None, *, strict: bool = False, booley_dir: Path | None = None
 ) -> dict:
     """Return the parsed ``booley.toml`` as a dict, or ``{}`` if unavailable.
 
@@ -148,14 +148,12 @@ def _load_booley_config(
 
     if project_root is None:
         return {}
-    root = Path(project_dir if project_dir is not None else project_root).resolve()
+    root = Path(booley_dir if booley_dir is not None else project_root).resolve()
 
-    state_repo = root.name == ".booley_project" or (
-        root.name == "project" and root.parent.name == ".booley"
-    )
+    state_repo = root.name == ".booley"
     directories = (
         (Path(),)
-        if project_dir is not None
+        if booley_dir is not None
         else ((Path(), *_TOML_SUBDIRS) if state_repo else _TOML_SUBDIRS)
     )
     for subdir in directories:
@@ -214,9 +212,9 @@ def validate_push_configuration(project_root: Path | None = None) -> UpstreamImp
     return UpstreamImport(repository, base.lower())
 
 
-def _stealth_section(project_root: Path | None = None, *, project_dir: Path | None = None) -> dict:
+def _stealth_section(project_root: Path | None = None, *, booley_dir: Path | None = None) -> dict:
     """Return the ``[stealth]`` table, or ``{}`` if absent/malformed."""
-    section = _load_booley_config(project_root, project_dir=project_dir).get("stealth", {})
+    section = _load_booley_config(project_root, booley_dir=booley_dir).get("stealth", {})
     return as_dict(section, default={}) or {}
 
 
@@ -286,13 +284,13 @@ class StealthPolicy:
 
 
 def stealth_policy(
-    project_root: Path | None = None, *, project_dir: Path | None = None
+    project_root: Path | None = None, *, booley_dir: Path | None = None
 ) -> StealthPolicy:
     """Load one Project's Stealth policy; source checkouts are always disabled."""
     if source_checkout_policy_owner(project_root):
         return StealthPolicy(False, (), None, False, ())
 
-    section = _stealth_section(project_root, project_dir=project_dir)
+    section = _stealth_section(project_root, booley_dir=booley_dir)
     words, substrings = parse_stealth_vocabulary(section)
     raw_cap = section.get("max_body_lines")
     try:
@@ -329,14 +327,14 @@ def stealth_policy(
     )
 
 
-def stealth_enabled(project_root: Path | None = None, *, project_dir: Path | None = None) -> bool:
+def stealth_enabled(project_root: Path | None = None, *, booley_dir: Path | None = None) -> bool:
     """Whether stealth mode is active. On by default; opt out with
     ``[stealth] enabled = false`` in booley.toml.
 
     Gates both the commit-msg hook install (setup) and the agent-facing
     banned-word prompt note (specialists).
     """
-    return stealth_policy(project_root, project_dir=project_dir).enabled
+    return stealth_policy(project_root, booley_dir=booley_dir).enabled
 
 
 def _load_stealth_config(project_root: Path | None = None) -> list[str] | None:

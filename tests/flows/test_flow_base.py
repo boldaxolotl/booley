@@ -193,11 +193,11 @@ class TestResourceEvidence:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from booley.criteria.state import DevelopmentState
-        from booley.runtime.project_dir import reset_cache
+        from booley.runtime.booley_dir import reset_cache
 
         state_file = tmp_path / "state.json"
         DevelopmentState.load(state_file).save()
-        monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+        monkeypatch.delenv("BOOLEY_DIR", raising=False)
         monkeypatch.delenv("BOOLEY_RUNTIME_DIR", raising=False)
         reset_cache()
         flow = EchoFlow()

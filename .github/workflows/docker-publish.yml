@@ -503,7 +503,7 @@ jobs:
         run: |
           mkdir -p "${RUNNER_TEMP}/simulation-evidence"
           cp -a demo "${RUNNER_TEMP}/simulation-project"
-          project_config="${RUNNER_TEMP}/simulation-project/.booley_project/booley.toml"
+          project_config="${RUNNER_TEMP}/simulation-project/.booley/booley.toml"
           grep -Fxq 'image = "booley-sandbox-riscv"' "${project_config}"
           sed -i 's/^image = "booley-sandbox-riscv"$/image = "booley-sandbox"/' \
             "${project_config}"
@@ -519,9 +519,9 @@ jobs:
             --name booley-release-${{ github.run_id }}-${{ github.run_attempt }}-simulation \
             --mount type=bind,src="${{ github.workspace }}",dst=/booley-source,readonly \
             --mount type=bind,src="${RUNNER_TEMP}/simulation-project",dst=/work \
-            --mount type=bind,src="${RUNNER_TEMP}/simulation-project/.booley_project",dst=/booley-project \
+            --mount type=bind,src="${RUNNER_TEMP}/simulation-project/.booley",dst=/booley-project \
             --mount type=bind,src="${RUNNER_TEMP}/simulation-evidence",dst=/evidence \
-            -w /work -e BOOLEY_PROJECT_DIR=/booley-project -e BOOLEY_IN_SANDBOX=1 \
+            -w /work -e BOOLEY_DIR=/booley-project -e BOOLEY_IN_SANDBOX=1 \
             -e PYTHONPATH=/booley-source/.github/scripts \
             "${IMAGE}" python3 -m release_validation.simulation_selftest \
             --project /work --booley /usr/local/bin/booley \
@@ -675,9 +675,9 @@ jobs:
             --name booley-release-${{ github.run_id }}-${{ github.run_attempt }}-demo-surface \
             --mount type=bind,src="${{ github.workspace }}",dst=/booley-source,readonly \
             --mount type=bind,src="${{ github.workspace }}/demo",dst=/work \
-            --mount type=bind,src="${{ github.workspace }}/demo/.booley_project",dst=/booley-project \
+            --mount type=bind,src="${{ github.workspace }}/demo/.booley",dst=/booley-project \
             --mount type=bind,src="${RUNNER_TEMP}/demo-surface-evidence",dst=/evidence \
-            -w /work -e BOOLEY_PROJECT_DIR=/booley-project -e BOOLEY_IN_SANDBOX=1 \
+            -w /work -e BOOLEY_DIR=/booley-project -e BOOLEY_IN_SANDBOX=1 \
             -e BOOLEY_MCP_MODE=interactive \
             -e PYTHONPATH=/booley-source/.github/scripts \
             "${IMAGE}" python3 -m release_validation.demo_surface \
@@ -739,10 +739,10 @@ jobs:
             --name booley-release-${{ github.run_id }}-${{ github.run_attempt }}-picorv32 \
             --mount type=bind,src="${{ github.workspace }}",dst=/booley-source,readonly \
             --mount type=bind,src="${{ github.workspace }}/demo",dst=/work \
-            --mount type=bind,src="${{ github.workspace }}/demo/.booley_project",dst=/booley-project \
+            --mount type=bind,src="${{ github.workspace }}/demo/.booley",dst=/booley-project \
             --mount type=bind,src="${{ steps.nangate.outputs.root }}",dst=/opt/pdk,readonly \
             --mount type=bind,src="${RUNNER_TEMP}/picorv32-evidence",dst=/evidence \
-            -w /work -e BOOLEY_PROJECT_DIR=/booley-project -e BOOLEY_IN_SANDBOX=1 \
+            -w /work -e BOOLEY_DIR=/booley-project -e BOOLEY_IN_SANDBOX=1 \
             -e BOOLEY_MCP_MODE=interactive \
             -e BOOLEY_GOAL_READINESS_EVIDENCE=/evidence/goal-readiness.json -e BOOLEY_RUN_PICORV32_FLOWS "${IMAGE}" bash -euo pipefail -c \
             'bash /booley-source/.github/scripts/verify_picorv32_demo.sh'

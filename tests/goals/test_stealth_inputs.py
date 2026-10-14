@@ -12,7 +12,7 @@ from booley.goals.finish import finish_goal
 from booley.goals.model import parse_goal_args
 from booley.goals.target_surface import target_surface_fingerprint
 from booley.mcp.goal_generated_inputs import _committed_only_inputs
-from booley.runtime.project_dir import reset_cache
+from booley.runtime.booley_dir import reset_cache
 from booley.runtime.project_worktree_pairing import pair_project_worktree
 from booley.targets.catalog import TargetCatalog
 from tests.goals.conftest import git
@@ -29,8 +29,8 @@ def stealth(tmp_path):
     (main / "rtl.v").write_text("module top; endmodule\n")
     git(main, "add", ".")
     git(main, "commit", "-qm", "RTL")
-    (main / ".git/info/exclude").write_text("/.booley_project\n/.booley-projected-*.core\n")
-    control = main / ".booley_project"
+    (main / ".git/info/exclude").write_text("/.booley\n/.booley-projected-*.core\n")
+    control = main / ".booley"
     (control / "cores/constraints").mkdir(parents=True)
     (control / "booley.toml").write_text("[stealth]\nenabled=true\n")
     (control / ".gitignore").write_text("worktrees/\ngoals/\n.baseline-wt-*/\n.runtime/\n")
@@ -43,7 +43,7 @@ def stealth(tmp_path):
     git(main, "worktree", "add", "--detach", str(worktree), "HEAD")
     assert pair_project_worktree(main, worktree, "wt", source=control)
     with pytest.MonkeyPatch.context() as patch:
-        patch.setenv("BOOLEY_PROJECT_DIR", str(control))
+        patch.setenv("BOOLEY_DIR", str(control))
         reset_cache()
         reconcile_projected_cores(worktree)
         record = enter_goal_mode(
@@ -69,14 +69,14 @@ def test_baseline_resolves_projected_rtl_and_sibling_constraint(stealth, paired)
         catalog = TargetCatalog.build(baseline)
         inputs = catalog.inspect(catalog.select("top")).inputs
         paths = {item.path for item in inputs}
-        assert paths == {"rtl.v", ".booley_project/cores/constraints/top.sdc"}
+        assert paths == {"rtl.v", ".booley/cores/constraints/top.sdc"}
         assert all((baseline / item.path).is_file() for item in inputs)
 
 
 def test_user_pairing_pins_project_head_at_goal_entry(stealth):
     assert stealth.record.paired_project_base_sha == git(stealth.control, "rev-parse", "HEAD")
     assert (
-        git(stealth.worktree / ".booley_project", "symbolic-ref", "--short", "HEAD")
+        git(stealth.worktree / ".booley", "symbolic-ref", "--short", "HEAD")
         == "booley-worktree/wt"
     )
 
@@ -108,11 +108,11 @@ def stealth_programs(tmp_path, monkeypatch):
     (root / "rtl.v").write_text("module top; endmodule\n")
     (root / "scripts/prepare.sh").write_text("echo prepare\n")
     (root / "scripts/generate.py").write_text("print('generate')\n")
-    control = root / ".booley_project"
+    control = root / ".booley"
     (control / "cores").mkdir(parents=True)
     (control / "booley.toml").write_text("[stealth]\nenabled=true\n")
     (control / "cores/gen.core").write_text(PROGRAM_CORE)
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(control))
+    monkeypatch.setenv("BOOLEY_DIR", str(control))
     reset_cache()
     reconcile_projected_cores(root)
     yield root
@@ -142,7 +142,7 @@ def test_target_less_parent_ignore_does_not_hide_paired_constraint(stealth):
     from booley.goals.freshness import DEFAULT_RESOLVERS
     from booley.goals.generated_artifacts import generated_artifact_paths
 
-    constraint = stealth.worktree / ".booley_project/cores/constraints/top.sdc"
+    constraint = stealth.worktree / ".booley/cores/constraints/top.sdc"
     assert constraint.resolve() not in generated_artifact_paths(stealth.worktree)
     before = DEFAULT_RESOLVERS.fingerprint(stealth.worktree, target=None)
     constraint.write_text("create_clock -period 20 [get_ports clk]\n")
@@ -158,12 +158,12 @@ def test_target_less_nonversioned_hidden_constraint_follows_literal_definition(l
     layout.record = enter_goals(
         layout, [{"family": "REVIEW", "review": "rtl_bugs", "verdict": "done"}]
     )
-    constraint = layout.worktree / ".booley_project/top.sdc"
+    constraint = layout.worktree / ".booley/top.sdc"
     constraint.write_text("constraint first\n")
     core = layout.worktree / "top.core"
     core.write_text(
         core.read_text().replace(
-            "files: [rtl.v]", "files: [rtl.v, {.booley_project/top.sdc: {file_type: user}}]"
+            "files: [rtl.v]", "files: [rtl.v, {.booley/top.sdc: {file_type: user}}]"
         )
     )
     git(layout.worktree, "add", "top.core")
@@ -174,7 +174,7 @@ def test_target_less_nonversioned_hidden_constraint_follows_literal_definition(l
     assert DEFAULT_RESOLVERS.fingerprint(layout.worktree, target=None) == before
     assert is_always_committed_input(constraint)
     assert (
-        ".booley_project/top.sdc"
+        ".booley/top.sdc"
         in DEFAULT_RESOLVERS.fingerprint(layout.worktree, target="top")["rtl"]["files"]
     )
 
@@ -184,7 +184,7 @@ def test_presentation_epoch_maps_real_projected_catalog_and_worktree_alias(steal
     from booley.goals.input_view import committed_view, select_inputs
     from tests.conftest import symlink_or_skip
 
-    project = stealth.worktree / ".booley_project"
+    project = stealth.worktree / ".booley"
     core = project / "cores/data.core"
     core.write_bytes(
         b"CAPI=2:\nname: ::data:0\nfilesets:\n"

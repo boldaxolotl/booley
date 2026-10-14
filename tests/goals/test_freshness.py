@@ -18,7 +18,7 @@ from booley.goals.freshness import (
 )
 from booley.goals.model import GoalFamily, GoalSpec
 from booley.goals.target_surface import TargetSurfaceError, target_surface_fingerprint
-from booley.runtime.project_dir import reset_cache
+from booley.runtime.booley_dir import reset_cache
 
 LINT_KEY = "lint_clean_top"
 SIM_KEY = "sim_pass_top"
@@ -64,7 +64,7 @@ def project(tmp_path: Path) -> Iterator[Path]:
         "dep.v": "module dep; endmodule\n",
         "top.sdc": "create_clock -period 10 clk\n",
         "gen.py": "print('generated')\n",
-        ".booley_project/tests.toml": '[top]\ntests = ["smoke"]\n',
+        ".booley/tests.toml": '[top]\ntests = ["smoke"]\n',
     }
     for name, content in files.items():
         (root / name).parent.mkdir(parents=True, exist_ok=True)
@@ -234,7 +234,7 @@ def test_resolver_failure_is_stale(project: Path, resolvers: GoalFreshnessResolv
             "default: {filesets: [rtl]}  # edited",
             ("target_surface",),
         ),
-        (".booley_project/tests.toml", '["smoke"]', '["smoke", "regress"]', ("target_surface",)),
+        (".booley/tests.toml", '["smoke"]', '["smoke", "regress"]', ("target_surface",)),
         ("gen.py", "generated", "regenerated", ("target_surface",)),
         # A constraints file is a selected Target input too, so the rtl stamp sees it.
         ("top.sdc", "-period 10", "-period 5", ("rtl", "target_surface")),
@@ -370,7 +370,7 @@ def test_target_less_ignored_authored_inputs_remain_protected(project, protectio
     elif protection == "generator":
         core.write_text(core.read_text().replace("command: gen.py", f"command: {name}"))
     elif protection == "project":
-        (project / ".booley_project/booley.toml").write_text(
+        (project / ".booley/booley.toml").write_text(
             f'[flows.sim]\npre_run_commands=["./{name}"]\n'
         )
     elif protection == "outside-core":
@@ -390,7 +390,7 @@ def test_target_less_tb_and_consumed_campaign_are_filtered(project, tmp_path, al
     core = project / "top.core"
     core.write_text(
         core.read_text().replace(
-            "files: [rtl.v]", "files: [rtl.v, {.booley_project/tests.toml: {file_type: user}}]"
+            "files: [rtl.v]", "files: [rtl.v, {.booley/tests.toml: {file_type: user}}]"
         )
         + "# configured generated test data\n"
     )
@@ -402,7 +402,7 @@ def test_target_less_tb_and_consumed_campaign_are_filtered(project, tmp_path, al
     )
     (project / "tb").mkdir()
     (project / "tb/data.hex").write_text("first\n")
-    (project / ".gitignore").write_text("tb/data.hex\n.booley_project/tests.toml\n")
+    (project / ".gitignore").write_text("tb/data.hex\n.booley/tests.toml\n")
     query = project
     if alias:
         from tests.conftest import symlink_or_skip
@@ -411,9 +411,9 @@ def test_target_less_tb_and_consumed_campaign_are_filtered(project, tmp_path, al
         symlink_or_skip(query, project, target_is_directory=True)
     first = DEFAULT_RESOLVERS.fingerprint(query, target=None)
     assert "tb/data.hex" not in first["tb"]["files"]
-    assert ".booley_project/tests.toml" not in first["campaign"]["files"]
+    assert ".booley/tests.toml" not in first["campaign"]["files"]
     (project / "tb/data.hex").write_text("changed\n")
-    (project / ".booley_project/tests.toml").write_text("changed\n")
+    (project / ".booley/tests.toml").write_text("changed\n")
     assert DEFAULT_RESOLVERS.fingerprint(query, target=None) == first
 
 

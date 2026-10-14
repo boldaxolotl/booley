@@ -8,7 +8,7 @@ closes that gap cheaply.
 
 On every doctor run that ends with **zero FAILs and zero active WARNs**, doctor
 records a timestamp plus an environment fingerprint into project runtime state at
-``<project_dir>/runtime/doctor_stamp.json`` (beside the developer probe and
+``<booley_dir>/runtime/doctor_stamp.json`` (beside the developer probe and
 the slot store -- the same ADR 0028 bookkeeping home, bind-mounted into the
 Sandbox, so a host-written stamp is readable in-container and vice
 versa). Session start (``booley session up``) and the per-sweep ticket loop
@@ -41,8 +41,8 @@ from booley.audit.doctor_waivers import WAIVER_FILENAME
 from booley.audit.health import HEALTHY_MAX_AGE_DAYS
 from booley.core.differences import format_differences
 from booley.runtime import runtime_context
+from booley.runtime.booley_dir import resolve_booley_dir
 from booley.runtime.devcontainer import devcontainer_path
-from booley.runtime.project_dir import resolve_project_dir
 from booley.runtime.timefmt import format_human_date, parse_timestamp, utc_now_rfc3339
 
 STAMP_FILENAME = "doctor_stamp.json"
@@ -61,14 +61,14 @@ class StampAdvisory:
     requires_action: bool = False
 
 
-def stamp_path(project_dir: Path) -> Path:
+def stamp_path(booley_dir: Path) -> Path:
     """Location of the stamp inside project runtime state.
 
     Lives beside the developer probe and the slot store
     (``runtime/jobs/slots``) -- container-lifetime bookkeeping that both
     contexts reach through the Booley Directory bind mount.
     """
-    return project_dir / "runtime" / STAMP_FILENAME
+    return booley_dir / "runtime" / STAMP_FILENAME
 
 
 def _sha256_or_none(path: Path) -> str | None:
@@ -79,7 +79,7 @@ def _sha256_or_none(path: Path) -> str | None:
         return None
 
 
-def compute_fingerprint(project_dir: Path, project_root: Path) -> dict[str, str | None]:
+def compute_fingerprint(booley_dir: Path, project_root: Path) -> dict[str, str | None]:
     """Hash the config inputs whose drift should invalidate the stamp.
 
     Both files are identical bytes on host and in-container (Booley Directory and
@@ -87,13 +87,13 @@ def compute_fingerprint(project_dir: Path, project_root: Path) -> dict[str, str 
     compares cleanly on the other.
     """
     return {
-        "booley_toml_sha256": _sha256_or_none(project_dir / "booley.toml"),
-        "doctor_waivers_sha256": _sha256_or_none(project_dir / WAIVER_FILENAME),
+        "booley_toml_sha256": _sha256_or_none(booley_dir / "booley.toml"),
+        "doctor_waivers_sha256": _sha256_or_none(booley_dir / WAIVER_FILENAME),
         "devcontainer_json_sha256": _sha256_or_none(devcontainer_path(project_root)),
     }
 
 
-def record_clean_run(project_dir: Path, project_root: Path, *, deep: bool) -> Path | None:
+def record_clean_run(booley_dir: Path, project_root: Path, *, deep: bool) -> Path | None:
     """Atomically record a fully clean Doctor run; returns the file written.
 
     Fail-soft: a read-only or missing Booley Directory returns None rather than
@@ -101,13 +101,13 @@ def record_clean_run(project_dir: Path, project_root: Path, *, deep: bool) -> Pa
     """
     import booley
 
-    path = stamp_path(project_dir)
+    path = stamp_path(booley_dir)
     payload = {
         "passed_at": utc_now_rfc3339(),
         "deep": bool(deep),
         "runtime": "session-runtime" if runtime_context.inside_session_runtime() else "host",
         "booley_version": booley.__version__,
-        "fingerprint": compute_fingerprint(project_dir, project_root),
+        "fingerprint": compute_fingerprint(booley_dir, project_root),
     }
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -120,10 +120,10 @@ def record_clean_run(project_dir: Path, project_root: Path, *, deep: bool) -> Pa
     return path
 
 
-def load_stamp(project_dir: Path) -> dict | None:
+def load_stamp(booley_dir: Path) -> dict | None:
     """The recorded stamp dict, or None when absent/corrupt."""
     try:
-        data = json.loads(stamp_path(project_dir).read_text(encoding="utf-8"))
+        data = json.loads(stamp_path(booley_dir).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, ValueError):
         return None
     return data if isinstance(data, dict) else None
@@ -162,7 +162,7 @@ def _fingerprint_differences(recorded: object, current: dict[str, str | None]) -
 
 
 def check_stamp_advisory(
-    project_dir: Path,
+    booley_dir: Path,
     project_root: Path,
     *,
     max_age_days: int = MAX_AGE_DAYS,
@@ -174,7 +174,7 @@ def check_stamp_advisory(
     unreadable timestamp, package-version drift, config drift, then age beyond
     *max_age_days*.
     """
-    stamp = load_stamp(project_dir)
+    stamp = load_stamp(booley_dir)
     if stamp is None:
         return StampAdvisory(
             "no warning-free `booley doctor` run is stamped -- Doctor records "
@@ -195,7 +195,7 @@ def check_stamp_advisory(
         return StampAdvisory(version_message, requires_action=True)
 
     recorded_fingerprint = stamp.get("fingerprint")
-    current_fingerprint = compute_fingerprint(project_dir, project_root)
+    current_fingerprint = compute_fingerprint(booley_dir, project_root)
     if recorded_fingerprint != current_fingerprint:
         differences = _fingerprint_differences(recorded_fingerprint, current_fingerprint)
         return StampAdvisory(
@@ -213,7 +213,7 @@ def check_stamp_advisory(
 
 
 def check_stamp(
-    project_dir: Path,
+    booley_dir: Path,
     project_root: Path,
     *,
     max_age_days: int = MAX_AGE_DAYS,
@@ -221,7 +221,7 @@ def check_stamp(
 ) -> str | None:
     """Plain advisory message, or None when doctor's blessing is current."""
     advisory = check_stamp_advisory(
-        project_dir,
+        booley_dir,
         project_root,
         max_age_days=max_age_days,
         now=now,
@@ -242,7 +242,7 @@ def warn_if_stale(
     silently skips the check rather than blocking real work.
     """
     try:
-        advisory = check_stamp_advisory(resolve_project_dir(project_root), project_root)
+        advisory = check_stamp_advisory(resolve_booley_dir(project_root), project_root)
     except Exception:  # noqa: BLE001 — advisory by contract; never block a session or sweep on the stamp
         return
     if advisory:

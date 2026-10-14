@@ -8,14 +8,14 @@ import sys
 from pathlib import Path
 
 from booley.config.settings import BackendConfigError, get_agent_settings, load_agent_settings
-from booley.runtime.project_dir import resolve_checkout_project_dir
+from booley.runtime.booley_dir import resolve_checkout_booley_dir
 
 
 def run(_args: argparse.Namespace, project_root: Path) -> int:
     """Replace Booley with the Project's configured interactive agent CLI."""
     try:
-        project_dir = resolve_checkout_project_dir(project_root)
-        load_agent_settings(project_root, project_dir=project_dir)
+        booley_dir = resolve_checkout_booley_dir(project_root)
+        load_agent_settings(project_root, booley_dir=booley_dir)
         provider = get_agent_settings().provider
     except (BackendConfigError, FileNotFoundError) as exc:
         print(f"ERROR: could not resolve the Project's agent provider: {exc}", file=sys.stderr)

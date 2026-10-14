@@ -639,7 +639,7 @@ def _changed_files(ctx: TriageContext) -> list[dict[str, Any]]:
                 project.base_sha,
                 project.head_sha,
                 repository="project",
-                path_prefix=".booley_project",
+                path_prefix=".booley",
             )
         )
     return rows

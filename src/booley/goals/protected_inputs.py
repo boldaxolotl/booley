@@ -20,8 +20,8 @@ records the same list:
 
 - ``worktree``: the Goal worktree root (``work_dir``);
 - ``project``: the Main Booley Directory the caller resolved
-  (:func:`booley.runtime.project_dir.resolve_project_dir`; in a Sandbox the
-  shared ``BOOLEY_PROJECT_DIR``);
+  (:func:`booley.runtime.booley_dir.resolve_booley_dir`; in a Sandbox the
+  shared ``BOOLEY_DIR``);
 - ``main``: the primary checkout of the worktree's repository;
 - ``abs``: an absolute path, only for a ``[project].dir`` override that lies
   outside the other three.
@@ -31,30 +31,27 @@ Protected input                 Consumers and what they read                    
 =============================== ================================================================= ========================================
 Project ``booley.toml``         Session-global readers (``project_config``                        ``project:booley.toml``; the
                                 globals, EDA requests, endpoint config,                           ``booley.toml`` in
-                                Specialist ``[agent]``/``[models]``) read the                     ``worktree:.booley_project/``,
-                                Main Booley Directory. Flow readers given                         ``worktree:.booley/project/``,
-                                ``work_dir`` read the Worktree Booley Directory                   ``main:.booley_project/``,
-                                (``resolve_checkout_project_dir``, which may                      ``main:.booley/project/``; the
+                                Specialist ``[agent]``/``[models]``) read the                     ``worktree:.booley/``,
+                                ``work_dir`` read the Worktree Booley Directory                   ``main:.booley/``,
                                 follow a ``[project].dir`` override) or the fixed                 directory
-                                ``.booley_project`` / ``.booley/project`` path,                   ``resolve_checkout_project_dir``
                                 falling back to the main checkout's copy.                         returns
 Checkout ``booley.toml``        ``[project].dir`` routing walks up from the                       ``worktree:booley.toml``
                                 worktree root.
 legacy ``pipeline.toml``        Every reader above falls back to it beside                        the ``pipeline.toml`` sibling of
                                 a missing ``booley.toml`` (``resolve_toml``).                     every ``booley.toml`` candidate
 ``hooks/``                      Runner hooks read the Main Booley Directory;                      ``project:hooks``,
-                                worktree preparation reads the Worktree Booley Directory          ``worktree:.booley_project/hooks``,
-                                or the directory ``resolve_checkout_project_dir`` returns.        ``hooks`` in the directory
-                                No Flow or Specialist reads it.                                   ``resolve_checkout_project_dir``
+                                worktree preparation reads the Worktree Booley Directory          ``worktree:.booley/hooks``,
+                                or the directory ``resolve_checkout_booley_dir`` returns.        ``hooks`` in the directory
+                                No Flow or Specialist reads it.                                   ``resolve_checkout_booley_dir``
                                                                                                   returns
-``.managed/``                   The Git hook adapters run the worktree's bundle                   ``worktree:.booley_project/.managed``,
-                                file when it exists, else the main checkout's;                    ``main:.booley_project/.managed``,
+``.managed/``                   The Git hook adapters run the worktree's bundle                   ``worktree:.booley/.managed``,
+                                file when it exists, else the main checkout's;                    ``main:.booley/.managed``,
                                 ``init`` writes the selected checkout's Booley Directory.         ``project:.managed``
 ``generators/``                 No Booley reader exists; FuseSoC generators                       ``project:generators``
                                 are declared per ``.core``. Digested where it
                                 is authored.
 ``mcp_tools/``                  Discovered once, at MCP server start, from                        ``project:mcp_tools``,
-                                ``BOOLEY_PROJECT_DIR``, else the server's                         ``main:.booley_project/mcp_tools``
+                                ``BOOLEY_DIR``, else the server's                         ``main:.booley/mcp_tools``
                                 working directory (the main checkout). The
                                 Worktree Booley Directory copy is never run.
 ``FUSESOC_IGNORE``              Core discovery scans the ``work_dir`` root.                       ``worktree:FUSESOC_IGNORE``
@@ -107,7 +104,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from booley.config.protected_inputs import protected_input_declarations
-from booley.core.project_dir import PROJECT_DIR_NAME, resolve_checkout_project_dir
+from booley.core.booley_dir import BOOLEY_DIR_NAME, resolve_checkout_booley_dir
 from booley.goals.checkout import CheckoutError, GoalCheckout, TreeEntry
 from booley.goals.declared_inputs import (
     DeclaredCapture,
@@ -123,17 +120,16 @@ from booley.runtime.git import git_common_dir
 # The protected set as the rules text names it (ADR 0067 "Protected inputs").
 PROTECTED_INPUT_NAMES: tuple[str, ...] = (
     "booley.toml",
-    f"{PROJECT_DIR_NAME}/booley.toml",
-    f"{PROJECT_DIR_NAME}/hooks/",
-    f"{PROJECT_DIR_NAME}/.managed/",
-    f"{PROJECT_DIR_NAME}/generators/",
-    f"{PROJECT_DIR_NAME}/mcp_tools/",
+    f"{BOOLEY_DIR_NAME}/booley.toml",
+    f"{BOOLEY_DIR_NAME}/hooks/",
+    f"{BOOLEY_DIR_NAME}/.managed/",
+    f"{BOOLEY_DIR_NAME}/generators/",
+    f"{BOOLEY_DIR_NAME}/mcp_tools/",
     "FUSESOC_IGNORE",
 )
 # Every name a Project configuration file may have, newest first (resolve_toml).
 CONFIG_FILE_NAMES: tuple[str, ...] = ("booley.toml", "pipeline.toml")
 # The legacy Booley Directory layout resolve_booley_toml still reads.
-LEGACY_PROJECT_DIR = ".booley/project"
 _SKIPPED_DIRECTORIES = frozenset({"__pycache__"})
 _DIGEST_FORMAT = "booley-protected-inputs/2"
 
@@ -183,7 +179,7 @@ class ProtectedInputRoots:
     """Where the resolvers look: the Goal worktree and the Main Booley Directory."""
 
     worktree: Path
-    project_dir: Path
+    booley_dir: Path
     logical_paths: tuple[tuple[Path, Path], ...] = ()
     checkout_label: tuple[RootKind, str] | None = None
 
@@ -191,7 +187,7 @@ class ProtectedInputRoots:
         """Physical proof preserves D7 labels and resolves them through the current mount."""
         if saved is None:
             return self
-        current = capture_roots(self.worktree, self.project_dir)
+        current = capture_roots(self.worktree, self.booley_dir)
         require_bindings(saved, current)
         return replace(
             self,
@@ -223,7 +219,7 @@ class ProtectedInputRoots:
             return physical
         base = {
             RootKind.WORKTREE: self.worktree,
-            RootKind.PROJECT: self.project_dir,
+            RootKind.PROJECT: self.booley_dir,
             RootKind.MAIN: main,
         }[path.root]
         return None if base is None else base.joinpath(*PurePosixPath(path.relative).parts)
@@ -260,11 +256,9 @@ def _builtin_inputs(roots: ProtectedInputRoots) -> tuple[ProtectedPath, ...]:
     worktree, project, main = RootKind.WORKTREE, RootKind.PROJECT, RootKind.MAIN
     config_dirs = [
         (project, ""),
-        (worktree, PROJECT_DIR_NAME),
-        (worktree, LEGACY_PROJECT_DIR),
-        (main, PROJECT_DIR_NAME),
-        (main, LEGACY_PROJECT_DIR),
-        _checkout_project_dir(roots),
+        (worktree, BOOLEY_DIR_NAME),
+        (main, BOOLEY_DIR_NAME),
+        _checkout_booley_dir(roots),
         (worktree, ""),  # the checkout root's own booley.toml
     ]
     paths = [
@@ -272,34 +266,34 @@ def _builtin_inputs(roots: ProtectedInputRoots) -> tuple[ProtectedPath, ...]:
         for kind, directory in config_dirs
         for name in CONFIG_FILE_NAMES
     ]
-    checkout_kind, checkout_dir = _checkout_project_dir(roots)
+    checkout_kind, checkout_dir = _checkout_booley_dir(roots)
     paths += [
         ProtectedPath(project, "hooks"),
-        ProtectedPath(worktree, f"{PROJECT_DIR_NAME}/hooks"),
+        ProtectedPath(worktree, f"{BOOLEY_DIR_NAME}/hooks"),
         # Preparation reads the hooks of the directory Flow readers resolve,
         # which a `[project].dir` override moves away from the fixed path.
         ProtectedPath(checkout_kind, _join(checkout_dir, "hooks")),
-        ProtectedPath(worktree, f"{PROJECT_DIR_NAME}/.managed"),
-        ProtectedPath(main, f"{PROJECT_DIR_NAME}/.managed"),
+        ProtectedPath(worktree, f"{BOOLEY_DIR_NAME}/.managed"),
+        ProtectedPath(main, f"{BOOLEY_DIR_NAME}/.managed"),
         ProtectedPath(project, ".managed"),
         ProtectedPath(project, "generators"),
         ProtectedPath(project, "mcp_tools"),
-        ProtectedPath(main, f"{PROJECT_DIR_NAME}/mcp_tools"),
+        ProtectedPath(main, f"{BOOLEY_DIR_NAME}/mcp_tools"),
         ProtectedPath(worktree, "FUSESOC_IGNORE"),
     ]
     return tuple(dict.fromkeys(paths))
 
 
-def _checkout_project_dir(roots: ProtectedInputRoots) -> tuple[RootKind, str]:
+def _checkout_booley_dir(roots: ProtectedInputRoots) -> tuple[RootKind, str]:
     """The directory Flow readers resolve for the worktree, relative to its root."""
     if roots.checkout_label is not None:
         return roots.checkout_label
     try:
-        resolved = resolve_checkout_project_dir(roots.worktree)
+        resolved = resolve_checkout_booley_dir(roots.worktree)
     except FileNotFoundError:
-        return RootKind.WORKTREE, PROJECT_DIR_NAME  # nothing resolves: the fixed path
+        return RootKind.WORKTREE, BOOLEY_DIR_NAME  # nothing resolves: the fixed path
     main = roots.main_checkout()
-    bases = [(RootKind.WORKTREE, roots.worktree), (RootKind.PROJECT, roots.project_dir)]
+    bases = [(RootKind.WORKTREE, roots.worktree), (RootKind.PROJECT, roots.booley_dir)]
     if main is not None:
         bases.append((RootKind.MAIN, main))
     for kind, base in bases:
@@ -428,7 +422,7 @@ def protected_input_violations(
 
 
 def _declared_rules(roots: ProtectedInputRoots) -> tuple[str, ...]:
-    kind, relative = _checkout_project_dir(roots)
+    kind, relative = _checkout_booley_dir(roots)
     selected = roots.absolute(ProtectedPath(kind, relative), roots.main_checkout())
     return protected_input_declarations(roots.worktree, selected)
 
@@ -437,15 +431,15 @@ def _declared_capture(
     roots: ProtectedInputRoots, *, entering: bool = False
 ) -> DeclaredCapture | None:
     try:
-        kind, relative = _checkout_project_dir(roots)
+        kind, relative = _checkout_booley_dir(roots)
         selected = roots.absolute(ProtectedPath(kind, relative), roots.main_checkout())
         declarations = protected_input_declarations(roots.worktree, selected)
         if not declarations:
             return None
         storage = (
-            (roots.project_dir / "goals", selected / "goals")
+            (roots.booley_dir / "goals", selected / "goals")
             if selected
-            else (roots.project_dir / "goals",)
+            else (roots.booley_dir / "goals",)
         )
         matched = working_matches(roots.worktree, declarations, storage)
         rows = GoalCheckout(roots.worktree).head_tree(".")

@@ -9,8 +9,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.runtime.platform_paths import bash_bin
-from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.runtime.project_repositories import paired_project_repository
 
 logger = logging.getLogger(__name__)
@@ -29,12 +29,12 @@ def _project_content_dir(worktree: Path) -> Path:
     paired = paired_project_repository(worktree)
     if paired is not None:
         return paired.worktree
-    return resolve_checkout_project_dir(worktree)
+    return resolve_checkout_booley_dir(worktree)
 
 
-def _find_hook(project_dir: Path) -> Path | None:
+def _find_hook(booley_dir: Path) -> Path | None:
     for suffix in (".sh", ".py", ""):
-        candidate = project_dir / "hooks" / f"post-setup{suffix}"
+        candidate = booley_dir / "hooks" / f"post-setup{suffix}"
         if candidate.is_file():
             return candidate
     return None
@@ -65,16 +65,16 @@ def prepare_project(
     """
     root = Path(project_root).resolve()
     checkout = Path(worktree).resolve()
-    project_dir = _project_content_dir(checkout)
-    hook = _find_hook(project_dir)
+    booley_dir = _project_content_dir(checkout)
+    hook = _find_hook(booley_dir)
     if hook is None:
-        logger.debug("No post-setup hook in %s", project_dir / "hooks")
+        logger.debug("No post-setup hook in %s", booley_dir / "hooks")
         return PreparationResult(ok=True)
 
     env = {
         **os.environ,
         "BOOLEY_WORKTREE": str(checkout),
-        "BOOLEY_PROJECT_DIR": str(project_dir),
+        "BOOLEY_DIR": str(booley_dir),
         "BOOLEY_PROJECT_ROOT": str(root),
         "BOOLEY_TICKET_SLUG": slug,
         "BOOLEY_TICKET_FILE": str(ticket_path or ""),

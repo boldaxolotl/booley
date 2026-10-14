@@ -193,7 +193,7 @@ to the user.
 
 Explain the warning's concrete failure mode and the real repair first. If the
 user explicitly accepts the constraint, create the narrowest structured entry
-in `.booley_project/doctor-waivers.toml` using Doctor's check ID and subject.
+in `.booley/doctor-waivers.toml` using Doctor's check ID and subject.
 Require a specific reason and exactly one expiry date or `permanent = true`.
 Rerun the originating command and confirm the row changes from `WARN` to
 `WAIVED`; it must not disappear. Never waive a `FAIL`, transient machine issue,

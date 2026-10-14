@@ -5,7 +5,7 @@ name: ::top:0
 filesets:
   rtl: {files: [rtl.v], file_type: verilogSource}
   constraints:
-    files: [.booley_project/cores/constraints/top.sdc]
+    files: [.booley/cores/constraints/top.sdc]
     file_type: SDC
 targets:
   top: {filesets: [rtl, constraints], toplevel: top, default_tool: verilator}

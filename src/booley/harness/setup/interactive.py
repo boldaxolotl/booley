@@ -18,7 +18,7 @@ from booley.runtime.git import add_git_excludes, git_excludes_pending
 def _exclude_names(root: Path) -> tuple[str, ...]:
     """Fresh non-Stealth Projects keep durable Project content trackable."""
     names = (".devcontainer", ".claude")
-    return (*names, ".booley_project") if stealth_enabled(root) else names
+    return (*names, ".booley") if stealth_enabled(root) else names
 
 
 @dataclass(frozen=True, slots=True)

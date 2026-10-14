@@ -76,7 +76,7 @@ def test_inspect_symbolic_branch_ignores_same_named_tag(tmp_path: Path) -> None:
 def test_project_topology_keeps_independent_configured_and_fixed_selections(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from booley.core.project_dir import reset_cache
+    from booley.core.booley_dir import reset_cache
     from booley.runtime.project_repositories import (
         paired_project_repository,
         project_topology,
@@ -90,12 +90,12 @@ def test_project_topology_keeps_independent_configured_and_fixed_selections(
     (outer / "booley.toml").write_text(
         f'[project]\ndir = "{standalone.as_posix()}"\n', encoding="utf-8"
     )
-    _git(standalone, "worktree", "add", "--detach", str(outer / ".booley_project"))
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path / "absent"))
+    _git(standalone, "worktree", "add", "--detach", str(outer / ".booley"))
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / "absent"))
     reset_cache()
     topology = project_topology(outer)
     assert topology.paired is not None
-    assert topology.paired.worktree == outer / ".booley_project"
+    assert topology.paired.worktree == outer / ".booley"
     assert topology.standalone == standalone
     assert paired_project_repository(outer) == topology.paired
     assert resolve_inner_project_repo(outer) == standalone
@@ -105,15 +105,15 @@ def test_project_topology_keeps_independent_configured_and_fixed_selections(
 def test_project_topology_classifies_real_checkout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
 ) -> None:
-    from booley.core.project_dir import reset_cache
+    from booley.core.booley_dir import reset_cache
     from booley.runtime.project_repositories import project_topology
 
     outer = _repository(tmp_path)
     ambient = tmp_path / "empty-project"
     ambient.mkdir()
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(ambient))
+    monkeypatch.setenv("BOOLEY_DIR", str(ambient))
     reset_cache()
-    project = outer / ("custom" if kind == "configured" else ".booley_project")
+    project = outer / ("custom" if kind == "configured" else ".booley")
     if kind != "absent":
         project.mkdir()
     if kind in {"standalone", "configured"}:
@@ -135,14 +135,14 @@ def test_paired_projection_never_resolves_ambient_project(
     def forbidden(_root):
         raise AssertionError("paired selection consulted configured Project")
 
-    monkeypatch.setattr(project_repositories, "resolve_checkout_project_dir", forbidden)
+    monkeypatch.setattr(project_repositories, "resolve_checkout_booley_dir", forbidden)
     assert project_repositories.paired_project_repository(outer) is None
     _git(outer, "config", "core.worktree", str(outer))
-    (outer / ".booley_project").mkdir()
-    (outer / ".booley_project/.git").write_text(f"gitdir: {outer / '.git'}\n", encoding="utf-8")
+    (outer / ".booley").mkdir()
+    (outer / ".booley/.git").write_text(f"gitdir: {outer / '.git'}\n", encoding="utf-8")
     with pytest.raises(project_repositories.RepositoryCheckoutError, match="unexpected root"):
         project_repositories.paired_project_repository(outer)
-    (outer / ".booley_project/.git").write_text("gitdir: /missing\n", encoding="utf-8")
+    (outer / ".booley/.git").write_text("gitdir: /missing\n", encoding="utf-8")
     with pytest.raises(project_repositories.RepositoryCheckoutError, match="unavailable"):
         project_repositories.paired_project_repository(outer)
 
@@ -157,7 +157,7 @@ def test_paired_identity_filesystem_error_has_typed_repository_context(tmp_path,
     source_parent = tmp_path / "source"
     source_parent.mkdir()
     source = _repository(source_parent)
-    paired = outer / ".booley_project"
+    paired = outer / ".booley"
     _git(source, "worktree", "add", "--detach", str(paired))
     samefile = Path.samefile
 

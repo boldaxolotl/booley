@@ -15,11 +15,11 @@ from booley.runtime.pid import ProcessIdentity
 
 
 def snapshot_jobs(
-    project_dir, *, interactive_root=None, slots_root=None, proc_root=None, reader=None
+    booley_dir, *, interactive_root=None, slots_root=None, proc_root=None, reader=None
 ):
     options = {} if proc_root is None else {"proc_root": proc_root}
-    reader = reader or JobReader(project_dir, slots_root=slots_root, **options)
-    records = GoalStore(project_dir).list_records().records
+    reader = reader or JobReader(booley_dir, slots_root=slots_root, **options)
+    records = GoalStore(booley_dir).list_records().records
     return reader.read(records, interactive_root=interactive_root)
 
 
@@ -248,7 +248,7 @@ def test_server_job_lifecycle_does_not_include_other_interactive_roots(tmp_path,
     historic = tmp_path / ".interactive_logs/historic/.runtime/jobs"
     historic.mkdir(parents=True)
     monkeypatch.setattr(server, "container_jobs_root", lambda: current)
-    monkeypatch.setattr(server, "resolve_project_dir", lambda: tmp_path)
+    monkeypatch.setattr(server, "resolve_booley_dir", lambda: tmp_path)
     assert set(
         retained_job_roots(
             tmp_path, GoalStore(tmp_path).list_records().records, interactive_root=current

@@ -45,7 +45,7 @@ def record(**changes: Any) -> GoalRecord:
         id="fix-uart-20261006T101500Z",
         state=GoalState.ACTIVE,
         worktree=WorktreeIdentity(REPOSITORY, "worktrees/uart"),
-        worktree_path="/work/.booley_project/worktrees/uart",
+        worktree_path="/work/.booley/worktrees/uart",
         branch="goal/fix-uart-20261006",
         original_ref="refs/heads/main",
         base_sha=SHA,

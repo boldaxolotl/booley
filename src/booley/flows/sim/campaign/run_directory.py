@@ -12,8 +12,8 @@ from pathlib import Path
 
 from booley.flows.sim.campaign_reports import is_report_link
 from booley.flows.sim.config import literal_run_cwd_error
+from booley.runtime.booley_dir import checkout_runtime_dir
 from booley.runtime.file_lock import release_file_lock, wait_for_file_lock
-from booley.runtime.project_dir import checkout_runtime_dir
 
 from .codec import SimulationCampaignIntegrityError, canonical_json_bytes
 

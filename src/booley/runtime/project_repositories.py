@@ -6,8 +6,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from booley.runtime.booley_dir import BOOLEY_DIR_NAME, resolve_checkout_booley_dir
 from booley.runtime.git_environment import inherited_git_environment
-from booley.runtime.project_dir import PROJECT_DIR_NAME, resolve_checkout_project_dir
 
 
 @dataclass(frozen=True)
@@ -90,12 +90,12 @@ def project_topology(
     standalone = None
     if discover_standalone:
         try:
-            project_dir = resolve_checkout_project_dir(checkout_root).resolve()
+            booley_dir = resolve_checkout_booley_dir(checkout_root).resolve()
         except FileNotFoundError:
             pass
         else:
-            if is_standalone_git_repository(project_dir):
-                standalone = project_dir
+            if is_standalone_git_repository(booley_dir):
+                standalone = booley_dir
     return ProjectTopology(paired, standalone)
 
 
@@ -111,7 +111,7 @@ def paired_project_repository(checkout_root: Path) -> RepositoryCheckout | None:
 
 def _inspect_paired_project_repository(checkout_root: Path) -> RepositoryCheckout | None:
     """Return the checkout's linked inner worktree, when one is installed."""
-    nested = checkout_root / PROJECT_DIR_NAME
+    nested = checkout_root / BOOLEY_DIR_NAME
     if not (nested / ".git").is_file():
         return None
     result = run_git(nested, "rev-parse", "--show-toplevel")
@@ -130,7 +130,7 @@ def _inspect_paired_project_repository(checkout_root: Path) -> RepositoryCheckou
         raise RepositoryCheckoutError(
             f"Paired Checkout has unexpected root {top}; expected {expected}"
         )
-    return RepositoryCheckout(nested, PROJECT_DIR_NAME)
+    return RepositoryCheckout(nested, BOOLEY_DIR_NAME)
 
 
 def is_paired_root_change(
@@ -225,6 +225,7 @@ def run_git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
             env=inherited_git_environment(),
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=30,
             check=False,
         )

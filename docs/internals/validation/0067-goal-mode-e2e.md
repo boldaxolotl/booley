@@ -377,7 +377,7 @@ requested HTML retained the exact selected observations and open findings,
 without the inherited Ticket approval banner. Raw Git proof showed commit
 `c546f7b83da45b0072e66ce5542b6fee07800edc` has exactly one parent,
 the validated pin `fc54360efb94e97d950cc4e72153e0ba3c8228d0`, and changes
-only `.booley_project/goals/history/p5-finish-v1-20261007T164714Z.md` at
+only `.booley/goals/history/p5-finish-v1-20261007T164714Z.md` at
 literal mode `100644`. The rest of the tree and the main checkout's ref/index
 were unchanged.
 

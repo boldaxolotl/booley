@@ -63,7 +63,7 @@ _ENTER_DESCRIPTION = (
     "Enter Goal Mode in one linked worktree: create the Goal Branch goal/<slug>-<date> at "
     "the current clean HEAD, record the Goals (every Goal is mandatory and starts unmet), "
     "and return the rules for working in Goal Mode. Translate the chosen Goalsets from "
-    "goalsets/ in the Main Booley Directory (BOOLEY_PROJECT_DIR in the Sandbox) "
+    "goalsets/ in the Main Booley Directory (BOOLEY_DIR in the Sandbox) "
     "into concrete Goals yourself; a Worktree Booley Directory inside work_dir is never the "
     "source. Every per-Target Goal names "
     "its Target. If the Project has a default Goalset, apply it (list 'default' in "
@@ -135,7 +135,7 @@ def _status_views(store: GoalStore, root: Path) -> tuple[GoalStatusView, ...]:
 
     views = status_views(store, root, campaign_reader=read_unpublished_results)
     for view in views:
-        schedule_sim_baselines(store.project_dir, view.record)
+        schedule_sim_baselines(store.booley_dir, view.record)
     return views
 
 
@@ -143,19 +143,19 @@ async def dispatch_goal_tool(  # noqa: PLR0911 — four independent public Goal 
     name: str,
     arguments: Mapping[str, Any],
     *,
-    project_dir: Path,
+    booley_dir: Path,
     request_context: McpRequestContext | None = None,
 ) -> McpDispatchResult | McpInputRequired:
     """Serve one visible Goal tool call; the caller checked visibility."""
     from booley.mcp.call_context import require_goal_work_dir
 
-    store = GoalStore(project_dir)
+    store = GoalStore(booley_dir)
     try:
         require_goal_work_dir(arguments, store)
         if name == GOAL_FINISH:
-            return await _finish(arguments, project_dir, request_context)
+            return await _finish(arguments, booley_dir, request_context)
         if name == GOAL_PROPOSE_CHANGE:
-            env = _entry_environment(project_dir, request_context)
+            env = _entry_environment(booley_dir, request_context)
             result = await asyncio.to_thread(propose_change, arguments, env, request_context)
             record = store.active_for_worktree(Path(str(arguments["work_dir"])))
             if record is not None and env.schedule_baselines is not None:
@@ -196,7 +196,7 @@ async def dispatch_goal_tool(  # noqa: PLR0911 — four independent public Goal 
             arguments,
             session_key=_entry_key(arguments, store, request_context),
         )
-        env = _entry_environment(project_dir, request_context)
+        env = _entry_environment(booley_dir, request_context)
         result = await asyncio.to_thread(enter_goal_mode, request, env)
     except (GoalEntryError, GoalStoreError) as exc:
         message = (
@@ -240,10 +240,10 @@ def _entry_key(
 
 async def _finish(
     arguments: Mapping[str, Any],
-    project_dir: Path,
+    booley_dir: Path,
     request_context: McpRequestContext | None = None,
 ) -> McpDispatchResult:
-    env = _entry_environment(project_dir, request_context)
+    env = _entry_environment(booley_dir, request_context)
     result = await asyncio.to_thread(
         complete_goal,
         arguments,
@@ -303,14 +303,14 @@ def _text(
     )
 
 
-def _entry_environment(project_dir: Path, context: McpRequestContext | None) -> EntryEnvironment:
+def _entry_environment(booley_dir: Path, context: McpRequestContext | None) -> EntryEnvironment:
     from booley.mcp.sim_baseline_jobs import schedule_sim_baselines
 
     own = (context or McpRequestContext()).session_key()
     keys = tuple(key for key in context.other_session_keys if key != own) if context else ()
     return EntryEnvironment(
-        project_dir=project_dir,
+        booley_dir=booley_dir,
         recipe_families=_recipe_families(),
         other_sessions=lambda _identity: keys,
-        schedule_baselines=lambda record: schedule_sim_baselines(project_dir, record),
+        schedule_baselines=lambda record: schedule_sim_baselines(booley_dir, record),
     )

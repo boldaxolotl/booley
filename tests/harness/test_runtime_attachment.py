@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from booley.runtime import execution_records, job_slots, project_dir, runtime_attachment
+from booley.runtime import booley_dir, execution_records, job_slots, runtime_attachment
 from booley.runtime.pid import RUNNING, UNKNOWN, ProcessIdentity, observe_process
 
 _SRC_ROOT = Path(__file__).parents[2] / "src"
@@ -43,8 +43,8 @@ def _fake_docker(tmp_path: Path, monkeypatch, project: Path) -> None:
         "PYTHONPATH",
         f"{_SRC_ROOT}{os.pathsep}{os.environ.get('PYTHONPATH', '')}",
     )
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project))
-    project_dir.reset_cache()
+    monkeypatch.setenv("BOOLEY_DIR", str(project))
+    booley_dir.reset_cache()
 
 
 def _exiting_docker(tmp_path: Path, monkeypatch, project: Path) -> None:
@@ -52,8 +52,8 @@ def _exiting_docker(tmp_path: Path, monkeypatch, project: Path) -> None:
     binary.write_text("#!/bin/sh\nexit 127\n", encoding="utf-8")
     binary.chmod(binary.stat().st_mode | stat.S_IXUSR)
     monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project))
-    project_dir.reset_cache()
+    monkeypatch.setenv("BOOLEY_DIR", str(project))
+    booley_dir.reset_cache()
 
 
 def _wait_for_execution_leader_exit(project: Path, *, timeout_s: float = 5.0) -> bool:
@@ -82,7 +82,7 @@ def _interrupt_when(predicate, *, timeout_s: float = 5.0) -> None:
 
 def test_normal_command_uses_structured_terminal_result(tmp_path: Path, monkeypatch) -> None:
     root = tmp_path / "project"
-    data = root / ".booley_project"
+    data = root / ".booley"
     data.mkdir(parents=True)
     _fake_docker(tmp_path, monkeypatch, data)
 
@@ -100,7 +100,7 @@ def test_normal_command_uses_structured_terminal_result(tmp_path: Path, monkeypa
 
 def test_explicit_environment_reaches_attached_command(tmp_path: Path, monkeypatch) -> None:
     root = tmp_path / "project"
-    data = root / ".booley_project"
+    data = root / ".booley"
     data.mkdir(parents=True)
     _fake_docker(tmp_path, monkeypatch, data)
     observed = tmp_path / "proxy.txt"
@@ -120,7 +120,7 @@ def test_explicit_environment_reaches_attached_command(tmp_path: Path, monkeypat
 
 def test_sigint_requests_cancellation_and_returns_130(tmp_path: Path, monkeypatch) -> None:
     root = tmp_path / "project"
-    data = root / ".booley_project"
+    data = root / ".booley"
     data.mkdir(parents=True)
     _fake_docker(tmp_path, monkeypatch, data)
 
@@ -146,7 +146,7 @@ def test_sigint_requests_cancellation_and_returns_130(tmp_path: Path, monkeypatc
 
 def test_sigterm_preserves_signal_exit_semantics(tmp_path: Path, monkeypatch) -> None:
     root = tmp_path / "project"
-    data = root / ".booley_project"
+    data = root / ".booley"
     data.mkdir(parents=True)
     _fake_docker(tmp_path, monkeypatch, data)
     interrupter = threading.Thread(
@@ -170,7 +170,7 @@ def test_command_that_handles_sigint_and_exits_zero_preserves_zero(
     tmp_path: Path, monkeypatch
 ) -> None:
     root = tmp_path / "project"
-    data = root / ".booley_project"
+    data = root / ".booley"
     data.mkdir(parents=True)
     _fake_docker(tmp_path, monkeypatch, data)
     ready = tmp_path / "handler-ready"
@@ -206,7 +206,7 @@ def test_command_that_handles_sigint_and_exits_zero_preserves_zero(
 
 def test_second_sigint_forces_cleanup(tmp_path: Path, monkeypatch) -> None:
     root = tmp_path / "project"
-    data = root / ".booley_project"
+    data = root / ".booley"
     data.mkdir(parents=True)
     _fake_docker(tmp_path, monkeypatch, data)
     ready = tmp_path / "handlers-ready"
@@ -245,7 +245,7 @@ def test_second_sigint_forces_cleanup(tmp_path: Path, monkeypatch) -> None:
 
 def test_sigint_after_root_exit_cancels_surviving_descendant(tmp_path: Path, monkeypatch) -> None:
     root = tmp_path / "project"
-    data = root / ".booley_project"
+    data = root / ".booley"
     data.mkdir(parents=True)
     _fake_docker(tmp_path, monkeypatch, data)
     descendant_pid_file = tmp_path / "descendant.pid"
@@ -287,7 +287,7 @@ def test_sigint_after_root_exit_cancels_surviving_descendant(tmp_path: Path, mon
 
 def test_sigint_during_slot_queue_wait_withdraws_waiter(tmp_path: Path, monkeypatch) -> None:
     root = tmp_path / "project"
-    data = root / ".booley_project"
+    data = root / ".booley"
     data.mkdir(parents=True)
     _fake_docker(tmp_path, monkeypatch, data)
     slots = data / "runtime" / "jobs" / "slots"
@@ -296,8 +296,8 @@ def test_sigint_during_slot_queue_wait_withdraws_waiter(tmp_path: Path, monkeypa
     command = (
         "import os\n"
         "from booley.runtime import job_slots\n"
-        "from booley.runtime.project_dir import resolve_project_dir\n"
-        "root=resolve_project_dir()/'runtime'/'jobs'/'slots'\n"
+        "from booley.runtime.booley_dir import resolve_booley_dir\n"
+        "root=resolve_booley_dir()/'runtime'/'jobs'/'slots'\n"
         "store=job_slots.SlotStore(root)\n"
         "store.acquire(job_slots.CLASS_HEAVY,pid=os.getpid(),poll_interval=0.02)\n"
     )
@@ -320,15 +320,15 @@ def test_sigint_during_slot_queue_wait_withdraws_waiter(tmp_path: Path, monkeypa
 
 def test_sigint_after_promotion_allows_repeated_slot_cleanup(tmp_path: Path, monkeypatch) -> None:
     root = tmp_path / "project"
-    data = root / ".booley_project"
+    data = root / ".booley"
     data.mkdir(parents=True)
     _fake_docker(tmp_path, monkeypatch, data)
     promoted = tmp_path / "promoted"
     command = (
         "import os,time\n"
         "from booley.runtime import job_slots\n"
-        "from booley.runtime.project_dir import resolve_project_dir\n"
-        "root=resolve_project_dir()/'runtime'/'jobs'/'slots'\n"
+        "from booley.runtime.booley_dir import resolve_booley_dir\n"
+        "root=resolve_booley_dir()/'runtime'/'jobs'/'slots'\n"
         "store=job_slots.SlotStore(root)\n"
         "store.acquire(job_slots.CLASS_HEAVY,pid=os.getpid(),poll_interval=0.02)\n"
         f"open({str(promoted)!r},'w').close()\n"
@@ -353,7 +353,7 @@ def test_missing_container_protocol_fails_fast_with_actionable_message(
     tmp_path: Path, monkeypatch, caplog
 ) -> None:
     root = tmp_path / "project"
-    data = root / ".booley_project"
+    data = root / ".booley"
     data.mkdir(parents=True)
     _exiting_docker(tmp_path, monkeypatch, data)
     monkeypatch.setattr(runtime_attachment, "_STARTUP_LIMIT_SECONDS", 0.1)
@@ -374,7 +374,7 @@ def test_missing_container_protocol_fails_fast_with_actionable_message(
 
 def test_protocol_version_mismatch_fails_closed(tmp_path: Path, monkeypatch, caplog) -> None:
     root = tmp_path / "project"
-    data = root / ".booley_project"
+    data = root / ".booley"
     data.mkdir(parents=True)
     _fake_docker(tmp_path, monkeypatch, data)
     real_read = runtime_attachment.read_json

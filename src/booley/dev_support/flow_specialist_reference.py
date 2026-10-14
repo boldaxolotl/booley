@@ -157,7 +157,7 @@ def render_flow_reference(
     :func:`_summarize`.
 
     Args:
-        project_mcp_tools_dir: Optional ``.booley_project/mcp_tools/`` directory; when
+        project_mcp_tools_dir: Optional ``.booley/mcp_tools/`` directory; when
             given, project-specific Flows are discovered and rendered too.
         execution_column: Retained for compatibility; ignored because all
             Flows execute inside the Sandbox.

@@ -475,9 +475,9 @@ class TestMainEntryPoint:
         import subprocess
 
         subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, timeout=30)
-        project_dir = tmp_path / ".booley_project"
-        project_dir.mkdir()
-        (project_dir / "booley.toml").write_text("[stealth]\nenabled = false\n", encoding="utf-8")
+        booley_dir = tmp_path / ".booley"
+        booley_dir.mkdir()
+        (booley_dir / "booley.toml").write_text("[stealth]\nenabled = false\n", encoding="utf-8")
         monkeypatch.chdir(tmp_path)
 
         with patch("sys.argv", ["validate_commit_msg.py", "mention Booley intentionally"]):
@@ -489,7 +489,7 @@ class TestMainEntryPoint:
 def test_project_config_detection(tmp_path):
     assert not _has_project_config(tmp_path)
 
-    config = tmp_path / ".booley_project" / "booley.toml"
+    config = tmp_path / ".booley" / "booley.toml"
     config.parent.mkdir()
     config.write_text("[stealth]\nenabled = true\n", encoding="utf-8")
 
@@ -501,7 +501,7 @@ def test_source_checkout_ignores_stale_project_config(tmp_path):
         "[tool.booley]\nsource_checkout = true\n",
         encoding="utf-8",
     )
-    config = tmp_path / ".booley_project" / "booley.toml"
+    config = tmp_path / ".booley" / "booley.toml"
     config.parent.mkdir()
     config.write_text("[stealth]\nenabled = true\n", encoding="utf-8")
 
@@ -510,7 +510,7 @@ def test_source_checkout_ignores_stale_project_config(tmp_path):
 
 
 def test_project_state_repository_config_detection(tmp_path):
-    state_repo = tmp_path / ".booley_project"
+    state_repo = tmp_path / ".booley"
     state_repo.mkdir()
     (state_repo / "booley.toml").write_text("[stealth]\nenabled = true\n", encoding="utf-8")
 
@@ -522,9 +522,9 @@ def test_absolute_source_script_recovers_canonical_package_under_isolation(tmp_p
     import sys
 
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, timeout=30)
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
-    (project_dir / "booley.toml").write_text(
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    (booley_dir / "booley.toml").write_text(
         "[stealth]\nenabled = true\nenforce_convention = true\n",
         encoding="utf-8",
     )
@@ -577,9 +577,9 @@ class TestVendoredStandaloneImport:
         subprocess.run(
             ["git", "init", "-q", str(dst)], capture_output=True, check=True, timeout=30
         )
-        project_dir = dst / ".booley_project"
-        project_dir.mkdir(exist_ok=True)
-        (project_dir / "booley.toml").write_text("[stealth]\nenabled = true\n", encoding="utf-8")
+        booley_dir = dst / ".booley"
+        booley_dir.mkdir(exist_ok=True)
+        (booley_dir / "booley.toml").write_text("[stealth]\nenabled = true\n", encoding="utf-8")
         return subprocess.run(
             [sys.executable, str(dst / "validate_commit_msg.py"), msg],
             cwd=str(dst),
@@ -612,9 +612,9 @@ class TestVendoredStandaloneImport:
         subprocess.run(
             ["git", "init", "-q", str(tmp_path)], capture_output=True, check=True, timeout=30
         )
-        project_dir = tmp_path / ".booley_project"
-        project_dir.mkdir()
-        (project_dir / "booley.toml").write_text("[stealth]\nenabled = true\n", encoding="utf-8")
+        booley_dir = tmp_path / ".booley"
+        booley_dir.mkdir()
+        (booley_dir / "booley.toml").write_text("[stealth]\nenabled = true\n", encoding="utf-8")
         # A Co-Authored-By trailer is a banned attribution term the diff scan
         # flags. Stage it so `git diff --cached` (run via run_command) sees it.
         (tmp_path / "note.txt").write_text("Co-Authored-By: somebody <x@y.z>\n", encoding="utf-8")

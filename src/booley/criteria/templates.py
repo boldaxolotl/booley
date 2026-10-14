@@ -15,7 +15,7 @@ Structured sim criterion format:
 
 Also provides TOML-based criterion *definitions* (base + project):
   - Base: ``data/criteria.toml`` (ships with Booley, loaded via importlib.resources)
-  - Project: ``.booley_project/criteria.toml`` (project-specific extensions)
+  - Project: ``.booley/criteria.toml`` (project-specific extensions)
 """
 
 from __future__ import annotations
@@ -257,7 +257,7 @@ def load_base_criteria() -> list[CriterionDef]:
 
 
 def load_project_criteria(project_criteria_path: Path) -> list[CriterionDef]:
-    """Load project criteria from ``.booley_project/criteria.toml``.
+    """Load project criteria from ``.booley/criteria.toml``.
 
     Returns empty list if file doesn't exist.
     """

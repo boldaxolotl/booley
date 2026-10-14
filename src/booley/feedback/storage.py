@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from booley.runtime.booley_dir import BOOLEY_DIR_NAME, resolve_booley_dir
 from booley.runtime.checkout_role import is_booley_source_checkout
 from booley.runtime.git import git_common_dir
-from booley.runtime.project_dir import PROJECT_DIR_NAME, resolve_project_dir
 
 SOURCE_FEEDBACK_DIR_NAME = "booley-feedback"
 
@@ -22,6 +22,6 @@ def feedback_storage_dir(checkout_root: Path) -> Path:
     if is_booley_source_checkout(root):
         return git_common_dir(root) / SOURCE_FEEDBACK_DIR_NAME
     try:
-        return resolve_project_dir(root)
+        return resolve_booley_dir(root)
     except FileNotFoundError:
-        return root / PROJECT_DIR_NAME
+        return root / BOOLEY_DIR_NAME

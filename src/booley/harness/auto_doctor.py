@@ -18,7 +18,7 @@ from typing import Any
 
 from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport, Severity
 from booley.runtime import health
-from booley.runtime.project_dir import resolve_project_dir
+from booley.runtime.booley_dir import resolve_booley_dir
 
 _RUN_LOCK_NAME = "auto.lock"
 Progress = Callable[[str], None]
@@ -41,7 +41,7 @@ def _crash_report(exc: Exception, transcript: Path) -> DiagnosticReport:
 
 def _execute(
     project_root: Path,
-    project_dir: Path,
+    booley_dir: Path,
     trigger: str,
     *,
     progress: Progress | None = None,
@@ -64,7 +64,7 @@ def _execute(
         diagnostics = result.diagnostics
         deep_status = result.deep_status.to_document() if result.deep_status else None
     except Exception as exc:  # noqa: BLE001 — automatic health must record crashes, never break startup
-        diagnostics = _crash_report(exc, health.transcript_path(project_dir))
+        diagnostics = _crash_report(exc, health.transcript_path(booley_dir))
         output.write(f"\n{diagnostics.findings[0].message}\n")
     duration_s = time.monotonic() - started
     report = health.publish_result(
@@ -76,7 +76,7 @@ def _execute(
         deep_status=deep_status,
     )
     (progress or _ignore_progress)(
-        f"completed in {duration_s:.1f}s; transcript: {health.transcript_path(project_dir)}"
+        f"completed in {duration_s:.1f}s; transcript: {health.transcript_path(booley_dir)}"
     )
     return report
 
@@ -89,8 +89,8 @@ def run_if_due(
 ) -> dict[str, Any] | None:
     """Run one automatic Doctor attempt when stale; never raises."""
     try:
-        project_dir = resolve_project_dir(project_root)
-        lock_path = health.state_dir(project_dir) / _RUN_LOCK_NAME
+        booley_dir = resolve_booley_dir(project_root)
+        lock_path = health.state_dir(booley_dir) / _RUN_LOCK_NAME
         with health.try_state_lock(lock_path) as acquired:
             if not acquired:
                 return None
@@ -101,7 +101,7 @@ def run_if_due(
             emit_progress(f"starting ({reason})")
             report = _execute(
                 project_root,
-                project_dir,
+                booley_dir,
                 trigger,
                 progress=emit_progress,
             )

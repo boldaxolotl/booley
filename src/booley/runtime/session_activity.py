@@ -104,8 +104,8 @@ def _parse(raw: bytes, key: str) -> ActivitySignal:
 class ActivityStore:
     """Reader and pruner of the per-session signal files the hook script writes."""
 
-    def __init__(self, project_dir: Path) -> None:
-        self.root = project_dir / "runtime" / "session_activity"
+    def __init__(self, booley_dir: Path) -> None:
+        self.root = booley_dir / "runtime" / "session_activity"
 
     def path(self, key: str) -> Path:
         """Opaque filename; logical keys never become filesystem components."""

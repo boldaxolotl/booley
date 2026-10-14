@@ -95,7 +95,7 @@ def test_matching_manual_recipe_stays_above_wheel_and_preserves_from(
     root = _project(tmp_path, "booley-sandbox-riscv")
     docker = FakeDocker({})
     _bootstrap_base(monkeypatch, docker)
-    recipe = root / ".booley_project/docker/Dockerfile"
+    recipe = root / ".booley/docker/Dockerfile"
     recipe.parent.mkdir()
     body = f"FROM {parent}\nRUN echo custom\n"
     recipe.write_text(body)
@@ -118,7 +118,7 @@ def test_mismatched_or_false_manual_parent_is_ignored(tmp_path, monkeypatch, cap
     root = _project(tmp_path, "booley-sandbox-riscv")
     docker = FakeDocker({})
     _bootstrap_base(monkeypatch, docker)
-    recipe = root / ".booley_project/docker/Dockerfile"
+    recipe = root / ".booley/docker/Dockerfile"
     recipe.parent.mkdir()
     recipe.write_text(body)
     planned = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
@@ -327,7 +327,7 @@ def test_run_init_observes_bootstrap_only_and_fails_base_before_project_mutation
         init_cmd, "_resolve_agent_selection", lambda *_args: SimpleNamespace(provider="codex")
     )
     monkeypatch.setattr(init_cmd, "_plan_existing_guidance", lambda _ctx: (None, True))
-    monkeypatch.setattr(init_cmd, "init_project_dir_scope", lambda _root: nullcontext())
+    monkeypatch.setattr(init_cmd, "init_booley_dir_scope", lambda _root: nullcontext())
     monkeypatch.setattr(
         init_cmd,
         "_run_project_init_steps",
@@ -377,7 +377,7 @@ class _PreservingDependencyBuilder(TransactionBuilder):
     def prepare(self, node, **kwargs):
         from booley.harness.image_lifecycle import _IncrementalBuildAdapter
 
-        directory = self.root / ".booley_project/docker"
+        directory = self.root / ".booley/docker"
         before = (directory / "requirements.txt").read_bytes()
         adapter = _IncrementalBuildAdapter(self.root, self.docker, verbose=False)
         adapter._materialize_managed_project_recipe(node)
@@ -408,7 +408,7 @@ def test_lone_user_requirements_build_and_remain_current(
     root = _project(tmp_path, image)
     docker = FakeDocker({})
     _bootstrap_base(monkeypatch, docker)
-    directory = root / ".booley_project/docker"
+    directory = root / ".booley/docker"
     directory.mkdir()
     requirements = directory / "requirements.txt"
     body = b"# user dependencies\r\nrequests==2.32.0\r\n"
@@ -444,7 +444,7 @@ def test_kept_manual_recipe_and_sibling_survive_convergence(tmp_path, monkeypatc
     root = _project(tmp_path)
     docker = FakeDocker({})
     _bootstrap_base(monkeypatch, docker)
-    directory = root / ".booley_project/docker"
+    directory = root / ".booley/docker"
     directory.mkdir()
     recipe = directory / "Dockerfile"
     recipe_body = b"# booley:keep\nFROM booley-sandbox\nCOPY requirements.txt /tmp/deps\n"
@@ -485,7 +485,7 @@ def test_release_overlay_preserves_lone_user_requirements(tmp_path, monkeypatch)
         }
     )
     docker.images[lifecycle.BASE_IMAGE] = ("sha256:release", labels)
-    directory = root / ".booley_project/docker"
+    directory = root / ".booley/docker"
     directory.mkdir()
     requirements = directory / "requirements.txt"
     body = b"# booley:keep\r\nrequests==2.32.0\r\n"

@@ -16,14 +16,14 @@ from typing import Any
 from booley.config.coverage_waiver_inputs import CoverageWaiverConfig, parse_coverage_waiver_config
 from booley.core.config_paths import resolve_toml
 from booley.goals.proposals import digest
-from booley.runtime.project_dir import resolve_checkout_project_dir
+from booley.runtime.booley_dir import resolve_checkout_booley_dir
 
 WAIVER_POLICY_DETAIL_KEY = "goal_waiver_policy"
 
 
 def policy_location(work_dir: Path) -> tuple[CoverageWaiverConfig | None, Path]:
     """Resolve exactly the config and anchor used by this checkout's coverage."""
-    project = resolve_checkout_project_dir(work_dir)
+    project = resolve_checkout_booley_dir(work_dir)
     path = resolve_toml(project)
     config = parse_coverage_waiver_config(tomllib.loads(path.read_text()) if path.exists() else {})
     anchor = (

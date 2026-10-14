@@ -54,13 +54,13 @@ class _PlanningDisclosureAuthenticatedError(RuntimeError):
 
 def _isolated_icarus_target(tmp_path: Path, core_text: str, *, cocotb: bool):
     project = tmp_path / "project"
-    cores = project / ".booley_project" / "cores"
+    cores = project / ".booley" / "cores"
     cores.mkdir(parents=True)
-    (project / ".booley_project" / "booley.toml").write_text(
+    (project / ".booley" / "booley.toml").write_text(
         "[stealth]\nenabled = true\nignore_native_cores = true\n",
         encoding="utf-8",
     )
-    (project / ".booley_project" / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
+    (project / ".booley" / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
     (project / "rtl").mkdir()
     (project / "tb").mkdir()
     (project / "rtl" / "dut.sv").write_text("module dut; endmodule\n", encoding="utf-8")
@@ -417,13 +417,13 @@ class TestWriteTraceOverlay:
     ):
         pytest.importorskip("fusesoc")
         project = tmp_path / "project"
-        cores = project / ".booley_project" / "cores"
+        cores = project / ".booley" / "cores"
         cores.mkdir(parents=True)
-        (project / ".booley_project" / "booley.toml").write_text(
+        (project / ".booley" / "booley.toml").write_text(
             "[stealth]\nenabled = true\nignore_native_cores = true\n",
             encoding="utf-8",
         )
-        (project / ".booley_project" / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
+        (project / ".booley" / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
         (project / "rtl").mkdir()
         (project / "tb").mkdir()
         (project / "rtl" / "dut.sv").write_text("module dut; endmodule\n", encoding="utf-8")
@@ -509,14 +509,14 @@ class TestWriteTraceOverlay:
             )
 
     def test_projected_icarus_overlay_rebases_injected_dump(self, tmp_path: Path):
-        project_dir = tmp_path / ".booley_project"
-        (project_dir / "cores").mkdir(parents=True)
-        (project_dir / "booley.toml").write_text("[stealth]\nenabled = true\n", encoding="utf-8")
-        (project_dir / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
+        booley_dir = tmp_path / ".booley"
+        (booley_dir / "cores").mkdir(parents=True)
+        (booley_dir / "booley.toml").write_text("[stealth]\nenabled = true\n", encoding="utf-8")
+        (booley_dir / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
         core = self._ICARUS_CORE.replace(
             "      - sim/booley_vcd_dump.sv: {file_type: systemVerilogSource}\n", ""
         )
-        _write_core(project_dir / "cores", core, create_sources=False)
+        _write_core(booley_dir / "cores", core, create_sources=False)
         overlay = write_trace_overlay(TargetCatalog.build(tmp_path).select("sim"))
         try:
             from booley.fusesoc.fusesoc_registry import _setup_command
@@ -530,7 +530,7 @@ class TestWriteTraceOverlay:
             projected = next(path for path in overlay.extra_files if path.name.endswith(".core"))
             doc = read_core(projected)
             entry = doc["filesets"]["booley_trace_dump"]["files"][0]
-            assert next(iter(entry)).startswith(".booley_project/cores/")
+            assert next(iter(entry)).startswith(".booley/cores/")
         finally:
             overlay.cleanup()
         assert not projected.exists()

@@ -52,10 +52,10 @@ from booley.mcp.base import (
     McpToolResult,
     read_source_dirs_from_toml,
 )
+from booley.runtime.booley_dir import resolve_booley_dir
 from booley.runtime.exception_diagnostics import exception_report_text, log_exception
 from booley.runtime.execution_records import atomic_write_json
 from booley.runtime.paths import refs_dir
-from booley.runtime.project_dir import resolve_project_dir
 from booley.specialists.verification_freshness import refresh_verification_freshness
 from booley.targets.flow_names import config_section
 
@@ -218,8 +218,8 @@ def _guide_paths() -> dict[str, str]:
 # Project style-guide overlays, resolved against work_dir. Absence is the
 # normal case for a project that has not authored one — never warn on a miss.
 _STYLE_OVERLAYS = {
-    "rtl": ".booley_project/rtl_style_guide.md",
-    "tb": ".booley_project/tb_style_guide.md",
+    "rtl": ".booley/rtl_style_guide.md",
+    "tb": ".booley/tb_style_guide.md",
 }
 
 
@@ -1498,7 +1498,7 @@ object, even after calling the capability.
         return self._publish_review_evidence(result, prepared)
 
     def _evidence_path(self, label: str) -> Path:
-        directory = resolve_project_dir(Path(self.args.work_dir)) / "reviewer-evidence"
+        directory = resolve_booley_dir(Path(self.args.work_dir)) / "reviewer-evidence"
         return directory / f"{self._review_run_id or uuid4().hex}-{label}.json"
 
     def _write_review_evidence(self, detail: dict[str, Any], label: str) -> Path:

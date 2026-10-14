@@ -6,14 +6,14 @@ import re
 import subprocess
 from pathlib import Path
 
-from booley.core.project_dir import resolve_checkout_project_dir, resolve_project_dir
+from booley.core.booley_dir import resolve_booley_dir, resolve_checkout_booley_dir
 
 
-def worktree_state_dir(project_root: Path, *, project_dir: Path | None = None) -> Path:
+def worktree_state_dir(project_root: Path, *, booley_dir: Path | None = None) -> Path:
     """Use a checkout-local spelling only when it names the selected state."""
     root = project_root.resolve()
-    selected = project_dir.resolve() if project_dir is not None else resolve_project_dir(root)
-    local = resolve_checkout_project_dir(root)
+    selected = booley_dir.resolve() if booley_dir is not None else resolve_booley_dir(root)
+    local = resolve_checkout_booley_dir(root)
     try:
         local.relative_to(root)
         if local.samefile(selected):
@@ -36,7 +36,7 @@ def relative_worktree_paths(project_root: Path) -> bool:
         alias = Path("/booley-project")
         return (
             alias.is_symlink()
-            and alias.readlink() == Path("/work/.booley_project")
+            and alias.readlink() == Path("/work/.booley")
             and alias.lstat().st_uid == 0
             and Path("/").stat().st_uid == 0
             and not Path("/").stat().st_mode & 0o022

@@ -7,9 +7,9 @@ from collections.abc import Mapping
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
+from booley.core.booley_dir import resolve_checkout_booley_dir
 from booley.core.boundary import require_dict, require_list, require_str_value
 from booley.core.config_paths import resolve_toml
-from booley.core.project_dir import resolve_checkout_project_dir
 
 
 def parse_protected_inputs(data: Mapping[str, Any]) -> tuple[str, ...]:
@@ -54,11 +54,11 @@ def validate_input_path(value: str) -> str:
 
 
 def protected_input_declarations(
-    worktree: Path, project_dir: Path | None = None
+    worktree: Path, booley_dir: Path | None = None
 ) -> tuple[str, ...]:
     """Read the selected checkout's effective config, without process-global memoization."""
     try:
-        selected = project_dir or resolve_checkout_project_dir(worktree)
+        selected = booley_dir or resolve_checkout_booley_dir(worktree)
     except FileNotFoundError:
         return ()
     path = resolve_toml(selected)

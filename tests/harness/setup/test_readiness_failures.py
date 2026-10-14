@@ -13,11 +13,11 @@ from tests.harness.test_doctor import _write_project
 
 @pytest.mark.parametrize("filename", ["booley.toml", "configs.toml"])
 def test_project_load_reports_malformed_toml_and_retains_resolved_directory(tmp_path, filename):
-    project_dir = _write_project(tmp_path)
-    (project_dir / filename).write_text("[broken")
+    booley_dir = _write_project(tmp_path)
+    (booley_dir / filename).write_text("[broken")
     result = readiness.load_project(tmp_path)
     assert result.project is None
-    assert result.project_dir == project_dir
+    assert result.booley_dir == booley_dir
     assert any(
         f.severity is Severity.FAIL and f"{filename} does not parse" in f.message
         for f in result.report.findings
@@ -25,11 +25,11 @@ def test_project_load_reports_malformed_toml_and_retains_resolved_directory(tmp_
 
 
 def test_project_load_reports_unreadable_configuration(tmp_path, monkeypatch):
-    project_dir = _write_project(tmp_path)
+    booley_dir = _write_project(tmp_path)
     original = Path.open
 
     def open_file(path, *args, **kwargs):
-        if path == project_dir / "booley.toml":
+        if path == booley_dir / "booley.toml":
             raise PermissionError("unreadable project config")
         return original(path, *args, **kwargs)
 
@@ -43,8 +43,8 @@ def test_project_load_reports_unreadable_configuration(tmp_path, monkeypatch):
 
 
 def test_project_load_rejects_invalid_eda_before_constructing_continuation(tmp_path):
-    project_dir = _write_project(tmp_path)
-    with (project_dir / "booley.toml").open("a") as stream:
+    booley_dir = _write_project(tmp_path)
+    with (booley_dir / "booley.toml").open("a") as stream:
         stream.write("\n[eda.unknown]\n")
     result = readiness.load_project(tmp_path)
     assert result.project is None
@@ -63,8 +63,8 @@ def test_project_load_keeps_legacy_target_fallback_when_no_core_is_available(tmp
 
 
 def test_guidance_reconciliation_is_idempotent_and_inspect_reports_current(tmp_path):
-    project_dir = _write_project(tmp_path)
-    (project_dir / "AGENTS.md").write_text("# Guidance\n")
+    booley_dir = _write_project(tmp_path)
+    (booley_dir / "AGENTS.md").write_text("# Guidance\n")
     project = readiness.load_project(tmp_path).project
     assert project is not None
     first = readiness.check_guidance(project, mode=readiness.ReadinessMode.RECONCILE)
@@ -79,8 +79,8 @@ def test_guidance_reconciliation_is_idempotent_and_inspect_reports_current(tmp_p
 
 
 def test_guidance_repair_preserves_conflicting_tracked_file(tmp_path):
-    project_dir = _write_project(tmp_path)
-    (project_dir / "AGENTS.md").write_text("canonical guidance\n")
+    booley_dir = _write_project(tmp_path)
+    (booley_dir / "AGENTS.md").write_text("canonical guidance\n")
     root_file = tmp_path / "AGENTS.md"
     root_file.write_text("tracked author guidance\n")
     subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True)
@@ -98,8 +98,8 @@ def test_guidance_repair_preserves_conflicting_tracked_file(tmp_path):
 
 
 def test_guidance_read_error_retains_scope_warning_identity(tmp_path, monkeypatch):
-    project_dir = _write_project(tmp_path)
-    canon = project_dir / "AGENTS.md"
+    booley_dir = _write_project(tmp_path)
+    canon = booley_dir / "AGENTS.md"
     canon.write_text("booley_status\n")
     project = readiness.load_project(tmp_path).project
     assert project is not None
@@ -118,10 +118,10 @@ def test_guidance_read_error_retains_scope_warning_identity(tmp_path, monkeypatc
 
 
 def test_stealth_inspection_reports_stale_projection_then_reconcile_repairs_it(tmp_path):
-    project_dir = _write_project(tmp_path)
-    with (project_dir / "booley.toml").open("a") as stream:
+    booley_dir = _write_project(tmp_path)
+    with (booley_dir / "booley.toml").open("a") as stream:
         stream.write("\n[stealth]\nenabled = true\n")
-    cores = project_dir / "cores"
+    cores = booley_dir / "cores"
     cores.mkdir()
     (cores / "hidden.core").write_text("CAPI=2:\nname: ::hidden:0\n")
     subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True)
@@ -154,8 +154,8 @@ def test_stealth_inspection_reports_stale_projection_then_reconcile_repairs_it(t
     ],
 )
 def test_legacy_notifications_do_not_block_project_readiness(tmp_path, settings):
-    project_dir = _write_project(tmp_path)
-    config = project_dir / "booley.toml"
+    booley_dir = _write_project(tmp_path)
+    config = booley_dir / "booley.toml"
     baseline = readiness.load_project(tmp_path)
     config.write_text(config.read_text() + "\n" + settings)
     result = readiness.load_project(tmp_path)

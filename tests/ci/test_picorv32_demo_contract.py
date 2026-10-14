@@ -150,6 +150,10 @@ def test_demo_uses_and_retains_the_pulled_immutable_image_identity() -> None:
     }
     assert '"${{ steps.runtime-image.outputs.image }}"' in verify["run"]
     assert '"${IMAGE}" bash' not in verify["run"]
+    # Published images can still own a legacy /booley-project symlink.
+    # Docker resolves mount destinations through it, recreating the old layout.
+    assert "dst=/booley-project" not in verify["run"]
+    assert "-e BOOLEY_DIR=/work/.booley" in verify["run"]
 
 
 def test_repository_demo_contract_is_pinned_to_public_project_main() -> None:
@@ -158,7 +162,7 @@ def test_repository_demo_contract_is_pinned_to_public_project_main() -> None:
 
     assert "project_contract_ref" not in raw_contract
     assert len(contract.upstream_ref) == 40
-    assert contract.project_ref == "da79489482a7bed69e275ba2c46358ea6636af4d"
+    assert contract.project_ref == "e53c1896ab02595aa4ebb3a56b5aa7bd109177f9"
     assert contract.schema == 2
     assert all(goal.target in contract.required_targets for goal in contract.required_goals)
     assert contract.toolchain_url.startswith("https://github.com/xpack-dev-tools/")
@@ -329,11 +333,9 @@ def test_shared_action_reads_repository_and_revision_pins_from_contract() -> Non
         if step.get("name") == "Require reviewed revisions and materialize destination refs"
     )
     assert steps.index(checkouts[1]) < steps.index(excludes) < steps.index(ancestry)
-    assert "'/.booley_project'" in excludes["run"]
+    assert "'/.booley'" in excludes["run"]
     assert "'/.booley-projected-*.core'" in excludes["run"]
-    assert (
-        "git -C demo/.booley_project merge-base --is-ancestor HEAD origin/main" in ancestry["run"]
-    )
+    assert "git -C demo/.booley merge-base --is-ancestor HEAD origin/main" in ancestry["run"]
 
     action_strings = _yaml_strings(action)
     references = {
@@ -825,7 +827,7 @@ def test_demo_contract_cli_reports_success_and_errors(
         str(tmp_path / "c"),
         "--demo-root",
         str(tmp_path),
-        "--project-dir",
+        "--booley-dir",
         str(tmp_path),
     ]
     monkeypatch.setattr(demo_contract_module, "validate_demo", lambda *_args: [])
@@ -891,3 +893,37 @@ def test_typed_goals_encode_for_mcp_without_sharing_nested_maps():
         if "thresholds" in encoded:
             encoded["thresholds"]["cell_count_max"] = 999
             assert "cell_count_max" not in goal.thresholds
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="verifier executes inside the Linux image")
+def test_demo_verifier_uses_explicit_directory_for_both_readiness_stages(tmp_path, monkeypatch):
+    import json
+    import os
+    import sys
+
+    commands = tmp_path / "commands.jsonl"
+    binary = tmp_path / "bin/python"
+    binary.parent.mkdir()
+    binary.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, sys\n"
+        "with open(os.environ['DEMO_COMMAND_LOG'], 'a') as handle:\n"
+        "    handle.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+    )
+    binary.chmod(0o755)
+    configured = "/work/Project inputs/.booley"
+    monkeypatch.setenv("PATH", str(binary.parent) + os.pathsep + os.environ["PATH"])
+    monkeypatch.setenv("BOOLEY_DIR", configured)
+    monkeypatch.setenv("DEMO_COMMAND_LOG", str(commands))
+    monkeypatch.setenv("BOOLEY_RUN_PICORV32_FLOWS", "0")
+    subprocess.run(
+        ["bash", str(VERIFY_SCRIPT.resolve())],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=10,
+    )
+    calls = [json.loads(line) for line in commands.read_text().splitlines()]
+    assert len(calls) == 2
+    for arguments, option in zip(calls, ("--booley-dir", "--project-state"), strict=True):
+        assert arguments[arguments.index(option) + 1] == configured

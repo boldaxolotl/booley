@@ -1,7 +1,7 @@
 """booley init / booley doctor — project setup and health checks.
 
 Replaces bootstrap.py with package-aware logic. Uses booley.runtime.paths for all
-package data resolution and booley.runtime.project_dir for Booley Directory discovery.
+package data resolution and booley.runtime.booley_dir for Booley Directory discovery.
 
 Idempotent — safe to re-run. Each step checks preconditions and skips if
 already satisfied. A first init defaults to Claude with automatic credential
@@ -14,7 +14,7 @@ contiguous; identity lives in the ``record`` key, not the number.
 
     - Host bootstrap preflight (git, Docker, VS Code); unavailable Docker aborts
     - Scaffold a new IP from scratch (``--scaffold`` only)
-    - Booley Directory (.booley_project/ with config skeletons)
+    - Booley Directory (.booley/ with config skeletons)
     - Project Goalsets
     - Agent authentication setup
     - Skill deployment (system-level ~/.agents/ or ~/.claude/)
@@ -145,18 +145,18 @@ from booley.runtime import auth_token, doctor_stamp, project_repositories
 from booley.runtime import devcontainer as dc
 from booley.runtime import interactive_docker as idk
 from booley.runtime import project_image as pi
+from booley.runtime.booley_dir import (
+    booley_dir_for_init,
+    init_booley_dir_scope,
+    reset_cache,
+    resolve_booley_dir,
+    resolve_checkout_booley_dir,
+)
 from booley.runtime.checkout_role import is_booley_qa_skill_path
 from booley.runtime.docker_capacity import DockerCapacityError
 from booley.runtime.git import add_git_excludes
 from booley.runtime.paths import skills_dir
 from booley.runtime.platform_paths import IS_WINDOWS, docker_mount_path
-from booley.runtime.project_dir import (
-    init_project_dir_scope,
-    project_dir_for_init,
-    reset_cache,
-    resolve_checkout_project_dir,
-    resolve_project_dir,
-)
 from booley.runtime.project_gitignore import (
     PROJECT_GITIGNORE,
     PROJECT_GITIGNORE_PATTERNS,
@@ -216,11 +216,11 @@ TESTS_TOML_SKELETON = """\
 
 
 # ---------------------------------------------------------------------------
-# Init step: Booley Directory (record key: project_dir)
+# Init step: Booley Directory (record key: booley_dir)
 # ---------------------------------------------------------------------------
 
 
-def _backfill_config_skeletons(project_dir: Path, ctx: InitContext) -> None:
+def _backfill_config_skeletons(booley_dir: Path, ctx: InitContext) -> None:
     """Create missing config skeletons without guessing project-specific values."""
     # Create-only configuration preserves Project-authored content.
     skeletons = {
@@ -230,19 +230,19 @@ def _backfill_config_skeletons(project_dir: Path, ctx: InitContext) -> None:
     added = [
         name
         for name, body in skeletons.items()
-        if guarded_write(project_dir / name, body, dry_run=ctx.check_only, newline="\n")
+        if guarded_write(booley_dir / name, body, dry_run=ctx.check_only, newline="\n")
         is WriteOutcome.WRITTEN
     ]
     if not added:
         return
     if ctx.check_only:
-        warn(f"would add {len(added)} config skeleton file(s) under {project_dir}")
+        warn(f"would add {len(added)} config skeleton file(s) under {booley_dir}")
         return
-    ok(f"added {len(added)} config skeleton file(s) under {project_dir}")
+    ok(f"added {len(added)} config skeleton file(s) under {booley_dir}")
 
 
-def _backfill_project_gitignore(project_dir: Path, ctx: InitContext) -> None:
-    """Ensure ``.booley_project/.gitignore`` covers every required ignore pattern.
+def _backfill_project_gitignore(booley_dir: Path, ctx: InitContext) -> None:
+    """Ensure ``.booley/.gitignore`` covers every required ignore pattern.
 
     Pre-existing projects predate later ignore lines (``.interactive_logs/``,
     ``.runtime/``, ``worktrees/``).  Rather than only creating the file when it's
@@ -252,7 +252,7 @@ def _backfill_project_gitignore(project_dir: Path, ctx: InitContext) -> None:
     on an old project repairs a stale ignore list instead of silently leaving a
     multi-GB ``.runtime/`` tree stage-able.
     """
-    gitignore = project_dir / ".gitignore"
+    gitignore = booley_dir / ".gitignore"
 
     if not gitignore.exists():
         if ctx.check_only:
@@ -288,7 +288,7 @@ def _backfill_project_gitignore(project_dir: Path, ctx: InitContext) -> None:
 
 FUSESOC_IGNORE_BODY = (
     "# Marker: FuseSoC's library scanner (and Booley's discover_cores) skip any\n"
-    "# directory carrying this file. .booley_project/ holds transient git\n"
+    "# directory carrying this file. .booley/ holds transient git\n"
     "# worktrees whose .core copies share the project's VLNV — without this\n"
     "# marker FuseSoC's recursive --cores-root scan would let a stale worktree\n"
     "# core shadow the source at the Project Root and silently build the wrong RTL.\n"
@@ -300,17 +300,17 @@ FUSESOC_IGNORE_BODY = (
 )
 
 
-def _backfill_fusesoc_ignore(project_dir: Path, ctx: InitContext) -> None:
-    """Ensure ``.booley_project/FUSESOC_IGNORE`` exists.
+def _backfill_fusesoc_ignore(booley_dir: Path, ctx: InitContext) -> None:
+    """Ensure ``.booley/FUSESOC_IGNORE`` exists.
 
     The load-bearing half of the worktree-shadowing fix: Booley's own
-    :func:`~booley.fusesoc.fusesoc_registry.discover_cores` skips ``.booley_project/``
+    :func:`~booley.fusesoc.fusesoc_registry.discover_cores` skips ``.booley/``
     structurally, but FuseSoC's ``--cores-root`` recursive scan is out of
     Booley's code control — only this on-disk marker reaches it. Idempotent and
     self-healing so re-running ``booley init`` repairs a project that predates
     the fix (or one whose marker a user deleted).
     """
-    marker = project_dir / "FUSESOC_IGNORE"
+    marker = booley_dir / "FUSESOC_IGNORE"
     outcome = guarded_write(marker, FUSESOC_IGNORE_BODY, dry_run=ctx.check_only, newline="\n")
     if outcome is not WriteOutcome.WRITTEN:
         return
@@ -320,17 +320,17 @@ def _backfill_fusesoc_ignore(project_dir: Path, ctx: InitContext) -> None:
     ok(f"added {marker} (worktree cores stay out of FuseSoC's --cores-root scan)")
 
 
-def _step_project_dir(ctx: InitContext) -> None:
+def _step_booley_dir(ctx: InitContext) -> None:
     ctx.step_banner("Booley Directory")
     info(f"initializing project at {ctx.project_root}")
 
-    # Init only ever creates/backfills .booley_project/ at the top-level repo dir
-    # it was pointed at — a DIRECT check, never a walk-up. resolve_project_dir()
+    # Init only ever creates/backfills .booley/ at the top-level repo dir
+    # it was pointed at — a DIRECT check, never a walk-up. resolve_booley_dir()
     # deliberately walks up to ancestors (so runtime lookups from inside worktrees
     # resolve), but that behavior is wrong for init's *creation* decision: a
-    # sibling project's .booley_project/ one level up must not suppress scaffolding
+    # sibling project's .booley/ one level up must not suppress scaffolding
     # for the repo the user actually ran init on.
-    target = project_dir_for_init(ctx.project_root)
+    target = booley_dir_for_init(ctx.project_root)
 
     if target.is_dir():
         permissions_pending = False
@@ -343,7 +343,7 @@ def _step_project_dir(ctx: InitContext) -> None:
                         f"backfill report is incomplete: cannot inspect {target} "
                         "without changing directory permissions"
                     )
-                    ctx.record("project_dir", "warn", "permissions need 0700")
+                    ctx.record("booley_dir", "warn", "permissions need 0700")
                     return
             else:
                 target.chmod(0o700)
@@ -354,14 +354,14 @@ def _step_project_dir(ctx: InitContext) -> None:
         _backfill_fusesoc_ignore(target, ctx)
         _init_project_git_repo(target, ctx)  # self-heal an older stealth setup
         if permissions_pending:
-            ctx.record("project_dir", "warn", "permissions need 0700")
+            ctx.record("booley_dir", "warn", "permissions need 0700")
         else:
-            ctx.record("project_dir", "skip", "already present")
+            ctx.record("booley_dir", "skip", "already present")
         return
 
     if ctx.check_only:
         warn(f"would create {target}/ with config skeletons")
-        ctx.record("project_dir", "warn", "would create")
+        ctx.record("booley_dir", "warn", "would create")
         return
 
     target.mkdir(parents=True, mode=0o700, exist_ok=True)
@@ -382,11 +382,11 @@ def _step_project_dir(ctx: InitContext) -> None:
         "  config skeletons created; run the booley-setup skill starting at "
         "Step 0 (planning). Its Step 2 fills these files."
     )
-    ctx.record("project_dir", "ok", "created with config skeletons")
+    ctx.record("booley_dir", "ok", "created with config skeletons")
 
 
 def _init_project_git_repo(target: Path, ctx: InitContext) -> None:
-    """Give a stealth ``.booley_project/`` its own git repo (F-5, ADR 0036).
+    """Give a stealth ``.booley/`` its own git repo (F-5, ADR 0036).
 
     A stealth Booley Directory is excluded from the host repo via
     ``.git/info/exclude``, so ADR 0036's "versioned by the Booley Directory's own
@@ -483,7 +483,7 @@ def _step_core_projections(ctx: InitContext) -> None:
 def _step_goalsets(ctx: InitContext) -> None:
     """Reconcile the four create-only Project Goalsets."""
     ctx.step_banner("Goalsets")
-    outcomes = seed_goalsets(project_dir_for_init(ctx.project_root), dry_run=ctx.check_only)
+    outcomes = seed_goalsets(booley_dir_for_init(ctx.project_root), dry_run=ctx.check_only)
     added = sum(outcome is WriteOutcome.WRITTEN for _, outcome in outcomes)
     if not added:
         skip("Goalsets already present")
@@ -514,12 +514,12 @@ class AgentSelection:
 def _agent_config_path(project_root: Path, *, seed: bool) -> Path:
     """Select the config path for full initialization or checkout-aware seeding."""
     if not seed:
-        return project_dir_for_init(project_root) / "booley.toml"
+        return booley_dir_for_init(project_root) / "booley.toml"
     try:
-        project_dir = resolve_checkout_project_dir(project_root)
+        booley_dir = resolve_checkout_booley_dir(project_root)
     except FileNotFoundError:
-        project_dir = project_dir_for_init(project_root)
-    return project_dir / "booley.toml"
+        booley_dir = booley_dir_for_init(project_root)
+    return booley_dir / "booley.toml"
 
 
 def _read_agent_selection(path: Path) -> tuple[str | None, str | None]:
@@ -980,10 +980,10 @@ def reissue_session_spec(project_root: Path, image_id: str, *, verbose: bool = F
         raise RuntimeError("Sandbox spec reissuance failed: " + "; ".join(failures))
 
 
-def _dashboard_enabled(project_dir: Path) -> bool:
+def _dashboard_enabled(booley_dir: Path) -> bool:
     from booley.runtime.dashboard_tasks import enabled
 
-    return enabled(project_dir)
+    return enabled(booley_dir)
 
 
 def _project_sandbox_memory(project_root: Path) -> str:
@@ -992,7 +992,7 @@ def _project_sandbox_memory(project_root: Path) -> str:
     Parsed through ``_parse_sandbox_config`` so legacy tier tables /
     ``memory_tiers`` keys get their retirement warning here too.
     """
-    toml_path = project_root / ".booley_project" / "booley.toml"
+    toml_path = project_root / ".booley" / "booley.toml"
     if not toml_path.is_file():
         return ""
     try:
@@ -1011,13 +1011,13 @@ def _project_mask_paths(project_root: Path) -> list[str]:
     Workspace-root-relative POSIX paths the Sandbox must NOT see
     (oracle artifacts, competing lanes, private notes): each becomes a
     read-only bind of an always-empty host dir over the path's container view
-    (both views, for a ``.booley_project/`` subtree — see
+    (both views, for a ``.booley/`` subtree — see
     :func:`booley.runtime.devcontainer._mask_mounts`). An invalid knob is
     reported and ignored AS A WHOLE. A partially applied mask list would leave
     the user believing a path is
     hidden when it is not, which is worse than masking nothing loudly.
     """
-    toml_path = project_root / ".booley_project" / "booley.toml"
+    toml_path = project_root / ".booley" / "booley.toml"
     raw = _load_sandbox_config(toml_path).get("mask_paths")
     error = dc.mask_paths_error(raw)
     if error:
@@ -1128,7 +1128,7 @@ def _report_seeded_mounts(
         ok(
             f"masking {len(mask_paths)} path(s) from the container: "
             f"{', '.join(mask_paths)} (read-only empty binds over /work — and "
-            "over /booley-project for .booley_project subtrees)"
+            "over /booley-project for .booley subtrees)"
         )
 
 
@@ -1148,7 +1148,7 @@ def _resolve_host_skills_sources(project_root: Path) -> list[tuple[str, str]]:
     by a stale host symlink, and the container's built-ins always win. Entries
     are de-duplicated by skill name (first dir scanned wins) and by real path.
     """
-    raw = _load_sandbox_config(project_root / ".booley_project" / "booley.toml")
+    raw = _load_sandbox_config(project_root / ".booley" / "booley.toml")
     if not bool(raw.get("mount_host_skills", False)):
         return []
 
@@ -1225,7 +1225,7 @@ class _InteractiveSpecSources:
         return dc.build_devcontainer_spec(
             self.app,
             image=self.runtime_image_id or pi.project_sandbox_image(self.project_root),
-            project_dir_source=docker_mount_path(inputs.project_data_source),
+            booley_dir_source=docker_mount_path(inputs.project_data_source),
             project_id=dc.canonical_project_id(self.project_root),
             auth_token_source=(docker_mount_path(self.auth_source) if self.auth_source else None),
             config_seed_source=(docker_mount_path(self.config_seed) if self.config_seed else None),
@@ -1315,16 +1315,16 @@ def _interactive_precondition_failed(
     ctx: InitContext,
     nangate_pdk_root: Path | object | None,
     *,
-    init_will_create_project_dir: bool = False,
+    init_will_create_booley_dir: bool = False,
 ) -> bool:
     if _devcontainer_is_tracked(ctx.project_root):
         err(".devcontainer/ is tracked by git — refusing to clobber it")
         info("  Interactive Mode is unavailable for this repo until it is removed")
         ctx.record("interactive", "err", "tracked .devcontainer")
         return True
-    if _init_owned_project_dir_missing(
+    if _init_owned_booley_dir_missing(
         ctx,
-        init_will_create_project_dir=init_will_create_project_dir,
+        init_will_create_booley_dir=init_will_create_booley_dir,
     ):
         warn("would seed the Sandbox after creating the private Booley Directory")
         ctx.record("interactive", "warn", "Booley Directory would be created first")
@@ -1336,16 +1336,16 @@ def _interactive_precondition_failed(
     return False
 
 
-def _init_owned_project_dir_missing(
+def _init_owned_booley_dir_missing(
     ctx: InitContext,
     *,
-    init_will_create_project_dir: bool,
+    init_will_create_booley_dir: bool,
 ) -> bool:
     """Return whether full init owns the one unavailable Booley Directory source."""
-    if not ctx.check_only or not init_will_create_project_dir:
+    if not ctx.check_only or not init_will_create_booley_dir:
         return False
-    target = project_dir_for_init(ctx.project_root)
-    configured = os.environ.get("BOOLEY_PROJECT_DIR")
+    target = booley_dir_for_init(ctx.project_root)
+    configured = os.environ.get("BOOLEY_DIR")
     candidate = Path(configured).expanduser() if configured else target
     if not candidate.is_absolute() or candidate != target:
         return False
@@ -1401,14 +1401,14 @@ def _step_interactive(
     nangate_pdk_root: Path | object | None = _NANGATE_PDK_NOT_REQUESTED,
     agent_app: str | None = None,
     runtime_image_id: str | None = None,
-    init_will_create_project_dir: bool = False,
+    init_will_create_booley_dir: bool = False,
 ) -> None:
     """Seed the untracked devcontainer spec + long-lived Docker objects (ADR 0018)."""
     ctx.step_banner("Interactive Mode (Reopen in Container)")
     if _interactive_precondition_failed(
         ctx,
         nangate_pdk_root,
-        init_will_create_project_dir=init_will_create_project_dir,
+        init_will_create_booley_dir=init_will_create_booley_dir,
     ):
         return
 
@@ -1489,7 +1489,7 @@ def _setup_step_done(key: str, project_root: Path, data: dict) -> bool:
         name = project.get("name", "") if isinstance(project, dict) else ""
         return bool(str(name).strip())
     if key == "agents":
-        return (project_root / ".booley_project" / "AGENTS.md").is_file()
+        return (project_root / ".booley" / "AGENTS.md").is_file()
     flows = data.get("flows") if isinstance(data.get("flows"), dict) else {}
     from booley.targets.flow_names import LEGACY_TO_CANONICAL, config_section
 
@@ -1521,7 +1521,7 @@ def _outstanding_setup_steps(project_root: Path) -> list[str]:
 
 
 def _print_configured_advisory(ctx: InitContext) -> None:
-    """Send-off for a project whose .booley_project/ is already fully set up.
+    """Send-off for a project whose .booley/ is already fully set up.
 
     The common case for a demo/clone: every setup step's evidence is on disk, so
     listing the booley-setup steps contradicts the user's own repo. All that is
@@ -1535,7 +1535,7 @@ def _print_configured_advisory(ctx: InitContext) -> None:
     print()
     try:
         advisory = doctor_stamp.check_stamp_advisory(
-            resolve_project_dir(ctx.project_root), ctx.project_root
+            resolve_booley_dir(ctx.project_root), ctx.project_root
         )
     except (FileNotFoundError, OSError):
         advisory = None  # advisory by contract — never let the stamp break init
@@ -1578,8 +1578,8 @@ def _normalize_git_origin(origin: str) -> str:
     return normalized.removeprefix("git@").replace("github.com:", "github.com/", 1)
 
 
-def _query_project_git(project_dir: Path, *args: str) -> str | None:
-    """Run a read-only git query in *project_dir*; ``None`` when it cannot answer.
+def _query_project_git(booley_dir: Path, *args: str) -> str | None:
+    """Run a read-only git query in *booley_dir*; ``None`` when it cannot answer.
 
     A failure only ever downgrades the send-off to the ordinary one, so it is
     reported as a warning instead of failing init. Git exiting non-zero with
@@ -1587,31 +1587,31 @@ def _query_project_git(project_dir: Path, *args: str) -> str | None:
     """
     try:
         result = subprocess.run(
-            ["git", "-C", str(project_dir), *args],
+            ["git", "-C", str(booley_dir), *args],
             capture_output=True,
             text=True,
             timeout=5,
             check=False,
         )
     except subprocess.TimeoutExpired:
-        warn(f"could not inspect published Project state at {project_dir}: git timed out after 5s")
+        warn(f"could not inspect published Project state at {booley_dir}: git timed out after 5s")
         return None
     except (FileNotFoundError, OSError) as exc:
-        warn(f"could not inspect published Project state at {project_dir}: {exc}")
+        warn(f"could not inspect published Project state at {booley_dir}: {exc}")
         return None
     if result.returncode != 0:
         if error := result.stderr.strip():
             warn(
-                f"could not inspect published Project state at {project_dir}: "
+                f"could not inspect published Project state at {booley_dir}: "
                 f"git exited {result.returncode}: {error}"
             )
         return None
     return result.stdout.strip()
 
 
-def _has_published_project_origin(project_dir: Path) -> bool:
-    """Whether *project_dir* was cloned from a maintainer-published Project."""
-    origin = _query_project_git(project_dir, "config", "--get", "remote.origin.url")
+def _has_published_project_origin(booley_dir: Path) -> bool:
+    """Whether *booley_dir* was cloned from a maintainer-published Project."""
+    origin = _query_project_git(booley_dir, "config", "--get", "remote.origin.url")
     if origin is None:
         return False
     normalized = _normalize_git_origin(origin)
@@ -1629,7 +1629,7 @@ def _without_agent_table(toml_text: str) -> dict[str, object]:
     return document
 
 
-def _published_config_unchanged(project_dir: Path) -> bool:
+def _published_config_unchanged(booley_dir: Path) -> bool:
     """Whether booley.toml still says what the published commit says.
 
     Compared by parsed content with ``[agent]`` left out, not by bytes: init
@@ -1637,21 +1637,21 @@ def _published_config_unchanged(project_dir: Path) -> bool:
     leaves them open, and that choice must not turn a pristine checkout into a
     "modified" one.
     """
-    published = _query_project_git(project_dir, "show", "HEAD:./booley.toml")
+    published = _query_project_git(booley_dir, "show", "HEAD:./booley.toml")
     if published is None:
         return False
     try:
-        current = (project_dir / "booley.toml").read_text(encoding="utf-8")
+        current = (booley_dir / "booley.toml").read_text(encoding="utf-8")
         return _without_agent_table(current) == _without_agent_table(published)
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
         # Unreadable config is the ordinary send-off's problem to report.
         return False
 
 
-def _published_files_unchanged(project_dir: Path) -> bool:
+def _published_files_unchanged(booley_dir: Path) -> bool:
     """Whether the checkout still holds the published files, init's writes aside."""
     tracked_changes = _query_project_git(
-        project_dir,
+        booley_dir,
         "status",
         "--porcelain",
         "--untracked-files=no",
@@ -1662,14 +1662,14 @@ def _published_files_unchanged(project_dir: Path) -> bool:
     if tracked_changes != "":
         return False
     added_setup_files = _query_project_git(
-        project_dir,
+        booley_dir,
         "status",
         "--porcelain",
         "--untracked-files=all",
         "--",
         *_PUBLISHED_PROJECT_SETUP_PATHS,
     )
-    return added_setup_files == "" and _published_config_unchanged(project_dir)
+    return added_setup_files == "" and _published_config_unchanged(booley_dir)
 
 
 def _is_published_project(project_root: Path) -> bool:
@@ -1680,15 +1680,15 @@ def _is_published_project(project_root: Path) -> bool:
     the origin lacks, and the published files are unchanged.
     """
     try:
-        project_dir = resolve_project_dir(project_root)
+        booley_dir = resolve_booley_dir(project_root)
     except FileNotFoundError:
         return False
-    if not _has_published_project_origin(project_dir):
+    if not _has_published_project_origin(booley_dir):
         return False
     local_commits = _query_project_git(
-        project_dir, "rev-list", "--count", "HEAD", "--not", "--remotes=origin"
+        booley_dir, "rev-list", "--count", "HEAD", "--not", "--remotes=origin"
     )
-    return local_commits == "0" and _published_files_unchanged(project_dir)
+    return local_commits == "0" and _published_files_unchanged(booley_dir)
 
 
 def _project_display_name(project_root: Path) -> str:
@@ -1710,9 +1710,9 @@ def _print_published_advisory(ctx: InitContext) -> None:
     info('    No popup? Press F1 (or Ctrl+Shift+P) and run "Dev Containers: Reopen in Container"')
     # Only some published Projects ship a post-setup hook; naming a script
     # that is not there would send the user to a "No such file" error.
-    project_dir = resolve_project_dir(ctx.project_root)
-    if (project_dir / "hooks" / "post-setup.sh").is_file():
-        info("  * In the container, run `bash .booley_project/hooks/post-setup.sh`")
+    booley_dir = resolve_booley_dir(ctx.project_root)
+    if (booley_dir / "hooks" / "post-setup.sh").is_file():
+        info("  * In the container, run `bash .booley/hooks/post-setup.sh`")
     info("  * Then run `booley doctor --deep`; use booley-heal if it reports warnings")
 
 
@@ -1835,7 +1835,7 @@ def _print_summary(ctx: InitContext) -> int:
         return exit_code
 
     # The send-off has to match what the advisories step just printed. Telling a fully
-    # configured project (a published Project cloned with its .booley_project/ intact)
+    # configured project (a published Project cloned with its .booley/ intact)
     # to "finish the setup skills above" contradicts the empty step list right
     # above it, and reads as if init left work undone.
     advisory = next((r for r in ctx.results if r.name == "advisories"), None)
@@ -1890,14 +1890,14 @@ def _step_guidance_links(ctx: InitContext, planned: InitPlan | None = None) -> N
     """
     ctx.step_banner("guidance links")
 
-    project_dir = project_dir_for_init(ctx.project_root)
-    if not (project_dir / "AGENTS.md").is_file():
+    booley_dir = booley_dir_for_init(ctx.project_root)
+    if not (booley_dir / "AGENTS.md").is_file():
         skip("no AGENTS.md yet — run the booley-setup skill (Step 3, guidance)")
         ctx.record("guidance_links", "skip", "no guidance file")
         return
 
     try:
-        plan = planned or plan_guidance_links(ctx.project_root, project_dir)
+        plan = planned or plan_guidance_links(ctx.project_root, booley_dir)
     except (OSError, FileNotFoundError) as exc:
         warn(f"could not inspect guidance links: {exc}")
         ctx.record("guidance_links", "warn", "inspection failed")
@@ -1920,7 +1920,7 @@ def _step_guidance_links(ctx: InitContext, planned: InitPlan | None = None) -> N
         return
 
     try:
-        links = ensure_guidance_links(ctx.project_root, project_dir, plan=plan)
+        links = ensure_guidance_links(ctx.project_root, booley_dir, plan=plan)
     except InitPreconditionError as exc:
         err(f"guidance filesystem changed before apply: {exc}")
         ctx.record("guidance_links", "err", "filesystem precondition changed")
@@ -1930,7 +1930,7 @@ def _step_guidance_links(ctx: InitContext, planned: InitPlan | None = None) -> N
         ctx.record("guidance_links", "warn", "link failed")
         return
 
-    ok(f"root guidance links point at {project_dir / 'AGENTS.md'}")
+    ok(f"root guidance links point at {booley_dir / 'AGENTS.md'}")
     for link in links:
         info(f"  {link.name}")
     ctx.record("guidance_links", "ok", f"{len(links)} link(s)")
@@ -1956,10 +1956,7 @@ def _run_seed(ctx: InitContext, selection: AgentSelection) -> int:
     if not ctx.check_only and sys.stdout.isatty():
         print(bold_chrome(f"  Seeding Interactive Mode for {ctx.project_root}"))
         print()
-    if (
-        "BOOLEY_PROJECT_DIR" not in os.environ
-        and not (ctx.project_root / ".booley_project").is_dir()
-    ):
+    if "BOOLEY_DIR" not in os.environ and not (ctx.project_root / ".booley").is_dir():
         _step_interactive(ctx, agent_app=selection.provider)
         return _print_summary(ctx)
     pdk_root = nangate_pdk.cache_root() if nangate_pdk.is_ready() else None
@@ -1990,15 +1987,15 @@ def _init_context(args: argparse.Namespace, project_root: Path) -> InitContext:
     )
 
 
-def _line_ending_project_dir(project_root: Path) -> Path | None:
+def _line_ending_booley_dir(project_root: Path) -> Path | None:
     """Resolve Booley Directory only when init has materialized or found it."""
     try:
-        return resolve_project_dir(project_root)
+        return resolve_booley_dir(project_root)
     except FileNotFoundError:
         return None
 
 
-def _release_guidance_for_line_endings(ctx: InitContext, project_dir: Path | None) -> bool:
+def _release_guidance_for_line_endings(ctx: InitContext, booley_dir: Path | None) -> bool:
     """Detach Booley's own guidance hardlinks when the canonical file needs LF.
 
     The Windows guidance fallback hardlinks the root ``AGENTS.md``/``CLAUDE.md``
@@ -2007,13 +2004,13 @@ def _release_guidance_for_line_endings(ctx: InitContext, project_dir: Path | Non
     guidance step right after line endings recreates them against the
     normalized file. Other hardlinks still block the repair.
     """
-    if ctx.check_only or project_dir is None:
+    if ctx.check_only or booley_dir is None:
         return False
-    canon = project_dir / "AGENTS.md"
+    canon = booley_dir / "AGENTS.md"
     try:
         if not canon.is_file() or canon.stat().st_nlink < 2:
             return False
-        pending = pending_normalization_paths(ctx.project_root, project_dir)
+        pending = pending_normalization_paths(ctx.project_root, booley_dir)
         if not any(path.is_file() and path.samefile(canon) for path in pending):
             return False
         detached = detach_guidance_hardlinks(ctx.project_root, canon.parent)
@@ -2032,9 +2029,9 @@ def _sample_line_ending_baseline(ctx: InitContext) -> dict[Path, bool | None] | 
     """
     if ctx.check_only:
         return None
-    project_dir = project_dir_for_init(ctx.project_root)
+    booley_dir = booley_dir_for_init(ctx.project_root)
     return sample_worktree_cleanliness(
-        ctx.project_root, project_dir if project_dir.is_dir() else None
+        ctx.project_root, booley_dir if booley_dir.is_dir() else None
     )
 
 
@@ -2049,20 +2046,20 @@ def _step_line_endings_and_guidance(
     repair ignore Booley's own earlier LF edits to tracked files in the Booley Directory while
     still refusing a tree the user had left dirty.
     """
-    project_dir = _line_ending_project_dir(ctx.project_root)
-    if _release_guidance_for_line_endings(ctx, project_dir):
+    booley_dir = _line_ending_booley_dir(ctx.project_root)
+    if _release_guidance_for_line_endings(ctx, booley_dir):
         guidance_plan = None  # the preflight plan observed the detached links
-    _step_line_endings(ctx, project_dir, clean_baseline=clean_baseline)
+    _step_line_endings(ctx, booley_dir, clean_baseline=clean_baseline)
     _step_guidance_links(ctx, guidance_plan)
 
 
 def _plan_existing_guidance(ctx: InitContext) -> tuple[InitPlan | None, bool]:
     """Inspect existing guidance links and report whether init may proceed."""
-    project_dir = project_dir_for_init(ctx.project_root)
-    if not (project_dir / "AGENTS.md").is_file():
+    booley_dir = booley_dir_for_init(ctx.project_root)
+    if not (booley_dir / "AGENTS.md").is_file():
         return None, True
     try:
-        guidance_plan = plan_guidance_links(ctx.project_root, project_dir)
+        guidance_plan = plan_guidance_links(ctx.project_root, booley_dir)
     except (OSError, FileNotFoundError, ValueError) as exc:
         err(f"initialization filesystem inspection failed: {exc}")
         ctx.record("filesystem_plan", "err", "inspection failed")
@@ -2156,12 +2153,12 @@ def _sandbox_git_version(image_id: str | None) -> tuple[int, int, int] | None:
 
 def _step_worktree_policies(ctx: InitContext, runtime_image_id: str | None) -> None:
     """Reconcile pruning safety and the two-sided worktree-link policy."""
-    project_dir = project_dir_for_init(ctx.project_root)
-    _step_worktree_prune_guard(ctx, project_dir=project_dir)
+    booley_dir = booley_dir_for_init(ctx.project_root)
+    _step_worktree_prune_guard(ctx, booley_dir=booley_dir)
     _step_worktree_link_policy(
         ctx,
         sandbox_git_version=_sandbox_git_version(runtime_image_id),
-        project_dir=project_dir,
+        booley_dir=booley_dir,
     )
 
 
@@ -2186,7 +2183,7 @@ def _run_project_init_steps(
     if getattr(args, "scaffold", None) and not step_scaffold(ctx, args):
         return _print_summary(ctx)
 
-    _step_project_dir(ctx)
+    _step_booley_dir(ctx)
     if not _step_agent_config(ctx, selection, agent_config_path):
         return _print_summary(ctx)
     _step_core_projections(ctx)
@@ -2208,7 +2205,7 @@ def _run_project_init_steps(
         nangate_pdk_root=pdk_root,
         agent_app=selection.provider,
         runtime_image_id=runtime_image_id,
-        init_will_create_project_dir=True,
+        init_will_create_booley_dir=True,
     )
     _step_project_inventory(ctx)
     _step_advisories(ctx)
@@ -2284,7 +2281,7 @@ def _run_init_unlocked(
     guidance_plan, may_proceed = _plan_existing_guidance(ctx)
     if not may_proceed:
         return _print_summary(ctx)
-    project_scope = nullcontext() if seed else init_project_dir_scope(ctx.project_root)
+    project_scope = nullcontext() if seed else init_booley_dir_scope(ctx.project_root)
     with project_scope:
         return _run_project_init_steps(
             ctx,
@@ -2296,30 +2293,83 @@ def _run_init_unlocked(
         )
 
 
-def run_init(args: argparse.Namespace, project_root: Path) -> int:
-    """Run Project initialization without racing host Docker mutations."""
-    from booley.runtime import issuance_invalidation, session_runtime
+def _check_init_layout(args: argparse.Namespace, project_root: Path):
+    """Observe layout and report migration independently of host Bootstrap/recovery."""
+    from booley.core.booley_layout import BooleyLayoutError, Layout, classify_layout
+    from booley.core.checkout_role import require_project_checkout
+    from booley.harness.setup.directory_migration import inspect_migration
+
+    project_root = require_project_checkout(project_root)
+    if classify_layout(project_root) is Layout.RETIRED:
+        if getattr(args, "seed", False):
+            raise BooleyLayoutError(
+                "Run full `booley init` from the primary Project Root before --seed"
+            )
+        if getattr(args, "check_only", False):
+            info(
+                "Would rename the Booley Directory; required preflight checks follow, no changes made"
+            )
+    migration = inspect_migration(project_root)
+    if migration is not None:
+        info(f"Pending Booley Directory migration at {project_root}; run `booley init`")
+        if getattr(args, "seed", False):
+            raise BooleyLayoutError(
+                "Run full `booley init` from the primary Project Root before --seed"
+            )
+    return migration
+
+
+def _check_init_only(args: argparse.Namespace, project_root: Path, migration) -> int:
     from booley.runtime.session_refresh import shared_recovery_blocks_command
 
-    if getattr(args, "check_only", False):
-        try:
-            recovery_pending = shared_recovery_blocks_command(read_only=True)
-        except (issuance_invalidation.InvalidationError, session_runtime.SessionError) as exc:
-            err(str(exc))
-            return 2
-        if recovery_pending:
-            err("interrupted Sandbox host state requires recovery")
-            return 2
-        return _run_init_unlocked(args, project_root)
+    pending = shared_recovery_blocks_command(read_only=True)
+    if migration is not None:
+        info("Would rename the Booley Directory and repair linked worktrees; no changes made")
+    if pending:
+        err("interrupted Sandbox host state also requires recovery")
+    if pending or migration is not None:
+        return 2
+    return _run_init_unlocked(args, project_root)
+
+
+def _init_with_migration(args: argparse.Namespace, project_root: Path, migration) -> int:
+    from booley.runtime.booley_dir_migration import apply_migration
+    from booley.runtime.session_refresh import shared_recovery_blocks_command
+
+    if migration is not None:
+        apply_migration(migration)
+        reset_cache()
+        info(
+            "Booley Directory migrated; review tracked renames in every checkout. "
+            "Create a branch before committing a retained detached worktree; "
+            "migrate each existing clone before pulling a tracked rename."
+        )
+    if shared_recovery_blocks_command(read_only=False):
+        err("recovered interrupted Sandbox host state; run `booley init` again")
+        return 2
+    return _run_init_unlocked(args, project_root)
+
+
+def run_init(args: argparse.Namespace, project_root: Path) -> int:
+    """Refuse before writes, then migrate under host-wide lifecycle serialization."""
+    from booley.core.booley_layout import BooleyLayoutError
+    from booley.core.checkout_role import SourceCheckoutProjectError
+    from booley.runtime import issuance_invalidation, session_runtime
     from booley.runtime.lifecycle_lock import host_lifecycle_lock
 
-    with host_lifecycle_lock("project init"):
-        try:
-            recovery_performed = shared_recovery_blocks_command(read_only=False)
-        except (issuance_invalidation.InvalidationError, session_runtime.SessionError) as exc:
-            err(str(exc))
-            return 2
-        if recovery_performed:
-            err("recovered interrupted Sandbox host state; run `booley init` again")
-            return 2
-        return _run_init_unlocked(args, project_root)
+    try:
+        migration = _check_init_layout(args, project_root)
+        if getattr(args, "check_only", False):
+            return _check_init_only(args, project_root, migration)
+        with host_lifecycle_lock("project init"):
+            return _init_with_migration(args, project_root, migration)
+    except (
+        BooleyLayoutError,
+        SourceCheckoutProjectError,
+        OSError,
+        subprocess.SubprocessError,
+        issuance_invalidation.InvalidationError,
+        session_runtime.SessionError,
+    ) as exc:
+        err(f"{exc}; run `booley init` after resolving this condition")
+        return 2

@@ -43,17 +43,17 @@ def build_goal_package(
     context: GoalReviewContext,
     record: GoalRecord,
     state: DevelopmentState,
-    project_dir: Path,
+    booley_dir: Path,
     *,
     omitted_inputs: frozenset[str] = frozenset(),
 ) -> GoalCompletionPackage:
     """Freeze exact selected rows, linked originals and all proposal decisions."""
-    paths = record_paths(project_dir, record.id)
-    selected = selected_observations(record, state, project_dir)
+    paths = record_paths(booley_dir, record.id)
+    selected = selected_observations(record, state, booley_dir)
     records = validated_evidence_records(GOAL_SCOPE, Path(context.log_dir), state, {})
     indexed = {row["sequence"]: row for row in records}
     rows = _package_rows(context, record, state, selected, indexed)
-    _add_baseline_reports(rows, record, selected, records, project_dir)
+    _add_baseline_reports(rows, record, selected, records, booley_dir)
     transactions = _transactions(
         Path(context.log_dir), state, indexed, omitted_inputs=omitted_inputs
     )
@@ -86,7 +86,7 @@ def build_goal_package(
         ],
         "session_summary": context.session_summary,
     }
-    return GoalCompletionPackage.from_json(facts | _unsettled(project_dir, record))
+    return GoalCompletionPackage.from_json(facts | _unsettled(booley_dir, record))
 
 
 def _link_transactions(rows: list[dict[str, Any]], transactions: list[dict[str, Any]]) -> None:
@@ -101,7 +101,7 @@ def _add_baseline_reports(
     record: GoalRecord,
     selected: dict[str, dict[str, Any]],
     records: list[dict[str, Any]],
-    project_dir: Path,
+    booley_dir: Path,
 ) -> None:
     """Freeze observational SIM reports without contributing completion authority."""
     from booley.goals.freshness import DEFAULT_RESOLVERS
@@ -110,7 +110,7 @@ def _add_baseline_reports(
 
     for goal in sim_goals(record):
         transitions = goal_transitions(
-            project_dir,
+            booley_dir,
             record,
             goal,
             selected.get(goal.spec.key),
@@ -130,13 +130,13 @@ def _add_baseline_reports(
         }
 
 
-def _unsettled(project_dir: Path, record: GoalRecord) -> dict[str, Any]:
+def _unsettled(booley_dir: Path, record: GoalRecord) -> dict[str, Any]:
     """The Simulation Campaigns the reviewer should see were never fully accounted for.
 
     Open ones, and registrations a human-approved change set aside because
     nobody could read them (ADR 0072). No key at all when there is none.
     """
-    listed = unsettled_campaigns(GoalStore(project_dir), record)
+    listed = unsettled_campaigns(GoalStore(booley_dir), record)
     return {"unsettled_campaigns": listed} if listed else {}
 
 

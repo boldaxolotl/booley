@@ -159,7 +159,7 @@ A codebase initialized with `booley init`, with a **Booley Directory** for its c
 _Avoid_: repo, workspace
 
 **Booley Directory**:
-The directory that holds everything Booley keeps for a **Project**: configuration, Goalsets, Goal Records, evidence, logs, and worktrees. Its default location is `.booley_project/` at the **Project Root**; a Project may select another location.
+The directory that holds everything Booley keeps for a **Project**: configuration, Goalsets, Goal Records, evidence, logs, and worktrees. Its default location is `.booley/` at the **Project Root**; a Project may select another location.
 _Avoid_: Project directory, Project dir, Project data, Project data directory, state dir
 
 **Project Root**:
@@ -258,7 +258,7 @@ When a **Specialist** reviews or mutates one side of the design, the other side'
 _Avoid_: optional blindness, reviewer independence
 
 **Custom Flow**:
-A project-authored Booley Flow that does not ship with Booley. Its MCP tool implementation lives under `.booley_project/mcp_tools/`; it implements the same deterministic orchestration and evidence contract as built-in Flows, is discovered and invoked through the same MCP tool infrastructure, and may produce evidence for declared Goals. It adds a new Flow alongside the built-ins (for example, a DRC check); it is not a side door for replacing the EDA tool driven by an existing Flow.
+A project-authored Booley Flow that does not ship with Booley. Its MCP tool implementation lives under `.booley/mcp_tools/`; it implements the same deterministic orchestration and evidence contract as built-in Flows, is discovered and invoked through the same MCP tool infrastructure, and may produce evidence for declared Goals. It adds a new Flow alongside the built-ins (for example, a DRC check); it is not a side door for replacing the EDA tool driven by an existing Flow.
 _Avoid_: Custom Tool, plugin, user tool, project tool
 
 ### Simulation evidence

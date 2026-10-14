@@ -427,8 +427,8 @@ def test_temp_recovery_ignores_other_transactions_and_rejects_contradictions(
 def isolated_owner(tmp_path, monkeypatch):
     import os
 
-    from booley.runtime.project_dir import reset_cache
+    from booley.runtime.booley_dir import reset_cache
 
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path))
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path))
     reset_cache()

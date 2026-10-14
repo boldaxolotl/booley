@@ -6,13 +6,13 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def _set_project_dir(tmp_path, monkeypatch):
-    """Prevent resolve_project_dir() from failing in sim tests."""
-    from booley.runtime.project_dir import reset_cache
+def _set_booley_dir(tmp_path, monkeypatch):
+    """Prevent resolve_booley_dir() from failing in sim tests."""
+    from booley.runtime.booley_dir import reset_cache
 
     reset_cache()
-    proj_dir = tmp_path / ".booley_project"
+    proj_dir = tmp_path / ".booley"
     proj_dir.mkdir()
     (proj_dir / "booley.toml").write_text('[flows.sim]\nsandbox = "sandboxed"\n', encoding="utf-8")
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(proj_dir))
+    monkeypatch.setenv("BOOLEY_DIR", str(proj_dir))

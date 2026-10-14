@@ -20,6 +20,7 @@ from typing import Any
 from booley.flows.endpoint_events import _write_display_event
 from booley.mcp.call_context import CallContext
 from booley.mcp.report_encoding import _max_stderr_bytes, _max_stdout_bytes
+from booley.runtime.booley_dir import resolve_booley_dir
 from booley.runtime.display_identity import DisplayIdentity
 from booley.runtime.process_group import (
     ProcessGroup,
@@ -30,7 +31,6 @@ from booley.runtime.process_group import (
     terminate_adopted_process_group,
     terminate_async_process_group,
 )
-from booley.runtime.project_dir import resolve_project_dir
 from booley.runtime.python_artifacts import relocate_python_artifacts
 from booley.runtime.session_paths import logs_runtime_dir
 from booley.runtime.timefmt import utc_now_rfc3339
@@ -137,7 +137,7 @@ def _endpoint_subprocess_env(
         runtime_root = Path(runtime)
     else:
         try:
-            runtime_root = resolve_project_dir() / ".runtime"
+            runtime_root = resolve_booley_dir() / ".runtime"
         except (OSError, RuntimeError, ValueError):
             runtime_root = Path(tempfile.gettempdir()) / "booley-runtime"
         env["BOOLEY_RUNTIME_DIR"] = str(runtime_root)

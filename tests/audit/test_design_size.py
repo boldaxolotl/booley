@@ -50,11 +50,11 @@ def test_repository_scan_prunes_generated_and_internal_directories(tmp_path: Pat
     generated = tmp_path / "build"
     generated.mkdir()
     (generated / "ignored.sv").write_text("module ignored; endmodule\n", encoding="utf-8")
-    project_dir = tmp_path / ".custom" / "project-data"
-    project_dir.mkdir(parents=True)
-    (project_dir / "internal.sv").write_text("module internal; endmodule\n", encoding="utf-8")
+    booley_dir = tmp_path / ".custom" / "project-data"
+    booley_dir.mkdir(parents=True)
+    (booley_dir / "internal.sv").write_text("module internal; endmodule\n", encoding="utf-8")
 
-    audit = design_size.analyze_design_size(tmp_path, project_dir, [])
+    audit = design_size.analyze_design_size(tmp_path, booley_dir, [])
 
     assert audit.hdl_files == 1
     assert audit.lines_of_code == 1

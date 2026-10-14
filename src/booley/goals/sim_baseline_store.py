@@ -20,20 +20,20 @@ from booley.fusesoc.fusesoc_registry import discover_cores
 from booley.goals.model import GoalFamily, GoalRecord, RecordedGoal
 from booley.goals.paths import record_paths
 from booley.runtime.atomic_files import atomic_replace_bytes
-from booley.runtime.project_dir import resolve_checkout_project_dir
+from booley.runtime.booley_dir import resolve_checkout_booley_dir
 
 SCHEMA = "booley.sim-baseline/v1"
 INPUTS_FILE = "sim-baseline-inputs.json"
 
 
-def baseline_root(project_dir: Path) -> Path:
+def baseline_root(booley_dir: Path) -> Path:
     """Shared baseline requests, evidence and Jobs, outside Goal Record roots."""
-    return project_dir / "goals" / "sim-baselines"
+    return booley_dir / "goals" / "sim-baselines"
 
 
-def baseline_jobs_dir(project_dir: Path) -> Path:
+def baseline_jobs_dir(booley_dir: Path) -> Path:
     """Jobs that Finish must never read or fence."""
-    return baseline_root(project_dir) / ".runtime" / "jobs"
+    return baseline_root(booley_dir) / ".runtime" / "jobs"
 
 
 def content_digest(value: Mapping[str, Any]) -> str:
@@ -63,12 +63,12 @@ def relative_path(value: object) -> Path:
     return Path(path)
 
 
-def capture_entry_inputs(project_dir: Path, record: GoalRecord) -> None:
+def capture_entry_inputs(booley_dir: Path, record: GoalRecord) -> None:
     """Capture declarations at entry; errors become report facts, never an entry gate."""
-    path = record_paths(project_dir, record.id).root / INPUTS_FILE
+    path = record_paths(booley_dir, record.id).root / INPUTS_FILE
     root = Path(record.worktree_path)
     try:
-        project = resolve_checkout_project_dir(root)
+        project = resolve_checkout_booley_dir(root)
         # Values are hex contents; ``None`` marks a protected non-file entry.
         files: dict[str, str | None] = {
             core.relative_to(root).as_posix(): core.read_bytes().hex()
@@ -87,7 +87,7 @@ def capture_entry_inputs(project_dir: Path, record: GoalRecord) -> None:
             if data is not None and (root / name).is_file()
         }
         directories: set[str] = set()
-        _capture_protected(project_dir, record, files, executable, directories)
+        _capture_protected(booley_dir, record, files, executable, directories)
         links = _core_links(root, project)
         write_document(
             path,
@@ -105,7 +105,7 @@ def capture_entry_inputs(project_dir: Path, record: GoalRecord) -> None:
 
 
 def _capture_protected(
-    project_dir: Path,
+    booley_dir: Path,
     record: GoalRecord,
     files: dict[str, str | None],
     executable: dict[str, bool],
@@ -115,8 +115,8 @@ def _capture_protected(
     from booley.goals.protected_inputs import ProtectedInputRoots, ProtectedPath
 
     root = Path(record.worktree_path)
-    project = resolve_checkout_project_dir(root)
-    roots = ProtectedInputRoots(root, project_dir)
+    project = resolve_checkout_booley_dir(root)
+    roots = ProtectedInputRoots(root, booley_dir)
     main = roots.main_checkout()
     paths = sorted(record.protected_paths, key=lambda value: not value.startswith("worktree:"))
     for encoded in paths:
@@ -125,8 +125,8 @@ def _capture_protected(
             continue
         if physical.is_relative_to(root):
             relative = physical.relative_to(root)
-        elif physical.is_relative_to(project_dir):
-            relative = project.relative_to(root) / physical.relative_to(project_dir)
+        elif physical.is_relative_to(booley_dir):
+            relative = project.relative_to(root) / physical.relative_to(booley_dir)
         else:
             continue  # outside-checkout inputs cannot be copied into a baseline dependency
         if physical.is_dir():
@@ -159,9 +159,9 @@ def _core_links(root: Path, project: Path) -> dict[str, str]:
     return links
 
 
-def entry_inputs(project_dir: Path, record: GoalRecord) -> dict[str, Any]:
+def entry_inputs(booley_dir: Path, record: GoalRecord) -> dict[str, Any]:
     """The same independently captured inputs across entry, changes and lazy resolution."""
-    return read_document(record_paths(project_dir, record.id).root / INPUTS_FILE)
+    return read_document(record_paths(booley_dir, record.id).root / INPUTS_FILE)
 
 
 def request_identity(
@@ -179,9 +179,9 @@ def request_identity(
     }
 
 
-def request_path(project_dir: Path, identity: Mapping[str, Any]) -> Path:
+def request_path(booley_dir: Path, identity: Mapping[str, Any]) -> Path:
     """Stable shared request directory, confined by a canonical digest."""
-    return baseline_root(project_dir) / "requests" / content_digest(identity) / "request.json"
+    return baseline_root(booley_dir) / "requests" / content_digest(identity) / "request.json"
 
 
 def sim_goals(record: GoalRecord) -> tuple[RecordedGoal, ...]:
@@ -200,14 +200,14 @@ def result_key(target: str, run: TestRun, stamp: str, protected_digest: str) -> 
     }
 
 
-def cache_path(project_dir: Path, key: Mapping[str, str]) -> Path:
+def cache_path(booley_dir: Path, key: Mapping[str, str]) -> Path:
     """The per-Test-Run evidence document."""
-    return baseline_root(project_dir) / "evidence" / (content_digest(key) + ".json")
+    return baseline_root(booley_dir) / "evidence" / (content_digest(key) + ".json")
 
 
-def cached_result(project_dir: Path, key: Mapping[str, str]) -> dict[str, Any] | None:
+def cached_result(booley_dir: Path, key: Mapping[str, str]) -> dict[str, Any] | None:
     """A validated successful observation; unavailable outcomes are never cached."""
-    path = cache_path(project_dir, key)
+    path = cache_path(booley_dir, key)
     if not path.exists():
         return None
     raw = read_document(path)

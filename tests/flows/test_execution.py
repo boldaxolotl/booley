@@ -6,7 +6,7 @@ from booley.flows.execution import FlowConfigError, flow_enabled, flow_enabled_f
 
 
 def _project(tmp_path, toml_text: str):
-    state = tmp_path / ".booley_project"
+    state = tmp_path / ".booley"
     state.mkdir()
     (state / "booley.toml").write_text(toml_text, encoding="utf-8")
     return tmp_path

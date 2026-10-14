@@ -47,7 +47,7 @@ def test_shared_nonversioned_control_project_uses_explicit_view_without_main_git
     from booley.goals.model import parse_goal_args
     from tests.goals.conftest import TOP_CORE
 
-    shutil.rmtree(layout.worktree / ".booley_project")
+    shutil.rmtree(layout.worktree / ".booley")
     (layout.worktree / "top.core").write_bytes(TOP_CORE.encode())
     git(layout.worktree, "add", "top.core")
     git(layout.worktree, "commit", "-qm", "runtime Target")
@@ -158,7 +158,7 @@ def test_topology_replacement_after_fence_retains_attempt_and_allows_safe_abando
 
 def test_nonversioned_original_suite_snapshot_is_not_replaced_by_final(layout):
     layout.record = enter_goals(layout, [{"family": "LINT", "target": "top"}])
-    (layout.worktree / ".booley_project/tests.toml").write_bytes(b'[top]\ntests=["changed"]\n')
+    (layout.worktree / ".booley/tests.toml").write_bytes(b'[top]\ntests=["changed"]\n')
     publish(layout)
     result = finish_goal(request(layout), environment(layout))
     changed = json.loads(Path(result["package"]).read_bytes())["target_changes"][0]
@@ -300,7 +300,7 @@ def test_coalesced_project_control_spellings_preserve_entry_authority(
         with pytest.raises(Crash):
             finish_goal(call, environment(layout, stop))
     layout.control = control.readlink()
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(layout.control))
+    monkeypatch.setenv("BOOLEY_DIR", str(layout.control))
     if drift == "protected":
         (layout.control / "booley.toml").write_text("[stealth]\nenabled=false\n# changed\n")
     elif drift == "target":
@@ -319,14 +319,14 @@ def enter_shared_role_aliases(layout, tmp_path, monkeypatch):
     from booley.goals.model import parse_goal_args
     from tests.goals.conftest import TOP_CORE
 
-    shutil.rmtree(layout.worktree / ".booley_project")
+    shutil.rmtree(layout.worktree / ".booley")
     (layout.worktree / "top.core").write_text(TOP_CORE)
     git(layout.worktree, "add", "top.core")
     git(layout.worktree, "commit", "-qm", "runtime Target")
     (layout.control / "booley.toml").write_text("[stealth]\nenabled=false\n")
     (layout.control / "tests.toml").write_text('[top]\ntests=["shared"]\n')
     project, control = model_shared_root_spellings(layout.control, tmp_path, monkeypatch)
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project))
+    monkeypatch.setenv("BOOLEY_DIR", str(project))
     layout.control = control
     layout.record = enter_goal_mode(
         EntryRequest(

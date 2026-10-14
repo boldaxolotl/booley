@@ -19,7 +19,7 @@ from pathlib import Path
 # Predefined configurations (single source of truth)
 # ---------------------------------------------------------------------------
 from booley.core.config_paths import resolve_toml
-from booley.runtime.project_dir import resolve_project_dir
+from booley.runtime.booley_dir import resolve_booley_dir
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +51,7 @@ def _resolve_main_repo_root(work_dir: Path) -> Path | None:
     """Follow a worktree's ``.git`` file to its main repository root.
 
     Mirrors ``dev_support.workspace_isolation._resolve_main_repo_root`` so that
-    worktrees without their own ``.booley_project/`` can still find the
+    worktrees without their own ``.booley/`` can still find the
     project config in the main repo.
     """
     git_path = work_dir / ".git"
@@ -73,7 +73,7 @@ def _resolve_main_repo_root(work_dir: Path) -> Path | None:
 
 
 def _load_toml_from_root(root: Path) -> dict | None:
-    """Load booley.toml under ``root/.booley_project/`` (legacy fallback included).
+    """Load booley.toml under ``root/.booley/`` (legacy fallback included).
 
     Returns the parsed dict, or None if no readable TOML is present. A file
     that exists but fails to parse/read is logged (not silently equated with
@@ -82,8 +82,8 @@ def _load_toml_from_root(root: Path) -> dict | None:
     Never touches the CWD-derived module cache — pure function over *root*.
     """
     candidates = (
-        root / ".booley_project" / "booley.toml",
-        root / ".booley_project" / "pipeline.toml",
+        root / ".booley" / "booley.toml",
+        root / ".booley" / "pipeline.toml",
     )
     for path in candidates:
         if not path.is_file():
@@ -121,7 +121,7 @@ def _load_rtl_config(project_root: Path | None = None) -> dict | None:
     global _TOML_CACHE
     if _TOML_CACHE is not None:
         return _TOML_CACHE
-    project_path = resolve_toml(resolve_project_dir())
+    project_path = resolve_toml(resolve_booley_dir())
     toml_path = project_path if project_path.exists() else resolve_toml(resolve_project_root())
     if not toml_path.exists():
         return None

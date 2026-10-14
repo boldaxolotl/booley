@@ -8,14 +8,14 @@ import pytest
 
 from booley.criteria.coverage import COVERAGE_MIGRATION_SKELETON
 from booley.flows.sim import coverage_flow_context
-from booley.runtime.project_dir import reset_cache, resolve_project_dir
+from booley.runtime.booley_dir import reset_cache, resolve_booley_dir
 
 
 def test_context_uses_checkout_local_legacy_config_over_cached_override(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = tmp_path / "checkout"
-    local = root / ".booley_project"
+    local = root / ".booley"
     override = tmp_path / "override"
     local.mkdir(parents=True)
     override.mkdir()
@@ -24,9 +24,9 @@ def test_context_uses_checkout_local_legacy_config_over_cached_override(
         '[coverage.waivers]\nanchor = "rtl_repository"\ndirectory = "approved-waivers"\n',
         encoding="utf-8",
     )
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(override))
+    monkeypatch.setenv("BOOLEY_DIR", str(override))
     reset_cache()
-    assert resolve_project_dir() == override
+    assert resolve_booley_dir() == override
     monkeypatch.setattr(coverage_flow_context, "_coverage_policies", lambda *_args: {})
     monkeypatch.setattr(
         coverage_flow_context,
@@ -46,7 +46,7 @@ def test_runtime_rejects_legacy_coverage_with_current_schema_hint(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = tmp_path / "checkout"
-    (root / ".booley_project").mkdir(parents=True)
+    (root / ".booley").mkdir(parents=True)
     subprocess.run(["git", "init", "-q"], cwd=root, check=True)
     monkeypatch.setattr(
         coverage_flow_context.TargetCatalog,

@@ -11,13 +11,13 @@ import os
 import stat
 from pathlib import Path
 
-# ``.booley_project`` mounts here; BOOLEY_PROJECT_DIR (containerEnv) points at
+# ``.booley`` mounts here; BOOLEY_DIR (containerEnv) points at
 # it so in-container tooling — including the Ticket-Mode Runner and its
 # developer agent (ADR 0028) — resolves project config from one place.
-PROJECT_DIR_TARGET = "/booley-project"
+BOOLEY_DIR_TARGET = "/booley-project"
 
 WORK_DIR = "/work"
-PROJECT_DATA_MOUNT_PATH = "/work/.booley_project"
+PROJECT_DATA_MOUNT_PATH = "/work/.booley"
 
 
 def canonical_project_alias_path(path: Path) -> Path:
@@ -28,7 +28,7 @@ def canonical_project_alias_path(path: Path) -> Path:
     """
     if os.name != "posix":
         return path
-    alias = Path(PROJECT_DIR_TARGET)
+    alias = Path(BOOLEY_DIR_TARGET)
     if not path.is_absolute() or not path.is_relative_to(alias):
         return path
     try:

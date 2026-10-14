@@ -56,9 +56,9 @@ def _identity_field(git: Mapping[str, Any], field: str, default: str) -> str:
     return text
 
 
-def load_git_identity(project_dir: Path) -> GitIdentity:
+def load_git_identity(booley_dir: Path) -> GitIdentity:
     """Load ``[agent.git]`` from the Project's ``booley.toml``."""
-    path = project_dir / "booley.toml"
+    path = booley_dir / "booley.toml"
     if not path.is_file():
         return GitIdentity(_DEFAULT_NAME, _DEFAULT_EMAIL)
     try:
@@ -182,8 +182,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ticket", action="store_true", required=True)
     parser.parse_args()
-    project_dir = Path(os.environ.get("BOOLEY_PROJECT_DIR", "/booley-project"))
-    identity = load_git_identity(project_dir)
+    booley_dir = Path(os.environ.get("BOOLEY_DIR", "/booley-project"))
+    identity = load_git_identity(booley_dir)
     checkout = Path(os.environ.get("BOOLEY_GIT_CHECKOUT", Path.cwd()))
     apply_git_identity(checkout, identity)
 

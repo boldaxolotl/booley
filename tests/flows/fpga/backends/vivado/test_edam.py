@@ -252,7 +252,7 @@ class TestBuildFpgaEdam:
             "defines": ["SYNTH", "WIDTH=32"],
             "vlogparams": {"DEPTH": 16},
             "workspace_root": root,
-            "work_root": root / ".booley_project" / ".runtime" / "edalize" / "fpga" / "cfgA",
+            "work_root": root / ".booley" / ".runtime" / "edalize" / "fpga" / "cfgA",
         }
         kwargs.update(overrides)
         return fpga_edam.build_fpga_edam(**kwargs)
@@ -307,12 +307,12 @@ class TestBuildFpgaEdam:
 class TestRunCommand:
     def test_make_command_relative_to_work_dir(self, tmp_path: Path):
         work_dir = tmp_path
-        work_root = tmp_path / ".booley_project" / ".runtime" / "edalize" / "fpga" / "cfgA"
+        work_root = tmp_path / ".booley" / ".runtime" / "edalize" / "fpga" / "cfgA"
         cmd = fpga_edam.fpga_run_command(work_root, work_dir)
         assert cmd[0] == "make" and cmd[1] == "-C"
         # Relative so it stays independent of the Runtime workspace location.
         assert not Path(cmd[2]).is_absolute()
-        assert cmd[2] == ".booley_project/.runtime/edalize/fpga/cfgA"
+        assert cmd[2] == ".booley/.runtime/edalize/fpga/cfgA"
 
 
 class TestConfigure:
@@ -325,7 +325,7 @@ class TestConfigure:
         (root / "rtl" / "a.sv").write_text("module dut_top; endmodule\n")
         (root / "constr").mkdir()
         (root / "constr" / "pins.xdc").write_text("# constraints\n")
-        work_root = root / ".booley_project" / ".runtime" / "edalize" / "fpga" / "cfgA"
+        work_root = root / ".booley" / ".runtime" / "edalize" / "fpga" / "cfgA"
         edam = fpga_edam.build_fpga_edam(
             name="fpga_cfgA",
             toplevel="dut_top",

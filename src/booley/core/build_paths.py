@@ -5,11 +5,11 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from booley.core.booley_dir import BOOLEY_DIR_NAME
 from booley.core.checkout_role import require_project_checkout
-from booley.core.project_dir import PROJECT_DIR_NAME
 
 _NAME_SANITIZE_RE = re.compile(r"[^A-Za-z0-9_]+")
-_EDALIZE_SUBDIR = Path(PROJECT_DIR_NAME) / ".runtime" / "edalize"
+_EDALIZE_SUBDIR = Path(BOOLEY_DIR_NAME) / ".runtime" / "edalize"
 
 
 def work_root_for(

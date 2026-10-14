@@ -210,10 +210,10 @@ def test_extension_without_cli_wording_keeps_its_description() -> None:
 @pytest.mark.parametrize("command", sorted(ENDPOINTS))
 def test_help_from_the_booley_entry_point(command, tmp_path, monkeypatch, capsys) -> None:
     """The wording reaches a person who types the command inside a Project."""
-    for name in ("RTL_PROJECT_ROOT", "BOOLEY_PROJECT_DIR", INVOCATION_ORIGIN_ENV):
+    for name in ("RTL_PROJECT_ROOT", "BOOLEY_DIR", INVOCATION_ORIGIN_ENV):
         monkeypatch.delenv(name, raising=False)
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, timeout=10)
-    (tmp_path / ".booley_project").mkdir()
+    (tmp_path / ".booley").mkdir()
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("sys.argv", [*command.split(), "--help"])
 

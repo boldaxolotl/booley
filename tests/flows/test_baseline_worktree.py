@@ -25,11 +25,11 @@ from booley.runtime.submodule_materialization import materialize_submodules
 
 @pytest.fixture(autouse=True)
 def _select_worktree_state(tmp_path: Path, monkeypatch):
-    from booley.core.project_dir import reset_cache
+    from booley.core.booley_dir import reset_cache
 
-    state = tmp_path / ".booley_project"
+    state = tmp_path / ".booley"
     state.mkdir(exist_ok=True)
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(state))
+    monkeypatch.setenv("BOOLEY_DIR", str(state))
     reset_cache()
     try:
         yield
@@ -89,8 +89,8 @@ def test_yields_baseline_content_and_leaves_tree_untouched(tmp_path: Path) -> No
     with baseline_worktree(tmp_path, "HEAD~1") as wt:
         # The worktree holds the *baseline* content...
         assert (wt / "f.txt").read_text(encoding="utf-8") == "v1\n"
-        # ...it lives under .booley_project/ and is PID-tagged.
-        assert wt.parent.name == ".booley_project"
+        # ...it lives under .booley/ and is PID-tagged.
+        assert wt.parent.name == ".booley"
         assert ".baseline-wt-" in wt.name
         # ...while the caller's tree still has the dirty edit.
         assert (tmp_path / "f.txt").read_text(encoding="utf-8") == "dirty\n"
@@ -199,20 +199,20 @@ def test_submodule_checkout_failure_is_an_infrastructure_error(
         baseline_worktree(tmp_path, "HEAD"),
     ):
         pass
-    assert not list((tmp_path / ".booley_project").glob(".baseline-wt-*"))
+    assert not list((tmp_path / ".booley").glob(".baseline-wt-*"))
 
 
 def test_stealth_cores_copied_into_worktree(tmp_path: Path) -> None:
-    """ADR 0036 stealth cores live in the git-excluded ``.booley_project/``,
+    """ADR 0036 stealth cores live in the git-excluded ``.booley/``,
     so a bare checkout has none — the helper must mirror them in, or a
     stealth-only project's baseline run would scan zero cores."""
     _init_repo(tmp_path)
-    stealth = tmp_path / ".booley_project" / "cores" / "ip"
+    stealth = tmp_path / ".booley" / "cores" / "ip"
     stealth.mkdir(parents=True)
     (stealth / "top.core").write_text("CAPI=2:\nname: x:ip:top:1.0\n", encoding="utf-8")
 
     with baseline_worktree(tmp_path, "HEAD~1") as wt:
-        copied = wt / ".booley_project" / "cores" / "ip" / "top.core"
+        copied = wt / ".booley" / "cores" / "ip" / "top.core"
         assert copied.read_text(encoding="utf-8").startswith("CAPI=2:")
 
     # The copied (untracked) files must not break force-removal on exit.
@@ -227,11 +227,11 @@ def test_paired_project_uses_ticket_fork_recipe(tmp_path: Path) -> None:
     outer.mkdir()
     _init_repo(outer)
     (outer / ".git" / "info" / "exclude").write_text(
-        "/.booley_project\n",
+        "/.booley\n",
         encoding="utf-8",
     )
 
-    project = outer / ".booley_project"
+    project = outer / ".booley"
     (project / "cores").mkdir(parents=True)
     _git(project, "init", "-q")
     _git(project, "config", "user.email", "t@example.com")
@@ -244,7 +244,7 @@ def test_paired_project_uses_ticket_fork_recipe(tmp_path: Path) -> None:
 
     ticket = project / "worktrees" / "ticket"
     _git(outer, "worktree", "add", "-b", "ticket", str(ticket), "HEAD")
-    paired = ticket / ".booley_project"
+    paired = ticket / ".booley"
     _git(project, "worktree", "add", "-b", "booley-ticket/ticket", str(paired), "master")
     _git(paired, "branch", "--set-upstream-to=master")
     materialize_submodules(project, paired)
@@ -252,10 +252,10 @@ def test_paired_project_uses_ticket_fork_recipe(tmp_path: Path) -> None:
     _commit_all(paired, "change target recipe")
 
     with baseline_worktree(ticket, "HEAD") as baseline:
-        frozen = baseline / ".booley_project" / "cores" / "top.core"
+        frozen = baseline / ".booley" / "cores" / "top.core"
         assert frozen.read_text(encoding="utf-8") == "recipe: baseline\n"
-        assert (baseline / ".booley_project" / ".git").is_file()
-        dependency_file = baseline / ".booley_project/vendor/dependency/f.txt"
+        assert (baseline / ".booley" / ".git").is_file()
+        dependency_file = baseline / ".booley/vendor/dependency/f.txt"
         assert dependency_file.read_text(encoding="utf-8") == "v2\n"
 
     assert (paired / "cores" / "top.core").read_text(encoding="utf-8") == "recipe: current\n"
@@ -264,11 +264,11 @@ def test_paired_project_uses_ticket_fork_recipe(tmp_path: Path) -> None:
 def _stealth_core_linking_to_rtl(repo: Path, link_name: str = "rtl") -> Path:
     """A stealth core dir whose fileset reaches repo-root ``rtl/`` via a
     core-relative resolution link (ADR 0036). Returns the link path."""
-    core_dir = repo / ".booley_project" / "cores" / "ip"
+    core_dir = repo / ".booley" / "cores" / "ip"
     core_dir.mkdir(parents=True)
     (core_dir / "top.core").write_text("CAPI=2:\nname: x:ip:top:1.0\n", encoding="utf-8")
     link = core_dir / link_name
-    # cores/ip -> cores -> .booley_project -> Project Root
+    # cores/ip -> cores -> .booley -> Project Root
     link.symlink_to(Path("..", "..", "..", "rtl"), target_is_directory=True)
     return link
 
@@ -290,11 +290,11 @@ def test_resolution_symlink_is_preserved_not_dereferenced(tmp_path: Path) -> Non
     (core_dir / "top.v").symlink_to("../../../rtl/top.v")
 
     with baseline_worktree(tmp_path, "HEAD~1") as wt:
-        copied_file = wt / ".booley_project" / "cores" / "ip" / "top.v"
+        copied_file = wt / ".booley" / "cores" / "ip" / "top.v"
         assert copied_file.is_symlink(), "resolution link was dereferenced into a real file"
         assert copied_file.read_text(encoding="utf-8") == "baseline\n"
 
-        copied = wt / ".booley_project" / "cores" / "ip" / "rtl"
+        copied = wt / ".booley" / "cores" / "ip" / "rtl"
         assert copied.is_symlink(), "resolution link was dereferenced into a real dir"
         # It resolves inside the worktree, onto the *baseline* revision...
         assert (copied / "top.v").read_text(encoding="utf-8") == "baseline\n"
@@ -313,12 +313,12 @@ def test_absolute_in_project_symlink_is_rebased_onto_the_worktree(tmp_path: Path
     _commit_all(tmp_path, "add rtl")
     (rtl / "top.v").write_text("modified\n", encoding="utf-8")
     _commit_all(tmp_path, "modify rtl")
-    core_dir = tmp_path / ".booley_project" / "cores" / "ip"
+    core_dir = tmp_path / ".booley" / "cores" / "ip"
     core_dir.mkdir(parents=True)
     (core_dir / "rtl").symlink_to(rtl)  # absolute target
 
     with baseline_worktree(tmp_path, "HEAD~1") as wt:
-        copied = wt / ".booley_project" / "cores" / "ip" / "rtl"
+        copied = wt / ".booley" / "cores" / "ip" / "rtl"
         assert copied.is_symlink()
         assert (copied / "top.v").read_text(encoding="utf-8") == "baseline\n"
 
@@ -332,48 +332,48 @@ def test_symlink_outside_the_project_is_left_verbatim(tmp_path: Path, monkeypatc
     shared = tmp_path / "shared"
     shared.mkdir()
     (shared / "lib.v").write_text("vendor\n", encoding="utf-8")
-    core_dir = repo / ".booley_project" / "cores" / "ip"
+    core_dir = repo / ".booley" / "cores" / "ip"
     core_dir.mkdir(parents=True)
     (core_dir / "vendor").symlink_to(shared)
-    from booley.core.project_dir import reset_cache
+    from booley.core.booley_dir import reset_cache
 
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(repo / ".booley_project"))
+    monkeypatch.setenv("BOOLEY_DIR", str(repo / ".booley"))
     reset_cache()
 
     with baseline_worktree(repo, "HEAD") as wt:
-        copied = wt / ".booley_project" / "cores" / "ip" / "vendor"
+        copied = wt / ".booley" / "cores" / "ip" / "vendor"
         assert copied.is_symlink()
         assert (copied / "lib.v").read_text(encoding="utf-8") == "vendor\n"
 
 
 def test_link_into_the_state_dir_follows_the_live_tree(tmp_path: Path) -> None:
     """ADR 0036 blesses ``cores/worktrees -> ../worktrees`` (a core pinning a
-    frozen checkout). ``.booley_project/`` is git-excluded, so no checkout has
+    frozen checkout). ``.booley/`` is git-excluded, so no checkout has
     one — the link must keep naming the LIVE Booley Directory instead of dangling."""
     _init_repo(tmp_path)
-    frozen = tmp_path / ".booley_project" / "worktrees" / "pinned"
+    frozen = tmp_path / ".booley" / "worktrees" / "pinned"
     frozen.mkdir(parents=True)
     (frozen / "top.v").write_text("frozen\n", encoding="utf-8")
-    core_dir = tmp_path / ".booley_project" / "cores" / "ip"
+    core_dir = tmp_path / ".booley" / "cores" / "ip"
     core_dir.mkdir(parents=True)
     (core_dir / "worktrees").symlink_to("../../worktrees")
 
     with baseline_worktree(tmp_path, "HEAD") as wt:
-        copied = wt / ".booley_project" / "cores" / "ip" / "worktrees"
+        copied = wt / ".booley" / "cores" / "ip" / "worktrees"
         assert (copied / "pinned" / "top.v").read_text(encoding="utf-8") == "frozen\n"
 
 
 def test_link_within_the_cores_tree_stays_verbatim(tmp_path: Path) -> None:
     """A link between two mirrored cores resolves inside the copy already."""
     _init_repo(tmp_path)
-    cores = tmp_path / ".booley_project" / "cores"
+    cores = tmp_path / ".booley" / "cores"
     (cores / "common").mkdir(parents=True)
     (cores / "common" / "util.v").write_text("util\n", encoding="utf-8")
     (cores / "ip").mkdir()
     (cores / "ip" / "shared").symlink_to("../common")
 
     with baseline_worktree(tmp_path, "HEAD") as wt:
-        copied = wt / ".booley_project" / "cores" / "ip" / "shared"
+        copied = wt / ".booley" / "cores" / "ip" / "shared"
         assert copied.readlink() == Path("../common")
         assert (copied / "util.v").read_text(encoding="utf-8") == "util\n"
 
@@ -393,29 +393,29 @@ def test_link_target_missing_from_the_ref_is_refused(tmp_path: Path) -> None:
     ):
         pass
     # The failed setup still cleaned its worktree up.
-    assert not list((tmp_path / ".booley_project").glob(".baseline-wt-*"))
+    assert not list((tmp_path / ".booley").glob(".baseline-wt-*"))
 
 
 def test_no_stealth_cores_is_a_noop(tmp_path: Path) -> None:
     _init_repo(tmp_path)
     with baseline_worktree(tmp_path, "HEAD") as wt:
-        assert not (wt / ".booley_project").exists()
+        assert not (wt / ".booley").exists()
 
 
 def test_nonstealth_ignored_project_baseline_keeps_live_tests_resolution(tmp_path: Path) -> None:
-    from booley.runtime.project_dir import resolve_checkout_project_dir
+    from booley.runtime.booley_dir import resolve_checkout_booley_dir
 
     _init_repo(tmp_path)
-    (tmp_path / ".git/info/exclude").write_text("/.booley_project\n", encoding="utf-8")
-    project = tmp_path / ".booley_project"
+    (tmp_path / ".git/info/exclude").write_text("/.booley\n", encoding="utf-8")
+    project = tmp_path / ".booley"
     (project / "booley.toml").write_text("[stealth]\nenabled=false\n", encoding="utf-8")
     tests = project / "tests.toml"
     tests.write_text('[top]\ntests=["smoke"]\n', encoding="utf-8")
     with baseline_worktree(tmp_path, "HEAD") as worktree:
-        assert not (worktree / ".booley_project").exists()
-        assert resolve_checkout_project_dir(worktree) == project
+        assert not (worktree / ".booley").exists()
+        assert resolve_checkout_booley_dir(worktree) == project
         assert (
-            resolve_checkout_project_dir(worktree) / "tests.toml"
+            resolve_checkout_booley_dir(worktree) / "tests.toml"
         ).read_bytes() == tests.read_bytes()
 
 
@@ -431,15 +431,15 @@ def test_git_short_sha_falls_back_on_bad_ref(tmp_path: Path) -> None:
 def test_standalone_project_baseline_copies_stealth_cores(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from booley.core.project_dir import reset_cache
+    from booley.core.booley_dir import reset_cache
 
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
     reset_cache()
     root = tmp_path / "outer"
     root.mkdir()
     (root / "booley.toml").write_text("[project]\n", encoding="utf-8")
     _init_repo(root)
-    (root / ".git/info/exclude").write_text("/.booley_project\n", encoding="utf-8")
+    (root / ".git/info/exclude").write_text("/.booley\n", encoding="utf-8")
     _add_private_project_submodule(root, tmp_path / "dependency")
     dependency = root / "vendor/dependency"
     _git(dependency, "checkout", "--detach", "HEAD~1")
@@ -450,17 +450,17 @@ def test_standalone_project_baseline_copies_stealth_cores(
     _git(dependency, "checkout", "--detach", "refs/remotes/origin/HEAD")
     _commit_all(root, "current RTL")
     link = _stealth_core_linking_to_rtl(root)
-    project = root / ".booley_project"
+    project = root / ".booley"
     _git(project, "init", "-q")
     _git(project, "config", "user.name", "Test")
     _git(project, "config", "user.email", "test@example.invalid")
     _commit_all(project, "stealth cores")
 
     with baseline_worktree(root, "HEAD~1") as baseline:
-        copied = baseline / ".booley_project/cores/ip"
+        copied = baseline / ".booley/cores/ip"
         assert (copied / "top.core").is_file()
         assert (copied / "rtl/top.v").read_text(encoding="utf-8") == "old\n"
-        assert not (baseline / ".booley_project/.git").exists()
+        assert not (baseline / ".booley/.git").exists()
         assert (baseline / "vendor/dependency/f.txt").read_text(encoding="utf-8") == "v1\n"
         assert (dependency / "f.txt").read_text(encoding="utf-8") == "v2\n"
         assert (link / "top.v").read_text(encoding="utf-8") == "current\n"
@@ -469,12 +469,12 @@ def test_standalone_project_baseline_copies_stealth_cores(
 
 def _project_topology_checkout(tmp_path: Path, monkeypatch, topology: str) -> tuple[Path, str]:
     """Real historical RTL and authored Targets shared by baseline caller regressions."""
-    from booley.core.project_dir import reset_cache
+    from booley.core.booley_dir import reset_cache
 
     outer = tmp_path / "topology-source"
     outer.mkdir()
     _init_repo(outer)
-    (outer / ".git/info/exclude").write_text("/.booley_project\n", encoding="utf-8")
+    (outer / ".git/info/exclude").write_text("/.booley\n", encoding="utf-8")
     (outer / "rtl").mkdir()
     (outer / "rtl/top.v").write_text("module top; // historical\nendmodule\n", encoding="utf-8")
     _commit_all(outer, "historical RTL")
@@ -489,7 +489,7 @@ def _project_topology_checkout(tmp_path: Path, monkeypatch, topology: str) -> tu
     (outer / "rtl/top.v").write_text("module top; // current\nendmodule\n", encoding="utf-8")
     _commit_all(outer, "current RTL")
     _stealth_core_linking_to_rtl(outer)
-    project = outer / ".booley_project"
+    project = outer / ".booley"
     (project / "cores/ip/top.core").write_text(
         "CAPI=2:\nname: acme:lib:top:1\nfilesets:\n"
         "  rtl:\n    files: [rtl/top.v]\n    file_type: verilogSource\n"
@@ -510,7 +510,7 @@ def _project_topology_checkout(tmp_path: Path, monkeypatch, topology: str) -> tu
     _commit_all(project, "Project Targets")
     if topology == "linked":
         _link_project_checkout(tmp_path, project)
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project))
+    monkeypatch.setenv("BOOLEY_DIR", str(project))
     reset_cache()
     return outer, revision
 
@@ -522,10 +522,8 @@ def _assert_topology_baseline(root: Path, candidate: Path, selector: str) -> Non
     assert root != candidate
     assert "historical" in (root / "rtl/top.v").read_text(encoding="utf-8")
     assert "current" in (candidate / "rtl/top.v").read_text(encoding="utf-8")
-    assert (root / ".booley_project/cores/ip/top.core").is_file()
-    assert "historical" in (root / ".booley_project/cores/ip/rtl/top.v").read_text(
-        encoding="utf-8"
-    )
+    assert (root / ".booley/cores/ip/top.core").is_file()
+    assert "historical" in (root / ".booley/cores/ip/rtl/top.v").read_text(encoding="utf-8")
     assert _load_rtl_config(root)["flows"]["sim"]["run_cwd"] == "."
     assert TargetCatalog.build(root).select(selector).identity == f"acme:lib:top:1#{selector}"
 
@@ -535,7 +533,7 @@ def test_standalone_project_baseline_failure_cleans_worktree(tmp_path, monkeypat
     root, revision = _project_topology_checkout(tmp_path, monkeypatch, "standalone")
     if failure == "planning":
         (root / "missing.v").write_text("generated\n", encoding="utf-8")
-        (root / ".booley_project/cores/ip/missing").symlink_to("../../../missing.v")
+        (root / ".booley/cores/ip/missing").symlink_to("../../../missing.v")
         with (
             pytest.raises(BaselineWorktreeError, match="no source for stealth-core"),
             baseline_worktree(root, revision),
@@ -549,7 +547,7 @@ def test_standalone_project_baseline_failure_cleans_worktree(tmp_path, monkeypat
             _assert_topology_baseline(baseline, root, "sim_core")
             raise RuntimeError("body failed")
         assert not baseline.exists()
-    assert not list((root / ".booley_project").glob(".baseline-wt-*"))
+    assert not list((root / ".booley").glob(".baseline-wt-*"))
 
 
 def test_baseline_prefers_fixed_pair_over_configured_standalone(tmp_path, monkeypatch):
@@ -562,7 +560,7 @@ def test_baseline_prefers_fixed_pair_over_configured_standalone(tmp_path, monkey
     )
     with baseline_worktree(root, revision) as baseline:
         _assert_topology_baseline(baseline, root, "sim_core")
-        assert (baseline / ".booley_project/.git").is_file()
+        assert (baseline / ".booley/.git").is_file()
     assert not baseline.exists()
 
 
@@ -592,7 +590,7 @@ def _baseline_implementation_unit(target, _recipe, *, role, revision):
 
 
 def test_external_standalone_project_baseline_copies_cores(tmp_path, monkeypatch):
-    from booley.core.project_dir import reset_cache
+    from booley.core.booley_dir import reset_cache
 
     root = tmp_path / "outer"
     root.mkdir()
@@ -605,14 +603,14 @@ def test_external_standalone_project_baseline_copies_cores(tmp_path, monkeypatch
     (root / "booley.toml").write_text(
         f'[project]\ndir = "{project.as_posix()}"\n', encoding="utf-8"
     )
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project))
+    monkeypatch.setenv("BOOLEY_DIR", str(project))
     reset_cache()
     with baseline_worktree(root, "HEAD~1") as baseline:
         assert (baseline / "f.txt").read_text(encoding="utf-8") == "v1\n"
-        assert (baseline / ".booley_project/cores/top.core").read_bytes() == (
+        assert (baseline / ".booley/cores/top.core").read_bytes() == (
             project / "cores/top.core"
         ).read_bytes()
-        assert not (baseline / ".booley_project/.git").exists()
+        assert not (baseline / ".booley/.git").exists()
         assert (project / ".git").is_dir()
     assert not baseline.exists()
 
@@ -626,8 +624,8 @@ def _paired_checkout_without_upstream(tmp_path: Path) -> tuple[Path, Path, str]:
     outer = tmp_path / "outer"
     outer.mkdir()
     _init_repo(outer)
-    (outer / ".git" / "info" / "exclude").write_text("/.booley_project\n", encoding="utf-8")
-    project = outer / ".booley_project"
+    (outer / ".git" / "info" / "exclude").write_text("/.booley\n", encoding="utf-8")
+    project = outer / ".booley"
     (project / "cores").mkdir(parents=True)
     _git(project, "init", "-q", "-b", "project-source")
     _git(project, "config", "user.email", "t@example.com")
@@ -637,7 +635,7 @@ def _paired_checkout_without_upstream(tmp_path: Path) -> tuple[Path, Path, str]:
     _commit_all(project, "project at entry")
     goal = project / "worktrees" / "goal"
     _git(outer, "worktree", "add", "-b", "goal", str(goal), "HEAD")
-    paired = goal / ".booley_project"
+    paired = goal / ".booley"
     _git(project, "worktree", "add", "-b", "goal-project", str(paired), "HEAD")
     entry_sha = _git(paired, "rev-parse", "HEAD")
     (paired / "cores" / "top.core").write_text("recipe: later\n", encoding="utf-8")
@@ -654,7 +652,7 @@ def test_entry_pinned_paired_project_needs_no_upstream(tmp_path: Path) -> None:
     with baseline_worktree(
         goal, "HEAD", paired_project=PairedProjectBaseline.entry_pinned(entry_sha)
     ) as baseline:
-        frozen = baseline / ".booley_project" / "cores" / "top.core"
+        frozen = baseline / ".booley" / "cores" / "top.core"
         assert frozen.read_text(encoding="utf-8") == "recipe: entry\n"
 
     assert (paired / "cores" / "top.core").read_text(encoding="utf-8") == "recipe: later\n"
@@ -679,8 +677,8 @@ def _assert_paired_baseline(goal: Path, paired: Path, expected: str, rule: str, 
     recipe = (paired / "cores/top.core").read_bytes()
     caplog.set_level(logging.INFO, logger="booley.flows.baseline_worktree")
     with baseline_worktree(goal, "HEAD") as baseline:
-        assert git_full_sha("HEAD", baseline / ".booley_project") == expected
-        assert (baseline / ".booley_project/cores/top.core").read_text().strip() == _git(
+        assert git_full_sha("HEAD", baseline / ".booley") == expected
+        assert (baseline / ".booley/cores/top.core").read_text().strip() == _git(
             paired, "show", f"{expected}:cores/top.core"
         )
     assert f"Paired Checkout baseline: {rule} -> {expected}" in caplog.text
@@ -799,7 +797,7 @@ def test_explicit_pairing_pin_bypasses_standalone_policy(tmp_path, caplog, mode,
         _git(paired, "checkout", "--detach", "HEAD")
     policy = getattr(PairedProjectBaseline, mode)(entry_sha)
     with baseline_worktree(goal, "HEAD", paired_project=policy) as baseline:
-        assert git_full_sha("HEAD", baseline / ".booley_project") == entry_sha
+        assert git_full_sha("HEAD", baseline / ".booley") == entry_sha
     assert not baseline.exists()
     assert "Paired Checkout baseline:" not in caplog.text
 

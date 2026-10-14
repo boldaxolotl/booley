@@ -15,7 +15,7 @@ skimmed the [README](../../README.md) overview and know Booley's controlled
 vocabulary: terms used here without definition — **Target**, **Booley Flow**,
 **EDA Provisioning**, **Sandbox**, **Specialist**, **VLNV** —
 are indexed by the [context map](../../GLOSSARY-MAP.md) if one is unfamiliar. Every
-project has exactly two mandatory pieces: `.booley_project/booley.toml` (first
+project has exactly two mandatory pieces: `.booley/booley.toml` (first
 section below) and at least one FuseSoC `.core` file describing your design. If
 you have not described your design yet, start with the [Design description
 (`.core`) section](#design-description-core-and-tests-teststoml) — every Booley Flow
@@ -77,7 +77,7 @@ canceling the editor operation.
 ## booley.toml
 
 Project identity, Flow selection, and Developer Agent and Specialist configuration live in
-`.booley_project/booley.toml`. A per-knob reference follows, section by section.
+`.booley/booley.toml`. A per-knob reference follows, section by section.
 
 `[project]` carries the project `name`, `protected_inputs`, and `preflight_checks` — see
 [Per-Target environment](#per-target-environment-env) for the last one, which is
@@ -512,7 +512,7 @@ artifact staging never has to guess the sim's working directory:
 | `BOOLEY_TEST_SEED` | one Test Run on a seeded Target | the seed, in decimal |
 | `BOOLEY_RUN_CWD` | always | the directory the Simulation Flow runs in ([`run_cwd`](#sim-working-directory-flowssimrun_cwd) when set; otherwise the Project Root) |
 | `BOOLEY_BUILD_ROOT` | `pre_sim_build_access = "legacy-per-test"` only | the fresh private per-test Edalize build tree; deliberately absent in immutable mode |
-| `BOOLEY_PROJECT_ROOT` / `BOOLEY_PROJECT_DIR` | always | same meaning as in the [post-setup hook](#worktree-setup-hooks) |
+| `BOOLEY_PROJECT_ROOT` / `BOOLEY_DIR` | always | same meaning as in the [post-setup hook](#worktree-setup-hooks) |
 | `BOOLEY_SIM_EDA_TOOL` | after Target resolution | concrete EDA tool driven by this Simulation Flow run |
 
 A hook that stages one input per Test keys it on `BOOLEY_TEST_NAME`. A hook
@@ -526,12 +526,12 @@ pre_run_commands = [
 ]
 ```
 
-`BOOLEY_PROJECT_DIR` deserves a note: **inside the Sandbox it is
-`/booley-project`**, not `/work/.booley_project`. For the default in-checkout
+`BOOLEY_DIR` deserves a note: **inside the Sandbox it is
+`/booley-project`**, not `/work/.booley`. For the default in-checkout
 Project, both paths reach the same Booley Directory through the issued layout;
 compatible images provide the short path as a symlink. Only the short path is
 exported. An external Booley Directory uses its issued short-path mount,
-without a `/work/.booley_project` counterpart. Prefer the variable.
+without a `/work/.booley` counterpart. Prefer the variable.
 
 Failure semantics: a nonzero exit records that test as a **failed** run with an
 attributed tail (`pre-sim commands failed (rc=N): …`) and the loop continues
@@ -1034,13 +1034,13 @@ the choice is about whether the pins should survive a fresh clone:
 - **Tracked, in the repo** (e.g. `sim-requirements.txt` at the root, or next to
   the testbenches) — the file is a normal source file, reviewed and cloned like
   any other. Preferred when you can add a file to the repo.
-- **Inside the Booley Directory** (e.g. `.booley_project/sim-requirements.txt`) —
+- **Inside the Booley Directory** (e.g. `.booley/sim-requirements.txt`) —
   legal, and the right call under [stealth mode](#stealth-mode-stealth) when you
   do not want a Booley-shaped file in the tracked tree. The catch is durability:
-  `.booley_project/` is excluded from the host repo, so a fresh clone has no
+  `.booley/` is excluded from the host repo, so a fresh clone has no
   such file and `booley init` there produces a base-image project with none of
   your pins. See [what survives a fresh clone](#what-survives-a-fresh-clone).
-  Do not name `.booley_project/docker/requirements.txt`: that path is the
+  Do not name `.booley/docker/requirements.txt`: that path is the
   *generated* output of this knob.
 
 Either way the file is an **image-build input**, consumed only by `booley init`
@@ -1058,7 +1058,7 @@ Keeps your AI-assisted workflow out of the git history (see
 [FEATURES.md: Stealth Mode](FEATURES.md#stealth-mode)).
 This table belongs only to an initialized Project. Booley's own Source Checkout
 is never a Project, does not read this policy, and must not own
-`.booley_project/` or Project Git hooks.
+`.booley/` or Project Git hooks.
 
 ```toml
 [stealth]
@@ -1077,15 +1077,15 @@ enabled = false              # open setup; hidden answer sets true
 ```
 
 Setup asks whether to keep Booley out of your git history. Yes keeps
-`.booley_project/` hidden and writes `[stealth] enabled = true`, enabling the
+`.booley/` hidden and writes `[stealth] enabled = true`, enabling the
 commit-message scrub and hidden-core projection when Booley authors cores.
 No uses open config and native cores with `enabled = false`. Unattended setup
 leaves stealth off unless hidden authored cores require it; existing hand-set
 values are preserved. A missing `enabled` key still means **on**; write the
 key rather than omitting it when you want stealth disabled.
 
-Stealth also makes `.booley_project/` a self-contained home for authored
-FuseSoC cores. Cores under `.booley_project/cores/` use repository-root-relative
+Stealth also makes `.booley/` a self-contained home for authored
+FuseSoC cores. Cores under `.booley/cores/` use repository-root-relative
 fileset paths; `booley init` generates ignored `.booley-projected-*.core` copies
 at the repository root so FuseSoC reads pristine RTL directly, with no source
 symlinks or copied RTL. Booley refreshes the projections again before target
@@ -1094,7 +1094,7 @@ resolution. This filesystem behavior requires explicit `enabled = true`.
 `ignore_native_cores` is an optional, default-false isolation switch for
 repositories whose shipped `.core` files are invalid, obsolete, or deliberately
 outside the Booley Target surface. It requires explicit `enabled = true`. When
-set, Booley enumerates only `.booley_project/cores/` and gives FuseSoC a private
+set, Booley enumerates only `.booley/cores/` and gives FuseSoC a private
 generated registry containing only those cores; repository-native `.core` files
 are never parsed during Booley resolution. The private copies use absolute
 source paths generated for the current workspace, so no source symlinks or RTL
@@ -1130,10 +1130,10 @@ any positive integer N)
 are rejected before publication. After upgrading or configuring this tier,
 run Project Setup or Doctor to reconcile installed Git-hook bundles.
 
-Project Initialization keeps `.booley_project/hooks/` for Project-authored
+Project Initialization keeps `.booley/hooks/` for Project-authored
 `post-setup` lifecycle hooks. Booley-managed commit and
 push policy lives in the deterministic
-`.booley_project/.managed/project-git-hooks.pyz` bundle, reached by the small
+`.booley/.managed/project-git-hooks.pyz` bundle, reached by the small
 `commit-msg` and `pre-push` adapters under `.git/hooks/`.
 
 **Your message is redacted, not truncated.** Subject *and* body are kept, with
@@ -1201,7 +1201,7 @@ readable, and it also covers identities that arrive via rebase, cherry-pick, or
 
 The hook also inspects changed tracked paths and committed symlink targets. A
 push is rejected when either carries a banned term or resolves into the hidden
-Booley Directory. The reserved repository spelling `.booley_project/`
+Booley Directory. The reserved repository spelling `.booley/`
 is blocked independently of the Sandbox's absolute project-state path,
 and changing the worktree link after committing does not bypass the check.
 
@@ -1274,15 +1274,15 @@ plainly: **the setup is local**. `booley init` writes these entries into
 
 ```
 /.devcontainer
-/.booley_project
+/.booley
 /.claude
-/AGENTS.md            # root symlink into .booley_project/AGENTS.md
+/AGENTS.md            # root symlink into .booley/AGENTS.md
 /CLAUDE.md            # same file, second name
 ```
 
 So a colleague who clones the repo gets your RTL, your `.core` files, your SDC
 — and no Booley at all. Nothing breaks for them; that is the point. But it
-means anything you park under `.booley_project/` is **your machine's state, not
+means anything you park under `.booley/` is **your machine's state, not
 the project's**, including:
 
 - `booley.toml` and everything it configures;
@@ -1295,7 +1295,7 @@ the project's**, including:
 
 Two consequences worth planning for:
 
-**`git add -f` does not rescue a file under `.booley_project/`.** `booley init`
+**`git add -f` does not rescue a file under `.booley/`.** `booley init`
 gives the Booley Directory its **own** git repo when stealth is on, so the host repo
 sees an embedded repository and refuses to track paths inside it. Commit that
 inner repo (or back it up) if you want the setup to survive a machine, and use
@@ -1305,14 +1305,14 @@ inner repo (or back it up) if you want the setup to survive a machine, and use
 most visible for a deliberately-broken lint fixture: it has to be a real file
 in a real Target. `booley doctor` warns when it finds one on disk but not in git
 ("a fresh clone or CI checkout will lack them"), and it is right: put that file
-in the **tracked tree**, not in `.booley_project/`. A `tb/fixtures/` or
+in the **tracked tree**, not in `.booley/`. A `tb/fixtures/` or
 `verif/lint_bad.sv` next to the sources reads as ordinary test material and
 gives nothing away — which is what stealth mode is actually asking of you.
 
 Simulation has one narrow exception because its fail-path fixture may replace
 an already-staged firmware or vector rather than belong to a `.core`: mirror
 the replacement beneath
-`.booley_project/selftest/sim/bad-overlay/` (for example,
+`.booley/selftest/sim/bad-overlay/` (for example,
 `bad-overlay/firmware/firmware.hex`). During `doctor --deep`, Booley overlays
 that tree on an isolated simulation build variant of the default Target's
 first runnable test. Ordinary simulation never applies or reuses it, and no
@@ -1329,7 +1329,7 @@ conventional Target as the bad case.
 ### Feedback (`[feedback]`)
 
 Booley keeps an append-only log of what went wrong, what was merely annoying, and
-what you think of Booley — `.booley_project/findings.jsonl`. Setup fills it as
+what you think of Booley — `.booley/findings.jsonl`. Setup fills it as
 it runs; afterwards, tell the **`/booley-feedback`** skill from any normal
 working session. The skill decides how to classify and record what you said:
 
@@ -1349,7 +1349,7 @@ the sentiment without making you learn a reporting interface.
 
 The skill keeps one persistent report from that log:
 
-- **`.booley_project/SETUP-REPORT.md`** — yours. Local, unredacted, never
+- **`.booley/SETUP-REPORT.md`** — yours. Local, unredacted, never
   published, and always written. On a project that never ran setup it is
   called `FEEDBACK-REPORT.md` instead.
 
@@ -1357,7 +1357,7 @@ The skill derives the maintainer-facing view from the same log: only entries
 attributable to Booley, with enough evidence to act on, not already filed, and
 with project identifiers redacted. It is not saved as a second report. Ask the
 skill for a redacted export only when you explicitly want that view persisted as
-`.booley_project/BOOLEY-FEEDBACK.md` for manual sharing.
+`.booley/BOOLEY-FEEDBACK.md` for manual sharing.
 
 Booley never transmits feedback. The `[feedback]` table contains only redaction
 settings used by an explicit export:
@@ -1505,7 +1505,7 @@ on Claude, whose SDK exposes no per-call effort knob).
 
 The design itself is described outside `booley.toml`: *how it builds* lives in
 one or more FuseSoC CAPI2 `.core` files ([CAPI2 reference](https://fusesoc.readthedocs.io/en/stable/user/build_system/core_file.html)),
-and *what to verify* in `.booley_project/tests.toml`.
+and *what to verify* in `.booley/tests.toml`.
 
 > **Is FuseSoC mandatory?** Yes: every Booley Flow builds from a resolvable `.core`
 > Target. A `.core` is usually a mechanical restatement of the build
@@ -1967,7 +1967,7 @@ targets:
 ```
 
 ```toml
-# .booley_project/tests.toml
+# .booley/tests.toml
 [sim_cocotb]
 tests = ["test_reset", "test_basic"]   # the @cocotb.test() FUNCTION names
 # no `select` — see below
@@ -2121,7 +2121,7 @@ stalls at time zero, follow the diagnosis and recovery in
   worktrees**; commit them if repository changes are acceptable. To keep the
   vendored repository unchanged across worktrees, use
   [Stealth isolation](#stealth-mode-stealth) (`enabled = true` and
-  `ignore_native_cores = true`) with authored cores in `.booley_project/cores/`;
+  `ignore_native_cores = true`) with authored cores in `.booley/cores/`;
   this excludes native discovery entirely while reading the original RTL.
 - **Git submodules** work, but Goal Mode does not clone them. See
   [Submodules](#submodules) below.
@@ -2152,8 +2152,8 @@ What this asks of you, once, on the host:
 
 ```bash
 git submodule update --init --recursive
-# If .booley_project is a standalone Git repository:
-git -C .booley_project submodule update --init --recursive
+# If .booley is a standalone Git repository:
+git -C .booley submodule update --init --recursive
 ```
 
 Every selected submodule must be **present, clean, and non-shallow** in its
@@ -2187,7 +2187,7 @@ list is an allowlist intersected with that revision's top-level gitlinks;
 anything omitted remains an empty gitlink directory in the worktree. Nested
 gitlinks below a selected entry are always reconstructed recursively.
 
-For a separately paired `.booley_project` repository, the allowlist above
+For a separately paired `.booley` repository, the allowlist above
 selects gitlinks in the outer repository. Booley also materializes every
 top-level gitlink recorded by the Paired Checkout, recursively and
 offline, because that repository can own acceptance controls and build inputs.
@@ -2196,7 +2196,7 @@ offline, because that repository can own acceptance controls and build inputs.
 
 `booley doctor` reserves `WARN` for an actionable failure mode. A clean setup
 has no active warnings: fix the cause, or explicitly accept a deliberate
-project constraint in `.booley_project/doctor-waivers.toml`. Waived findings
+project constraint in `.booley/doctor-waivers.toml`. Waived findings
 remain visible as `WAIVED` and are counted separately; the file does not hide
 output or change failures.
 
@@ -2220,8 +2220,8 @@ expires = 2026-11-01
 
 [[waiver]]
 check = "project.git-excludes-missing"
-subject = ".booley_project"
-reason = "This project deliberately tracks .booley_project in its parent repository."
+subject = ".booley"
+reason = "This project deliberately tracks .booley in its parent repository."
 permanent = true
 ```
 
@@ -2270,7 +2270,7 @@ every Flow (see [SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md)).
 ### Custom sandbox image
 
 To add project-specific EDA tools to every sandbox container, hand-author a
-Dockerfile at `.booley_project/docker/Dockerfile` that extends `booley-sandbox`,
+Dockerfile at `.booley/docker/Dockerfile` that extends `booley-sandbox`,
 then run plain `booley init`:
 
 ```dockerfile
@@ -2297,7 +2297,7 @@ $ booley init
 That is one pass, not a recipe: init builds the image **from your file
 verbatim** and re-seeds the devcontainer spec later in the same run. The image
 name is derived automatically from the Project slug and canonical-root digest.
-A matching manual `.booley_project/docker/Dockerfile` is built above the selected
+A matching manual `.booley/docker/Dockerfile` is built above the selected
 Booley wheel overlay, so no matching `[sandbox].image` entry is written or needed. Set `[sandbox].image` only to select a genuinely
 custom name or a Booley flavor image.
 
@@ -2308,7 +2308,7 @@ What init decides, and how to steer it:
 | Standard or Booley flavor with matching manual `FROM` | Build the selected wheel overlay, then the exact manual recipe under this Project's private image name. |
 | Manual `FROM` mismatches the selection or is ambiguous | Report the selection and parsed parent, preserve the recipe, and leave it unused. |
 
-| Your `.booley_project/docker/` state | What `booley init` does |
+| Your `.booley/docker/` state | What `booley init` does |
 |---|---|
 | No Dockerfile, `[sandbox].pip_requirements` set | Generates `Dockerfile` + `requirements.txt` and builds the derived image |
 | Hand-authored Dockerfile, image **not** built | Builds the derived image from your file untouched |
@@ -2459,11 +2459,11 @@ refresh, and Doctor—resolve that generated image name consistently.
 
 ### Custom MCP tools
 
-Project-specific MCP tools can be added via `.booley_project/mcp_tools/`, following the same base-class interface as built-in MCP tools. The Developer Agent discovers and invokes them just like built-in MCP tools. See [MCP-TOOLS.md](../internals/MCP-TOOLS.md) for the architecture and extension guide.
+Project-specific MCP tools can be added via `.booley/mcp_tools/`, following the same base-class interface as built-in MCP tools. The Developer Agent discovers and invokes them just like built-in MCP tools. See [MCP-TOOLS.md](../internals/MCP-TOOLS.md) for the architecture and extension guide.
 
 ### Worktree setup hooks
 
-Project setup scripts can live under `.booley_project/hooks/`. After creating a
+Project setup scripts can live under `.booley/hooks/`. After creating a
 Goal worktree with `booley worktree new`, run any Project-specific setup it
 needs from that worktree before entry. The command creates the worktree and
 Worktree Booley Directory; it does not invoke these scripts automatically. Keep generated
@@ -2541,7 +2541,7 @@ directory = "coverage-waivers"
 ```
 
 `anchor` is exactly `rtl_repository` or `project_data_repository`; the latter is
-the directory resolved by `booley.runtime.project_dir.resolve_project_dir()`.
+the directory resolved by `booley.runtime.booley_dir.resolve_booley_dir()`.
 `directory` is a safe relative path. Approval files mirror RTL paths: source
 `rtl/counter.sv` uses `coverage-waivers/rtl/counter.sv.toml`. A human-authored file
 has this shape (replace the placeholders with exact retained evidence):

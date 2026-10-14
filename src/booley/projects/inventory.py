@@ -30,6 +30,7 @@ class ProjectStatus(StrEnum):
     PRESENT = "present"
     MISSING = "missing"
     UNINITIALIZED = "uninitialized"
+    MIGRATION_NEEDED = "migration-needed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,7 +143,10 @@ def _initialized_project(project_root: Path) -> Path:
         raise ProjectInventoryError(
             f"Project Root is unavailable: {project_root} ({exc})"
         ) from exc
-    if not project.is_dir() or not (project / ".booley_project").is_dir():
+    from booley.core.booley_layout import require_current_layout
+
+    require_current_layout(project)
+    if not project.is_dir() or not (project / ".booley").is_dir():
         raise ProjectInventoryError(f"not an initialized Booley Project: {project}")
     return project
 
@@ -172,7 +176,9 @@ def _discover_under(search_root: Path) -> set[Path]:
 
 
 def _is_initialized_checkout(path: Path) -> bool:
-    return (path / ".git").exists() and (path / ".booley_project").is_dir()
+    from booley.core.booley_layout import Layout, classify_layout
+
+    return (path / ".git").exists() and classify_layout(path) in {Layout.CURRENT, Layout.RETIRED}
 
 
 def _child_directories(path: Path) -> list[Path]:
@@ -180,7 +186,9 @@ def _child_directories(path: Path) -> list[Path]:
     try:
         with os.scandir(path) as entries:
             for entry in entries:
-                if entry.name in {".git", ".booley_project"}:
+                from booley.core.booley_layout import RETIRED_DIR_NAME
+
+                if entry.name in {".git", ".booley", RETIRED_DIR_NAME}:
                     continue
                 if entry.is_dir(follow_symlinks=False):
                     children.append(Path(entry.path))
@@ -192,7 +200,11 @@ def _child_directories(path: Path) -> list[Path]:
 def _status(project_root: Path) -> ProjectStatus:
     if not project_root.exists():
         return ProjectStatus.MISSING
-    if (project_root / ".booley_project").is_dir():
+    from booley.core.booley_layout import Layout, classify_layout
+
+    if classify_layout(project_root) is Layout.RETIRED:
+        return ProjectStatus.MIGRATION_NEEDED
+    if (project_root / ".booley").is_dir():
         return ProjectStatus.PRESENT
     return ProjectStatus.UNINITIALIZED
 

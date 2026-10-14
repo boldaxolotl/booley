@@ -3,7 +3,7 @@
 Simulation fail-path fixtures sometimes need to replace a file after FuseSoC
 has staged a Target. Keep that Doctor-only mechanism out of project Flow
 configuration: a project may mirror replacement files beneath
-``.booley_project/selftest/<flow>/bad-overlay/``, and the internal Doctor run
+``.booley/selftest/<flow>/bad-overlay/``, and the internal Doctor run
 copies that tree over the resolved build root.
 """
 
@@ -71,27 +71,27 @@ def doctor_runtime_view_path(
     return parent / f"{BAD_RUN_CWD_DIR}-a-{attempt_token}"
 
 
-def bad_overlay_dir(project_dir: Path, flow_name: str) -> Path:
+def bad_overlay_dir(booley_dir: Path, flow_name: str) -> Path:
     """Return the conventional bad-fixture overlay directory for *flow_name*."""
-    return project_dir / "selftest" / flow_name / _BAD_OVERLAY_DIR
+    return booley_dir / "selftest" / flow_name / _BAD_OVERLAY_DIR
 
 
-def has_bad_overlay(project_dir: Path, flow_name: str) -> bool:
+def has_bad_overlay(booley_dir: Path, flow_name: str) -> bool:
     """Return whether *flow_name* has at least one regular overlay file."""
-    root = bad_overlay_dir(project_dir, flow_name)
+    root = bad_overlay_dir(booley_dir, flow_name)
     return root.is_dir() and any(
         path.is_file() and not path.is_symlink() for path in root.rglob("*")
     )
 
 
-def stage_bad_overlay(project_dir: Path, flow_name: str, build_root: Path) -> int:
+def stage_bad_overlay(booley_dir: Path, flow_name: str, build_root: Path) -> int:
     """Copy *flow_name*'s bad-fixture overlay over *build_root*.
 
     The overlay must contain only real directories and regular files. Symlinks
     are rejected on both sides so a project fixture cannot redirect a copy
     outside the resolved build tree.
     """
-    source_root = bad_overlay_dir(project_dir, flow_name)
+    source_root = bad_overlay_dir(booley_dir, flow_name)
     if not source_root.is_dir():
         return 0
     resolved_build_root = build_root.resolve()
@@ -152,7 +152,7 @@ def _cleanup_managed_view(view: Path, primary: BaseException | None) -> None:
 @contextmanager
 def managed_runtime_view(
     checkout_root: Path,
-    project_dir: Path,
+    booley_dir: Path,
     flow_name: str,
     run_cwd: Path,
     generation_parent: Path,
@@ -165,11 +165,11 @@ def managed_runtime_view(
     staged = False
     try:
         _remove_owned_views(parent)
-        copied = stage_bad_run_overlay(project_dir, flow_name, run_cwd, view)
+        copied = stage_bad_run_overlay(booley_dir, flow_name, run_cwd, view)
         if copied == 0:
             raise SelftestOverlayError(
                 f"Doctor requested a bad simulation fixture, but "
-                f"{bad_overlay_dir(project_dir, flow_name)} is empty"
+                f"{bad_overlay_dir(booley_dir, flow_name)} is empty"
             )
         staged = True
     except SelftestOverlayError:
@@ -253,7 +253,7 @@ def _mirror_runtime_dir(
 
 
 def stage_bad_run_overlay(
-    project_dir: Path,
+    booley_dir: Path,
     flow_name: str,
     run_cwd: Path,
     shadow_root: Path,
@@ -267,8 +267,8 @@ def stage_bad_run_overlay(
     visible through symlinks, while overlay paths are private real files in the
     per-build shadow.  The project-owned inputs are never modified.
     """
-    project_dir = project_dir.resolve()
-    source_root = bad_overlay_dir(project_dir, flow_name)
+    booley_dir = booley_dir.resolve()
+    source_root = bad_overlay_dir(booley_dir, flow_name)
     files = [
         path for path in sorted(source_root.rglob("*")) if path.is_file() and not path.is_symlink()
     ]
@@ -278,5 +278,5 @@ def stage_bad_run_overlay(
         raise SelftestOverlayError(f"simulation run_cwd is not a directory: {run_cwd}")
     overlay_parts = {path.relative_to(source_root).parts for path in files}
     _remove_shadow(shadow_root)
-    _mirror_runtime_dir(run_cwd, shadow_root, overlay_parts, shadow_root, project_dir)
-    return stage_bad_overlay(project_dir, flow_name, shadow_root)
+    _mirror_runtime_dir(run_cwd, shadow_root, overlay_parts, shadow_root, booley_dir)
+    return stage_bad_overlay(booley_dir, flow_name, shadow_root)

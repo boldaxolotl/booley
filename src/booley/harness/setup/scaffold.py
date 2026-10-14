@@ -43,7 +43,7 @@ from booley.harness.setup.plan import (
     apply_init_plan,
     plan_init_filesystem,
 )
-from booley.runtime.project_dir import reset_cache
+from booley.runtime.booley_dir import reset_cache
 
 # Wizard vocabulary. `sv` = a plain self-checking SystemVerilog TB scored by
 # stdout sentinels; `cocotb` = a Python TB per ADR 0034 (verdict from
@@ -74,7 +74,7 @@ class _ScaffoldHostProbe:
 
 def _plan_scaffold_files(ctx: InitContext, files: dict[str, str]) -> InitPlan:
     targets: list[InitTarget] = []
-    config_paths = frozenset({".booley_project/booley.toml", ".booley_project/tests.toml"})
+    config_paths = frozenset({".booley/booley.toml", ".booley/tests.toml"})
     for rel, content in sorted(files.items()):
         target = ctx.project_root / rel
         recognized: tuple[str, ...] = ()
@@ -120,7 +120,7 @@ def _scaffold_inputs_available(ctx: InitContext) -> bool:
         ctx.record("scaffold", "err", "existing design files")
         return False
     for cfg_name in ("booley.toml", "tests.toml"):
-        cfg = ctx.project_root / ".booley_project" / cfg_name
+        cfg = ctx.project_root / ".booley" / cfg_name
         if _config_is_populated(cfg):
             err(
                 f"{cfg} is already populated — scaffold would overwrite deliberate "
@@ -292,15 +292,15 @@ _RTL_SUFFIXES = {".sv", ".svh", ".v", ".vh", ".vhd", ".vhdl"}
 def existing_design_files(root: Path, limit: int = 5) -> list[Path]:
     """Design files that make the repo a *porting* job, not a scaffold target.
 
-    Hidden trees (``.git/``, ``.booley_project/`` worktrees, editor state) are
-    skipped — except ``.booley_project/cores/``, whose stealth ``.core`` files
+    Hidden trees (``.git/``, ``.booley/`` worktrees, editor state) are
+    skipped — except ``.booley/cores/``, whose stealth ``.core`` files
     are real design description (ADR 0036).
     """
     found: list[Path] = []
     for path in sorted(root.rglob("*")):
         rel = path.relative_to(root)
         hidden = any(part.startswith(".") for part in rel.parts[:-1])
-        stealth_core = rel.parts[:2] == (".booley_project", "cores") and path.suffix == ".core"
+        stealth_core = rel.parts[:2] == (".booley", "cores") and path.suffix == ".core"
         if hidden and not stealth_core:
             continue
         if not path.is_file() or rel.name.startswith("."):
@@ -435,7 +435,7 @@ def _sv_testbench(c: ScaffoldChoices) -> str:
 // Booley decides pass/fail by scanning stdout: print exactly ONE
 // `[SIM_RESULT] PASSED` or `[SIM_RESULT] FAILED` line, then $finish.
 // Test selection arrives as `+test_id=<index>` — the 0-based position of the
-// test name in `.booley_project/tests.toml` `[sim] tests = [...]`.
+// test name in `.booley/tests.toml` `[sim] tests = [...]`.
 `timescale 1ns / 1ps
 
 module tb_{c.name} #(
@@ -542,7 +542,7 @@ def _cocotb_testbench(c: ScaffoldChoices) -> str:
 # test_{c.name} — cocotb testbench for the scaffold counter (Cocotb Target,
 # ADR 0034). The verdict comes from cocotb's results.xml: a test passes when
 # its coroutine returns and fails when it raises — assert, never print
-# sentinels. One @cocotb.test() per behavior; `.booley_project/tests.toml`
+# sentinels. One @cocotb.test() per behavior; `.booley/tests.toml`
 # lists exactly these function names.
 
 import random
@@ -849,7 +849,7 @@ def _xdc_file(c: ScaffoldChoices) -> str:
 # constraints/{c.name}.xdc — FPGA constraints for the `fpga` Target.
 # Scaffolded for out-of-context implementation (no board pins). When targeting
 # a real board, add pin LOCs/IOSTANDARDs here and drop `out_of_context` from
-# [flows.fpga] in .booley_project/booley.toml.
+# [flows.fpga] in .booley/booley.toml.
 create_clock -name clk -period 10.000 [get_ports clk]
 """
 
@@ -861,9 +861,9 @@ def scaffold_files(c: ScaffoldChoices) -> dict[str, str]:
         f"{c.name}.core": _core_file(c),
         "verif/booley_doctor_selftest.core": _lint_selftest_core(c),
         "verif/booley_doctor_selftest/lint_bad.sv": _lint_bad_source(c),
-        ".booley_project/booley.toml": _booley_toml(c),
-        ".booley_project/tests.toml": _tests_toml(c),
-        f".booley_project/selftest/sim/bad-overlay/{c.name}.sv": _sim_bad_overlay(c),
+        ".booley/booley.toml": _booley_toml(c),
+        ".booley/tests.toml": _tests_toml(c),
+        f".booley/selftest/sim/bad-overlay/{c.name}.sv": _sim_bad_overlay(c),
     }
     if c.tb_style == "cocotb":
         files[f"tb/test_{c.name}.py"] = _cocotb_testbench(c)
@@ -919,7 +919,7 @@ def step_scaffold(ctx: InitContext, args) -> bool:
 
     if not _apply_scaffold_files(ctx, plan):
         return False
-    reset_cache()  # .booley_project may have just come into existence
+    reset_cache()  # .booley may have just come into existence
 
     summary = (
         f"sim={choices.sim_eda_tool}/{choices.tb_style} lint={choices.lint_eda_tool} "

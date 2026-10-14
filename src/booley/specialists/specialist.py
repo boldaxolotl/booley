@@ -403,7 +403,7 @@ class Specialist(McpTool):
         if logs_dir and Path(logs_dir).is_dir():
             return Path(logs_dir) / f"{key}.session_id"
         try:
-            from booley.runtime.project_dir import runtime_dir
+            from booley.runtime.booley_dir import runtime_dir
 
             return runtime_dir() / "sessions" / f"{key}.session_id"
         except (FileNotFoundError, ImportError, OSError):

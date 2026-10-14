@@ -11,7 +11,7 @@ The executable package-direction design and its legacy cycle baseline live in th
 
 Booley makes EDA workflows drivable by LLM agents without trusting the agents' claims. It wraps heterogeneous toolchains as **Booley Flows** with structured inputs and machine-checkable results, then exposes those Flows and LLM-backed **Specialists** through MCP.
 
-Everything executes in a containerized **Sandbox**, one per opened project folder. Two modes share that runtime and the same `.booley_project/` configuration:
+Everything executes in a containerized **Sandbox**, one per opened project folder. Two modes share that runtime and the same `.booley/` configuration:
 
 - **Interactive Mode** is a human-steered engineering session in a VS Code devcontainer.
 - **Goal Mode** binds an agent session's work to mandatory Goals in a linked worktree on a Goal Branch. The human may steer it or leave the tab working unattended; `/booley-goal` guides entry, changes, and Finish.

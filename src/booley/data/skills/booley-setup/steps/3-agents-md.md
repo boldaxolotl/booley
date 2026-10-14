@@ -11,12 +11,12 @@ file is high leverage: do not auto-write, pad, or invent facts.
 
 **Location and linking**
 
-- The canonical file lives in the Booley Directory as `<project_dir>/AGENTS.md`
-  (usually `.booley_project/AGENTS.md`), so it is versioned with the rest of
+- The canonical file lives in the Booley Directory as `<booley_dir>/AGENTS.md`
+  (usually `.booley/AGENTS.md`), so it is versioned with the rest of
   the project config. Normally, do not write a real file at the Project Root.
 - Exception: when plan row 16 selects the hybrid port/integration footprint,
   write and track a content-identical regular root `AGENTS.md` so a fresh clone
-  remains self-describing while `.booley_project/` stays local. Init and Doctor
+  remains self-describing while `.booley/` stays local. Init and Doctor
   preserve this matching tracked copy and refuse to overwrite a stale one.
 - The Project Root carries only generated `AGENTS.md` and `CLAUDE.md` links to
   the canonical file. Plain `booley doctor` creates or repairs them after the
@@ -38,7 +38,7 @@ file is high leverage: do not auto-write, pad, or invent facts.
   reference-docs bullet verbatim so Developer Agents can find the image's offline manuals.
   Remove that conditional bullet for every other sandbox image.
 - When `booley.toml` has `[stealth].enabled = true`, keep the template's stealth
-  mode bullet verbatim so Developer Agents treat `.booley_project/` as a separate Git
+  mode bullet verbatim so Developer Agents treat `.booley/` as a separate Git
   repository and do not expose its changes in the main repository.
   Remove that conditional bullet when stealth mode is disabled.
 - Do not read RTL, testbench, or test contents by default. Stable docs and
@@ -64,13 +64,13 @@ file is high leverage: do not auto-write, pad, or invent facts.
 
 ### 1. Inspect Stable Inputs
 
-- Existing canonical `<project_dir>/AGENTS.md`, if present (and any alternate
+- Existing canonical `<booley_dir>/AGENTS.md`, if present (and any alternate
   `AGENTS.md` at the Project Root, to migrate its content into the canonical file)
 - `README.md`
 - `GLOSSARY-MAP.md`, if present, followed by the relevant context glossaries
 - `docs/GLOSSARY.md`, if present when no context map exists
-- `.booley_project/booley.toml`
-- the `.core` design-description and `.booley_project/tests.toml`
+- `.booley/booley.toml`
+- the `.core` design-description and `.booley/tests.toml`
 - Top-level directory names, only when docs/config mention source/spec roots
 
 If a file is missing, continue. Do not treat missing docs as an error.
@@ -86,7 +86,7 @@ recorded in the plan (row 15).
 
 ### 3. Review Artifact
 
-If the canonical `<project_dir>/AGENTS.md` already exists:
+If the canonical `<booley_dir>/AGENTS.md` already exists:
 
 1. Apply the fate the plan's row 15 decided (merge / overwrite / leave),
    summarizing what is kept, removed, or added.
@@ -99,8 +99,8 @@ approval question in either case beyond the plan-gap stop above.
 
 ### 4. Write and Report
 
-1. Write the canonical file to `<project_dir>/AGENTS.md` (resolve
-   `<project_dir>` from `.booley_project/`; do not hardcode). For the explicit
+1. Write the canonical file to `<booley_dir>/AGENTS.md` (resolve
+   `<booley_dir>` from `.booley/`; do not hardcode). For the explicit
    hybrid footprint, also write the same bytes to tracked root `AGENTS.md`.
 2. Run plain `booley doctor`; it creates or repairs the root `AGENTS.md` and
    `CLAUDE.md` links and adds them to `.git/info/exclude`. If Doctor cannot run,

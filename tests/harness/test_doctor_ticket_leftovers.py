@@ -74,8 +74,7 @@ def test_edited_guidance_warns_to_move_rules_before_delete(tmp_path, name):
     assert finding.check_id == "tickets.leftover-guidance"
     assert finding.subject == name
     assert finding.fix == (
-        "move its rules into a Goalset under .booley_project/goalsets/, "
-        f"then delete {tmp_path / name}"
+        f"move its rules into a Goalset under .booley/goalsets/, then delete {tmp_path / name}"
     )
 
 

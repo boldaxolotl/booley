@@ -18,7 +18,7 @@ from booley.config.tests_toml_rules import TEST_NAME_RULES
 
 
 def _write_toml(work_dir: Path, body: str) -> None:
-    project = work_dir / ".booley_project"
+    project = work_dir / ".booley"
     project.mkdir(parents=True, exist_ok=True)
     (project / "booley.toml").write_text(body, encoding="utf-8")
 
@@ -27,7 +27,7 @@ class TestProjectName:
     @pytest.fixture(autouse=True)
     def empty_ambient_project(self, tmp_path, monkeypatch):
         """The default-name contract assumes no intentional legacy ambient Project override."""
-        monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+        monkeypatch.delenv("BOOLEY_DIR", raising=False)
         monkeypatch.chdir(tmp_path)
         reset_cache()
         yield
@@ -226,7 +226,7 @@ class TestTestsTomlNameRules:
         assert normalize_tests_toml(raw) == raw
 
     def test_explicit_checkout_read_path_applies_the_rules(self, tmp_path: Path):
-        project = tmp_path / ".booley_project"
+        project = tmp_path / ".booley"
         project.mkdir()
         (project / "booley.toml").write_text('[project]\nname = "demo"\n', encoding="utf-8")
         (project / "tests.toml").write_text('[sim]\ntests = ["default"]\n', encoding="utf-8")
@@ -234,11 +234,11 @@ class TestTestsTomlNameRules:
             load_test_configuration(tmp_path)
 
     def test_active_project_read_path_applies_the_rules(self, tmp_path: Path, monkeypatch):
-        project = tmp_path / ".booley_project"
+        project = tmp_path / ".booley"
         project.mkdir()
         (project / "booley.toml").write_text('[project]\nname = "demo"\n', encoding="utf-8")
         (project / "tests.toml").write_text('[sim]\ntests = ["a+b"]\n', encoding="utf-8")
-        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project))
+        monkeypatch.setenv("BOOLEY_DIR", str(project))
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(project_config, "_CONFIG_CACHE", None)
         reset_cache()
@@ -615,4 +615,4 @@ class TestEnvTableValidation:
         )
 
 
-from booley.runtime.project_dir import reset_cache
+from booley.runtime.booley_dir import reset_cache

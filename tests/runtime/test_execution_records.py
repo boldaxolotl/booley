@@ -123,13 +123,13 @@ def test_verified_inherited_execution_accepts_descendant_and_supervisor_itself(
     execution_id = "d" * 32
     supervisor = ProcessIdentity(10, "fake", 1)
     atomic_write_json(
-        execution_paths(execution_id, project_dir=tmp_path).record,
+        execution_paths(execution_id, booley_dir=tmp_path).record,
         _active_execution_record(supervisor),
     )
 
     assert verify_inherited_execution_id(
         execution_id,
-        project_dir=tmp_path,
+        booley_dir=tmp_path,
         owner_pid=owner_pid,
         observe_identity=lambda _identity: ProcessObservation(RUNNING),
         ancestor_check=lambda pid, ancestor: ancestor_result and (pid, ancestor) == (20, 10),
@@ -144,14 +144,14 @@ def test_verified_inherited_execution_rejects_record_from_another_project(
     current = tmp_path / "current"
     supervisor = ProcessIdentity(10, "fake", 1)
     atomic_write_json(
-        execution_paths(execution_id, project_dir=foreign).record,
+        execution_paths(execution_id, booley_dir=foreign).record,
         _active_execution_record(supervisor),
     )
 
     assert (
         verify_inherited_execution_id(
             execution_id,
-            project_dir=current,
+            booley_dir=current,
             owner_pid=20,
             observe_identity=lambda _identity: ProcessObservation(RUNNING),
             ancestor_check=lambda pid, ancestor: (pid, ancestor) == (20, 10),
@@ -164,14 +164,14 @@ def test_verified_inherited_execution_rejects_non_ancestor(tmp_path: Path) -> No
     execution_id = "f" * 32
     supervisor = ProcessIdentity(10, "fake", 1)
     atomic_write_json(
-        execution_paths(execution_id, project_dir=tmp_path).record,
+        execution_paths(execution_id, booley_dir=tmp_path).record,
         _active_execution_record(supervisor),
     )
 
     assert (
         verify_inherited_execution_id(
             execution_id,
-            project_dir=tmp_path,
+            booley_dir=tmp_path,
             owner_pid=20,
             observe_identity=lambda _identity: ProcessObservation(RUNNING),
             ancestor_check=lambda _pid, _ancestor: False,
@@ -184,7 +184,7 @@ def test_verified_inherited_execution_rejects_invalid_id(tmp_path: Path) -> None
     assert (
         verify_inherited_execution_id(
             "not-an-execution",
-            project_dir=tmp_path,
+            booley_dir=tmp_path,
             owner_pid=20,
         )
         is None
@@ -196,7 +196,7 @@ def test_verified_inherited_execution_rejects_unusable_records(
     tmp_path: Path, record_kind: str
 ) -> None:
     execution_id = "1" * 32
-    paths = execution_paths(execution_id, project_dir=tmp_path)
+    paths = execution_paths(execution_id, booley_dir=tmp_path)
     supervisor = ProcessIdentity(10, "fake", 1)
     if record_kind == "malformed":
         paths.root.mkdir(parents=True)
@@ -212,7 +212,7 @@ def test_verified_inherited_execution_rejects_unusable_records(
     assert (
         verify_inherited_execution_id(
             execution_id,
-            project_dir=tmp_path,
+            booley_dir=tmp_path,
             owner_pid=20,
             observe_identity=lambda _identity: ProcessObservation(RUNNING),
             ancestor_check=lambda _pid, _ancestor: True,
@@ -228,14 +228,14 @@ def test_verified_inherited_execution_requires_live_durable_supervisor(
     execution_id = "2" * 32
     supervisor = ProcessIdentity(10, "fake", 1)
     atomic_write_json(
-        execution_paths(execution_id, project_dir=tmp_path).record,
+        execution_paths(execution_id, booley_dir=tmp_path).record,
         _active_execution_record(supervisor),
     )
 
     assert (
         verify_inherited_execution_id(
             execution_id,
-            project_dir=tmp_path,
+            booley_dir=tmp_path,
             owner_pid=20,
             observe_identity=lambda _identity: ProcessObservation(state),
             ancestor_check=lambda _pid, _ancestor: True,
@@ -251,12 +251,12 @@ def test_verified_inherited_execution_rejects_live_leader_without_supervisor(
     leader = ProcessIdentity(10, "fake", 1)
     record = _active_execution_record(None)
     record["leader"] = leader.to_payload()
-    atomic_write_json(execution_paths(execution_id, project_dir=tmp_path).record, record)
+    atomic_write_json(execution_paths(execution_id, booley_dir=tmp_path).record, record)
 
     assert (
         verify_inherited_execution_id(
             execution_id,
-            project_dir=tmp_path,
+            booley_dir=tmp_path,
             owner_pid=20,
             observe_identity=lambda _identity: ProcessObservation(RUNNING),
             ancestor_check=lambda _pid, _ancestor: True,
@@ -265,8 +265,8 @@ def test_verified_inherited_execution_rejects_live_leader_without_supervisor(
     )
 
 
-def _old_terminal(project_dir: Path, execution_id: str) -> None:
-    paths = execution_paths(execution_id, project_dir=project_dir)
+def _old_terminal(booley_dir: Path, execution_id: str) -> None:
+    paths = execution_paths(execution_id, booley_dir=booley_dir)
     paths.root.mkdir(parents=True)
     paths.record.write_text(
         json.dumps({"schema_version": 1, "state": "terminal", "tree_terminal": True}),
@@ -277,7 +277,7 @@ def _old_terminal(project_dir: Path, execution_id: str) -> None:
 
 def test_heartbeat_rename_permission_error_does_not_crash(tmp_path: Path, monkeypatch) -> None:
     """Windows [WinError 5] on replace() must not crash the auth flow."""
-    paths = execution_paths("a" * 32, project_dir=tmp_path)
+    paths = execution_paths("a" * 32, booley_dir=tmp_path)
     write_attachment_heartbeat(paths, generation=1)
     assert read_attachment_heartbeat(paths) == 1
 
@@ -299,7 +299,7 @@ def test_gc_keeps_slot_referenced_and_nonterminal_execution_records(tmp_path: Pa
     running = "c" * 32
     _old_terminal(tmp_path, unreferenced)
     _old_terminal(tmp_path, referenced)
-    running_paths = execution_paths(running, project_dir=tmp_path)
+    running_paths = execution_paths(running, booley_dir=tmp_path)
     running_paths.root.mkdir(parents=True)
     running_paths.record.write_text(
         json.dumps({"schema_version": 1, "state": "running", "tree_terminal": False}),
@@ -313,6 +313,6 @@ def test_gc_keeps_slot_referenced_and_nonterminal_execution_records(tmp_path: Pa
     removed = gc_terminal_executions(tmp_path, now=1_000_000, retention_seconds=10)
 
     assert removed == [unreferenced]
-    assert not execution_paths(unreferenced, project_dir=tmp_path).root.exists()
-    assert execution_paths(referenced, project_dir=tmp_path).root.exists()
+    assert not execution_paths(unreferenced, booley_dir=tmp_path).root.exists()
+    assert execution_paths(referenced, booley_dir=tmp_path).root.exists()
     assert running_paths.root.exists()

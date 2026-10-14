@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from booley.harness.setup import readiness
-from booley.runtime.project_dir import reset_cache, resolve_project_dir
+from booley.runtime.booley_dir import reset_cache, resolve_booley_dir
 from tests.diagnostic_helpers import (
     _Rec,
     _record_report,
@@ -37,37 +37,37 @@ def test_doctor_prefers_linked_checkout_project_snapshot(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     reset_cache()
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(canonical_dir))
-    assert resolve_project_dir() == canonical_dir.resolve()  # pre-warm session-global cache
+    monkeypatch.setenv("BOOLEY_DIR", str(canonical_dir))
+    assert resolve_booley_dir() == canonical_dir.resolve()  # pre-warm session-global cache
 
     audit = readiness.load_project(checkout_root).project
 
     assert audit is not None
-    assert audit.project_dir == checkout_dir.resolve()
+    assert audit.booley_dir == checkout_dir.resolve()
     assert audit.booley_toml["project"]["name"] == "ticket"
 
 
 class TestStealthCoresCheck:
-    """ADR 0036 contract: authored cores live in .booley_project/cores/ (and
+    """ADR 0036 contract: authored cores live in .booley/cores/ (and
     nowhere else in the Booley Directory), and never share a VLNV with a repo core."""
 
     def _project(self, tmp_path: Path) -> tuple[Path, Path]:
         root = tmp_path / "repo"
-        project_dir = root / ".booley_project"
-        (project_dir / "cores").mkdir(parents=True)
-        return root, project_dir
+        booley_dir = root / ".booley"
+        (booley_dir / "cores").mkdir(parents=True)
+        return root, booley_dir
 
     def test_clean_layout_passes(self, tmp_path: Path):
-        root, project_dir = self._project(tmp_path)
+        root, booley_dir = self._project(tmp_path)
         (root / "repo.core").write_text("CAPI=2:\nname: ::repo:0\n", encoding="utf-8")
-        (project_dir / "cores" / "s.core").write_text(
+        (booley_dir / "cores" / "s.core").write_text(
             "CAPI=2:\nname: ::stealth:0\n", encoding="utf-8"
         )
-        (project_dir / "booley.toml").write_text("[stealth]\nenabled = true\n", encoding="utf-8")
+        (booley_dir / "booley.toml").write_text("[stealth]\nenabled = true\n", encoding="utf-8")
         rec = _Rec()
         _record_report(
             readiness.check_stealth_cores(
-                readiness.ProjectAudit(root, project_dir, {"stealth": {"enabled": True}}, {}, ""),
+                readiness.ProjectAudit(root, booley_dir, {"stealth": {"enabled": True}}, {}, ""),
                 mode=readiness.ReadinessMode.RECONCILE,
             ),
             passed=rec.p,
@@ -77,13 +77,13 @@ class TestStealthCoresCheck:
 
     def test_stranded_core_fails_with_move_hint(self, tmp_path: Path):
         # The original stealth-project layout: authored cores directly under
-        # .booley_project/ — structurally skipped, so Targets silently vanish.
-        root, project_dir = self._project(tmp_path)
-        (project_dir / "stranded.core").write_text("CAPI=2:\nname: ::s:0\n", encoding="utf-8")
+        # .booley/ — structurally skipped, so Targets silently vanish.
+        root, booley_dir = self._project(tmp_path)
+        (booley_dir / "stranded.core").write_text("CAPI=2:\nname: ::s:0\n", encoding="utf-8")
         rec = _Rec()
         _record_report(
             readiness.check_stealth_cores(
-                readiness.ProjectAudit(root, project_dir, {"stealth": {"enabled": False}}, {}, ""),
+                readiness.ProjectAudit(root, booley_dir, {"stealth": {"enabled": False}}, {}, ""),
                 mode=readiness.ReadinessMode.INSPECT,
             ),
             passed=rec.p,
@@ -93,17 +93,17 @@ class TestStealthCoresCheck:
         assert "stranded.core" in rec.fails()[0]
 
     def test_worktree_copies_are_not_stranded(self, tmp_path: Path):
-        root, project_dir = self._project(tmp_path)
-        wt = project_dir / "worktrees" / "t1"
+        root, booley_dir = self._project(tmp_path)
+        wt = booley_dir / "worktrees" / "t1"
         wt.mkdir(parents=True)
         (wt / "copy.core").write_text("CAPI=2:\nname: ::c:0\n", encoding="utf-8")
-        bl = project_dir / ".baseline-wt-7-abc"
+        bl = booley_dir / ".baseline-wt-7-abc"
         bl.mkdir()
         (bl / "copy.core").write_text("CAPI=2:\nname: ::c:0\n", encoding="utf-8")
         rec = _Rec()
         _record_report(
             readiness.check_stealth_cores(
-                readiness.ProjectAudit(root, project_dir, {"stealth": {"enabled": False}}, {}, ""),
+                readiness.ProjectAudit(root, booley_dir, {"stealth": {"enabled": False}}, {}, ""),
                 mode=readiness.ReadinessMode.INSPECT,
             ),
             passed=rec.p,
@@ -112,15 +112,15 @@ class TestStealthCoresCheck:
         assert rec.kinds() == {"pass"}
 
     def test_private_registry_copies_are_not_stranded(self, tmp_path: Path):
-        root, project_dir = self._project(tmp_path)
-        registry = project_dir / "tmp" / "fusesoc-isolated-cores"
+        root, booley_dir = self._project(tmp_path)
+        registry = booley_dir / "tmp" / "fusesoc-isolated-cores"
         registry.mkdir(parents=True)
         (registry / "copy.core").write_text("CAPI=2:\nname: ::c:0\n", encoding="utf-8")
         rec = _Rec()
 
         _record_report(
             readiness.check_stealth_cores(
-                readiness.ProjectAudit(root, project_dir, {"stealth": {"enabled": False}}, {}, ""),
+                readiness.ProjectAudit(root, booley_dir, {"stealth": {"enabled": False}}, {}, ""),
                 mode=readiness.ReadinessMode.INSPECT,
             ),
             passed=rec.p,
@@ -130,13 +130,13 @@ class TestStealthCoresCheck:
         assert rec.kinds() == {"pass"}
 
     def test_cross_root_collision_fails(self, tmp_path: Path):
-        root, project_dir = self._project(tmp_path)
+        root, booley_dir = self._project(tmp_path)
         (root / "repo.core").write_text("CAPI=2:\nname: ::dup:0\n", encoding="utf-8")
-        (project_dir / "cores" / "s.core").write_text("CAPI=2:\nname: ::dup:1\n", encoding="utf-8")
+        (booley_dir / "cores" / "s.core").write_text("CAPI=2:\nname: ::dup:1\n", encoding="utf-8")
         rec = _Rec()
         _record_report(
             readiness.check_stealth_cores(
-                readiness.ProjectAudit(root, project_dir, {"stealth": {"enabled": False}}, {}, ""),
+                readiness.ProjectAudit(root, booley_dir, {"stealth": {"enabled": False}}, {}, ""),
                 mode=readiness.ReadinessMode.INSPECT,
             ),
             passed=rec.p,
@@ -145,15 +145,15 @@ class TestStealthCoresCheck:
         assert any("both core roots" in msg for msg in rec.fails())
 
     def test_hidden_cores_require_stealth_mode(self, tmp_path: Path):
-        root, project_dir = self._project(tmp_path)
-        (project_dir / "cores" / "s.core").write_text(
+        root, booley_dir = self._project(tmp_path)
+        (booley_dir / "cores" / "s.core").write_text(
             "CAPI=2:\nname: ::stealth:0\n", encoding="utf-8"
         )
         rec = _Rec()
 
         _record_report(
             readiness.check_stealth_cores(
-                readiness.ProjectAudit(root, project_dir, {"stealth": {"enabled": False}}, {}, ""),
+                readiness.ProjectAudit(root, booley_dir, {"stealth": {"enabled": False}}, {}, ""),
                 mode=readiness.ReadinessMode.INSPECT,
             ),
             passed=rec.p,
@@ -163,16 +163,16 @@ class TestStealthCoresCheck:
         assert any("stealth mode is disabled" in msg for msg in rec.fails())
 
     def test_stealth_projection_is_repaired(self, tmp_path: Path):
-        root, project_dir = self._project(tmp_path)
-        (project_dir / "booley.toml").write_text("[stealth]\nenabled = true\n", encoding="utf-8")
-        (project_dir / "cores" / "s.core").write_text(
+        root, booley_dir = self._project(tmp_path)
+        (booley_dir / "booley.toml").write_text("[stealth]\nenabled = true\n", encoding="utf-8")
+        (booley_dir / "cores" / "s.core").write_text(
             "CAPI=2:\nname: ::stealth:0\n", encoding="utf-8"
         )
         rec = _Rec()
 
         _record_report(
             readiness.check_stealth_cores(
-                readiness.ProjectAudit(root, project_dir, {"stealth": {"enabled": True}}, {}, ""),
+                readiness.ProjectAudit(root, booley_dir, {"stealth": {"enabled": True}}, {}, ""),
                 mode=readiness.ReadinessMode.RECONCILE,
             ),
             passed=rec.p,
@@ -191,8 +191,8 @@ class TestGuidanceVenueNote:
     """
 
     def _canon(self, tmp_path: Path, body: str) -> Path:
-        if tmp_path.name != ".booley_project":
-            tmp_path = tmp_path / ".booley_project"
+        if tmp_path.name != ".booley":
+            tmp_path = tmp_path / ".booley"
             tmp_path.mkdir()
         canon = tmp_path / "AGENTS.md"
         canon.write_text(body, encoding="utf-8")
@@ -265,10 +265,10 @@ class TestGuidanceVenueNote:
     def test_automatic_profile_reports_missing_links_without_creating_them(
         self, tmp_path, monkeypatch
     ):
-        project_dir = tmp_path / ".booley_project"
-        project_dir.mkdir()
-        self._canon(project_dir, "# Project guidance\n")
-        project = readiness.ProjectAudit(tmp_path, project_dir, {}, {}, "sim")
+        booley_dir = tmp_path / ".booley"
+        booley_dir.mkdir()
+        self._canon(booley_dir, "# Project guidance\n")
+        project = readiness.ProjectAudit(tmp_path, booley_dir, {}, {}, "sim")
         monkeypatch.setattr(
             readiness,
             "ensure_guidance_links",
@@ -287,10 +287,10 @@ class TestGuidanceVenueNote:
         assert not (tmp_path / "CLAUDE.md").exists()
 
     def test_manual_profile_repairs_guidance_links(self, tmp_path, monkeypatch):
-        project_dir = tmp_path / ".booley_project"
-        project_dir.mkdir()
-        self._canon(project_dir, "# Project guidance\n")
-        project = readiness.ProjectAudit(tmp_path, project_dir, {}, {}, "sim")
+        booley_dir = tmp_path / ".booley"
+        booley_dir.mkdir()
+        self._canon(booley_dir, "# Project guidance\n")
+        project = readiness.ProjectAudit(tmp_path, booley_dir, {}, {}, "sim")
         calls = []
         monkeypatch.setattr(
             readiness,
@@ -305,13 +305,13 @@ class TestGuidanceVenueNote:
             warned=rec.w,
         )
 
-        assert calls == [(tmp_path, project_dir)]
+        assert calls == [(tmp_path, booley_dir)]
         assert any("root links ensured" in message for _kind, message in rec.events)
 
 
-def test_project_audit_reports_a_missing_project_directory(tmp_path, monkeypatch):
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+def test_project_audit_reports_a_missing_booley_directory(tmp_path, monkeypatch):
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
     loaded = readiness.load_project(tmp_path)
-    assert loaded.project_dir is None
+    assert loaded.booley_dir is None
     assert loaded.project is None
     assert any("Booley Directory not found" in f.message for f in loaded.report.findings)

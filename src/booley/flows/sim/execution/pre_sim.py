@@ -14,13 +14,13 @@ from booley.flows.eda_failures import find_missing_executable
 from booley.flows.sim.config import resolve_pre_sim_commands, resolve_run_cwd
 from booley.flows.sim.live_progress import observe_stage
 from booley.flows.test_runs import TestRun
+from booley.runtime.booley_dir import resolve_booley_dir, resolve_checkout_booley_dir
 from booley.runtime.execution_records import RUNTIME_EXECUTION_ENV
 from booley.runtime.platform_paths import (
     bash_bin,
     kill_process_tree,
     popen_new_group_kwargs,
 )
-from booley.runtime.project_dir import resolve_checkout_project_dir, resolve_project_dir
 from booley.runtime.python_artifacts import relocate_python_artifacts
 from booley.runtime.supervised_execution import current_supervised_execution
 from booley.targets.domain import TargetHandle
@@ -112,7 +112,7 @@ def _pre_sim_environment(
     else:
         environment.pop("BOOLEY_BUILD_ROOT", None)
     with suppress(FileNotFoundError):
-        environment["BOOLEY_PROJECT_DIR"] = str(resolve_project_dir(root))
+        environment["BOOLEY_DIR"] = str(resolve_booley_dir(root))
     if len(test_names) == 1:
         environment["BOOLEY_TEST_NAME"] = test_names[0]
     for name in TEST_RUN_VARIABLES:
@@ -120,7 +120,7 @@ def _pre_sim_environment(
         environment.pop(name, None)
     environment.update(test_run_environment(test_runs))
     try:
-        cache_root = resolve_checkout_project_dir(root) / ".runtime" / "python-artifacts"
+        cache_root = resolve_checkout_booley_dir(root) / ".runtime" / "python-artifacts"
     except (OSError, RuntimeError, ValueError):
         cache_root = build_root / "python-artifacts"
     scope = f"pre-sim:{handle.selector}:{resolved_run_cwd}:{' '.join(test_names)}"

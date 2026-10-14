@@ -12,13 +12,13 @@ def _flow_project_root() -> None:
 
 def _detached_data_config(tmp_path, monkeypatch, text):
     from booley.runtime import shared_infra
-    from booley.runtime.project_dir import reset_cache
+    from booley.runtime.booley_dir import reset_cache
 
-    data = tmp_path / ".booley_project"
+    data = tmp_path / ".booley"
     data.mkdir()
     (data / "booley.toml").write_text(text)
     monkeypatch.chdir(data)
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(data))
+    monkeypatch.setenv("BOOLEY_DIR", str(data))
     monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
     reset_cache()
     from booley.runtime.project_discovery import ProjectRootDiscoveryError
@@ -59,11 +59,11 @@ def test_nonempty_sdc_requires_checkout_containment(tmp_path, monkeypatch, absol
 
 
 def test_import_is_lazy_but_implicit_operation_refuses(tmp_path, monkeypatch):
-    data = tmp_path / ".booley_project"
+    data = tmp_path / ".booley"
     data.mkdir()
     monkeypatch.chdir(data)
     monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
     from booley.runtime import shared_infra
 
     importlib.reload(shared_infra)

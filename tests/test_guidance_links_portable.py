@@ -24,39 +24,39 @@ from booley.harness.setup.guidance_links import (
     _portable_target,
     ensure_guidance_links,
 )
-from booley.runtime.project_dir import PROJECT_DIR_NAME
+from booley.runtime.booley_dir import BOOLEY_DIR_NAME
 
 
 def _make_project(tmp_path: Path) -> tuple[Path, Path, Path]:
     project_root = tmp_path / "repo"
-    project_dir = project_root / PROJECT_DIR_NAME
-    project_dir.mkdir(parents=True)
+    booley_dir = project_root / BOOLEY_DIR_NAME
+    booley_dir.mkdir(parents=True)
     (project_root / ".git" / "info").mkdir(parents=True)
-    canon = project_dir / CANON_NAME
+    canon = booley_dir / CANON_NAME
     canon.write_text("# AGENTS\n", encoding="utf-8")
-    return project_root, project_dir, canon
+    return project_root, booley_dir, canon
 
 
 class TestPortableTarget:
     def test_prefers_the_repo_local_path(self, tmp_path: Path):
-        project_root, _project_dir, canon = _make_project(tmp_path)
+        project_root, _booley_dir, canon = _make_project(tmp_path)
         target = _portable_target(project_root, canon.resolve())
-        assert target == project_root / PROJECT_DIR_NAME / CANON_NAME
+        assert target == project_root / BOOLEY_DIR_NAME / CANON_NAME
 
     def test_container_layout_still_resolves_through_the_workspace_mount(self, tmp_path: Path):
         """In-container the canon is /booley-project/AGENTS.md, but the same file
-        is reachable at <repo>/.booley_project/AGENTS.md. Name the latter."""
-        project_root, _project_dir, _canon = _make_project(tmp_path)
+        is reachable at <repo>/.booley/AGENTS.md. Name the latter."""
+        project_root, _booley_dir, _canon = _make_project(tmp_path)
         mounted_canon = tmp_path / "booley-project" / CANON_NAME
         mounted_canon.parent.mkdir()
         mounted_canon.write_text("# AGENTS\n", encoding="utf-8")
 
         target = _portable_target(project_root, mounted_canon)
 
-        assert target == project_root / PROJECT_DIR_NAME / CANON_NAME
+        assert target == project_root / BOOLEY_DIR_NAME / CANON_NAME
         assert ".." not in str(target)
 
-    def test_relocated_project_dir_falls_back_to_canon(self, tmp_path: Path):
+    def test_relocated_booley_dir_falls_back_to_canon(self, tmp_path: Path):
         """A [project].dir override has no repo-local path to name."""
         project_root = tmp_path / "repo"
         (project_root / ".git" / "info").mkdir(parents=True)
@@ -70,9 +70,9 @@ class TestPortableTarget:
 
 class TestEnsureGuidanceLinks:
     def test_creates_both_links_readable_from_the_host(self, tmp_path: Path):
-        project_root, project_dir, _canon = _make_project(tmp_path)
+        project_root, booley_dir, _canon = _make_project(tmp_path)
 
-        links = ensure_guidance_links(project_root, project_dir)
+        links = ensure_guidance_links(project_root, booley_dir)
 
         assert {p.name for p in links} == set(LINK_NAMES)
         for link in links:
@@ -80,11 +80,11 @@ class TestEnsureGuidanceLinks:
             assert link.read_text(encoding="utf-8") == "# AGENTS\n"
 
     def test_is_idempotent(self, tmp_path: Path):
-        project_root, project_dir, _canon = _make_project(tmp_path)
+        project_root, booley_dir, _canon = _make_project(tmp_path)
 
-        first = ensure_guidance_links(project_root, project_dir)
+        first = ensure_guidance_links(project_root, booley_dir)
         stats = {p: p.stat().st_ino for p in first}
-        ensure_guidance_links(project_root, project_dir)
+        ensure_guidance_links(project_root, booley_dir)
 
         # A hardlink resolves to itself; without the samefile check in
         # _points_to, every run would tear it down and rebuild it.
@@ -94,7 +94,7 @@ class TestEnsureGuidanceLinks:
 
     def test_repairs_a_dangling_container_style_link(self, tmp_path: Path):
         """The exact F-13 breakage: a link left pointing at ../booley-project/."""
-        project_root, project_dir, _canon = _make_project(tmp_path)
+        project_root, booley_dir, _canon = _make_project(tmp_path)
         link = project_root / "AGENTS.md"
         try:
             link.symlink_to(Path("..") / "booley-project" / CANON_NAME)
@@ -102,11 +102,11 @@ class TestEnsureGuidanceLinks:
             pytest.skip("symlink creation not permitted on this host")
 
         assert not link.exists()  # dangling, as seen from the host
-        ensure_guidance_links(project_root, project_dir)
+        ensure_guidance_links(project_root, booley_dir)
         assert link.read_text(encoding="utf-8") == "# AGENTS\n"
 
     def test_preserves_an_unrelated_dangling_link(self, tmp_path: Path):
-        project_root, project_dir, _canon = _make_project(tmp_path)
+        project_root, booley_dir, _canon = _make_project(tmp_path)
         link = project_root / "AGENTS.md"
         try:
             link.symlink_to(Path("..") / "temporarily-unmounted" / CANON_NAME)
@@ -115,7 +115,7 @@ class TestEnsureGuidanceLinks:
         original = link.readlink()
 
         with pytest.raises(OSError, match="foreign untracked guidance entry"):
-            ensure_guidance_links(project_root, project_dir)
+            ensure_guidance_links(project_root, booley_dir)
 
         assert link.is_symlink()
         assert link.readlink() == original
@@ -123,21 +123,21 @@ class TestEnsureGuidanceLinks:
 
     def test_refuses_a_foreign_stale_copy(self, tmp_path: Path):
         """An untracked regular file is user-owned unless positively recognized."""
-        project_root, project_dir, canon = _make_project(tmp_path)
+        project_root, booley_dir, canon = _make_project(tmp_path)
         link = project_root / "AGENTS.md"
         link.write_text("# STALE\n", encoding="utf-8")
 
         assert not _points_to(link, canon.resolve())
         with pytest.raises(OSError, match="foreign untracked guidance entry"):
-            ensure_guidance_links(project_root, project_dir)
+            ensure_guidance_links(project_root, booley_dir)
         assert link.read_text(encoding="utf-8") == "# STALE\n"
 
     def test_missing_canon_raises(self, tmp_path: Path):
         project_root = tmp_path / "repo"
-        project_dir = project_root / PROJECT_DIR_NAME
-        project_dir.mkdir(parents=True)
+        booley_dir = project_root / BOOLEY_DIR_NAME
+        booley_dir.mkdir(parents=True)
         with pytest.raises(FileNotFoundError):
-            ensure_guidance_links(project_root, project_dir)
+            ensure_guidance_links(project_root, booley_dir)
 
 
 class TestPointsTo:

@@ -44,7 +44,7 @@ def docker_image():
 def _repository(tmp_path: Path):
     root = tmp_path / "project"
     root.mkdir()
-    state = root / ".booley_project"
+    state = root / ".booley"
     state.mkdir()
     for args in (
         ("init", "-q"),
@@ -71,13 +71,13 @@ def _container(image: str, root: Path, state: Path, script: str, *, duplicate: b
         "--mount",
         f"type=bind,source={root},target=/work",
         "--mount",
-        f"type=bind,source={state},target=/work/.booley_project",
+        f"type=bind,source={state},target=/work/.booley",
         "--mount",
         f"type=bind,source={source},target=/opt/booley-test-src,readonly",
         "-e",
         "PYTHONPATH=/opt/booley-test-src",
         "-e",
-        "BOOLEY_PROJECT_DIR=/booley-project",
+        "BOOLEY_DIR=/booley-project",
     ]
     if duplicate:
         args += ["--mount", f"type=bind,source={state},target=/booley-project"]
@@ -88,7 +88,7 @@ def _container(image: str, root: Path, state: Path, script: str, *, duplicate: b
 # by the retired directory layout without introducing a legacy image producer.
 _LEGACY_RELATIVE_METADATA = """
 from pathlib import Path
-checkout = Path('/work/.booley_project/worktrees/demo')
+checkout = Path('/work/.booley/worktrees/demo')
 metadata = Path('/work/.git/worktrees/demo')
 subprocess.run(['git', '-C', '/work', 'config', 'core.repositoryformatversion', '1'], check=True)
 subprocess.run(['git', '-C', '/work', 'config', 'extensions.relativeWorktrees', 'true'], check=True)
@@ -112,8 +112,8 @@ def test_external_directory_layout_uses_actual_guarded_builder(
     (external / "proof").write_text("external-state\n")
     parent_id = docker_image[1]
     parent = project_image.inspect_layout_image(parent_id)
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(external))
-    from booley.core.project_dir import reset_cache
+    monkeypatch.setenv("BOOLEY_DIR", str(external))
+    from booley.core.booley_dir import reset_cache
 
     reset_cache()
     node = _layout_fixture_node(root, parent_id, parent)
@@ -133,10 +133,10 @@ def test_external_directory_layout_uses_actual_guarded_builder(
             external,
             "from pathlib import Path; assert not Path('/booley-project').is_symlink(); "
             "assert Path('/booley-project/proof').read_text() == 'external-state\\n'; "
-            "assert not Path('/work/.booley_project').exists()",
+            "assert not Path('/work/.booley').exists()",
         )
         assert result.returncode == 0, result.stderr
-        assert not (root / ".booley_project").exists()
+        assert not (root / ".booley").exists()
     finally:
         _run(["docker", "image", "rm", output])
 
@@ -152,9 +152,9 @@ def test_canonical_mount_pins_state_and_preserves_discovery_boundary(tmp_path: P
 import errno
 import subprocess
 from pathlib import Path
-assert Path('/booley-project').resolve() == Path('/work/.booley_project')
+assert Path('/booley-project').resolve() == Path('/work/.booley')
 try:
-    Path('/work/.booley_project').rename('/work/replaced-state')
+    Path('/work/.booley').rename('/work/replaced-state')
 except OSError as exc:
     assert exc.errno == errno.EBUSY, exc
 else:
@@ -273,7 +273,7 @@ def _external_container(image: str, root: Path, external: Path, script: str):
             "-e",
             "PYTHONPATH=/opt/booley-test-src",
             "-e",
-            "BOOLEY_PROJECT_DIR=/booley-project",
+            "BOOLEY_DIR=/booley-project",
             image,
             "-c",
             script,
@@ -283,7 +283,7 @@ def _external_container(image: str, root: Path, external: Path, script: str):
 
 @pytest.mark.slow
 def test_layout_cleanup_uses_actual_docker_latest_inventory(tmp_path, docker_image, monkeypatch):
-    from booley.core.project_dir import reset_cache
+    from booley.core.booley_dir import reset_cache
     from booley.harness import image_lifecycle as harness
     from booley.runtime import image_lifecycle as lifecycle
     from booley.runtime import project_image
@@ -299,7 +299,7 @@ def test_layout_cleanup_uses_actual_docker_latest_inventory(tmp_path, docker_ima
         for name in ("first", "second"):
             external = tmp_path / name
             external.mkdir()
-            monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(external))
+            monkeypatch.setenv("BOOLEY_DIR", str(external))
             reset_cache()
             node = _layout_fixture_node(root, parent_id, parent)
             references.append(node.reference)

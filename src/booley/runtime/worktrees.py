@@ -92,6 +92,7 @@ def list_worktrees(repository: Path) -> tuple[WorktreeEntry, ...]:
         ["git", "-C", str(repository), "worktree", "list", "--porcelain"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=True,
         timeout=_LIST_TIMEOUT_S,
     ).stdout

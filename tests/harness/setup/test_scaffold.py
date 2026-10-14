@@ -30,7 +30,7 @@ from booley.harness.setup.scaffold import (
     scaffold_files,
     step_scaffold,
 )
-from booley.runtime.project_dir import reset_cache
+from booley.runtime.booley_dir import reset_cache
 from booley.targets.catalog import TargetCatalog
 from booley.targets.target_surface import collect_surface
 
@@ -62,7 +62,7 @@ def _args(**overrides) -> argparse.Namespace:
 
 
 def _ctx(project_root: Path, monkeypatch, **kw) -> InitContext:
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
     reset_cache()
     return InitContext(project_root=project_root, interactive=False, **kw)
 
@@ -90,9 +90,9 @@ def test_default_combo_files_and_shapes() -> None:
         "verif/booley_doctor_selftest.core",
         "verif/booley_doctor_selftest/lint_bad.sv",
         "constraints/my_ip.sdc",
-        ".booley_project/booley.toml",
-        ".booley_project/tests.toml",
-        ".booley_project/selftest/sim/bad-overlay/my_ip.sv",
+        ".booley/booley.toml",
+        ".booley/tests.toml",
+        ".booley/selftest/sim/bad-overlay/my_ip.sv",
     }
 
     core = _core(files)
@@ -124,7 +124,7 @@ def test_default_combo_files_and_shapes() -> None:
     sdc_entry = core["filesets"]["constraints"]["files"][0]
     assert sdc_entry == {"constraints/my_ip.sdc": {"file_type": "SDC"}}
 
-    cfg = tomllib.loads(files[".booley_project/booley.toml"])
+    cfg = tomllib.loads(files[".booley/booley.toml"])
     assert cfg["project"]["name"] == "my_ip"
     # Stealth is OFF in a scaffolded repo: it exists to exercise Booley, so
     # the commit sanitizer would redact its own MCP tool name from subjects and
@@ -138,7 +138,7 @@ def test_default_combo_files_and_shapes() -> None:
     assert sim["flow_options"]["booley"]["doctor"] == ["sim"]
     assert "fpga" not in cfg["flows"]
 
-    tests_cfg = tomllib.loads(files[".booley_project/tests.toml"])
+    tests_cfg = tomllib.loads(files[".booley/tests.toml"])
     assert tests_cfg["sim"]["tests"] == ["reset", "count"]
     assert tests_cfg["sim"]["select"] == "+test_id={index}"
 
@@ -158,7 +158,7 @@ def test_default_combo_files_and_shapes() -> None:
 def test_sim_bad_overlay_only_injects_the_reset_defect() -> None:
     files = scaffold_files(_choices())
     good_rtl = files["rtl/my_ip.sv"]
-    bad_rtl = files[".booley_project/selftest/sim/bad-overlay/my_ip.sv"]
+    bad_rtl = files[".booley/selftest/sim/bad-overlay/my_ip.sv"]
     good_body = good_rtl[good_rtl.index("`timescale") :]
     bad_body = bad_rtl[bad_rtl.index("`timescale") :]
 
@@ -173,7 +173,7 @@ def test_scaffold_supplies_doctor_fail_path_fixtures(
 ) -> None:
     files = scaffold_files(_choices(lint_eda_tool=lint_eda_tool))
 
-    sim_overlay = ".booley_project/selftest/sim/bad-overlay/my_ip.sv"
+    sim_overlay = ".booley/selftest/sim/bad-overlay/my_ip.sv"
     lint_bad_source = "verif/booley_doctor_selftest/lint_bad.sv"
     lint_bad_core = "verif/booley_doctor_selftest.core"
     assert sim_overlay in files
@@ -185,12 +185,12 @@ def test_scaffold_supplies_doctor_fail_path_fixtures(
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
 
-    project_dir = tmp_path / ".booley_project"
+    booley_dir = tmp_path / ".booley"
     project = doctor.ProjectAudit(
         project_root=tmp_path,
-        project_dir=project_dir,
-        booley_toml=tomllib.loads((project_dir / "booley.toml").read_text(encoding="utf-8")),
-        configs_toml=tomllib.loads((project_dir / "tests.toml").read_text(encoding="utf-8")),
+        booley_dir=booley_dir,
+        booley_toml=tomllib.loads((booley_dir / "booley.toml").read_text(encoding="utf-8")),
+        configs_toml=tomllib.loads((booley_dir / "tests.toml").read_text(encoding="utf-8")),
         first_target="sim",
     )
     warnings: list[str] = []
@@ -243,14 +243,12 @@ def test_scaffold_sim_bad_overlay_replaces_the_staged_rtl(tmp_path: Path) -> Non
     staged_rtl = resolved.build_root / "my_ip.sv"
     assert staged_rtl.read_text(encoding="utf-8") == files["rtl/my_ip.sv"]
 
-    copied = selftest_overlay.stage_bad_overlay(
-        tmp_path / ".booley_project", "sim", resolved.build_root
-    )
+    copied = selftest_overlay.stage_bad_overlay(tmp_path / ".booley", "sim", resolved.build_root)
 
     assert copied == 1
     assert (
         staged_rtl.read_text(encoding="utf-8")
-        == files[".booley_project/selftest/sim/bad-overlay/my_ip.sv"]
+        == files[".booley/selftest/sim/bad-overlay/my_ip.sv"]
     )
 
 
@@ -321,7 +319,7 @@ def test_cocotb_combo_shapes() -> None:
     tb_entry = core["filesets"]["tb"]["files"][0]
     assert tb_entry == {"tb/test_my_ip.py": {"file_type": "user", "copyto": "test_my_ip.py"}}
 
-    tests_cfg = tomllib.loads(files[".booley_project/tests.toml"])
+    tests_cfg = tomllib.loads(files[".booley/tests.toml"])
     assert tests_cfg["sim"]["tests"] == ["test_reset", "test_count"]
     # A select plusarg on a Cocotb Target is a setup-time error — never emit one.
     assert "select" not in tests_cfg["sim"]
@@ -345,14 +343,14 @@ def test_verible_lint_keeps_elaboration_check_on_sim() -> None:
         "booley": {"doctor": ["lint"]},
     }
 
-    cfg = tomllib.loads(files[".booley_project/booley.toml"])
+    cfg = tomllib.loads(files[".booley/booley.toml"])
     assert "elab" not in cfg["flows"]
     assert core["targets"]["sim"]["flow_options"]["booley"]["doctor"] == ["sim"]
 
 
 def test_verible_lint_has_no_separate_elaboration_flow() -> None:
     files = scaffold_files(_choices(lint_eda_tool="verible"))
-    cfg = tomllib.loads(files[".booley_project/booley.toml"])
+    cfg = tomllib.loads(files[".booley/booley.toml"])
     assert "elab" not in cfg["flows"]
 
 
@@ -362,7 +360,7 @@ def test_no_asic_omits_synth_target_and_sdc() -> None:
     core = _core(files)
     assert "synth" not in core["targets"]
     assert "constraints" not in core["filesets"]
-    cfg = tomllib.loads(files[".booley_project/booley.toml"])
+    cfg = tomllib.loads(files[".booley/booley.toml"])
     assert cfg["flows"]["synth"]["enabled"] is False
     assert "default_target" not in cfg["flows"]["synth"]
 
@@ -384,7 +382,7 @@ def test_fpga_part_emits_fpga_target_and_xdc() -> None:
     xdc_entry = core["filesets"]["xdc"]["files"][0]
     assert xdc_entry == {"constraints/my_ip.xdc": {"file_type": "xdc"}}
 
-    cfg = tomllib.loads(files[".booley_project/booley.toml"])
+    cfg = tomllib.loads(files[".booley/booley.toml"])
     assert "backend" not in cfg["flows"]["fpga"]
     assert cfg["flows"]["fpga"] == {}
 
@@ -394,7 +392,7 @@ def test_fpga_part_emits_fpga_target_and_xdc() -> None:
 def test_every_combo_parses_with_booleys_own_readers(
     tmp_path: Path, monkeypatch, sim_eda_tool: str, tb_style: str
 ) -> None:
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
     reset_cache()
     files = scaffold_files(
         _choices(sim_eda_tool=sim_eda_tool, tb_style=tb_style, fpga_part="xc7a35tcpg236-1")
@@ -480,12 +478,12 @@ def test_existing_design_files_finds_rtl_and_cores(tmp_path: Path) -> None:
     (tmp_path / ".git" / "objects").mkdir(parents=True)
     (tmp_path / ".git" / "objects" / "junk.sv").write_text("not rtl\n")
     # ...except stealth authored cores (ADR 0036).
-    stealth = tmp_path / ".booley_project" / "cores"
+    stealth = tmp_path / ".booley" / "cores"
     stealth.mkdir(parents=True)
     (stealth / "stealth.core").write_text("CAPI=2:\n")
 
     found = {p.as_posix() for p in existing_design_files(tmp_path)}
-    assert found == {"rtl/old.v", "chip.core", ".booley_project/cores/stealth.core"}
+    assert found == {"rtl/old.v", "chip.core", ".booley/cores/stealth.core"}
 
 
 def test_step_refuses_on_existing_design(tmp_path: Path, monkeypatch, capsys) -> None:
@@ -498,7 +496,7 @@ def test_step_refuses_on_existing_design(tmp_path: Path, monkeypatch, capsys) ->
 
 
 def test_step_refuses_on_populated_config(tmp_path: Path, monkeypatch, capsys) -> None:
-    pd = tmp_path / ".booley_project"
+    pd = tmp_path / ".booley"
     pd.mkdir()
     (pd / "booley.toml").write_text('[project]\nname = "existing"\n')
     ctx = _ctx(tmp_path, monkeypatch)
@@ -510,7 +508,7 @@ def test_step_refuses_on_populated_config(tmp_path: Path, monkeypatch, capsys) -
 def test_step_overwrites_comment_only_skeletons(tmp_path: Path, monkeypatch, capsys) -> None:
     # A prior plain `booley init` leaves comment-only skeletons; scaffolding
     # over them is the supported "ran init first, then decided to scaffold" path.
-    pd = tmp_path / ".booley_project"
+    pd = tmp_path / ".booley"
     pd.mkdir()
     (pd / "booley.toml").write_text(BOOLEY_TOML_SKELETON, encoding="utf-8")
     (pd / "tests.toml").write_text(TESTS_TOML_SKELETON, encoding="utf-8")
@@ -532,9 +530,9 @@ def test_step_writes_everything_in_fresh_repo(tmp_path: Path, monkeypatch, capsy
         "verif/booley_doctor_selftest.core",
         "verif/booley_doctor_selftest/lint_bad.sv",
         "constraints/my_ip.sdc",
-        ".booley_project/booley.toml",
-        ".booley_project/tests.toml",
-        ".booley_project/selftest/sim/bad-overlay/my_ip.sv",
+        ".booley/booley.toml",
+        ".booley/tests.toml",
+        ".booley/selftest/sim/bad-overlay/my_ip.sv",
     ):
         assert (tmp_path / rel).is_file(), rel
     reset_cache()

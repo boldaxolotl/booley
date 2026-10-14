@@ -212,7 +212,7 @@ _VARIANT_TESTS_TOML = (
 
 
 def _declare_variants(root: Path) -> None:
-    data = root / ".booley_project"
+    data = root / ".booley"
     data.mkdir()
     (data / "tests.toml").write_text(_VARIANT_TESTS_TOML, encoding="utf-8")
 
@@ -284,12 +284,12 @@ def test_prepare_collection_keeps_several_test_runs_of_one_test(tmp_path: Path) 
 
 
 def test_coverage_runs_pre_sim_commands_before_the_adapter(tmp_path: Path, monkeypatch) -> None:
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
     marker = tmp_path / "pre-sim.txt"
     staged = tmp_path / "staged-input.txt"
     staged.write_text("stale", encoding="utf-8")
-    project_dir.joinpath("booley.toml").write_text(
+    booley_dir.joinpath("booley.toml").write_text(
         "[flows.sim]\n"
         'pre_run_commands = [\'printf "%s\\n%s\\n%s\\n%s\\n%s" '
         '"$BOOLEY_TEST_NAME" "$BOOLEY_TEST_NAMES" "$BOOLEY_TARGET" '
@@ -318,9 +318,9 @@ def test_coverage_runs_pre_sim_commands_before_the_adapter(tmp_path: Path, monke
 def test_cocotb_coverage_runs_pre_sim_once_per_selected_test_process(
     tmp_path: Path, monkeypatch
 ) -> None:
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
-    project_dir.joinpath("booley.toml").write_text(
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    booley_dir.joinpath("booley.toml").write_text(
         "[flows.sim]\n"
         'pre_run_commands = [\'printf "%s\\n" "$BOOLEY_TEST_NAME" >> firings.txt\', '
         '\'printf "%s" "$BOOLEY_TEST_NAME" > staged-input.txt\']\n',
@@ -353,9 +353,9 @@ def test_cocotb_coverage_runs_pre_sim_once_per_selected_test_process(
 def test_snapshot_bound_coverage_uses_authoritative_run_cwd_for_pre_sim(
     tmp_path: Path, monkeypatch
 ) -> None:
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
-    project_dir.joinpath("booley.toml").write_text(
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    booley_dir.joinpath("booley.toml").write_text(
         '[flows.sim]\npre_run_commands = [\'printf "%s" "$BOOLEY_RUN_CWD" > bound-cwd.txt\']\n',
         encoding="utf-8",
     )
@@ -483,9 +483,9 @@ def test_pre_sim_failure_skips_the_coverage_adapter(
 def test_pre_sim_missing_executable_is_an_infrastructure_error(
     tmp_path: Path, monkeypatch
 ) -> None:
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
-    project_dir.joinpath("booley.toml").write_text(
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    booley_dir.joinpath("booley.toml").write_text(
         "[flows.sim]\npre_run_commands = ['booley-command-that-does-not-exist']\n",
         encoding="utf-8",
     )
@@ -505,9 +505,9 @@ def test_pre_sim_missing_executable_is_an_infrastructure_error(
 def test_legacy_build_access_with_commands_fails_before_coverage_build(
     tmp_path: Path, monkeypatch
 ) -> None:
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
-    project_dir.joinpath("booley.toml").write_text(
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    booley_dir.joinpath("booley.toml").write_text(
         "[flows.sim]\npre_run_commands = ['true']\npre_sim_build_access = 'legacy-per-test'\n",
         encoding="utf-8",
     )
@@ -524,9 +524,9 @@ def test_legacy_build_access_with_commands_fails_before_coverage_build(
 def test_legacy_build_access_without_commands_remains_compatible(
     tmp_path: Path, monkeypatch
 ) -> None:
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
-    project_dir.joinpath("booley.toml").write_text(
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    booley_dir.joinpath("booley.toml").write_text(
         "[flows.sim]\npre_sim_build_access = 'legacy-per-test'\n",
         encoding="utf-8",
     )
@@ -559,15 +559,15 @@ def test_pre_sim_cannot_mutate_authenticated_coverage_surfaces(
         "raw": raw_path,
         "hook_evidence": hook_path,
     }
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir(exist_ok=True)
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir(exist_ok=True)
     command = (
         f"find {shlex.quote(str(tmp_path))} -name Vcounter_tb -exec "
         "sh -c 'printf changed >> \"$1\"' _ {} \\;"
         if surface == "image"
         else f"printf changed >> {shlex.quote(str(paths[surface]))}"
     )
-    project_dir.joinpath("booley.toml").write_text(
+    booley_dir.joinpath("booley.toml").write_text(
         f"[flows.sim]\npre_run_commands = [{json.dumps(command)}]\n",
         encoding="utf-8",
     )

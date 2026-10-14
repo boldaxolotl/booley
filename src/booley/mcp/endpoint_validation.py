@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from booley.runtime.project_dir import resolve_checkout_project_dir
+from booley.runtime.booley_dir import resolve_checkout_booley_dir
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +50,7 @@ def validate_custom_endpoints_and_criteria(project_root: Path) -> None:
 
     # --- Load endpoint config and check structural endpoint errors ---
     specialist_config, flow_config = _load_endpoint_config(project_root)
-    custom_mcp_tools_dir = resolve_checkout_project_dir(project_root) / "mcp_tools"
+    custom_mcp_tools_dir = resolve_checkout_booley_dir(project_root) / "mcp_tools"
     # --- Per-endpoint validation (warn + skip on error) ---
     if not custom_mcp_tools_dir.is_dir():
         return
@@ -81,7 +81,7 @@ def _validate_criteria_structure(project_root: Path) -> set[str]:
     base_criteria = load_base_criteria()
     base_criteria_names = {c.name for c in base_criteria}
 
-    project_criteria_path = resolve_checkout_project_dir(project_root) / "criteria.toml"
+    project_criteria_path = resolve_checkout_booley_dir(project_root) / "criteria.toml"
     project_criteria = load_project_criteria(project_criteria_path)
 
     _merged, merge_errors = merge_criteria_defs(base_criteria, project_criteria)
@@ -190,7 +190,7 @@ def _load_endpoint_config(project_root: Path) -> tuple[dict[str, Any], dict[str,
     """Load the ``[specialists]`` and ``[flows]`` sections from booley.toml."""
     from booley.mcp.endpoint_config import read_endpoint_config
 
-    toml_path = resolve_checkout_project_dir(project_root) / "booley.toml"
+    toml_path = resolve_checkout_booley_dir(project_root) / "booley.toml"
     return read_endpoint_config(toml_path)
 
 

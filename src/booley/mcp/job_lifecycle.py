@@ -121,7 +121,7 @@ class JobLifecycle:
         """Use the admitted binding for every Goal write, including completion."""
         binding = _job_binding(rec)
         if binding is not None:
-            return record_paths(binding.project_dir, binding.record_id).jobs_dir
+            return record_paths(binding.booley_dir, binding.record_id).jobs_dir
         return self._record_root(rec.run_id)
 
     def _read_run(self, run_id: str) -> jobrec.JobRecord | None:

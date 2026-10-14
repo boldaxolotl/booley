@@ -94,7 +94,7 @@ groups below describe behavior, not a proposed wholesale directory layout.
 | Supervised execution and process observation | `runtime_attachment`, `execution_supervisor`, `execution_records`, `execution_recovery`, `pid`, `process_group` | Sandbox commands, Flow execution, MCP, Specialists, Dashboard resource sampling | Preserve descendant cleanup, durable execution identity and recovery. A broader extraction needs evidence beyond import counts; supervisor module launches are also executable contracts. |
 | Jobs and endpoint execution | `job_records`, `job_slots`, `job_wait`, `endpoint_execution`, `job_observation` | MCP lifecycle, Flow execution, Goal finalization, Dashboard, cleanup | Extract only read-only Job observation. Record persistence, admission and execution remain distinct behavioral owners. |
 | Agent execution and provider adapters | `agent`, `agent_backend`, `agent_config`, provider backends, transcript and prompt artifacts | Specialists, developer probe, MCP composition | Preserve the existing provider seam and capability policy. Moving the adapter files would not itself reduce caller knowledge. |
-| Project and Git/worktree mechanics | `project_dir`, `project_repositories`, pairing, relocation, materialization and Git helpers | Goal entry/finish, Flow baselines, Initialization, worktree commands | Reuse stable Project discovery and repository-coordinate owners; do not introduce a second Project resolver. |
+| Project and Git/worktree mechanics | `booley_dir`, `project_repositories`, pairing, relocation, materialization and Git helpers | Goal entry/finish, Flow baselines, Initialization, worktree commands | Reuse stable Project discovery and repository-coordinate owners; do not introduce a second Project resolver. |
 | Initialization and attachment integrations | `init_plan`, `dashboard_tasks`, `skill_links`, in-container integrations, `shared_infra` | Initialization, guidance reconciliation, editor attachment, Flow support | Keep concrete file ownership and conditional recovery local. An umbrella forwarding interface would hide little behavior. |
 | Health, activity and presentation support | `health`, `inspection`, `session_activity`, `health_presentation`, artifact paths, timestamps | Doctor, automatic diagnostics, Dashboard, producers | Reuse the shared health interface delivered by #1294 and the reported-activity contract. |
 | Filesystem publication and compatibility primitives | `atomic_files`, `publication_ownership`, `regular_file`, `safe_storage`, storage/locking compatibility imports | Durable record owners, Goal publication, Flow artifacts, Initialization | Keep atomicity and path-safety mechanics beneath caller policy. A generic utilities package is not a behavioral extraction. |
@@ -293,7 +293,7 @@ and type-only imports and have no waiver or composition exception.
   Git staging. Harness retains forbidden-path policy. The standalone pre-commit
   hook remains self-contained and keeps its distinct behavior.
 - Project Git policy is published as one deterministic zip application at
-  `.booley_project/.managed/project-git-hooks.pyz`. Its explicit flat source
+  `.booley/.managed/project-git-hooks.pyz`. Its explicit flat source
   inventory is generated from the canonical wheel modules, and the adapters
   execute it with `python -I -S`; Git operations therefore do not import the
   installed Booley package or depend on the initializer's environment.

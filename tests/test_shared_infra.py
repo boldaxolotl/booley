@@ -236,7 +236,7 @@ class TestProjectRootScoping:
 
     ADR 0026 follow-through: the source of truth is now each project's ``.core``
     ``tags:[tb]`` partition (read fresh per root by ``source_dirs_from_core``),
-    not ``[sources.*]`` in a gitignored ``.booley_project/booley.toml``. The
+    not ``[sources.*]`` in a gitignored ``.booley/booley.toml``. The
     scoping property is unchanged; only the fixture shape moved to ``.core``.
     """
 
@@ -326,7 +326,7 @@ class TestProjectRootScoping:
         """A git worktree resolves source dirs from its own checked-out ``.core``.
 
         Premise reframed for the ``.core`` era: the pre-ADR-0026 test asserted a
-        worktree WALKS BACK to the main repo because its ``.booley_project/``
+        worktree WALKS BACK to the main repo because its ``.booley/``
         (holding ``booley.toml``) was gitignored and absent from the checkout.
         ``.core`` files are *tracked*, so ``git worktree add`` materializes them
         directly in the worktree — no walk-back needed, and a stale main-repo

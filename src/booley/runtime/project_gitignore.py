@@ -1,4 +1,4 @@
-"""The ignore policy for ``.booley_project/``: transient Booley state Git must not track.
+"""The ignore policy for ``.booley/``: transient Booley state Git must not track.
 
 ``booley init`` writes and backfills these patterns; Doctor warns when one is
 missing.
@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from fnmatch import fnmatchcase
 
-# Inside ``.booley_project/`` we ignore transient state that should never be
+# Inside ``.booley/`` we ignore transient state that should never be
 # committed (tmp scratch, runtime logs, lockfiles).  ``.interactive_logs/`` is
 # new in ADR 0012 — per-session transcripts written by the MCP server when an
 # outer Claude Code / Codex tab calls Booley Flows and Specialists.
@@ -18,7 +18,7 @@ from fnmatch import fnmatchcase
 # transient to Git. ``/logs/`` holds root-level pre-intake diagnostics, while
 # ``/.baseline-wt-*/`` covers root-level temporary baseline worktrees whose
 # best-effort cleanup may be interrupted. ``.runtime/`` (dotted) is the
-# scratch/EDA build root (``resolve_project_dir()/".runtime"``, holds the multi-GB
+# scratch/EDA build root (``resolve_booley_dir()/".runtime"``, holds the multi-GB
 # edalize tree);
 # ``runtime/`` (no dot) is the container-lifetime bookkeeping dir — the doctor
 # stamp (``runtime/doctor_stamp.json``), the developer probe, and the job-slot
@@ -26,7 +26,7 @@ from fnmatch import fnmatchcase
 # typo — do not "dedupe" the two away).  ``worktrees/`` holds per-run git
 # worktrees.  Project-configurable output dirs (``[flows.sim].output_dir``
 # etc.) are deliberately NOT listed — they vary per project and often live
-# outside ``.booley_project/``.
+# outside ``.booley/``.
 #
 # ``tickets/board/`` and ``tickets/state/`` (ADR 0065): live Ticket documents
 # and their state records are working state, so a Ticket worktree never carries
@@ -40,10 +40,11 @@ from fnmatch import fnmatchcase
 # overrides, so :func:`missing_gitignore_patterns` only counts it when it does.
 #
 # ``__pycache__/`` + ``*.pyc``: Project-authored Python lifecycle hooks may
-# still run in ``.booley_project/hooks/``. The managed Git policy bundle is
-# isolated under ``.booley_project/.managed/`` and runs from its zip archive.
+# still run in ``.booley/hooks/``. The managed Git policy bundle is
+# isolated under ``.booley/.managed/`` and runs from its zip archive.
 # Ignore the generated bundle and temporary files from interrupted publication.
 PROJECT_GITIGNORE_PATTERNS = (
+    "/.directory-relocation.json",
     "tmp/",
     "flow-reports/",
     "/logs/",

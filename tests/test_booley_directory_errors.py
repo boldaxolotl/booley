@@ -8,7 +8,7 @@ from unittest.mock import Mock
 import pytest
 
 from booley.audit.diagnostic_results import Findings
-from booley.core.project_dir import checkout_project_dir_relative_to, reset_cache
+from booley.core.booley_dir import checkout_booley_dir_relative_to, reset_cache
 from booley.eda.provisioning.authority import AuthorityError, _canonical_project
 from booley.evidence.acceptance import PairedProjectBaseline
 from booley.flows import baseline_worktree as baseline
@@ -33,10 +33,10 @@ def test_checkout_cannot_be_its_own_booley_directory(tmp_path, monkeypatch):
     config = tmp_path / "booley.toml"
     original = '[project]\ndir = "."\n'
     config.write_text(original, encoding="utf-8")
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
     reset_cache()
     with pytest.raises(ValueError, match="Booley Directory cannot be the checkout root"):
-        checkout_project_dir_relative_to(tmp_path)
+        checkout_booley_dir_relative_to(tmp_path)
     assert config.read_text(encoding="utf-8") == original
 
 
@@ -61,9 +61,9 @@ def test_paired_baseline_requires_a_commit(pin):
 )
 def test_missing_paired_baseline_preserves_source_and_cleans_scratch(tmp_path, monkeypatch, pin):
     _init_repo(tmp_path)
-    directory = tmp_path / ".booley_project"
+    directory = tmp_path / ".booley"
     directory.mkdir()
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(directory))
+    monkeypatch.setenv("BOOLEY_DIR", str(directory))
     reset_cache()
     head = baseline.git_full_sha("HEAD", tmp_path)
     before = baseline._git(tmp_path, "worktree", "list", "--porcelain", timeout=10).stdout
@@ -78,7 +78,7 @@ def test_missing_paired_baseline_preserves_source_and_cleans_scratch(tmp_path, m
 
 def test_absent_pairing_policy_refuses_existing_paired_inputs(tmp_path, monkeypatch):
     outer, paired, _base = _paired_checkout_without_upstream(tmp_path)
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(paired))
+    monkeypatch.setenv("BOOLEY_DIR", str(paired))
     reset_cache()
     head = baseline.git_full_sha("HEAD", paired)
     with (
@@ -110,7 +110,7 @@ def test_doctor_outside_git_names_the_rtl_repository(tmp_path):
 
 def test_missing_booley_directory_prevents_agent_selection_write(tmp_path, capsys):
     ctx = InitContext(project_root=tmp_path)
-    config = tmp_path / ".booley_project" / "booley.toml"
+    config = tmp_path / ".booley" / "booley.toml"
     selection = init_cmd.AgentSelection("claude", "api_key", True, True)
     assert not init_cmd._step_agent_config(ctx, selection, config)
     assert ctx.results[-1].name == "agent_config"
@@ -141,7 +141,7 @@ def test_cleanup_resolution_failure_is_typed_and_preserves_files(tmp_path, monke
     sentinel = tmp_path / "keep.txt"
     sentinel.write_text("keep", encoding="utf-8")
     monkeypatch.setattr(
-        cleanup, "resolve_checkout_project_dir", Mock(side_effect=PermissionError("denied"))
+        cleanup, "resolve_checkout_booley_dir", Mock(side_effect=PermissionError("denied"))
     )
     with pytest.raises(cleanup.CleanupError, match="cannot resolve the Booley Directory"):
         cleanup._project_root(tmp_path)
@@ -154,9 +154,9 @@ def test_cleanup_refuses_a_substituted_directory_symlink(tmp_path):
     outside.mkdir()
     root = tmp_path / "root"
     root.mkdir()
-    (root / ".booley_project").symlink_to(outside, target_is_directory=True)
+    (root / ".booley").symlink_to(outside, target_is_directory=True)
     with pytest.raises(cleanup.CleanupError, match="Booley Directory must not be a symlink"):
-        cleanup._safe_relative(root, ".booley_project/report.json")
+        cleanup._safe_relative(root, ".booley/report.json")
     assert outside.is_dir() and not list(outside.iterdir())
 
 
@@ -185,7 +185,7 @@ def test_guidance_rejects_another_project_roots_plan_before_writing(tmp_path):
 
 
 def test_configuration_validation_reports_disappeared_directory(tmp_path):
-    missing = tmp_path / ".booley_project"
+    missing = tmp_path / ".booley"
     findings = Findings()
     assert not readiness._validate_booley_toml({}, missing, findings)
     failures = findings.report().findings
@@ -206,7 +206,7 @@ def test_forget_unremembered_project_preserves_inventory(tmp_path, monkeypatch):
 
 
 def test_pairing_refuses_to_replace_an_existing_git_checkout(tmp_path):
-    nested = tmp_path / ".booley_project"
+    nested = tmp_path / ".booley"
     nested.mkdir()
     (nested / ".git").write_text("gitdir: keep", encoding="utf-8")
     with pytest.raises(
@@ -222,7 +222,7 @@ def test_pairing_refuses_an_escaping_directory_symlink(tmp_path):
     outside.mkdir()
     outer = tmp_path / "outer"
     outer.mkdir()
-    (outer / ".booley_project").symlink_to(outside, target_is_directory=True)
+    (outer / ".booley").symlink_to(outside, target_is_directory=True)
     with pytest.raises(
         project_worktree_pairing.ProjectPairingError, match="escapes its containing worktree"
     ):

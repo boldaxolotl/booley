@@ -18,7 +18,7 @@ through the public Booley route, and install `project/project-data/tests.toml`
 in the directory that the product's Project configuration resolves. Keep
 initialization's other configuration. The detached-data waiver case uses a
 separately initialized Booley Directory's repository and its resolved root; never
-assume `.booley_project`. Commit the fixture and initialized Project files locally before creating a
+assume `.booley`. Commit the fixture and initialized Project files locally before creating a
 Goal worktree. Keep mutable report and fault roots separate from saved evidence.
 
 The coverage Goal area replaces only the registry, with `goals/tests.toml`:

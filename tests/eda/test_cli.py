@@ -306,7 +306,7 @@ def test_project_binding_revoke_recorded_identity_under_source(
     source.mkdir()
     (source / ".git").mkdir()
     project = source / "nested" if deleted_nested_project else source
-    (project / ".booley_project").mkdir(parents=True)
+    (project / ".booley").mkdir(parents=True)
     if deleted_nested_project:
         (project / ".git").mkdir()
     authority.register_license(
@@ -334,7 +334,7 @@ def test_project_binding_revoke_recorded_identity_under_source(
 def test_source_project_binding_revoke_symlink_parent(tmp_path, monkeypatch, relative):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     source = tmp_path / "source"
-    (source / ".booley_project").mkdir(parents=True)
+    (source / ".booley").mkdir(parents=True)
     (source / ".git").mkdir()
     nested = source / "nested"
     nested.mkdir()
@@ -379,7 +379,7 @@ def test_project_binding_permission_error_is_clean(tmp_path, monkeypatch, capsys
 def test_project_binding_inaccessible_revoke_keeps_source_grant(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     source = tmp_path / "source"
-    (source / ".booley_project").mkdir(parents=True)
+    (source / ".booley").mkdir(parents=True)
     (source / ".git").mkdir()
     authority.register_license(
         "registered",
@@ -408,7 +408,7 @@ def test_project_binding_inaccessible_revoke_keeps_source_grant(tmp_path, monkey
 def test_project_binding_cleanup_permission_error_propagates(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     project = tmp_path / "project"
-    (project / ".booley_project").mkdir(parents=True)
+    (project / ".booley").mkdir(parents=True)
     (project / ".git").mkdir()
     authority.register_license(
         "registered",

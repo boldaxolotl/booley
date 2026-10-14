@@ -57,7 +57,7 @@ def sandbox(monkeypatch):
     monkeypatch.setattr(
         "booley.runtime.runtime_context.container_only_error", lambda _command: None
     )
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
     monkeypatch.delenv("BOOLEY_RUNTIME_DIR", raising=False)
 
 
@@ -88,8 +88,8 @@ def test_dispatch_preserves_arguments_and_exit_without_flow_adapter(
 
 
 def test_listing_filters_disabled_and_discovers_project_specialist(tmp_path, monkeypatch, capsys):
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
-    directory = tmp_path / ".booley_project"
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    directory = tmp_path / ".booley"
     (directory / "mcp_tools").mkdir(parents=True)
     (directory / "booley.toml").write_text("[specialists.reviewer]\nenabled = false\n")
     (directory / "mcp_tools/project_review.py").write_text(
@@ -145,7 +145,7 @@ def test_host_refusal_precedes_state_reports_and_admission(tmp_path, monkeypatch
 
 
 def test_module_gate_rejects_disabled_specialist(tmp_path, sandbox, capsys):
-    data = tmp_path / ".booley_project"
+    data = tmp_path / ".booley"
     data.mkdir()
     register_project_specialist(data)
     (data / "booley.toml").write_text("[specialists.project_review]\nenabled = false\n")
@@ -158,7 +158,7 @@ def test_module_gate_rejects_disabled_specialist(tmp_path, sandbox, capsys):
 
 
 def test_module_gate_reports_retirement_before_loading_state(tmp_path, sandbox, capsys):
-    data = tmp_path / ".booley_project"
+    data = tmp_path / ".booley"
     data.mkdir()
     (data / "booley.toml").write_text("[mcp_tools.project_review]\nenabled = false\n")
     endpoint = ProjectSpecialist()
@@ -173,7 +173,7 @@ def test_module_gate_reports_retirement_before_loading_state(tmp_path, sandbox, 
 def test_reviewer_gate_rejects_misspelled_setting_before_loading_state(tmp_path, sandbox, capsys):
     from booley.specialists.reviewer import ReviewerSpecialist
 
-    data = tmp_path / ".booley_project"
+    data = tmp_path / ".booley"
     data.mkdir()
     (data / "booley.toml").write_text("[specialists.reveiwer]\nenabled = false\n")
     endpoint = ReviewerSpecialist()
@@ -205,7 +205,7 @@ def test_disabled_gate_uses_selected_project_config(
 ):
     root = tmp_path / "checkout"
     root.mkdir()
-    data = root / ("project_data" if selection == "override" else ".booley_project")
+    data = root / ("project_data" if selection == "override" else ".booley")
     data.mkdir()
     register_project_specialist(data)
     (data / "booley.toml").write_text("[specialists.project_review]\nenabled = false\n")
@@ -215,7 +215,7 @@ def test_disabled_gate_uses_selected_project_config(
         session_data = tmp_path / "session_data"
         session_data.mkdir()
         (session_data / "booley.toml").write_text("[specialists.project_review]\nenabled = true\n")
-        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(session_data))
+        monkeypatch.setenv("BOOLEY_DIR", str(session_data))
     else:
         root = root / "rtl"
         root.mkdir()
@@ -227,8 +227,8 @@ def test_disabled_gate_uses_selected_project_config(
     assert "is disabled" in output.out + output.err
 
 
-def test_listing_resolves_project_directory_override(tmp_path, monkeypatch, capsys):
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+def test_listing_resolves_booley_directory_override(tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
     (tmp_path / "booley.toml").write_text('[project]\ndir = "project_data"\n')
     data = tmp_path / "project_data"
     (data / "mcp_tools").mkdir(parents=True)
@@ -300,7 +300,7 @@ def test_real_public_and_module_execution_preserve_reports(
     monkeypatch.setattr(ProjectSpecialist, "_invoke_agent", model)
     project_data = tmp_path / "durable"
     monkeypatch.setattr(
-        "booley.runtime.project_dir.resolve_checkout_project_dir", lambda _root: project_data
+        "booley.runtime.booley_dir.resolve_checkout_booley_dir", lambda _root: project_data
     )
     argv = ["--work-dir", str(tmp_path)]
     assert (

@@ -202,7 +202,7 @@ def _restore_request(baseline, raw, **inputs):
     base = {
         "files": {},
         "links": {},
-        "project_relative": ".booley_project",
+        "project_relative": ".booley",
         "executable": {},
     }
     return raw | {"inputs": base | inputs}
@@ -235,11 +235,11 @@ def test_restore_entry_inputs_removes_absent_files_and_relinks(baseline, tmp_pat
         baseline,
         raw,
         files={"gone.txt": None},
-        links={".booley_project/cores/top": "rtl"},
+        links={".booley/cores/top": "rtl"},
     )
     execution.restore_entry_inputs(root, request)
     assert not (root / "gone.txt").exists()
-    link = root / ".booley_project/cores/top"
+    link = root / ".booley/cores/top"
     assert link.is_symlink() and link.resolve() == (root / "rtl").resolve()
 
     (root / "outside").mkdir()

@@ -54,7 +54,7 @@ def baseline_environment() -> dict[str, str]:
         "BOOLEY_REVIEW_OPERATION",
         "BOOLEY_EXECUTION_LEASE",
         "BOOLEY_TICKET_FILE",
-        "BOOLEY_PROJECT_DIR",
+        "BOOLEY_DIR",
         "BOOLEY_CONTROL_PROJECT_ROOT",
     }
     return {key: value for key, value in os.environ.items() if key not in excluded}
@@ -147,7 +147,7 @@ def schedule_sim_baselines(
                     "schema": SCHEMA,
                     "identity": identity,
                     "inputs": inputs,
-                    "project_dir": str(project),
+                    "booley_dir": str(project),
                     "record": record.to_json(),
                     "source_repository": str(
                         ProtectedInputRoots(Path(record.worktree_path), project).main_checkout()

@@ -302,7 +302,7 @@ class GoalProjection:
     def _current_revisions(self) -> dict[str, int]:
         try:
             with self.store.record_lock(self.record_id):
-                require_no_apply(record_paths(self.store.project_dir, self.record_id).root)
+                require_no_apply(record_paths(self.store.booley_dir, self.record_id).root)
                 record = self.store.load(self.record_id)
         except (GoalStoreError, ProposalError) as exc:
             raise AcceptanceLedgerError(f"Goal Record cannot be read: {exc}") from exc
@@ -340,7 +340,7 @@ class GoalEvidenceRecorder:
     @property
     def log_dir(self) -> Path:
         """The bound record's ``logs/`` directory, root of its ledger."""
-        return record_paths(self._binding.project_dir, self._binding.record_id).logs_dir
+        return record_paths(self._binding.booley_dir, self._binding.record_id).logs_dir
 
     def projection(self) -> GoalProjection:
         """The projection fencing replay of this record's evidence."""

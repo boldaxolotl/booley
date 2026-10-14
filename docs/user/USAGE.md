@@ -83,7 +83,7 @@ Use the selector once, at the root, command, or nested operation. It also works 
 and do not accept the new selector. Full option names are stable; ambiguous
 abbreviations produce an error. Arguments after a command's payload `--` stay opaque.
 
-Selection chooses the checkout, while `BOOLEY_PROJECT_DIR` chooses the Booley Directory;
+Selection chooses the checkout, while `BOOLEY_DIR` chooses the Booley Directory;
 an external data override remains supported. Checkout-local data configuration and
 initialization's destination scope keep their existing precedence. A selector
 requires an existing directory; `init` accepts an uninitialized directory.
@@ -149,7 +149,7 @@ work, with one linked worktree and Goal Branch per session.
    ```
 
    `booley` (or `booley chat`) just starts the Developer Agent chosen in
-   `[agent].provider` in `.booley_project/booley.toml`:
+   `[agent].provider` in `.booley/booley.toml`:
 
    | Provider | Same as running |
    | --- | --- |
@@ -232,7 +232,7 @@ doesn't replace your own review.
 > container.
 
 Per-session logs of Flow and Specialist calls through Booley’s tool server
-are saved in `.booley_project/.interactive_logs/`. Chat transcripts live in
+are saved in `.booley/.interactive_logs/`. Chat transcripts live in
 the Developer Agent CLI’s own session storage. If the
 Developer Agent can't reach Booley (`booley` is missing from its `/mcp` list), see
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md#booley-is-missing-from-mcp-in-claude-code-or-codex).
@@ -274,7 +274,7 @@ from the worktree's current HEAD and records that base for comparisons.
 
 ### Goalsets and entry
 
-Goalsets are Project-owned Markdown files under `.booley_project/goalsets/`.
+Goalsets are Project-owned Markdown files under `.booley/goalsets/`.
 `booley init` creates missing `feature.md`, `bugfix.md`, `refactor.md`, and
 `verification.md` without rewriting existing files. Customize their prose to
 express your project's rules. The Developer Agent translates them into concrete Goals;
@@ -285,13 +285,13 @@ explicit instruction and reason. Setup can create this file; initialization
 does not seed it. You can also add Goals for this particular change. Duplicate
 Goals merge to the stricter condition, and entry reports every merge.
 
-Goalsets, including `default.md`, come from the **Main Booley Directory**. In the Sandbox that is `BOOLEY_PROJECT_DIR`, even when the
+Goalsets, including `default.md`, come from the **Main Booley Directory**. In the Sandbox that is `BOOLEY_DIR`, even when the
 directory lives outside the main checkout. The Worktree Booley Directory inside
 the Goal worktree is not used: a `default.md` that exists only there does not
 apply. `work_dir` selects the worktree, not the Goalsets.
 
-A session started inside a worktree without `BOOLEY_PROJECT_DIR` can resolve
-that worktree's copy instead. Start the session with `BOOLEY_PROJECT_DIR` set
+A session started inside a worktree without `BOOLEY_DIR` can resolve
+that worktree's copy instead. Start the session with `BOOLEY_DIR` set
 to the Main Booley Directory; entry refuses a Booley Directory
 inside the Goal worktree.
 
@@ -617,9 +617,9 @@ findings remain in the package and do not require a second approval to Finish.
 Read the package before deciding what to merge. Completion keeps the Goal
 Branch and worktree; merge, publication, and cleanup need separate instructions.
 
-Local Goal Records live under `.booley_project/goals/<goal-id>/`. Outside
+Local Goal Records live under `.booley/goals/<goal-id>/`. Outside
 Stealth, Finish commits the Session Summary under
-`.booley_project/goals/history/<goal-id>.md` in the Goal worktree when that
+`.booley/goals/history/<goal-id>.md` in the Goal worktree when that
 path is Git-trackable and owned by the RTL repository. Stealth, excluded, or
 Paired Checkout summaries stay local.
 
@@ -733,7 +733,7 @@ The log and default local report stay in the Main Booley Directory, even
 when a worktree has its own Paired Checkout. When the skill uses the
 feedback CLI, its `-C` / `--project` option selects the checkout used for context;
 it does not move that shared log or the default report. For Projects, the
-`BOOLEY_PROJECT_DIR` environment variable selects shared storage. Outside the
+`BOOLEY_DIR` environment variable selects shared storage. Outside the
 Sandbox, without that override, storage is discovered from the selected checkout
 and may use a separate log. Use the report paths provided by the skill.
 
@@ -897,7 +897,7 @@ booley goal status                # this worktree's Goal Mode, or every active G
 booley dashboard                  # sessions, Goals, and Jobs
 
 # Worktrees (container)
-booley worktree new <name>        # .booley_project/worktrees/<name>, Paired Checkout or Snapshot
+booley worktree new <name>        # .booley/worktrees/<name>, Paired Checkout or Snapshot
 
 # Quick reference
 booley cheat                      # the whole cheatsheet
@@ -924,7 +924,7 @@ behind. A non-versioned Booley Directory supplies a Snapshot. Run this command f
 the primary workspace; creating from a Paired Checkout is refused.
 The outer checkout starts detached unless `<branch>--<description>` selects an
 existing branch. To remove a paired workspace, remove the Paired Checkout
-first with `git -C <absolute-booley-directory> worktree remove <absolute-worktree>/.booley_project`,
+first with `git -C <absolute-booley-directory> worktree remove <absolute-worktree>/.booley`,
 then run `git -C <absolute-project-root> worktree remove <absolute-worktree>`.
 To reuse the name, preserve any Booley Directory commits you need, then delete its branch
 with `git -C <absolute-booley-directory> branch -D booley-worktree/<name>`.
@@ -950,7 +950,7 @@ Booley also runs a quick health check on its own when the container starts and
 on supported command and Flow paths: about once a week, daily while problems remain, and
 whenever the configuration changes. It never blocks work. New problems show up
 in `booley session up` and the next Flow result. The last result
-is in `.booley_project/runtime/doctor/last.log`.
+is in `.booley/runtime/doctor/last.log`.
 
 Plain Doctor and `booley session up` also report whether prior deep validation is
 current or due. Deep evidence has no expiry; automatic change triggers are only

@@ -204,7 +204,7 @@ def _validate_criterion(where: str, entry: dict[str, Any]) -> None:
 
 def load_goal_state(store: GoalStore, record: GoalRecord) -> DevelopmentState:
     """Read *record*'s state for presentation: fail-closed, declared Goals when missing."""
-    path = record_paths(store.project_dir, record.id).state_file
+    path = record_paths(store.booley_dir, record.id).state_file
     state = read_goal_state_file(path)
     return declared_goal_state(record, record.worktree_path) if state is None else state
 
@@ -348,7 +348,7 @@ class GoalStatePersistence:
     @property
     def state_file(self) -> Path:
         """The bound record's ``booley_state.json``."""
-        return record_paths(self._binding.project_dir, self._binding.record_id).state_file
+        return record_paths(self._binding.booley_dir, self._binding.record_id).state_file
 
     def read(self, path: Path) -> DevelopmentState:
         """The strict content of *path*, or the record's declared Goals when it is missing."""

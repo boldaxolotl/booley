@@ -36,7 +36,7 @@ def clean_env(tmp_path, monkeypatch):
         "CLAUDE_CODE_OAUTH_TOKEN",
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
         "BOOLEY_PRIMARY_AUTH",
-        "BOOLEY_PROJECT_DIR",
+        "BOOLEY_DIR",
     ):
         monkeypatch.delenv(var, raising=False)
     return tmp_path
@@ -75,7 +75,7 @@ class TestResolveAuthPolicy:
         project = clean_env / "proj"
         project.mkdir()
         (project / "booley.toml").write_text('[agent]\nauth = "subscription"\n')
-        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project))
+        monkeypatch.setenv("BOOLEY_DIR", str(project))
         assert bc.resolve_auth_policy() == "subscription"
 
     def test_invalid_toml_value_degrades_not_raises(self, clean_env, monkeypatch):
@@ -84,7 +84,7 @@ class TestResolveAuthPolicy:
         project = clean_env / "proj"
         project.mkdir()
         (project / "booley.toml").write_text('[agent]\nauth = "junk"\n')
-        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project))
+        monkeypatch.setenv("BOOLEY_DIR", str(project))
         assert bc.resolve_auth_policy() == "auto"
 
 
@@ -378,7 +378,7 @@ class TestDoctorPolicyAwareness:
 
         audit = doctor.ProjectAudit(
             project_root=tmp_path,
-            project_dir=tmp_path / ".booley_project",
+            booley_dir=tmp_path / ".booley",
             booley_toml={"agent": {"auth": "subscription"}},
             configs_toml={},
             first_target="",

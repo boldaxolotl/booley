@@ -13,7 +13,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 TAXI_VALIDATOR = ROOT / "qa/missions/taxi/fixtures/simulation-campaign/validate_phase5.py"
 # Documents captured unchanged from one Taxi QA run.
-CAPTURED = ROOT / "tests/qa/fixtures/taxi_campaign"
+CAPTURED = ROOT / "tests/runtime/fixtures/directory_migration/taxi_campaign"
 
 
 def _module(path: Path, name: str):

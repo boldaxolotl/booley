@@ -33,17 +33,17 @@ FLAVOR = "booley-sandbox-riscv"
 def flavor_repo(tmp_path: Path, monkeypatch) -> Path:
     """A project selecting the RISC-V flavor, with docker present but stubbed."""
     root = tmp_path / "proj"
-    (root / ".booley_project").mkdir(parents=True)
-    (root / ".booley_project" / "booley.toml").write_text(
+    (root / ".booley").mkdir(parents=True)
+    (root / ".booley" / "booley.toml").write_text(
         f'[sandbox]\nimage = "{FLAVOR}"\n', encoding="utf-8"
     )
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
     monkeypatch.setattr(
         init_cmd.shutil, "which", lambda n: "/usr/bin/docker" if n == "docker" else None
     )
     # A live-session probe would shell out to docker; the F-9 warning is not
     # what these tests are about.
-    from booley.runtime.project_dir import reset_cache
+    from booley.runtime.booley_dir import reset_cache
 
     reset_cache()
     return root

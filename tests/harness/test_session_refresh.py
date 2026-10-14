@@ -57,7 +57,7 @@ def _issuance(root: Path, image_id: str = "sha256:prior") -> Issuance:
         None,
         "b" * 64,
         "c" * 64,
-        str(project / ".booley_project"),
+        str(project / ".booley"),
     )
 
 

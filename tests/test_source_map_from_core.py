@@ -196,7 +196,7 @@ class TestSourceDirsFromCore:
         """A core in the Booley Directory may expose repository sources through a symlink."""
         (tmp_path / "src" / "rtl").mkdir(parents=True)
         (tmp_path / "src" / "rtl" / "dut.sv").write_text("module dut; endmodule\n")
-        core_dir = tmp_path / ".booley_project" / "cores"
+        core_dir = tmp_path / ".booley" / "cores"
         core_dir.mkdir(parents=True)
         (core_dir / "src").symlink_to(tmp_path / "src", target_is_directory=True)
         _write_core(

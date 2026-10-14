@@ -18,7 +18,7 @@ from booley.runtime import devcontainer as dc
 from booley.runtime import session_issuance as runtime_spec
 from booley.runtime import session_refresh
 from booley.runtime import session_runtime as sr
-from booley.runtime.project_dir import reset_cache
+from booley.runtime.booley_dir import reset_cache
 from booley.runtime.session_issuance import Issuance
 from booley.runtime.session_spec import SessionSpecSnapshot
 
@@ -53,7 +53,7 @@ def _issuance(project: Path, image_id: str = "sha256:prior") -> Issuance:
         relay_image_id=None,
         validator_sha256="b" * 64,
         file_sha256="c" * 64,
-        project_data_source=str(project / ".booley_project"),
+        project_data_source=str(project / ".booley"),
     )
 
 
@@ -73,7 +73,7 @@ def _write_restore_journal(
     content = (_FIXTURES / fixture).read_text(encoding="utf-8")
     replacements = {
         "${PROJECT_ROOT}": str(project),
-        "${PROJECT_DATA_SOURCE}": str(project / ".booley_project"),
+        "${PROJECT_DATA_SOURCE}": str(project / ".booley"),
         "${PROJECT_ID}": identity,
         "${KEEPER_IMAGE}": runtime_spec.keeper_image(project),
         "${SESSION_NAME}": sr.session_container_name(project),
@@ -249,10 +249,10 @@ def test_checked_in_committed_fixture_resumes_forward(
 ) -> None:
     reset_cache()
     request.addfinalizer(reset_cache)
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
     project = (tmp_path / "project").resolve()
-    project_dir = project / ".booley_project"
-    project_dir.mkdir(parents=True)
+    booley_dir = project / ".booley"
+    booley_dir.mkdir(parents=True)
     config = tmp_path / "config"
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
     validator = tmp_path / "trusted" / "bin" / "booley"

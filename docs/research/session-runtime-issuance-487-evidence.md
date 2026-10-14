@@ -40,7 +40,7 @@ host-path/storage primitives; issuance no longer contributes the reverse edge.
 
 Before, EDA depended on Runtime through:
 
-- `eda.config -> runtime.project_dir`;
+- `eda.config -> runtime.booley_dir`;
 - `eda.provisioning.authority -> runtime.auth_token, runtime.private_store`;
 - licensing and Vivado policy modules `-> runtime.paths`;
 - `eda.provisioning.runtime_spec -> runtime.auth_token, runtime.devcontainer,

@@ -22,7 +22,7 @@ from tests.mcp_tools.test_coverage_candidate_recording import _NOW, _screened, _
 
 def environment(goal_mode):
     binding = bind(goal_mode)
-    paths = record_paths(binding.project_dir, binding.record_id)
+    paths = record_paths(binding.booley_dir, binding.record_id)
     return {
         "BOOLEY_GOAL_FILE": str(paths.record_file),
         "BOOLEY_GOAL_RUN_BINDING": json.dumps(binding.to_json()),

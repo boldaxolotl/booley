@@ -39,12 +39,12 @@ class Derivation:
 
 
 def selected_observations(
-    record: GoalRecord, state: DevelopmentState, project_dir: Path
+    record: GoalRecord, state: DevelopmentState, booley_dir: Path
 ) -> dict[str, dict[str, Any]]:
     """Latest selected producer observations under complete original identity groups."""
     revisions = {goal.spec.key: goal.spec_revision for goal in record.goals}
     records = validated_evidence_records(
-        GOAL_SCOPE, record_paths(project_dir, record.id).logs_dir, state, {}
+        GOAL_SCOPE, record_paths(booley_dir, record.id).logs_dir, state, {}
     )
     return {
         row["criterion"]: row
@@ -86,13 +86,13 @@ def derive_changes(
     proposal: Proposal,
     record: GoalRecord,
     state: DevelopmentState,
-    project_dir: Path,
+    booley_dir: Path,
     *,
     coverage: CoverageEvaluation | None = None,
     resolvers: GoalFreshnessResolvers = DEFAULT_RESOLVERS,
 ) -> tuple[Derivation, ...]:
     """Derive the changed Goal and valid unchanged siblings of invalidated groups."""
-    rows = selected_observations(record, state, project_dir)
+    rows = selected_observations(record, state, booley_dir)
     affected_groups = [
         row["goal_identity"]
         for row in rows.values()

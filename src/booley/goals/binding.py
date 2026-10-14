@@ -49,7 +49,7 @@ BINDING_SCHEMA = "booley.goal-run-binding/v1"
 _JSON_FIELDS = frozenset(
     {
         "schema",
-        "project_dir",
+        "booley_dir",
         "record_id",
         "record_revision",
         "worktree",
@@ -84,7 +84,7 @@ class GoalRunBinding:
     produces is published, whatever happens later (D7).
     """
 
-    project_dir: Path
+    booley_dir: Path
     record_id: str
     record_revision: int
     worktree: WorktreeIdentity
@@ -122,13 +122,13 @@ class GoalRunBinding:
 
     def protected_roots(self) -> ProtectedInputRoots:
         """Where the protected inputs of this run are read from."""
-        return ProtectedInputRoots(self.worktree_root, self.project_dir)
+        return ProtectedInputRoots(self.worktree_root, self.booley_dir)
 
     def to_json(self) -> dict[str, Any]:
         """The JSON object a job record stores."""
         return {
             "schema": BINDING_SCHEMA,
-            "project_dir": str(self.project_dir),
+            "booley_dir": str(self.booley_dir),
             "record_id": self.record_id,
             "record_revision": self.record_revision,
             "worktree": self.worktree.to_json(),
@@ -170,7 +170,7 @@ def _parse_binding(raw: object) -> GoalRunBinding:
         raise ValueError("protected_paths must be a list")
     paths = cast("list[object]", raw_paths)
     return GoalRunBinding(
-        project_dir=Path(require_str_value(mapping["project_dir"], field="project_dir")),
+        booley_dir=Path(require_str_value(mapping["booley_dir"], field="booley_dir")),
         record_id=validate_goal_id(require_str_value(mapping["record_id"], field="record_id")),
         record_revision=_positive_int(mapping["record_revision"], "record_revision"),
         worktree=WorktreeIdentity.from_json(mapping["worktree"], where="worktree"),
@@ -248,17 +248,17 @@ def bind_run(
     with store.record_lock(initial.id):
         record = _active_record(store, root)
         try:
-            require_no_apply(record_paths(store.project_dir, record.id).root)
+            require_no_apply(record_paths(store.booley_dir, record.id).root)
         except ProposalError as exc:
             raise GoalBindingError(str(exc)) from exc
         record = _on_goal_branch_with_test_runs(store, record, root)
         try:
-            snapshot = snapshot_protected_inputs(ProtectedInputRoots(root, store.project_dir))
+            snapshot = snapshot_protected_inputs(ProtectedInputRoots(root, store.booley_dir))
         except ProtectedInputError as exc:
             raise GoalBindingError(f"cannot read the protected inputs of {root}: {exc}") from exc
         reason = protected_drift(record, snapshot)
         return GoalRunBinding(
-            project_dir=store.project_dir,
+            booley_dir=store.booley_dir,
             record_id=record.id,
             record_revision=record.revision,
             worktree=record.worktree,

@@ -8,8 +8,8 @@ from booley.feedback.render import Environment, collect_environment
 from booley.runtime import doctor_stamp
 
 
-def resolve_feedback_environment(project_dir: Path) -> Environment:
+def resolve_feedback_environment(booley_dir: Path) -> Environment:
     """Resolve one fail-soft Feedback environment for a logical operation."""
-    stamp = doctor_stamp.load_stamp(project_dir)
+    stamp = doctor_stamp.load_stamp(booley_dir)
     deep = stamp.get("deep") if stamp is not None else None
     return collect_environment(doctor_deep_clean=deep if isinstance(deep, bool) else None)

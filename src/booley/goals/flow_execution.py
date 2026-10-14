@@ -72,7 +72,7 @@ class GoalFlowExecution:
         """Capture matching admitted revisions once; never follow a later retarget."""
         if self._presented_goals is None:
             try:
-                record = GoalStore(self._binding.project_dir).load(self._binding.record_id)
+                record = GoalStore(self._binding.booley_dir).load(self._binding.record_id)
             except GoalStoreError:
                 return CriterionPresentation(UNAVAILABLE_GOAL, "", "", "", "")
             self._capture_presentation(record)
@@ -83,7 +83,7 @@ class GoalFlowExecution:
 
     def candidate_store_paths(self) -> tuple[str, Path, Path]:
         """Neutral Specialist paths selected from the validated admission binding."""
-        paths = record_paths(self._binding.project_dir, self._binding.record_id)
+        paths = record_paths(self._binding.booley_dir, self._binding.record_id)
         return self._binding.record_id, paths.runtime_dir / "flow-reports", paths.root
 
     @property
@@ -94,7 +94,7 @@ class GoalFlowExecution:
     @property
     def state_file(self) -> Path:
         """The bound record's ``booley_state.json``."""
-        return record_paths(self._binding.project_dir, self._binding.record_id).state_file
+        return record_paths(self._binding.booley_dir, self._binding.record_id).state_file
 
     def validate_and_resolve(
         self, request: FlowRequest
@@ -102,7 +102,7 @@ class GoalFlowExecution:
         """Admit *request* into the bound worktree and point it at the Goal state."""
         try:
             found = GoalCheckout(request.work_dir).containing_repository()
-            record = GoalStore(self._binding.project_dir).load(self._binding.record_id)
+            record = GoalStore(self._binding.booley_dir).load(self._binding.record_id)
         except (CheckoutError, GoalStoreError) as exc:
             return _blocked(str(exc))
         root = None if found is None else found[0].resolve()
@@ -131,7 +131,7 @@ class GoalFlowExecution:
         specification will be rejected by the gate; it cannot acquire evidence.
         """
         try:
-            record = GoalStore(self._binding.project_dir).load(self._binding.record_id)
+            record = GoalStore(self._binding.booley_dir).load(self._binding.record_id)
         except GoalStoreError:
             return fallback  # publication reports the missing/corrupt authority
         for goal in record.goals:
@@ -147,7 +147,7 @@ class GoalFlowExecution:
             found = GoalCheckout(root).containing_repository()
             if found is None or found[0].resolve() != self._binding.worktree_root.resolve():
                 raise EvidenceDiscarded("producer is outside its admitted Goal worktree")
-            record = GoalStore(self._binding.project_dir).load(self._binding.record_id)
+            record = GoalStore(self._binding.booley_dir).load(self._binding.record_id)
         except (CheckoutError, GoalStoreError) as exc:
             raise EvidenceDiscarded(f"Goal producer binding cannot be resolved: {exc}") from exc
         goal = next((item for item in record.goals if item.spec.key == key), None)
@@ -169,7 +169,7 @@ class GoalFlowExecution:
         from booley.goals.state_store import load_goal_state
         from booley.goals.status import build_status
 
-        store = GoalStore(self._binding.project_dir)
+        store = GoalStore(self._binding.booley_dir)
         with store.record_lock(self._binding.record_id):
             record = store.load(self._binding.record_id)
             goal = next((item for item in record.goals if item.spec.key == key), None)
@@ -198,7 +198,7 @@ class GoalFlowExecution:
         The Simulation Flow runs them and matches its evidence against them.
         """
         try:
-            record = GoalStore(self._binding.project_dir).load(self._binding.record_id)
+            record = GoalStore(self._binding.booley_dir).load(self._binding.record_id)
         except GoalStoreError as exc:
             raise EvidenceDiscarded(f"Goal Record cannot be read: {exc}") from exc
         return flow_test_runs(record, dict(self._binding.spec_revisions))
