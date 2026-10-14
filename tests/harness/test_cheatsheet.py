@@ -145,8 +145,19 @@ class TestCheatCommand:
         with pytest.raises(SystemExit):
             self._parse(["cheat", "--tips"])
 
-    def test_no_flags_prints_whole_sheet(self, capsys):
-        assert tlr._cmd_cheat(self._parse(["cheat"]), Path.cwd()) == 0
+    def test_no_flags_matches_explicit_list(self, capsys, monkeypatch):
+        monkeypatch.setattr(tlr, "cheatsheet_path", lambda: pytest.fail("index read cheatsheet"))
+        assert tlr._cmd_cheat(self._parse(["cheat"]), None) == 0
+        default_out = capsys.readouterr().out
+        assert tlr._cmd_cheat(self._parse(["cheat", "--list"]), None) == 0
+        assert default_out == capsys.readouterr().out
+        assert "Example: booley cheat --commands --project-files" in default_out
+        assert "booley cheat --all" in default_out
+        assert "\nCommands\n" not in default_out
+
+    @pytest.mark.parametrize("flags", (["--all"], ["--all", "--criteria"]))
+    def test_all_prints_whole_sheet(self, capsys, flags):
+        assert tlr._cmd_cheat(self._parse(["cheat", *flags]), Path.cwd()) == 0
         out = capsys.readouterr().out
         assert "Criteria" in out
         assert "Sandbox & Docker" in out
@@ -160,6 +171,19 @@ class TestCheatCommand:
             < out.index("\nCriteria\n")
             < out.index("\nProject Files\n")
         )
+
+    def test_all_and_list_are_mutually_exclusive(self):
+        with pytest.raises(SystemExit):
+            self._parse(["cheat", "--all", "--list"])
+
+    def test_multiple_sections_print_only_requested_sections(self, capsys):
+        args = self._parse(["cheat", "--commands", "--project-files"])
+        assert tlr._cmd_cheat(args, None) == 0
+        out = capsys.readouterr().out
+        assert "\nCommands\n" in out
+        assert "\nProject Files\n" in out
+        assert "\nCriteria\n" not in out
+        assert "\nSandbox & Docker\n" not in out
 
     def test_commands_include_configured_agent_chat(self, capsys):
         assert tlr._cmd_cheat(self._parse(["cheat", "--commands"]), Path.cwd()) == 0
@@ -262,7 +286,7 @@ class TestCheatCommand:
 
     def test_missing_cheatsheet_is_reported(self, capsys, monkeypatch):
         monkeypatch.setattr(tlr, "cheatsheet_path", lambda: Path("/nonexistent/cheat.md"))
-        assert tlr._cmd_cheat(self._parse(["cheat"]), Path.cwd()) == 1
+        assert tlr._cmd_cheat(self._parse(["cheat", "--all"]), Path.cwd()) == 1
         assert "cheatsheet not found" in capsys.readouterr().err
 
 

@@ -1186,7 +1186,8 @@ def test_project_binding_registry_covers_parser():
 
 
 @pytest.mark.parametrize(
-    "argv", [["auth", "--status"], ["auth", "--status", "--clear"], ["cheat", "--list"]]
+    "argv",
+    [["auth", "--status"], ["auth", "--status", "--clear"], ["cheat"], ["cheat", "--list"]],
 )
 def test_project_binding_independent_never_discovers(tmp_path, monkeypatch, argv):
     (tmp_path / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
@@ -1218,7 +1219,8 @@ def test_source_project_binding_required_dispatch(tmp_path, monkeypatch, argv):
 
 
 @pytest.mark.parametrize("source", [True, False])
-def test_source_project_binding_cheat_selected_imports(tmp_path, monkeypatch, source):
+@pytest.mark.parametrize("view", ["--all", "--criteria"])
+def test_source_project_binding_cheat_selected_imports(tmp_path, monkeypatch, source, view):
     from booley.dev_support import flow_specialist_reference as reference
 
     project = tmp_path / "project"
@@ -1233,7 +1235,7 @@ def test_source_project_binding_cheat_selected_imports(tmp_path, monkeypatch, so
     monkeypatch.chdir(subdir)
     monkeypatch.setenv("BOOLEY_DIR", str(project / ".booley"))
     monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
-    monkeypatch.setattr(sys, "argv", ["booley", "cheat"])
+    monkeypatch.setattr(sys, "argv", ["booley", "cheat", view])
     monkeypatch.setattr(tlr, "_enforce_runtime_location", lambda *_: None)
     calls = []
     criteria_calls = []
@@ -1289,11 +1291,15 @@ def test_source_project_binding_selected_root(tmp_path, monkeypatch, command, se
 def test_source_project_binding_optional_discovery_failure(monkeypatch):
     from booley.runtime.project_discovery import ProjectRootDiscoveryError
 
+    calls = []
+
     def discover():
+        calls.append(True)
         raise ProjectRootDiscoveryError("ambiguous stale Project")
 
     monkeypatch.setattr(tlr, "find_project_root", discover)
-    assert tlr._optional_project_root(Namespace(list=False)) is None
+    assert tlr._optional_project_root(Namespace(list=False, all=True)) is None
+    assert calls == [True]
 
 
 def test_source_project_binding_feedback_discovery_fallback(tmp_path, monkeypatch):
@@ -1318,7 +1324,7 @@ def test_project_binding_cheat_uninitialized_directory(
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("BOOLEY_DIR", raising=False)
     monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
-    monkeypatch.setattr(sys, "argv", ["booley", "cheat"])
+    monkeypatch.setattr(sys, "argv", ["booley", "cheat", "--all"])
     committed = tmp_path / "reference.md"
     committed.write_text("Committed optional reference\n")
     monkeypatch.setattr(tlr, "cheatsheet_path", lambda: committed)
@@ -1355,7 +1361,7 @@ def test_source_project_binding_cheat_stale_custom_sentinel(tmp_path, monkeypatc
     monkeypatch.chdir(source)
     monkeypatch.setenv("BOOLEY_DIR", str(source / ".booley"))
     monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
-    monkeypatch.setattr(sys, "argv", ["booley", "cheat"])
+    monkeypatch.setattr(sys, "argv", ["booley", "cheat", "--all"])
     assert tlr._dispatch_main() == 0
     assert "source_sentinel" not in capsys.readouterr().out
     assert not sentinel.exists()

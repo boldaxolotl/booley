@@ -407,18 +407,24 @@ def test_handlers_receive_selected_checkout(projects, monkeypatch, route):
     assert captured == [projects[1]]
 
 
-@pytest.mark.parametrize("route, operation", [("auth", "--status"), ("cheat", "--list")])
+@pytest.mark.parametrize(
+    "route, operation", [("auth", "--status"), ("cheat", "--list"), ("cheat", None)]
+)
 def test_independent_operations_ignore_selection(projects, monkeypatch, route, operation):
     monkeypatch.setattr(cli, "_resolve_cli_selection", lambda _args: pytest.fail("discovery"))
     monkeypatch.setitem(cli._EARLY_COMMANDS, route, lambda _args, _root: 0)
-    assert dispatch([route, "-C", "missing", operation], monkeypatch) == 0
+    argv = [route, "-C", "missing"]
+    if operation:
+        argv.append(operation)
+    assert dispatch(argv, monkeypatch) == 0
 
 
 @pytest.mark.parametrize("route", ["targets", "cheat", "init"])
 def test_invalid_selection_fails_before_handler(projects, monkeypatch, route):
     monkeypatch.setitem(cli._EARLY_COMMANDS, route, lambda *_args: pytest.fail("handler called"))
-    assert dispatch([route, "-C", "missing"], monkeypatch) == 2
-    assert dispatch([route, "-C", ".git/HEAD"], monkeypatch) == 2
+    flags = ["--all"] if route == "cheat" else []
+    assert dispatch([route, "-C", "missing", *flags], monkeypatch) == 2
+    assert dispatch([route, "-C", ".git/HEAD", *flags], monkeypatch) == 2
 
 
 @pytest.mark.parametrize(
