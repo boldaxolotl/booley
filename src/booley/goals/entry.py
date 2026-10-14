@@ -307,7 +307,7 @@ def _plan_entry(
     base_sha = checkout.head_sha()
     head_ref = checkout.head_ref()
     paired = _paired_project_checkout(checkout.root)
-    _require_clean(checkout, "the worktree")
+    _require_clean(checkout, "the worktree", outer=True)
     if paired is not None:
         _require_clean(paired, "the Paired Checkout")
     _check_default_goalset(request, project_dir)
@@ -561,9 +561,9 @@ def _paired_project_checkout(work_dir: Path) -> GoalCheckout | None:
     return None if repository is None else GoalCheckout(repository.worktree)
 
 
-def _require_clean(checkout: GoalCheckout, what: str) -> None:
+def _require_clean(checkout: GoalCheckout, what: str, *, outer: bool = False) -> None:
     """Refuse uncommitted changes: Targets would resolve from files the base lacks."""
-    dirty = checkout.dirty_paths()
+    dirty = checkout.dirty_paths(outer=outer)
     if dirty:
         shown = ", ".join(dirty[:5]) + (" ..." if len(dirty) > 5 else "")
         raise GoalEntryError(f"{what} has uncommitted changes ({shown}); commit or stash them")
@@ -582,7 +582,7 @@ def _checkout_goal_branch(checkout: GoalCheckout, record: GoalRecord) -> None:
     """Check out the Goal Branch, refusing if HEAD or the tree moved since validation."""
     original = record.original_ref if branch_name(record.original_ref) else None
     _require_head(checkout, original, record.base_sha, "before checking out the Goal Branch")
-    _require_clean(checkout, "the worktree")
+    _require_clean(checkout, "the worktree", outer=True)
     checkout.checkout_branch(record.branch)
     _require_head(
         checkout, branch_ref(record.branch), record.base_sha, "after checking out the Goal Branch"
@@ -602,7 +602,7 @@ def _revalidate_before_activation(
 ) -> None:
     """Step 9: nothing a run would read moved while entry pinned and froze (B7)."""
     _require_head(checkout, branch_ref(record.branch), record.base_sha, "before activation")
-    _require_clean(checkout, "the worktree")
+    _require_clean(checkout, "the worktree", outer=True)
     paired = _paired_project_checkout(checkout.root)
     if record.paired_project_base_sha is not None:
         if paired is None or paired.head_sha() != record.paired_project_base_sha:
@@ -724,7 +724,11 @@ def rollback_entering(
     record = store.load(goal_id)
     if record.state is not GoalState.ENTERING:
         return record
-    notes = [reason, *_undo_goal_branch(checkout, record)]
+    try:
+        effects = _undo_goal_branch(checkout, record)
+    except CheckoutError as exc:
+        effects = [f"could not inspect entry-owned Git effects ({exc}); branch and files retained"]
+    notes = [reason, *effects]
     return _save(
         store, record, state=GoalState.FAILED, failure="; ".join(notes), ended_at=utc_now_rfc3339()
     )
@@ -735,7 +739,7 @@ def _undo_goal_branch(checkout: GoalCheckout, record: GoalRecord) -> list[str]:
     branch, base = record.branch, record.base_sha
     tip = checkout.branch_tip(branch)
     if checkout.head_ref() == branch_ref(branch):
-        if tip != base or checkout.dirty_paths():
+        if tip != base or checkout.dirty_paths(outer=True):
             return [
                 f"HEAD stays on Goal Branch {branch}: it has commits or uncommitted changes "
                 "since entry; the branch is left in place"

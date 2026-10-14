@@ -14,6 +14,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from booley.runtime.git_environment import inherited_git_environment
+from booley.runtime.project_repositories import (
+    RepositoryCheckoutError,
+    is_paired_root_change,
+    paired_project_repository,
+    parse_porcelain_z,
+)
 
 # Generous for checkout in a large repository, still bounded.
 GIT_TIMEOUT_S = 120
@@ -90,12 +96,20 @@ class GoalCheckout:
         detail = (result.stderr or result.stdout).strip()
         raise CheckoutError(f"git symbolic-ref HEAD failed in {self.root}: {detail}")
 
-    def dirty_paths(self) -> list[str]:
+    def dirty_paths(self, *, outer: bool = False) -> list[str]:
         """Changed, staged, or untracked paths (ignored files excluded), as Git prints them."""
         output = self._git(
             "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none"
         ).stdout
-        return [entry[3:] for entry in output.split("\0") if len(entry) > 3]
+        try:
+            paired = paired_project_repository(self.root) if outer else None
+        except RepositoryCheckoutError as exc:
+            raise CheckoutError(str(exc)) from exc
+        return [
+            change.path
+            for change in parse_porcelain_z(output)
+            if not is_paired_root_change(change, paired)
+        ]
 
     def _git_bytes(self, *args: str) -> bytes:
         """Run git and return raw stdout: path-bearing output is read as bytes."""

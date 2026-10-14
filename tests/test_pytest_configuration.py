@@ -939,9 +939,23 @@ def test_image_validation_wrapper_preserves_failure_and_cleans_containers(
     ]
 
 
+def _wait_for_child_pid(path: Path) -> int:
+    """Wait for complete readiness, not an empty file created by shell redirection."""
+    for _ in range(200):
+        try:
+            text = path.read_text(encoding="utf-8").strip()
+        except FileNotFoundError:
+            text = ""
+        if text.isdecimal() and int(text) > 0:
+            return int(text)
+        time.sleep(0.01)
+    pytest.fail("wrapped child did not publish a complete positive PID")
+
+
 @pytest.mark.skipif(os.name == "nt", reason="exercises POSIX signals and process groups")
+@pytest.mark.parametrize("publish_delay", [0, 0.1])
 def test_image_validation_wrapper_cleans_promptly_on_cancellation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, publish_delay: float
 ) -> None:
     """SIGTERM interrupts wait, kills an ignoring child group, and cleans Docker."""
     docker_log = tmp_path / "docker.log"
@@ -966,20 +980,19 @@ def test_image_validation_wrapper_cleans_promptly_on_cancellation(
             "booley-ci-123-1-fifo",
             "bash",
             "-c",
-            'echo $$ > "$CHILD_PID_PATH"; trap "" INT TERM; sleep 30',
+            'trap "" INT TERM; '
+            f': > "$CHILD_PID_PATH.pending"; sleep {publish_delay}; '
+            'echo $$ > "$CHILD_PID_PATH.pending" && '
+            'mv "$CHILD_PID_PATH.pending" "$CHILD_PID_PATH" && sleep 30',
         ],
         cwd=REPOSITORY_ROOT,
     )
-    for _ in range(200):
-        if child_pid_path.exists():
-            break
-        time.sleep(0.01)
-    assert child_pid_path.exists(), "wrapped child did not start"
+    child_pid = _wait_for_child_pid(child_pid_path)
 
     process.terminate()
     assert process.wait(timeout=5) == 143
     with pytest.raises(ProcessLookupError):
-        os.kill(int(child_pid_path.read_text(encoding="utf-8")), 0)
+        os.kill(child_pid, 0)
     calls = docker_log.read_text(encoding="utf-8").splitlines()
     assert calls[-2:] == [
         "ps -aq --filter name=^/booley-ci-123-1-fifo",

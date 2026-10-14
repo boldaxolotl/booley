@@ -180,9 +180,9 @@ Packaged release history starts at 0.2.7. For older changes, see
   while preserving user-edited tasks. Tracked `.vscode/tasks.json` files are
   preserved with an informational notice; add the Dashboard task yourself or
   opt out with `[sandbox].dashboard = false`.
-- New non-Stealth initialization keeps Goal history eligible for commits.
-  Existing explicit Git exclusions remain in place; excluded or Stealth
-  summaries stay local, and completion reports skipped publication. Project
+- New non-Stealth initialization keeps RTL-owned Goal history eligible for commits.
+  Existing explicit Git exclusions remain in place; excluded, Stealth, or Paired
+  Checkout summaries stay local, and completion reports skipped publication. Project
   configuration remains untracked until you commit it; initialization makes
   these paths eligible without staging or committing them.
 

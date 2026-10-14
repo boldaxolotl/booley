@@ -212,3 +212,8 @@ typed specification and freezes it beside completion artifacts, including when a
 Target disappears. Saved completion bytes are replayed
 without regeneration. MCP structured output retains separate addresses so proposals
 can select Goals without exposing internal keys in human text.
+
+
+## Amendment (2026-10-13): Paired Checkout summaries
+
+Issue #1430 qualifies the Record and summary decision above: Finish keeps summaries local for authenticated Paired Checkouts, preserving independent Booley history. Other layouts retain the existing publication policy.

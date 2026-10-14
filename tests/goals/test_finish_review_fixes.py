@@ -54,15 +54,19 @@ def paired_publication(layout, tmp_path):
 @pytest.mark.parametrize("paired", [False, True])
 @pytest.mark.parametrize("abandon", [False, True])
 def test_revalidated_publication_retains_history_through_next_commit(
-    layout, tmp_path, paired, abandon
+    layout, tmp_path, paired, abandon, monkeypatch
 ):
     if paired:
         complete, project = paired_publication(layout, tmp_path)
     else:
         complete = publication_layout(layout)
     call = request(complete)
-    with pytest.raises(Crash):
-        finish_goal(call, environment(complete, stop_at("ref-published")))
+    # Construct an attempt made under the historical paired-publication policy.
+    with monkeypatch.context() as old_policy:
+        if paired:
+            old_policy.setattr("booley.goals.finish._skip_publication", lambda *_: None)
+        with pytest.raises(Crash):
+            finish_goal(call, environment(complete, stop_at("ref-published")))
     if paired:
         (project / "note.txt").write_bytes(b"later paired commit\n")
         git(project, "add", "note.txt")
@@ -137,11 +141,15 @@ def test_abandoned_retry_reads_sealed_notes_when_projection_is_missing(layout):
     assert finish_goal(call, environment(complete)) == result
 
 
-def test_recovering_publication_with_broken_paired_git_is_actionable(layout, tmp_path):
+def test_recovering_publication_with_broken_paired_git_is_actionable(
+    layout, tmp_path, monkeypatch
+):
     complete, project = paired_publication(layout, tmp_path)
     call = request(complete)
-    with pytest.raises(Crash):
-        finish_goal(call, environment(complete, stop_at("ref-published")))
+    with monkeypatch.context() as old_policy:
+        old_policy.setattr("booley.goals.finish._skip_publication", lambda *_: None)
+        with pytest.raises(Crash):
+            finish_goal(call, environment(complete, stop_at("ref-published")))
     marker = project / ".git"
     marker.chmod(marker.stat().st_mode | 0o200)
     marker.unlink()
@@ -344,12 +352,16 @@ def test_pruned_blob_before_any_commit_journal_restores_frozen_summary(layout):
     assert (directory / "intended-commit.authority.json").is_file()
 
 
-def test_legacy_own_publication_with_moved_paired_pin_repairs_only_owned_index(layout, tmp_path):
+def test_legacy_own_publication_with_moved_paired_pin_repairs_only_owned_index(
+    layout, tmp_path, monkeypatch
+):
     from tests.goals.test_r1_lifecycle import publish_legacy_attempt
 
     complete, project = paired_publication(layout, tmp_path)
     call = request(complete, explain_html=True)
-    frozen, destination, content = publish_legacy_attempt(complete, call)
+    with monkeypatch.context() as old_policy:
+        old_policy.setattr("booley.goals.finish._skip_publication", lambda *_: None)
+        frozen, destination, content = publish_legacy_attempt(complete, call)
     # Simulate process death just after ref CAS, before the index synchronization.
     git(complete.worktree, "reset", "-q", frozen["inputs"]["rtl_pin"], "--", frozen["path"])
     (project / "later.txt").write_bytes(b"paired participant moved\n")

@@ -173,7 +173,8 @@ asks to inspect it. Open `done` review findings remain visible and do not
 require a second approval to finish. Completion does not authorize merging,
 publishing, or deleting the branch or worktree. Outside Stealth, the Session
 Summary is committed under `.booley_project/goals/history/` in the Goal
-worktree when that path is Git-trackable; otherwise it stays local.
+worktree when that path is Git-trackable and owned by the RTL repository;
+otherwise it stays local. Paired Checkout summaries always stay local.
 
 ## Resume or abandon
 
