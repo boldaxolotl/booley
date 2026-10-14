@@ -250,7 +250,15 @@ experiment, not a setup requirement.
   `* text=auto eol=lf` default goes in Git's common `info/attributes`, local to
   the repository and shared by linked worktrees; it does not travel through
   commits. Existing upstream attributes policy suppresses that default to
-  preserve its rules. With Stealth disabled, and in a Versioned Booley Directory, init adds the default as the first line of root `.gitattributes`
+  preserve its rules. If a sibling worktree's user attributes or Git's system
+  attributes path cannot be inspected, init also defers a new shared default
+  and preserves existing local rules and registrations. Doctor reports this
+  limitation as `git.attributes-policy-unknown`, independently of real policy
+  conflicts. Inspect the policy from an environment where its source is
+  accessible; see [Doctor health](DOCTOR.md) for source-specific guidance and
+  waiver behavior. Normal init remains nonfatal, while unknown-only
+  `booley init --check` exits 1 for incomplete inspection.
+  With Stealth disabled, and in a Versioned Booley Directory, init adds the default as the first line of root `.gitattributes`
   unless the root already owns a whole-tree policy. `text=auto` preserves Git's
   binary-file detection, and later rules in that file can override the default.
   **Commit only published root `.gitattributes` files** to share their policy.

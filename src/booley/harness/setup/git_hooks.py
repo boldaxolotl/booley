@@ -41,10 +41,12 @@ from booley.harness.setup.line_endings import (
     LineEndingActionState,
     LineEndingMode,
     LineEndingObservationCode,
+    LineEndingReport,
     LineEndingStatus,
     RepositoryLineEndingReport,
     line_ending_repository_display,
     reconcile_project_line_endings,
+    unknown_attributes_policy_details,
 )
 from booley.harness.setup.project_git_hook_reconcile import (
     _LEGACY_MANAGED_HOOKS,
@@ -228,7 +230,11 @@ def _unsafe_line_ending_observation_detail(report: RepositoryLineEndingReport) -
     observations = {
         observation.code: observation
         for observation in report.observations
-        if observation.code is not LineEndingObservationCode.UPSTREAM_POLICY
+        if observation.code
+        not in (
+            LineEndingObservationCode.UPSTREAM_POLICY,
+            LineEndingObservationCode.ATTRIBUTES_POLICY_UNKNOWN,
+        )
     }
     for code, detail in _OBSERVATION_RESULT_DETAILS:
         if code in observations:
@@ -272,6 +278,13 @@ def _line_ending_result_detail(report: RepositoryLineEndingReport) -> str:
         return observation_detail
     if report.status is LineEndingStatus.UNSAFE:
         return "unsafe line-ending state"
+    return _safe_line_ending_result_detail(report)
+
+
+def _safe_line_ending_result_detail(report: RepositoryLineEndingReport) -> str:
+    unknown = unknown_attributes_policy_details(report)
+    if unknown:
+        return f"attributes policy inspection incomplete: {'; '.join(unknown)}"
     completed = {
         action.kind for action in report.actions if action.state is LineEndingActionState.COMPLETED
     }
@@ -306,25 +319,47 @@ def _step_line_endings(
         return
     details: list[str] = []
     for repository_report in report.repositories:
-        repository = repository_report.repository
-        info(line_ending_repository_display(repository.role, repository.root))
-        _render_line_ending_observations(repository_report)
-        for action in repository_report.actions:
-            _render_line_ending_action(action)
-        if repository_report.status is LineEndingStatus.SAFE and not repository_report.actions:
-            ok("working tree is container-safe (no CRLF checkouts, autocrlf off)")
-        if repository_report.status is LineEndingStatus.UNSAFE:
-            details.append(f"{repository.role}: {_line_ending_result_detail(repository_report)}")
+        detail = _render_repository_line_endings(repository_report)
+        if detail:
+            details.append(detail)
     for failure in report.discovery_failures:
         display = line_ending_repository_display(failure.role, failure.candidate)
         warn(f"could not inspect {display}: {failure.detail}")
         details.append(f"{failure.role}: {failure.detail}")
+    _record_line_ending_summary(ctx, report, details)
+
+
+def _render_repository_line_endings(report: RepositoryLineEndingReport) -> str | None:
+    repository = report.repository
+    info(line_ending_repository_display(repository.role, repository.root))
+    _render_line_ending_observations(report)
+    for action in report.actions:
+        _render_line_ending_action(action)
+    unknown = bool(unknown_attributes_policy_details(report))
+    if report.status is LineEndingStatus.SAFE and not report.actions and not unknown:
+        ok("working tree is container-safe (no CRLF checkouts, autocrlf off)")
+    if report.status is LineEndingStatus.UNSAFE or unknown:
+        return f"{repository.role}: {_line_ending_summary_detail(report)}"
+    return None
+
+
+def _line_ending_summary_detail(report: RepositoryLineEndingReport) -> str:
+    detail = _line_ending_result_detail(report)
+    unknown = unknown_attributes_policy_details(report)
+    if report.status is LineEndingStatus.UNSAFE and unknown:
+        return f"{detail}; attributes policy inspection incomplete: {'; '.join(unknown)}"
+    return detail
+
+
+def _record_line_ending_summary(
+    ctx: InitContext, report: LineEndingReport, details: list[str]
+) -> None:
     if report.status is LineEndingStatus.SAFE:
-        status = "ok"
+        status = "warn" if details else "ok"
     else:
         status = "warn" if ctx.check_only else "err"
     if len(report.repositories) == 1 and not report.discovery_failures:
-        detail = _line_ending_result_detail(report.repositories[0])
+        detail = _line_ending_summary_detail(report.repositories[0])
     elif status == "ok":
         detail = f"{len(report.repositories)} Git repositories container-safe"
     else:
