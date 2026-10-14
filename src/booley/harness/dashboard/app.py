@@ -35,9 +35,12 @@ READ_BUDGET = 1.0
 # "Recent" lists this many newest results; "All" lists everything the snapshot retains.
 RECENT_JOBS = 50
 HELP = (
-    "1-9 stable session shortcuts · arrows / Enter select any row\n"
-    "Esc back · j Running · r Recent · a All\n"
-    "s all sessions / standalone · ? help · q quit\n"
+    "1-9 stable session shortcuts · arrows select rows\n"
+    "Enter inspects sessions, Goals, Jobs and proposals; Booley call rows are informational\n"
+    "Job details appear beside the list on wide terminals; Enter opens them on narrow terminals\n"
+    "Esc back · j Running Jobs · r Recent results · a All Jobs in the current scope\n"
+    "s Sessions · u Jobs from all sessions / standalone · ? help · q quit\n"
+    "Job shortcuts keep the selected session scope; u clears that scope\n"
     "Click a report, artifact or evidence path to open it in the editor\n"
     "Activity is what the agent client last reported: working, waiting for tool call,\n"
     "or waiting for user input. Unknown means no fresh report, never a guess.\n"
@@ -242,7 +245,8 @@ class DashboardApp(App[None]):
         ("j", "jobs('running')", "Running Jobs"),
         ("r", "jobs('recent')", "Recent results"),
         ("a", "all_jobs", "All Jobs"),
-        ("s", "all_sessions", "All sessions"),
+        ("s", "all_sessions", "Sessions"),
+        ("u", "all_job_owners", "Jobs: all sessions"),
     ]
     CSS = """
     #orientation { height: auto; max-height: 8; }
@@ -363,7 +367,7 @@ class DashboardApp(App[None]):
 
     def action_help(self) -> None:
         """Display the available read-only shortcuts."""
-        self._push(Navigation("help", self.navigation.session))
+        self._push(Navigation("help", self.navigation.session, self.navigation.job_filter))
 
     def action_jobs(self, job_filter: str) -> None:
         """Session detail shortcuts carry that session's immutable ownership key."""
@@ -375,6 +379,10 @@ class DashboardApp(App[None]):
         self._push(Navigation("jobs", self.navigation.session, "all"))
 
     def action_all_sessions(self) -> None:
+        """Return to the session overview from any view."""
+        self._push(Navigation())
+
+    def action_all_job_owners(self) -> None:
         """Remove the session filter in the Jobs view."""
         self._push(Navigation("jobs", None, self.navigation.job_filter))
 
