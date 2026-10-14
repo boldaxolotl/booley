@@ -359,7 +359,10 @@ time.sleep(10)
         deadline = time.monotonic() + 5
         while not Path({str(descendant_ready)!r}).exists() and time.monotonic() < deadline:
             time.sleep(0.01)
-        Path({str(context.work_dir / "ready")!r}).write_text(str(child.pid))
+        ready = Path({str(context.work_dir / "ready")!r})
+        pending = ready.with_suffix('.tmp')
+        pending.write_text(str(child.pid))
+        pending.replace(ready)
         time.sleep(10)
     """)
 
