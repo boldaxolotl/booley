@@ -651,6 +651,21 @@ or `a` for all Jobs. From a session detail, Job shortcuts show that session's
 Jobs; press `u` to include all sessions and standalone Jobs. `Esc` returns to
 the previous view, and `?` shows help.
 
+Sessions have short, persistent Project handles such as `S17`. Jobs include
+their kind: `J-SIM25`, `J-SYN34`, `J-LINT45`, or `J-FPGA33`; simulation baseline
+Jobs use `SIM`, and other endpoints use `J-JOB<n>`. One Job counter covers every
+kind, so numbers may skip within a kind. Handles survive Dashboard restarts
+and session pruning. The `1`–`9` keys remain navigation shortcuts, independent
+of handles. Full session keys and Job run IDs are secondary text in details;
+MCP polling continues to use the full run ID.
+
+Existing sessions and Jobs receive handles from MCP maintenance, which runs
+once per minute, or when they are next registered. Until then, or if handle
+storage is unavailable, the Dashboard shows `S?` or `J-SIM?` (and the equivalent
+for other kinds) with a diagnostic. Maintenance backfills at most 16384 retained
+Job files per pass; files beyond that scan bound stay unassigned until a
+producer registers them. The Dashboard itself never allocates handles.
+
 For scripted inspection, `booley goal status` shows this worktree's Goal Mode,
 or every active Goal Mode in the Project when this worktree hosts none.
 

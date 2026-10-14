@@ -11,6 +11,7 @@ from booley.goals.binding import GoalBindingError, GoalRunBinding
 from booley.goals.model import GoalRecord
 from booley.goals.paths import record_paths
 from booley.runtime import job_records
+from booley.runtime.handles import HandleStore
 from booley.runtime.job_observation import JobObservation, JobObserver
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import FuseSocError
@@ -29,6 +30,8 @@ class JobView(JobObservation):
     memory: int | None = None
     peak_memory: int | None = None
     eda_tool: str = ""
+    handle: str = ""
+    owner_handle: str = ""
 
 
 @dataclass(frozen=True)
@@ -113,11 +116,27 @@ class JobReader:
         roots = retained_job_roots(self._booley_dir, records, interactive_root=interactive_root)
         observed = self._observer.read(roots)
         catalogs: dict[str, TargetCatalog | None] = {}
-        rows = tuple(_job_view(job, catalogs) for job in observed.jobs)
-        return JobSnapshot(rows, observed.diagnostics)
+        handles, diagnostics = HandleStore(self._booley_dir, jobs=True).snapshot()
+        owners, owner_diagnostics = HandleStore(self._booley_dir).snapshot()
+        rows = tuple(_job_view(job, catalogs, handles, owners) for job in observed.jobs)
+        missing = (
+            ("Job or owner handles pending MCP registration/maintenance",)
+            if any(
+                not row.handle or (row.record.session_key and not row.owner_handle) for row in rows
+            )
+            else ()
+        )
+        return JobSnapshot(
+            rows, (*observed.diagnostics, *diagnostics, *owner_diagnostics, *missing)
+        )
 
 
-def _job_view(job: JobObservation, catalogs: dict[str, TargetCatalog | None]) -> JobView:
+def _job_view(
+    job: JobObservation,
+    catalogs: dict[str, TargetCatalog | None],
+    handles: dict[str, str],
+    owners: dict[str, str],
+) -> JobView:
     return JobView(
         root=job.root,
         record=job.record,
@@ -128,6 +147,8 @@ def _job_view(job: JobObservation, catalogs: dict[str, TargetCatalog | None]) ->
         diagnostic=job.diagnostic,
         artifacts=job.artifacts,
         eda_tool=_configured_tool(job.record, catalogs),
+        handle=handles.get(job.record.run_id, ""),
+        owner_handle=owners.get(job.record.session_key or "", ""),
     )
 
 

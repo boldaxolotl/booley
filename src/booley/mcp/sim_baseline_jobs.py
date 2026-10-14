@@ -30,6 +30,7 @@ from booley.goals.sim_baseline_store import (
     write_document,
 )
 from booley.runtime import job_records
+from booley.runtime.handles import register_job
 from booley.runtime.pid import is_pid_alive
 from booley.runtime.process_group import new_group_kwargs
 from booley.runtime.timefmt import utc_now_rfc3339
@@ -73,6 +74,7 @@ def launch_baseline(path: Path, request: dict[str, Any]) -> None:
         session_key=request["record"]["session_key"],
     )
     jobs = Path(request["jobs_root"])
+    register_job(Path(request["booley_dir"]), rec.run_id, rec.endpoint, rec.session_key)
     job_records.write_record(rec, jobs)
     environment = baseline_environment()
     source = str(Path(__file__).resolve().parents[2])

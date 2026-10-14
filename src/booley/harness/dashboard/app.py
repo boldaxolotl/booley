@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from typing import Any, ClassVar
 
@@ -26,6 +26,7 @@ from booley.harness.dashboard.model import DashboardSnapshot, GoalDetail, GoalVi
 from booley.harness.dashboard.resources import Resources
 from booley.mcp.session_registry import Attribution, SessionRow, shares_worktree
 from booley.review.goal_package import observation_facts
+from booley.runtime.handles import job_prefix
 from booley.runtime.pid import ProcessState
 from booley.runtime.session_activity import UNKNOWN, WAITING_TOOL, Activity
 from booley.runtime.timefmt import parse_timestamp
@@ -149,13 +150,32 @@ def _connection_label(row: SessionRow, now: float) -> str:
     return f"last seen {_age(row.last_call_at, now)} ago · connection unknown"
 
 
-def _owner_label(job: JobView, sessions: tuple[SessionRow, ...], now: float) -> str:
+def _owner_label(
+    job: JobView,
+    sessions: tuple[SessionRow, ...],
+    now: float,
+    handles: Mapping[str, str] | None = None,
+) -> str:
     key = job.record.session_key
     if key is None:
         return "standalone"
-    row = next((row for row in sessions if row.attribution.key == key), None)
+    handles = handles or {}
+    label = job.owner_handle or handles.get(key, "S?")
+    row = next(
+        (
+            row
+            for row in sessions
+            if row.attribution.key == key
+            or (label != "S?" and handles.get(row.attribution.key) == label)
+        ),
+        None,
+    )
     state = _connection_label(row, now) if row else "disconnected"
-    return f"{key} ({state})"
+    return f"{label} ({state})"
+
+
+def _job_label(job: JobView) -> str:
+    return job.handle or job_prefix(job.record.endpoint) + "?"
 
 
 def _job_row(job: JobView, now: float, owner: str) -> str:
@@ -167,7 +187,7 @@ def _job_row(job: JobView, now: float, owner: str) -> str:
     else:
         outcome = "resources unavailable"
     return (
-        f"{job.record.endpoint} · {DashboardApp._target(job)} · {owner} · "
+        f"{_job_label(job)} · {job.record.endpoint} · {DashboardApp._target(job)} · {owner} · "
         f"{job.state} · {_elapsed(job, now)} · {job.stage or 'stage —'} · {outcome}"
     )
 
@@ -178,7 +198,8 @@ def job_detail(job: JobView, *, now: float | None = None) -> str:
     paths = job_paths(job)
     return "\n".join(
         [
-            f"{rec.endpoint} · {rec.run_id}",
+            f"{_job_label(job)} · {rec.endpoint}",
+            f"Run ID: {rec.run_id}",
             f"Execution: {job.state} · exit {rec.exit_code}",
             f"Design verdict: {report.get('passed', 'unavailable')}",
             f"Flow configuration: {' '.join(rec.argv) or '—'}",
@@ -202,7 +223,7 @@ def job_paths(job: JobView) -> tuple[str, ...]:
 
 def _job_summary(job: JobView, now: float) -> str:
     """Compact overview form: Flow, Target and elapsed time."""
-    return f"{job.record.endpoint} {DashboardApp._target(job)} {_elapsed(job, now)}"
+    return f"{_job_label(job)} · {job.record.endpoint} {DashboardApp._target(job)} {_elapsed(job, now)}"
 
 
 def _reported_metrics(report: dict[str, Any]) -> str:
@@ -431,10 +452,10 @@ class DashboardApp(App[None]):
             _connection_label(row, self.snapshot.observed_at) if connected else "disconnected"
         )
         return (
-            f"{facts.work_dir} · {branch or 'branch unavailable'} · "
+            f"{self._session_handle(facts.key)} · {facts.work_dir} · {branch or 'branch unavailable'} · "
             f"{'Goal Mode' if goal else 'Interactive'} · {connection} · uptime {_age(row.started_at, self.snapshot.observed_at)}\n"
             f"{_sentence(self._activity_label(facts.key))} · {warning}\nLast Booley call: {last.tool if last else '—'} "
-            f"· {_age(row.last_call_at, self.snapshot.observed_at)} ago"
+            f"· {_age(row.last_call_at, self.snapshot.observed_at)} ago\nSession key: {facts.key}"
         ), goal
 
     def _activity_label(self, key: str) -> str:
@@ -469,7 +490,7 @@ class DashboardApp(App[None]):
         rows = [
             job
             for job in self.snapshot.jobs.jobs
-            if self.navigation.session is None or job.record.session_key == self.navigation.session
+            if self.navigation.session is None or self._owned_by(job, self.navigation.session)
         ]
         if self.navigation.job_filter != "all":
             recent = self.navigation.job_filter == "recent"
@@ -499,14 +520,19 @@ class DashboardApp(App[None]):
             jobs = self._jobs()
             return (
                 f"Jobs · {nav.job_filter}{f' (newest {RECENT_JOBS})' if nav.job_filter == 'recent' else ''}"
-                f" · {nav.session or 'all sessions and standalone'}",
+                f" · {self._session_handle(nav.session) if nav.session else 'all sessions and standalone'}",
                 [json.dumps(job.key) for job in jobs],
                 [
                     (
                         _job_row(
                             job,
                             self.snapshot.observed_at,
-                            _owner_label(job, self.snapshot.sessions, self.snapshot.observed_at),
+                            _owner_label(
+                                job,
+                                self.snapshot.sessions,
+                                self.snapshot.observed_at,
+                                self.snapshot.session_handles,
+                            ),
                         ),
                     )
                     for job in jobs
@@ -565,11 +591,11 @@ class DashboardApp(App[None]):
         activities.extend(
             (
                 "job:" + json.dumps(job.key),
-                f"Running Job: {job.record.endpoint} · {self._target(job)} · {job.state}"
+                f"Running Job: {_job_label(job)} · {job.record.endpoint} · {self._target(job)} · {job.state}"
                 f" · {_elapsed(job, self.snapshot.observed_at)}",
             )
             for job in self.snapshot.jobs.jobs
-            if job.record.session_key == self.navigation.session
+            if self._owned_by(job, self.navigation.session)
             and job.state not in TERMINAL_JOB_STATES
         )
         session = next(
@@ -600,6 +626,17 @@ class DashboardApp(App[None]):
     def _target(job: JobView) -> str:
         return target_arg(job.record.argv) or "Target —"
 
+    def _session_handle(self, key: str) -> str:
+        return self.snapshot.session_handles.get(key, "S?")
+
+    def _owned_by(self, job: JobView, key: str | None) -> bool:
+        """Aliases affect presentation membership only; routing keeps durable keys."""
+        if key is None:
+            return job.record.session_key is None
+        owner = job.owner_handle or self.snapshot.session_handles.get(job.record.session_key or "")
+        label = self.snapshot.session_handles.get(key)
+        return owner == label if owner and label else job.record.session_key == key
+
     def _overview_row(self, row: Any) -> str:
         facts = row.attribution
         goal = next(
@@ -626,12 +663,12 @@ class DashboardApp(App[None]):
         jobs = [
             job
             for job in self.snapshot.jobs.jobs
-            if job.record.session_key == facts.key and job.state == "running"
+            if self._owned_by(job, facts.key) and job.state == "running"
         ]
         running = "; ".join(_job_summary(job, self.snapshot.observed_at) for job in jobs)
         branch = facts.branch or (goal.record.branch if goal and goal.record else "")
         return (
-            f"{self.shortcuts.get(facts.key, '·')} · {facts.work_dir} · {branch or 'branch —'} · "
+            f"{self.shortcuts.get(facts.key, '·')} · {self._session_handle(facts.key)} · {facts.work_dir} · {branch or 'branch —'} · "
             f"{'Goal Mode' if goal else 'Interactive'} · {_age(row.started_at, self.snapshot.observed_at)} · {self._activity_label(facts.key)}"
             + summary
             + warning
@@ -768,7 +805,13 @@ class DashboardApp(App[None]):
     def _job_detail(self, job: JobView) -> str:
         return (
             "Owner: "
-            + _owner_label(job, self.snapshot.sessions, self.snapshot.observed_at)
+            + _owner_label(
+                job,
+                self.snapshot.sessions,
+                self.snapshot.observed_at,
+                self.snapshot.session_handles,
+            )
+            + (f"\nSession key: {job.record.session_key}" if job.record.session_key else "")
             + "\n"
             + job_detail(job, now=self.snapshot.observed_at)
         )

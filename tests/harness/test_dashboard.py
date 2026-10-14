@@ -86,7 +86,68 @@ def snapshot(count=12):
         ),
         JobView(Path("/jobs"), JobRecord("two", "lint", STAMP, 60, status="done"), "completed"),
     )
-    return model.DashboardSnapshot(rows, jobs=JobSnapshot(jobs), observed_at=1791454200)
+    return model.DashboardSnapshot(
+        rows,
+        jobs=JobSnapshot(jobs),
+        observed_at=1791454200,
+        session_handles={row.attribution.key: f"S{index + 1}" for index, row in enumerate(rows)},
+    )
+
+
+@pytest.mark.asyncio
+async def test_handles_name_every_dashboard_surface_and_full_keys_only_in_details():
+    current = snapshot(12)
+    jobs = tuple(
+        replace(
+            job,
+            handle=f"J-{'SIM' if index == 0 else 'LINT'}{index + 1}",
+            owner_handle="S1" if index == 0 else "",
+        )
+        for index, job in enumerate(current.jobs.jobs)
+    )
+    current = replace(current, jobs=JobSnapshot(jobs))
+    app = DashboardApp(lambda: current)
+    async with app.run_test(size=(90, 35)) as pilot:
+        assert "S12" in str(app._content()[2][-1])
+        assert "J-SIM1" in str(app._content()[2][0])
+        assert "codex:00" not in str(app._content()[2])
+        await pilot.press("1")
+        orientation, _, rows = app._content()
+        assert orientation.startswith("S1 ·")
+        assert "Session key: codex:00" in orientation
+        assert "J-SIM1" in str(rows)
+        await pilot.press("j")
+        orientation, _, rows = app._content()
+        assert orientation.endswith(" · S1")
+        assert "J-SIM1" in str(rows) and "S1" in str(rows)
+        assert "codex:00" not in orientation + str(rows)
+        await pilot.press("enter")
+        detail = str(app.query_one("#detail", Static).render())
+        assert "Owner: S1" in detail and "J-SIM1 · sim" in detail
+        assert "Session key: codex:00" in detail and "Run ID: one" in detail
+        await pilot.press("escape", "escape")
+        assert app.navigation.session == "codex:00"
+
+
+def test_alias_ownership_keeps_historical_jobs_in_session_scope_and_summaries():
+    current = snapshot(1)
+    old = "worktree:path:/fixture/0"
+    job = replace(
+        current.jobs.jobs[0],
+        record=replace(current.jobs.jobs[0].record, session_key=old),
+        handle="J-SIM1",
+        owner_handle="S1",
+    )
+    current = replace(
+        current, jobs=JobSnapshot((job,)), session_handles={"codex:00": "S1", old: "S1"}
+    )
+    app = DashboardApp(lambda: current)
+    app.snapshot = current
+    app.navigation = Navigation("jobs", "codex:00")
+    assert app._jobs() == [job]
+    assert "J-SIM1" in app._overview_row(current.sessions[0])
+    assert "S1" in str(app._content())
+    assert old not in str(app._content())
 
 
 @pytest.mark.asyncio
@@ -657,7 +718,7 @@ def test_overview_summarizes_session_and_standalone_running_jobs():
     app.snapshot = replace(current, jobs=JobSnapshot((*current.jobs.jobs, standalone)))
     elapsed = f"{1791454200 - 1791453600}s"
     orientation, _, rows = app._overview()
-    assert f"Standalone running Jobs: lint lint_top {elapsed}" in orientation
+    assert f"Standalone running Jobs: J-LINT? · lint lint_top {elapsed}" in orientation
     assert f"sim Target — {elapsed}" in str(rows[0])
     app.snapshot = current
     assert "Standalone" not in app._overview()[0]

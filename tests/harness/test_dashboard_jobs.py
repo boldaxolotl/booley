@@ -474,7 +474,10 @@ def test_dashboard_job_view_preserves_every_observation_field(tmp_path, monkeypa
         getattr(snapshot.jobs[0], field.name) == getattr(observation, field.name)
         for field in fields(JobObservation)
     )
-    assert snapshot.diagnostics == ("history truncated",)
+    assert snapshot.diagnostics == (
+        "history truncated",
+        "Job or owner handles pending MCP registration/maintenance",
+    )
 
 
 @pytest.mark.parametrize(
@@ -510,7 +513,10 @@ def test_invalid_goal_binding_never_reaches_process_observation(tmp_path, monkey
     observed = JobReader(tmp_path).read((), interactive_root=root)
 
     assert [job.record.run_id for job in observed.jobs] == ["good"]
-    assert observed.diagnostics == (f"Job record unavailable: {root / 'bad.json'}",)
+    assert observed.diagnostics == (
+        f"Job record unavailable: {root / 'bad.json'}",
+        "Job or owner handles pending MCP registration/maintenance",
+    )
 
 
 def test_dashboard_goal_rows_and_job_history_share_one_enumeration(tmp_path, monkeypatch):

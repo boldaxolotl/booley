@@ -95,10 +95,18 @@ def test_corrupt_future_schema_and_symlink_are_diagnosed_not_pruned(registry, tm
     registry.path(facts().key).write_text(json.dumps(data))
     corrupt = registry.root / "corrupt.json"
     corrupt.write_bytes(b"{broken")
-    before = {path.name: path.read_bytes() for path in registry.root.iterdir()}
+    before = {
+        str(path.relative_to(registry.root)): path.read_bytes()
+        for path in registry.root.rglob("*")
+        if path.is_file()
+    }
     assert len(registry.snapshot().diagnostics) == 2
     assert registry.prune(now=999, namespace=SCOPE) == 0
-    assert before == {path.name: path.read_bytes() for path in registry.root.iterdir()}
+    assert before == {
+        str(path.relative_to(registry.root)): path.read_bytes()
+        for path in registry.root.rglob("*")
+        if path.is_file()
+    }
     link = registry.root / "linked.json"
     symlink_or_skip(link, corrupt)
     assert len(registry.snapshot().diagnostics) == 3
@@ -358,13 +366,21 @@ def test_visible_registry_is_one_namespace_and_unknown_is_unavailable(registry):
         "completed",
         now=100,
     )
-    before = {path.name: path.read_bytes() for path in registry.root.iterdir()}
+    before = {
+        str(path.relative_to(registry.root)): path.read_bytes()
+        for path in registry.root.rglob("*")
+        if path.is_file()
+    }
     assert [
         row.attribution.key for row in registry.visible_snapshot(now=101, scope=SCOPE).rows
     ] == [facts().key]
     assert registry.visible_snapshot(now=101, scope="").rows == ()
     assert "namespace unavailable" in registry.visible_snapshot(now=101, scope="").diagnostics[-1]
-    assert before == {path.name: path.read_bytes() for path in registry.root.iterdir()}
+    assert before == {
+        str(path.relative_to(registry.root)): path.read_bytes()
+        for path in registry.root.rglob("*")
+        if path.is_file()
+    }
 
 
 @pytest.mark.parametrize("thread", ["bad\ud800", "bad\n", "bad\x7f", "", 123])
