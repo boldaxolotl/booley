@@ -30,7 +30,7 @@ def test_resolved_target_plans_one_private_serial_item_per_exact_test(
     catalog_empty = _plan(handle, inspection, preview, (), catalog_backed=True)
     assert catalog_empty["required_suite"]["names"] == ()  # type: ignore[index]
     assert catalog_empty["required_suite"]["default_invocation"] is False  # type: ignore[index]
-    assert catalog_empty["required_suite"]["source_path"] == ".booley_project/tests.toml"  # type: ignore[index]
+    assert catalog_empty["required_suite"]["source_path"] == ".booley/tests.toml"  # type: ignore[index]
     (project / "booley.toml").write_text(
         '[flows.sim]\nrun_cwd = "."\npre_sim_build_access = "legacy-per-test"\n',
         encoding="utf-8",
@@ -65,7 +65,7 @@ def test_candidate_and_baseline_plans_disclose_carried_build_budget(
 
 
 def _planning_fixture(tmp_path: Path):
-    project = tmp_path / ".booley_project"
+    project = tmp_path / ".booley"
     project.mkdir()
     (project / "booley.toml").write_text("[flows.sim]\nrun_cwd = '.'\n", encoding="utf-8")
     (project / "tests.toml").write_text('[sim]\ntests = ["reset", "count"]\n', encoding="utf-8")

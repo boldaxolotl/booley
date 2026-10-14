@@ -7,8 +7,8 @@ import pytest
 from booley.feedback import cli as feedback_cli
 from booley.feedback.findings import Finding, append
 from booley.harness import booley, feedback_environment
+from booley.runtime import booley_dir as booley_dir_mod
 from booley.runtime import doctor_stamp
-from booley.runtime import project_dir as project_dir_mod
 
 
 @pytest.mark.parametrize(
@@ -60,25 +60,25 @@ def test_feedback_dispatch_reads_stamp_only_for_rendering_commands(
 
 
 def test_feedback_report_renders_real_doctor_stamp(tmp_path, monkeypatch):
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
     project = tmp_path / "project"
-    project_dir = project / ".booley_project"
-    project_dir.mkdir(parents=True)
-    (project_dir / "booley.toml").write_text(
+    booley_dir = project / ".booley"
+    booley_dir.mkdir(parents=True)
+    (booley_dir / "booley.toml").write_text(
         '[project]\nname = "project"\n',
         encoding="utf-8",
     )
-    append(Finding(title="project note", bucket="project"), project_dir)
-    assert doctor_stamp.record_clean_run(project_dir, project, deep=True) is not None
+    append(Finding(title="project note", bucket="project"), booley_dir)
+    assert doctor_stamp.record_clean_run(booley_dir, project, deep=True) is not None
     parser = ArgumentParser()
     feedback_cli.add_subparser(parser.add_subparsers(dest="command"))
     args = parser.parse_args(["feedback", "report"])
 
-    project_dir_mod.reset_cache()
+    booley_dir_mod.reset_cache()
     try:
         assert booley._cmd_feedback(args, project) == 0
     finally:
-        project_dir_mod.reset_cache()
+        booley_dir_mod.reset_cache()
 
-    report = (project_dir / "SETUP-REPORT.md").read_text(encoding="utf-8")
+    report = (booley_dir / "SETUP-REPORT.md").read_text(encoding="utf-8")
     assert "| doctor --deep clean | yes |" in report

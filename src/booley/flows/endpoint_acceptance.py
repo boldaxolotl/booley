@@ -363,11 +363,11 @@ def _criterion_binding_gate(endpoint: EndpointState) -> EndpointOutcome | None:
         CriterionEndpointCatalog,
         EndpointCriterionRelationship,
     )
-    from booley.runtime.project_dir import resolve_checkout_project_dir
+    from booley.runtime.booley_dir import resolve_checkout_booley_dir
 
     try:
         project_criteria_path = (
-            resolve_checkout_project_dir(Path(endpoint.args.work_dir)) / "criteria.toml"
+            resolve_checkout_booley_dir(Path(endpoint.args.work_dir)) / "criteria.toml"
         )
     except (FileNotFoundError, SourceCheckoutProjectError):
         project_criteria_path = None

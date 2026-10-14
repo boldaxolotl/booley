@@ -326,7 +326,7 @@ class TestDoClean:
 
 
 # ---------------------------------------------------------------------------
-# SETUP-27: result dirs land under .booley_project/.runtime, not util/syn
+# SETUP-27: result dirs land under .booley/.runtime, not util/syn
 # ---------------------------------------------------------------------------
 
 
@@ -336,10 +336,10 @@ class TestSynResultRoot:
         never in the design repo's util/syn/ namespace (SETUP-27)."""
         from booley.flows.synth.backends import configure as mod
 
-        (tmp_path / ".booley_project").mkdir()
+        (tmp_path / ".booley").mkdir()
         result_root = mod._synth_result_root(tmp_path)
         parts = result_root.parts
-        assert ".booley_project" in parts
+        assert ".booley" in parts
         assert ".runtime" in parts
         assert result_root.name == "syn_result"
         assert "util" not in parts

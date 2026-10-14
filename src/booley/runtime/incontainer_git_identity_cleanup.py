@@ -97,9 +97,9 @@ def cleanup_git_identity(checkout: Path, identity: GitIdentity) -> None:
 
 def main() -> None:
     """Clean the designated Interactive Project Root, never a Ticket apply path."""
-    project_dir = Path(os.environ.get("BOOLEY_PROJECT_DIR", "/booley-project"))
+    booley_dir = Path(os.environ.get("BOOLEY_DIR", "/booley-project"))
     checkout = Path(os.environ.get("BOOLEY_GIT_CHECKOUT", Path.cwd()))
-    cleanup_git_identity(checkout, load_git_identity(project_dir))
+    cleanup_git_identity(checkout, load_git_identity(booley_dir))
 
 
 if __name__ == "__main__":

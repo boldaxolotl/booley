@@ -65,7 +65,7 @@ def test_child_recovery_rejects_display_form_parent_identity(tmp_path: Path) -> 
     store.publish_manifest(manifest)
     project = tmp_path / "project"
     project.mkdir()
-    (project / ".booley_project").mkdir()
+    (project / ".booley").mkdir()
     registry = child_protocol.ChildExecutionRegistry(store, manifest, project)
     item = manifest.document["work_items"][0]
     attempt_id = "550e8400-e29b-41d4-a716-446655440001"

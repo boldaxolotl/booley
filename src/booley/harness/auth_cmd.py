@@ -97,10 +97,10 @@ def _report_status() -> int:
 
 def _project_is_initialized(project_root: Path) -> bool:
     """Whether *project_root* resolves to Project-owned state."""
-    from booley.runtime.project_dir import resolve_checkout_project_dir
+    from booley.runtime.booley_dir import resolve_checkout_booley_dir
 
     try:
-        return resolve_checkout_project_dir(project_root).is_dir()
+        return resolve_checkout_booley_dir(project_root).is_dir()
     except FileNotFoundError:
         return False
 

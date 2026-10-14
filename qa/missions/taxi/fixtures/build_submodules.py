@@ -142,7 +142,7 @@ endmodule
     )
     template = Path(__file__).with_name("fixture.core").read_text(encoding="utf-8")
     put(root, "fixture.core", template)
-    put(root, ".gitignore", ".booley_project/\nbuild/\n")
+    put(root, ".gitignore", ".booley/\nbuild/\n")
 
 
 def outer_sources(root: Path, sources: Path, histories: dict) -> dict:
@@ -152,7 +152,7 @@ def outer_sources(root: Path, sources: Path, histories: dict) -> dict:
     clone(sources / "leaf", root / "deps/data/nested/leaf", histories["leaf"]["A"])
     clone(sources / "unselected", root / "deps/unselected", histories["unselected"]["A"])
     modules(root, ["deps/data", "deps/unselected"])
-    pair = root / ".booley_project"
+    pair = root / ".booley"
     init(pair)
     clone(sources / "control", pair / "deps/control", histories["control"]["A"])
     modules(pair, ["deps/control"])

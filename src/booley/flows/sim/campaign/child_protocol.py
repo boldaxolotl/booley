@@ -14,6 +14,7 @@ from pathlib import Path
 
 from booley.core.boundary import BoundaryError, require_int
 from booley.flows.sim.campaign_durability import durable_create
+from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.runtime.execution_records import (
     PROTOCOL_VERSION,
     ExecutionId,
@@ -23,7 +24,6 @@ from booley.runtime.execution_records import (
     request_cancellation,
 )
 from booley.runtime.execution_recovery import recover_execution
-from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.runtime.regular_file import open_regular_nofollow
 from booley.runtime.timefmt import utc_now_rfc3339
 
@@ -93,7 +93,7 @@ class ChildExecutionRegistry:
         manifest: SimulationCampaignManifest,
         project_root: Path,
     ) -> None:
-        self._configure(store, manifest, resolve_checkout_project_dir(project_root))
+        self._configure(store, manifest, resolve_checkout_booley_dir(project_root))
 
     @classmethod
     def from_project_data(
@@ -165,7 +165,7 @@ class ChildExecutionRegistry:
         campaign_entry = self._campaign_root / "entries" / f"{execution_id}.json"
         _publish_or_verify(project_entry, entry_raw)
         _publish_or_verify(campaign_entry, entry_raw)
-        paths = execution_paths(execution_id, project_dir=self._project_data)
+        paths = execution_paths(execution_id, booley_dir=self._project_data)
         _publish_or_verify(paths.context, context_raw)
         if read_json(paths.record) is None:
             atomic_write_json(paths.record, _waiting_record())
@@ -183,7 +183,7 @@ class ChildExecutionRegistry:
         terminal_cause: str,
     ) -> None:
         with self._record_lock(prepared.execution_id):
-            paths = execution_paths(prepared.execution_id, project_dir=self._project_data)
+            paths = execution_paths(prepared.execution_id, booley_dir=self._project_data)
             terminal = read_json(paths.record)
             if terminal is None:
                 raise SimulationCampaignIntegrityError("child execution record disappeared")
@@ -217,7 +217,7 @@ class ChildExecutionRegistry:
         terminal_cause: str,
         token_absent: bool,
     ) -> None:
-        paths = execution_paths(prepared.execution_id, project_dir=self._project_data)
+        paths = execution_paths(prepared.execution_id, booley_dir=self._project_data)
         terminal = read_json(paths.record)
         if terminal is None or terminal.get("tree_terminal") is not True:
             raise SimulationCampaignIntegrityError(
@@ -240,7 +240,7 @@ class ChildExecutionRegistry:
         _publish_or_verify(campaign, raw)
 
     def is_terminal(self, execution_id: ExecutionId) -> bool:
-        paths = execution_paths(execution_id, project_dir=self._project_data)
+        paths = execution_paths(execution_id, booley_dir=self._project_data)
         record = read_json(paths.record)
         return bool(
             record is not None
@@ -249,12 +249,12 @@ class ChildExecutionRegistry:
         )
 
     def cancel(self, execution_id: ExecutionId) -> bool:
-        paths = execution_paths(execution_id, project_dir=self._project_data)
+        paths = execution_paths(execution_id, booley_dir=self._project_data)
         request_cancellation(paths, reason="campaign_cancelled")
         deadline = time.monotonic() + 5.0
         while True:
             with self._record_lock(execution_id):
-                recovered = recover_execution(execution_id, project_dir=self._project_data)
+                recovered = recover_execution(execution_id, booley_dir=self._project_data)
             if recovered:
                 return True
             if time.monotonic() >= deadline:
@@ -384,7 +384,7 @@ class ChildExecutionRegistry:
         if project_retired.exists():
             retired_raw, _retirement = _read_protocol_record(project_retired, "child retirement")
             terminal = read_json(
-                execution_paths(execution_id, project_dir=self._project_data).record
+                execution_paths(execution_id, booley_dir=self._project_data).record
             )
             if terminal is None or terminal.get("tree_terminal") is not True:
                 raise SimulationCampaignIntegrityError(
@@ -404,13 +404,13 @@ class ChildExecutionRegistry:
             _sha(raw),
             path,
             campaign_entry,
-            execution_paths(execution_id, project_dir=self._project_data).context,
+            execution_paths(execution_id, booley_dir=self._project_data).context,
         )
         self._recover_execution(prepared, entry)
         lease_id = self._release_matching_token(slot_store, execution_id)
         if slot_store is None:
             self._assert_no_unmanaged_token(execution_id)
-        record = read_json(execution_paths(execution_id, project_dir=self._project_data).record)
+        record = read_json(execution_paths(execution_id, booley_dir=self._project_data).record)
         cause = str(record.get("terminal_cause", "recovered")) if record else "recovered"
         self.retire(prepared, lease_id=lease_id, terminal_cause=cause, token_absent=True)
 
@@ -428,7 +428,7 @@ class ChildExecutionRegistry:
         if _sha(raw) != entry.get("runtime_context_sha256"):
             raise SimulationCampaignIntegrityError("child context digest disagrees with entry")
         _publish_or_verify(prepared.context_path, raw)
-        paths = execution_paths(prepared.execution_id, project_dir=self._project_data)
+        paths = execution_paths(prepared.execution_id, booley_dir=self._project_data)
         if read_json(paths.record) is None:
             atomic_write_json(paths.record, _waiting_record())
         if not self.is_terminal(prepared.execution_id) and not self.cancel(prepared.execution_id):

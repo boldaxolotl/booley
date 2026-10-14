@@ -28,7 +28,7 @@ from booley.flows.synth.backends.yosys.core import (  # Core synthesis functions
 from booley.flows.synth.mode import SYNTH_MODE_CHOICES, SynthMode
 from booley.flows.synth.timing import StaTimingConfig
 from booley.flows.target_parameters import ParameterValue
-from booley.runtime.project_dir import resolve_checkout_project_dir
+from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.runtime.shared_infra import (
     check_paths as _check_paths,
 )
@@ -51,7 +51,7 @@ def _project_root(project_root: Path | None = None) -> Path:
 def _synth_result_root(project_root: Path | None = None) -> Path:
     """Return the project-owned standalone synthesis result directory."""
     root = _project_root(project_root)
-    return resolve_checkout_project_dir(root) / ".runtime" / "syn" / "syn_result"
+    return resolve_checkout_booley_dir(root) / ".runtime" / "syn" / "syn_result"
 
 
 def _resolve_extra_rtl(args: argparse.Namespace, root: Path | None = None) -> list[Path]:

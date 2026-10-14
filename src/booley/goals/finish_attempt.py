@@ -59,6 +59,7 @@ def validate_attempt(frozen: dict[str, Any], operation: LifecycleOperation) -> N
         if set(frozen) != fields or version not in {
             "booley.goal-finish-attempt/v1",
             "booley.goal-finish-attempt/v2",
+            "booley.goal-finish-attempt/v3",
         }:
             raise ValueError("unknown finish attempt schema/fields")
         if (
@@ -71,16 +72,33 @@ def validate_attempt(frozen: dict[str, Any], operation: LifecycleOperation) -> N
             raise ValueError("attempt revision must be nonnegative")
         if frozen["destination_before"] != "absent" or frozen["mode"] != "100644":
             raise ValueError("invalid publication destination/mode")
-        _validate_path(frozen["path"], record.id, operation.request.operation_id)
+        from booley.runtime.booley_dir_migration import (
+            historical_publication_paths,
+            historical_skip_note,
+            is_archived_record,
+        )
+
+        archived = record.state.value in {
+            "finished",
+            "abandoned",
+            "failed",
+        } and is_archived_record(operation.store.booley_dir, record.id)
+        if archived and frozen["path"] in historical_publication_paths(
+            record.id, operation.request.operation_id
+        ):
+            pass  # Exact historical confinement is validated by the migration boundary.
+        else:
+            _validate_path(frozen["path"], record.id, operation.request.operation_id)
         _validate_package(frozen, operation, record)
-        if version == "booley.goal-finish-attempt/v2":
+        if version in {"booley.goal-finish-attempt/v2", "booley.goal-finish-attempt/v3"}:
             validate_capture(frozen["private_capture"], frozen["package"]["input_proof"])
             validate_presentation(operation, frozen)
         skip = frozen["skip_publication"]
-        if skip not in {
+        historical_skip = {historical_skip_note()} if archived else set()
+        if skip not in historical_skip | {
             None,
             "summary kept local; Stealth publication is skipped",
-            "summary kept local; `.booley_project` is git-excluded",
+            "summary kept local; `.booley` is git-excluded",
             "summary kept local; Paired Checkout preserves independent Booley history",
         }:
             raise ValueError("invalid publication skip identity")
@@ -93,8 +111,8 @@ def validate_attempt(frozen: dict[str, Any], operation: LifecycleOperation) -> N
 def _validate_path(raw: object, record_id: str, operation_id: str) -> None:
     path = require_str_value(raw, field="publication path")
     allowed = {
-        f".booley_project/goals/history/{record_id}.md",
-        f".booley_project/goals/history/{record_id}-{operation_id}.md",
+        f".booley/goals/history/{record_id}.md",
+        f".booley/goals/history/{record_id}-{operation_id}.md",
     }
     if (
         path not in allowed

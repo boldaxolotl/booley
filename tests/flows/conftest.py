@@ -12,13 +12,13 @@ def _flow_project_root(tmp_path):
 
 
 @pytest.fixture(autouse=True)
-def _set_project_dir(tmp_path, monkeypatch):
+def _set_booley_dir(tmp_path, monkeypatch):
     """Keep Flow tests independent of a locally initialized project."""
-    from booley.runtime.project_dir import reset_cache
+    from booley.runtime.booley_dir import reset_cache
 
     reset_cache()
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path))
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path))
 
 
 @pytest.fixture(autouse=True)

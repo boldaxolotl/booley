@@ -277,7 +277,7 @@ class TargetCatalog:
                 }
             )
         )
-        projection_config = self.project_root / ".booley_project" / "booley.toml"
+        projection_config = self.project_root / ".booley" / "booley.toml"
         self._require_fresh()
         return TargetCompileSurface(
             project_root=self.project_root,

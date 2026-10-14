@@ -60,7 +60,7 @@ from booley.flows.sim.trace_session import TraceSession
 from booley.fusesoc import fusesoc_registry, selftest_overlay
 from booley.fusesoc.fusesoc_registry import ResolvedFile, ResolvedTarget
 from booley.runtime import paths as runtime_paths
-from booley.runtime.project_dir import reset_cache
+from booley.runtime.booley_dir import reset_cache
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
 
@@ -262,7 +262,7 @@ def _write_runtime_input_project(
     *,
     tool_declaration: str = "    flow: sim\n    flow_options: {tool: icarus}\n",
 ) -> Path:
-    state = root / ".booley_project"
+    state = root / ".booley"
     state.mkdir(parents=True)
     (state / "booley.toml").write_text("", encoding="utf-8")
     (root / "tb.sv").write_text("module tb; endmodule\n", encoding="utf-8")
@@ -344,7 +344,7 @@ def _write_stale_compiler_fixture(root: Path) -> tuple[Path, Path]:
     """A compiler that deliberately leaves an existing image stale."""
     project = root / "project"
     project.mkdir()
-    (project / ".booley_project").mkdir()
+    (project / ".booley").mkdir()
     source = project / "tb.sv"
     source.write_text("module tb; // OLD\nendmodule\n", encoding="utf-8")
     (project / "multi.core").write_text(
@@ -1781,11 +1781,11 @@ def test_projected_core_bad_overlay_reaches_design_failure(
     )
     monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
     monkeypatch.setenv(selftest_overlay.INTERNAL_KIND_ENV, selftest_overlay.BAD_KIND)
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(state))
+    monkeypatch.setenv("BOOLEY_DIR", str(state))
     reset_cache()
 
     handle = TargetCatalog.build(project).select("sim", for_flow="sim")
-    previous_project_dir = os.environ.get("BOOLEY_PROJECT_DIR")
+    previous_booley_dir = os.environ.get("BOOLEY_DIR")
     try:
         for outcome in _run_real_icarus_twice(project, handle):
             assert outcome.verdict == "fail"
@@ -1798,10 +1798,10 @@ def test_projected_core_bad_overlay_reaches_design_failure(
         assert result.returncode == 1, result.stdout + result.stderr
         assert not _doctor_view_paths(state)
     finally:
-        if previous_project_dir is None:
-            monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+        if previous_booley_dir is None:
+            monkeypatch.delenv("BOOLEY_DIR", raising=False)
         else:
-            monkeypatch.setenv("BOOLEY_PROJECT_DIR", previous_project_dir)
+            monkeypatch.setenv("BOOLEY_DIR", previous_booley_dir)
         reset_cache()
 
 
@@ -1878,7 +1878,7 @@ def test_icarus_pre_sim_output_gates_reuse_only_inside_the_generation(
     pytest.importorskip("fusesoc")
     pytest.importorskip("edalize")
     project, _ = _write_stale_compiler_fixture(tmp_path)
-    (project / ".booley_project" / "booley.toml").write_text(
+    (project / ".booley" / "booley.toml").write_text(
         f'[flows.sim]\npre_run_commands = ["printf fw > \\"{destination}\\""]\n',
         encoding="utf-8",
     )
@@ -1983,7 +1983,7 @@ def test_missing_new_image_is_build_infrastructure_and_never_launches(
         nonlocal launched
         result = base_invoke(command, timeout=timeout)
         if "BOOLEY_BUILD_STAGE" in command[-1]:
-            for script in (project / ".booley_project" / ".runtime").rglob("*.scr"):
+            for script in (project / ".booley" / ".runtime").rglob("*.scr"):
                 script.with_suffix("").unlink(missing_ok=True)
         if "booley.flows.sim.backends.icarus" in command[-1]:
             launched = True
@@ -2021,7 +2021,7 @@ def test_each_pre_sim_hook_runs_in_its_launched_generation(
     pytest.importorskip("fusesoc")
     pytest.importorskip("edalize")
     project, _ = _write_stale_compiler_fixture(tmp_path)
-    (project / ".booley_project" / "booley.toml").write_text(
+    (project / ".booley" / "booley.toml").write_text(
         "[flows.sim]\n"
         'pre_run_commands = ["printf %s \\"$BOOLEY_TEST_NAME\\" > '
         '\\"$BOOLEY_BUILD_ROOT/hook.txt\\""]\n',
@@ -2160,7 +2160,7 @@ def test_icarus_trace_reaches_execution_on_first_and_repeat_run(
     if queryable and native_bwave is None:
         pytest.skip("native B-Wave binary is required to verify a queryable Trace Artifact")
     project, _ = _write_stale_compiler_fixture(tmp_path)
-    state = project / ".booley_project"
+    state = project / ".booley"
     cores = state / "cores"
     cores.mkdir()
     (project / "multi.core").rename(cores / "multi.core")
@@ -2197,7 +2197,7 @@ def test_hook_editing_project_source_after_setup_cannot_launch_staged_old_copy(
     pytest.importorskip("fusesoc")
     pytest.importorskip("edalize")
     project, _ = _write_stale_compiler_fixture(tmp_path)
-    (project / ".booley_project" / "booley.toml").write_text(
+    (project / ".booley" / "booley.toml").write_text(
         '[flows.sim]\npre_run_commands = ["sed -i s/OLD/NEW/ tb.sv"]\n',
         encoding="utf-8",
     )
@@ -2224,7 +2224,7 @@ def test_hook_editing_staged_source_cannot_launch_image(
     pytest.importorskip("fusesoc")
     pytest.importorskip("edalize")
     project, _ = _write_stale_compiler_fixture(tmp_path)
-    (project / ".booley_project" / "booley.toml").write_text(
+    (project / ".booley" / "booley.toml").write_text(
         '[flows.sim]\npre_run_commands = ["printf MUTATED >> '
         '\\"$BOOLEY_BUILD_ROOT/src/acme_lib_multi_1/tb.sv\\""]\n',
         encoding="utf-8",
@@ -2245,7 +2245,7 @@ def test_hook_editing_authored_core_cannot_launch_image(
     pytest.importorskip("fusesoc")
     pytest.importorskip("edalize")
     project, _ = _write_stale_compiler_fixture(tmp_path)
-    (project / ".booley_project" / "booley.toml").write_text(
+    (project / ".booley" / "booley.toml").write_text(
         "[flows.sim]\npre_run_commands = [\"printf '\\n# mutation\\n' >> multi.core\"]\n",
         encoding="utf-8",
     )
@@ -2274,7 +2274,7 @@ def test_hook_editing_generated_isolated_core_cannot_launch_image(
     pytest.importorskip("fusesoc")
     pytest.importorskip("edalize")
     project, _ = _write_stale_compiler_fixture(tmp_path)
-    state = project / ".booley_project"
+    state = project / ".booley"
     cores = state / "cores"
     cores.mkdir()
     (project / "multi.core").rename(cores / "multi.core")
@@ -2282,7 +2282,7 @@ def test_hook_editing_generated_isolated_core_cannot_launch_image(
         "[stealth]\nenabled = true\nignore_native_cores = true\n"
         "[flows.sim]\npre_run_commands = ["
         "\"printf '\\n# mutation\\n' >> "
-        '.booley_project/tmp/fusesoc-isolated-cores/booley-isolated-multi.core"]\n',
+        '.booley/tmp/fusesoc-isolated-cores/booley-isolated-multi.core"]\n',
         encoding="utf-8",
     )
     (state / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
@@ -2541,7 +2541,7 @@ def test_doctor_bad_preview_uses_placeholder_without_filesystem_side_effects(
         _inspection(cocotb=False),
         (),
         False,
-        ".booley_project/.runtime/edalize/sim/slot/g/<generation>/build",
+        ".booley/.runtime/edalize/sim/slot/g/<generation>/build",
     )
 
     assert work.run_cwd == "<attempt>"
@@ -2555,7 +2555,7 @@ def test_preview_resolves_configuration_from_each_handle_root(tmp_path: Path) ->
         (current, "now", "+test={name}"),
         (baseline, "then", "+case={index}"),
     ):
-        project = root / ".booley_project"
+        project = root / ".booley"
         project.mkdir(parents=True)
         (project / "tests.toml").write_text(
             f'[sim]\ntests = ["{name}"]\nselect = "{selector}"\n',
@@ -2588,7 +2588,7 @@ def test_trace_evidence_must_be_fresh_for_this_attempt(
 ) -> None:
     handle = _handle(tmp_path)
     prepared = _prepared(handle, cocotb=False)
-    project = tmp_path / ".booley_project"
+    project = tmp_path / ".booley"
     project.mkdir()
     (project / "booley.toml").write_text('[flows.sim]\nrun_cwd = "run"\n', encoding="utf-8")
     run_cwd = tmp_path / "run"
@@ -2689,7 +2689,7 @@ def _run_owned_main(
 ) -> SimulationTargetOutcome:
     handle = _handle(tmp_path)
     prepared = _prepared(handle, cocotb=False)
-    project = tmp_path / ".booley_project"
+    project = tmp_path / ".booley"
     project.mkdir()
     (project / "booley.toml").write_text(f"[flows.sim]\n{config}", encoding="utf-8")
     (tmp_path / "run").mkdir()
@@ -2734,7 +2734,7 @@ def test_trace_candidates_exclude_stale_owned_and_other_attempt_files(tmp_path: 
         (
             "run/new.vcd",
             "run/dump.vcd",
-            ".booley_project/.runtime/other/attempt.vcd",
+            ".booley/.runtime/other/attempt.vcd",
         ),
         config='run_cwd = "."\n',
         preexisting=("run/old.vcd",),
@@ -2800,7 +2800,7 @@ def test_trace_authority_is_limited_to_runtime_roots_and_declared_globs(
 ) -> None:
     handle = _handle(tmp_path)
     prepared = _prepared(handle, cocotb=False)
-    project = tmp_path / ".booley_project"
+    project = tmp_path / ".booley"
     project.mkdir()
     (project / "booley.toml").write_text(
         f'[flows.sim]\nrun_cwd = "run"\n{trace_config}', encoding="utf-8"
@@ -2824,7 +2824,7 @@ def test_trace_authority_is_limited_to_runtime_roots_and_declared_globs(
 def test_declared_trace_freshness_uses_pre_dispatch_identity(tmp_path: Path) -> None:
     handle = _handle(tmp_path)
     prepared = _prepared(handle, cocotb=False)
-    project = tmp_path / ".booley_project"
+    project = tmp_path / ".booley"
     project.mkdir()
     (project / "booley.toml").write_text(
         '[flows.sim]\nrun_cwd = "run"\ntrace_files = ["../declared/*.fst"]\n',
@@ -2851,7 +2851,7 @@ def test_declared_trace_freshness_uses_pre_dispatch_identity(tmp_path: Path) -> 
 def test_new_runtime_trace_accepts_filesystem_clock_skew(tmp_path: Path) -> None:
     handle = _handle(tmp_path)
     prepared = _prepared(handle, cocotb=False)
-    project = tmp_path / ".booley_project"
+    project = tmp_path / ".booley"
     project.mkdir()
     (project / "booley.toml").write_text('[flows.sim]\nrun_cwd = "run"\n', encoding="utf-8")
     run_cwd = tmp_path / "run"
@@ -2874,7 +2874,7 @@ def test_new_runtime_trace_accepts_filesystem_clock_skew(tmp_path: Path) -> None
 def test_unchanged_declared_trace_is_stale(tmp_path: Path) -> None:
     handle = _handle(tmp_path)
     prepared = _prepared(handle, cocotb=False)
-    project = tmp_path / ".booley_project"
+    project = tmp_path / ".booley"
     project.mkdir()
     (project / "booley.toml").write_text(
         '[flows.sim]\nrun_cwd = "run"\ntrace_files = ["../declared/*.fst"]\n',
@@ -2980,7 +2980,7 @@ def test_unchanged_adapter_result_is_stale(tmp_path: Path) -> None:
 def test_stdout_cannot_forge_trace_without_authenticated_evidence(tmp_path: Path) -> None:
     handle = _handle(tmp_path)
     prepared = _prepared(handle, cocotb=False)
-    project = tmp_path / ".booley_project"
+    project = tmp_path / ".booley"
     project.mkdir()
     (project / "booley.toml").write_text('[flows.sim]\nrun_cwd = "run"\n', encoding="utf-8")
     run_cwd = tmp_path / "run"
@@ -3059,7 +3059,7 @@ def test_trace_declarations_are_frozen_for_each_attempt(tmp_path: Path) -> None:
             files=(ResolvedFile("firmware.hex", "user"),),
         ),
     )
-    project = tmp_path / ".booley_project"
+    project = tmp_path / ".booley"
     project.mkdir()
     config = project / "booley.toml"
     config.write_text(
@@ -3219,7 +3219,7 @@ def test_missing_literal_run_cwd_fails_plain_run_before_any_build(tmp_path: Path
     """Issue #881: the plain engine path reports the missing directory before building."""
     handle = _handle(tmp_path)
     prepared = _prepared(handle, cocotb=False)
-    project = tmp_path / ".booley_project"
+    project = tmp_path / ".booley"
     project.mkdir()
     (project / "booley.toml").write_text('[flows.sim]\nrun_cwd = "run"\n', encoding="utf-8")
     invocations: list[list[str]] = []

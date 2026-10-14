@@ -58,7 +58,7 @@ def classified(
     source.write_bytes(
         b"CAPI=2:\nname: ::generated_data:0\n" if suffix == ".core" else b"00112233\n"
     )
-    (layout.main / ".git/info/exclude").write_bytes(f"/.booley_project\n{relative}\n".encode())
+    (layout.main / ".git/info/exclude").write_bytes(f"/.booley\n{relative}\n".encode())
     core = layout.worktree / "top.core"
     core.write_bytes(
         core.read_bytes().replace(
@@ -252,7 +252,7 @@ def test_generated_authorization_is_bound_to_exact_selected_producer(layout, for
 @pytest.mark.parametrize("kind", ["hdl-type", "core-program", "project-program"])
 def test_nonstandard_extension_design_and_planner_inputs_still_require_commit(layout, kind):
     if kind == "project-program":
-        (layout.worktree / ".booley_project/booley.toml").write_bytes(
+        (layout.worktree / ".booley/booley.toml").write_bytes(
             b'[flows.sim]\npre_run_commands=["./prepared.workload"]\n'
         )
     classified(
@@ -589,7 +589,7 @@ def test_ignored_consumed_project_snapshot_keeps_its_independent_completion_proo
     core.write_bytes(
         core.read_bytes().replace(
             b"      - other.v\n",
-            b"      - other.v\n      - .booley_project/tests.toml:\n          file_type: user\n",
+            b"      - other.v\n      - .booley/tests.toml:\n          file_type: user\n",
         )
     )
     git(layout.worktree, "add", "other.core")
@@ -598,13 +598,13 @@ def test_ignored_consumed_project_snapshot_keeps_its_independent_completion_proo
     assert endpoint._run().exit_code == 0
     fingerprints = GoalFreshnessResolvers().fingerprint(layout.worktree, target=None)
     assert all(
-        ".booley_project/tests.toml" not in category.get("files", [])
+        ".booley/tests.toml" not in category.get("files", [])
         for category in fingerprints.values()
         if isinstance(category, dict)
     )
     result = finish_goal(request(layout), completion_environment(EntryEnvironment(layout.control)))
     facts = json.loads(Path(result["package"]).read_bytes())
-    assert ".booley_project/tests.toml" in json.dumps(facts["target_changes"])
+    assert ".booley/tests.toml" in json.dumps(facts["target_changes"])
     observations = facts["input_proof"]["nonversioned_observations"]
     assert any(
         row["classification"] == "ProjectSnapshot" and row["path"].endswith("tests.toml")

@@ -7,7 +7,7 @@ this: it bakes exactly the requirements files a project lists in
 ``[sandbox].pip_requirements`` — nothing is auto-discovered. It drops pins on
 Booley-:data:`MANAGED_PACKAGES` so a design repo can't downgrade the driver,
 skips non-bakeable lines (editable/``-r``/``file:``), consolidates the rest,
-generates an untracked ``.booley_project/docker/{requirements.txt,Dockerfile}``
+generates an untracked ``.booley/docker/{requirements.txt,Dockerfile}``
 extending ``booley-sandbox``, and builds the automatically selected
 ``<slug>-booley-sandbox`` image.
 
@@ -562,7 +562,7 @@ def project_data_alias_capable(image_id: str) -> bool:
         "import os,stat; p='/booley-project'; "
         "s=os.lstat(p) if os.path.lexists(p) else None; r=os.stat('/'); "
         "alias=s is not None and stat.S_ISLNK(s.st_mode); "
-        "assert not alias or (s.st_uid == 0 and os.readlink(p) == '/work/.booley_project' "
+        "assert not alias or (s.st_uid == 0 and os.readlink(p) == '/work/.booley' "
         "and r.st_uid == 0 and not r.st_mode & 0o022); "
         "assert alias or s is None or stat.S_ISDIR(s.st_mode); "
         "print('canonical-alias' if alias else 'directory')"
@@ -599,10 +599,10 @@ def project_data_alias_capable(image_id: str) -> bool:
 
 def layout_identity(root: Path, parent_id: str, recipe_hash: str) -> tuple[str, str]:
     """Resolve the exact Project, data topology, immutable parent and recipe key."""
-    from booley.runtime.project_dir import resolve_project_dir
+    from booley.runtime.booley_dir import resolve_booley_dir
 
     root = root.resolve()
-    data = resolve_project_dir(root).resolve()
+    data = resolve_booley_dir(root).resolve()
     if data.is_relative_to(root):
         raise ValueError("Booley Directory layout derivative requires external directory topology")
     identity = hashlib.sha256(

@@ -94,8 +94,8 @@ _IMPLICIT_TARGET = "default"
 _BUILD_DIR_NAMES = frozenset({"build", "_build", ".runtime"})
 
 # The Booley Directory. It holds transient checkouts — per-ticket git
-# worktrees (``.booley_project/worktrees/<name>``) and ephemeral baseline
-# worktrees (``.booley_project/.baseline-wt-*``) — each a full clone carrying a
+# worktrees (``.booley/worktrees/<name>``) and ephemeral baseline
+# worktrees (``.booley/.baseline-wt-*``) — each a full clone carrying a
 # COPY of the project's ``.core`` files with the same VLNV. A stale copy left
 # there shadows the core at the Project Root in FuseSoC's recursive ``--cores-root`` scan
 # (silently building the worktree's RTL, not ``/work``'s) and collapses under
@@ -104,17 +104,17 @@ _BUILD_DIR_NAMES = frozenset({"build", "_build", ".runtime"})
 # hooks are ``.sh``/``.py``), so no ``.core`` below it is a source. ``booley init``
 # also drops a ``FUSESOC_IGNORE`` marker here so FuseSoC's own scanner (out of
 # Booley's code control) skips it too.
-_STATE_DIR_NAME = ".booley_project"
+_STATE_DIR_NAME = ".booley"
 
 # The one sanctioned home for authored cores INSIDE the Booley Directory
 # (ADR 0036). Stealth projects — where Booley usage must stay invisible to the
 # host repo — cannot commit ``.core`` files to the main tree; they author them
-# under ``.booley_project/cores/`` instead, versioned by the Booley Directory's own
+# under ``.booley/cores/`` instead, versioned by the Booley Directory's own
 # git repo. :func:`discover_cores` scans it as a *second root* (never as an
 # exception carved into the Booley Directory skip), and :func:`setup_command` hands it
 # to FuseSoC as a second ``--cores-root``. FuseSoC's scanner checks
 # ``FUSESOC_IGNORE`` only on directories it walks *into*, never on ancestors of
-# a scan root, so the ``.booley_project/FUSESOC_IGNORE`` marker does not veto
+# a scan root, so the ``.booley/FUSESOC_IGNORE`` marker does not veto
 # this subtree (verified against the pinned fusesoc 2.4.6 ``find_cores``).
 STATE_CORES_SUBDIR = "cores"
 
@@ -229,11 +229,11 @@ def core_target_toplevel(core_doc: Mapping[str, Any], name: str) -> str:
 
 
 def state_cores_dir(project_root: Path | str) -> Path:
-    """The stealth authored-cores root, ``<root>/.booley_project/cores`` (ADR 0036).
+    """The stealth authored-cores root, ``<root>/.booley/cores`` (ADR 0036).
 
     Purely structural — no env-var or config resolution — so
     :func:`discover_cores` stays a deterministic function of the tree it is
-    handed. A relocated Booley Directory (``BOOLEY_PROJECT_DIR``) is out of scope
+    handed. A relocated Booley Directory (``BOOLEY_DIR``) is out of scope
     for stealth cores; ``booley doctor`` reports the mismatch.
     """
     return Path(project_root) / _STATE_DIR_NAME / STATE_CORES_SUBDIR
@@ -243,13 +243,13 @@ def discover_cores(project_root: Path | str) -> list[Path]:
     """Return every authored ``.core`` under *project_root*, sorted.
 
     Two roots are scanned: *project_root* itself, and — when it exists — the
-    stealth authored-cores dir ``.booley_project/cores/`` (ADR 0036), the one
+    stealth authored-cores dir ``.booley/cores/`` (ADR 0036), the one
     subtree of the Booley Directory that holds sources rather than transient state.
 
     Git metadata and generated build/cache trees (``build/``, ``.runtime/``)
     are skipped — a ``.core`` copied there by a prior resolution is an
     artifact, not a source.
-    The rest of the ``.booley_project/`` state tree is skipped (:data:`_STATE_DIR_NAME`):
+    The rest of the ``.booley/`` state tree is skipped (:data:`_STATE_DIR_NAME`):
     its per-ticket / baseline git worktrees carry stale VLNV-colliding copies of
     the project's cores that must never shadow the authored source. Directories
     carrying a ``FUSESOC_IGNORE`` marker file are skipped as well, mirroring
@@ -262,7 +262,7 @@ def discover_cores(project_root: Path | str) -> list[Path]:
     stealth_root = state_cores_dir(root)
     if stealth_root.is_dir():
         # Second root, not an exception to the Booley Directory skip: the skip above
-        # stays fail-closed for everything else under .booley_project/, and the
+        # stays fail-closed for everything else under .booley/, and the
         # scan below judges exclusions relative to the stealth root (so a
         # FUSESOC_IGNORE *at or under* it is honored, matching FuseSoC).
         cores += _scan_core_root(stealth_root)
@@ -816,7 +816,7 @@ def _enumerate_all(project_root: Path | str) -> dict[str, list[TargetRef]]:
             repo_file, state_file = (other, core_file) if zone == "state" else (core_file, other)
             raise CoreCollisionError(
                 f"core VLNV {_vlnv_key(vlnv)!r} is authored in both core roots: "
-                f"{repo_file} (repo tree) and {state_file} (.booley_project/cores/); "
+                f"{repo_file} (repo tree) and {state_file} (.booley/cores/); "
                 "rename or delete one — cross-root precedence is never silent (ADR 0036)"
             )
         seen.setdefault(zone, core_file)
@@ -1672,7 +1672,7 @@ def core_files_root(core_file: Path, project_root: Path) -> Path:
 def _core_files_root(core_file: Path, project_root: Path) -> Path:
     """Effective fileset root for an authoritative core.
 
-    Explicit stealth mode projects cores from ``.booley_project/cores`` into
+    Explicit stealth mode projects cores from ``.booley/cores`` into
     the repository root before FuseSoC resolution.  Cheap YAML readers keep
     reading the authoritative file, so they must apply the same root semantics.
     Legacy hidden cores retain core-directory-relative behavior.
@@ -2436,7 +2436,7 @@ def _try_resolve_target(
     Unlike :func:`resolve_target` (which raises), this never propagates a
     :class:`FuseSocError`; it is the soft, "prefer the ``.core`` if there is one"
     entry point. *build_root* defaults to a payload-dedicated dir under
-    ``project_root/.booley_project/.runtime``; extra *kwargs* are forwarded to
+    ``project_root/.booley/.runtime``; extra *kwargs* are forwarded to
     :func:`resolve_target` (e.g. ``runner`` for tests).
     """
     proot = Path(project_root)
@@ -2446,7 +2446,7 @@ def _try_resolve_target(
         logger.debug("try_resolve_target(%s): resolution failed: %s", target, exc)
         return None
     if build_root is None:
-        build_root = proot / ".booley_project" / ".runtime" / "edalize" / "payload" / ref.name
+        build_root = proot / ".booley" / ".runtime" / "edalize" / "payload" / ref.name
     try:
         return _resolve_target(
             ref.name,

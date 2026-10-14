@@ -12,14 +12,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from booley.runtime.sandbox_layout import PROJECT_DIR_TARGET
+from booley.runtime.sandbox_layout import BOOLEY_DIR_TARGET
 
 COMPILER_CACHE_ROOT_ENV = "BOOLEY_COMPILER_CACHE_ROOT"
 # Directory names below the Booley Directory owner, outermost first.
 COMPILER_CACHE_SEGMENTS = (".runtime", "compiler-cache", "ccache")
 COMPILER_CACHE_RELATIVE = "/".join(COMPILER_CACHE_SEGMENTS)
 # The only root Session Issuance hands to a Sandbox.
-ISSUED_COMPILER_CACHE_ROOT = f"{PROJECT_DIR_TARGET}/{COMPILER_CACHE_RELATIVE}"
+ISSUED_COMPILER_CACHE_ROOT = f"{BOOLEY_DIR_TARGET}/{COMPILER_CACHE_RELATIVE}"
 
 
 @dataclass(frozen=True)
@@ -36,5 +36,5 @@ def read_issued_identity(environ: Mapping[str, str] = os.environ) -> IssuedCache
     """Read the issued compiler-cache identity from *environ* and the Sandbox layout."""
     return IssuedCacheIdentity(
         root=environ.get(COMPILER_CACHE_ROOT_ENV) or None,
-        in_sandbox=environ.get("BOOLEY_CONTAINER") == "1" and Path(PROJECT_DIR_TARGET).is_dir(),
+        in_sandbox=environ.get("BOOLEY_CONTAINER") == "1" and Path(BOOLEY_DIR_TARGET).is_dir(),
     )

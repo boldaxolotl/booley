@@ -59,10 +59,10 @@ def _apply_default_endpoint_report_root(endpoint: EndpointState) -> EndpointOutc
         or endpoint.args.report_dir is not None
     ):
         return None
-    from booley.runtime.project_dir import resolve_checkout_project_dir
+    from booley.runtime.booley_dir import resolve_checkout_booley_dir
 
     try:
-        project_data = resolve_checkout_project_dir(Path(endpoint.args.work_dir))
+        project_data = resolve_checkout_booley_dir(Path(endpoint.args.work_dir))
     except (OSError, RuntimeError, ValueError) as exc:
         result = EndpointOutcome(
             exit_code=EXIT_ERROR,

@@ -39,7 +39,7 @@ def _enter(layout: SimpleNamespace) -> None:
     request = EntryRequest(
         layout.worktree, "uart-fix", parse_goal_args([{"family": "LINT", "target": "top"}])
     )
-    enter_goal_mode(request, EntryEnvironment(project_dir=layout.control))
+    enter_goal_mode(request, EntryEnvironment(booley_dir=layout.control))
 
 
 def _violations(layout: SimpleNamespace, worktree: Path | None = None) -> list[str]:
@@ -74,26 +74,24 @@ def test_every_candidate_a_consumer_could_read_is_recorded(layout: SimpleNamespa
 
     for directory in (
         "project:",
-        "worktree:.booley_project/",
-        "worktree:.booley/project/",
-        "main:.booley_project/",
-        "main:.booley/project/",
+        "worktree:.booley/",
+        "main:.booley/",
         "worktree:",
     ):
         assert f"{directory}booley.toml" in encoded
         assert f"{directory}pipeline.toml" in encoded  # resolve_toml's legacy fallback
     assert {
-        "worktree:.booley_project/.managed",
-        "main:.booley_project/.managed",
+        "worktree:.booley/.managed",
+        "main:.booley/.managed",
         "project:.managed",
         "project:hooks",
-        "worktree:.booley_project/hooks",
+        "worktree:.booley/hooks",
         "project:generators",
         "project:mcp_tools",
-        "main:.booley_project/mcp_tools",
+        "main:.booley/mcp_tools",
         "worktree:FUSESOC_IGNORE",
     } <= encoded
-    assert "worktree:.booley_project/mcp_tools" not in encoded  # no consumer runs the copy
+    assert "worktree:.booley/mcp_tools" not in encoded  # no consumer runs the copy
 
 
 def test_the_path_list_is_the_same_from_another_spelling(
@@ -108,7 +106,7 @@ def test_the_path_list_is_the_same_from_another_spelling(
 
 
 def test_stored_paths_round_trip_and_reject_garbage() -> None:
-    path = ProtectedPath(RootKind.WORKTREE, ".booley_project/booley.toml")
+    path = ProtectedPath(RootKind.WORKTREE, ".booley/booley.toml")
 
     assert ProtectedPath.decode(path.encode()) == path
     with pytest.raises(ProtectedInputError, match="unknown root"):
@@ -147,7 +145,7 @@ def test_editing_an_input_a_run_reads_is_a_violation(
 ) -> None:
     _enter(layout)
     where, _, rest = relative.partition("/")
-    base = layout.control if where == "control" else layout.worktree / ".booley_project"
+    base = layout.control if where == "control" else layout.worktree / ".booley"
     path = base / rest
     original = path.read_text(encoding="utf-8")
 
@@ -160,7 +158,7 @@ def test_editing_an_input_a_run_reads_is_a_violation(
 
 def test_editing_the_worktrees_unused_copy_is_not_a_violation(layout: SimpleNamespace) -> None:
     _enter(layout)
-    unused = layout.worktree / ".booley_project" / "mcp_tools" / "tool.py"
+    unused = layout.worktree / ".booley" / "mcp_tools" / "tool.py"
 
     unused.write_text("# edited copy nobody runs\n", encoding="utf-8")
 
@@ -170,8 +168,7 @@ def test_editing_the_worktrees_unused_copy_is_not_a_violation(layout: SimpleName
 @pytest.mark.parametrize(
     "relative",
     [
-        ".booley_project/pipeline.toml",
-        ".booley/project/booley.toml",
+        ".booley/pipeline.toml",
         "pipeline.toml",
     ],
 )
@@ -195,7 +192,7 @@ def test_a_git_hook_bundle_in_any_candidate_is_a_violation(
     """The hook adapters pick the worktree's bundle file, else the main checkout's."""
     _enter(layout)
     root = layout.worktree if where == "worktree" else layout.main
-    bundle = root / ".booley_project" / ".managed" / "project-git-hooks.pyz"
+    bundle = root / ".booley" / ".managed" / "project-git-hooks.pyz"
     bundle.parent.mkdir(parents=True, exist_ok=True)
 
     bundle.write_bytes(b"PK")
@@ -231,11 +228,11 @@ def test_main_checkout_copy_is_covered_when_the_session_project_is_elsewhere(
     """Without a snapshot, Flow readers fall back to the main checkout's file."""
     shared = tmp_path / "shared-project"
     shared.mkdir()
-    (layout.worktree / ".booley_project" / "booley.toml").unlink()
+    (layout.worktree / ".booley" / "booley.toml").unlink()
     roots = ProtectedInputRoots(layout.worktree, shared)
     snapshot = snapshot_protected_inputs(roots)
 
-    (layout.main / ".booley_project" / "booley.toml").write_text("# edited\n", encoding="utf-8")
+    (layout.main / ".booley" / "booley.toml").write_text("# edited\n", encoding="utf-8")
 
     assert _check(layout, snapshot, roots) == [WORKING]
 
@@ -388,7 +385,7 @@ def test_another_spelling_with_missing_inputs_is_not_a_violation(
 # ---------------------------------------------------------------------------
 
 
-def test_hooks_of_a_routed_project_directory_are_protected(
+def test_hooks_of_a_routed_booley_directory_are_protected(
     layout: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Preparation reads the hooks of the directory `[project].dir` routes to."""
@@ -397,7 +394,7 @@ def test_hooks_of_a_routed_project_directory_are_protected(
     hook = routed / "hooks" / "post-setup.sh"
     hook.write_text("#!/bin/sh\n", encoding="utf-8")
     monkeypatch.setattr(
-        protected_inputs_module, "resolve_checkout_project_dir", lambda _worktree: routed
+        protected_inputs_module, "resolve_checkout_booley_dir", lambda _worktree: routed
     )
     assert "worktree:custom-project/hooks" in {
         path.encode() for path in resolve_protected_inputs(_roots(layout))
@@ -489,7 +486,7 @@ def test_ignored_existing_bundle_mutation_is_protected(layout, tmp_path, paired,
     if paired:
         install_paired_project(layout, tmp_path)
     root = layout.worktree if where == "worktree" else layout.main
-    data = root / ".booley_project"
+    data = root / ".booley"
     ignore = data / ".gitignore"
     ignore.write_text(PROJECT_GITIGNORE)
     if paired and where == "worktree":

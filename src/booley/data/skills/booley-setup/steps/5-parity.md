@@ -57,16 +57,16 @@ The first cut covers **simulation only**, at the cheapest useful strength:
    output lives only in the per-Target `run.log` (in the resolved Edalize
    build dir); `booley flow sim` stdout carries just a truncated summary
    tail. That `run.log` is at a fixed path, so the next run of the same Target
-   overwrites it — copy it aside (e.g. into `.booley_project/parity/`) right
+   overwrites it — copy it aside (e.g. into `.booley/parity/`) right
    after the run you are comparing, before running anything else against that
    Target.
-2. **Quarantine the golden.** Write it under `.booley_project/` (e.g.
-   `.booley_project/parity/sim-<target>.golden`) — **never** the RTL repo's
+2. **Quarantine the golden.** Write it under `.booley/` (e.g.
+   `.booley/parity/sim-<target>.golden`) — **never** the RTL repo's
    tracked tree. Golden dumps are IP-derived and can be large; the
    minimal-footprint guardrail and the "never commit a design's VCDs into
    Booley" rule both apply. In stealth mode it rides the inner
-   `.booley_project/` repo; in open mode it stays quarantined even though the
-   rest of `.booley_project/` is committed.
+   `.booley/` repo; in open mode it stays quarantined even though the
+   rest of `.booley/` is committed.
 3. **Diff.** Run Booley `sim` for the Target and compare its stdout capture
    against the golden. **Same simulator + same design ⇒ expect an exact match**
    on the verdict and on deterministic telemetry — there is no tolerance band at
@@ -83,7 +83,7 @@ The first cut covers **simulation only**, at the cheapest useful strength:
 
 ## Output — `PARITY-REPORT.md`
 
-Write `.booley_project/PARITY-REPORT.md`. Per Target: the tier used, the golden
+Write `.booley/PARITY-REPORT.md`. Per Target: the tier used, the golden
 fixture path, the diff result (match / mismatch + the diverging lines), and —
 explicitly — **what was not compared** (every phase skipped for EDA-tool mismatch or
 a missing golden, with the reason). A parity check that quietly narrows its own

@@ -9,6 +9,32 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- The Booley Directory is now `.booley/`; use `BOOLEY_DIR` and
+  `booley.runtime.booley_dir`. Full `booley init` migrates the previous directory
+  and repairs linked RTL worktrees and Paired Checkouts. Finish or abandon all
+  occupying Goal Modes and stop affected Sandboxes/consumers before migrating.
+  `init --check` and Doctor report pending migration without moving files.
+  Retired selection variables and the older embedded-source/project layout
+  produce explicit errors. Historical Goal evidence remains unchanged.
+  Review and commit tracked renames in each retained checkout; create a branch
+  for a detached worktree before committing. Init does not stage or commit them.
+  Migrate **each existing clone before pulling** a Project's tracked rename
+  commit. Fresh clones can check out the current layout directly.
+
+  If a pull already left both `.booley_project/` and `.booley/`, init refuses
+  unchanged. Do not `git add -A`: removed old ignore rules may expose local
+  runtime/Goal/worktree state. Stop consumers and back up both trees and Git
+  state. If the new directory is proven to contain only current tracked files,
+  park it intact at a unique sibling location outside every checkout. Preserve
+  the old directory and its worktrees. Restore pre-pull tracked inputs there
+  from the recorded previous commit if an occupying Goal must first be finished
+  with the previous Booley version. Once inactive, manually reconcile the parked
+  current tracked inputs into the old container without overwriting local state;
+  then run full init with only the old directory present. Verify tracked inputs,
+  Goal inspection and both repositories' worktree registrations before retiring
+  any backup. Any collision, extra state or uncertainty requires human
+  reconciliation; Booley never deletes or automatically combines these trees.
+
 - Doctor defers generated cocotb test IDs, including generating function base
   names, to run-time results. An absent ID now lists cocotb's reported IDs in
   Simulation Flow diagnostics, including zero-match filters at compact verbosity.

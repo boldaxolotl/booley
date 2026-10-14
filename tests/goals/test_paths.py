@@ -38,7 +38,7 @@ def test_non_goal_ids_are_refused(goal_id: str) -> None:
         record_paths(Path("/p"), goal_id)
 
 
-def test_record_layout_lives_under_the_callers_project_dir(tmp_path: Path) -> None:
+def test_record_layout_lives_under_the_callers_booley_dir(tmp_path: Path) -> None:
     paths = record_paths(tmp_path, "fix-uart-20261006T101500Z")
     root = tmp_path / "goals" / "fix-uart-20261006T101500Z"
     assert paths.root == root
@@ -53,7 +53,7 @@ def test_record_layout_lives_under_the_callers_project_dir(tmp_path: Path) -> No
     assert paths.review_package_file == root / "review-package.json"
 
 
-def test_history_file_is_in_the_checkouts_own_project_dir(tmp_path: Path) -> None:
+def test_history_file_is_in_the_checkouts_own_booley_dir(tmp_path: Path) -> None:
     assert history_file(tmp_path, "fix-uart-20261006T101500Z") == (
         tmp_path / "goals" / "history" / "fix-uart-20261006T101500Z.md"
     )

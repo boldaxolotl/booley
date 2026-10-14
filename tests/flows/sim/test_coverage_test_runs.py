@@ -59,7 +59,7 @@ def _fixed_draw(count: int, *, exclude=()) -> tuple[int, ...]:
 def _project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     context = project(tmp_path)
-    data = tmp_path / ".booley_project"
+    data = tmp_path / ".booley"
     data.mkdir()
     (data / "tests.toml").write_text(_TESTS_TOML)
     return context

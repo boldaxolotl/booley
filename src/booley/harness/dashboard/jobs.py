@@ -49,7 +49,7 @@ def target_arg(argv: list[str]) -> str | None:
 
 
 def retained_job_roots(
-    project_dir: Path, records: Sequence[GoalRecord], *, interactive_root: Path | None = None
+    booley_dir: Path, records: Sequence[GoalRecord], *, interactive_root: Path | None = None
 ) -> tuple[Path, ...]:
     """Interactive roots and every retained Goal, including finished/abandoned records.
 
@@ -57,10 +57,10 @@ def retained_job_roots(
     root, then every Goal Record, then older interactive sessions newest first.
     """
     roots = [] if interactive_root is None else [interactive_root]
-    roots.extend(record_paths(project_dir, rec.id).jobs_dir for rec in records)
+    roots.extend(record_paths(booley_dir, rec.id).jobs_dir for rec in records)
     history = []
     for path in islice(
-        project_dir.glob(".interactive_logs/*/.runtime/jobs"), MAX_SCANNED_INTERACTIVE_ROOTS
+        booley_dir.glob(".interactive_logs/*/.runtime/jobs"), MAX_SCANNED_INTERACTIVE_ROOTS
     ):
         try:
             history.append((path.stat().st_mtime_ns, path))
@@ -88,14 +88,14 @@ class JobReader:
 
     def __init__(
         self,
-        project_dir: Path,
+        booley_dir: Path,
         *,
         slots_root: Path | None = None,
         proc_root: Path = Path("/proc"),
     ) -> None:
-        self._project_dir = project_dir
+        self._booley_dir = booley_dir
         self._observer = JobObserver(
-            project_dir,
+            booley_dir,
             slots_root=slots_root,
             proc_root=proc_root,
             validate_record=_validate_goal_binding,
@@ -105,7 +105,7 @@ class JobReader:
         self, records: Sequence[GoalRecord], *, interactive_root: Path | None = None
     ) -> JobSnapshot:
         """Reuse the Goal enumeration that supplied this Dashboard refresh."""
-        roots = retained_job_roots(self._project_dir, records, interactive_root=interactive_root)
+        roots = retained_job_roots(self._booley_dir, records, interactive_root=interactive_root)
         observed = self._observer.read(roots)
         catalogs: dict[str, TargetCatalog | None] = {}
         rows = tuple(_job_view(job, catalogs) for job in observed.jobs)

@@ -95,7 +95,7 @@ def _write_dut_top(tmp_path: Path, top: str = "design_top") -> Path:
 
 def _write_tests_toml(root: Path, text: str) -> None:
     """Give the checkout at *root* a Project directory with this ``tests.toml``."""
-    project = root / ".booley_project"
+    project = root / ".booley"
     project.mkdir(exist_ok=True)
     (project / "booley.toml").write_text('[project]\nname = "demo"\n', encoding="utf-8")
     (project / "tests.toml").write_text(text, encoding="utf-8")
@@ -1636,7 +1636,7 @@ class TestValidateScopeAgainstTarget:
         # The stealth-cores mirror path is NOT a resolved source; its basename
         # (counter.sv) matches rtl/counter.sv, so a "did you mean" hint fires.
         result = endpoint._validate_scope_against_target(
-            [".booley_project/cores/rtl/counter.sv"],
+            [".booley/cores/rtl/counter.sv"],
         )
         assert result is not None
         assert result.exit_code == 1
@@ -1947,7 +1947,7 @@ def test_pristine_baseline_reports_missing_literal_run_cwd_before_elaboration(
     tmp_path: Path,
 ) -> None:
     """Issue #881: the baseline must not build before it knows run_cwd is usable."""
-    state = tmp_path / ".booley_project"
+    state = tmp_path / ".booley"
     state.mkdir()
     (state / "booley.toml").write_text('[flows.sim]\nrun_cwd = "run"\n', encoding="utf-8")
     plan = SimpleNamespace(target="sim", work_dir=tmp_path, tb_top="tb")

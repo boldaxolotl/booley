@@ -65,7 +65,7 @@ def _require_python_modules(*names: str) -> None:
 def _owned_project(tmp_path: Path, fixture: Path) -> Path:
     project = tmp_path / "project"
     shutil.copytree(fixture, project)
-    project_config = project / ".booley_project"
+    project_config = project / ".booley"
     project_config.mkdir()
     shutil.copyfile(project / "tests.toml", project_config / "tests.toml")
     return project

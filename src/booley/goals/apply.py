@@ -94,7 +94,7 @@ class ChangeEnvironment:
     @property
     def store(self) -> GoalStore:
         """All lifecycle files stay in the resolved Main Booley Directory."""
-        return GoalStore(self.entry.project_dir)
+        return GoalStore(self.entry.booley_dir)
 
     def checkpoint(self, name: str) -> None:
         """Expose durable boundaries for crash/recovery tests."""
@@ -320,12 +320,12 @@ def _prepare_approved(
     assert decision.transaction_id is not None
     updated = _next_record(record, proposal)
     updated = _with_frozen_test_runs(record, updated, proposal, env)
-    derivations = derive_changes(proposal, record, state, env.entry.project_dir, coverage=coverage)
+    derivations = derive_changes(proposal, record, state, env.entry.booley_dir, coverage=coverage)
     shadow = _state_delta(state, proposal)
     _apply_derivations(shadow, derivations)
     transaction_id = digest({"proposal": proposal.id, "decision": decision.to_json()})
     observations = _derived_observations(record.id, updated, derivations)
-    paths = record_paths(env.entry.project_dir, record.id)
+    paths = record_paths(env.entry.booley_dir, record.id)
     ledger = _prepare_ledger(paths.logs_dir, shadow, observations, transaction_id, proposal.id)
     if ledger:
         shadow.acceptance_transactions.append(transaction_id)

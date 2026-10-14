@@ -40,10 +40,10 @@ def completion_environment(entry: EntryEnvironment) -> FinishEnvironment:
     return FinishEnvironment(
         ChangeEnvironment(entry),
         GOAL_FRESHNESS_RESOLVERS,
-        waiver_factory=lambda record: GoalWaiverService(entry.project_dir, record),
+        waiver_factory=lambda record: GoalWaiverService(entry.booley_dir, record),
         campaign_reader=read_unpublished_results,
         generated_inputs=lambda record, state, root: generated_inputs(
-            entry.project_dir, record, state, root
+            entry.booley_dir, record, state, root
         ),
     )
 

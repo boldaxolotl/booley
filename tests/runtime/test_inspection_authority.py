@@ -14,18 +14,18 @@ from booley.config.eda import EdaConfig
 from booley.eda.provisioning import authority
 from booley.runtime import devcontainer as dc
 from booley.runtime import inspection, runtime_context, session_issuance
-from booley.runtime.project_dir import reset_cache
+from booley.runtime.booley_dir import reset_cache
 
 
 def _configured_project(tmp_path, monkeypatch, *, active: bool):
     project = tmp_path / "project"
-    data = project / ".booley_project"
+    data = project / ".booley"
     data.mkdir(parents=True)
     (data / "booley.toml").write_text(
         f"[flows.fpga]\nenabled = {str(active).lower()}\n[eda.vivado]\nprovisioning = 'image'\n"
     )
     reset_cache()
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     executable = _install_trusted_validator(tmp_path, monkeypatch)
     monkeypatch.setenv("PATH", str(executable.parent))

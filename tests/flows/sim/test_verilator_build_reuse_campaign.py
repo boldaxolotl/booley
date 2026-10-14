@@ -59,7 +59,7 @@ def flow_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     # production race guard would (correctly) refuse to trust its files.
     monkeypatch.setattr(build_reuse, "RACE_MARGIN_NS", 0)
     project = _write_project(tmp_path)
-    (project / ".booley_project" / "tests.toml").write_text(
+    (project / ".booley" / "tests.toml").write_text(
         '[sim]\ntests = ["first", "second", "third"]\nselect = "+test={name}"\n',
         encoding="utf-8",
     )
@@ -113,7 +113,7 @@ def _assert_hit(build: dict[str, object]) -> None:
 
 
 def _configure(project: Path, *lines: str) -> None:
-    (project / ".booley_project" / "booley.toml").write_text(
+    (project / ".booley" / "booley.toml").write_text(
         "[flows.sim]\n" + "".join(f"{line}\n" for line in lines), encoding="utf-8"
     )
 

@@ -3165,7 +3165,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 report_text=(
                     "sim: --target is required when multiple or zero "
                     "Targets are available. Pass --target <name>; available "
-                    "Targets are the .core sim Targets in .booley_project/."
+                    "Targets are the .core sim Targets in .booley/."
                 ),
             )
         return None

@@ -9,7 +9,7 @@ The client waits for this process on every prompt and tool call, so it is a
 standalone, standard-library-only script: importing the ``booley`` package
 would cost about 0.1 s per event. It therefore repeats the few storage rules
 of ``booley.runtime.session_activity``, the Session Registry key formats and
-the Booley Directory resolution order of ``booley.core.project_dir``;
+the Booley Directory resolution order of ``booley.core.booley_dir``;
 ``tests/harness/test_session_activity_hook.py`` holds the two in agreement.
 
 It prints nothing to stdout (clients feed hook output back to the model),
@@ -56,7 +56,7 @@ MAX_SIGNALS = 4096
 MAX_TOOL_NAME = 128
 MAX_THREAD_ID = 1024
 MAX_PARENT_DIRS = 128
-PROJECT_DIR_NAME = ".booley_project"
+BOOLEY_DIR_NAME = ".booley"
 
 
 def _process_key(proc_root: Path, pid: int) -> str | None:
@@ -206,7 +206,7 @@ def record(
     return True
 
 
-def _toml_project_dir(directory: Path) -> Path | None:
+def _toml_booley_dir(directory: Path) -> Path | None:
     """``[project].dir`` of the booley.toml in *directory*, when it names a directory."""
     import tomllib  # Deferred: only a checkout with a booley.toml and no env override pays.
 
@@ -222,27 +222,30 @@ def _toml_project_dir(directory: Path) -> Path | None:
     return resolved if resolved.is_dir() else None
 
 
-def resolve_project_dir(env: Mapping[str, str], cwd: Path) -> Path | None:
+def resolve_booley_dir(env: Mapping[str, str], cwd: Path) -> Path | None:
     """The Booley Directory this session works in, or ``None`` outside a Project.
 
-    Same order as Booley itself: ``BOOLEY_PROJECT_DIR`` (always set in a
+    Same order as Booley itself: ``BOOLEY_DIR`` (always set in a
     Sandbox), then the nearest booley.toml ``[project].dir``, then the nearest
-    ``.booley_project`` directory.
+    ``.booley`` directory.
     """
-    configured = env.get("BOOLEY_PROJECT_DIR", "")
+    configured = env.get("BOOLEY_DIR", "")
     if configured:
         return Path(configured) if Path(configured).is_dir() else None
     current = Path(cwd).resolve()
     parents = [current, *current.parents][:MAX_PARENT_DIRS]
     for directory in parents:
         if (directory / "booley.toml").is_file():
-            override = _toml_project_dir(directory)
+            override = _toml_booley_dir(directory)
             if override is not None:
                 return override
             break
     for directory in parents:
-        if (directory / PROJECT_DIR_NAME).is_dir():
-            return directory / PROJECT_DIR_NAME
+        candidate = directory / BOOLEY_DIR_NAME
+        if candidate.is_dir() and any(
+            (candidate / name).is_file() for name in ("booley.toml", "pipeline.toml")
+        ):
+            return candidate
     return None
 
 
@@ -259,7 +262,7 @@ def main(argv: list[str] | None = None) -> int:
         payload = json.loads(raw)
         if not isinstance(payload, dict):
             raise ValueError("hook payload is not a JSON object")
-        project = resolve_project_dir(os.environ, Path.cwd())
+        project = resolve_booley_dir(os.environ, Path.cwd())
         if project is not None:
             record(args[0], payload, project, now)
     except (OSError, ValueError, UnicodeError, RecursionError) as exc:

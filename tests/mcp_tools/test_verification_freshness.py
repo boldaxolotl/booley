@@ -18,7 +18,7 @@ from booley.specialists.verification_freshness import refresh_verification_fresh
 def test_source_drift_invalidates_review_and_unlocked_submitted_report(
     tmp_path: Path, persist: bool, report: str
 ) -> None:
-    (tmp_path / ".booley_project").mkdir()
+    (tmp_path / ".booley").mkdir()
     source = tmp_path / "rtl/dut.sv"
     source.parent.mkdir()
     source.write_text("module dut; endmodule\n")

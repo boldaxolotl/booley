@@ -51,9 +51,7 @@ def _assert_trace_reference(root: Path, alias: Path) -> None:
     )
     assert result.exit_code == 0, result.outcome.report_text
     campaign = result.outcome.detail["campaigns"]["sim"]
-    manifest = (
-        root / ".booley_project/trace-reports/sim/1" / campaign["artifacts"]["manifest"]["path"]
-    )
+    manifest = root / ".booley/trace-reports/sim/1" / campaign["artifacts"]["manifest"]["path"]
     receipt = next(manifest.parent.glob("work-items/*/result.json"))
     document = json.loads(receipt.read_text())
     trace = next(item for item in document["evidence"] if item["kind"] == "trace")
@@ -64,13 +62,13 @@ def _assert_trace_reference(root: Path, alias: Path) -> None:
     raw = path.read_bytes()
     assert len(raw) == trace["bytes"] > 0
     assert "sha256:" + hashlib.sha256(raw).hexdigest() == trace["sha256"]
-    assert path.is_relative_to(root / ".booley_project/trace-reports")
+    assert path.is_relative_to(root / ".booley/trace-reports")
 
 
 def test_image_project_alias_good_bad_coverage_and_user_links() -> None:
     root = Path("/work")
     alias = Path("/booley-project")
-    data = root / ".booley_project"
+    data = root / ".booley"
     assert shutil.which("verilator") and shutil.which("verilator_coverage")
     assert alias.is_symlink() and alias.readlink() == data
     assert canonical_project_alias_path(alias / "reports") == data / "reports"

@@ -158,7 +158,7 @@ def test_repository_demo_contract_is_pinned_to_public_project_main() -> None:
 
     assert "project_contract_ref" not in raw_contract
     assert len(contract.upstream_ref) == 40
-    assert contract.project_ref == "da79489482a7bed69e275ba2c46358ea6636af4d"
+    assert contract.project_ref == "b1334cc5bb2416e62cf3e04c891966ad8d3e9637"
     assert contract.schema == 2
     assert all(goal.target in contract.required_targets for goal in contract.required_goals)
     assert contract.toolchain_url.startswith("https://github.com/xpack-dev-tools/")
@@ -329,11 +329,9 @@ def test_shared_action_reads_repository_and_revision_pins_from_contract() -> Non
         if step.get("name") == "Require reviewed revisions and materialize destination refs"
     )
     assert steps.index(checkouts[1]) < steps.index(excludes) < steps.index(ancestry)
-    assert "'/.booley_project'" in excludes["run"]
+    assert "'/.booley'" in excludes["run"]
     assert "'/.booley-projected-*.core'" in excludes["run"]
-    assert (
-        "git -C demo/.booley_project merge-base --is-ancestor HEAD origin/main" in ancestry["run"]
-    )
+    assert "git -C demo/.booley merge-base --is-ancestor HEAD origin/main" in ancestry["run"]
 
     action_strings = _yaml_strings(action)
     references = {
@@ -825,7 +823,7 @@ def test_demo_contract_cli_reports_success_and_errors(
         str(tmp_path / "c"),
         "--demo-root",
         str(tmp_path),
-        "--project-dir",
+        "--booley-dir",
         str(tmp_path),
     ]
     monkeypatch.setattr(demo_contract_module, "validate_demo", lambda *_args: [])

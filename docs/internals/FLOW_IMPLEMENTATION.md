@@ -69,8 +69,8 @@ Configuration is split across three files by **owner and concern**:
 | File | Owner | Scope |
 |------|-------|-------|
 | `<name>.core` | FuseSoC | Design description: filesets, typed parameters, toplevel, per-flow Targets, and the EDA tool |
-| `.booley_project/tests.toml` | Booley | Verification intent: per-Target test lists and the run-time test selector (e.g. a `+test_id=` plusarg template; a plusarg is a `+name=value` simulator argument) |
-| `.booley_project/booley.toml` | Booley | Project metadata, source dirs, per-Flow policy, and approved EDA provisioning requests |
+| `.booley/tests.toml` | Booley | Verification intent: per-Target test lists and the run-time test selector (e.g. a `+test_id=` plusarg template; a plusarg is a `+name=value` simulator argument) |
+| `.booley/booley.toml` | Booley | Project metadata, source dirs, per-Flow policy, and approved EDA provisioning requests |
 
 [CONFIG.md](../user/CONFIG.md) owns the exact schemas, defaults, and configuration
 examples for all three. The table is repeated here only because ownership of an
@@ -87,7 +87,7 @@ The support matrix lives in
 below describe only how a built-in Flow uses its selected EDA tool.
 
 Normalized reports produced in the Sandbox live under the project
-runtime tree, referred to below as `<runtime>` = `.booley_project/.runtime`.
+runtime tree, referred to below as `<runtime>` = `.booley/.runtime`.
 The per-Flow report paths that follow (`<runtime>/flow-reports/...`) all resolve
 there.
 
@@ -883,7 +883,7 @@ witness before accepting a run or caching its reports, even if routing succeeded
 A later boardless bitstream failure remains acceptable once that witness exists:
 
 ```
-make -C .booley_project/.runtime/edalize/fpga/<target>
+make -C .booley/.runtime/edalize/fpga/<target>
 ```
 
 The `make` process and every Vivado subprocess remain in the container whether
@@ -1134,7 +1134,7 @@ observational supersession; it never prevents manifest-authoritative recovery.
 
 The maintenance seams in `booley.flows.sim.campaign_retention` accept the report
 root explicitly; callers obtain Booley Directory roots through
-`booley.runtime.project_dir.resolve_project_dir()`. They never discover a
+`booley.runtime.booley_dir.resolve_booley_dir()`. They never discover a
 “latest” Campaign or apply age/size rules:
 
 - `prune_native_payload(reports_root, invocation, target)` requires an exact

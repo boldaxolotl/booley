@@ -98,4 +98,4 @@ def test_source_repository_contract_has_no_project_state_directory() -> None:
     source_root = Path(__file__).resolve().parents[1]
 
     assert is_booley_source_checkout(source_root)
-    assert not (source_root / ".booley_project").exists()
+    assert not (source_root / ".booley").exists()

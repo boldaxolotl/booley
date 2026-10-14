@@ -114,7 +114,7 @@ def second_goal(mode, monkeypatch):
 
     second = mode.control / "worktrees" / "other"
     git(mode.main, "worktree", "add", "-q", "-b", "other", str(second))
-    write_project_files(second / ".booley_project")
+    write_project_files(second / ".booley")
     other = SimpleNamespace(main=mode.main, control=mode.control, worktree=second)
     with monkeypatch.context() as context:
         context.setattr("booley.goals.entry.compact_utc_now", lambda: "20261007T120000Z")

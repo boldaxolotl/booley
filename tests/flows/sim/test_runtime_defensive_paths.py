@@ -127,13 +127,13 @@ def test_recovery_short_circuits_unsafe_or_live_executions(monkeypatch, tmp_path
     paths = SimpleNamespace(record=tmp_path / "record")
     monkeypatch.setattr(execution_recovery, "execution_paths", lambda *_a, **_k: paths)
     monkeypatch.setattr(execution_recovery, "child_context_matches", lambda *_a: False)
-    assert execution_recovery.recover_execution(execution_id, project_dir=tmp_path) is False
+    assert execution_recovery.recover_execution(execution_id, booley_dir=tmp_path) is False
 
     monkeypatch.setattr(execution_recovery, "child_context_matches", lambda *_a: True)
     monkeypatch.setattr(
         execution_recovery, "read_json", lambda _p: {"state": "terminal", "tree_terminal": True}
     )
-    assert execution_recovery.recover_execution(execution_id, project_dir=tmp_path) is True
+    assert execution_recovery.recover_execution(execution_id, booley_dir=tmp_path) is True
 
 
 def test_windows_recovery_waits_for_live_leader_then_publishes(monkeypatch) -> None:
@@ -150,7 +150,7 @@ def test_windows_recovery_waits_for_live_leader_then_publishes(monkeypatch) -> N
         lambda _identity: SimpleNamespace(state=execution_recovery.RUNNING),
     )
     assert not execution_recovery._recover_windows_execution(
-        execution_id, {"leader": {}}, project_dir=None
+        execution_id, {"leader": {}}, booley_dir=None
     )
 
     published = []
@@ -160,7 +160,7 @@ def test_windows_recovery_waits_for_live_leader_then_publishes(monkeypatch) -> N
         "_publish_recovered_terminal",
         lambda *args, **kwargs: published.append((args, kwargs)),
     )
-    assert execution_recovery._recover_windows_execution(execution_id, None, project_dir=None)
+    assert execution_recovery._recover_windows_execution(execution_id, None, booley_dir=None)
     assert published
 
 

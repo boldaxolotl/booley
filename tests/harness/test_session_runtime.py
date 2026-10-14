@@ -92,7 +92,7 @@ def test_session_up_waits_for_lifecycle_lock(
 
 def _spec(**kwargs) -> dict:
     defaults = {
-        "project_dir_source": "/c/ws/i2c/.booley_project",
+        "booley_dir_source": "/c/ws/i2c/.booley",
         "mcp_start_command": dc.mcp_post_start_command(),
     }
     return dc.build_devcontainer_spec("claude", **{**defaults, **kwargs})
@@ -154,12 +154,12 @@ class TestDockerRunArgv:
         argv = _argv(_spec(image="booley-sandbox"), workspace)
         assert argv[-3:] == ["booley-sandbox", "sleep", "infinity"]
 
-    def test_workspace_and_project_dir_are_mounted(self, workspace: Path):
+    def test_workspace_and_booley_dir_are_mounted(self, workspace: Path):
         from booley.runtime.platform_paths import docker_mount_path
 
         mounts = _flag_values(_argv(_spec(), workspace), "--mount")
         assert f"source={docker_mount_path(workspace)},target=/work,type=bind" in mounts
-        assert "source=/c/ws/i2c/.booley_project,target=/booley-project,type=bind" in mounts
+        assert "source=/c/ws/i2c/.booley,target=/booley-project,type=bind" in mounts
 
     def test_readonly_credential_mounts_survive_translation(self, workspace: Path):
         spec = _spec(auth_token_source="/c/home/.credentials.json")
@@ -174,7 +174,7 @@ class TestDockerRunArgv:
     def test_remote_env_becomes_e_flags(self, workspace: Path):
         env = _flag_values(_argv(_spec(), workspace), "-e")
         assert "BOOLEY_MCP_MODE=interactive" in env
-        assert "BOOLEY_PROJECT_DIR=/booley-project" in env
+        assert "BOOLEY_DIR=/booley-project" in env
         assert "BOOLEY_AGENT_APP=claude" in env
         assert "HTTP_PROXY=http://booley-proxy:8080" in env
 
@@ -270,7 +270,7 @@ def _test_issuance(workspace: Path) -> SimpleNamespace:
         installation=None,
         license_profile=None,
         relay_image_id="sha256:" + "a" * 64,
-        project_data_source=str(workspace / ".booley_project"),
+        project_data_source=str(workspace / ".booley"),
         project_data_layout="legacy",
     )
 
@@ -323,7 +323,7 @@ def _stub_prepare(
     monkeypatch.setattr(
         runtime_spec,
         "authorized_project_data_source",
-        lambda _path: workspace / ".booley_project",
+        lambda _path: workspace / ".booley",
     )
     monkeypatch.setattr(runtime_spec, "validate", lambda *_args: issuance)
     monkeypatch.setattr(runtime_spec, "authenticate", lambda *_args: issuance)
@@ -461,7 +461,7 @@ class TestPrepareMigration:
         monkeypatch.setattr(
             runtime_spec,
             "authorized_project_data_source",
-            lambda _path: workspace / ".booley_project",
+            lambda _path: workspace / ".booley",
         )
         monkeypatch.setattr(runtime_spec, "validate", lambda *_args: issuance)
         monkeypatch.setattr(sr, "_preflight", lambda *_args, **_kwargs: None)
@@ -504,7 +504,7 @@ class TestPrepareMigration:
         monkeypatch.setattr(
             runtime_spec,
             "authorized_project_data_source",
-            lambda _path: workspace / ".booley_project",
+            lambda _path: workspace / ".booley",
         )
         monkeypatch.setattr(runtime_spec, "validate", lambda *_args: issuance)
         monkeypatch.setattr(runtime_spec, "requested_license", lambda _path, **_kwargs: None)
@@ -545,7 +545,7 @@ class TestPrepareMigration:
         monkeypatch.setattr(
             runtime_spec,
             "authorized_project_data_source",
-            lambda _path: workspace / ".booley_project",
+            lambda _path: workspace / ".booley",
         )
         monkeypatch.setattr(runtime_spec, "validate", lambda *_args: issuance)
         monkeypatch.setattr(runtime_spec, "requested_license", lambda _path, **_kwargs: None)
@@ -626,7 +626,7 @@ class TestPrepareMigration:
         monkeypatch.setattr(
             runtime_spec,
             "authorized_project_data_source",
-            lambda _path: workspace / ".booley_project",
+            lambda _path: workspace / ".booley",
         )
         monkeypatch.setattr(
             runtime_spec,
@@ -663,7 +663,7 @@ class TestPrepareMigration:
         )
         monkeypatch.setattr(
             "booley.runtime.session_issuance.authorized_project_data_source",
-            lambda _path: workspace / ".booley_project",
+            lambda _path: workspace / ".booley",
         )
         monkeypatch.setattr("booley.runtime.session_issuance.validate", validate)
 
@@ -676,7 +676,7 @@ class TestPrepareMigration:
         self, workspace: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _write_spec(workspace, _spec())
-        source = str(workspace / ".booley_project")
+        source = str(workspace / ".booley")
         current = [
             {
                 "Mounts": [
@@ -687,7 +687,7 @@ class TestPrepareMigration:
                         "RW": True,
                     },
                     {
-                        "Destination": "/work/.booley_project",
+                        "Destination": "/work/.booley",
                         "Source": source,
                         "Type": "bind",
                         "RW": True,
@@ -708,7 +708,7 @@ class TestPrepareMigration:
         )
         monkeypatch.setattr(
             "booley.runtime.session_issuance.authorized_project_data_source",
-            lambda _path: workspace / ".booley_project",
+            lambda _path: workspace / ".booley",
         )
         monkeypatch.setattr("booley.runtime.session_issuance.validate", lambda *_args: issuance)
         monkeypatch.setattr(
@@ -727,7 +727,7 @@ class TestPrepareMigration:
         monkeypatch.setattr(sr, "_docker_stdout", lambda _args: None)
         monkeypatch.setattr(
             "booley.runtime.session_issuance.authorized_project_data_source",
-            lambda _path: workspace / ".booley_project",
+            lambda _path: workspace / ".booley",
         )
         monkeypatch.setattr("booley.runtime.session_issuance.validate", validate)
 
@@ -765,7 +765,7 @@ class TestPrepareMigration:
         )
         monkeypatch.setattr(
             "booley.runtime.session_issuance.authorized_project_data_source",
-            lambda _path: workspace / ".booley_project",
+            lambda _path: workspace / ".booley",
         )
 
         with pytest.raises(sr.SessionError, match="cannot safely migrate"):
@@ -891,7 +891,7 @@ class TestPrepareMigration:
         monkeypatch.setattr(sr, "_run", run)
 
         with pytest.raises(sr.SessionError, match="multiple or ambiguous"):
-            sr._quiesce_legacy_vscode_container(workspace, workspace / ".booley_project", issuance)
+            sr._quiesce_legacy_vscode_container(workspace, workspace / ".booley", issuance)
 
         run.assert_not_called()
 
@@ -1072,7 +1072,7 @@ def wired(workspace: Path, request: pytest.FixtureRequest):
         installation=None,
         license_profile=None,
         relay_image_id="sha256:" + "a" * 64,
-        project_data_source=str(workspace / ".booley_project"),
+        project_data_source=str(workspace / ".booley"),
         project_data_layout="legacy",
     )
     with (
@@ -1086,7 +1086,7 @@ def wired(workspace: Path, request: pytest.FixtureRequest):
         patch("booley.runtime.session_issuance.authenticate", return_value=issuance),
         patch(
             "booley.runtime.session_issuance.authorized_project_data_source",
-            return_value=workspace / ".booley_project",
+            return_value=workspace / ".booley",
         ),
         patch.object(sr, "_strict_running_interactive_states", return_value=[]),
         patch.object(sr, "_strict_all_interactive_states", return_value=[]),
@@ -1782,9 +1782,9 @@ class TestUp:
         from booley.runtime import image_lifecycle
 
         workspace, _run = wired
-        project_dir = workspace / ".booley_project"
-        project_dir.mkdir()
-        (project_dir / "booley.toml").write_text(
+        booley_dir = workspace / ".booley"
+        booley_dir.mkdir()
+        (booley_dir / "booley.toml").write_text(
             '[sandbox]\nimage = "custom/session"\n',
             encoding="utf-8",
         )
@@ -2395,7 +2395,7 @@ class TestProjectDataMountPinned:
                         "RW": True,
                     },
                     {
-                        "Destination": "/work/.booley_project",
+                        "Destination": "/work/.booley",
                         "Source": workspace_source,
                         "Type": "bind",
                         "RW": True,
@@ -2408,7 +2408,7 @@ class TestProjectDataMountPinned:
     @staticmethod
     def _windows_workspace() -> tuple[SimpleNamespace, Path]:
         workspace = SimpleNamespace(resolve=lambda: Path("C:/Users/dev/project"))
-        return workspace, workspace.resolve() / ".booley_project"
+        return workspace, workspace.resolve() / ".booley"
 
     def test_wsl2_prefixed_sources_are_recognized(self, monkeypatch: pytest.MonkeyPatch):
         from booley.runtime import platform_paths
@@ -2416,8 +2416,8 @@ class TestProjectDataMountPinned:
         monkeypatch.setattr(platform_paths, "IS_WINDOWS", True)
         workspace, pending = self._windows_workspace()
         raw = self._mount_inspect_json(
-            "/run/desktop/mnt/host/c/Users/dev/project/.booley_project",
-            "/run/desktop/mnt/host/c/Users/dev/project/.booley_project",
+            "/run/desktop/mnt/host/c/Users/dev/project/.booley",
+            "/run/desktop/mnt/host/c/Users/dev/project/.booley",
         )
 
         assert sr._project_data_mount_root_is_pinned(raw, workspace, pending)
@@ -2428,8 +2428,8 @@ class TestProjectDataMountPinned:
         monkeypatch.setattr(platform_paths, "IS_WINDOWS", True)
         workspace, pending = self._windows_workspace()
         raw = self._mount_inspect_json(
-            "/c/Users/dev/project/.booley_project",
-            "/c/Users/dev/project/.booley_project",
+            "/c/Users/dev/project/.booley",
+            "/c/Users/dev/project/.booley",
         )
 
         assert sr._project_data_mount_root_is_pinned(raw, workspace, pending)
@@ -2440,8 +2440,8 @@ class TestProjectDataMountPinned:
         monkeypatch.setattr(platform_paths, "IS_WINDOWS", True)
         workspace, pending = self._windows_workspace()
         raw = self._mount_inspect_json(
-            "/run/desktop/mnt/host/c/Users/dev/project/.booley_project",
-            "/run/desktop/mnt/host/c/Users/dev/other/.booley_project",
+            "/run/desktop/mnt/host/c/Users/dev/project/.booley",
+            "/run/desktop/mnt/host/c/Users/dev/other/.booley",
         )
 
         assert not sr._project_data_mount_root_is_pinned(raw, workspace, pending)
@@ -2453,8 +2453,8 @@ class TestProjectDataMountPinned:
         workspace, pending = self._windows_workspace()
         raw = json.loads(
             self._mount_inspect_json(
-                "/c/Users/dev/project/.booley_project",
-                "/c/Users/dev/project/.booley_project",
+                "/c/Users/dev/project/.booley",
+                "/c/Users/dev/project/.booley",
             )
         )
         raw[0]["Mounts"][1]["RW"] = False
@@ -2716,7 +2716,7 @@ class TestImageDriftWarning:
     the spec)."""
 
     def _set_toml_image(self, workspace: Path, image: str) -> None:
-        pdir = workspace / ".booley_project"
+        pdir = workspace / ".booley"
         pdir.mkdir()
         (pdir / "booley.toml").write_text(f'[sandbox]\nimage = "{image}"\n', encoding="utf-8")
 
@@ -2728,13 +2728,13 @@ class TestImageDriftWarning:
             sr.up(workspace)
 
     def test_spec_vs_toml_drift_warns_and_names_the_fix(self, wired, caplog, monkeypatch):
-        from booley.runtime.project_dir import reset_cache
+        from booley.runtime.booley_dir import reset_cache
 
         workspace, _run = wired
         # The spec on disk says the default 'booley-sandbox'; the toml has
         # since been pointed at a project image.
         self._set_toml_image(workspace, "i2c-booley-sandbox")
-        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(workspace / ".booley_project"))
+        monkeypatch.setenv("BOOLEY_DIR", str(workspace / ".booley"))
         reset_cache()
 
         self._up_running(workspace)
@@ -2851,7 +2851,7 @@ class TestImageDriftWarning:
         assert "!= [sandbox].image 'custom-sandbox'" in caplog.text
 
     def test_no_project_config_is_silent(self, wired, caplog):
-        # No .booley_project at all: the resolver falls back to the base image,
+        # No .booley at all: the resolver falls back to the base image,
         # which is exactly what the generated spec carries — no drift.
         workspace, _run = wired
         _write_spec(workspace, _spec(image=sr.project_image.project_image_name(workspace)))
@@ -3361,7 +3361,7 @@ class TestRunProjectCommand:
         "https_proxy": dc.PROXY_URL,
         "NO_PROXY": "localhost,127.0.0.1",
         "BOOLEY_MCP_MODE": "interactive",
-        "BOOLEY_PROJECT_DIR": "/booley-project",
+        "BOOLEY_DIR": "/booley-project",
         "BOOLEY_AGENT_APP": "claude",
     }
 
@@ -4092,10 +4092,8 @@ def test_canonical_pin_checks_immutable_image_and_rejects_alias_mask(
 
     workspace = tmp_path / "project"
     workspace.mkdir()
-    source = workspace / ".booley_project"
-    mounts = [
-        {"Destination": "/work/.booley_project", "Source": str(source), "Type": "bind", "RW": True}
-    ]
+    source = workspace / ".booley"
+    mounts = [{"Destination": "/work/.booley", "Source": str(source), "Type": "bind", "RW": True}]
     if duplicate:
         mounts.append(
             {

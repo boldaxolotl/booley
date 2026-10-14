@@ -39,7 +39,7 @@ UNREFRESHED_SANDBOX = IssuedCacheIdentity(root=None, in_sandbox=True)
 def project(tmp_path, monkeypatch):
     root = tmp_path / "checkout"
     root.mkdir()
-    data = root / ".booley_project"
+    data = root / ".booley"
     data.mkdir()
     monkeypatch.delenv(COMPILER_CACHE_ROOT_ENV, raising=False)
     return root, data
@@ -91,7 +91,7 @@ def test_selected_checkout_errors_do_not_fall_back(project, tmp_path, monkeypatc
     main = tmp_path / "main-data"
     main.mkdir()
     (main / "booley.toml").write_text('[flows.sim.compiler_cache]\nmax_size="2G"')
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(main))
+    monkeypatch.setenv("BOOLEY_DIR", str(main))
     (data / "booley.toml").write_text(content)
     with pytest.raises(CompilerCacheConfigurationError):
         resolve_policy(root, issued=HOST, owner=main)
@@ -357,10 +357,10 @@ def test_real_edalize_preparation_rejects_target_make_overrides(
     project, monkeypatch, legacy, assignment, source
 ):
     from booley.flows.sim.build import SimulationBuildPreparationError
-    from booley.runtime.project_dir import reset_cache
+    from booley.runtime.booley_dir import reset_cache
 
     root, data = project
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(data))
+    monkeypatch.setenv("BOOLEY_DIR", str(data))
     reset_cache()
     options = {"make_options": ["-j2", assignment] if source == "authored" else ["-j2"]}
     if source == "GNUMAKEFLAGS":
@@ -371,10 +371,10 @@ def test_real_edalize_preparation_rejects_target_make_overrides(
 
 
 def test_real_preparation_in_unrefreshed_sandbox_builds_uncached(project, monkeypatch):
-    from booley.runtime.project_dir import reset_cache
+    from booley.runtime.booley_dir import reset_cache
 
     root, data = project
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(data))
+    monkeypatch.setenv("BOOLEY_DIR", str(data))
     reset_cache()
     monkeypatch.setattr(
         "booley.flows.sim.build.read_issued_identity", lambda _environ: UNREFRESHED_SANDBOX
@@ -424,9 +424,9 @@ def test_disabled_policy_exports_no_cache_location(project):
     assert not {"CCACHE_DIR", "CCACHE_MAXSIZE", "CCACHE_BASEDIR"} & environment.keys()
 
 
-def test_issued_owner_survives_ticket_project_dir(project, tmp_path, monkeypatch):
+def test_issued_owner_survives_ticket_booley_dir(project, tmp_path, monkeypatch):
     root, data = project
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path / "ticket-data"))
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / "ticket-data"))
     (data / "booley.toml").write_text('[flows.sim.compiler_cache]\nmax_size="1Gi"')
     issued = IssuedCacheIdentity(root=ISSUED_COMPILER_CACHE_ROOT, in_sandbox=True)
     policy = resolve_policy(root, issued=issued)

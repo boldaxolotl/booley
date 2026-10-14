@@ -26,8 +26,8 @@ from booley.flows.sim.compiler_cache import (
     resolve_policy,
 )
 from booley.flows.sim.execution import NamedTests, SimulationExecution, SimulationOptions
+from booley.runtime.booley_dir import reset_cache
 from booley.runtime.compiler_cache import COMPILER_CACHE_RELATIVE, IssuedCacheIdentity
-from booley.runtime.project_dir import reset_cache
 from booley.targets.catalog import TargetCatalog
 
 pytestmark = pytest.mark.skipif(
@@ -40,7 +40,7 @@ _HOST = IssuedCacheIdentity(root=None, in_sandbox=False)
 
 def _write_project(root: Path, revision: int) -> Path:
     """Write a one-Target Verilator Project whose RTL drives *revision*."""
-    data = root / ".booley_project"
+    data = root / ".booley"
     data.mkdir(parents=True, exist_ok=True)
     (data / "booley.toml").write_text('[project]\nname="compiler-cache-smoke"\n')
     (data / "tests.toml").write_text('[sim]\ntests=["check"]\n')
@@ -133,7 +133,7 @@ def _simulate(root: Path) -> str:
 def test_rtl_edit_is_reflected_while_unchanged_objects_hit_cache(tmp_path, monkeypatch):
     root = tmp_path / "project"
     data = _write_project(root, revision=1)
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(data))
+    monkeypatch.setenv("BOOLEY_DIR", str(data))
     monkeypatch.delenv("BOOLEY_COMPILER_CACHE_ROOT", raising=False)
     reset_cache()
     cache_dir = data / COMPILER_CACHE_RELATIVE
@@ -152,7 +152,7 @@ def test_rtl_edit_is_reflected_while_unchanged_objects_hit_cache(tmp_path, monke
 
 def _cached_build(root: Path, revision: int, cache_owner: Path) -> str:
     """Build and run one design with Booley's managed cache environment."""
-    (root / ".booley_project").mkdir(parents=True)
+    (root / ".booley").mkdir(parents=True)
     source = root / "dut.sv"
     source.write_text(
         "module top;\n"

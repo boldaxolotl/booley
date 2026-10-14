@@ -15,7 +15,7 @@ from booley.runtime import runtime_context
 def test_repeat_attach_one_view_and_no_filesystem_lock(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(command.socket, "AF_UNIX", 1, raising=False)
     monkeypatch.setattr(command, "namespace", lambda: "pid:[fixture]")
-    monkeypatch.setattr(command, "resolve_project_dir", lambda _: tmp_path)
+    monkeypatch.setattr(command, "resolve_booley_dir", lambda _: tmp_path)
     launched = []
     monkeypatch.setattr(command, "DashboardReader", lambda *_: SimpleNamespace(read=lambda: None))
     monkeypatch.setattr(

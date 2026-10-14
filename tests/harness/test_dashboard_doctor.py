@@ -363,7 +363,7 @@ async def test_deleted_goal_worktree_does_not_break_status_or_dashboard(
     work.rmdir()
     before = {str(path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
     result = await dispatch_goal_tool(
-        "goal_status", {"work_dir": str(tmp_path / caller)}, project_dir=control
+        "goal_status", {"work_dir": str(tmp_path / caller)}, booley_dir=control
     )
     assert result.is_error is (caller == "removed")
     assert result.goal_aware is (caller == "healthy")

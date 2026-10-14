@@ -1,4 +1,4 @@
-"""Tests for project_dir: 4-step Booley Directory discovery."""
+"""Tests for booley_dir: 4-step Booley Directory discovery."""
 
 from __future__ import annotations
 
@@ -8,15 +8,15 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from booley.runtime.checkout_role import SourceCheckoutProjectError
-from booley.runtime.project_dir import (
-    checkout_project_dir_relative_to,
+from booley.runtime.booley_dir import (
+    booley_dir_for_init,
+    checkout_booley_dir_relative_to,
     checkout_runtime_dir,
-    project_dir_for_init,
     reset_cache,
-    resolve_checkout_project_dir,
-    resolve_project_dir,
+    resolve_booley_dir,
+    resolve_checkout_booley_dir,
 )
+from booley.runtime.checkout_role import SourceCheckoutProjectError
 
 
 @pytest.fixture(autouse=True)
@@ -30,14 +30,14 @@ def _clear_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 class TestProjectDirForInit:
     def test_uses_selected_checkout_despite_ancestor_env_and_cache(self, tmp_path, monkeypatch):
-        ancestor = tmp_path / ".booley_project"
+        ancestor = tmp_path / ".booley"
         ancestor.mkdir()
         child = tmp_path / "child"
         child.mkdir()
-        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(ancestor))
-        assert resolve_project_dir() == ancestor.resolve()
+        monkeypatch.setenv("BOOLEY_DIR", str(ancestor))
+        assert resolve_booley_dir() == ancestor.resolve()
 
-        assert project_dir_for_init(child) == child.resolve() / ".booley_project"
+        assert booley_dir_for_init(child) == child.resolve() / ".booley"
 
     def test_rejects_booley_source_checkout(self, tmp_path):
         root = tmp_path / "booley-source"
@@ -49,11 +49,11 @@ class TestProjectDirForInit:
         )
 
         with pytest.raises(SourceCheckoutProjectError, match="cannot be initialized"):
-            project_dir_for_init(root)
+            booley_dir_for_init(root)
 
 
 # ---------------------------------------------------------------------------
-# Step 1: BOOLEY_PROJECT_DIR env var
+# Step 1: BOOLEY_DIR env var
 # ---------------------------------------------------------------------------
 
 
@@ -61,46 +61,47 @@ class TestEnvVarOverride:
     def test_env_var_returns_path(self, tmp_path: Path, monkeypatch):
         d = tmp_path / "my_project"
         d.mkdir()
-        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(d))
-        result = resolve_project_dir()
+        monkeypatch.setenv("BOOLEY_DIR", str(d))
+        result = resolve_booley_dir()
         assert result == d.resolve()
 
     def test_env_var_nonexistent_warns(self, tmp_path: Path, monkeypatch):
         fake = tmp_path / "does_not_exist"
-        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(fake))
+        monkeypatch.setenv("BOOLEY_DIR", str(fake))
         with pytest.warns(UserWarning, match="does not exist"):
-            result = resolve_project_dir()
+            result = resolve_booley_dir()
         assert result == fake.resolve()
 
     def test_env_var_takes_precedence_over_sibling(self, tmp_path: Path, monkeypatch):
-        """Env var should win even if sibling .booley_project/ exists."""
+        """Env var should win even if sibling .booley/ exists."""
         env_dir = tmp_path / "env_project"
         env_dir.mkdir()
-        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(env_dir))
+        monkeypatch.setenv("BOOLEY_DIR", str(env_dir))
         # Also create a sibling that would match step 3
-        sibling = tmp_path / ".booley_project"
+        sibling = tmp_path / ".booley"
         sibling.mkdir()
-        result = resolve_project_dir()
+        (sibling / "booley.toml").write_text("# Project\n")
+        result = resolve_booley_dir()
         assert result == env_dir.resolve()
 
     def test_checkout_local_snapshot_overrides_session_global_dir(self, tmp_path, monkeypatch):
         session_dir = tmp_path / "session-project"
         session_dir.mkdir()
         checkout = tmp_path / "ticket-checkout"
-        local = checkout / ".booley_project"
+        local = checkout / ".booley"
         local.mkdir(parents=True)
-        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(session_dir))
-        assert resolve_project_dir() == session_dir.resolve()  # pre-warm global cache
+        monkeypatch.setenv("BOOLEY_DIR", str(session_dir))
+        assert resolve_booley_dir() == session_dir.resolve()  # pre-warm global cache
 
-        assert resolve_checkout_project_dir(checkout) == local.resolve()
+        assert resolve_checkout_booley_dir(checkout) == local.resolve()
 
     def test_checkout_runtime_dir_ignores_session_global_dir(self, tmp_path, monkeypatch):
         selected = tmp_path / "selected"
-        selected_project = selected / ".booley_project"
+        selected_project = selected / ".booley"
         selected_project.mkdir(parents=True)
-        global_project = tmp_path / "global" / ".booley_project"
+        global_project = tmp_path / "global" / ".booley"
         global_project.mkdir(parents=True)
-        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(global_project))
+        monkeypatch.setenv("BOOLEY_DIR", str(global_project))
 
         assert checkout_runtime_dir(selected) == selected_project / ".runtime"
 
@@ -111,13 +112,13 @@ class TestEnvVarOverride:
         custom = checkout / "control"
         custom.mkdir(parents=True)
         (checkout / "booley.toml").write_text('[project]\ndir = "control"\n')
-        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(session_dir))
-        assert resolve_project_dir() == session_dir.resolve()
+        monkeypatch.setenv("BOOLEY_DIR", str(session_dir))
+        assert resolve_booley_dir() == session_dir.resolve()
 
-        assert resolve_checkout_project_dir(checkout) == custom.resolve()
-        assert checkout_project_dir_relative_to(checkout) == Path("control")
+        assert resolve_checkout_booley_dir(checkout) == custom.resolve()
+        assert checkout_booley_dir_relative_to(checkout) == Path("control")
 
-    def test_checkout_relative_project_dir_rejects_external_path(self, tmp_path, monkeypatch):
+    def test_checkout_relative_booley_dir_rejects_external_path(self, tmp_path, monkeypatch):
         checkout = tmp_path / "ticket-checkout"
         checkout.mkdir()
         external = tmp_path / "external"
@@ -126,10 +127,10 @@ class TestEnvVarOverride:
             f'[project]\ndir = "{external.as_posix()}"\n',
             encoding="utf-8",
         )
-        monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+        monkeypatch.delenv("BOOLEY_DIR", raising=False)
 
         with pytest.raises(ValueError, match="outside checkout"):
-            checkout_project_dir_relative_to(checkout)
+            checkout_booley_dir_relative_to(checkout)
 
 
 # ---------------------------------------------------------------------------
@@ -139,7 +140,7 @@ class TestEnvVarOverride:
 
 class TestBooleyToml:
     def test_absolute_dir_in_toml(self, tmp_path: Path, monkeypatch):
-        monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+        monkeypatch.delenv("BOOLEY_DIR", raising=False)
         project_d = tmp_path / "custom_project"
         project_d.mkdir()
 
@@ -150,11 +151,11 @@ class TestBooleyToml:
             encoding="utf-8",
         )
 
-        result = resolve_project_dir(start=tmp_path)
+        result = resolve_booley_dir(start=tmp_path)
         assert result == project_d
 
     def test_relative_dir_in_toml(self, tmp_path: Path, monkeypatch):
-        monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+        monkeypatch.delenv("BOOLEY_DIR", raising=False)
         subdir = tmp_path / "sub"
         subdir.mkdir()
         project_d = tmp_path / "rel_proj"
@@ -163,36 +164,38 @@ class TestBooleyToml:
         toml_path = tmp_path / "booley.toml"
         toml_path.write_text('[project]\ndir = "rel_proj"', encoding="utf-8")
 
-        result = resolve_project_dir(start=subdir)
+        result = resolve_booley_dir(start=subdir)
         assert result == project_d.resolve()
 
     def test_malformed_toml_falls_through(self, tmp_path: Path, monkeypatch):
         """Broken booley.toml should fall through to step 3."""
-        monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+        monkeypatch.delenv("BOOLEY_DIR", raising=False)
         (tmp_path / "booley.toml").write_text("INVALID{{{", encoding="utf-8")
-        sibling = tmp_path / ".booley_project"
+        sibling = tmp_path / ".booley"
         sibling.mkdir()
+        (sibling / "booley.toml").write_text("# Project\n")
 
-        result = resolve_project_dir(start=tmp_path)
+        result = resolve_booley_dir(start=tmp_path)
         assert result == sibling
 
 
 # ---------------------------------------------------------------------------
-# Step 3: Walk-up .booley_project/
+# Step 3: Walk-up .booley/
 # ---------------------------------------------------------------------------
 
 
 class TestWalkUpConvention:
-    def test_finds_booley_project(self, tmp_path: Path, monkeypatch):
-        monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
-        project_dir = tmp_path / ".booley_project"
-        project_dir.mkdir()
+    def test_finds_booley_directory(self, tmp_path: Path, monkeypatch):
+        monkeypatch.delenv("BOOLEY_DIR", raising=False)
+        booley_dir = tmp_path / ".booley"
+        booley_dir.mkdir()
+        (booley_dir / "booley.toml").write_text("# Project\n")
         # Start from a subdirectory
         subdir = tmp_path / "sub" / "deep"
         subdir.mkdir(parents=True)
 
-        result = resolve_project_dir(start=subdir)
-        assert result == project_dir
+        result = resolve_booley_dir(start=subdir)
+        assert result == booley_dir
 
 
 # ---------------------------------------------------------------------------
@@ -202,10 +205,10 @@ class TestWalkUpConvention:
 
 class TestNotFound:
     def test_raises_when_nothing_found(self, tmp_path: Path, monkeypatch):
-        monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
-        # Empty tmp_path — no toml, no .booley_project/
+        monkeypatch.delenv("BOOLEY_DIR", raising=False)
+        # Empty tmp_path — no toml, no .booley/
         with pytest.raises(FileNotFoundError, match="booley init"):
-            resolve_project_dir(start=tmp_path)
+            resolve_booley_dir(start=tmp_path)
 
 
 class TestSourceCheckoutRefusal:
@@ -220,34 +223,34 @@ class TestSourceCheckoutRefusal:
 
     def test_stale_state_does_not_turn_source_into_project(self, tmp_path, monkeypatch):
         root = self._source(tmp_path)
-        (root / ".booley_project").mkdir()
+        (root / ".booley").mkdir()
         external = tmp_path / "external-state"
         external.mkdir()
-        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(external))
+        monkeypatch.setenv("BOOLEY_DIR", str(external))
 
         with pytest.raises(SourceCheckoutProjectError, match="cannot be initialized"):
-            resolve_project_dir(start=root)
+            resolve_booley_dir(start=root)
         with pytest.raises(SourceCheckoutProjectError, match="cannot be initialized"):
-            resolve_checkout_project_dir(root)
+            resolve_checkout_booley_dir(root)
 
     def test_implicit_cwd_can_select_an_external_project(self, tmp_path, monkeypatch):
         root = self._source(tmp_path)
         external = tmp_path / "external-state"
         external.mkdir()
         monkeypatch.chdir(root)
-        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(external))
+        monkeypatch.setenv("BOOLEY_DIR", str(external))
 
-        assert resolve_project_dir() == external.resolve()
+        assert resolve_booley_dir() == external.resolve()
 
     def test_env_cannot_select_state_inside_source(self, tmp_path, monkeypatch):
         root = self._source(tmp_path)
-        stale = root / ".booley_project"
+        stale = root / ".booley"
         stale.mkdir()
         monkeypatch.chdir(root)
-        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(stale))
+        monkeypatch.setenv("BOOLEY_DIR", str(stale))
 
         with pytest.raises(SourceCheckoutProjectError, match="cannot be initialized"):
-            resolve_project_dir()
+            resolve_booley_dir()
 
 
 # ---------------------------------------------------------------------------
@@ -259,30 +262,30 @@ class TestCaching:
     def test_cache_returns_same_value(self, tmp_path: Path, monkeypatch):
         d = tmp_path / "cached_proj"
         d.mkdir()
-        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(d))
-        r1 = resolve_project_dir()
-        r2 = resolve_project_dir()
+        monkeypatch.setenv("BOOLEY_DIR", str(d))
+        r1 = resolve_booley_dir()
+        r2 = resolve_booley_dir()
         assert r1 == r2
         assert r1 is r2  # same object from cache
 
     def test_reset_cache_clears(self, tmp_path: Path, monkeypatch):
         d1 = tmp_path / "proj1"
         d1.mkdir()
-        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(d1))
-        r1 = resolve_project_dir()
+        monkeypatch.setenv("BOOLEY_DIR", str(d1))
+        r1 = resolve_booley_dir()
 
         d2 = tmp_path / "proj2"
         d2.mkdir()
         reset_cache()
-        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(d2))
-        r2 = resolve_project_dir()
+        monkeypatch.setenv("BOOLEY_DIR", str(d2))
+        r2 = resolve_booley_dir()
 
         assert r1 != r2
 
 
 class TestContainment:
     def test_nonlexical_directory_identity(self, tmp_path, monkeypatch):
-        from booley.runtime import project_dir
+        from booley.runtime import booley_dir
 
         root, alias = tmp_path / "selected", tmp_path / "alias"
         for directory in (root, alias):
@@ -300,15 +303,15 @@ class TestContainment:
         monkeypatch.setattr(Path, "samefile", samefile)
         candidate = alias / "inputs" / "file"
         assert not candidate.resolve().is_relative_to(root.resolve())
-        assert project_dir.contains(candidate, project_dir=root) == root / "inputs" / "file"
+        assert booley_dir.contains(candidate, booley_dir=root) == root / "inputs" / "file"
         assert calls
         assert (
-            project_dir.contains(root / "inputs" / "file", project_dir=alias)
+            booley_dir.contains(root / "inputs" / "file", booley_dir=alias)
             == alias / "inputs" / "file"
         )
 
     def test_rebased_escape_is_denied(self, tmp_path, monkeypatch):
-        from booley.runtime import project_dir
+        from booley.runtime import booley_dir
 
         root, alias, outside = (tmp_path / name for name in ("root", "alias", "outside"))
         for directory in (root, alias, outside):
@@ -319,10 +322,10 @@ class TestContainment:
         monkeypatch.setattr(
             Path, "samefile", lambda p, q: {p, Path(q)} == {root, alias} or original(p, q)
         )
-        assert project_dir.contains(alias / "escape" / "new", project_dir=root) is None
+        assert booley_dir.contains(alias / "escape" / "new", booley_dir=root) is None
 
     def test_contract_matrix(self, tmp_path, monkeypatch):
-        from booley.runtime.project_dir import contains
+        from booley.runtime.booley_dir import contains
 
         root = tmp_path / "root"
         root.mkdir()
@@ -351,28 +354,28 @@ class TestContainment:
             (root / ".." / "outside", None),
             (tmp_path / "root-extra" / "file", None),
         ):
-            assert contains(candidate, project_dir=root) == expected
-        assert contains(alias / "directory" / "file", project_dir=alias).samefile(inside)
+            assert contains(candidate, booley_dir=root) == expected
+        assert contains(alias / "directory" / "file", booley_dir=alias).samefile(inside)
         monkeypatch.chdir(root)
-        assert contains("directory/file", project_dir=root) == inside
-        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(root))
+        assert contains("directory/file", booley_dir=root) == inside
+        monkeypatch.setenv("BOOLEY_DIR", str(root))
         assert contains(inside) == inside
-        assert contains(inside, project_dir=tmp_path / "absent") is None
+        assert contains(inside, booley_dir=tmp_path / "absent") is None
 
     def test_errors(self, tmp_path, monkeypatch):
-        from booley.runtime import project_dir
+        from booley.runtime import booley_dir
 
         root = tmp_path / "root"
         root.mkdir()
         with pytest.raises(ValueError):
-            project_dir.contains("bad\0path", project_dir=root)
+            booley_dir.contains("bad\0path", booley_dir=root)
 
         def resolver():
             raise ValueError("selection failed")
 
-        monkeypatch.setattr(project_dir, "resolve_project_dir", resolver)
+        monkeypatch.setattr(booley_dir, "resolve_booley_dir", resolver)
         with pytest.raises(ValueError, match="selection failed"):
-            project_dir.contains(root)
+            booley_dir.contains(root)
         original = Path.resolve
 
         def resolve(path, *args, **kwargs):
@@ -381,16 +384,16 @@ class TestContainment:
             return original(path, *args, **kwargs)
 
         monkeypatch.setattr(Path, "resolve", resolve)
-        assert project_dir.contains(root / "denied", project_dir=root) is None
+        assert booley_dir.contains(root / "denied", booley_dir=root) is None
         (root / "loop").symlink_to(root / "loop")
-        assert project_dir.contains(root / "loop", project_dir=root) is None
+        assert booley_dir.contains(root / "loop", booley_dir=root) is None
         monkeypatch.setattr(
             Path, "samefile", lambda *args: (_ for _ in ()).throw(PermissionError("denied"))
         )
-        assert project_dir.contains(root, project_dir=root) is None
+        assert booley_dir.contains(root, booley_dir=root) is None
 
     def test_inaccessible_candidate_stat(self, tmp_path, monkeypatch):
-        from booley.runtime.project_dir import contains
+        from booley.runtime.booley_dir import contains
 
         root = tmp_path / "root"
         root.mkdir()
@@ -403,10 +406,10 @@ class TestContainment:
             return original(path, *args, **kwargs)
 
         monkeypatch.setattr(Path, "stat", stat)
-        assert contains(candidate, project_dir=root) is None
+        assert contains(candidate, booley_dir=root) is None
 
     def test_rebased_alias_child_symlink(self, tmp_path, monkeypatch):
-        from booley.runtime.project_dir import contains
+        from booley.runtime.booley_dir import contains
 
         root, alias = tmp_path / "root", tmp_path / "alias"
         for directory in (root, alias):
@@ -418,12 +421,12 @@ class TestContainment:
         monkeypatch.setattr(
             Path, "samefile", lambda p, q: {p, Path(q)} == {root, alias} or original(p, q)
         )
-        result = contains(alias / "input", project_dir=root)
+        result = contains(alias / "input", booley_dir=root)
         assert result == root / "target"
         assert result.relative_to(root) == Path("target")
 
     def test_final_authority_rebase_escape_is_denied(self, tmp_path, monkeypatch):
-        from booley.runtime.project_dir import contains
+        from booley.runtime.booley_dir import contains
 
         root, alias, outside = (tmp_path / name for name in ("root", "alias", "outside"))
         for directory in (root, alias, outside):
@@ -436,11 +439,11 @@ class TestContainment:
         monkeypatch.setattr(
             Path, "samefile", lambda p, q: {p, Path(q)} == {root, alias} or original(p, q)
         )
-        assert contains(alias / "input", project_dir=root) is None
+        assert contains(alias / "input", booley_dir=root) is None
 
 
 def test_containment_final_authority_internal_symlink(tmp_path, monkeypatch):
-    from booley.runtime.project_dir import contains
+    from booley.runtime.booley_dir import contains
 
     root, alias = tmp_path / "root", tmp_path / "alias"
     for directory in (root, alias):
@@ -454,4 +457,4 @@ def test_containment_final_authority_internal_symlink(tmp_path, monkeypatch):
     monkeypatch.setattr(
         Path, "samefile", lambda p, q: {p, Path(q)} == {root, alias} or original(p, q)
     )
-    assert contains(alias / "input", project_dir=root) == root / "real"
+    assert contains(alias / "input", booley_dir=root) == root / "real"

@@ -474,7 +474,7 @@ def test_configured_tb_policy_does_not_discard_valid_current_finding(
     source = root / "tb/dut_tb.sv"
     source.parent.mkdir()
     source.write_text("module dut_tb; endmodule\n")
-    config_dir = root / ".booley_project"
+    config_dir = root / ".booley"
     config_dir.mkdir()
     (config_dir / "booley.toml").write_text(
         '[flows.sim]\npass_sentinels = ["CUSTOM PASS"]\ntrace_files = ["custom.vcd"]\n'
@@ -555,21 +555,21 @@ def test_fresh_superseded_proposal_is_rejected(reviewer, monkeypatch):
 def test_actual_reviewer_evidence_keeps_versioned_project_clean(
     reviewer, monkeypatch, payload, code
 ):
-    from booley.runtime import project_dir
+    from booley.runtime import booley_dir
     from tests.project_runtime_git_support import assert_clean, initialize_repository
 
     root = Path(reviewer.args.work_dir)
-    data = root / ".booley_project"
+    data = root / ".booley"
     data.mkdir()
     (data / "booley.toml").write_text('[project]\nname = "fixture"\n')
     state_path = data / "goals" / "audit" / "state.json"
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(data))
+    monkeypatch.setenv("BOOLEY_DIR", str(data))
     reviewer.state._file_path = state_path
     reviewer.args.state_file = state_path
     monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_path))
     reviewer.state.save()
     initialize_repository(root, data, monkeypatch)
-    project_dir.reset_cache()
+    booley_dir.reset_cache()
     try:
         output(reviewer, monkeypatch, payload)
         result = reviewer._run()
@@ -580,4 +580,4 @@ def test_actual_reviewer_evidence_keeps_versioned_project_clean(
         assert evidence(result) == result.detail
         assert_clean(root)
     finally:
-        project_dir.reset_cache()
+        booley_dir.reset_cache()

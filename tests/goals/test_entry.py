@@ -1,9 +1,9 @@
 """Entering Goal Mode: refusals, the Goal Branch, protected inputs, and crash recovery.
 
 Every test drives real Git in a throwaway repository laid out like a Booley
-Project: the Main Booley Directory ``<main>/.booley_project`` (excluded
+Project: the Main Booley Directory ``<main>/.booley`` (excluded
 from Git, as ``init`` does), and a linked worktree under its ``worktrees/``
-carrying a copied ``.booley_project`` snapshot. Only the Target catalog is
+carrying a copied ``.booley`` snapshot. Only the Target catalog is
 faked, so entry never needs FuseSoC.
 """
 
@@ -52,7 +52,7 @@ def _request(layout: SimpleNamespace, goals: list[dict[str, Any]] | None = None,
 
 
 def _env(layout: SimpleNamespace, on_boundary: Callable[[str], None] | None = None):
-    return EntryEnvironment(project_dir=layout.control, on_boundary=on_boundary)
+    return EntryEnvironment(booley_dir=layout.control, on_boundary=on_boundary)
 
 
 def _store(layout: SimpleNamespace) -> GoalStore:
@@ -144,8 +144,8 @@ def test_second_entry_on_an_active_worktree_is_refused(layout: SimpleNamespace) 
         enter_goal_mode(_request(layout, slug="other"), _env(layout))
 
 
-def test_project_dir_inside_the_worktree_is_refused(layout: SimpleNamespace) -> None:
-    env = EntryEnvironment(project_dir=layout.worktree / ".booley_project")
+def test_booley_dir_inside_the_worktree_is_refused(layout: SimpleNamespace) -> None:
+    env = EntryEnvironment(booley_dir=layout.worktree / ".booley")
     with pytest.raises(GoalEntryError, match=r"Worktree Booley Directory.*Main Booley Directory"):
         enter_goal_mode(_request(layout), env)
 
@@ -632,7 +632,7 @@ def test_nonexcluded_paired_checkout_enters(layout, tmp_path):
     empty.write_bytes(b"")
     git(layout.worktree, "config", "core.excludesFile", str(empty))
     (layout.main / ".git/info/exclude").write_bytes(b"")
-    assert git(layout.worktree, "status", "--porcelain=v1") == "?? .booley_project/"
+    assert git(layout.worktree, "status", "--porcelain=v1") == "?? .booley/"
     result = enter_goal_mode(_request(layout), _env(layout))
     assert result.record.state is GoalState.ACTIVE
     assert result.record.paired_project_base_sha == git(paired, "rev-parse", "HEAD")
@@ -663,7 +663,7 @@ def test_nonexcluded_unpaired_root_is_not_exempt(layout, tmp_path, nested):
     empty.write_bytes(b"")
     git(layout.worktree, "config", "core.excludesFile", str(empty))
     (layout.main / ".git/info/exclude").write_bytes(b"")
-    project = layout.worktree / ".booley_project"
+    project = layout.worktree / ".booley"
     if nested == "standalone":
         git(project, "init", "-q")
         git(project, "add", "-A")
@@ -671,7 +671,7 @@ def test_nonexcluded_unpaired_root_is_not_exempt(layout, tmp_path, nested):
     elif nested == "broken":
         (project / ".git").write_bytes(b"gitdir: /nonexistent-paired-metadata\n")
     if nested != "broken":
-        assert git(layout.worktree, "status", "--porcelain=v1") == "?? .booley_project/"
+        assert git(layout.worktree, "status", "--porcelain=v1") == "?? .booley/"
     message = "Paired Checkout is unavailable" if nested == "broken" else "uncommitted changes"
     with pytest.raises(GoalEntryError, match=message):
         enter_goal_mode(_request(layout), _env(layout))
@@ -728,7 +728,7 @@ def test_doctor_retain_exclusion_hint_leaves_linked_goal_entry_working(layout, t
     assert enter_goal_mode(_request(layout), _env(layout)).record.state is GoalState.ACTIVE
     next_root = tmp_path / "next-worktree"
     git(layout.main, "worktree", "add", "-q", "--detach", str(next_root), "main")
-    next_pair = next_root / ".booley_project"
+    next_pair = next_root / ".booley"
     git(paired, "worktree", "add", "-q", "--detach", str(next_pair), "HEAD")
     reporter = doctor._Reporter.create(doctor.load_doctor_waivers(next_pair))
     doctor._check_goal_history_ignored(next_root, next_pair, reporter.pass_, reporter.warn_)
@@ -776,14 +776,14 @@ def test_paired_root_gitlink_is_not_exempt_from_entry(layout, tmp_path, committe
         "--cacheinfo",
         "160000",
         git(paired, "rev-parse", "HEAD"),
-        ".booley_project",
+        ".booley",
     )
     if committed:
         git(layout.worktree, "commit", "-qm", "tracked paired gitlink")
         (paired / "booley.toml").write_bytes(b"user work\n")
     git(layout.worktree, "config", "diff.ignoreSubmodules", "all")
     status = git(layout.worktree, "status", "--porcelain=v1", "--ignore-submodules=none")
-    assert status.endswith(".booley_project") and not status.startswith("??")
+    assert status.endswith(".booley") and not status.startswith("??")
     with pytest.raises(GoalEntryError, match=r"the worktree has uncommitted changes"):
         enter_goal_mode(_request(layout), _env(layout))
     if committed:

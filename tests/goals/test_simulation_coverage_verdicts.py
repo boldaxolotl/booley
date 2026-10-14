@@ -28,7 +28,7 @@ def test_bound_flow_records_both_verdicts(layout, monkeypatch, simulation, cover
     project(root)
     core = root / "counter.core"
     core.write_text(core.read_text().replace("sim_0", "top"))
-    (root / ".booley_project/tests.toml").write_text('[top]\ntests = ["reset", "wrap"]\n')
+    (root / ".booley/tests.toml").write_text('[top]\ntests = ["reset", "wrap"]\n')
     git(root, "add", "counter.core", "rtl/counter.sv")
     git(root, "commit", "-m", "simulation recipe")
     record = enter_goal_mode(
@@ -86,7 +86,7 @@ def _enter(layout, monkeypatch, goals):
     project(root)
     core = root / "counter.core"
     core.write_text(core.read_text().replace("sim_0", "top"))
-    (root / ".booley_project/tests.toml").write_text('[top]\ntests = ["reset", "wrap"]\n')
+    (root / ".booley/tests.toml").write_text('[top]\ntests = ["reset", "wrap"]\n')
     git(root, "add", "counter.core", "rtl/counter.sv")
     git(root, "commit", "-m", "simulation recipe")
     record = enter_goal_mode(
@@ -208,7 +208,7 @@ def test_a_published_coverage_campaign_whose_acceptance_never_ran_is_accounted_f
     context = replace(project(root), test_names={"top": ("reset", "wrap")})
     core = root / "counter.core"
     core.write_text(core.read_text().replace("sim_0", "top"))
-    (root / ".booley_project/tests.toml").write_text('[top]\ntests = ["reset", "wrap"]\n')
+    (root / ".booley/tests.toml").write_text('[top]\ntests = ["reset", "wrap"]\n')
     git(root, "add", "counter.core", "rtl/counter.sv")
     git(root, "commit", "-m", "simulation recipe")
     record = enter_goal_mode(

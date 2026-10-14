@@ -141,7 +141,7 @@ def test_old_owned_untracked_output_does_not_wedge_new_attempt_and_canonical_is_
         finish_goal(first, environment(complete, stop_at("destination-materialized")))
     git(complete.worktree, "commit", "--allow-empty", "-qm", "unrelated committed work")
     assert finish_goal(first, environment(complete))["status"] == "revalidation_required"
-    old = complete.worktree / f".booley_project/goals/history/{complete.record.id}.md"
+    old = complete.worktree / f".booley/goals/history/{complete.record.id}.md"
     original = old.read_bytes()
     second = request(complete)
     result = finish_goal(second, environment(complete))
@@ -190,7 +190,7 @@ def test_physical_substitution_never_adopts_foreign_summary_or_ref(layout):
     with pytest.raises(Crash):
         finish_goal(call, environment(complete, stop_at("ref-published")))
     recreate(complete.worktree)
-    path = complete.worktree / f".booley_project/goals/history/{complete.record.id}.md"
+    path = complete.worktree / f".booley/goals/history/{complete.record.id}.md"
     path.write_bytes(b"foreign summary")
     with pytest.raises(LifecycleError, match="destination conflicts"):
         finish_goal(call, environment(complete))
@@ -243,7 +243,7 @@ raise AssertionError('did not reach death boundary')
     result = finish_goal(call, environment(complete))
     assert result["status"] == "finished"
     assert unrelated.read_bytes() == b"user staging bytes"
-    assert not list((complete.worktree / ".booley_project/goals/history").glob(".*.tmp"))
+    assert not list((complete.worktree / ".booley/goals/history").glob(".*.tmp"))
     assert git(complete.worktree, "rev-list", "--count", "HEAD^..HEAD") == "1"
 
 
@@ -512,7 +512,7 @@ def test_cross_volume_publication_and_foreign_anchor_confinement(layout, tmp_pat
         work = Path(scratch) / "work"
         git(layout.main, "worktree", "add", "-q", "-b", "cross-volume", str(work))
         try:
-            write_project_files(work / ".booley_project")
+            write_project_files(work / ".booley")
             current = publication_layout(SimpleNamespace(**{**vars(layout), "worktree": work}))
             call = request(current)
             before = git(current.main, "rev-parse", "HEAD")
@@ -520,7 +520,7 @@ def test_cross_volume_publication_and_foreign_anchor_confinement(layout, tmp_pat
                 foreign = tmp_path / "foreign"
                 foreign.mkdir()
                 (foreign / "sentinel").write_bytes(b"unchanged")
-                anchor = work / ".booley_project/goals" / (".publication-" + call.operation_id)
+                anchor = work / ".booley/goals" / (".publication-" + call.operation_id)
                 anchor.parent.mkdir(exist_ok=True)
                 anchor.symlink_to(foreign, target_is_directory=True)
                 with pytest.raises(LifecycleError, match=r"staging anchor|commit changes"):

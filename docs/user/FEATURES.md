@@ -73,7 +73,7 @@ The same contract layer is what keeps project-specific build steps contained: a 
 
 ## Named Targets and Tests
 
-Booley does not let Developer Agents assemble simulator command lines from ad-hoc fragments. Every buildable variant of the design is a **named Target** in a FuseSoC `.core` file (CAPI2, FuseSoC's YAML design-description format), with filesets, parameters, defines, and top module in one place, and every test is a **named entry** in `.booley_project/tests.toml` keyed by that Target. Booley Flows take `target` and `test` arguments that resolve against them:
+Booley does not let Developer Agents assemble simulator command lines from ad-hoc fragments. Every buildable variant of the design is a **named Target** in a FuseSoC `.core` file (CAPI2, FuseSoC's YAML design-description format), with filesets, parameters, defines, and top module in one place, and every test is a **named entry** in `.booley/tests.toml` keyed by that Target. Booley Flows take `target` and `test` arguments that resolve against them:
 
 ```yaml
 # design.core — one target per build
@@ -126,7 +126,7 @@ See [Working with evidence](USAGE.md#working-with-evidence).
 
 Developer Agents run with `--dangerously-skip-permissions` to operate autonomously. Docker sandboxing keeps this safe: every Developer Agent runs inside the per-folder Sandbox container with only the project workspace mounted, full access inside, no access to the host outside. There is no general internet access either: egress is restricted to the LLM API endpoints through a Booley proxy, so a prompt-injection payload picked up from a web page has nowhere to reach. The Developer Agent runs as a non-root user, and an idle reaper stops orphaned sessions. The sandbox image ships every built-in EDA tool (see [One Interface Over Every EDA Tool and Developer Agent](#one-interface-over-every-eda-tool-and-developer-agent)) and both Claude Code and Codex CLIs preinstalled.
 
-The sandbox is **customizable** in two ways. Use `[sandbox].image` for a project image that extends `booley-sandbox` with EDA tools that must exist in every container. Run a Project setup script under `<project_dir>/hooks/` when a new worktree needs generated inputs before Goal entry.
+The sandbox is **customizable** in two ways. Use `[sandbox].image` for a project image that extends `booley-sandbox` with EDA tools that must exist in every container. Run a Project setup script under `<booley_dir>/hooks/` when a new worktree needs generated inputs before Goal entry.
 
 ## Fresh Context per Specialist
 
@@ -176,7 +176,7 @@ Both backends support **subscription-based auth** alongside API billing: a Claud
 
 ## Expert-Written RTL Guides
 
-Developer Agents and Specialists need guidance for hardware development. Booley closes this gap with expert-written guides covering RTL coding style, testbench methodology, assertion strategy, debugging techniques, and more. Each guide has a **generic part** (shipped with Booley) and a **project-specific part** (filled in by you). For coding style, the project part goes in `.booley_project/rtl_style_guide.md` and `.booley_project/tb_style_guide.md`; whatever you write there is appended to the shipped guide during a quality review and takes precedence where the two conflict. Both files are optional: with neither present, reviews run against the shipped guides alone. Building up the project-specific knowledge over time directly improves the quality of every Specialist's output.
+Developer Agents and Specialists need guidance for hardware development. Booley closes this gap with expert-written guides covering RTL coding style, testbench methodology, assertion strategy, debugging techniques, and more. Each guide has a **generic part** (shipped with Booley) and a **project-specific part** (filled in by you). For coding style, the project part goes in `.booley/rtl_style_guide.md` and `.booley/tb_style_guide.md`; whatever you write there is appended to the shipped guide during a quality review and takes precedence where the two conflict. Both files are optional: with neither present, reviews run against the shipped guides alone. Building up the project-specific knowledge over time directly improves the quality of every Specialist's output.
 
 ## Guided Project Setup
 
@@ -184,7 +184,7 @@ Making a project Booley-ready is a guided, mostly hands-off process. Booley ship
 
 ## Extensible Toolkit
 
-Booley's MCP surface is designed for extension. The built-in Booley Flows and Specialists cover the core RTL workflow (simulation, synthesis, lint, review), but every project has unique needs: formal verification, logic equivalence checking, DFT insertion, custom lint rules, power analysis. Project-specific MCP tools can be added via the `.booley_project/mcp_tools/` directory, following the same base-class interface as built-in MCP tools. The Developer Agent discovers and invokes them just like built-in MCP tools. See [MCP-TOOLS.md](../internals/MCP-TOOLS.md) for the architecture and extension guide.
+Booley's MCP surface is designed for extension. The built-in Booley Flows and Specialists cover the core RTL workflow (simulation, synthesis, lint, review), but every project has unique needs: formal verification, logic equivalence checking, DFT insertion, custom lint rules, power analysis. Project-specific MCP tools can be added via the `.booley/mcp_tools/` directory, following the same base-class interface as built-in MCP tools. The Developer Agent discovers and invokes them just like built-in MCP tools. See [MCP-TOOLS.md](../internals/MCP-TOOLS.md) for the architecture and extension guide.
 
 ## Parallel sessions
 
@@ -218,10 +218,10 @@ For designs with embedded processors, the debug loop naturally extends to firmwa
 
 Stealth Mode is Project policy for protecting a downstream design's private
 identifiers. It never applies to a Booley source checkout, which is not a
-Project and must not contain `.booley_project/` or receive Project Git hooks.
+Project and must not contain `.booley/` or receive Project Git hooks.
 
 Setup asks whether to keep Booley out of your git history. Yes keeps
-`.booley_project/` hidden and enables stealth mode, including the commit-message
+`.booley/` hidden and enables stealth mode, including the commit-message
 scrub and hidden-core projection for authored cores; No uses open config and
 native cores with stealth off. Unattended setup leaves stealth off unless
 hidden authored cores require it. Existing hand-set values are preserved.
@@ -229,7 +229,7 @@ An omitted `enabled` key defaults to on at runtime.
 
 When enabled, a commit-msg hook rejects attribution footers and sanitizes other
 protected commit-message prose, and authored
-FuseSoC cores remain self-contained under `.booley_project/`. Booley projects
+FuseSoC cores remain self-contained under `.booley/`. Booley projects
 ignored root-level core copies for FuseSoC, so pristine RTL needs no tracked
 integration files or source symlinks. Customize history sanitation with
 `[stealth] banned_words`; projects with unusable bundled cores may explicitly

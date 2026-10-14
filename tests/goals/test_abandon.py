@@ -185,7 +185,7 @@ def test_abandon_finishing_after_participant_move_and_external_conflict(layout):
 
     with pytest.raises(Crash):
         finish_goal(call, environment(complete, stop))
-    destination = complete.worktree / f".booley_project/goals/history/{complete.record.id}.md"
+    destination = complete.worktree / f".booley/goals/history/{complete.record.id}.md"
     destination.parent.mkdir(parents=True)
     destination.write_bytes(b"other writer")
     abandoned = LifecycleRequest(

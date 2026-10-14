@@ -113,9 +113,9 @@ def _configure_external_project_state(repo: Path, monkeypatch) -> None:
     """Run the hook as if Project state used a separate runtime mount."""
     monkeypatch.chdir(repo)
     monkeypatch.delenv("BOOLEY_SKIP_PUSH_GUARD", raising=False)
-    project_dir = repo.parent / "runtime-project-state"
-    project_dir.mkdir()
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project_dir))
+    booley_dir = repo.parent / "runtime-project-state"
+    booley_dir.mkdir()
+    monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
 
 
 # ---------------------------------------------------------------------------
@@ -157,21 +157,21 @@ class TestCommitFacts:
         assert _commit_facts("0" * 40) is None
 
 
-def test_project_dir_fallback_uses_hook_parent_when_runtime_is_unavailable(
+def test_booley_dir_fallback_uses_hook_parent_when_runtime_is_unavailable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     hook_dir = tmp_path / "hooks"
     hook_dir.mkdir()
     monkeypatch.setattr(pre_push_hook, "__file__", str(hook_dir / "pre-push"))
-    runtime_module = types.ModuleType("booley.runtime.project_dir")
+    runtime_module = types.ModuleType("booley.runtime.booley_dir")
 
     def unavailable(_repository_root: Path) -> Path:
         raise FileNotFoundError
 
-    runtime_module.resolve_checkout_project_dir = unavailable
-    monkeypatch.setitem(sys.modules, "booley.runtime.project_dir", runtime_module)
+    runtime_module.resolve_checkout_booley_dir = unavailable
+    monkeypatch.setitem(sys.modules, "booley.runtime.booley_dir", runtime_module)
 
-    assert pre_push_hook._guard_project_dir(tmp_path / "repo") == tmp_path
+    assert pre_push_hook._guard_booley_dir(tmp_path / "repo") == tmp_path
 
 
 # ---------------------------------------------------------------------------
@@ -261,23 +261,23 @@ class TestCommitOffenses:
 
     def test_symlink_target_is_read_from_committed_blob(self, repo, monkeypatch):
         monkeypatch.chdir(repo)
-        (repo / ".booley_project").mkdir()
-        sha = _commit_symlink(repo, "guide", ".booley_project/AGENTS.md")
+        (repo / ".booley").mkdir()
+        sha = _commit_symlink(repo, "guide", ".booley/AGENTS.md")
         (repo / "guide").unlink()
         (repo / "guide").symlink_to("ordinary.txt")
 
         offenses = _commit_offenses(sha, [])
 
         assert any("symlink target exposes project state" in offense for offense in offenses)
-        assert any(".booley_project/AGENTS.md" in offense for offense in offenses)
+        assert any(".booley/AGENTS.md" in offense for offense in offenses)
 
-    def test_custom_project_dir_target_is_blocked_without_banned_term(self, repo, monkeypatch):
+    def test_custom_booley_dir_target_is_blocked_without_banned_term(self, repo, monkeypatch):
         monkeypatch.chdir(repo)
-        project_dir = repo.parent / ".private-state"
-        project_dir.mkdir()
+        booley_dir = repo.parent / ".private-state"
+        booley_dir.mkdir()
         sha = _commit_symlink(repo, "guide", "../.private-state/AGENTS.md")
 
-        offenses = _commit_offenses(sha, [], project_dir=project_dir)
+        offenses = _commit_offenses(sha, [], booley_dir=booley_dir)
 
         assert any("symlink target exposes project state" in offense for offense in offenses)
 
@@ -328,9 +328,9 @@ class TestMain:
     def test_blocks_symlink_to_project_state(self, repo, monkeypatch, capsys):
         monkeypatch.chdir(repo)
         monkeypatch.delenv("BOOLEY_SKIP_PUSH_GUARD", raising=False)
-        project_dir = repo / ".booley_project"
-        project_dir.mkdir()
-        sha = _commit_symlink(repo, "AGENTS.md", ".booley_project/AGENTS.md")
+        booley_dir = repo / ".booley"
+        booley_dir.mkdir()
+        sha = _commit_symlink(repo, "AGENTS.md", ".booley/AGENTS.md")
         with (
             _stdin(sha),
             patch("booley.dev_support.pre_push_hook.stealth_enabled", return_value=True),
@@ -340,16 +340,16 @@ class TestMain:
         err = capsys.readouterr().err
         assert "push blocked" in err
         assert "symlink target" in err
-        assert ".booley_project/AGENTS.md" in err
+        assert ".booley/AGENTS.md" in err
 
     def test_blocks_tracked_project_state_when_runtime_uses_external_alias(
         self, repo, monkeypatch, capsys
     ):
         _configure_external_project_state(repo, monkeypatch)
-        path = repo / ".booley_project" / "docs" / "example.md"
+        path = repo / ".booley" / "docs" / "example.md"
         path.parent.mkdir(parents=True)
         path.write_text("private project state\n", encoding="utf-8")
-        _git(repo, "add", ".booley_project/docs/example.md")
+        _git(repo, "add", ".booley/docs/example.md")
         _git(repo, "commit", "-q", "--no-verify", "-m", "docs: add example")
 
         with _stdin(_head(repo)):
@@ -357,27 +357,27 @@ class TestMain:
 
         err = capsys.readouterr().err
         assert "tracked path exposes project state" in err
-        assert ".booley_project/docs/example.md" in err
+        assert ".booley/docs/example.md" in err
 
     def test_blocks_checkout_state_symlink_when_runtime_uses_external_alias(
         self, repo, monkeypatch, capsys
     ):
         _configure_external_project_state(repo, monkeypatch)
-        sha = _commit_symlink(repo, "AGENTS.md", ".booley_project/AGENTS.md")
+        sha = _commit_symlink(repo, "AGENTS.md", ".booley/AGENTS.md")
 
         with _stdin(sha):
             assert main() == 1
 
         err = capsys.readouterr().err
         assert "symlink target exposes project state" in err
-        assert ".booley_project/AGENTS.md" in err
+        assert ".booley/AGENTS.md" in err
 
     def test_blocks_case_variant_of_checkout_project_state(self, repo, monkeypatch, capsys):
         _configure_external_project_state(repo, monkeypatch)
-        path = repo / ".BOOLEY_PROJECT" / "docs" / "example.md"
+        path = repo / ".BOOLEY" / "docs" / "example.md"
         path.parent.mkdir(parents=True)
         path.write_text("private project state\n", encoding="utf-8")
-        _git(repo, "add", ".BOOLEY_PROJECT/docs/example.md")
+        _git(repo, "add", ".BOOLEY/docs/example.md")
         _git(repo, "commit", "-q", "--no-verify", "-m", "docs: add example")
 
         with _stdin(_head(repo)):
@@ -385,32 +385,32 @@ class TestMain:
 
         err = capsys.readouterr().err
         assert "tracked path exposes project state" in err
-        assert ".BOOLEY_PROJECT/docs/example.md" in err
+        assert ".BOOLEY/docs/example.md" in err
 
     def test_blocks_tracked_project_state_root(self, repo, monkeypatch, capsys):
         _configure_external_project_state(repo, monkeypatch)
         # Isolate tracked paths from strict configuration-node validation.
         monkeypatch.setattr(pre_push_hook, "validate_push_configuration", lambda root: None)
-        (repo / ".booley_project").write_text("private project state\n", encoding="utf-8")
-        _git(repo, "add", ".booley_project")
+        (repo / ".booley").write_text("private project state\n", encoding="utf-8")
+        _git(repo, "add", ".booley")
         _git(repo, "commit", "-q", "--no-verify", "-m", "docs: add state")
 
         with _stdin(_head(repo)):
             assert main() == 1
 
         err = capsys.readouterr().err
-        assert "tracked path exposes project state: .booley_project" in err
+        assert "tracked path exposes project state: .booley" in err
 
     @pytest.mark.parametrize(
         "relative_path",
         [
-            ".booley_project_backup/example.md",
-            "docs/.booley_project/example.md",
+            ".booley_backup/example.md",
+            "docs/.booley/example.md",
         ],
     )
     def test_allows_checkout_project_state_name_lookalikes(self, repo, monkeypatch, relative_path):
         _configure_external_project_state(repo, monkeypatch)
-        config = repo / ".booley_project" / "booley.toml"
+        config = repo / ".booley" / "booley.toml"
         config.parent.mkdir()
         config.write_text("[stealth]\nbanned_words = []\n")
         path = repo / relative_path
@@ -503,7 +503,7 @@ def matrix_repo(actual_git, repo, monkeypatch):
 
 
 def _upstream_pair(repo, upstream, base=None):
-    config = repo / ".booley_project" / "booley.toml"
+    config = repo / ".booley" / "booley.toml"
     config.parent.mkdir(exist_ok=True)
     location = upstream.as_posix() if isinstance(upstream, Path) else upstream
     config.write_text(
@@ -543,7 +543,7 @@ def test_minimum_git_destination_protected_ancestry_and_fresh_metadata(
     )
     upstream = _clone_upstream(repo)
     sys.argv[2] = str(upstream)
-    config = repo / ".booley_project" / "booley.toml"
+    config = repo / ".booley" / "booley.toml"
     config.parent.mkdir(exist_ok=True)
     config.write_text('[stealth]\nallowed_authors = ["*@example.com"]\n')
     assert _push(base) == 0
@@ -557,7 +557,7 @@ def test_minimum_git_destination_protected_ancestry_and_fresh_metadata(
     _git(repo, "commit", "--no-verify", "-m", "fix(core): ordinary new file")
     assert _push(_head(repo)) == 1
     _git(repo, "reset", "--hard", base)
-    assert _push(_commit_symlink(repo, "state-link", ".booley_project/private")) == 1
+    assert _push(_commit_symlink(repo, "state-link", ".booley/private")) == 1
 
 
 @pytest.mark.parametrize(
@@ -1202,11 +1202,11 @@ def test_destination_imported_path_identity_and_allowlist_exempt_but_new_state_r
     base = _head(repo)
     upstream = _clone_upstream(repo)
     sys.argv[2] = str(upstream)
-    config = repo / ".booley_project" / "booley.toml"
+    config = repo / ".booley" / "booley.toml"
     config.parent.mkdir(exist_ok=True)
     config.write_text('[stealth]\nallowed_authors = ["dev@example.com"]\n')
     assert _push(base) == 0
-    sha = _commit_symlink(repo, "state-link", ".booley_project/private")
+    sha = _commit_symlink(repo, "state-link", ".booley/private")
     assert _push(sha) == 1
 
 
@@ -1270,7 +1270,7 @@ def test_source_checkout_policy_never_reads_push_configuration(
         pytest.fail("source pre-push must never load the Project push configuration")
 
     monkeypatch.setattr(pre_push_hook, "validate_push_configuration", forbidden)
-    monkeypatch.setattr(pre_push_hook, "_guard_project_dir", forbidden)
+    monkeypatch.setattr(pre_push_hook, "_guard_booley_dir", forbidden)
     assert policy.source_checkout_policy_owner(root)
     assert main() == 0
 
@@ -1305,7 +1305,7 @@ def test_disabled_project_does_not_load_upstream_pair(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(repo)
-    config = repo / ".booley_project" / "booley.toml"
+    config = repo / ".booley" / "booley.toml"
     config.parent.mkdir()
     config.write_text('[stealth]\nenabled = false\nupstream_repository = "invalid"\n')
 
@@ -1827,12 +1827,12 @@ def test_minimum_git_upstream_base_can_be_advertised_ancestor(matrix_repo: Path)
     tip = _commit(repo, "fix(core): subsequent upstream work")
     upstream = _clone_upstream(repo)
     _upstream_pair(repo, upstream, base)
-    config = repo / ".booley_project" / "booley.toml"
+    config = repo / ".booley" / "booley.toml"
     config.write_text(config.read_text() + 'allowed_authors = ["*@example.com"]\n')
     assert _push(tip) == 0
     assert _push(_commit(repo, "fix(core): local work", author="Foreign <old@source.test>")) == 1
     _git(repo, "reset", "--hard", tip)
-    assert _push(_commit_symlink(repo, "guide", ".booley_project/private")) == 1
+    assert _push(_commit_symlink(repo, "guide", ".booley/private")) == 1
 
 
 def test_minimum_git_upstream_advance_requires_fetch_before_verification(
@@ -1919,7 +1919,7 @@ def test_minimum_git_upstream_ignores_foreign_environment_policy(
     state.mkdir()
     if foreign_policy == "disabled":
         (state / "booley.toml").write_text("[stealth]\nenabled = false\nbanned_words = []\n")
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(state))
+    monkeypatch.setenv("BOOLEY_DIR", str(state))
     assert _push(base) == 0
     assert _push(_commit(repo, "fix(core): claude fresh metadata")) == 1
 
@@ -1931,7 +1931,7 @@ def test_minimum_git_native_bundled_upstream_import(matrix_repo: Path) -> None:
     base = _commit(repo, "fix(core): generated upstream instructions by claude")
     upstream = _clone_upstream(repo)
     _upstream_pair(repo, upstream, base)
-    bundle = repo / ".booley_project" / ".managed" / "project-git-hooks.pyz"
+    bundle = repo / ".booley" / ".managed" / "project-git-hooks.pyz"
     bundle.parent.mkdir()
     bundle.write_bytes(build_project_git_hook_bundle().content)
     hook = repo / ".git" / "hooks" / "pre-push"
@@ -2117,7 +2117,7 @@ def test_minimum_git_zero_active_push_needs_no_selected_config(
     configuration: str,
 ) -> None:
     repo = matrix_repo
-    config = repo / ".booley_project" / "booley.toml"
+    config = repo / ".booley" / "booley.toml"
     config.parent.mkdir(exist_ok=True)
     config.write_text(
         '[stealth]\nupstream_base = ""\n' if configuration == "incomplete-pair" else "[stealth]\n"

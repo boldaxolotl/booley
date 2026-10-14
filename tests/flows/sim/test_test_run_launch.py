@@ -39,7 +39,7 @@ fault = { args = ["+err_rate=5"], env = { FAULT_MODE = "1" } }
 
 
 def _project(root: Path, tests_toml: str) -> Path:
-    project = root / ".booley_project"
+    project = root / ".booley"
     project.mkdir(parents=True)
     (project / "booley.toml").write_text('[project]\nname = "demo"\n', encoding="utf-8")
     (project / "tests.toml").write_text(tests_toml, encoding="utf-8")

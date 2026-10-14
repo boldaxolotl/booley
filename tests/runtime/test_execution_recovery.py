@@ -19,6 +19,7 @@ from tests.execution_test_support import (
     wait_for_value,
 )
 
+from booley.runtime.booley_dir import reset_cache
 from booley.runtime.execution_records import (
     RUNTIME_EXECUTION_ENV,
     ExecutionId,
@@ -38,7 +39,6 @@ from booley.runtime.pid import (
     capture_process_identity,
     observe_process,
 )
-from booley.runtime.project_dir import reset_cache
 
 _PROCESS_TIMEOUT_SECONDS = 5.0
 _RECOVERY_TIMEOUT_SECONDS = 12.0
@@ -163,16 +163,16 @@ def test_recovers_execution_after_supervisor_is_killed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     execution_id = ExecutionId(uuid.uuid4().hex)
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
-    paths = execution_paths(execution_id, project_dir=project_dir)
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    paths = execution_paths(execution_id, booley_dir=booley_dir)
     descendant_pid_file = tmp_path / "descendant.pid"
     monkeypatch.delenv(RUNTIME_EXECUTION_ENV, raising=False)
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project_dir))
+    monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
     reset_cache()
     write_attachment_heartbeat(paths, generation=1)
     supervisor = start_supervisor_with_detached_descendant(
-        project_dir, execution_id, descendant_pid_file
+        booley_dir, execution_id, descendant_pid_file
     )
     known_identities: tuple[ProcessIdentity, ...] = ()
     try:

@@ -402,7 +402,7 @@ def _required_suite(
         raw = b""
         relative = ""
     else:
-        path = root / ".booley_project" / "tests.toml"
+        path = root / ".booley" / "tests.toml"
         try:
             raw = path.read_bytes()
         except OSError as exc:

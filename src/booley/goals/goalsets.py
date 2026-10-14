@@ -221,15 +221,15 @@ def _describe(goal: Mapping[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def seed_goalsets(project_dir: Path, *, dry_run: bool) -> list[tuple[Path, WriteOutcome]]:
-    """Create each missing seeded Goalset under ``<project_dir>/goalsets/``.
+def seed_goalsets(booley_dir: Path, *, dry_run: bool) -> list[tuple[Path, WriteOutcome]]:
+    """Create each missing seeded Goalset under ``<booley_dir>/goalsets/``.
 
     Writes are create-only: an existing file is :attr:`WriteOutcome.SKIPPED`
     and left untouched, because the Project owns it. ``default.md`` is never
     written. Under *dry_run* nothing is created, not even the directory, and
     each result is the outcome a real run would have.
     """
-    goalsets_dir = project_dir / GOALSETS_DIR
+    goalsets_dir = booley_dir / GOALSETS_DIR
     results: list[tuple[Path, WriteOutcome]] = []
     for name in SEEDED_GOALSETS:
         path = goalsets_dir / f"{name}.md"

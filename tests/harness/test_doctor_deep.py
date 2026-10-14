@@ -181,9 +181,9 @@ def test_project_edits_and_plain_stamps_preserve_deep_currency(tmp_path, name):
 
 
 def _stub_orchestration(tmp_path, monkeypatch):
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
-    project = SimpleNamespace(project_dir=project_dir, project_root=tmp_path)
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    project = SimpleNamespace(booley_dir=booley_dir, project_root=tmp_path)
     monkeypatch.setattr(doctor, "_run_project_phase", lambda *_args, **_kw: (None, project))
     monkeypatch.setattr(doctor, "_run_runtime_phase", lambda *_args: None)
     monkeypatch.setattr(doctor, "_run_flow_and_core_phase", lambda *_args: None)
@@ -198,10 +198,10 @@ def _stub_orchestration(tmp_path, monkeypatch):
         doctor,
         "observe_deep_status",
         lambda *_args, **_kw: deep.evaluate_deep_status(
-            deep.load_deep_state(project_dir), version=booley.__version__, image_id=IMAGE
+            deep.load_deep_state(booley_dir), version=booley.__version__, image_id=IMAGE
         ),
     )
-    return project_dir
+    return booley_dir
 
 
 @pytest.mark.parametrize(
@@ -215,7 +215,7 @@ def _stub_orchestration(tmp_path, monkeypatch):
 def test_doctor_records_only_completed_qualified_success(
     tmp_path, monkeypatch, missing, clean, outcome
 ):
-    project_dir = _stub_orchestration(tmp_path, monkeypatch)
+    booley_dir = _stub_orchestration(tmp_path, monkeypatch)
 
     def run(*args):
         if not clean:
@@ -224,7 +224,7 @@ def test_doctor_records_only_completed_qualified_success(
 
     monkeypatch.setattr(doctor, "_run_deep_phase", run)
     result = doctor.run_doctor_result(argparse.Namespace(deep=True), tmp_path)
-    state = deep.load_deep_state(project_dir)
+    state = deep.load_deep_state(booley_dir)
     assert state.latest_completed_attempt.outcome == outcome
     assert result.deep_status.current is (outcome == deep.DeepOutcome.SUCCESS)
     assert result.counts["warn"] == 0
@@ -232,32 +232,32 @@ def test_doctor_records_only_completed_qualified_success(
 
 
 def test_observation_only_deep_run_writes_neither_stamp(tmp_path, monkeypatch):
-    project_dir = _stub_orchestration(tmp_path, monkeypatch)
+    booley_dir = _stub_orchestration(tmp_path, monkeypatch)
     monkeypatch.setattr(
         doctor, "_run_deep_phase", lambda *_args: deep.DeepAttemptSummary((), (), IMAGE)
     )
     result = doctor.run_doctor_result(argparse.Namespace(deep=True), tmp_path, record_clean=False)
     assert not result.deep_status.current
-    assert not deep.deep_stamp_path(project_dir).exists()
-    assert not doctor_stamp.stamp_path(project_dir).exists()
+    assert not deep.deep_stamp_path(booley_dir).exists()
+    assert not doctor_stamp.stamp_path(booley_dir).exists()
 
 
 def test_cancelled_run_leaves_matching_historical_success_current(tmp_path, monkeypatch):
-    project_dir = _stub_orchestration(tmp_path, monkeypatch)
-    deep.record_deep_attempt(project_dir, _attempt())
-    before = deep.deep_stamp_path(project_dir).read_bytes()
+    booley_dir = _stub_orchestration(tmp_path, monkeypatch)
+    deep.record_deep_attempt(booley_dir, _attempt())
+    before = deep.deep_stamp_path(booley_dir).read_bytes()
     monkeypatch.setattr(doctor, "_run_deep_phase", Mock(side_effect=KeyboardInterrupt))
     with pytest.raises(KeyboardInterrupt):
         doctor.run_doctor_result(argparse.Namespace(deep=True), tmp_path)
-    assert deep.deep_stamp_path(project_dir).read_bytes() == before
+    assert deep.deep_stamp_path(booley_dir).read_bytes() == before
     assert doctor.observe_deep_status(tmp_path).current
 
 
 @pytest.mark.parametrize("healthy", [False, True])
 def test_plain_run_preserves_deep_state_and_never_runs_deep(tmp_path, monkeypatch, healthy):
-    project_dir = _stub_orchestration(tmp_path, monkeypatch)
-    deep.record_deep_attempt(project_dir, _attempt())
-    before = deep.deep_stamp_path(project_dir).read_bytes()
+    booley_dir = _stub_orchestration(tmp_path, monkeypatch)
+    deep.record_deep_attempt(booley_dir, _attempt())
+    before = deep.deep_stamp_path(booley_dir).read_bytes()
     monkeypatch.setattr(doctor, "_run_deep_phase", Mock(side_effect=AssertionError("deep")))
     if not healthy:
         monkeypatch.setattr(
@@ -265,7 +265,7 @@ def test_plain_run_preserves_deep_state_and_never_runs_deep(tmp_path, monkeypatc
         )
     result = doctor.run_doctor_result(argparse.Namespace(deep=False), tmp_path)
     assert result.deep_status.current
-    assert deep.deep_stamp_path(project_dir).read_bytes() == before
+    assert deep.deep_stamp_path(booley_dir).read_bytes() == before
     assert result.clean is healthy
 
 
@@ -287,13 +287,13 @@ def test_storage_failure_does_not_claim_new_current_evidence(tmp_path, monkeypat
 def test_persisted_reports_include_status_without_scheduling_or_dedup_changes(
     tmp_path, monkeypatch, writer
 ):
-    from booley.runtime.project_dir import reset_cache
+    from booley.runtime.booley_dir import reset_cache
 
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
     reset_cache()
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
-    (project_dir / "booley.toml").write_text("[project]\nname='unit'\n")
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    (booley_dir / "booley.toml").write_text("[project]\nname='unit'\n")
     result = doctor._Reporter.create().result(0)
     result = replace(
         result,
@@ -303,24 +303,24 @@ def test_persisted_reports_include_status_without_scheduling_or_dedup_changes(
     )
     monkeypatch.setattr(doctor, "run_doctor_result", lambda *_args, **_kw: result)
     if writer == "automatic":
-        report = auto_doctor._execute(tmp_path, project_dir, "session-start")
+        report = auto_doctor._execute(tmp_path, booley_dir, "session-start")
     else:
         report = doctor.record_manual_result(tmp_path, result)
     assert report["deep_status"] == result.deep_status.to_document()
     # Deep status is metadata: changing it leaves the announcement identity alone.
     changed = {**report, "deep_status": {"status": "current"}}
     del changed["finding_hash"]
-    health.report_path(project_dir).write_text(json.dumps(changed))
+    health.report_path(booley_dir).write_text(json.dumps(changed))
     assert health.read_health(tmp_path).finding_hash == report["finding_hash"]
-    assert health.compute_fingerprint(project_dir, tmp_path) == report["fingerprint"]
+    assert health.compute_fingerprint(booley_dir, tmp_path) == report["fingerprint"]
     assert health.read_health(tmp_path).assessment.clean
     reset_cache()
 
 
 def test_completed_invalid_config_attempt_vetoes_previous_success(tmp_path, monkeypatch):
-    project_dir = _stub_orchestration(tmp_path, monkeypatch)
-    deep.record_deep_attempt(project_dir, _attempt())
-    monkeypatch.setattr(doctor, "resolve_checkout_project_dir", lambda _: project_dir)
+    booley_dir = _stub_orchestration(tmp_path, monkeypatch)
+    deep.record_deep_attempt(booley_dir, _attempt())
+    monkeypatch.setattr(doctor, "resolve_checkout_booley_dir", lambda _: booley_dir)
 
     def invalid(_root, reporter, **_kwargs):
         reporter.fail_("project configuration invalid")
@@ -328,15 +328,15 @@ def test_completed_invalid_config_attempt_vetoes_previous_success(tmp_path, monk
 
     monkeypatch.setattr(doctor, "_run_project_phase", invalid)
     result = doctor.run_doctor_result(argparse.Namespace(deep=True), tmp_path)
-    state = deep.load_deep_state(project_dir)
+    state = deep.load_deep_state(booley_dir)
     assert state.last_success == _attempt()
     assert state.latest_completed_attempt.outcome == deep.DeepOutcome.FAILED
     assert not result.deep_status.current
 
 
 def _write_in_process(arguments):
-    project_dir, attempt = arguments
-    return deep.record_deep_attempt(project_dir, attempt)
+    booley_dir, attempt = arguments
+    return deep.record_deep_attempt(booley_dir, attempt)
 
 
 def test_separate_processes_share_the_project_evidence_lock(tmp_path):
@@ -398,7 +398,7 @@ def test_host_currency_uses_sandbox_execution_version(
 ):
     success = _attempt(version="validated")
     deep.record_deep_attempt(tmp_path, success)
-    monkeypatch.setattr(doctor, "resolve_checkout_project_dir", lambda _: tmp_path)
+    monkeypatch.setattr(doctor, "resolve_checkout_booley_dir", lambda _: tmp_path)
     monkeypatch.setattr(doctor.runtime_context, "inside_session_runtime", lambda: False)
     monkeypatch.setattr(booley, "__version__", host_version)
     observation = Mock(
@@ -414,7 +414,7 @@ def test_host_currency_uses_sandbox_execution_version(
 def test_inside_currency_uses_live_package_version(tmp_path, monkeypatch):
     success = _attempt(version="validated")
     deep.record_deep_attempt(tmp_path, success)
-    monkeypatch.setattr(doctor, "resolve_checkout_project_dir", lambda _: tmp_path)
+    monkeypatch.setattr(doctor, "resolve_checkout_booley_dir", lambda _: tmp_path)
     monkeypatch.setattr(doctor.runtime_context, "inside_session_runtime", lambda: True)
     monkeypatch.setattr(booley, "__version__", "upgraded")
     monkeypatch.setattr(

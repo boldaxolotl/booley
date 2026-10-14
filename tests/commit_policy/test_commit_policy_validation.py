@@ -8,9 +8,9 @@ from booley.commit_policy import StealthPolicy, policy, validate_message
 
 
 def _configured_project(tmp_path: Path, stealth: str) -> Path:
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
-    (project_dir / "booley.toml").write_text(f"[stealth]\n{stealth}", encoding="utf-8")
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    (booley_dir / "booley.toml").write_text(f"[stealth]\n{stealth}", encoding="utf-8")
     return tmp_path
 
 

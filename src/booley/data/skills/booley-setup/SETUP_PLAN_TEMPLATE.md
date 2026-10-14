@@ -1,4 +1,4 @@
-<!-- Template for .booley_project/SETUP-PLAN.md — written by the booley-setup
+<!-- Template for .booley/SETUP-PLAN.md — written by the booley-setup
      skill's Step 0 (plan phase). Copy, fill, and delete these comments.
      Statuses: draft → approved | auto-approved → executing → complete. -->
 
@@ -48,7 +48,7 @@
 | 13 | How long can jobs run, and how much memory does the heaviest synthesis need? | Set time limits and plan measurements over the synthesis matrix so large jobs have enough memory. | Timeouts, heaviest synth calibration Target, & memory reservation |  |  |  |  |  |
 | 14 | Which licensed commercial EDA tools may Booley use, and with whose license approval? | Record the approved installation, License Profile, and Project Grant so licensed EDA use has explicit authority. | Commercial EDA provisioning and grant |  |  |  |  |  |
 | 15 | Do you want an `AGENTS.md` guide for Developer Agents working on this repo? | Decide whether to create or merge agent guidance and which documented project gotchas it should retain. | AGENTS.md (wanted? merge fate; gotchas) |  |  |  |  |  |
-| 16 | Keep Booley out of your git history? | Hidden keeps `.booley_project/` untracked and enables stealth mode; open commits the config and uses native cores. | Git footprint: stealth `.booley_project/` or open native cores; ignore repository-native `.core` files? |  |  |  |  |  |
+| 16 | Keep Booley out of your git history? | Hidden keeps `.booley/` untracked and enables stealth mode; open commits the config and uses native cores. | Git footprint: stealth `.booley/` or open native cores; ignore repository-native `.core` files? |  |  |  |  |  |
 | 17 | Turn off any Specialist (AI reviewer, mutation tester) from the start? | Keep optional AI helpers available by default, or record the ones you deliberately disable. | Specialists explicitly disabled from the start (reviewer, …) |  |  |  |  |  |
 | 18 | Cross-check Booley's results against your existing scripts (parity check)? | Compare results after setup only when both paths use the same EDA tool; propose sim for an identical runnable script, otherwise none. | Parity check (optional): native EDA-tool match per phase → tier, else `none` |  |  |  |  |  |
 | 19 | Which AI provider and account does Booley use? | Preserve the provider and authentication selected during initialization; ask only for missing fields. | Agent backend: preserve the `[agent] provider` + `auth` selected by `booley init`; ask only for a missing field |  |  |  |  |  |
@@ -89,7 +89,7 @@
 - **Liberty input:** <path and verification evidence>
 - **LEF input (physical mode):** <path and verification evidence, or N/A>
 - **Authoritative Project-owned replacement location:** <one tracked Project
-  path, or one `.booley_project/` path for a hidden Project>
+  path, or one `.booley/` path for a hidden Project>
 
 #### Project inventory
 

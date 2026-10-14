@@ -16,7 +16,7 @@ from booley.targets.domain import TargetHandle
 
 
 def _handle(root: Path) -> TargetHandle:
-    project = root / ".booley_project"
+    project = root / ".booley"
     project.mkdir(parents=True)
     (project / "booley.toml").write_text(
         "[flows.sim]\n"
@@ -87,9 +87,9 @@ def test_batch_environment_has_selected_set_without_single_test_name(tmp_path: P
 def test_uninitialized_checkout_uses_build_cache_fallback(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from booley.runtime.project_dir import reset_cache
+    from booley.runtime.booley_dir import reset_cache
 
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
     reset_cache()
     handle = cast(
         TargetHandle,
@@ -235,7 +235,7 @@ def test_timeout_is_preserved_as_pre_sim_evidence(tmp_path: Path) -> None:
 
 
 def test_python_and_pytest_caches_stay_under_project_runtime(tmp_path: Path, monkeypatch) -> None:
-    from booley.runtime.project_dir import reset_cache
+    from booley.runtime.booley_dir import reset_cache
 
     handle = _handle(tmp_path)
     helper = tmp_path / "project_helper.py"
@@ -250,7 +250,7 @@ def test_python_and_pytest_caches_stay_under_project_runtime(tmp_path: Path, mon
         "PYTEST_XDIST_TESTRUNUID",
     ):
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path / ".booley_project"))
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
     reset_cache()
 
     evidence = run_pre_sim_commands(
@@ -266,7 +266,7 @@ def test_python_and_pytest_caches_stay_under_project_runtime(tmp_path: Path, mon
     )
 
     assert evidence is not None and evidence.status == "passed", evidence
-    runtime = tmp_path / ".booley_project" / ".runtime" / "python-artifacts"
+    runtime = tmp_path / ".booley" / ".runtime" / "python-artifacts"
     assert any((runtime / "bytecode").rglob("*.pyc"))
     assert any((runtime / "pytest").rglob("*"))
     assert not (tmp_path / "__pycache__").exists()
@@ -320,7 +320,7 @@ def test_pre_cancelled_scope_does_not_spawn_or_fabricate_a_firing(tmp_path: Path
     )
 
     handle = _handle(tmp_path)
-    scope = SupervisedExecutionScope(None, tmp_path / ".booley_project", lambda: True)
+    scope = SupervisedExecutionScope(None, tmp_path / ".booley", lambda: True)
     with (
         supervised_execution_scope(scope),
         patch("booley.flows.sim.execution.pre_sim.subprocess.Popen") as spawn,

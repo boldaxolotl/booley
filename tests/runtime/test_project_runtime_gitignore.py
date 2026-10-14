@@ -15,7 +15,7 @@ from tests.project_runtime_git_support import (
 
 from booley.feedback.findings import Finding, append, rewrite
 from booley.harness.init_cmd import InitContext, _backfill_project_gitignore
-from booley.runtime import project_dir
+from booley.runtime import booley_dir
 
 # Audit policy owners, including interrupted publications. Concrete writer calls
 # below complement these path fixtures; these are deliberately Git-policy tests.
@@ -79,14 +79,14 @@ AUTHORED_PATHS = (
 @pytest.fixture(params=["standalone", "nested"])
 def versioned_project(tmp_path, monkeypatch, request):
     root = tmp_path / "design"
-    data = root / ".booley_project"
+    data = root / ".booley"
     data.mkdir(parents=True)
     (data / "booley.toml").write_text('[project]\nname = "fixture"\n')
     repo = data if request.param == "standalone" else root
     initialize_repository(repo, data, monkeypatch)
-    project_dir.reset_cache()
+    booley_dir.reset_cache()
     yield root, data, repo
-    project_dir.reset_cache()
+    booley_dir.reset_cache()
 
 
 @pytest.mark.parametrize("path", RUNTIME_PATHS)
@@ -177,7 +177,7 @@ def _publish_bookkeeping(root, data, repo):
     write_record(JobRecord("run", "sim", "2026-10-10T00:00:00Z", 10), jobs)
     assert (jobs / "run.json").is_file()
     assert_clean(repo)
-    execution = execution_paths("a" * 32, project_dir=data).record
+    execution = execution_paths("a" * 32, booley_dir=data).record
     atomic_write_json(execution, {"schema_version": 1, "state": "starting"})
     return (stamp, *sessions, jobs / "run.json", execution)
 
@@ -210,7 +210,7 @@ def _publish_logs_and_cache(root, data, repo):
     from booley.dev_support.mutation_lock import LockMeta, lock_json_path, save_lock
     from booley.flows.run_log import write_run_log
     from booley.flows.sim.trace_session import TraceSession
-    from booley.runtime.project_dir import runtime_dir
+    from booley.runtime.booley_dir import runtime_dir
 
     runtime = runtime_dir(root)
     outputs = []
@@ -433,7 +433,7 @@ def test_specialist_session_and_mutation_round_storage_keep_project_clean(
 
     root, data, repo = versioned_project
     monkeypatch.chdir(root)
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(data))
+    monkeypatch.setenv("BOOLEY_DIR", str(data))
     monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
     endpoint = ReviewerSpecialist()
     endpoint._last_session_id = "fixture-session"

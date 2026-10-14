@@ -124,7 +124,7 @@ class TestLoadStealthConfig:
         """When booley.toml has [stealth] banned_words, those are returned."""
         toml_content = b'[stealth]\nbanned_words = ["foo", "bar"]\n'
         proj_root = tmp_path / "project"
-        bp_dir = proj_root / ".booley_project"
+        bp_dir = proj_root / ".booley"
         bp_dir.mkdir(parents=True)
         (bp_dir / "booley.toml").write_bytes(toml_content)
 
@@ -161,7 +161,7 @@ class TestStealthEnabled:
     """[stealth] enabled is opt-out — default True, gates hook + prompt note."""
 
     def _project(self, tmp_path, toml_body: bytes | None):
-        bp = tmp_path / ".booley_project"
+        bp = tmp_path / ".booley"
         bp.mkdir(parents=True)
         if toml_body is not None:
             (bp / "booley.toml").write_bytes(toml_body)
@@ -293,7 +293,7 @@ class TestMaxBodyLines:
     """[stealth] max_body_lines — opt-in cap, unlimited when absent."""
 
     def _project(self, tmp_path, toml_body: bytes | None):
-        bp = tmp_path / ".booley_project"
+        bp = tmp_path / ".booley"
         bp.mkdir(parents=True)
         if toml_body is not None:
             (bp / "booley.toml").write_bytes(toml_body)
@@ -348,7 +348,7 @@ class TestEnforceConvention:
     off unless a project turns it on (SETUP-10)."""
 
     def _project(self, tmp_path, toml_body: bytes | None):
-        bp = tmp_path / ".booley_project"
+        bp = tmp_path / ".booley"
         bp.mkdir(parents=True)
         if toml_body is not None:
             (bp / "booley.toml").write_bytes(toml_body)
@@ -390,7 +390,7 @@ class TestAllowedAuthors:
     """[stealth] allowed_authors — identity allowlist, empty = unrestricted."""
 
     def _project(self, tmp_path, toml_body: bytes | None):
-        bp = tmp_path / ".booley_project"
+        bp = tmp_path / ".booley"
         bp.mkdir(parents=True)
         if toml_body is not None:
             (bp / "booley.toml").write_bytes(toml_body)
@@ -570,7 +570,7 @@ def test_default_inventory_is_exhaustively_audited() -> None:
     ],
 )
 def test_validate_push_configuration_invalid_pair_fails_closed(tmp_path: Path, text: str) -> None:
-    config = tmp_path / ".booley_project" / "booley.toml"
+    config = tmp_path / ".booley" / "booley.toml"
     config.parent.mkdir()
     config.write_text("[stealth]\n" + text)
     with pytest.raises(ValueError):
@@ -579,7 +579,7 @@ def test_validate_push_configuration_invalid_pair_fails_closed(tmp_path: Path, t
 
 def test_validate_push_configuration_absent_and_immutable_pairs(tmp_path: Path) -> None:
     assert validate_push_configuration(tmp_path) is None
-    config = tmp_path / ".booley_project" / "booley.toml"
+    config = tmp_path / ".booley" / "booley.toml"
     config.parent.mkdir()
     for base in ("A" * 40, "B" * 64):
         config.write_text(
@@ -594,7 +594,7 @@ def test_validate_push_configuration_absent_and_immutable_pairs(tmp_path: Path) 
 def test_validate_push_configuration_unreadable_selected_config_refuses(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    config = tmp_path / ".booley_project" / "booley.toml"
+    config = tmp_path / ".booley" / "booley.toml"
     config.parent.mkdir()
     config.write_text("[stealth]\n")
     original = Path.open
@@ -627,7 +627,7 @@ def test_validate_push_configuration_source_owner_never_loads_project_config(
 def test_validate_push_configuration_broken_config_node_refuses(
     tmp_path: Path, target: str
 ) -> None:
-    config = tmp_path / ".booley_project" / "booley.toml"
+    config = tmp_path / ".booley" / "booley.toml"
     config.parent.mkdir()
     try:
         config.symlink_to(target)
@@ -640,7 +640,7 @@ def test_validate_push_configuration_broken_config_node_refuses(
 def test_validate_push_configuration_stat_error_refuses(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    config = tmp_path / ".booley_project" / "booley.toml"
+    config = tmp_path / ".booley" / "booley.toml"
     config.parent.mkdir()
     original = Path.stat
 
@@ -658,7 +658,7 @@ def test_validate_push_configuration_unreadable_missing_node_refuses(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """stat() says missing but lstat() cannot tell: refuse rather than assume absent."""
-    config = tmp_path / ".booley_project" / "booley.toml"
+    config = tmp_path / ".booley" / "booley.toml"
     config.parent.mkdir()
     original = Path.lstat
 
@@ -674,7 +674,7 @@ def test_validate_push_configuration_unreadable_missing_node_refuses(
 
 
 def test_validate_push_configuration_non_table_stealth_refuses(tmp_path: Path) -> None:
-    config = tmp_path / ".booley_project" / "booley.toml"
+    config = tmp_path / ".booley" / "booley.toml"
     config.parent.mkdir()
     config.write_text('stealth = "enabled"\n')
     with pytest.raises(ValueError, match=r"\[stealth\] must be a table"):
@@ -687,7 +687,7 @@ def test_validate_push_configuration_non_table_stealth_refuses(tmp_path: Path) -
 def test_validate_push_configuration_leaves_transport_validation_to_hook(
     tmp_path: Path, repository: str
 ) -> None:
-    config = tmp_path / ".booley_project" / "booley.toml"
+    config = tmp_path / ".booley" / "booley.toml"
     config.parent.mkdir()
     config.write_text(
         f'[stealth]\nupstream_repository = "{repository}"\nupstream_base = "{"f" * 40}"\n'
@@ -699,7 +699,7 @@ def test_validate_push_configuration_leaves_transport_validation_to_hook(
 def test_validate_push_configuration_preserves_file_location_for_hook_validation(
     tmp_path: Path,
 ) -> None:
-    directory = tmp_path / ".booley_project"
+    directory = tmp_path / ".booley"
     directory.mkdir()
     (directory / "booley.toml").write_text(
         '[stealth]\nupstream_repository = "file:/absolute/repo"\n'
@@ -738,7 +738,7 @@ class TestVocabularyTiers:
     def test_config_union_reload_and_empty(self, tmp_path):
         from booley.commit_policy.policy import stealth_policy
 
-        directory = tmp_path / ".booley_project"
+        directory = tmp_path / ".booley"
         directory.mkdir()
         config = directory / "booley.toml"
         config.write_text(
@@ -787,7 +787,7 @@ class TestVocabularyTiers:
                 parse_stealth_vocabulary({"banned_substrings": value})
 
     def test_literal_overlap_preserves_utf8_and_second_pass(self, tmp_path):
-        directory = tmp_path / ".booley_project"
+        directory = tmp_path / ".booley"
         directory.mkdir()
         (directory / "booley.toml").write_text(
             '[stealth]\nbanned_words = []\nbanned_substrings = ["quokka", "okkafi", "a+b"]\n'
@@ -832,7 +832,7 @@ class TestVocabularyTiers:
         from booley.commit_policy.policy import StealthPolicy, stealth_policy
 
         (tmp_path / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
-        directory = tmp_path / ".booley_project"
+        directory = tmp_path / ".booley"
         directory.mkdir()
         (directory / "booley.toml").write_text('[stealth]\nbanned_substrings = ["red"]\n')
         assert stealth_policy(tmp_path) == StealthPolicy(False, (), None, False, ())
@@ -844,7 +844,7 @@ def test_token_ascii_edges_and_overlapping_repeated_literal(tmp_path):
     assert StealthPolicy(True, ("agent",), None, False, ()).find_banned("\u212aagent\u0131") == [
         "agent"
     ]
-    directory = tmp_path / ".booley_project"
+    directory = tmp_path / ".booley"
     directory.mkdir()
     (directory / "booley.toml").write_text(
         '[stealth]\nbanned_words = []\nbanned_substrings = ["aba"]\n'
@@ -894,7 +894,7 @@ def test_disabled_policy_rejects_invalid_explicit_substring_tier(tmp_path):
     from booley.commit_policy.policy import stealth_policy
     from booley.core.boundary import BoundaryError
 
-    directory = tmp_path / ".booley_project"
+    directory = tmp_path / ".booley"
     directory.mkdir()
     (directory / "booley.toml").write_text(
         '[stealth]\nenabled = false\nbanned_substrings = ["red"]\n'
@@ -912,7 +912,7 @@ def test_stealth_uses_explicit_relocated_project_data(tmp_path, enabled, name):
     root.mkdir()
     data.mkdir()
     (data / name).write_text(f"[stealth]\nenabled = {str(enabled).lower()}\n")
-    assert stealth_enabled(root, project_dir=data) is enabled
+    assert stealth_enabled(root, booley_dir=data) is enabled
 
 
 def test_relocated_project_data_does_not_enable_source_checkout_stealth(tmp_path):
@@ -923,4 +923,4 @@ def test_relocated_project_data_does_not_enable_source_checkout_stealth(tmp_path
     data.mkdir()
     (root / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
     (data / "booley.toml").write_text("[stealth]\nenabled = true\n")
-    assert stealth_enabled(root, project_dir=data) is False
+    assert stealth_enabled(root, booley_dir=data) is False

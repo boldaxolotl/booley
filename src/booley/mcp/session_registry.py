@@ -191,10 +191,10 @@ class SessionRegistry:
     """
 
     def __init__(
-        self, project_dir: Path, *, quiet_after: float = 7200, proc_root: Path = Path("/proc")
+        self, booley_dir: Path, *, quiet_after: float = 7200, proc_root: Path = Path("/proc")
     ) -> None:
-        self.project_dir = project_dir
-        self.root = project_dir / "runtime" / "sessions"
+        self.booley_dir = booley_dir
+        self.root = booley_dir / "runtime" / "sessions"
         self.quiet_after = quiet_after
         self.proc_root = proc_root
 

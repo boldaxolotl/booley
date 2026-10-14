@@ -240,7 +240,7 @@ class TestLintResolution:
         # points ResolvedTarget.build_root there. Emulate that for the mock.
         resolved_build = (
             tmp_path
-            / ".booley_project"
+            / ".booley"
             / ".runtime"
             / "edalize"
             / "lint"
@@ -288,14 +288,14 @@ class TestLintResolution:
         assert captured["vlnv"] == "::lint_demo:0"
         assert Path(captured["project_root"]) == Path(flow.args.work_dir)
         assert captured["build_root"] == (
-            tmp_path / ".booley_project" / ".runtime" / "edalize" / "lint" / "lite"
+            tmp_path / ".booley" / ".runtime" / "edalize" / "lint" / "lite"
         )
         # Authenticated preflight names the selected linter before make can
         # translate a child 127 into its own exit 2.
         assert cmd[:2] == ["sh", "-c"]
         assert "command -v verilator" in cmd[2]
         assert re.search(r"BOOLEY_EDA_FAILURE token=[0-9a-f]{32}", cmd[2])
-        assert "make -C .booley_project/.runtime/edalize/lint/lite/lint_demo_0/lite" in cmd[2]
+        assert "make -C .booley/.runtime/edalize/lint/lite/lint_demo_0/lite" in cmd[2]
 
     def test_setup_failure_propagates(self, tmp_path: Path, state_file: Path):
         """A FuseSoC resolution failure surfaces (caller records a Flow error)."""
@@ -520,9 +520,7 @@ class TestDoctorTargetAuthority:
         resolve.assert_called_once_with(
             "doctor#lint",
             project_root=tmp_path,
-            build_root=(
-                tmp_path / ".booley_project" / ".runtime" / "edalize" / "lint" / "doctor_lint"
-            ),
+            build_root=(tmp_path / ".booley" / ".runtime" / "edalize" / "lint" / "doctor_lint"),
             vlnv="acme:ip:doctor:1.0",
         )
         setup = fusesoc_registry._setup_command(
@@ -1132,7 +1130,7 @@ class TestErrorVsFailTaxonomy:
             result = flow._run()
         assert result.exit_code == EXIT_ERROR
         assert "lint_clean_lite" not in flow.state.criteria
-        run_log = tmp_path / ".booley_project/.runtime/edalize/lint/lite/run.log"
+        run_log = tmp_path / ".booley/.runtime/edalize/lint/lite/run.log"
         assert "partial lint output" in run_log.read_text(encoding="utf-8")
         assert "partial timeout diagnostic" in run_log.read_text(encoding="utf-8")
 
@@ -1187,7 +1185,7 @@ class TestErrorVsFailTaxonomy:
             flow.read_state()
             cr = flow._run_lint_target(_target_handle("lite"))
 
-        pointer = ".booley_project/.runtime/edalize/lint/lite/run.log"
+        pointer = ".booley/.runtime/edalize/lint/lite/run.log"
         assert cr.error.startswith("%Error: rtl/x.v:1:1")
         assert "(full log:" not in cr.error
         log_text = (tmp_path / pointer).read_text(encoding="utf-8")
@@ -1235,7 +1233,7 @@ class TestErrorVsFailTaxonomy:
         """F-26: lint's run.log is only written at the END of a run, so it is
         claimed (truncated to a run header) at the start — a tail during the
         run must never show the previous run's findings."""
-        pointer = tmp_path / ".booley_project/.runtime/edalize/lint/lite/run.log"
+        pointer = tmp_path / ".booley/.runtime/edalize/lint/lite/run.log"
         pointer.parent.mkdir(parents=True)
         pointer.write_text("%Warning: stale finding from an older run\n", encoding="utf-8")
 

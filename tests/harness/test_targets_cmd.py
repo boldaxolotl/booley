@@ -49,8 +49,8 @@ _CORE = textwrap.dedent(
 @pytest.fixture
 def project(tmp_path: Path) -> Path:
     (tmp_path / "alpha.core").write_text(_CORE, encoding="utf-8")
-    (tmp_path / ".booley_project").mkdir()
-    (tmp_path / ".booley_project" / "booley.toml").write_text("[flows.sim]\n", encoding="utf-8")
+    (tmp_path / ".booley").mkdir()
+    (tmp_path / ".booley" / "booley.toml").write_text("[flows.sim]\n", encoding="utf-8")
     return tmp_path
 
 

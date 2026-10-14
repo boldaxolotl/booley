@@ -13,13 +13,13 @@ from booley.harness.booley import _build_parser
 
 
 def _project(tmp_path: Path) -> Path:
-    project_dir = tmp_path / ".booley_project"
-    (project_dir / "runtime").mkdir(parents=True)
-    return project_dir
+    booley_dir = tmp_path / ".booley"
+    (booley_dir / "runtime").mkdir(parents=True)
+    return booley_dir
 
 
 def test_upgrade_status_json_is_scriptable(tmp_path: Path, monkeypatch, capsys) -> None:
-    project_dir = _project(tmp_path)
+    booley_dir = _project(tmp_path)
     monkeypatch.setattr("booley.__version__", "1.2.3")
     args = _build_parser().parse_args(["upgrade", "status", "--json"])
 
@@ -27,7 +27,7 @@ def test_upgrade_status_json_is_scriptable(tmp_path: Path, monkeypatch, capsys) 
     payload = json.loads(capsys.readouterr().out)
     assert payload["condition"] == "current"
     assert payload["reviewed_through"] == "1.2.3"
-    assert Path(payload["state_path"]) == upgrade_review.state_path(project_dir)
+    assert Path(payload["state_path"]) == upgrade_review.state_path(booley_dir)
 
 
 def test_upgrade_acknowledge_reports_compare_and_swap_error(
@@ -64,8 +64,8 @@ def test_unknown_upgrade_command_is_rejected(tmp_path: Path, capsys) -> None:
 def test_pending_status_is_observation_not_command_failure(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
-    project_dir = _project(tmp_path)
-    (project_dir / "runtime" / "doctor_stamp.json").write_text(
+    booley_dir = _project(tmp_path)
+    (booley_dir / "runtime" / "doctor_stamp.json").write_text(
         json.dumps({"booley_version": "1.0.0"}), encoding="utf-8"
     )
     monkeypatch.setattr("booley.__version__", "1.2.3")

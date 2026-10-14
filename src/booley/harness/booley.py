@@ -43,9 +43,9 @@ from booley.harness.worktree_cmd import add_subparser as add_worktree_subparser
 from booley.harness.worktree_cmd import run as run_worktree
 from booley.projects import cli as project_inventory_cli
 from booley.runtime import runtime_context
+from booley.runtime.booley_dir import BOOLEY_DIR_NAME
 from booley.runtime.lifecycle_lock import LifecycleLockError
 from booley.runtime.paths import cheatsheet_path
-from booley.runtime.project_dir import PROJECT_DIR_NAME
 
 if TYPE_CHECKING:
     # Type-only: keep the MCP tool registry (and endpoint packages it leads to) out
@@ -808,13 +808,13 @@ def _cmd_goal(args: argparse.Namespace, _project_root: Path) -> int:
         from booley.goals.state_store import GoalStateError
         from booley.goals.status import select_status
         from booley.goals.store import GoalStore, GoalStoreError
-        from booley.runtime.project_dir import resolve_project_dir
+        from booley.runtime.booley_dir import resolve_booley_dir
 
         try:
             from booley.flows.sim.unpublished_results import read_unpublished_results
 
             selection = select_status(
-                GoalStore(resolve_project_dir(_project_root)),
+                GoalStore(resolve_booley_dir(_project_root)),
                 _goal_checkout(args, _project_root),
                 campaign_reader=read_unpublished_results,
             )
@@ -841,15 +841,15 @@ def _abandon_goal_cli(args: argparse.Namespace, _project_root: Path) -> int:
     from booley.goals.proposals import ProposalError
     from booley.goals.store import GoalStore, GoalStoreError
     from booley.mcp.goal_completion import completion_environment
+    from booley.runtime.booley_dir import resolve_booley_dir
     from booley.runtime.history_commit import FileCommitError
-    from booley.runtime.project_dir import resolve_project_dir
 
     try:
-        project_dir = resolve_project_dir(_project_root)
+        booley_dir = resolve_booley_dir(_project_root)
         result = abandon_goal(
-            GoalStore(project_dir),
+            GoalStore(booley_dir),
             _goal_checkout(args, _project_root),
-            completion_environment(EntryEnvironment(project_dir)),
+            completion_environment(EntryEnvironment(booley_dir)),
             record_id=args.record_id,
             operation_id=args.operation_id,
             instruction_quote=args.instruction_quote,
@@ -1002,13 +1002,13 @@ def _live_criterion_endpoint_catalog(project_root: Path):
         criterion_endpoint_relationships,
         discover_mcp_tools,
     )
-    from booley.runtime.project_dir import resolve_checkout_project_dir
+    from booley.runtime.booley_dir import resolve_checkout_booley_dir
 
-    project_dir = resolve_checkout_project_dir(project_root)
+    booley_dir = resolve_checkout_booley_dir(project_root)
     return CriterionEndpointCatalog.load(
-        project_dir / "criteria.toml",
+        booley_dir / "criteria.toml",
         criterion_endpoint_relationships(
-            discover_mcp_tools(project_mcp_tools_dir=project_dir / "mcp_tools")
+            discover_mcp_tools(project_mcp_tools_dir=booley_dir / "mcp_tools")
         ),
     )
 
@@ -1038,7 +1038,7 @@ def _cmd_cheat(args: argparse.Namespace, project_root: Path | None) -> int:
             render_specialists_reference,
             splice_generated,
         )
-        from booley.runtime.project_dir import resolve_checkout_project_dir
+        from booley.runtime.booley_dir import resolve_checkout_booley_dir
 
         # No Execution column: keep the terminal table within a terminal width
         # — a 4th column overflowed and truncated the Sets column (QA_REPORT
@@ -1046,7 +1046,7 @@ def _cmd_cheat(args: argparse.Namespace, project_root: Path | None) -> int:
         # anyway; the docs blocks carry the matrix.
         if project_root is None:
             raise ValueError("No selected Project for live reference")
-        project_mcp_tools_dir = resolve_checkout_project_dir(project_root) / "mcp_tools"
+        project_mcp_tools_dir = resolve_checkout_booley_dir(project_root) / "mcp_tools"
         body = render_flow_reference(
             project_mcp_tools_dir=project_mcp_tools_dir,
             execution_column=False,
@@ -1072,11 +1072,11 @@ def _cmd_cheat(args: argparse.Namespace, project_root: Path | None) -> int:
             splice_generated as splice_criteria,
         )
         from booley.goals.reference import render_goal_reference as render_criteria_reference
-        from booley.runtime.project_dir import resolve_checkout_project_dir
+        from booley.runtime.booley_dir import resolve_checkout_booley_dir
 
         if project_root is None:
             raise ValueError("No selected Project for live Criteria")
-        project_criteria = resolve_checkout_project_dir(project_root) / "criteria.toml"
+        project_criteria = resolve_checkout_booley_dir(project_root) / "criteria.toml"
         text = splice_criteria(
             text,
             render_criteria_reference(
@@ -1169,9 +1169,9 @@ def _session_up(args: argparse.Namespace, project_root: Path) -> int:
 def _report_upgrade_before_session(project_root: Path) -> None:
     """Observe host version state and advise before starting a Sandbox."""
     try:
-        from booley.runtime.project_dir import resolve_checkout_project_dir
+        from booley.runtime.booley_dir import resolve_checkout_booley_dir
 
-        status = upgrade_review.observe(resolve_checkout_project_dir(project_root))
+        status = upgrade_review.observe(resolve_checkout_booley_dir(project_root))
     except Exception:  # noqa: BLE001 — advisory state must never block Session startup
         return
     if status.condition is upgrade_review.ReviewCondition.CURRENT:
@@ -1369,14 +1369,14 @@ def _discover_project_mcp_tools(project_root: Path) -> list[McpToolInfo]:
     """
     from booley.mcp.registry import discover_mcp_tools
 
-    return discover_mcp_tools(project_mcp_tools_dir=project_root / PROJECT_DIR_NAME / "mcp_tools")
+    return discover_mcp_tools(project_mcp_tools_dir=project_root / BOOLEY_DIR_NAME / "mcp_tools")
 
 
 def _load_mcp_tool_class(info: McpToolInfo) -> type | None:
     """Import the module behind a discovered endpoint.
 
     Built-in paths include their canonical package. Project-defined endpoints
-    are absolute files below ``.booley_project/mcp_tools``.
+    are absolute files below ``.booley/mcp_tools``.
     """
     import importlib
     import importlib.util
@@ -1486,11 +1486,11 @@ def _cmd_specialist(args: argparse.Namespace, project_root: Path) -> int:
     """Run a visible Specialist through its existing entry point."""
     from booley.mcp.endpoint_config import get_endpoint_config
     from booley.mcp.registry import discover_mcp_tools
-    from booley.runtime.project_dir import resolve_checkout_project_dir
+    from booley.runtime.booley_dir import resolve_checkout_booley_dir
 
     config, flows = get_endpoint_config(project_root)
     try:
-        project_tools = resolve_checkout_project_dir(project_root) / "mcp_tools"
+        project_tools = resolve_checkout_booley_dir(project_root) / "mcp_tools"
     except FileNotFoundError:
         project_tools = None
     endpoints = discover_mcp_tools(
@@ -1708,6 +1708,13 @@ def _command_project_root(command: str) -> Path:
     from booley.core.checkout_role import is_booley_source_checkout
     from booley.runtime.project_discovery import ProjectRootDiscoveryError
 
+    if command in {"init", "doctor"}:
+        # Init/Doctor must reach their layout boundary even for an old-only Project.
+        current = Path.cwd().resolve()
+        for parent in (current, *current.parents):
+            if (parent / ".git").exists():
+                return parent
+        return current
     try:
         return find_project_root()
     except ProjectRootDiscoveryError:
@@ -1725,20 +1732,24 @@ class ProjectRequiredError(RuntimeError):
 
 def _require_command_project(command: str, project_root: Path) -> None:
     """Validate required Project context before dispatch, allowing initialization."""
-    from booley.runtime.project_dir import resolve_checkout_project_dir
+    from booley.runtime.booley_dir import resolve_checkout_booley_dir
 
     # Initialization creates the context this guard requires, including in non-Git folders.
     if command == "init":
         return
+    if command == "doctor":
+        from booley.core.booley_layout import require_current_layout
+
+        require_current_layout(project_root)
     try:
         with warnings.catch_warnings():
             # Replace the stale-selection warning with the CLI's actionable error.
             warnings.filterwarnings(
                 "ignore",
-                message=r"BOOLEY_PROJECT_DIR=.*does not exist; using anyway",
+                message=r"BOOLEY_DIR=.*does not exist; using anyway",
                 category=UserWarning,
             )
-            present = resolve_checkout_project_dir(project_root).is_dir()
+            present = resolve_checkout_booley_dir(project_root).is_dir()
     except FileNotFoundError:
         present = False
     except PermissionError as exc:
@@ -1764,11 +1775,11 @@ def _optional_project_root(args: argparse.Namespace) -> Path | None:
             else find_project_root()
         )
         root = require_project_checkout(root)
-        from booley.runtime.project_dir import resolve_checkout_project_dir
+        from booley.runtime.booley_dir import resolve_checkout_booley_dir
 
-        project_dir = resolve_checkout_project_dir(root)
-        require_project_checkout(project_dir)
-        require_project_checkout(project_dir / "mcp_tools")
+        booley_dir = resolve_checkout_booley_dir(root)
+        require_project_checkout(booley_dir)
+        require_project_checkout(booley_dir / "mcp_tools")
         return root
     except (
         ProjectRootDiscoveryError,
@@ -1845,6 +1856,7 @@ def _dispatch_main() -> int:
 
 def main() -> int:
     """Run the CLI with one rendering boundary for lifecycle contention."""
+    from booley.core.booley_layout import BooleyLayoutError
     from booley.flows.cli_selection import invocation_context
     from booley.mcp.endpoint_config import EndpointConfigError
     from booley.runtime.checkout_role import SourceCheckoutProjectError
@@ -1855,6 +1867,7 @@ def main() -> int:
             return _dispatch_main()
     except (
         LifecycleLockError,
+        BooleyLayoutError,
         ProjectRootDiscoveryError,
         EndpointConfigError,
         ProjectRequiredError,

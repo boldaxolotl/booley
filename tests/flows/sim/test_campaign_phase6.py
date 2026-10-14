@@ -266,7 +266,7 @@ def _common(request: WorkExecutionRequest) -> dict[str, object]:
     "defect", ["corrupt", "truncate", "replace", "symlink", "hardlink", "resize"]
 )
 def test_terminal_authority_defect_matrix_fails_closed(tmp_path: Path, defect: str) -> None:
-    (tmp_path / ".booley_project").mkdir()
+    (tmp_path / ".booley").mkdir()
     completed = _completed(tmp_path)
     result = completed.store.work_item_directory(completed.item_id) / "result.json"
     original = result.with_name("original-result.json")
@@ -505,7 +505,7 @@ def test_maximum_campaign_previews_authenticated_mixed_resume_without_eda(
     manifest = _manifest_for(tuple(f"case_{index:04d}" for index in range(1_000)))
     project = tmp_path / "project"
     project.mkdir()
-    (project / ".booley_project").mkdir()
+    (project / ".booley").mkdir()
     invocation = tmp_path / "reports" / "sim" / "1"
     store = CampaignStore(invocation / "targets" / "sim" / "campaign")
     store.publish_manifest(manifest)
@@ -591,7 +591,7 @@ def test_resume_endpoint_refreshes_recovery_after_failure(
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
-    (project / ".booley_project").mkdir()
+    (project / ".booley").mkdir()
     store = CampaignStore(tmp_path / "reports" / "sim" / "1" / "targets" / "sim" / "campaign")
     store.publish_manifest(_manifest_for(("smoke",)))
     validated = _resume_request(store, project).validated
@@ -622,7 +622,7 @@ def test_resume_endpoint_refreshes_recovery_after_failure(
 def test_resume_execution_uses_a_fresh_scan_after_preview(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
-    (project / ".booley_project").mkdir()
+    (project / ".booley").mkdir()
     first_invocation = tmp_path / "reports" / "sim" / "1"
     store = CampaignStore(first_invocation / "targets" / "sim" / "campaign")
     store.publish_manifest(_manifest_for(("smoke",)))
@@ -705,7 +705,7 @@ def _acceptance_endpoint(state, recorder, invocation):
 def _one_item_outcome(tmp_path: Path):
     project = tmp_path / "project"
     project.mkdir()
-    (project / ".booley_project").mkdir()
+    (project / ".booley").mkdir()
     invocation = tmp_path / "reports" / "sim" / "1"
     request = NewCampaignRunRequest(
         plan=create_simulation_campaign_plan(_manifest_for(("smoke",))),
@@ -943,7 +943,7 @@ def _retained_invocation(
 ) -> tuple[Path, Path, CampaignStore]:
     source = tmp_path / "source"
     source.mkdir()
-    (source / ".booley_project").mkdir()
+    (source / ".booley").mkdir()
     complete = _completed(source)
     project_data = tmp_path / "project-data"
     reports = reports or project_data / ".runtime" / "flow-reports"
@@ -1035,7 +1035,7 @@ def _publish_retired_child(
         (root / "retired").mkdir(parents=True, exist_ok=True)
         (root / "entries" / f"{execution_id}.json").write_bytes(entry_raw)
         (root / "retired" / f"{execution_id}.json").write_bytes(retirement_raw)
-    atomic_write_json(execution_paths(execution_id, project_dir=project_data).record, terminal)
+    atomic_write_json(execution_paths(execution_id, booley_dir=project_data).record, terminal)
     return execution_id
 
 
@@ -1147,7 +1147,7 @@ def test_full_pruning_authenticates_and_removes_retained_valid_v3_coverage(
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     _retain_v3_before_reference(monkeypatch)
     project(tmp_path)
-    data = tmp_path / ".booley_project"
+    data = tmp_path / ".booley"
     data.mkdir()
     (data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
     reports = tmp_path / "reports"
@@ -1464,7 +1464,7 @@ def test_pruning_rejects_unsafe_campaign_child_record(tmp_path: Path, defect: st
 def test_pruning_rejects_terminal_schema_extras(tmp_path: Path) -> None:
     reports, project_data, store = _retained_invocation(tmp_path)
     execution_id = _publish_retired_child(project_data, store)
-    terminal = execution_paths(execution_id, project_dir=project_data).record
+    terminal = execution_paths(execution_id, booley_dir=project_data).record
     document = json.loads(terminal.read_bytes())
     document["unexpected"] = True
     atomic_write_json(terminal, document)

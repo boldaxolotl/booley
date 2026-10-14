@@ -23,6 +23,7 @@ from booley.core.boundary import (
 )
 from booley.core.differences import format_differences
 from booley.runtime import project_image
+from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.runtime.build_stamp import (
     embedded_payload_fingerprint,
     embedded_wheel_source_fingerprint,
@@ -62,7 +63,6 @@ from booley.runtime.image_provenance import (
     resolve_recipe_fingerprint,
 )
 from booley.runtime.paths import docker_data_dir
-from booley.runtime.project_dir import resolve_checkout_project_dir
 
 BASE_IMAGE = "booley-sandbox"
 STABLE_RUNTIME_BASE_IMAGE = "booley-runtime-base:local"
@@ -466,13 +466,13 @@ def _expected_wheel_source_fingerprint() -> str | None:
     )
 
 
-def _direct_project_dir(project_root: Path) -> Path:
-    return resolve_checkout_project_dir(project_root)
+def _direct_booley_dir(project_root: Path) -> Path:
+    return resolve_checkout_booley_dir(project_root)
 
 
 def _sandbox_config(project_root: Path) -> dict[str, object]:
     try:
-        config = _direct_project_dir(project_root) / "booley.toml"
+        config = _direct_booley_dir(project_root) / "booley.toml"
     except FileNotFoundError:
         return {}
     if not config.is_file():
@@ -524,7 +524,7 @@ def _project_requirements_body(project_root: Path) -> str | None:
 
 def _user_project_requirements(project_root: Path) -> str | None:
     try:
-        requirements = _direct_project_dir(project_root) / "docker" / "requirements.txt"
+        requirements = _direct_booley_dir(project_root) / "docker" / "requirements.txt"
     except FileNotFoundError:
         return None
     if not requirements.is_file() or project_image.is_managed_generated_file(requirements):
@@ -554,7 +554,7 @@ def _logical_reference(project_root: Path) -> str:
 
 def _manual_parent(project_root: Path) -> str | None:
     try:
-        recipe = _direct_project_dir(project_root) / "docker" / "Dockerfile"
+        recipe = _direct_booley_dir(project_root) / "docker" / "Dockerfile"
     except FileNotFoundError:
         return None
     if not recipe.is_file():
@@ -595,7 +595,7 @@ def _project_recipe_fingerprint(
     *,
     parent_image: str = BASE_IMAGE,
 ) -> str:
-    docker_dir = _direct_project_dir(project_root) / "docker"
+    docker_dir = _direct_booley_dir(project_root) / "docker"
     dockerfile = docker_dir / "Dockerfile"
     requirements = docker_dir / "requirements.txt"
     overrides = None
@@ -738,7 +738,7 @@ def _source_graph(project_root: Path, selected: str) -> tuple[ImageNode, ...]:
 
 
 def _manual_overlay(project_root, selected, parent, observed):
-    recipe = _direct_project_dir(project_root) / "docker" / "Dockerfile"
+    recipe = _direct_booley_dir(project_root) / "docker" / "Dockerfile"
     fingerprint = _project_recipe_fingerprint(project_root, None)
     node = _graph_node(
         reference=selected,
@@ -812,7 +812,7 @@ def _source_graph_riscv(standard: ImageNode, docker_dir: Path) -> ImageNode:
 
 def _source_graph_project(project_root: Path, selected: str, substrate: ImageNode) -> ImageNode:
     requirements_body = _project_requirements_body(project_root)
-    dockerfile = _direct_project_dir(project_root) / "docker" / "Dockerfile"
+    dockerfile = _direct_booley_dir(project_root) / "docker" / "Dockerfile"
     generated_recipe, requirements_content = project_image.managed_project_image_files(
         requirements_body or "", parent_image=project_image.MANAGED_PROJECT_PARENT
     )
@@ -2378,13 +2378,13 @@ def _layout_alias_capable(image_id: str) -> bool:
 
 
 def _external_data_layout(root: Path) -> bool:
-    from booley.runtime.project_dir import resolve_project_dir
+    from booley.runtime.booley_dir import resolve_booley_dir
 
     try:
-        selected = resolve_project_dir(root)
-        return selected.resolve() != (
-            root / ".booley_project"
-        ).resolve() and not selected.is_relative_to(root)
+        selected = resolve_booley_dir(root)
+        return selected.resolve() != (root / ".booley").resolve() and not selected.is_relative_to(
+            root
+        )
     except (FileNotFoundError, ValueError):
         return False
 

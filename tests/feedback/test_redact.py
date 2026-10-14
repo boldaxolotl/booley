@@ -29,7 +29,7 @@ from booley.feedback.redact import (
 def project(tmp_path):
     """A realistic project: git remote, identity, booley.toml, and a .core."""
     root = tmp_path / "rocketwidget"
-    (root / ".booley_project").mkdir(parents=True)
+    (root / ".booley").mkdir(parents=True)
     subprocess.run(["git", "init", "-q", str(root)], check=True)
     for args in (
         ["config", "user.name", "Jane Tester"],
@@ -37,7 +37,7 @@ def project(tmp_path):
         ["remote", "add", "origin", "git@github.com:acme-semi/rocketwidget.git"],
     ):
         subprocess.run(["git", *args], cwd=root, check=True)
-    (root / ".booley_project" / "booley.toml").write_text(
+    (root / ".booley" / "booley.toml").write_text(
         '[project]\nname = "rocketwidget"\n\n[flows.sim]\n',
         encoding="utf-8",
     )
@@ -90,7 +90,7 @@ class TestScrubbing:
         assert out.count(out.split()[0]) == 2
 
     def test_explicit_redact_extra_terms_are_replaced(self, project):
-        toml = project / ".booley_project" / "booley.toml"
+        toml = project / ".booley" / "booley.toml"
         toml.write_text(
             toml.read_text(encoding="utf-8") + '\n[feedback]\nredact_extra = ["Skunkworks"]\n',
             encoding="utf-8",
@@ -99,7 +99,7 @@ class TestScrubbing:
         assert "Skunkworks" not in out
 
     def test_overridden_stealth_banned_words_are_replaced(self, project):
-        toml = project / ".booley_project" / "booley.toml"
+        toml = project / ".booley" / "booley.toml"
         toml.write_text(
             toml.read_text(encoding="utf-8") + '\n[stealth]\nbanned_words = ["Nightingale"]\n',
             encoding="utf-8",
@@ -117,7 +117,7 @@ class TestScrubbing:
     def test_framework_name_survives_when_the_repo_itself_is_named_booley(self, tmp_path):
         """The repo directory is also an automatic design-identifier candidate."""
         root = tmp_path / "Booley"
-        (root / ".booley_project").mkdir(parents=True)
+        (root / ".booley").mkdir(parents=True)
 
         out, _ = redact("Booley feedback should preserve the word booley", root)
 
@@ -134,7 +134,7 @@ class TestNotOverreaching:
         """F-24: a short as-given path must not corrupt ordinary prose."""
         monkeypatch.chdir(tmp_path)
         root = Path("work")
-        (root / ".booley_project").mkdir(parents=True)
+        (root / ".booley").mkdir(parents=True)
 
         out, _ = redact("worktrees differ; inspect work/rtl/dut.sv or work", root)
 
@@ -143,14 +143,14 @@ class TestNotOverreaching:
     def test_a_generically_named_toplevel_is_not_redacted(self, tmp_path):
         """A design whose toplevel is literally `top` must not nuke the word."""
         root = tmp_path / "proj"
-        (root / ".booley_project").mkdir(parents=True)
+        (root / ".booley").mkdir(parents=True)
         (root / "d.core").write_text("name: v:l:d:1.0\ntoplevel: top\n", encoding="utf-8")
         out, _ = redact("the top module and the toplevel port", root)
         assert "top module" in out
 
     def test_short_identifiers_are_not_redacted(self, tmp_path):
         root = tmp_path / "proj"
-        (root / ".booley_project").mkdir(parents=True)
+        (root / ".booley").mkdir(parents=True)
         (root / "d.core").write_text("name: v:l:d:1.0\ntoplevel: alu\n", encoding="utf-8")
         plan = build_plan(root)
         assert "alu" not in plan.identifiers
@@ -186,7 +186,7 @@ class TestConfigKnobs:
         assert redact_identifiers_enabled({}) is True
 
     def test_identifier_redaction_can_be_disabled(self, project):
-        toml = project / ".booley_project" / "booley.toml"
+        toml = project / ".booley" / "booley.toml"
         toml.write_text(
             toml.read_text(encoding="utf-8") + "\n[feedback]\nredact_identifiers = false\n",
             encoding="utf-8",
@@ -199,7 +199,7 @@ class TestConfigKnobs:
         assert str(project) not in out2
 
     def test_malformed_toml_does_not_disable_redaction(self, project):
-        (project / ".booley_project" / "booley.toml").write_text("[[[not toml", encoding="utf-8")
+        (project / ".booley" / "booley.toml").write_text("[[[not toml", encoding="utf-8")
         out, _ = redact(f"path {project} and Jane Tester", project)
         assert str(project) not in out
         assert "Jane Tester" not in out
@@ -209,7 +209,7 @@ class TestOrdering:
     def test_longest_path_wins(self, tmp_path):
         """`/home/u/proj` must not be half-eaten by the `/home/u` rule."""
         root = tmp_path / "proj"
-        (root / ".booley_project").mkdir(parents=True)
+        (root / ".booley").mkdir(parents=True)
         out, _ = redact(f"{root}/rtl", root)
         assert out == "<repo>/rtl"
 
@@ -237,7 +237,7 @@ class TestHonesty:
         """A repo with no name worth mapping (here: a generic directory name and
         no .core) gets told that design names go out verbatim."""
         root = tmp_path / "ip"
-        (root / ".booley_project").mkdir(parents=True)
+        (root / ".booley").mkdir(parents=True)
         plan = build_plan(root)
         assert not plan.identifiers
         assert any("verbatim" in r for r in residual_risks("text", plan))
@@ -251,7 +251,7 @@ class TestHonesty:
 
 def test_apply_plan_on_an_empty_plan_is_a_no_op(tmp_path):
     root = tmp_path / "bare"
-    (root / ".booley_project").mkdir(parents=True)
+    (root / ".booley").mkdir(parents=True)
     plan = build_plan(root)
     plan.literals.clear()
     plan.identifiers.clear()
@@ -263,7 +263,7 @@ def test_apply_plan_on_an_empty_plan_is_a_no_op(tmp_path):
 def test_feedback_custom_generic_vocabulary_stays_independent(project: Path) -> None:
     text = "generated docker verification agent"
     assert redact(text, project)[0] == text
-    config = project / ".booley_project" / "booley.toml"
+    config = project / ".booley" / "booley.toml"
     config.write_text(
         config.read_text() + '\n[stealth]\nbanned_words = ["generated", "docker", "agent"]\n'
     )
@@ -275,7 +275,7 @@ def test_explicit_stealth_tiers_identifier_optout_and_hits(tmp_path):
     from booley.feedback.redact import apply_plan, build_plan
 
     root = tmp_path / "public"
-    directory = root / ".booley_project"
+    directory = root / ".booley"
     directory.mkdir(parents=True)
     (directory / "booley.toml").write_text(
         '[feedback]\nredact_identifiers = false\n[stealth]\nbanned_words = ["agent", "booley"]\nbanned_substrings = ["quokka"]\n'
@@ -292,7 +292,7 @@ def test_feedback_explicit_terms_duplicate_module_and_no_defaults(tmp_path):
     from booley.feedback.redact import apply_plan, build_plan
 
     root = tmp_path / "quokka"
-    directory = root / ".booley_project"
+    directory = root / ".booley"
     directory.mkdir(parents=True)
     config = directory / "booley.toml"
     config.write_text('[stealth]\nbanned_words = ["quokka"]\nbanned_substrings = ["quokka"]\n')
@@ -311,7 +311,7 @@ def test_feedback_shared_parser_rejects_reserved_substrings(tmp_path):
     from booley.core.boundary import BoundaryError
     from booley.feedback.redact import build_plan
 
-    directory = tmp_path / ".booley_project"
+    directory = tmp_path / ".booley"
     directory.mkdir()
     (directory / "booley.toml").write_text('[stealth]\nbanned_substrings = ["mod"]\n')
     with pytest.raises(BoundaryError, match="reserved"):

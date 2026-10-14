@@ -25,7 +25,7 @@ from booley.fusesoc.fusesoc_registry import (
     discover_cores,
     source_dirs_from_core,
 )
-from booley.runtime.project_dir import resolve_checkout_project_dir
+from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.targets.catalog import TargetCatalog
 from booley.targets.declared_inputs import project_config_program_paths
 
@@ -122,7 +122,7 @@ def _source_group_files(work_dir: Path, source_dirs: list[str]) -> list[str]:
 def _declared_program_files(root: Path) -> list[str]:
     """Return committed programs directly referenced by Project configuration."""
     try:
-        config_path = resolve_checkout_project_dir(root) / "booley.toml"
+        config_path = resolve_checkout_booley_dir(root) / "booley.toml"
     except FileNotFoundError:
         return []
     if not config_path.is_file():
@@ -157,7 +157,7 @@ def _campaign_files(root: Path, target: str | None) -> list[tuple[str, Path]]:
         if path.is_file()
     ]
     try:
-        tests_toml = resolve_checkout_project_dir(root) / "tests.toml"
+        tests_toml = resolve_checkout_booley_dir(root) / "tests.toml"
     except FileNotFoundError:
         return files
     if tests_toml.is_file():

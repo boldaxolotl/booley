@@ -7,7 +7,7 @@ import pytest
 
 from booley.goals.proposals import Proposal, ProposalError, encode, load_proposal
 
-FIXTURE = Path(__file__).parent / "fixtures" / "waiver-proposal-v1"
+FIXTURE = Path(__file__).parents[1] / "runtime/fixtures/directory_migration/waiver-proposal-v1"
 
 
 def legacy_payload():

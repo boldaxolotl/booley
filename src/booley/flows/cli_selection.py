@@ -163,7 +163,7 @@ def collect_project_selection(parser: argparse.ArgumentParser, args: argparse.Na
 
 def resolve_selection(value: str | Path, *, legacy: bool = False) -> Path:
     """Canonical paths discover a checkout; aliases retain literal resolution."""
-    from booley.runtime.project_dir import reset_cache
+    from booley.runtime.booley_dir import reset_cache
     from booley.runtime.project_discovery import ProjectRootDiscoveryError, discover_project_root
 
     reset_cache()

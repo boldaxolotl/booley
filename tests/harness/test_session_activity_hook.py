@@ -122,7 +122,7 @@ def test_codex_hook_keys_by_thread_and_prefers_a_subagents_own_thread(tmp_path):
 
 def run_main(monkeypatch, capsys, argv, stdin, project=None):
     monkeypatch.setattr(sys, "stdin", SimpleNamespace(buffer=io.BytesIO(stdin)))
-    monkeypatch.setattr(hook, "resolve_project_dir", lambda _env, _cwd: project)
+    monkeypatch.setattr(hook, "resolve_booley_dir", lambda _env, _cwd: project)
     code = hook.main(argv)
     return code, capsys.readouterr()
 
@@ -185,7 +185,7 @@ def test_script_repeats_the_packages_event_table_states_and_bounds():
         activity.WAITING_TOOL,
         activity.WAITING_USER,
     )
-    assert hook.PROJECT_DIR_NAME == ".booley_project"
+    assert hook.BOOLEY_DIR_NAME == ".booley"
 
 
 @pytest.mark.parametrize(("event", "state"), sorted(activity.EVENT_STATES.items()))
@@ -234,33 +234,32 @@ def test_script_refuses_redirected_storage_and_a_full_store(tmp_path, monkeypatc
         hook.record("codex", stop, project=redirected, now=NOW)
 
 
-def test_project_dir_follows_booleys_own_resolution_order(tmp_path):
+def test_booley_dir_follows_booleys_own_resolution_order(tmp_path):
     checkout = tmp_path / "checkout"
     nested = checkout / "rtl" / "deep"
     nested.mkdir(parents=True)
-    assert hook.resolve_project_dir({}, nested) is None
-    local = checkout / ".booley_project"
+    assert hook.resolve_booley_dir({}, nested) is None
+    local = checkout / ".booley"
     local.mkdir()
-    assert hook.resolve_project_dir({}, nested) == local.resolve()
+    (local / "booley.toml").write_text("# Project\n")
+    assert hook.resolve_booley_dir({}, nested) == local.resolve()
     elsewhere = tmp_path / "stealth"
     elsewhere.mkdir()
     (checkout / "booley.toml").write_text('[project]\ndir = "../stealth"\n', encoding="utf-8")
-    assert hook.resolve_project_dir({}, nested) == elsewhere.resolve()
+    assert hook.resolve_booley_dir({}, nested) == elsewhere.resolve()
     for unusable in ('[project]\ndir = "../missing"\n', "[project]\n", "not toml ["):
         (checkout / "booley.toml").write_text(unusable, encoding="utf-8")
-        assert hook.resolve_project_dir({}, nested) == local.resolve()
-    env = {"BOOLEY_PROJECT_DIR": str(elsewhere)}
-    assert hook.resolve_project_dir(env, nested) == elsewhere
-    assert (
-        hook.resolve_project_dir({"BOOLEY_PROJECT_DIR": str(tmp_path / "gone")}, str(nested))
-        is None
-    )
+        assert hook.resolve_booley_dir({}, nested) == local.resolve()
+    env = {"BOOLEY_DIR": str(elsewhere)}
+    assert hook.resolve_booley_dir(env, nested) == elsewhere
+    assert hook.resolve_booley_dir({"BOOLEY_DIR": str(tmp_path / "gone")}, str(nested)) is None
 
 
 def test_script_runs_standalone_without_site_packages_or_booley(tmp_path):
     """The image runs it with ``-I -S``: it must need nothing beyond the standard library."""
-    project = tmp_path / ".booley_project"
+    project = tmp_path / ".booley"
     project.mkdir()
+    (project / "booley.toml").write_text("# Project\n")
     payload = json.dumps({"hook_event_name": "PreToolUse", "session_id": "t1", "tool_name": "x"})
     result = subprocess.run(
         [sys.executable, "-I", "-S", str(SCRIPT), "codex"],

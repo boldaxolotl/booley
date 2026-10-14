@@ -89,8 +89,8 @@ def _project(tmp_path: Path, part: str) -> Path:
     if text.count(marker) != 1:
         pytest.fail("paid fixture no longer has one replaceable FPGA part")
     core.write_text(text.replace(marker, f"part: {part}"), encoding="utf-8")
-    (workspace / "project_data").rename(workspace / ".booley_project")
-    (workspace / ".booley_project").chmod(0o700)
+    (workspace / "project_data").rename(workspace / ".booley")
+    (workspace / ".booley").chmod(0o700)
     return workspace
 
 
@@ -111,7 +111,7 @@ def _issue(workspace: Path, p: Prerequisites) -> None:
     )
     spec = dc.build_devcontainer_spec(
         dc.APP_NONE,
-        project_dir_source=str((workspace / ".booley_project").resolve()),
+        booley_dir_source=str((workspace / ".booley").resolve()),
         mcp_start_command=dc.mcp_post_start_command(),
         trusted_eda_mounts=((str(p.vivado_root), CONTAINER_TARGET),),
         protected_devcontainer_source=str(workspace / ".devcontainer"),
@@ -239,7 +239,7 @@ def test_paid_vivado_checkout_uses_production_relay_and_vendor_status_evidence(
     p = _prerequisites()
     workspace = _project(tmp_path, p.part)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "host-config"))
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(workspace / ".booley_project"))
+    monkeypatch.setenv("BOOLEY_DIR", str(workspace / ".booley"))
     _issue(workspace, p)
 
     container = session_runtime.up(workspace)

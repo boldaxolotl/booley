@@ -6,11 +6,11 @@ running the steps below against the build under test.
 
 Use this owned Icarus fixture only inside a run-owned copy of the PicoRV32
 Project. Do not edit the pinned upstream source. This Project uses Stealth with
-`ignore_native_cores = true`, so `.booley_project/cores/` is the only core root,
+`ignore_native_cores = true`, so `.booley/cores/` is the only core root,
 and its fileset paths are repository-root-relative (CONFIG.md "Stealth"). Copy
-`campaign.core` and `campaign_tb.sv` into `.booley_project/cores/qa_campaign/`,
+`campaign.core` and `campaign_tb.sv` into `.booley/cores/qa_campaign/`,
 then change the copied core's `campaign_tb.sv` entry to
-`.booley_project/cores/qa_campaign/campaign_tb.sv`. Merge the `sim_campaign`
+`.booley/cores/qa_campaign/campaign_tb.sv`. Merge the `sim_campaign`
 table from `tests.toml` into the Project's active test catalog. Add the copied
 files and catalog entry to `resources.md` before running anything.
 

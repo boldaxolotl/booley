@@ -2,7 +2,7 @@
 
 Validated on 30 SEP 2026 with a pinned public PicoRV32 CPU, real Booley Simulation
 execution, and host-sealed Sandbox specifications rendered through the Docker CLI
-translation. [Machine-readable evidence](879-compiler-cache.json) records all
+translation. [Machine-readable evidence](../../../tests/runtime/fixtures/directory_migration/compiler-cache-879.json) records all
 47 successful measured builds, compiler commands, generated C++ identities,
 Make wall/child CPU times, total wall times, observed values, and cache statistics.
 Timing is evidence, never a normal CI assertion.

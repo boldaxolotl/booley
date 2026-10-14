@@ -15,10 +15,10 @@ sudo chown -R 1000:1000 demo "${EVIDENCE_DIR}"
   --name "${CONTAINER_NAME}" \
   --mount "type=bind,src=${WORKSPACE},dst=/booley-source,readonly" \
   --mount "type=bind,src=${WORKSPACE}/demo,dst=/work" \
-  --mount "type=bind,src=${WORKSPACE}/demo/.booley_project,dst=/booley-project" \
+  --mount "type=bind,src=${WORKSPACE}/demo/.booley,dst=/booley-project" \
   --mount "type=bind,src=${EVIDENCE_DIR},dst=/evidence" \
   -w /work \
-  -e BOOLEY_PROJECT_DIR=/booley-project \
+  -e BOOLEY_DIR=/booley-project \
   -e BOOLEY_GOAL_READINESS_EVIDENCE=/evidence/goal-readiness.json \
   -e BOOLEY_IN_SANDBOX=1 \
   -e BOOLEY_RUN_PICORV32_FLOWS=1 \

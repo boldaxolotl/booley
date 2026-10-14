@@ -280,7 +280,7 @@ def _validate_result(value: dict[str, Any], operation: LifecycleOperation) -> No
 
 
 def _validate_result_paths(value: dict[str, Any], operation: LifecycleOperation) -> None:
-    from booley.runtime.project_dir import contains
+    from booley.runtime.booley_dir import contains
 
     origin = value.get("recovered_operation_id", operation.request.operation_id)
     directory = operation.lock.record_dir / "operations" / origin
@@ -306,7 +306,7 @@ def _validate_result_paths(value: dict[str, Any], operation: LifecycleOperation)
                 if path.is_relative_to(original):
                     path = operation.lock.record_dir / path.relative_to(original)
                     break
-        mapped = contains(path, project_dir=directory)
+        mapped = contains(path, booley_dir=directory)
         if mapped is None or mapped != (directory / name).resolve():
             raise LifecycleError("saved lifecycle result path differs from its bound operation")
 
@@ -389,3 +389,20 @@ def _validate_finished_artifacts(result: dict[str, Any], operation: LifecycleOpe
     }
     if any(result[key] != value for key, value in expected.items()):
         raise LifecycleError("saved finished result differs from its frozen completion")
+
+
+def archived_result(store: GoalStore, request: LifecycleRequest) -> dict[str, Any] | None:
+    """Replay only a proven migrated terminal operation; no live checkout is required."""
+    from booley.runtime.booley_dir_migration import is_archived_record
+
+    validate_goal_id(request.record_id)
+    require_uuid4(request.operation_id, field="operation_id")
+    if not is_archived_record(store.booley_dir, request.record_id):
+        return None
+    record = store.load(request.record_id)
+    if record.state.value not in {"finished", "abandoned", "failed"}:
+        raise LifecycleError("archival replay requires a terminal Goal Record")
+    # Observational locking never creates storage, recovers operations or publishes state.
+    with store.record_lock(record.id, existing_only=True) as lock:
+        operation = LifecycleOperation(store, lock, request, Path(record.worktree_path))
+        return operation.saved_result()

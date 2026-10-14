@@ -409,12 +409,12 @@ class TransactionBuilder:
 
 def _project(tmp_path: Path, image: str | None = None) -> Path:
     root = tmp_path / "project"
-    project_dir = root / ".booley_project"
-    project_dir.mkdir(parents=True)
+    booley_dir = root / ".booley"
+    booley_dir.mkdir(parents=True)
     body = "[sandbox]\n"
     if image is not None:
         body += f'image = "{image}"\n'
-    (project_dir / "booley.toml").write_text(body, encoding="utf-8")
+    (booley_dir / "booley.toml").write_text(body, encoding="utf-8")
     return root
 
 
@@ -610,7 +610,7 @@ def test_riscv_requirements_select_generated_project_overlay(
     root = _project(tmp_path, "booley-sandbox-riscv")
     requirements = root / "requirements.txt"
     requirements.write_text("cocotb==2.0.0\n", encoding="utf-8")
-    config = root / ".booley_project" / "booley.toml"
+    config = root / ".booley" / "booley.toml"
     config.write_text(
         '[sandbox]\nimage = "booley-sandbox-riscv"\npip_requirements = ["requirements.txt"]\n',
         encoding="utf-8",
@@ -982,7 +982,7 @@ def test_runtime_graph_rejects_missing_wheel_and_user_owned_project_recipe(
     with pytest.raises(lifecycle.ImageLifecycleError, match="wheel-source fingerprint"):
         lifecycle._source_graph(root, lifecycle.BASE_IMAGE)
 
-    project_docker = root / ".booley_project" / "docker"
+    project_docker = root / ".booley" / "docker"
     project_docker.mkdir()
     (project_docker / "Dockerfile").write_text("FROM custom:image\n", encoding="utf-8")
     monkeypatch.setattr(lifecycle, "_expected_wheel_source_fingerprint", lambda: "wheel")
@@ -1089,7 +1089,7 @@ def test_incremental_adapter_release_pull_and_project_recipe_paths(
         )
 
     project = _incremental_node(tmp_path, lifecycle.ImageRole.PROJECT_SUBSTRATE)
-    monkeypatch.setattr(harness_lifecycle, "resolve_checkout_project_dir", lambda _root: tmp_path)
+    monkeypatch.setattr(harness_lifecycle, "resolve_checkout_booley_dir", lambda _root: tmp_path)
     project = replace(project, generated_files=(("Dockerfile", "generated recipe"),))
     adapter._materialize_managed_project_recipe(project)
     assert (tmp_path / "docker/Dockerfile").read_text() == "generated recipe"
@@ -1220,7 +1220,7 @@ def test_official_release_project_requirements_use_local_overlay_only(
     root = _project(tmp_path, "booley-sandbox-riscv")
     requirement = root / "requirements.txt"
     requirement.write_text("cocotb==2.0.1\n", encoding="utf-8")
-    config = root / ".booley_project" / "booley.toml"
+    config = root / ".booley" / "booley.toml"
     config.write_text(
         '[sandbox]\nimage = "booley-sandbox-riscv"\npip_requirements = ["requirements.txt"]\n',
         encoding="utf-8",
@@ -1263,7 +1263,7 @@ def test_hybrid_project_selection_fingerprint_includes_release_flavor(
     riscv = _project(tmp_path / "riscv", "booley-sandbox-riscv")
     for root in (standard, riscv):
         (root / "requirements.txt").write_text("cocotb==2.0.1\n", encoding="utf-8")
-        config = root / ".booley_project" / "booley.toml"
+        config = root / ".booley" / "booley.toml"
         configured = "booley-sandbox-riscv" if root == riscv else "booley-sandbox"
         config.write_text(
             f'[sandbox]\nimage = "{configured}"\npip_requirements = ["requirements.txt"]\n',
@@ -1289,7 +1289,7 @@ def test_official_release_default_project_requirements_use_standard_overlay(
 
     root = _project(tmp_path)
     (root / "requirements.txt").write_text("cocotb==2.0.1\n", encoding="utf-8")
-    (root / ".booley_project" / "booley.toml").write_text(
+    (root / ".booley" / "booley.toml").write_text(
         '[sandbox]\npip_requirements = ["requirements.txt"]\n',
         encoding="utf-8",
     )
@@ -2141,7 +2141,7 @@ def test_invalid_sandbox_configuration_fails_loudly(
     message: str,
 ) -> None:
     root = _project(tmp_path)
-    (root / ".booley_project" / "booley.toml").write_text(body, encoding="utf-8")
+    (root / ".booley" / "booley.toml").write_text(body, encoding="utf-8")
     _wire(monkeypatch, FakeDocker({}))
 
     with pytest.raises(lifecycle.ImageLifecycleError, match=message):
@@ -2152,7 +2152,7 @@ def test_missing_configured_requirement_fails_loudly(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = _project(tmp_path)
-    (root / ".booley_project" / "booley.toml").write_text(
+    (root / ".booley" / "booley.toml").write_text(
         '[sandbox]\npip_requirements = ["missing.txt"]\n',
         encoding="utf-8",
     )
@@ -2162,9 +2162,9 @@ def test_missing_configured_requirement_fails_loudly(
         lifecycle.reconcile(lifecycle.ProjectImageScope(root), lifecycle.Intent.CHECK)
 
 
-def test_checkout_project_dir_override_wins_over_literal_directory(tmp_path: Path, monkeypatch):
+def test_checkout_booley_dir_override_wins_over_literal_directory(tmp_path: Path, monkeypatch):
     root = tmp_path / "project"
-    local = root / ".booley_project"
+    local = root / ".booley"
     custom = root / "control"
     local.mkdir(parents=True)
     custom.mkdir()
@@ -2175,7 +2175,7 @@ def test_checkout_project_dir_override_wins_over_literal_directory(tmp_path: Pat
 
     lifecycle.reconcile(lifecycle.ProjectImageScope(root), lifecycle.Intent.CHECK)
 
-    assert lifecycle._direct_project_dir(root) == custom
+    assert lifecycle._direct_booley_dir(root) == custom
 
 
 @pytest.mark.parametrize("reference", [lifecycle.BASE_IMAGE])
@@ -2727,7 +2727,7 @@ def test_docker_tag_removal_is_exact_non_forced_and_does_not_prune_parents(
 
 def test_project_recipe_fingerprint_includes_arbitrary_context_files(tmp_path: Path):
     root = _project(tmp_path)
-    docker_dir = root / ".booley_project" / "docker"
+    docker_dir = root / ".booley" / "docker"
     docker_dir.mkdir()
     dockerfile = docker_dir / "Dockerfile"
     dockerfile.write_text(
@@ -2837,7 +2837,7 @@ def test_local_builder_reports_step_failure(
 
 def _user_project_node(tmp_path: Path) -> tuple[Path, lifecycle.ImageNode]:
     root = _project(tmp_path)
-    docker_dir = root / ".booley_project" / "docker"
+    docker_dir = root / ".booley" / "docker"
     docker_dir.mkdir()
     (docker_dir / "requirements.txt").write_text("user-owned\n", encoding="utf-8")
     payload = lifecycle.PayloadProvenance("1", "0.2.6", "payload")
@@ -2973,7 +2973,7 @@ def test_external_layout_late_parent_graph_preserves_terminal_identity_and_reuse
     root = _project(tmp_path)
     external = tmp_path / "external"
     external.mkdir()
-    monkeypatch.setattr("booley.runtime.project_dir.resolve_project_dir", lambda _root: external)
+    monkeypatch.setattr("booley.runtime.booley_dir.resolve_booley_dir", lambda _root: external)
     docker = FakeDocker({})
     _wire(monkeypatch, docker)
     monkeypatch.setattr(lifecycle, "_expected_wheel_source_fingerprint", lambda: "wheel")
@@ -3009,16 +3009,16 @@ def test_layout_identity_changes_for_parent_topology_recipe_and_project(tmp_path
     root = _project(tmp_path)
     external = tmp_path / "external"
     external.mkdir()
-    monkeypatch.setattr("booley.runtime.project_dir.resolve_project_dir", lambda _root: external)
+    monkeypatch.setattr("booley.runtime.booley_dir.resolve_booley_dir", lambda _root: external)
     parent = _incremental_node(tmp_path, lifecycle.ImageRole.WHEEL_OVERLAY, source="wheel")
     first = lifecycle._layout_node(root, parent, "sha256:" + "a" * 64)
     changed_parent = lifecycle._layout_node(root, parent, "sha256:" + "b" * 64)
     assert changed_parent.reference != first.reference
     monkeypatch.setattr(
-        "booley.runtime.project_dir.resolve_project_dir", lambda _root: tmp_path / "different"
+        "booley.runtime.booley_dir.resolve_booley_dir", lambda _root: tmp_path / "different"
     )
     assert lifecycle._layout_node(root, parent, "sha256:" + "a" * 64).reference != first.reference
-    monkeypatch.setattr("booley.runtime.project_dir.resolve_project_dir", lambda _root: external)
+    monkeypatch.setattr("booley.runtime.booley_dir.resolve_booley_dir", lambda _root: external)
     assert (
         lifecycle._layout_node(tmp_path / "other-project", parent, "sha256:" + "a" * 64).reference
         != first.reference
@@ -3033,7 +3033,7 @@ def test_release_layout_child_retains_verified_parent_policy_and_zero_build_chec
     root = _project(tmp_path)
     external = tmp_path / "external"
     external.mkdir()
-    monkeypatch.setattr("booley.runtime.project_dir.resolve_project_dir", lambda _root: external)
+    monkeypatch.setattr("booley.runtime.booley_dir.resolve_booley_dir", lambda _root: external)
     monkeypatch.setattr(lifecycle.project_image, "project_data_alias_capable", lambda _image: True)
     docker = FakeDocker({})
     _wire(monkeypatch, docker)
@@ -3223,12 +3223,12 @@ def test_release_project_overlay_retains_wheel_identity_through_layout_convergen
 ):
     root = _project(tmp_path)
     (root / "requirements.txt").write_text("cocotb\n")
-    (root / ".booley_project/booley.toml").write_text(
+    (root / ".booley/booley.toml").write_text(
         '[sandbox]\npip_requirements = ["requirements.txt"]\n'
     )
     external = tmp_path / "external"
     external.mkdir()
-    monkeypatch.setattr("booley.runtime.project_dir.resolve_project_dir", lambda _root: external)
+    monkeypatch.setattr("booley.runtime.booley_dir.resolve_booley_dir", lambda _root: external)
     docker = FakeDocker({})
     _wire(monkeypatch, docker)
     contracts = lifecycle.ImageBuildContracts("a" * 64, "b" * 64)
@@ -3267,7 +3267,7 @@ def test_prepared_parent_losing_alias_can_validate_and_commit_without_obsolete_l
     root = _project(tmp_path)
     external = tmp_path / "external"
     external.mkdir()
-    monkeypatch.setattr("booley.runtime.project_dir.resolve_project_dir", lambda _root: external)
+    monkeypatch.setattr("booley.runtime.booley_dir.resolve_booley_dir", lambda _root: external)
     docker = FakeDocker({})
     _wire(monkeypatch, docker)
     monkeypatch.setattr(lifecycle, "_expected_wheel_source_fingerprint", lambda: "old-wheel")

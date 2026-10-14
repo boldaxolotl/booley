@@ -407,7 +407,7 @@ def test_cycle_comparison_is_prominent_and_discloses_workload_drift(
 
 def test_review_facts_include_paired_project_repository(tmp_path: Path, monkeypatch):
     ctx = _context(tmp_path)
-    project = ctx.worktree / ".booley_project"
+    project = ctx.worktree / ".booley"
     project.mkdir()
     _git(project, "init", "-q")
     _git(project, "config", "user.name", "Test")
@@ -433,7 +433,7 @@ def test_review_facts_include_paired_project_repository(tmp_path: Path, monkeypa
     assert facts["commits"][-1]["subject"] == "update project core"
     project_change = facts["changed_files"][-1]
     assert project_change["repository"] == "project"
-    assert project_change["path"] == ".booley_project/cores/demo.core"
+    assert project_change["path"] == ".booley/cores/demo.core"
     assert Path(project_change["diff_left"]).read_text(encoding="utf-8") == ("name: ::demo:0\n")
     assert Path(project_change["diff_right"]).read_text(encoding="utf-8") == ("name: ::demo:1\n")
 

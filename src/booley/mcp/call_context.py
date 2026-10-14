@@ -33,8 +33,8 @@ from booley.goals.protected_inputs import ProtectedInputRoots
 from booley.goals.rules import WORK_DIR_GUIDANCE
 from booley.goals.session_key import session_key
 from booley.goals.store import GoalRecordCorruptError, GoalStore, WorktreeIdentityError
+from booley.runtime.booley_dir import resolve_booley_dir
 from booley.runtime.job_records import make_run_id
-from booley.runtime.project_dir import resolve_project_dir
 from booley.runtime.session_paths import session_jobs_dir
 from booley.runtime.timefmt import compact_utc_now
 
@@ -127,7 +127,7 @@ def require_goal_work_dir(arguments: Mapping[str, Any], store: GoalStore) -> Non
 def project_goal_store() -> GoalStore | None:
     """Resolve the session's Goal store, preserving ordinary calls without a Project."""
     try:
-        return GoalStore(resolve_project_dir())
+        return GoalStore(resolve_booley_dir())
     except (FileNotFoundError, SourceCheckoutProjectError):
         return None
 
@@ -155,7 +155,7 @@ def _goal_call_context(arguments: Mapping[str, Any], explicit: Path | None) -> C
         return None
     invocation = make_run_id("goal", compact_utc_now(), 0)
     binding = bind_run(store, explicit, invocation)
-    paths = record_paths(store.project_dir, binding.record_id)
+    paths = record_paths(store.booley_dir, binding.record_id)
     overrides = {
         "BOOLEY_GOAL_FILE": str(paths.record_file),
         "BOOLEY_GOAL_RUN_BINDING": json.dumps(binding.to_json()),
@@ -164,7 +164,7 @@ def _goal_call_context(arguments: Mapping[str, Any], explicit: Path | None) -> C
         "BOOLEY_RUNTIME_DIR": str(paths.runtime_dir),
         "BOOLEY_CONTROL_PROJECT_ROOT": os.environ.get("BOOLEY_CONTROL_PROJECT_ROOT")
         or str(
-            ProtectedInputRoots(binding.worktree_root, store.project_dir).main_checkout()
+            ProtectedInputRoots(binding.worktree_root, store.booley_dir).main_checkout()
             or binding.worktree_root
         ),
         "BOOLEY_SLUG": binding.record_id,

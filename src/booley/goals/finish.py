@@ -132,6 +132,11 @@ class FinishEnvironment:
 def finish_goal(request: LifecycleRequest, env: FinishEnvironment) -> dict[str, Any]:
     """Bind first, then resume the exact operation or freeze a new validated attempt."""
     store = env.changes.store
+    from booley.goals.lifecycle import archived_result
+
+    saved = archived_result(store, request)
+    if saved is not None:
+        return saved
     with bind_operation(store, request) as operation:
         saved = operation.saved_result()
         if saved is not None:
@@ -213,7 +218,7 @@ def _attempt_authority_current(
     return frozen["record_revision"] == record.revision and frozen[
         "authority_digest"
     ] == completion_authority_digest(
-        record, load_goal_state(operation.store, record), operation.store.project_dir
+        record, load_goal_state(operation.store, record), operation.store.booley_dir
     )
 
 
@@ -229,7 +234,7 @@ def _freeze(
         raise LifecycleError(f"Goal evidence cannot be accounted for: {exc}") from exc
     selection = select_inputs(record, operation.root)
     if record.declared_protected_inputs is not None:
-        violations = protected_warnings(record, operation.store.project_dir, operation.root)
+        violations = protected_warnings(record, operation.store.booley_dir, operation.root)
         if violations:
             raise LifecycleError("; ".join(violations))
     require_clean(selection, retained=retained_outputs(operation))
@@ -238,7 +243,7 @@ def _freeze(
         operation.store,
         record,
         work_dir=operation.root,
-        resolvers=alias_resolvers(record, selection, operation.store.project_dir, env.resolvers),
+        resolvers=alias_resolvers(record, selection, operation.store.booley_dir, env.resolvers),
     )
     unmet = [
         row.presentation.text if row.presentation else "Goal unavailable"
@@ -292,12 +297,12 @@ def _frozen_attempt(
     names: dict[str, str],
 ) -> dict[str, Any]:
     frozen = {
-        "schema": "booley.goal-finish-attempt/v2",
+        "schema": "booley.goal-finish-attempt/v3",
         "private_capture": capture,
         "operation_id": operation.request.operation_id,
         "record_revision": record.revision,
         "authority_digest": completion_authority_digest(
-            record, load_goal_state(operation.store, record), operation.store.project_dir
+            record, load_goal_state(operation.store, record), operation.store.booley_dir
         ),
         "inputs": selection.to_json(),
         "package": package.to_json(),
@@ -311,7 +316,7 @@ def _frozen_attempt(
         "worktree": record.worktree.to_json(),
         "branch": branch_ref(record.branch),
         "running_jobs": _running_jobs(
-            record_paths(operation.store.project_dir, record.id).jobs_dir
+            record_paths(operation.store.booley_dir, record.id).jobs_dir
         ),
     }
     validate_canonical_ownership(operation, frozen)
@@ -346,17 +351,17 @@ def _build_frozen_package_checked(
         () if env.generated_inputs is None else env.generated_inputs(record, state, operation.root)
     )
     policy = any(goal.spec.target is None for goal in record.goals)
-    resolvers = alias_resolvers(record, selection, operation.store.project_dir, env.resolvers)
+    resolvers = alias_resolvers(record, selection, operation.store.booley_dir, env.resolvers)
     excluded: frozenset[Path] = (
         resolvers.select_artifacts(selection.rtl, None) if policy else frozenset()
     )
     resolvers = resolvers.with_artifacts(excluded)
     with committed_view(
-        selection, record, control_project=operation.store.project_dir, baseline=True
+        selection, record, control_project=operation.store.booley_dir, baseline=True
     ) as base:
         before = resolved_surfaces(base.root)
         before_epoch = artifact_epoch(base, record, baseline=True) if policy else None
-    with committed_view(selection, record, control_project=operation.store.project_dir) as final:
+    with committed_view(selection, record, control_project=operation.store.booley_dir) as final:
         validate_committed(
             final,
             record,
@@ -374,7 +379,7 @@ def _build_frozen_package_checked(
             record.base_sha,
             selection.rtl_pin,
             record.branch,
-            str(record_paths(operation.store.project_dir, record.id).logs_dir),
+            str(record_paths(operation.store.booley_dir, record.id).logs_dir),
             operation.request.summary,
             public_capture(proof),
             target_changes,
@@ -382,7 +387,7 @@ def _build_frozen_package_checked(
             resolved_goal_targets(final.root, record),
         )
         package = build_goal_package(
-            context, record, state, operation.store.project_dir, omitted_inputs=omitted
+            context, record, state, operation.store.booley_dir, omitted_inputs=omitted
         )
     return GoalCompletionPackage.from_json(
         {**package.to_json(), "earlier_attempts": earlier_attempt_facts(operation)}
@@ -401,7 +406,7 @@ def _project_completion_changes(
     if before_epoch is None:
         return changes, frozenset()
     after_epoch = artifact_epoch(final, record, baseline=False)
-    observations = presentation_observations(record, state, operation.store.project_dir)
+    observations = presentation_observations(record, state, operation.store.booley_dir)
     retained = retained_presentation_inputs(final, observations)
     labels, omitted = presentation_exclusions(
         final.selection.rtl, (before_epoch, after_epoch), retained
@@ -461,22 +466,20 @@ def _publication_path(operation: LifecycleOperation, record: GoalRecord) -> str:
         operations.glob("*/attempt.json")
     )
     suffix = "" if not attempts else "-" + operation.request.operation_id
-    return f".booley_project/goals/history/{record.id}{suffix}.md"
+    return f".booley/goals/history/{record.id}{suffix}.md"
 
 
 def _skip_publication(root: Path, project: Path, path: str) -> str | None:
     if paired_project_repository(root) is not None:
         return "summary kept local; Paired Checkout preserves independent Booley history"
-    if stealth_enabled(root, project_dir=project):
+    if stealth_enabled(root, booley_dir=project):
         return "summary kept local; Stealth publication is skipped"
     result = GoalCheckout(root)._git("check-ignore", "-q", "--", path, check=False)  # pyright: ignore[reportPrivateUsage]
     if result.returncode not in {0, 1}:
         raise LifecycleError(
             f"cannot inspect summary exclusion: git check-ignore exited {result.returncode}: {result.stderr.strip()}"
         )
-    return (
-        "summary kept local; `.booley_project` is git-excluded" if result.returncode == 0 else None
-    )
+    return "summary kept local; `.booley` is git-excluded" if result.returncode == 0 else None
 
 
 def _read_attempt(operation: LifecycleOperation) -> dict[str, Any]:
@@ -610,9 +613,7 @@ def _complete_proven_publication(
 def _control_binding_unchanged(operation: LifecycleOperation, frozen: dict[str, Any]) -> bool:
     capture = frozen.get("private_capture", frozen["package"]["input_proof"])
     control = capture.get("path_roots", {}).get("control")
-    return control is None or control["identity"] == directory_identity(
-        operation.store.project_dir
-    )
+    return control is None or control["identity"] == directory_identity(operation.store.booley_dir)
 
 
 def _revalidate_publication(
@@ -655,7 +656,7 @@ def _original_input_bindings(operation: LifecycleOperation, frozen: dict[str, An
     if saved is None:
         return False  # Legacy captures without physical authority cannot authorize index writes.
     try:
-        current = capture_path_roots(operation.root, operation.store.project_dir)
+        current = capture_path_roots(operation.root, operation.store.booley_dir)
         require_bindings(saved, current)
         from booley.runtime.project_repositories import paired_project_repository
 
@@ -746,14 +747,14 @@ def _inputs_unchanged(
         record.protected_paths,
         record.protected_digest or "",
         record.protected_head_digest,
-        ProtectedInputRoots(operation.root, operation.store.project_dir).with_input_paths(
+        ProtectedInputRoots(operation.root, operation.store.booley_dir).with_input_paths(
             record.input_paths
         ),
         record.declared_protected_inputs,
     )
     return not violations and observations_unchanged(
         frozen.get("private_capture", frozen["package"]["input_proof"]),
-        capture_path_roots(operation.root, operation.store.project_dir),
+        capture_path_roots(operation.root, operation.store.booley_dir),
     )
 
 

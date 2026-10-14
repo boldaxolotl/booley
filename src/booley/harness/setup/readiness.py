@@ -33,8 +33,8 @@ from booley.harness.setup.guidance_links import (
     ensure_guidance_links,
     guidance_links_current,
 )
+from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.runtime.git import _git_common_dir
-from booley.runtime.project_dir import resolve_checkout_project_dir
 from booley.runtime.worktree_paths import worktree_state_dir
 from booley.targets.catalog import TargetCatalog
 
@@ -56,7 +56,7 @@ class ProjectAudit:
     """Validated setup inputs; later findings do not invalidate this snapshot."""
 
     project_root: Path
-    project_dir: Path
+    booley_dir: Path
     booley_toml: dict[str, Any]
     configs_toml: dict[str, dict[str, Any]]
     first_target: str
@@ -68,7 +68,7 @@ class ProjectLoadResult:
     """Resolved data location survives even a failed configuration audit."""
 
     report: DiagnosticReport
-    project_dir: Path | None
+    booley_dir: Path | None
     project: ProjectAudit | None
 
 
@@ -86,12 +86,12 @@ def load_project(project_root: Path) -> ProjectLoadResult:
     """Read and validate checkout-local configuration, without repairs."""
     report = Findings()
     try:
-        project_dir = resolve_checkout_project_dir(project_root)
+        booley_dir = resolve_checkout_booley_dir(project_root)
     except FileNotFoundError:
         report.fail("Booley Directory not found", "booley init")
         return ProjectLoadResult(report.report(), None, None)
-    project = _check_project_setup(project_root, project_dir, report)
-    return ProjectLoadResult(report.report(), project_dir, project)
+    project = _check_project_setup(project_root, booley_dir, report)
+    return ProjectLoadResult(report.report(), booley_dir, project)
 
 
 def check_guidance(project: ProjectAudit, *, mode: ReadinessMode) -> DiagnosticReport:
@@ -108,7 +108,7 @@ def check_stealth_cores(project: ProjectAudit, *, mode: ReadinessMode) -> Diagno
     enabled = isinstance(stealth, Mapping) and stealth.get("enabled") is True
     _check_stealth_cores(
         project.project_root,
-        project.project_dir,
+        project.booley_dir,
         report,
         stealth_enabled=enabled,
         repair=mode is ReadinessMode.RECONCILE,
@@ -120,7 +120,7 @@ def inspect_worktree_portability(request: WorktreePortabilityRequest) -> Diagnos
     """Inspect repository policy and every live worktree without repair."""
     report = Findings()
     repositories = worktree_policy_repositories(
-        request.project.project_root, project_dir=request.project.project_dir
+        request.project.project_root, booley_dir=request.project.booley_dir
     )
     policies = {
         repository: read_local_config(repository, WORKTREE_RELATIVE_KEY)
@@ -318,7 +318,7 @@ def _worktree_metadata_problems(worktree: Path) -> tuple[str, ...]:
 
 
 def _live_worktree_paths(project: ProjectAudit) -> tuple[Path, ...]:
-    root = worktree_state_dir(project.project_root, project_dir=project.project_dir) / "worktrees"
+    root = worktree_state_dir(project.project_root, booley_dir=project.booley_dir) / "worktrees"
     if not root.is_dir():
         return ()
     worktrees: list[Path] = []
@@ -327,11 +327,11 @@ def _live_worktree_paths(project: ProjectAudit) -> tuple[Path, ...]:
             continue
         worktrees.append(outer)
         try:
-            paired = resolve_checkout_project_dir(outer)
+            paired = resolve_checkout_booley_dir(outer)
         except (FileNotFoundError, ValueError):
             continue
         if (
-            paired != project.project_dir
+            paired != project.booley_dir
             and paired.is_relative_to(outer)
             and (paired / ".git").is_file()
         ):
@@ -354,16 +354,16 @@ def _inspect_live_worktrees(project: ProjectAudit, report: Findings) -> None:
 
 
 def _check_project_setup(
-    project_root: Path, project_dir: Path, report: Findings
+    project_root: Path, booley_dir: Path, report: Findings
 ) -> ProjectAudit | None:
     """Strictly parse and validate Booley project setup files."""
-    report.pass_(f"Booley Directory found: {project_dir}")
+    report.pass_(f"Booley Directory found: {booley_dir}")
 
-    booley_toml = _load_toml(project_dir / "booley.toml", report)
+    booley_toml = _load_toml(booley_dir / "booley.toml", report)
     if booley_toml is None:
         return None
 
-    valid = _validate_booley_toml(booley_toml, project_dir, report)
+    valid = _validate_booley_toml(booley_toml, booley_dir, report)
     from booley.targets.flow_names import canonicalize_config
 
     booley_toml = canonicalize_config(booley_toml)
@@ -372,7 +372,7 @@ def _check_project_setup(
     # design-description home, and the legacy configs.toml registry path was
     # removed. Validate a configs.toml only when a project still ships one.
     configs_toml: dict[str, dict[str, Any]] = {}
-    configs_path = project_dir / "configs.toml"
+    configs_path = booley_dir / "configs.toml"
     if configs_path.is_file():
         configs_raw = _load_toml(configs_path, report)
         if configs_raw is None:
@@ -392,7 +392,7 @@ def _check_project_setup(
         report.pass_(f"first deep-check config: {first_target}")
     return ProjectAudit(
         project_root=project_root,
-        project_dir=project_dir,
+        booley_dir=booley_dir,
         booley_toml=booley_toml,
         configs_toml=configs_toml,
         first_target=first_target,
@@ -430,7 +430,7 @@ def _load_toml(path: Path, report: Findings) -> dict[str, Any] | None:
     return data
 
 
-def _validate_booley_toml(data: dict[str, Any], project_dir: Path, report: Findings) -> bool:
+def _validate_booley_toml(data: dict[str, Any], booley_dir: Path, report: Findings) -> bool:
     """Validate the project-level booley.toml schema used by doctor."""
     if not _add_config_audit(project_schema.audit_eda_config(data), report):
         return False
@@ -449,7 +449,7 @@ def _validate_booley_toml(data: dict[str, Any], project_dir: Path, report: Findi
 
     specialists = {
         endpoint.name
-        for endpoint in discover_mcp_tools(project_mcp_tools_dir=project_dir / "mcp_tools")
+        for endpoint in discover_mcp_tools(project_mcp_tools_dir=booley_dir / "mcp_tools")
         if endpoint.kind == "specialist"
     }
     valid &= _add_config_audit(project_schema.audit_specialist_table(data, specialists), report)
@@ -457,8 +457,8 @@ def _validate_booley_toml(data: dict[str, Any], project_dir: Path, report: Findi
     # _run_core_checks → sim_target_has_untagged_tb), not a booley.toml
     # [sources.*] table — those fields were retired (ADR 0026 follow-through).
 
-    if not project_dir.exists():
-        report.fail(f"Booley Directory missing: {project_dir}", "booley init")
+    if not booley_dir.exists():
+        report.fail(f"Booley Directory missing: {booley_dir}", "booley init")
         valid = False
     return valid
 
@@ -495,13 +495,13 @@ def _check_agents_md(project: ProjectAudit, report: Findings, *, repair: bool) -
     The canonical AGENTS.md lives in the Booley Directory; the Project Root
     only carries generated AGENTS.md/CLAUDE.md links to it.
     """
-    canon = project.project_dir / CANON_NAME
+    canon = project.booley_dir / CANON_NAME
     if not canon.is_file():
         report.note("project guidance file missing; run setup guidance when ready")
         return
     if repair:
         try:
-            ensure_guidance_links(project.project_root, project.project_dir)
+            ensure_guidance_links(project.project_root, project.booley_dir)
             report.pass_("project guidance file present; root links ensured")
         except OSError as exc:
             _guidance_warning(report, f"could not create root guidance links: {exc}")
@@ -547,14 +547,14 @@ def _scope_warning(canon: Path, report: Findings, message: str, fix: str = "") -
 
 
 def _check_stealth_cores(
-    project_root: Path, project_dir: Path, report: Findings, *, stealth_enabled: bool, repair: bool
+    project_root: Path, booley_dir: Path, report: Findings, *, stealth_enabled: bool, repair: bool
 ) -> None:
     """Diagnose stranded/colliding authored cores and inspect or repair projections."""
-    stealth_root = project_dir / fusesoc_registry.STATE_CORES_SUBDIR
+    stealth_root = booley_dir / fusesoc_registry.STATE_CORES_SUBDIR
     authored = tuple(sorted(stealth_root.rglob("*.core"))) if stealth_root.is_dir() else ()
     if stealth_enabled is False and authored:
         report.fail(
-            ".booley_project/cores contains authored cores while stealth mode is disabled",
+            ".booley/cores contains authored cores while stealth mode is disabled",
             "set [stealth] enabled = true, or move the cores into the tracked repository",
         )
     elif stealth_enabled is True:
@@ -562,20 +562,20 @@ def _check_stealth_cores(
 
     stranded = [
         p
-        for p in project_dir.rglob("*.core")
+        for p in booley_dir.rglob("*.core")
         if not p.is_relative_to(stealth_root)
-        and not _STATE_TRANSIENT_DIR_NAMES.intersection(p.relative_to(project_dir).parts)
-        and not any(part.startswith(".baseline-wt") for part in p.relative_to(project_dir).parts)
+        and not _STATE_TRANSIENT_DIR_NAMES.intersection(p.relative_to(booley_dir).parts)
+        and not any(part.startswith(".baseline-wt") for part in p.relative_to(booley_dir).parts)
         and TRACE_OVERLAY_MARKER not in p.name
     ]
     if stranded:
-        names = ", ".join(str(p.relative_to(project_dir)) for p in sorted(stranded))
+        names = ", ".join(str(p.relative_to(booley_dir)) for p in sorted(stranded))
         report.fail(
             f"authored .core stranded in the Booley Directory, invisible to Booley and FuseSoC: {names}",
-            f"move it under {stealth_root} — the one scanned subtree of .booley_project/ (ADR 0036)",
+            f"move it under {stealth_root} — the one scanned subtree of .booley/ (ADR 0036)",
         )
     else:
-        report.pass_("no authored .core stranded outside .booley_project/cores/")
+        report.pass_("no authored .core stranded outside .booley/cores/")
 
     try:
         TargetCatalog.build(project_root).list()
@@ -585,7 +585,7 @@ def _check_stealth_cores(
         # Unreadable/misnamed cores are the core-audit checks' beat, not ours.
         return
     else:
-        report.pass_("no VLNV collision between repo-tree and .booley_project/cores/ cores")
+        report.pass_("no VLNV collision between repo-tree and .booley/cores/ cores")
 
 
 def _check_core_projections(project_root: Path, report: Findings, *, repair: bool) -> None:
@@ -614,7 +614,7 @@ def _check_core_projections(project_root: Path, report: Findings, *, repair: boo
             "run booley init to reconcile the ignored root-level projections",
         )
     elif not failed:
-        report.pass_("stealth core projections match .booley_project/cores/")
+        report.pass_("stealth core projections match .booley/cores/")
     _check_projection_exclude(project_root, report)
 
 

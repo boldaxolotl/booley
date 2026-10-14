@@ -73,7 +73,7 @@ omit it), and Project-defined endpoints must declare `work_dir` to run.
 and Finish IDs rather than editing records. Protected Input changes block
 Finish until reverted. Open `done` review findings remain visible; Finish does not merge.
 Read Project-owned Goalsets, including `default.md`, from `goalsets/` in the
-Main Booley Directory (`BOOLEY_PROJECT_DIR` in the Sandbox); a
+Main Booley Directory (`BOOLEY_DIR` in the Sandbox); a
 Worktree Booley Directory inside `work_dir` is not used. `default.md` applies
 unless the human explicitly skips it with a reason. Initialization seeds four
 create-only Goalsets and preserves edits.
@@ -329,7 +329,7 @@ For FPGA Targets the `fpga` axis, not `flow_options.tool`, determines drivabilit
 
 ### Project Files
 
-Recognized user-owned inputs under `.booley_project/` are listed below.
+Recognized user-owned inputs under `.booley/` are listed below.
 Generated runtime state, reports, logs, worktrees, and managed marker files are
 omitted. FuseSoC `.core` design files also stay outside this directory, beside
 the design sources they describe.
@@ -369,7 +369,7 @@ do not need these files.
 
 ### Artifacts
 
-`<GOAL>` means `<project_dir>/goals/<goal-id>/`, the local Goal Record.
+`<GOAL>` means `<booley_dir>/goals/<goal-id>/`, the local Goal Record.
 
 | Artifact | Path | Use |
 |----------|------|-----|
@@ -378,7 +378,7 @@ do not need these files.
 | Review Package | `<GOAL>/review-package.json` | Diff, final evidence, Change Log, and review findings |
 | Approved Goal changes | `<GOAL>/changes.jsonl` | Human decisions and reasons |
 | Evidence logs | `<GOAL>/logs/` | Flow/Specialist evidence and retained reports |
-| Summary on the Goal Branch | `.booley_project/goals/history/<goal-id>.md` | Committed outside Stealth when Git-trackable and owned by the RTL repository; Paired Checkout summaries stay local |
+| Summary on the Goal Branch | `.booley/goals/history/<goal-id>.md` | Committed outside Stealth when Git-trackable and owned by the RTL repository; Paired Checkout summaries stay local |
 
 ### Sandbox & Docker
 
@@ -395,7 +395,7 @@ The `booley-sandbox` image contains Booley's EDA toolchain, Developer Agent clie
 | `booley` / `booley chat` | Recommended: launch the configured `claude` or `codex` command inside the Sandbox |
 | `docker pull ghcr.io/boldaxolotl/booley-sandbox:<ver>` | Manual pull of pre-built image |
 
-To extend the image, create `.booley_project/docker/Dockerfile` with `FROM booley-sandbox`, build it, then set `[sandbox].image` in `.booley_project/booley.toml`.
+To extend the image, create `.booley/docker/Dockerfile` with `FROM booley-sandbox`, build it, then set `[sandbox].image` in `.booley/booley.toml`.
 
 Inside the Sandbox, `booley` / `booley chat` is a convenience alias for the selected Developer Agent command:
 it replaces itself with the native CLI. Invoke `claude` or `codex` directly to

@@ -27,7 +27,7 @@ from booley.runtime.incontainer_git_identity import (
     git_identity_environment,
     load_git_identity,
 )
-from booley.runtime.sandbox_layout import PROJECT_DIR_TARGET, WORK_DIR
+from booley.runtime.sandbox_layout import BOOLEY_DIR_TARGET, WORK_DIR
 from booley.runtime.timefmt import LOCAL_TIMEZONE_ENV
 from booley.runtime.vaporview import EXTENSION_ID as _VAPORVIEW_EXTENSION
 from booley.runtime.vaporview import PRESENTATION_COLOR_SETTINGS
@@ -60,24 +60,24 @@ INTERACTIVE_ROLE_LABEL = "booley.role=interactive"
 SESSION_PIDS_LIMIT = 4096
 
 # --- Container-side paths (must match the booley-sandbox image) ---
-# PROJECT_DIR_TARGET (imported above from ``sandbox_layout``) is where
-# ``.booley_project`` mounts; it is re-exported here for existing callers.
+# BOOLEY_DIR_TARGET (imported above from ``sandbox_layout``) is where
+# ``.booley`` mounts; it is re-exported here for existing callers.
 AGENT_HOME = "/home/agent"  # non-root ``agent`` user (see data/docker/Dockerfile)
 
 # Workspace-relative basename of the Booley Directory. ``[sandbox] mask_paths``
 # needs it to notice entries that are visible through TWO container mounts:
-# the whole workspace binds at /work (so ``.booley_project/x`` shows up at
-# ``/work/.booley_project/x``) AND the Booley Directory itself binds again at
-# PROJECT_DIR_TARGET — masking only the /work view would leave the same bytes
+# the whole workspace binds at /work (so ``.booley/x`` shows up at
+# ``/work/.booley/x``) AND the Booley Directory itself binds again at
+# BOOLEY_DIR_TARGET — masking only the /work view would leave the same bytes
 # readable at ``/booley-project/x``.
-PROJECT_DIR_BASENAME = ".booley_project"
+BOOLEY_DIR_BASENAME = ".booley"
 
-# Default mount source for ``.booley_project``: the co-located common case.
+# Default mount source for ``.booley``: the co-located common case.
 # The Dev Containers CLI does NOT support nested variable defaults
 # (``${localEnv:VAR:${localWorkspaceFolder}/...}`` is mis-parsed into an invalid
 # mount path), so for non-co-located projects ``booley init`` bakes the resolved
 # absolute host path instead of relying on env-var indirection here.
-DEFAULT_PROJECT_DIR_SOURCE = "${localWorkspaceFolder}/.booley_project"
+DEFAULT_BOOLEY_DIR_SOURCE = "${localWorkspaceFolder}/.booley"
 
 # VS Code Marketplace extension IDs for the supported agent apps. Listed under
 # ``customizations`` so VS Code installs them container-side; update if the
@@ -560,8 +560,8 @@ def mask_paths_error(value: object) -> str | None:
     subpaths are accepted: an absolute path would mask an arbitrary container
     path and a ``..`` segment would walk the mask outside the workspace mount —
     either turns a privacy knob into a container-layout editor. Masking
-    ``.booley_project`` itself is rejected too: the session reads its config,
-    Goal Records, and worktrees through that mount (``BOOLEY_PROJECT_DIR``), so
+    ``.booley`` itself is rejected too: the session reads its config,
+    Goal Records, and worktrees through that mount (``BOOLEY_DIR``), so
     hiding the whole dir bricks the runtime — mask *subtrees* of it instead.
     """
     if value is None:
@@ -569,7 +569,7 @@ def mask_paths_error(value: object) -> str | None:
     if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
         return "[sandbox].mask_paths must be a list of strings"
     bad: list[str] = []
-    whole_project_dir: list[str] = []
+    whole_booley_dir: list[str] = []
     for v in value:
         # PurePosixPath normalizes away "." segments, duplicate and trailing
         # slashes, so ``parts`` is the canonical segment view ("." -> ()).
@@ -581,18 +581,18 @@ def mask_paths_error(value: object) -> str | None:
             or ".." in parts
         ):
             bad.append(v)
-        elif parts == (PROJECT_DIR_BASENAME,):
-            whole_project_dir.append(v)
+        elif parts == (BOOLEY_DIR_BASENAME,):
+            whole_booley_dir.append(v)
     if bad:
         return (
             "[sandbox].mask_paths entries must be workspace-relative POSIX "
             "paths with no '..' segments: " + ", ".join(repr(v) for v in bad)
         )
-    if whole_project_dir:
+    if whole_booley_dir:
         return (
-            f"[sandbox].mask_paths must not mask {PROJECT_DIR_BASENAME!r} "
+            f"[sandbox].mask_paths must not mask {BOOLEY_DIR_BASENAME!r} "
             "itself — the session reads its config through that mount; mask "
-            f"subtrees (e.g. {PROJECT_DIR_BASENAME}/private) instead"
+            f"subtrees (e.g. {BOOLEY_DIR_BASENAME}/private) instead"
         )
     return None
 
@@ -613,9 +613,9 @@ def _mask_mounts(mask_paths: Sequence[str], mask_source: str) -> list[str]:
     - ``readonly``: the mask must also swallow writes — an agent writing into
       a masked subtree would otherwise scribble into the shared empty dir.
 
-    An entry under ``.booley_project/`` is masked a SECOND time under
+    An entry under ``.booley/`` is masked a SECOND time under
     ``/booley-project/<rest>``: the Booley Directory is bind-mounted twice (the
-    workspace mount at /work plus its own mount at PROJECT_DIR_TARGET), and
+    workspace mount at /work plus its own mount at BOOLEY_DIR_TARGET), and
     masking only one view leaves the same bytes readable through the other.
 
     Callers must place these AFTER the Booley Directory mount in the ``mounts``
@@ -631,16 +631,16 @@ def _mask_mounts(mask_paths: Sequence[str], mask_source: str) -> list[str]:
         if not parts:
             continue  # belt-and-braces: validation already rejects "" / "."
         mounts.append(_bind_mount(mask_source, f"{WORK_DIR}/{'/'.join(parts)}", readonly=True))
-        if parts[0] == PROJECT_DIR_BASENAME and len(parts) > 1:
+        if parts[0] == BOOLEY_DIR_BASENAME and len(parts) > 1:
             rest = "/".join(parts[1:])
-            mounts.append(_bind_mount(mask_source, f"{PROJECT_DIR_TARGET}/{rest}", readonly=True))
+            mounts.append(_bind_mount(mask_source, f"{BOOLEY_DIR_TARGET}/{rest}", readonly=True))
     return mounts
 
 
 def _build_mounts(
     app: str,
     project_id: str,
-    project_dir_source: str,
+    booley_dir_source: str,
     auth_token_source: str | None,
     auth_target: str | None,
     seeding_creds: bool,
@@ -654,7 +654,7 @@ def _build_mounts(
     mask_source: str = "",
 ) -> list[str]:
     """Build the ``mounts`` list for :func:`build_devcontainer_spec`."""
-    mounts = [_bind_mount(project_dir_source, PROJECT_DIR_TARGET)]
+    mounts = [_bind_mount(booley_dir_source, BOOLEY_DIR_TARGET)]
     # Rotation-free credential stored by `booley auth` (see
     # _APP_TOKEN_SEED_TARGET): mounted read-only for incontainer_register to
     # apply on every start. Re-minting rewrites the host file in place (same
@@ -725,7 +725,7 @@ def _build_remote_env(
         "NO_PROXY": "localhost,127.0.0.1",
         # Container-side MCP runs in interactive mode and finds config here.
         "BOOLEY_MCP_MODE": "interactive",
-        "BOOLEY_PROJECT_DIR": PROJECT_DIR_TARGET,
+        "BOOLEY_DIR": BOOLEY_DIR_TARGET,
         COMPILER_CACHE_ROOT_ENV: ISSUED_COMPILER_CACHE_ROOT,
         # The in-container registrar (postStartCommand) configures this app.
         "BOOLEY_AGENT_APP": app,
@@ -867,7 +867,7 @@ def build_devcontainer_spec(
     app: str = APP_NONE,
     *,
     image: str = SANDBOX_IMAGE,
-    project_dir_source: str = DEFAULT_PROJECT_DIR_SOURCE,
+    booley_dir_source: str = DEFAULT_BOOLEY_DIR_SOURCE,
     project_id: str = "${localWorkspaceFolderBasename}",
     auth_token_source: str | None = None,
     config_seed_source: str | None = None,
@@ -891,7 +891,7 @@ def build_devcontainer_spec(
             auth-token target. ``"none"`` installs no agent extension.
         image: the prebuilt Sandbox Image (``booley-sandbox`` by default; the
             published ref can be substituted by the caller).
-        project_dir_source: host-side mount source for ``.booley_project``.
+        booley_dir_source: host-side mount source for ``.booley``.
         project_id: canonical Project-root identity used to scope persistent
             container state. Production callers pass :func:`canonical_project_id`.
         auth_token_source: host path to the agent auth token to mount read-only;
@@ -935,7 +935,7 @@ def build_devcontainer_spec(
         mask_paths: workspace-root-relative POSIX paths from
             ``[sandbox] mask_paths`` to HIDE from the Sandbox. Each is
             rendered as a read-only bind of *mask_source* over
-            ``/work/<rel>`` — and, for a path under ``.booley_project/``, a
+            ``/work/<rel>`` — and, for a path under ``.booley/``, a
             second bind over ``/booley-project/<rest>``, because that tree is
             visible through both mounts (see :func:`_mask_mounts`). Callers
             validate via :func:`mask_paths_error` first. Empty (the default)
@@ -971,7 +971,7 @@ def build_devcontainer_spec(
     mounts = _build_mounts(
         app,
         project_id,
-        project_dir_source,
+        booley_dir_source,
         auth_token_source,
         auth_target,
         seeding_creds,
@@ -984,7 +984,7 @@ def build_devcontainer_spec(
         mask_paths,
         mask_source,
     )
-    identity_env = _git_environment(project_dir_source, fixed_container_env)
+    identity_env = _git_environment(booley_dir_source, fixed_container_env)
     remote_env = _build_remote_env(app, forward_oauth_token, local_timezone)
     remote_env.update(identity_env)
     run_args = _build_run_args(memory)

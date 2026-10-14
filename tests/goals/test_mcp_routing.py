@@ -65,7 +65,7 @@ def test_missing_work_dir_both_paths(goal_mode: SimpleNamespace) -> None:
     assert str(goal_mode.worktree) in message
     assert "booley_report" in message and "booley_targets" in message
     assert "booley_status" in message and "accept no work_dir" in message
-    result = asyncio.run(dispatch_goal_tool("goal_status", {}, project_dir=goal_mode.control))
+    result = asyncio.run(dispatch_goal_tool("goal_status", {}, booley_dir=goal_mode.control))
     assert result.is_error and "Pass work_dir" in result.value[0].text
 
 
@@ -147,7 +147,7 @@ def test_status_rules(goal_mode: SimpleNamespace) -> None:
         dispatch_goal_tool(
             "goal_status",
             {"work_dir": str(goal_mode.worktree), "rules": True},
-            project_dir=goal_mode.control,
+            booley_dir=goal_mode.control,
         )
     )
     assert result.is_error is False
@@ -162,7 +162,7 @@ def test_two_goal_worktrees_and_interactive_restart_poll_cancel(goal_mode, monke
 
     second = goal_mode.control / "worktrees" / "other"
     git(goal_mode.main, "worktree", "add", "-q", "-b", "other", str(second))
-    write_project_files(second / ".booley_project")
+    write_project_files(second / ".booley")
     other = SimpleNamespace(main=goal_mode.main, control=goal_mode.control, worktree=second)
     from booley.goals import entry as entry_module
 
@@ -532,11 +532,11 @@ def test_goal_status_mcp_from_subdirectory_is_identical(goal_mode):
     publish(goal_mode)
     root = asyncio.run(
         dispatch_goal_tool(
-            "goal_status", {"work_dir": str(goal_mode.worktree)}, project_dir=goal_mode.control
+            "goal_status", {"work_dir": str(goal_mode.worktree)}, booley_dir=goal_mode.control
         )
     )
     below = asyncio.run(
-        dispatch_goal_tool("goal_status", {"work_dir": str(nested)}, project_dir=goal_mode.control)
+        dispatch_goal_tool("goal_status", {"work_dir": str(nested)}, booley_dir=goal_mode.control)
     )
     assert below == root
 
@@ -546,7 +546,7 @@ def test_public_report_recovery_selects_goal_root(goal_mode, monkeypatch, tmp_pa
 
     second = goal_mode.control / "worktrees" / "report-other"
     git(goal_mode.main, "worktree", "add", "-q", "-b", "report-other", str(second))
-    write_project_files(second / ".booley_project")
+    write_project_files(second / ".booley")
     other = SimpleNamespace(main=goal_mode.main, control=goal_mode.control, worktree=second)
     from booley.goals import entry as entry_module
 
@@ -628,7 +628,7 @@ def test_goal_status_simulation_contract_explanation(goal_mode, met):
     )
     result = asyncio.run(
         dispatch_goal_tool(
-            "goal_status", {"work_dir": str(goal_mode.worktree)}, project_dir=goal_mode.control
+            "goal_status", {"work_dir": str(goal_mode.worktree)}, booley_dir=goal_mode.control
         )
     )
     assert not result.is_error
@@ -689,7 +689,7 @@ def test_target_less_publication_compares_admission_policy(layout, monkeypatch, 
         if mutation == "bytes":
             artifact.write_text("regenerated\n")
         elif mutation == "ignore":
-            exclude.write_text("/.booley_project\n")
+            exclude.write_text("/.booley\n")
         else:
             (layout.worktree / "top.core").write_text(
                 (layout.worktree / "top.core").read_text() + "# authored edit\n"
@@ -912,7 +912,7 @@ def test_status_complete_text_and_metadata_unchanged(goal_mode, inside, rules):
         dispatch_goal_tool(
             "goal_status",
             {"work_dir": str(location), "rules": rules},
-            project_dir=goal_mode.control,
+            booley_dir=goal_mode.control,
         )
     )
     assert result.is_error is False

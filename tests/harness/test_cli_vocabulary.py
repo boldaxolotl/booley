@@ -34,14 +34,14 @@ def command(argv):
 @pytest.fixture
 def projects(tmp_path, monkeypatch):
     monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
     monkeypatch.delenv(INVOCATION_ORIGIN_ENV, raising=False)
     roots = []
     for name in ("a", "b"):
         root = tmp_path / name
         root.mkdir()
         subprocess.run(["git", "init", "-q", str(root)], check=True, timeout=10)
-        (root / ".booley_project").mkdir()
+        (root / ".booley").mkdir()
         (root / "rtl").mkdir()
         roots.append(root)
     monkeypatch.chdir(roots[0])
@@ -117,10 +117,10 @@ def test_feedback_help_explains_checkout_context_and_shared_storage(capsys):
             assert "worktrees share one Findings Log" in help_text
             assert "configured names and redaction settings" in help_text
             assert "booley.toml in the feedback storage directory" in help_text
-            assert "BOOLEY_PROJECT_DIR" in help_text
+            assert "BOOLEY_DIR" in help_text
             assert "may find a separate log" in help_text
             assert "Git's shared metadata directory" in help_text
-            assert "regardless of BOOLEY_PROJECT_DIR" in help_text
+            assert "regardless of BOOLEY_DIR" in help_text
 
     for route in ((), ("doctor",)):
         help_text = " ".join(routes[route].format_help().split())
@@ -431,8 +431,8 @@ def test_invalid_selection_fails_before_handler(projects, monkeypatch, route):
 def test_discovery_config_and_execution_use_same_checkout(projects, monkeypatch, tail):
     from booley.mcp.endpoint_config import get_endpoint_config
 
-    (projects[0] / ".booley_project/booley.toml").write_text("[flows.lint]\ntimeout_ms = 1000\n")
-    (projects[1] / ".booley_project/booley.toml").write_text("[flows.lint]\ntimeout_ms = 9000\n")
+    (projects[0] / ".booley/booley.toml").write_text("[flows.lint]\ntimeout_ms = 1000\n")
+    (projects[1] / ".booley/booley.toml").write_text("[flows.lint]\ntimeout_ms = 9000\n")
     discovered = []
     original = cli._discover_project_mcp_tools
 
@@ -456,16 +456,16 @@ def test_discovery_config_and_execution_use_same_checkout(projects, monkeypatch,
 
 
 def test_external_data_selection_and_cache_switch(projects, monkeypatch):
-    from booley.runtime.project_dir import resolve_checkout_project_dir, resolve_project_dir
+    from booley.runtime.booley_dir import resolve_booley_dir, resolve_checkout_booley_dir
 
-    assert resolve_project_dir(start=projects[0]) == projects[0] / ".booley_project"
+    assert resolve_booley_dir(start=projects[0]) == projects[0] / ".booley"
     selected = cli._resolve_cli_selection(command(["targets", "-C", "../b"]))
-    assert resolve_project_dir(start=selected) == projects[1] / ".booley_project"
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(projects[0] / ".booley_project"))
+    assert resolve_booley_dir(start=selected) == projects[1] / ".booley"
+    monkeypatch.setenv("BOOLEY_DIR", str(projects[0] / ".booley"))
     selected = cli._resolve_cli_selection(command(["targets", "-C", "../b"]))
     assert selected == projects[1]
-    assert resolve_project_dir(start=selected) == projects[0] / ".booley_project"
-    assert resolve_checkout_project_dir(selected) == projects[1] / ".booley_project"
+    assert resolve_booley_dir(start=selected) == projects[0] / ".booley"
+    assert resolve_checkout_booley_dir(selected) == projects[1] / ".booley"
 
 
 def test_shared_plugin_outer_selection_and_override_refusal(projects, capsys):
@@ -606,4 +606,4 @@ def test_canonical_synth_help_uses_initialized_project(
     titles = ["Common:", "Output:", "Synthesis options:", "Expert: ABC:", "Expert: OpenROAD:"]
     positions = [output.index(title) for title in titles]
     assert positions == sorted(positions)
-    assert list(projects[0].joinpath(".booley_project").iterdir()) == []
+    assert list(projects[0].joinpath(".booley").iterdir()) == []

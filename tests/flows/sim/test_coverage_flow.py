@@ -96,7 +96,7 @@ def _prepare_console_scope_project(tmp_path: Path, monkeypatch: pytest.MonkeyPat
 
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path, ("verilator", "verilator"))
-    project_data = tmp_path / ".booley_project"
+    project_data = tmp_path / ".booley"
     project_data.mkdir()
     (project_data / "tests.toml").write_text(
         '[sim_0]\ntests = ["half", "reset", "wrap", "carry", "zero"]\n'
@@ -262,7 +262,7 @@ def _prepare_atomic_coverage_state(
     project(tmp_path)
     core = tmp_path / "counter.core"
     core.write_text(core.read_text().replace("sim_0", "sim_custom"))
-    project_data = tmp_path / ".booley_project"
+    project_data = tmp_path / ".booley"
     project_data.mkdir()
     (project_data / "tests.toml").write_text('[sim_custom]\ntests = ["gap"]\n')
     projection = _atomic_coverage_projection()
@@ -325,7 +325,7 @@ def test_flow_produces_numbered_target_reports_with_public_coverage_input(tmp_pa
 
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path)
-    data = tmp_path / ".booley_project"
+    data = tmp_path / ".booley"
     data.mkdir()
     (data / "tests.toml").write_text('[sim_0]\ntests = ["reset", "wrap"]\n')
     flow = SimulateFlow(
@@ -378,7 +378,7 @@ def test_coverage_simulation_projection_error_tail_is_text(tmp_path, monkeypatch
         root = tmp_path / verdict
         root.mkdir()
         project(root)
-        data = root / ".booley_project"
+        data = root / ".booley"
         data.mkdir()
         (data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
 
@@ -432,7 +432,7 @@ def _frozen_hook_execution(tmp_path, data, received):
 def test_injected_coverage_execution_receives_frozen_pre_sim_policy(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path)
-    data = tmp_path / ".booley_project"
+    data = tmp_path / ".booley"
     data.mkdir()
     (data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
     (data / "booley.toml").write_text(
@@ -572,7 +572,7 @@ def test_coverage_recipe_schema_errors_are_atomic_preflight_failures(
             f"flow_options: {{tool: verilator, booley: {{coverage: {coverage_recipe}}}}}",
         )
     )
-    project_data = tmp_path / ".booley_project"
+    project_data = tmp_path / ".booley"
     project_data.mkdir()
     (project_data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
     before = {path.relative_to(tmp_path) for path in tmp_path.rglob("*")}
@@ -613,7 +613,7 @@ def test_valid_custom_main_coverage_recipe_passes_preflight(
             "{custom_main_hooks: [start_hook, write_hook], reset_included: false}}}",
         )
     )
-    project_data = tmp_path / ".booley_project"
+    project_data = tmp_path / ".booley"
     project_data.mkdir()
     (project_data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
 
@@ -665,7 +665,7 @@ def test_custom_main_hook_failures_are_public_collector_errors(
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path)
     _configure_custom_main_coverage(tmp_path)
-    project_data = tmp_path / ".booley_project"
+    project_data = tmp_path / ".booley"
     project_data.mkdir()
     (project_data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
 
@@ -689,13 +689,13 @@ def test_custom_main_hook_failures_are_public_collector_errors(
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX unreadable-directory regression")
-@pytest.mark.parametrize("relative", ["unreadable", ".booley_project/unreadable"])
+@pytest.mark.parametrize("relative", ["unreadable", ".booley/unreadable"])
 def test_unreadable_unrelated_directory_does_not_block_coverage(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, relative: str
 ) -> None:
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path)
-    project_data = tmp_path / ".booley_project"
+    project_data = tmp_path / ".booley"
     project_data.mkdir()
     (project_data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
     unreadable = tmp_path / relative
@@ -727,7 +727,7 @@ def test_copied_complete_invocation_remains_analyzable_and_independently_prunabl
 
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path)
-    data = tmp_path / ".booley_project"
+    data = tmp_path / ".booley"
     data.mkdir()
     (data / "tests.toml").write_text('[sim_0]\ntests = ["reset", "wrap"]\n')
     reports = tmp_path / "reports"
@@ -775,7 +775,7 @@ def test_copied_complete_invocation_remains_analyzable_and_independently_prunabl
 def test_multi_target_collector_error_preserves_completed_and_later_targets(tmp_path, monkeypatch):
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path, ("verilator", "verilator", "verilator"))
-    data = tmp_path / ".booley_project"
+    data = tmp_path / ".booley"
     data.mkdir()
     (data / "tests.toml").write_text("".join(f'[sim_{i}]\ntests = ["reset"]\n' for i in range(3)))
     flow = SimulateFlow(
@@ -826,7 +826,7 @@ def test_shared_execution_failure_terminalizes_without_losing_completed_reports(
 ):
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path, ("verilator", "verilator", "verilator"))
-    data = tmp_path / ".booley_project"
+    data = tmp_path / ".booley"
     data.mkdir()
     (data / "tests.toml").write_text("".join(f'[sim_{i}]\ntests = ["reset"]\n' for i in range(3)))
 
@@ -910,7 +910,7 @@ def test_pre_outcome_coverage_failure_uses_prepared_policy(
     else:
         monkeypatch.setenv("BOOLEY_CONTAINER", "1")
         project(tmp_path)
-        project_data = tmp_path / ".booley_project"
+        project_data = tmp_path / ".booley"
         project_data.mkdir()
         (project_data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
 
@@ -961,7 +961,7 @@ def test_nested_coverage_publication_failure_preserves_simulation_truth(tmp_path
 def test_atomic_preflight_creates_no_report_or_build_path(tmp_path, monkeypatch):
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path, ("verilator", "icarus"))
-    data = tmp_path / ".booley_project"
+    data = tmp_path / ".booley"
     data.mkdir()
     (data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n[sim_1]\ntests = ["reset"]\n')
     before = set(tmp_path.rglob("*"))
@@ -987,7 +987,7 @@ def test_explicit_coverage_selection_executes_configured_skips(
 ):
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path)
-    data = tmp_path / ".booley_project"
+    data = tmp_path / ".booley"
     data.mkdir()
     (data / "tests.toml").write_text('[sim_0]\ntests = ["reset", "wrap"]\nskip = ["wrap"]\n')
 
@@ -1010,7 +1010,7 @@ def test_interactive_coverage_criterion_does_not_mutate_or_save_state(tmp_path, 
 
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path)
-    data = tmp_path / ".booley_project"
+    data = tmp_path / ".booley"
     data.mkdir()
     (data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
     state = DevelopmentState.load(tmp_path / "state.json")
@@ -1106,7 +1106,7 @@ def test_gated_passing_coverage_headline_reports_evaluation_pass(tmp_path, monke
 
 def test_gated_suite_mismatch_headline_attaches_diagnostic_to_evaluation(tmp_path, monkeypatch):
     _prepare_atomic_coverage_state(tmp_path, monkeypatch)
-    tests_path = tmp_path / ".booley_project/tests.toml"
+    tests_path = tmp_path / ".booley/tests.toml"
     tests_path.write_text('[sim_custom]\ntests = ["gap", "other"]\n')
     result = SimulateFlow(
         coverage_execution=lambda _handle, _options, _commands, _access: NativeExecution()
@@ -1144,9 +1144,9 @@ def test_public_cli_aliases_select_same_request():
 def test_invalid_coverage_tables_return_preflight_error(tmp_path, monkeypatch, config):
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path)
-    data = tmp_path / ".booley_project"
+    data = tmp_path / ".booley"
     data.mkdir()
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(data))
+    monkeypatch.setenv("BOOLEY_DIR", str(data))
     (data / "booley.toml").write_text(config)
     before = set(tmp_path.rglob("*"))
     result = SimulateFlow().execute(SimRequest(target="sim_0", work_dir=tmp_path, coverage=True))
@@ -1162,9 +1162,9 @@ def test_shared_build_prerequisite_failure_publishes_durable_terminal_results(
 
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path, ("verilator", "verilator"))
-    data = tmp_path / ".booley_project"
+    data = tmp_path / ".booley"
     data.mkdir()
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(data))
+    monkeypatch.setenv("BOOLEY_DIR", str(data))
     (data / "tests.toml").write_text('[sim_0]\ntests=["reset"]\n[sim_1]\ntests=["reset"]\n')
     built = []
 
@@ -1208,7 +1208,7 @@ def _prepare_coverage_origin(tmp_path, monkeypatch, *, skipped=()):
     monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: revision)
     monkeypatch.setattr("booley.flows.sim.campaign.resume.git_full_sha", lambda *_args: revision)
     project(tmp_path)
-    data = tmp_path / ".booley_project"
+    data = tmp_path / ".booley"
     data.mkdir()
     (data / "tests.toml").write_text(
         f'[sim_0]\ntests = ["reset", "wrap"]\nskip = {json.dumps(list(skipped))}\n'
@@ -1857,7 +1857,7 @@ def _crash_coverage_publication(tmp_path, monkeypatch, boundary, *, no_waivers=F
     monkeypatch.setattr("booley.flows.sim.flow.git_full_sha", lambda *_args: revision)
     monkeypatch.setattr("booley.flows.sim.campaign.resume.git_full_sha", lambda *_args: revision)
     project(tmp_path)
-    data = tmp_path / ".booley_project"
+    data = tmp_path / ".booley"
     data.mkdir()
     (data / "tests.toml").write_text('[sim_0]\ntests = ["reset", "wrap"]\n')
     reports = tmp_path / "reports"
@@ -2053,7 +2053,7 @@ def test_failure_reference_encoding_cannot_mask_original_error(tmp_path, monkeyp
 def test_retention_failure_drops_reference_when_owner_authentication_fails(tmp_path, monkeypatch):
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path)
-    data = tmp_path / ".booley_project"
+    data = tmp_path / ".booley"
     data.mkdir()
     (data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
 
@@ -2088,7 +2088,7 @@ def test_retention_failure_drops_reference_when_owner_authentication_fails(tmp_p
 def test_retention_failure_preserves_in_memory_campaign_truth(tmp_path, monkeypatch):
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path)
-    data = tmp_path / ".booley_project"
+    data = tmp_path / ".booley"
     data.mkdir()
     (data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
 
@@ -2122,7 +2122,7 @@ def test_coverage_lock_covers_final_flow_report_publication(tmp_path, monkeypatc
 
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path)
-    data = tmp_path / ".booley_project"
+    data = tmp_path / ".booley"
     data.mkdir()
     (data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
     replace = Path.replace
@@ -2153,7 +2153,7 @@ def test_full_pruning_rejects_extra_nested_coverage_payload(tmp_path, monkeypatc
 
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path)
-    data = tmp_path / ".booley_project"
+    data = tmp_path / ".booley"
     data.mkdir()
     (data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
     reports = tmp_path / "reports"
@@ -2184,7 +2184,7 @@ def test_pruning_during_allocation_does_not_reuse_campaign_number(tmp_path, monk
 
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     campaign(tmp_path)
-    data = tmp_path / ".booley_project"
+    data = tmp_path / ".booley"
     data.mkdir()
     (data / "tests.toml").write_text('[sim_0]\ntests = ["reset", "wrap"]\n')
     sim = tmp_path / "reports/sim"
@@ -2219,7 +2219,7 @@ def test_interactive_collection_then_exact_campaign_analysis(tmp_path, monkeypat
 
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path)
-    data = tmp_path / ".booley_project"
+    data = tmp_path / ".booley"
     data.mkdir()
     (data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
     result = SimulateFlow(
@@ -2265,7 +2265,7 @@ def test_interactive_collection_keeps_criteria_unchanged_across_verdicts(
 
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path)
-    data = tmp_path / ".booley_project"
+    data = tmp_path / ".booley"
     data.mkdir()
     (data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
     state_path = tmp_path / "state.json"
@@ -2311,9 +2311,7 @@ def _run_gap_coverage(
     listing = ", ".join(f'"{name}"' for name in registered)
     skipped = ", ".join(f'"{name}"' for name in skip)
     skipping = f"skip = [{skipped}]\n" if skip else ""
-    (tmp_path / ".booley_project/tests.toml").write_text(
-        f"[sim_custom]\ntests = [{listing}]\n{skipping}"
-    )
+    (tmp_path / ".booley/tests.toml").write_text(f"[sim_custom]\ntests = [{listing}]\n{skipping}")
     state = DevelopmentState.load(state_path)
     for entry in state.criteria.values():
         if "tests" in entry.params:
@@ -2396,7 +2394,7 @@ def test_bound_and_interactive_coverage_select_the_same_tests(tmp_path_factory, 
 def test_failed_test_exit_code_is_recorded_per_target_in_progress(tmp_path, monkeypatch):
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path)
-    data = tmp_path / ".booley_project"
+    data = tmp_path / ".booley"
     data.mkdir()
     (data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
 
@@ -2420,7 +2418,7 @@ def test_failed_test_exit_code_is_recorded_per_target_in_progress(tmp_path, monk
 
 def _configure_missing_waiver_directory(root: Path) -> None:
     """Configure waivers whose directory is absent: a load-time error for gated runs."""
-    (root / ".booley_project" / "booley.toml").write_text(
+    (root / ".booley" / "booley.toml").write_text(
         '[coverage.waivers]\nanchor = "project_data_repository"\ndirectory = "missing-waivers"\n'
     )
 
@@ -2504,7 +2502,7 @@ def test_gated_no_waivers_diagnostic_reports_raw_and_records_nothing(tmp_path, m
 def test_default_coverage_manifest_omits_no_waivers(tmp_path, monkeypatch):
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path)
-    data = tmp_path / ".booley_project"
+    data = tmp_path / ".booley"
     data.mkdir()
     (data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
 
@@ -2528,7 +2526,7 @@ def test_default_coverage_manifest_omits_no_waivers(tmp_path, monkeypatch):
 def test_ungated_invalid_waivers_exit_2_with_no_waivers_hint(tmp_path, monkeypatch):
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path)
-    data = tmp_path / ".booley_project"
+    data = tmp_path / ".booley"
     data.mkdir()
     (data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
     _configure_missing_waiver_directory(tmp_path)
@@ -2782,7 +2780,7 @@ def test_public_publication_resumable_coverage_mismatch_diagnostics(
 def _coverage_hook_flow_fixture(tmp_path, monkeypatch):
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path)
-    data = tmp_path / ".booley_project"
+    data = tmp_path / ".booley"
     data.mkdir()
     (data / "tests.toml").write_text('[sim_0]\ntests = ["reset"]\n')
     (data / "booley.toml").write_text('[flows.sim]\npre_run_commands = ["echo frozen-hook"]\n')
@@ -2980,7 +2978,7 @@ def test_image_alias_coverage_flow_publishes_authenticated_references(tmp_path, 
     require_symlinks(tmp_path)
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path)
-    data = tmp_path / ".booley_project"
+    data = tmp_path / ".booley"
     data.mkdir()
     (data / "tests.toml").write_text('[sim_0]\ntests=["reset", "wrap"]\n')
     alias = tmp_path / "booley-project"

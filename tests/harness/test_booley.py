@@ -12,9 +12,9 @@ import pytest
 
 from booley.harness import booley as tlr
 from booley.runtime import health
-from booley.runtime.project_dir import reset_cache
+from booley.runtime.booley_dir import reset_cache
 
-TICKETS_REL = Path(".booley") / "project" / "tickets"
+TICKETS_REL = Path(".booley") / "tickets"
 
 
 # ===========================================================================
@@ -911,7 +911,7 @@ class TestEndpointResolution:
         assert tlr._load_mcp_tool_class(lint_info) is LintFlow
 
     def test_project_custom_mcp_tool_is_discovered_and_loaded(self, tmp_path):
-        mcp_tools_dir = tmp_path / ".booley_project" / "mcp_tools"
+        mcp_tools_dir = tmp_path / ".booley" / "mcp_tools"
         mcp_tools_dir.mkdir(parents=True)
         (mcp_tools_dir / "custom_probe.py").write_text(
             "from booley.mcp.base import McpTool\n"
@@ -1149,7 +1149,7 @@ def test_source_project_binding_independent_dispatch(tmp_path, monkeypatch, argv
     (source / ".git").mkdir()
     (source / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
     project = tmp_path / "project"
-    (project / ".booley_project").mkdir(parents=True)
+    (project / ".booley").mkdir(parents=True)
     monkeypatch.chdir(source)
     monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
     monkeypatch.setattr(
@@ -1225,13 +1225,13 @@ def test_source_project_binding_cheat_selected_imports(tmp_path, monkeypatch, so
     project.mkdir()
     (project / ".git").mkdir()
     (project / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
-    (project / ".booley_project").mkdir()
+    (project / ".booley").mkdir()
     if source:
         (project / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
     subdir = project / "nested"
     subdir.mkdir()
     monkeypatch.chdir(subdir)
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project / ".booley_project"))
+    monkeypatch.setenv("BOOLEY_DIR", str(project / ".booley"))
     monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
     monkeypatch.setattr(sys, "argv", ["booley", "cheat"])
     monkeypatch.setattr(tlr, "_enforce_runtime_location", lambda *_: None)
@@ -1253,7 +1253,7 @@ def test_source_project_binding_cheat_selected_imports(tmp_path, monkeypatch, so
     monkeypatch.setattr(reference, "render_specialists_reference", render)
     monkeypatch.setattr(reference, "splice_generated", lambda text, *_args, **_kwargs: text)
     assert tlr._dispatch_main() == 0
-    assert calls == ([] if source else [project / ".booley_project" / "mcp_tools"] * 2)
+    assert calls == ([] if source else [project / ".booley" / "mcp_tools"] * 2)
     assert criteria_calls == ([] if source else [project])
 
 
@@ -1265,7 +1265,7 @@ def test_source_project_binding_selected_root(tmp_path, monkeypatch, command, se
     (source / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
     project = tmp_path / "project"
     project.mkdir()
-    (project / ".booley_project").mkdir()
+    (project / ".booley").mkdir()
     selected, cwd = (source, project) if selected_source else (project, source)
     monkeypatch.chdir(cwd)
     suffix = {"doctor": [], "goal": ["status"], "session": ["down"], "cleanup": ["prepare"]}[
@@ -1316,7 +1316,7 @@ def test_project_binding_cheat_uninitialized_directory(
     from booley.dev_support import flow_specialist_reference as reference
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
     monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
     monkeypatch.setattr(sys, "argv", ["booley", "cheat"])
     committed = tmp_path / "reference.md"
@@ -1339,7 +1339,7 @@ def test_project_binding_cheat_uninitialized_directory(
 
 def test_source_project_binding_cheat_stale_custom_sentinel(tmp_path, monkeypatch, capsys):
     source = tmp_path / "source"
-    custom = source / ".booley_project" / "mcp_tools"
+    custom = source / ".booley" / "mcp_tools"
     custom.mkdir(parents=True)
     (source / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
     (source / ".git").mkdir()
@@ -1353,7 +1353,7 @@ def test_source_project_binding_cheat_stale_custom_sentinel(tmp_path, monkeypatc
         "    description = 'Source custom endpoint sentinel'\n"
     )
     monkeypatch.chdir(source)
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(source / ".booley_project"))
+    monkeypatch.setenv("BOOLEY_DIR", str(source / ".booley"))
     monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
     monkeypatch.setattr(sys, "argv", ["booley", "cheat"])
     assert tlr._dispatch_main() == 0

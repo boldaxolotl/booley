@@ -25,7 +25,7 @@ from tests.golden.conftest import assert_matches_golden
 # Canned workspace layout. work_root mirrors work_root_for()'s real
 # shape so the relative file names in the golden look like production ones.
 _WS = Path("/ws")
-_WORK_ROOT = _WS / ".booley_project" / ".runtime" / "edalize" / "fpga" / "lite"
+_WORK_ROOT = _WS / ".booley" / ".runtime" / "edalize" / "fpga" / "lite"
 
 
 def _build(extra_eda_tool_options: dict | None = None) -> str:

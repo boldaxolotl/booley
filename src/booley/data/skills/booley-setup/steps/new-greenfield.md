@@ -34,8 +34,8 @@ The grill covers:
 - whether they want `AGENTS.md`;
 - one merged git-history question (rows 16 + 20), asked exactly:
   **"Keep Booley out of your git history?"** Recommend No/open for a repo born
-  with Booley: commit `.booley_project/`, use native cores, row 20 =
-  `enabled = false`. Explain that Yes/hidden keeps `.booley_project/` untracked
+  with Booley: commit `.booley/`, use native cores, row 20 =
+  `enabled = false`. Explain that Yes/hidden keeps `.booley/` untracked
   and enables stealth mode (`enabled = true`), including the commit-message
   scrub and hidden-core projection when Booley authors cores. Record both rows
   `user-confirmed` from this single answer; preserve hand-set `[stealth]` as
@@ -53,7 +53,7 @@ only):
   `booley init --scaffold <name>` on the host with the flags matching the
   answers (`--sim-eda-tool`, `--tb-style`, `--lint-eda-tool`, `--asic`/`--no-asic`,
   `--fpga-part`).
-- **Already scaffolded** (populated `.booley_project/` and a `.core`): don't
+- **Already scaffolded** (populated `.booley/` and a `.core`): don't
   re-ask what the scaffold already fixed — read the choices from the config,
   confirm them in the grill message, and record them.
 - **Repo has existing RTL/`.core` but isn't scaffolded**: it's a port — run

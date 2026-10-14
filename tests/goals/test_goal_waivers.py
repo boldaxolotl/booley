@@ -62,11 +62,11 @@ IDENTITY = DurableTargetIdentity("::top:0#top")
 
 
 def prepared(layout, anchor="rtl_repository", directory="approvals", *, covered=1, total=2):
-    config = layout.worktree / ".booley_project" / "booley.toml"
+    config = layout.worktree / ".booley" / "booley.toml"
     config.write_text(
         f"[project]\nname = 'demo'\n[coverage.waivers]\nanchor = '{anchor}'\ndirectory = '{directory}'\n"
     )
-    root = layout.worktree if anchor == "rtl_repository" else layout.worktree / ".booley_project"
+    root = layout.worktree if anchor == "rtl_repository" else layout.worktree / ".booley"
     (root / directory).mkdir(parents=True, exist_ok=True)
     source = layout.worktree / "rtl" / "counter.sv"
     source.parent.mkdir()
@@ -551,7 +551,7 @@ def test_decision_revalidates_all_exact_bindings(layout, drift):
 
 
 def test_protected_approval_destination_is_refused_without_resetting_entry_digest(layout):
-    env, candidate, root = prepared(layout, directory=".booley_project/hooks/approvals")
+    env, candidate, root = prepared(layout, directory=".booley/hooks/approvals")
     before = env.store.load(layout.record.id)
     with pytest.raises(ProposalError, match="protected input"):
         propose(layout, env, candidate)
@@ -626,7 +626,7 @@ def test_recovery_uses_captured_binding_after_producer_drift(layout, drift):
         next(iter(raw["candidates"].values()))["justification"] = "replaced after approval"
         path.write_text(json.dumps(raw))
     else:
-        config = layout.worktree / ".booley_project" / "booley.toml"
+        config = layout.worktree / ".booley" / "booley.toml"
         config.write_text(
             "[project]\nname = 'demo'\n[coverage.waivers]\nanchor = 'rtl_repository'\ndirectory = 'new-approvals'\n"
         )

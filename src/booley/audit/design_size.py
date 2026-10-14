@@ -51,7 +51,7 @@ class DesignSizeAudit:
 
 def analyze_design_size(
     project_root: Path,
-    project_dir: Path,
+    booley_dir: Path,
     configured_targets: Iterable[str],
 ) -> DesignSizeAudit:
     """Measure configured Target closure, falling back to a pruned repository scan."""
@@ -60,7 +60,7 @@ def analyze_design_size(
         files, lines = _count_design_files(configured_paths)
         return DesignSizeAudit(files, lines, DesignSizeScope.CONFIGURED_TARGETS)
 
-    files, lines = _count_design_files(_repository_hdl_paths(project_root, project_dir))
+    files, lines = _count_design_files(_repository_hdl_paths(project_root, booley_dir))
     return DesignSizeAudit(files, lines, DesignSizeScope.REPOSITORY)
 
 
@@ -79,16 +79,15 @@ def _configured_hdl_paths(project_root: Path, targets: Iterable[str]) -> set[Pat
     return paths
 
 
-def _repository_hdl_paths(project_root: Path, project_dir: Path) -> set[Path]:
+def _repository_hdl_paths(project_root: Path, booley_dir: Path) -> set[Path]:
     paths: set[Path] = set()
-    resolved_project_dir = project_dir.resolve()
+    resolved_booley_dir = booley_dir.resolve()
     for dirpath, dirnames, filenames in os.walk(project_root):
         directory = Path(dirpath)
         dirnames[:] = [
             name
             for name in dirnames
-            if name not in SKIP_DIRECTORIES
-            and (directory / name).resolve() != resolved_project_dir
+            if name not in SKIP_DIRECTORIES and (directory / name).resolve() != resolved_booley_dir
         ]
         paths.update(
             Path(dirpath) / name for name in filenames if Path(name).suffix.lower() in HDL_SUFFIXES

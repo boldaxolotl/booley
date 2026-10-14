@@ -82,6 +82,6 @@ def require_project_checkout(root: Path) -> Path:
     if source_root is not None:
         raise SourceCheckoutProjectError(
             "Booley's own Source Checkout cannot be initialized or used as a Project. "
-            f"Remove or migrate any stale {source_root / '.booley_project'} separately."
+            f"Remove or migrate any stale {source_root / '.booley'} separately."
         )
     return checkout

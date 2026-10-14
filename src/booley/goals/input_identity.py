@@ -7,8 +7,8 @@ from pathlib import Path
 from typing import Any
 
 from booley.core.boundary import require_dict, require_int, require_list, require_str_value
+from booley.runtime.booley_dir import contains, resolve_checkout_booley_dir
 from booley.runtime.git import git_common_dir
-from booley.runtime.project_dir import contains, resolve_checkout_project_dir
 from booley.runtime.project_repositories import paired_project_repository
 
 
@@ -85,7 +85,7 @@ def current_path(path: Path, current: Mapping[str, Any]) -> Path:
         current, key=lambda name: len(Path(current[name]["path"]).parts), reverse=True
     ):
         root = Path(current[name]["path"])
-        mapped = contains(path, project_dir=root)
+        mapped = contains(path, booley_dir=root)
         if mapped is not None:
             return mapped
     return path
@@ -114,7 +114,7 @@ def capture_roots(root: Path, control_project: Path) -> dict[str, Any]:
     """The input and control roots, including Git's actual primary checkout."""
     roots = {
         "rtl": root,
-        "project": resolve_checkout_project_dir(root).resolve(),
+        "project": resolve_checkout_booley_dir(root).resolve(),
         "control": control_project,
     }
     common = git_common_dir(root)

@@ -7,7 +7,7 @@ from pathlib import Path
 from booley.harness.dashboard.app import DashboardApp
 from booley.harness.dashboard.model import DashboardReader
 from booley.mcp.session_registry import namespace
-from booley.runtime.project_dir import resolve_project_dir
+from booley.runtime.booley_dir import resolve_booley_dir
 
 
 def run_dashboard(root: Path) -> int:
@@ -28,5 +28,5 @@ def run_dashboard(root: Path) -> int:
                 return 0
             print(f"Dashboard unavailable: cannot reserve the Sandbox view: {exc}")
             return 2
-        DashboardApp(DashboardReader(root, resolve_project_dir(root)).read).run()
+        DashboardApp(DashboardReader(root, resolve_booley_dir(root)).read).run()
     return 0

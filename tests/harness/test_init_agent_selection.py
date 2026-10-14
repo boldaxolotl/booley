@@ -23,7 +23,7 @@ def _args(**overrides) -> argparse.Namespace:
 
 
 def test_unattended_first_init_records_compatible_defaults(tmp_path, monkeypatch):
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
     init_cmd.reset_cache()
     ctx = InitContext(project_root=tmp_path, interactive=False)
 
@@ -31,24 +31,24 @@ def test_unattended_first_init_records_compatible_defaults(tmp_path, monkeypatch
     resolved = init_cmd._resolve_agent_selection(ctx, _args(), config)
 
     assert resolved == init_cmd.AgentSelection("claude", "auto", True, True)
-    assert config == init_cmd.project_dir_for_init(tmp_path) / "booley.toml"
+    assert config == init_cmd.booley_dir_for_init(tmp_path) / "booley.toml"
 
 
 def test_initial_line_ending_baseline_does_not_warn_for_uncreated_data(tmp_path):
     ctx = InitContext(project_root=tmp_path)
-    with init_cmd.init_project_dir_scope(tmp_path), warnings.catch_warnings(record=True) as caught:
+    with init_cmd.init_booley_dir_scope(tmp_path), warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         assert init_cmd._sample_line_ending_baseline(ctx) == {}
     assert caught == []
-    assert not init_cmd.project_dir_for_init(tmp_path).exists()
+    assert not init_cmd.booley_dir_for_init(tmp_path).exists()
 
 
-def test_seed_agent_config_uses_resolved_project_directory(tmp_path, monkeypatch):
-    project_dir = tmp_path / "project-data"
-    project_dir.mkdir()
-    monkeypatch.setattr(init_cmd, "resolve_checkout_project_dir", lambda _root: project_dir)
+def test_seed_agent_config_uses_resolved_booley_directory(tmp_path, monkeypatch):
+    booley_dir = tmp_path / "project-data"
+    booley_dir.mkdir()
+    monkeypatch.setattr(init_cmd, "resolve_checkout_booley_dir", lambda _root: booley_dir)
 
-    assert init_cmd._agent_config_path(tmp_path, seed=True) == project_dir / "booley.toml"
+    assert init_cmd._agent_config_path(tmp_path, seed=True) == booley_dir / "booley.toml"
 
 
 def test_sandbox_git_version_treats_runtime_error_as_unknown(monkeypatch):
@@ -62,7 +62,7 @@ def test_sandbox_git_version_treats_runtime_error_as_unknown(monkeypatch):
 
 
 def test_seed_retains_ancestor_project_resolution(tmp_path, monkeypatch):
-    parent_config = tmp_path / ".booley_project" / "booley.toml"
+    parent_config = tmp_path / ".booley" / "booley.toml"
     parent_config.parent.mkdir()
     parent_config.write_text(
         '[agent]\nprovider = "codex"\nauth = "subscription"\n',
@@ -70,7 +70,7 @@ def test_seed_retains_ancestor_project_resolution(tmp_path, monkeypatch):
     )
     child = tmp_path / "ticket-checkout"
     child.mkdir()
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
     init_cmd.reset_cache()
 
     assert init_cmd._agent_config_path(child, seed=True) == parent_config
@@ -78,15 +78,15 @@ def test_seed_retains_ancestor_project_resolution(tmp_path, monkeypatch):
 
 def test_full_init_ignores_ancestor_environment_and_warmed_cache(tmp_path, monkeypatch):
     parent = tmp_path / "parent"
-    parent_config = parent / ".booley_project" / "booley.toml"
+    parent_config = parent / ".booley" / "booley.toml"
     parent_config.parent.mkdir(parents=True)
     original = '[agent]\nprovider = "claude"\nauth = "auto"\n'
     parent_config.write_text(original, encoding="utf-8")
     child = parent / "child"
     child.mkdir()
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(parent_config.parent))
+    monkeypatch.setenv("BOOLEY_DIR", str(parent_config.parent))
     init_cmd.reset_cache()
-    assert init_cmd.resolve_project_dir() == parent_config.parent.resolve()
+    assert init_cmd.resolve_booley_dir() == parent_config.parent.resolve()
 
     config = init_cmd._agent_config_path(child, seed=False)
     ctx = InitContext(project_root=child, interactive=False)
@@ -96,7 +96,7 @@ def test_full_init_ignores_ancestor_environment_and_warmed_cache(tmp_path, monke
         config,
     )
 
-    assert config == child / ".booley_project" / "booley.toml"
+    assert config == child / ".booley" / "booley.toml"
     assert selection == init_cmd.AgentSelection("codex", "subscription", True, True)
     config.parent.mkdir()
     assert init_cmd._step_agent_config(ctx, selection, config)
@@ -109,12 +109,12 @@ def test_full_init_ignores_ancestor_environment_and_warmed_cache(tmp_path, monke
 def test_nested_child_run_init_isolates_every_project_write(
     tmp_path, monkeypatch, relocated_parent, child_guidance
 ):
-    parent_project_dir = tmp_path / ("project-data" if relocated_parent else ".booley_project")
-    parent_config = parent_project_dir / "booley.toml"
+    parent_booley_dir = tmp_path / ("project-data" if relocated_parent else ".booley")
+    parent_config = parent_booley_dir / "booley.toml"
     parent_config.parent.mkdir()
     original = '[agent]\nprovider = "claude"\nauth = "auto"\n'
     parent_config.write_text(original, encoding="utf-8")
-    parent_guidance = parent_project_dir / "AGENTS.md"
+    parent_guidance = parent_booley_dir / "AGENTS.md"
     parent_guidance.write_bytes(b"# Parent Project\r\n")
     if relocated_parent:
         (tmp_path / "booley.toml").write_bytes(b'[project]\ndir = "project-data"\n')
@@ -122,11 +122,11 @@ def test_nested_child_run_init_isolates_every_project_write(
     child.mkdir()
     if child_guidance:
         (child / "AGENTS.md").write_bytes(b"# Child Project\n")
-    parent_git_config = _initialize_nested_git_repositories(parent_project_dir, child)
-    parent_entries = set(parent_project_dir.iterdir())
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(parent_config.parent))
+    parent_git_config = _initialize_nested_git_repositories(parent_booley_dir, child)
+    parent_entries = set(parent_booley_dir.iterdir())
+    monkeypatch.setenv("BOOLEY_DIR", str(parent_config.parent))
     init_cmd.reset_cache()
-    assert init_cmd.resolve_project_dir() == parent_config.parent.resolve()
+    assert init_cmd.resolve_booley_dir() == parent_config.parent.resolve()
 
     _stub_nested_init_services(tmp_path, monkeypatch)
 
@@ -142,22 +142,22 @@ def test_nested_child_run_init_isolates_every_project_write(
         == 0
     )
 
-    child_config = child / ".booley_project" / "booley.toml"
+    child_config = child / ".booley" / "booley.toml"
     content = child_config.read_text(encoding="utf-8")
     assert 'provider = "codex"' in content
     assert 'auth = "subscription"' in content
     assert not (child_config.parent / "tickets").exists()
     assert (child_config.parent / "goalsets" / "feature.md").is_file()
     assert parent_config.read_text(encoding="utf-8") == original
-    assert set(parent_project_dir.iterdir()) == parent_entries
-    assert (parent_project_dir / ".git" / "config").read_bytes() == parent_git_config
+    assert set(parent_booley_dir.iterdir()) == parent_entries
+    assert (parent_booley_dir / ".git" / "config").read_bytes() == parent_git_config
     assert parent_guidance.read_bytes() == b"# Parent Project\r\n"
     assert not (child / "CLAUDE.md").exists()
     if child_guidance:
         assert (child / "AGENTS.md").read_bytes() == b"# Child Project\n"
     else:
         assert not (child / "AGENTS.md").exists()
-    assert init_cmd.resolve_project_dir() == parent_project_dir.resolve()
+    assert init_cmd.resolve_booley_dir() == parent_booley_dir.resolve()
 
 
 def _stub_nested_init_services(tmp_path, monkeypatch):
@@ -181,15 +181,15 @@ def _stub_nested_init_services(tmp_path, monkeypatch):
     )
 
 
-def _initialize_nested_git_repositories(parent_project_dir, child):
+def _initialize_nested_git_repositories(parent_booley_dir, child):
     """Use real Git so an escaped repair would alter the parent's policy or files."""
     commands = (
-        (parent_project_dir, "init", "-q"),
+        (parent_booley_dir, "init", "-q"),
         (child, "init", "-q"),
-        (parent_project_dir, "config", "core.autocrlf", "true"),
-        (parent_project_dir, "add", "-A"),
+        (parent_booley_dir, "config", "core.autocrlf", "true"),
+        (parent_booley_dir, "add", "-A"),
         (
-            parent_project_dir,
+            parent_booley_dir,
             "-c",
             "user.name=t",
             "-c",
@@ -203,11 +203,11 @@ def _initialize_nested_git_repositories(parent_project_dir, child):
         subprocess.run(
             ["git", "-C", str(root), *args], capture_output=True, check=True, timeout=10
         )
-    return (parent_project_dir / ".git" / "config").read_bytes()
+    return (parent_booley_dir / ".git" / "config").read_bytes()
 
 
 def test_full_init_ignores_retired_policy_in_ancestor(tmp_path, monkeypatch):
-    parent_config = tmp_path / ".booley_project" / "booley.toml"
+    parent_config = tmp_path / ".booley" / "booley.toml"
     parent_config.parent.mkdir()
     parent_config.write_text(
         "[interactive]\nidle_timeout_seconds = 600\n",
@@ -215,7 +215,7 @@ def test_full_init_ignores_retired_policy_in_ancestor(tmp_path, monkeypatch):
     )
     child = tmp_path / "child"
     child.mkdir()
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
     init_cmd.reset_cache()
     config = init_cmd._agent_config_path(child, seed=False)
 
@@ -223,7 +223,7 @@ def test_full_init_ignores_retired_policy_in_ancestor(tmp_path, monkeypatch):
 
 
 def test_init_resolves_config_path_once_for_preflight_read_and_write(tmp_path, monkeypatch):
-    config = tmp_path / ".booley_project" / "booley.toml"
+    config = tmp_path / ".booley" / "booley.toml"
     selection = init_cmd.AgentSelection("codex", "subscription", True, True)
     calls = []
     monkeypatch.setattr(
@@ -277,8 +277,8 @@ def test_terminal_prompt_accepts_documented_defaults(tmp_path, monkeypatch):
 
 
 def test_run_init_persists_selection_before_seed(tmp_path, monkeypatch):
-    project_dir = init_cmd.project_dir_for_init(tmp_path)
-    project_dir.mkdir()
+    booley_dir = init_cmd.booley_dir_for_init(tmp_path)
+    booley_dir.mkdir()
     monkeypatch.setattr(
         init_cmd,
         "reconcile_bootstrap",
@@ -286,7 +286,7 @@ def test_run_init_persists_selection_before_seed(tmp_path, monkeypatch):
     )
 
     def seed(_ctx, selection):
-        config = (project_dir / "booley.toml").read_text(encoding="utf-8")
+        config = (booley_dir / "booley.toml").read_text(encoding="utf-8")
         assert selection == init_cmd.AgentSelection("codex", "subscription", True, True)
         assert '[agent]\nprovider = "codex"\nauth = "subscription"' in config
         return 0
@@ -320,7 +320,7 @@ def test_agent_selection_records_an_aborted_auth_prompt(tmp_path, monkeypatch):
 
 
 def test_existing_guidance_plan_can_proceed(tmp_path, monkeypatch):
-    canon = tmp_path / ".booley_project" / "AGENTS.md"
+    canon = tmp_path / ".booley" / "AGENTS.md"
     canon.parent.mkdir()
     canon.write_text("# Project\n", encoding="utf-8")
     plan = SimpleNamespace(blockers=[])
@@ -330,7 +330,7 @@ def test_existing_guidance_plan_can_proceed(tmp_path, monkeypatch):
 
 
 def test_existing_guidance_inspection_failure_stops_init(tmp_path, monkeypatch):
-    canon = tmp_path / ".booley_project" / "AGENTS.md"
+    canon = tmp_path / ".booley" / "AGENTS.md"
     canon.parent.mkdir()
     canon.write_text("# Project\n", encoding="utf-8")
     monkeypatch.setattr(
@@ -345,9 +345,9 @@ def test_existing_guidance_inspection_failure_stops_init(tmp_path, monkeypatch):
 
 
 def test_persist_selection_preserves_existing_config_text(tmp_path):
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
-    config = project_dir / "booley.toml"
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    config = booley_dir / "booley.toml"
     original = "# user comment\n\n[flows.sim]\nenabled = false\n"
     config.write_text(original, encoding="utf-8")
     selection = init_cmd.AgentSelection("claude", "api_key", True, True)
@@ -361,9 +361,9 @@ def test_persist_selection_preserves_existing_config_text(tmp_path):
 
 def test_persist_selection_writes_project_data_with_lf(tmp_path):
     """Windows text mode must not turn booley.toml into Booley configuration with CRLF line endings (#609)."""
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
-    config = project_dir / "booley.toml"
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    config = booley_dir / "booley.toml"
     config.write_bytes(b"# user comment\n[flows.sim]\nenabled = false\n")
     selection = init_cmd.AgentSelection("claude", "api_key", True, True)
 
@@ -373,9 +373,9 @@ def test_persist_selection_writes_project_data_with_lf(tmp_path):
 
 
 def test_existing_selection_is_authoritative_and_not_rewritten(tmp_path, monkeypatch):
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
-    config = project_dir / "booley.toml"
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    config = booley_dir / "booley.toml"
     body = '[agent]\nprovider = "codex"\nauth = "subscription"\n'
     config.write_text(body, encoding="utf-8")
     monkeypatch.setattr(
@@ -392,9 +392,9 @@ def test_existing_selection_is_authoritative_and_not_rewritten(tmp_path, monkeyp
 
 
 def test_existing_provider_only_receives_and_persists_default_auth(tmp_path):
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
-    config = project_dir / "booley.toml"
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    config = booley_dir / "booley.toml"
     config.write_text('[agent]\nprovider = "claude"\n', encoding="utf-8")
     ctx = InitContext(project_root=tmp_path, interactive=False)
 
@@ -406,9 +406,9 @@ def test_existing_provider_only_receives_and_persists_default_auth(tmp_path):
 
 
 def test_persisting_auth_preserves_existing_git_identity(tmp_path):
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
-    config = project_dir / "booley.toml"
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    config = booley_dir / "booley.toml"
     config.write_text(
         '[agent]\nprovider = "claude"\n\n'
         '[agent.git]\nname = "Expected Developer"\n'
@@ -428,9 +428,9 @@ def test_persisting_auth_preserves_existing_git_identity(tmp_path):
     )
 
 
-def test_check_only_reports_pending_selection_before_project_dir_exists(tmp_path):
+def test_check_only_reports_pending_selection_before_booley_dir_exists(tmp_path):
     selection = init_cmd.AgentSelection("codex", "subscription", True, True)
-    config = tmp_path / ".booley_project" / "booley.toml"
+    config = tmp_path / ".booley" / "booley.toml"
     ctx = InitContext(project_root=tmp_path, check_only=True, interactive=False)
 
     assert init_cmd._step_agent_config(ctx, selection, config)
@@ -470,7 +470,7 @@ def test_full_init_passes_verified_runtime_image_id_to_interactive_mode(tmp_path
     )
     monkeypatch.setattr(init_cmd, "_step_agent_config", lambda *_args: True)
     for name in (
-        "_step_project_dir",
+        "_step_booley_dir",
         "_step_core_projections",
         "_step_goalsets",
         "_step_auth",
@@ -506,7 +506,7 @@ def test_full_init_passes_verified_runtime_image_id_to_interactive_mode(tmp_path
             ctx,
             _args(),
             selection,
-            tmp_path / ".booley_project" / "booley.toml",
+            tmp_path / ".booley" / "booley.toml",
             None,
         )
         == 0
@@ -517,7 +517,7 @@ def test_full_init_passes_verified_runtime_image_id_to_interactive_mode(tmp_path
             "nangate_pdk_root": "pdk",
             "agent_app": "codex",
             "runtime_image_id": result.selected_id,
-            "init_will_create_project_dir": True,
+            "init_will_create_booley_dir": True,
         }
     ]
     assert remembered == [tmp_path]
@@ -663,9 +663,9 @@ def test_image_lifecycle_step_reports_cleanup_when_image_was_rebuilt(tmp_path, m
 
 
 def test_flag_cannot_silently_replace_existing_provider(tmp_path):
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
-    (project_dir / "booley.toml").write_text(
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    (booley_dir / "booley.toml").write_text(
         '[agent]\nprovider = "claude"\nauth = "auto"\n', encoding="utf-8"
     )
     ctx = InitContext(project_root=tmp_path, interactive=False)
@@ -674,7 +674,7 @@ def test_flag_cannot_silently_replace_existing_provider(tmp_path):
         init_cmd._resolve_agent_selection(
             ctx,
             _args(provider="codex"),
-            project_dir / "booley.toml",
+            booley_dir / "booley.toml",
         )
         is None
     )

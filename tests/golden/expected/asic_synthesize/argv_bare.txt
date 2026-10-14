@@ -5,13 +5,13 @@ configure
 -t
 dut
 --extra-rtl
-.booley_project/.runtime/edalize/synth/lite/syn_demo_0/syn/src/syn_demo_0/rtl/pkg.sv
+.booley/.runtime/edalize/synth/lite/syn_demo_0/syn/src/syn_demo_0/rtl/pkg.sv
 --extra-rtl
-.booley_project/.runtime/edalize/synth/lite/syn_demo_0/syn/src/syn_demo_0/rtl/dut.sv
+.booley/.runtime/edalize/synth/lite/syn_demo_0/syn/src/syn_demo_0/rtl/dut.sv
 --inc-dir
-.booley_project/.runtime/edalize/synth/lite/syn_demo_0/syn/src/syn_demo_0/rtl/include
+.booley/.runtime/edalize/synth/lite/syn_demo_0/syn/src/syn_demo_0/rtl/include
 --sta-sdc
-.booley_project/.runtime/edalize/synth/lite/syn_demo_0/syn/src/syn_demo_0/constraints/dut.sdc
+.booley/.runtime/edalize/synth/lite/syn_demo_0/syn/src/syn_demo_0/constraints/dut.sdc
 -d
 SYNTHESIS
 -p

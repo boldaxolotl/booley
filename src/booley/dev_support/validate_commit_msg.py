@@ -100,7 +100,7 @@ SUBJECT_RE = _shared_validation.SUBJECT_RE
 validate_message = _shared_validation.validate_message
 
 
-_PROJECT_CONFIG_DIRS = (Path(".booley_project"), Path(".booley") / "project")
+_PROJECT_CONFIG_DIRS = (Path(".booley"),)
 _PROJECT_CONFIG_NAMES = ("booley.toml", "pipeline.toml")
 
 
@@ -117,7 +117,7 @@ def _has_project_config(repo_root: Path) -> bool:
     if any(path.is_file() for path in nested):
         return True
 
-    is_state_repo = repo_root.name == ".booley_project" or (
+    is_state_repo = repo_root.name == ".booley" or (
         repo_root.name == "project" and repo_root.parent.name == ".booley"
     )
     return is_state_repo and any((repo_root / name).is_file() for name in _PROJECT_CONFIG_NAMES)

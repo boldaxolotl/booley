@@ -11,27 +11,27 @@ import pytest
 from booley.audit.diagnostic_results import DiagnosticFinding, Severity
 from booley.harness import auto_doctor, doctor
 from booley.runtime import doctor_stamp, health, health_presentation
-from booley.runtime.project_dir import reset_cache
+from booley.runtime.booley_dir import reset_cache
 from booley.runtime.timefmt import MACHINE_TIMESTAMP_FORMAT
 
 
 @pytest.fixture(autouse=True)
 def _isolated_project_resolution(monkeypatch):
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
     reset_cache()
     yield
     reset_cache()
 
 
 def _project(root: Path) -> Path:
-    project_dir = root / ".booley_project"
-    project_dir.mkdir()
-    (project_dir / "booley.toml").write_text("[project]\nname = 'unit'\n", encoding="utf-8")
-    return project_dir
+    booley_dir = root / ".booley"
+    booley_dir.mkdir()
+    (booley_dir / "booley.toml").write_text("[project]\nname = 'unit'\n", encoding="utf-8")
+    return booley_dir
 
 
 def _report(root: Path, *, clean: bool, checked_at: datetime) -> dict:
-    project_dir = root / ".booley_project"
+    booley_dir = root / ".booley"
     findings = []
     counts = {"pass": 1, "fail": 0, "warn": 0, "waived": 0, "note": 0, "skip": 0}
     if not clean:
@@ -50,9 +50,9 @@ def _report(root: Path, *, clean: bool, checked_at: datetime) -> dict:
         "clean": clean,
         "counts": counts,
         "findings": findings,
-        "fingerprint": health.compute_fingerprint(project_dir, root),
+        "fingerprint": health.compute_fingerprint(booley_dir, root),
     }
-    path = health.report_path(project_dir)
+    path = health.report_path(booley_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload), encoding="utf-8")
     # A report without a stored hash is identified by the hash of its active findings.
@@ -68,8 +68,8 @@ class TestDueReason:
         assert health.due_reason(tmp_path) == "no automatic Doctor result"
 
     def test_manual_stamp_does_not_replace_runtime_scoped_result(self, tmp_path: Path):
-        project_dir = _project(tmp_path)
-        doctor_stamp.record_clean_run(project_dir, tmp_path, deep=False)
+        booley_dir = _project(tmp_path)
+        doctor_stamp.record_clean_run(booley_dir, tmp_path, deep=False)
 
         assert health.due_reason(tmp_path) == "no automatic Doctor result"
 
@@ -98,23 +98,21 @@ class TestDueReason:
             }
         ]
         del payload["finding_hash"]  # the fixture hashed its earlier FAIL finding
-        health.report_path(tmp_path / ".booley_project").write_text(
-            json.dumps(payload), encoding="utf-8"
-        )
+        health.report_path(tmp_path / ".booley").write_text(json.dumps(payload), encoding="utf-8")
 
         assert health.due_reason(tmp_path, now=now) is None
 
     def test_config_change_invalidates_result(self, tmp_path: Path):
-        project_dir = _project(tmp_path)
+        booley_dir = _project(tmp_path)
         _report(tmp_path, clean=True, checked_at=datetime.now(tz=UTC))
-        (project_dir / "booley.toml").write_text("[project]\nname = 'edited'\n", encoding="utf-8")
+        (booley_dir / "booley.toml").write_text("[project]\nname = 'edited'\n", encoding="utf-8")
 
         assert health.due_reason(tmp_path) == "Doctor inputs changed"
 
     def test_upgrade_review_state_change_invalidates_result(self, tmp_path: Path):
-        project_dir = _project(tmp_path)
+        booley_dir = _project(tmp_path)
         _report(tmp_path, clean=True, checked_at=datetime.now(tz=UTC))
-        state = project_dir / "runtime" / "upgrade_review.json"
+        state = booley_dir / "runtime" / "upgrade_review.json"
         state.parent.mkdir(parents=True, exist_ok=True)
         state.write_text(json.dumps({"schema": 1, "reviewed_through": "1.0.0"}), encoding="utf-8")
 
@@ -122,7 +120,7 @@ class TestDueReason:
 
 
 def test_execute_persists_structured_report_and_transcript(tmp_path: Path, monkeypatch):
-    project_dir = _project(tmp_path)
+    booley_dir = _project(tmp_path)
     result = doctor.DoctorRunResult(
         counts={"pass": 2, "fail": 0, "warn": 1, "waived": 0, "note": 0, "skip": 0},
         findings=(
@@ -143,7 +141,7 @@ def test_execute_persists_structured_report_and_transcript(tmp_path: Path, monke
 
     payload = auto_doctor._execute(
         tmp_path,
-        project_dir,
+        booley_dir,
         "test",
         progress=progress.append,
     )
@@ -152,8 +150,8 @@ def test_execute_persists_structured_report_and_transcript(tmp_path: Path, monke
     assert payload["trigger"] == "test"
     assert payload["findings"][0]["check_id"] == "agent.credential"
     assert health.load_report(tmp_path) == payload
-    assert health.transcript_path(project_dir).is_file()
-    assert "captured Doctor finding" in health.transcript_path(project_dir).read_text()
+    assert health.transcript_path(booley_dir).is_file()
+    assert "captured Doctor finding" in health.transcript_path(booley_dir).read_text()
     assert progress[0] == "host/project checks"
     assert progress[-1].startswith("completed in ")
     assert "transcript:" in progress[-1]
@@ -192,7 +190,7 @@ def test_manual_smoke_result_does_not_replace_health_status(tmp_path: Path):
 def test_changed_summary_is_consumed_once_per_channel(tmp_path: Path):
     _project(tmp_path)
     report = _report(tmp_path, clean=False, checked_at=datetime.now(tz=UTC))
-    announcements = health.state_dir(tmp_path / ".booley_project") / "announcements.json"
+    announcements = health.state_dir(tmp_path / ".booley") / "announcements.json"
     announcements.write_text(json.dumps({"ntfy": report["finding_hash"]}))
 
     first = health_presentation.consume_changed_summary(tmp_path, channel="mcp", issues_only=True)
@@ -228,15 +226,15 @@ def test_launch_starts_detached_worker_when_due(tmp_path: Path, monkeypatch):
 
 
 def test_run_if_due_records_once_then_stays_current(tmp_path: Path, monkeypatch):
-    project_dir = _project(tmp_path)
-    (project_dir / "booley.toml").write_text(
+    booley_dir = _project(tmp_path)
+    (booley_dir / "booley.toml").write_text(
         '[project]\nname = "unit"\n[notifications]\nntfy_topic = "probe"\n'
     )
     calls = []
     deliveries = []
     monkeypatch.setattr(auto_doctor.subprocess, "Popen", lambda *a, **k: deliveries.append(a))
 
-    def execute(root, _project_dir, trigger, **_kwargs):
+    def execute(root, _booley_dir, trigger, **_kwargs):
         calls.append(trigger)
         return _report(root, clean=True, checked_at=datetime.now(tz=UTC))
 

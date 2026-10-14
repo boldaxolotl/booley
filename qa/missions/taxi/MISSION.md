@@ -178,7 +178,7 @@ Try, inside the Sandbox:
 Intent: offline pinned-submodule rebuilds; a missing required one breaks simulation.
 Try:
 - `python3 fixtures/build_submodules.py <new-dir>` (uses `fixtures/fixture.core`) builds outer A/B,
-  `deps/data` with nested `deps/data/nested/leaf`, `deps/unselected`, and a paired `.booley_project`
+  `deps/data` with nested `deps/data/nested/leaf`, `deps/unselected`, and a paired `.booley`
   pinning `deps/control`. Init it at B as a separate Project (same build/image), set `.gitmodules`
   URLs to unreachable `example.invalid` SSH, keep default-deny egress.
 - Positive: a child enters a tiny verification Goal in a linked worktree at B,

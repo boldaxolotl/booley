@@ -19,7 +19,7 @@ _REAL_TASK_FILE_TRACKED = tasks._task_file_tracked
 def project(tmp_path, monkeypatch):
     root = tmp_path / "project"
     root.mkdir()
-    data = root / ".booley_project"
+    data = root / ".booley"
     data.mkdir()
     common = root / "git-admin"
     (common / "info").mkdir(parents=True)
@@ -438,9 +438,9 @@ def test_owned_task_update_removes_environment_and_keeps_disable_reversible(proj
 def test_new_non_git_directory_silently_has_no_dashboard_plan(tmp_path, caplog):
     root = tmp_path / "new"
     root.mkdir()
-    project_dir = root / ".booley_project"
-    assert tasks.inspect(root, project_dir) == tasks.TaskPlan()
-    assert not tasks.reconcile(root, project_dir).applied
+    booley_dir = root / ".booley"
+    assert tasks.inspect(root, booley_dir) == tasks.TaskPlan()
+    assert not tasks.reconcile(root, booley_dir).applied
     assert caplog.records == []
     assert list(root.iterdir()) == []
 
@@ -509,7 +509,7 @@ def test_tracked_task_file_is_preserved_with_informational_notice(
         return result.stdout
 
     git("init", "-q")
-    data = tmp_path / ".booley_project"
+    data = tmp_path / ".booley"
     data.mkdir()
     task_file = tmp_path / ".vscode/tasks.json"
     if owned:

@@ -20,8 +20,8 @@ from booley.core.build_paths import work_root_for
 from booley.flows.eda_failures import classify_eda_failure
 from booley.flows.parameter_transport import normalize_resolved_parameters
 from booley.fusesoc import fusesoc_registry, selftest_overlay
+from booley.runtime.booley_dir import resolve_booley_dir
 from booley.runtime.compiler_cache import read_issued_identity
-from booley.runtime.project_dir import resolve_project_dir
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle, TargetInspection
 from booley.targets.parameter_integrity import (
@@ -285,12 +285,12 @@ def _stage_doctor_overlay(project_root: Path, build_root: Path) -> None:
 
     if os.environ.get(selftest_overlay.INTERNAL_KIND_ENV) != selftest_overlay.BAD_KIND:
         return
-    project_dir = resolve_project_dir(project_root)
-    copied = selftest_overlay.stage_bad_overlay(project_dir, "sim", build_root)
+    booley_dir = resolve_booley_dir(project_root)
+    copied = selftest_overlay.stage_bad_overlay(booley_dir, "sim", build_root)
     if copied == 0:
         raise selftest_overlay.SelftestOverlayError(
             "Doctor requested a bad simulation fixture, but "
-            f"{selftest_overlay.bad_overlay_dir(project_dir, 'sim')} is empty"
+            f"{selftest_overlay.bad_overlay_dir(booley_dir, 'sim')} is empty"
         )
 
 

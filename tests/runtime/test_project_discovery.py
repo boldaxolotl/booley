@@ -9,17 +9,17 @@ from booley.harness.booley import find_project_root
 
 def test_nested_data_repository_selects_checkout(tmp_path, monkeypatch):
     outer = tmp_path / "checkout"
-    data = outer / ".booley_project"
+    data = outer / ".booley"
     data.mkdir(parents=True)
     for root in (outer, data):
         subprocess.run(["git", "init", str(root)], check=True, capture_output=True, timeout=30)
     monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
     monkeypatch.chdir(data)
     assert find_project_root() == outer
 
 
-@pytest.mark.parametrize("name", [".booley_project", ".booley/project", "custom-data"])
+@pytest.mark.parametrize("name", [".booley", "custom-data"])
 def test_all_checkout_local_data_selections(tmp_path, monkeypatch, name):
     from booley.runtime.project_discovery import discover_project_root
 
@@ -33,7 +33,7 @@ def test_all_checkout_local_data_selections(tmp_path, monkeypatch, name):
     child = data / "child"
     child.mkdir()
     monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
     assert discover_project_root(child) == outer
 
 
@@ -45,7 +45,7 @@ def test_unrelated_nested_checkout_keeps_identity(tmp_path, monkeypatch):
     for root in (tmp_path, nested):
         subprocess.run(["git", "init", str(root)], check=True, capture_output=True, timeout=30)
     monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
     assert discover_project_root(nested) == nested
 
 
@@ -54,7 +54,7 @@ def test_ticket_design_worktree_inside_data_keeps_checkout(tmp_path, monkeypatch
     from booley.runtime.project_discovery import discover_project_root
 
     outer = tmp_path / "checkout"
-    data = outer / ".booley_project"
+    data = outer / ".booley"
     data.mkdir(parents=True)
     subprocess.run(["git", "init", str(outer)], check=True, capture_output=True, timeout=30)
     subprocess.run(
@@ -82,10 +82,10 @@ def test_ticket_design_worktree_inside_data_keeps_checkout(tmp_path, monkeypatch
         capture_output=True,
         timeout=30,
     )
-    snapshot = worktree / ".booley_project"
+    snapshot = worktree / ".booley"
     snapshot.mkdir()
     subprocess.run(["git", "init", str(snapshot)], check=True, capture_output=True, timeout=30)
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(data))
+    monkeypatch.setenv("BOOLEY_DIR", str(data))
     if explicit:
         monkeypatch.setenv("RTL_PROJECT_ROOT", str(worktree))
     else:
@@ -103,7 +103,7 @@ def test_detached_data_refuses_and_explicit_outer_disambiguates(tmp_path, monkey
     outer = tmp_path / "checkout"
     data.mkdir()
     outer.mkdir()
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(data))
+    monkeypatch.setenv("BOOLEY_DIR", str(data))
     monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
     with pytest.raises(ProjectRootDiscoveryError, match="run from the Project Root"):
         discover_project_root(data)
@@ -120,7 +120,7 @@ def test_empty_git_marker_and_fallback_priority(tmp_path, monkeypatch):
     (tmp_path / ".git").mkdir()
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
     fallback = tmp_path / "fallback"
     assert resolve_project_root(fallback) == fallback
     monkeypatch.setenv("RTL_PROJECT_ROOT", str(tmp_path / "explicit"))
@@ -131,13 +131,13 @@ def test_linked_git_marker_and_symlink_data(tmp_path, monkeypatch):
     from booley.runtime.project_discovery import discover_project_root
 
     outer = tmp_path / "checkout"
-    data = outer / ".booley_project"
+    data = outer / ".booley"
     data.mkdir(parents=True)
     (outer / ".git").write_text("gitdir: /unused/metadata\n")
     alias = tmp_path / "alias"
     alias.symlink_to(data, target_is_directory=True)
     monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
     assert discover_project_root(alias) == outer
 
 
@@ -145,13 +145,13 @@ def test_source_stale_data_refuses_goal_but_feedback_routes(tmp_path, monkeypatc
     from booley.harness.booley import _command_project_root
     from booley.runtime.project_discovery import ProjectRootDiscoveryError
 
-    data = tmp_path / ".booley_project"
+    data = tmp_path / ".booley"
     data.mkdir()
     (tmp_path / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
     subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True, timeout=30)
     monkeypatch.chdir(data)
     monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
     with pytest.raises(ProjectRootDiscoveryError):
         _command_project_root("goal")
     assert _command_project_root("feedback") == tmp_path
@@ -167,14 +167,14 @@ def test_checkout_owned_external_symlink_data_resolves_logical_parent(
     data = tmp_path / "external-data"
     outer.mkdir()
     data.mkdir()
-    (outer / ".booley_project").symlink_to(data, target_is_directory=True)
+    (outer / ".booley").symlink_to(data, target_is_directory=True)
     for root in (outer, data):
         subprocess.run(["git", "init", str(root)], check=True, capture_output=True, timeout=30)
     monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
     monkeypatch.chdir(data)
-    monkeypatch.setenv("PWD", str(outer / ".booley_project"))
-    assert discover_project_root(outer / ".booley_project" if use_start else None) == outer
+    monkeypatch.setenv("PWD", str(outer / ".booley"))
+    assert discover_project_root(outer / ".booley" if use_start else None) == outer
 
 
 @pytest.mark.parametrize("config", ['project = "invalid"', "[project]\ndir = 12"])
@@ -184,7 +184,7 @@ def test_malformed_project_selection_does_not_crash_discovery(tmp_path, monkeypa
     subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True, timeout=30)
     (tmp_path / "booley.toml").write_text(config)
     monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
     assert discover_project_root(tmp_path) == tmp_path
 
 
@@ -195,11 +195,11 @@ def test_explicit_external_data_symlink_is_refused(tmp_path, monkeypatch):
     data = tmp_path / "external-data"
     outer.mkdir()
     data.mkdir()
-    alias = outer / ".booley_project"
+    alias = outer / ".booley"
     alias.symlink_to(data, target_is_directory=True)
     for root in (outer, data):
         subprocess.run(["git", "init", str(root)], check=True, capture_output=True, timeout=30)
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
     monkeypatch.setenv("RTL_PROJECT_ROOT", str(alias))
     with pytest.raises(ProjectRootDiscoveryError, match="run from the Project Root"):
         discover_project_root(outer)
@@ -223,7 +223,7 @@ def test_containment_alias_explicit_authority(tmp_path, monkeypatch):
         return original(path, other)
 
     monkeypatch.setattr(Path, "samefile", samefile)
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(root))
+    monkeypatch.setenv("BOOLEY_DIR", str(root))
     assert project_discovery._data_root(alias / "new", []) == root
     assert calls
     nested = alias / "embedded"
@@ -237,11 +237,11 @@ def test_containment_alias_explicit_authority(tmp_path, monkeypatch):
     (owner / ".git").mkdir()
     (owner / ".git" / "HEAD").write_text("ref: refs/heads/main")
     (owner / "booley.toml").write_text(f'[project]\ndir = "{root.as_posix()}"\n')
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(unrelated))
-    from booley.runtime.project_dir import reset_cache, resolve_project_dir
+    monkeypatch.setenv("BOOLEY_DIR", str(unrelated))
+    from booley.runtime.booley_dir import reset_cache, resolve_booley_dir
 
     reset_cache()
-    assert resolve_project_dir() == unrelated
+    assert resolve_booley_dir() == unrelated
     assert project_discovery._data_root(alias / "new", [owner]) == root
     assert project_discovery._owning_checkouts([owner], root) == {owner}
     reset_cache()
@@ -260,9 +260,9 @@ def test_sandbox_requires_checkout_local_ownership(tmp_path, monkeypatch, owned)
     if owned:
         (outer / "booley.toml").write_text(f'[project]\ndir = "{data.as_posix()}"\n')
     monkeypatch.setattr(discovery, "WORK_DIR", str(outer))
-    monkeypatch.setattr(discovery, "PROJECT_DIR_TARGET", str(data))
+    monkeypatch.setattr(discovery, "BOOLEY_DIR_TARGET", str(data))
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(data))
+    monkeypatch.setenv("BOOLEY_DIR", str(data))
     monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
     if owned:
         assert discovery.discover_project_root(data) == outer

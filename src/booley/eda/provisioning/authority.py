@@ -30,7 +30,7 @@ LICENSING_KIND = "xilinx-flexnet"
 _STATE_FILENAME = "authority.json"
 _LOCK_FILENAME = "authority.lock"
 _HOST_ID_RE = re.compile(r"^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$")
-_PROJECT_MARKERS = (".git", ".booley_project")
+_PROJECT_MARKERS = (".git", ".booley")
 _BROAD_SYSTEM_ROOT_NAMES = frozenset(
     {
         "bin",

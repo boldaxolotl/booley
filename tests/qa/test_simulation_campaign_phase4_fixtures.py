@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 TAXI = ROOT / "qa/missions/taxi/fixtures/simulation-campaign"
 # Documents captured unchanged from one Taxi QA run; ``timeline.json`` is the operator's
 # measurement of that run with its SlotStore samples thinned.
-CAPTURED = ROOT / "tests/qa/fixtures/taxi_campaign/parallel"
+CAPTURED = ROOT / "tests/runtime/fixtures/directory_migration/taxi_campaign/parallel"
 UART = ROOT / "qa/missions/uart/fixtures/simulation-campaign"
 CAMPAIGN_ID = "9904b376-4087-4d49-a9be-55c4b8e27da8"
 OUTER = "539e1228e49a48de8b6f967edbe31ce1"

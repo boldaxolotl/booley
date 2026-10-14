@@ -68,7 +68,7 @@ def test_fresh_asic_scaffold_has_clean_timing_baseline(tmp_path: Path) -> None:
 
     report_dir = project / "reports"
     env = os.environ.copy()
-    env["BOOLEY_PROJECT_DIR"] = str(project / ".booley_project")
+    env["BOOLEY_DIR"] = str(project / ".booley")
     result = subprocess.run(
         [
             "booley",
@@ -105,10 +105,10 @@ def _workspace(tmp_path: Path) -> Workspace:
     _run_git(source, "init", "-b", "main")
     _run_git(source, "config", "user.name", "Booley Smoke")
     _run_git(source, "config", "user.email", "smoke@example.invalid")
-    (source / ".git/info/exclude").write_text("/.booley_project\n")
+    (source / ".git/info/exclude").write_text("/.booley\n")
     _run_git(source, "add", ".")
     _run_git(source, "commit", "-m", "Initialize smoke RTL")
-    project = source / ".booley_project"
+    project = source / ".booley"
     _run_git(project, "init", "-b", "main")
     _run_git(project, "config", "user.name", "Booley Smoke")
     _run_git(project, "config", "user.email", "smoke@example.invalid")
@@ -124,7 +124,7 @@ def _workspace(tmp_path: Path) -> Workspace:
 
 async def _enter(client: Client, workspace: Workspace, goals: list[dict[str, Any]]) -> str:
     entry = await enter(client, workspace.worktree, parse_goal_args(goals))
-    record = GoalStore(workspace.project_dir).active_for_worktree(workspace.worktree)
+    record = GoalStore(workspace.booley_dir).active_for_worktree(workspace.worktree)
     assert record is not None and record.id == entry["record_id"]
     assert record.state is GoalState.ACTIVE
     return record.id
@@ -192,9 +192,9 @@ async def _success(workspace: Workspace) -> None:
             ).values()
         ) == {"met"}
         await finish(client, worktree, record_id)
-    store = GoalStore(workspace.project_dir)
+    store = GoalStore(workspace.booley_dir)
     assert store.load(record_id).state is GoalState.FINISHED
-    _assert_openroad(DevelopmentState.load(record_paths(store.project_dir, record_id).state_file))
+    _assert_openroad(DevelopmentState.load(record_paths(store.booley_dir, record_id).state_file))
 
 
 def test_goal_mode_success_staleness_and_openroad(tmp_path: Path) -> None:
@@ -216,7 +216,7 @@ async def _failure(workspace: Workspace) -> None:
             await finish(client, worktree, record_id)
         assert "SIM:sim_fail" in str(refusal.value)
         assert _run_git(worktree, "rev-parse", "HEAD").stdout == before
-        assert GoalStore(workspace.project_dir).load(record_id).state is GoalState.ACTIVE
+        assert GoalStore(workspace.booley_dir).load(record_id).state is GoalState.ACTIVE
 
 
 def test_goal_mode_failing_sim_refuses_finish(tmp_path: Path) -> None:

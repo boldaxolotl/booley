@@ -45,7 +45,7 @@ def _heartbeat_generations(path: Path) -> list[int]:
 
 
 def _start_supervisor_with_test_heartbeat(
-    project_dir: Path,
+    booley_dir: Path,
     execution_id: ExecutionId,
     heartbeat_path: Path,
     command: list[str],
@@ -81,13 +81,13 @@ def _start_supervisor_with_test_heartbeat(
             "--",
             *command,
         ],
-        env=runtime_env(project_dir),
+        env=runtime_env(booley_dir),
         text=True,
     )
 
 
 def test_force_cancellation_is_monotonic(tmp_path: Path) -> None:
-    paths = execution_paths(_EXECUTION_ID, project_dir=tmp_path)
+    paths = execution_paths(_EXECUTION_ID, booley_dir=tmp_path)
     request_cancellation(paths, force=True)
     request_cancellation(paths, force=False)
 
@@ -96,10 +96,10 @@ def test_force_cancellation_is_monotonic(tmp_path: Path) -> None:
 
 
 def test_cancellation_before_start_never_launches_the_command(tmp_path: Path) -> None:
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
     execution_id = ExecutionId("d" * 32)
-    paths = execution_paths(execution_id, project_dir=project_dir)
+    paths = execution_paths(execution_id, booley_dir=booley_dir)
     marker = tmp_path / "command-started"
     write_attachment_heartbeat(paths, generation=1)
     request_cancellation(paths, signum=signal.SIGINT)
@@ -118,7 +118,7 @@ def test_cancellation_before_start_never_launches_the_command(tmp_path: Path) ->
             f"open({str(marker)!r}, 'w').close()",
         ],
         check=False,
-        env=runtime_env(project_dir),
+        env=runtime_env(booley_dir),
     )
 
     assert result.returncode == 130
@@ -130,10 +130,10 @@ def test_cancellation_before_start_never_launches_the_command(tmp_path: Path) ->
 
 
 def test_boolean_protocol_signal_does_not_become_signal_one(tmp_path: Path) -> None:
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
     execution_id = ExecutionId("e" * 32)
-    paths = execution_paths(execution_id, project_dir=project_dir)
+    paths = execution_paths(execution_id, booley_dir=booley_dir)
     write_attachment_heartbeat(paths, generation=1)
     atomic_write_json(
         paths.cancel,
@@ -154,7 +154,7 @@ def test_boolean_protocol_signal_does_not_become_signal_one(tmp_path: Path) -> N
             "raise SystemExit(99)",
         ],
         check=False,
-        env=runtime_env(project_dir),
+        env=runtime_env(booley_dir),
     )
 
     assert result.returncode == 130
@@ -170,13 +170,13 @@ def _non_zombie_alive(pid: int) -> bool:
 
 def test_cancellation_reaps_descendant_that_created_a_new_session(tmp_path: Path) -> None:
     """Cancellation remains scoped and complete across a descendant's setsid()."""
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
-    paths = execution_paths(_EXECUTION_ID, project_dir=project_dir)
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    paths = execution_paths(_EXECUTION_ID, booley_dir=booley_dir)
     write_attachment_heartbeat(paths, generation=1)
     descendant_pid_file = tmp_path / "descendant.pid"
     supervisor = start_supervisor_with_detached_descendant(
-        project_dir, _EXECUTION_ID, descendant_pid_file
+        booley_dir, _EXECUTION_ID, descendant_pid_file
     )
     descendant_pid: int | None = None
     try:
@@ -198,7 +198,7 @@ def test_cancellation_reaps_descendant_that_created_a_new_session(tmp_path: Path
             capture_output=True,
             text=True,
             check=False,
-            env=runtime_env(project_dir),
+            env=runtime_env(booley_dir),
         )
         assert cancel.returncode == 0, cancel.stderr
 
@@ -220,14 +220,14 @@ def test_cancellation_reaps_descendant_that_created_a_new_session(tmp_path: Path
 
 
 def test_supervisor_refreshes_reaper_heartbeat_until_normal_exit(tmp_path: Path) -> None:
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
     execution_id = ExecutionId("f" * 32)
-    paths = execution_paths(execution_id, project_dir=project_dir)
+    paths = execution_paths(execution_id, booley_dir=booley_dir)
     heartbeat_path = tmp_path / "reaper-heartbeat"
     write_attachment_heartbeat(paths, generation=1)
     supervisor = _start_supervisor_with_test_heartbeat(
-        project_dir,
+        booley_dir,
         execution_id,
         heartbeat_path,
         [sys.executable, "-c", "import time; time.sleep(0.3); raise SystemExit(7)"],
@@ -249,10 +249,10 @@ def test_supervisor_refreshes_reaper_heartbeat_until_normal_exit(tmp_path: Path)
 
 
 def test_supervisor_refreshes_reaper_heartbeat_during_cancellation(tmp_path: Path) -> None:
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
     execution_id = ExecutionId("1" * 32)
-    paths = execution_paths(execution_id, project_dir=project_dir)
+    paths = execution_paths(execution_id, booley_dir=booley_dir)
     heartbeat_path = tmp_path / "reaper-heartbeat"
     child_starting = tmp_path / "child-starting"
     child_ready = tmp_path / "child-ready"
@@ -267,7 +267,7 @@ def test_supervisor_refreshes_reaper_heartbeat_during_cancellation(tmp_path: Pat
         f"Path({str(child_ready)!r}).touch(); time.sleep(10)",
     ]
     supervisor = _start_supervisor_with_test_heartbeat(
-        project_dir,
+        booley_dir,
         execution_id,
         heartbeat_path,
         command,
@@ -294,10 +294,10 @@ def test_supervisor_refreshes_reaper_heartbeat_during_cancellation(tmp_path: Pat
 
 
 def test_attachment_heartbeat_expiry_cancels_execution(tmp_path: Path) -> None:
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
     execution_id = ExecutionId("b" * 32)
-    paths = execution_paths(execution_id, project_dir=project_dir)
+    paths = execution_paths(execution_id, booley_dir=booley_dir)
     write_attachment_heartbeat(paths, generation=1)
     supervisor = subprocess.Popen(
         [
@@ -315,7 +315,7 @@ def test_attachment_heartbeat_expiry_cancels_execution(tmp_path: Path) -> None:
             "sleep",
             "120",
         ],
-        env=runtime_env(project_dir),
+        env=runtime_env(booley_dir),
     )
     try:
         assert supervisor.wait(timeout=5) == 130
@@ -332,10 +332,10 @@ def test_attachment_heartbeat_expiry_cancels_execution(tmp_path: Path) -> None:
 def test_tty_child_owns_the_foreground_process_group(tmp_path: Path) -> None:
     if sys.platform != "linux":
         return
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
     execution_id = ExecutionId("c" * 32)
-    paths = execution_paths(execution_id, project_dir=project_dir)
+    paths = execution_paths(execution_id, booley_dir=booley_dir)
     write_attachment_heartbeat(paths, generation=1)
     child_check = (
         "import os,sys; sys.exit(0 if os.isatty(0) and os.tcgetpgrp(0) == os.getpgrp() else 9)"
@@ -355,7 +355,7 @@ def test_tty_child_owns_the_foreground_process_group(tmp_path: Path) -> None:
     ]
     pid, fd = pty.fork()
     if pid == 0:
-        os.execve(sys.executable, argv, runtime_env(project_dir))
+        os.execve(sys.executable, argv, runtime_env(booley_dir))
     try:
         _waited, status = os.waitpid(pid, 0)
     finally:

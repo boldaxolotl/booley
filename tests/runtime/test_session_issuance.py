@@ -29,8 +29,8 @@ from booley.runtime import (
     session_spec,
 )
 from booley.runtime import session_issuance as runtime_spec
+from booley.runtime.booley_dir import reset_cache
 from booley.runtime.platform_paths import docker_mount_path
-from booley.runtime.project_dir import reset_cache
 
 # Issuance fixtures replace PATH with a synthetic launcher directory.
 _HOST_PATH = os.environ.get("PATH", os.defpath)
@@ -398,9 +398,9 @@ def _concurrent_licensed_project(
 ) -> Path:
     reset_cache()
     project = tmp_path / "project"
-    project_dir = project / ".booley_project"
-    project_dir.mkdir(parents=True)
-    (project_dir / "booley.toml").write_text(
+    booley_dir = project / ".booley"
+    booley_dir.mkdir(parents=True)
+    (booley_dir / "booley.toml").write_text(
         '[flows.fpga]\nenabled = true\n[eda.vivado]\nprovisioning = "image"\n',
         encoding="utf-8",
     )
@@ -500,7 +500,7 @@ def issued(
     del trusted_validator
     project = tmp_path / "project"
     project.mkdir()
-    (project / ".booley_project").mkdir()
+    (project / ".booley").mkdir()
     host_skill = tmp_path / "host-skills" / "example-skill"
     host_skill.mkdir(parents=True)
     (host_skill / "SKILL.md").write_text("# Example skill\n", encoding="utf-8")
@@ -702,7 +702,7 @@ def test_inspect_prepared_accepts_exact_current_issuance(issued) -> None:
     prepared = runtime_spec.PreparedSessionSpec(
         spec=spec,
         digest=stamp.spec_sha256,
-        inputs=runtime_spec.SessionSpecInputs(project / ".booley_project", (), (), None, None),
+        inputs=runtime_spec.SessionSpecInputs(project / ".booley", (), (), None, None),
     )
 
     assert runtime_spec.inspect_prepared(project, prepared) == stamp
@@ -715,7 +715,7 @@ def test_inspect_prepared_rejects_different_desired_spec(issued) -> None:
     prepared = runtime_spec.PreparedSessionSpec(
         spec=desired,
         digest=runtime_spec._spec_digest(desired),
-        inputs=runtime_spec.SessionSpecInputs(project / ".booley_project", (), (), None, None),
+        inputs=runtime_spec.SessionSpecInputs(project / ".booley", (), (), None, None),
     )
 
     with pytest.raises(runtime_spec.RuntimeSpecError, match="prepared specification"):
@@ -728,7 +728,7 @@ def test_inspect_prepared_rejects_missing_document_without_creating_it(issued) -
     prepared = runtime_spec.PreparedSessionSpec(
         spec=spec,
         digest=stamp.spec_sha256,
-        inputs=runtime_spec.SessionSpecInputs(project / ".booley_project", (), (), None, None),
+        inputs=runtime_spec.SessionSpecInputs(project / ".booley", (), (), None, None),
     )
 
     with pytest.raises(runtime_spec.RuntimeSpecError, match="missing"):
@@ -745,7 +745,7 @@ def test_legacy_registrar_remains_valid_for_issued_specs(
     del trusted_validator
     project = tmp_path / "project"
     project.mkdir()
-    (project / ".booley_project").mkdir()
+    (project / ".booley").mkdir()
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
     legacy = "python -m booley.runtime.incontainer_register"
@@ -836,7 +836,7 @@ def test_no_eda_issuance_and_validation_never_open_authority_store(
     reset_cache()
     project = tmp_path / "project"
     project.mkdir()
-    (project / ".booley_project").mkdir()
+    (project / ".booley").mkdir()
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
 
@@ -896,7 +896,7 @@ def test_runtime_spec_rejects_non_mapping_container_environment(
     del trusted_validator
     project = tmp_path / "project"
     project.mkdir()
-    (project / ".booley_project").mkdir()
+    (project / ".booley").mkdir()
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
     spec = dc.build_devcontainer_spec(
         dc.APP_NONE,
@@ -915,9 +915,9 @@ def test_host_eda_issuance_still_requires_authority(
 ) -> None:
     del trusted_validator
     project = tmp_path / "project"
-    project_dir = project / ".booley_project"
-    project_dir.mkdir(parents=True)
-    (project_dir / "booley.toml").write_text(
+    booley_dir = project / ".booley"
+    booley_dir.mkdir(parents=True)
+    (booley_dir / "booley.toml").write_text(
         '[eda.vivado]\nprovisioning = "host"\n',
         encoding="utf-8",
     )
@@ -967,7 +967,7 @@ def test_active_image_vivado_cannot_omit_license_marker_to_bypass_authority(
     del trusted_validator
     project = tmp_path / "project"
     project.mkdir()
-    (project / ".booley_project").mkdir()
+    (project / ".booley").mkdir()
     monkeypatch.setattr(runtime_spec, "flow_enabled", lambda *_args: True)
     monkeypatch.setattr(
         eda_requirements,
@@ -1031,7 +1031,7 @@ def test_generated_bind_without_target_is_rejected(tmp_path: Path) -> None:
 @pytest.mark.parametrize("operation", ["issue", "validate"])
 def test_missing_project_data_bind_names_source_and_target(issued, operation: str) -> None:
     project, spec, path, _stamp = issued
-    source = project / ".booley_project"
+    source = project / ".booley"
     source.rmdir()
 
     with pytest.raises(runtime_spec.RuntimeSpecError) as caught:
@@ -1053,7 +1053,7 @@ def test_missing_vivado_bind_names_source_and_target(
     del trusted_validator
     project = tmp_path / "project"
     project.mkdir()
-    (project / ".booley_project").mkdir()
+    (project / ".booley").mkdir()
     vivado_root = tmp_path / "Vivado-2025.2"
     vivado_root.mkdir()
     vivado_source = docker_mount_path(vivado_root)
@@ -1208,7 +1208,7 @@ def test_reissuance_rejects_unverifiable_keeper(issued, monkeypatch) -> None:
 def test_legacy_no_eda_spec_cannot_bypass_issuance(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
-    (project / ".booley_project").mkdir()
+    (project / ".booley").mkdir()
     spec = dc.build_devcontainer_spec(dc.APP_NONE)
     path = dc.write_devcontainer(project, spec)
     with pytest.raises(runtime_spec.RuntimeSpecError):
@@ -1338,7 +1338,7 @@ def test_dangerous_full_spec_drift_is_rejected_before_issuance(
     del trusted_validator
     project = tmp_path / "project"
     project.mkdir()
-    (project / ".booley_project").mkdir()
+    (project / ".booley").mkdir()
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
     spec = dc.build_devcontainer_spec(
@@ -1362,7 +1362,7 @@ def test_readonly_false_does_not_satisfy_protected_mount(
     del trusted_validator
     project = tmp_path / "project"
     project.mkdir()
-    (project / ".booley_project").mkdir()
+    (project / ".booley").mkdir()
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
     spec = dc.build_devcontainer_spec(
@@ -1399,9 +1399,9 @@ def test_disabled_fpga_does_not_request_host_vivado(
     reset_cache()
     request.addfinalizer(reset_cache)
     project = tmp_path / "project"
-    project_dir = project / ".booley_project"
-    project_dir.mkdir(parents=True)
-    (project_dir / "booley.toml").write_text(
+    booley_dir = project / ".booley"
+    booley_dir.mkdir(parents=True)
+    (booley_dir / "booley.toml").write_text(
         """\
 [flows.fpga]
 enabled = false
@@ -1445,7 +1445,7 @@ def test_licensed_seal_gives_vscode_and_headless_the_same_networks_and_labels(
     del trusted_validator
     project = tmp_path / "project"
     project.mkdir()
-    (project / ".booley_project").mkdir()
+    (project / ".booley").mkdir()
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
     profile = SimpleNamespace(name="site", lmgrd_port=2100)
@@ -1512,7 +1512,7 @@ def test_issue_rejects_mutable_image_reference(
     del trusted_validator
     project = tmp_path / "project"
     project.mkdir()
-    (project / ".booley_project").mkdir()
+    (project / ".booley").mkdir()
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
     spec = dc.build_devcontainer_spec(
@@ -1532,8 +1532,8 @@ def test_project_data_mount_rejects_broad_and_mount_grammar_paths(
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
-    (project / ".booley_project").mkdir()
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", source)
+    (project / ".booley").mkdir()
+    monkeypatch.setenv("BOOLEY_DIR", source)
     with pytest.raises(
         runtime_spec.RuntimeSpecError,
         match=r"too broad|mount grammar|unavailable|must be an absolute host path",
@@ -1544,7 +1544,7 @@ def test_project_data_mount_rejects_broad_and_mount_grammar_paths(
 def test_project_authored_external_mount_is_not_authority(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
-    (project / ".booley_project").mkdir()
+    (project / ".booley").mkdir()
     (project / "booley.toml").write_text('[project]\ndir = "/home"\n', encoding="utf-8")
     with pytest.raises(runtime_spec.RuntimeSpecError, match="cannot authorize"):
         runtime_spec.authorized_project_data_source(project)
@@ -1559,7 +1559,7 @@ def test_project_data_mount_rejects_symlink_source(
     actual.mkdir()
     linked = tmp_path / "linked-data"
     linked.symlink_to(actual, target_is_directory=True)
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(linked))
+    monkeypatch.setenv("BOOLEY_DIR", str(linked))
     with pytest.raises(runtime_spec.RuntimeSpecError, match="symlink"):
         runtime_spec.authorized_project_data_source(project)
 
@@ -1570,7 +1570,7 @@ def test_project_data_mount_rejects_nested_workspace_source(
     project = tmp_path / "project"
     nested = project / "state" / "data"
     nested.mkdir(parents=True)
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(nested))
+    monkeypatch.setenv("BOOLEY_DIR", str(nested))
     with pytest.raises(runtime_spec.RuntimeSpecError, match="overlaps the Project"):
         runtime_spec.authorized_project_data_source(project)
 
@@ -1583,12 +1583,12 @@ def test_seal_rejects_project_controlled_mount_source(
     del trusted_validator
     project = tmp_path / "project"
     project.mkdir()
-    (project / ".booley_project").mkdir()
+    (project / ".booley").mkdir()
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
     spec = dc.build_devcontainer_spec(
         dc.APP_NONE,
-        project_dir_source="/home/victim",
+        booley_dir_source="/home/victim",
         mcp_start_command=dc.mcp_post_start_command(),
         protected_devcontainer_source=str(project / ".devcontainer"),
     )
@@ -1603,7 +1603,7 @@ def test_seal_rejects_workspace_path_poisoned_booley(
     trusted = _install_trusted_validator(tmp_path, monkeypatch)
     project = tmp_path / "project"
     project.mkdir()
-    (project / ".booley_project").mkdir()
+    (project / ".booley").mkdir()
     poisoned = project / ".venv" / "bin" / "booley"
     poisoned.parent.mkdir(parents=True)
     poisoned.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
@@ -1626,7 +1626,7 @@ def test_seal_skips_tmp_path_poisoned_booley(
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
-    (project / ".booley_project").mkdir()
+    (project / ".booley").mkdir()
     poisoned = tmp_path / "untrusted-bin" / "booley"
     poisoned.parent.mkdir()
     poisoned.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
@@ -1902,21 +1902,17 @@ def test_seal_pins_absolute_host_executable_and_canonical_mount(issued) -> None:
     command = spec["initializeCommand"]
     assert Path(command[0]).is_absolute()
     assert project not in Path(command[0]).parents
-    expected_source = str((project / ".booley_project").resolve())
+    expected_source = str((project / ".booley").resolve())
     assert stamp.project_data_source == expected_source
     expected_mount_source = docker_mount_path(Path(expected_source))
     assert f"source={expected_mount_source},target=/booley-project,type=bind" in spec["mounts"]
-    assert spec["mounts"][1] == (
-        f"source={expected_mount_source},target=/work/.booley_project,type=bind"
-    )
+    assert spec["mounts"][1] == (f"source={expected_mount_source},target=/work/.booley,type=bind")
     assert spec["mounts"][-1] == runtime_spec.expected_devcontainer_mount(project)
 
 
 def test_issue_rejects_missing_project_data_workspace_bind(issued) -> None:
     project, spec, _path, _stamp = issued
-    spec["mounts"] = [
-        mount for mount in spec["mounts"] if "target=/work/.booley_project," not in mount
-    ]
+    spec["mounts"] = [mount for mount in spec["mounts"] if "target=/work/.booley," not in mount]
     path = dc.write_devcontainer(project, spec)
     with pytest.raises(runtime_spec.RuntimeSpecError, match="workspace view must be pinned"):
         runtime_spec.issue(project, spec, path)
@@ -1925,9 +1921,7 @@ def test_issue_rejects_missing_project_data_workspace_bind(issued) -> None:
 def test_issue_rejects_readonly_project_data_workspace_bind(issued) -> None:
     project, spec, _path, _stamp = issued
     shadow = next(
-        index
-        for index, mount in enumerate(spec["mounts"])
-        if "target=/work/.booley_project," in mount
+        index for index, mount in enumerate(spec["mounts"]) if "target=/work/.booley," in mount
     )
     spec["mounts"][shadow] += ",readonly"
     path = dc.write_devcontainer(project, spec)
@@ -1942,7 +1936,7 @@ def test_validator_bytes_are_bound_into_issuance(
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
-    (project / ".booley_project").mkdir()
+    (project / ".booley").mkdir()
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
     spec = dc.build_devcontainer_spec(
@@ -1967,7 +1961,7 @@ def test_relay_image_bytes_are_bound_into_licensed_issuance(
     del trusted_validator
     project = tmp_path / "project"
     project.mkdir()
-    (project / ".booley_project").mkdir()
+    (project / ".booley").mkdir()
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
     profile = authority.LicenseProfile(
@@ -2004,7 +1998,7 @@ def test_relay_image_bytes_are_bound_into_licensed_issuance(
 
 def test_validate_rejects_post_issuance_project_data_symlink_swap(issued) -> None:
     project, spec, path, _stamp = issued
-    source = project / ".booley_project"
+    source = project / ".booley"
     replacement = project / "replacement-data"
     source.rename(replacement)
     source.symlink_to(replacement, target_is_directory=True)
@@ -2020,7 +2014,7 @@ def test_seal_requires_canonical_hash_scoped_state_volume(
     del trusted_validator
     project = tmp_path / "project"
     project.mkdir()
-    (project / ".booley_project").mkdir()
+    (project / ".booley").mkdir()
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
     spec = dc.build_devcontainer_spec(
@@ -2168,8 +2162,8 @@ def test_canonical_alias_seal_keeps_shadow_and_rejects_alias_subtree_drift(
     runtime_spec.pin_image(spec)
     runtime_spec.seal(project, spec)
     assert not any("target=/booley-project," in mount for mount in spec["mounts"])
-    expected_source = docker_mount_path(project / ".booley_project")
-    assert f"source={expected_source},target=/work/.booley_project,type=bind" in spec["mounts"]
+    expected_source = docker_mount_path(project / ".booley")
+    assert f"source={expected_source},target=/work/.booley,type=bind" in spec["mounts"]
     path = dc.write_devcontainer(project, spec)
     stamp = runtime_spec.issue(project, spec, path)
     assert stamp.project_data_layout == "canonical-alias"
@@ -2200,7 +2194,7 @@ def test_previewed_spec_issues_for_every_project_data_layout(
         return dc.build_devcontainer_spec(
             dc.APP_NONE,
             mcp_start_command=dc.mcp_post_start_command(),
-            project_dir_source=docker_mount_path(inputs.project_data_source),
+            booley_dir_source=docker_mount_path(inputs.project_data_source),
             protected_devcontainer_source=str(project / ".devcontainer"),
         )
 
@@ -2381,7 +2375,7 @@ def test_seal_pins_external_project_identity_over_builder_defaults(issued, tmp_p
     (external / "booley.toml").write_text(
         '[agent.git]\nname="Mounted Agent"\nemail="mounted@example.invalid"\n'
     )
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(external))
+    monkeypatch.setenv("BOOLEY_DIR", str(external))
     spec = dc.build_devcontainer_spec(
         dc.APP_NONE, protected_devcontainer_source=str(project / ".devcontainer")
     )
@@ -2460,7 +2454,7 @@ def test_previously_issued_legacy_prepare_survives_full_validation(
     """Model an old issuer, then authenticate its unchanged sealed document."""
     project = tmp_path / "project"
     project.mkdir()
-    (project / ".booley_project").mkdir()
+    (project / ".booley").mkdir()
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
     original_pin = runtime_spec._pin_initialize_command
@@ -2546,7 +2540,7 @@ def test_real_git_issued_environment_preserves_host_identity(issued, monkeypatch
     sandbox = {
         **environment,
         **spec["containerEnv"],
-        "BOOLEY_PROJECT_DIR": stamp.project_data_source,
+        "BOOLEY_DIR": stamp.project_data_source,
         "BOOLEY_MCP_MODE": "interactive",
     }
     subprocess.run(
@@ -2591,7 +2585,7 @@ def test_authorized_directory_source_refuses_an_ordinary_file(issued, monkeypatc
     project, _spec, _path, _stamp = issued
     source = tmp_path / "not-a-directory"
     source.write_text("keep", encoding="utf-8")
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(source.resolve()))
+    monkeypatch.setenv("BOOLEY_DIR", str(source.resolve()))
     with pytest.raises(runtime_spec.RuntimeSpecError, match="mount source is not a directory"):
         runtime_spec.authorized_project_data_source(project)
     assert source.read_text(encoding="utf-8") == "keep"
@@ -2620,7 +2614,7 @@ def test_seal_refuses_an_already_mounted_directory_workspace_view(issued):
         mcp_start_command=dc.mcp_post_start_command(),
         protected_devcontainer_source=str(project / ".devcontainer"),
     )
-    spec["mounts"].append("source=/untrusted,target=/work/.booley_project,type=bind")
+    spec["mounts"].append("source=/untrusted,target=/work/.booley,type=bind")
     with pytest.raises(runtime_spec.RuntimeSpecError, match="workspace view is already mounted"):
         runtime_spec.seal(project, spec)
 
@@ -2637,7 +2631,7 @@ def test_runtime_directory_mount_requires_canonical_source(issued):
     project, _spec, _path, _stamp = issued
     intermediate = project / "existing"
     intermediate.mkdir()
-    source = intermediate / ".." / ".booley_project"
+    source = intermediate / ".." / ".booley"
     with pytest.raises(runtime_spec.RuntimeSpecError, match="mount source is no longer canonical"):
         runtime_spec._require_project_data_mount([], str(source), project)
 
@@ -2655,7 +2649,7 @@ def test_canonical_alias_rejects_external_directory_authority(issued, tmp_path):
 @pytest.mark.parametrize("damage", ["missing", "duplicate", "readonly"])
 def test_runtime_directory_mount_refuses_inexact_host_bind(issued, damage):
     project, _spec, _path, _stamp = issued
-    source = project / ".booley_project"
+    source = project / ".booley"
     mount = f"source={docker_mount_path(source)},target=/booley-project,type=bind"
     mounts = {"missing": [], "duplicate": [mount, mount], "readonly": [mount + ",readonly"]}[
         damage

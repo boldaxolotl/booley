@@ -120,11 +120,11 @@ LABEL org.opencontainers.image.version=${BOOLEY_VERSION} \
 
 USER root
 RUN if test -e /booley-project || test -L /booley-project; then \
-        test -L /booley-project && test "$(readlink /booley-project)" = /work/.booley_project; \
-    else ln -s /work/.booley_project /booley-project; fi \
+        test -L /booley-project && test "$(readlink /booley-project)" = /work/.booley; \
+    else ln -s /work/.booley /booley-project; fi \
     && chown -h root:root /booley-project \
     && test "$(stat -c %u /)" = 0 \
-    && test "$(readlink /booley-project)" = /work/.booley_project
+    && test "$(readlink /booley-project)" = /work/.booley
 
 USER agent
 WORKDIR /work

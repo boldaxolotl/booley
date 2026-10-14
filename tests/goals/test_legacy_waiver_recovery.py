@@ -40,7 +40,9 @@ def relocated_snapshot(tmp_path, path_type=Path):
     state = json.loads((FIXTURE / "state.json").read_bytes())
     transaction = json.loads((FIXTURE / "apply.json").read_bytes())
     old_root = payload["waiver"]["anchor_root"].split("/main/")[0]
-    replacements = [(old_root, str(tmp_path))]
+    from booley.core.booley_layout import BOOLEY_DIR_NAME, RETIRED_DIR_NAME
+
+    replacements = [(old_root, str(tmp_path)), (RETIRED_DIR_NAME, BOOLEY_DIR_NAME)]
     payload = relocate(payload, replacements)
     replacements.append((state["payload_digest"], legacy_digest(payload)))
     old_ledger = legacy_digest({"proposal": payload["id"], "decision": state["decision"]})
@@ -79,8 +81,8 @@ def install_snapshot(tmp_path):
             path = Path(effect["path"])
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(base64.b64decode(effect["before"]))
-    project_dir = Path(payload["waiver"]["candidate_root"]).parent.parent
-    root = record_paths(project_dir, payload["record_id"]).root
+    booley_dir = Path(payload["waiver"]["candidate_root"]).parent.parent
+    root = record_paths(booley_dir, payload["record_id"]).root
     proposal_root = root / "proposals" / payload["id"]
     proposal_root.mkdir(parents=True)
     (proposal_root / "payload.json").write_bytes(legacy_bytes(payload))
@@ -91,15 +93,15 @@ def install_snapshot(tmp_path):
     worktree = Path(payload["waiver"]["anchor_root"])
     worktree.mkdir(parents=True, exist_ok=True)
     git(worktree, "init", "-q")
-    entry = EntryEnvironment(project_dir)
+    entry = EntryEnvironment(booley_dir)
     store = ChangeEnvironment(entry).store
     record = store.load(payload["record_id"])
-    return ChangeEnvironment(entry, GoalWaiverService(project_dir, record)), payload, transaction
+    return ChangeEnvironment(entry, GoalWaiverService(booley_dir, record)), payload, transaction
 
 
 def test_saved_dictionary_based_interrupted_apply_recovers_without_producer_inputs(tmp_path):
     env, payload, transaction = install_snapshot(tmp_path)
-    root = record_paths(env.entry.project_dir, payload["record_id"]).root
+    root = record_paths(env.entry.booley_dir, payload["record_id"]).root
     before = load_proposal(root, payload["id"])
     assert before.state == "approved"
     assert before.decision.payload_digest == legacy_digest(payload)

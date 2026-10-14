@@ -5,7 +5,7 @@ an agent call cost?" — hardcoding it would drift with every agent
 CLI/SDK release. ``booley doctor --deep`` therefore spawns the cheapest real
 agent call (light-tier model, one turn, no MCP tools) and records the child
 process's peak RSS into project runtime state at
-``<project_dir>/runtime/developer_probe.json``. The invariant check reads
+``<booley_dir>/runtime/developer_probe.json``. The invariant check reads
 that file on every subsequent doctor run and multiplies it by the
 model-call admission cap; until a measurement exists it uses a conservative
 1 GiB fallback.
@@ -108,19 +108,19 @@ class ProbeError(RuntimeError):
         self.usage = usage
 
 
-def probe_path(project_dir: Path) -> Path:
+def probe_path(booley_dir: Path) -> Path:
     """Location of the recorded measurement inside project runtime state.
 
     Lives beside the slot store (``runtime/jobs/slots``) — both are
     container-lifetime bookkeeping for the ADR 0028 admission story.
     """
-    return project_dir / "runtime" / PROBE_FILENAME
+    return booley_dir / "runtime" / PROBE_FILENAME
 
 
-def load_measurement(project_dir: Path) -> int | None:
+def load_measurement(booley_dir: Path) -> int | None:
     """Recorded developer peak RSS in bytes, or None when absent/invalid."""
     try:
-        data = json.loads(probe_path(project_dir).read_text(encoding="utf-8"))
+        data = json.loads(probe_path(booley_dir).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, ValueError):
         return None
     if not isinstance(data, dict):
@@ -132,9 +132,9 @@ def load_measurement(project_dir: Path) -> int | None:
     return as_positive_int(value, 0) or None
 
 
-def record_measurement(project_dir: Path, peak_rss_bytes: int) -> Path:
+def record_measurement(booley_dir: Path, peak_rss_bytes: int) -> Path:
     """Atomically record a measurement; returns the file written."""
-    path = probe_path(project_dir)
+    path = probe_path(booley_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "developer_peak_rss_bytes": int(peak_rss_bytes),

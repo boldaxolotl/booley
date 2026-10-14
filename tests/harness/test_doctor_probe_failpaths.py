@@ -79,11 +79,11 @@ def _mk_audit(root: Path, booley_toml: dict | None = None) -> doctor.ProjectAudi
     """Minimal ProjectAudit over a tmp tree (local re-implementation — the
     helpers in test_doctor.py must not be imported while parallel work edits
     that file)."""
-    project_dir = root / ".booley_project"
-    project_dir.mkdir(exist_ok=True)
+    booley_dir = root / ".booley"
+    booley_dir.mkdir(exist_ok=True)
     return doctor.ProjectAudit(
         project_root=root,
-        project_dir=project_dir,
+        booley_dir=booley_dir,
         booley_toml=booley_toml or {},
         configs_toml={"fast": {}},
         first_target="fast",
@@ -334,7 +334,7 @@ class TestAuditTestsTomlRules:
     def _run(self, tmp_path: Path, text: str | None) -> tuple[_Rec, list[str]]:
         project = _mk_audit(tmp_path)
         if text is not None:
-            (project.project_dir / "tests.toml").write_text(text, encoding="utf-8")
+            (project.booley_dir / "tests.toml").write_text(text, encoding="utf-8")
         rec = _Rec()
         fixes: list[str] = []
 

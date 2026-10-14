@@ -19,7 +19,7 @@ the push on any of these offenses:
 3. **A repository-visible path into the Booley Directory**, including
    a symlink whose committed target resolves there.
 
-Packaged into the Project's ``.booley_project/.managed/project-git-hooks.pyz``
+Packaged into the Project's ``.booley/.managed/project-git-hooks.pyz``
 bundle by ``booley init``. Its flat imports resolve from the zip root, so Git
 operations do not need an installed Booley package. Escape hatch:
 ``BOOLEY_SKIP_PUSH_GUARD=1`` explicitly skips all checks for one push.
@@ -64,7 +64,7 @@ _MAX_SYMLINK_TARGET_BYTES = 64 * 1024
 _SYMLINK_MODE = "120000"
 # Kept local because this module is packaged into Projects and must run without
 # an installed Booley package.
-_PROJECT_DIR_NAME = ".booley_project"
+_BOOLEY_DIR_NAME = ".booley"
 
 
 @dataclass(frozen=True)
@@ -745,7 +745,7 @@ def _check_symlink_sizes(inspection, ids):
             raise InspectionError("cannot safely inspect oversized symlink target")
 
 
-def _inspect_commits(inspection, commits, allowlist, project_dir, policy):
+def _inspect_commits(inspection, commits, allowlist, booley_dir, policy):
     facts = inspection.objects(commits)
     trees = _batch_trees(inspection, commits)
     symlinks = {
@@ -764,7 +764,7 @@ def _inspect_commits(inspection, commits, allowlist, project_dir, policy):
     offenders = []
     for sha in commits:
         offenses = _fact_offenses(_parse_commit(facts[sha]), allowlist, policy)
-        offenses.extend(_entry_offenses(trees[sha], inspection.root, project_dir, policy, targets))
+        offenses.extend(_entry_offenses(trees[sha], inspection.root, booley_dir, policy, targets))
         if offenses:
             offenders.append((sha, list(dict.fromkeys(offenses))))
     inspection.stable()
@@ -812,21 +812,21 @@ def _repository_root() -> Path | None:
     return Path(os.fsdecode(result.stdout.strip())).resolve()
 
 
-def _guard_project_dir(repository_root: Path) -> Path | None:
+def _guard_booley_dir(repository_root: Path) -> Path | None:
     """Resolve project state without requiring Booley in the managed bundle."""
-    configured = os.environ.get("BOOLEY_PROJECT_DIR")
+    configured = os.environ.get("BOOLEY_DIR")
     if configured:
         return Path(configured).resolve()
     hook_file = Path(__file__).resolve()
     if hook_file.parent.name != "hooks":
-        # The zip-app launcher derives BOOLEY_PROJECT_DIR before importing this
+        # The zip-app launcher derives BOOLEY_DIR before importing this
         # module. Never probe an installed package as a fallback here: the
         # managed bundle is deliberately stdlib-only and isolated from it.
         return None
     try:
-        from booley.runtime.project_dir import resolve_checkout_project_dir
+        from booley.runtime.booley_dir import resolve_checkout_booley_dir
 
-        return resolve_checkout_project_dir(repository_root).resolve()
+        return resolve_checkout_booley_dir(repository_root).resolve()
     except (ImportError, FileNotFoundError):
         hook_dir = hook_file.parent
         return hook_dir.parent if hook_dir.name == "hooks" else None
@@ -901,20 +901,20 @@ def _symlink_target(entry: _TreeEntry) -> tuple[str | None, str | None]:
     return blob_result.stdout.decode("utf-8", errors="replace"), None
 
 
-def _inside_project_state(path: Path, project_dir: Path | None) -> bool:
-    if project_dir is None:
+def _inside_project_state(path: Path, booley_dir: Path | None) -> bool:
+    if booley_dir is None:
         return False
     # Normalize ``..`` without following the current worktree's symlinks; the
     # committed target above, not mutable checkout state, is authoritative.
     normalized = Path(os.path.normpath(path.absolute()))
-    state = Path(os.path.normpath(project_dir.absolute()))
+    state = Path(os.path.normpath(booley_dir.absolute()))
     return normalized == state or state in normalized.parents
 
 
 def _inside_checkout_or_runtime_project_state(
     path: Path,
     repository_root: Path,
-    project_dir: Path | None,
+    booley_dir: Path | None,
 ) -> bool:
     """Whether *path* uses either checkout or runtime spelling for state."""
     normalized = Path(os.path.normpath(path.absolute()))
@@ -926,25 +926,25 @@ def _inside_checkout_or_runtime_project_state(
     inside_checkout_state = (
         relative is not None
         and bool(relative.parts)
-        and relative.parts[0].casefold() == _PROJECT_DIR_NAME.casefold()
+        and relative.parts[0].casefold() == _BOOLEY_DIR_NAME.casefold()
     )
-    return inside_checkout_state or _inside_project_state(path, project_dir)
+    return inside_checkout_state or _inside_project_state(path, booley_dir)
 
 
 def _tree_offenses(
     sha: str,
     repository_root: Path,
-    project_dir: Path | None,
+    booley_dir: Path | None,
     policy: StealthPolicy,
 ) -> list[str]:
     entries = _changed_tree_entries(sha)
     if entries is None:
         return ["cannot inspect changed tracked paths"]
 
-    return _entry_offenses(entries, repository_root, project_dir, policy)
+    return _entry_offenses(entries, repository_root, booley_dir, policy)
 
 
-def _entry_offenses(entries, repository_root, project_dir, policy, targets=None):
+def _entry_offenses(entries, repository_root, booley_dir, policy, targets=None):
     offenses: list[str] = []
     for entry in entries:
         path_leaks = policy.find_banned(entry.path)
@@ -954,7 +954,7 @@ def _entry_offenses(entries, repository_root, project_dir, policy, targets=None)
                 f"tracked path has banned terms ({', '.join(sorted(set(path_leaks)))}): "
                 f"{entry.path}"
             )
-        if _inside_checkout_or_runtime_project_state(tracked_path, repository_root, project_dir):
+        if _inside_checkout_or_runtime_project_state(tracked_path, repository_root, booley_dir):
             offenses.append(f"tracked path exposes project state: {entry.path}")
         if entry.mode != _SYMLINK_MODE:
             continue
@@ -972,7 +972,7 @@ def _entry_offenses(entries, repository_root, project_dir, policy, targets=None)
                 f"symlink target has banned terms ({', '.join(sorted(set(target_leaks)))}): "
                 f"{entry.path} -> {target}"
             )
-        if _inside_checkout_or_runtime_project_state(target_path, repository_root, project_dir):
+        if _inside_checkout_or_runtime_project_state(target_path, repository_root, booley_dir):
             offenses.append(f"symlink target exposes project state: {entry.path} -> {target}")
     return list(dict.fromkeys(offenses))
 
@@ -982,7 +982,7 @@ def _commit_offenses(
     allowlist: list[str],
     *,
     repository_root: Path | None = None,
-    project_dir: Path | None = None,
+    booley_dir: Path | None = None,
     policy: StealthPolicy | None = None,
 ) -> list[str]:
     """Human-readable reasons this commit must not be pushed (empty = fine)."""
@@ -1001,7 +1001,7 @@ def _commit_offenses(
     if root is None:
         offenses.append("cannot resolve repository root to inspect tracked metadata")
     else:
-        state = project_dir if project_dir is not None else _guard_project_dir(root)
+        state = booley_dir if booley_dir is not None else _guard_booley_dir(root)
         offenses.extend(_tree_offenses(sha, root, state, active_policy))
     return offenses
 
@@ -1070,7 +1070,7 @@ def _inspect_push(repository_root):
         inspection,
         commits,
         allowed_authors(repository_root),
-        _guard_project_dir(repository_root),
+        _guard_booley_dir(repository_root),
         policy,
     )
     return offenders, unavailable

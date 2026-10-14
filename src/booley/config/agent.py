@@ -216,7 +216,7 @@ def _unresolved_provider_error() -> BackendConfigError:
     return BackendConfigError(
         "Agent provider unresolved inside container: BOOLEY_PRIMARY_PROVIDER "
         "is unset, no booley.toml with an [agent] provider was found at "
-        "BOOLEY_PROJECT_DIR, and BOOLEY_AGENT_APP names no provider. "
+        "BOOLEY_DIR, and BOOLEY_AGENT_APP names no provider. "
         "If you are running a specialist directly (e.g. "
         "`python -m booley.dev_support.reviewer ...`), pin the backend with one "
         "of:\n"
@@ -313,12 +313,12 @@ class _ProjectAgentConfig:
 def _project_config_from_env() -> _ProjectAgentConfig | None:
     """Read the project's agent/model config from booley.toml via env.
 
-    Reads ``BOOLEY_PROJECT_DIR`` and looks for ``booley.toml`` under it. Handles
+    Reads ``BOOLEY_DIR`` and looks for ``booley.toml`` under it. Handles
     both layouts the harness produces:
 
-      * container: ``BOOLEY_PROJECT_DIR=/booley-project`` with the toml mounted
+      * container: ``BOOLEY_DIR=/booley-project`` with the toml mounted
         flat at ``/booley-project/booley.toml``.
-      * host:      ``BOOLEY_PROJECT_DIR=<repo>/.booley_project`` — the toml sits
+      * host:      ``BOOLEY_DIR=<repo>/.booley`` — the toml sits
         directly inside, so the same flat probe finds it.
 
     This is the path a *specialist subprocess* takes: it never calls
@@ -328,12 +328,12 @@ def _project_config_from_env() -> _ProjectAgentConfig | None:
     """
     import os
 
-    project_dir = os.environ.get("BOOLEY_PROJECT_DIR")
-    if not project_dir:
+    booley_dir = os.environ.get("BOOLEY_DIR")
+    if not booley_dir:
         return None
 
-    base = Path(project_dir)
-    for toml_path in (base / "booley.toml", base / ".booley_project" / "booley.toml"):
+    base = Path(booley_dir)
+    for toml_path in (base / "booley.toml", base / ".booley" / "booley.toml"):
         if not toml_path.is_file():
             continue
         try:
@@ -421,13 +421,13 @@ def _resolve_booley_toml(project_data: Path) -> Path:
     return path
 
 
-def load_agent_settings(project_root: Path, *, project_dir: Path | None = None) -> AgentSettings:
+def load_agent_settings(project_root: Path, *, booley_dir: Path | None = None) -> AgentSettings:
     """Load and install validated agent, model, sandbox, and job settings.
 
     The single provider is selected via ``[agent] provider`` (default:
     ``_DEFAULT_PROVIDER``). The developer and every specialist run on it.
     Auth mode, explicit model tiers, and sandbox config are also read from the
-    TOML. ``project_dir`` lets callers that already resolved the canonical
+    TOML. ``booley_dir`` lets callers that already resolved the canonical
     Booley Directory avoid repeating path discovery. An explicitly *invalid*
     provider raises ``BackendConfigError`` — we never silently run a backend
     the project didn't ask for.
@@ -436,7 +436,7 @@ def load_agent_settings(project_root: Path, *, project_dir: Path | None = None) 
 
     (auth, tier_overrides, provider, role_models, sandbox_cfg, jobs_cfg) = _load_toml_agent_config(
         project_root,
-        project_dir=project_dir,
+        booley_dir=booley_dir,
     )
     if provider is None:
         provider = _DEFAULT_PROVIDER
@@ -456,7 +456,7 @@ def load_agent_settings(project_root: Path, *, project_dir: Path | None = None) 
 def _load_toml_agent_config(
     project_root: Path,
     *,
-    project_dir: Path | None = None,
+    booley_dir: Path | None = None,
 ) -> tuple[str, dict[str, str] | None, str | None, dict[str, str], SandboxConfig, SlotCaps]:
     """Parse booley.toml [agent]/[sandbox]/[models]/[jobs].
 
@@ -465,11 +465,11 @@ def _load_toml_agent_config(
     no provider — the caller applies ``_DEFAULT_PROVIDER``. An *invalid*
     provider, auth, or role raises (fail loud).
     """
-    if project_dir is None:
-        bp = project_root / ".booley_project"
-        project_data = bp if bp.is_dir() else project_root / ".booley" / "project"
+    if booley_dir is None:
+        bp = project_root / ".booley"
+        project_data = bp
     else:
-        project_data = project_dir
+        project_data = booley_dir
     toml_path = _resolve_booley_toml(project_data)
 
     auth = _DEFAULT_AUTH
@@ -582,11 +582,11 @@ def resolve_auth_policy() -> str:
     if os.environ.get("BOOLEY_PRIMARY_AUTH"):
         return _env_auth()
 
-    project_dir = os.environ.get("BOOLEY_PROJECT_DIR")
-    if not project_dir:
+    booley_dir = os.environ.get("BOOLEY_DIR")
+    if not booley_dir:
         return _DEFAULT_AUTH
-    base = Path(project_dir)
-    for toml_path in (base / "booley.toml", base / ".booley_project" / "booley.toml"):
+    base = Path(booley_dir)
+    for toml_path in (base / "booley.toml", base / ".booley" / "booley.toml"):
         if not toml_path.is_file():
             continue
         try:

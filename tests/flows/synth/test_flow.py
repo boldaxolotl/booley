@@ -417,9 +417,9 @@ def test_relative_ticket_criterion_auto_applies_pinned_baseline(
 
 def _write_execution_config(tmp_path: Path, body: str) -> None:
     """Write a ``[flows.synth]`` booley.toml with *body* lines."""
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir(exist_ok=True)
-    (project_dir / "booley.toml").write_text(
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir(exist_ok=True)
+    (booley_dir / "booley.toml").write_text(
         f"[flows.synth]\n{body}",
         encoding="utf-8",
     )
@@ -474,7 +474,7 @@ def _fake_synth_resolved(
     """A ResolvedTarget shaped like a real synth EDAM, under asic_synthesize's work root."""
     build_root = (
         Path(work_dir)
-        / ".booley_project"
+        / ".booley"
         / ".runtime"
         / "edalize"
         / "synth"
@@ -526,7 +526,7 @@ def _fake_synth_resolved(
         "tool": "yosys",
         "synth_mode": "logical",
     }  # upstream FuseSoC flow_options fields
-    config_path = Path(work_dir) / ".booley_project" / "booley.toml"
+    config_path = Path(work_dir) / ".booley" / "booley.toml"
     if config_path.is_file():
         with config_path.open("rb") as config_file:
             flow_cfg = tomllib.load(config_file).get("flows", {}).get("synth", {})
@@ -628,9 +628,7 @@ def _stub_plan(
     design: str = "dut",
 ) -> syn_make.SynthPlan:
     """A minimal configured SynthPlan under *target*'s real build dir."""
-    build_dir = (
-        Path(work_dir) / ".booley_project" / ".runtime" / "edalize" / "synth" / target / "synth"
-    )
+    build_dir = Path(work_dir) / ".booley" / ".runtime" / "edalize" / "synth" / target / "synth"
     build_dir.mkdir(parents=True, exist_ok=True)
     spec = syn_make.SynthSpec(
         design_name=design,
@@ -1111,7 +1109,7 @@ class TestIntentionalLatches:
     def test_expected_latches_read_from_booley_toml(self, tmp_path):
         from booley.flows.synth.flow import _expected_latches
 
-        proj = tmp_path / ".booley_project"
+        proj = tmp_path / ".booley"
         proj.mkdir()
         (proj / "booley.toml").write_text(
             "[flows.synth]\nexpected_latches = 1\n", encoding="utf-8"
@@ -1133,7 +1131,7 @@ class TestIntentionalLatches:
         """A bad knob must fall back to strict (0), never to permissive."""
         from booley.flows.synth.flow import _expected_latches
 
-        proj = tmp_path / ".booley_project"
+        proj = tmp_path / ".booley"
         proj.mkdir()
         (proj / "booley.toml").write_text(
             f"[flows.synth]\nexpected_latches = {literal}\n", encoding="utf-8"
@@ -1463,9 +1461,9 @@ class TestDryRun:
 
     def test_dry_run_with_flags(self, state_file: Path, tmp_path: Path):
         # Synthesis-recipe knobs live on the Flow config, not the CLI.
-        project_dir = tmp_path / ".booley_project"
-        project_dir.mkdir(exist_ok=True)
-        (project_dir / "booley.toml").write_text(
+        booley_dir = tmp_path / ".booley"
+        booley_dir.mkdir(exist_ok=True)
+        (booley_dir / "booley.toml").write_text(
             '[flows.synth]\nflatten = true\nsdc = true\nsynth_mode = "logical"\n',
             encoding="utf-8",
         )
@@ -1500,15 +1498,15 @@ class TestDryRun:
 
         work_dir = tmp_path / "proj"
         _write_syn_demo_project(work_dir)
-        project_dir = work_dir / ".booley_project"
-        cores = project_dir / "cores"
+        booley_dir = work_dir / ".booley"
+        cores = booley_dir / "cores"
         cores.mkdir(parents=True)
         (work_dir / "syn_demo.core").replace(cores / "syn_demo.core")
-        (project_dir / "booley.toml").write_text(
+        (booley_dir / "booley.toml").write_text(
             "[stealth]\nenabled = true\n",
             encoding="utf-8",
         )
-        (project_dir / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
+        (booley_dir / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
         flow = AsicSynthesizeFlow()
         flow.parse_args(
             [
@@ -2092,7 +2090,7 @@ class TestFileBasedInterpretation:
 
     @staticmethod
     def _build_dir(tmp_path: Path) -> Path:
-        return tmp_path / ".booley_project" / ".runtime" / "edalize" / "synth" / "lite" / "synth"
+        return tmp_path / ".booley" / ".runtime" / "edalize" / "synth" / "lite" / "synth"
 
     def test_metrics_parsed_from_fresh_stage_files(self, flow_and_state, tmp_path: Path):
         """A make run that leaves its results as FILES (empty stdout) still
@@ -2378,9 +2376,7 @@ class TestFileBasedInterpretation:
         assert "RESULT: ERROR" in result.report_text
         # The scan verdict lands in the persisted full output (the report line
         # itself carries the bounded rc-based summary, as on the legacy path).
-        run_log = (
-            tmp_path / ".booley_project" / ".runtime" / "edalize" / "synth" / "lite" / "run.log"
-        )
+        run_log = tmp_path / ".booley" / ".runtime" / "edalize" / "synth" / "lite" / "run.log"
         assert "despite exit 0" in run_log.read_text(encoding="utf-8")
         st = DevelopmentState.load(state_file)
         assert not st.is_met("synthesis_ok_lite")
@@ -2525,7 +2521,7 @@ def _fake_baseline_worktree(project_root: Path, ref: str, *, paired_project):
     """Stand-in for ``baseline_worktree``: yields a real dir under the project
     (so path derivations work) without touching git. Records nothing itself;
     tests that need enter/exit tracking define their own."""
-    wt = Path(project_root) / ".booley_project" / f".baseline-wt-fake-{ref}"
+    wt = Path(project_root) / ".booley" / f".baseline-wt-fake-{ref}"
     wt.mkdir(parents=True, exist_ok=True)
     yield wt
 
@@ -2758,7 +2754,7 @@ class TestBaselineFlow:
         @contextmanager
         def tracking_worktree(project_root, ref, *, paired_project):
             del paired_project
-            wt = Path(project_root) / ".booley_project" / ".baseline-wt-track"
+            wt = Path(project_root) / ".booley" / ".baseline-wt-track"
             wt.mkdir(parents=True, exist_ok=True)
             try:
                 yield wt
@@ -2968,9 +2964,9 @@ class TestBuildSynthCmd:
         assert cmd[cmd.index("--ppa-profile") + 1] == "balanced"
 
     def test_profile_and_backend_config_forwarded(self, state_file: Path, tmp_path: Path):
-        project_dir = tmp_path / ".booley_project"
-        project_dir.mkdir(exist_ok=True)
-        (project_dir / "booley.toml").write_text(
+        booley_dir = tmp_path / ".booley"
+        booley_dir.mkdir(exist_ok=True)
+        (booley_dir / "booley.toml").write_text(
             '[flows.synth]\nppa_profile = "compact"\nsynth_mode = "physical"\n'
             "[flows.synth.advanced_settings_yosys]\nabc_delay_ps = 3333\n"
             "[flows.synth.advanced_settings_openroad]\n"
@@ -2992,9 +2988,9 @@ class TestBuildSynthCmd:
         assert "--repair-hold" in cmd
 
     def test_cli_profile_resets_project_backend_overrides(self, state_file: Path, tmp_path: Path):
-        project_dir = tmp_path / ".booley_project"
-        project_dir.mkdir(exist_ok=True)
-        (project_dir / "booley.toml").write_text(
+        booley_dir = tmp_path / ".booley"
+        booley_dir.mkdir(exist_ok=True)
+        (booley_dir / "booley.toml").write_text(
             '[flows.synth]\nppa_profile = "compact"\n'
             '[flows.synth.advanced_settings_yosys]\nabc_recipe = "fast"\n',
             encoding="utf-8",
@@ -3039,9 +3035,9 @@ class TestBuildSynthCmd:
         present: str,
         absent: str,
     ):
-        project_dir = tmp_path / ".booley_project"
-        project_dir.mkdir(exist_ok=True)
-        (project_dir / "booley.toml").write_text(
+        booley_dir = tmp_path / ".booley"
+        booley_dir.mkdir(exist_ok=True)
+        (booley_dir / "booley.toml").write_text(
             f"[flows.synth.advanced_settings_yosys]\n{config_line}\n",
             encoding="utf-8",
         )
@@ -3136,9 +3132,9 @@ class TestBuildSynthCmd:
             )
 
     def test_with_flags(self, state_file: Path, tmp_path: Path):
-        project_dir = tmp_path / ".booley_project"
-        project_dir.mkdir(exist_ok=True)
-        (project_dir / "booley.toml").write_text(
+        booley_dir = tmp_path / ".booley"
+        booley_dir.mkdir(exist_ok=True)
+        (booley_dir / "booley.toml").write_text(
             "[flows.synth]\nflatten = true\nsdc = true\n",
             encoding="utf-8",
         )
@@ -3223,9 +3219,9 @@ class TestBuildSynthCmd:
 
     def test_target_frontend_forwarded(self, state_file: Path, tmp_path: Path):
         """Target flow_options.frontend is forwarded when no CLI override."""
-        project_dir = tmp_path / ".booley_project"
-        project_dir.mkdir(exist_ok=True)
-        (project_dir / "booley.toml").write_text(
+        booley_dir = tmp_path / ".booley"
+        booley_dir.mkdir(exist_ok=True)
+        (booley_dir / "booley.toml").write_text(
             '[flows.synth]\nfrontend = "slang"\n',
             encoding="utf-8",
         )
@@ -3242,9 +3238,9 @@ class TestBuildSynthCmd:
 
     def test_frontend_invalid_config_hard_errors(self, state_file: Path, tmp_path: Path):
         """A bogus Target frontend is a loud BoundaryError."""
-        project_dir = tmp_path / ".booley_project"
-        project_dir.mkdir(exist_ok=True)
-        (project_dir / "booley.toml").write_text(
+        booley_dir = tmp_path / ".booley"
+        booley_dir.mkdir(exist_ok=True)
+        (booley_dir / "booley.toml").write_text(
             '[flows.synth]\nfrontend = "verilator"\n',
             encoding="utf-8",
         )
@@ -3268,9 +3264,9 @@ class TestBuildSynthCmd:
         itself a flag (--single-unit), which argparse's two-token form rejects
         ("expected one argument") — the ravenoc halt #2b regression.
         """
-        project_dir = tmp_path / ".booley_project"
-        project_dir.mkdir(exist_ok=True)
-        (project_dir / "booley.toml").write_text(
+        booley_dir = tmp_path / ".booley"
+        booley_dir.mkdir(exist_ok=True)
+        (booley_dir / "booley.toml").write_text(
             '[flows.synth]\nfrontend = "slang"\n'
             'slang_options = ["--single-unit", "--allow-use-before-declare"]\n',
             encoding="utf-8",
@@ -3289,9 +3285,9 @@ class TestBuildSynthCmd:
 
     def test_slang_options_invalid_config_hard_errors(self, state_file: Path, tmp_path: Path):
         """A non-list slang_options value is a loud BoundaryError, not a silent no-op."""
-        project_dir = tmp_path / ".booley_project"
-        project_dir.mkdir(exist_ok=True)
-        (project_dir / "booley.toml").write_text(
+        booley_dir = tmp_path / ".booley"
+        booley_dir.mkdir(exist_ok=True)
+        (booley_dir / "booley.toml").write_text(
             '[flows.synth]\nslang_options = "--single-unit"\n',
             encoding="utf-8",
         )
@@ -3368,9 +3364,9 @@ class TestBuildSynthCmd:
 
     def test_no_flatten_cli_overrides_toml(self, state_file: Path, tmp_path: Path):
         """--no-flatten wins over Target ``flow_options.flatten = true``."""
-        project_dir = tmp_path / ".booley_project"
-        project_dir.mkdir(exist_ok=True)
-        (project_dir / "booley.toml").write_text(
+        booley_dir = tmp_path / ".booley"
+        booley_dir.mkdir(exist_ok=True)
+        (booley_dir / "booley.toml").write_text(
             "[flows.synth]\nflatten = true\n",
             encoding="utf-8",
         )
@@ -3390,9 +3386,9 @@ class TestBuildSynthCmd:
 
     def test_flatten_false_toml_is_honoured(self, state_file: Path, tmp_path: Path):
         """``flatten = false`` now emits --no-flatten (previously ignored)."""
-        project_dir = tmp_path / ".booley_project"
-        project_dir.mkdir(exist_ok=True)
-        (project_dir / "booley.toml").write_text(
+        booley_dir = tmp_path / ".booley"
+        booley_dir.mkdir(exist_ok=True)
+        (booley_dir / "booley.toml").write_text(
             "[flows.synth]\nflatten = false\n",
             encoding="utf-8",
         )
@@ -3437,9 +3433,9 @@ class TestFlowConfigBoundary:
 
     @staticmethod
     def _flow_with_config(tmp_path: Path, toml_body: str) -> AsicSynthesizeFlow:
-        project_dir = tmp_path / ".booley_project"
-        project_dir.mkdir(exist_ok=True)
-        (project_dir / "booley.toml").write_text(
+        booley_dir = tmp_path / ".booley"
+        booley_dir.mkdir(exist_ok=True)
+        (booley_dir / "booley.toml").write_text(
             f"[flows.synth]\n{toml_body}",
             encoding="utf-8",
         )
@@ -3912,11 +3908,7 @@ class TestSynthResolution:
         assert captured["vlnv"] == "::test:0"
         assert captured["project_root"] == tmp_path
         # Compare build_root in POSIX form for Windows portability.
-        assert (
-            captured["build_root"]
-            .as_posix()
-            .endswith(".booley_project/.runtime/edalize/synth/lite")
-        )
+        assert captured["build_root"].as_posix().endswith(".booley/.runtime/edalize/synth/lite")
 
     def test_real_fusesoc_synth_setup(self, state_file: Path, tmp_path: Path):
         """End-to-end: a real `fusesoc run --setup` leaves a resolved synth EDAM.
@@ -3982,7 +3974,7 @@ class TestSynthResolution:
         assert "SYNTHESIS" in cmd
         assert "WIDTH=8" in joined
         # Resolved build dir lives under the worktree and is relocatable.
-        edam = next((work_dir / ".booley_project" / ".runtime").rglob("*.eda.yml"))
+        edam = next((work_dir / ".booley" / ".runtime").rglob("*.eda.yml"))
         assert str(work_dir) not in edam.read_text(encoding="utf-8")
 
 
@@ -4000,7 +3992,7 @@ class TestTimeoutResolution:
         assert flow._get_timeout() == 1800
 
     def test_toml_knob_picked_up(self, tmp_path: Path):
-        proj = tmp_path / ".booley_project"
+        proj = tmp_path / ".booley"
         proj.mkdir()
         (proj / "booley.toml").write_text(
             "[flows.synth]\ntimeout_ms = 5400000\n",
@@ -4011,7 +4003,7 @@ class TestTimeoutResolution:
         assert flow._get_timeout() == 5400
 
     def test_cli_overrides_toml(self, tmp_path: Path):
-        proj = tmp_path / ".booley_project"
+        proj = tmp_path / ".booley"
         proj.mkdir()
         (proj / "booley.toml").write_text(
             "[flows.synth]\ntimeout_ms = 5400000\n",
@@ -4040,7 +4032,7 @@ class TestTruncationResilientOutput:
 
     @staticmethod
     def _log_file(tmp_path: Path) -> Path:
-        return tmp_path / ".booley_project" / ".runtime" / "edalize" / "synth" / "lite" / "run.log"
+        return tmp_path / ".booley" / ".runtime" / "edalize" / "synth" / "lite" / "run.log"
 
     def test_synth_log_written_on_pass(self, flow_and_state, tmp_path: Path):
         flow, _ = flow_and_state
@@ -4161,7 +4153,7 @@ class TestTruncationResilientOutput:
 # Baseline self-compare guard — _baseline_self_compare_warning
 # ===========================================================================
 
-# A minimal stealth `.core` (authored under .booley_project/cores/) whose single
+# A minimal stealth `.core` (authored under .booley/cores/) whose single
 # rtl file is what compute_source_fingerprint hashes into the "rtl" digest.
 _STEALTH_CORE_TEXT = (
     "CAPI=2:\n"
@@ -4177,7 +4169,7 @@ _STEALTH_CORE_TEXT = (
 
 
 def _author_stealth_core(root: Path, rtl_body: str) -> None:
-    """Author a stealth .core + its rtl source under ``root/.booley_project/cores/``."""
+    """Author a stealth .core + its rtl source under ``root/.booley/cores/``."""
     from booley.fusesoc.fusesoc_registry import state_cores_dir
 
     cores = state_cores_dir(root)
@@ -4196,7 +4188,7 @@ class TestBaselineSelfCompareWarning:
         wt = tmp_path / "wt"
         cur.mkdir()
         wt.mkdir()
-        # No .booley_project/cores/ on either side → nothing to warn about,
+        # No .booley/cores/ on either side → nothing to warn about,
         # even though two empty trees fingerprint identically.
         assert _baseline_self_compare_warning(cur, wt) is None
 
@@ -4234,9 +4226,9 @@ class TestFailOnTimingViolation:
 
     @staticmethod
     def _project(tmp_path: Path, body: str) -> None:
-        project_dir = tmp_path / ".booley_project"
-        project_dir.mkdir(exist_ok=True)
-        (project_dir / "booley.toml").write_text(body, encoding="utf-8")
+        booley_dir = tmp_path / ".booley"
+        booley_dir.mkdir(exist_ok=True)
+        (booley_dir / "booley.toml").write_text(body, encoding="utf-8")
 
     def test_default_is_false(self, tmp_path: Path):
         from booley.flows.synth.flow import _fail_on_timing_violation
@@ -4794,7 +4786,7 @@ def _write_latch_artifacts(build, stat, openroad_log, stale_openroad):
 def _run_latch_case(flow_and_state, tmp_path, case):
     flow, _state = flow_and_state
     mode = case.get("mode", "logical")
-    project = tmp_path / ".booley_project"
+    project = tmp_path / ".booley"
     project.mkdir(exist_ok=True)
     expected = case.get("expected", 0)
     (project / "booley.toml").write_text(

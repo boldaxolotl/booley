@@ -50,7 +50,7 @@ def test_neutral_mechanisms_cannot_reacquire_caller_policy(owner, target):
 
 def test_downward_consumption_remains_allowed():
     pairs = [
-        ("config.eda", "core.project_dir"),
+        ("config.eda", "core.booley_dir"),
         ("eda.provisioning.configuration", "config.eda"),
         ("eda.provisioning.authority", "core.private_store"),
         ("eda.provisioning.policies.vivado", "core.resources"),

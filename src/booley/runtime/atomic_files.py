@@ -23,6 +23,9 @@ def fsync_directory(directory: Path) -> None:
 
 
 def _staged_bytes(path: Path, content: bytes, mode: int) -> Path:
+    from booley.core.booley_layout import reject_retired_path
+
+    reject_retired_path(path.absolute())
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, raw_temporary = tempfile.mkstemp(
         dir=path.parent,

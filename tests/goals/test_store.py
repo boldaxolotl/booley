@@ -68,7 +68,7 @@ def repo(tmp_path: Path) -> dict[str, Path]:
     _git(main, "commit", "-q", "--allow-empty", "-m", "base")
     linked = tmp_path / "wt" / "uart"
     _git(main, "worktree", "add", "-q", str(linked), "-b", "work")
-    project = tmp_path / "project" / ".booley_project"
+    project = tmp_path / "project" / ".booley"
     project.mkdir(parents=True)
     return {"main": main, "linked": linked, "project": project}
 

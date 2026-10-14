@@ -16,10 +16,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from booley.runtime.booley_dir import resolve_booley_dir
 from booley.runtime.filesystem_utils import replace_file
 from booley.runtime.pid import RUNNING, ProcessIdentity, ProcessObservation, observe_process
 from booley.runtime.process_tree import has_ancestor
-from booley.runtime.project_dir import resolve_project_dir
 from booley.runtime.timefmt import utc_now_rfc3339
 
 PROTOCOL_VERSION = 1
@@ -98,11 +98,11 @@ class ExecutionPaths:
 
 
 def execution_paths(
-    execution_id: str | ExecutionId, *, project_dir: Path | None = None
+    execution_id: str | ExecutionId, *, booley_dir: Path | None = None
 ) -> ExecutionPaths:
     """Resolve protocol paths for one validated opaque execution ID."""
     validated_id = ExecutionId(execution_id)
-    resolved = project_dir if project_dir is not None else resolve_project_dir()
+    resolved = booley_dir if booley_dir is not None else resolve_booley_dir()
     root = resolved / ".runtime" / "executions" / validated_id
     return ExecutionPaths(
         root=root,
@@ -153,7 +153,7 @@ def read_json(path: Path) -> dict[str, Any] | None:
 def verify_inherited_execution_id(
     raw_execution_id: object,
     *,
-    project_dir: Path,
+    booley_dir: Path,
     owner_pid: int,
     observe_identity: Callable[[ProcessIdentity], ProcessObservation] = observe_process,
     ancestor_check: Callable[[int, int], bool] = has_ancestor,
@@ -163,7 +163,7 @@ def verify_inherited_execution_id(
         execution_id = ExecutionId(raw_execution_id)
     except ValueError:
         return None
-    record = read_json(execution_paths(execution_id, project_dir=project_dir).record)
+    record = read_json(execution_paths(execution_id, booley_dir=booley_dir).record)
     if record is None or set(record) != _TERMINAL_FIELDS:
         return None
     if (
@@ -311,9 +311,9 @@ def force_cancellation_requested(paths: ExecutionPaths) -> bool:
     return paths.force.exists()
 
 
-def _referenced_execution_ids(project_dir: Path) -> set[str]:
+def _referenced_execution_ids(booley_dir: Path) -> set[str]:
     references: set[str] = set()
-    slots = project_dir / "runtime" / "jobs" / "slots"
+    slots = booley_dir / "runtime" / "jobs" / "slots"
     for path in slots.glob("*/*.json"):
         payload = read_json(path)
         execution_id = payload.get("execution_id") if payload is not None else None
@@ -321,8 +321,8 @@ def _referenced_execution_ids(project_dir: Path) -> set[str]:
             references.add(ExecutionId(execution_id))
         except ValueError:
             continue
-    child_entries = project_dir / ".runtime" / "campaign-child-executions" / "entries"
-    child_retired = project_dir / ".runtime" / "campaign-child-executions" / "retired"
+    child_entries = booley_dir / ".runtime" / "campaign-child-executions" / "entries"
+    child_retired = booley_dir / ".runtime" / "campaign-child-executions" / "retired"
     for path in child_entries.glob("*.json"):
         if (child_retired / path.name).is_file():
             continue
@@ -334,7 +334,7 @@ def _referenced_execution_ids(project_dir: Path) -> set[str]:
 
 
 def release_retired_campaign_children(
-    project_dir: Path, campaign_children: Path
+    booley_dir: Path, campaign_children: Path
 ) -> tuple[str, ...]:
     """Release exact retired child index pairs after campaign retention.
 
@@ -346,7 +346,7 @@ def release_retired_campaign_children(
     records = _campaign_child_records(campaign_children)
     if not records:
         return ()
-    project_root = project_dir / ".runtime" / "campaign-child-executions"
+    project_root = booley_dir / ".runtime" / "campaign-child-executions"
     _validate_project_inventory(project_root, records)
     releases: list[tuple[ExecutionId, Path, Path]] = []
     for name, (entry_raw, retirement_raw) in sorted(records.items()):
@@ -357,14 +357,14 @@ def release_retired_campaign_children(
         marker_raw = _release_marker(execution_id, entry_raw, retirement_raw)
         _require_matching_if_present(project_entry, entry_raw)
         _require_matching_if_present(project_retirement, retirement_raw)
-        _require_child_token_absent(project_dir, execution_id)
+        _require_child_token_absent(booley_dir, execution_id)
         if marker.exists() or marker.is_symlink():
             if _regular_bytes(marker) != marker_raw:
                 raise ValueError("campaign child release marker is contradictory")
         else:
             if not project_entry.is_file() or not project_retirement.is_file():
                 raise ValueError("Project child retirement pair disappeared before release")
-            _require_retirement_terminal(project_dir, execution_id, retirement_raw)
+            _require_retirement_terminal(booley_dir, execution_id, retirement_raw)
             _durable_create(marker, marker_raw)
         releases.append((execution_id, project_entry, project_retirement))
     if _json_inventory(campaign_children / "released") != set(records):
@@ -569,8 +569,8 @@ def _fsync_registry_directories(project_root: Path) -> None:
         _fsync_directory(directory)
 
 
-def _require_child_token_absent(project_dir: Path, execution_id: ExecutionId) -> None:
-    slots = project_dir / "runtime" / "jobs" / "slots"
+def _require_child_token_absent(booley_dir: Path, execution_id: ExecutionId) -> None:
+    slots = booley_dir / "runtime" / "jobs" / "slots"
     for path in slots.glob("*/*.json"):
         payload = read_json(path)
         if payload is not None and payload.get("execution_id") == execution_id:
@@ -578,10 +578,10 @@ def _require_child_token_absent(project_dir: Path, execution_id: ExecutionId) ->
 
 
 def _require_retirement_terminal(
-    project_dir: Path, execution_id: ExecutionId, retirement_raw: bytes
+    booley_dir: Path, execution_id: ExecutionId, retirement_raw: bytes
 ) -> None:
     retirement = json.loads(retirement_raw)
-    paths = execution_paths(execution_id, project_dir=project_dir)
+    paths = execution_paths(execution_id, booley_dir=booley_dir)
     _terminal_raw, terminal = _canonical_or_legacy_object(paths.record)
     if (
         set(terminal) != _TERMINAL_FIELDS
@@ -668,16 +668,16 @@ def _remove_terminal_record(root: Path, *, cutoff: float) -> bool:
 
 
 def gc_terminal_executions(
-    project_dir: Path,
+    booley_dir: Path,
     *,
     now: float | None = None,
     retention_seconds: float = EXECUTION_RETENTION_SECONDS,
 ) -> list[str]:
     """Remove old complete records not pinned by any current Job lease."""
-    executions = project_dir / ".runtime" / "executions"
+    executions = booley_dir / ".runtime" / "executions"
     if not executions.is_dir():
         return []
-    referenced = _referenced_execution_ids(project_dir)
+    referenced = _referenced_execution_ids(booley_dir)
     cutoff = (time.time() if now is None else now) - retention_seconds
     removed: list[str] = []
     for root in executions.iterdir():

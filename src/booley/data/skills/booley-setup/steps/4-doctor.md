@@ -16,7 +16,7 @@ scale, for instance). `[--] SKIP` means the check did not apply here.
 
 For `.core` findings, keep modernization scope separate from structural
 correctness. Configured/selected Targets and every Target in a hidden adapter
-under `.booley_project/cores/` are active setup scope. Modernization-only issues
+under `.booley/cores/` are active setup scope. Modernization-only issues
 in unselected native Targets are advisory NOTES: do not edit or waive those
 Targets merely to clean setup. Parse/schema failures, VLNV collisions, unsafe
 path/confinement findings, and failures in a selected Target or its dependency
@@ -84,7 +84,7 @@ over that severity bug with a project waiver.
   reference (an undeclared LHS is only an implicit-net warning). The marker
   keeps the bad Target out of public listings and ordinary Flow selection while
   Doctor retains access. For simulation, mirror the broken staged firmware or
-  vectors under `.booley_project/selftest/sim/bad-overlay/`; Doctor runs the
+  vectors under `.booley/selftest/sim/bad-overlay/`; Doctor runs the
   same smoke test normally and with that overlay. Do not add
   a Project self-test mapping. A `bad` that FALSE-PASSES or returns
   an infra error is a hard FAIL: fix the Flow or fixture.
@@ -124,8 +124,8 @@ Sandbox if the container limit changed and repeat the heaviest synthesis.
 
 - Prefer Booley's own fix hint when present, for example `booley init` for
   stale MCP registration or missing project scaffolding.
-- For config parse/schema failures, edit `.booley_project/booley.toml`, the
-  `.core` design-description, or `.booley_project/tests.toml` minimally and
+- For config parse/schema failures, edit `.booley/booley.toml`, the
+  `.core` design-description, or `.booley/tests.toml` minimally and
   re-run doctor.
 - For Flow dry-run or deep-check failures, inspect the report directory named
   by doctor, especially run.log, reports, stdout, and stderr. Fix the config
@@ -142,9 +142,9 @@ Sandbox if the container limit changed and repeat the heaviest synthesis.
 
 ## Using Doctor waivers
 
-Waivers live in `.booley_project/doctor-waivers.toml`, next to `booley.toml`.
+Waivers live in `.booley/doctor-waivers.toml`, next to `booley.toml`.
 They are project configuration and follow the same git-footprint decision as
-the rest of `.booley_project/`. Never use them for a Doctor bug, a fixable
+the rest of `.booley/`. Never use them for a Doctor bug, a fixable
 setup defect, a transient machine problem, or simply to make the output green.
 Fix those. A waiver is for a warning whose risk is understood and deliberately
 accepted by this project.
@@ -188,41 +188,41 @@ the user report.
 
 ## Settle the git footprint
 
-Setup is not finished until `.booley_project/` has a decided home in git.
+Setup is not finished until `.booley/` has a decided home in git.
 Leaving it merely untracked-and-unmentioned is wrong in both modes: the config,
 hooks, Goalsets, and authored cores under it are real work, and nothing is
 versioning them. The plan's row 16 says which of the two outcomes applies. Do
 this once, at the end, when the config has stopped moving.
 
 Row 16 decides the git footprint. If it places authored cores under
-`.booley_project/cores/`, row 20 must enable stealth so Booley projects those
+`.booley/cores/`, row 20 must enable stealth so Booley projects those
 cores into the repository root. An open footprint uses tracked native cores.
 
 **Hybrid port/integration footprint.** When row 16 explicitly selected the
-hybrid, follow the hidden procedure for `.booley_project/`, but commit only the
+hybrid, follow the hidden procedure for `.booley/`, but commit only the
 row's named repository-native integration artifacts. Keep the selected native
 `.core` authoritative, and keep a real tracked root `AGENTS.md` whose content
-matches `<project_dir>/AGENTS.md`; current init/Doctor preserves that durable
+matches `<booley_dir>/AGENTS.md`; current init/Doctor preserves that durable
 file and generates only the optional `CLAUDE.md` link. Verify the tracked
 allowlist exactly—hybrid does not authorize committing operational state.
 
 **Hidden (default) — exclude it in the *parent repo's* `.git/info/exclude`.**
 
 - The exclusion belongs in the RTL repo's `.git/info/exclude`, **not** its
-  `.gitignore`. `.gitignore` is itself a tracked file: a `/.booley_project`
+  `.gitignore`. `.gitignore` is itself a tracked file: a `/.booley`
   line in it is committed, shows up in every diff and blame, and advertises
   Booley in exactly the history stealth mode exists to keep clean.
   `info/exclude` is local to the clone and travels nowhere.
-- `booley init` already wrote `/.devcontainer`, `/.booley_project`, and
+- `booley init` already wrote `/.devcontainer`, `/.booley`, and
   `/.claude` there, so normally you are only **verifying**: `git check-ignore
-  -v .booley_project` should name `.git/info/exclude`, and `git status
-  --porcelain` must not list `.booley_project/` as untracked. Repair a missing
+  -v .booley` should name `.git/info/exclude`, and `git status
+  --porcelain` must not list `.booley/` as untracked. Repair a missing
   entry by re-running `booley init` (idempotent), not by hand-editing.
   Worktree gotcha: git honors `info/exclude` only from `$GIT_COMMON_DIR`, so
   check there, not in `.git/worktrees/<id>/info/`.
-- Hidden is not unversioned. Offer to give `.booley_project/` **its own git
+- Hidden is not unversioned. Offer to give `.booley/` **its own git
   repo** (`git init` inside it, commit) — this keeps hidden
-  authored cores under `.booley_project/cores/`, which are versioned nowhere
+  authored cores under `.booley/cores/`, which are versioned nowhere
   otherwise. Hidden authored cores require `[stealth] enabled = true`, and
   `booley init` creates the inner repo and ignored root-level projections.
   Its `.gitignore` (written by `booley init`) already keeps the
@@ -233,11 +233,11 @@ allowlist exactly—hybrid does not authorize committing operational state.
   during setup, and that the root `AGENTS.md`/`CLAUDE.md` links are excluded
   the same way (Step 3; plain `booley doctor` repairs them).
 
-**Open — commit `.booley_project/` to the RTL repo.**
+**Open — commit `.booley/` to the RTL repo.**
 
-- Before changing exclusions, inspect `.booley_project/.git`, if present, with
-  `git -C .booley_project rev-list --all --count`, `git -C .booley_project remote -v`,
-  and `git -C .booley_project status --short`. Existing commits, remotes, or
+- Before changing exclusions, inspect `.booley/.git`, if present, with
+  `git -C .booley rev-list --all --count`, `git -C .booley remote -v`,
+  and `git -C .booley status --short`. Existing commits, remotes, or
   intentional staged history require a human decision about preservation or
   migration; row 16 does not authorize deleting that history.
 - When preserving an independently versioned Booley Directory, retain its Git
@@ -264,27 +264,27 @@ allowlist exactly—hybrid does not authorize committing operational state.
   named backup under the parent repo's `$(git rev-parse --git-common-dir)` (verify
   the destination is absent first) and report that recovery path. Preserve the
   backup.
-- Once the files belong to the RTL repository, drop the `/.booley_project` line
+- Once the files belong to the RTL repository, drop the `/.booley` line
   from `.git/info/exclude` (leave `/.devcontainer` and `/.claude` there unless the
   user asks otherwise — those are machine-specific runtime config).
 - After migration, ensure the inner Git metadata is backed up outside these
   files: the RTL repository must track regular files, not an embedded-repository
-  gitlink. Then `git add .booley_project`; inspect `git ls-files --stage
-  .booley_project` and require regular-file entries rather than mode `160000`
+  gitlink. Then `git add .booley`; inspect `git ls-files --stage
+  .booley` and require regular-file entries rather than mode `160000`
   before committing. Do **not** move the exclusion into `.gitignore`; the point
   is to track the directory, not to re-hide it.
-- Verify what landed with `git ls-files .booley_project | head`: the inner
+- Verify what landed with `git ls-files .booley | head`: the inner
   `.gitignore` should have kept `tmp/`, `.runtime/`, `worktrees/`, and the
   Goal logs/locks out. If transient state slipped in, unstage it and fix the
   inner `.gitignore` before committing — a committed `.runtime/` churns every
   run.
 - Rerun Doctor. With Stealth off, removing the Booley exclusion requires no
   missing-exclusion waiver.
-- `SETUP-PLAN.md` lives under `.booley_project/` and will be committed with
+- `SETUP-PLAN.md` lives under `.booley/` and will be committed with
   it. That is fine — it is the setup audit trail. Say so in the report so
   nobody is surprised to find it in the tracked tree.
 
-Either way, this decides only the fate of `.booley_project/` itself. The
+Either way, this decides only the fate of `.booley/` itself. The
 minimal-footprint guardrail still holds: no other Booley-generated file joins
 the RTL repo's tracked tree.
 
@@ -294,7 +294,7 @@ The Doctor command owns its Flow output locations, so do not redirect them with
 invented environment variables. Register only setup-authored command captures,
 exit-code sidecars, and exact Doctor scratch subtrees in the current run
 manifest. A Doctor scratch registration must name the bounded leaf subtree and
-the producing command; never register the shared `.booley_project/tmp/` root.
+the producing command; never register the shared `.booley/tmp/` root.
 Record any structured Findings attachment dependency while the source still
 exists. Active Job/process state, clean stamps, Goal Records, worktrees, reusable
 `.runtime/edalize` slots, and pre-existing residue are preserved or unresolved,

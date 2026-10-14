@@ -497,7 +497,7 @@ def test_verified_sources_are_available_only_through_scoped_tool(tmp_path):
 @pytest.mark.parametrize("ignore_native", [False, True])
 def test_stealth_analysis_preserves_project_files(tmp_path, ignore_native):
     path = source_project(tmp_path)
-    state = tmp_path / ".booley_project"
+    state = tmp_path / ".booley"
     (state / "cores").mkdir(parents=True)
     (tmp_path / "counter.core").rename(state / "cores/counter.core")
     (state / "booley.toml").write_text(

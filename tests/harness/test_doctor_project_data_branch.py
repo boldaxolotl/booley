@@ -15,10 +15,10 @@ def _repositories(tmp_path: Path, outer_branch: str, project_branch: str) -> tup
     root = tmp_path / "project"
     root.mkdir()
     _git(root, "init", "-b", outer_branch)
-    project_dir = root / ".booley_project"
-    project_dir.mkdir()
-    _git(project_dir, "init", "-b", project_branch)
-    return root, project_dir
+    booley_dir = root / ".booley"
+    booley_dir.mkdir()
+    _git(booley_dir, "init", "-b", project_branch)
+    return root, booley_dir
 
 
 def _commit(repository: Path, name: str) -> None:
@@ -36,7 +36,7 @@ def _run_check(root: Path) -> doctor._Reporter:
 
 
 def test_missing_project_data_destination_warns_with_migration_choices(tmp_path: Path) -> None:
-    root, project_dir = _repositories(tmp_path, "main", "master")
+    root, booley_dir = _repositories(tmp_path, "main", "master")
 
     reporter = _run_check(root)
 
@@ -46,7 +46,7 @@ def test_missing_project_data_destination_warns_with_migration_choices(tmp_path:
     assert finding.check_id == "project-data.destination-branch-missing"
     assert finding.subject == "project-data"
     assert "main" in finding.message
-    assert str(project_dir) in finding.message
+    assert str(booley_dir) in finding.message
     assert "git -C" in finding.fix
     assert "switch -c main" in finding.fix
     assert "project_destination_ref" in finding.fix
@@ -57,7 +57,7 @@ def test_matching_unborn_project_data_destination_passes(
     tmp_path: Path,
     branch: str,
 ) -> None:
-    root, _project_dir = _repositories(tmp_path, branch, branch)
+    root, _booley_dir = _repositories(tmp_path, branch, branch)
 
     reporter = _run_check(root)
 
@@ -69,8 +69,8 @@ def test_unreadable_project_data_repository_has_distinct_warning(tmp_path: Path)
     root = tmp_path / "project"
     root.mkdir()
     _git(root, "init", "-b", "main")
-    project_dir = root / ".booley_project"
-    (project_dir / ".git").mkdir(parents=True)
+    booley_dir = root / ".booley"
+    (booley_dir / ".git").mkdir(parents=True)
 
     reporter = _run_check(root)
 
@@ -79,14 +79,14 @@ def test_unreadable_project_data_repository_has_distinct_warning(tmp_path: Path)
     finding = warnings[0]
     assert finding.check_id == "project-data.destination-branch-unreadable"
     assert finding.subject == "project-data"
-    assert str(project_dir) in finding.message
+    assert str(booley_dir) in finding.message
     assert "inspect Git health" in finding.fix
 
 
 def test_existing_destination_passes_when_another_branch_is_checked_out(tmp_path: Path) -> None:
-    root, project_dir = _repositories(tmp_path, "main", "master")
-    _commit(project_dir, "baseline.txt")
-    _git(project_dir, "branch", "main")
+    root, booley_dir = _repositories(tmp_path, "main", "master")
+    _commit(booley_dir, "baseline.txt")
+    _git(booley_dir, "branch", "main")
 
     reporter = _run_check(root)
 
@@ -95,7 +95,7 @@ def test_existing_destination_passes_when_another_branch_is_checked_out(tmp_path
 
 
 def test_detached_outer_checkout_skips_alignment(tmp_path: Path) -> None:
-    root, _project_dir = _repositories(tmp_path, "main", "master")
+    root, _booley_dir = _repositories(tmp_path, "main", "master")
     _commit(root, "README.md")
     _git(root, "checkout", "--detach")
 
@@ -110,7 +110,7 @@ def test_nonstandalone_project_data_skips_alignment(tmp_path: Path) -> None:
     root = tmp_path / "project"
     root.mkdir()
     _git(root, "init", "-b", "main")
-    (root / ".booley_project").mkdir()
+    (root / ".booley").mkdir()
 
     reporter = _run_check(root)
 
@@ -119,18 +119,18 @@ def test_nonstandalone_project_data_skips_alignment(tmp_path: Path) -> None:
 
 
 def test_linked_project_data_worktree_skips_standalone_alignment(tmp_path: Path) -> None:
-    root, project_dir = _repositories(tmp_path, "main", "main")
+    root, booley_dir = _repositories(tmp_path, "main", "main")
     _commit(root, "README.md")
-    _commit(project_dir, "baseline.txt")
+    _commit(booley_dir, "baseline.txt")
     ticket_root = tmp_path / "ticket-worktree"
     _git(root, "worktree", "add", "-b", "ticket", str(ticket_root))
     _git(
-        project_dir,
+        booley_dir,
         "worktree",
         "add",
         "-b",
         "ticket-project",
-        str(ticket_root / ".booley_project"),
+        str(ticket_root / ".booley"),
     )
 
     reporter = _run_check(ticket_root)
@@ -140,8 +140,8 @@ def test_linked_project_data_worktree_skips_standalone_alignment(tmp_path: Path)
 
 
 def test_missing_destination_warning_can_be_waived(tmp_path: Path) -> None:
-    root, project_dir = _repositories(tmp_path, "main", "master")
-    (project_dir / "doctor-waivers.toml").write_text(
+    root, booley_dir = _repositories(tmp_path, "main", "master")
+    (booley_dir / "doctor-waivers.toml").write_text(
         """\
 version = 1
 
@@ -153,7 +153,7 @@ permanent = true
 """,
         encoding="utf-8",
     )
-    reporter = doctor._Reporter.create(load_doctor_waivers(project_dir))
+    reporter = doctor._Reporter.create(load_doctor_waivers(booley_dir))
 
     doctor._check_project_data_destination_branch(root, reporter)
 

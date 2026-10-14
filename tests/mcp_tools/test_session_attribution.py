@@ -391,7 +391,7 @@ async def test_deferred_peer_resolution_is_used_before_job_admission(tmp_path, m
     from booley.mcp.session_registry import SessionRegistry
     from booley.runtime.pid import ProcessIdentity
 
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path))
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path))
     monkeypatch.chdir(tmp_path)
     release = threading.Event()
     peer = ProcessIdentity(98765, "fixture", 101)

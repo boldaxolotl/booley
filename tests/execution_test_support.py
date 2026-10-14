@@ -17,7 +17,7 @@ _WAIT_SECONDS = 5.0
 _T = TypeVar("_T")
 
 
-def runtime_env(project_dir: Path, execution_id: ExecutionId | None = None) -> dict[str, str]:
+def runtime_env(booley_dir: Path, execution_id: ExecutionId | None = None) -> dict[str, str]:
     """Return a source-checkout subprocess environment for one Project."""
     python_path = os.environ.get("PYTHONPATH", "")
     source_path = str(_SRC_ROOT)
@@ -25,7 +25,7 @@ def runtime_env(project_dir: Path, execution_id: ExecutionId | None = None) -> d
         source_path = f"{source_path}{os.pathsep}{python_path}"
     env = {
         **os.environ,
-        "BOOLEY_PROJECT_DIR": str(project_dir),
+        "BOOLEY_DIR": str(booley_dir),
         "PYTHONPATH": source_path,
     }
     if execution_id is not None:
@@ -64,7 +64,7 @@ def wait_for(
 
 
 def start_supervisor_with_detached_descendant(
-    project_dir: Path,
+    booley_dir: Path,
     execution_id: ExecutionId,
     descendant_pid_file: Path,
 ) -> subprocess.Popen[str]:
@@ -104,5 +104,5 @@ def start_supervisor_with_detached_descendant(
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         text=True,
-        env=runtime_env(project_dir, execution_id),
+        env=runtime_env(booley_dir, execution_id),
     )

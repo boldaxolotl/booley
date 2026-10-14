@@ -269,8 +269,8 @@ filterwarnings = [
     # our code only *catches* TOMLDecodeError, it never constructs one. Not ours to fix.
     "ignore:Free-form arguments for TOMLDecodeError are deprecated:DeprecationWarning",
     # Boundary tests deliberately exercise an explicit-but-not-yet-created
-    # BOOLEY_PROJECT_DIR. The warning is the behavior under test, not test debt.
-    "ignore:BOOLEY_PROJECT_DIR=.* does not exist; using anyway:UserWarning",
+    # BOOLEY_DIR. The warning is the behavior under test, not test debt.
+    "ignore:BOOLEY_DIR=.* does not exist; using anyway:UserWarning",
     # Coverage.py's per-thread SQLite data connections can be finalized by the
     # garbage collector after pytest's last unraisable-exception sweep, failing
     # an all-green coverage shard at shutdown. Booley never imports sqlite3
@@ -342,7 +342,7 @@ include = [
     "src/booley/flows/implementation_report.py",
     "src/booley/flows/synth/implementation_report.py",
     "src/booley/flows/fpga/implementation_report.py",
-    "src/booley/runtime/project_dir.py",
+    "src/booley/runtime/booley_dir.py",
     "src/booley/flows/sim/backends/cocotb_results.py",
     "src/booley/flows/sim/result.py",
     # Test Run names, selectors and seeds: the identity simulation evidence records.
@@ -369,7 +369,7 @@ strict = [
     # External-input coercion and the Booley Directory trust boundary.
     "src/booley/core/boundary.py",
     "src/booley/targets",
-    "src/booley/runtime/project_dir.py",
+    "src/booley/runtime/booley_dir.py",
     # Persisted simulator-result structures and verdict parsing.
     "src/booley/flows/sim/backends/cocotb_results.py",
     "src/booley/flows/sim/result.py",

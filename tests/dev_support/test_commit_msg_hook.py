@@ -69,7 +69,7 @@ class TestSanitizeMessage:
         ],
     )
     def test_plain_attribution_variants_use_project_vocabulary(self, tmp_path: Path, footer: str):
-        config = tmp_path / ".booley_project" / "booley.toml"
+        config = tmp_path / ".booley" / "booley.toml"
         config.parent.mkdir()
         config.write_text(
             '[stealth]\nbanned_words = ["generated", "assistant-identity"]\n',
@@ -82,7 +82,7 @@ class TestSanitizeMessage:
     def test_plain_generated_prose_without_identity_is_sanitized_not_rejected(
         self, tmp_path: Path
     ):
-        config = tmp_path / ".booley_project" / "booley.toml"
+        config = tmp_path / ".booley" / "booley.toml"
         config.parent.mkdir()
         config.write_text(
             '[stealth]\nbanned_words = ["generated", "assistant-identity"]\n',
@@ -99,7 +99,7 @@ class TestSanitizeMessage:
     def test_plain_generated_prose_containing_protected_term_is_not_attribution(
         self, tmp_path: Path
     ):
-        config = tmp_path / ".booley_project" / "booley.toml"
+        config = tmp_path / ".booley" / "booley.toml"
         config.parent.mkdir()
         config.write_text(
             '[stealth]\nbanned_words = ["generated", "docker"]\n',
@@ -116,7 +116,7 @@ class TestSanitizeMessage:
         )
 
     def test_plain_identity_shape_before_final_prose_is_not_a_footer(self, tmp_path: Path):
-        config = tmp_path / ".booley_project" / "booley.toml"
+        config = tmp_path / ".booley" / "booley.toml"
         config.parent.mkdir()
         config.write_text(
             '[stealth]\nbanned_words = ["generated", "assistant-identity"]\n',
@@ -133,7 +133,7 @@ class TestSanitizeMessage:
     def test_empty_vocabulary_leaves_plain_shape_but_rejects_structural_shape(
         self, tmp_path: Path
     ):
-        config = tmp_path / ".booley_project" / "booley.toml"
+        config = tmp_path / ".booley" / "booley.toml"
         config.parent.mkdir()
         config.write_text("[stealth]\nbanned_words = []\n", encoding="utf-8")
         plain = "fix(core): repair widget\n\nGenerated with assistant-identity\n"
@@ -146,7 +146,7 @@ class TestSanitizeMessage:
             )
 
     def test_attribution_in_git_comment_is_ignored(self, tmp_path: Path):
-        config = tmp_path / ".booley_project" / "booley.toml"
+        config = tmp_path / ".booley" / "booley.toml"
         config.parent.mkdir()
         config.write_text(
             '[stealth]\nbanned_words = ["generated", "assistant-identity"]\n',
@@ -307,7 +307,7 @@ class TestMain:
     def test_plain_attribution_rejected_before_message_rewrite(self, tmp_path: Path, capsys):
         """A footer naming a configured identity stays intact for correction."""
         project_root = tmp_path / "project"
-        config_dir = project_root / ".booley_project"
+        config_dir = project_root / ".booley"
         config_dir.mkdir(parents=True)
         (config_dir / "booley.toml").write_text(
             '[stealth]\nenabled = true\nbanned_words = ["generated", "assistant-identity"]\n',
@@ -364,7 +364,7 @@ class TestMain:
         self, tmp_path: Path, monkeypatch
     ):
         project_root = tmp_path / "project"
-        config = project_root / ".booley_project" / "booley.toml"
+        config = project_root / ".booley" / "booley.toml"
         config.parent.mkdir(parents=True)
         config.write_text(
             '[stealth]\nbanned_words = ["generated", "assistant-identity"]\n',
@@ -386,7 +386,7 @@ class TestMain:
 
     def test_stealth_disabled_leaves_attribution_message_unchanged(self, tmp_path: Path, capsys):
         project_root = tmp_path / "project"
-        config = project_root / ".booley_project" / "booley.toml"
+        config = project_root / ".booley" / "booley.toml"
         config.parent.mkdir(parents=True)
         config.write_text(
             '[stealth]\nenabled = false\nbanned_words = ["generated", "assistant-identity"]\n',
@@ -552,7 +552,7 @@ def test_identifier_sanitization_preserves_original_unicode_bytes():
 
 
 def test_attribution_payload_equality_is_not_broadened_by_substrings(tmp_path):
-    directory = tmp_path / ".booley_project"
+    directory = tmp_path / ".booley"
     directory.mkdir()
     (directory / "booley.toml").write_text(
         '[stealth]\nbanned_words = []\nbanned_substrings = ["quokka"]\n'

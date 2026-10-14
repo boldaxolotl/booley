@@ -458,7 +458,7 @@ class TestConfiguredProvider:
 
         return doctor.ProjectAudit(
             project_root=tmp_path,
-            project_dir=tmp_path / ".booley_project",
+            booley_dir=tmp_path / ".booley",
             booley_toml={"agent": agent_section} if agent_section is not None else {},
             configs_toml={},
             first_target="",
@@ -623,11 +623,11 @@ class TestCli:
 
 class TestClaudeMintLocation:
     def test_missing_project_state_is_not_initialized(self, tmp_path, monkeypatch):
-        from booley.runtime import project_dir
+        from booley.runtime import booley_dir
 
         monkeypatch.setattr(
-            project_dir,
-            "resolve_checkout_project_dir",
+            booley_dir,
+            "resolve_checkout_booley_dir",
             Mock(side_effect=FileNotFoundError("missing")),
         )
 
@@ -783,7 +783,7 @@ class TestClaudeMintLocation:
         prompt.assert_not_called()
         assert errors == ["`claude setup-token` failed (exit 7)"]
 
-    def test_external_project_directory_counts_as_initialized(self, tmp_path, monkeypatch):
+    def test_external_booley_directory_counts_as_initialized(self, tmp_path, monkeypatch):
         project = tmp_path / "rtl"
         project_data = tmp_path / "private-state"
         project.mkdir()
@@ -791,7 +791,7 @@ class TestClaudeMintLocation:
         (project / "booley.toml").write_text(
             '[project]\ndir = "../private-state"\n', encoding="utf-8"
         )
-        monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+        monkeypatch.delenv("BOOLEY_DIR", raising=False)
 
         assert auth_cmd._project_is_initialized(project)
 

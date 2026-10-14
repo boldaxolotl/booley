@@ -32,7 +32,7 @@ def _clean_env(monkeypatch):
     for var in (
         "BOOLEY_PRIMARY_PROVIDER",
         "BOOLEY_PRIMARY_AUTH",
-        "BOOLEY_PROJECT_DIR",
+        "BOOLEY_DIR",
         "BOOLEY_AGENT_APP",
     ):
         monkeypatch.delenv(var, raising=False)
@@ -42,8 +42,8 @@ def _clean_env(monkeypatch):
 
 
 def _write_toml(root: Path, body: str) -> Path:
-    """Create a project whose .booley_project/booley.toml holds *body*."""
-    project_data = root / ".booley_project"
+    """Create a project whose .booley/booley.toml holds *body*."""
+    project_data = root / ".booley"
     project_data.mkdir(parents=True, exist_ok=True)
     (project_data / "booley.toml").write_text(body)
     return root
@@ -181,7 +181,7 @@ class TestSpecialistSubprocessPath:
 
     def test_lazy_config_picks_up_role_pins(self, tmp_path, monkeypatch):
         _write_toml(tmp_path, '[models.roles]\nreviewer = "claude-opus-4-8"\n')
-        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path / ".booley_project"))
+        monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
         cfg = bc.get_agent_settings()
         assert cfg.model_for_role("reviewer", "standard") == "claude-opus-4-8"
 
@@ -192,13 +192,13 @@ class TestSpecialistSubprocessPath:
             tmp_path,
             '[models]\nheavy = "custom-heavy"\n\n[models.roles]\nreviewer = "heavy"\n',
         )
-        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path / ".booley_project"))
+        monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
         monkeypatch.setenv("BOOLEY_PRIMARY_PROVIDER", "claude")
         cfg = bc.get_agent_settings()
         assert cfg.provider == "claude"
         assert cfg.model_for_role("reviewer", "light") == "custom-heavy"
 
-    def test_no_project_dir_leaves_roles_empty(self):
+    def test_no_booley_dir_leaves_roles_empty(self):
         assert bc.get_agent_settings().role_models == {}
 
 

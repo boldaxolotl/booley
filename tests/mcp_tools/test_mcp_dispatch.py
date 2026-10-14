@@ -2688,7 +2688,7 @@ def test_late_interactive_logging_and_job_completion_keep_the_selected_root(tmp_
     monkeypatch.setenv("BOOLEY_LOGS_DIR", "")
     monkeypatch.delenv("BOOLEY_RUNTIME_DIR", raising=False)
     monkeypatch.chdir(tmp_path)
-    (tmp_path / ".booley_project").mkdir()
+    (tmp_path / ".booley").mkdir()
     assert session_jobs_dir() is None
     mcp_server._maybe_configure_interactive_logs_dir()
     root = session_jobs_dir()
@@ -2749,7 +2749,7 @@ def test_endpoint_child_relocates_initial_import_and_direct_run_caches(
     """The endpoint interpreter is protected before a Custom Flow is imported."""
     import asyncio
 
-    from booley.runtime.project_dir import reset_cache
+    from booley.runtime.booley_dir import reset_cache
 
     module = _write_direct_custom_flow(tmp_path)
     for name in (
@@ -2761,7 +2761,7 @@ def test_endpoint_child_relocates_initial_import_and_direct_run_caches(
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path))
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path))
     reset_cache()
 
     definition = {
@@ -2790,9 +2790,9 @@ def test_endpoint_child_relocates_initial_import_and_direct_run_caches(
 def test_endpoint_environment_without_project_uses_runtime_fallback(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from booley.runtime.project_dir import reset_cache
+    from booley.runtime.booley_dir import reset_cache
 
-    for name in ("BOOLEY_PROJECT_DIR", "BOOLEY_RUNTIME_DIR", "BOOLEY_LOGS_DIR"):
+    for name in ("BOOLEY_DIR", "BOOLEY_RUNTIME_DIR", "BOOLEY_LOGS_DIR"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.chdir(tmp_path)
     reset_cache()

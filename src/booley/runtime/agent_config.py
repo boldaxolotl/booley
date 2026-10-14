@@ -41,9 +41,9 @@ def configure_backend(settings: AgentSettings) -> BackendConfig:
     return _backend_config
 
 
-def load_backend_config(project_root: Path, *, project_dir: Path | None = None) -> BackendConfig:
+def load_backend_config(project_root: Path, *, booley_dir: Path | None = None) -> BackendConfig:
     """Load Config settings and atomically replace Runtime backend composition."""
-    return configure_backend(load_agent_settings(project_root, project_dir=project_dir))
+    return configure_backend(load_agent_settings(project_root, booley_dir=booley_dir))
 
 
 def get_backend_config() -> BackendConfig:

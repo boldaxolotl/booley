@@ -6,9 +6,9 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+from booley.core.booley_dir import resolve_booley_dir
 from booley.core.boundary import as_dict
 from booley.core.config_paths import resolve_booley_toml, resolve_toml
-from booley.core.project_dir import resolve_project_dir
 from booley.targets.flow_names import config_section
 
 
@@ -77,7 +77,7 @@ def _retired_flow_key_error(section: str, key: str, value: object) -> str:
 def _load_config(work_dir: Path | None) -> dict[str, Any]:
     try:
         if work_dir is None:
-            return _read_toml(resolve_toml(resolve_project_dir())) or {}
+            return _read_toml(resolve_toml(resolve_booley_dir())) or {}
         root = work_dir.resolve()
         config = _read_toml(resolve_booley_toml(root))
         if config is not None:

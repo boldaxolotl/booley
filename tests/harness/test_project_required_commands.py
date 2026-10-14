@@ -8,7 +8,7 @@ import sys
 import pytest
 
 from booley.harness import booley as cli
-from booley.runtime.project_dir import reset_cache
+from booley.runtime.booley_dir import reset_cache
 
 
 def _command_paths(parser, prefix=()):
@@ -58,7 +58,7 @@ def test_required_commands_refuse_outside_project(
     if git_checkout:
         (tmp_path / ".git").mkdir()
         (tmp_path / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
-    for variable in ("BOOLEY_PROJECT_DIR", "RTL_PROJECT_ROOT", "BOOLEY_CONTAINER"):
+    for variable in ("BOOLEY_DIR", "RTL_PROJECT_ROOT", "BOOLEY_CONTAINER"):
         monkeypatch.delenv(variable, raising=False)
     reset_cache()
     monkeypatch.setattr(sys, "argv", ["booley", *path])
@@ -74,7 +74,7 @@ def test_required_commands_refuse_outside_project(
 @pytest.mark.parametrize("argv", [["targets"], ["upgrade", "status"]])
 def test_missing_project_with_real_parser(argv, monkeypatch, tmp_path, capsys):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
     monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
     reset_cache()
     monkeypatch.setattr(sys, "argv", ["booley", *argv])
@@ -101,7 +101,7 @@ def test_init_accepts_uninitialized_folder(git_checkout, tmp_path, monkeypatch):
 @pytest.mark.parametrize("selection", ["explicit", "stale-env", "source-env"])
 def test_invalid_project_selection_is_a_clean_cli_error(selection, tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
     monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
     target = tmp_path / "selected"
     target.mkdir()
@@ -109,10 +109,10 @@ def test_invalid_project_selection_is_a_clean_cli_error(selection, tmp_path, mon
     if selection == "explicit":
         argv += ["--project", str(target)]
     elif selection == "stale-env":
-        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(target / "missing"))
+        monkeypatch.setenv("BOOLEY_DIR", str(target / "missing"))
     else:
         (target / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
-        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(target / ".booley_project"))
+        monkeypatch.setenv("BOOLEY_DIR", str(target / ".booley"))
     reset_cache()
     monkeypatch.setattr(sys, "argv", argv)
     assert cli.main() == 2
@@ -132,7 +132,7 @@ def test_project_selection_permission_error_is_clean(tmp_path, monkeypatch, caps
     def refuse(_root):
         raise PermissionError("Booley Directory is not readable")
 
-    monkeypatch.setattr("booley.runtime.project_dir.resolve_checkout_project_dir", refuse)
+    monkeypatch.setattr("booley.runtime.booley_dir.resolve_checkout_booley_dir", refuse)
     assert cli.main() == 2
     assert capsys.readouterr().err == (
         "ERROR: cannot access Booley Directory: Booley Directory is not readable\n"
@@ -154,9 +154,9 @@ def test_bare_host_help_precedes_project_and_runtime_work(
     if directory == "source":
         (tmp_path / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
     if directory == "project":
-        (tmp_path / ".booley_project").mkdir()
+        (tmp_path / ".booley").mkdir()
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path / "stale"))
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / "stale"))
     monkeypatch.setenv("RTL_PROJECT_ROOT", str(tmp_path / "missing"))
     monkeypatch.setattr(sys, "argv", ["booley", *argv])
     monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: False)
@@ -222,9 +222,9 @@ def cli_project(tmp_path, monkeypatch):
     project.mkdir()
     (project / ".git").mkdir()
     (project / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
-    (project / ".booley_project").mkdir()
+    (project / ".booley").mkdir()
     monkeypatch.chdir(project)
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
     monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
     monkeypatch.setattr(cli.runtime_context, "ensure_proxy_env", lambda: False)
     reset_cache()
@@ -254,7 +254,7 @@ def test_bare_sandbox_preserves_project_guards(source, tmp_path, monkeypatch, ca
     if source:
         (tmp_path / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
     monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
     monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
     monkeypatch.setattr(sys, "argv", ["booley"])
     monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: True)

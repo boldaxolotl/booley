@@ -19,9 +19,9 @@ from tests.harness.test_doctor import _patch_environment, _write_project
 def test_pending_bootstrap_completes_with_waivable_warning_and_correct_health(
     waived, tmp_path, monkeypatch
 ):
-    project_dir = _write_project(tmp_path)
+    booley_dir = _write_project(tmp_path)
     inspect_host = host_diagnostics.inspect_host
-    _patch_environment(monkeypatch, tmp_path, project_dir)
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
     monkeypatch.setattr(host_diagnostics, "inspect_host", inspect_host)
     monkeypatch.setattr(
         host_diagnostics,
@@ -74,13 +74,13 @@ def test_pending_bootstrap_completes_with_waivable_warning_and_correct_health(
             '[[waiver]]\ncheck = "host.bootstrap-pending"\n'
             'subject = "skills"\nreason = "Reviewed temporary gap"\npermanent = true\n'
         )
-    (project_dir / "doctor-waivers.toml").write_text(waivers)
+    (booley_dir / "doctor-waivers.toml").write_text(waivers)
     result = doctor.run_doctor_result(argparse.Namespace(deep=False), tmp_path)
     finding = next(f for f in result.findings if f.check_id == "host.bootstrap-pending")
     assert (finding.severity, finding.subject) == ("waived" if waived else "warn", "skills")
     assert result.exit_code == 0
     assert result.clean is waived
-    assert doctor_stamp.stamp_path(project_dir).exists() is waived
+    assert doctor_stamp.stamp_path(booley_dir).exists() is waived
 
 
 def test_typed_report_preserves_warning_deduplication_and_machine_fields():
@@ -104,11 +104,11 @@ def test_typed_report_preserves_warning_deduplication_and_machine_fields():
 def test_project_observations_and_repairs_keep_the_existing_order(
     tmp_path, monkeypatch, read_only, valid
 ):
-    project_dir = _write_project(tmp_path)
-    (project_dir / "AGENTS.md").write_text("# Project guidance\n")
+    booley_dir = _write_project(tmp_path)
+    (booley_dir / "AGENTS.md").write_text("# Project guidance\n")
     if not valid:
-        (project_dir / "booley.toml").unlink()
-    _patch_environment(monkeypatch, tmp_path, project_dir)
+        (booley_dir / "booley.toml").unlink()
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
     events = []
 
     def trace(module, name, label):

@@ -7,8 +7,8 @@ import yaml
 
 def write_project(root: Path, harness: str, outcome: str) -> None:
     root.mkdir(parents=True)
-    (root / ".booley_project").mkdir()
-    (root / ".booley_project" / "booley.toml").write_text('[project]\nname = "acceptance"\n')
+    (root / ".booley").mkdir()
+    (root / ".booley" / "booley.toml").write_text('[project]\nname = "acceptance"\n')
     rtl = "module counter(input logic clk, output logic [1:0] value = 0);\n"
     rtl += "always_ff @(posedge clk) value <= value + 1'b1;\nendmodule\n"
     if outcome == "compile":

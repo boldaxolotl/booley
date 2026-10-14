@@ -29,7 +29,7 @@ pytestmark = pytest.mark.timeout(120)
 
 def configure(layout, declarations, files=None):
     config = "[project]\nname='demo'\nprotected_inputs=" + json.dumps(declarations) + "\n"
-    (layout.worktree / ".booley_project/booley.toml").write_text(config)
+    (layout.worktree / ".booley/booley.toml").write_text(config)
     for relative, content in (files or {"Makefile": b"all:\n\ttrue\n"}).items():
         path = layout.worktree / relative
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -143,7 +143,7 @@ def test_committed_membership_and_mode_cannot_hide_behind_restored_disk(layout, 
     [
         (["missing.c"], {"Makefile": b"recipe"}, "missing.c.*matches no files"),
         (["firmware"], {"firmware/a.c": b"a"}, "firmware/"),
-        ([".booley_project/goals/"], {"Makefile": b"recipe"}, "Goal Record"),
+        ([".booley/goals/"], {"Makefile": b"recipe"}, "Goal Record"),
     ],
 )
 def test_entry_refusals_rollback(layout, declarations, files, message):
@@ -159,7 +159,7 @@ def test_entry_refusals_rollback(layout, declarations, files, message):
 def test_untracked_matches_are_not_skipped(layout, ignored):
     configure(layout, ["firmware/"], {"firmware/a.c": b"a"})
     if ignored:
-        (layout.main / ".git/info/exclude").write_text("/.booley_project\nfirmware/new.c\n")
+        (layout.main / ".git/info/exclude").write_text("/.booley\nfirmware/new.c\n")
     (layout.worktree / "firmware/new.c").write_bytes(b"new")
     with pytest.raises(GoalEntryError, match=r"firmware/new\.c"):
         enter(layout)
@@ -167,9 +167,7 @@ def test_untracked_matches_are_not_skipped(layout, ignored):
 
 def test_nested_project_repository_is_refused(layout, tmp_path):
     project = install_paired_project(layout, tmp_path)
-    (project / "booley.toml").write_text(
-        "[project]\nprotected_inputs=['.booley_project/booley.toml']\n"
-    )
+    (project / "booley.toml").write_text("[project]\nprotected_inputs=['.booley/booley.toml']\n")
     git(project, "add", "booley.toml")
     git(project, "commit", "-qm", "nested declaration")
     with pytest.raises(GoalEntryError, match="nested repository or submodule"):
@@ -179,7 +177,7 @@ def test_nested_project_repository_is_refused(layout, tmp_path):
 def test_configuration_change_is_a_violation_even_with_identical_files(layout):
     configure(layout, ["Makefile"])
     enter(layout)
-    config = layout.worktree / ".booley_project/booley.toml"
+    config = layout.worktree / ".booley/booley.toml"
     original = config.read_text()
     config.write_text(original.replace('["Makefile"]', '["Makefile", "Make*"]'))
     assert any("declarations changed" in reason for reason in warnings(layout))
@@ -337,34 +335,34 @@ def test_committed_mode_on_builtin_overlap_is_detected_with_working_mode_restore
     )
 
 
-# Digests independently captured from main 7b56e4b0daed's unchanged implementation.
+# Current-layout digests; historical recorded digests are never rewritten.
 @pytest.mark.parametrize(
     "declaration_line,working,head",
     [
         (
             "",
-            "0375d7b4402a9f0d184f9978a23aa50208c25308e0d066226d50e2e2d8dbbf61",
-            "fe7a63a377e5f705805bb62c5f29552b7c6f63291f14b1dacc9d3a4d2e7587ba",
+            "677060e19bf9a366063ccc4ee4fd8bc02b060ab051f174be5bd7fdcafa2290ea",
+            "c052731edc29e589fc1e2aac7c1de654a32741466d180f8536094919629465bf",
         ),
         (
             "protected_inputs=[]\n",
-            "6195adfbb250ba40fd55489987067b68d9c9d89f4b49769bda7dbf978b758de7",
-            "ca7e5e2aa0746af69673789bcc4fadf304682a2749d6753a6bec48ff669e2971",
+            "3a5941b320e9794c0c7b0d4a2fa28cea8b9f6463b03bb6b6141392b4b1cc5299",
+            "b4414298727c9945c744f640e1f03e7f50f92ced443de936ad2c6dc0b58d8ee9",
         ),
     ],
 )
-def test_no_declarations_preserve_independent_legacy_digest(
+def test_no_declarations_have_stable_current_layout_digest(
     layout, declaration_line, working, head
 ):
     # Normalize the fixture's text writes to LF on Windows as well as POSIX.
     (layout.worktree / "booley.toml").write_bytes(b"# root config\n")
     git(layout.worktree, "add", "booley.toml")
     git(layout.worktree, "commit", "--allow-empty", "-qm", "canonical newline fixture")
-    for project in (layout.control, layout.worktree / ".booley_project"):
+    for project in (layout.control, layout.worktree / ".booley"):
         (project / "booley.toml").write_bytes(b"[project]\nname = 'demo'\n")
         (project / "mcp_tools/tool.py").write_bytes(b"# custom tool\n")
     config = "[project]\nname = 'demo'\n" + declaration_line
-    (layout.worktree / ".booley_project/booley.toml").write_bytes(config.encode())
+    (layout.worktree / ".booley/booley.toml").write_bytes(config.encode())
     snapshot = snapshot_protected_inputs(ProtectedInputRoots(layout.worktree, layout.control))
     assert snapshot.declared is None
     assert snapshot.working_digest == "sha256:" + working

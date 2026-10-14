@@ -141,8 +141,8 @@ def project(tmp_path: Path) -> Path:
     (tmp_path / "alpha" / "alpha.core").write_text(_ALPHA_CORE, encoding="utf-8")
     (tmp_path / "beta").mkdir()
     (tmp_path / "beta" / "beta.core").write_text(_BETA_CORE, encoding="utf-8")
-    (tmp_path / ".booley_project").mkdir()
-    (tmp_path / ".booley_project" / "booley.toml").write_text(_BOOLEY_TOML, encoding="utf-8")
+    (tmp_path / ".booley").mkdir()
+    (tmp_path / ".booley" / "booley.toml").write_text(_BOOLEY_TOML, encoding="utf-8")
     return tmp_path
 
 
@@ -177,14 +177,14 @@ class TestTargetInterface:
             select_target(project, "sim", for_flow="lint")
 
     def test_inspection_uses_projected_view_of_stealth_authored_core(self, tmp_path: Path):
-        project_dir = tmp_path / ".booley_project"
-        cores = project_dir / "cores"
+        booley_dir = tmp_path / ".booley"
+        cores = booley_dir / "cores"
         cores.mkdir(parents=True)
-        (project_dir / "booley.toml").write_text(
+        (booley_dir / "booley.toml").write_text(
             "[stealth]\nenabled = true\n",
             encoding="utf-8",
         )
-        (project_dir / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
+        (booley_dir / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
         (tmp_path / "rtl").mkdir()
         (tmp_path / "rtl" / "demo.sv").write_text(
             "module demo; endmodule\n",
@@ -216,14 +216,14 @@ class TestTargetInterface:
         assert inspection.rtl_files == ("rtl/demo.sv",)
 
     def test_inspection_refreshes_owned_stale_projection(self, tmp_path: Path):
-        project_dir = tmp_path / ".booley_project"
-        cores = project_dir / "cores"
+        booley_dir = tmp_path / ".booley"
+        cores = booley_dir / "cores"
         cores.mkdir(parents=True)
-        (project_dir / "booley.toml").write_text(
+        (booley_dir / "booley.toml").write_text(
             "[stealth]\nenabled = true\n",
             encoding="utf-8",
         )
-        (project_dir / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
+        (booley_dir / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
         (tmp_path / "rtl").mkdir()
         (tmp_path / "rtl" / "old.sv").write_text(
             "module old; endmodule\n",
@@ -261,14 +261,14 @@ class TestTargetInterface:
     def test_inspection_uses_state_core_as_second_library_when_projection_is_disabled(
         self, tmp_path: Path
     ):
-        project_dir = tmp_path / ".booley_project"
-        cores = project_dir / "cores"
+        booley_dir = tmp_path / ".booley"
+        cores = booley_dir / "cores"
         cores.mkdir(parents=True)
-        (project_dir / "booley.toml").write_text(
+        (booley_dir / "booley.toml").write_text(
             "[stealth]\nenabled = false\n",
             encoding="utf-8",
         )
-        (project_dir / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
+        (booley_dir / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
         authored = cores / "demo.core"
         authored.write_text(
             textwrap.dedent(
@@ -292,8 +292,8 @@ class TestTargetInterface:
         assert inspection.inputs == ()
 
     def test_inspection_ignores_generated_build_core_copy(self, tmp_path: Path):
-        (tmp_path / ".booley_project").mkdir()
-        (tmp_path / ".booley_project" / "booley.toml").write_text(
+        (tmp_path / ".booley").mkdir()
+        (tmp_path / ".booley" / "booley.toml").write_text(
             "[stealth]\nenabled = false\n",
             encoding="utf-8",
         )
@@ -325,10 +325,10 @@ class TestTargetInterface:
         assert inspection.toplevel == "authored"
 
     def test_inspection_ignores_state_worktree_core_copies(self, tmp_path: Path):
-        project_dir = tmp_path / ".booley_project"
-        cores = project_dir / "cores"
+        booley_dir = tmp_path / ".booley"
+        cores = booley_dir / "cores"
         cores.mkdir(parents=True)
-        (project_dir / "booley.toml").write_text(
+        (booley_dir / "booley.toml").write_text(
             "[stealth]\nenabled = true\n",
             encoding="utf-8",
         )
@@ -349,8 +349,8 @@ class TestTargetInterface:
         )
         reconcile_projected_cores(tmp_path)
         for state_copy in (
-            project_dir / "worktrees" / "ticket" / "stale.core",
-            project_dir / ".baseline-wt-old" / "stale.core",
+            booley_dir / "worktrees" / "ticket" / "stale.core",
+            booley_dir / ".baseline-wt-old" / "stale.core",
         ):
             state_copy.parent.mkdir(parents=True)
             state_copy.write_text(
@@ -365,7 +365,7 @@ class TestTargetInterface:
 
     @pytest.mark.parametrize(
         "excluded_tree",
-        [Path(".booley_project/worktrees/ticket"), Path("build/cache")],
+        [Path(".booley/worktrees/ticket"), Path("build/cache")],
         ids=["project-state", "generated-build"],
     )
     def test_inspection_prunes_symlink_aliases_into_excluded_trees(
@@ -401,10 +401,10 @@ class TestTargetInterface:
             inspect_target(tmp_path, select_target(tmp_path, "lint"))
 
     def test_inspection_refuses_foreign_expected_projection(self, tmp_path: Path):
-        project_dir = tmp_path / ".booley_project"
-        cores = project_dir / "cores"
+        booley_dir = tmp_path / ".booley"
+        cores = booley_dir / "cores"
         cores.mkdir(parents=True)
-        (project_dir / "booley.toml").write_text(
+        (booley_dir / "booley.toml").write_text(
             "[stealth]\nenabled = true\n",
             encoding="utf-8",
         )
@@ -437,14 +437,14 @@ class TestTargetInterface:
         assert projected.read_text(encoding="utf-8") == foreign_content
 
     def test_inspection_uses_isolated_registry_when_native_cores_are_ignored(self, tmp_path: Path):
-        project_dir = tmp_path / ".booley_project"
-        cores = project_dir / "cores"
+        booley_dir = tmp_path / ".booley"
+        cores = booley_dir / "cores"
         cores.mkdir(parents=True)
-        (project_dir / "booley.toml").write_text(
+        (booley_dir / "booley.toml").write_text(
             "[stealth]\nenabled = true\nignore_native_cores = true\n",
             encoding="utf-8",
         )
-        (project_dir / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
+        (booley_dir / "FUSESOC_IGNORE").write_text("", encoding="utf-8")
         (tmp_path / "rtl").mkdir()
         (tmp_path / "rtl" / "demo.sv").write_text("module demo; endmodule\n", encoding="utf-8")
         authored = cores / "demo.core"
@@ -986,13 +986,13 @@ class TestDetail:
         payload = detail_payload(project, "sim", resolve=False)
         assert payload["name"] == "sim"
         assert "resolved" not in payload and "resolved_error" not in payload
-        assert not (project / ".booley_project" / ".runtime" / "edalize").exists()
+        assert not (project / ".booley" / ".runtime" / "edalize").exists()
 
     def test_source_checkout_rejection_is_not_a_resolution_error(self, project):
         (project / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
         with pytest.raises(SourceCheckoutProjectError, match="cannot be initialized"):
             detail_payload(project, "sim")
-        assert not (project / ".booley_project" / ".runtime" / "edalize").exists()
+        assert not (project / ".booley" / ".runtime" / "edalize").exists()
 
     @pytest.mark.parametrize(
         ("message", "expected"),
@@ -1061,7 +1061,7 @@ class TestDetail:
             (project / rel).parent.mkdir(parents=True, exist_ok=True)
             (project / rel).touch()
 
-        build_root = project / ".booley_project" / ".runtime" / "edalize" / "targets" / "sim"
+        build_root = project / ".booley" / ".runtime" / "edalize" / "targets" / "sim"
         edam_text = textwrap.dedent(
             """\
             name: acme_ip_alpha_1.0
@@ -1093,7 +1093,7 @@ class TestDetail:
         assert resolved["sdc_files"] == ["constraints/alpha.sdc"]
         assert resolved["xdc_files"] == []
         assert resolved["build_root"] == (
-            ".booley_project/.runtime/edalize/targets/sim/acme_ip_alpha_1.0/sim"
+            ".booley/.runtime/edalize/targets/sim/acme_ip_alpha_1.0/sim"
         )
         assert resolved["parameters"] == {
             "WIDTH": {"datatype": "int", "default": 8, "paramtype": "vlogparam"}

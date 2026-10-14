@@ -7,7 +7,7 @@ from typing import Any
 
 from booley.audit.project_schema import audit_specialist_table
 from booley.core.boundary import BoundaryError, as_dict, require_dict
-from booley.runtime.project_dir import resolve_checkout_project_dir, resolve_project_dir
+from booley.runtime.booley_dir import resolve_booley_dir, resolve_checkout_booley_dir
 
 
 class EndpointConfigError(ValueError):
@@ -68,14 +68,14 @@ def read_endpoint_config(path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
 def get_endpoint_config(project_root: Path | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
     """Load ``[specialists]`` and ``[flows]`` from booley.toml."""
     try:
-        project_dir = (
-            resolve_checkout_project_dir(project_root)
+        booley_dir = (
+            resolve_checkout_booley_dir(project_root)
             if project_root is not None
-            else resolve_project_dir()
+            else resolve_booley_dir()
         )
     except FileNotFoundError:
         return {}, {}
-    return read_endpoint_config(project_dir / "booley.toml")
+    return read_endpoint_config(booley_dir / "booley.toml")
 
 
 def endpoint_is_enabled(

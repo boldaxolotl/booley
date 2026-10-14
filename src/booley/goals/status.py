@@ -116,20 +116,26 @@ def _build_status(
     work_dir: Path | None,
     resolvers: GoalFreshnessResolvers,
 ) -> GoalStatusView:
-    root = work_dir or Path(record.worktree_path)
+    from booley.runtime.booley_dir_migration import archival_path, is_archived_record
+
+    if is_archived_record(store.booley_dir, record.id):
+        return _archived_status(store, record)
+    root = work_dir or archival_path(
+        store.booley_dir, Path(record.worktree_path), record_id=record.id
+    )
     try:
         checkout = GoalCheckout(root).containing_repository()
     except CheckoutError:
         checkout = None  # protected/checkout checks report an inaccessible worktree
     if checkout is not None:
         root = checkout[0]
-    paths = record_paths(store.project_dir, record.id)
+    paths = record_paths(store.booley_dir, record.id)
     proposals = list_proposals(paths.root)
     interrupted = pending_applies(paths.root)
     state = load_goal_state(store, record)
     if state.slug != record.id:
         raise GoalStoreError(f"Goal state belongs to {state.slug}, not {record.id}")
-    protected = protected_warnings(record, store.project_dir, root)
+    protected = protected_warnings(record, store.booley_dir, root)
     drift = ("Goal apply is interrupted; recovery is required" if interrupted else "") or (
         protected[0] if protected else checkout_violation(store, record, root)
     )
@@ -139,7 +145,7 @@ def _build_status(
     return GoalStatusView(
         record,
         goals,
-        goal_warnings(record, store.project_dir, work_dir=root),
+        goal_warnings(record, store.booley_dir, work_dir=root),
         sum(view.state == "pending" and not view.closed_by_abandonment for view in proposals),
         proposals,
         _proposal_conflicts(proposals, record),
@@ -364,3 +370,30 @@ def status_views(
     campaign evidence before it reads.
     """
     return select_status(store, work_dir, campaign_reader=campaign_reader).views
+
+
+def _archived_status(store: GoalStore, record: GoalRecord) -> GoalStatusView:
+    """Inspect terminal frozen facts without reopening old inputs or judging live freshness."""
+    from booley.runtime.booley_dir_migration import archival_path
+
+    state = load_goal_state(store, record)
+    rows = []
+    for goal in record.goals:
+        entry = state.criteria.get(goal.spec.key)
+        rows.append(
+            GoalStatus(
+                goal.spec.key,
+                "met" if entry is not None and entry.met else "unmet",
+                "recorded evidence (historical)",
+                presentation=goal_presentation(goal.spec, _entry_facts(entry)),
+            )
+        )
+    display = replace(
+        record,
+        worktree_path=str(
+            archival_path(store.booley_dir, Path(record.worktree_path), record_id=record.id)
+        ),
+    )
+    return GoalStatusView(
+        display, tuple(rows), "Historical Goal Record; current checkout freshness is not asserted."
+    )

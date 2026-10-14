@@ -64,21 +64,21 @@ from booley.goals.waiver_policy import (
     policy_location,
     waiver_policy_fingerprint,
 )
-from booley.runtime.project_dir import resolve_checkout_project_dir
+from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.targets.catalog import TargetCatalog
 
 
 class GoalWaiverService:
     """One resolved record's checkout/Campaign/candidate composition."""
 
-    def __init__(self, project_dir: Path, record: GoalRecord) -> None:
-        self.project_dir = project_dir
+    def __init__(self, booley_dir: Path, record: GoalRecord) -> None:
+        self.booley_dir = booley_dir
         self.record = record
         self.root = Path(record.worktree_path)
-        self.paths = record_paths(project_dir, record.id)
+        self.paths = record_paths(booley_dir, record.id)
 
     def _roots(self) -> CoverageRepositoryRoots:
-        return CoverageRepositoryRoots(self.root, resolve_checkout_project_dir(self.root))
+        return CoverageRepositoryRoots(self.root, resolve_checkout_booley_dir(self.root))
 
     def _targets(self) -> tuple[DurableTargetIdentity, ...]:
         return tuple(
@@ -115,8 +115,8 @@ class GoalWaiverService:
 
     def bind(self, record: GoalRecord, goal_key: str, candidate_id: str) -> WaiverBinding:
         """Bind one exact candidate to a selected producer Campaign and current policy."""
-        state = load_goal_state(GoalStore(self.project_dir), record)
-        row = selected_observations(record, state, self.project_dir).get(goal_key)
+        state = load_goal_state(GoalStore(self.booley_dir), record)
+        row = selected_observations(record, state, self.booley_dir).get(goal_key)
         if row is None:
             raise ProposalError("waiver proposal requires selected immutable coverage evidence")
         item = self._candidate(candidate_id)
@@ -193,7 +193,7 @@ class GoalWaiverService:
     def _refuse_protected(self, destination: Path, record: GoalRecord) -> None:
         from booley.goals.protected_inputs import ProtectedInputRoots
 
-        roots = ProtectedInputRoots(Path(record.worktree_path), self.project_dir)
+        roots = ProtectedInputRoots(Path(record.worktree_path), self.booley_dir)
         # Persisted resolved paths are authoritative; decode through their recorded roots.
         from booley.goals.protected_inputs import ProtectedPath
 
@@ -228,8 +228,8 @@ class GoalWaiverService:
         item = self._candidate(binding.candidate_id)
         if digest(item.to_json()) != binding.candidate_digest:
             raise ProposalError("selected candidate was replaced after proposal creation")
-        state = load_goal_state(GoalStore(self.project_dir), self.record)
-        row = selected_observations(self.record, state, self.project_dir).get(proposal.goal_key)
+        state = load_goal_state(GoalStore(self.booley_dir), self.record)
+        row = selected_observations(self.record, state, self.booley_dir).get(proposal.goal_key)
         if (
             row is None
             or row["detail"].get("coverage_campaign_reference")

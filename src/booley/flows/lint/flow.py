@@ -970,7 +970,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
                 report_text=(
                     "lint: --target is required when running outside a ticket. "
                     "Pass --target <name>; available Targets are the .core "
-                    "lint Targets in .booley_project/."
+                    "lint Targets in .booley/."
                 ),
             )
         return None

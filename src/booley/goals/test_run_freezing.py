@@ -597,7 +597,7 @@ def _resolved(
     """*record* with its pending slots filled, or ``None`` when nothing may or need change."""
     if record.state is not GoalState.ACTIVE:
         return None
-    if pending_applies(record_paths(store.project_dir, record.id).root):
+    if pending_applies(record_paths(store.booley_dir, record.id).root):
         return None
     # Looked up here, not bound as a default: a caller without its own source
     # (a run being bound, a status read) draws from this module's.

@@ -40,7 +40,7 @@ from booley.runtime import (
     session_runtime,
 )
 from booley.runtime import devcontainer as dc
-from booley.runtime.project_dir import reset_cache
+from booley.runtime.booley_dir import reset_cache
 from booley.targets.catalog import TargetCatalog
 from tests.diagnostic_helpers import (
     _issued_runtime_state,
@@ -87,8 +87,8 @@ def _write_project(
 ) -> Path:
     (root / "rtl").mkdir()
     (root / "tb").mkdir()
-    project_dir = root / ".booley_project"
-    project_dir.mkdir()
+    booley_dir = root / ".booley"
+    booley_dir.mkdir()
     sandbox_section = f'[sandbox]\nimage = "{sandbox_image}"\n' if sandbox_image else ""
     booley_toml = """
 [project]
@@ -110,11 +110,11 @@ include_dirs = []
 
 {sandbox_section}
 """.lstrip().replace("{sandbox_section}", sandbox_section)
-    (project_dir / "booley.toml").write_text(
+    (booley_dir / "booley.toml").write_text(
         booley_toml,
         encoding="utf-8",
     )
-    (project_dir / "configs.toml").write_text(
+    (booley_dir / "configs.toml").write_text(
         configs_text
         or """
 [fast]
@@ -131,7 +131,7 @@ tests = ["full"]
 """.lstrip(),
         encoding="utf-8",
     )
-    (project_dir / ".gitignore").write_text(project_gitignore.PROJECT_GITIGNORE, encoding="utf-8")
+    (booley_dir / ".gitignore").write_text(project_gitignore.PROJECT_GITIGNORE, encoding="utf-8")
     # ADR 0039: a resolvable .core Target is mandatory — without one the core
     # audit hard-FAILs and every doctor E2E fixture here would go red.
     (root / "unit.core").write_text(
@@ -169,14 +169,14 @@ tests = ["full"]
         encoding="utf-8",
     )
     if write_tickets:
-        _write_tickets_tree(project_dir)
+        _write_tickets_tree(booley_dir)
     if seed_interactive:
         _seed_interactive(root)
-    return project_dir
+    return booley_dir
 
 
-def _write_tickets_tree(project_dir: Path) -> None:
-    tickets_dir = project_dir / "tickets"
+def _write_tickets_tree(booley_dir: Path) -> None:
+    tickets_dir = booley_dir / "tickets"
     for directory in [tickets_dir / "board", tickets_dir / "state"]:
         directory.mkdir(parents=True, exist_ok=True)
     (tickets_dir / "logs").mkdir(parents=True, exist_ok=True)
@@ -195,7 +195,7 @@ def _seed_interactive(root: Path) -> None:
     info_dir.mkdir(parents=True, exist_ok=True)
     (info_dir / "attributes").write_text("* text=auto eol=lf\n", encoding="utf-8")
     (info_dir / "exclude").write_text(
-        "/.devcontainer\n/.booley_project\n",
+        "/.devcontainer\n/.booley\n",
         encoding="utf-8",
     )
 
@@ -233,14 +233,14 @@ def _patch_host_environment(monkeypatch, root: Path) -> None:
 def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixture
     monkeypatch,
     root: Path,
-    project_dir: Path,
+    booley_dir: Path,
     *,
     mcp_tools: list[str] | None = None,
     mcp_payload: dict | None = None,
     runtime_booley_version: str = __version__,
 ) -> list[list[str]]:
     reset_cache()
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project_dir))
+    monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
     # Doctor tests exercise the host-side orchestration path deterministically,
     # whatever machine the suite itself runs on.
     _patch_host_environment(monkeypatch, root)
@@ -344,7 +344,7 @@ def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixtu
                     "sim",
                 ],
                 "errors": [],
-                "logs_dir": "/work/.booley_project/.interactive_logs/session",
+                "logs_dir": "/work/.booley/.interactive_logs/session",
                 "logs_dir_ok": True,
             }
             return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(payload), stderr="")
@@ -371,8 +371,8 @@ def test_doctor_default_runs_tool_dry_runs_and_notes_missing_guidance(
     monkeypatch,
     capsys,
 ):
-    project_dir = _write_project(tmp_path)
-    calls = _patch_environment(monkeypatch, tmp_path, project_dir)
+    booley_dir = _write_project(tmp_path)
+    calls = _patch_environment(monkeypatch, tmp_path, booley_dir)
 
     rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
 
@@ -395,8 +395,8 @@ def test_doctor_default_reports_unsafe_private_store_as_flow_failure(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     real_up = session_runtime.up
-    project_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, project_dir)
+    booley_dir = _write_project(tmp_path)
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
     config_root = tmp_path / "config"
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config_root))
     pending = issuance_invalidation.prepare(
@@ -422,8 +422,8 @@ def test_doctor_default_reports_unsafe_private_store_as_flow_failure(
 
 
 def test_doctor_passes_interactive_checks_when_seeded(tmp_path, monkeypatch, capsys):
-    project_dir = _write_project(tmp_path)  # seeds devcontainer + exclude
-    _patch_environment(monkeypatch, tmp_path, project_dir)
+    booley_dir = _write_project(tmp_path)  # seeds devcontainer + exclude
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
 
     rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
 
@@ -442,19 +442,19 @@ def test_git_exclude_warnings_are_scoped_per_missing_entry(tmp_path):
 
     assert len(findings) == 1
     assert findings[0].check_id == "project.git-excludes-missing"
-    assert findings[0].subject == ".booley_project"
+    assert findings[0].subject == ".booley"
 
 
 @pytest.mark.parametrize("concise", [False, True])
 def test_doctor_clean_run_records_freshness_stamp(tmp_path, monkeypatch, capsys, concise):
-    project_dir = _write_project(tmp_path)
+    booley_dir = _write_project(tmp_path)
     _disable_line_ending_stealth(tmp_path)
     (tmp_path / ".git").mkdir(exist_ok=True)
-    _patch_environment(monkeypatch, tmp_path, project_dir)
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
     # This broad integration fixture intentionally leaves several environmental
     # warnings active.  Exercise the real waiver path so the clean-run contract
     # remains zero *unwaived* warnings.
-    (project_dir / "doctor-waivers.toml").write_text(
+    (booley_dir / "doctor-waivers.toml").write_text(
         """\
 version = 1
 
@@ -489,37 +489,37 @@ permanent = true
     assert rc == 0
     output = capsys.readouterr().out
     assert ("PASS  " not in output) is concise
-    stamp = doctor_stamp.load_stamp(project_dir)
+    stamp = doctor_stamp.load_stamp(booley_dir)
     assert stamp is not None, output
-    assert stamp["fingerprint"] == doctor_stamp.compute_fingerprint(project_dir, tmp_path)
+    assert stamp["fingerprint"] == doctor_stamp.compute_fingerprint(booley_dir, tmp_path)
     # The stamp it just wrote must satisfy its own freshness check.
-    assert doctor_stamp.check_stamp(project_dir, tmp_path) is None
+    assert doctor_stamp.check_stamp(booley_dir, tmp_path) is None
 
 
 def test_doctor_warning_run_does_not_record_freshness_stamp(tmp_path, monkeypatch):
-    project_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, project_dir)
+    booley_dir = _write_project(tmp_path)
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
 
     rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
 
     assert rc == 0  # WARN remains advisory to CLI callers.
-    assert doctor_stamp.load_stamp(project_dir) is None
+    assert doctor_stamp.load_stamp(booley_dir) is None
 
 
 def test_doctor_failing_run_does_not_record_stamp(tmp_path, monkeypatch):
-    project_dir = _write_project(tmp_path)
+    booley_dir = _write_project(tmp_path)
     # Missing asic_synthesize in the MCP probe is a hard FAIL (rc 1).
     _patch_environment(
         monkeypatch,
         tmp_path,
-        project_dir,
+        booley_dir,
         mcp_tools=["bwave", "lint", "sim"],
     )
 
     rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
 
     assert rc == 1
-    assert doctor_stamp.load_stamp(project_dir) is None
+    assert doctor_stamp.load_stamp(booley_dir) is None
 
 
 def test_doctor_fails_when_issued_runtime_has_different_booley_identity(
@@ -527,11 +527,11 @@ def test_doctor_fails_when_issued_runtime_has_different_booley_identity(
     monkeypatch,
     capsys,
 ):
-    project_dir = _write_project(tmp_path)
+    booley_dir = _write_project(tmp_path)
     _patch_environment(
         monkeypatch,
         tmp_path,
-        project_dir,
+        booley_dir,
         runtime_booley_version="9.9.9",
     )
     monkeypatch.setattr(
@@ -550,7 +550,7 @@ def test_doctor_fails_when_issued_runtime_has_different_booley_identity(
     assert rc == 1
     assert "revision abc123 -> def456" in output
     assert "wheel_source_fingerprint current -> stale" in output
-    assert doctor_stamp.load_stamp(project_dir) is None
+    assert doctor_stamp.load_stamp(booley_dir) is None
 
 
 def test_doctor_fails_and_does_not_stamp_agent_app_drift(
@@ -558,14 +558,14 @@ def test_doctor_fails_and_does_not_stamp_agent_app_drift(
     monkeypatch,
     capsys,
 ):
-    project_dir = _write_project(tmp_path)
-    toml_path = project_dir / "booley.toml"
+    booley_dir = _write_project(tmp_path)
+    toml_path = booley_dir / "booley.toml"
     toml_path.write_text(
         toml_path.read_text(encoding="utf-8") + '\n[agent]\nprovider = "codex"\n',
         encoding="utf-8",
     )
     dc.write_devcontainer(tmp_path, dc.build_devcontainer_spec(dc.APP_CLAUDE))
-    _patch_environment(monkeypatch, tmp_path, project_dir)
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
 
     rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
 
@@ -573,12 +573,12 @@ def test_doctor_fails_and_does_not_stamp_agent_app_drift(
     assert rc == 1
     assert "FAIL  devcontainer.json BOOLEY_AGENT_APP 'claude'" in output
     assert "[agent] provider 'codex'" in output
-    assert doctor_stamp.load_stamp(project_dir) is None
+    assert doctor_stamp.load_stamp(booley_dir) is None
 
 
 def test_doctor_warns_when_devcontainer_missing(tmp_path, monkeypatch, capsys):
-    project_dir = _write_project(tmp_path, seed_interactive=False)
-    _patch_environment(monkeypatch, tmp_path, project_dir)
+    booley_dir = _write_project(tmp_path, seed_interactive=False)
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
 
     rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
 
@@ -590,8 +590,8 @@ def test_doctor_warns_when_devcontainer_missing(tmp_path, monkeypatch, capsys):
 
 
 def test_doctor_fails_when_devcontainer_tracked(tmp_path, monkeypatch, capsys):
-    project_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, project_dir)
+    booley_dir = _write_project(tmp_path)
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
     # Make `git ls-files -- .devcontainer` report a tracked file.
     inner = doctor.subprocess.run
 
@@ -616,11 +616,11 @@ def test_doctor_fails_when_mcp_probe_misses_required_tool(
     monkeypatch,
     capsys,
 ):
-    project_dir = _write_project(tmp_path)
+    booley_dir = _write_project(tmp_path)
     _patch_environment(
         monkeypatch,
         tmp_path,
-        project_dir,
+        booley_dir,
         mcp_tools=["bwave", "lint", "sim"],
     )
 
@@ -632,8 +632,8 @@ def test_doctor_fails_when_mcp_probe_misses_required_tool(
 
 
 def test_doctor_runs_supported_mcp_probe_entrypoint(tmp_path: Path) -> None:
-    project_dir = tmp_path / ".booley_project"
-    project = doctor.ProjectAudit(tmp_path, project_dir, {}, {}, "sim")
+    booley_dir = tmp_path / ".booley"
+    project = doctor.ProjectAudit(tmp_path, booley_dir, {}, {}, "sim")
 
     command = doctor._mcp_probe_command(project, "docker", "booley:test")
 
@@ -646,11 +646,11 @@ def test_doctor_fails_when_mcp_probe_does_not_set_interactive_logs(
     monkeypatch,
     capsys,
 ):
-    project_dir = _write_project(tmp_path)
+    booley_dir = _write_project(tmp_path)
     _patch_environment(
         monkeypatch,
         tmp_path,
-        project_dir,
+        booley_dir,
         mcp_payload={
             "tools": [
                 "synth",
@@ -674,10 +674,10 @@ def test_doctor_fails_when_mcp_probe_does_not_set_interactive_logs(
     assert "MCP interactive log setup failed" in output
 
 
-def _gitignore_probe(project_dir: Path) -> list[DiagnosticFinding]:
-    """Run the Project ``.gitignore`` probe against *project_dir* and return its findings."""
+def _gitignore_probe(booley_dir: Path) -> list[DiagnosticFinding]:
+    """Run the Project ``.gitignore`` probe against *booley_dir* and return its findings."""
     reporter = doctor._Reporter.create()
-    doctor._check_project_gitignore(project_dir, reporter.pass_, reporter.warn_)
+    doctor._check_project_gitignore(booley_dir, reporter.pass_, reporter.warn_)
     assert reporter.findings is not None
     return reporter.findings
 
@@ -774,10 +774,10 @@ def test_project_gitignore_missing_file_warns(tmp_path: Path) -> None:
     assert findings[0].fix == "booley init"
 
 
-def _history_probe(project_dir: Path) -> doctor._Reporter:
-    """Run the Ticket History commit probe against *project_dir* and return its reporter."""
+def _history_probe(booley_dir: Path) -> doctor._Reporter:
+    """Run the Ticket History commit probe against *booley_dir* and return its reporter."""
     reporter = doctor._Reporter.create()
-    doctor._check_ticket_history_committed(project_dir, reporter.pass_, reporter.warn_)
+    doctor._check_ticket_history_committed(booley_dir, reporter.pass_, reporter.warn_)
     return reporter
 
 
@@ -799,16 +799,16 @@ def _history_repo(tmp_path: Path, monkeypatch) -> Path:
     _history_git(tmp_path, "add", "README")
     _history_git(tmp_path, "commit", "-q", "-m", "init")
     # The default Stealth policy bans "ticket"; this repository opts out.
-    (tmp_path / ".booley_project").mkdir()
-    (tmp_path / ".booley_project" / "booley.toml").write_text(
+    (tmp_path / ".booley").mkdir()
+    (tmp_path / ".booley" / "booley.toml").write_text(
         "[stealth]\nenabled = false\n", encoding="utf-8"
     )
     return tmp_path
 
 
 def test_doctor_deep_runs_first_config_without_dry_run(tmp_path, monkeypatch):
-    project_dir = _write_project(tmp_path)
-    calls = _patch_environment(monkeypatch, tmp_path, project_dir)
+    booley_dir = _write_project(tmp_path)
+    calls = _patch_environment(monkeypatch, tmp_path, booley_dir)
     monkeypatch.setattr(doctor, "_synth_deep_report_error", lambda *args: "")
 
     rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=True), tmp_path)
@@ -832,8 +832,8 @@ def test_doctor_deep_surfaces_synthesis_warning_verdict(
     monkeypatch,
     capsys,
 ):
-    project_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, project_dir)
+    booley_dir = _write_project(tmp_path)
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
     monkeypatch.setattr(doctor, "_synth_deep_report_error", lambda *args: "")
     base_run = doctor.subprocess.run
 
@@ -860,7 +860,7 @@ def test_doctor_deep_surfaces_synthesis_warning_verdict(
     assert run_line in output
     assert output.index(run_line) < output.index("WARN  synth deep check [synth_fast]")
     assert "Agent-backed checks: no agent call ran (0 tokens, $0.00)." in output
-    assert doctor_stamp.load_stamp(project_dir) is None
+    assert doctor_stamp.load_stamp(booley_dir) is None
 
 
 def _healthy_doctor_backend(monkeypatch):
@@ -878,8 +878,8 @@ def _healthy_doctor_backend(monkeypatch):
 
 @pytest.mark.parametrize("deep", [False, True])
 def test_doctor_backend_hint_matches_mode(tmp_path, monkeypatch, capsys, deep):
-    project_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, project_dir)
+    booley_dir = _write_project(tmp_path)
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
     _healthy_doctor_backend(monkeypatch)
     probe_calls = []
 
@@ -902,8 +902,8 @@ def test_doctor_backend_hint_matches_mode(tmp_path, monkeypatch, capsys, deep):
 
 
 def test_doctor_deep_host_preserves_probe_skip(tmp_path, monkeypatch, capsys):
-    project_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, project_dir)
+    booley_dir = _write_project(tmp_path)
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
     _healthy_doctor_backend(monkeypatch)
     result = doctor.run_doctor_result(
         argparse.Namespace(verbose=False, deep=True), tmp_path, record_clean=False
@@ -920,8 +920,8 @@ def test_doctor_skip_agent_checks_omits_credentials_and_live_probe(
     monkeypatch,
     capsys,
 ):
-    project_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, project_dir)
+    booley_dir = _write_project(tmp_path)
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
     monkeypatch.setattr(doctor, "_synth_deep_report_error", lambda *args: "")
 
     def unexpected_agent_check(*_args, **_kwargs):
@@ -948,7 +948,7 @@ def test_doctor_skip_agent_checks_omits_credentials_and_live_probe(
     )
     assert "no agent call ran" in output
     assert "run `booley doctor --deep`" not in output
-    assert doctor_stamp.load_stamp(project_dir) is None
+    assert doctor_stamp.load_stamp(booley_dir) is None
 
 
 # ---------------------------------------------------------------------------
@@ -961,10 +961,10 @@ def _tool_check_harness(tmp_path, monkeypatch, fake_run):
 
     Returns ``(project, calls)`` — *calls* records every argv *fake_run* saw.
     """
-    (tmp_path / ".booley_project").mkdir(exist_ok=True)
+    (tmp_path / ".booley").mkdir(exist_ok=True)
     project = doctor.ProjectAudit(
         project_root=tmp_path,
-        project_dir=tmp_path / ".booley_project",
+        booley_dir=tmp_path / ".booley",
         booley_toml={"flows": {"sim": {}}},
         configs_toml={"fast": {"defines": [], "tb_top": "tb", "tests": ["smoke"]}},
         first_target="fast",
@@ -1160,7 +1160,7 @@ def test_core_resolve_misroute_fails_loudly(tmp_path, monkeypatch):
     )
     project = doctor.ProjectAudit(
         project_root=tmp_path,
-        project_dir=tmp_path / ".booley_project",
+        booley_dir=tmp_path / ".booley",
         booley_toml={},
         configs_toml={"fast": {"defines": []}},
         first_target="fast",
@@ -1190,8 +1190,8 @@ def test_deep_core_resolution_only_runs_doctor_selected_targets(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
     targets = [
         "  sim_selected:\n"
         "    flow: sim\n"
@@ -1208,7 +1208,7 @@ def test_deep_core_resolution_only_runs_doctor_selected_targets(
         "CAPI=2:\nname: ::design:0\ntargets:\n" + "".join(targets),
         encoding="utf-8",
     )
-    project = doctor.ProjectAudit(tmp_path, project_dir, {}, {}, "")
+    project = doctor.ProjectAudit(tmp_path, booley_dir, {}, {}, "")
     calls: list[tuple[str, str | None]] = []
     monkeypatch.setattr(doctor, "_docker_image_exists_by_name", lambda _image: False)
     monkeypatch.setattr(doctor.shutil, "which", lambda _name: "/usr/bin/fusesoc")
@@ -1236,8 +1236,8 @@ def test_sandbox_core_resolution_receives_only_canonical_selected_targets(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
     (tmp_path / "first.core").write_text(
         "CAPI=2:\nname: acme:ip:first:1\ntargets:\n"
         "  smoke:\n"
@@ -1255,7 +1255,7 @@ def test_sandbox_core_resolution_receives_only_canonical_selected_targets(
         "    flow_options: {tool: verilator}\n",
         encoding="utf-8",
     )
-    project = doctor.ProjectAudit(tmp_path, project_dir, {}, {}, "")
+    project = doctor.ProjectAudit(tmp_path, booley_dir, {}, {}, "")
     seen: list[dict[str, str]] = []
 
     def fake_run(cmd, **_kwargs):
@@ -1288,8 +1288,8 @@ def test_core_resolve_announces_before_container_run(
     monkeypatch,
     capsys,
 ) -> None:
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
     (tmp_path / "first.core").write_text(
         "CAPI=2:\nname: acme:ip:first:1\ntargets:\n"
         "  smoke:\n"
@@ -1297,7 +1297,7 @@ def test_core_resolve_announces_before_container_run(
         "    flow_options: {tool: verilator, booley: {doctor: [sim]}}\n",
         encoding="utf-8",
     )
-    project = doctor.ProjectAudit(tmp_path, project_dir, {}, {}, "")
+    project = doctor.ProjectAudit(tmp_path, booley_dir, {}, {}, "")
     printed_before_run: list[str] = []
 
     def fake_run(cmd, **_kwargs):
@@ -1325,8 +1325,8 @@ def test_selected_target_dependency_resolution_failure_is_a_deep_failure(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
     (tmp_path / "design.core").write_text(
         "CAPI=2:\nname: acme:ip:top:1\nfilesets:\n"
         "  rtl: {depend: [acme:ip:missing]}\n"
@@ -1337,7 +1337,7 @@ def test_selected_target_dependency_resolution_failure_is_a_deep_failure(
         "    flow_options: {tool: verilator, booley: {doctor: [sim]}}\n",
         encoding="utf-8",
     )
-    project = doctor.ProjectAudit(tmp_path, project_dir, {}, {}, "")
+    project = doctor.ProjectAudit(tmp_path, booley_dir, {}, {}, "")
     monkeypatch.setattr(doctor, "_docker_image_exists_by_name", lambda _image: False)
     monkeypatch.setattr(doctor.shutil, "which", lambda _name: "/usr/bin/fusesoc")
 
@@ -1358,9 +1358,9 @@ def test_selected_target_that_no_longer_resolves_fails_before_dispatch(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
-    project = doctor.ProjectAudit(tmp_path, project_dir, {}, {}, "")
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    project = doctor.ProjectAudit(tmp_path, booley_dir, {}, {}, "")
     matrix = MagicMock(seed_targets=("removed_target",))
     monkeypatch.setattr(doctor, "_project_target_matrix", lambda _project: matrix)
     rec = _Rec()
@@ -1376,8 +1376,8 @@ def test_doctor_deep_fails_hard_when_issued_runtime_cannot_start(
     monkeypatch,
     capsys,
 ):
-    project_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, project_dir)
+    booley_dir = _write_project(tmp_path)
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
 
     def fail_up(_root):
         raise doctor.session_runtime.SessionError("sandbox image is not built")
@@ -1455,14 +1455,14 @@ def test_deep_check_fails_when_issued_runtime_is_invalid(tmp_path, monkeypatch):
 
 
 def test_doctor_rejects_configs_without_defines(tmp_path, monkeypatch):
-    project_dir = _write_project(
+    booley_dir = _write_project(
         tmp_path,
         configs_text="""
 [bad]
 top_module = "dut"
 """.lstrip(),
     )
-    _patch_environment(monkeypatch, tmp_path, project_dir)
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
 
     rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
 
@@ -1470,7 +1470,7 @@ top_module = "dut"
 
 
 def test_doctor_accepts_config_parameters(tmp_path, monkeypatch):
-    project_dir = _write_project(
+    booley_dir = _write_project(
         tmp_path,
         configs_text="""
 [fast]
@@ -1486,7 +1486,7 @@ MODE = { expr = "pkg::ModeFast" }
 INIT = { string = "rom.mem" }
 """.lstrip(),
     )
-    _patch_environment(monkeypatch, tmp_path, project_dir)
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
 
     rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
 
@@ -1494,7 +1494,7 @@ INIT = { string = "rom.mem" }
 
 
 def test_doctor_accepts_shared_test_lists(tmp_path, monkeypatch):
-    project_dir = _write_project(
+    booley_dir = _write_project(
         tmp_path,
         configs_text="""
 [test_lists]
@@ -1507,7 +1507,7 @@ tb_top = "tb"
 test_list = "rv_tests"
 """.lstrip(),
     )
-    _patch_environment(monkeypatch, tmp_path, project_dir)
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
 
     rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
 
@@ -1515,7 +1515,7 @@ test_list = "rv_tests"
 
 
 def test_doctor_rejects_plain_string_parameters(tmp_path, monkeypatch, capsys):
-    project_dir = _write_project(
+    booley_dir = _write_project(
         tmp_path,
         configs_text="""
 [bad]
@@ -1525,7 +1525,7 @@ defines = []
 MODE = "pkg::ModeFast"
 """.lstrip(),
     )
-    _patch_environment(monkeypatch, tmp_path, project_dir)
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
 
     rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
 
@@ -1536,10 +1536,10 @@ MODE = "pkg::ModeFast"
 
 def test_flow_command_uses_first_config_and_first_test(tmp_path, monkeypatch):
     _set_venue(monkeypatch, True)
-    project_dir = _write_project(tmp_path)
+    booley_dir = _write_project(tmp_path)
     project = doctor.ProjectAudit(
         project_root=tmp_path,
-        project_dir=project_dir,
+        booley_dir=booley_dir,
         booley_toml={},
         configs_toml={
             "fast": {
@@ -1571,10 +1571,10 @@ def test_flow_command_uses_first_config_and_first_test(tmp_path, monkeypatch):
 def test_flow_command_passes_internal_selftest_kind_into_session(tmp_path, monkeypatch):
     from booley.fusesoc import selftest_overlay
 
-    project_dir = _write_project(tmp_path)
+    booley_dir = _write_project(tmp_path)
     project = doctor.ProjectAudit(
         project_root=tmp_path,
-        project_dir=project_dir,
+        booley_dir=booley_dir,
         booley_toml={},
         configs_toml={},
         first_target="sim_core",
@@ -1599,11 +1599,11 @@ def test_flow_command_passes_internal_selftest_kind_into_session(tmp_path, monke
 
 
 def _tests_toml_project_audit(tmp_path, tests_toml_text: str) -> doctor.ProjectAudit:
-    project_dir = _write_project(tmp_path)
-    (project_dir / "tests.toml").write_text(tests_toml_text, encoding="utf-8")
+    booley_dir = _write_project(tmp_path)
+    (booley_dir / "tests.toml").write_text(tests_toml_text, encoding="utf-8")
     return doctor.ProjectAudit(
         project_root=tmp_path,
-        project_dir=project_dir,
+        booley_dir=booley_dir,
         booley_toml={},
         configs_toml={},
         first_target="sim_core",
@@ -1712,7 +1712,7 @@ def test_doctor_targets_come_from_core_metadata_and_keep_all(tmp_path):
     )
     project = doctor.ProjectAudit(
         project_root=tmp_path,
-        project_dir=tmp_path / ".booley_project",
+        booley_dir=tmp_path / ".booley",
         booley_toml={"flows": {}},
         configs_toml={},
         first_target="",
@@ -1731,7 +1731,7 @@ def test_deep_timeout_honors_configured_timeout_ms(tmp_path):
     """
     project = doctor.ProjectAudit(
         project_root=tmp_path,
-        project_dir=tmp_path / ".booley_project",
+        booley_dir=tmp_path / ".booley",
         booley_toml={
             "flows": {
                 # Raised well above the 1800s asic floor -> honored (ms -> s).
@@ -1753,7 +1753,7 @@ def test_deep_timeout_honors_configured_timeout_ms(tmp_path):
     # No knob at all -> the hardcoded floor.
     bare = doctor.ProjectAudit(
         project_root=tmp_path,
-        project_dir=tmp_path / ".booley_project",
+        booley_dir=tmp_path / ".booley",
         booley_toml={},
         configs_toml={},
         first_target="",
@@ -1766,7 +1766,7 @@ def test_deep_timeout_honors_configured_timeout_ms(tmp_path):
 
     custom = doctor.ProjectAudit(
         project_root=tmp_path,
-        project_dir=tmp_path / ".booley_project",
+        booley_dir=tmp_path / ".booley",
         booley_toml={"flows": {"sim": {"timeout_ms": 5000, "build_timeout_ms": 7000}}},
         configs_toml={},
         first_target="",
@@ -1780,7 +1780,7 @@ def test_sim_selftest_timeout_names_stage_specific_knobs(
 ) -> None:
     project = doctor.ProjectAudit(
         project_root=tmp_path,
-        project_dir=tmp_path / ".booley_project",
+        booley_dir=tmp_path / ".booley",
         booley_toml={},
         configs_toml={},
         first_target="",
@@ -2077,7 +2077,7 @@ class TestKnownTablesMatchLiveConfig:
 def test_doctor_targets_do_not_fall_back_to_configs_first_target(tmp_path):
     project = doctor.ProjectAudit(
         project_root=tmp_path,
-        project_dir=tmp_path / ".booley_project",
+        booley_dir=tmp_path / ".booley",
         booley_toml={},
         configs_toml={"fast": {"defines": []}},
         first_target="fast",
@@ -2086,11 +2086,11 @@ def test_doctor_targets_do_not_fall_back_to_configs_first_target(tmp_path):
 
 
 def test_doctor_uses_configured_sandbox_image(tmp_path, monkeypatch):
-    project_dir = _write_project(
+    booley_dir = _write_project(
         tmp_path,
         sandbox_image="ibex-booley-sandbox:latest",
     )
-    calls = _patch_environment(monkeypatch, tmp_path, project_dir)
+    calls = _patch_environment(monkeypatch, tmp_path, booley_dir)
 
     rc = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
 
@@ -2156,8 +2156,8 @@ class TestRiscvImageChecks:
 
 
 def test_doctor_fails_when_interactive_logs_tracked(tmp_path, monkeypatch, capsys):
-    project_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, project_dir)
+    booley_dir = _write_project(tmp_path)
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
     base_run = doctor.subprocess.run
 
     def run_with_tracked_logs(cmd, **kwargs):
@@ -2186,8 +2186,8 @@ def test_doctor_fails_when_interactive_logs_tracked(tmp_path, monkeypatch, capsy
     "(no os.getuid, st_uid is always 0) — F-16",
 )
 def test_doctor_fails_on_container_uid_mismatch(tmp_path, monkeypatch, capsys):
-    project_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, project_dir)
+    booley_dir = _write_project(tmp_path)
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
     monkeypatch.setattr(doctor.sys, "platform", "linux")
     base_run = doctor.subprocess.run
 
@@ -2211,8 +2211,8 @@ def test_doctor_skips_simulate_dry_run_when_tb_top_runtime_resolved(
     capsys,
 ):
     configs_text = '[fast]\ndefines = []\ntop_module = "dut"\ntests = ["smoke"]\n'
-    project_dir = _write_project(tmp_path, configs_text=configs_text)
-    _patch_environment(monkeypatch, tmp_path, project_dir)
+    booley_dir = _write_project(tmp_path, configs_text=configs_text)
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
     base_run = doctor.subprocess.run
 
     def run_with_tb_top_error(cmd, **kwargs):
@@ -2240,11 +2240,11 @@ def test_doctor_skips_simulate_dry_run_when_tb_top_runtime_resolved(
 
 
 def _audit(root: Path) -> _Rec:
-    pd = root / ".booley_project"
+    pd = root / ".booley"
     pd.mkdir(exist_ok=True)
     project = doctor.ProjectAudit(
         project_root=root,
-        project_dir=pd,
+        booley_dir=pd,
         booley_toml={},
         configs_toml={"x": {}},
         first_target="x",
@@ -2301,7 +2301,7 @@ def _write_cocotb_project(
     (root / "tb").mkdir(exist_ok=True)
     (root / "rtl" / "dut.sv").write_text("module dut; endmodule\n", encoding="utf-8")
     (root / "tb" / "test_dut.py").write_text(tb_body, encoding="utf-8")
-    pd = root / ".booley_project"
+    pd = root / ".booley"
     pd.mkdir(exist_ok=True)
     if tests is not None:
         names = ", ".join(f'"{t}"' for t in tests)
@@ -2381,11 +2381,11 @@ targets:
         )
         (tmp_path / "tb").mkdir(exist_ok=True)
         (tmp_path / "tb" / "harness.cc").write_text(include_line, encoding="utf-8")
-        pd = tmp_path / ".booley_project"
+        pd = tmp_path / ".booley"
         pd.mkdir(exist_ok=True)
         return doctor.ProjectAudit(
             project_root=tmp_path,
-            project_dir=pd,
+            booley_dir=pd,
             booley_toml={"flows": {"sim": {}}},
             configs_toml={"sim": {}},
             first_target="sim",
@@ -2420,7 +2420,7 @@ targets:
 
     def test_native_dependency_declared_in_project_dockerfile_passes(self, tmp_path: Path):
         project = self._cpp_target_project(tmp_path, "#include <libelf.h>\n")
-        docker_dir = project.project_dir / "docker"
+        docker_dir = project.booley_dir / "docker"
         docker_dir.mkdir()
         (docker_dir / "Dockerfile").write_text(
             "FROM booley-sandbox-riscv\n"
@@ -2437,7 +2437,7 @@ targets:
 
     def test_native_dependency_in_dockerfile_comment_still_warns(self, tmp_path: Path):
         project = self._cpp_target_project(tmp_path, "#include <libelf.h>\n")
-        docker_dir = project.project_dir / "docker"
+        docker_dir = project.booley_dir / "docker"
         docker_dir.mkdir()
         (docker_dir / "Dockerfile").write_text(
             "FROM booley-sandbox-riscv\n# install libelf-dev later\n",
@@ -2458,11 +2458,11 @@ targets:
 
     def test_project_without_cpp_sources_is_silent(self, tmp_path: Path):
         (tmp_path / "design.core").write_text(_CLEAN_SIM_CORE, encoding="utf-8")
-        pd = tmp_path / ".booley_project"
+        pd = tmp_path / ".booley"
         pd.mkdir(exist_ok=True)
         project = doctor.ProjectAudit(
             project_root=tmp_path,
-            project_dir=pd,
+            booley_dir=pd,
             booley_toml={"flows": {"sim": {}}},
             configs_toml={"sim": {}},
             first_target="sim",
@@ -2650,11 +2650,11 @@ targets:
     def test_configured_sentinel_honored(self, tmp_path: Path):
         (tmp_path / "design.core").write_text(_CLEAN_SIM_CORE, encoding="utf-8")
         self._write_tb(tmp_path, "ALL TESTS PASSED.\n")
-        pd = tmp_path / ".booley_project"
+        pd = tmp_path / ".booley"
         pd.mkdir(exist_ok=True)
         project = doctor.ProjectAudit(
             project_root=tmp_path,
-            project_dir=pd,
+            booley_dir=pd,
             booley_toml={"flows": {"sim": {"pass_sentinels": ["ALL TESTS PASSED."]}}},
             configs_toml={"x": {}},
             first_target="x",
@@ -2751,7 +2751,7 @@ targets:
 
     def test_bad_tests_toml_fails(self, tmp_path: Path):
         (tmp_path / "design.core").write_text(_CLEAN_SIM_CORE, encoding="utf-8")
-        pd = tmp_path / ".booley_project"
+        pd = tmp_path / ".booley"
         pd.mkdir(exist_ok=True)
         (pd / "tests.toml").write_text(
             '[sim]\nselect = "not-a-plusarg with spaces"\n', encoding="utf-8"
@@ -2775,11 +2775,11 @@ class TestWcpServerCheck:
 
     @staticmethod
     def _project(root: Path) -> doctor.ProjectAudit:
-        pd = root / ".booley_project"
+        pd = root / ".booley"
         pd.mkdir(exist_ok=True)
         return doctor.ProjectAudit(
             project_root=root,
-            project_dir=pd,
+            booley_dir=pd,
             booley_toml={},
             configs_toml={"x": {}},
             first_target="x",
@@ -3381,7 +3381,7 @@ targets:
 def _schema_audit(tmp_path, booley_toml=None) -> doctor.ProjectAudit:
     return doctor.ProjectAudit(
         project_root=tmp_path,
-        project_dir=tmp_path / ".booley_project",
+        booley_dir=tmp_path / ".booley",
         booley_toml=booley_toml or {},
         configs_toml={},
         first_target="",
@@ -3492,7 +3492,7 @@ def test_check_core_schema_vendored_core_is_a_note(tmp_path):
 def test_check_core_schema_state_zone_core_fails_even_unconfigured(tmp_path):
     """State-zone cores (ADR 0036) are always Booley-authored — a schema
     violation there is ours to fix regardless of configuration."""
-    state_cores = tmp_path / ".booley_project" / "cores"
+    state_cores = tmp_path / ".booley" / "cores"
     state_cores.mkdir(parents=True)
     _write_core(state_cores, _BAD_DEPEND_CORE)
     project = _schema_audit(tmp_path)
@@ -3672,7 +3672,7 @@ def test_stealth_core_files_judged_against_state_repo(tmp_path):
     (tmp_path / "rtl" / "dut.sv").write_text("module dut; endmodule\n", encoding="utf-8")
     subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
 
-    state_cores = tmp_path / ".booley_project" / "cores"
+    state_cores = tmp_path / ".booley" / "cores"
     state_cores.mkdir(parents=True)
     (state_cores / "fw").mkdir()
     (state_cores / "fw" / "boot.hex").write_text("00\n", encoding="utf-8")
@@ -3691,7 +3691,7 @@ targets:
   sim: {flow: sim, filesets: [rtl, fw]}
 """,
     )
-    state_dir = tmp_path / ".booley_project"
+    state_dir = tmp_path / ".booley"
     subprocess.run(["git", "init", "-q"], cwd=state_dir, check=True)
     subprocess.run(["git", "add", "-A"], cwd=state_dir, check=True)
 
@@ -3876,7 +3876,7 @@ def test_repo_footprint_clean_passes(tmp_path):
 def test_check_doctor_targets_names_available_targets_when_none_selected(tmp_path):
     project = doctor.ProjectAudit(
         project_root=tmp_path,
-        project_dir=tmp_path / ".booley_project",
+        booley_dir=tmp_path / ".booley",
         booley_toml={},
         configs_toml={},
         first_target="",
@@ -3916,7 +3916,7 @@ def _fpga_doctor_project(
         flows["fpga"] = fpga_table
     return doctor.ProjectAudit(
         project_root=root,
-        project_dir=root / ".booley_project",
+        booley_dir=root / ".booley",
         booley_toml={"flows": flows},
         configs_toml={},
         first_target="",
@@ -4045,7 +4045,7 @@ def _derived_project_audit(root: Path) -> doctor.ProjectAudit:
     """Minimal ProjectAudit whose project_root yields a known generated image name."""
     return doctor.ProjectAudit(
         project_root=root,
-        project_dir=root / ".booley_project",
+        booley_dir=root / ".booley",
         booley_toml={},
         configs_toml={},
         first_target="",
@@ -4056,7 +4056,7 @@ def test_derived_image_freshness_warns_when_derived_predates_base(tmp_path, monk
     # A project image built FROM an older base freezes stale Booley layers; a
     # base rebuild does not propagate. Doctor must flag that drift.
     proj = tmp_path / "myproj"
-    (proj / ".booley_project").mkdir(parents=True)
+    (proj / ".booley").mkdir(parents=True)
     project = _derived_project_audit(proj)
     image = doctor.pi.project_image_name(proj)  # "myproj-booley-sandbox"
     created = {doctor.DOCKER_IMAGE: 2000.0, image: 1000.0}  # derived older than base
@@ -4071,7 +4071,7 @@ def test_derived_image_freshness_warns_when_derived_predates_base(tmp_path, monk
 
 def test_derived_image_freshness_passes_when_derived_newer(tmp_path, monkeypatch):
     proj = tmp_path / "myproj"
-    (proj / ".booley_project").mkdir(parents=True)
+    (proj / ".booley").mkdir(parents=True)
     project = _derived_project_audit(proj)
     image = doctor.pi.project_image_name(proj)
     created = {doctor.DOCKER_IMAGE: 1000.0, image: 2000.0}  # derived newer than base
@@ -4088,7 +4088,7 @@ def test_derived_image_freshness_skips_user_managed_image(tmp_path, monkeypatch)
     # An image name that isn't the auto-generated one is user-managed (may not
     # even derive from the base): doctor must stay silent, not misjudge it.
     proj = tmp_path / "myproj"
-    (proj / ".booley_project").mkdir(parents=True)
+    (proj / ".booley").mkdir(parents=True)
     project = _derived_project_audit(proj)
     monkeypatch.setattr(
         doctor,
@@ -4112,7 +4112,7 @@ def test_derived_image_freshness_silent_when_base_absent(tmp_path, monkeypatch):
     # Base image missing (or unreadable): nothing to compare, degrade to silence
     # rather than a false stale verdict.
     proj = tmp_path / "myproj"
-    (proj / ".booley_project").mkdir(parents=True)
+    (proj / ".booley").mkdir(parents=True)
     project = _derived_project_audit(proj)
     image = doctor.pi.project_image_name(proj)
     created = {image: 1000.0}  # base absent
@@ -4125,12 +4125,12 @@ def test_derived_image_freshness_silent_when_base_absent(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Custom [sandbox].image freshness vs .booley_project/docker/Dockerfile (item 5)
+# Custom [sandbox].image freshness vs .booley/docker/Dockerfile (item 5)
 # ---------------------------------------------------------------------------
 
 
 def _write_project_dockerfile(proj: Path, mtime: float) -> Path:
-    docker_dir = proj / ".booley_project" / "docker"
+    docker_dir = proj / ".booley" / "docker"
     docker_dir.mkdir(parents=True, exist_ok=True)
     dockerfile = docker_dir / "Dockerfile"
     dockerfile.write_text("FROM booley-sandbox\n", encoding="utf-8")
@@ -4142,7 +4142,7 @@ def test_custom_image_freshness_warns_when_image_predates_dockerfile(tmp_path, m
     # A hand-named [sandbox].image built from an edited-but-not-rebuilt Dockerfile
     # runs the old toolchain; neither sibling freshness check covers it.
     proj = tmp_path / "myproj"
-    (proj / ".booley_project").mkdir(parents=True)
+    (proj / ".booley").mkdir(parents=True)
     _write_project_dockerfile(proj, mtime=2000.0)
     project = _derived_project_audit(proj)
     monkeypatch.setattr(doctor, "_image_created_epoch", lambda _exe, _img: 1000.0)
@@ -4162,7 +4162,7 @@ def test_custom_image_freshness_warns_when_image_predates_dockerfile(tmp_path, m
 
 def test_custom_image_freshness_passes_when_image_newer(tmp_path, monkeypatch):
     proj = tmp_path / "myproj"
-    (proj / ".booley_project").mkdir(parents=True)
+    (proj / ".booley").mkdir(parents=True)
     _write_project_dockerfile(proj, mtime=1000.0)
     project = _derived_project_audit(proj)
     monkeypatch.setattr(doctor, "_image_created_epoch", lambda _exe, _img: 2000.0)
@@ -4184,7 +4184,7 @@ def test_custom_image_freshness_skips_base_and_generated(tmp_path, monkeypatch):
     # The base and auto-generated derived images are covered by sibling checks —
     # this one must stay out of their lane (and never even inspect them).
     proj = tmp_path / "myproj"
-    (proj / ".booley_project").mkdir(parents=True)
+    (proj / ".booley").mkdir(parents=True)
     _write_project_dockerfile(proj, mtime=9999.0)
     project = _derived_project_audit(proj)
     monkeypatch.setattr(
@@ -4213,10 +4213,10 @@ def test_custom_image_freshness_skips_base_and_generated(tmp_path, monkeypatch):
 
 
 def test_custom_image_freshness_silent_without_project_dockerfile(tmp_path, monkeypatch):
-    # A custom image built from an external Dockerfile (none under .booley_project)
+    # A custom image built from an external Dockerfile (none under .booley)
     # has nothing to compare against: degrade to silence, not a false verdict.
     proj = tmp_path / "myproj"
-    (proj / ".booley_project").mkdir(parents=True)
+    (proj / ".booley").mkdir(parents=True)
     project = _derived_project_audit(proj)
     monkeypatch.setattr(doctor, "_image_created_epoch", lambda _exe, _img: 1000.0)
 
@@ -4287,7 +4287,7 @@ def test_design_size_passes_for_small_design_and_skips_pruned_dirs(tmp_path):
     assert passes and "design size" in passes[0]
     assert not notes
     # Exactly the one non-pruned HDL file was counted.
-    audit = design_size.analyze_design_size(proj, project.project_dir, ())
+    audit = design_size.analyze_design_size(proj, project.booley_dir, ())
     assert audit.hdl_files == 1
 
 
@@ -4340,7 +4340,7 @@ def test_image_bakes_current_booley_warns_on_fingerprint_mismatch(tmp_path, monk
     # Exact path: the build-fingerprint label differs from the checkout hash →
     # WARN without ever consulting the mtime heuristic.
     proj = tmp_path / "myproj"
-    (proj / ".booley_project").mkdir(parents=True)
+    (proj / ".booley").mkdir(parents=True)
     project = _derived_project_audit(proj)
     image = doctor.pi.project_image_name(proj)
     _write_issued_image_spec(proj)
@@ -4362,7 +4362,7 @@ def test_image_bakes_current_booley_warns_on_fingerprint_mismatch(tmp_path, monk
 
 def test_image_bakes_current_booley_passes_on_fingerprint_match(tmp_path, monkeypatch):
     proj = tmp_path / "myproj"
-    (proj / ".booley_project").mkdir(parents=True)
+    (proj / ".booley").mkdir(parents=True)
     project = _derived_project_audit(proj)
     image = doctor.pi.project_image_name(proj)
     _write_issued_image_spec(proj)
@@ -4385,7 +4385,7 @@ def test_image_bakes_current_booley_passes_on_fingerprint_match(tmp_path, monkey
 
 def test_image_bakes_current_booley_warns_when_provenance_is_stale(tmp_path, monkeypatch):
     proj = tmp_path / "myproj"
-    (proj / ".booley_project").mkdir(parents=True)
+    (proj / ".booley").mkdir(parents=True)
     project = _derived_project_audit(proj)
     image = doctor.pi.project_image_name(proj)
     _write_issued_image_spec(proj)
@@ -4406,7 +4406,7 @@ def test_image_bakes_current_booley_warns_when_provenance_is_stale(tmp_path, mon
 
 def test_image_bakes_current_booley_passes_when_provenance_is_current(tmp_path, monkeypatch):
     proj = tmp_path / "myproj"
-    (proj / ".booley_project").mkdir(parents=True)
+    (proj / ".booley").mkdir(parents=True)
     project = _derived_project_audit(proj)
     image = doctor.pi.project_image_name(proj)
     _write_issued_image_spec(proj)
@@ -4427,7 +4427,7 @@ def test_image_bakes_current_booley_passes_when_provenance_is_current(tmp_path, 
 
 def test_image_bakes_current_booley_skips_user_managed(tmp_path, monkeypatch):
     proj = tmp_path / "myproj"
-    (proj / ".booley_project").mkdir(parents=True)
+    (proj / ".booley").mkdir(parents=True)
     project = _derived_project_audit(proj)
     monkeypatch.setattr(
         doctor,
@@ -4448,7 +4448,7 @@ def test_image_bakes_current_booley_skips_user_managed(tmp_path, monkeypatch):
 
 def test_image_bakes_current_booley_silent_when_undeterminable(tmp_path, monkeypatch):
     proj = tmp_path / "myproj"
-    (proj / ".booley_project").mkdir(parents=True)
+    (proj / ".booley").mkdir(parents=True)
     project = _derived_project_audit(proj)
     image = doctor.pi.project_image_name(proj)
     _write_issued_image_spec(proj)
@@ -4530,9 +4530,9 @@ class TestWorktreePruneGuard:
 
 class TestWorktreePortability:
     def _project(self, root: Path):
-        project_dir = root / ".booley_project"
-        project_dir.mkdir(exist_ok=True)
-        return SimpleNamespace(project_root=root, project_dir=project_dir)
+        booley_dir = root / ".booley"
+        booley_dir.mkdir(exist_ok=True)
+        return SimpleNamespace(project_root=root, booley_dir=booley_dir)
 
     def test_two_capable_sides_and_enabled_policy_pass(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -4603,8 +4603,8 @@ class TestWorktreePortability:
 
         _git_init(tmp_path)
         project = self._project(tmp_path)
-        _git_init(project.project_dir)
-        for repository, policy in ((tmp_path, root_policy), (project.project_dir, data_policy)):
+        _git_init(project.booley_dir)
+        for repository, policy in ((tmp_path, root_policy), (project.booley_dir, data_policy)):
             assert git_hooks._set_local_config(repository, policy) is None
         monkeypatch.setattr(readiness, "_git_version_at", lambda *_args: (2, 53, 0))
         report = readiness.inspect_worktree_portability(
@@ -4613,7 +4613,7 @@ class TestWorktreePortability:
         warnings = [item for item in report.findings if item.severity is Severity.WARN]
         assert bool(warnings) is (root_policy != "true" or data_policy != "true")
         if root_policy == "true" and data_policy != "true":
-            scoped = [item for item in warnings if item.subject == str(project.project_dir)]
+            scoped = [item for item in warnings if item.subject == str(project.booley_dir)]
             assert len(scoped) == 1
             assert "container-only" in scoped[0].message
             assert "do not run host `git worktree prune`" in scoped[0].message
@@ -4821,7 +4821,7 @@ class TestWorktreePortability:
                     ),
                 )
         else:
-            worktree = project.project_dir / "worktrees" / "ticket"
+            worktree = project.booley_dir / "worktrees" / "ticket"
             admin = tmp_path / "admin"
             worktree.mkdir(parents=True)
             admin.mkdir()
@@ -4890,16 +4890,16 @@ class TestWorktreePortability:
     def test_unreadable_and_unresolvable_live_worktrees(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        project_dir = tmp_path / ".booley_project"
-        outer = project_dir / "worktrees" / "ticket"
-        ignored = project_dir / "worktrees" / "not-a-worktree"
+        booley_dir = tmp_path / ".booley"
+        outer = booley_dir / "worktrees" / "ticket"
+        ignored = booley_dir / "worktrees" / "not-a-worktree"
         outer.mkdir(parents=True)
         ignored.mkdir()
         (outer / ".git").touch()
-        project = SimpleNamespace(project_root=tmp_path, project_dir=project_dir)
+        project = SimpleNamespace(project_root=tmp_path, booley_dir=booley_dir)
         monkeypatch.setattr(
             readiness,
-            "resolve_checkout_project_dir",
+            "resolve_checkout_booley_dir",
             lambda _root: (_ for _ in ()).throw(FileNotFoundError),
         )
 
@@ -4909,8 +4909,8 @@ class TestWorktreePortability:
         assert readiness._live_worktree_paths(project) == (outer,)
 
     def test_relative_live_worktree_reports_pass(self, tmp_path: Path):
-        project_dir = tmp_path / ".booley_project"
-        worktree = project_dir / "worktrees" / "ticket"
+        booley_dir = tmp_path / ".booley"
+        worktree = booley_dir / "worktrees" / "ticket"
         administration = tmp_path / "admin"
         worktree.mkdir(parents=True)
         administration.mkdir()
@@ -4920,7 +4920,7 @@ class TestWorktreePortability:
         (administration / "gitdir").write_text(
             f"{os.path.relpath(worktree / '.git', administration)}\n", encoding="utf-8"
         )
-        project = SimpleNamespace(project_root=tmp_path, project_dir=project_dir)
+        project = SimpleNamespace(project_root=tmp_path, booley_dir=booley_dir)
         findings = readiness.Findings()
 
         readiness._inspect_live_worktrees(project, findings)
@@ -4976,15 +4976,15 @@ class TestWorktreePortability:
         assert "repository format" in failures[0]
 
     def test_live_metadata_reports_absolute_paths(self, tmp_path: Path):
-        project_dir = tmp_path / ".booley_project"
-        worktree = project_dir / "worktrees" / "ticket"
+        booley_dir = tmp_path / ".booley"
+        worktree = booley_dir / "worktrees" / "ticket"
         administration = tmp_path / "admin"
         worktree.mkdir(parents=True)
         administration.mkdir()
         (worktree / ".git").write_text(f"gitdir: {administration}\n", encoding="utf-8")
         (administration / "gitdir").write_text(f"{worktree / '.git'}\n", encoding="utf-8")
 
-        project = SimpleNamespace(project_root=tmp_path, project_dir=project_dir)
+        project = SimpleNamespace(project_root=tmp_path, booley_dir=booley_dir)
         report = readiness.inspect_worktree_portability(
             readiness.WorktreePortabilityRequest(project, None, "image", False)
         )
@@ -5021,9 +5021,9 @@ class TestWorktreePortability:
         assert problems == ()
 
     def test_live_metadata_includes_paired_project_data_worktree(self, tmp_path: Path):
-        project_dir = tmp_path / ".booley_project"
-        outer = project_dir / "worktrees" / "ticket"
-        paired = outer / ".booley_project"
+        booley_dir = tmp_path / ".booley"
+        outer = booley_dir / "worktrees" / "ticket"
+        paired = outer / ".booley"
         outer_admin = tmp_path / "outer-admin"
         paired_admin = tmp_path / "paired-admin"
         for worktree, administration in ((outer, outer_admin), (paired, paired_admin)):
@@ -5046,7 +5046,7 @@ class TestWorktreePortability:
             ],
             check=True,
         )
-        project = SimpleNamespace(project_root=tmp_path, project_dir=project_dir)
+        project = SimpleNamespace(project_root=tmp_path, booley_dir=booley_dir)
 
         paths = readiness._live_worktree_paths(project)
         problems = readiness._worktree_metadata_problems(paired)
@@ -5082,7 +5082,7 @@ class TestWorktreePortability:
 
 
 class TestWorktreeCoreShadowGuard:
-    """A stale worktree .core under .booley_project/ shadows the repo-root
+    """A stale worktree .core under .booley/ shadows the repo-root
     source in FuseSoC's --cores-root scan unless a FUSESOC_IGNORE marker is
     present (dropped by `booley init` / worktree_create.sh)."""
 
@@ -5111,7 +5111,7 @@ class TestWorktreeCoreShadowGuard:
         assert "can shadow the source at the Project Root" in self._warns(rec)[0]
 
     def test_authored_stealth_cores_are_not_shadow_threats(self, tmp_path: Path):
-        # ADR 0036: .booley_project/cores/ holds authored sources scanned
+        # ADR 0036: .booley/cores/ holds authored sources scanned
         # deliberately — with no other .core around they soft-warn, not escalate.
         stealth = tmp_path / "cores"
         stealth.mkdir()
@@ -5156,11 +5156,11 @@ _GIB = 1024**3
 
 
 def _adr28_project(tmp_path: Path, *, booley_toml: dict | None = None) -> doctor.ProjectAudit:
-    pd = tmp_path / ".booley_project"
+    pd = tmp_path / ".booley"
     pd.mkdir(exist_ok=True)
     return doctor.ProjectAudit(
         project_root=tmp_path,
-        project_dir=pd,
+        booley_dir=pd,
         booley_toml=booley_toml or {},
         configs_toml={},
         first_target="x",
@@ -5254,7 +5254,7 @@ class TestMemoryInvariant:
         assert rec.kinds() == {"warn"}
         assert "1g agent fallback" in rec.events[0][1]
 
-        developer_probe.record_measurement(project.project_dir, _GIB // 2)
+        developer_probe.record_measurement(project.booley_dir, _GIB // 2)
         rec = _Rec()
         doctor._check_memory_invariant(project, rec.p, rec.w, rec.s)
         assert rec.kinds() == {"pass"}
@@ -5479,7 +5479,7 @@ class TestAdvisoryMcpTools:
     )
 
     def _project(self, tmp_path, endpoint_config):
-        pd = tmp_path / ".booley_project"
+        pd = tmp_path / ".booley"
         pd.mkdir(exist_ok=True)
         flows = {
             name: config
@@ -5489,7 +5489,7 @@ class TestAdvisoryMcpTools:
         mcp_tools = {name: config for name, config in endpoint_config.items() if name not in flows}
         return doctor.ProjectAudit(
             project_root=tmp_path,
-            project_dir=pd,
+            booley_dir=pd,
             booley_toml={"flows": flows, "specialists": mcp_tools},
             configs_toml={},
             first_target="",
@@ -5545,7 +5545,7 @@ class TestFailPathSelfTest:
     """
 
     def _audit(self, tmp_path, fixture=True):
-        pd = tmp_path / ".booley_project"
+        pd = tmp_path / ".booley"
         pd.mkdir(exist_ok=True)
         (pd / "tests.toml").write_text('[sim_core]\ntests = ["hello_world"]\n', encoding="utf-8")
         if fixture:
@@ -5563,7 +5563,7 @@ class TestFailPathSelfTest:
         )
         return doctor.ProjectAudit(
             project_root=tmp_path,
-            project_dir=pd,
+            booley_dir=pd,
             booley_toml={
                 "flows": {
                     "sim": {},
@@ -5735,7 +5735,7 @@ class TestFailPathSelfTest:
         # project-native-only gate letting builtin --deep report green
         # without ever running the fail path). Fuller coverage lives in
         # test_doctor_selftest_builtin.py.
-        pd = tmp_path / ".booley_project"
+        pd = tmp_path / ".booley"
         pd.mkdir(exist_ok=True)
         (tmp_path / "builtin.core").write_text(
             "CAPI=2:\n"
@@ -5748,7 +5748,7 @@ class TestFailPathSelfTest:
         )
         p = doctor.ProjectAudit(
             project_root=tmp_path,
-            project_dir=pd,
+            booley_dir=pd,
             booley_toml={
                 "flows": {
                     "sim": {},
@@ -5770,7 +5770,7 @@ class TestDeveloperProbe:
     """doctor --deep measures the developer memory term (ADR 0028 D12)."""
 
     def test_record_and_load_round_trip(self, tmp_path):
-        pd = tmp_path / ".booley_project"
+        pd = tmp_path / ".booley"
         pd.mkdir()
         path = developer_probe.record_measurement(pd, 3 * _GIB // 2)
         assert path == pd / "runtime" / "developer_probe.json"
@@ -5780,7 +5780,7 @@ class TestDeveloperProbe:
         assert developer_probe.load_measurement(pd) == 3 * _GIB // 2
 
     def test_load_measurement_tolerates_garbage(self, tmp_path):
-        pd = tmp_path / ".booley_project"
+        pd = tmp_path / ".booley"
         assert developer_probe.load_measurement(pd) is None  # absent
         path = developer_probe.probe_path(pd)
         path.parent.mkdir(parents=True)
@@ -5810,7 +5810,7 @@ class TestDeveloperProbe:
         doctor._run_developer_probe(project, rec.p, rec.s, rec.f)
         assert rec.kinds() == {"pass"}
         assert "recorded to" in rec.events[0][1]
-        assert developer_probe.load_measurement(project.project_dir) == 2 * _GIB
+        assert developer_probe.load_measurement(project.booley_dir) == 2 * _GIB
 
         # The invariant now uses the measurement: 1x4 + 1x2 + 2 = 8g.
         _fake_cgroup(tmp_path, monkeypatch, str(7 * _GIB))
@@ -5831,7 +5831,7 @@ class TestDeveloperProbe:
         doctor._run_developer_probe(project, rec.p, rec.s, rec.f)
         assert rec.kinds() == {"skip"}
         assert "1g fallback" in rec.events[0][1]
-        assert developer_probe.load_measurement(project.project_dir) is None
+        assert developer_probe.load_measurement(project.booley_dir) is None
 
     def test_agent_call_failure_is_fail_not_skip(self, tmp_path, monkeypatch):
         """Regression (2026-07-23): the developer agent crashed at launch on
@@ -6091,10 +6091,10 @@ class TestDeveloperProbe:
 
 
 def _audit_with_flows(tmp_path: Path, flows: dict) -> doctor.ProjectAudit:
-    project_dir = _write_project(tmp_path)
+    booley_dir = _write_project(tmp_path)
     return doctor.ProjectAudit(
         project_root=tmp_path,
-        project_dir=project_dir,
+        booley_dir=booley_dir,
         booley_toml={"flows": flows},
         configs_toml={},
         first_target="",
@@ -6118,7 +6118,7 @@ class TestCheckDoctorTargets:
         )
         project = doctor.ProjectAudit(
             project_root=tmp_path,
-            project_dir=tmp_path / ".booley_project",
+            booley_dir=tmp_path / ".booley",
             booley_toml={"flows": {"sim": {}}},
             configs_toml={},
             first_target="",
@@ -6408,8 +6408,8 @@ targets:
 """
 
     def _state_core(self, tmp_path: Path, name: str, text: str) -> None:
-        """Write into `.booley_project/cores/` — always Booley-authored (ADR 0036)."""
-        cores = tmp_path / ".booley_project" / "cores"
+        """Write into `.booley/cores/` — always Booley-authored (ADR 0036)."""
+        cores = tmp_path / ".booley" / "cores"
         cores.mkdir(parents=True, exist_ok=True)
         (cores / name).write_text(text, encoding="utf-8")
 
@@ -6493,10 +6493,10 @@ targets:
     def _project(self, tmp_path, eda_tool: str) -> doctor.ProjectAudit:
         (tmp_path / "i2c.v").write_text("module i2c; endmodule\n", encoding="utf-8")
         (tmp_path / "design.core").write_text(self._CORE % eda_tool, encoding="utf-8")
-        (tmp_path / ".booley_project").mkdir(exist_ok=True)
+        (tmp_path / ".booley").mkdir(exist_ok=True)
         return doctor.ProjectAudit(
             project_root=tmp_path,
-            project_dir=tmp_path / ".booley_project",
+            booley_dir=tmp_path / ".booley",
             booley_toml={},
             configs_toml={},
             first_target="lint",
@@ -6522,10 +6522,10 @@ targets:
             % "verible",
             encoding="utf-8",
         )
-        (tmp_path / ".booley_project").mkdir(exist_ok=True)
+        (tmp_path / ".booley").mkdir(exist_ok=True)
         project = doctor.ProjectAudit(
             project_root=tmp_path,
-            project_dir=tmp_path / ".booley_project",
+            booley_dir=tmp_path / ".booley",
             booley_toml={},
             configs_toml={},
             first_target="lint",
@@ -6825,7 +6825,7 @@ class TestDisplayReportDir:
     Doctor may run inside the Sandbox, where the Booley Directory is the
     /booley-project bind mount; printing that verbatim sent a host-side user
     ls-ing a path that only exists in the container (the real files sit at
-    <repo>/.booley_project/tmp/...).
+    <repo>/.booley/tmp/...).
     """
 
     def test_container_mount_is_rendered_repo_relative(self, tmp_path, monkeypatch):
@@ -6833,25 +6833,25 @@ class TestDisplayReportDir:
 
         mount = tmp_path / "project-mount"
         mount.mkdir()
-        monkeypatch.setattr(doctor.dc, "PROJECT_DIR_TARGET", mount.as_posix())
-        project = SimpleNamespace(project_dir=mount)
+        monkeypatch.setattr(doctor.dc, "BOOLEY_DIR_TARGET", mount.as_posix())
+        project = SimpleNamespace(booley_dir=mount)
         report_dir = mount / "tmp" / "doctor" / "flow-reports"
         hint = doctor._display_report_dir(project, report_dir)
-        assert hint == ".booley_project/tmp/doctor/flow-reports (under the Project Root)"
+        assert hint == ".booley/tmp/doctor/flow-reports (under the Project Root)"
 
     def test_host_path_is_printed_verbatim(self, tmp_path: Path):
         from types import SimpleNamespace
 
-        project = SimpleNamespace(project_dir=tmp_path / ".booley_project")
-        report_dir = tmp_path / ".booley_project" / "tmp" / "doctor" / "flow-reports"
+        project = SimpleNamespace(booley_dir=tmp_path / ".booley")
+        report_dir = tmp_path / ".booley" / "tmp" / "doctor" / "flow-reports"
         assert doctor._display_report_dir(project, report_dir) == str(report_dir)
 
-    def test_project_dir_override_is_not_rewritten(self, tmp_path: Path):
+    def test_booley_dir_override_is_not_rewritten(self, tmp_path: Path):
         # An explicit [project].dir override is a real host path — rewriting it
         # repo-relative would point at files that are not there.
         from types import SimpleNamespace
 
-        project = SimpleNamespace(project_dir=tmp_path / "elsewhere")
+        project = SimpleNamespace(booley_dir=tmp_path / "elsewhere")
         report_dir = tmp_path / "elsewhere" / "tmp" / "doctor" / "flow-reports"
         assert doctor._display_report_dir(project, report_dir) == str(report_dir)
 
@@ -7033,15 +7033,15 @@ class TestLineEndingsCheck:
         _disable_line_ending_stealth(tmp_path)
         self._repo(tmp_path, autocrlf="false")
         self._commit(tmp_path, "a.v", b"module a;\nendmodule\n")
-        project_dir = tmp_path / ".booley_project"
-        hooks = project_dir / "hooks"
+        booley_dir = tmp_path / ".booley"
+        hooks = booley_dir / "hooks"
         hooks.mkdir(parents=True)
-        self._repo(project_dir, autocrlf="true")
-        self._commit(project_dir, "hooks/post-setup.sh", b"#!/bin/sh\nset -euo pipefail\n")
+        self._repo(booley_dir, autocrlf="true")
+        self._commit(booley_dir, "hooks/post-setup.sh", b"#!/bin/sh\nset -euo pipefail\n")
         hook = hooks / "post-setup.sh"
         hook.unlink()
         subprocess.run(
-            ["git", "-C", str(project_dir), "checkout", "--", "hooks/post-setup.sh"],
+            ["git", "-C", str(booley_dir), "checkout", "--", "hooks/post-setup.sh"],
             capture_output=True,
             check=True,
         )
@@ -7053,20 +7053,20 @@ class TestLineEndingsCheck:
             c._warn,
             c._skip,
             c._fail,
-            project_dir=project_dir,
+            booley_dir=booley_dir,
         )
 
         assert len(c.failed) == 1
         assert "Booley Directory" in c.failed[0][0]
-        assert str(project_dir) in c.failed[0][0]
+        assert str(booley_dir) in c.failed[0][0]
         assert any("Project Root" in message for message in c.passed)
 
     def test_nested_autocrlf_warning_has_project_data_subject(self, tmp_path: Path):
         _disable_line_ending_stealth(tmp_path)
         self._repo(tmp_path, autocrlf="false")
-        project_dir = tmp_path / ".booley_project"
-        project_dir.mkdir(exist_ok=True)
-        self._repo(project_dir, autocrlf="true")
+        booley_dir = tmp_path / ".booley"
+        booley_dir.mkdir(exist_ok=True)
+        self._repo(booley_dir, autocrlf="true")
         reporter = doctor._Reporter.create()
 
         doctor._check_line_endings(
@@ -7075,7 +7075,7 @@ class TestLineEndingsCheck:
             reporter.warn_,
             reporter.skip_,
             reporter.fail_,
-            project_dir=project_dir,
+            booley_dir=booley_dir,
         )
 
         assert reporter.findings is not None
@@ -7083,7 +7083,7 @@ class TestLineEndingsCheck:
         assert len(warnings) == 1
         assert warnings[0].check_id == "git.autocrlf-risk"
         assert warnings[0].subject == "project-data"
-        assert str(project_dir) in warnings[0].message
+        assert str(booley_dir) in warnings[0].message
 
     def test_unset_local_autocrlf_warning_names_project_checkout(
         self,
@@ -7480,7 +7480,7 @@ class TestSynthHeavyTargetCalibration:
                 "jobs": {"heavy_memory": "16g", "max_tickets": 2},
             },
         )
-        synth_probe.record_measurement(project.project_dir, "asic_full", 15.8 * 1024)
+        synth_probe.record_measurement(project.booley_dir, "asic_full", 15.8 * 1024)
         rec = _Rec()
         doctor._check_memory_invariant(project, rec.p, rec.w, rec.s)
         # 15.8 GiB + 15%, rounded up = 19 GiB; + 1 GiB agent + 2 GiB
@@ -7500,7 +7500,7 @@ class TestSynthHeavyTargetCalibration:
                 "sandbox": {"memory": "32g"},
             },
         )
-        synth_probe.record_measurement(project.project_dir, "asic_small", 7 * 1024)
+        synth_probe.record_measurement(project.booley_dir, "asic_small", 7 * 1024)
         rec = _Rec()
 
         doctor._check_memory_invariant(project, rec.p, rec.w, rec.s)
@@ -7575,7 +7575,7 @@ def _git_commit_all(root: Path, message: str = "add") -> None:
 
 def _run_cwd_project(root: Path, run_cwd: str | None) -> doctor.ProjectAudit:
     sim: dict[str, object] = {} if run_cwd is None else {"run_cwd": run_cwd}
-    return doctor.ProjectAudit(root, root / ".booley_project", {"flows": {"sim": sim}}, {}, "sim")
+    return doctor.ProjectAudit(root, root / ".booley", {"flows": {"sim": sim}}, {}, "sim")
 
 
 def _check_run_cwd(root: Path, run_cwd: str | None) -> _Collector:
@@ -7601,7 +7601,7 @@ def test_flow_audit_wires_sim_run_cwd_check_only_for_enabled_sim(tmp_path, monke
     project = _run_cwd_project(tmp_path, "run")
     enabled = doctor.ProjectAudit(
         project.project_root,
-        project.project_dir,
+        project.booley_dir,
         {"flows": {"sim": {"run_cwd": "run"}, "lint": {"enabled": False}}},
         {},
         "sim",
@@ -7613,7 +7613,7 @@ def test_flow_audit_wires_sim_run_cwd_check_only_for_enabled_sim(tmp_path, monke
     checked.clear()
     disabled = doctor.ProjectAudit(
         project.project_root,
-        project.project_dir,
+        project.booley_dir,
         {"flows": {"sim": {"enabled": False}}},
         {},
         "sim",
@@ -7701,10 +7701,10 @@ def test_sim_run_cwd_unset_or_templated_is_silent(tmp_path: Path, run_cwd: str |
 def test_sim_run_cwd_inside_nested_project_repo_uses_the_innermost_repository(
     tmp_path: Path,
 ) -> None:
-    """The host repo ignores ``.booley_project/``; its own repo owns the placeholder."""
+    """The host repo ignores ``.booley/``; its own repo owns the placeholder."""
     _committed_repo(tmp_path)
-    (tmp_path / ".gitignore").write_text(".booley_project/\n", encoding="utf-8")
-    nested = tmp_path / ".booley_project"
+    (tmp_path / ".gitignore").write_text(".booley/\n", encoding="utf-8")
+    nested = tmp_path / ".booley"
     nested.mkdir()
     _committed_repo(nested)
     (nested / "runs" / "sim").mkdir(parents=True)
@@ -7712,7 +7712,7 @@ def test_sim_run_cwd_inside_nested_project_repo_uses_the_innermost_repository(
     subprocess.run(["git", "add", "-f", "runs/sim/.gitkeep"], cwd=nested, check=True)
     _git_commit_all(nested, "placeholder")
 
-    c = _check_run_cwd(tmp_path, ".booley_project/runs/sim")
+    c = _check_run_cwd(tmp_path, ".booley/runs/sim")
 
     assert not c.warned
     assert any("is committed" in m for m in c.passed)
@@ -7738,8 +7738,8 @@ def test_agent_usage_summary_edge_cases(calls, expected) -> None:
 
 
 def test_core_resolve_announces_before_host_fallback(tmp_path: Path, monkeypatch, capsys) -> None:
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
     (tmp_path / "first.core").write_text(
         "CAPI=2:\nname: acme:ip:first:1\ntargets:\n"
         "  smoke:\n"
@@ -7747,7 +7747,7 @@ def test_core_resolve_announces_before_host_fallback(tmp_path: Path, monkeypatch
         "    flow_options: {tool: verilator, booley: {doctor: [sim]}}\n",
         encoding="utf-8",
     )
-    project = doctor.ProjectAudit(tmp_path, project_dir, {}, {}, "")
+    project = doctor.ProjectAudit(tmp_path, booley_dir, {}, {}, "")
     monkeypatch.setattr(doctor, "_docker_image_exists_by_name", lambda _image: False)
     rec = _Rec()
 
@@ -7793,7 +7793,7 @@ int main(int argc, char** argv) {{
         cpp: str | None = None,
         run_cwd: str = ".",
     ) -> _FixCollector:
-        from booley.runtime.project_dir import reset_cache
+        from booley.runtime.booley_dir import reset_cache
 
         reset_cache()
         (tmp_path / "sim").mkdir(exist_ok=True)
@@ -7802,7 +7802,7 @@ int main(int argc, char** argv) {{
         )
         (tmp_path / "rtl").mkdir(exist_ok=True)
         (tmp_path / "rtl" / "dut.sv").write_text("module dut; endmodule\n", encoding="utf-8")
-        project = tmp_path / ".booley_project"
+        project = tmp_path / ".booley"
         project.mkdir(exist_ok=True)
         (project / "booley.toml").write_text(
             f'[flows.sim]\nrun_cwd = "{run_cwd}"\n{trace_config}', encoding="utf-8"
@@ -7917,7 +7917,7 @@ targets:
 
 
 def _disable_line_ending_stealth(root: Path) -> None:
-    data = root / ".booley_project"
+    data = root / ".booley"
     data.mkdir(parents=True, exist_ok=True)
     config = data / "booley.toml"
     existing = config.read_text() if config.exists() else ""
@@ -7928,14 +7928,14 @@ def _disable_line_ending_stealth(root: Path) -> None:
 
 def test_doctor_stealth_missing_local_policy_is_read_only(tmp_path):
     TestLineEndingsCheck._repo(tmp_path, autocrlf="false")
-    TestLineEndingsCheck._commit(tmp_path, ".gitignore", b".booley_project/\n")
-    data = tmp_path / ".booley_project"
+    TestLineEndingsCheck._commit(tmp_path, ".gitignore", b".booley/\n")
+    data = tmp_path / ".booley"
     data.mkdir()
     (data / "booley.toml").write_text("[stealth]\nenabled = true\n")
     paths = [tmp_path / ".git/config", tmp_path / ".git/index"]
     before = [(path.read_bytes(), path.stat().st_mtime_ns) for path in paths]
     c = _Collector()
-    doctor._check_line_endings(tmp_path, c._pass, c._warn, c._skip, c._fail, project_dir=data)
+    doctor._check_line_endings(tmp_path, c._pass, c._warn, c._skip, c._fail, booley_dir=data)
     assert c.warned and not c.passed and not c.failed
     assert str(tmp_path / ".git/info/attributes") in c.warned[0]
     assert [(path.read_bytes(), path.stat().st_mtime_ns) for path in paths] == before
@@ -7949,7 +7949,7 @@ def test_containment_report_alias_and_symlinks(tmp_path, monkeypatch):
     root, alias = tmp_path / "selected", tmp_path / "alias"
     for directory in (root, alias):
         (directory / "reports").mkdir(parents=True)
-    monkeypatch.setattr(doctor.dc, "PROJECT_DIR_TARGET", root.as_posix())
+    monkeypatch.setattr(doctor.dc, "BOOLEY_DIR_TARGET", root.as_posix())
     original = Path.samefile
     calls = []
 
@@ -7960,16 +7960,16 @@ def test_containment_report_alias_and_symlinks(tmp_path, monkeypatch):
         return original(path, other)
 
     monkeypatch.setattr(Path, "samefile", samefile)
-    project = SimpleNamespace(project_dir=root)
+    project = SimpleNamespace(booley_dir=root)
     assert (
         doctor._display_report_dir(project, alias / "reports")
-        == ".booley_project/reports (under the Project Root)"
+        == ".booley/reports (under the Project Root)"
     )
     assert calls
     (root / "internal").symlink_to(root / "reports", target_is_directory=True)
     assert (
         doctor._display_report_dir(project, root / "internal")
-        == ".booley_project/reports (under the Project Root)"
+        == ".booley/reports (under the Project Root)"
     )
     outside = tmp_path / "outside"
     outside.mkdir()
@@ -7991,17 +7991,17 @@ def test_containment_report_rebased_alias_child_symlink(tmp_path, monkeypatch):
     monkeypatch.setattr(
         Path, "samefile", lambda p, q: {p, Path(q)} == {root, alias} or original(p, q)
     )
-    monkeypatch.setattr(doctor.dc, "PROJECT_DIR_TARGET", root.as_posix())
+    monkeypatch.setattr(doctor.dc, "BOOLEY_DIR_TARGET", root.as_posix())
     assert (
-        doctor._display_report_dir(SimpleNamespace(project_dir=root), alias / "input")
-        == ".booley_project/target (under the Project Root)"
+        doctor._display_report_dir(SimpleNamespace(booley_dir=root), alias / "input")
+        == ".booley/target (under the Project Root)"
     )
     (root / "target").rmdir()
     (root / "real").mkdir()
     (root / "target").symlink_to(root / "real", target_is_directory=True)
     assert (
-        doctor._display_report_dir(SimpleNamespace(project_dir=root), alias / "input")
-        == ".booley_project/real (under the Project Root)"
+        doctor._display_report_dir(SimpleNamespace(booley_dir=root), alias / "input")
+        == ".booley/real (under the Project Root)"
     )
 
 
@@ -8030,7 +8030,7 @@ def test_authored_lint_doctor_eda_tool_policy(tmp_path, eda_tool, flow, compatib
     )
     project = doctor.ProjectAudit(
         project_root=tmp_path,
-        project_dir=tmp_path / ".booley_project",
+        booley_dir=tmp_path / ".booley",
         booley_toml={},
         configs_toml={},
         first_target="lint_style",
@@ -8057,7 +8057,7 @@ def test_mixed_lint_doctor_rejects_but_keeps_inventory(tmp_path, eda_tool):
     )
     project = doctor.ProjectAudit(
         project_root=tmp_path,
-        project_dir=tmp_path / ".booley_project",
+        booley_dir=tmp_path / ".booley",
         booley_toml={},
         configs_toml={},
         first_target="lint_mixed",
@@ -8129,9 +8129,9 @@ def test_mixed_lint_doctor_rejects_but_keeps_inventory(tmp_path, eda_tool):
 def test_doctor_renders_removed_documentation_item_with_fix(
     tmp_path, monkeypatch, capsys, config, item, fix, severity
 ):
-    project_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, project_dir)
-    (project_dir / "booley.toml").write_text('[project]\nname = "unit"\n' + config)
+    booley_dir = _write_project(tmp_path)
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    (booley_dir / "booley.toml").write_text('[project]\nname = "unit"\n' + config)
 
     result = doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path)
 
@@ -8144,10 +8144,10 @@ def test_doctor_renders_removed_documentation_item_with_fix(
 @pytest.mark.parametrize("key", ["idle_timeout_seconds", "max_sessions", "egress_allowlist"])
 @pytest.mark.parametrize("table", ["interactive", "sandbox"])
 def test_doctor_renders_each_project_policy_migration(tmp_path, monkeypatch, capsys, key, table):
-    project_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, project_dir)
+    booley_dir = _write_project(tmp_path)
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
     value = '["example.com"]' if key == "egress_allowlist" else "600"
-    (project_dir / "booley.toml").write_text(f"[{table}]\n{key} = {value}\n")
+    (booley_dir / "booley.toml").write_text(f"[{table}]\n{key} = {value}\n")
 
     assert doctor.run_doctor(argparse.Namespace(verbose=False, deep=False), tmp_path) == 1
 
@@ -8172,8 +8172,8 @@ def test_doctor_renders_synthesis_target_migration(
 ):
     import yaml
 
-    project_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, project_dir)
+    booley_dir = _write_project(tmp_path)
+    _patch_environment(monkeypatch, tmp_path, booley_dir)
     core = tmp_path / "unit.core"
     document = yaml.safe_load(core.read_text().removeprefix("CAPI=2:\n"))
     document["targets"]["synth_fast"]["flow_options"][key] = value
@@ -8193,11 +8193,11 @@ def test_goal_history_exclusion_diagnostic_preserves_explicit_git_policy(tmp_pat
     root = tmp_path / "repo"
     root.mkdir()
     _history_git(root, "init", "-q", "-b", "main")
-    project = root / ".booley_project"
+    project = root / ".booley"
     project.mkdir()
     (project / "booley.toml").write_text("[stealth]\nenabled = false\n")
     exclude = root / ".git/info/exclude"
-    exclude.write_text(".booley_project/\n" if ignored else "")
+    exclude.write_text(".booley/\n" if ignored else "")
     before = exclude.read_bytes()
     reporter = doctor._Reporter.create()
     doctor._check_goal_history_ignored(root, project, reporter.pass_, reporter.warn_)
@@ -8208,9 +8208,9 @@ def test_goal_history_exclusion_diagnostic_preserves_explicit_git_policy(tmp_pat
         ]
         assert findings[0].subject is None
         assert findings[0].message == (
-            "Goal Session Summary path .booley_project/goals/history/doctor-probe.md is "
+            "Goal Session Summary path .booley/goals/history/doctor-probe.md is "
             "gitignored; summaries remain local. Exclusion: .git/info/exclude:1:"
-            ".booley_project/\t.booley_project/goals/history/doctor-probe.md"
+            ".booley/\t.booley/goals/history/doctor-probe.md"
         )
         assert findings[0].fix == (
             "edit the reported exclusion when publication is wanted, then rerun booley doctor"
@@ -8228,14 +8228,14 @@ def test_goal_history_exclusion_uses_rtl_checkout_with_external_control(tmp_path
     control.mkdir()
     (control / "booley.toml").write_text("[stealth]\nenabled = false\n")
     exclude = root / ".git/info/exclude"
-    exclude.write_text(".booley_project/\n")
+    exclude.write_text(".booley/\n")
     before = exclude.read_bytes()
     reporter = doctor._Reporter.create()
     doctor._check_goal_history_ignored(root, control, reporter.pass_, reporter.warn_)
     findings = reporter.findings or []
     assert findings[0].check_id == "goals.history-ignored"
-    assert ".git/info/exclude:1:.booley_project/" in findings[0].message
-    assert not (root / ".booley_project").exists()
+    assert ".git/info/exclude:1:.booley/" in findings[0].message
+    assert not (root / ".booley").exists()
     assert exclude.read_bytes() == before
 
 
@@ -8314,17 +8314,17 @@ def _versioned_history_layout(tmp_path, *, linked, ignored):
     empty = tmp_path / "empty-excludes"
     empty.write_bytes(b"")
     git(root, "config", "core.excludesFile", str(empty))
-    owner = tmp_path / "owner" if linked else root / ".booley_project"
+    owner = tmp_path / "owner" if linked else root / ".booley"
     owner.mkdir()
     git(owner, "init", "-q", "-b", "main")
     (owner / "booley.toml").write_bytes(b"[stealth]\nenabled = false\n")
     git(owner, "add", "-A")
     git(owner, "commit", "-qm", "independent history")
-    project = root / ".booley_project"
+    project = root / ".booley"
     if linked:
         git(owner, "worktree", "add", "-q", "--detach", str(project))
     exclude = root / ".git/info/exclude"
-    exclude.write_bytes(b".booley_project/\n" if ignored else b"")
+    exclude.write_bytes(b".booley/\n" if ignored else b"")
     return root, project, exclude
 
 
@@ -8416,8 +8416,8 @@ def test_doctor_opt_out_migration_read_only_and_direct_init_hint(tmp_path):
     from booley.harness.setup.line_endings import LineEndingMode, reconcile_project_line_endings
 
     TestLineEndingsCheck._repo(tmp_path, autocrlf="false")
-    TestLineEndingsCheck._commit(tmp_path, ".gitignore", b".booley_project/\n")
-    data = tmp_path / ".booley_project"
+    TestLineEndingsCheck._commit(tmp_path, ".gitignore", b".booley/\n")
+    data = tmp_path / ".booley"
     data.mkdir()
     config = data / "booley.toml"
     config.write_text("[stealth]\nenabled = true\n")
@@ -8437,7 +8437,7 @@ def test_doctor_opt_out_migration_read_only_and_direct_init_hint(tmp_path):
         c._warn(message, fix)
         hints.append(fix)
 
-    doctor._check_line_endings(tmp_path, c._pass, warn, c._skip, c._fail, project_dir=data)
+    doctor._check_line_endings(tmp_path, c._pass, warn, c._skip, c._fail, booley_dir=data)
     assert c.warned and not c.failed and not c.passed
     assert "migration" in c.warned[0]
     assert "booley init" in hints[0]
@@ -8445,7 +8445,7 @@ def test_doctor_opt_out_migration_read_only_and_direct_init_hint(tmp_path):
     assert [(p.read_bytes(), p.stat().st_mtime_ns) for p in paths] == before
     reconcile_project_line_endings(tmp_path, data, mode=LineEndingMode.REPAIR)
     c = _Collector()
-    doctor._check_line_endings(tmp_path, c._pass, c._warn, c._skip, c._fail, project_dir=data)
+    doctor._check_line_endings(tmp_path, c._pass, c._warn, c._skip, c._fail, booley_dir=data)
     assert c.passed and not c.warned and not c.failed
 
 

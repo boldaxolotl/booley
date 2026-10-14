@@ -156,14 +156,14 @@ def _no_other_sessions(_identity: WorktreeIdentity) -> Sequence[str]:
 class EntryEnvironment:
     """What entry needs from its caller besides the request.
 
-    ``project_dir`` is the Main Booley Directory, resolved by the caller
+    ``booley_dir`` is the Main Booley Directory, resolved by the caller
     for the session (never a worktree's copy). ``other_sessions`` names the
     other live sessions on a worktree, for the shared-worktree warning.
     ``on_boundary`` is called with each durable boundary's name after it is
     reached; tests use it to stop entry there.
     """
 
-    project_dir: Path
+    booley_dir: Path
     recipe_families: tuple[RecipeFamily, ...] = ()
     other_sessions: Callable[[WorktreeIdentity], Sequence[str]] = _no_other_sessions
     on_boundary: Callable[[str], None] | None = None
@@ -253,21 +253,33 @@ def _goalset_names(raw: object) -> tuple[str, ...]:
 
 
 def enter_goal_mode(request: EntryRequest, env: EntryEnvironment) -> EntryResult:
+    """Serialize entry publication against a directory migration."""
+    from booley.core.file_lock import LockTimeoutError
+    from booley.core.layout_lock import layout_gate
+
+    try:
+        with layout_gate(env.booley_dir.absolute().parent, timeout_s=env.lock_timeout_s):
+            return _enter_goal_mode(request, env)
+    except LockTimeoutError as exc:
+        raise GoalEntryError("Goal entry or directory migration lock stayed busy") from exc
+
+
+def _enter_goal_mode(request: EntryRequest, env: EntryEnvironment) -> EntryResult:
     """Run the entry transaction (module docstring) and return the active record."""
     work_dir = _require_linked_worktree_root(request.work_dir)
-    project_dir = env.project_dir.absolute()
-    _refuse_worktree_copy(project_dir, work_dir)
+    booley_dir = env.booley_dir.absolute()
+    _refuse_worktree_copy(booley_dir, work_dir)
     plans = TargetPlans(work_dir)
     translation = _translate(request.goals, plans, work_dir)
     checkout = GoalCheckout(work_dir)
-    store = GoalStore(project_dir, lock_timeout_s=env.lock_timeout_s)
+    store = GoalStore(booley_dir, lock_timeout_s=env.lock_timeout_s)
     try:
         identity = store.identify_worktree(work_dir, create=True)
         assert identity is not None  # create=True always returns an identity
         with store.worktree_lock(identity) as lock:
             recovered = _recover_occupant(store, identity, checkout)
             freezing = _Freezing(plans, env.draw_seeds)
-            plan = _plan_entry(request, checkout, identity, translation, project_dir, freezing)
+            plan = _plan_entry(request, checkout, identity, translation, booley_dir, freezing)
             created = store.create(lock, plan.record)
             _boundary(env, "created")
             try:
@@ -300,7 +312,7 @@ def _plan_entry(
     checkout: GoalCheckout,
     identity: WorktreeIdentity,
     translation: Translation,
-    project_dir: Path,
+    booley_dir: Path,
     freezing: _Freezing,
 ) -> _EntryPlan:
     """Validate the checkout and the Goals under the lock; build the new record."""
@@ -310,7 +322,7 @@ def _plan_entry(
     _require_clean(checkout, "the worktree", outer=True)
     if paired is not None:
         _require_clean(paired, "the Paired Checkout")
-    _check_default_goalset(request, project_dir)
+    _check_default_goalset(request, booley_dir)
     timestamp = compact_utc_now()
     branch = f"{GOAL_BRANCH_PREFIX}{request.slug}-{timestamp[:8]}"
     checkout.require_valid_branch_name(branch)
@@ -335,7 +347,7 @@ def _plan_entry(
         skip_reason=request.skip_reason,
         paired_project_base_sha=None if paired is None else paired.head_sha(),
         input_topology_digest=_input_topology(checkout.root),
-        input_paths=_input_paths(checkout.root, project_dir),
+        input_paths=_input_paths(checkout.root, booley_dir),
         project_snapshot=_input_snapshot(checkout.root),
     )
     return _EntryPlan(record, goal_criterion_params(translation.goals), tuple(warnings))
@@ -354,7 +366,7 @@ def _drive_entry(
     _boundary(env, "branch_created")
     _checkout_goal_branch(checkout, record)
     _boundary(env, "checked_out")
-    roots = ProtectedInputRoots(checkout.root, store.project_dir)
+    roots = ProtectedInputRoots(checkout.root, store.booley_dir)
     snapshot = _snapshot(roots)
     record = _save(
         store,
@@ -409,14 +421,14 @@ def _require_linked_worktree_root(work_dir: Path) -> Path:
     return root
 
 
-def _refuse_worktree_copy(project_dir: Path, work_dir: Path) -> None:
+def _refuse_worktree_copy(booley_dir: Path, work_dir: Path) -> None:
     """Refuse a Main Booley Directory inside the worktree: that is its copy (D9)."""
-    from booley.runtime.project_dir import contains
+    from booley.runtime.booley_dir import contains
 
-    if contains(project_dir, project_dir=work_dir) is None:
+    if contains(booley_dir, booley_dir=work_dir) is None:
         return
     raise GoalEntryError(
-        f"the Worktree Booley Directory {project_dir} cannot own Goal Records; they "
+        f"the Worktree Booley Directory {booley_dir} cannot own Goal Records; they "
         "must live in the Main Booley Directory"
     )
 
@@ -478,9 +490,9 @@ def _recover_occupant(
     raise GoalEntryError(message)
 
 
-def _check_default_goalset(request: EntryRequest, project_dir: Path) -> None:
+def _check_default_goalset(request: EntryRequest, booley_dir: Path) -> None:
     """The default Goalset is applied or explicitly skipped with a reason (D10)."""
-    exists = (project_dir / GOALSETS_DIR / f"{DEFAULT_GOALSET}.md").is_file()
+    exists = (booley_dir / GOALSETS_DIR / f"{DEFAULT_GOALSET}.md").is_file()
     used = DEFAULT_GOALSET in request.goalsets_used
     reason = (request.skip_reason or "").strip()
     if request.default_skipped:
@@ -639,7 +651,7 @@ def pin_goal_baselines(
     checkout: GoalCheckout,
 ) -> None:
     """Pin ``_baseline_ref`` to the base commit and freeze recipes (Step 0 R6)."""
-    paths = record_paths(env.project_dir, record.id)
+    paths = record_paths(env.booley_dir, record.id)
     ctx = _GoalPinContext(checkout.root, record.base_sha, paths.runtime_dir / "recipe-freeze")
     paired = (
         None
@@ -674,7 +686,7 @@ def _write_initial_state(
     never points at a state file a crash could lose.
     """
     categories = review_categories(params)
-    state_file = record_paths(store.project_dir, record.id).state_file
+    state_file = record_paths(store.booley_dir, record.id).state_file
     with store.record_lock(record.id):
         state = DevelopmentState.load(state_file)
         state.slug = record.id
@@ -797,11 +809,11 @@ def _describe_goal(goal: GoalSpec) -> str:
 
 def _input_topology(root: Path) -> str:
     from booley.goals.input_view import topology_digest
-    from booley.runtime.project_dir import resolve_checkout_project_dir
+    from booley.runtime.booley_dir import resolve_checkout_booley_dir
 
     paired = _paired_project_checkout(root)
     return "sha256:" + topology_digest(
-        root, resolve_checkout_project_dir(root), None if paired is None else paired.root
+        root, resolve_checkout_booley_dir(root), None if paired is None else paired.root
     )
 
 
@@ -811,7 +823,7 @@ def _input_snapshot(root: Path) -> dict[str, str | None] | None:
     return snapshot_project(root)
 
 
-def _input_paths(root: Path, project_dir: Path) -> dict[str, Any]:
+def _input_paths(root: Path, booley_dir: Path) -> dict[str, Any]:
     from booley.goals.input_view import capture_path_roots
 
-    return capture_path_roots(root, project_dir)
+    return capture_path_roots(root, booley_dir)

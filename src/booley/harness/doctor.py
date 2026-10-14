@@ -125,14 +125,14 @@ from booley.runtime import (
 from booley.runtime import devcontainer as dc
 from booley.runtime import interactive_docker as idk
 from booley.runtime import project_image as pi
+from booley.runtime.booley_dir import (
+    BOOLEY_DIR_NAME,
+    contains,
+    resolve_checkout_booley_dir,
+)
 from booley.runtime.checkout_role import SourceCheckoutProjectError
 from booley.runtime.git import _git_common_dir
 from booley.runtime.platform_paths import docker_mount_path
-from booley.runtime.project_dir import (
-    PROJECT_DIR_NAME,
-    contains,
-    resolve_checkout_project_dir,
-)
 from booley.runtime.project_gitignore import missing_gitignore_patterns
 from booley.runtime.timefmt import format_human_datetime
 from booley.targets import target_naming
@@ -204,7 +204,7 @@ _SELFTEST_FOOTPRINT_NOTE = {
     # behavior: no Doctor-only shell belongs in booley.toml.
     "sim": (
         "Footprint: mirror only the broken staged file(s) beneath "
-        ".booley_project/selftest/sim/bad-overlay/; Doctor applies that overlay "
+        ".booley/selftest/sim/bad-overlay/; Doctor applies that overlay "
         "only to its bad run."
     ),
     # lint has no pre_run_commands hook, so its bad Target resolves through a
@@ -628,13 +628,13 @@ def _load_waivers(project_root: Path) -> tuple[DoctorWaivers, str | None]:
     """Resolve and load project waivers without hiding config failures."""
 
     try:
-        project_dir = resolve_checkout_project_dir(project_root)
+        booley_dir = resolve_checkout_booley_dir(project_root)
     except FileNotFoundError:
-        project_dir = project_root / PROJECT_DIR_NAME
+        booley_dir = project_root / BOOLEY_DIR_NAME
     try:
-        return load_doctor_waivers(project_dir), None
+        return load_doctor_waivers(booley_dir), None
     except DoctorWaiverError as exc:
-        return DoctorWaivers.empty(project_dir / WAIVER_FILENAME), str(exc)
+        return DoctorWaivers.empty(booley_dir / WAIVER_FILENAME), str(exc)
 
 
 def _create_reporter(
@@ -682,6 +682,18 @@ def record_manual_result(project_root: Path, result: DoctorRunResult) -> dict[st
 
 def run_doctor(args: argparse.Namespace, project_root: Path) -> int:
     """Run setup health checks."""
+    from booley.core.booley_layout import (
+        BooleyLayoutError,
+        require_current_layout,
+        validate_environment,
+    )
+
+    try:
+        validate_environment()
+        require_current_layout(project_root)
+    except BooleyLayoutError as exc:
+        err(str(exc))
+        return 2
     result = run_doctor_result(args, project_root)
     if runtime_context.inside_session_runtime():
         # Advisory publication must never change the manual result.
@@ -731,7 +743,7 @@ def run_doctor_result(
 
     result = reporter.result(reporter.finish())
     if project is not None and result.clean and result.health_evidence and record_clean:
-        doctor_stamp.record_clean_run(project.project_dir, project_root, deep=deep)
+        doctor_stamp.record_clean_run(project.booley_dir, project_root, deep=deep)
     return _report_deep_currency(project_root, project, result, summary, record_clean)
 
 
@@ -747,14 +759,14 @@ def _report_deep_currency(
     attempt = None
     if summary is not None and persist:
         try:
-            project_dir = (
-                project.project_dir if project else resolve_checkout_project_dir(project_root)
+            booley_dir = (
+                project.booley_dir if project else resolve_checkout_booley_dir(project_root)
             )
         except (FileNotFoundError, OSError):
-            project_dir = None
-        if project_dir is not None:
+            booley_dir = None
+        if booley_dir is not None:
             attempt = summary.attempt(version=booley.__version__, clean=result.clean)
-            storage_failed = not doctor_deep.record_deep_attempt(project_dir, attempt)
+            storage_failed = not doctor_deep.record_deep_attempt(booley_dir, attempt)
     status = observe_deep_status(project_root, unsaved_attempt=attempt if storage_failed else None)
     if storage_failed:
         status = replace(status, storage_failed=True)
@@ -771,7 +783,7 @@ def observe_deep_status(
     """Read and report currency without starting checks or modifying evidence."""
     state = doctor_deep.DeepState()
     with contextlib.suppress(FileNotFoundError, OSError):
-        state = doctor_deep.load_deep_state(resolve_checkout_project_dir(project_root))
+        state = doctor_deep.load_deep_state(resolve_checkout_booley_dir(project_root))
     identity = sandbox_artifact.observe_execution(project_root, container=container)
     return doctor_deep.evaluate_deep_status(
         state,
@@ -796,11 +808,11 @@ def _run_project_phase(
     docker_exe = host.docker_exe
     loaded = readiness.load_project(project_root)
     reporter.diagnostics(loaded.report)
-    project_dir, project = loaded.project_dir, loaded.project
+    booley_dir, project = loaded.booley_dir, loaded.project
     mode = readiness.ReadinessMode.INSPECT if read_only else readiness.ReadinessMode.RECONCILE
-    _check_upgrade_review(project_dir, reporter)
+    _check_upgrade_review(booley_dir, reporter)
     _check_legacy_source_stashes(project_root, reporter)
-    _check_goal_presence(project_root, project_dir, reporter)
+    _check_goal_presence(project_root, booley_dir, reporter)
     if project is None:
         reporter.skip_("project setup audit skipped - no valid project config")
     else:
@@ -813,11 +825,11 @@ def _run_project_phase(
         reporter.warn_,
         reporter.skip_,
         reporter.fail_,
-        project_dir=project_dir,
+        booley_dir=booley_dir,
     )
     if project is not None:
         _check_worktree_core_shadow_guard(
-            project.project_dir, reporter.pass_, reporter.warn_, project_root=project.project_root
+            project.booley_dir, reporter.pass_, reporter.warn_, project_root=project.project_root
         )
         reporter.diagnostics(readiness.check_stealth_cores(project, mode=mode))
     return docker_exe, project
@@ -843,7 +855,7 @@ def _check_project_data_destination_branch(project_root: Path, reporter: _Report
     project_repo = project_repositories.resolve_inner_project_repo(project_root)
     if project_repo is None:
         try:
-            candidate = resolve_checkout_project_dir(project_root).resolve()
+            candidate = resolve_checkout_booley_dir(project_root).resolve()
         except (FileNotFoundError, OSError):
             candidate = None
         if candidate is not None and (candidate / ".git").is_dir():
@@ -956,13 +968,13 @@ def _outer_branch_for_project_data(
     return None
 
 
-def _check_goal_presence(root: Path, project_dir: Path | None, reporter: _Reporter) -> None:
+def _check_goal_presence(root: Path, booley_dir: Path | None, reporter: _Reporter) -> None:
     from booley.harness.dashboard.doctor import inspect_presence
 
-    if project_dir is None:
+    if booley_dir is None:
         return
     result = inspect_presence(
-        root, project_dir, inside_sandbox=runtime_context.inside_session_runtime()
+        root, booley_dir, inside_sandbox=runtime_context.inside_session_runtime()
     )
     if result.unavailable:
         reporter.skip_(result.unavailable)
@@ -972,11 +984,11 @@ def _check_goal_presence(root: Path, project_dir: Path | None, reporter: _Report
         )
 
 
-def _check_upgrade_review(project_dir: Path | None, reporter: _Reporter) -> None:
+def _check_upgrade_review(booley_dir: Path | None, reporter: _Reporter) -> None:
     """Observe the running version and render its durable review status."""
-    if project_dir is None:
+    if booley_dir is None:
         return
-    status = upgrade_review.observe(project_dir)
+    status = upgrade_review.observe(booley_dir)
     presentation = upgrade_cli.status_presentation(status)
     if presentation.doctor_check_id is None:
         reporter.pass_(presentation.summary)
@@ -1398,12 +1410,12 @@ def _check_line_endings(
     _skip: Check,
     _fail: Fail,
     *,
-    project_dir: Path | None = None,
+    booley_dir: Path | None = None,
 ) -> None:
     """Map the shared read-only line-ending report into Doctor findings."""
     report = reconcile_project_line_endings(
         project_root,
-        project_dir,
+        booley_dir,
         mode=LineEndingMode.INSPECT,
     )
     if report.status is LineEndingStatus.NOT_APPLICABLE:
@@ -1418,15 +1430,15 @@ def _check_line_endings(
 
 
 def _check_worktree_core_shadow_guard(
-    project_dir: Path,
+    booley_dir: Path,
     _pass: Check,
     _warn: Check,
     *,
     project_root: Path | None = None,
 ) -> None:
-    """Ensure ``.booley_project/FUSESOC_IGNORE`` keeps worktree cores out of scan.
+    """Ensure ``.booley/FUSESOC_IGNORE`` keeps worktree cores out of scan.
 
-    Goal / baseline git worktrees under ``.booley_project/`` are full
+    Goal / baseline git worktrees under ``.booley/`` are full
     checkouts carrying COPIES of the project's ``.core`` files (same VLNV). A
     stale copy shadows the source at the Project Root in FuseSoC's recursive
     ``--cores-root`` scan — silently building the worktree's RTL, not ``/work``'s.
@@ -1435,44 +1447,44 @@ def _check_worktree_core_shadow_guard(
     escalating the message when a live shadowing ``.core`` is already present.
     """
     _warn = _warning_sink(_warn, "fusesoc.worktree-core-shadow")
-    marker = project_dir / "FUSESOC_IGNORE"
+    marker = booley_dir / "FUSESOC_IGNORE"
     if marker.is_file():
         _pass(
             "FUSESOC_IGNORE present (worktree .core copies can't shadow source at the Project Root)"
         )
         return
     # Marker absent — is there an actual stale worktree .core to shadow right now?
-    # Authored stealth cores (.booley_project/cores/, ADR 0036) are sources, not
+    # Authored stealth cores (.booley/cores/, ADR 0036) are sources, not
     # shadow threats — they are scanned deliberately and must not be counted.
-    stealth_root = project_dir / fusesoc_registry.STATE_CORES_SUBDIR
-    worktrees = _worktree_core_directory(project_dir, project_root)
+    stealth_root = booley_dir / fusesoc_registry.STATE_CORES_SUBDIR
+    worktrees = _worktree_core_directory(booley_dir, project_root)
     shadow_cores = [
         p
-        for sub in (worktrees, project_dir)
+        for sub in (worktrees, booley_dir)
         if sub.is_dir()
         for p in sub.rglob("*.core")
         if not p.is_relative_to(stealth_root)
     ]
     if shadow_cores:
         _warn(
-            f".booley_project/FUSESOC_IGNORE missing and {len(shadow_cores)} "
+            f".booley/FUSESOC_IGNORE missing and {len(shadow_cores)} "
             "worktree .core copy/copies can shadow the source at the Project Root in "
             "FuseSoC's --cores-root scan; run `booley init` to add the marker"
         )
     else:
         _warn(
-            ".booley_project/FUSESOC_IGNORE missing; a future worktree's "
+            ".booley/FUSESOC_IGNORE missing; a future worktree's "
             ".core could shadow the source at the Project Root — run `booley init`"
         )
 
 
-def _worktree_core_directory(project_dir: Path, project_root: Path | None) -> Path:
+def _worktree_core_directory(booley_dir: Path, project_root: Path | None) -> Path:
     from booley.runtime.worktree_paths import worktree_state_dir
 
     state = (
-        worktree_state_dir(project_root, project_dir=project_dir)
+        worktree_state_dir(project_root, booley_dir=booley_dir)
         if project_root is not None
-        else project_dir
+        else booley_dir
     )
     return state / "worktrees"
 
@@ -1494,7 +1506,7 @@ _RUNTIME_MARKER_FIX = (
 )
 
 
-def _developer_mem_bytes(project_dir: Path) -> tuple[int, bool]:
+def _developer_mem_bytes(booley_dir: Path) -> tuple[int, bool]:
     """(agent memory term, measured?) for the invariant arithmetic.
 
     Uses the peak RSS ``doctor --deep`` recorded into runtime state when
@@ -1502,7 +1514,7 @@ def _developer_mem_bytes(project_dir: Path) -> tuple[int, bool]:
     """
     from booley.harness import developer_probe
 
-    measured = developer_probe.load_measurement(project_dir)
+    measured = developer_probe.load_measurement(booley_dir)
     if measured is not None:
         return (measured, True)
     return (developer_probe.FALLBACK_BYTES, False)
@@ -1514,7 +1526,7 @@ def _heavy_memory_reservation(project: ProjectAudit) -> resource_policy.HeavyMem
     raw = jobs.get("heavy_memory") if isinstance(jobs, dict) else None
     from booley.harness import synth_probe
 
-    measurement = synth_probe.load_measurement(project.project_dir)
+    measurement = synth_probe.load_measurement(project.booley_dir)
     calibration = (
         resource_policy.SynthesisMemoryCalibration(
             target=str(measurement["target"]),
@@ -1578,7 +1590,7 @@ def _check_memory_invariant(
     if reservation.error:
         _warn(reservation.error)
         return
-    orch, measured = _developer_mem_bytes(project.project_dir)
+    orch, measured = _developer_mem_bytes(project.booley_dir)
     requirement = resource_policy.memory_requirement(
         max_heavy=caps.max_heavy,
         heavy_job_bytes=reservation.bytes,
@@ -1676,7 +1688,7 @@ def _check_slot_store_writable(_pass: Check, _fail: Fail) -> None:
     if root is None:
         _fail(
             "slot store root unresolvable (no Booley Directory) — job admission cannot arbitrate",
-            "run doctor from the project workspace or set BOOLEY_PROJECT_DIR",
+            "run doctor from the project workspace or set BOOLEY_DIR",
         )
         return
     probe = root / f".doctor-write-probe-{os.getpid()}"
@@ -1786,7 +1798,7 @@ def _run_developer_probe(
         return record
     record = _AgentCallRecord("agent probe", measurement.usage)
     try:
-        path = developer_probe.record_measurement(project.project_dir, measurement.peak_rss_bytes)
+        path = developer_probe.record_measurement(project.booley_dir, measurement.peak_rss_bytes)
     except Exception as exc:  # noqa: BLE001 — fail-soft by contract; the paid call is still accounted
         _skip(
             f"Specialist provider memory probe skipped - {exc} (memory invariant keeps the 1g fallback)"
@@ -1946,7 +1958,7 @@ def _check_custom_image_freshness(
     ``_check_image_freshness`` guards the base image and
     ``_check_derived_image_freshness`` the auto-generated ``<slug>-booley-sandbox``.
     A *custom* ``[sandbox].image`` (e.g. ``openc910-booley-sandbox``, built from a
-    hand-maintained ``.booley_project/docker/Dockerfile``) falls through both — so
+    hand-maintained ``.booley/docker/Dockerfile``) falls through both — so
     the classic "edited the Dockerfile, forgot to rebuild, container runs the old
     toolchain" drift goes unflagged. Compare the image build time against that
     Dockerfile's mtime; degrade to silence when there is nothing to compare.
@@ -1961,7 +1973,7 @@ def _check_custom_image_freshness(
         return
     if image == DOCKER_IMAGE or image == pi.project_image_name(project.project_root):
         return  # base / auto-generated derived — covered by the sibling checks
-    dockerfile = project.project_dir / "docker" / "Dockerfile"
+    dockerfile = project.booley_dir / "docker" / "Dockerfile"
     if not dockerfile.is_file():
         return  # no project Dockerfile to compare against (e.g. externally built)
     created = _image_created_epoch(docker_exe, image)
@@ -2032,10 +2044,10 @@ def _check_container_uid(  # noqa: PLR0911 — ordered precondition ladder; each
     _warn: Check,
     _fail: Fail,
 ) -> None:
-    """Compare the in-container agent uid against the .booley_project owner.
+    """Compare the in-container agent uid against the .booley owner.
 
     On native Linux, bind-mounted project files keep their host uid; if the
-    container user has a different uid it cannot write into .booley_project and
+    container user has a different uid it cannot write into .booley and
     the MCP server fails opaquely. Docker Desktop (macOS/Windows) remaps mount
     ownership, so this check only applies on Linux hosts.
     """
@@ -2065,15 +2077,15 @@ def _check_container_uid(  # noqa: PLR0911 — ordered precondition ladder; each
         _warn(f"unexpected container uid output: {result.stdout.strip()!r}")
         return
     try:
-        owner_uid = project.project_dir.stat().st_uid
+        owner_uid = project.booley_dir.stat().st_uid
     except OSError as exc:
-        _warn(f"could not stat {project.project_dir}: {exc}")
+        _warn(f"could not stat {project.booley_dir}: {exc}")
         return
     if container_uid == owner_uid:
-        _pass(f"container agent uid {container_uid} matches .booley_project owner")
+        _pass(f"container agent uid {container_uid} matches .booley owner")
         return
     _fail(
-        f"container agent uid {container_uid} != .booley_project owner uid "
+        f"container agent uid {container_uid} != .booley owner uid "
         f"{owner_uid}; bind-mounted files are unwritable in the sandbox",
         f"rebuild the sandbox image with the agent user pinned to host uid {os.getuid()}",
     )
@@ -2335,7 +2347,7 @@ def _run_mcp_checks(
     )
     reporter.diagnostics(inspection.inspect_runtime(request).report)
     _check_devcontainer_excludes(project.project_root, reporter.pass_, reporter.warn_)
-    _check_interactive_logs_tracked(project.project_dir, reporter.pass_, reporter.fail_)
+    _check_interactive_logs_tracked(project.booley_dir, reporter.pass_, reporter.fail_)
     _run_agent_credential_checks(project, reporter)
     _check_wcp_server(project, docker_exe, reporter.pass_, reporter.skip_, reporter.fail_)
     reporter.diagnostics(inspection.inspect_retained_resources(project.project_root, docker_exe))
@@ -2372,7 +2384,7 @@ def _run_agent_credential_checks(project: ProjectAudit, reporter: _Reporter) -> 
 
 
 def _check_interactive_logs_tracked(
-    project_dir: Path,
+    booley_dir: Path,
     _pass: Check,
     _fail: Fail,
 ) -> None:
@@ -2385,7 +2397,7 @@ def _check_interactive_logs_tracked(
     try:
         result = subprocess.run(
             ["git", "ls-files", "--", ".interactive_logs"],
-            cwd=project_dir,
+            cwd=booley_dir,
             capture_output=True,
             text=True,
             timeout=10,
@@ -2418,9 +2430,7 @@ def _check_devcontainer_excludes(
     from booley.commit_policy import stealth_enabled
 
     required = (
-        (".devcontainer", ".booley_project")
-        if stealth_enabled(project_root)
-        else (".devcontainer",)
+        (".devcontainer", ".booley") if stealth_enabled(project_root) else (".devcontainer",)
     )
     missing = [name for name in required if f"/{name}" not in body]
     if missing:
@@ -2959,7 +2969,7 @@ def _run_mcp_probe(
 ) -> None:
     cmd = _mcp_probe_command(project, docker_exe, image)
     env = os.environ.copy()
-    env["BOOLEY_PROJECT_DIR"] = str(project.project_dir)
+    env["BOOLEY_DIR"] = str(project.booley_dir)
     env["BOOLEY_MCP_MODE"] = "interactive"
     try:
         result = subprocess.run(
@@ -2988,7 +2998,7 @@ def _mcp_probe_command(project: ProjectAudit, docker_exe: str, image: str) -> li
         "-w",
         "/work",
         "-e",
-        "BOOLEY_PROJECT_DIR=/work/.booley_project",
+        "BOOLEY_DIR=/work/.booley",
         "-e",
         "BOOLEY_MCP_MODE=interactive",
         image,
@@ -3047,7 +3057,7 @@ def _check_mcp_tool_payload(
         _fail(f"MCP tool discovery reported {len(errors)} error(s)", errors[0])
         return
     if payload.get("logs_dir_ok") is not True:
-        _fail("MCP interactive log setup failed", "check .booley_project mount and permissions")
+        _fail("MCP interactive log setup failed", "check .booley mount and permissions")
         return
     missing = _required_mcp_tools(project) - set(mcp_tools)
     if missing:
@@ -3098,10 +3108,10 @@ def _run_project_checks(
         reporter.skip_("Project checks skipped - project config invalid")
         return
 
-    _check_ticket_leftovers(project.project_dir, reporter.warn_)
-    _check_project_gitignore(project.project_dir, reporter.pass_, reporter.warn_)
+    _check_ticket_leftovers(project.booley_dir, reporter.warn_)
+    _check_project_gitignore(project.booley_dir, reporter.pass_, reporter.warn_)
     _check_goal_history_ignored(
-        project.project_root, project.project_dir, reporter.pass_, reporter.warn_
+        project.project_root, project.booley_dir, reporter.pass_, reporter.warn_
     )
     _check_git_state(project.project_root, reporter.pass_, reporter.note_, reporter.fail_)
     _check_repo_footprint(project.project_root, reporter.pass_, reporter.warn_)
@@ -3136,17 +3146,17 @@ _SHIPPED_TICKET_GUIDANCE_HASHES = frozenset(
 )
 
 
-def _check_ticket_leftovers(project_dir: Path, _warn: Check) -> None:
+def _check_ticket_leftovers(booley_dir: Path, _warn: Check) -> None:
     """Warn about actionable board data and guidance; keep Ticket History inert."""
-    _check_leftover_board(project_dir, _warn)
-    _check_leftover_guidance(project_dir, _warn)
+    _check_leftover_board(booley_dir, _warn)
+    _check_leftover_guidance(booley_dir, _warn)
 
 
-def _check_leftover_board(project_dir: Path, _warn: Check) -> None:
+def _check_leftover_board(booley_dir: Path, _warn: Check) -> None:
     nonempty: dict[Path, str] = {}
     empty: list[str] = []
     for name in ("board", "state", "logs", "locks", "waiver-candidates"):
-        path = project_dir / "tickets" / name
+        path = booley_dir / "tickets" / name
         try:
             if not path.is_dir():
                 continue
@@ -3164,9 +3174,9 @@ def _check_leftover_board(project_dir: Path, _warn: Check) -> None:
         )
 
 
-def _check_leftover_guidance(project_dir: Path, _warn: Check) -> None:
+def _check_leftover_guidance(booley_dir: Path, _warn: Check) -> None:
     for name in ("ticket_creation.md", "ticket_defaults.md"):
-        path = project_dir / name
+        path = booley_dir / name
         warning = _warning_sink(_warn, "tickets.leftover-guidance", subject=name)
         try:
             if not path.is_file():
@@ -3182,25 +3192,22 @@ def _check_leftover_guidance(project_dir: Path, _warn: Check) -> None:
         fix = (
             f"delete {path}"
             if shipped
-            else (
-                "move its rules into a Goalset under .booley_project/goalsets/, "
-                f"then delete {path}"
-            )
+            else (f"move its rules into a Goalset under .booley/goalsets/, then delete {path}")
         )
         warning(f"leftover Ticket guidance in {path}", fix)
 
 
-def _check_project_gitignore(project_dir: Path, _pass: Check, _warn: Check) -> None:
-    """Warn when ``.booley_project/.gitignore`` lacks a transient-state pattern ``init`` adds.
+def _check_project_gitignore(booley_dir: Path, _pass: Check, _warn: Check) -> None:
+    """Warn when ``.booley/.gitignore`` lacks a transient-state pattern ``init`` adds.
 
     A missing ``tickets/board/`` pattern leaves closed Tickets' deletions in
     the checkout, which blocks the next Ticket's completion.
     """
     _warn = _warning_sink(_warn, "project.gitignore")
-    gitignore = project_dir / ".gitignore"
+    gitignore = booley_dir / ".gitignore"
     if not gitignore.is_file():
         _warn(
-            ".booley_project/.gitignore missing; transient Booley state may be tracked",
+            ".booley/.gitignore missing; transient Booley state may be tracked",
             "booley init",
         )
         return
@@ -3212,7 +3219,7 @@ def _check_project_gitignore(project_dir: Path, _pass: Check, _warn: Check) -> N
     missing = missing_gitignore_patterns(content)
     if missing:
         _warn(
-            f".booley_project/.gitignore is missing {len(missing)} pattern(s): {', '.join(missing)}",
+            f".booley/.gitignore is missing {len(missing)} pattern(s): {', '.join(missing)}",
             "booley init",
         )
         return
@@ -3220,10 +3227,10 @@ def _check_project_gitignore(project_dir: Path, _pass: Check, _warn: Check) -> N
 
 
 def _goal_history_layout_advice(root: Path) -> tuple[str, str]:
-    from booley.runtime.project_dir import PROJECT_DIR_NAME
+    from booley.runtime.booley_dir import BOOLEY_DIR_NAME
     from booley.runtime.project_repositories import RepositoryCheckoutError, is_git_worktree_root
 
-    project = root / PROJECT_DIR_NAME
+    project = root / BOOLEY_DIR_NAME
     healthy = is_git_worktree_root(project)
     if (project / ".git").exists() and not healthy:
         raise RepositoryCheckoutError(f"Booley repository metadata is unavailable at {project}")
@@ -3237,14 +3244,14 @@ def _goal_history_layout_advice(root: Path) -> tuple[str, str]:
     return "", "edit the reported exclusion when publication is wanted, then rerun booley doctor"
 
 
-def _check_goal_history_ignored(root: Path, project_dir: Path, _pass: Check, _warn: Warn) -> None:
+def _check_goal_history_ignored(root: Path, booley_dir: Path, _pass: Check, _warn: Warn) -> None:
     """Report preserved explicit exclusions which keep non-Stealth Goal history local."""
     from booley.commit_policy import stealth_enabled
-    from booley.runtime.project_dir import PROJECT_DIR_NAME
+    from booley.runtime.booley_dir import BOOLEY_DIR_NAME
 
-    if stealth_enabled(root, project_dir=project_dir):
+    if stealth_enabled(root, booley_dir=booley_dir):
         return
-    relative = (Path(PROJECT_DIR_NAME) / "goals/history/doctor-probe.md").as_posix()
+    relative = (Path(BOOLEY_DIR_NAME) / "goals/history/doctor-probe.md").as_posix()
     inspect_warning = _warning_sink(_warn, "goals.history-ignored")
     try:
         result = subprocess.run(
@@ -3377,7 +3384,7 @@ def _check_git_conflicts(project_root: Path, _pass: Check, _fail: Fail) -> None:
 
 # Booley-branded scaffolding filenames that must never be committed into a
 # target repo. Booley's operational state lives under the gitignored
-# `.booley_project/` dir (minimal-footprint / stealth rule, booley-setup
+# `.booley/` dir (minimal-footprint / stealth rule, booley-setup
 # SKILL.md); a tracked `*.booley.md` note means a setup agent leaked Booley
 # scaffolding into the project's history. Leading `*` makes each git pathspec
 # match at any depth (git wildcard pathspecs cross `/`).
@@ -3387,11 +3394,11 @@ _BOOLEY_FOOTPRINT_PATHSPECS = ("*.booley.md", "*.booley.txt", "*.booley.rst")
 def _check_repo_footprint(project_root: Path, _pass: Check, _warn: Check) -> None:
     """Warn when Booley-branded scaffolding is committed into the target repo.
 
-    Booley keeps all operational state under the gitignored `.booley_project/`
+    Booley keeps all operational state under the gitignored `.booley/`
     dir, so a tracked `README.booley.md` / integration note means the setup
     agent broke the minimal-footprint rule and littered the project's history
     with Booley scaffolding. Warn (the repo still builds) with a `git rm
-    --cached` remedy; notes belong under `.booley_project/`.
+    --cached` remedy; notes belong under `.booley/`.
     """
     _warn = _warning_sink(_warn, "project.scaffolding-tracked")
     try:
@@ -3413,7 +3420,7 @@ def _check_repo_footprint(project_root: Path, _pass: Check, _warn: Check) -> Non
         _warn(
             f"{len(stray)} Booley scaffolding file(s) committed into the repo "
             f"({shown}) — Booley state belongs under the gitignored "
-            ".booley_project/; move any notes there and `git rm --cached` the "
+            ".booley/; move any notes there and `git rm --cached` the "
             "strays (booley-setup SKILL.md: minimal-footprint rule)"
         )
     else:
@@ -3440,7 +3447,7 @@ def _check_custom_endpoints_and_criteria(project_root: Path, _pass: Check, _fail
     except (ImportError, OSError, ValueError) as exc:
         _fail(
             f"custom endpoint/Criteria validation failed: {exc}",
-            "fix .booley_project/mcp_tools and Criteria configuration",
+            "fix .booley/mcp_tools and Criteria configuration",
         )
         return
     _pass("custom endpoints and Criteria validated")
@@ -3491,7 +3498,7 @@ def _check_design_size(project: ProjectAudit, _pass: Check, _note: Check) -> Non
     """
     audit = design_size.analyze_design_size(
         project.project_root,
-        project.project_dir,
+        project.booley_dir,
         _project_target_matrix(project).seed_targets,
     )
     label = (
@@ -3753,7 +3760,7 @@ def _owned_core_files(project: ProjectAudit, root: Path) -> set[Path]:
 
     A core is "owned" when it hosts a Target selected by Doctor metadata (the
     project drives it, so its defects are the project's problem) or lives in the
-    state zone (``.booley_project/cores/`` is always Booley-authored). Everything
+    state zone (``.booley/cores/`` is always Booley-authored). Everything
     else is vendored upstream content — advice like "fix the .core" is
     unfollowable for a repo that must stay byte-identical to upstream.
     """
@@ -3817,7 +3824,7 @@ def _check_core_schema(
 
     Severity follows ownership. A violation FAILs when the core is one the
     project actually drives — it hosts a Doctor-selected Target — or
-    lives in the state zone (``.booley_project/cores/``, always Booley-authored,
+    lives in the state zone (``.booley/cores/``, always Booley-authored,
     ADR 0036). A vendored upstream core the project never selects (the pristine
     YosysHQ ``picorv32.core`` ships a bare ``depend:``) is a WARN instead:
     FuseSoC drops such a core at resolve time, so only *its own* targets are
@@ -4964,7 +4971,7 @@ def _check_core_files_tracked(
     warn with the ``git add -f`` remedy, not a fail: the local run still works.
 
     Files in a Versioned Booley Directory (ADR 0036 stealth cores) are judged
-    against its own Git repository — ``.booley_project/`` is invisible to the host repo by
+    against its own Git repository — ``.booley/`` is invisible to the host repo by
     design, so asking the host is guaranteed noise. No repo there → skip them
     (nothing knowable). Tracking is symlink-aware in both zones: a path whose
     ancestor is a tracked symlink (a stealth core's reach-through like
@@ -4976,7 +4983,7 @@ def _check_core_files_tracked(
     on_disk = [rel for rel in referenced if (root / rel).is_file()]
     if not on_disk:
         return
-    state_prefix = fusesoc_registry.state_cores_dir(root).parent.name  # ".booley_project"
+    state_prefix = fusesoc_registry.state_cores_dir(root).parent.name  # ".booley"
     host_files = [
         rel for rel in on_disk if not rel.replace("\\", "/").startswith(state_prefix + "/")
     ]
@@ -5253,7 +5260,7 @@ def _load_tests_toml_normalized(project: ProjectAudit) -> dict[str, dict]:
     Invalidity is _audit_tests_toml's finding, not this reader's — the cocotb
     checks just degrade to the no-tests view.
     """
-    tests_path = project.project_dir / "tests.toml"
+    tests_path = project.booley_dir / "tests.toml"
     if not tests_path.exists():
         return {}
     try:
@@ -5535,7 +5542,7 @@ def _report_native_dependencies(
     _warn: Check,
 ) -> None:
     """Report curated native packages, honoring the project image recipe."""
-    dockerfile = project.project_dir / "docker" / "Dockerfile"
+    dockerfile = project.booley_dir / "docker" / "Dockerfile"
     declared = {
         package for package in needed if _dockerfile_declares_native_package(dockerfile, package)
     }
@@ -5553,7 +5560,7 @@ def _report_native_dependencies(
             f"C/C++ sources need the native package '{package}' ({where}{more}), "
             "which the base sandbox image does not carry. Baking Python "
             "requirements cannot pull in native deps — add it to "
-            ".booley_project/docker/Dockerfile and rebuild, or the simulation "
+            ".booley/docker/Dockerfile and rebuild, or the simulation "
             "build will fail on a missing header/library"
         )
 
@@ -5612,7 +5619,7 @@ def _audit_native_dependencies(project: ProjectAudit, _pass: Check, _warn: Check
 
 def _audit_tests_toml(project: ProjectAudit, _pass: Check, _skip: Check, _fail: Fail) -> None:
     """Validate the project's ``tests.toml``: section keys, Test names, selectors."""
-    tests_path = project.project_dir / "tests.toml"
+    tests_path = project.booley_dir / "tests.toml"
     if not tests_path.exists():
         _skip("tests.toml not present (each sim Target runs its testbench's default test)")
         return
@@ -5813,7 +5820,7 @@ def _run_core_resolve_checks(
     )
     for selector, ref in sorted(refs.items()):
         build_key = hashlib.sha256(selector.encode()).hexdigest()[:16]
-        build_root = project.project_dir / "runtime" / "doctor" / "core-resolve" / build_key
+        build_root = project.booley_dir / "runtime" / "doctor" / "core-resolve" / build_key
         try:
             fusesoc_registry.resolve_target_handle(
                 ref,
@@ -5930,7 +5937,7 @@ def _grade_core_resolution(
 _CORE_RESOLVE_SNIPPET = (
     "import json, os, sys\n"
     "from pathlib import Path\n"
-    "from booley.runtime.project_dir import resolve_project_dir\n"
+    "from booley.runtime.booley_dir import resolve_booley_dir\n"
     "from booley.fusesoc import fusesoc_registry as fr\n"
     "from booley.targets.catalog import TargetCatalog\n"
     "root = os.getcwd()\n"
@@ -5939,7 +5946,7 @@ _CORE_RESOLVE_SNIPPET = (
     "out = []\n"
     "for target in targets:\n"
     "    selector = target['selector']\n"
-    "    br = resolve_project_dir(Path(root)) / 'runtime/doctor/core-resolve' / target['build_key']\n"
+    "    br = resolve_booley_dir(Path(root)) / 'runtime/doctor/core-resolve' / target['build_key']\n"
     "    try:\n"
     "        fr.resolve_target_handle(catalog.select(selector), build_root=br)\n"
     "        out.append({'selector': selector, 'ok': True})\n"
@@ -6116,7 +6123,7 @@ class _SelftestPlan:
 def _warn_unvalidated_selftest(flow_name: str, _warn: Check) -> None:
     """Explain the missing conventional fixture for one enabled Flow."""
     if flow_name == "sim":
-        requirement = "add at least one file beneath .booley_project/selftest/sim/bad-overlay/"
+        requirement = "add at least one file beneath .booley/selftest/sim/bad-overlay/"
     else:
         requirement = (
             f"add a known-bad Target named {_LINT_SELFTEST_BAD_TARGET!r} in a dedicated "
@@ -6140,7 +6147,7 @@ def _selftest_plan(
         return None  # The ordinary Flow target check owns this configuration failure.
     target = targets[0]
     if flow_name == "sim":
-        if not selftest_overlay.has_bad_overlay(project.project_dir, flow_name):
+        if not selftest_overlay.has_bad_overlay(project.booley_dir, flow_name):
             _warn_unvalidated_selftest(flow_name, _warn)
             return None
         test = _first_smoke_test(project, target)
@@ -6274,7 +6281,7 @@ def _doctor_subprocess_env(project: ProjectAudit) -> dict[str, str]:
     env = {key: value for key, value in os.environ.items() if key not in _PROJECT_CONTEXT_ENV}
     from booley.flows.cli_selection import INVOCATION_ORIGIN_ENV
 
-    env["BOOLEY_PROJECT_DIR"] = str(project.project_dir)
+    env["BOOLEY_DIR"] = str(project.booley_dir)
     env[INVOCATION_ORIGIN_ENV] = "transport"
     return env
 
@@ -6477,17 +6484,17 @@ def _display_report_dir(project: ProjectAudit, report_dir: Path) -> str:
     Doctor may run inside the Sandbox, where the Booley Directory is the
     ``/booley-project`` bind mount — a path that exists in no other runtime, while
     the FAIL hint is often read from the host (where the same files sit under
-    ``<repo>/.booley_project/``). For that well-known mount, print the
+    ``<repo>/.booley/``). For that well-known mount, print the
     repo-relative rendering that resolves on both host and runtime; any other Booley Directory
     (host default, or an explicit ``[project].dir`` override) is printed as-is.
     """
-    if project.project_dir.as_posix() not in {dc.PROJECT_DIR_TARGET, "/work/.booley_project"}:
+    if project.booley_dir.as_posix() not in {dc.BOOLEY_DIR_TARGET, "/work/.booley"}:
         return str(report_dir)
-    canonical = contains(report_dir, project_dir=project.project_dir)
+    canonical = contains(report_dir, booley_dir=project.booley_dir)
     if canonical is None:
         return str(report_dir)
-    rel = canonical.relative_to(project.project_dir.resolve())
-    return f"{PROJECT_DIR_NAME}/{rel.as_posix()} (under the Project Root)"
+    rel = canonical.relative_to(project.booley_dir.resolve())
+    return f"{BOOLEY_DIR_NAME}/{rel.as_posix()} (under the Project Root)"
 
 
 def _run_flow_check_subprocess(
@@ -6666,7 +6673,7 @@ def _prepare_flow_report_dir(
     project: ProjectAudit, flow_name: str, target: str, dry_run: bool
 ) -> Path:
     """Create the Doctor report directory and remove stale synth evidence."""
-    report_dir = project.project_dir / _DOCTOR_TMP / "flow-reports"
+    report_dir = project.booley_dir / _DOCTOR_TMP / "flow-reports"
     report_dir.mkdir(parents=True, exist_ok=True)
     if flow_name != "synth" or dry_run:
         return report_dir
@@ -6800,7 +6807,7 @@ def _record_synth_memory_calibration(
     from booley.harness import synth_probe
 
     synth_probe.record_measurement(
-        project.project_dir,
+        project.booley_dir,
         target,
         float(peak),
         selected_targets=_doctor_targets(project, "synth"),
@@ -6838,7 +6845,7 @@ def _is_simulate_tb_top_skip(
     needle = "--tb-top is required"
     if needle in f"{result.stderr or ''}\n{result.stdout or ''}":
         return True
-    report = project.project_dir / _DOCTOR_TMP / "flow-reports" / f"{flow_name}.json"
+    report = project.booley_dir / _DOCTOR_TMP / "flow-reports" / f"{flow_name}.json"
     try:
         payload = json.loads(report.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -6901,7 +6908,7 @@ def _first_smoke_test(project: ProjectAudit, target: str) -> str | None:
     fixture. Falls back to the legacy configs.toml entry for pre-migration
     projects, then to None (no --test: the Target's single/default run).
     """
-    tests_path = project.project_dir / "tests.toml"
+    tests_path = project.booley_dir / "tests.toml"
     if tests_path.is_file():
         try:
             with tests_path.open("rb") as f:
@@ -6937,9 +6944,9 @@ def _flow_argv(
 ) -> list[str]:
     work_dir = "/work" if host_entry else str(project.project_root)
     report_dir = (
-        f"{dc.PROJECT_DIR_TARGET}/{_DOCTOR_TMP}/flow-reports"
+        f"{dc.BOOLEY_DIR_TARGET}/{_DOCTOR_TMP}/flow-reports"
         if host_entry
-        else str(project.project_dir / _DOCTOR_TMP / "flow-reports")
+        else str(project.booley_dir / _DOCTOR_TMP / "flow-reports")
     )
     argv = [
         "--work-dir",
@@ -7050,7 +7057,7 @@ def _docker_wrap(
 
     The single source of truth for how doctor executes a command inside the
     Sandbox image: repo bind-mounted at ``/work``, network isolated, and the
-    in-container ``BOOLEY_PROJECT_DIR`` / ``BOOLEY_IN_SANDBOX`` env set so the
+    in-container ``BOOLEY_DIR`` / ``BOOLEY_IN_SANDBOX`` env set so the
     Flow resolves the project the same way a real sandbox run would.
 
     The inner argv is additionally prefixed with the sandbox self-assertion
@@ -7078,7 +7085,7 @@ def _docker_wrap(
         "--network",
         "none",
         "-e",
-        "BOOLEY_PROJECT_DIR=/work/.booley_project",
+        "BOOLEY_DIR=/work/.booley",
         "-e",
         "BOOLEY_IN_SANDBOX=1",
         *selftest_env,

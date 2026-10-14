@@ -924,7 +924,7 @@ replacement must differ, and every proposal must remain a single source edit.
         """Fail fast when a ``--scope`` entry isn't a source file of ``--target``.
 
         A plausible-but-wrong scope (classically the stealth-cores mirror
-        ``.booley_project/cores/rtl/foo.sv`` instead of the repo-relative
+        ``.booley/cores/rtl/foo.sv`` instead of the repo-relative
         ``rtl/foo.sv``) would otherwise be discovered only after proposal
         validation. Resolving the scope against the Target's fileset up front (a
         subprocess-free ``.core`` read, <1s) turns that into an instant,

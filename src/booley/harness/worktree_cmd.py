@@ -3,7 +3,7 @@
 The command wraps the packaged ``worktree_create.sh`` with its default
 ``refuse`` policy, so an existing destination (possibly an active worktree
 holding someone's work) is never deleted. The worktree lands where Ticket
-setup puts its worktrees, ``.booley_project/worktrees/<name>``, on a detached
+setup puts its worktrees, ``.booley/worktrees/<name>``, on a detached
 HEAD at the workspace's current commit unless the name uses the
 ``<branch>--<description>`` convention to check out an existing branch.
 A Versioned Booley Directory gets a Paired Checkout on ``booley-worktree/<name>``
@@ -20,9 +20,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+from booley.runtime.booley_dir import BOOLEY_DIR_NAME
 from booley.runtime.paths import worktree_create_script
 from booley.runtime.platform_paths import bash_bin
-from booley.runtime.project_dir import PROJECT_DIR_NAME
 from booley.runtime.project_repositories import run_git
 from booley.runtime.project_worktree_pairing import (
     ProjectPairingError,
@@ -62,9 +62,9 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
     commands = parser.add_subparsers(dest="worktree_command", metavar="{new}", required=True)
     new = commands.add_parser(
         "new",
-        help="Create .booley_project/worktrees/<name> and print its path",
+        help="Create .booley/worktrees/<name> and print its path",
         description=(
-            "Create a linked Git worktree at .booley_project/worktrees/<name> with a "
+            "Create a linked Git worktree at .booley/worktrees/<name> with a "
             "Paired Checkout on booley-worktree/<name> for a Versioned Booley Directory, "
             "or a Snapshot for a non-versioned Booley Directory "
             "(live run and session state stays behind). The outer worktree starts on a "
@@ -84,7 +84,7 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
 
 def worktree_path(project_root: Path, name: str) -> Path:
     """Return where ``booley worktree new <name>`` creates the worktree."""
-    return project_root / PROJECT_DIR_NAME / "worktrees" / name
+    return project_root / BOOLEY_DIR_NAME / "worktrees" / name
 
 
 class WorktreeCreationError(Exception):
@@ -127,6 +127,14 @@ def _create_outer(name: str, project_root: Path, *, paired_project: bool) -> Non
 
 
 def run(args: argparse.Namespace, project_root: Path) -> int:
+    """Keep checkout/pair registration atomic with respect to directory migration."""
+    from booley.core.layout_lock import layout_gate
+
+    with layout_gate(project_root):
+        return _run_current(args, project_root)
+
+
+def _run_current(args: argparse.Namespace, project_root: Path) -> int:
     """Create the outer and paired checkouts atomically; print removal instructions."""
     worktree = worktree_path(project_root, args.name)
     created = False
@@ -164,7 +172,7 @@ def _rollback_creation(root: Path, worktree: Path, name: str, failure: BaseExcep
 
 
 def _is_named_pair(worktree: Path, name: str) -> bool:
-    nested = worktree / PROJECT_DIR_NAME
+    nested = worktree / BOOLEY_DIR_NAME
     if not (nested / ".git").is_file():
         return False
     branch = run_git(nested, "symbolic-ref", "--short", "HEAD")

@@ -62,12 +62,12 @@ def complete(layout: SimpleNamespace) -> SimpleNamespace:
 def publication_layout(layout: SimpleNamespace) -> SimpleNamespace:
     (layout.main / ".git/info/exclude").write_bytes(b"")
     git(layout.worktree, "config", "core.excludesfile", str(layout.main / "no-global-excludes"))
-    project = layout.worktree / ".booley_project"
+    project = layout.worktree / ".booley"
     (project / "booley.toml").write_bytes(b"[stealth]\nenabled = false\n")
     (layout.control / "booley.toml").write_bytes(b"[stealth]\nenabled = false\n")
     (project / ".gitignore").write_bytes(PROJECT_GITIGNORE.encode())
     (project / "tests.toml").write_bytes(b'[top]\ntests = ["smoke"]\n')
-    git(layout.worktree, "add", ".booley_project")
+    git(layout.worktree, "add", ".booley")
     git(layout.worktree, "commit", "-qm", "Versioned Booley Directory inputs")
     layout.record = enter_goals(layout, [{"family": "LINT", "target": "top"}])
     publish(layout)
@@ -152,7 +152,7 @@ def test_every_publication_crash_boundary_recovers_exactly_once(layout, boundary
 def test_ignored_nonstealth_is_explicitly_local(complete):
     # Configuration is protected; create a new Goal after the human changes it.
     abandon_goal(GoalStore(complete.control), complete.worktree, environment(complete))
-    for root in (complete.control, complete.worktree / ".booley_project"):
+    for root in (complete.control, complete.worktree / ".booley"):
         (root / "booley.toml").write_bytes(b"[stealth]\nenabled=false\n")
     complete.record = enter_goal_mode(
         EntryRequest(
@@ -217,7 +217,7 @@ def test_revalidation_retains_attempt_and_permanently_fences_old_run(layout):
     with pytest.raises(Crash):
         finish_goal(call, environment(complete, stop))
     # Reconcile the summary's own index effect first, then add an ordinary commit.
-    git(complete.worktree, "add", ".booley_project/goals/history")
+    git(complete.worktree, "add", ".booley/goals/history")
     (complete.worktree / "note.txt").write_bytes(b"new commit\n")
     git(complete.worktree, "add", "note.txt")
     git(complete.worktree, "commit", "-qm", "ordinary work")
@@ -234,7 +234,7 @@ def test_revalidation_retains_attempt_and_permanently_fences_old_run(layout):
     assert Path(result["attempt"]).joinpath("attempt.json").is_file()
     second = finish_goal(request(complete), environment(complete))
     assert second["status"] == "finished"
-    assert second["history_path"] != f".booley_project/goals/history/{complete.record.id}.md"
+    assert second["history_path"] != f".booley/goals/history/{complete.record.id}.md"
 
 
 def test_replacement_entry_does_not_receive_old_retry_or_abandon(complete):
@@ -267,7 +267,7 @@ def test_recovery_never_overwrites_external_destination(layout, effect):
 
     with pytest.raises(Crash):
         finish_goal(call, environment(complete, stop))
-    destination = complete.worktree / f".booley_project/goals/history/{complete.record.id}.md"
+    destination = complete.worktree / f".booley/goals/history/{complete.record.id}.md"
     if effect == "ancestor":
         destination.parent.parent.write_bytes(b"conflict")
     else:
@@ -295,7 +295,7 @@ def test_untracked_ignored_consumed_design_source_is_not_copied_to_committed_vie
     layout.record = enter_goals(layout, [{"family": "LINT", "target": "top"}])
     # The user's explicit ignore hides the source from clean-tree checks.
     git(layout.worktree, "rm", "--cached", "rtl.v")
-    (layout.main / ".git/info/exclude").write_bytes(b"/.booley_project\nrtl.v\n")
+    (layout.main / ".git/info/exclude").write_bytes(b"/.booley\nrtl.v\n")
     git(layout.worktree, "commit", "-qm", "stop tracking source")
     publish(layout)
     with pytest.raises(LifecycleError, match="no committed representation"):
@@ -317,7 +317,7 @@ def test_selected_missing_and_substituted_evidence_refuses(complete):
 
 
 def test_summary_is_not_overwritten_when_existing_before_first_attempt(complete):
-    destination = complete.worktree / f".booley_project/goals/history/{complete.record.id}.md"
+    destination = complete.worktree / f".booley/goals/history/{complete.record.id}.md"
     destination.parent.mkdir(parents=True)
     destination.write_bytes(b"preexisting summary")
     with pytest.raises(LifecycleError, match="destination conflicts"):
@@ -406,7 +406,7 @@ def test_presentation_epochs_keep_tracked_history_bound_and_mandatory_proofs(lay
 
     root = layout.worktree.resolve()
     names = ["removed.hex", "obsolete.hex", "bound.hex", "snapshot.toml", "alias.hex"]
-    (layout.main / ".git/info/exclude").write_text("/.booley_project\n*.hex\n*.toml\n")
+    (layout.main / ".git/info/exclude").write_text("/.booley\n*.hex\n*.toml\n")
     paths = {name: root / name for name in names}
     before = ArtifactEpoch(
         tuple((name, path) for name, path in paths.items()),
@@ -446,12 +446,12 @@ def _prepare_pinned_artifact_history(layout, history):
     if history == "tracked-removed":
         git(layout.worktree, "add", "history.hex")
     else:
-        (layout.main / ".git/info/exclude").write_text("/.booley_project\nhistory.hex\n")
+        (layout.main / ".git/info/exclude").write_text("/.booley\nhistory.hex\n")
     git(layout.worktree, "commit", "-qm", "baseline data target")
     record = enter_goals(layout, [{"family": "REVIEW", "review": "rtl_bugs", "verdict": "done"}])
     if history == "tracked-removed":
         git(layout.worktree, "rm", "history.hex")
-        (layout.main / ".git/info/exclude").write_text("/.booley_project\nhistory.hex\n")
+        (layout.main / ".git/info/exclude").write_text("/.booley\nhistory.hex\n")
         core.write_bytes(core.read_bytes().replace(b"toplevel: top", b"toplevel: updated_top"))
         git(layout.worktree, "add", "history.core")
     else:
@@ -602,7 +602,7 @@ def paired_publication_layout(layout, tmp_path, *, selected=None):
 )
 def test_nonexcluded_pair_finish_retry_and_next_entry_stay_local(layout, tmp_path, boundary):
     layout = paired_publication_layout(layout, tmp_path)
-    paired = layout.worktree / ".booley_project"
+    paired = layout.worktree / ".booley"
     outer = git(layout.worktree, "rev-parse", "HEAD")
     inner = git(paired, "rev-parse", "HEAD")
     call = request(layout)
@@ -620,8 +620,8 @@ def test_nonexcluded_pair_finish_retry_and_next_entry_stay_local(layout, tmp_pat
     assert finish_goal(call, environment(layout)) == result
     assert git(layout.worktree, "rev-parse", "HEAD") == outer
     assert git(paired, "rev-parse", "HEAD") == inner
-    assert git(layout.worktree, "ls-tree", "-r", "HEAD", "--", ".booley_project") == ""
-    assert git(layout.worktree, "status", "--porcelain=v1") == "?? .booley_project/"
+    assert git(layout.worktree, "ls-tree", "-r", "HEAD", "--", ".booley") == ""
+    assert git(layout.worktree, "status", "--porcelain=v1") == "?? .booley/"
     layout.record = enter_goal_mode(
         EntryRequest(
             layout.worktree, "next", parse_goal_args([{"family": "LINT", "target": "top"}])
@@ -630,7 +630,7 @@ def test_nonexcluded_pair_finish_retry_and_next_entry_stay_local(layout, tmp_pat
     ).record
     publish(layout)
     assert finish_goal(request(layout), environment(layout))["status"] == "finished"
-    assert git(layout.worktree, "status", "--porcelain=v1") == "?? .booley_project/"
+    assert git(layout.worktree, "status", "--porcelain=v1") == "?? .booley/"
 
 
 @pytest.mark.parametrize("selected", [False, True])
@@ -674,7 +674,7 @@ def test_nonexcluded_pair_finish_retry_preserves_concurrent_inner_dirt(layout, t
 
     with pytest.raises(Crash):
         finish_goal(call, environment(layout, crash))
-    paired = layout.worktree / ".booley_project"
+    paired = layout.worktree / ".booley"
     path = paired / ("new" if dirt == "untracked" else "booley.toml")
     before = path.read_bytes() if path.exists() else None
     path.write_bytes(b"user work\n")
@@ -694,7 +694,7 @@ def test_nonexcluded_pair_finish_retry_preserves_concurrent_inner_dirt(layout, t
 
 def test_active_finish_refuses_broken_pair_without_changing_participants(layout, tmp_path):
     layout = paired_publication_layout(layout, tmp_path)
-    paired = layout.worktree / ".booley_project"
+    paired = layout.worktree / ".booley"
     marker = paired / ".git"
     broken = b"gitdir: /nonexistent-paired-metadata\n"
     outer = git(layout.worktree, "rev-parse", "HEAD")
@@ -719,7 +719,7 @@ def test_new_paired_skip_reason_precedes_stealth_and_exclusion(
 
     paired = install_paired_project(layout, tmp_path)
     (paired / "booley.toml").write_text(f"[stealth]\nenabled = {str(stealth).lower()}\n")
-    (layout.main / ".git/info/exclude").write_bytes(b"/.booley_project\n" if excluded else b"")
-    assert _skip_publication(layout.worktree, paired, ".booley_project/goals/history/test.md") == (
+    (layout.main / ".git/info/exclude").write_bytes(b"/.booley\n" if excluded else b"")
+    assert _skip_publication(layout.worktree, paired, ".booley/goals/history/test.md") == (
         "summary kept local; Paired Checkout preserves independent Booley history"
     )

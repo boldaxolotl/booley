@@ -1,7 +1,7 @@
 """Project Initialization ownership of root guidance links.
 
 The canonical project guidance file (``AGENTS.md``) lives in the Booley
-Directory (``.booley_project/``), so it is versioned alongside the rest of the
+Directory (``.booley/``), so it is versioned alongside the rest of the
 Project configuration. The Project Root normally carries generated links —
 ``AGENTS.md`` (for Codex / Booley) and ``CLAUDE.md`` (for Claude Code) — that
 point at the canonical file. An open-source repo may instead track a regular
@@ -21,6 +21,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from booley.runtime.booley_dir import BOOLEY_DIR_NAME
 from booley.runtime.git import add_git_excludes
 from booley.runtime.init_plan import (
     InitAction,
@@ -32,7 +33,6 @@ from booley.runtime.init_plan import (
     apply_init_plan,
     plan_init_filesystem,
 )
-from booley.runtime.project_dir import PROJECT_DIR_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -47,11 +47,11 @@ _EXCLUDE_HEADER = "# Booley guidance links (generated; canonical file in project
 
 def ensure_guidance_links(
     project_root: Path,
-    project_dir: Path,
+    booley_dir: Path,
     *,
     plan: InitPlan | None = None,
 ) -> list[Path]:
-    """Point ``<project_root>/{AGENTS,CLAUDE}.md`` at ``<project_dir>/AGENTS.md``.
+    """Point ``<project_root>/{AGENTS,CLAUDE}.md`` at ``<booley_dir>/AGENTS.md``.
 
     Idempotent: a link already resolving to the canonical file is left
     untouched. A git-tracked regular file with identical content is also left
@@ -62,7 +62,7 @@ def ensure_guidance_links(
     Returns the link paths that now exist. Raises ``FileNotFoundError`` when
     the canonical guidance file is missing.
     """
-    selected_plan = plan or plan_guidance_links(project_root, project_dir)
+    selected_plan = plan or plan_guidance_links(project_root, booley_dir)
     if selected_plan.request.root.resolve() != project_root.resolve():
         raise ValueError("guidance plan belongs to a different Project Root")
     conflicts = [
@@ -85,9 +85,9 @@ class _GuidanceHostProbe:
         return _is_git_tracked(root, path)
 
 
-def plan_guidance_links(project_root: Path, project_dir: Path) -> InitPlan:
+def plan_guidance_links(project_root: Path, booley_dir: Path) -> InitPlan:
     """Inspect every root guidance entry without changing any of them."""
-    canon = (project_dir / CANON_NAME).resolve()
+    canon = (booley_dir / CANON_NAME).resolve()
     if not canon.is_file():
         raise FileNotFoundError(f"canonical guidance file not found: {canon}")
     portable_target = _portable_target(project_root, canon)
@@ -120,7 +120,7 @@ def _apply_guidance_action(action: InitAction) -> None:
     _link_file(target.path, target.desired_identity, target.link_target)
 
 
-def detach_guidance_hardlinks(project_root: Path, project_dir: Path) -> tuple[Path, ...]:
+def detach_guidance_hardlinks(project_root: Path, booley_dir: Path) -> tuple[Path, ...]:
     """Remove Booley's root hardlinks to the canonical guidance file.
 
     On Windows without Developer Mode the root links are hardlinks, which make
@@ -133,7 +133,7 @@ def detach_guidance_hardlinks(project_root: Path, project_dir: Path) -> tuple[Pa
     the affected entry intact; completed removals are still returned so the
     caller can discard its stale plan and restore those links.
     """
-    canon = project_dir / CANON_NAME
+    canon = booley_dir / CANON_NAME
     try:
         if not canon.is_file() or canon.stat().st_nlink < 2:
             return ()
@@ -210,12 +210,12 @@ def _portable_target(project_root: Path, canon: Path) -> Path:
     the repo that does not exist. The host then sees two dangling links and an
     editor or host-side agent reads no guidance at all.
 
-    ``<project_root>/.booley_project/AGENTS.md`` names the same file in both
+    ``<project_root>/.booley/AGENTS.md`` names the same file in both
     contexts (the container reaches it through the workspace mount), so prefer it
     whenever it exists. Falls back to *canon* for a relocated Booley Directory
     (``[project].dir`` override), where no such repo-local path exists.
     """
-    repo_local = project_root / PROJECT_DIR_NAME / CANON_NAME
+    repo_local = project_root / BOOLEY_DIR_NAME / CANON_NAME
     return repo_local if repo_local.is_file() else canon
 
 

@@ -590,7 +590,7 @@ def test_pre_cancelled_campaign_hook_never_compiles_or_runs(tmp_path, coverage):
             plans={},
             execution_factory=lambda *_args: pytest.fail("cancelled coverage must not compile"),
         )
-    scope = SupervisedExecutionScope(None, tmp_path / ".booley_project", lambda: True)
+    scope = SupervisedExecutionScope(None, tmp_path / ".booley", lambda: True)
     with supervised_execution_scope(scope), pytest.raises(PreSimScopeStoppedError):
         executor.execute(request)
     assert counters == {"compile": 0, "durable_reuse": 0, "launch": 0}
@@ -859,7 +859,7 @@ def test_scope_stop_after_real_hook_retains_firing_without_simulator_launch(tmp_
         return evidence
 
     monkeypatch.setattr(serial_execution, "_run_hook", stop_after_hook)
-    scope = SupervisedExecutionScope(None, project / ".booley_project", lambda: stopped)
+    scope = SupervisedExecutionScope(None, project / ".booley", lambda: stopped)
     with supervised_execution_scope(scope), pytest.raises(PreSimScopeStoppedError):
         executor.execute(request)
     assert counters["launch"] == 0

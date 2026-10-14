@@ -82,7 +82,7 @@ def _issue_runtime(workspace: Path, vivado_root: Path) -> None:
     spec = dc.build_devcontainer_spec(
         dc.APP_NONE,
         image=_IMAGE,
-        project_dir_source=str((workspace / ".booley_project").resolve()),
+        booley_dir_source=str((workspace / ".booley").resolve()),
         mcp_start_command=dc.mcp_post_start_command(),
         trusted_eda_mounts=((str(vivado_root), CONTAINER_TARGET),),
         protected_devcontainer_source=str((workspace / ".devcontainer").resolve()),
@@ -440,11 +440,11 @@ def test_host_provisioned_vivado_completes_issued_session_runtime_flow_twice(
         env={**os.environ, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull},
     )
     assert initialized.returncode == 0, initialized.stdout + initialized.stderr
-    (workspace / "project_data").rename(workspace / ".booley_project")
-    (workspace / ".booley_project").chmod(0o700)
+    (workspace / "project_data").rename(workspace / ".booley")
+    (workspace / ".booley").chmod(0o700)
     config_home = tmp_path / "host-config"
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(workspace / ".booley_project"))
+    monkeypatch.setenv("BOOLEY_DIR", str(workspace / ".booley"))
     _issue_runtime(workspace, vivado_root)
 
     host_doctor = subprocess.run(

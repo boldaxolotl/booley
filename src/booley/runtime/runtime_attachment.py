@@ -15,6 +15,7 @@ from pathlib import Path
 from types import FrameType
 
 from booley.core.boundary import BoundaryError, as_str, require_int
+from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.runtime.execution_records import (
     PROTOCOL_VERSION,
     RUNTIME_EXECUTION_ENV,
@@ -26,7 +27,6 @@ from booley.runtime.execution_records import (
     request_cancellation,
     write_attachment_heartbeat,
 )
-from booley.runtime.project_dir import resolve_checkout_project_dir
 
 _HEARTBEAT_INTERVAL_SECONDS = 0.25
 _ATTACHMENT_TIMEOUT_SECONDS = 2.0
@@ -55,7 +55,7 @@ class SupervisedExecutionDriver:
         self._project_data = project_data
 
     def run(self, execution_id: ExecutionId, transport_argv: list[str]) -> ExecutionResult:
-        paths = execution_paths(execution_id, project_dir=self._project_data)
+        paths = execution_paths(execution_id, booley_dir=self._project_data)
         write_attachment_heartbeat(paths, generation=1)
         pending = _PendingSignals()
         with _capture_host_signals(pending):
@@ -242,7 +242,7 @@ def run_command(
     from booley.runtime.session_runtime import exec_argv
 
     execution_id = ExecutionId(uuid.uuid4().hex)
-    project_data = resolve_checkout_project_dir(project_root)
+    project_data = resolve_checkout_booley_dir(project_root)
     gc_terminal_executions(project_data)
     supervisor = _supervisor_command(execution_id, command, tty=tty)
     docker_argv = exec_argv(

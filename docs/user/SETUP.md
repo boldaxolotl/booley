@@ -149,7 +149,7 @@ same defaults; pass flags only when the project needs a different selection:
 booley init --provider codex --auth subscription
 ```
 
-The choice is recorded in `.booley_project/booley.toml` before credentials are
+The choice is recorded in `.booley/booley.toml` before credentials are
 checked or the devcontainer is generated. Re-running init preserves an existing
 `[agent]` selection; change that table directly when deliberately migrating a
 project. `booley init --seed` follows the same contract, so an older project
@@ -170,13 +170,13 @@ booley init --scaffold my_ip
 ```
 
 `booley init` is idempotent (safe to re-run): it never overwrites a
-`.booley_project/docker/{Dockerfile,requirements.txt}` you've hand-edited (it
+`.booley/docker/{Dockerfile,requirements.txt}` you've hand-edited (it
 detects the loss of its `# AUTO-GENERATED` header, or a `# booley:keep`
 directive you add, and leaves your files and image untouched). Host Bootstrap
 owns external dependency validation, system skill links, the Nangate45 cache,
 the base Sandbox Image, and global sidecars. Project Initialization walks through:
 
-1. Creating `.booley_project/` with placeholder configs
+1. Creating `.booley/` with placeholder configs
 2. Recording the selected agent provider and authentication policy
 3. The four create-only Goalsets and selected-provider credential checks
 4. Reconciling the Project-selected or Project-derived Sandbox Image while
@@ -229,7 +229,7 @@ What lands, wired together and ready to run:
   testbench with two tests, following the shipped TB style guides
 - `my_ip.core`: one Target per enabled flow (`sim`, `lint`, and optionally
   `synth` + SDC constraints, `fpga` + XDC)
-- `.booley_project/booley.toml` and `tests.toml`, populated rather than
+- `.booley/booley.toml` and `tests.toml`, populated rather than
   skeletons. The scaffolded config also turns
   [stealth mode](CONFIG.md#stealth-mode-stealth) off, since this repo exists to
   exercise Booley and commit messages should stay verbatim (set
@@ -275,7 +275,7 @@ Steps **5–7**:
   `sim`, `lint`, `synth`, `fpga`) plus a decision grill over
   everything the later steps need. It asks only a few questions and shows the
   rest as defaults you can accept in one go. Writes
-  `.booley_project/SETUP-PLAN.md` and stops for your approval. **The only approval gate.**
+  `.booley/SETUP-PLAN.md` and stops for your approval. **The only approval gate.**
 - **1 · Environment · host.** Applies the plan's sandbox-image decision if it
   made one (`booley init` re-run), then hands you into **Reopen in Container**.
 - **2 · Project config.** The `.core` Target(s), `tests.toml`, and `booley.toml`.
@@ -338,7 +338,7 @@ Mode session.
 ## Notes
 
 **Setup asks whether to keep Booley out of your git history.** Yes keeps
-`.booley_project/` hidden and enables stealth mode, including its commit-message
+`.booley/` hidden and enables stealth mode, including its commit-message
 scrub and hidden-core projection when Booley authors cores; No uses open config
 and native cores with stealth off. Unattended setup leaves stealth off unless
 hidden authored cores require it. Existing hand-set values are preserved.

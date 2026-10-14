@@ -93,7 +93,7 @@ class TestBuildSpec:
         for key in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
             assert env[key] == dc.PROXY_URL
         assert env["BOOLEY_MCP_MODE"] == "interactive"
-        assert env["BOOLEY_PROJECT_DIR"] == dc.PROJECT_DIR_TARGET
+        assert env["BOOLEY_DIR"] == dc.BOOLEY_DIR_TARGET
 
     def test_agent_app_env_matches_app(self):
         assert (
@@ -111,23 +111,23 @@ class TestBuildSpec:
                 "${localWorkspaceFolder}",
             ]
 
-    def test_project_dir_mount_default_source(self):
+    def test_booley_dir_mount_default_source(self):
         spec = dc.build_devcontainer_spec(dc.APP_NONE)
         # Default is the co-located single-var form; nested defaults are NOT used
         # (the Dev Containers CLI mis-parses them into an invalid mount path).
-        assert dc.DEFAULT_PROJECT_DIR_SOURCE == "${localWorkspaceFolder}/.booley_project"
-        assert "${localEnv:" not in dc.DEFAULT_PROJECT_DIR_SOURCE
+        assert dc.DEFAULT_BOOLEY_DIR_SOURCE == "${localWorkspaceFolder}/.booley"
+        assert "${localEnv:" not in dc.DEFAULT_BOOLEY_DIR_SOURCE
         assert spec["mounts"][0] == (
-            f"source={dc.DEFAULT_PROJECT_DIR_SOURCE},target={dc.PROJECT_DIR_TARGET},type=bind"
+            f"source={dc.DEFAULT_BOOLEY_DIR_SOURCE},target={dc.BOOLEY_DIR_TARGET},type=bind"
         )
 
-    def test_custom_project_dir_source(self):
+    def test_custom_booley_dir_source(self):
         spec = dc.build_devcontainer_spec(
             dc.APP_NONE,
-            project_dir_source="/host/proj/.booley_project",
+            booley_dir_source="/host/proj/.booley",
         )
         assert spec["mounts"][0] == (
-            f"source=/host/proj/.booley_project,target={dc.PROJECT_DIR_TARGET},type=bind"
+            f"source=/host/proj/.booley,target={dc.BOOLEY_DIR_TARGET},type=bind"
         )
 
     def test_unknown_app_rejected(self):
@@ -194,36 +194,36 @@ class TestBuildSpec:
             "type=bind,readonly" in spec["mounts"]
         )
 
-    def test_mask_under_project_dir_masks_both_container_views(self):
-        # .booley_project is visible TWICE (via /work and /booley-project), so
+    def test_mask_under_booley_dir_masks_both_container_views(self):
+        # .booley is visible TWICE (via /work and /booley-project), so
         # a subtree under it must be masked in both views or the bytes remain
         # readable through the second mount.
         spec = dc.build_devcontainer_spec(
             dc.APP_NONE,
-            mask_paths=[".booley_project/oracle"],
+            mask_paths=[".booley/oracle"],
             mask_source="/empty",
         )
         assert (
-            f"source=/empty,target={dc.WORK_DIR}/.booley_project/oracle,type=bind,readonly"
+            f"source=/empty,target={dc.WORK_DIR}/.booley/oracle,type=bind,readonly"
             in spec["mounts"]
         )
         assert (
-            f"source=/empty,target={dc.PROJECT_DIR_TARGET}/oracle,type=bind,readonly"
+            f"source=/empty,target={dc.BOOLEY_DIR_TARGET}/oracle,type=bind,readonly"
             in spec["mounts"]
         )
 
-    def test_mask_mounts_come_after_the_project_dir_mount(self):
+    def test_mask_mounts_come_after_the_booley_dir_mount(self):
         # Mount order is the over-mount mechanism: docker applies
         # workspaceMount first, then `mounts` in order, so a mask listed
         # BEFORE the project-dir mount would be buried by it.
         spec = dc.build_devcontainer_spec(
             dc.APP_CLAUDE,
-            mask_paths=[".booley_project/oracle", "lanes/b"],
+            mask_paths=[".booley/oracle", "lanes/b"],
             mask_source="/empty",
         )
         mounts = spec["mounts"]
         project_idx = mounts.index(
-            f"source={dc.DEFAULT_PROJECT_DIR_SOURCE},target={dc.PROJECT_DIR_TARGET},type=bind"
+            f"source={dc.DEFAULT_BOOLEY_DIR_SOURCE},target={dc.BOOLEY_DIR_TARGET},type=bind"
         )
         mask_indices = [i for i, m in enumerate(mounts) if m.startswith("source=/empty,")]
         assert mask_indices  # both views + the plain /work mask
@@ -263,9 +263,7 @@ class TestMaskPathsValidation:
     def test_accepts_absent_and_valid_relative_paths(self):
         assert dc.mask_paths_error(None) is None
         assert dc.mask_paths_error([]) is None
-        assert (
-            dc.mask_paths_error(["secret/oracle", ".booley_project/lanes/b", "notes.md"]) is None
-        )
+        assert dc.mask_paths_error(["secret/oracle", ".booley/lanes/b", "notes.md"]) is None
 
     def test_rejects_non_list_and_non_string_entries(self):
         assert "list of strings" in dc.mask_paths_error("secret")
@@ -278,10 +276,10 @@ class TestMaskPathsValidation:
             error = dc.mask_paths_error([entry])
             assert error is not None and "workspace-relative" in error, entry
 
-    def test_rejects_masking_the_whole_project_dir(self):
+    def test_rejects_masking_the_whole_booley_dir(self):
         # The session reads booley.toml through /booley-project — masking the
         # entire dir bricks the runtime rather than hiding a secret.
-        for entry in [".booley_project", ".booley_project/"]:
+        for entry in [".booley", ".booley/"]:
             error = dc.mask_paths_error([entry])
             assert error is not None and "subtrees" in error, entry
 

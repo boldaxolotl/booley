@@ -1,4 +1,4 @@
-# TESTS_TEMPLATE — annotated `.booley_project/tests.toml` (verification-intent).
+# TESTS_TEMPLATE — annotated `.booley/tests.toml` (verification-intent).
 # Per-Target test lists plus an optional run-time selector (decisions 15–16).
 
 [test_lists]                 # optional shared, reusable lists

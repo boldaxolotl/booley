@@ -101,10 +101,10 @@ class DoctorWaivers:
         return tuple(item for item in self.active if item.key not in self._used)
 
 
-def load_doctor_waivers(project_dir: Path, *, today: date | None = None) -> DoctorWaivers:
-    """Load and validate ``doctor-waivers.toml`` from *project_dir*."""
+def load_doctor_waivers(booley_dir: Path, *, today: date | None = None) -> DoctorWaivers:
+    """Load and validate ``doctor-waivers.toml`` from *booley_dir*."""
 
-    path = project_dir / WAIVER_FILENAME
+    path = booley_dir / WAIVER_FILENAME
     if not path.is_file():
         return DoctorWaivers.empty(path)
     try:

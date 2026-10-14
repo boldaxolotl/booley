@@ -25,7 +25,7 @@ def test_project_alias_simulation_executes_campaign(flow_project, tmp_path, monk
     data.mkdir()
     alias = tmp_path / "booley-project"
     symlink_or_skip(alias, data, target_is_directory=True)
-    monkeypatch.setattr(doctor.dc, "PROJECT_DIR_TARGET", str(alias))
+    monkeypatch.setattr(doctor.dc, "BOOLEY_DIR_TARGET", str(alias))
     from tests.runtime.test_sandbox_layout import configure_project_alias
 
     configure_project_alias(monkeypatch, alias, data)
@@ -1126,7 +1126,7 @@ def test_alias_normalization_precedes_simulation_preparation(
 
     alias, data = project_alias
     monkeypatch.setattr(
-        "booley.runtime.project_dir.resolve_checkout_project_dir", lambda _root: alias
+        "booley.runtime.booley_dir.resolve_checkout_booley_dir", lambda _root: alias
     )
     flow = SimulateFlow()
     result = flow.execute(

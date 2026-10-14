@@ -100,7 +100,7 @@ def test_coverage_report_keeps_nonpassing_status_without_optional_detail(
 def _facts(
     root: Path, *, cocotb: bool, preview_names: tuple[str, ...] = ("count", "reset")
 ) -> tuple[TargetHandle, TargetInspection, SimulationPreview]:
-    project = root / ".booley_project"
+    project = root / ".booley"
     project.mkdir()
     (project / "booley.toml").write_text("[flows.sim]\nrun_cwd = '.'\n", encoding="utf-8")
     (project / "tests.toml").write_text('[sim]\ntests = ["reset", "count"]\n', encoding="utf-8")
@@ -407,7 +407,7 @@ def _coverage_campaign_plan(
     context = project(root)
     if runtime_input:
         _coverage_runtime_input(root)
-    project_data = root / ".booley_project"
+    project_data = root / ".booley"
     project_data.mkdir()
     (project_data / "booley.toml").write_text(
         "[flows.sim]\npre_run_commands = " + json.dumps(pre_sim_commands) + "\n",

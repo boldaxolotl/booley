@@ -18,7 +18,7 @@ FIXTURES = Path(__file__).parents[1] / "fixtures"
 
 @pytest.mark.parametrize(
     "gitignore",
-    sorted(FIXTURES.glob("*/.booley_project/.gitignore")),
+    sorted(FIXTURES.glob("*/.booley/.gitignore")),
     ids=lambda path: path.parents[1].name,
 )
 def test_fixture_project_gitignore_is_current(gitignore: Path) -> None:

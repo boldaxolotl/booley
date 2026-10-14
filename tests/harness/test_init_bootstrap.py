@@ -151,7 +151,7 @@ def test_bootstrap_failure_precedes_every_project_write(
         ),
     )
     assert init_cmd.run_init(_args(), tmp_path) == 2
-    assert not (tmp_path / ".booley_project").exists()
+    assert not (tmp_path / ".booley").exists()
     assert not (tmp_path / ".devcontainer").exists()
 
 
@@ -239,7 +239,7 @@ def test_source_checkout_refusal_precedes_bootstrap_and_project_write(
 
     assert init_cmd.run_init(_args(), tmp_path) == 2
     assert "cannot be initialized or used as a Project" in capsys.readouterr().out
-    assert not (tmp_path / ".booley_project").exists()
+    assert not (tmp_path / ".booley").exists()
     assert not (tmp_path / ".devcontainer").exists()
 
 
@@ -256,7 +256,7 @@ def test_seed_only_checks_bootstrap_and_names_repair(
     )
     assert init_cmd.run_init(_args(seed=True), tmp_path) == 2
     assert "booley bootstrap" in capsys.readouterr().out
-    assert not (tmp_path / ".booley_project").exists()
+    assert not (tmp_path / ".booley").exists()
 
 
 def test_check_only_continues_project_planning_and_returns_pending(
@@ -286,16 +286,16 @@ def test_check_only_continues_project_planning_and_returns_pending(
     monkeypatch.setattr(init_cmd, "_run_project_init_steps", project_steps)
     assert init_cmd.run_init(_args(check_only=True), tmp_path) == 1
     assert planned == [True]
-    assert not (tmp_path / ".booley_project").exists()
+    assert not (tmp_path / ".booley").exists()
 
 
 @pytest.mark.parametrize("table", ["interactive", "sandbox"])
 def test_retired_project_policy_fails_before_project_mutation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], table: str
 ) -> None:
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
-    config = project_dir / "booley.toml"
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    config = booley_dir / "booley.toml"
     config.write_text(
         f"[{table}]\nidle_timeout_seconds = 600\nmax_sessions = 2\n",
         encoding="utf-8",
@@ -315,9 +315,9 @@ def test_retired_project_policy_fails_before_project_mutation(
 
 
 def _image_command_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
-    (project_dir / "booley.toml").write_text("[sandbox]\nimage = 'booley-sandbox'\n")
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    (booley_dir / "booley.toml").write_text("[sandbox]\nimage = 'booley-sandbox'\n")
     spec = tmp_path / ".devcontainer/devcontainer.json"
     spec.parent.mkdir()
     spec.write_text('{"image":"sha256:prior"}\n')

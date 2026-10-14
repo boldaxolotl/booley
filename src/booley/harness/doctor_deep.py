@@ -166,9 +166,9 @@ class DeepCheckTracker:
         return tuple(sorted(key for key, value in self._checks.items() if not value))
 
 
-def deep_stamp_path(project_dir: Path) -> Path:
+def deep_stamp_path(booley_dir: Path) -> Path:
     """Deep evidence lives in the shared Project runtime, separate from plain stamps."""
-    return project_dir / "runtime" / DEEP_STAMP_FILENAME
+    return booley_dir / "runtime" / DEEP_STAMP_FILENAME
 
 
 def _decode_attempt(raw: object) -> DeepAttempt | None:
@@ -196,10 +196,10 @@ def _decode_attempt(raw: object) -> DeepAttempt | None:
     )
 
 
-def load_deep_state(project_dir: Path) -> DeepState:
+def load_deep_state(booley_dir: Path) -> DeepState:
     """Missing, legacy, unsupported, or corrupt records cannot establish currency."""
     try:
-        values = require_dict(json.loads(deep_stamp_path(project_dir).read_text()))
+        values = require_dict(json.loads(deep_stamp_path(booley_dir).read_text()))
         if require_int(values.get("schema_version"), field="schema_version") != 1:
             return DeepState()
         success = _decode_attempt(values.get("last_success"))
@@ -239,15 +239,15 @@ def _publish(path: Path, state: DeepState) -> None:
         Path(temporary).unlink(missing_ok=True)
 
 
-def record_deep_attempt(project_dir: Path, attempt: DeepAttempt) -> bool:
+def record_deep_attempt(booley_dir: Path, attempt: DeepAttempt) -> bool:
     """Atomically merge completed evidence under a bounded shared runtime lock."""
-    path = deep_stamp_path(project_dir)
+    path = deep_stamp_path(booley_dir)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.with_suffix(".lock").open("a+", encoding="utf-8") as lock:
             wait_for_file_lock(lock, timeout_s=2)
             try:
-                state = _merge(load_deep_state(project_dir), attempt)
+                state = _merge(load_deep_state(booley_dir), attempt)
                 _publish(path, state)
             finally:
                 release_file_lock(lock)

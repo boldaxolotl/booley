@@ -31,13 +31,13 @@ from booley.runtime import interactive_docker as idk
 
 
 def test_host_doctor_rejects_unissued_session_spec(tmp_path, monkeypatch) -> None:
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
     (tmp_path / ".devcontainer").mkdir()
     (tmp_path / ".devcontainer" / "devcontainer.json").write_text("{}", encoding="utf-8")
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
-    project = readiness.ProjectAudit(tmp_path, project_dir, {}, {}, "sim")
+    project = readiness.ProjectAudit(tmp_path, booley_dir, {}, {}, "sim")
     rec = _Rec()
 
     _record_report(
@@ -53,8 +53,8 @@ def test_host_doctor_rejects_unissued_session_spec(tmp_path, monkeypatch) -> Non
 def test_host_doctor_rejects_issued_spec_with_missing_bind_source(tmp_path, monkeypatch) -> None:
     from booley.runtime import session_issuance as runtime_spec
 
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
     spec_path = tmp_path / ".devcontainer" / "devcontainer.json"
     spec_path.parent.mkdir()
     spec_path.write_text("{}", encoding="utf-8")
@@ -67,7 +67,7 @@ def test_host_doctor_rejects_issued_spec_with_missing_bind_source(tmp_path, monk
         )
 
     monkeypatch.setattr(runtime_spec, "validate", missing_bind)
-    project = readiness.ProjectAudit(tmp_path, project_dir, {}, {}, "sim")
+    project = readiness.ProjectAudit(tmp_path, booley_dir, {}, {}, "sim")
     rec = _Rec()
 
     _record_report(
@@ -83,8 +83,8 @@ def test_host_doctor_rejects_issued_spec_with_missing_bind_source(tmp_path, monk
 def test_host_doctor_accepts_issued_spec_and_no_live_resources(tmp_path, monkeypatch) -> None:
     from booley.runtime import session_issuance as runtime_spec
 
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
     spec_path = tmp_path / ".devcontainer" / "devcontainer.json"
     spec_path.parent.mkdir()
     spec_path.write_text("{}", encoding="utf-8")
@@ -107,7 +107,7 @@ def test_host_doctor_accepts_issued_spec_and_no_live_resources(tmp_path, monkeyp
     monkeypatch.setattr(runtime_spec, "validate", lambda *_args: issuance)
 
     monkeypatch.setattr(subprocess, "run", _runtime_probe_subprocess(""))
-    project = readiness.ProjectAudit(tmp_path, project_dir, {}, {}, "sim")
+    project = readiness.ProjectAudit(tmp_path, booley_dir, {}, {}, "sim")
     rec = _Rec()
 
     _record_report(
@@ -140,8 +140,8 @@ def test_host_doctor_accepts_issued_spec_and_no_live_resources(tmp_path, monkeyp
 def test_host_doctor_rejects_full_live_runtime_state_drift(tmp_path, monkeypatch, drift) -> None:
     from booley.runtime import session_issuance as runtime_spec
 
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
     issuance, spec, labels, state = _issued_runtime_state(tmp_path)
     if drift == "image":
         state["Image"] = "sha256:" + "d" * 64
@@ -175,7 +175,7 @@ def test_host_doctor_rejects_full_live_runtime_state_drift(tmp_path, monkeypatch
         return json.dumps([state])
 
     monkeypatch.setattr(session_runtime, "_docker_stdout", inspect)
-    project = readiness.ProjectAudit(tmp_path, project_dir, {}, {}, "sim")
+    project = readiness.ProjectAudit(tmp_path, booley_dir, {}, {}, "sim")
     rec = _Rec()
 
     _record_report(
@@ -194,8 +194,8 @@ def test_host_doctor_names_stop_first_repair_for_running_old_vscode(
 ) -> None:
     from booley.runtime import session_issuance as runtime_spec
 
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
     issuance, spec, labels, state = _issued_runtime_state(tmp_path)
     state["Image"] = "sha256:" + "d" * 64
     labels.update(
@@ -226,7 +226,7 @@ def test_host_doctor_names_stop_first_repair_for_running_old_vscode(
         return json.dumps([state])
 
     monkeypatch.setattr(session_runtime, "_docker_stdout", inspect)
-    project = readiness.ProjectAudit(tmp_path, project_dir, {}, {}, "sim")
+    project = readiness.ProjectAudit(tmp_path, booley_dir, {}, {}, "sim")
     rec = _Rec()
 
     _record_report(
@@ -244,10 +244,10 @@ def test_host_doctor_names_stop_first_repair_for_running_old_vscode(
 def test_host_doctor_accepts_vscode_managed_runtime_state(tmp_path, monkeypatch) -> None:
     from booley.runtime import session_issuance as runtime_spec
 
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
     issuance, spec, labels, state = _issued_runtime_state(tmp_path)
-    spec["remoteEnv"] = {"BOOLEY_PROJECT_DIR": "/booley-project"}
+    spec["remoteEnv"] = {"BOOLEY_DIR": "/booley-project"}
     labels["devcontainer.local_folder"] = str(tmp_path)
     state["Config"]["Labels"] = labels
     state["Mounts"].extend(
@@ -275,7 +275,7 @@ def test_host_doctor_accepts_vscode_managed_runtime_state(tmp_path, monkeypatch)
         return json.dumps([state])
 
     monkeypatch.setattr(session_runtime, "_docker_stdout", inspect)
-    project = readiness.ProjectAudit(tmp_path, project_dir, {}, {}, "sim")
+    project = readiness.ProjectAudit(tmp_path, booley_dir, {}, {}, "sim")
     rec = _Rec()
 
     _record_report(
@@ -292,8 +292,8 @@ def test_host_doctor_accepts_vscode_managed_runtime_state(tmp_path, monkeypatch)
 def test_in_runtime_doctor_executes_mounted_vivado_policy_branch(tmp_path, monkeypatch) -> None:
     from booley.eda.provisioning.policies import vivado
 
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
     wrapper_bytes = vivado.wrapper_path().read_bytes()
     original_read_bytes = Path.read_bytes
     original_read_text = Path.read_text
@@ -343,7 +343,7 @@ def test_in_runtime_doctor_executes_mounted_vivado_policy_branch(tmp_path, monke
     )
     project = readiness.ProjectAudit(
         tmp_path,
-        project_dir,
+        booley_dir,
         {"eda": {"vivado": {"provisioning": "host"}}},
         {},
         "sim",
@@ -369,13 +369,13 @@ def test_in_runtime_doctor_does_not_require_vivado_for_disabled_fpga(
     tmp_path,
     monkeypatch,
 ) -> None:
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
     _isolate_runtime_files(monkeypatch)
     project = readiness.ProjectAudit(
         tmp_path,
-        project_dir,
+        booley_dir,
         {
             "eda": {"vivado": {"provisioning": "host"}},
             "flows": {"fpga": {"enabled": False}},
@@ -405,11 +405,11 @@ class TestStateVolumeCheck:
 
     @staticmethod
     def _project(root: Path) -> readiness.ProjectAudit:
-        pd = root / ".booley_project"
+        pd = root / ".booley"
         pd.mkdir(exist_ok=True)
         return readiness.ProjectAudit(
             project_root=root,
-            project_dir=pd,
+            booley_dir=pd,
             booley_toml={},
             configs_toml={"x": {}},
             first_target="x",

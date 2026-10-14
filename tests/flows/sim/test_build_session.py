@@ -57,7 +57,7 @@ def test_resolved_compile_surface_is_target_scoped_and_snapshot_is_walk_free(
     dependency.write_text("CAPI=2:\nname: acme:demo:dependency:1\n", encoding="utf-8")
     unselected = tmp_path / "rtl" / "unselected.sv"
     unselected.write_text("module unselected; endmodule\n", encoding="utf-8")
-    ticket_source = tmp_path / ".booley_project/worktrees/T-1/rtl/copy.sv"
+    ticket_source = tmp_path / ".booley/worktrees/T-1/rtl/copy.sv"
     ticket_source.parent.mkdir(parents=True)
     ticket_source.write_text("module copy; endmodule\n", encoding="utf-8")
     handle = TargetCatalog.build(tmp_path).select("sim_0", for_flow="sim")
@@ -72,13 +72,13 @@ def test_resolved_compile_surface_is_target_scoped_and_snapshot_is_walk_free(
         "dependency.core",
     } <= identities
     assert "rtl/unselected.sv" not in identities
-    assert ".booley_project/worktrees/T-1/rtl/copy.sv" not in identities
+    assert ".booley/worktrees/T-1/rtl/copy.sv" not in identities
     before = project_compile_surface(surface)
     monkeypatch.setattr(os, "walk", lambda *_args, **_kwargs: pytest.fail("snapshot walked"))
     unselected.write_text("module changed; endmodule\n", encoding="utf-8")
     ticket_source.write_text("module changed_copy; endmodule\n", encoding="utf-8")
     assert project_compile_surface(surface) == before
-    config = tmp_path / ".booley_project/booley.toml"
+    config = tmp_path / ".booley/booley.toml"
     config.parent.mkdir(exist_ok=True)
     config.write_text("[stealth]\nenabled = true\n", encoding="utf-8")
     assert project_compile_surface(surface) != before
@@ -96,7 +96,7 @@ def test_compile_surface_resolution_normalizes_a_stale_target(tmp_path: Path) ->
 
 
 def test_slot_uses_durable_target_identity_not_selector_spelling(tmp_path: Path) -> None:
-    (tmp_path / ".booley_project").mkdir()
+    (tmp_path / ".booley").mkdir()
     first = cast(
         TargetHandle,
         SimpleNamespace(project_root=tmp_path, identity="vendor:lib:one:1#sim", selector="a-b"),
@@ -117,7 +117,7 @@ def test_slot_uses_durable_target_identity_not_selector_spelling(tmp_path: Path)
 def test_compile_surface_does_not_require_project_initialization(tmp_path: Path) -> None:
     source = tmp_path / "counter.sv"
     source.write_text("module counter; endmodule\n", encoding="utf-8")
-    generated = tmp_path / ".booley_project" / ".runtime" / "generated.sv"
+    generated = tmp_path / ".booley" / ".runtime" / "generated.sv"
     generated.parent.mkdir(parents=True)
     generated.write_text("module generated; endmodule\n", encoding="utf-8")
 
@@ -128,7 +128,7 @@ def test_compile_surface_does_not_require_project_initialization(tmp_path: Path)
 def test_compile_surface_includes_only_resolved_operational_core_projections(
     tmp_path: Path,
 ) -> None:
-    authored = tmp_path / ".booley_project" / "cores" / "design.core"
+    authored = tmp_path / ".booley" / "cores" / "design.core"
     authored.parent.mkdir(parents=True)
     authored.write_text("CAPI=2:\nname: ::design:0\n", encoding="utf-8")
     overlay = authored.with_name("design.booleytrace.core")
@@ -136,7 +136,7 @@ def test_compile_surface_includes_only_resolved_operational_core_projections(
     generated.parent.mkdir(parents=True)
     generated.write_text(
         "CAPI=2:\n"
-        "# Booley stealth core projection: .booley_project/cores/design.booleytrace.core\n"
+        "# Booley stealth core projection: .booley/cores/design.booleytrace.core\n"
         "name: ::design-booleytrace:0\n",
         encoding="utf-8",
     )
@@ -166,7 +166,7 @@ def test_compile_surface_includes_only_resolved_operational_core_projections(
 
 
 def test_compile_surface_hashes_foreign_isolated_cores_without_decoding(tmp_path: Path) -> None:
-    registry = isolated_core_path(tmp_path, tmp_path / ".booley_project/cores/design.core").parent
+    registry = isolated_core_path(tmp_path, tmp_path / ".booley/cores/design.core").parent
     registry.mkdir(parents=True)
     invalid_utf8 = registry / "booley-isolated-invalid.core"
     invalid_utf8.write_bytes(b"\xff\n")
@@ -182,7 +182,7 @@ def test_compile_surface_hashes_foreign_isolated_cores_without_decoding(tmp_path
 
 
 def _handle(root: Path) -> TargetHandle:
-    (root / ".booley_project").mkdir(exist_ok=True)
+    (root / ".booley").mkdir(exist_ok=True)
     return cast(
         TargetHandle,
         SimpleNamespace(project_root=root, identity="acme:lib:demo:1#sim"),
@@ -556,7 +556,7 @@ def test_discard_candidate_is_idempotent(tmp_path: Path) -> None:
 )
 def test_projected_core_shadow_is_not_a_generated_build_input(tmp_path: Path) -> None:
     session = SimulationBuildSession(_handle(tmp_path))
-    overlay = selftest_overlay.bad_overlay_dir(tmp_path / ".booley_project", "sim") / "fixture.hex"
+    overlay = selftest_overlay.bad_overlay_dir(tmp_path / ".booley", "sim") / "fixture.hex"
     overlay.parent.mkdir(parents=True)
     overlay.write_text("bad\n", encoding="utf-8")
     (tmp_path / ".booley-projected-demo.core").write_text("core\n", encoding="utf-8")
@@ -565,9 +565,7 @@ def test_projected_core_shadow_is_not_a_generated_build_input(tmp_path: Path) ->
         build_input = generation / "input.sv"
         build_input.write_text("module demo; endmodule\n", encoding="utf-8")
         shadow = selftest_overlay.doctor_runtime_view_path(tmp_path, generation.parent, "a" * 32)
-        selftest_overlay.stage_bad_run_overlay(
-            tmp_path / ".booley_project", "sim", tmp_path, shadow
-        )
+        selftest_overlay.stage_bad_run_overlay(tmp_path / ".booley", "sim", tmp_path, shadow)
 
         assert (shadow / ".booley-projected-demo.core").is_symlink()
         assert session.capture_inputs(SimpleNamespace(work_root=generation)) == {
@@ -719,7 +717,7 @@ def test_fresh_verification_rejects_other_generation_and_symlinked_manifest(
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX lease inheritance")
 def test_parent_death_does_not_release_live_child_build_lease(tmp_path: Path) -> None:
-    (tmp_path / ".booley_project").mkdir()
+    (tmp_path / ".booley").mkdir()
     marker = tmp_path / "child-started"
     handle = cast(
         TargetHandle,

@@ -77,7 +77,7 @@ def test_workload_snapshot_records_configured_backend_and_fingerprints_changes(
 def test_configured_run_cwd_is_normalized_for_workload_snapshot(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     _write_inputs(project_root)
-    config_dir = project_root / ".booley_project"
+    config_dir = project_root / ".booley"
     config_dir.mkdir()
     (config_dir / "booley.toml").write_text(
         '[flows.sim]\nrun_cwd = "tests/work"\n', encoding="utf-8"

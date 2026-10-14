@@ -21,7 +21,7 @@ def test_read_only_freshness_evaluator_reports_tb_drift_without_mutation(
     tmp_path: Path,
 ) -> None:
     work_dir = tmp_path / "work"
-    (work_dir / ".booley_project").mkdir(parents=True)
+    (work_dir / ".booley").mkdir(parents=True)
     (work_dir / "rtl").mkdir()
     (work_dir / "tb").mkdir()
     (work_dir / "rtl" / "dut.sv").write_text("module dut; endmodule\n")
@@ -93,9 +93,9 @@ def test_freshness_eligibility_distinguishes_gate_from_review_placeholders() -> 
 def test_read_only_freshness_evaluator_normalizes_malformed_project_config(
     tmp_path: Path,
 ) -> None:
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
-    (project_dir / "booley.toml").write_text("[broken", encoding="utf-8")
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    (booley_dir / "booley.toml").write_text("[broken", encoding="utf-8")
     entry = CriterionEntry(
         met=True,
         mandatory=True,
@@ -119,7 +119,7 @@ def test_read_only_freshness_evaluator_prefers_version_4_reviewer_receipt(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
-    (tmp_path / ".booley_project").mkdir()
+    (tmp_path / ".booley").mkdir()
     source = tmp_path / "rtl" / "dut.sv"
     source.parent.mkdir()
     source.write_text("module dut; endmodule\n", encoding="utf-8")

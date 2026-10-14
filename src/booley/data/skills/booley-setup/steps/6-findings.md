@@ -91,11 +91,11 @@ redacted export and shares that file themselves.
 booley feedback report --project-name <name>
 ```
 
-Writes `.booley_project/SETUP-REPORT.md` — the user's copy, unredacted and never
+Writes `.booley/SETUP-REPORT.md` — the user's copy, unredacted and never
 published. `booley feedback export` creates the separate redacted view only
 when the user explicitly asks for a sanitized file.
 
-The report stays inside `.booley_project/`. **Do not** put it in the RTL repo's
+The report stays inside `.booley/`. **Do not** put it in the RTL repo's
 tracked tree; that is the footprint guardrail. The enclosing maintainer dogfood
 flow may explicitly tell this step to pass `--user-report-path SETUP-REPORT.md`
 for its throwaway clone. That writes the root report instead of an inner copy;

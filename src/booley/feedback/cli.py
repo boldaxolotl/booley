@@ -54,10 +54,10 @@ def add_subparser(sub: argparse._SubParsersAction) -> None:
             "log or the default report. For redaction, repository identifiers come "
             "from the selected checkout; configured names and redaction settings "
             "come from booley.toml in the feedback storage directory. "
-            "For Projects, BOOLEY_PROJECT_DIR selects shared storage, as in the Sandbox. "
+            "For Projects, BOOLEY_DIR selects shared storage, as in the Sandbox. "
             "Without it, storage discovery starts from the selected checkout and may find "
             "a separate log. Booley source checkouts always share feedback in Git's "
-            "shared metadata directory, regardless of BOOLEY_PROJECT_DIR."
+            "shared metadata directory, regardless of BOOLEY_DIR."
         ),
     )
     fb = parser.add_subparsers(dest="feedback_command")
@@ -290,7 +290,7 @@ def _warn_missing_evidence(finding: Finding) -> None:
     )
 
 
-def _cmd_add(args: argparse.Namespace, project_dir: Path) -> int:
+def _cmd_add(args: argparse.Namespace, booley_dir: Path) -> int:
     finding = append(
         Finding(
             title=args.title,
@@ -307,14 +307,14 @@ def _cmd_add(args: argparse.Namespace, project_dir: Path) -> int:
             origin=args.origin,
             attachments=list(args.attach),
         ),
-        project_dir,
+        booley_dir,
     )
     print(f"{finding.id} logged ({finding.marker} {finding.severity}, bucket={finding.bucket})")
     _warn_missing_evidence(finding)
     return 0
 
 
-def _cmd_friction(args: argparse.Namespace, project_dir: Path) -> int:
+def _cmd_friction(args: argparse.Namespace, booley_dir: Path) -> int:
     """Log "this was confusing" — no reproduction demanded, evidence bar of its own."""
     finding = append(
         Finding(
@@ -330,14 +330,14 @@ def _cmd_friction(args: argparse.Namespace, project_dir: Path) -> int:
             origin=args.origin,
             attachments=list(args.attach),
         ),
-        project_dir,
+        booley_dir,
     )
     print(f"{finding.id} logged ({finding.marker} friction, bucket={finding.bucket})")
     _warn_missing_evidence(finding)
     return 0
 
 
-def _cmd_say(args: argparse.Namespace, project_dir: Path) -> int:
+def _cmd_say(args: argparse.Namespace, booley_dir: Path) -> int:
     """Log an impression — no evidence demanded, nothing to get wrong."""
     finding = append(
         Finding(
@@ -354,16 +354,16 @@ def _cmd_say(args: argparse.Namespace, project_dir: Path) -> int:
             origin=args.origin,
             attachments=list(args.attach),
         ),
-        project_dir,
+        booley_dir,
     )
     print(f"{finding.id} logged ({finding.marker} {finding.sentiment}). Thanks — that helps.")
     print("Use `booley feedback export` when you want a redacted file to share manually.")
     return 0
 
 
-def _cmd_filed(args: argparse.Namespace, project_dir: Path) -> int:
+def _cmd_filed(args: argparse.Namespace, booley_dir: Path) -> int:
     """Stamp findings as already reported, so no later batch re-publishes them."""
-    log = read_log(project_dir)
+    log = read_log(booley_dir)
     if log.corrupt_lines:
         return _refuse_lossy_rewrite(log)
     by_id = {e.id: e for e in log.entries}
@@ -373,22 +373,22 @@ def _cmd_filed(args: argparse.Namespace, project_dir: Path) -> int:
         return 1
     for finding_id in args.finding_ids:
         by_id[finding_id].mark_filed(args.url)
-    rewrite(log.entries, project_dir)
+    rewrite(log.entries, booley_dir)
     print(f"Marked as filed ({args.url}): {', '.join(args.finding_ids)}")
     return 0
 
 
-def _cmd_win(args: argparse.Namespace, project_dir: Path) -> int:
+def _cmd_win(args: argparse.Namespace, booley_dir: Path) -> int:
     finding = append(
         Finding(title=args.title, kind="win", exposed_by=args.exposed_by, step=args.step),
-        project_dir,
+        booley_dir,
     )
     print(f"{finding.id} logged (win)")
     return 0
 
 
-def _cmd_triage(args: argparse.Namespace, project_dir: Path) -> int:
-    log = read_log(project_dir)
+def _cmd_triage(args: argparse.Namespace, booley_dir: Path) -> int:
+    log = read_log(booley_dir)
     if log.corrupt_lines:
         return _refuse_lossy_rewrite(log)
     target = next((e for e in log.entries if e.id == args.finding_id), None)
@@ -412,7 +412,7 @@ def _cmd_triage(args: argparse.Namespace, project_dir: Path) -> int:
     # Attachments accumulate rather than replace: triage is where a second
     # transcript gets added to a finding, never where one gets dropped.
     target.attachments += [a for a in args.attach if a not in target.attachments]
-    rewrite(log.entries, project_dir)
+    rewrite(log.entries, booley_dir)
     print(f"{target.id} → bucket={target.bucket}, severity={target.severity}")
     return 0
 
@@ -429,8 +429,8 @@ def _refuse_lossy_rewrite(log: object) -> int:
     return 2
 
 
-def _cmd_list(args: argparse.Namespace, project_dir: Path) -> int:
-    log = read_log(project_dir)
+def _cmd_list(args: argparse.Namespace, booley_dir: Path) -> int:
+    log = read_log(booley_dir)
     entries = log.entries
     if args.kind:
         entries = [e for e in entries if e.kind == args.kind]
@@ -471,14 +471,14 @@ def _cmd_list(args: argparse.Namespace, project_dir: Path) -> int:
 def _cmd_report(
     args: argparse.Namespace,
     project_root: Path,
-    project_dir: Path,
+    booley_dir: Path,
     *,
     env: render.Environment | None = None,
 ) -> int:
     override = Path(args.user_report_path).resolve() if args.user_report_path else None
     user_path, report = render.write_user_report(
         project_root,
-        project_dir,
+        booley_dir,
         project_name=args.project_name,
         user_report_path=override,
         env=env,
@@ -491,7 +491,7 @@ def _cmd_report(
             f"{len(report.filable)} finding(s) available to export; no redacted file was written."
         )
         print(f"  redaction: {redact_mod.diff_summary(report.redaction_hits)}")
-    old_export = project_dir / render.BOOLEY_REPORT_NAME
+    old_export = booley_dir / render.BOOLEY_REPORT_NAME
     if old_export.is_file():
         print(
             f"\nExisting redacted export not updated: {old_export}\n"
@@ -529,14 +529,14 @@ def _select_findings(log: FindingsLog, finding_ids: list[str]) -> FindingsLog:
 
 def _export_report(
     project_root: Path,
-    project_dir: Path,
+    booley_dir: Path,
     finding_ids: list[str],
     *,
     all_findings: bool,
     env: render.Environment | None = None,
 ) -> tuple[FindingsLog, render.BooleyReport] | None:
     """Read, validate, select, and render one export batch."""
-    log = read_log(project_dir)
+    log = read_log(booley_dir)
     if bool(finding_ids) == all_findings:
         choice = "finding IDs or --all, not both" if finding_ids else "finding IDs or --all"
         print(f"Error: choose {choice} for the export batch.", file=sys.stderr)
@@ -546,20 +546,20 @@ def _export_report(
     except _UnknownFindingIdsError as error:
         print(f"Error: {error}", file=sys.stderr)
         return None
-    report = render.render_booley_report(selected, project_root, project_dir=project_dir, env=env)
+    report = render.render_booley_report(selected, project_root, booley_dir=booley_dir, env=env)
     return log, report
 
 
 def _cmd_export(
     args: argparse.Namespace,
     project_root: Path,
-    project_dir: Path,
+    booley_dir: Path,
     *,
     env: render.Environment | None = None,
 ) -> int:
     prepared = _export_report(
         project_root,
-        project_dir,
+        booley_dir,
         args.finding_ids,
         all_findings=args.all_findings,
         env=env,
@@ -570,18 +570,16 @@ def _cmd_export(
     if not report.has_content:
         print("Nothing filable — nothing to export.")
         return 0
-    output = (
-        Path(args.output).resolve() if args.output else project_dir / render.BOOLEY_REPORT_NAME
-    )
+    output = Path(args.output).resolve() if args.output else booley_dir / render.BOOLEY_REPORT_NAME
     path = render.export_booley_report(report, output)
     print(f"Wrote {path} ({len(report.filable)} finding(s), redacted)")
     print(f"  redaction: {redact_mod.diff_summary(report.redaction_hits)}")
     return 0
 
 
-def _cmd_redact(args: argparse.Namespace, project_root: Path, project_dir: Path) -> int:
+def _cmd_redact(args: argparse.Namespace, project_root: Path, booley_dir: Path) -> int:
     text = Path(args.file).read_text(encoding="utf-8") if args.file else sys.stdin.read()
-    plan = redact_mod.build_plan(project_root, project_dir)
+    plan = redact_mod.build_plan(project_root, booley_dir)
     redacted, hits = redact_mod.apply_plan(text, plan)
     sys.stdout.write(redacted)
     # Flush before the stderr commentary: piped stdout is block-buffered, and
@@ -595,7 +593,7 @@ def _cmd_redact(args: argparse.Namespace, project_root: Path, project_dir: Path)
     return 0
 
 
-# Subcommand → handler. Every handler takes (args, project_root, project_dir) so
+# Subcommand → handler. Every handler takes (args, project_root, booley_dir) so
 # the dispatch stays a table rather than a ladder of ifs; handlers that don't need
 # a value simply ignore it.
 _HANDLERS: dict[str, Callable[[argparse.Namespace, Path, Path], int]] = {
@@ -637,8 +635,8 @@ def run(
             file=sys.stderr,
         )
         return 2
-    project_dir = feedback_storage_dir(project_root)
+    booley_dir = feedback_storage_dir(project_root)
     if environment_handler is not None:
-        return environment_handler(args, project_root, project_dir, env=env)
+        return environment_handler(args, project_root, booley_dir, env=env)
     assert handler is not None
-    return handler(args, project_root, project_dir)
+    return handler(args, project_root, booley_dir)

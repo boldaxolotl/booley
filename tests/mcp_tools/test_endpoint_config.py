@@ -14,8 +14,8 @@ from booley.mcp.registry import discover_mcp_tools
 
 @pytest.mark.parametrize("loader", [get_endpoint_config, developer_config, endpoint_config])
 def test_specialist_visibility_is_shared_across_execution_modes(tmp_path, monkeypatch, loader):
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
-    project = tmp_path / ".booley_project"
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    project = tmp_path / ".booley"
     project.mkdir()
     (project / "booley.toml").write_text(
         "[specialists.coverage_analyst]\nenabled = false\n[flows.lint]\nenabled = false\n",
@@ -36,8 +36,8 @@ def test_specialist_visibility_is_shared_across_execution_modes(tmp_path, monkey
 def test_retired_visibility_tables_fail_with_migration_guidance(
     tmp_path, monkeypatch, loader, table
 ):
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
-    project = tmp_path / ".booley_project"
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    project = tmp_path / ".booley"
     project.mkdir()
     config = project / "booley.toml"
     config.write_text(f"[{table}.reviewer]\nenabled = false\n", encoding="utf-8")
@@ -55,8 +55,8 @@ def test_project_audit_rejects_retired_mcp_table():
 
 
 def test_specialist_settings_cannot_disable_protocol_utilities(tmp_path: Path, monkeypatch):
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
-    project = tmp_path / ".booley_project"
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    project = tmp_path / ".booley"
     project.mkdir()
     (project / "booley.toml").write_text(
         "[specialists.submit_run_report]\nenabled = false\n", encoding="utf-8"
@@ -66,8 +66,8 @@ def test_specialist_settings_cannot_disable_protocol_utilities(tmp_path: Path, m
 
 
 def test_readiness_does_not_accept_retired_endpoint_configuration(tmp_path, monkeypatch):
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
-    project = tmp_path / ".booley_project"
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    project = tmp_path / ".booley"
     project.mkdir()
     config = "[project]\nname = 'fixture'\n" + "".join(
         f"[flows.{name}]\nenabled = false\n" for name in ("sim", "lint", "synth")
@@ -92,8 +92,8 @@ def test_readiness_does_not_accept_retired_endpoint_configuration(tmp_path, monk
 )
 @pytest.mark.parametrize("loader", [get_endpoint_config, developer_config, endpoint_config])
 def test_invalid_specialist_settings_fail_closed(tmp_path, monkeypatch, config, loader):
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
-    project = tmp_path / ".booley_project"
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    project = tmp_path / ".booley"
     project.mkdir()
     (project / "booley.toml").write_text(config)
 
@@ -103,8 +103,8 @@ def test_invalid_specialist_settings_fail_closed(tmp_path, monkeypatch, config, 
 
 @pytest.mark.parametrize("loader", [get_endpoint_config, developer_config, endpoint_config])
 def test_malformed_toml_fails_closed_in_every_endpoint_loader(tmp_path, monkeypatch, loader):
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
-    project = tmp_path / ".booley_project"
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    project = tmp_path / ".booley"
     project.mkdir()
     config = project / "booley.toml"
     config.write_text("[specialists.reviewer\nenabled = false\n")
@@ -120,8 +120,8 @@ def test_misspelled_specialist_name_is_rejected():
 
 
 def test_readiness_rejects_misspelled_specialist_name(tmp_path, monkeypatch):
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
-    project = tmp_path / ".booley_project"
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    project = tmp_path / ".booley"
     project.mkdir()
     config = "[project]\nname = 'fixture'\n" + "".join(
         f"[flows.{name}]\nenabled = false\n" for name in ("sim", "lint", "synth")
@@ -137,7 +137,7 @@ def test_readiness_rejects_misspelled_specialist_name(tmp_path, monkeypatch):
 def test_cli_renders_retirement_error_without_traceback(tmp_path, monkeypatch, capsys):
     from booley.harness import booley as cli
 
-    project = tmp_path / ".booley_project"
+    project = tmp_path / ".booley"
     project.mkdir()
     (project / "booley.toml").write_text("[mcp_tools.reviewer]\nenabled = false\n")
     args = cli._build_parser().parse_args(["specialist"])
@@ -154,8 +154,8 @@ def test_cli_renders_retirement_error_without_traceback(tmp_path, monkeypatch, c
 
 
 def test_retired_table_cannot_be_masked_by_new_settings(tmp_path, monkeypatch):
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
-    project = tmp_path / ".booley_project"
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    project = tmp_path / ".booley"
     project.mkdir()
     (project / "booley.toml").write_text(
         "[mcp_tools.reviewer]\nenabled = false\n[specialists.reviewer]\nenabled = true\n"
@@ -170,7 +170,7 @@ def test_mcp_entry_point_renders_catalog_configuration_error(tmp_path, monkeypat
 
     from booley.mcp import server
 
-    project = tmp_path / ".booley_project"
+    project = tmp_path / ".booley"
     project.mkdir()
     (project / "booley.toml").write_text("[mcp_tools.reviewer]\nenabled = false\n")
 
@@ -192,7 +192,7 @@ def test_mcp_entry_point_renders_catalog_configuration_error(tmp_path, monkeypat
     assert "Traceback" not in output
 
 
-def test_endpoint_validation_reads_the_resolved_project_directory(tmp_path):
+def test_endpoint_validation_reads_the_resolved_booley_directory(tmp_path):
     from booley.mcp.endpoint_validation import validate_custom_endpoints_and_criteria
 
     project = tmp_path / "project-data"

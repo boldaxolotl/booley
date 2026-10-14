@@ -110,10 +110,6 @@ def test_inspect_and_apply_use_the_same_history_visibility_policy(tmp_path, monk
     monkeypatch.setattr(interactive, "add_git_excludes", apply_exclusions)
     plan = interactive.inspect(_request(tmp_path, Mock()))
     interactive.apply(plan)
-    expected = (
-        (".devcontainer", ".claude", ".booley_project")
-        if stealth
-        else (".devcontainer", ".claude")
-    )
+    expected = (".devcontainer", ".claude", ".booley") if stealth else (".devcontainer", ".claude")
     inspect_exclusions.assert_called_once_with(tmp_path, expected)
     apply_exclusions.assert_called_once_with(tmp_path, expected)

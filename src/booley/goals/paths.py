@@ -1,7 +1,7 @@
 """Where Goal Mode keeps its files (ADR 0067 D9).
 
 Every Goal Record lives in the Booley Directory the caller resolved through
-:mod:`booley.runtime.project_dir`; nothing here discovers or hardcodes it::
+:mod:`booley.runtime.booley_dir`; nothing here discovers or hardcodes it::
 
     <booley-directory>/goals/<goal-id>/record.json         the Goal Record
     <booley-directory>/goals/<goal-id>/lock                its record lock (D15)
@@ -82,25 +82,25 @@ def validate_goal_id(goal_id: str) -> str:
     return goal_id
 
 
-def goals_root(project_dir: Path) -> Path:
+def goals_root(booley_dir: Path) -> Path:
     """Directory holding every Goal Record of the Project."""
-    return project_dir / GOALS_DIR
+    return booley_dir / GOALS_DIR
 
 
-def locks_dir(project_dir: Path) -> Path:
+def locks_dir(booley_dir: Path) -> Path:
     """Directory holding the Goal worktree locks."""
-    return goals_root(project_dir) / LOCKS_DIR
+    return goals_root(booley_dir) / LOCKS_DIR
 
 
-def worktree_lock_file(project_dir: Path, identity: WorktreeIdentity) -> Path:
+def worktree_lock_file(booley_dir: Path, identity: WorktreeIdentity) -> Path:
     """The worktree lock for *identity*, named by a digest of the identity (D15)."""
     digest = hashlib.sha256(identity.key.encode("utf-8")).hexdigest()
-    return locks_dir(project_dir) / f"worktree-{digest}.lock"
+    return locks_dir(booley_dir) / f"worktree-{digest}.lock"
 
 
-def history_file(checkout_project_dir: Path, goal_id: str) -> Path:
+def history_file(checkout_booley_dir: Path, goal_id: str) -> Path:
     """The committed summary of *goal_id* inside a checkout's own Booley Directory."""
-    return checkout_project_dir / GOALS_DIR / HISTORY_DIR / f"{validate_goal_id(goal_id)}.md"
+    return checkout_booley_dir / GOALS_DIR / HISTORY_DIR / f"{validate_goal_id(goal_id)}.md"
 
 
 @dataclass(frozen=True)
@@ -155,6 +155,6 @@ class GoalRecordPaths:
         return self.root / REVIEW_PACKAGE_FILE
 
 
-def record_paths(project_dir: Path, goal_id: str) -> GoalRecordPaths:
-    """The files of Goal Record *goal_id* in *project_dir*."""
-    return GoalRecordPaths(goals_root(project_dir) / validate_goal_id(goal_id))
+def record_paths(booley_dir: Path, goal_id: str) -> GoalRecordPaths:
+    """The files of Goal Record *goal_id* in *booley_dir*."""
+    return GoalRecordPaths(goals_root(booley_dir) / validate_goal_id(goal_id))

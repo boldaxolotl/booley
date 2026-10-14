@@ -114,7 +114,7 @@ class TestGoalSelection:
         from booley.goals.model import WorktreeIdentity
 
         binding = GoalRunBinding(
-            project_dir=tmp_path,
+            booley_dir=tmp_path,
             record_id="evidence-20261006T120000Z",
             record_revision=3,
             worktree=WorktreeIdentity("12345678-1234-4234-9234-123456789abc", "worktrees/wt"),

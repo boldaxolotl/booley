@@ -22,7 +22,7 @@ def configure_project_alias(
     """Use real links; substitute only image ownership/protection metadata."""
     if os.name != "posix":
         pytest.skip("authenticated image alias is POSIX-only")
-    monkeypatch.setattr(sandbox_layout, "PROJECT_DIR_TARGET", str(alias))
+    monkeypatch.setattr(sandbox_layout, "BOOLEY_DIR_TARGET", str(alias))
     monkeypatch.setattr(sandbox_layout, "PROJECT_DATA_MOUNT_PATH", str(target))
     original = Path.lstat
 

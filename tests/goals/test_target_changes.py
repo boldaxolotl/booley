@@ -14,7 +14,7 @@ from tests.goals.test_status import publish
 
 
 def test_runtime_target_declarations_and_qualified_test_lookup(tmp_path):
-    project = tmp_path / ".booley_project"
+    project = tmp_path / ".booley"
     project.mkdir()
     (project / "booley.toml").write_bytes(b"[project]\n")
     (project / "tests.toml").write_bytes(b'["::top:0#top"]\ntests=["smoke"]\n')

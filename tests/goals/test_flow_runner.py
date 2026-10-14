@@ -42,7 +42,7 @@ def test_builtin_runner_forwards_args_and_admitted_adapter(admitted, monkeypatch
         assert isinstance(adapter, GoalFlowExecution)
         assert adapter.binding == admitted
         assert (
-            adapter.state_file == record_paths(admitted.project_dir, admitted.record_id).state_file
+            adapter.state_file == record_paths(admitted.booley_dir, admitted.record_id).state_file
         )
         return 7
 
@@ -77,9 +77,7 @@ class ProjectFlow(BooleyFlow):
         goal_flow_runner.main(["--custom-path", str(module), "project-check", "--source", "rtl.v"])
         == 0
     )
-    state = DevelopmentState.load(
-        record_paths(admitted.project_dir, admitted.record_id).state_file
-    )
+    state = DevelopmentState.load(record_paths(admitted.booley_dir, admitted.record_id).state_file)
     assert state.slug == admitted.record_id
     assert state.criteria["lint_clean_top"].met
 

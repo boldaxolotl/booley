@@ -583,8 +583,8 @@ def test_one_target_executes_only_authenticated_make_and_archives_complete_log(
         target="sim_dut",
         target_identity="::dut:0#sim_dut",
         resolved=MagicMock(),
-        work_root=tmp_path / ".booley_project/.runtime/edalize/sim/sim_dut",
-        build_root=tmp_path / ".booley_project/.runtime/edalize/sim/sim_dut/inner",
+        work_root=tmp_path / ".booley/.runtime/edalize/sim/sim_dut",
+        build_root=tmp_path / ".booley/.runtime/edalize/sim/sim_dut/inner",
         eda_tool="verilator",
         toplevel="tb_dut",
         make_argv=("make", "-C", "cache"),
@@ -639,7 +639,7 @@ def test_elaboration_plan_discloses_build_budget_as_its_timeout(
 
 
 def test_elaboration_resolves_build_budget_from_project_config(tmp_path: Path) -> None:
-    config_dir = tmp_path / ".booley_project"
+    config_dir = tmp_path / ".booley"
     config_dir.mkdir()
     (config_dir / "booley.toml").write_text(
         "[flows.sim]\nbuild_timeout_ms = 7000\n",

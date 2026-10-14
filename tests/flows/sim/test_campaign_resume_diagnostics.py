@@ -38,7 +38,7 @@ def _interrupted_campaign(root, monkeypatch, *, parameter_datatype="int", parame
         )
         .replace("    filesets: [rtl]", "    parameters: [WIDTH]\n    filesets: [rtl]")
     )
-    data = root / ".booley_project"
+    data = root / ".booley"
     data.mkdir()
     (data / "tests.toml").write_text('[sim_0]\ntests=["reset", "wrap"]\n')
     reports = root / "reports"
@@ -189,7 +189,7 @@ def test_public_resume_cli_summary_detail_and_dry_run_immutability(
     ("changed", "line"),
     [
         ("parameter", "parameter WIDTH:"),
-        ("suite", "suite changed: .booley_project/tests.toml"),
+        ("suite", "suite changed: .booley/tests.toml"),
         ("option", "build command model changed"),
     ],
 )
@@ -198,7 +198,7 @@ def test_public_resume_parameters_suite_content_and_opaque_options(
 ):
     reports, manifest, executions = _interrupted_campaign(tmp_path, monkeypatch)
     if changed == "suite":
-        path = tmp_path / ".booley_project/tests.toml"
+        path = tmp_path / ".booley/tests.toml"
         path.write_text(path.read_text() + "# catalog bytes changed, names remain frozen\n")
     else:
         path = tmp_path / "counter.core"
@@ -230,7 +230,7 @@ def test_missing_input_distinguishes_source_planning_error_from_suite_comparison
     if removed == "source":
         (tmp_path / "rtl/counter.sv").unlink()
     else:
-        (tmp_path / ".booley_project/tests.toml").write_text('[sim_0]\ntests=["wrap"]\n')
+        (tmp_path / ".booley/tests.toml").write_text('[sim_0]\ntests=["wrap"]\n')
     result = SimulateFlow().execute(
         SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports, dry_run=True)
     )
@@ -243,9 +243,7 @@ def test_missing_input_distinguishes_source_planning_error_from_suite_comparison
         assert "mismatch_summary" not in result.outcome.detail
         assert "campaign workload mismatch" not in result.outcome.report_text
     else:
-        assert result.outcome.detail["mismatch_summary"] == [
-            "suite changed: .booley_project/tests.toml"
-        ]
+        assert result.outcome.detail["mismatch_summary"] == ["suite changed: .booley/tests.toml"]
     assert len(executions) == 1
 
 

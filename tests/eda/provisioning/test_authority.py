@@ -190,12 +190,12 @@ def test_grant_canonicalizes_a_marked_project_symlink(tmp_path: Path, private_st
     assert authority.resolve_grant(project, "vivado") == grant
 
 
-def test_grant_rejects_non_project_directory(tmp_path: Path, private_state: Path) -> None:
+def test_grant_rejects_non_booley_directory(tmp_path: Path, private_state: Path) -> None:
     _registered(tmp_path)
     unrelated = tmp_path / "unrelated"
     unrelated.mkdir()
 
-    with pytest.raises(authority.AuthorityError, match=r"no canonical \.git or \.booley_project"):
+    with pytest.raises(authority.AuthorityError, match=r"no canonical \.git or \.booley"):
         authority._add_grant(unrelated, "vivado", installation="vivado_2025_2")
 
 

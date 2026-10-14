@@ -133,7 +133,7 @@ First check the [supported EDA tool matrix](../user/SUPPORTED-EDA-TOOLS.md). If 
 
 ## Chapter 1: Discovery, Visibility, and Configuration
 
-MCP tools are discovered from either the installed Booley package or the project's `.booley_project/mcp_tools/` directory. Discovery is inclusive by default: every valid implementation is enabled unless its own configuration section says otherwise.
+MCP tools are discovered from either the installed Booley package or the project's `.booley/mcp_tools/` directory. Discovery is inclusive by default: every valid implementation is enabled unless its own configuration section says otherwise.
 
 ### Default Discovery and Explicit Opt-Out
 
@@ -143,7 +143,7 @@ enabled = false                 # remove one discovered Specialist MCP tool
 ```
 
 - Built-in Flows are scanned from `booley.flows`, Specialists from `booley.specialists`, and protocol utilities from `booley.mcp`.
-- Custom Flows and MCP tools are scanned from `.booley_project/mcp_tools/*.py`.
+- Custom Flows and MCP tools are scanned from `.booley/mcp_tools/*.py`.
 - `[flows.<name>].enabled = false` disables a Flow; `[specialists.<name>].enabled = false` disables a Specialist. Protocol utilities have no Project enable switch.
 - Interactive, non-nested servers list `goal_enter`, `goal_status`, `goal_propose_change`, and `goal_finish` without a rollout switch. These Goal tools bypass `BOOLEY_MCP_TOOLS`; default and nested servers do not list them.
 - For regular discovered tools, nested allowlists take precedence, followed by `BOOLEY_MCP_TOOLS`, then the `BOOLEY_MCP_MODE=interactive` filter. These environment filters are separate from Project registration.
@@ -184,13 +184,13 @@ and discovery reject names that do not belong to discovered Specialists.
 | Built-in Flow | Installed `booley.flows` package | Enabled unless `[flows.<name>].enabled = false` | Yes, subject to mode-specific hiding |
 | Built-in Specialist | Installed `booley.specialists` package | Enabled unless `[specialists.<name>].enabled = false` | Yes, subject to mode-specific hiding |
 | Protocol utility | Installed `booley.mcp` package | Available by default; no Project enable switch | Yes, subject to mode-specific hiding |
-| Custom MCP tool | `.booley_project/mcp_tools/*.py` | Flows use `[flows]`, Specialists use `[specialists]`, direct endpoints have no Project enable switch | Yes, subject to mode-specific hiding |
+| Custom MCP tool | `.booley/mcp_tools/*.py` | Flows use `[flows]`, Specialists use `[specialists]`, direct endpoints have no Project enable switch | Yes, subject to mode-specific hiding |
 Use unique MCP tool names. Shared endpoint validation warns when a custom name collides with a discovered built-in MCP tool. Doctor runs that validation, but registry discovery is a separate pass, so the warning is not an enforcement boundary.
 
 ### Register a Custom Endpoint
 
 Put one implementation with a unique name and literal `name` / `description`
-metadata in `.booley_project/mcp_tools/<name>.py`; the file is the registration,
+metadata in `.booley/mcp_tools/<name>.py`; the file is the registration,
 with no source allowlist. Chapter 2 covers implementation and exercise, and
 Chapter 3 covers any project Criteria named by `satisfies`.
 
@@ -339,11 +339,11 @@ plus the **directories** holding everything else.
 
 ```json
 "artifacts": {
-  "log":    ".booley_project/.runtime/edalize/synth/synth_soc/run.log",
-  "report": ".booley_project/.runtime/flow-reports/synth_synth_soc.json",
+  "log":    ".booley/.runtime/edalize/synth/synth_soc/run.log",
+  "report": ".booley/.runtime/flow-reports/synth_synth_soc.json",
   "dirs": {
-    "build":  ".booley_project/.runtime/edalize/synth/synth_soc/synth",
-    "timing": ".booley_project/.runtime/edalize/synth/synth_soc/synth/reports/timing"
+    "build":  ".booley/.runtime/edalize/synth/synth_soc/synth",
+    "timing": ".booley/.runtime/edalize/synth/synth_soc/synth/reports/timing"
   }
 }
 ```
@@ -469,7 +469,7 @@ This example runs one project DRC command, applies its verdict to every selected
 Target, and keeps infrastructure failures distinct from design failures:
 
 ```python
-# .booley_project/mcp_tools/drc_check.py
+# .booley/mcp_tools/drc_check.py
 import sys
 
 from booley.flows.base import BooleyFlow, SubprocessResult
@@ -517,7 +517,7 @@ if __name__ == "__main__":
 #### Implement a `Specialist`
 
 ```python
-# .booley_project/mcp_tools/protocol_reviewer.py
+# .booley/mcp_tools/protocol_reviewer.py
 from booley.specialists.specialist import Specialist
 from booley.mcp.base import EXIT_ERROR, McpToolResult
 
@@ -565,7 +565,7 @@ if __name__ == "__main__":
 
 #### Wire It In
 
-Save each class under `.booley_project/mcp_tools/` and define every Criterion
+Save each class under `.booley/mcp_tools/` and define every Criterion
 named by `satisfies` as described in Chapter 3. An undefined Criterion draws a
 shared endpoint-validation warning. Registering a project Criterion does not
 make it selectable as a new Goal family.
@@ -642,7 +642,7 @@ not hide files.
 
 #### Find Its Logs
 
-Interactive session logs land under `.booley_project/.interactive_logs/<session-id>/`. A bound Goal run keeps receipts and logs under the Goal Record's `logs/` and machine-owned reports under its `.runtime/flow-reports/`. Use the exact returned artifact paths. If a custom MCP tool does not appear, check its syntax and literal metadata, confirm the appropriate `[flows.<name>]` or `[specialists.<name>]` section is enabled, run Doctor's shared endpoint checks, and restart the Sandbox so MCP discovery runs again.
+Interactive session logs land under `.booley/.interactive_logs/<session-id>/`. A bound Goal run keeps receipts and logs under the Goal Record's `logs/` and machine-owned reports under its `.runtime/flow-reports/`. Use the exact returned artifact paths. If a custom MCP tool does not appear, check its syntax and literal metadata, confirm the appropriate `[flows.<name>]` or `[specialists.<name>]` section is enabled, run Doctor's shared endpoint checks, and restart the Sandbox so MCP discovery runs again.
 
 ---
 
@@ -676,7 +676,7 @@ Goal only when its evidence contract, key, and subject match that Goal.
 | Location | Purpose |
 |----------|---------|
 | Booley package `data/criteria.toml` | Base criteria (shipped with framework: sim, lint, etc.) |
-| `.booley_project/criteria.toml` | Project-specific criteria you define |
+| `.booley/criteria.toml` | Project-specific criteria you define |
 
 Base criteria are read-only: look at them for format reference, but never redefine them in your project file (shared endpoint validation fails on collision).
 
@@ -730,7 +730,7 @@ category    = "rtl"
 ### Extending the Diagnostic Criterion Catalog
 
 1. Choose a unique Criterion name that does not collide with the base catalog.
-2. Add its `description`, `workflow_region`, `per_target`, and `category` fields to `.booley_project/criteria.toml`.
+2. Add its `description`, `workflow_region`, `per_target`, and `category` fields to `.booley/criteria.toml`.
 3. Add the base name to one custom MCP tool's literal `satisfies` list.
 4. If invocation arguments differ by Criterion, add literal `satisfies_args` prompt hints.
 5. For `per_target = true`, supply the expanded `<criterion>_<target>` key to `set_criterion()`.
@@ -839,7 +839,7 @@ For built-in Booley Flows, use `booley doctor` to catch unavailable dependencies
 
 | I want to... | Do this |
 |-------------|---------|
-| Add an in-container endpoint | Write a `BooleyFlow`, `Specialist`, or direct `McpTool` subclass in `.booley_project/mcp_tools/`; discovery is automatic |
+| Add an in-container endpoint | Write a `BooleyFlow`, `Specialist`, or direct `McpTool` subclass in `.booley/mcp_tools/`; discovery is automatic |
 | Run a per-test build step before sim | `[flows.sim].pre_run_commands` ([CONFIG.md](../user/CONFIG.md#pre-sim-commands-flowssimpre_run_commands)) |
 | Use host-provisioned Vivado | Follow [CONFIG.md](../user/CONFIG.md#commercial-eda-provisioning) for the Project request, [FLOW_IMPLEMENTATION.md](FLOW_IMPLEMENTATION.md#fpga) for the Flow contract, and [SUPPORTED-EDA-TOOLS.md](../user/SUPPORTED-EDA-TOOLS.md#vivado-host-provisioning-policy) for requirements |
 | Add another host-provisioned EDA tool | Implement and validate a built-in policy; custom MCP tools cannot add host mounts or execution paths |
@@ -958,7 +958,7 @@ is a Specialist error. Invalid verification dispositions keep findings pending.
 ### Publication and history
 
 Review results have immutable JSON evidence under `reviewer-evidence/` in the
-directory resolved by `booley.runtime.project_dir`, including Interactive Mode
+directory resolved by `booley.runtime.booley_dir`, including Interactive Mode
 and failures after input validation. Dry runs and input-validation failures do
 not publish review evidence. Results include the path in `audit_evidence` and
 `artifacts.reviewer_evidence`. Evidence is published atomically before a passing

@@ -15,7 +15,7 @@ from booley.mcp.endpoint_validation import (
 
 @pytest.fixture
 def project(tmp_path):
-    data = tmp_path / ".booley_project"
+    data = tmp_path / ".booley"
     (data / "mcp_tools").mkdir(parents=True)
     return tmp_path, data
 
@@ -177,9 +177,9 @@ def test_base_criterion_conflict_refuses_endpoint_scan(project, validator, error
 
 
 @pytest.mark.parametrize("conflict", [False, True])
-def test_external_project_directory_has_doctor_preflight_parity(tmp_path, monkeypatch, conflict):
+def test_external_booley_directory_has_doctor_preflight_parity(tmp_path, monkeypatch, conflict):
     from booley.harness import doctor
-    from booley.runtime.project_dir import reset_cache
+    from booley.runtime.booley_dir import reset_cache
 
     root = tmp_path / "design"
     root.mkdir()
@@ -191,7 +191,7 @@ def test_external_project_directory_has_doctor_preflight_parity(tmp_path, monkey
         else '[custom_gate]\ndescription = "Custom"\n'
     )
     _endpoint(external, satisfies="['custom_gate']")
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(external))
+    monkeypatch.setenv("BOOLEY_DIR", str(external))
     reset_cache()
     outcomes = []
     doctor._check_custom_endpoints_and_criteria(
@@ -206,4 +206,4 @@ def test_external_project_directory_has_doctor_preflight_parity(tmp_path, monkey
     else:
         validate_custom_endpoints_and_criteria(root)
         assert outcomes == [("pass", "custom endpoints and Criteria validated")]
-    assert not (root / ".booley_project").exists()
+    assert not (root / ".booley").exists()

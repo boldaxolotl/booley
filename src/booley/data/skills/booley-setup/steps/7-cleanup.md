@@ -29,7 +29,7 @@ Read the §3 **Execution ledger** in `SETUP-PLAN.md`.
   booley cleanup prepare --run-id <ledger-run-id>
   ```
 
-  The root is `.booley_project/tmp/setup/<run-id>/`. Every setup-authored
+  The root is `.booley/tmp/setup/<run-id>/`. Every setup-authored
   detached stdout/stderr capture, exit-code sidecar, probe, conversion, and
   Developer Agent note is placed beneath it and registered before cleanup can remove it:
 
@@ -80,7 +80,7 @@ deletion of anything that was present before this run.
 later. Before removing an attached raw log, the helper's
 Feedback operation snapshots exactly the bounded rendered evidence, including
 source digest, original path, line/byte counts, and clipping metadata, under
-`.booley_project/setup-evidence/`. It then atomically retargets only the
+`.booley/setup-evidence/`. It then atomically retargets only the
 structured attachment field.
 
 The operation preserves every Finding ID, semantic field, ordering, filed
@@ -100,7 +100,7 @@ booley cleanup apply --run-id <run-id> --digest <preview-digest> \
 ```
 
 At mutation time the helper rechecks that every candidate is still beneath the
-same `.booley_project`, has the recorded no-follow file type, device, and inode,
+same `.booley`, has the recorded no-follow file type, device, and inode,
 has no live Job/process claim, and can move to a uniquely named sibling
 quarantine on its own filesystem. It deletes only after rechecking the
 quarantined identity. Missing candidates are recorded as already absent;

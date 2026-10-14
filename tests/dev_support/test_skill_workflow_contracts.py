@@ -682,7 +682,7 @@ def test_heal_requires_user_decision_for_ticket_leftovers():
 def test_setup_open_footprint_preserves_history_before_changing_exclusions():
     text = _skill_text("booley-setup", "steps/4-doctor.md")
     section = " ".join(text.split("**Open —", 1)[1].split("Either way,", 1)[0].split())
-    drop = section.index("drop the `/.booley_project` line")
+    drop = section.index("drop the `/.booley` line")
     assert section.index("Before changing exclusions") < drop
     assert section.index("the outer exclusion when present") < drop
     assert "human's chosen history migration" in section

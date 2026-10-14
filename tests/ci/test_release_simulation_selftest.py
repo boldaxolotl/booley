@@ -90,7 +90,7 @@ def test_prepare_clone_state_restores_init_owned_local_state(tmp_path: Path) -> 
         capture_output=True,
         text=True,
     )
-    (project / ".booley_project").mkdir()
+    (project / ".booley").mkdir()
 
     simulation_selftest._prepare_clone_state(project)
 
@@ -102,16 +102,16 @@ def test_prepare_clone_state_restores_init_owned_local_state(tmp_path: Path) -> 
         text=True,
     )
     assert configured.stdout.strip() == "never"
-    tickets = project / ".booley_project" / "tickets"
+    tickets = project / ".booley" / "tickets"
     assert not tickets.exists()
 
 
 def test_prepare_clone_state_guards_nested_project_repository(tmp_path: Path) -> None:
     """Doctor's prune guard also checks a standalone nested Booley Directory's repository (#915)."""
     project = tmp_path / "project"
-    project_dir = project / ".booley_project"
-    project_dir.mkdir(parents=True)
-    for repository in (project, project_dir):
+    booley_dir = project / ".booley"
+    booley_dir.mkdir(parents=True)
+    for repository in (project, booley_dir):
         subprocess.run(
             ["git", "init", "-b", "main"],
             cwd=repository,
@@ -122,7 +122,7 @@ def test_prepare_clone_state_guards_nested_project_repository(tmp_path: Path) ->
 
     simulation_selftest._prepare_clone_state(project)
 
-    for repository in (project, project_dir):
+    for repository in (project, booley_dir):
         configured = subprocess.run(
             ["git", "config", "--local", "--get", "gc.worktreePruneExpire"],
             cwd=repository,

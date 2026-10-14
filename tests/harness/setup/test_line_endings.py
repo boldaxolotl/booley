@@ -540,8 +540,8 @@ def test_readonly_staged_file_cleanup_does_not_crash(tmp_path: Path):
 def test_stealth_default_is_local_and_keeps_upstream_checkout_clean(tmp_path: Path):
     root = tmp_path / "upstream"
     _init(root)
-    _commit_file(root, ".gitignore", b".booley_project/\n")
-    data = root / ".booley_project"
+    _commit_file(root, ".gitignore", b".booley/\n")
+    data = root / ".booley"
     data.mkdir()
     (data / "booley.toml").write_text("[stealth]\nenabled = true\n")
     assert _git(root, "config", "--unset", "core.autocrlf").returncode == 0
@@ -558,15 +558,15 @@ def test_stealth_default_is_local_and_keeps_upstream_checkout_clean(tmp_path: Pa
 
 
 def _disable_stealth(root: Path) -> None:
-    data = root / ".booley_project"
+    data = root / ".booley"
     data.mkdir(parents=True, exist_ok=True)
     (data / "booley.toml").write_text("[stealth]\nenabled = false\n")
 
 
 def _stealth_repo(root: Path, *, enabled: bool | None = True) -> Path:
     _init(root)
-    _commit_file(root, ".gitignore", b".booley_project/\n")
-    data = root / ".booley_project"
+    _commit_file(root, ".gitignore", b".booley/\n")
+    data = root / ".booley"
     data.mkdir(exist_ok=True)
     setting = "" if enabled is None else f"enabled = {str(enabled).lower()}\n"
     (data / "booley.toml").write_text("[stealth]\n" + setting)
@@ -611,7 +611,7 @@ def test_stealth_preserves_all_upstream_attribute_policies(tmp_path: Path, name,
     data = _stealth_repo(tmp_path)
     _commit_file(tmp_path, "run.bat", b"@echo off\r\n")
     _commit_file(tmp_path, "sub/a.txt", b"a\n")
-    _commit_file(tmp_path, ".gitignore", b".booley_project/\nignored/\n")
+    _commit_file(tmp_path, ".gitignore", b".booley/\nignored/\n")
     path = tmp_path / name
     path.parent.mkdir(exist_ok=True)
     if tracked:
@@ -721,7 +721,7 @@ def test_linked_worktree_uses_shared_common_attributes(tmp_path: Path):
     _stealth_repo(root)
     sibling = tmp_path / "linked"
     assert _git(root, "worktree", "add", "-qb", "linked", str(sibling)).returncode == 0
-    data = sibling / ".booley_project"
+    data = sibling / ".booley"
     data.mkdir()
     (data / "booley.toml").write_text("[stealth]\nenabled = true\n")
     report = reconcile_project_line_endings(sibling, data, mode=LineEndingMode.REPAIR)
@@ -1553,7 +1553,7 @@ def test_opt_out_migration_linked_worktree_selected_root_only(tmp_path):
     (data / "booley.toml").write_text("[stealth]\nenabled = true\n")
     sibling = tmp_path / "linked"
     assert _git(root, "worktree", "add", "-qb", "linked", str(sibling)).returncode == 0
-    selected_data = sibling / ".booley_project"
+    selected_data = sibling / ".booley"
     selected_data.mkdir()
     (selected_data / "booley.toml").write_text("[stealth]\nenabled = false\n")
     before = {p: _snapshot(p) for p in [root / ".gitignore", data / "booley.toml"]}

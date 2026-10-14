@@ -228,10 +228,10 @@ class _WaiterRequest:
     execution_id: ExecutionId | None
 
 
-def slots_dir(project_dir: Path | None = None) -> Path | None:
+def slots_dir(booley_dir: Path | None = None) -> Path | None:
     """Root of the shared slot store, or None when no project is resolvable.
 
-    Project-scoped (``.booley_project/runtime/jobs/slots/``): admission
+    Project-scoped (``.booley/runtime/jobs/slots/``): admission
     arbitrates across every workload in the Sandbox, so claims share one
     directory independently of each execution's Job records. ``BOOLEY_SLOTS_DIR`` overrides for tests and doctor probes.
     """
@@ -239,9 +239,9 @@ def slots_dir(project_dir: Path | None = None) -> Path | None:
     if env:
         return Path(env)
     try:
-        from booley.runtime.project_dir import resolve_project_dir
+        from booley.runtime.booley_dir import resolve_booley_dir
 
-        project = project_dir if project_dir is not None else resolve_project_dir()
+        project = booley_dir if booley_dir is not None else resolve_booley_dir()
     except (OSError, ValueError, RuntimeError):
         return None
     return project / "runtime" / "jobs" / "slots"
@@ -268,15 +268,13 @@ def _default_inherited_execution_verifier(
     candidate: object, root: Path, owner_pid: int
 ) -> ExecutionId | None:
     try:
-        from booley.runtime.project_dir import resolve_project_dir
+        from booley.runtime.booley_dir import resolve_booley_dir
 
-        project_dir = resolve_project_dir()
-        canonical_root = project_dir / "runtime" / "jobs" / "slots"
+        booley_dir = resolve_booley_dir()
+        canonical_root = booley_dir / "runtime" / "jobs" / "slots"
         if root.resolve() != canonical_root.resolve():
             return None
-        return verify_inherited_execution_id(
-            candidate, project_dir=project_dir, owner_pid=owner_pid
-        )
+        return verify_inherited_execution_id(candidate, booley_dir=booley_dir, owner_pid=owner_pid)
     except (OSError, RuntimeError, ValueError):
         return None
 

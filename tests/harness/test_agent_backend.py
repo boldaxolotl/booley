@@ -259,7 +259,7 @@ class TestLoadBackendConfig:
         from booley.config.agent import load_agent_settings
 
         assert isinstance(get_backend_config().active_backend, ClaudeSDKBackend)
-        toml_dir = tmp_path / ".booley" / "project"
+        toml_dir = tmp_path / ".booley"
         toml_dir.mkdir(parents=True)
         (toml_dir / "booley.toml").write_text('[agent]\nprovider = "codex"\n')
 
@@ -271,7 +271,7 @@ class TestLoadBackendConfig:
 
     def test_explicit_models_override_defaults(self, tmp_path):
         """[models] section overrides the hardcoded codex tier models."""
-        toml_dir = tmp_path / ".booley" / "project"
+        toml_dir = tmp_path / ".booley"
         toml_dir.mkdir(parents=True)
         (toml_dir / "booley.toml").write_text(
             textwrap.dedent("""\
@@ -293,7 +293,7 @@ class TestLoadBackendConfig:
         """[agent] provider = 'claude' flips the active backend to Claude."""
         from booley.runtime.agent_backend import ClaudeSDKBackend
 
-        toml_dir = tmp_path / ".booley" / "project"
+        toml_dir = tmp_path / ".booley"
         toml_dir.mkdir(parents=True)
         (toml_dir / "booley.toml").write_text(
             textwrap.dedent("""\
@@ -311,7 +311,7 @@ class TestLoadBackendConfig:
     def test_retired_primary_alias_is_ignored(self, tmp_path):
         from booley.runtime.agent_backend import ClaudeSDKBackend
 
-        toml_dir = tmp_path / ".booley" / "project"
+        toml_dir = tmp_path / ".booley"
         toml_dir.mkdir(parents=True)
         (toml_dir / "booley.toml").write_text(
             textwrap.dedent("""\
@@ -327,7 +327,7 @@ class TestLoadBackendConfig:
 
     def test_invalid_provider_raises(self, tmp_path):
         """An invalid provider is a hard error — never a silent fallback."""
-        toml_dir = tmp_path / ".booley" / "project"
+        toml_dir = tmp_path / ".booley"
         toml_dir.mkdir(parents=True)
         (toml_dir / "booley.toml").write_text(
             textwrap.dedent("""\
@@ -340,7 +340,7 @@ class TestLoadBackendConfig:
 
     def test_malformed_toml_uses_defaults(self, tmp_path):
         """Unparseable toml can't declare a provider → default (claude)."""
-        toml_dir = tmp_path / ".booley" / "project"
+        toml_dir = tmp_path / ".booley"
         toml_dir.mkdir(parents=True)
         (toml_dir / "pipeline.toml").write_text("this is not valid toml {{{")
         load_backend_config(tmp_path)
@@ -351,7 +351,7 @@ class TestLoadBackendConfig:
 
     def test_default_provider_is_claude(self, tmp_path):
         """With no provider set, the default is claude (never a silent codex)."""
-        toml_dir = tmp_path / ".booley" / "project"
+        toml_dir = tmp_path / ".booley"
         toml_dir.mkdir(parents=True)
         (toml_dir / "booley.toml").write_text(
             textwrap.dedent("""\
@@ -366,7 +366,7 @@ class TestLoadBackendConfig:
 
     def test_auth_from_toml(self, tmp_path):
         """The single auth field is loaded from toml."""
-        toml_dir = tmp_path / ".booley" / "project"
+        toml_dir = tmp_path / ".booley"
         toml_dir.mkdir(parents=True)
         (toml_dir / "booley.toml").write_text(
             textwrap.dedent("""\
@@ -379,7 +379,7 @@ class TestLoadBackendConfig:
         assert cfg.settings.auth == "subscription"
 
     def test_retired_primary_auth_alias_is_ignored(self, tmp_path):
-        toml_dir = tmp_path / ".booley" / "project"
+        toml_dir = tmp_path / ".booley"
         toml_dir.mkdir(parents=True)
         (toml_dir / "pipeline.toml").write_text(
             textwrap.dedent("""\
@@ -405,7 +405,7 @@ class TestLoadBackendConfig:
         (tmp_path / "booley.toml").write_text(
             '[agent]\nprovider = "claude"\nauth = "subscription"\n', encoding="utf-8"
         )
-        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setenv("BOOLEY_DIR", str(tmp_path))
         monkeypatch.setenv("BOOLEY_PRIMARY_PROVIDER", "codex")
         monkeypatch.delenv("BOOLEY_PRIMARY_AUTH", raising=False)
         set_backend_config(None)
@@ -430,19 +430,19 @@ class TestLoadBackendConfig:
         from booley.runtime.agent_backend import ClaudeSDKBackend
 
         monkeypatch.delenv("BOOLEY_PRIMARY_PROVIDER", raising=False)
-        monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+        monkeypatch.delenv("BOOLEY_DIR", raising=False)
         set_backend_config(None)
         cfg = get_backend_config()
         assert isinstance(cfg.active_backend, ClaudeSDKBackend)
         assert cfg.settings.provider == "claude"
 
     def test_lazy_resolves_provider_from_project_toml(self, tmp_path, monkeypatch):
-        """No env hand-off → resolve provider from BOOLEY_PROJECT_DIR/booley.toml.
+        """No env hand-off → resolve provider from BOOLEY_DIR/booley.toml.
 
         This is the fix for specialist subprocesses (e.g. the reviewer) that
         used to silently default to codex when the developer's env
         propagation was dropped. The container mounts booley.toml flat under
-        BOOLEY_PROJECT_DIR.
+        BOOLEY_DIR.
         """
         from booley.runtime.agent_backend import CodexBackend
 
@@ -454,7 +454,7 @@ class TestLoadBackendConfig:
         """)
         )
         monkeypatch.delenv("BOOLEY_PRIMARY_PROVIDER", raising=False)
-        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setenv("BOOLEY_DIR", str(tmp_path))
         set_backend_config(None)
         cfg = get_backend_config()
         assert isinstance(cfg.active_backend, CodexBackend)
@@ -465,7 +465,7 @@ class TestLoadBackendConfig:
         """Inside a container with no env, no toml, no app signal → fail loud."""
         monkeypatch.delenv("BOOLEY_PRIMARY_PROVIDER", raising=False)
         monkeypatch.delenv("BOOLEY_AGENT_APP", raising=False)
-        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path))  # no booley.toml
+        monkeypatch.setenv("BOOLEY_DIR", str(tmp_path))  # no booley.toml
         monkeypatch.setattr(
             "booley.config.agent._inside_container",
             lambda: True,
@@ -478,7 +478,7 @@ class TestLoadBackendConfig:
         """The fail-loud message tells a standalone user how to pin a provider (QA-9)."""
         monkeypatch.delenv("BOOLEY_PRIMARY_PROVIDER", raising=False)
         monkeypatch.delenv("BOOLEY_AGENT_APP", raising=False)
-        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setenv("BOOLEY_DIR", str(tmp_path))
         monkeypatch.setattr(
             "booley.config.agent._inside_container",
             lambda: True,
@@ -501,7 +501,7 @@ class TestLoadBackendConfig:
         from booley.runtime.agent_backend import CodexBackend
 
         monkeypatch.delenv("BOOLEY_PRIMARY_PROVIDER", raising=False)
-        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path))  # no booley.toml
+        monkeypatch.setenv("BOOLEY_DIR", str(tmp_path))  # no booley.toml
         monkeypatch.setenv("BOOLEY_AGENT_APP", "codex")
         monkeypatch.setattr(
             "booley.config.agent._inside_container",
@@ -515,7 +515,7 @@ class TestLoadBackendConfig:
     def test_agent_app_none_does_not_resolve(self, tmp_path, monkeypatch):
         """BOOLEY_AGENT_APP='none' is not a provider → still fail loud in container."""
         monkeypatch.delenv("BOOLEY_PRIMARY_PROVIDER", raising=False)
-        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setenv("BOOLEY_DIR", str(tmp_path))
         monkeypatch.setenv("BOOLEY_AGENT_APP", "none")
         monkeypatch.setattr(
             "booley.config.agent._inside_container",
@@ -538,7 +538,7 @@ class TestLoadBackendConfig:
 
     def test_booley_toml_preferred_over_pipeline_toml(self, tmp_path):
         """booley.toml takes precedence when both exist."""
-        toml_dir = tmp_path / ".booley" / "project"
+        toml_dir = tmp_path / ".booley"
         toml_dir.mkdir(parents=True)
         (toml_dir / "pipeline.toml").write_text(
             textwrap.dedent("""\

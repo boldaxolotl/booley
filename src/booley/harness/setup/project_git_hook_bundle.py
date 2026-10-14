@@ -92,7 +92,7 @@ def main() -> None:
 
     bundle = Path(sys.argv[0]).resolve()
     if bundle.parent.name == ".managed":
-        os.environ.setdefault("BOOLEY_PROJECT_DIR", str(bundle.parent.parent))
+        os.environ.setdefault("BOOLEY_DIR", str(bundle.parent.parent))
     del sys.argv[1]
     module = importlib.import_module(module_name)
     raise SystemExit(module.main())

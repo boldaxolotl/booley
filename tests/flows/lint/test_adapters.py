@@ -20,10 +20,10 @@ async def test_cli_and_mcp_adapters_return_equivalent_structured_outcomes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Unknown-Target diagnostic parity with an explicit Project-directory stub."""
-    project = tmp_path / ".booley_project"
+    project = tmp_path / ".booley"
     project.mkdir()
-    (tmp_path / "booley.toml").write_text('[project]\ndir=".booley_project"\n')
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(project))
+    (tmp_path / "booley.toml").write_text('[project]\ndir=".booley"\n')
+    monkeypatch.setenv("BOOLEY_DIR", str(project))
     monkeypatch.delenv("BOOLEY_RUNTIME_DIR", raising=False)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")

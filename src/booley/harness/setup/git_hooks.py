@@ -3,8 +3,8 @@
 Extracted from ``init_cmd.py`` (Single Responsibility): the ``git_hooks`` step
 installs the leak guard into the project-agnostic ``.booley/`` repo, and the
 ``project_git_hooks`` step publishes one standalone policy bundle under
-``.booley_project/.managed/`` and installs repo-relative adapters into the
-project's own ``.git/hooks/``. ``.booley_project/hooks/`` remains reserved for
+``.booley/.managed/`` and installs repo-relative adapters into the
+project's own ``.git/hooks/``. ``.booley/hooks/`` remains reserved for
 Project-authored lifecycle hooks. Steps are named by their
 record key, never by a display number — the banner numbers are allocated at
 print time from the steps that actually run (see :meth:`InitContext.step_banner`),
@@ -28,8 +28,6 @@ from booley.harness.bootstrap import (
 )
 from booley.harness.setup.common import (
     InitContext,
-    WriteOutcome,
-    guarded_write,
     info,
     note,
     ok,
@@ -63,73 +61,12 @@ from booley.harness.setup.project_git_hook_reconcile import (
 from booley.harness.setup.project_git_hook_reconcile import (
     step_project_git_hooks as _managed_step_project_git_hooks,
 )
-from booley.runtime.project_dir import resolve_checkout_project_dir, resolve_project_dir
+from booley.runtime.booley_dir import resolve_checkout_booley_dir
 
 
 def _step_git_hooks(ctx: InitContext) -> None:
-    ctx.step_banner("git hooks")
-
-    project_dir = resolve_project_dir(ctx.project_root)
-    guard_sh = project_dir / "hooks" / "booley_commit_guard.sh"
-    if not guard_sh.is_file():
-        # Only Booley's own dev repo ships this repo-level guard; a normal
-        # RTL repository has none, so there is nothing to install — expected, not
-        # a failure (SETUP-4). The project commit-msg hook is a separate step.
-        skip(
-            "no repo-level commit guard (booley_commit_guard.sh) to install — "
-            "expected for an RTL repository; the project commit-msg hook installs "
-            "separately below"
-        )
-        ctx.record("git_hooks", "skip", "no repo-level guard (expected)")
-        return
-
-    # Find the .booley/.git/hooks/ target
-    # For pip-installed booley, the git repo is wherever the package is installed from
-    # Try common locations
-    booley_git_hooks: Path | None = None
-    for candidate in [
-        ctx.project_root / ".booley" / ".git" / "hooks",
-    ]:
-        if candidate.parent.is_dir():
-            booley_git_hooks = candidate
-            break
-
-    if booley_git_hooks is None:
-        skip("no .booley/.git/ found — git hooks skipped")
-        ctx.record("git_hooks", "skip", "no .booley git dir")
-        return
-
-    hook_target = booley_git_hooks / "commit-msg"
-
-    guard_body = guard_sh.read_text(encoding="utf-8")
-    # The content sniff that marks an installed hook as ours. A guard script
-    # that never names itself degrades to create-only: installed once, never
-    # refreshed, and an existing hook is left alone.
-    marker = "booley_commit_guard" if "booley_commit_guard" in guard_body else None
-
-    outcome = guarded_write(
-        hook_target,
-        guard_body,
-        owner_marker=marker,
-        dry_run=ctx.check_only,
-        newline="\n",
-        executable=True,
-    )
-    if outcome in (WriteOutcome.UNCHANGED, WriteOutcome.SKIPPED):
-        skip("commit-msg hook already installed")
-        ctx.record("git_hooks", "skip", "already installed")
-        return
-    if outcome is WriteOutcome.REFUSED:
-        warn("existing .booley/.git/hooks/commit-msg is not booley's — leaving it untouched")
-        ctx.record("git_hooks", "warn", "foreign hook preserved")
-        return
-    if ctx.check_only:
-        warn("would install commit-msg hook")
-        ctx.record("git_hooks", "warn", "would install")
-        return
-
-    ok("commit-msg hook installed in .booley/.git/hooks/")
-    ctx.record("git_hooks", "ok", "installed")
+    """Embedded Booley source checkouts are retired; Project hooks reconcile separately."""
+    ctx.record("git_hooks", "skip", "Project policy bundle is reconciled separately")
 
 
 # Project Git-hook reconciliation lives in a focused module. Keep these names here
@@ -349,7 +286,7 @@ def _line_ending_result_detail(report: RepositoryLineEndingReport) -> str:
 
 def _step_line_endings(
     ctx: InitContext,
-    project_dir: Path | None = None,
+    booley_dir: Path | None = None,
     *,
     clean_baseline: Mapping[Path, bool | None] | None = None,
 ) -> None:
@@ -361,7 +298,7 @@ def _step_line_endings(
     ctx.step_banner("line endings")
     mode = LineEndingMode.INSPECT if ctx.check_only else LineEndingMode.REPAIR
     report = reconcile_project_line_endings(
-        ctx.project_root, project_dir, mode=mode, clean_baseline=clean_baseline
+        ctx.project_root, booley_dir, mode=mode, clean_baseline=clean_baseline
     )
     if report.status is LineEndingStatus.NOT_APPLICABLE:
         skip("Project Root is not a git repo — line-endings check skipped")
@@ -401,17 +338,17 @@ WORKTREE_RELATIVE_KEY = "worktree.useRelativePaths"
 
 
 def worktree_policy_repositories(
-    project_root: Path, *, project_dir: Path | None = None
+    project_root: Path, *, booley_dir: Path | None = None
 ) -> tuple[Path, ...]:
     """Return durable repositories that create worktrees."""
     repositories = [project_root]
-    if project_dir is None:
+    if booley_dir is None:
         try:
-            project_dir = resolve_checkout_project_dir(project_root)
+            booley_dir = resolve_checkout_booley_dir(project_root)
         except FileNotFoundError:
             return tuple(repositories)
-    if project_dir != project_root and _policy_standalone_repository(project_dir):
-        repositories.append(project_dir)
+    if booley_dir != project_root and _policy_standalone_repository(booley_dir):
+        repositories.append(booley_dir)
     return tuple(repositories)
 
 
@@ -536,13 +473,13 @@ def _step_worktree_link_policy(
     *,
     sandbox_git_version: tuple[int, int, int] | None,
     host_git_version: tuple[int, int, int] | None = None,
-    project_dir: Path | None = None,
+    booley_dir: Path | None = None,
 ) -> None:
     """Reconcile portable worktree creation after two-sided capability proof."""
     ctx.step_banner("worktree link policy")
     host_version = host_git_version if host_git_version is not None else _host_git_version()
     capable = _worktree_policy_capable(host_version, sandbox_git_version)
-    repositories = worktree_policy_repositories(ctx.project_root, project_dir=project_dir)
+    repositories = worktree_policy_repositories(ctx.project_root, booley_dir=booley_dir)
     incompatible = [repo for repo in repositories if _repository_uses_relative_extension(repo)]
     if not capable and incompatible:
         warn(
@@ -609,7 +546,7 @@ def read_worktree_prune_expire(project_root: Path) -> str | None:
     return value or None
 
 
-def _step_worktree_prune_guard(ctx: InitContext, *, project_dir: Path | None = None) -> None:
+def _step_worktree_prune_guard(ctx: InitContext, *, booley_dir: Path | None = None) -> None:
     """Keep automatic pruning disabled in every worktree repository."""
     ctx.step_banner("worktree prune guard")
 
@@ -626,7 +563,7 @@ def _step_worktree_prune_guard(ctx: InitContext, *, project_dir: Path | None = N
         ctx.record("worktree_prune_guard", "skip", "not a git repo")
         return
 
-    repositories = worktree_policy_repositories(ctx.project_root, project_dir=project_dir)
+    repositories = worktree_policy_repositories(ctx.project_root, booley_dir=booley_dir)
     pending = [
         repository
         for repository in repositories

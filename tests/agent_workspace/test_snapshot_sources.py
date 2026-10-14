@@ -33,10 +33,10 @@ def test_removes_only_opposite_copy(snapshot, category, hidden, visible):
 def test_flat_and_nested_sources_and_discovery_links(snapshot):
     root = snapshot.snapshot_root
     (root / "testbench.v").write_text("// flat TB\n")
-    nested = root / ".booley_project/scratch/case/tb"
+    nested = root / ".booley/scratch/case/tb"
     nested.mkdir(parents=True)
     (nested / "nested.sv").write_text("// nested TB\n")
-    cores = root / ".booley_project/cores"
+    cores = root / ".booley/cores"
     cores.mkdir()
     symlink_or_skip(cores / "tb", Path("../..") / "tb", target_is_directory=True)
     symlink_or_skip(cores / "rtl", Path("../..") / "rtl", target_is_directory=True)
@@ -45,7 +45,7 @@ def test_flat_and_nested_sources_and_discovery_links(snapshot):
         "rtl",
         category_dirs={
             "rtl": ("rtl/",),
-            "tb": ("tb/", "testbench.v", ".booley_project/cores/tb/"),
+            "tb": ("tb/", "testbench.v", ".booley/cores/tb/"),
         },
     )
     assert not (root / "testbench.v").exists()
@@ -124,7 +124,7 @@ def test_agent_cwd_removal_rejected(snapshot):
 
 
 def test_copied_artifact_sources_are_hidden_without_touching_live_artifacts(snapshot):
-    relative = Path(".booley_project/.runtime/edalize/sim/tb/source.sv")
+    relative = Path(".booley/.runtime/edalize/sim/tb/source.sv")
     for root in (snapshot.real_root, snapshot.snapshot_root):
         path = root / relative
         path.parent.mkdir(parents=True)

@@ -24,8 +24,8 @@ from booley.config.tests_toml_rules import (
     option_key,
     validate_env_table,
 )
+from booley.core.booley_dir import BOOLEY_DIR_NAME
 from booley.core.build_paths import work_root_for
-from booley.core.project_dir import PROJECT_DIR_NAME
 from booley.flows import artifacts as flow_artifacts
 from booley.flows import edam as edam_layer
 from booley.flows.base import DEFAULT_TIMEOUT_S, SubprocessResult
@@ -97,7 +97,7 @@ from booley.flows.target_test_plan_loading import (
 from booley.flows.terminal_progress import announce_unit
 from booley.flows.test_runs import TestRun, discovered_test_run
 from booley.fusesoc import fusesoc_registry, selftest_overlay
-from booley.runtime.project_dir import resolve_checkout_project_dir, resolve_project_dir
+from booley.runtime.booley_dir import resolve_booley_dir, resolve_checkout_booley_dir
 from booley.runtime.supervised_execution import current_supervised_execution
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
@@ -364,10 +364,10 @@ class PreparedOrdinaryGroup:
         if not selftest_overlay.bad_selftest_requested(os.environ):
             yield run_cwd
             return
-        project_dir = resolve_project_dir(self._handle.project_root)
+        booley_dir = resolve_booley_dir(self._handle.project_root)
         with selftest_overlay.managed_runtime_view(
             self._handle.project_root,
-            project_dir,
+            booley_dir,
             "sim",
             run_cwd,
             self._attempt.prepared.work_root.parent,
@@ -1059,10 +1059,10 @@ class SimulationExecution:
         if not selftest_overlay.bad_selftest_requested(os.environ):
             yield
             return
-        project_dir = resolve_project_dir(handle.project_root)
+        booley_dir = resolve_booley_dir(handle.project_root)
         with selftest_overlay.managed_runtime_view(
             handle.project_root,
-            project_dir,
+            booley_dir,
             "sim",
             attempt.configured_run_cwd,
             attempt.prepared.work_root.parent,
@@ -2769,8 +2769,8 @@ def _trace_candidates_clause(
     owned = {work_dir / "trace.fst", work_dir / "trace.vcd"}
     if attempt.work.adapter in {"icarus", "cocotb"}:
         owned.add(trace_policy.run_cwd / BOOLEY_DUMP_VCD_NAME)
-    ignored = {(root / PROJECT_DIR_NAME / ".runtime").resolve()}
-    ignored.add((resolve_checkout_project_dir(root) / ".runtime").resolve())
+    ignored = {(root / BOOLEY_DIR_NAME / ".runtime").resolve()}
+    ignored.add((resolve_checkout_booley_dir(root) / ".runtime").resolve())
     listed, omitted = trace_policy.fresh_candidates(
         owned=frozenset(owned),
         ignored_dirs=tuple(sorted(ignored)),

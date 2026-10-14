@@ -19,7 +19,7 @@ def test_remembered_initialized_project_is_listed_as_present(tmp_path: Path, mon
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     project = tmp_path / "project"
     (project / ".git").mkdir(parents=True)
-    (project / ".booley_project").mkdir()
+    (project / ".booley").mkdir()
 
     assert project_inventory.remember_project(project) == project.resolve()
 
@@ -45,7 +45,7 @@ def test_inventory_joins_grants_and_keeps_deleted_root_visible(
     project = tmp_path / "project"
     source = tmp_path / "Xilinx" / "2025.2"
     (project / ".git").mkdir(parents=True)
-    (project / ".booley_project").mkdir()
+    (project / ".booley").mkdir()
     source.mkdir(parents=True)
     project_inventory.remember_project(project)
     authority.register_installation("vivado_2025_2", "vivado", source)
@@ -102,7 +102,7 @@ def test_discovery_remembers_projects_and_prunes_their_subtrees(
     second = search_root / "second"
     for root in (project, nested_fixture, second):
         (root / ".git").mkdir(parents=True)
-        (root / ".booley_project").mkdir()
+        (root / ".booley").mkdir()
 
     assert project_inventory.discover_projects((search_root,)) == (
         project.resolve(),
@@ -119,7 +119,7 @@ def test_forget_removes_a_missing_remembered_root(tmp_path: Path, monkeypatch) -
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     project = tmp_path / "project"
     (project / ".git").mkdir(parents=True)
-    (project / ".booley_project").mkdir()
+    (project / ".booley").mkdir()
     project_inventory.remember_project(project)
     shutil.rmtree(project)
 
@@ -138,7 +138,7 @@ def test_forget_refuses_a_root_with_a_live_grant(tmp_path: Path, monkeypatch) ->
     project = tmp_path / "project"
     source = tmp_path / "Xilinx" / "2025.2"
     (project / ".git").mkdir(parents=True)
-    (project / ".booley_project").mkdir()
+    (project / ".booley").mkdir()
     source.mkdir(parents=True)
     project_inventory.remember_project(project)
     authority.register_installation("vivado_2025_2", "vivado", source)
@@ -167,7 +167,7 @@ def test_inventory_rejects_a_symlinked_state_file(tmp_path: Path, monkeypatch) -
 def test_inventory_lock_contention_has_a_bounded_error(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     project = tmp_path / "project"
-    (project / ".booley_project").mkdir(parents=True)
+    (project / ".booley").mkdir(parents=True)
     monkeypatch.setattr(
         private_store,
         "acquire_file_lock",
@@ -189,7 +189,7 @@ def test_inventory_rejects_a_symlinked_config_directory(tmp_path: Path, monkeypa
     (platform_root / "booley").symlink_to(redirected, target_is_directory=True)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(platform_root))
     project = tmp_path / "project"
-    (project / ".booley_project").mkdir(parents=True)
+    (project / ".booley").mkdir(parents=True)
 
     with pytest.raises(project_inventory.ProjectInventoryError, match="must not be a symlink"):
         project_inventory.remember_project(project)
@@ -246,7 +246,7 @@ def test_before_forget_receives_stored_identity_and_failure_keeps_root(
 ) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     project = tmp_path / "project"
-    (project / ".booley_project").mkdir(parents=True)
+    (project / ".booley").mkdir(parents=True)
     project_inventory.remember_project(project)
     shutil.rmtree(project)
     observed = []

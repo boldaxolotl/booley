@@ -12,7 +12,7 @@ One findings log serves two audiences without creating two reports by default:
   through :mod:`redact`. ``booley feedback export`` explicitly persists it as
   ``BOOLEY-FEEDBACK.md`` for manual sharing.
 
-The user report lives in ``<project_dir>/`` — inside the Booley Directory, never
+The user report lives in ``<booley_dir>/`` — inside the Booley Directory, never
 in the RTL repo's tracked tree (the setup footprint guardrail). An explicit
 export lands there by default too. The one exception is the maintainer dogfood
 flow, which asks for the user report at a clone's root.
@@ -388,7 +388,7 @@ def render_booley_report(
     log: FindingsLog,
     project_root: Path,
     *,
-    project_dir: Path | None = None,
+    booley_dir: Path | None = None,
     env: Environment | None = None,
     plan: redact_mod.RedactionPlan | None = None,
     origin: str = "",
@@ -403,7 +403,7 @@ def render_booley_report(
     gone, having been reported once already.
     """
     env = env or collect_environment()
-    plan = plan if plan is not None else redact_mod.build_plan(project_root, project_dir)
+    plan = plan if plan is not None else redact_mod.build_plan(project_root, booley_dir)
     origin = origin or report_origin(log)
 
     candidates = [
@@ -485,7 +485,7 @@ def render_booley_report(
 
 def write_user_report(
     project_root: Path,
-    project_dir: Path,
+    booley_dir: Path,
     *,
     project_name: str = "",
     user_report_path: Path | None = None,
@@ -501,20 +501,18 @@ def write_user_report(
             flow points this at a throwaway clone's root; a real project must
             leave it alone so the report stays out of the tracked tree.
     """
-    log = read_log(project_dir)
+    log = read_log(booley_dir)
     env = env or collect_environment()
     origin = report_origin(log)
 
-    user_path = user_report_path or (project_dir / user_report_name(origin))
+    user_path = user_report_path or (booley_dir / user_report_name(origin))
     user_path.parent.mkdir(parents=True, exist_ok=True)
     user_path.write_text(
         render_user_report(log, project_name=project_name, env=env, origin=origin),
         encoding="utf-8",
     )
 
-    report = render_booley_report(
-        log, project_root, project_dir=project_dir, env=env, origin=origin
-    )
+    report = render_booley_report(log, project_root, booley_dir=booley_dir, env=env, origin=origin)
     return user_path, report
 
 

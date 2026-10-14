@@ -1,6 +1,6 @@
 """Append-only findings log for setup and port runs.
 
-One JSON object per line in ``<project_dir>/findings.jsonl``. Append-only and
+One JSON object per line in ``<booley_dir>/findings.jsonl``. Append-only and
 line-oriented on purpose: several agents write it concurrently (the main agent
 plus whatever sub-agents Steps 2/4 delegate to), and a corrupt or half-written
 line must cost one finding, never the whole log.
@@ -33,7 +33,7 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, Literal
 
-from booley.runtime.project_dir import resolve_project_dir
+from booley.runtime.booley_dir import resolve_booley_dir
 from booley.runtime.timefmt import utc_now_rfc3339
 
 logger = logging.getLogger(__name__)
@@ -280,18 +280,18 @@ class CorruptFindingsLogError(RuntimeError):
     """A mutating rewrite was refused because raw evidence is unparseable."""
 
 
-def log_path(project_dir: Path | None = None) -> Path:
+def log_path(booley_dir: Path | None = None) -> Path:
     """Absolute path of the findings log."""
-    return (project_dir or resolve_project_dir()) / LOG_NAME
+    return (booley_dir or resolve_booley_dir()) / LOG_NAME
 
 
-def read_log(project_dir: Path | None = None) -> FindingsLog:
+def read_log(booley_dir: Path | None = None) -> FindingsLog:
     """Read the log, skipping unparseable lines rather than failing.
 
     A missing log is an empty log — a setup that hit no friction and recorded
     no wins is unusual, not an error.
     """
-    path = log_path(project_dir)
+    path = log_path(booley_dir)
     log = FindingsLog(path=path)
     if not path.is_file():
         return log
@@ -316,7 +316,7 @@ def _next_id(existing: Iterable[Finding]) -> str:
     return f"F-{highest + 1}"
 
 
-def append(finding: Finding, project_dir: Path | None = None) -> Finding:
+def append(finding: Finding, booley_dir: Path | None = None) -> Finding:
     """Append *finding* to the log, assigning its id, and return it.
 
     The read-then-append is not atomic across processes, so two concurrent
@@ -326,7 +326,7 @@ def append(finding: Finding, project_dir: Path | None = None) -> Finding:
     Ordering within a single ``O_APPEND`` write is guaranteed by the OS, so no
     entry is ever lost or interleaved mid-line.
     """
-    directory = project_dir or resolve_project_dir()
+    directory = booley_dir or resolve_booley_dir()
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / LOG_NAME
     if not finding.id:
@@ -339,7 +339,7 @@ def append(finding: Finding, project_dir: Path | None = None) -> Finding:
     return finding
 
 
-def rewrite(entries: list[Finding], project_dir: Path | None = None) -> Path:
+def rewrite(entries: list[Finding], booley_dir: Path | None = None) -> Path:
     """Replace the log wholesale — used by triage, which re-buckets entries.
 
     Written to a sibling temp file and renamed so an interrupted triage leaves
@@ -348,8 +348,8 @@ def rewrite(entries: list[Finding], project_dir: Path | None = None) -> Path:
     that evidence first, rather than silently replacing the file with only the
     parseable subset.
     """
-    path = log_path(project_dir)
-    current = read_log(project_dir)
+    path = log_path(booley_dir)
+    current = read_log(booley_dir)
     if current.corrupt_lines:
         raise CorruptFindingsLogError(
             f"refusing to rewrite {path}: {current.corrupt_lines} unparseable "

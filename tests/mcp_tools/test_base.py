@@ -1794,7 +1794,7 @@ class TestJobSlotAdmission:
         """Point the slot store at tmp_path; return the slots root dir.
 
         BOOLEY_SLOTS_DIR is the store's test override — the real store is
-        project-scoped (.booley_project/runtime/jobs/slots), shared across
+        project-scoped (.booley/runtime/jobs/slots), shared across
         every venue in the container.
         """
         slots = tmp_path / "jobs" / "slots"
@@ -1815,13 +1815,13 @@ class TestJobSlotAdmission:
         """A classed endpoint with no resolvable project (bare human invocation
         outside a project) runs unguarded — admission needs a slot store."""
         monkeypatch.delenv("BOOLEY_SLOTS_DIR", raising=False)
-        monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+        monkeypatch.delenv("BOOLEY_DIR", raising=False)
         monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
         monkeypatch.delenv("BOOLEY_RUNTIME_DIR", raising=False)
-        # No .booley_project above tmp_path, so project discovery fails and
+        # No .booley above tmp_path, so project discovery fails and
         # slots_dir() returns None.
         monkeypatch.chdir(tmp_path)
-        from booley.runtime.project_dir import reset_cache
+        from booley.runtime.booley_dir import reset_cache
 
         reset_cache()
         endpoint = HeavyMcpTool()

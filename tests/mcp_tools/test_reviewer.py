@@ -1697,7 +1697,7 @@ class TestPromptConstruction:
         focus: str,
     ):
         """A project-authored overlay is appended after the packaged guide."""
-        overlay = tmp_path / ".booley_project" / f"{category}_style_guide.md"
+        overlay = tmp_path / ".booley" / f"{category}_style_guide.md"
         overlay.parent.mkdir(parents=True, exist_ok=True)
         overlay.write_text("Signal names MUST carry a `u_` prefix.\n")
 
@@ -1764,7 +1764,7 @@ class TestPromptConstruction:
         tmp_path: Path,
     ):
         """Overlays ride along with style guides — quality focus only."""
-        overlay = tmp_path / ".booley_project" / "rtl_style_guide.md"
+        overlay = tmp_path / ".booley" / "rtl_style_guide.md"
         overlay.parent.mkdir(parents=True, exist_ok=True)
         overlay.write_text("Signal names MUST carry a `u_` prefix.\n")
 
@@ -3786,7 +3786,7 @@ def _make_pico_tb_repo(repo: Path) -> tuple[str, Path]:
         "endmodule\n",
         encoding="utf-8",
     )
-    project = repo / ".booley_project"
+    project = repo / ".booley"
     project.mkdir()
     (project / "booley.toml").write_text(
         "[flows.sim]\n"
@@ -3796,7 +3796,7 @@ def _make_pico_tb_repo(repo: Path) -> tuple[str, Path]:
         encoding="utf-8",
     )
     _git(repo, "add", "verif/testbench.v")
-    _git(repo, "add", "-f", ".booley_project/booley.toml")
+    _git(repo, "add", "-f", ".booley/booley.toml")
     _git(repo, "commit", "-qm", "baseline")
     base = _git(repo, "rev-parse", "HEAD")
     tb.write_text(tb.read_text(encoding="utf-8").replace("feature_mode = 0", "feature_mode = 1"))

@@ -427,26 +427,26 @@ worktree based on that label. Inspect the Goal Record and preserve branch and
 Project commits before removing a workspace. For Paired Checkout
 removal, follow the absolute Git commands printed by `booley worktree new`.
 
-## `git` cannot see files under `.booley_project/`
+## `git` cannot see files under `.booley/`
 
 ```
-$ git checkout -- .booley_project/booley.toml
-error: pathspec '.booley_project/booley.toml' did not match any file(s) known to git
+$ git checkout -- .booley/booley.toml
+error: pathspec '.booley/booley.toml' did not match any file(s) known to git
 ```
 
-`.booley_project/` is usually its own Git repository, and the outer repository
+`.booley/` is usually its own Git repository, and the outer repository
 ignores it so your RTL history stays clean of Booley bookkeeping. Outer-repo
 commands therefore cannot see anything inside it. Run them against the inner
 repository instead:
 
 ```bash
-git -C .booley_project checkout -- booley.toml     # restore Booley config
-git -C .booley_project status                      # what changed in Booley's own repo
-git -C .booley_project log --oneline -5
+git -C .booley checkout -- booley.toml     # restore Booley config
+git -C .booley status                      # what changed in Booley's own repo
+git -C .booley log --oneline -5
 ```
 
 The same applies to `tests.toml`, `goalsets/*.md`, `criteria.toml`, and the `.core` files. If
-`git -C .booley_project rev-parse --git-dir` errors, the directory is not a
+`git -C .booley rev-parse --git-dir` errors, the directory is not a
 repository on this machine and those files were never version-controlled: copy
 one aside before you edit it.
 
@@ -460,7 +460,7 @@ on their own; `tickets/history/` is not reported.
 
 `tickets.leftover-guidance` names `ticket_creation.md` or `ticket_defaults.md`.
 Delete a file that matches the shipped template. For edited or unfamiliar
-content, move its rules into a Goalset under `.booley_project/goalsets/`, then
+content, move its rules into a Goalset under `.booley/goalsets/`, then
 delete it. Both warning IDs can be narrowly waived in `doctor-waivers.toml`.
 
 ## RTL simulates cleanly but `synth` rejects it under `slang`
@@ -623,14 +623,14 @@ one-per-`read_verilog` (Yosys) or as separate units breaks with `Define not
 defined`. Compile the whole filelist (headers first) as **one** unit — in a
 `.core`, list the `` `define `` headers first in the fileset.
 
-## A pytest selftest under `.booley_project/` crashes at collection
+## A pytest selftest under `.booley/` crashes at collection
 
-A pytest-based selftest fixture under `.booley_project/` dies at collection when
+A pytest-based selftest fixture under `.booley/` dies at collection when
 the project's pytest config sets `--import-mode=importlib`:
 
 ```
 TypeError: the 'package' argument is required to perform a relative import
-for '.booley_project.selftest'
+for '.booley.selftest'
 ```
 
 importlib mode derives a module name from the path, and the directory's leading

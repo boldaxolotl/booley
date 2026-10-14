@@ -81,7 +81,7 @@ class DashboardSnapshot:
 
 
 def _terminal(store: GoalStore, record: GoalRecord) -> GoalView:
-    root = record_paths(store.project_dir, record.id).root
+    root = record_paths(store.booley_dir, record.id).root
     packages = (
         []
         if record.finish_operation is None
@@ -103,7 +103,7 @@ def _terminal(store: GoalStore, record: GoalRecord) -> GoalView:
             row["selected_observation"],
             tuple(row["original_observations"]),
             artifacts=available_paths(
-                row["selected_observation"], (Path(record.worktree_path), store.project_dir)
+                row["selected_observation"], (Path(record.worktree_path), store.booley_dir)
             ),
         )
         for row in data["goals"]
@@ -178,7 +178,7 @@ def project_goal(store: GoalStore, record: GoalRecord) -> GoalView:
                 current.id, current, status, diagnostic="Interrupted apply: recovery required"
             )
         state = load_goal_state(store, current)
-        logs = record_paths(store.project_dir, current.id).logs_dir
+        logs = record_paths(store.booley_dir, current.id).logs_dir
         evidence = validated_evidence_records(GOAL_SCOPE, logs, state, {})
         selected = {row["criterion"]: row for row in evidence if row["role"] == "candidate"}
         by_key = {goal.spec.key: goal for goal in current.goals}
@@ -221,7 +221,7 @@ def _goal_artifacts(
         replace(
             goal,
             artifacts=available_paths(
-                goal.evidence or {}, (Path(record.worktree_path), store.project_dir)
+                goal.evidence or {}, (Path(record.worktree_path), store.booley_dir)
             ),
         )
         for goal in details
@@ -255,7 +255,7 @@ def checking_goals(view: GoalView, jobs: JobSnapshot) -> GoalView:
     )
 
 
-def health_lines(root: Path, project_dir: Path) -> tuple[str, ...]:
+def health_lines(root: Path, booley_dir: Path) -> tuple[str, ...]:
     """Non-consuming Doctor freshness and typed read-only upgrade-review projection."""
     lines = []
     snapshot = health.read_health(root)
@@ -268,7 +268,7 @@ def health_lines(root: Path, project_dir: Path) -> tuple[str, ...]:
         lines.append("Doctor health unavailable: no readable automatic result")
     elif snapshot.due:
         lines.append("Doctor health stale: " + snapshot.due)
-    review = upgrade_review.read_status(project_dir)
+    review = upgrade_review.read_status(booley_dir)
     if review.condition not in {
         upgrade_review.ReviewCondition.CURRENT,
         upgrade_review.ReviewCondition.UNAVAILABLE,
@@ -289,20 +289,20 @@ def _unavailable_view(record: GoalRecord, error: BaseException) -> GoalView:
 class DashboardReader:
     """Bounded record-lock acquisitions and independent failures across record rows."""
 
-    def __init__(self, root: Path, project_dir: Path) -> None:
+    def __init__(self, root: Path, booley_dir: Path) -> None:
         self.root = root
-        self.project_dir = project_dir
+        self.booley_dir = booley_dir
         self.resources = ResourceSampler()
         self.processes = ProcessSampler()
-        self.jobs = JobReader(project_dir, slots_root=job_slots.slots_dir(project_dir))
+        self.jobs = JobReader(booley_dir, slots_root=job_slots.slots_dir(booley_dir))
 
     def read(self) -> DashboardSnapshot:
         """Read one snapshot without retaining locks or touching persistent state."""
         now = time.time()
         sessions = SessionRegistry(
-            self.project_dir, quiet_after=quiet_after(self.project_dir)
+            self.booley_dir, quiet_after=quiet_after(self.booley_dir)
         ).visible_snapshot(now=now, scope=namespace())
-        store = GoalStore(self.project_dir, lock_timeout_s=0)
+        store = GoalStore(self.booley_dir, lock_timeout_s=0)
         scan = store.list_records()
         goals = []
         for record in scan.records:
@@ -333,7 +333,7 @@ class DashboardReader:
             tuple(checking_goals(goal, jobs) for goal in goals),
             replace(jobs, jobs=tuple(measured)),
             resources,
-            health_lines(self.root, self.project_dir),
+            health_lines(self.root, self.booley_dir),
             sessions.diagnostics,
             now,
             self._activity(sessions.rows, now),
@@ -341,7 +341,7 @@ class DashboardReader:
 
     def _activity(self, rows: tuple[SessionRow, ...], now: float) -> dict[str, Activity]:
         """Join each visible session with the last lifecycle event its client reported."""
-        store = ActivityStore(self.project_dir)
+        store = ActivityStore(self.booley_dir)
         return {
             row.attribution.key: observed_activity(store.read(row.attribution.key), now=now)
             for row in rows

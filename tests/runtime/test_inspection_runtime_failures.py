@@ -145,7 +145,7 @@ def test_runtime_rejects_broken_isolation_before_vivado_probe(
 ):
     request, _, calls = mounted_runtime
     if failure == "identity":
-        monkeypatch.setenv("BOOLEY_PROJECT_DIR", "/wrong-project")
+        monkeypatch.setenv("BOOLEY_DIR", "/wrong-project")
     elif failure == "missing-project":
         original = Path.is_dir
         monkeypatch.setattr(

@@ -197,7 +197,7 @@ def _issued_runtime_state(tmp_path: Path):
 
 
 def _isolate_runtime_files(monkeypatch):
-    monkeypatch.setenv("BOOLEY_PROJECT_DIR", "/booley-project")
+    monkeypatch.setenv("BOOLEY_DIR", "/booley-project")
     is_dir = Path.is_dir
     exists = Path.exists
     hidden = {

@@ -62,7 +62,7 @@ def test_endpoint_state_saves_through_the_adapters_persistence(
 
     saved = DevelopmentState.load(adapter.state_file)
     assert saved.criteria[LINT_KEY].met is True
-    assert (adapter.binding.project_dir / "goals" / goal_mode.record.id / "logs").is_dir()
+    assert (adapter.binding.booley_dir / "goals" / goal_mode.record.id / "logs").is_dir()
 
 
 def test_a_diagnostic_run_report_names_the_goal_by_the_adapters_public_name(

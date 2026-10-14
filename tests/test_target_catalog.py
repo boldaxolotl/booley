@@ -14,7 +14,7 @@ from booley.flows.sim.trace_overlay import write_trace_overlay
 from booley.fusesoc import fusesoc_registry, selftest_overlay, target_inspection
 from booley.fusesoc.constants import TRACE_OVERLAY_MARKER
 from booley.harness.doctor import _check_sim_target_tb_staging
-from booley.runtime.project_dir import resolve_checkout_project_dir
+from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.runtime.project_repositories import paired_project_repository
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import (
@@ -361,8 +361,8 @@ def test_inspection_normalizes_windows_fileset_paths_on_posix(tmp_path: Path) ->
 def test_real_baseline_worktree_receives_an_independent_catalog(tmp_path: Path) -> None:
     root = tmp_path / "project"
     _init_repository(root)
-    (root / ".booley_project").mkdir()
-    (root / ".gitignore").write_text("/.booley_project/\n", encoding="utf-8")
+    (root / ".booley").mkdir()
+    (root / ".gitignore").write_text("/.booley/\n", encoding="utf-8")
     (root / "rtl").mkdir()
     (root / "rtl" / "a.sv").write_text("module a; endmodule\n", encoding="utf-8")
     _write_core(
@@ -409,7 +409,7 @@ def test_real_baseline_worktree_receives_an_independent_catalog(tmp_path: Path) 
 def test_paired_project_worktree_targets_belong_to_outer_checkout(tmp_path: Path) -> None:
     outer = tmp_path / "outer"
     _init_repository(outer)
-    (outer / ".gitignore").write_text("/.booley_project\n", encoding="utf-8")
+    (outer / ".gitignore").write_text("/.booley\n", encoding="utf-8")
     (outer / "README.md").write_text("outer\n", encoding="utf-8")
     _git(outer, "add", ".")
     _git(outer, "commit", "-m", "outer")
@@ -432,19 +432,19 @@ def test_paired_project_worktree_targets_belong_to_outer_checkout(tmp_path: Path
     )
     _git(project, "add", ".")
     _git(project, "commit", "-m", "Booley Directory")
-    _git(project, "worktree", "add", "--detach", str(outer / ".booley_project"), "HEAD")
+    _git(project, "worktree", "add", "--detach", str(outer / ".booley"), "HEAD")
 
     paired = paired_project_repository(outer)
     assert paired is not None
     catalog = TargetCatalog.build(outer)
     handle = catalog.select("lint", for_flow="lint")
 
-    assert paired.worktree == outer / ".booley_project"
+    assert paired.worktree == outer / ".booley"
     assert handle.project_root == outer.resolve()
     assert handle.core_file == (paired.worktree / "cores" / "paired.core").resolve()
 
 
-def test_external_project_directory_does_not_retarget_catalog_root(tmp_path: Path) -> None:
+def test_external_booley_directory_does_not_retarget_catalog_root(tmp_path: Path) -> None:
     checkout = tmp_path / "checkout"
     checkout.mkdir()
     external = tmp_path / "project-data"
@@ -468,7 +468,7 @@ def test_external_project_directory_does_not_retarget_catalog_root(tmp_path: Pat
     catalog = TargetCatalog.build(checkout)
     handle = catalog.select("lint", for_flow="lint")
 
-    assert resolve_checkout_project_dir(checkout) == external.resolve()
+    assert resolve_checkout_booley_dir(checkout) == external.resolve()
     assert handle.project_root == checkout.resolve()
     assert handle.core_file == (checkout / "external.core").resolve()
 

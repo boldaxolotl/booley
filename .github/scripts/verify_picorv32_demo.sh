@@ -7,7 +7,7 @@ source_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 python "${source_root}/.github/scripts/picorv32_demo_contract.py" \
   --contract "${source_root}/.github/contracts/picorv32-demo.toml" \
   --demo-root /work \
-  --project-dir /booley-project
+  --booley-dir /booley-project
 
 python "${source_root}/.github/scripts/goal_mode_driver.py" \
   --project /work --project-state /booley-project \

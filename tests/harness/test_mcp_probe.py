@@ -23,14 +23,14 @@ def _definition(name: str) -> dict[str, object]:
 
 
 def test_probe_entrypoint_builds_real_interactive_catalog(tmp_path: Path) -> None:
-    project_dir = tmp_path / ".booley_project"
-    project_dir.mkdir()
-    (project_dir / "booley.toml").write_text(
+    booley_dir = tmp_path / ".booley"
+    booley_dir.mkdir()
+    (booley_dir / "booley.toml").write_text(
         '[project]\nname = "probe"\n',
         encoding="utf-8",
     )
     env = os.environ.copy()
-    env["BOOLEY_PROJECT_DIR"] = str(project_dir)
+    env["BOOLEY_DIR"] = str(booley_dir)
     env["BOOLEY_MCP_MODE"] = "interactive"
     env.pop("BOOLEY_LOGS_DIR", None)
     source_root = Path(__file__).parents[2] / "src"

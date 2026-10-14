@@ -104,13 +104,13 @@ class ReviewStatus:
         return payload
 
 
-def state_path(project_dir: Path) -> Path:
+def state_path(booley_dir: Path) -> Path:
     """Return the project-local upgrade review state path."""
-    return project_dir / "runtime" / STATE_FILENAME
+    return booley_dir / "runtime" / STATE_FILENAME
 
 
-def _lock_path(project_dir: Path) -> Path:
-    return project_dir / "runtime" / LOCK_FILENAME
+def _lock_path(booley_dir: Path) -> Path:
+    return booley_dir / "runtime" / LOCK_FILENAME
 
 
 def _running_version(value: str | None) -> str:
@@ -177,8 +177,8 @@ def _read_state(path: Path) -> ReviewState | None:
         raise CorruptReviewStateError(f"cannot parse {path}: {exc}") from exc
 
 
-def _doctor_bootstrap_version(project_dir: Path) -> StableVersion | None:
-    path = project_dir / "runtime" / "doctor_stamp.json"
+def _doctor_bootstrap_version(booley_dir: Path) -> StableVersion | None:
+    path = booley_dir / "runtime" / "doctor_stamp.json"
     try:
         data = as_dict(json.loads(path.read_text(encoding="utf-8")))
     except (OSError, ValueError, json.JSONDecodeError, UnicodeError):
@@ -212,8 +212,8 @@ def _first_seen_at(value: str | None) -> str:
 
 
 @contextmanager
-def _locked(project_dir: Path) -> Iterator[None]:
-    path = _lock_path(project_dir)
+def _locked(booley_dir: Path) -> Iterator[None]:
+    path = _lock_path(booley_dir)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         handle: IO[Any] = path.open("a+", encoding="utf-8")
@@ -239,7 +239,7 @@ def _locked(project_dir: Path) -> Iterator[None]:
         handle.close()
 
 
-def _status(project_dir: Path, running: StableVersion, state: ReviewState) -> ReviewStatus:
+def _status(booley_dir: Path, running: StableVersion, state: ReviewState) -> ReviewStatus:
     reviewed = _parse_version(state.reviewed_through, "reviewed_through")
     pending = (
         _parse_version(state.pending_target, "pending_target")
@@ -254,7 +254,7 @@ def _status(project_dir: Path, running: StableVersion, state: ReviewState) -> Re
     return ReviewStatus(
         condition,
         str(running),
-        str(state_path(project_dir)),
+        str(state_path(booley_dir)),
         state.reviewed_through,
         state.pending_target,
         state.first_seen_at,
@@ -262,7 +262,7 @@ def _status(project_dir: Path, running: StableVersion, state: ReviewState) -> Re
 
 
 def _diagnostic_status(
-    project_dir: Path,
+    booley_dir: Path,
     running_version: str,
     condition: ReviewCondition,
     diagnostic: str,
@@ -270,13 +270,13 @@ def _diagnostic_status(
     return ReviewStatus(
         condition,
         running_version,
-        str(state_path(project_dir)),
+        str(state_path(booley_dir)),
         diagnostic=diagnostic,
     )
 
 
 def observe(
-    project_dir: Path,
+    booley_dir: Path,
     *,
     current_version: str | None = None,
     now: str | None = None,
@@ -290,15 +290,13 @@ def observe(
     try:
         running = _parse_version(running_value, "running version")
     except CorruptReviewStateError as exc:
-        return _diagnostic_status(
-            project_dir, running_value, ReviewCondition.UNSUPPORTED, str(exc)
-        )
+        return _diagnostic_status(booley_dir, running_value, ReviewCondition.UNSUPPORTED, str(exc))
     try:
-        with _locked(project_dir):
-            path = state_path(project_dir)
+        with _locked(booley_dir):
+            path = state_path(booley_dir)
             state = _read_state(path)
             if state is None:
-                baseline = _doctor_bootstrap_version(project_dir) or running
+                baseline = _doctor_bootstrap_version(booley_dir) or running
                 state = ReviewState(str(baseline))
             reviewed = _parse_version(state.reviewed_through, "reviewed_through")
             pending = (
@@ -314,17 +312,15 @@ def observe(
                     state.first_seen_at or _first_seen_at(now),
                 )
             _atomic_write(path, state)
-            return _status(project_dir, running, state)
+            return _status(booley_dir, running, state)
     except CorruptReviewStateError as exc:
-        return _diagnostic_status(project_dir, running_value, ReviewCondition.CORRUPT, str(exc))
+        return _diagnostic_status(booley_dir, running_value, ReviewCondition.CORRUPT, str(exc))
     except ReviewStorageError as exc:
-        return _diagnostic_status(
-            project_dir, running_value, ReviewCondition.UNAVAILABLE, str(exc)
-        )
+        return _diagnostic_status(booley_dir, running_value, ReviewCondition.UNAVAILABLE, str(exc))
 
 
 def acknowledge(
-    project_dir: Path,
+    booley_dir: Path,
     expected_target: str,
     *,
     current_version: str | None = None,
@@ -342,8 +338,8 @@ def acknowledge(
             f"running Booley {running} cannot acknowledge expected target {expected}"
         )
     try:
-        with _locked(project_dir):
-            state = _read_state(state_path(project_dir))
+        with _locked(booley_dir):
+            state = _read_state(state_path(booley_dir))
             if state is None:
                 raise AcknowledgmentError("upgrade review state does not exist; run status first")
             if state.pending_target != str(expected):
@@ -361,18 +357,18 @@ def acknowledge(
                     f"packaged changelog has no release entry for {expected}"
                 )
             acknowledged = ReviewState(str(expected))
-            _atomic_write(state_path(project_dir), acknowledged)
-            return _status(project_dir, running, acknowledged)
+            _atomic_write(state_path(booley_dir), acknowledged)
+            return _status(booley_dir, running, acknowledged)
     except CorruptReviewStateError as exc:
         raise AcknowledgmentError(f"upgrade review state is corrupt: {exc}") from exc
     except ReviewStorageError as exc:
         raise AcknowledgmentError(str(exc)) from exc
 
 
-def read_status(project_dir: Path, *, running_version: str | None = None) -> ReviewStatus:
+def read_status(booley_dir: Path, *, running_version: str | None = None) -> ReviewStatus:
     """Validated observational projection: no lock creation, baseline or observation write."""
     running = _running_version(running_version)
-    path = state_path(project_dir)
+    path = state_path(booley_dir)
     try:
         state = _read_state(path)
     except CorruptReviewStateError as exc:
@@ -394,6 +390,6 @@ def read_status(project_dir: Path, *, running_version: str | None = None) -> Rev
         )
         if version > highest:
             state = ReviewState(state.reviewed_through, str(version), state.first_seen_at)
-        return _status(project_dir, version, state)
+        return _status(booley_dir, version, state)
     except CorruptReviewStateError as exc:
-        return _diagnostic_status(project_dir, running, ReviewCondition.UNSUPPORTED, str(exc))
+        return _diagnostic_status(booley_dir, running, ReviewCondition.UNSUPPORTED, str(exc))

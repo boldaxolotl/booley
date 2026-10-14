@@ -1110,7 +1110,7 @@ def _diagnostic_document(*, sources=(), parameters=(), names=()):
     document["required_suite"]["names"] = list(names)
     document["required_suite"]["default_invocation"] = not names
     if names:
-        document["required_suite"]["source_path"] = ".booley_project/tests.toml"
+        document["required_suite"]["source_path"] = ".booley/tests.toml"
         document["work_items"][0]["kind"] = "cocotb_batch"
         document["work_items"][0]["selection"] = {"kind": "unfiltered", "names": []}
     return document

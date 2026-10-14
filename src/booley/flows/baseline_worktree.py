@@ -4,11 +4,11 @@ Both :mod:`asic_synthesize` and :mod:`fpga_impl` accept ``--baseline <git ref>``
 re-run the Flow at a past commit and compare QoR metrics. This module creates
 a throwaway ``git worktree`` at the baseline ref and preserves the caller's
 working tree in Interactive and Goal Mode. The worktree lives under
-``<project>/.booley_project/`` — git-ignored (never pollutes ``git status``) and
+``<project>/.booley/`` — git-ignored (never pollutes ``git status``) and
 inside the Sandbox workspace. It is force-removed on context exit,
 even if the body raises.
 
-For a paired ``.booley_project`` repository, the outer baseline worktree
+For a paired ``.booley`` repository, the outer baseline worktree
 receives a nested detached worktree at the recorded creation base's merge-base
 with HEAD, falling back to upstream only without a recorded base. A detached
 paired HEAD uses its checked-out commit; explicit pins use their exact commit.
@@ -146,10 +146,10 @@ def baseline_worktree(
 
 def _copy_baseline_configuration(project_root: Path, worktree: Path) -> None:
     """Copied Stealth cores retain their explicit projection configuration."""
-    if not projection_enabled(project_root) or not (worktree / ".booley_project/cores").is_dir():
+    if not projection_enabled(project_root) or not (worktree / ".booley/cores").is_dir():
         return
     source = worktree_state_dir(project_root) / "booley.toml"
-    destination = worktree / ".booley_project" / "booley.toml"
+    destination = worktree / ".booley" / "booley.toml"
     if source.is_file() and not destination.exists():
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination)
@@ -219,7 +219,7 @@ def _install_paired_project_baseline(
     if policy.mode is PairedBaselineMode.ABSENT:
         raise BaselineWorktreeError("unexpected Paired Checkout in Ticket execution")
     base_sha = policy.sha if policy.pinned else _paired_project_base_sha(repository.worktree)
-    destination = wt_dir / ".booley_project"
+    destination = wt_dir / ".booley"
     source = repository.worktree.resolve()
     _git(source, "config", "gc.worktreePruneExpire", "never", timeout=30)
     add = _git(
@@ -340,8 +340,8 @@ def _copy_root_quarantine_marker(project_root: Path, wt_dir: Path) -> None:
 def _copy_stealth_cores(project_root: Path, wt_dir: Path, ref: str) -> None:
     """Mirror the stealth authored-cores dir (ADR 0036) into the worktree.
 
-    ``.booley_project/`` is git-excluded, so a fresh ``git worktree add``
-    checkout carries no ``.booley_project/cores/`` — and the baseline run
+    ``.booley/`` is git-excluded, so a fresh ``git worktree add``
+    checkout carries no ``.booley/cores/`` — and the baseline run
     scans cores relative to the *worktree*, so stealth-only projects would
     silently compare against zero cores. Without a Paired Checkout, copying the
     *live* stealth cores is the pragmatic choice: Flow config is likewise read
@@ -433,7 +433,7 @@ def _retarget_links(project_root: Path, wt_dir: Path, src: Path, dst: Path) -> l
       gets its own text back; an absolute one stops naming the live tree.
     - **Elsewhere in the Booley Directory** (ADR 0036 blesses ``cores/worktrees ->
       ../worktrees``, e.g. a core pinning a frozen checkout): re-pointed at the
-      LIVE Booley Directory. ``.booley_project/`` is git-excluded, so no checkout of any
+      LIVE Booley Directory. ``.booley/`` is git-excluded, so no checkout of any
       ref has one — and that storage is deliberately ref-independent, like the
       Flow config a baseline run likewise reads from the live Booley Directory.
     - **Repo content** (``cores/rtl -> ../../rtl``): re-pointed at the

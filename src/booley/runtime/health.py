@@ -20,8 +20,8 @@ from booley.audit.diagnostic_results import DiagnosticReport, Severity
 from booley.audit.health import HealthSnapshot
 from booley.runtime import doctor_stamp
 from booley.runtime.atomic_files import atomic_replace_bytes
+from booley.runtime.booley_dir import contains, resolve_booley_dir
 from booley.runtime.file_lock import try_file_lock
-from booley.runtime.project_dir import contains, resolve_project_dir
 from booley.runtime.timefmt import parse_timestamp, utc_now_rfc3339
 
 _STATE_DIR = Path("runtime") / "doctor"
@@ -31,19 +31,19 @@ _ANNOUNCEMENTS_NAME = "announcements.json"
 _ANNOUNCE_LOCK_NAME = "announcements.lock"
 
 
-def state_dir(project_dir: Path) -> Path:
+def state_dir(booley_dir: Path) -> Path:
     """Return the automatic Doctor runtime directory."""
-    return project_dir / _STATE_DIR
+    return booley_dir / _STATE_DIR
 
 
-def report_path(project_dir: Path) -> Path:
+def report_path(booley_dir: Path) -> Path:
     """Return the latest structured automatic Doctor report path."""
-    return state_dir(project_dir) / _REPORT_NAME
+    return state_dir(booley_dir) / _REPORT_NAME
 
 
-def transcript_path(project_dir: Path) -> Path:
+def transcript_path(booley_dir: Path) -> Path:
     """Return the latest automatic Doctor console transcript path."""
-    return state_dir(project_dir) / _TRANSCRIPT_NAME
+    return state_dir(booley_dir) / _TRANSCRIPT_NAME
 
 
 def _sha256_or_none(path: Path) -> str | None:
@@ -65,15 +65,15 @@ def _path_identity(path: Path) -> str | None:
     return None
 
 
-def _core_digest(project_root: Path, project_dir: Path) -> str:
+def _core_digest(project_root: Path, booley_dir: Path) -> str:
     """Hash authored core descriptions without scanning runtime worktrees."""
-    roots = [project_root, project_dir / "cores"]
+    roots = [project_root, booley_dir / "cores"]
     entries: list[tuple[str, Path]] = []
     for root in roots:
         if not root.is_dir():
             continue
         for path in root.rglob("*.core"):
-            if root == project_root and contains(path.parent, project_dir=project_dir) is not None:
+            if root == project_root and contains(path.parent, booley_dir=booley_dir) is not None:
                 continue
             try:
                 label = str(path.relative_to(root))
@@ -88,19 +88,19 @@ def _core_digest(project_root: Path, project_dir: Path) -> str:
     return digest.hexdigest()
 
 
-def compute_fingerprint(project_dir: Path, project_root: Path) -> dict[str, Any]:
+def compute_fingerprint(booley_dir: Path, project_root: Path) -> dict[str, Any]:
     """Hash config and authored design-description inputs relevant to Doctor."""
     import booley
 
-    fingerprint: dict[str, Any] = doctor_stamp.compute_fingerprint(project_dir, project_root)
+    fingerprint: dict[str, Any] = doctor_stamp.compute_fingerprint(booley_dir, project_root)
     for name in ("tests.toml", "configs.toml", "AGENTS.md"):
-        fingerprint[f"{name}_sha256"] = _sha256_or_none(project_dir / name)
+        fingerprint[f"{name}_sha256"] = _sha256_or_none(booley_dir / name)
     for name in ("AGENTS.md", "CLAUDE.md"):
         fingerprint[f"root_{name}_identity"] = _path_identity(project_root / name)
-    fingerprint["core_files_sha256"] = _core_digest(project_root, project_dir)
+    fingerprint["core_files_sha256"] = _core_digest(project_root, booley_dir)
     fingerprint["booley_version"] = booley.__version__
     fingerprint["upgrade_review_sha256"] = _sha256_or_none(
-        project_dir / "runtime" / "upgrade_review.json"
+        booley_dir / "runtime" / "upgrade_review.json"
     )
     return fingerprint
 
@@ -108,8 +108,8 @@ def compute_fingerprint(project_dir: Path, project_root: Path) -> dict[str, Any]
 def load_report(project_root: Path) -> dict[str, Any] | None:
     """Load the latest automatic Doctor report, or ``None`` when unavailable."""
     try:
-        project_dir = resolve_project_dir(project_root)
-        data = json.loads(report_path(project_dir).read_text(encoding="utf-8"))
+        booley_dir = resolve_booley_dir(project_root)
+        data = json.loads(report_path(booley_dir).read_text(encoding="utf-8"))
     except (FileNotFoundError, OSError, ValueError, json.JSONDecodeError):
         return None
     return data if isinstance(data, dict) else None
@@ -131,7 +131,7 @@ def read_health(project_root: Path, *, now: datetime | None = None) -> HealthSna
     unavailable: none of them is evidence of health, and each is due for a recheck.
     """
     try:
-        project_dir = resolve_project_dir(project_root)
+        booley_dir = resolve_booley_dir(project_root)
         document = load_report(project_root)
         if document is None:
             return None
@@ -139,20 +139,20 @@ def read_health(project_root: Path, *, now: datetime | None = None) -> HealthSna
         due = policy.freshness_reason(
             diagnostics,
             inputs_changed=document.get("fingerprint")
-            != compute_fingerprint(project_dir, project_root),
+            != compute_fingerprint(booley_dir, project_root),
             checked_at=_parse_time(document.get("checked_at")),
             now=now or datetime.now(tz=UTC),
         )
     except (OSError, ValueError):
         return None
     finding_hash = str(document.get("finding_hash") or _finding_hash(diagnostics))
-    return HealthSnapshot(diagnostics, finding_hash, transcript_path(project_dir), due)
+    return HealthSnapshot(diagnostics, finding_hash, transcript_path(booley_dir), due)
 
 
 def due_reason(project_root: Path, *, now: datetime | None = None) -> str | None:
     """Return why an automatic check is due, or None outside a Project/when current."""
     try:
-        resolve_project_dir(project_root)
+        resolve_booley_dir(project_root)
     except (FileNotFoundError, OSError):
         return None
     snapshot = read_health(project_root, now=now)
@@ -201,7 +201,7 @@ def publish_result(
     """
     from booley.runtime import runtime_context
 
-    project_dir = resolve_project_dir(project_root)
+    booley_dir = resolve_booley_dir(project_root)
     assessment = diagnostics.health
     payload = {
         "schema": 1,
@@ -209,7 +209,7 @@ def publish_result(
         "duration_s": round(duration_s, 3),
         "trigger": trigger,
         "runtime": "session-runtime" if runtime_context.inside_session_runtime() else "host",
-        "fingerprint": compute_fingerprint(project_dir, project_root),
+        "fingerprint": compute_fingerprint(booley_dir, project_root),
         "counts": _severity_counts(diagnostics),
         "findings": policy.finding_documents(diagnostics.findings),
         "exit_code": assessment.exit_code,
@@ -217,8 +217,8 @@ def publish_result(
         "deep_status": deep_status,
         "finding_hash": _finding_hash(diagnostics),
     }
-    _atomic_write(transcript_path(project_dir), transcript)
-    _atomic_write(report_path(project_dir), json.dumps(payload, indent=2) + "\n")
+    _atomic_write(transcript_path(booley_dir), transcript)
+    _atomic_write(report_path(booley_dir), json.dumps(payload, indent=2) + "\n")
     return payload
 
 
@@ -246,8 +246,8 @@ def consume_changed_snapshot(
     if issues_only and snapshot.assessment.clean:
         return None
     try:
-        project_dir = resolve_project_dir(project_root)
-        directory = state_dir(project_dir)
+        booley_dir = resolve_booley_dir(project_root)
+        directory = state_dir(booley_dir)
         announcements_path = directory / _ANNOUNCEMENTS_NAME
         with try_state_lock(directory / _ANNOUNCE_LOCK_NAME) as acquired:
             if not acquired:

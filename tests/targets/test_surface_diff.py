@@ -52,7 +52,7 @@ def _core_delta(current: str | None, baseline: str | None = _BASELINE) -> Surfac
 
 
 def _tests_delta(baseline: bytes | None, current: bytes | None) -> SurfaceDelta:
-    return diff_tests_surface(TargetSurfaceFile(".booley_project/tests.toml", baseline, current))
+    return diff_tests_surface(TargetSurfaceFile(".booley/tests.toml", baseline, current))
 
 
 def test_unchanged_surface_yields_an_empty_delta() -> None:

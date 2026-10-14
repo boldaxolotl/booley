@@ -41,7 +41,7 @@ def worktree_presence(
 
 def inspect_presence(
     root: Path,
-    project_dir: Path,
+    booley_dir: Path,
     *,
     inside_sandbox: bool,
     now: float | None = None,
@@ -58,12 +58,12 @@ def inspect_presence(
             unavailable="Goal presence checks unavailable: PID namespace unreadable"
         )
     try:
-        threshold = quiet_after(project_dir)
+        threshold = quiet_after(booley_dir)
         entries = list_worktrees(root)
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         return PresenceDiagnostics(unavailable=f"Goal worktree/presence checks unavailable: {exc}")
-    store = GoalStore(project_dir)
-    sessions = SessionRegistry(project_dir, proc_root=proc_root).snapshot()
+    store = GoalStore(booley_dir)
+    sessions = SessionRegistry(booley_dir, proc_root=proc_root).snapshot()
     context = _PresenceContext(
         store,
         entries,

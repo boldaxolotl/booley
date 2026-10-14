@@ -14,14 +14,14 @@ import pytest
 from booley.feedback import cli
 from booley.feedback.findings import read_log
 from booley.feedback.storage import feedback_storage_dir
-from booley.runtime import project_dir as project_dir_mod
+from booley.runtime import booley_dir as booley_dir_mod
 
 
 @pytest.fixture
 def project(tmp_path):
     root = tmp_path / "rocketwidget"
-    (root / ".booley_project").mkdir(parents=True)
-    (root / ".booley_project" / "booley.toml").write_text(
+    (root / ".booley").mkdir(parents=True)
+    (root / ".booley" / "booley.toml").write_text(
         '[project]\nname = "rocketwidget"\n', encoding="utf-8"
     )
     return root
@@ -31,11 +31,11 @@ def project(tmp_path):
 def run(project):
     """Invoke a subcommand through the real parser, as the CLI would.
 
-    The cache reset is not optional: ``resolve_project_dir`` memoizes at module
+    The cache reset is not optional: ``resolve_booley_dir`` memoizes at module
     level, so without it every test after the first writes into the first test's
     tmp project and the assertions read someone else's log.
     """
-    project_dir_mod.reset_cache()
+    booley_dir_mod.reset_cache()
 
     def _run(*argv):
         parser = argparse.ArgumentParser()
@@ -45,11 +45,11 @@ def run(project):
     yield _run
     # And again on the way out: a tmp path left in the cache would follow the
     # next test module into a directory that no longer exists.
-    project_dir_mod.reset_cache()
+    booley_dir_mod.reset_cache()
 
 
 def _log(project):
-    return read_log(project / ".booley_project")
+    return read_log(project / ".booley")
 
 
 def _commit_project_data(state, monkeypatch):
@@ -79,7 +79,7 @@ def test_source_feedback_uses_shared_git_metadata(tmp_path):
 
     state = source / ".git" / "booley-feedback"
     assert read_log(state).entries[0].title == "boom"
-    assert not (source / ".booley_project").exists()
+    assert not (source / ".booley").exists()
 
 
 def test_source_feedback_is_shared_by_linked_worktree(tmp_path):
@@ -254,7 +254,7 @@ class TestReporting:
 
     def test_report_writes_only_the_user_report(self, run, project, filable, capsys):
         assert run("report") == 0
-        state = project / ".booley_project"
+        state = project / ".booley"
         assert (state / "SETUP-REPORT.md").is_file()
         assert not (state / "BOOLEY-FEEDBACK.md").exists()
         assert "no redacted file was written" in capsys.readouterr().out
@@ -270,7 +270,7 @@ class TestReporting:
     def test_user_report_keeps_project_data_repository_clean(
         self, run, project, finding_args, monkeypatch
     ):
-        state = project / ".booley_project"
+        state = project / ".booley"
         _commit_project_data(state, monkeypatch)
         run(*finding_args)
         assert _project_data_status(state) == ""
@@ -281,7 +281,7 @@ class TestReporting:
     def test_report_warns_that_an_existing_export_was_not_refreshed(
         self, run, project, filable, capsys
     ):
-        export = project / ".booley_project" / "BOOLEY-FEEDBACK.md"
+        export = project / ".booley" / "BOOLEY-FEEDBACK.md"
         export.write_text("old export", encoding="utf-8")
         assert run("report") == 0
         assert export.read_text(encoding="utf-8") == "old export"
@@ -289,13 +289,13 @@ class TestReporting:
 
     def test_export_is_the_explicit_redacted_file_path(self, run, project, filable):
         assert run("export", "--all") == 0
-        assert (project / ".booley_project" / "BOOLEY-FEEDBACK.md").is_file()
+        assert (project / ".booley" / "BOOLEY-FEEDBACK.md").is_file()
 
     def test_export_accepts_an_output_override(self, run, project, filable, tmp_path):
         target = tmp_path / "sanitized.md"
         assert run("export", "--all", "--output", str(target)) == 0
         assert target.is_file()
-        assert not (project / ".booley_project" / "BOOLEY-FEEDBACK.md").exists()
+        assert not (project / ".booley" / "BOOLEY-FEEDBACK.md").exists()
 
     def test_export_honours_the_selected_finding_ids(self, run, project, filable, tmp_path):
         run(
@@ -357,7 +357,7 @@ def test_actual_feedback_writers_keep_versioned_project_clean(run, project, monk
     from booley.feedback.render import Environment
     from tests.project_runtime_git_support import assert_clean, initialize_repository
 
-    state = project / ".booley_project"
+    state = project / ".booley"
     initialize_repository(state, state, monkeypatch)
     environment = Environment(doctor_deep_clean=True)
     monkeypatch.setattr(

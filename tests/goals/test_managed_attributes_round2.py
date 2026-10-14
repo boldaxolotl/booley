@@ -187,7 +187,7 @@ def test_init_with_comment_only_xdg_attributes_can_finish(layout, tmp_path, monk
     monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
     git(layout.worktree, "config", "--unset", "core.autocrlf")
     report = reconcile_project_line_endings(
-        layout.worktree, layout.worktree / ".booley_project", mode=LineEndingMode.REPAIR
+        layout.worktree, layout.worktree / ".booley", mode=LineEndingMode.REPAIR
     )
     assert report.status.value == "safe"
     assert (

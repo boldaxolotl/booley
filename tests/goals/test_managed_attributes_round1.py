@@ -79,7 +79,7 @@ def test_init_preserves_export_only_content_and_finish_replays_it(layout, commen
     info.write_bytes(extra)
     git(layout.worktree, "config", "--unset", "core.autocrlf")
     report = reconcile_project_line_endings(
-        layout.worktree, layout.worktree / ".booley_project", mode=LineEndingMode.REPAIR
+        layout.worktree, layout.worktree / ".booley", mode=LineEndingMode.REPAIR
     )
     assert report.status.value == "safe"
     content = GITATTRIBUTES_RULE.encode() + b"\n" + extra

@@ -961,7 +961,7 @@ def _build_report_dict(
 def _baseline_self_compare_warning(project_root: Path, wt: Path) -> str | None:
     """Detect a no-op ``--baseline`` self-comparison and return an actionable warning.
 
-    A Project without a Paired Checkout may mirror live ``.booley_project/cores/`` (ADR 0036)
+    A Project without a Paired Checkout may mirror live ``.booley/cores/`` (ADR 0036)
     into the baseline worktree because the outer Git ref does not contain those
     files. A project whose RTL lives as real files below those cores can therefore
     synthesize byte-identical sources on both sides. Paired Checkouts
@@ -1692,7 +1692,7 @@ class AsicSynthesizeFlow(BuiltinFlow[SynthRequest]):
     def _persist_synth_log(self, target: str, output: str) -> str:
         """Write *target*'s full synth output to its Edalize work dir.
 
-        Lands as ``run.log`` in ``.booley_project/.runtime/edalize/
+        Lands as ``run.log`` in ``.booley/.runtime/edalize/
         asic_synthesize/<target>/`` — the per-target dir the FuseSoC resolution
         already uses. Reuses the Flow-neutral :func:`write_run_log` for its
         tail-cap + atomic-write semantics (flows/ already depends on sim/ — see

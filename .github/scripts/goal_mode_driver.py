@@ -63,9 +63,9 @@ class Workspace:
     worktree: Path
 
     @property
-    def project_dir(self) -> Path:
+    def booley_dir(self) -> Path:
         """The main Project owns Goal state for every linked checkout."""
-        return self.primary / ".booley_project"
+        return self.primary / ".booley"
 
 
 async def tool_text(
@@ -258,14 +258,14 @@ def create_workspace(
     primary = directory / "primary"
     env = os.environ | {
         "BOOLEY_IN_SANDBOX": "1",
-        "BOOLEY_PROJECT_DIR": str(primary / ".booley_project"),
+        "BOOLEY_DIR": str(primary / ".booley"),
         "PROJECT_ROOT": str(primary),
     }
     _run(["git", "clone", "--no-hardlinks", "--local", str(source), str(primary)], directory, env)
     paired = _clone_project(project_state, primary, directory, env)
     with (primary / ".git/info/exclude").open("a", encoding="utf-8") as stream:
-        stream.write("\n/.booley_project\n/.booley-projected-*.core\n")
-    for repository in (primary, *((primary / ".booley_project",) if paired else ())):
+        stream.write("\n/.booley\n/.booley-projected-*.core\n")
+    for repository in (primary, *((primary / ".booley",) if paired else ())):
         _run(["git", "config", "user.name", "Booley CI"], repository, env)
         _run(
             ["git", "config", "user.email", "booley-ci@users.noreply.github.com"], repository, env
@@ -275,7 +275,7 @@ def create_workspace(
         primary,
         env,
     )
-    worktree = primary / ".booley_project/worktrees/ci-demo"
+    worktree = primary / ".booley/worktrees/ci-demo"
     return Workspace(primary, worktree)
 
 
@@ -291,12 +291,12 @@ def _clone_project(
                 "--no-hardlinks",
                 "--local",
                 str(project_state),
-                str(primary / ".booley_project"),
+                str(primary / ".booley"),
             ],
             directory,
             env,
         )
-    if not (primary / ".booley_project/booley.toml").is_file():
+    if not (primary / ".booley/booley.toml").is_file():
         raise GoalDriverError(
             "Project inputs must be versioned in the source or a Versioned Booley Directory"
         )
@@ -310,7 +310,7 @@ async def client_session(
     """The driver and image smoke share control paths, environment and protocol."""
     env = os.environ | {
         "BOOLEY_MCP_MODE": "interactive",
-        "BOOLEY_PROJECT_DIR": str(workspace.project_dir),
+        "BOOLEY_DIR": str(workspace.booley_dir),
         "BOOLEY_IN_SANDBOX": "1",
     }
     server = StdioServerParameters(
@@ -328,7 +328,7 @@ async def _client_run(
     async with client_session(workspace, python) as client:
         operation = readiness if check_readiness else roundtrip
         result = await operation(client, workspace.worktree, goals)
-    record = GoalStore(workspace.project_dir).load(result["record_id"])
+    record = GoalStore(workspace.booley_dir).load(result["record_id"])
     expected = GoalState.ACTIVE if check_readiness else GoalState.FINISHED
     if record.state is not expected:
         raise GoalDriverError(f"persisted Goal state {record.state} differs from {expected}")

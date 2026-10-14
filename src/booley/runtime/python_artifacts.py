@@ -12,7 +12,7 @@ def python_artifact_root(environment: Mapping[str, str], fallback: Path) -> Path
     """Return a stable Booley-owned root from an already-composed environment."""
     if runtime := environment.get("BOOLEY_RUNTIME_DIR"):
         return Path(runtime) / "python-artifacts"
-    if project := environment.get("BOOLEY_PROJECT_DIR"):
+    if project := environment.get("BOOLEY_DIR"):
         return Path(project) / ".runtime" / "python-artifacts"
     return fallback
 

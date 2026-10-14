@@ -9,20 +9,20 @@ import pytest
 from booley.eda.provisioning import configuration as eda_config
 from booley.harness import init_cmd
 from booley.harness.setup.common import InitContext
-from booley.runtime.project_dir import reset_cache
+from booley.runtime.booley_dir import reset_cache
 
 
 def test_init_rejects_host_provisioning_on_windows(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project = tmp_path / "project"
-    project_dir = project / ".booley_project"
-    project_dir.mkdir(parents=True)
-    (project_dir / "booley.toml").write_text(
+    booley_dir = project / ".booley"
+    booley_dir.mkdir(parents=True)
+    (booley_dir / "booley.toml").write_text(
         '[eda.vivado]\nprovisioning = "host"\n',
         encoding="utf-8",
     )
-    monkeypatch.delenv("BOOLEY_PROJECT_DIR", raising=False)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
     monkeypatch.setattr(eda_config.sys, "platform", "win32")
     monkeypatch.setattr(init_cmd, "_devcontainer_is_tracked", lambda _project: False)
     monkeypatch.setattr(init_cmd, "_select_interactive_app", lambda _project: "none")
