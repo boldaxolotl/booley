@@ -121,11 +121,15 @@ def _reap_unstarted(process: subprocess.Popen[Any], path: Path) -> None:
 
 
 def schedule_sim_baselines(
-    project: Path, record: GoalRecord, *, launch: Launch = launch_baseline
+    project: Path, record: GoalRecord, *, launch: Launch | None = None
 ) -> None:
-    """Idempotent active-call scheduling; failure never changes lifecycle success."""
+    """Idempotent active-call scheduling; failure never changes lifecycle success.
+
+    *launch* defaults to :func:`launch_baseline`, looked up at call time.
+    """
     if record.state is not GoalState.ACTIVE:
         return
+    launcher = launch_baseline if launch is None else launch
     try:
         inputs = entry_inputs(project, record)
         for goal in sim_goals(record):
@@ -156,7 +160,7 @@ def schedule_sim_baselines(
                 }
                 write_document(path, request)
                 try:
-                    launch(path, request)
+                    launcher(path, request)
                 except (OSError, ValueError, RuntimeError) as exc:
                     write_document(
                         path,

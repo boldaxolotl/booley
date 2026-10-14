@@ -35,6 +35,7 @@ from booley.mcp.sim_baseline_execution import (
     contents_stamp,
     run_baseline,
 )
+from booley.mcp.sim_baseline_jobs import launch_baseline as real_launch_baseline
 from booley.mcp.sim_baseline_jobs import schedule_sim_baselines
 from booley.runtime import job_records
 from booley.runtime.timefmt import utc_now_rfc3339
@@ -638,10 +639,8 @@ def test_review_package_highlights_new_never_seen_failing_and_dashboard_matches(
 def test_real_detached_supervisor_publishes_without_a_goal_binding(layout):
     import time
 
-    from booley.mcp.sim_baseline_jobs import launch_baseline
-
     record = enter_goals(layout, [{"family": "SIM", "target": "future", "test": "new"}])
-    schedule_sim_baselines(layout.control, record, launch=launch_baseline)
+    schedule_sim_baselines(layout.control, record, launch=real_launch_baseline)
     goal = sim_goals(record)[0]
     deadline = time.monotonic() + 15
     report = baseline_observations(layout.control, record, goal)
