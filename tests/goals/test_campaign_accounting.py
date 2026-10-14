@@ -466,11 +466,14 @@ def test_failure_in_a_stopped_transaction_is_folded_by_the_next_campaign(
     assert _status(two).reason.startswith("goal-test-run-failed")
 
 
+@pytest.mark.parametrize("previous_observation", [False, True])
 def test_an_unselected_transaction_keeps_its_goal_unmet_until_it_is_completed(
     two: SimpleNamespace,
+    previous_observation: bool,
 ) -> None:
-    _record(two, "run-0", [run_row(A), run_row(B)])
-    assert _status(two).status == "met"
+    if previous_observation:
+        _record(two, "run-0", [run_row(A), run_row(B)])
+        assert _status(two).status == "met"
     stopped = GoalEvidenceRecorder(
         bind(two, "run-a"), publication_checkpoint=_interrupt("after:acceptance_commit")
     )

@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 from collections.abc import Callable
+from copy import deepcopy
 from dataclasses import asdict, replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -489,10 +490,14 @@ def test_canonical_evidence_survives_late_or_missing_save(goal_mode, schedule):
     recorder = GoalEvidenceRecorder(bind(goal_mode))
     older = _load(goal_mode, recorder)
     newer = _load(goal_mode, recorder)
+    report = _load(goal_mode, recorder)
 
     def publish(state, warnings):
         changes = state.set_criterion(LINT_KEY, True, detail={"warnings": warnings})
         recorder.record_changes(state, changes, invocation_id="race", producer="lint")
+        if state is older:
+            # A report copies back the published result without adopting its baseline.
+            report.criteria[LINT_KEY] = deepcopy(state.criteria[LINT_KEY])
 
     async def interleave():
         published = asyncio.Event()
@@ -502,7 +507,7 @@ def test_canonical_evidence_survives_late_or_missing_save(goal_mode, schedule):
             publish(older, 1)
             published.set()
             await saved.wait()
-            older.save()
+            report.save()
 
         async def second():
             await published.wait()
@@ -519,9 +524,12 @@ def test_canonical_evidence_survives_late_or_missing_save(goal_mode, schedule):
         if schedule == "reverse_save":
             publish(newer, 0)
             newer.save()
-            older.save()
+            report.save()
     disk = _load(goal_mode, recorder)
     row = evidence_ledger.validated_evidence_records(GOAL_SCOPE, recorder.log_dir, disk, {})[-1]
+    persisted = _disk_state(goal_mode)["criteria"][LINT_KEY]
+    assert persisted["detail"] == row["detail"]
+    assert persisted["params"] == row["params"]
     assert disk.criteria[LINT_KEY].met == row["met"]
     assert disk.criteria[LINT_KEY].params == row["params"]
     assert disk.criteria[LINT_KEY].detail == row["detail"]
@@ -562,6 +570,7 @@ def test_async_producer_adapters_keep_final_observations_after_old_reports(layou
             diagnostic=False,
         )
         endpoint.read_state()
+        report = _load(layout, recorder)
         endpoint.set_criterion(
             goal.spec.key,
             True,
@@ -578,7 +587,8 @@ def test_async_producer_adapters_keep_final_observations_after_old_reports(layou
             },
             source_target=goal.spec.target,
         )
-        return endpoint.state
+        report.criteria[goal.spec.key] = deepcopy(endpoint.state.criteria[goal.spec.key])
+        return report
 
     async def run():
         ready = [asyncio.Event() for _ in range(len(layout.record.goals) + 1)]
@@ -613,7 +623,10 @@ def _assert_final_projection(layout, recorder):
     history = evidence_ledger.validated_evidence_records(GOAL_SCOPE, recorder.log_dir, disk, {})
     assert len(history) == 2 * len(layout.record.goals)
     latest = {row["criterion"]: row for row in history}
+    persisted = _disk_state(layout)["criteria"]
     for key, row in latest.items():
+        assert persisted[key]["detail"] == row["detail"]
+        assert persisted[key]["params"] == row["params"]
         assert disk.criteria[key].detail == row["detail"]
         assert disk.criteria[key].params == row["params"]
         assert row["detail"]["final"] is True

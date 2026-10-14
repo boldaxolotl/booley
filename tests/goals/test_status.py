@@ -99,6 +99,24 @@ def test_revision_without_evidence_cannot_become_met(goal_mode: SimpleNamespace)
     assert lint_status(goal_mode).status == "unmet"
 
 
+@pytest.mark.parametrize("drift", ["checkout", "protected", "apply"])
+def test_missing_evidence_reports_the_blocker_before_a_producer_rerun(
+    goal_mode, drift, monkeypatch
+):
+    if drift == "checkout":
+        git(goal_mode.worktree, "checkout", "--detach")
+    elif drift == "protected":
+        edit_protected(goal_mode)
+    else:
+        monkeypatch.setattr("booley.goals.status.pending_applies", lambda root: ["pending"])
+    goal = lint_status(goal_mode)
+    assert goal.status == "unmet"
+    assert goal.reason
+    assert "rerun lint" not in goal.reason
+    if drift == "apply":
+        assert "recovery is required" in goal.reason
+
+
 def test_candidate_target_appearing_stays_unmet(layout: SimpleNamespace) -> None:
     from tests.goals.conftest import enter_goals
 

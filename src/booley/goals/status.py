@@ -181,7 +181,7 @@ def _goal_statuses(
         status = _goal_status(goal, entry, evidence, record, root, drift, resolvers)
         status = _with_test_runs(status, goal, record, evidence, history, plans)
         status = replace(status, presentation=goal_presentation(goal.spec, _entry_facts(entry)))
-        if key in unaccounted and status.status != "unmet":
+        if key in unaccounted and (status.status != "unmet" or evidence is None):
             status = replace(
                 status,
                 status="unmet",
@@ -240,10 +240,9 @@ def _with_test_runs(
     """*status* judged by the Goal's frozen Test Runs as well (ADR 0072).
 
     A Goal that is judged by Test Runs is met only when they allow it; when
-    they do not, it is unmet with the named reason. Two verdicts keep their
-    own reason: state that conflicts with its evidence, and stale evidence,
-    unless the frozen runs themselves can no longer be judged (pending,
-    gone or changed): rerunning cannot cure that.
+    they do not, it is unmet with the named reason. Stale evidence keeps its
+    own reason unless the frozen runs themselves can no longer be judged
+    (pending, gone or changed): rerunning cannot cure that.
     """
     if not names_test_runs(goal.spec):
         return status
@@ -272,8 +271,8 @@ def _goal_status(
             else format_criterion_metric(key, entry)
         )
         violation = entry.detail.get("goal_contract_violation") if entry and entry.detail else None
-        reason = as_str(violation, "") or ""
-        if evidence is None:
+        reason = drift or as_str(violation, "") or ""
+        if evidence is None and not reason:
             producer = {
                 GoalFamily.ELAB: "sim mode=elab_only",
                 GoalFamily.REVIEW: "Reviewer",
