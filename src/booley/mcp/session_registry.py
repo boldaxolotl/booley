@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
@@ -16,7 +17,7 @@ from booley.core.boundary import require_dict, require_str, require_str_value, r
 from booley.goals.model import WorktreeIdentity
 from booley.goals.store import REPOSITORY_ID_FILE, resolve_worktree_identity
 from booley.runtime.atomic_files import atomic_replace_bytes
-from booley.runtime.handles import HandleStore, session_writer
+from booley.runtime.handles import HandleStore, fallback_predecessors, session_writer
 from booley.runtime.pid import ProcessIdentity, ProcessState, observe_process
 from booley.runtime.safe_storage import refuse_symlinks
 from booley.runtime.session_activity import (
@@ -29,6 +30,7 @@ from booley.runtime.timefmt import parse_timestamp, rfc3339_from_epoch
 MAX_ROWS = 4096
 MAX_ROW_BYTES = 65536
 CALL_HISTORY = 20
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -305,19 +307,32 @@ class SessionRegistry:
             payload = row.payload()
             if len(payload) > MAX_ROW_BYTES:
                 raise ValueError("oversized session row")
-            handles = HandleStore(self.booley_dir)
-            state = handles.load()
-            aliases = tuple(row.attribution.key for _, row in predecessors)
-            if attribution.kind == "worktree" and attribution.work_dir:
-                aliases += ("worktree:path:" + attribution.work_dir,)
-            before = state.labels()
-            state.reserve(attribution.key, "S", predecessors=aliases)
-            if state.labels() != before:
-                handles.save(state)
+            self._reserve_handle(
+                attribution, tuple(row.attribution.key for _, row in predecessors)
+            )
             atomic_replace_bytes(path, payload)
             for prior_path, _ in predecessors:
                 if prior_path != path:
                     prior_path.unlink(missing_ok=True)
+
+    def _reserve_handle(self, facts: Attribution, predecessors: tuple[str, ...]) -> None:
+        """The writer lock is held; handle failures cannot discard session presence."""
+        try:
+            store = HandleStore(self.booley_dir)
+            handles = store.load()
+            before = handles.labels()
+            handles.reserve(
+                facts.key,
+                "S",
+                predecessors=(
+                    *predecessors,
+                    *fallback_predecessors(facts.key, facts.work_dir),
+                ),
+            )
+            if handles.labels() != before:
+                store.save(handles)
+        except (OSError, ValueError, RuntimeError) as exc:
+            logger.warning("Session handle unavailable for %s: %s", facts.key, exc)
 
     def backfill_handles(self) -> None:
         """Migrate legacy identities before pruning; Dashboard snapshots never write."""

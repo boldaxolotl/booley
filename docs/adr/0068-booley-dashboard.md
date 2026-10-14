@@ -245,7 +245,9 @@ cannot identify every session or remain meaningful across Dashboard restarts.
   `runtime/job-handles/map.json` under its own bounded writer lock. Both maps
   live in the resolved Booley Directory and publish complete, fsynced state
   atomically. Reservation precedes row/record publication; a failed publication
-  can leave a gap, and a retry reuses its reservation. Numbers are never recycled.
+  can leave a gap, and registration of the same key or run ID reuses its
+  reservation. A new invocation with a new run ID gets a new handle. Numbers
+  are never recycled.
 - **Worktree fallback migration.** A path key becoming a repository/admin key
   carries its handle forward through a direct alias if the canonical key has
   no allocation. If both already have allocations, preserve both. Dashboard
@@ -257,5 +259,6 @@ cannot identify every session or remain meaningful across Dashboard restarts.
   layouts; files beyond that bound stay unknown until producer registration.
   The Dashboard only reads maps and shows `S?` / `J-TYPE?` with a diagnostic
   until allocation succeeds. Handle-store failures are advisory and never
-  prevent Job execution. Invalid maps are diagnosed rather than reset; a
+  prevent session presence publication or Job execution. Invalid maps are
+  diagnosed rather than reset; a
   16 MiB map bound fails allocation rather than recycling prior handles.

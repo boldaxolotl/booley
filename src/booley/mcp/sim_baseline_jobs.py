@@ -74,7 +74,13 @@ def launch_baseline(path: Path, request: dict[str, Any]) -> None:
         session_key=request["record"]["session_key"],
     )
     jobs = Path(request["jobs_root"])
-    register_job(Path(request["booley_dir"]), rec.run_id, rec.endpoint, rec.session_key)
+    register_job(
+        Path(request["booley_dir"]),
+        rec.run_id,
+        rec.endpoint,
+        rec.session_key,
+        work_dir=rec.work_dir,
+    )
     job_records.write_record(rec, jobs)
     environment = baseline_environment()
     source = str(Path(__file__).resolve().parents[2])

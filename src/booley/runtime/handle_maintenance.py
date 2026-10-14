@@ -8,7 +8,13 @@ from pathlib import Path
 
 from booley.core.boundary import require_str_value
 from booley.runtime import job_records
-from booley.runtime.handles import HandleStore, job_prefix, job_writer, session_writer
+from booley.runtime.handles import (
+    HandleStore,
+    fallback_predecessors,
+    job_prefix,
+    job_writer,
+    session_writer,
+)
 from booley.runtime.safe_storage import refuse_symlinks
 
 logger = logging.getLogger(__name__)
@@ -56,9 +62,13 @@ def backfill_job_handles(booley_dir: Path) -> None:
     with session_writer(booley_dir):
         store = HandleStore(booley_dir)
         handles = store.load()
-        before = handles.next_number
+        before = handles.labels()
         for rec in records:
             if rec.session_key:
-                handles.reserve(rec.session_key, "S")
-        if handles.next_number != before:
+                handles.reserve(
+                    rec.session_key,
+                    "S",
+                    predecessors=fallback_predecessors(rec.session_key, rec.work_dir),
+                )
+        if handles.labels() != before:
             store.save(handles)

@@ -68,6 +68,61 @@ def test_registry_migration_keeps_handle_after_old_row_was_pruned(tmp_path):
     assert handles.HandleStore(tmp_path).load().labels()[canonical.key] == "S1"
 
 
+def test_fully_legacy_fallback_keeps_job_owner_alias_during_backfill(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    old = Attribution(
+        "worktree:path:/work", "worktree", "/work", "path:/work", namespace="fixture"
+    )
+    canonical = replace(old, key="worktree:repo:main", worktree_key="repo:main")
+    registry = SessionRegistry(tmp_path)
+    registry.root.mkdir(parents=True)
+    registry.path(old.key).write_bytes(session_registry.SessionRow(old, STAMP, STAMP).payload())
+    job = job_records.JobRecord(
+        "old-job", "sim", STAMP, 60, status="done", session_key=old.key, work_dir="/work"
+    )
+    root = tmp_path / ".interactive_logs" / "old" / ".runtime" / "jobs"
+    job_records.write_record(job, root)
+    monkeypatch.setattr(session_registry, "canonical_attribution", lambda _facts: canonical)
+    registry.backfill_handles()
+    handle_maintenance.backfill_job_handles(tmp_path)
+    labels = handles.HandleStore(tmp_path).load().labels()
+    assert labels[canonical.key] == labels[old.key] == "S1"
+
+
+def test_job_creation_before_registry_migration_preserves_existing_handle(tmp_path, monkeypatch):
+    from booley.mcp.call_context import CallContext
+    from booley.mcp.job_lifecycle import JobLifecycle
+
+    old = Attribution(
+        "worktree:path:/work", "worktree", "/work", "path:/work", namespace="fixture"
+    )
+    canonical = Attribution(
+        "worktree:repo:main", "worktree", "/work", "repo:main", namespace="fixture"
+    )
+    registry = SessionRegistry(tmp_path)
+    registry.upsert(old, "sim", "completed", now=100)
+    monkeypatch.setattr("booley.runtime.booley_dir.resolve_booley_dir", lambda: tmp_path)
+    context = CallContext(
+        Path("/work"), tmp_path / "jobs", None, None, None, {}, session_key=canonical.key
+    )
+    job = job_records.JobRecord("new-job", "sim", STAMP, 60)
+    JobLifecycle._stamp_context(job, context)
+    registry.upsert(canonical, "sim", "completed", now=101)
+    labels = handles.HandleStore(tmp_path).load().labels()
+    assert labels[canonical.key] == labels[old.key] == "S1"
+
+
+def test_corrupt_session_handles_preserve_presence_publication(tmp_path):
+    store = handles.HandleStore(tmp_path)
+    store.root.mkdir(parents=True)
+    store.path.write_text("broken")
+    registry = SessionRegistry(tmp_path)
+    registry.upsert(attribution(), "sim", "completed", now=100)
+    assert registry.snapshot().rows[0].attribution.key == "codex:one"
+    assert store.path.read_text() == "broken"
+
+
 def test_reservation_survives_failed_row_publication(tmp_path, monkeypatch):
     registry = SessionRegistry(tmp_path)
     real_write = session_registry.atomic_replace_bytes
@@ -201,8 +256,9 @@ def test_invalid_map_is_diagnosed_never_reset(tmp_path, mutation):
     store.path.write_text(json.dumps(data))
     before = store.path.read_bytes()
     assert store.snapshot()[1]
-    with pytest.raises(ValueError):
-        SessionRegistry(tmp_path).upsert(attribution(), "lint", "completed", now=100)
+    registry = SessionRegistry(tmp_path)
+    registry.upsert(attribution(), "lint", "completed", now=100)
+    assert registry.snapshot().rows[0].attribution.key == "codex:one"
     assert store.path.read_bytes() == before
 
 

@@ -53,19 +53,37 @@ class HandleMap:
     def reserve(self, key: str, prefix: str, *, predecessors: tuple[str, ...] = ()) -> str:
         """Allocate once, carrying a fallback identity forward without renumbering."""
         require_str_value(key, field="handle key")
-        if key in self.entries or key in self.aliases:
-            return self.entries[key] if key in self.entries else self.entries[self.aliases[key]]
-        prior = next((old for old in predecessors if old in self.entries), None)
-        if prior is not None:
-            self.entries[key] = self.entries.pop(prior)
-            self.aliases = {
-                alias: key if target == prior else target for alias, target in self.aliases.items()
-            }
-            self.aliases[prior] = key
-        else:
-            self.entries[key] = f"{prefix}{self.next_number}"
-            self.next_number += 1
-        return self.entries[key]
+        if key not in self.entries and key not in self.aliases:
+            prior = next(
+                (
+                    self.aliases.get(old, old)
+                    for old in predecessors
+                    if old in self.entries or old in self.aliases
+                ),
+                None,
+            )
+            if prior is not None:
+                self.entries[key] = self.entries.pop(prior)
+                self.aliases = {
+                    alias: key if target == prior else target
+                    for alias, target in self.aliases.items()
+                }
+                self.aliases[prior] = key
+            else:
+                self.entries[key] = f"{prefix}{self.next_number}"
+                self.next_number += 1
+        target = self.aliases.get(key, key)
+        for old in predecessors:
+            if old != target and old not in self.entries and old not in self.aliases:
+                self.aliases[old] = target
+        return self.entries[target]
+
+
+def fallback_predecessors(key: str, work_dir: str | None) -> tuple[str, ...]:
+    """A canonical worktree owner may have first registered by its physical path."""
+    if key.startswith("worktree:") and work_dir:
+        return ("worktree:path:" + work_dir,)
+    return ()
 
 
 class HandleStore:
@@ -183,7 +201,14 @@ def job_writer(booley_dir: Path) -> Iterator[None]:
             release_file_lock(handle)
 
 
-def register_job(booley_dir: Path, run_id: str, endpoint: str, session_key: str | None) -> None:
+def register_job(
+    booley_dir: Path,
+    run_id: str,
+    endpoint: str,
+    session_key: str | None,
+    *,
+    work_dir: str | None = None,
+) -> None:
     """Best-effort presentation allocation; broken maps never gate Job execution."""
     try:
         with job_writer(booley_dir):
@@ -199,8 +224,11 @@ def register_job(booley_dir: Path, run_id: str, endpoint: str, session_key: str 
             with session_writer(booley_dir):
                 store = HandleStore(booley_dir)
                 handles = store.load()
-                if session_key not in handles.labels():
-                    handles.reserve(session_key, "S")
+                before = handles.labels()
+                handles.reserve(
+                    session_key, "S", predecessors=fallback_predecessors(session_key, work_dir)
+                )
+                if handles.labels() != before:
                     store.save(handles)
         except (OSError, ValueError, RuntimeError) as exc:
             logger.warning("Session handle unavailable for Job %s: %s", run_id, exc)

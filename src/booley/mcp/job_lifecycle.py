@@ -168,7 +168,7 @@ class JobLifecycle:
 
         try:
             project = context.binding.booley_dir if context.binding else resolve_booley_dir()
-            register_job(project, rec.run_id, rec.endpoint, rec.session_key)
+            register_job(project, rec.run_id, rec.endpoint, rec.session_key, work_dir=rec.work_dir)
         except (OSError, ValueError, RuntimeError) as exc:
             logger.warning("Job handle Project unavailable for %s: %s", rec.run_id, exc)
 
