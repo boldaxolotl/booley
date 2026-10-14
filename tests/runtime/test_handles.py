@@ -90,21 +90,41 @@ def test_fully_legacy_fallback_keeps_job_owner_alias_during_backfill(tmp_path, m
     assert labels[canonical.key] == labels[old.key] == "S1"
 
 
-def test_job_creation_before_registry_migration_preserves_existing_handle(tmp_path, monkeypatch):
+@pytest.mark.parametrize("spelling", ["absolute", "relative", "symlink", "subdirectory"])
+def test_job_creation_before_registry_migration_preserves_existing_handle(
+    tmp_path, monkeypatch, spelling
+):
     from booley.mcp.call_context import CallContext
     from booley.mcp.job_lifecycle import JobLifecycle
 
+    root = tmp_path / "work"
+    root.mkdir()
+    (root / ".git").mkdir()
+    (root / "rtl").mkdir()
+    monkeypatch.chdir(root)
+    work_dir = root
+    if spelling == "relative":
+        work_dir = Path()
+    elif spelling == "symlink":
+        work_dir = tmp_path / "work-alias"
+        symlink_or_skip(work_dir, root)
+    elif spelling == "subdirectory":
+        work_dir = Path("rtl")
     old = Attribution(
-        "worktree:path:/work", "worktree", "/work", "path:/work", namespace="fixture"
+        "worktree:path:" + str(root),
+        "worktree",
+        str(root),
+        "path:" + str(root),
+        namespace="fixture",
     )
     canonical = Attribution(
-        "worktree:repo:main", "worktree", "/work", "repo:main", namespace="fixture"
+        "worktree:repo:main", "worktree", str(root), "repo:main", namespace="fixture"
     )
     registry = SessionRegistry(tmp_path)
     registry.upsert(old, "sim", "completed", now=100)
     monkeypatch.setattr("booley.runtime.booley_dir.resolve_booley_dir", lambda: tmp_path)
     context = CallContext(
-        Path("/work"), tmp_path / "jobs", None, None, None, {}, session_key=canonical.key
+        work_dir, tmp_path / "jobs", None, None, None, {}, session_key=canonical.key
     )
     job = job_records.JobRecord("new-job", "sim", STAMP, 60)
     JobLifecycle._stamp_context(job, context)

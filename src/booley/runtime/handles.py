@@ -8,6 +8,7 @@ import re
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from itertools import islice
 from pathlib import Path
 
 from booley.core.boundary import require_dict, require_int, require_str_value
@@ -81,9 +82,17 @@ class HandleMap:
 
 def fallback_predecessors(key: str, work_dir: str | None) -> tuple[str, ...]:
     """A canonical worktree owner may have first registered by its physical path."""
-    if key.startswith("worktree:") and work_dir:
-        return ("worktree:path:" + work_dir,)
-    return ()
+    if not key.startswith("worktree:") or not work_dir:
+        return ()
+    root = Path(work_dir).resolve()
+    candidates = [root]
+    # Registry worktree facts use the checkout root, even when a call names a subdirectory.
+    for parent in islice((root, *root.parents), 128):
+        marker = parent / ".git"
+        if marker.is_dir() or marker.is_file():
+            candidates.append(parent)
+            break
+    return tuple(dict.fromkeys("worktree:path:" + str(path) for path in candidates))
 
 
 class HandleStore:
