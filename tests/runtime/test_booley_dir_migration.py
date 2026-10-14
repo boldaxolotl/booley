@@ -871,3 +871,42 @@ def test_archival_artifact_confinement_preserves_logical_flavor(tmp_path, flavor
     saved["summary"] = str(original / ".." / "SUMMARY.md")
     with pytest.raises(LifecycleError, match="path differs"):
         _validate_result_paths(saved, operation)
+
+
+@pytest.mark.parametrize("kind", ["bare", "separate"])
+@pytest.mark.parametrize("current", [False, True])
+def test_non_retired_linked_checkout_does_not_require_primary_owner(tmp_path, kind, current):
+    source, metadata, linked = tmp_path / "source", tmp_path / "metadata", tmp_path / "linked"
+    _repository(source)
+    if kind == "bare":
+        git(tmp_path, "clone", "--bare", str(source), str(metadata))
+        repository = metadata
+    else:
+        git(
+            tmp_path,
+            "clone",
+            "--separate-git-dir",
+            str(metadata),
+            str(source),
+            str(tmp_path / "primary"),
+        )
+        repository = tmp_path / "primary"
+    git(repository, "worktree", "add", "--detach", str(linked))
+    if current:
+        (linked / NEW).mkdir()
+    before = _snapshot(tmp_path)
+    assert _inspect(linked) is None
+    assert _snapshot(tmp_path) == before
+
+
+@pytest.mark.parametrize("relative", [".gitignore", ".git/info/exclude"])
+def test_managed_ignore_rewrite_preserves_unrelated_bytes_and_line_endings(tmp_path, relative):
+    _repository(tmp_path)
+    (tmp_path / OLD).mkdir()
+    path = tmp_path / relative
+    before = b"# opaque \xff \xc3\xa9\r\n/" + OLD.encode() + b"/\r\nkeep \xfe\n"
+    path.write_bytes(before)
+    migration.apply_migration(_inspect(tmp_path))
+    assert path.read_bytes() == before.replace(
+        b"/" + OLD.encode() + b"/", b"/" + NEW.encode() + b"/"
+    )

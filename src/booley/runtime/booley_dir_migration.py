@@ -185,15 +185,14 @@ def _integration_edits(
     ignores.update(Path(row["common"]) / "info/exclude" for row in rows if not row.get("missing"))
     for path in ignores:
         if path.is_file():
-            before = path.read_text()
-            after = "".join(
-                line.replace(RETIRED_DIR_NAME, BOOLEY_DIR_NAME)
-                if line.strip().rstrip("/") in {RETIRED_DIR_NAME, "/" + RETIRED_DIR_NAME}
-                else line
+            before = path.read_bytes()
+            old, new = RETIRED_DIR_NAME.encode(), BOOLEY_DIR_NAME.encode()
+            after = b"".join(
+                line.replace(old, new) if line.strip().rstrip(b"/") in {old, b"/" + old} else line
                 for line in before.splitlines(keepends=True)
             )
             if after != before:
-                edits.append(edit(path, after.encode(), moves))
+                edits.append(edit(path, after, moves))
     for checkout in paths:
         for name in ("AGENTS.md", "CLAUDE.md"):
             link = checkout / name
@@ -226,13 +225,13 @@ def inspect_migration(
         _require_host_migration()
         _refuse_live_sandboxes(root, document["moves"], document["registrations"])
         return Migration(root, journal, document, observe, integrations)
+    layout = classify_layout(root)
+    if layout is not Layout.RETIRED:
+        return None
     if (root / ".git").is_file():
         primary = primary_checkout(root)
         if (primary / RETIRED_DIR_NAME).is_dir():
             observe(primary / RETIRED_DIR_NAME)
-    layout = classify_layout(root)
-    if layout is not Layout.RETIRED:
-        return None
     return Migration(root, journal, _capture(root, observe, integrations), observe, integrations)
 
 
