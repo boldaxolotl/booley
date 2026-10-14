@@ -19,7 +19,10 @@ def resolve_review_files(root: Path, category: str, params: Mapping[str, Any]) -
     """Resolve exactly one declared scope, refusing escapes and category mismatches."""
     target, paths = params.get("target"), params.get("paths")
     if (target is None) == (paths is None):
-        raise ValueError("Review Goal requires exactly one of target or paths")
+        raise ValueError(
+            "Review Goal requires exactly one of target or paths. "
+            "For an existing Goal, request an approved Goal Change that declares its scope."
+        )
     if target is not None:
         try:
             fingerprint = compute_source_fingerprint(root, target=target)

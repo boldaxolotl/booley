@@ -36,7 +36,7 @@ from booley.goals.paths import record_paths
 from booley.goals.presentation import UNAVAILABLE_GOAL, goal_presentation
 from booley.goals.recorder import GoalEvidenceRecorder
 from booley.goals.store import GoalStore, GoalStoreError
-from booley.goals.target_surface import review_target_surface
+from booley.goals.target_surface import TargetSurfaceError, review_target_surface
 from booley.goals.test_run_evidence import flow_test_runs
 from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
 
@@ -135,7 +135,12 @@ class GoalFlowExecution:
         category = "rtl" if key.startswith("review_rtl_") else "tb"
         scope = tuple(resolve_review_files(self._binding.worktree_root, category, params))
         target = params.get("target")
-        surface = review_target_surface(self._binding.worktree_root, target) if target else None
+        try:
+            surface = (
+                review_target_surface(self._binding.worktree_root, target) if target else None
+            )
+        except TargetSurfaceError as exc:
+            raise ValueError(f"Review Goal declaration cannot be read: {exc}") from exc
         return ReviewInputs(scope, params.get("spec"), surface)
 
     def done_findings_require_approval(self) -> bool:

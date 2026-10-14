@@ -1044,3 +1044,24 @@ def test_target_scope_changes_do_not_strand_findings_or_get_certified_by_verify(
         ["added.v", "rtl.v"] if scope_change == "growth" else ["rtl.v"]
     )
     assert build_status(GoalStore(layout.control), layout.record).goals[0].status == "met"
+
+
+def test_review_target_declaration_race_is_a_refusal(
+    layout: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from unittest.mock import MagicMock
+
+    from booley.goals.target_surface import TargetSurfaceError
+    from tests.goals.conftest import enter_goals
+
+    layout.record = enter_goals(
+        layout, [{"family": "REVIEW", "review": "rtl_bugs", "verdict": "clean", "target": "top"}]
+    )
+    reviewer, provider = _goal_reviewer_endpoint(layout, monkeypatch)
+    monkeypatch.setattr(
+        "booley.goals.flow_execution.review_target_surface",
+        MagicMock(side_effect=TargetSurfaceError("Target changed during selection")),
+    )
+    result = reviewer._run()
+    assert result.exit_code == 2 and "declaration cannot be read" in result.report_text
+    provider.assert_not_called()

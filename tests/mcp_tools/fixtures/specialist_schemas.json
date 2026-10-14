@@ -104,7 +104,6 @@
         "type": "string"
       },
       "scope": {
-        "default": "",
         "description": "Interactive Mode: comma-separated review files",
         "type": "string"
       },

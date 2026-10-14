@@ -670,3 +670,74 @@ def test_verify_rejects_a_frozen_goal_path_replaced_by_an_external_symlink(
     verifier, invoke = endpoint(project, monkeypatch, ["--verify"])
     assert "escapes the Goal worktree" in verifier._run().report_text
     invoke.assert_not_called()
+
+
+@pytest.mark.parametrize("disposition", ["advisory", "deferred", "out_of_scope"])
+def test_done_verify_keeps_non_corrective_findings_and_completion_metadata(
+    project: Path, monkeypatch: pytest.MonkeyPatch, disposition: str
+) -> None:
+    state = DevelopmentState.load(project / "state.json")
+    state.criteria.clear()
+    state.init_criteria({"review_rtl_bugs_done": True})
+    state.save()
+    discovery(
+        project,
+        monkeypatch,
+        payload={
+            "issues": [
+                ISSUE,
+                {**ISSUE, "summary": "Retained observation", "disposition": disposition},
+            ]
+        },
+    )
+    before = DevelopmentState.load(project / "state.json").criteria["review_rtl_bugs_done"].detail
+    observation = next(row for row in before["issue_list"] if row["disposition"] == disposition)
+    verifier, invoke = endpoint(
+        project,
+        monkeypatch,
+        ["--verify"],
+        payload={
+            "findings": [{"index": 1, "status": "FIXED", "evidence": "rtl/dut.sv:1 corrected"}]
+        },
+    )
+    result = verifier._run()
+    assert result.exit_code == 0
+    assert result.detail["observations"] == [observation]
+    after = DevelopmentState.load(project / "state.json").criteria["review_rtl_bugs_done"].detail
+    assert observation in after["issue_list"] and len(after["issue_list"]) == 2
+    assert after["pending"] == [] and after["resolved"][0]["status"] == "fixed"
+    for field in (
+        "receipt_id",
+        "_source_fingerprint",
+        "contract",
+        "observation_count",
+        "review_outcome",
+        "gate_passed",
+    ):
+        assert after[field] == before[field]
+    assert invoke.call_count == 1
+
+
+def test_reviewer_schema_does_not_inject_interactive_scope_default() -> None:
+    assert "default" not in extract_schema(ReviewerSpecialist()._parser)["properties"]["scope"]
+
+
+def test_missing_spec_during_verify_explains_recovery(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = project / "spec.md"
+    spec.write_text("Reset clears output")
+    reviewer, _ = endpoint(
+        project,
+        monkeypatch,
+        ["--scope", "rtl/dut.sv", "--category", "rtl", "--focus", "spec", "--spec", "spec.md"],
+        goal=False,
+        payload={"issues": [{**ISSUE, "category": "spec"}]},
+    )
+    assert reviewer._run().exit_code == 0
+    spec.unlink()
+    verifier, invoke = endpoint(project, monkeypatch, ["--verify"], goal=False)
+    result = verifier._run()
+    assert result.exit_code == 2 and "Restore the original specification" in result.report_text
+    assert "Pass --spec" not in result.report_text
+    invoke.assert_not_called()

@@ -1028,9 +1028,18 @@ class ReviewerSpecialist(Specialist):
                 *[
                     row
                     for row in prior.get("issue_list", [])
-                    if row.get("status") in {"fixed", "waived", "excluded"}
+                    if row.get("status") in {"fixed", "waived", "excluded", "superseded"}
                 ],
             ]
+        prior.setdefault(
+            "observations",
+            [
+                row
+                for row in prior.get("issue_list", [])
+                if row.get("disposition", "current") in _NON_CORRECTIVE_DISPOSITIONS
+                and row.get("status") not in {"fixed", "waived", "excluded", "superseded"}
+            ],
+        )
         prior["pending"] = findings
         self._verify_prior = prior
         return None
@@ -1096,7 +1105,7 @@ class ReviewerSpecialist(Specialist):
 
     def _add_agent_args(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument(
-            "--scope", default="", help="Interactive Mode: comma-separated review files"
+            "--scope", default=None, help="Interactive Mode: comma-separated review files"
         )
         parser.add_argument(
             "--verify",
@@ -1641,7 +1650,13 @@ object, even after calling the capability.
                 for key, value in prior["contract"].items()
                 if not key.startswith("decisions_")
             }
-            for field in ("_source_fingerprint", "receipt_id"):
+            for field in (
+                "_source_fingerprint",
+                "receipt_id",
+                "observation_count",
+                "review_outcome",
+                "gate_passed",
+            ):
                 if field in prior:
                     detail[field] = deepcopy(prior[field])
             self.set_criterion(crit_key, prior_entry.met, detail=detail)
@@ -1748,7 +1763,14 @@ object, even after calling the capability.
                 getattr(self.args, "work_dir", None),
             )
         except OSError as exc:
-            return McpToolResult(exit_code=EXIT_ERROR, report_text=str(exc))
+            recovery = ""
+            if self._is_verify_pass():
+                recovery = (
+                    " Restore the original specification before retrying --verify, or request an approved Goal Change."
+                    if self._goal_mode
+                    else " Restore the original specification or start a new Interactive discovery review."
+                )
+            return McpToolResult(exit_code=EXIT_ERROR, report_text=str(exc) + recovery)
         if SPEC_FOCUS not in self._parse_focus() or spec_content is not None:
             return None
         return McpToolResult(
