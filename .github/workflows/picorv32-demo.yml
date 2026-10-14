@@ -116,10 +116,9 @@ jobs:
           docker run --init --rm --network none \
             --mount type=bind,src="${{ github.workspace }}",dst=/booley-source,readonly \
             --mount type=bind,src="${{ github.workspace }}/demo",dst=/work \
-            --mount type=bind,src="${{ github.workspace }}/demo/.booley",dst=/booley-project \
             --mount type=bind,src="${RUNNER_TEMP}/picorv32-demo",dst=/evidence \
             -w /work \
-            -e BOOLEY_DIR=/booley-project \
+            -e BOOLEY_DIR=/work/.booley \
             -e BOOLEY_IN_SANDBOX=1 \
             -e BOOLEY_GOAL_READINESS_EVIDENCE=/evidence/goal-readiness.json \
             -e PYTHONPATH=/booley-source/src \

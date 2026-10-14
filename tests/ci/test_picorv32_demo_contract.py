@@ -150,6 +150,10 @@ def test_demo_uses_and_retains_the_pulled_immutable_image_identity() -> None:
     }
     assert '"${{ steps.runtime-image.outputs.image }}"' in verify["run"]
     assert '"${IMAGE}" bash' not in verify["run"]
+    # Published images can still own a legacy /booley-project symlink.
+    # Docker resolves mount destinations through it, recreating the old layout.
+    assert "dst=/booley-project" not in verify["run"]
+    assert "-e BOOLEY_DIR=/work/.booley" in verify["run"]
 
 
 def test_repository_demo_contract_is_pinned_to_public_project_main() -> None:
@@ -889,3 +893,37 @@ def test_typed_goals_encode_for_mcp_without_sharing_nested_maps():
         if "thresholds" in encoded:
             encoded["thresholds"]["cell_count_max"] = 999
             assert "cell_count_max" not in goal.thresholds
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="verifier executes inside the Linux image")
+def test_demo_verifier_uses_explicit_directory_for_both_readiness_stages(tmp_path, monkeypatch):
+    import json
+    import os
+    import sys
+
+    commands = tmp_path / "commands.jsonl"
+    binary = tmp_path / "bin/python"
+    binary.parent.mkdir()
+    binary.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, sys\n"
+        "with open(os.environ['DEMO_COMMAND_LOG'], 'a') as handle:\n"
+        "    handle.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+    )
+    binary.chmod(0o755)
+    configured = "/work/Project inputs/.booley"
+    monkeypatch.setenv("PATH", str(binary.parent) + os.pathsep + os.environ["PATH"])
+    monkeypatch.setenv("BOOLEY_DIR", configured)
+    monkeypatch.setenv("DEMO_COMMAND_LOG", str(commands))
+    monkeypatch.setenv("BOOLEY_RUN_PICORV32_FLOWS", "0")
+    subprocess.run(
+        ["bash", str(VERIFY_SCRIPT.resolve())],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=10,
+    )
+    calls = [json.loads(line) for line in commands.read_text().splitlines()]
+    assert len(calls) == 2
+    for arguments, option in zip(calls, ("--booley-dir", "--project-state"), strict=True):
+        assert arguments[arguments.index(option) + 1] == configured
