@@ -9,6 +9,11 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- The idle reaper keeps Sandboxes while a client Docker exec is running, including
+  editor and terminal attachments, even when the Booley activity heartbeat is stale
+  or absent. Inspection failures keep the Sandbox for that pass; after the exec
+  ends, the existing idle timeout applies without a new grace interval.
+
 - `booley help` (including `help -h` and `help --help`) now shows the same
   top-level help as `booley --help`. Public commands are grouped as Sandbox,
   either location, and host-only, with alphabetical ordering within each group.
