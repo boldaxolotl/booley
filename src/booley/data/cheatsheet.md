@@ -152,7 +152,7 @@ Read-only, single-focus code review. It reports `CRITICAL`, `MAJOR`, and `MINOR`
 
 The result links saved review evidence, including rejected proposals for inspection. Rejected proposals do not affect Criteria.
 
-Call the `reviewer` Specialist from your Developer Agent session with `scope="<file,...>"`, `category="<category>"`, and `focus="<focus>"`.
+Call the `reviewer` Specialist from your Developer Agent session with `category="<category>"` and `focus="<focus>"`.
 
 | Category | Focus | What it checks | Sets |
 |----------|-------|----------------|------|
@@ -164,7 +164,11 @@ Call the `reviewer` Specialist from your Developer Agent session with `scope="<f
 | `rtl` | `security` | Fault-injection resistance, simple power/timing leakage, secret exposure, and unsafe failure behavior | `REVIEW:rtl_security` |
 | `tb` | `quality` | False-pass paths in scoped testbench sources, missing checks and edge cases, coverage gaps, timing/sampling mistakes, and TB code quality | `REVIEW:tb_quality` |
 
-Arguments: required `scope="<file,...>"` selects files; `steer=["<context>"]` adds review context; `dry_run=true` validates and previews without invoking a Specialist. The `spec` focus needs specification text: use `spec="<path>"` or the spec file named by the Review Goal.
+**Interactive Mode:** also pass `scope="<file,...>"`. Add `spec="<path>"` (required for the `spec` focus) or `steer=["<context>"]` for context. `dry_run=true` previews the call. Each new review replaces the previous findings.
+
+**Goal Mode:** the Review Goal fixes scope and spec, so `scope`, `spec` and `steer` are refused. Declare each Review Goal with exactly one `target` or `paths` (see the Goal catalog).
+
+**Verify fixes (both modes):** after fixing findings, call `reviewer` with `verify=true` (CLI: `--verify`). It rechecks only the latest review's open findings, finds nothing new, and passes when none remain open. To argue a finding away, add `waive=[["<finding-id>", "<justification>"]]` (CLI: `--waive <finding-id> "<justification>"`, repeatable); the Reviewer accepts or rejects each. No other argument is accepted with verify. After repeated failed verifies, Goal Mode stops and asks you to change or abandon the Goal.
 
 #### `mutation_tester`
 
@@ -211,6 +215,10 @@ variants, and the first public test that killed each detected mutant.
 `{target}` is the bare Target name when unique, or its qualified selector otherwise. Details (thresholds, tests, baseline,
 review verdict and spec) follow the name in parentheses. Review Goals require
 `clean` or `done`; the name is identical for both requirements.
+Each Review Goal also names exactly one scope: `target` (that Target's RTL or TB
+files plus dependencies) or `paths` (files relative to the Goal worktree). Examples:
+`{"family":"REVIEW","review":"rtl_bugs","verdict":"clean","target":"top"}`,
+`{"family":"REVIEW","review":"tb_quality","verdict":"done","paths":["tb/top_tb.sv"]}`.
 
 Goal argument `family` uses the uppercase capability before the colon.
 Internal evidence keys and Project-defined evidence bindings are not Goal names.

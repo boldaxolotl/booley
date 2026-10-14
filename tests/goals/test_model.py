@@ -107,12 +107,23 @@ def record(**changes: Any) -> GoalRecord:
             MutationGoalArg("sim_uart", {"min_detected": 8, "total": 10}),
         ),
         (
-            {"family": "REVIEW", "review": "rtl_bugs", "verdict": "clean"},
-            ReviewGoalArg("rtl_bugs", "clean"),
+            {
+                "paths": ["rtl/mod_a.sv"],
+                "family": "REVIEW",
+                "review": "rtl_bugs",
+                "verdict": "clean",
+            },
+            ReviewGoalArg("rtl_bugs", "clean", paths=("rtl/mod_a.sv",)),
         ),
         (
-            {"family": "REVIEW", "review": "rtl_spec", "verdict": "done", "spec": "doc/uart.md"},
-            ReviewGoalArg("rtl_spec", "done", "doc/uart.md"),
+            {
+                "paths": ["rtl/mod_a.sv"],
+                "family": "REVIEW",
+                "review": "rtl_spec",
+                "verdict": "done",
+                "spec": "doc/uart.md",
+            },
+            ReviewGoalArg("rtl_spec", "done", "doc/uart.md", paths=("rtl/mod_a.sv",)),
         ),
     ],
 )
@@ -136,11 +147,36 @@ def test_every_family_parses_to_its_shape(raw: dict[str, Any], expected: object)
         ({"family": "CYCLE_COUNT", "target": "x", "test": "t"}, "thresholds is required"),
         ({"family": "COVERAGE", "target": "x", "metrics": {"line": 1}}, "tests is required"),
         ({"family": "COVERAGE", "target": "x", "metrics": {}, "tests": []}, "tests must be"),
-        ({"family": "REVIEW", "review": "rtl_magic", "verdict": "clean"}, "review must be"),
-        ({"family": "REVIEW", "review": "rtl_bugs", "verdict": "ok"}, "verdict must be"),
-        ({"family": "REVIEW", "review": "rtl_spec", "verdict": "clean"}, "spec is required"),
         (
-            {"family": "REVIEW", "review": "rtl_bugs", "verdict": "clean", "spec": "x.md"},
+            {
+                "paths": ["rtl/mod_a.sv"],
+                "family": "REVIEW",
+                "review": "rtl_magic",
+                "verdict": "clean",
+            },
+            "review must be",
+        ),
+        (
+            {"paths": ["rtl/mod_a.sv"], "family": "REVIEW", "review": "rtl_bugs", "verdict": "ok"},
+            "verdict must be",
+        ),
+        (
+            {
+                "paths": ["rtl/mod_a.sv"],
+                "family": "REVIEW",
+                "review": "rtl_spec",
+                "verdict": "clean",
+            },
+            "spec is required",
+        ),
+        (
+            {
+                "paths": ["rtl/mod_a.sv"],
+                "family": "REVIEW",
+                "review": "rtl_bugs",
+                "verdict": "clean",
+                "spec": "x.md",
+            },
             "spec is required",
         ),
         ("lint", "must be a mapping"),
@@ -177,9 +213,17 @@ def test_schema_has_one_variant_per_family_matching_the_parser() -> None:
         raw = {name: _sample(name, family) for name in variant["required"]}
         raw["family"] = family
         if family == "REVIEW":
-            raw.update(review="rtl_spec", spec="doc/spec.md")
+            raw.update(review="rtl_spec", spec="doc/spec.md", target="top")
         assert parse_goal_arg(raw).family.name == family
         for extra in set(variant["properties"]) - set(raw):
+            if family == "REVIEW" and extra == "paths":
+                parse_goal_arg(
+                    {
+                        **{key: value for key, value in raw.items() if key != "target"},
+                        "paths": ["rtl/mod_a.sv"],
+                    }
+                )
+                continue
             parse_goal_arg({**raw, extra: _sample(extra, family)})  # every schema field parses
     json.dumps(goal_arg_json_schema())  # serializable as an MCP input schema
 
@@ -324,7 +368,13 @@ def test_required_fields_stay_required(required: str) -> None:
 def test_spec_paths_may_not_escape_the_worktree(spec: str) -> None:
     with pytest.raises(GoalArgError, match="relative to the worktree"):
         parse_goal_arg(
-            {"family": "REVIEW", "review": "rtl_spec", "verdict": "clean", "spec": spec}
+            {
+                "paths": ["rtl/mod_a.sv"],
+                "family": "REVIEW",
+                "review": "rtl_spec",
+                "verdict": "clean",
+                "spec": spec,
+            }
         )
 
 
@@ -416,7 +466,13 @@ def test_schema_threshold_names_agree_with_the_parser() -> None:
 def test_rooted_and_drive_relative_spec_paths_are_refused(spec: str) -> None:
     with pytest.raises(GoalArgError, match="relative to the worktree"):
         parse_goal_arg(
-            {"family": "REVIEW", "review": "rtl_spec", "verdict": "clean", "spec": spec}
+            {
+                "paths": ["rtl/mod_a.sv"],
+                "family": "REVIEW",
+                "review": "rtl_spec",
+                "verdict": "clean",
+                "spec": spec,
+            }
         )
 
 

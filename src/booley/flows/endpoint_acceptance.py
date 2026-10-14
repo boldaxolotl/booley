@@ -122,6 +122,8 @@ def _stamp_source_fingerprint(
     if not categories:
         return detail
     stamped = dict(detail or {})
+    if is_review and key.endswith("_done") and stamped.get("verification_only"):
+        return stamped
     try:
         freshness = build_criterion_freshness(
             Path(endpoint.args.work_dir),

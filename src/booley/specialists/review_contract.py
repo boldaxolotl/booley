@@ -18,6 +18,7 @@ class ReviewScopeContract:
 
     cocotb_files: frozenset[str] = frozenset()
     hdl_files: frozenset[str] = frozenset()
+    support_files: frozenset[str] = frozenset()
 
     @property
     def has_cocotb(self) -> bool:
@@ -34,7 +35,11 @@ class ReviewScopeContract:
     def contains_file(self, path: str) -> bool:
         """Return whether *path* is one of the explicitly scoped sources."""
         normalized = _normalize(path)
-        return normalized in self.cocotb_files or normalized in self.hdl_files
+        return (
+            normalized in self.cocotb_files
+            or normalized in self.hdl_files
+            or normalized in self.support_files
+        )
 
 
 def _normalize(path: str) -> str:
@@ -42,7 +47,9 @@ def _normalize(path: str) -> str:
     return str(PurePosixPath(value))
 
 
-def resolve_review_scope(scope: list[str], *, category: str) -> ReviewScopeContract:
+def resolve_review_scope(
+    scope: list[str], *, category: str, allow_support: bool = False
+) -> ReviewScopeContract:
     """Classify the declared scope without consulting a build Target."""
     if not scope:
         raise ReviewContractError("Review scope must contain at least one source file")
@@ -58,9 +65,9 @@ def resolve_review_scope(scope: list[str], *, category: str) -> ReviewScopeContr
             hdl.add(path)
         else:
             unsupported.append(path)
-    if unsupported:
+    if unsupported and not allow_support:
         raise ReviewContractError(
             f"Unsupported {category.upper()} source kind in --scope: "
             + ", ".join(sorted(unsupported))
         )
-    return ReviewScopeContract(frozenset(cocotb), frozenset(hdl))
+    return ReviewScopeContract(frozenset(cocotb), frozenset(hdl), frozenset(unsupported))

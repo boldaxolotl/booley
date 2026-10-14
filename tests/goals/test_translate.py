@@ -70,14 +70,25 @@ def translate(*raw: dict[str, Any]):
             {"min_detected": 8, "total": 10},
         ),
         (
-            {"family": "REVIEW", "review": "rtl_bugs", "verdict": "clean"},
+            {
+                "paths": ["rtl/mod_a.sv"],
+                "family": "REVIEW",
+                "review": "rtl_bugs",
+                "verdict": "clean",
+            },
             "review_rtl_bugs_clean",
-            {},
+            {"paths": ["rtl/mod_a.sv"]},
         ),
         (
-            {"family": "REVIEW", "review": "rtl_spec", "verdict": "done", "spec": "doc/uart.md"},
+            {
+                "paths": ["rtl/mod_a.sv"],
+                "family": "REVIEW",
+                "review": "rtl_spec",
+                "verdict": "done",
+                "spec": "doc/uart.md",
+            },
             "review_rtl_spec_done",
-            {"spec": "doc/uart.md"},
+            {"spec": "doc/uart.md", "paths": ["rtl/mod_a.sv"]},
         ),
     ],
 )
@@ -109,7 +120,12 @@ def test_every_family_translates_to_its_criterion_key(
             },
         ),
         (
-            {"family": "REVIEW", "review": "tb_quality", "verdict": "clean"},
+            {
+                "paths": ["tb/mod_a_tb.sv"],
+                "family": "REVIEW",
+                "review": "tb_quality",
+                "verdict": "clean",
+            },
             {"review_tb_quality": None},
         ),
     ],
@@ -119,6 +135,8 @@ def test_criterion_specs_equal_the_ticket_authoring_ones(
 ) -> None:
     (goal,) = translate(raw).goals
     (expected,) = CriteriaTemplate.from_yaml({"mandatory": authoring}).specs
+    if raw["family"] == "REVIEW":
+        expected.params["paths"] = raw["paths"]
     assert criterion_spec(goal) == expected
 
 
@@ -275,9 +293,26 @@ def test_identical_goals_merge_with_a_warning() -> None:
 
 def test_review_clean_wins_over_done_for_the_same_review() -> None:
     result = translate(
-        {"family": "REVIEW", "review": "rtl_bugs", "verdict": "done", "origin": "feature"},
-        {"family": "REVIEW", "review": "rtl_bugs", "verdict": "clean", "origin": "ad-hoc"},
-        {"family": "REVIEW", "review": "tb_quality", "verdict": "done"},
+        {
+            "paths": ["rtl/mod_a.sv"],
+            "family": "REVIEW",
+            "review": "rtl_bugs",
+            "verdict": "done",
+            "origin": "feature",
+        },
+        {
+            "paths": ["rtl/mod_a.sv"],
+            "family": "REVIEW",
+            "review": "rtl_bugs",
+            "verdict": "clean",
+            "origin": "ad-hoc",
+        },
+        {
+            "paths": ["tb/mod_a_tb.sv"],
+            "family": "REVIEW",
+            "review": "tb_quality",
+            "verdict": "done",
+        },
     )
     assert [goal.key for goal in result.goals] == [
         "review_rtl_bugs_clean",
@@ -338,8 +373,20 @@ def test_coverage_floors_merge_per_metric() -> None:
             "different mutation scope, total, or auto",
         ),
         (
-            {"family": "REVIEW", "review": "rtl_spec", "verdict": "clean", "spec": "a.md"},
-            {"family": "REVIEW", "review": "rtl_spec", "verdict": "clean", "spec": "b.md"},
+            {
+                "paths": ["rtl/mod_a.sv"],
+                "family": "REVIEW",
+                "review": "rtl_spec",
+                "verdict": "clean",
+                "spec": "a.md",
+            },
+            {
+                "paths": ["rtl/mod_a.sv"],
+                "family": "REVIEW",
+                "review": "rtl_spec",
+                "verdict": "clean",
+                "spec": "b.md",
+            },
             "different spec files",
         ),
         (_synth("x", area_um2_max=1), _synth("y", area_kge_max=1), "mutually exclusive"),

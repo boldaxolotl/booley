@@ -143,8 +143,8 @@ def test_corrective_findings_do_not_complete_terminal_done_review(tmp_path, monk
     assert result.criterion_met is True, result.report_text
 
 
-def test_done_correction_survives_empty_rediscovery(tmp_path, monkeypatch):
-    """A stochastic rediscovery miss cannot silently clear corrective work."""
+def test_interactive_discovery_replaces_done_findings(tmp_path, monkeypatch):
+    """Interactive Mode explicitly replaces findings on each discovery call."""
     rtl = tmp_path / "rtl" / "uart.sv"
     rtl.parent.mkdir()
     rtl.write_text("module uart; endmodule\n")
@@ -176,12 +176,11 @@ def test_done_correction_survives_empty_rediscovery(tmp_path, monkeypatch):
     assert agent.call_count == 2
     assert first.criterion_met is True
     assert second.criterion_met is True
-    assert detail["issue_list"][0]["status"] == "current"
-
-    assert detail["issues"] == 1
-    assert detail["CRITICAL"] == 1
+    assert detail["issue_list"] == []
+    assert detail["issues"] == 0
+    assert detail["CRITICAL"] == 0
     assert detail["gate_passed"] is True
-    assert "NO FINDINGS" not in second.report_text
+    assert "NO FINDINGS" in second.report_text
 
 
 def test_explicit_advisory_done_observation_completes(tmp_path, monkeypatch):
@@ -220,8 +219,8 @@ def test_explicit_advisory_done_observation_completes(tmp_path, monkeypatch):
     assert detail["receipt_id"]
 
 
-def test_clean_verify_preserves_superseded_observations(tmp_path, monkeypatch):
-    """Final rediscovery retains lifecycle evidence for absent observations."""
+def test_explicit_verify_preserves_advisory_observations(tmp_path, monkeypatch):
+    """Verification retains prior observations without running discovery."""
     rtl = tmp_path / "rtl" / "uart.sv"
     rtl.parent.mkdir()
     rtl.write_text("module uart; endmodule\n")
@@ -249,7 +248,7 @@ def test_clean_verify_preserves_superseded_observations(tmp_path, monkeypatch):
         patch("booley.specialists.specialist.isolated_agent_workspace", _passthrough_workspace),
         patch(
             "booley.specialists.specialist._call_agent_sync",
-            side_effect=[_agent_result(corrective, advisory), verify_fixed, _agent_result()],
+            side_effect=[_agent_result(corrective, advisory), verify_fixed],
         ) as agent,
     ):
         argv = [
@@ -264,15 +263,15 @@ def test_clean_verify_preserves_superseded_observations(tmp_path, monkeypatch):
         ]
         first = _run_review(argv)
         rtl.write_text("module uart; wire fixed; endmodule\n")
-        second = _run_review(argv)
+        second = _run_review(["--work-dir", str(tmp_path), "--verify"])
 
     detail = DevelopmentState.load(state_file).criteria["review_rtl_bugs_clean"].detail
-    assert agent.call_count == 3
+    assert agent.call_count == 2
     assert first.criterion_met is False
     assert second.criterion_met is True
     assert len(detail["observations"]) == 1
     assert detail["observations"][0]["summary"] == advisory["summary"]
-    assert detail["observations"][0]["status"] == "superseded"
+    assert detail["observations"][0]["disposition"] == "advisory"
 
 
 def test_source_edit_has_one_freshness_verdict(tmp_path, monkeypatch):

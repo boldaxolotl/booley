@@ -241,7 +241,7 @@ class TestRequired:
     [
         (
             ReviewerSpecialist,
-            {"scope", "category", "focus"},
+            set(),
             {"target", "diff_ref", "ticket"},
         ),
         (
@@ -256,7 +256,7 @@ def test_specialist_input_contracts_are_unified(specialist, required, removed) -
     properties = schema["properties"]
 
     assert schema["additionalProperties"] is False
-    assert required <= set(schema["required"])
+    assert required <= set(schema.get("required", []))
     assert {"model", "max_turns", "timeout_ms"}.isdisjoint(properties)
     assert {"scope", "steer", "dry_run"} <= set(properties)
     assert properties["steer"]["type"] == "array"

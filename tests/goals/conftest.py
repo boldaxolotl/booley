@@ -115,6 +115,12 @@ def layout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleNa
     git(main, "worktree", "add", "-q", "-b", "work", str(worktree))
     write_project_files(worktree / ".booley")
     monkeypatch.setenv("BOOLEY_DIR", str(control))
+    from booley.flows.endpoint_diff import _classify_files
+
+    def classify_review_paths(paths, root):
+        return {"rtl"} if list(paths) == ["rtl.v"] else _classify_files(paths, root)
+
+    monkeypatch.setattr("booley.flows.review_scope._classify_files", classify_review_paths)
     monkeypatch.setattr(entry_module, "TargetCatalog", FakeCatalog)
     monkeypatch.setattr(target_test_plan_loading, "load_checkout_target_test_plan", fake_test_plan)
     monkeypatch.setattr(target_test_plan_loading, "checkout_target_identity", fake_target_identity)
