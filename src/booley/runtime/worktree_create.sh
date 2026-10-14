@@ -463,7 +463,7 @@ _parent_lock_release
 # Copy .booley/ into worktree if it exists as a sibling (convention-based discovery).
 # Live state stays behind: Ticket boards/logs/locks, Goal state under goals/
 # (records, locks, and history; committed Goal history reaches the worktree
-# through Git only), and per-session runtime state under runtime/sessions/.
+# through Git only), session presence/handles and the Project Job handle map.
 # The ./ patterns match only top-level members
 # (the archive is built from "."); a nested directory named goals is copied.
 if [ "${BOOLEY_WORKTREE_PAIRED_PROJECT:-0}" != "1" ] && [ -d "$CWD/.booley" ]; then
@@ -486,6 +486,7 @@ if [ "${BOOLEY_WORKTREE_PAIRED_PROJECT:-0}" != "1" ] && [ -d "$CWD/.booley" ]; t
         --exclude='./.directory-relocation.json' \
         --exclude='./goals' \
         --exclude='./runtime/sessions' \
+        --exclude='./runtime/job-handles' \
         --exclude='./runtime/doctor/*.lock' \
         --exclude='./runtime/jobs/slots' \
         --exclude='./tickets/state' \

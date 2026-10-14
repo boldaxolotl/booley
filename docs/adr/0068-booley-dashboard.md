@@ -247,7 +247,8 @@ cannot identify every session or remain meaningful across Dashboard restarts.
   atomically. Reservation precedes row/record publication; a failed publication
   can leave a gap, and registration of the same key or run ID reuses its
   reservation. A new invocation with a new run ID gets a new handle. Numbers
-  are never recycled.
+  are never recycled; inline Jobs retain allocations after their transient
+  records are removed. Snapshot creation excludes both maps from worktree copies.
 - **Worktree fallback migration.** A path key becoming a repository/admin key
   carries its handle forward through a direct alias if the canonical key has
   no allocation. If both already have allocations, preserve both. Dashboard

@@ -437,7 +437,10 @@ class DashboardApp(App[None]):
         connected = row is not None
         row = row or self._known_sessions.get(self.navigation.session or "")
         if row is None:
-            return "Session disconnected · retained Jobs remain available", None
+            return (
+                f"{self._session_handle(self.navigation.session or '')} disconnected"
+                " · retained Jobs remain available"
+            ), None
         facts = row.attribution
         goal = self._goal_for_session(facts)
         shared = any(shares_worktree(facts, other.attribution) for other in self.snapshot.sessions)

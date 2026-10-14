@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import json
 import multiprocessing
+import os
+import shutil
+import subprocess
+import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -294,6 +298,81 @@ def test_missing_read_and_symlink_refusal(tmp_path):
     assert external.read_text() == "{}"
 
 
+def test_deeply_nested_handle_map_is_isolated_as_a_diagnostic(tmp_path):
+    store = handles.HandleStore(tmp_path)
+    store.root.mkdir(parents=True)
+    depth = sys.getrecursionlimit() + 1000
+    store.path.write_text("[" * depth + "0" + "]" * depth)
+    before = store.path.read_bytes()
+    with pytest.raises(RecursionError):
+        json.loads(before)
+    assert store.snapshot()[0] == {}
+    assert "handles unavailable" in store.snapshot()[1][0]
+    assert store.path.read_bytes() == before
+
+
+def test_legacy_relative_work_dir_does_not_alias_the_current_checkout(tmp_path, monkeypatch):
+    root = tmp_path / "current"
+    root.mkdir()
+    monkeypatch.chdir(root)
+    store = handles.HandleStore(tmp_path)
+    state = handles.HandleMap()
+    old = "worktree:path:" + str(root)
+    state.reserve(old, "S")
+    store.save(state)
+    job = job_records.JobRecord(
+        "historical-job",
+        "sim",
+        STAMP,
+        60,
+        status="done",
+        session_key="worktree:repo:historical",
+        work_dir=".",
+    )
+    job_records.write_record(job, tmp_path / ".interactive_logs" / "old" / ".runtime" / "jobs")
+    handle_maintenance.backfill_job_handles(tmp_path)
+    assert store.load().labels()[old] == "S1"
+    assert store.load().labels()[job.session_key] == "S2"
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or not shutil.which("bash") or not shutil.which("tar"),
+    reason="POSIX worktree copy requires bash and tar",
+)
+def test_worktree_copy_excludes_both_handle_maps_and_keeps_configuration(tmp_path):
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    project = parent / ".booley"
+    project.mkdir()
+    (project / "config.txt").write_text("Project configuration")
+    handles.register_job(project, "parent-job", "sim", "codex:one")
+    before = handles.HandleStore(project, jobs=True).path.read_bytes()
+    destination = tmp_path / "worktree"
+    destination.mkdir()
+    script = Path(handles.__file__).with_name("worktree_create.sh").read_text()
+    start = script.index('if [ "${BOOLEY_WORKTREE_PAIRED_PROJECT:-0}"')
+    block = script[start : script.index("\nfi", start) + 3]
+    env = {
+        **os.environ,
+        "CWD": str(parent),
+        "WORKTREE_DIR": str(destination),
+        "BOOLEY_WORKTREE_PAIRED_PROJECT": "0",
+    }
+    subprocess.run(
+        ["bash", "-o", "pipefail", "-c", block],
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    copied = destination / ".booley"
+    assert (copied / "config.txt").read_text() == "Project configuration"
+    assert not (copied / "runtime" / "sessions").exists()
+    assert not (copied / "runtime" / "job-handles").exists()
+    assert handles.HandleStore(project, jobs=True).path.read_bytes() == before
+
+
 def test_dashboard_reader_joins_handles_without_mutating_files(tmp_path):
     from booley.harness.dashboard.jobs import JobReader
 
@@ -400,3 +479,19 @@ def test_maintenance_failure_does_not_prevent_session_pruning(tmp_path, monkeypa
     monkeypatch.setattr("booley.mcp.session_observer.namespace", lambda: "fixture")
     observer._prune()
     assert registry.snapshot().rows == ()
+
+
+def test_full_dashboard_reader_keeps_maps_and_registry_bytes_unchanged(tmp_path, monkeypatch):
+    from booley.harness.dashboard.model import DashboardReader
+
+    registry = SessionRegistry(tmp_path)
+    registry.upsert(attribution(), "sim", "completed", now=100)
+    monkeypatch.setattr("booley.harness.dashboard.model.namespace", lambda: "fixture")
+    monkeypatch.setattr("booley.harness.dashboard.model.time.time", lambda: 101)
+    before = {str(path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    reader = DashboardReader(tmp_path, tmp_path)
+    assert reader.read().session_handles["codex:one"] == "S1"
+    assert reader.read().sessions[0].attribution.key == "codex:one"
+    assert before == {
+        str(path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()
+    }

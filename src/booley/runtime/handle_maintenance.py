@@ -68,7 +68,10 @@ def backfill_job_handles(booley_dir: Path) -> None:
                 handles.reserve(
                     rec.session_key,
                     "S",
-                    predecessors=fallback_predecessors(rec.session_key, rec.work_dir),
+                    # Historical relative paths have no recorded cwd; do not guess an alias.
+                    predecessors=fallback_predecessors(rec.session_key, rec.work_dir)
+                    if rec.work_dir and Path(rec.work_dir).is_absolute()
+                    else (),
                 )
         if handles.labels() != before:
             store.save(handles)

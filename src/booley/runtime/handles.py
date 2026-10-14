@@ -148,7 +148,7 @@ class HandleStore:
         """Isolate presentation storage failures without hiding their diagnostics."""
         try:
             return self.load().labels(), ()
-        except (OSError, ValueError, UnicodeError) as exc:
+        except (OSError, ValueError, UnicodeError, RecursionError) as exc:
             return {}, (f"{'Job' if self.jobs else 'Session'} handles unavailable: {exc}",)
 
 

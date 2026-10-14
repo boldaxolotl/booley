@@ -150,6 +150,16 @@ def test_alias_ownership_keeps_historical_jobs_in_session_scope_and_summaries():
     assert old not in str(app._content())
 
 
+def test_disconnected_session_without_cached_row_still_has_its_handle():
+    current = replace(snapshot(0), session_handles={"codex:gone": "S17"})
+    app = DashboardApp(lambda: current)
+    app.snapshot = current
+    app.navigation = Navigation("session", "codex:gone")
+    orientation, goal = app._session()
+    assert "S17" in orientation and "disconnected" in orientation
+    assert goal is None
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("shortcut", "job_filter", "expected_global", "expected_scoped"),
