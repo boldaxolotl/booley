@@ -100,6 +100,21 @@ def _prepare_parser(parser, *, inert: bool, visited: set[int]) -> None:
             replacement.choices = None
 
 
+def _copy_parser_state(source, target) -> None:
+    """Retain copied container identity, including groups used by dynamic actions."""
+    target._registries = source._registries
+    target._actions = source._actions
+    target._option_string_actions = source._option_string_actions
+    target._defaults = source._defaults
+    target._action_groups = source._action_groups
+    target._mutually_exclusive_groups = source._mutually_exclusive_groups
+    target._positionals = source._positionals
+    target._optionals = source._optionals
+    target._subparsers = source._subparsers
+    target._negative_number_matcher = source._negative_number_matcher
+    target._has_negative_number_optionals = source._has_negative_number_optionals
+
+
 def _probe_parser(parser, visited: dict[int, argparse.ArgumentParser]) -> argparse.ArgumentParser:
     if id(parser) in visited:
         return visited[id(parser)]
@@ -116,16 +131,14 @@ def _probe_parser(parser, visited: dict[int, argparse.ArgumentParser]) -> argpar
             "argument_default",
             "conflict_handler",
             "allow_abbrev",
+            "exit_on_error",
         )
     }
     for name in ("color", "suggest_on_error"):
         if hasattr(parser, name):
             options[name] = getattr(parser, name)
-    wrapped = _HelpProbeParser(parents=[parser], add_help=False, **options)
-    # Parent parsers transfer actions, but omit registered type converters.
-    wrapped._registries = parser._registries
-    # Python 3.11 flattens titled groups containing mutually exclusive actions.
-    wrapped._action_groups = parser._action_groups
+    wrapped = _HelpProbeParser(add_help=False, **options)
+    _copy_parser_state(parser, wrapped)
     visited[id(parser)] = wrapped
     for action in wrapped._actions:
         if isinstance(action, argparse._SubParsersAction):

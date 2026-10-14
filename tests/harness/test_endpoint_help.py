@@ -432,3 +432,45 @@ def test_help_preserves_titled_mutually_exclusive_groups(
         cli.main()
     assert exc.value.code == 0
     assert capsys.readouterr() == expected
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_help_includes_options_added_by_extension_actions(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    nested: bool,
+) -> None:
+    from booley.flows.endpoint_cli import human_endpoint_parser
+
+    class Expand(argparse.Action):
+        def __call__(
+            self,
+            parser: argparse.ArgumentParser,
+            namespace: argparse.Namespace,
+            values: Any,
+            option_string: str | None = None,
+        ) -> None:
+            parser.add_argument("--late-option", help="Added by the argument action")
+            parser.add_argument("late_payload", nargs="?", help="Added positional")
+
+    class Expanding(Custom):
+        def _add_args(self, parser):
+            if nested:
+                parser = parser.add_subparsers().add_parser("nested")
+            parser.add_argument("--expand", action=Expand, nargs=0)
+
+    register_custom(monkeypatch, Expanding)
+    tail = ["nested"] if nested else []
+    tail.extend(["--expand", "--help"])
+    with pytest.raises(SystemExit) as direct:
+        human_endpoint_parser(Expanding()).parse_args(tail)
+    assert direct.value.code == 0
+    expected = capsys.readouterr()
+    assert "Added by the argument action" in expected.out
+    assert "Added positional" in expected.out
+    monkeypatch.setattr("sys.argv", ["booley", "flow", "custom", *tail])
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 0
+    assert capsys.readouterr() == expected
