@@ -131,12 +131,15 @@ async def test_jobs_shortcut_returns_to_sessions(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("shortcut", ["j", "r", "a"])
-async def test_all_job_owners_shortcut_preserves_filter(shortcut):
+@pytest.mark.parametrize("via_help", [False, True])
+async def test_all_job_owners_shortcut_preserves_filter(shortcut, via_help):
     current = snapshot(2)
     app = DashboardApp(lambda: current)
     async with app.run_test(size=(130, 30)) as pilot:
         await pilot.press("1", shortcut)
         job_filter = app.navigation.job_filter
+        if via_help:
+            await pilot.press("?")
         await pilot.press("u")
         assert app.navigation.view == "jobs"
         assert app.navigation.session is None

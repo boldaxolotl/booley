@@ -367,7 +367,7 @@ class DashboardApp(App[None]):
 
     def action_help(self) -> None:
         """Display the available read-only shortcuts."""
-        self._push(Navigation("help", self.navigation.session))
+        self._push(Navigation("help", self.navigation.session, self.navigation.job_filter))
 
     def action_jobs(self, job_filter: str) -> None:
         """Session detail shortcuts carry that session's immutable ownership key."""
