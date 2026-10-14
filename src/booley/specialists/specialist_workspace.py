@@ -62,8 +62,7 @@ def _safe_symlink_target(
         relative = source.resolve(strict=False).relative_to(real_root)
     except ValueError:
         return None
-    raw_target = source.readlink()
-    return snapshot_root / relative if raw_target.is_absolute() else raw_target
+    return snapshot_root / relative
 
 
 def _copy_path(
@@ -73,13 +72,15 @@ def _copy_path(
     snapshot_root: Path,
 ) -> None:
     """Copy one git-visible path without following symlinks."""
+    if not source.parent.resolve().is_relative_to(real_root):
+        raise ValueError(f"source parent escapes Project Root: {source.relative_to(real_root)}")
     if not source.exists() and not source.is_symlink():
         return  # tracked deletion in the live worktree
     destination.parent.mkdir(parents=True, exist_ok=True)
     if source.is_symlink():
         target = _safe_symlink_target(source, real_root, snapshot_root)
         if target is not None:
-            destination.symlink_to(target)
+            destination.symlink_to(target, target_is_directory=source.is_dir())
     elif source.is_dir():
         destination.mkdir(exist_ok=True)
         for child in source.iterdir():

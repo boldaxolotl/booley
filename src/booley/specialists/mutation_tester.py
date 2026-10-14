@@ -159,7 +159,7 @@ _EDALIZE_EDA_TOOL_MARKER = ".booley_edalize_eda_tool"
 
 # The creator can inspect source but cannot modify it or invoke shell tools.
 # Booley alone materializes variants after validating the returned proposals.
-def _configured_testbench_dirs(work_dir: Path) -> list[str]:
+def _configured_testbench_files(work_dir: Path) -> list[str]:
     """Return exact testbench source/include paths for creator boundaries."""
     from booley.fusesoc.fusesoc_registry import classified_sources
 
@@ -770,14 +770,14 @@ class MutationTesterSpecialist(Specialist):
 
         boundary_section = self._mutation_boundary_section()
         task_section = self._creator_task_section(count)
-        tb_dirs = ", ".join(_configured_testbench_dirs(self.args.work_dir))
+        tb_files = ", ".join(_configured_testbench_files(self.args.work_dir))
 
         return f"""You are a Mutation Tester Specialist.
 You are read-only. Do not edit any file or run simulators. Use provider-native
 read tools when available. If file inspection is exposed only through a shell,
 you may use read-only shell commands (for example: sed, rg, nl, head, tail, or
 find). Never use a command that writes or modifies files or executes project
-code. You MUST NOT read testbench files ({tb_dirs}). Inspect only the authorized RTL scope;
+code. You MUST NOT read testbench files ({tb_files}). Inspect only the authorized RTL scope;
 other files sharing those parent directories do not acquire a testbench role.
 
 Read the mutation testing guide at `{_mutation_guide_path()}` before starting.

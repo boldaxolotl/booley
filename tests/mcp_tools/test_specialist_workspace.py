@@ -468,8 +468,9 @@ def test_category_refuses_no_core_but_diagnostic_snapshot_remains_usable(tmp_pat
 
 @pytest.mark.parametrize("category", ["rtl", "tb"])
 @pytest.mark.parametrize("external", [False, True])
+@pytest.mark.parametrize("config_name", ["booley.toml", "pipeline.toml"])
 def test_snapshot_sanitizes_resolved_copy_roots_and_unregistered_scope(
-    tmp_path, monkeypatch, category, external, caplog
+    tmp_path, monkeypatch, category, external, caplog, config_name
 ):
     from booley.runtime.booley_dir import reset_cache
     from tests.test_target_catalog import _category_sim_core
@@ -482,7 +483,7 @@ def test_snapshot_sanitizes_resolved_copy_roots_and_unregistered_scope(
     monkeypatch.setenv("BOOLEY_LOGS_DIR", str(repo / "custom-logs"))
     monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(repo / "custom-runtime"))
     reset_cache()
-    (data / "booley.toml").write_text(
+    (data / config_name).write_text(
         '[project]\nname="fixture"\n[flows.sim]\noutput_dir="custom-output"\n'
     )
     roots = [
@@ -504,7 +505,7 @@ def test_snapshot_sanitizes_resolved_copy_roots_and_unregistered_scope(
     params = AgentCallParams(prompt="review", model="test", cwd=repo)
     caplog.set_level("INFO")
     with isolated_agent_workspace(
-        params, "read_only", category, scope=scope, excluded_roots=(repo / "current-report",)
+        params, "read_only", category, scope=scope, excluded_roots=(Path("current-report"),)
     ) as (isolated, _):
         root = Path(isolated.cwd)
         assert (root / "shared/new.sv").is_file()
@@ -517,4 +518,97 @@ def test_snapshot_sanitizes_resolved_copy_roots_and_unregistered_scope(
                 assert (relative / "result.md").as_posix() in caplog.text
     for source in roots:
         assert (source / "copied.sv").is_file()
+    reset_cache()
+
+
+def test_snapshot_refuses_tracked_file_beneath_external_symlink_parent(tmp_path):
+    from tests.conftest import symlink_or_skip
+    from tests.test_target_catalog import _category_sim_core
+
+    repo = _repo(tmp_path)
+    _category_sim_core(repo)
+    external = tmp_path / "external"
+    external.mkdir()
+    (external / "evidence.md").write_text("external private source copy\n")
+    parent = repo / "replaced"
+    parent.mkdir()
+    (parent / "evidence.md").write_text("original\n")
+    _git(["add", "replaced/evidence.md"], repo)
+    (parent / "evidence.md").unlink()
+    parent.rmdir()
+    symlink_or_skip(parent, external, target_is_directory=True)
+    params = AgentCallParams(prompt="review", model="test", cwd=repo)
+    with (
+        pytest.raises(ValueError, match=r"source parent escapes.*replaced/evidence.md"),
+        isolated_agent_workspace(params, "read_only", "rtl"),
+    ):
+        pytest.fail("provider must not receive an externally populated snapshot")
+    assert (external / "evidence.md").read_text() == "external private source copy\n"
+
+
+def test_snapshot_rebases_relative_reentry_symlink_without_writing_live_files(
+    tmp_path, monkeypatch
+):
+    import tempfile
+
+    from tests.conftest import symlink_or_skip
+    from tests.test_target_catalog import _category_sim_core
+
+    live = tmp_path / "live"
+    live.mkdir()
+    repo = _repo(live)
+    _category_sim_core(repo)
+    parent = repo / "alias"
+    parent.mkdir()
+    (parent / "dut.sv").write_text("original\n")
+    _git(["add", "alias/dut.sv"], repo)
+    (parent / "dut.sv").unlink()
+    parent.rmdir()
+    symlink_or_skip(parent, "../repo/shared", target_is_directory=True)
+    snapshots = tmp_path / "snapshots"
+    outsider = snapshots / "repo/shared"
+    outsider.mkdir(parents=True)
+    (outsider / "dut.sv").write_text("must remain unchanged\n")
+    original = tempfile.TemporaryDirectory
+    monkeypatch.setattr(
+        "booley.specialists.specialist_workspace.tempfile.TemporaryDirectory",
+        lambda **kwargs: original(dir=snapshots, **kwargs),
+    )
+    params = AgentCallParams(prompt="review", model="test", cwd=repo)
+    with isolated_agent_workspace(params, "read_only", "rtl"):
+        assert (outsider / "dut.sv").read_text() == "must remain unchanged\n"
+    assert (outsider / "dut.sv").read_text() == "must remain unchanged\n"
+
+
+def test_snapshot_sanitizes_checkout_and_goal_copies_despite_external_selection(
+    tmp_path, monkeypatch
+):
+    from booley.runtime.booley_dir import reset_cache
+    from tests.test_target_catalog import _category_sim_core
+
+    repo = _repo(tmp_path)
+    _category_sim_core(repo)
+    external = tmp_path / "external-state"
+    external.mkdir()
+    (external / "booley.toml").write_text('[project]\nname="external"\n')
+    monkeypatch.setenv("BOOLEY_DIR", str(external))
+    reset_cache()
+    local = repo / ".booley"
+    local.mkdir()
+    (local / "booley.toml").write_text('[project]\nname="checkout"\n')
+    goal = local / "goals/case-20261015T000000Z"
+    roots = [local / "selftest", goal / "logs", goal / ".runtime/flow-reports"]
+    for root in roots:
+        root.mkdir(parents=True)
+        (root / "source-copy.md").write_text("embedded opposite source\n")
+    history = local / "goals/history"
+    history.mkdir()
+    (history / "summary.md").write_text("authored summary\n")
+    _git(["add", "--force", ".booley"], repo)
+    params = AgentCallParams(prompt="review", model="test", cwd=repo)
+    with isolated_agent_workspace(params, "read_only", "rtl") as (isolated, _):
+        for root in roots:
+            assert not (Path(isolated.cwd) / root.relative_to(repo)).exists()
+        assert (Path(isolated.cwd) / history.relative_to(repo) / "summary.md").is_file()
+    assert all((root / "source-copy.md").is_file() for root in roots)
     reset_cache()

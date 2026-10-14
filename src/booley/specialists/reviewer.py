@@ -738,6 +738,8 @@ def validate_scope_category(
     scope_paths: list[str],
     category: str,
     work_dir: Path | None = None,
+    *,
+    allow_support: bool = False,
 ) -> list[str]:
     """Validate scope paths match the review category.
 
@@ -758,6 +760,8 @@ def validate_scope_category(
                 for path in scope_paths
                 if canonical_project_path(work_dir, path) in opposite
             ]
+    if allow_support:
+        return []
     from booley.runtime.shared_infra import source_path_matches
 
     errors: list[str] = []
@@ -1199,9 +1203,9 @@ class ReviewerSpecialist(Specialist):
             scope_paths,
             self.args.category,
             self.args.work_dir,
+            allow_support=self._goal_mode,
         )
-        if not self._goal_mode or any("opposite-category" in error for error in scope_errors):
-            errors.extend(scope_errors)
+        errors.extend(scope_errors)
         _warn_unregistered_sources(scope_paths, self.args.work_dir)
 
         return errors

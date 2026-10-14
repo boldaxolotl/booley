@@ -1188,11 +1188,7 @@ def _sim_fileset_inventory(
     inventory: dict[Path, set[str]] = {path: set() for path in documents}
     for core_file, doc in documents.items():
         targets = doc.get("targets") or {}
-        if not isinstance(targets, Mapping):
-            raise FuseSocError(f"{core_file}: targets must be a mapping")
         for name, target in targets.items():
-            if not isinstance(target, Mapping):
-                raise FuseSocError(f"{core_file}: invalid Target {name}")
             ref = _enumerated_ref(doc, name, str(doc.get("name", "")), core_file)
             if not flow_can_drive("sim", ref):
                 continue
@@ -1212,11 +1208,7 @@ def _role_entries(
 ) -> Iterator[tuple[str, str, tuple[str, ...], bool, bool]]:
     """Declared paths, effective tags, include status and explicit-role evidence."""
     filesets = doc.get("filesets") or {}
-    if not isinstance(filesets, Mapping):
-        raise FuseSocError(f"{core_file}: filesets must be a mapping")
     for fs_name, fs in filesets.items():
-        if not isinstance(fs, Mapping):
-            raise FuseSocError(f"{core_file}: invalid fileset {fs_name!r}")
         for path, attrs in _fileset_file_attrs(fs):
             tags = tuple(fs.get("tags") or ()) + tuple(attrs.get("tags") or ())
             if {"tb", "rtl"} <= set(tags):
@@ -1235,12 +1227,12 @@ def _partition_fileset_files(
     rtl: list[str],
     tb: list[str],
     *,
+    effective_tb: set[str],
     include_headers: bool = False,
 ) -> None:
     """Append one core's fileset files into the RTL/TB partition, in place."""
     if not isinstance(filesets, Mapping):
         return
-    effective_tb = set(classified_sources(project_root).tb_files)
     names = [
         name for expression in fileset_names for name in _possible_expression_values(expression)
     ]
@@ -1326,6 +1318,7 @@ def target_source_files_for_ref(
     target_def = targets.get(ref.name) if isinstance(targets, Mapping) else None
     rtl: list[str] = []
     tb: list[str] = []
+    effective_tb = set(classified_sources(project_root).tb_files)
     _partition_fileset_files(
         ref.core_file,
         project_root,
@@ -1333,6 +1326,7 @@ def target_source_files_for_ref(
         target_fileset_names(target_def),
         rtl,
         tb,
+        effective_tb=effective_tb,
         include_headers=include_headers,
     )
 
@@ -1352,9 +1346,9 @@ def target_source_files_for_ref(
                 _dependency_fileset_names(dep_doc),
                 rtl,
                 tb,
+                effective_tb=effective_tb,
                 include_headers=include_headers,
             )
-
     # Preserve first-seen order while dropping duplicates: a file reachable
     # through two dependency paths must not be mutated or counted twice.
     return CoreSources(
@@ -1744,17 +1738,27 @@ def _core_files_root(core_file: Path, project_root: Path) -> Path:
     return core_file.parent
 
 
+def _validate_source_attributes(attrs: Mapping[str, Any], core_file: Path, location: str) -> None:
+    """Validate role/type metadata before it can affect category membership."""
+    if "tags" in attrs and not is_str_list(attrs["tags"]):
+        raise FuseSocError(f"{core_file}: {location}.tags must be an array of strings")
+    if "file_type" in attrs and not isinstance(attrs["file_type"], str):
+        raise FuseSocError(f"{core_file}: {location}.file_type must be a string")
+    if "is_include_file" in attrs and not isinstance(attrs["is_include_file"], bool):
+        raise FuseSocError(f"{core_file}: {location}.is_include_file must be a boolean")
+
+
 def _validate_classification_doc(doc: Mapping[str, Any], core_file: Path) -> None:
     """Validate the declaration shapes consumed by security-critical inventory."""
-    filesets = doc.get("filesets")
+    filesets = doc.get("filesets", {})
     if not isinstance(filesets, Mapping):
         raise FuseSocError(f"{core_file}: category isolation needs usable filesets")
     for name, fileset in filesets.items():
         if not isinstance(fileset, Mapping):
             raise FuseSocError(f"{core_file}: invalid fileset {name}")
-        for key in ("files", "tags"):
-            if key in fileset and not isinstance(fileset[key], list):
-                raise FuseSocError(f"{core_file}: filesets.{name}.{key} must be array")
+        if "files" in fileset and not isinstance(fileset["files"], list):
+            raise FuseSocError(f"{core_file}: filesets.{name}.files must be array")
+        _validate_source_attributes(fileset, core_file, f"filesets.{name}")
         for entry in fileset.get("files", ()):
             if isinstance(entry, str):
                 continue
@@ -1763,8 +1767,7 @@ def _validate_classification_doc(doc: Mapping[str, Any], core_file: Path) -> Non
             path, attrs = next(iter(entry.items()))
             if not isinstance(path, str) or not isinstance(attrs, Mapping):
                 raise FuseSocError(f"{core_file}: malformed source {path}")
-            if "tags" in attrs and not isinstance(attrs["tags"], list):
-                raise FuseSocError(f"{core_file}: invalid tags for {path}")
+            _validate_source_attributes(attrs, core_file, path)
     _validate_classification_targets(doc.get("targets", {}), core_file)
 
 
@@ -1776,8 +1779,8 @@ def _validate_classification_targets(targets: Any, core_file: Path) -> None:
         if not isinstance(target, Mapping):
             raise FuseSocError(f"{core_file}: invalid Target {name}")
         for key in ("filesets", "filesets_append"):
-            if key in target and not isinstance(target[key], list):
-                raise FuseSocError(f"{core_file}: Target {name}.{key} must be array")
+            if key in target and not is_str_list(target[key]):
+                raise FuseSocError(f"{core_file}: Target {name}.{key} must be array of strings")
 
 
 def _classification_documents(root: Path, *, strict: bool) -> dict[Path, Mapping[str, Any]]:
@@ -1874,7 +1877,7 @@ def source_dirs_from_core(
 
     tb_incl: set[str] = set()
     for core_file, doc in documents.items():
-        for fileset in doc["filesets"].values():
+        for fileset in doc.get("filesets", {}).values():
             for path, _tags, include in _fileset_entries(fileset):
                 for candidate in _possible_expression_values(path):
                     rel = _core_relative_path(core_file, root, candidate)
@@ -1899,7 +1902,9 @@ def explicit_target_sources(project_root: Path | str, ref: TargetRef) -> CoreSou
             if core_file == ref.core_file
             else _dependency_fileset_names(doc)
         )
-        for name in names:
+        for name in (
+            name for expression in names for name in _possible_expression_values(expression)
+        ):
             fileset = (doc.get("filesets") or {}).get(name)
             if not isinstance(fileset, Mapping):
                 continue

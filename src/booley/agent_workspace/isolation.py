@@ -156,21 +156,12 @@ def _configured_outputs(value: object) -> list[Path]:
     ]
 
 
-def owned_copy_roots(real_root: Path) -> tuple[Path, ...]:
-    """Read artifact authorities without creating runtime state in the live tree."""
-    from booley.runtime.booley_dir import resolve_booley_dir
+def _booley_copy_roots(directory: Path) -> list[Path]:
+    """Known disposable copies in one authoritative or checkout Booley Directory."""
+    from booley.goals.paths import GoalIdError, goals_root, record_paths
 
     roots = [
-        Path(value)
-        for key in ("BOOLEY_RUNTIME_DIR", "BOOLEY_LOGS_DIR")
-        if (value := os.environ.get(key))
-    ]
-    try:
-        selected = resolve_booley_dir(real_root)
-    except FileNotFoundError:
-        return tuple(roots)
-    roots.extend(
-        selected / name
+        directory / name
         for name in (
             ".runtime",
             "runtime",
@@ -180,9 +171,37 @@ def owned_copy_roots(real_root: Path) -> tuple[Path, ...]:
             "logs",
             ".interactive_logs",
         )
-    )
-    roots.extend(selected.glob(".baseline-wt-*"))
-    for config in (selected / "booley.toml", real_root / "booley.toml"):
+    ]
+    roots.extend(directory.glob(".baseline-wt-*"))
+    goals = goals_root(directory)
+    for child in goals.iterdir() if goals.is_dir() else ():
+        try:
+            paths = record_paths(directory, child.name)
+        except GoalIdError:
+            continue  # history and locks are not per-Goal artifact trees
+        roots.extend((paths.runtime_dir, paths.logs_dir))
+    return roots
+
+
+def owned_copy_roots(real_root: Path) -> tuple[Path, ...]:
+    """Read artifact authorities without creating runtime state in the live tree."""
+    from booley.core.config_paths import resolve_toml
+    from booley.runtime.booley_dir import resolve_booley_dir, resolve_checkout_booley_dir
+
+    roots = [
+        Path(value)
+        for key in ("BOOLEY_RUNTIME_DIR", "BOOLEY_LOGS_DIR")
+        if (value := os.environ.get(key))
+    ]
+    directories: set[Path] = set()
+    for resolver in (resolve_booley_dir, resolve_checkout_booley_dir):
+        try:
+            directories.add(resolver(real_root))
+        except FileNotFoundError:
+            continue
+    for directory in directories:
+        roots.extend(_booley_copy_roots(directory))
+    for config in (resolve_toml(path) for path in (*directories, real_root)):
         if config.is_file():
             roots.extend(_configured_outputs(tomllib.loads(config.read_text(encoding="utf-8"))))
     return tuple(path if path.is_absolute() else real_root / path for path in roots)
@@ -302,7 +321,7 @@ def hide_opposite_sources(
     own, opposite = _category_membership(root, category, category_files, scope)
     excluded = []
     for path in excluded_roots:
-        resolved = path.resolve()
+        resolved = (path if path.is_absolute() else real / path).resolve()
         if resolved.is_relative_to(real):
             excluded.append(root / resolved.relative_to(real))
     excluded.extend(_campaign_roots(root))

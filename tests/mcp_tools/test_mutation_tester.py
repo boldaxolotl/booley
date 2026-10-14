@@ -392,10 +392,9 @@ class TestCreatorPrompt:
         p = endpoint._build_creator_prompt()
         assert "Developer Agent Context" not in p
 
-    def test_uses_configured_testbench_dirs_for_boundary(self, tmp_path: Path):
-        # ADR 0026: the read-boundary TB dirs come from the .core tags:[tb]
-        # partition — the tb fileset's source dir (verif/) plus its include
-        # header dir (checks/, an is_include_file entry).
+    def test_uses_configured_testbench_files_for_boundary(self, tmp_path: Path):
+        # The read boundary names exact TB sources and include headers from
+        # the .core tags:[tb] partition, rather than their parent directories.
         (tmp_path / "design.core").write_text(
             "CAPI=2:\n"
             "name: ::demo\n"
@@ -414,8 +413,8 @@ class TestCreatorPrompt:
         endpoint = _make_endpoint(tmp_path, scope="rtl/mod_a.sv")
         p = endpoint._build_creator_prompt()
 
-        assert "verif/" in p
-        assert "checks/" in p
+        assert "verif/tb_top.sv" in p
+        assert "checks/asserts.svh" in p
         assert "tb/ or any configured" not in p
 
     def test_flat_repo_boundary_names_testbench_file_not_directory(self, tmp_path: Path):

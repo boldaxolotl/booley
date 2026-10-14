@@ -140,6 +140,13 @@ class TestRemoveShadowPackage:
         "filesets: broken",
         "filesets: {rtl: {files: source.sv}}",
         "filesets: {rtl: {files: [42]}}",
+        "filesets: {rtl: {files: [source.sv], tags: [42]}}",
+        "filesets: {rtl: {files: [source.sv], tags: [[tb]]}}",
+        "filesets: {rtl: {files: [source.sv], file_type: [cppSource]}}",
+        "filesets: {rtl: {files: [{source.sv: {tags: [42]}}]}}",
+        "filesets: {rtl: {files: [{source.sv: {file_type: 42}}]}}",
+        'filesets: {rtl: {files: [{source.sv: {is_include_file: "false"}}]}}',
+        "filesets: {rtl: {files: [source.sv]}}\ntargets: {sim: {filesets: [42]}}",
     ],
 )
 def test_strict_inventory_refuses_malformed_discovered_core(tmp_path, content):
@@ -158,3 +165,11 @@ def test_strict_inventory_refuses_escaping_declared_source(tmp_path):
     core.write_text(core.read_text().replace("rtl/dut.sv", "../outside.sv"))
     with pytest.raises(FuseSocError, match="escapes Project Root"):
         classified_sources(tmp_path, strict=True)
+
+
+def test_strict_inventory_allows_metadata_core_without_filesets(tmp_path):
+    from booley.fusesoc.fusesoc_registry import classified_sources
+
+    _write_core(tmp_path)
+    (tmp_path / "metadata.core").write_text("CAPI=2:\nname: ::metadata:0\n")
+    assert "rtl/dut.sv" in classified_sources(tmp_path, strict=True).rtl_source_files
