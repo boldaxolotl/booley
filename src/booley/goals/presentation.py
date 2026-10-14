@@ -87,8 +87,12 @@ def _details(goal: GoalSpec, requirement: str, verdict: str) -> str:
         ("baseline_target", "baseline"),
         ("_baseline_target", "baseline"),
         ("scope", "scope"),
+        ("paths", "paths"),
+        ("target", "Target"),
         ("spec", ""),
     ):
+        if field == "target" and goal.family is not GoalFamily.REVIEW:
+            continue
         value = params.get(field)
         if value is None:
             continue

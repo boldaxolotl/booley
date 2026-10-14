@@ -142,11 +142,10 @@ def test_source_only_audit_is_non_gating_and_surfaces_in_mcp(reviewer, monkeypat
         {"mcp_tool": "reviewer", "exit_code": 0, "detail": result.detail}
     )
     assert payload["reports"][0]["detail"]["filtered"] == result.detail["filtered"]
-    calls = []
-    monkeypatch.setattr(reviewer, "_invoke_agent", calls.append)
+    reviewer.parse_args(["--work-dir", str(reviewer.args.work_dir), "--verify"])
     cached = reviewer._run()
-    assert calls == []
-    assert cached.detail["filtered"] == result.detail["filtered"]
+    assert cached.exit_code == 2
+    assert "no open findings" in cached.report_text
 
 
 @pytest.mark.parametrize("disposition", ["current", "advisory", "deferred", "out_of_scope"])
@@ -180,6 +179,7 @@ def test_verify_rejections_keep_obligations_and_raw_evidence(reviewer, monkeypat
         "_invoke_agent_with_resume",
         lambda _params: MagicMock(output=json.dumps({"findings": rows})),
     )
+    reviewer.parse_args(["--work-dir", str(reviewer.args.work_dir), "--verify"])
     result = reviewer._run()
     assert result.criterion_met is False
     assert len(result.detail["pending"]) == 1
@@ -189,65 +189,48 @@ def test_verify_rejections_keep_obligations_and_raw_evidence(reviewer, monkeypat
     assert initial.detail["rejected"] == []
 
 
-def test_audit_survives_verification_and_rediscovery(reviewer, monkeypatch):
+def test_audit_survives_verification_without_rediscovery(reviewer, monkeypatch):
     output(reviewer, monkeypatch, {"issues": [proposal(), proposal(file="rtl/other.sv")]})
     first = reviewer._run()
     Path(reviewer.args.work_dir, "rtl/dut.sv").write_text("module dut; logic fixed; endmodule\n")
+    reviewer.parse_args(["--work-dir", str(reviewer.args.work_dir), "--verify"])
     monkeypatch.setattr(
         reviewer,
         "_invoke_agent_with_resume",
         lambda _params: MagicMock(
             output=json.dumps(
-                {"findings": [{"index": 1, "status": "FIXED", "evidence": "fixed logic"}]}
+                {
+                    "findings": [
+                        {"index": 1, "status": "FIXED", "evidence": "rtl/dut.sv:1 fixed logic"}
+                    ]
+                }
             )
         ),
     )
-    output(reviewer, monkeypatch, {"issues": [proposal(file="rtl/other.sv")]})
+    monkeypatch.setattr(
+        reviewer, "_run_single_review", lambda: pytest.fail("Verify must never rediscover")
+    )
     second = reviewer._run()
-    assert second.criterion_met is True
-    assert len(second.detail["filtered"]) == 2
-    assert len({row["attempt_id"] for row in second.detail["filtered"]}) == 2
-    assert second.detail["filtered"][0]["evidence"] == first.detail["filtered"][0]["evidence"]
-    original = json.loads(Path(second.detail["filtered"][0]["evidence"]).read_text())
-    assert original["detail"]["filtered"][0] == first.detail["filtered"][0]
+    assert second.exit_code == 0
+    assert second.detail["filtered"] == first.detail["filtered"]
     assert len(second.detail["resolved"]) == 1
+    assert second.detail["pending"] == []
 
 
-def test_failed_semantics_migration_archives_receipt_and_preserves_obligations(
+def test_failed_interactive_discovery_retains_prior_obligations_until_success(
     reviewer, monkeypatch
 ):
     output(reviewer, monkeypatch, {"issues": [proposal()]})
     first = reviewer._run()
-    entry = reviewer.state.criteria["review_rtl_bugs_clean"]
-    old = entry.detail
-    old["contract"].pop("filtering_semantics_revision")
-    old["resolved"] = [
-        {
-            **proposal(summary="explicit waiver"),
-            "status": "waived",
-            "disposition_actor": "human",
-            "justification": "accepted",
-        },
-        {
-            **proposal(summary="policy exclusion"),
-            "status": "excluded",
-            "disposition_actor": "harness_policy",
-        },
-    ]
-    reviewer.state.save()
     output(reviewer, monkeypatch, {"issues": [None]})
     failed = reviewer._run()
     assert failed.exit_code == 2
-    assert failed.detail["needs_discovery"] is True
     assert failed.detail["pending"] == first.detail["pending"]
-    assert failed.detail["resolved"] == old["resolved"]
-    archive = json.loads(Path(failed.detail["receipt_history"][-1]).read_text())
-    assert archive["resolved"] == old["resolved"]
+    assert "needs_discovery" not in failed.detail
     output(reviewer, monkeypatch, {"issues": []})
-    restarted = reviewer._run()
-    assert restarted.criterion_met is False
-    assert restarted.detail["pending"] == first.detail["pending"]
-    assert restarted.detail["resolved"] == old["resolved"]
+    replaced = reviewer._run()
+    assert replaced.criterion_met
+    assert replaced.detail["pending"] == []
 
 
 @pytest.mark.parametrize("version", [None, 3, 4])
@@ -340,8 +323,7 @@ def test_reused_specialist_starts_audit_history_for_new_contract(reviewer, monke
     assert result.detail["pending"][0]["file"] == "rtl/other.sv"
     assert result.detail["filtered"] == []
     assert result.detail["rejected"] == []
-    archived = json.loads(Path(result.detail["receipt_history"][-1]).read_text())
-    assert archived["rejected"] == first.detail["rejected"]
+    assert result.detail.get("receipt_history", []) == []
     assert evidence(first)["rejected"] == first.detail["rejected"]
 
 
@@ -362,7 +344,7 @@ def test_historical_policy_exclusion_does_not_suppress_fresh_finding(reviewer, m
     result = reviewer._run()
     assert result.criterion_met is False
     assert len(result.detail["pending"]) == 1
-    assert result.detail["resolved"][0]["disposition_actor"] == "harness_policy"
+    assert result.detail["resolved"] == []
     normalized = collect_review_dispositions(reviewer.state.criteria)
     assert len(normalized) == 1
     assert normalized[0]["disposition"] == "open"
@@ -370,11 +352,14 @@ def test_historical_policy_exclusion_does_not_suppress_fresh_finding(reviewer, m
 
 
 @pytest.mark.parametrize("status", ["FIXED", "WAIVED"])
-def test_rediscovered_pending_finding_overrides_historical_resolution(
-    reviewer, monkeypatch, status
-):
+def test_interactive_discovery_replaces_historical_resolution(reviewer, monkeypatch, status):
     output(reviewer, monkeypatch, {"issues": [proposal()]})
-    reviewer._run()
+    first = reviewer._run()
+    root = str(reviewer.args.work_dir)
+    args = ["--work-dir", root, "--verify"]
+    if status == "WAIVED":
+        args += ["--waive", first.detail["pending"][0]["finding_id"], "Accepted policy permits it"]
+    reviewer.parse_args(args)
     monkeypatch.setattr(
         reviewer,
         "_invoke_agent_with_resume",
@@ -385,28 +370,22 @@ def test_rediscovered_pending_finding_overrides_historical_resolution(
                         {
                             "index": 1,
                             "status": status,
-                            "evidence": "rtl/dut.sv:1 — previously corrected",
-                            "justification": "Previously accepted by the user",
+                            "evidence": "rtl/dut.sv:1 fixed",
+                            "justification": "Policy permits it",
                         }
                     ]
                 }
             )
         ),
     )
-    assert reviewer._run().criterion_met is True
-    entry = reviewer.state.criteria["review_rtl_bugs_clean"]
-    entry.detail["contract"].pop("filtering_semantics_revision")
-    reviewer.state.save()
-
+    assert reviewer._run().criterion_met
+    reviewer.parse_args(
+        ["--work-dir", root, "--scope", "rtl/dut.sv", "--category", "rtl", "--focus", "bugs"]
+    )
     result = reviewer._run()
-
-    assert result.criterion_met is False
+    assert not result.criterion_met
     assert len(result.detail["pending"]) == 1
-    assert result.detail["resolved"][0]["status"] == status.lower()
-    normalized = collect_review_dispositions(reviewer.state.criteria)
-    assert len(normalized) == 1
-    assert normalized[0]["disposition"] == "open"
-    assert normalized[0]["finding_id"] == result.detail["pending"][0]["finding_id"]
+    assert result.detail["resolved"] == []
 
 
 @pytest.mark.parametrize(
@@ -518,30 +497,17 @@ def test_real_reviewer_output_roundtrips_package(reviewer, monkeypatch, mode, di
 
 
 @pytest.mark.parametrize("mode", ["done", "clean"])
-def test_real_history_preserves_advisory_under_superseded(reviewer, monkeypatch, mode):
-    from booley.review.artifact import ReviewPackage
-    from tests.review.test_artifact import _package
-
+def test_interactive_discovery_replaces_prior_advisory(reviewer, monkeypatch, mode):
     reviewer.state.criteria.clear()
     key = f"review_rtl_bugs_{mode}"
     reviewer.state.init_criteria({key: True})
     output(reviewer, monkeypatch, {"issues": [proposal(disposition="advisory")]})
     first = reviewer._run()
     assert first.exit_code == 0
-    Path(reviewer.args.work_dir, "rtl/dut.sv").write_text("module dut; wire changed; endmodule\n")
+    assert collect_review_dispositions({key: {"detail": first.detail}})
     output(reviewer, monkeypatch, {"issues": []})
-    monkeypatch.setattr(
-        reviewer,
-        "_invoke_agent_with_resume",
-        lambda _params: MagicMock(output=json.dumps({"findings": []})),
-    )
     second = reviewer._run()
-    rows = collect_review_dispositions({key: {"detail": second.detail}})
-    assert rows[0]["status"] == "superseded"
-    package = ReviewPackage.parse({**_package(), "review_dispositions": rows})
-    row = ReviewPackage.parse(package.to_dict()).review_dispositions[0]
-    assert row.disposition == "reported"
-    assert row.reviewer_disposition == "advisory"
+    assert collect_review_dispositions({key: {"detail": second.detail}}) == []
 
 
 def test_fresh_superseded_proposal_is_rejected(reviewer, monkeypatch):

@@ -194,8 +194,13 @@ def _translate_one(
     expanded = specs[0].expand([])
     assert len(expanded) == 1, f"{where} expanded to {len(expanded)} Criterion keys"
     params = dict(specs[0].params)
-    if isinstance(arg, ReviewGoalArg) and arg.spec is not None:
-        params["spec"] = arg.spec
+    if isinstance(arg, ReviewGoalArg):
+        if arg.spec is not None:
+            params["spec"] = arg.spec
+        if arg.target is not None:
+            params["target"] = arg.target
+        else:
+            params["paths"] = list(arg.paths)
     target = None if isinstance(arg, ReviewGoalArg) else arg.target
     return GoalSpec(expanded[0][0], arg.family, target, params, (arg.origin,))
 
@@ -394,6 +399,8 @@ def _merge_simulation(
 def _merge_review(members: Members, _resolver: CanonicalNames | None) -> tuple[GoalArg, list[str]]:
     reviews = [arg for arg, _ in members if isinstance(arg, ReviewGoalArg)]
     _require_equal(members, "spec files", lambda arg: _as(arg, ReviewGoalArg).spec)
+    _require_equal(members, "review Targets", lambda arg: _as(arg, ReviewGoalArg).target)
+    _require_equal(members, "review paths", lambda arg: _as(arg, ReviewGoalArg).paths)
     clean = [arg for arg in reviews if arg.verdict == "clean"]
     done = [arg for arg in reviews if arg.verdict == "done"]
     if not clean or not done:

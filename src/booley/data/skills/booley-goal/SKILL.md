@@ -199,3 +199,24 @@ of the owned task. `booley goal status` inspects local
 records; MCP `goal_status` is the worktree-specific evidence authority.
 Quiet presence is a presentation hint, not permission to abandon or prune a
 worktree. Inspect its record and preserve work before any human-directed cleanup.
+
+## Review Goals
+
+Translate each review request into a `REVIEW` Goal with its `review` kind,
+`verdict`, and exactly one `target` or `paths`. A Target reviews its category
+files and dependency closure; paths name category-matching files relative to the
+Goal worktree. Spec review also requires the Goal's `spec` path.
+
+Discover with `reviewer(category="rtl", focus="bugs")`, using the matching
+category/focus. The Goal supplies scope and spec. Fix reported findings, then
+call `reviewer(verify=true)` to check only the latest review's open findings.
+Propose waivers with `waive=[["<finding-id>", "<justification>"]]`; the Reviewer
+decides each justification. Verify accepts only waiver proposals as review
+arguments and runs no discovery. Resolve each open review before starting discovery for another focus, so the
+latest-review-only verify command can always reach its findings. A passing verify meets `clean` at the verified
+contents; it leaves `done` completion evidence unchanged.
+
+Check Goal status after verification: changed spec, policy or Target file
+selection can leave evidence stale even after all findings are resolved. Then
+run discovery again. Exhausted verify budgets require a human Goal Change or
+abandonment decision; keep the findings intact.

@@ -23,8 +23,6 @@ Everything you need is in this prompt or in the TB sources:
   names. This is your source of truth for what the DUT is supposed to do.
   Read it before the checklist; skip spec-dependent checks if it is absent
   rather than guessing.
-- **## Documented Assumptions** — decisions the developer recorded for points
-  the spec leaves open, when any exist.
 - **Change-request type policy** — when present, it overrides the severity of the
   coverage-expansion checks named there.
 - The TB module(s) under **Review the following files**, plus the helper
@@ -38,8 +36,7 @@ helpers — that is what the Grep instruction in the methodology preamble is for
 
 ## Procedure
 
-1. Read the **## Specification** section, and **## Documented Assumptions** if
-   present
+1. Read the **## Specification** section.
 2. Read the target TB module(s) listed in the review request (the
    `cocotb_module` file plus any helper packages it imports)
 3. Identify the DUT interface from `dut.<signal>` accesses, the spec, and any

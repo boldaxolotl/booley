@@ -551,7 +551,7 @@ def publish_open_review(layout, monkeypatch):
     from booley.goals.freshness import stamp_goal_detail
 
     monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
-    clean = {"family": "REVIEW", "review": "rtl_bugs", "verdict": "clean"}
+    clean = {"paths": ["rtl.v"], "family": "REVIEW", "review": "rtl_bugs", "verdict": "clean"}
     layout.record = enter_goals(layout, [clean])
     env = ChangeEnvironment(EntryEnvironment(layout.control))
     key = "review_rtl_bugs_clean"

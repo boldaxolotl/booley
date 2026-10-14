@@ -993,7 +993,10 @@ def _params_to_argv(params: dict[str, Any]) -> list[str]:
 
         if isinstance(value, list):
             for item in value:
-                emit(flag, str(item))
+                if key == "waive" and isinstance(item, list) and len(item) == 2:
+                    argv.extend([flag, *map(str, item)])
+                else:
+                    emit(flag, str(item))
             continue
 
         emit(flag, str(value))
@@ -2051,15 +2054,6 @@ def _endpoint_command(
 ) -> list[str]:
     """Build the canonical subprocess command for one endpoint definition."""
     arguments = dict(arguments)
-    if (
-        context.binding is not None
-        and name == "reviewer"
-        and "spec" in str(arguments.get("focus", ""))
-    ):
-        record = GoalStore(context.binding.booley_dir).load(context.binding.record_id)
-        specs = {g.spec.params.get("spec") for g in record.goals if g.spec.params.get("spec")}
-        if len(specs) == 1:
-            arguments["spec"] = specs.pop()
     argv = _params_to_argv(arguments)
     if definition.get("is_specialist"):
         transcript_dir = (

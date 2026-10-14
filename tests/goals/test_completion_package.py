@@ -32,7 +32,14 @@ def test_open_done_findings_finish_without_ticket_assessment_or_second_approval(
     monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
     layout.record = enter_goals(
         layout,
-        [{"family": "REVIEW", "review": "rtl_bugs", "verdict": "clean" if derived else "done"}],
+        [
+            {
+                "paths": ["rtl.v"],
+                "family": "REVIEW",
+                "review": "rtl_bugs",
+                "verdict": "clean" if derived else "done",
+            }
+        ],
     )
     endpoint, provider = _goal_reviewer_endpoint(layout, monkeypatch)
     provider.return_value.output = json.dumps({"issues": review_issues(True)})
@@ -43,7 +50,9 @@ def test_open_done_findings_finish_without_ticket_assessment_or_second_approval(
     selected = observations(layout)[-1]
     replay, replay_provider = _goal_reviewer_endpoint(layout, monkeypatch)
     replay_result = replay._run()
-    assert replay_result.exit_code == 0 and replay_provider.call_count == 0
+    assert replay_result.exit_code == 2 and replay_provider.call_count == 0
+    assert "--verify" in replay_result.report_text
+    assert observations(layout)[-1] == selected
     display = capsys.readouterr().out + str(replay_result)
     assert "explicit human approval before acceptance" not in display
     call = LifecycleRequest(
@@ -186,7 +195,7 @@ def test_attempt_frozen_survives_real_status_and_reviewer_activity_without_new_e
 
     monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
     layout.record = enter_goals(
-        layout, [{"family": "REVIEW", "review": "rtl_bugs", "verdict": "done"}]
+        layout, [{"paths": ["rtl.v"], "family": "REVIEW", "review": "rtl_bugs", "verdict": "done"}]
     )
     endpoint, provider = _goal_reviewer_endpoint(layout, monkeypatch)
     provider.return_value.output = json.dumps({"issues": review_issues(True)})
@@ -215,7 +224,8 @@ def test_attempt_frozen_survives_real_status_and_reviewer_activity_without_new_e
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     replay, replay_provider = _goal_reviewer_endpoint(layout, monkeypatch)
     activity = replay.execute_prepared()
-    assert activity.exit_code == 0, activity.outcome.report_text
+    assert activity.exit_code == 2, activity.outcome.report_text
+    assert "--verify" in activity.outcome.report_text
     assert replay_provider.call_count == 0
     after = json.loads(path.read_bytes())
     assert before["criteria"] == after["criteria"] and observations(layout) == exact
@@ -487,7 +497,7 @@ def test_obsolete_simulation_after_approved_retarget_omits_inventory_without_rew
         layout,
         goals=[
             {"family": "SIM", "target": "top"},
-            {"family": "REVIEW", "review": "rtl_bugs", "verdict": "clean"},
+            {"paths": ["rtl.v"], "family": "REVIEW", "review": "rtl_bugs", "verdict": "clean"},
         ],
         criterion=SIM_KEY,
         criterion_detail=passing_sim(),

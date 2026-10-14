@@ -174,10 +174,8 @@ def _validate_retarget(before: GoalSpec, after: GoalSpec) -> None:
     if old != new:
         raise ProposalError("retarget must preserve acceptance bounds")
     if before.family is GoalFamily.REVIEW:
-        if before.key != after.key or not before.params.get("spec"):
-            raise ProposalError(
-                "retarget must preserve review kind and verdict; only spec review has a binding"
-            )
+        if before.key != after.key:
+            raise ProposalError("retarget must preserve review kind and verdict")
         return
     fixed_before, fixed_after = _fixed(before), _fixed(after)
     for key in ("target", "test", "tests", "baseline_target", "_baseline_target"):

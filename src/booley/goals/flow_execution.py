@@ -120,6 +120,14 @@ class GoalFlowExecution:
         )
         return ResolvedFlowAcceptance(paired_project=paired)
 
+    def review_goal_inputs(self, key: str) -> Mapping[str, Any]:
+        """Read only the exact Review Goal revision this run was admitted under."""
+        record = GoalStore(self._binding.booley_dir).load(self._binding.record_id)
+        goal = next((item for item in record.goals if item.spec.key == key), None)
+        if goal is None or goal.spec_revision != self._binding.spec_revision(key):
+            raise EvidenceDiscarded("Review Goal is missing or changed; re-run")
+        return goal.spec.params
+
     def done_findings_require_approval(self) -> bool:
         """Goal completion exposes findings without changing its accepted completion policy."""
         return False

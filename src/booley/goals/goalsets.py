@@ -153,6 +153,9 @@ def _header(name: str) -> list[str]:
         "When a session enters Goal Mode with this Goalset, the agent translates",
         "it into the entry tool's Goal arguments. Every Goal is mandatory. Write",
         "new Goals in the same vocabulary as the Goal arguments below.",
+        "Review Goals declare exactly one Target or category-matching worktree-relative paths.",
+        "Use category/focus for discovery, then reviewer --verify to check only open findings.",
+        "Only repeatable --waive <finding-id> <justification> proposals accompany verify.",
         "",
     ]
 
@@ -164,6 +167,15 @@ def _arguments_section(goals: Sequence[Mapping[str, Any]]) -> list[str]:
         rules.append(
             f"- Repeat each Goal that names `{TARGET_PLACEHOLDER}` once for every Target"
             f" the change touches, replacing `{TARGET_PLACEHOLDER}` with the Target name."
+        )
+    if any("paths" in goal for goal in goals):
+        rules.extend(
+            [
+                "- Replace each review's `<rtl-file>` or `<tb-file>` placeholder with its full",
+                "  list of category-matching worktree-relative files across the touched Targets.",
+                "  Keep one Goal per review kind. For one Target, you may replace `paths` with",
+                "  `target` to review that Target's category files and dependency closure.",
+            ]
         )
     if any("spec" in goal for goal in goals):
         rules.append(
@@ -194,7 +206,11 @@ def _goal_argument(spec: CriterionSpec, *, origin: str) -> dict[str, Any]:
         return {**goal, "origin": origin}
     review = _REVIEW_NAME.fullmatch(spec.name)
     if review is not None and not spec.per_target and not spec.params:
-        goal = {"family": GoalFamily.REVIEW.name, **review.groupdict()}
+        goal = {
+            "family": GoalFamily.REVIEW.name,
+            **review.groupdict(),
+            "paths": ["<tb-file>" if review["review"].startswith("tb_") else "<rtl-file>"],
+        }
         if review["review"] == SPEC_REVIEW_KIND:
             goal["spec"] = SPEC_PLACEHOLDER
         return {**goal, "origin": origin}

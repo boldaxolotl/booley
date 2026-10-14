@@ -38,26 +38,30 @@ from Finish; the child sees no evaluator implementation, seed or generated cases
     "family": "REVIEW",
     "review": "rtl_bugs",
     "verdict": "clean",
-    "origin": "feature"
+    "origin": "feature",
+    "target": "sim_uart"
   },
   {
     "family": "REVIEW",
     "review": "rtl_protocol",
     "verdict": "clean",
-    "origin": "feature"
+    "origin": "feature",
+    "target": "sim_uart"
   },
   {
     "family": "REVIEW",
     "review": "rtl_spec",
     "verdict": "clean",
     "spec": "spec/contract.md",
-    "origin": "feature"
+    "origin": "feature",
+    "target": "sim_uart"
   },
   {
     "family": "REVIEW",
     "review": "tb_quality",
     "verdict": "clean",
-    "origin": "feature"
+    "origin": "feature",
+    "target": "sim_uart"
   }
 ]
 ```

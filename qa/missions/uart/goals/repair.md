@@ -36,26 +36,30 @@ the same seed; at most two repairs. Unfinished feature work is not a repair.
     "family": "REVIEW",
     "review": "rtl_bugs",
     "verdict": "clean",
-    "origin": "repair"
+    "origin": "repair",
+    "target": "sim_uart"
   },
   {
     "family": "REVIEW",
     "review": "rtl_protocol",
     "verdict": "clean",
-    "origin": "repair"
+    "origin": "repair",
+    "target": "sim_uart"
   },
   {
     "family": "REVIEW",
     "review": "rtl_spec",
     "verdict": "clean",
     "spec": "spec/contract.md",
-    "origin": "repair"
+    "origin": "repair",
+    "target": "sim_uart"
   },
   {
     "family": "REVIEW",
     "review": "tb_quality",
     "verdict": "clean",
-    "origin": "repair"
+    "origin": "repair",
+    "target": "sim_uart"
   }
 ]
 ```

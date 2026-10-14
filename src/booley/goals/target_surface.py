@@ -115,6 +115,13 @@ def target_surface_fingerprint(
     }
 
 
+def review_target_surface(work_dir: Path, target: str, scope: list[str]) -> dict[str, Any]:
+    """Keep Target declarations fixed while verify may update reviewed source bytes."""
+    return target_surface_fingerprint(
+        work_dir, target, artifact_paths=frozenset((work_dir / path).resolve() for path in scope)
+    )
+
+
 def _cores(root: Path, target: str | None) -> list[Path]:
     if target is None:
         return [core.resolve() for core in discover_cores(root)]

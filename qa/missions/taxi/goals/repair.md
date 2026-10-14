@@ -60,20 +60,23 @@ never hide the failure, waive checks or push.
     "family": "REVIEW",
     "review": "rtl_bugs",
     "verdict": "clean",
-    "origin": "repair"
+    "origin": "repair",
+    "target": "sim_mac_10g"
   },
   {
     "family": "REVIEW",
     "review": "rtl_protocol",
     "verdict": "done",
-    "origin": "repair"
+    "origin": "repair",
+    "target": "sim_mac_10g"
   },
   {
     "family": "REVIEW",
     "review": "rtl_spec",
     "verdict": "done",
     "spec": "docs/taxi-contract.md",
-    "origin": "repair"
+    "origin": "repair",
+    "target": "sim_mac_10g"
   }
 ]
 ```

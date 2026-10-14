@@ -244,12 +244,20 @@ def test_shared_worktree_and_missing_path_warning(goal_mode):
     assert "booley_status" in warning and "accept no work_dir" in warning
 
 
-def test_spec_from_declared_goal_is_forwarded(layout):
+def test_spec_from_declared_goal_is_resolved_by_specialist(layout):
     from tests.goals.conftest import enter_goals
 
     layout.record = enter_goals(
         layout,
-        [{"family": "REVIEW", "review": "rtl_spec", "verdict": "done", "spec": "docs/spec.md"}],
+        [
+            {
+                "paths": ["rtl.v"],
+                "family": "REVIEW",
+                "review": "rtl_spec",
+                "verdict": "done",
+                "spec": "docs/spec.md",
+            }
+        ],
     )
     context = resolve_call_context({"work_dir": str(layout.worktree)})
     cmd = server._endpoint_command(
@@ -259,7 +267,11 @@ def test_spec_from_declared_goal_is_forwarded(layout):
         __import__("collections").defaultdict(int),
         context,
     )
-    assert cmd[cmd.index("--spec") + 1] == "docs/spec.md"
+    assert "--spec" not in cmd
+    assert (
+        GoalStore(layout.control).load(layout.record.id).goals[0].spec.params["spec"]
+        == "docs/spec.md"
+    )
     assert str(context.runtime_dir / "transcripts") in cmd[cmd.index("--transcript-dir") + 1]
 
 
@@ -386,7 +398,7 @@ def test_reviewer_uses_goal_freshness_without_rewriting_producer_evidence(
         layout,
         [
             {"family": "LINT", "target": "top"},
-            {"family": "REVIEW", "review": "rtl_bugs", "verdict": mode},
+            {"paths": ["rtl.v"], "family": "REVIEW", "review": "rtl_bugs", "verdict": mode},
         ],
     )
     producer = GoalFlowExecution(bind(layout))
@@ -404,8 +416,6 @@ def test_reviewer_uses_goal_freshness_without_rewriting_producer_evidence(
         [
             "--work-dir",
             str(layout.worktree),
-            "--scope",
-            "rtl.v",
             "--category",
             "rtl",
             "--focus",
@@ -447,8 +457,6 @@ def _goal_reviewer_endpoint(layout, monkeypatch):
         [
             "--work-dir",
             str(layout.worktree),
-            "--scope",
-            "rtl.v",
             "--category",
             "rtl",
             "--focus",
@@ -476,7 +484,7 @@ def test_reviewer_interleaving_does_not_replay_or_save_obsolete_goal_receipt(
     from tests.goals.conftest import enter_goals
 
     layout.record = enter_goals(
-        layout, [{"family": "REVIEW", "review": "rtl_bugs", "verdict": mode}]
+        layout, [{"paths": ["rtl.v"], "family": "REVIEW", "review": "rtl_bugs", "verdict": mode}]
     )
     initial, _ = _goal_reviewer_endpoint(layout, monkeypatch)
     assert initial._run().exit_code == 0
@@ -642,9 +650,24 @@ def test_goal_status_simulation_contract_explanation(goal_mode, met):
 def _review_artifact(layout, monkeypatch, *, scope=None):
     from tests.goals.conftest import enter_goals, git
 
+    if scope:
+        from booley.flows.review_scope import _classify_files
+
+        def classify(paths, root):
+            return {"tb"} if paths == ["tb/artifact.py"] else _classify_files(paths, root)
+
+        monkeypatch.setattr("booley.flows.review_scope._classify_files", classify)
+
     layout.record = enter_goals(
         layout,
-        [{"family": "REVIEW", "review": "tb_quality" if scope else "rtl_bugs", "verdict": "done"}],
+        [
+            {
+                "paths": ["tb/artifact.py"] if scope else ["rtl.v"],
+                "family": "REVIEW",
+                "review": "tb_quality" if scope else "rtl_bugs",
+                "verdict": "done",
+            }
+        ],
     )
     name = "tb/artifact.py" if scope else "artifact.hex"
     artifact = layout.worktree / name
@@ -924,3 +947,73 @@ def test_status_complete_text_and_metadata_unchanged(goal_mode, inside, rules):
         "annotations": None,
         "meta": None,
     }
+
+
+@pytest.mark.timeout(120)
+def test_goal_review_fix_commit_then_explicit_verify_meets_clean(layout, monkeypatch):
+    from booley.goals.status import build_status
+    from tests.goals.conftest import enter_goals, git
+    from tests.goals.test_reviewer_proposals import review_issues
+
+    layout.record = enter_goals(
+        layout,
+        [{"family": "REVIEW", "review": "rtl_bugs", "verdict": "clean", "paths": ["rtl.v"]}],
+    )
+    initial, provider = _goal_reviewer_endpoint(layout, monkeypatch)
+    provider.return_value.output = json.dumps({"issues": review_issues(True)})
+    assert initial._run().exit_code == 1
+    before = record_paths(layout.control, layout.record.id).state_file.read_bytes()
+    refused, provider = _goal_reviewer_endpoint(layout, monkeypatch)
+    assert refused._run().exit_code == 2
+    assert record_paths(layout.control, layout.record.id).state_file.read_bytes() == before
+    provider.assert_not_called()
+    (layout.worktree / "rtl.v").write_text("module top; wire fixed; endmodule\n")
+    git(layout.worktree, "add", "rtl.v")
+    git(layout.worktree, "commit", "-qm", "fix review finding")
+    verifier, provider = _goal_reviewer_endpoint(layout, monkeypatch)
+    verifier.parse_args(["--work-dir", str(layout.worktree), "--verify"])
+    provider.return_value.output = json.dumps(
+        {
+            "findings": [
+                {"index": 1, "status": "FIXED", "evidence": "rtl.v:1 corrected implementation"}
+            ]
+        }
+    )
+    result = verifier._run()
+    assert result.exit_code == 0
+    assert "VERIFY RESULT: PASS (0 issues)" in result.report_text
+    assert "FIXED" in result.report_text
+    assert provider.call_count == 1
+    assert build_status(GoalStore(layout.control), layout.record).goals[0].status == "met"
+    (layout.worktree / "rtl.v").write_text("module top; wire edited_again; endmodule\n")
+    assert build_status(GoalStore(layout.control), layout.record).goals[0].status == "stale"
+
+
+@pytest.mark.timeout(120)
+def test_target_scope_growth_is_not_certified_by_verify(layout, monkeypatch):
+    from booley.goals.status import build_status
+    from tests.goals.conftest import enter_goals
+    from tests.goals.test_reviewer_proposals import review_issues
+
+    layout.record = enter_goals(
+        layout, [{"family": "REVIEW", "review": "rtl_bugs", "verdict": "clean", "target": "top"}]
+    )
+    reviewer, provider = _goal_reviewer_endpoint(layout, monkeypatch)
+    provider.return_value.output = json.dumps({"issues": review_issues(True)})
+    assert reviewer._run().exit_code == 1
+    assert reviewer._parse_scope() == ["rtl.v"]
+    (layout.worktree / "added.v").write_text("module added; endmodule\n")
+    core = layout.worktree / "top.core"
+    core.write_text(core.read_text().replace("files: [rtl.v]", "files: [rtl.v, added.v]"))
+    verifier, provider = _goal_reviewer_endpoint(layout, monkeypatch)
+    verifier.parse_args(["--work-dir", str(layout.worktree), "--verify"])
+    provider.return_value.output = json.dumps(
+        {"findings": [{"index": 1, "status": "FIXED", "evidence": "rtl.v:1 corrected"}]}
+    )
+    assert verifier._run().exit_code == 0
+    assert provider.call_count == 1
+    assert build_status(GoalStore(layout.control), layout.record).goals[0].status == "stale"
+    discovery, provider = _goal_reviewer_endpoint(layout, monkeypatch)
+    assert discovery._run().exit_code == 0
+    assert discovery._parse_scope() == ["added.v", "rtl.v"]
+    assert build_status(GoalStore(layout.control), layout.record).goals[0].status == "met"

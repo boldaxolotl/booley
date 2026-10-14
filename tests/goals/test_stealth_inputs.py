@@ -156,7 +156,7 @@ def test_target_less_nonversioned_hidden_constraint_follows_literal_definition(l
     from tests.goals.conftest import enter_goals
 
     layout.record = enter_goals(
-        layout, [{"family": "REVIEW", "review": "rtl_bugs", "verdict": "done"}]
+        layout, [{"paths": ["rtl.v"], "family": "REVIEW", "review": "rtl_bugs", "verdict": "done"}]
     )
     constraint = layout.worktree / ".booley/top.sdc"
     constraint.write_text("constraint first\n")

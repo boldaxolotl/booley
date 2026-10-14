@@ -40,7 +40,8 @@ mandatory. Do not edit existing Taxi files or weaken upstream tests.
     "family": "REVIEW",
     "review": "tb_quality",
     "verdict": "clean",
-    "origin": "observability"
+    "origin": "observability",
+    "target": "sim_mac_10g_observability"
   },
   {
     "family": "MUTATION",
