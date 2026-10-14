@@ -313,6 +313,16 @@ class SessionObserver:
     def _prune(self) -> None:
         """Expire registry rows, then the activity signals of sessions no longer held."""
         registry = self._registry()
+        from booley.runtime.handle_maintenance import backfill_job_handles
+
+        for backfill in (
+            registry.backfill_handles,
+            lambda: backfill_job_handles(registry.booley_dir),
+        ):
+            try:
+                backfill()
+            except (OSError, ValueError, RuntimeError) as exc:
+                logger.warning("Handle maintenance unavailable: %s", exc)
         registry.prune(
             now=self.now(),
             namespace=namespace(),

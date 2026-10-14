@@ -32,6 +32,7 @@ from booley.mcp.job_results import _KNOWN_JOB_ROOTS, JobRepository, LocatedJob, 
 from booley.runtime import job_records as jobrec
 from booley.runtime import job_slots
 from booley.runtime.display_identity import DisplayIdentity, DisplayScope
+from booley.runtime.handles import register_job
 from booley.runtime.pid import is_pid_alive
 from booley.runtime.timefmt import compact_utc_now, utc_now_rfc3339
 
@@ -163,6 +164,13 @@ class JobLifecycle:
         )
         rec.session_key = context.session_key
         rec.binding = None if context.binding is None else context.binding.to_json()
+        from booley.runtime.booley_dir import resolve_booley_dir
+
+        try:
+            project = context.binding.booley_dir if context.binding else resolve_booley_dir()
+            register_job(project, rec.run_id, rec.endpoint, rec.session_key, work_dir=rec.work_dir)
+        except (OSError, ValueError, RuntimeError) as exc:
+            logger.warning("Job handle Project unavailable for %s: %s", rec.run_id, exc)
 
     def _stamp_pid(self, rec: jobrec.JobRecord, pid: int) -> None:
         rec.pid = pid

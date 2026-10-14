@@ -1,6 +1,6 @@
 # Booley Dashboard replaces the Console
 
-Status: accepted (2026-10-06; proposed 2026-10-03; amended 2026-10-06: session identity; amended 2026-10-11: open implementation choices, see Amendments)
+Status: accepted (2026-10-06; proposed 2026-10-03; amended 2026-10-06: session identity; amended 2026-10-11: open implementation choices; amended 2026-10-14: persistent handles, see Amendments)
 
 The Console showed one Ticket execution at a time. Goal Mode (ADR 0067)
 removes Ticket execution and runs several agent sessions, often unattended,
@@ -225,3 +225,41 @@ from spikes on Claude Code 2.1.285/2.1.295 and Codex 0.160.0/0.162.0.
   process and changes no work. OSC 8 `file://` links are not used: VS Code's terminal,
   where the Dashboard normally runs, does not open them. Without an editor
   command the Dashboard says so and the path stays copyable.
+
+## Amendments (2026-10-14)
+
+Settles [#1512](https://github.com/boldaxolotl/booley/issues/1512): full session
+keys and Job run IDs are unreadable as names, and the nine navigation shortcuts
+cannot identify every session or remain meaningful across Dashboard restarts.
+
+- **Persistent Project handles.** Sessions use `S<n>`. Jobs use `J-SIM<n>`,
+  `J-SYN<n>`, `J-LINT<n>`, or `J-FPGA<n>`, with `SIM` also covering simulation
+  baselines and `J-JOB<n>` for other endpoints. Sessions and Jobs have separate
+  monotonic counters; one Job counter spans every kind. Handles appear in
+  overview rows, running summaries, session and Job details, Job lists, owner
+  labels and scoped Jobs orientation. Full keys remain secondary detail text.
+  Keyboard shortcuts and internal run IDs keep their existing meanings.
+- **Allocation and retention.** Session registration reserves a handle under
+  the registry writer lock in `runtime/sessions/handles/map.json`. This separate
+  map survives presence pruning. Job creation reserves a handle in
+  `runtime/job-handles/map.json` under its own bounded writer lock. Both maps
+  live in the resolved Booley Directory and publish complete, fsynced state
+  atomically. Reservation precedes row/record publication; a failed publication
+  can leave a gap, and registration of the same key or run ID reuses its
+  reservation. A new invocation with a new run ID gets a new handle. Numbers
+  are never recycled; inline Jobs retain allocations after their transient
+  records are removed. Snapshot creation excludes both maps from worktree copies.
+- **Worktree fallback migration.** A path key becoming a repository/admin key
+  carries its handle forward through a direct alias if the canonical key has
+  no allocation. If both already have allocations, preserve both. Dashboard
+  ownership and scoped lists follow established aliases without rewriting Job
+  records or changing execution routing.
+- **Observational Dashboard.** MCP maintenance backfills legacy presence before
+  pruning, then retained Jobs and disconnected owners, without rewriting Job
+  records. A pass examines at most 16384 Job files in known Goal and interactive
+  layouts; files beyond that bound stay unknown until producer registration.
+  The Dashboard only reads maps and shows `S?` / `J-TYPE?` with a diagnostic
+  until allocation succeeds. Handle-store failures are advisory and never
+  prevent session presence publication or Job execution. Invalid maps are
+  diagnosed rather than reset; a
+  16 MiB map bound fails allocation rather than recycling prior handles.

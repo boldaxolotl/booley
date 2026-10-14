@@ -34,6 +34,7 @@ from booley.mcp.session_registry import SessionRegistry, SessionRow, namespace
 from booley.review.goal_package import GoalCompletionPackage
 from booley.runtime import health, health_presentation, job_slots
 from booley.runtime.artifact_paths import available_paths
+from booley.runtime.handles import HandleStore
 from booley.runtime.pid import ProcessIdentity
 from booley.runtime.session_activity import Activity, ActivityStore, observed_activity
 
@@ -78,6 +79,7 @@ class DashboardSnapshot:
     observed_at: float = 0
     # Reported activity by session key; a session without an entry is unknown.
     activity: Mapping[str, Activity] = field(default_factory=dict)
+    session_handles: Mapping[str, str] = field(default_factory=dict)
 
 
 def _terminal(store: GoalStore, record: GoalRecord) -> GoalView:
@@ -305,6 +307,9 @@ class DashboardReader:
         sessions = SessionRegistry(
             self.booley_dir, quiet_after=quiet_after(self.booley_dir)
         ).visible_snapshot(now=now, scope=namespace())
+        handles, handle_diagnostics = HandleStore(self.booley_dir).snapshot()
+        if any(row.attribution.key not in handles for row in sessions.rows):
+            handle_diagnostics += ("Session handles pending MCP registration/maintenance",)
         store = GoalStore(self.booley_dir, lock_timeout_s=0)
         scan = store.list_records()
         goals = []
@@ -337,9 +342,10 @@ class DashboardReader:
             replace(jobs, jobs=tuple(measured)),
             resources,
             health_lines(self.root, self.booley_dir),
-            sessions.diagnostics,
+            (*sessions.diagnostics, *handle_diagnostics),
             now,
             self._activity(sessions.rows, now),
+            handles,
         )
 
     def _activity(self, rows: tuple[SessionRow, ...], now: float) -> dict[str, Activity]:

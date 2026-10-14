@@ -18,6 +18,7 @@ from booley.mcp import endpoint_process, job_results
 from booley.mcp.call_context import CallContext
 from booley.mcp.job_lifecycle import JobLifecycle
 from booley.runtime import job_records, job_slots
+from booley.runtime.handles import HandleStore
 from booley.runtime.pid import is_pid_alive
 from booley.runtime.timefmt import utc_now_rfc3339
 
@@ -117,6 +118,56 @@ async def test_inline_completion_and_nonzero_exit(context, script, exit_code, st
     rec = job_records.read_record(submission.poll.run_id, context.jobs_root)
     assert rec.status == status and rec.exit_code == exit_code
     assert activity.starts == activity.ends == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("synchronous", [False, True])
+@pytest.mark.parametrize("broken", [False, True])
+async def test_job_creation_allocates_handles_and_broken_maps_do_not_gate_execution(
+    context, tmp_path, monkeypatch, synchronous, broken
+):
+    project = tmp_path / "project-data"
+    project.mkdir()
+    monkeypatch.setattr("booley.runtime.booley_dir.resolve_booley_dir", lambda: project)
+    store = HandleStore(project, jobs=True)
+    if broken:
+        store.root.mkdir(parents=True)
+        store.path.write_text("broken")
+    jobs = JobLifecycle()
+    if synchronous:
+        result = await jobs.run_synchronous(
+            "lint", command("print('done')"), JOB_TIMEOUT, context=context
+        )
+        assert result[0] == 0
+    else:
+        submission = await jobs.submit_and_wait(
+            "lint",
+            command("print('done')"),
+            JOB_TIMEOUT,
+            context=context,
+            wait_seconds=WAIT_TIMEOUT,
+        )
+        assert submission.poll.result.exit_code == 0
+        assert job_records.read_record(submission.poll.run_id, context.jobs_root) is not None
+    if broken:
+        assert store.path.read_text() == "broken"
+    else:
+        assert tuple(store.load().entries.values()) == ("J-LINT1",)
+
+
+def test_goal_job_handle_uses_bound_project_directory(context, tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    project = tmp_path / "bound-project"
+    monkeypatch.setattr(
+        "booley.runtime.booley_dir.resolve_booley_dir",
+        lambda: pytest.fail("Goal handle must use its admitted binding"),
+    )
+    binding = SimpleNamespace(booley_dir=project, to_json=lambda: {})
+    bound = replace(context, binding=binding)
+    rec = job_records.JobRecord("goal-run", "sim", utc_now_rfc3339(), JOB_TIMEOUT)
+    JobLifecycle._stamp_context(rec, bound)
+    assert HandleStore(project, jobs=True).load().entries == {"goal-run": "J-SIM1"}
 
 
 @pytest.mark.asyncio
