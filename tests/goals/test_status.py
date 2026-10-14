@@ -178,6 +178,8 @@ def test_projection_conflict_reason_precedes_contract_reason(goal_mode):
     assert goal.reason == "Goal state differs from its selected immutable producer observation"
 
 
+# Windows CI has measured over 40% of the 60 s default; keep 3x headroom (#1202).
+@pytest.mark.timeout(120)
 @pytest.mark.parametrize("state", ["entering", "active", "finishing"])
 def test_scoped_selection_retains_occupying_states(goal_mode, tmp_path, state):
     from booley.goals.status import select_status
