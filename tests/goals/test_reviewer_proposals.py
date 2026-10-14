@@ -4,10 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
 
 import pytest
 from mcp import Client
 
+from booley.goals.apply import ChangeEnvironment
+from booley.goals.change_service import create_proposal
+from booley.goals.entry import EntryEnvironment
+from booley.goals.presentation import proposal_presentation
+from booley.goals.proposals import ProposalError
 from booley.goals.status import build_status
 from booley.goals.store import GoalStore
 from tests.goals.conftest import enter_goals
@@ -103,10 +109,35 @@ def test_modern_review_relaxation_preserves_actual_specialist_receipt(
     assert source["criterion"] == original["criterion"]
     assert provider.call_count == 1
     replay, replay_provider = _goal_reviewer_endpoint(layout, monkeypatch)
-    assert replay._run().exit_code == (2 if has_finding else 0)
+    assert replay._run().exit_code == 0
     assert replay_provider.call_count == 0
     assert observations(layout) == rows
     (layout.worktree / "rtl.v").write_text("module top; wire changed; endmodule\n")
     changed, changed_provider = _goal_reviewer_endpoint(layout, monkeypatch)
-    assert changed._run().exit_code == (2 if has_finding else 0)
-    assert changed_provider.call_count == (0 if has_finding else 1)
+    assert changed._run().exit_code == 0
+    assert changed_provider.call_count == 1
+
+
+def test_review_retarget_explains_evidence_reset_and_rejects_unchanged_contract(
+    layout: SimpleNamespace,
+) -> None:
+    original = {"family": "REVIEW", "review": "rtl_bugs", "verdict": "clean", "paths": ["rtl.v"]}
+    layout.record = enter_goals(layout, [original])
+    env = ChangeEnvironment(EntryEnvironment(layout.control))
+    args = {
+        "kind": "retarget",
+        "goal_key": "review_rtl_bugs_clean",
+        "after": original,
+        "rationale": "unchanged",
+    }
+    with pytest.raises(ProposalError, match="must change"):
+        create_proposal(env, layout.record.id, args, session_key=None)
+    view = create_proposal(
+        env,
+        layout.record.id,
+        {**args, "after": {**original, "paths": ["rtl/future.sv"]}, "rationale": "new selection"},
+        session_key=None,
+    )
+    effect = proposal_presentation(view)["review_retarget_effect"]
+    assert "Discards the prior review evidence" in effect
+    assert "weakens the review requirement" in effect

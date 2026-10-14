@@ -993,7 +993,7 @@ def _params_to_argv(params: dict[str, Any]) -> list[str]:
 
         if isinstance(value, list):
             for item in value:
-                if key == "waive" and isinstance(item, list) and len(item) == 2:
+                if isinstance(item, list):
                     argv.extend([flag, *map(str, item)])
                 else:
                     emit(flag, str(item))

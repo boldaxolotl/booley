@@ -313,7 +313,7 @@ def _review_goal_freshness(
         scope = resolve_review_files(root, category, goal.params)
         target = goal.params.get("target")
         if target is not None and contract.get("goal_target_surface") != review_target_surface(
-            root, target, scope
+            root, target
         ):
             return _stale(
                 goal_required_categories(key),

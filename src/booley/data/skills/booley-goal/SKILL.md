@@ -208,13 +208,16 @@ files and dependency closure; paths name category-matching files relative to the
 Goal worktree. Spec review also requires the Goal's `spec` path.
 
 Discover with `reviewer(category="rtl", focus="bugs")`, using the matching
-category/focus. The Goal supplies scope and spec. Fix reported findings, then
-call `reviewer(verify=true)` to check only the latest review's open findings.
+category/focus. The Goal supplies scope and spec. A `done` review needs no
+verification; present its open findings in the Review Package. For `clean`, fix
+reported findings, then call `reviewer(verify=true)` to check only the latest review's open findings.
 Propose waivers with `waive=[["<finding-id>", "<justification>"]]`; the Reviewer
 decides each justification. Verify accepts only waiver proposals as review
-arguments and runs no discovery. Resolve each open review before starting discovery for another focus, so the
-latest-review-only verify command can always reach its findings. A passing verify meets `clean` at the verified
-contents; it leaves `done` completion evidence unchanged.
+arguments and runs no discovery. Resolve each open `clean` review before
+starting discovery for another focus, so verify can still reach its findings.
+Open `done` findings never block another discovery review. A passing verify
+meets `clean` at the verified contents; it leaves `done` completion evidence
+unchanged.
 
 Check Goal status after verification: changed spec, policy or Target file
 selection can leave evidence stale even after all findings are resolved. Then

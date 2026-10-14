@@ -176,6 +176,8 @@ def _validate_retarget(before: GoalSpec, after: GoalSpec) -> None:
     if before.family is GoalFamily.REVIEW:
         if before.key != after.key:
             raise ProposalError("retarget must preserve review kind and verdict")
+        if before.params == after.params:
+            raise ProposalError("review retarget must change the review scope or specification")
         return
     fixed_before, fixed_after = _fixed(before), _fixed(after)
     for key in ("target", "test", "tests", "baseline_target", "_baseline_target"):

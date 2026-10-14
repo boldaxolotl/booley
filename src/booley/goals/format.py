@@ -8,7 +8,7 @@ from rich.console import Console
 from rich.table import Table
 
 from booley.evidence.timing import worst_fmax_from_json
-from booley.goals.presentation import UNAVAILABLE_GOAL, goal_presentation
+from booley.goals.presentation import UNAVAILABLE_GOAL, goal_presentation, proposal_presentation
 from booley.goals.test_run_resolution import SUITE_SLOT
 
 if TYPE_CHECKING:
@@ -326,6 +326,8 @@ def _render_long_status(console: Console, view: GoalStatusView) -> None:
         console.print(
             f"Proposal {proposal.id}: {proposal_view.state} · {proposal.kind.value} {change} · {proposal.rationale}"
         )
+        if effect := proposal_presentation(proposal_view).get("review_retarget_effect"):
+            console.print(f"  {effect}")
         if proposal.id in conflicts:
             console.print(f"  Conflict: {conflicts[proposal.id]}")
         if proposal_view.decision is not None:

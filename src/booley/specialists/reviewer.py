@@ -22,7 +22,7 @@ from typing import Any, ClassVar
 from uuid import uuid4
 
 from booley.agent_workspace.state_projection import filter_state_file_for_category
-from booley.core.boundary import as_dict, as_str_list
+from booley.core.boundary import as_dict, as_int, as_str_list
 from booley.core.models import AgentCallParams
 from booley.criteria.freshness import review_policy_digest
 from booley.criteria.state import DevelopmentState
@@ -40,6 +40,7 @@ from booley.evidence.review_vocabulary import (
 )
 from booley.flows.cli_help import CliHelp
 from booley.flows.execution_persistence import (
+    EvidenceDiscarded,
     done_findings_require_approval_for,
     execution_goal_name,
 )
@@ -50,9 +51,10 @@ from booley.mcp.base import (
     McpToolResult,
     read_source_dirs_from_toml,
 )
-from booley.runtime.booley_dir import resolve_booley_dir
+from booley.runtime.booley_dir import resolve_booley_dir, resolve_checkout_booley_dir
 from booley.runtime.exception_diagnostics import exception_report_text, log_exception
 from booley.runtime.execution_records import atomic_write_json
+from booley.runtime.file_lock import LockContentionError, nonblocking_file_lock
 from booley.runtime.paths import refs_dir
 from booley.specialists.verification_freshness import refresh_verification_freshness
 from booley.targets.flow_names import config_section
@@ -861,17 +863,28 @@ class ReviewerSpecialist(Specialist):
         self._acceptance_current: bool | None = None
         self._goal_receipt_replayed = False
         self._goal_mode = False
-        self._goal_target: str | None = None
+        self._resolved_scope: list[str] | None = None
+        self._goal_target_surface: dict[str, Any] | None = None
         self._verify_prior: dict[str, Any] = {}
         self._sampled_contract: dict[str, Any] | None = None
+        self._review_state_bytes: bytes | None = None
 
     def read_state(self) -> DevelopmentState:
         """Persist Interactive review history in the resolved Booley Directory."""
         if self.args.state_file is None:
+            root = Path(self.args.work_dir).resolve()
+            checkout_id = hashlib.sha256(str(root).encode()).hexdigest()[:24]
             self.args.state_file = (
-                resolve_booley_dir(Path(self.args.work_dir)) / "reviewer-state.json"
+                resolve_checkout_booley_dir(root) / "reviewer-state" / checkout_id / "state.json"
             )
+        self._review_state_bytes = self._read_review_state_bytes()
         return super().read_state()
+
+    def _read_review_state_bytes(self) -> bytes | None:
+        try:
+            return Path(self.args.state_file).read_bytes() if self.args.state_file else None
+        except FileNotFoundError:
+            return None
 
     @staticmethod
     def _open_findings(detail: dict[str, Any]) -> list[dict[str, Any]]:
@@ -905,8 +918,6 @@ class ReviewerSpecialist(Specialist):
         return None
 
     def _prepare_goal_discovery(self) -> McpToolResult | None:
-        from booley.flows.review_scope import resolve_review_files
-
         forbidden = self._supplied_options() & {"--scope", "--spec", "--steer", "--instruction"}
         if forbidden:
             return McpToolResult(
@@ -919,18 +930,20 @@ class ReviewerSpecialist(Specialist):
                 (
                     name
                     for name, entry in self.state.criteria.items()
-                    if name.startswith("review_") and self._open_findings(entry.detail)
+                    if name.startswith("review_")
+                    and name.endswith("_clean")
+                    and self._open_findings(entry.detail)
                 ),
                 None,
             )
             if open_key is not None:
                 return self._open_findings_refusal(open_key)
             params = self._acceptance_recorder.review_goal_inputs(key)
-            self._goal_target = params.get("target")
-            self.args.scope = ",".join(
-                resolve_review_files(Path(self.args.work_dir), self.args.category, params)
+            self._resolved_scope = list(params.scope)
+            self._goal_target_surface = (
+                dict(params.target_surface) if params.target_surface is not None else None
             )
-            self.args.spec = params.get("spec")
+            self.args.spec = params.spec
             self.args.steer = None
         except (OSError, ValueError) as exc:
             return McpToolResult(exit_code=EXIT_ERROR, report_text=str(exc))
@@ -947,7 +960,7 @@ class ReviewerSpecialist(Specialist):
     def _open_findings_refusal(self, key: str) -> McpToolResult:
         return McpToolResult(
             exit_code=EXIT_ERROR,
-            report_text=f"{execution_goal_name(self._acceptance_recorder, key)} has open findings. Resolve this review before starting another discovery review. Use reviewer --verify and --waive <finding-id> <justification>.",
+            report_text=f"{execution_goal_name(self._acceptance_recorder, key)} has open findings. Resolve this clean review before starting another discovery review. Use reviewer --verify and --waive <finding-id> <justification>.",
         )
 
     def _supplied_options(self) -> set[str]:
@@ -991,7 +1004,7 @@ class ReviewerSpecialist(Specialist):
     ) -> McpToolResult | None:
         contract = prior["contract"]
         self.args.category, self.args.focus = contract["category"], contract["focus"]
-        self.args.scope = ",".join(contract["scope"])
+        self._resolved_scope = list(contract["scope"])
         self.args.spec = contract.get("spec_source") or None
         self.args.steer = None
         if self._criterion_key() != key:
@@ -999,8 +1012,16 @@ class ReviewerSpecialist(Specialist):
                 exit_code=EXIT_ERROR,
                 report_text="Latest review no longer matches its Goal; run a review for the current Goal",
             )
+        # Admission and publication fence the Goal revision. Verify uses the
+        # discovery contract even when the current Target no longer resolves.
         if self._goal_mode:
-            self._goal_target = self._acceptance_recorder.review_goal_inputs(key).get("target")
+            root = Path(self.args.work_dir).resolve()
+            for path in self._resolved_scope:
+                if not (root / path).resolve().is_relative_to(root):
+                    return McpToolResult(
+                        exit_code=EXIT_ERROR,
+                        report_text=f"Review path {path!r} escapes the Goal worktree",
+                    )
         if "pending" not in prior:
             prior["resolved"] = [
                 *prior.get("resolved", []),
@@ -1014,6 +1035,15 @@ class ReviewerSpecialist(Specialist):
         self._verify_prior = prior
         return None
 
+    def _next_review_order(self) -> int:
+        return 1 + max(
+            (
+                as_int(entry.detail.get("review_call_order"), default=0) or 0
+                for entry in self.state.criteria.values()
+            ),
+            default=0,
+        )
+
     def _latest_review(self):
         reviews = [
             (key, entry)
@@ -1024,7 +1054,7 @@ class ReviewerSpecialist(Specialist):
             max(
                 reviews,
                 key=lambda item: (
-                    item[1].detail.get("review_call_order", 0),
+                    as_int(item[1].detail.get("review_call_order"), default=0) or 0,
                     item[1].updated_at,
                     item[0],
                 ),
@@ -1151,7 +1181,9 @@ class ReviewerSpecialist(Specialist):
 
     def _parse_scope(self) -> list[str]:
         """Parse comma-separated scope paths."""
-        return [s.strip() for s in self.args.scope.split(",") if s.strip()]
+        if self._resolved_scope is not None:
+            return list(self._resolved_scope)
+        return [s.strip() for s in (self.args.scope or "").split(",") if s.strip()]
 
     def _parse_focus(self) -> set[str]:
         """Parse comma-separated focus categories."""
@@ -1200,12 +1232,8 @@ class ReviewerSpecialist(Specialist):
                 ),
             )
         )
-        if self._goal_target is not None:
-            from booley.goals.target_surface import review_target_surface
-
-            contract["goal_target_surface"] = review_target_surface(
-                Path(self.args.work_dir), self._goal_target, self._parse_scope()
-            )
+        if self._goal_target_surface is not None:
+            contract["goal_target_surface"] = dict(self._goal_target_surface)
         return contract
 
     # --- System prompt construction ---
@@ -1527,15 +1555,45 @@ object, even after calling the capability.
     # --- Main execution override ---
 
     def _run(self) -> McpToolResult:
+        """Serialize review calls so latest-only verification cannot lose its history."""
+        path = self.state.file_path
+        if path is None or getattr(self.args, "dry_run", False):
+            return self._run_review()
+        lock_path = path.with_suffix(".review.lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with lock_path.open("a+", encoding="ascii") as lock, nonblocking_file_lock(lock):
+                if self._read_review_state_bytes() != self._review_state_bytes:
+                    self.read_state()
+                try:
+                    return self._run_review()
+                finally:
+                    self._review_state_bytes = self._read_review_state_bytes()
+        except LockContentionError:
+            return McpToolResult(
+                exit_code=EXIT_ERROR,
+                report_text="Another review is running for this state; retry after it finishes.",
+            )
+        except EvidenceDiscarded as exc:
+            self.discard_evidence(exc)
+            return McpToolResult(exit_code=EXIT_ERROR, report_text=str(exc))
+
+    def _run_review(self) -> McpToolResult:
         """Single-focus review with terminal _done or disposition-loop _clean mode."""
         self._audit = {"filtered": [], "rejected": []}
         self._non_corrective_issues = []
         self._tb_project_policy = None
         self._scope_contract = None
         self._sampled_contract = None
+        self._resolved_scope = None
+        self._goal_target_surface = None
         self._review_run_id = f"{self._invocation_id}-{uuid4().hex}"
-        if error := self._prepare_invocation():
-            return error
+        try:
+            if error := self._prepare_invocation():
+                return error
+        except EvidenceDiscarded as exc:
+            self.discard_evidence(exc)
+            return McpToolResult(exit_code=EXIT_ERROR, report_text=str(exc))
         prepared = self._prepare_review_run()
         if isinstance(prepared, McpToolResult):
             return prepared
@@ -1586,9 +1644,7 @@ object, even after calling the capability.
             for field in ("_source_fingerprint", "receipt_id"):
                 if field in prior:
                     detail[field] = deepcopy(prior[field])
-            changes = self.state.set_criterion(crit_key, prior_entry.met, detail=detail)
-            self._record_acceptance_changes(changes)
-            self.state.save()
+            self.set_criterion(crit_key, prior_entry.met, detail=detail)
         else:
             self.set_criterion(crit_key, met, detail=detail)
 
@@ -1620,6 +1676,7 @@ object, even after calling the capability.
             and not getattr(self.args, "diagnostic", False)
             and not self._goal_receipt_replayed
             and self._acceptance_current is None
+            and self.evidence_discarded is None
         ):
             entry = self.state.criteria.get(crit_key)
             if entry is not None:
@@ -2720,7 +2777,7 @@ Schema enforcement (applied upstream by the harness):
     ) -> dict[str, Any]:
         return {
             "review_detail_version": REVIEW_DETAIL_VERSION,
-            "review_call_order": time.time_ns(),
+            "review_call_order": self._next_review_order(),
             **self._audit_detail(),
             "issues": len(outcome.issues),
             "observation_count": len(outcome.records),
@@ -2840,7 +2897,7 @@ Schema enforcement (applied upstream by the harness):
     ) -> dict[str, Any]:
         detail: dict[str, Any] = {
             "review_detail_version": REVIEW_DETAIL_VERSION,
-            "review_call_order": time.time_ns(),
+            "review_call_order": self._next_review_order(),
             **self._audit_detail(),
             "issues": len(issues),
             "pending": [_finding_record(iss) for iss in issues],
@@ -2941,7 +2998,7 @@ Schema enforcement (applied upstream by the harness):
         verify_attempts = context.existing_detail.get("verify_attempts", 0) + 1
         detail: dict[str, Any] = {
             "review_detail_version": REVIEW_DETAIL_VERSION,
-            "review_call_order": time.time_ns(),
+            "review_call_order": self._next_review_order(),
             **self._audit_detail(),
             "issues": len(context.remaining),
             "pending": context.pending,

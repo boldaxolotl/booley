@@ -811,7 +811,7 @@ After fixing findings, call `reviewer` with `verify=true` (CLI: `booley speciali
 
 Only `waive=[["<finding-id>", "<justification>"], ...]` may accompany verify (CLI: repeat `--waive <finding-id> "<justification>"`). The Reviewer accepts or rejects each proposal. Category, focus, scope, spec, steer and dry_run are refused with verify. Finding IDs appear in the review result.
 
-In Goal Mode, resolve an open review before starting discovery for another focus; use verify. A passing verify meets `clean` at the current reviewed contents; later edits make it stale. Changed specification, policy or Target scope still require new discovery after resolution. `done` completion evidence is unchanged by verify. Interactive discovery replaces the prior findings.
+In Goal Mode, resolve an open `clean` review before starting discovery for another focus; use verify. A passing verify meets `clean` at the current reviewed contents; later edits make it stale. Changed specification, policy or Target scope still require new discovery after resolution. `done` reviews need no verify call, and their findings never block another review. Optional verify leaves their completion evidence unchanged. Interactive discovery replaces the prior findings.
 
 Verify retains the existing two-attempt and three-cumulative-cycle limits. Exhaustion preserves findings and asks for a human decision; it never waives automatically.
 

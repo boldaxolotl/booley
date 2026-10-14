@@ -507,12 +507,12 @@ def _review_paths(raw: Mapping[str, Any], where: str) -> tuple[str, ...]:
         raise GoalArgError(str(exc)) from None
     if not paths:
         raise GoalArgError(f"{where}.paths must not be empty")
-    normalized = []
+    normalized: list[str] = []
     for index, path in enumerate(paths):
         value = _spec_path({"spec": path}, f"{where}.paths[{index}]")
         value = PurePosixPath(value.replace("\\", "/")).as_posix()
-        if value == "." or "," in value:
-            raise GoalArgError(f"{where}.paths must name individual files without commas")
+        if value == ".":
+            raise GoalArgError(f"{where}.paths must name individual files")
         normalized.append(value)
     return tuple(sorted(set(normalized)))
 

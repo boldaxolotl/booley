@@ -16,7 +16,6 @@ You are NOT a hardware design reviewer. Do NOT judge whether the spec is good en
 
 The specification text is inlined in this prompt under **## Specification** — it is the change-request text, or the external spec file the Review Goal names. The RTL files to review are listed under the scope section. Compare the two.
 
-
 ## Procedure
 
 1. Read the specification text carefully. Identify every **behavioral** requirement: edge cases, signal descriptions, FSM states, timing requirements, and example operations. Ignore any synthesis/area/cell/wire targets — those are evaluated mechanically, not by review.

@@ -50,9 +50,7 @@ def test_open_done_findings_finish_without_ticket_assessment_or_second_approval(
     selected = observations(layout)[-1]
     replay, replay_provider = _goal_reviewer_endpoint(layout, monkeypatch)
     replay_result = replay._run()
-    assert replay_result.exit_code == 2 and replay_provider.call_count == 0
-    assert "--verify" in replay_result.report_text
-    assert observations(layout)[-1] == selected
+    assert replay_result.exit_code == 0 and replay_provider.call_count == 0
     display = capsys.readouterr().out + str(replay_result)
     assert "explicit human approval before acceptance" not in display
     call = LifecycleRequest(
@@ -224,8 +222,7 @@ def test_attempt_frozen_survives_real_status_and_reviewer_activity_without_new_e
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     replay, replay_provider = _goal_reviewer_endpoint(layout, monkeypatch)
     activity = replay.execute_prepared()
-    assert activity.exit_code == 2, activity.outcome.report_text
-    assert "--verify" in activity.outcome.report_text
+    assert activity.exit_code == 0, activity.outcome.report_text
     assert replay_provider.call_count == 0
     after = json.loads(path.read_bytes())
     assert before["criteria"] == after["criteria"] and observations(layout) == exact

@@ -15,6 +15,7 @@ from booley.goals.model import GoalState
 from booley.goals.paths import record_paths
 from booley.goals.store import GoalStore, GoalStoreError
 from booley.mcp import server
+from booley.mcp.base import McpToolResult
 from booley.mcp.call_context import binding_from_environment, resolve_call_context
 from booley.mcp.goal_tools import dispatch_goal_tool
 from booley.runtime import job_records
@@ -477,9 +478,12 @@ def _goal_reviewer_endpoint(layout, monkeypatch):
 @pytest.mark.timeout(120)
 @pytest.mark.parametrize("mode", ["done", "clean"])
 @pytest.mark.parametrize("after_freshness_check", [False, True])
-def test_reviewer_interleaving_does_not_replay_or_save_obsolete_goal_receipt(
-    layout, monkeypatch, mode, after_freshness_check
-):
+def test_reviewer_serializes_calls_and_reloads_receipts_before_replay(
+    layout: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+    after_freshness_check: bool,
+) -> None:
     from booley.goals.status import build_status
     from tests.goals.conftest import enter_goals
 
@@ -492,26 +496,25 @@ def test_reviewer_interleaving_does_not_replay_or_save_obsolete_goal_receipt(
     key = f"review_rtl_bugs_{mode}"
     path = record_paths(layout.control, layout.record.id).state_file
     old_receipt = json.loads(path.read_text())["criteria"][key]
-    newer_receipt = None
+    newer = None
+    newer_provider = None
 
-    def publish_newer():
-        nonlocal newer_receipt
+    def publish_newer() -> None:
+        nonlocal newer, newer_provider
         (layout.worktree / "rtl.v").write_bytes(b"module top; wire changed; endmodule\n")
-        newer, provider = _goal_reviewer_endpoint(layout, monkeypatch)
-        assert newer._run().exit_code == 0
-        assert provider.call_count >= 1
-        newer_receipt = json.loads(path.read_text())["criteria"][key]
-        assert (
-            newer_receipt["detail"]["_source_fingerprint"]
-            != old_receipt["detail"]["_source_fingerprint"]
-        )
-        assert build_status(GoalStore(layout.control), layout.record).goals[0].status == "met"
+        newer, newer_provider = _goal_reviewer_endpoint(layout, monkeypatch)
+        result = newer._run()
+        if after_freshness_check:
+            assert result.exit_code == 2 and "Another review is running" in result.report_text
+            assert newer_provider.call_count == 0
+        else:
+            assert result.exit_code == 0 and newer_provider.call_count == 1
 
     if after_freshness_check:
         method = "_replay_done_verdict" if mode == "done" else "_already_clean_result"
         replay = getattr(old, method)
 
-        def interleave(crit_key):
+        def interleave(crit_key: str) -> McpToolResult:
             publish_newer()
             return replay(crit_key)
 
@@ -519,17 +522,16 @@ def test_reviewer_interleaving_does_not_replay_or_save_obsolete_goal_receipt(
     else:
         publish_newer()
     assert old._run().exit_code == 0
-    actual = json.loads(path.read_text())["criteria"][key]
-    assert build_status(GoalStore(layout.control), layout.record).goals[0].status == "met"
+    assert old_provider.call_count == 0
+    assert newer is not None and newer_provider is not None
     if after_freshness_check:
-        assert old_provider.call_count == 0
-        assert actual == newer_receipt  # replay audit cannot replace a newer receipt
-    else:
-        assert old_provider.call_count >= 1  # the obsolete in-memory receipt was not replayed
-        assert (
-            actual["detail"]["_source_fingerprint"]
-            == newer_receipt["detail"]["_source_fingerprint"]
-        )
+        assert json.loads(path.read_text())["criteria"][key] == old_receipt
+        assert build_status(GoalStore(layout.control), layout.record).goals[0].status == "stale"
+        assert newer._run().exit_code == 0
+        assert newer_provider.call_count == 1
+    actual = json.loads(path.read_text())["criteria"][key]
+    assert actual["detail"]["_source_fingerprint"] != old_receipt["detail"]["_source_fingerprint"]
+    assert build_status(GoalStore(layout.control), layout.record).goals[0].status == "met"
 
 
 def test_goal_status_mcp_from_subdirectory_is_identical(goal_mode):
@@ -653,7 +655,7 @@ def _review_artifact(layout, monkeypatch, *, scope=None):
     if scope:
         from booley.flows.review_scope import _classify_files
 
-        def classify(paths, root):
+        def classify(paths: list[str], root: Path) -> set[str]:
             return {"tb"} if paths == ["tb/artifact.py"] else _classify_files(paths, root)
 
         monkeypatch.setattr("booley.flows.review_scope._classify_files", classify)
@@ -950,7 +952,9 @@ def test_status_complete_text_and_metadata_unchanged(goal_mode, inside, rules):
 
 
 @pytest.mark.timeout(120)
-def test_goal_review_fix_commit_then_explicit_verify_meets_clean(layout, monkeypatch):
+def test_goal_review_fix_commit_then_explicit_verify_meets_clean(
+    layout: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from booley.goals.status import build_status
     from tests.goals.conftest import enter_goals, git
     from tests.goals.test_reviewer_proposals import review_issues
@@ -990,7 +994,10 @@ def test_goal_review_fix_commit_then_explicit_verify_meets_clean(layout, monkeyp
 
 
 @pytest.mark.timeout(120)
-def test_target_scope_growth_is_not_certified_by_verify(layout, monkeypatch):
+@pytest.mark.parametrize("scope_change", ["growth", "empty", "removed_target"])
+def test_target_scope_changes_do_not_strand_findings_or_get_certified_by_verify(
+    layout: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, scope_change: str
+) -> None:
     from booley.goals.status import build_status
     from tests.goals.conftest import enter_goals
     from tests.goals.test_reviewer_proposals import review_issues
@@ -1004,7 +1011,19 @@ def test_target_scope_growth_is_not_certified_by_verify(layout, monkeypatch):
     assert reviewer._parse_scope() == ["rtl.v"]
     (layout.worktree / "added.v").write_text("module added; endmodule\n")
     core = layout.worktree / "top.core"
-    core.write_text(core.read_text().replace("files: [rtl.v]", "files: [rtl.v, added.v]"))
+    original_core = core.read_text()
+    if scope_change == "growth":
+        core.write_text(original_core.replace("files: [rtl.v]", "files: [rtl.v, added.v]"))
+    elif scope_change == "empty":
+        (layout.worktree / "tb.v").write_text("module tb; endmodule\n")
+        core.write_text(
+            original_core.replace(
+                "targets:",
+                "  tb:\n    files: [tb.v]\n    file_type: systemVerilogSource\n    tags: [tb]\ntargets:",
+            ).replace("filesets: [rtl]", "filesets: [tb]")
+        )
+    else:
+        core.write_text(original_core.replace("  top:", "  renamed:"))
     verifier, provider = _goal_reviewer_endpoint(layout, monkeypatch)
     verifier.parse_args(["--work-dir", str(layout.worktree), "--verify"])
     provider.return_value.output = json.dumps(
@@ -1014,6 +1033,14 @@ def test_target_scope_growth_is_not_certified_by_verify(layout, monkeypatch):
     assert provider.call_count == 1
     assert build_status(GoalStore(layout.control), layout.record).goals[0].status == "stale"
     discovery, provider = _goal_reviewer_endpoint(layout, monkeypatch)
+    if scope_change != "growth":
+        assert discovery._run().exit_code == 2
+        provider.assert_not_called()
+        core.write_text(original_core)
+        (layout.worktree / "rtl.v").write_text("module top; wire fixed; endmodule\n")
+        discovery, provider = _goal_reviewer_endpoint(layout, monkeypatch)
     assert discovery._run().exit_code == 0
-    assert discovery._parse_scope() == ["added.v", "rtl.v"]
+    assert discovery._parse_scope() == (
+        ["added.v", "rtl.v"] if scope_change == "growth" else ["rtl.v"]
+    )
     assert build_status(GoalStore(layout.control), layout.record).goals[0].status == "met"

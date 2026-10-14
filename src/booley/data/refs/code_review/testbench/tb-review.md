@@ -24,6 +24,7 @@ If the spec section is absent, skip the checks that depend on it rather than gue
 
 ## Procedure
 
+1. Read the **## Specification** section when supplied.
 2. Read the target TB file(s) listed in the review request
 3. Identify the DUT instance and interface from the TB connections, the spec, and any files explicitly in scope
 4. Identify: test tasks, golden ref functions (and their domain), config coverage, comparison logic, package dependencies

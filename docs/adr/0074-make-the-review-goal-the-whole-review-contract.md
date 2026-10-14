@@ -10,7 +10,9 @@ verify-before-restart approach in #1432 and the closed PR #1496.
 A Review Goal declares exactly one `target` or `paths`. `target` selects its RTL
 or TB filesets and dependency closure, using the same category file lists as
 source fingerprinting. `paths` declares category-matching files relative to the
-Goal worktree. Category, focus and verdict come from the Goal's review kind and
+Goal worktree. Files that do not exist or are not registered yet leave the Goal
+unmet until they are available; an existing opposite-category file is refused.
+Category, focus and verdict come from the Goal's review kind and
 requirement; a spec review also names `spec`. Goal Mode discovery takes only
 category and focus and refuses caller `scope`, `spec` and `steer`. Interactive
 Mode retains those controls. The decisions file is no longer Reviewer input or
@@ -31,12 +33,15 @@ A passing verify meets a `clean` Goal at the verified file contents. Changes to
 those files make it stale again. Verification retains the discovery requirements:
 a changed spec, TB policy or Target file selection requires new discovery after
 open findings are resolved. A `done` Goal is met by discovery completion;
-verification updates finding dispositions without refreshing its completion
-source evidence. Goal Mode resolves each open review before starting discovery
-for another focus; otherwise a later review would make older open findings
+verification is optional and updates finding dispositions without refreshing
+its completion source evidence. Open `done` findings never block another review.
+Goal Mode resolves each open `clean` review before starting discovery for another
+focus; otherwise a later review would make older open findings
 unreachable through the latest-review-only verify command. Refusals point to
-verify and waiver proposals. Interactive discovery replaces
-the previous review's findings.
+verify and waiver proposals. Interactive discovery replaces the previous
+review's findings. Interactive history is isolated per checkout, including when
+checkouts share a Booley Directory. Review calls sharing a state file are
+serialized; an overlapping call is refused and can be retried.
 
 The restart flag, contract invalidation, finding carry-over and automatic
 verification/rediscovery dispatch are removed. Existing verify budgets remain:
@@ -46,5 +51,8 @@ the total. Exhaustion preserves findings and requires a human decision through
 the existing Goal Change or abandonment workflow; it never waives automatically.
 
 Existing unscoped Review Goals must be replaced with scoped Goals through the
-normal approved Goal Change mechanism. Existing receipts retain their finding
-IDs; decisions-file fields are dropped when new review evidence is written.
+normal approved Goal Change mechanism. A review retarget must change scope or
+specification and requires human approval. Its proposal explicitly shows that
+it clears prior evidence and findings, and that narrowing scope weakens the
+requirement. Existing receipts retain their finding IDs; decisions-file fields
+are dropped when new review evidence is written.

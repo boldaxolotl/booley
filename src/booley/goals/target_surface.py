@@ -115,11 +115,17 @@ def target_surface_fingerprint(
     }
 
 
-def review_target_surface(work_dir: Path, target: str, scope: list[str]) -> dict[str, Any]:
+def review_target_surface(work_dir: Path, target: str) -> dict[str, Any]:
     """Keep Target declarations fixed while verify may update reviewed source bytes."""
-    return target_surface_fingerprint(
-        work_dir, target, artifact_paths=frozenset((work_dir / path).resolve() for path in scope)
-    )
+    from booley.flows.source_fingerprint import compute_source_fingerprint
+
+    sources = compute_source_fingerprint(work_dir, target=target)
+    paths = {
+        (work_dir / path).resolve() for path in [*sources["rtl"]["files"], *sources["tb"]["files"]]
+    }
+    if tests := _tests_toml(work_dir):
+        paths.add(tests.resolve())
+    return target_surface_fingerprint(work_dir, target, artifact_paths=frozenset(paths))
 
 
 def _cores(root: Path, target: str | None) -> list[Path]:
