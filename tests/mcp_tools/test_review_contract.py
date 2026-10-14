@@ -39,3 +39,16 @@ def test_rtl_scope_rejects_python() -> None:
 def test_scope_is_required() -> None:
     with pytest.raises(ReviewContractError, match="at least one source"):
         resolve_review_scope([], category="tb")
+
+
+def test_cpp_refusal_lists_interactive_supported_kinds():
+    with pytest.raises(ReviewContractError) as caught:
+        resolve_review_scope(["tb/sim_main.cpp"], category="tb")
+    assert ".svh" in str(caught.value)
+    assert ".py" in str(caught.value)
+    assert "USAGE" in str(caught.value)
+
+
+def test_goal_mode_preserves_explicit_cpp_support_scope():
+    contract = resolve_review_scope(["shared/main.cpp"], category="tb", allow_support=True)
+    assert contract.support_files == frozenset({"shared/main.cpp"})

@@ -160,17 +160,10 @@ _EDALIZE_EDA_TOOL_MARKER = ".booley_edalize_eda_tool"
 # The creator can inspect source but cannot modify it or invoke shell tools.
 # Booley alone materializes variants after validating the returned proposals.
 def _configured_testbench_dirs(work_dir: Path) -> list[str]:
-    """Return testbench source/include dirs (from the ``.core``) for prompt boundaries."""
-    try:
-        from booley.fusesoc.fusesoc_registry import source_dirs_from_core
+    """Return exact testbench source/include paths for creator boundaries."""
+    from booley.fusesoc.fusesoc_registry import classified_sources
 
-        _rtl, tb_dirs, tb_incl = source_dirs_from_core(work_dir)
-    except Exception:  # noqa: BLE001 — registry unavailable; default boundary
-        return ["tb/"]
-    from booley.runtime.shared_infra import source_dir_prefixes
-
-    prefixes = source_dir_prefixes([*tb_dirs, *tb_incl], work_dir)
-    return [prefix for prefix in prefixes if "\\" not in prefix] or ["tb/"]
+    return list(classified_sources(work_dir).tb_files)
 
 
 _CREATOR_TOOLS = ["Read", "Grep", "Glob"]
@@ -784,8 +777,8 @@ You are read-only. Do not edit any file or run simulators. Use provider-native
 read tools when available. If file inspection is exposed only through a shell,
 you may use read-only shell commands (for example: sed, rg, nl, head, tail, or
 find). Never use a command that writes or modifies files or executes project
-code. You MUST NOT read testbench files ({tb_dirs} or any configured
-testbench source/include directory). Inspect only the authorized RTL scope.
+code. You MUST NOT read testbench files ({tb_dirs}). Inspect only the authorized RTL scope;
+other files sharing those parent directories do not acquire a testbench role.
 
 Read the mutation testing guide at `{_mutation_guide_path()}` before starting.
 
@@ -930,12 +923,20 @@ replacement must differ, and every proposal must remain a single source edit.
         subprocess-free ``.core`` read, <1s) turns that into an instant,
         self-correcting error with a "did you mean" hint.
 
-        Fails open (returns ``None``) when the Target cannot be resolved or its
-        source list is empty; downstream Target validation then reports the error.
+        Inspection failures and empty source sets refuse before model/build work.
         """
+        for entry in scope_files:
+            if Path(entry).suffix.lower() not in {".v", ".vh", ".sv", ".svh"}:
+                return McpToolResult(
+                    exit_code=EXIT_FAILURE,
+                    report_text=f"mutation_tester: --scope entry '{entry}' is not an HDL RTL mutation source",
+                )
         target = getattr(self.args, "target", "") or ""
         if not target:
-            return None
+            return McpToolResult(
+                exit_code=EXIT_FAILURE,
+                report_text="mutation_tester: scope validation requires a Target",
+            )
         try:
             catalog = TargetCatalog.build(self.args.work_dir)
             resolved = list(catalog.inspect(catalog.select(target)).rtl_files)
@@ -943,10 +944,16 @@ replacement must differ, and every proposal must remain a single source edit.
                 fusesoc_registry.canonical_project_path(self.args.work_dir, path)
                 for path in resolved
             }
-        except Exception:  # noqa: BLE001 — unresolvable target: fail open, let downstream report
-            return None
+        except Exception as exc:  # noqa: BLE001 — boundary diagnostic refuses before model/build
+            return McpToolResult(
+                exit_code=EXIT_FAILURE,
+                report_text=f"mutation_tester: cannot inspect Target '{target}' for scope {scope_files}: {exc}",
+            )
         if not resolved:
-            return None
+            return McpToolResult(
+                exit_code=EXIT_FAILURE,
+                report_text=f"mutation_tester: Target '{target}' has no RTL sources for scope {scope_files}",
+            )
         by_base = {Path(r).name: r for r in resolved}
         for entry in scope_files:
             if not Path(entry).is_absolute() and entry in resolved_set:

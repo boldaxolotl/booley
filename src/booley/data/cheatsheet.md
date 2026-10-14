@@ -150,6 +150,8 @@ Call the `coverage_analyst` Specialist from your Developer Agent session with `c
 
 Read-only, single-focus code review. It reports `CRITICAL`, `MAJOR`, and `MINOR` findings. In Interactive Mode, review the selected files using your specification or steering. In Goal Mode, `done` reports findings without requiring fixes; the review package includes open findings. `clean` requires every finding to be fixed or waived with a justification.
 
+Interactive source review accepts Verilog/SystemVerilog (.v, .vh, .sv, .svh), plus Python (.py) for category=tb, and refuses C/C++ kinds. Goal Mode also accepts explicitly scoped support files, including C/C++. Sim C/C++ harness inputs count as TB for isolation and cannot be mutation scope. Explicit opposite-category sources are refused in either mode; unregistered scoped sources retain the registration warning.
+
 The result links saved review evidence, including rejected proposals for inspection. Rejected proposals do not affect Criteria.
 
 Call the `reviewer` Specialist from your Developer Agent session with `category="<category>"` and `focus="<focus>"`.

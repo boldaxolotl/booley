@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from booley.agent_workspace.isolation import (
     CATEGORY_DIRS_DEFAULT,
     get_category_dirs,
@@ -129,3 +131,30 @@ class TestRemoveShadowPackage:
         with patch("booley.agent_workspace.isolation.shutil.rmtree", side_effect=OSError("perm")):
             remove_shadow_package(tmp_path)  # logs warning, doesn't raise
         assert shadow.is_dir()
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "not: [valid",
+        "filesets: broken",
+        "filesets: {rtl: {files: source.sv}}",
+        "filesets: {rtl: {files: [42]}}",
+    ],
+)
+def test_strict_inventory_refuses_malformed_discovered_core(tmp_path, content):
+    from booley.fusesoc.fusesoc_registry import FuseSocError, classified_sources
+
+    _write_core(tmp_path)
+    (tmp_path / "broken.core").write_text(content)
+    with pytest.raises(FuseSocError, match=r"broken.core"):
+        classified_sources(tmp_path, strict=True)
+
+
+def test_strict_inventory_refuses_escaping_declared_source(tmp_path):
+    from booley.fusesoc.fusesoc_registry import FuseSocError, classified_sources
+
+    core = _write_core(tmp_path)
+    core.write_text(core.read_text().replace("rtl/dut.sv", "../outside.sv"))
+    with pytest.raises(FuseSocError, match="escapes Project Root"):
+        classified_sources(tmp_path, strict=True)

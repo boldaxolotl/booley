@@ -302,6 +302,14 @@ class Specialist(McpTool):
         """Category whose opposite sources must be absent from a read-only snapshot."""
         return None
 
+    def _workspace_isolation_scope(self) -> tuple[str, ...]:
+        """Exact authorized sources; subclasses may already have resolved scope."""
+        return tuple(
+            part.strip()
+            for part in (getattr(self.args, "scope", "") or "").split(",")
+            if part.strip()
+        )
+
     @abstractmethod
     def _build_prompt(self) -> str:
         """Build the agent prompt. Implemented by subclasses."""
@@ -341,6 +349,10 @@ class Specialist(McpTool):
             params,
             self.workspace_access,
             self._workspace_isolation_category(),
+            scope=self._workspace_isolation_scope(),
+            excluded_roots=(
+                (Path(self.args.report_dir),) if getattr(self.args, "report_dir", None) else ()
+            ),
         ) as (
             call_params,
             snapshot,

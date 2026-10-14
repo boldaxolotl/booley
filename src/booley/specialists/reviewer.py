@@ -160,9 +160,9 @@ def _get_tb_prefixes(work_dir: Path | None = None) -> tuple[str, ...]:
     return _get_prefixes(work_dir)[1]
 
 
-# HDL source suffixes whose presence in a review scope but absence from any
+# Source suffixes whose presence in a review scope but absence from any
 # ``.core`` fileset is worth surfacing (ADR 0026 follow-through).
-_SOURCE_SUFFIXES = (".v", ".sv", ".svh", ".vh")
+_SOURCE_SUFFIXES = (".v", ".sv", ".svh", ".vh", ".py", ".c", ".cc", ".cpp", ".cxx", ".h", ".hpp")
 
 
 def _warn_unregistered_sources(
@@ -743,6 +743,21 @@ def validate_scope_category(
 
     Returns list of error messages (empty = valid).
     """
+    if work_dir is not None:
+        from booley.fusesoc.fusesoc_registry import (
+            canonical_project_path,
+            classified_sources,
+            discover_cores,
+        )
+
+        if discover_cores(work_dir):
+            sources = classified_sources(work_dir, strict=True)
+            opposite = set(sources.tb_files if category == "rtl" else sources.rtl_source_files)
+            return [
+                f"Path '{path}' is an opposite-category source ({category} review)"
+                for path in scope_paths
+                if canonical_project_path(work_dir, path) in opposite
+            ]
     from booley.runtime.shared_infra import source_path_matches
 
     errors: list[str] = []
@@ -1090,6 +1105,9 @@ class ReviewerSpecialist(Specialist):
             return None
         return self.args.category
 
+    def _workspace_isolation_scope(self) -> tuple[str, ...]:
+        return tuple(self._parse_scope())
+
     @property
     def display_tag(self) -> str | None:
         if not self._args:
@@ -1182,7 +1200,7 @@ class ReviewerSpecialist(Specialist):
             self.args.category,
             self.args.work_dir,
         )
-        if not self._goal_mode:
+        if not self._goal_mode or any("opposite-category" in error for error in scope_errors):
             errors.extend(scope_errors)
         _warn_unregistered_sources(scope_paths, self.args.work_dir)
 

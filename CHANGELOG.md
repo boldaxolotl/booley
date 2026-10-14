@@ -9,6 +9,14 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- Specialist category snapshots hide opposite-category sources per file, including
+  shared-directory sources and Booley-owned copies; category isolation requires a
+  usable core and removes unscoped unregistered source copies conservatively.
+  Untagged C/C++ Sim harness inputs count as testbench sources and cannot be mutation
+  scope; Doctor identifies their missing TB tags. Reviewer refuses explicit
+  opposite-category scope in either mode, keeps Goal support-file review, and lists
+  Interactive source kinds in refusal messages.
+
 - `booley help` (including `help -h` and `help --help`) now shows the same
   top-level help as `booley --help`. Public commands are grouped as Sandbox,
   either location, and host-only, with alphabetical ordering within each group.

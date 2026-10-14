@@ -1542,16 +1542,17 @@ class TestTargetSourceFilesDependencyClosure:
         """The default stays root-only — this documents why that is not enough."""
         self._layered_repo(tmp_path)
         src = _target_source_files(tmp_path, "sim")
-        assert src.rtl_source_files == ("tb/harness.cpp",)
+        assert src.rtl_source_files == ()
+        assert src.tb_files == ("tb/harness.cpp", "tb/tb_top.sv")
 
     def test_closure_read_finds_the_transitive_dut(self, tmp_path: Path):
         self._layered_repo(tmp_path)
         src = _target_source_files(tmp_path, "sim", include_dependencies=True)
         assert "vendor/core/rtl/dut.sv" in src.rtl_source_files
         assert "vendor/core/rtl/dut_pkg.sv" in src.rtl_source_files
-        # The root core's own files are still first, and TB tagging survives.
-        assert src.rtl_source_files[0] == "tb/harness.cpp"
-        assert src.tb_files == ("tb/tb_top.sv",)
+        # Both inferred C++ harness and explicitly tagged HDL remain TB.
+        assert src.rtl_source_files[0] == "vendor/core/rtl/dut.sv"
+        assert src.tb_files == ("tb/harness.cpp", "tb/tb_top.sv")
 
     def test_closure_read_does_not_duplicate_shared_dependencies(self, tmp_path: Path):
         """A file reachable twice must not be mutated or counted twice."""

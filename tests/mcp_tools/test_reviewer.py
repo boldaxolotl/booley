@@ -45,7 +45,7 @@ def _skip_workspace_snapshot_for_mocked_agents(monkeypatch: pytest.MonkeyPatch) 
     """Reviewer unit tests mock the agent; snapshot behavior has focused tests."""
 
     @contextlib.contextmanager
-    def passthrough(params, _access, _category=None):
+    def passthrough(params, _access, _category=None, **_kwargs):
         yield params, None
 
     monkeypatch.setattr(
@@ -1349,7 +1349,7 @@ class TestScopeValidation:
         assert validate_scope_category(["picorv32.v"], "rtl", tmp_path) == []
         assert validate_scope_category(["./picorv32.v"], "rtl", tmp_path) == []
         errors = validate_scope_category(["picorv32.v.bak"], "rtl", tmp_path)
-        assert errors and "picorv32.v.bak" in errors[0]
+        assert errors == []  # explicit unregistered scope retains its narrow grant
 
 
 # ---------------------------------------------------------------------------
@@ -3879,3 +3879,28 @@ def review_logs(tmp_path, monkeypatch):
     logs.mkdir()
     monkeypatch.setenv("BOOLEY_LOGS_DIR", str(logs))
     return logs
+
+
+@pytest.mark.parametrize("category,scope", [("rtl", "shared/main.cpp"), ("tb", "shared/dut.sv")])
+@pytest.mark.parametrize("goal_mode", [False, True])
+def test_registered_opposite_scope_refused_in_both_modes(tmp_path, category, scope, goal_mode):
+    from tests.test_target_catalog import _category_sim_core
+
+    _category_sim_core(tmp_path)
+    endpoint = ReviewerSpecialist()
+    endpoint.parse_args(
+        ["--work-dir", str(tmp_path), "--scope", scope, "--category", category, "--focus", "bugs"]
+    )
+    endpoint._goal_mode = goal_mode
+    assert any("opposite-category" in error for error in endpoint._validate_args())
+
+
+def test_same_directory_unregistered_scope_is_own_grant_with_warning(tmp_path, caplog):
+    from booley.specialists.reviewer import _warn_unregistered_sources
+    from tests.test_target_catalog import _category_sim_core
+
+    _category_sim_core(tmp_path)
+    (tmp_path / "shared/new.sv").write_text("module new; endmodule\n")
+    assert validate_scope_category(["shared/new.sv"], "rtl", tmp_path) == []
+    _warn_unregistered_sources(["shared/new.sv"], tmp_path)
+    assert "shared/new.sv" in caplog.text

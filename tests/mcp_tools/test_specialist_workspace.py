@@ -94,12 +94,15 @@ def test_category_isolation_only_hides_snapshot_sources(
         source = repo / directory / "source.sv"
         source.parent.mkdir()
         source.write_text(f"// {directory}\n", encoding="utf-8")
+    (repo / "design.core").write_text(
+        "CAPI=2:\nname: ::snapshot:0\nfilesets:\n  rtl: {files: [rtl/source.sv]}\n  tb: {files: [tb/source.sv], tags: [tb]}\n"
+    )
     _git(["add", "rtl/source.sv", "tb/source.sv"], repo)
     params = AgentCallParams(prompt="review", model="test", cwd=repo)
 
     with isolated_agent_workspace(params, "read_only", category) as (isolated, _snapshot):
         isolated_root = Path(isolated.cwd)
-        assert not (isolated_root / hidden_dir).exists()
+        assert not (isolated_root / hidden_dir / "source.sv").exists()
         assert (isolated_root / visible_dir / "source.sv").is_file()
         assert (repo / "rtl" / "source.sv").is_file()
         assert (repo / "tb" / "source.sv").is_file()
@@ -169,6 +172,9 @@ def test_reviewer_invokes_agent_in_snapshot(tmp_path: Path) -> None:
     (repo / "rtl" / "dut.sv").write_text("module dut; endmodule\n", encoding="utf-8")
     (repo / "tb").mkdir()
     (repo / "tb" / "tb.sv").write_text("module tb; endmodule\n", encoding="utf-8")
+    from tests.agent_workspace.test_isolation import _write_core
+
+    _write_core(repo)
     _git(["add", "rtl/dut.sv", "tb/tb.sv"], repo)
     params = AgentCallParams(prompt="review", model="test", cwd=repo)
 
@@ -177,14 +183,14 @@ def test_reviewer_invokes_agent_in_snapshot(tmp_path: Path) -> None:
         isolated_file = Path(call_params.cwd) / "tracked.sv"
         assert Path(call_params.cwd) != repo
         assert (Path(call_params.cwd) / "rtl" / "dut.sv").is_file()
-        assert not (Path(call_params.cwd) / "tb").exists()
+        assert not (Path(call_params.cwd) / "tb/tb.sv").exists()
         assert (repo / "rtl" / "dut.sv").is_file()
         assert (repo / "tb" / "tb.sv").is_file()
         isolated_file.write_text("agent edit\n", encoding="utf-8")
         return AgentResult(output=f"finding in {isolated_file}")
 
     endpoint = ReviewerSpecialist()
-    endpoint._args = argparse.Namespace(category="rtl")
+    endpoint._args = argparse.Namespace(category="rtl", scope="tracked.sv")
     with (
         patch("booley.specialists.specialist._call_agent_sync", side_effect=fake_call),
         patch("booley.specialists.specialist.parent_death_watchdog", return_value=nullcontext()),
@@ -323,8 +329,8 @@ def test_mutation_snapshot_proposals_resolve_live_wip(tmp_path, monkeypatch, tb_
             sorted(str(p.relative_to(repo)) for p in repo.rglob("*") if ".git" not in p.parts)
             == before
         )
-        assert not (root / tb_dir).exists()
-        assert (root / "rtl/new.sv").read_text() == "// untracked RTL\n"
+        assert not (root / tb_dir / "tb.sv").exists()
+        assert not (root / "rtl/new.sv").exists()  # unscoped and unregistered
         assert (root / "rtl/dut.sv").read_text() == "assign x = live + b;\n"
         assert params.allowed_agent_capabilities == ["Read", "Grep", "Glob"]
         assert str(root / "rtl/dut.sv") in params.prompt
@@ -357,7 +363,7 @@ def test_mutation_snapshot_resume_paths(tmp_path, monkeypatch, returned_path):
         root = Path(params.cwd)
         assert root != repo
         assert (repo / "tb/tb.sv").is_file()
-        assert not (root / "tb").exists()
+        assert not (root / "tb/tb.sv").exists()
         if snapshots:
             assert params.resume_session and params.session_id == "resume-id"
             assert not snapshots[0].exists()
@@ -411,3 +417,104 @@ def test_result_json_windows_snapshot_paths_are_restored():
     result = AgentResult(output=json.dumps({"file": str(snapshot.snapshot_root) + r"\rtl\dut.sv"}))
     restored = restore_result_paths(result, snapshot)
     assert json.loads(restored.output)["file"] == str(snapshot.real_root) + r"\rtl\dut.sv"
+
+
+@pytest.mark.parametrize("category", ["rtl", "tb"])
+def test_shared_directory_snapshot_removes_exact_opposite_sources(tmp_path, category):
+    repo = _repo(tmp_path)
+    (repo / "shared").mkdir()
+    for name in ("dut.sv", "tb.sv", "sim_main.cpp"):
+        (repo / "shared" / name).write_text("// source\n")
+    (repo / "design.core").write_text("""CAPI=2:
+name: ::isolation:0
+filesets:
+  rtl:
+    files: [shared/dut.sv]
+    file_type: systemVerilogSource
+  tb:
+    files: [shared/tb.sv]
+    tags: [tb]
+    file_type: systemVerilogSource
+  harness:
+    files: [shared/sim_main.cpp]
+    file_type: cppSource
+targets:
+  sim:
+    default_tool: verilator
+    filesets: [rtl, tb, harness]
+    toplevel: tb
+""")
+    params = AgentCallParams(prompt="review", model="test", cwd=repo)
+    with isolated_agent_workspace(params, "read_only", category) as (isolated, _):
+        root = Path(isolated.cwd)
+        assert (root / "shared/dut.sv").exists() == (category == "rtl")
+        assert (root / "shared/tb.sv").exists() == (category == "tb")
+        assert (root / "shared/sim_main.cpp").exists() == (category == "tb")
+
+
+def test_category_refuses_no_core_but_diagnostic_snapshot_remains_usable(tmp_path):
+    from booley.fusesoc.fusesoc_registry import FuseSocError
+
+    repo = _repo(tmp_path)
+    params = AgentCallParams(prompt="review", model="test", cwd=repo)
+    with (
+        pytest.raises(FuseSocError, match=r"usable .core"),
+        isolated_agent_workspace(params, "read_only", "rtl"),
+    ):
+        pytest.fail("launched without classification")
+    with isolated_agent_workspace(params, "read_only") as (isolated, _):
+        assert (Path(isolated.cwd) / "tracked.sv").is_file()
+
+
+@pytest.mark.parametrize("category", ["rtl", "tb"])
+@pytest.mark.parametrize("external", [False, True])
+def test_snapshot_sanitizes_resolved_copy_roots_and_unregistered_scope(
+    tmp_path, monkeypatch, category, external, caplog
+):
+    from booley.runtime.booley_dir import reset_cache
+    from tests.test_target_catalog import _category_sim_core
+
+    repo = _repo(tmp_path)
+    _category_sim_core(repo)
+    data = tmp_path / "external-state" if external else repo / "project-state"
+    data.mkdir()
+    monkeypatch.setenv("BOOLEY_DIR", str(data))
+    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(repo / "custom-logs"))
+    monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(repo / "custom-runtime"))
+    reset_cache()
+    (data / "booley.toml").write_text(
+        '[project]\nname="fixture"\n[flows.sim]\noutput_dir="custom-output"\n'
+    )
+    roots = [
+        data / "selftest/sim/bad-overlay",
+        data / ".baseline-wt-stale",
+        data / "worktrees/case",
+        data / ".runtime/mutation_tester/lock/variants",
+        repo / "custom-logs/reverted",
+        repo / "custom-runtime",
+        repo / "custom-output",
+        repo / "current-report",
+    ]
+    for root in roots:
+        root.mkdir(parents=True)
+        (root / "copied.sv").write_text("module private_copy; endmodule\n")
+        (root / "result.md").write_text("embedded private source\n")
+    (repo / "shared/new.sv").write_text("module new; endmodule\n")
+    scope = ("shared/new.sv",)
+    params = AgentCallParams(prompt="review", model="test", cwd=repo)
+    caplog.set_level("INFO")
+    with isolated_agent_workspace(
+        params, "read_only", category, scope=scope, excluded_roots=(repo / "current-report",)
+    ) as (isolated, _):
+        root = Path(isolated.cwd)
+        assert (root / "shared/new.sv").is_file()
+        assert (root / "shared/dut.sv").exists() == (category == "rtl")
+        assert (root / "shared/main.cpp").exists() == (category == "tb")
+        for source in roots:
+            if source.is_relative_to(repo):
+                relative = source.relative_to(repo)
+                assert not (root / relative).exists()
+                assert (relative / "result.md").as_posix() in caplog.text
+    for source in roots:
+        assert (source / "copied.sv").is_file()
+    reset_cache()

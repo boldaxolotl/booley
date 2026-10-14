@@ -69,5 +69,8 @@ def resolve_review_scope(
         raise ReviewContractError(
             f"Unsupported {category.upper()} source kind in --scope: "
             + ", ".join(sorted(unsupported))
+            + ". Interactive review accepts .v, .vh, .sv, .svh"
+            + (", and .py for category=tb" if category == "tb" else "")
+            + "; see docs/user/USAGE.md. Goal Mode also accepts explicitly scoped support files."
         )
     return ReviewScopeContract(frozenset(cocotb), frozenset(hdl), frozenset(unsupported))

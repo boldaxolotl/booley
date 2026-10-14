@@ -8470,3 +8470,21 @@ def test_goal_history_corrupt_standalone_is_active_and_preserves_history(tmp_pat
     assert exclude.read_bytes() == before
     assert (metadata / "HEAD.preserved").read_bytes() == head
     assert (metadata / "objects").is_dir()
+
+
+@pytest.mark.parametrize("tagged", [False, True])
+def test_inferred_cpp_harness_does_not_mask_explicit_tb_tag_audit(tmp_path, tagged):
+    from tests.test_target_catalog import _category_sim_core
+
+    _category_sim_core(tmp_path)
+    core = tmp_path / "design.core"
+    text = core.read_text().replace(
+        "  broken_synth:\n    default_tool: yosys\n    filesets: [undefined]\n", ""
+    )
+    if not tagged:
+        text = text.replace(", tags: [tb]", "")
+    core.write_text(text)
+    rec = _audit(tmp_path)
+    warnings = [message for level, message in rec.events if level == "warn"]
+    assert any("shared/main.cpp" in message and "tags:[tb]" in message for message in warnings)
+    assert any("none tagged tags:[tb]" in message for message in rec.fails()) == (not tagged)
