@@ -474,3 +474,40 @@ def test_help_includes_options_added_by_extension_actions(
         cli.main()
     assert exc.value.code == 0
     assert capsys.readouterr() == expected
+
+
+def test_extension_action_can_resolve_conflicts_with_help_options(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from booley.flows.endpoint_cli import human_endpoint_parser
+
+    class ReplaceHelp(argparse.Action):
+        def __call__(
+            self,
+            parser: argparse.ArgumentParser,
+            namespace: argparse.Namespace,
+            values: Any,
+            option_string: str | None = None,
+        ) -> None:
+            parser.add_argument("-h", "--help", action="store_true", help="Plugin option")
+
+    class Replacing(Custom):
+        def _add_args(self, parser):
+            parser.conflict_handler = "resolve"
+            parser._optionals.conflict_handler = "resolve"
+            parser.add_argument("--replace-help", action=ReplaceHelp, nargs=0)
+
+    register_custom(monkeypatch, Replacing)
+    tail = ["--replace-help", "--help"]
+    with pytest.raises(SystemExit) as direct:
+        human_endpoint_parser(Replacing()).parse_args(tail)
+    assert direct.value.code == 0
+    expected = capsys.readouterr()
+    assert "Plugin option" in expected.out
+    monkeypatch.setattr("sys.argv", ["booley", "flow", "custom", *tail])
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 0
+    assert capsys.readouterr() == expected

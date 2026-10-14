@@ -94,6 +94,8 @@ def _prepare_parser(parser, *, inert: bool, visited: set[int]) -> None:
         index = parser._actions.index(action)
         _replace_action(parser, action, replacement_type)
         replacement = parser._actions[index]
+        if hasattr(action, "container"):
+            replacement.container = action.container
         replacement.help = action.help
         if inert:
             replacement.type = None
