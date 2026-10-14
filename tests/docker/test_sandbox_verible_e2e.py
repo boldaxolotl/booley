@@ -79,13 +79,16 @@ def _run_in_sandbox(args: list[str], mounts: list[str] | None = None, timeout: i
 def _require_verible_sandbox() -> None:
     if _docker() is None:
         pytest.skip("docker not available")
-    probe = subprocess.run(
-        [_docker(), "image", "inspect", _IMAGE],
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
-    )
+    try:
+        probe = subprocess.run(
+            [_docker(), "image", "inspect", _IMAGE],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        pytest.skip(f"Sandbox Image probe unavailable: {error}")
     if probe.returncode != 0:
         pytest.skip(f"{_IMAGE} image not built")
     have_bin = _run_in_sandbox(["sh", "-c", "command -v verible-verilog-lint"], timeout=120)
@@ -185,3 +188,19 @@ def test_sandbox_runs_use_unique_ci_container_names(monkeypatch: pytest.MonkeyPa
     names = [command[command.index("--name") + 1] for command in commands]
     assert len(set(names)) == 2
     assert all(name.startswith("booley-ci-123-1-verible-") for name in names)
+
+
+@pytest.mark.parametrize("failure", ["timeout", "unavailable"])
+def test_unavailable_image_probe_skips_before_worker_timeout(monkeypatch, failure):
+    monkeypatch.setattr(shutil, "which", lambda _name: "docker")
+
+    def fail_probe(command, **kwargs):
+        assert command == ["docker", "image", "inspect", _IMAGE]
+        assert kwargs["timeout"] == 10
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+        raise OSError("docker unavailable")
+
+    monkeypatch.setattr(subprocess, "run", fail_probe)
+    with pytest.raises(pytest.skip.Exception, match="Sandbox Image probe unavailable"):
+        _require_verible_sandbox()
