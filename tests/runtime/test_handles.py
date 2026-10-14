@@ -7,7 +7,6 @@ import multiprocessing
 import os
 import shutil
 import subprocess
-import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -301,11 +300,9 @@ def test_missing_read_and_symlink_refusal(tmp_path):
 def test_deeply_nested_handle_map_is_isolated_as_a_diagnostic(tmp_path):
     store = handles.HandleStore(tmp_path)
     store.root.mkdir(parents=True)
-    depth = sys.getrecursionlimit() + 1000
+    depth = 50000
     store.path.write_text("[" * depth + "0" + "]" * depth)
     before = store.path.read_bytes()
-    with pytest.raises(RecursionError):
-        json.loads(before)
     assert store.snapshot()[0] == {}
     assert "handles unavailable" in store.snapshot()[1][0]
     assert store.path.read_bytes() == before
@@ -495,3 +492,17 @@ def test_full_dashboard_reader_keeps_maps_and_registry_bytes_unchanged(tmp_path,
     assert before == {
         str(path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()
     }
+
+
+def test_json_decoder_recursion_failure_is_isolated(tmp_path, monkeypatch):
+    store = handles.HandleStore(tmp_path)
+    store.save(handles.HandleMap({"codex:one": "S1"}, next_number=2))
+    before = store.path.read_bytes()
+
+    def decode(_raw):
+        raise RecursionError("nested JSON")
+
+    monkeypatch.setattr(handles, "json", SimpleNamespace(loads=decode))
+    labels, diagnostics = store.snapshot()
+    assert labels == {} and "nested JSON" in diagnostics[0]
+    assert store.path.read_bytes() == before
