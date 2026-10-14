@@ -168,7 +168,32 @@ def test_candidate_entrypoint_reaps_owned_topology(tmp_path: Path) -> None:
         try:
             _start_relay(daemon.client, daemon.image_id, topology)
             _start_session(daemon.client, daemon.image_id, topology)
+            assert_ok(
+                daemon.client.run(
+                    "exec",
+                    "-d",
+                    topology.session,
+                    "sh",
+                    "-c",
+                    "echo $$ > /tmp/attachment.pid; exec sleep 50",
+                )
+            )
             _start_reaper(daemon.client, daemon.image_id, topology)
+            _wait_for_log(daemon.client, topology.reaper, "live client attachments")
+            time.sleep(2)
+            assert _exists(daemon.client, "container", topology.session)
+            assert _exists(daemon.client, "container", topology.relay)
+            assert _exists(daemon.client, "network", topology.private)
+            assert _exists(daemon.client, "network", topology.outbound)
+            assert_ok(
+                daemon.client.run(
+                    "exec",
+                    topology.session,
+                    "sh",
+                    "-c",
+                    "kill $(cat /tmp/attachment.pid)",
+                )
+            )
             _wait_for_cleanup(daemon.client, topology)
             logs = _wait_for_log(
                 daemon.client,
