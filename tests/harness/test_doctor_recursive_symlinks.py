@@ -169,8 +169,11 @@ def test_real_links_to_different_ancestors_are_grouped_by_resolved_target(tmp_pa
     rec = _Rec()
     doctor._check_core_setup_hazards(_schema_audit(tmp_path), tmp_path, rec.p, rec.f)
     assert len(rec.fails()) == 2
-    assert any(f"2 links resolve to ancestor {tmp_path} (" in message for message in rec.fails())
+    # Windows resolution can canonicalize path spelling, including drive-letter case.
     assert any(
-        f"1 link resolves to ancestor {tmp_path / 'nested'} (" in message
+        f"2 links resolve to ancestor {tmp_path.resolve()} (" in message for message in rec.fails()
+    ), rec.fails()
+    assert any(
+        f"1 link resolves to ancestor {(tmp_path / 'nested').resolve()} (" in message
         for message in rec.fails()
-    )
+    ), rec.fails()
