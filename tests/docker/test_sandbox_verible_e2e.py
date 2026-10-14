@@ -19,6 +19,7 @@ FuseSoC resolutions.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import stat
 import subprocess
@@ -84,10 +85,12 @@ def _require_verible_sandbox() -> None:
             [_docker(), "image", "inspect", _IMAGE],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=10 if os.name == "nt" else 60,
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as error:
+        if os.name != "nt":
+            raise
         pytest.skip(f"Sandbox Image probe unavailable: {error}")
     if probe.returncode != 0:
         pytest.skip(f"{_IMAGE} image not built")
@@ -191,16 +194,24 @@ def test_sandbox_runs_use_unique_ci_container_names(monkeypatch: pytest.MonkeyPa
 
 
 @pytest.mark.parametrize("failure", ["timeout", "unavailable"])
-def test_unavailable_image_probe_skips_before_worker_timeout(monkeypatch, failure):
+@pytest.mark.parametrize("platform", ["nt", "posix"])
+def test_unavailable_image_probe_respects_platform_requirement(monkeypatch, failure, platform):
     monkeypatch.setattr(shutil, "which", lambda _name: "docker")
 
     def fail_probe(command, **kwargs):
         assert command == ["docker", "image", "inspect", _IMAGE]
-        assert kwargs["timeout"] == 10
+        assert kwargs["timeout"] == (10 if platform == "nt" else 60)
         if failure == "timeout":
             raise subprocess.TimeoutExpired(command, kwargs["timeout"])
         raise OSError("docker unavailable")
 
     monkeypatch.setattr(subprocess, "run", fail_probe)
-    with pytest.raises(pytest.skip.Exception, match="Sandbox Image probe unavailable"):
-        _require_verible_sandbox()
+    expected = (
+        pytest.skip.Exception
+        if platform == "nt"
+        else (subprocess.TimeoutExpired if failure == "timeout" else OSError)
+    )
+    with monkeypatch.context() as probe:
+        probe.setattr(os, "name", platform)
+        with pytest.raises(expected):
+            _require_verible_sandbox()
