@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from dataclasses import replace
 from pathlib import Path
@@ -30,6 +31,7 @@ from booley.harness.setup.line_endings import (
 from booley.harness.setup.line_endings import (
     LineEndingStatus as Status,
 )
+from booley.runtime.booley_dir import init_booley_dir_scope
 
 pytestmark = pytest.mark.usefixtures("isolated_git_attributes")
 
@@ -107,6 +109,22 @@ def test_unknown_sibling_preserves_default_without_false_conflict(tmp_path, mode
     restored = line_endings.reconcile_project_line_endings(root, data, mode=mode)
     assert not _unknown(restored.repositories[0])
     assert local.read_bytes() == b"* text=auto eol=lf\n"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX filenames can contain non-UTF-8 bytes")
+def test_unknown_sibling_bytes_can_be_printed_and_persisted_as_utf8(tmp_path):
+    root, data, _local = _checkout(tmp_path)
+    _missing_sibling(root, tmp_path, os.fsdecode(b"sibling-\xff"))
+    reporter = _reporter(data)
+    doctor._check_line_endings(
+        root, reporter.pass_, reporter.warn_, reporter.skip_, reporter.fail_, booley_dir=data
+    )
+    message = reporter.findings[0].message
+    message.encode("utf-8")
+    assert "sibling-\\xff" in message
+    with init_booley_dir_scope(root):
+        assert doctor.record_manual_result(root, reporter.result(0)) is not None
+    assert "sibling-\\xff" in (data / "runtime/doctor/last.log").read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize("mode", list(Mode))
@@ -187,6 +205,7 @@ def test_unknown_system_policy_is_reported_once_across_worktrees(
         root, reporter.pass_, reporter.warn_, reporter.skip_, reporter.fail_, booley_dir=data
     )
     assert reporter.findings[0].message.count("system attributes path unresolved") == 1
+    assert reporter.finish() == 0 and not reporter.result(0).clean
     capsys.readouterr()
     ctx = InitContext(project_root=root, interactive=False)
     git_hooks._step_line_endings(ctx, data)
@@ -370,6 +389,7 @@ def test_doctor_unknown_siblings_warn_read_only_in_stable_order(tmp_path):
         "crlf-mismatch",
         "autocrlf-effective-true",
         "local-policy-conflict",
+        "leaked-root-policy",
     ],
 )
 def test_doctor_unknown_does_not_mask_primary_findings(tmp_path, other):

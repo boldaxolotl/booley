@@ -1138,7 +1138,7 @@ def _unknown_policy_observations(
     inputs: dict[str, tuple[_FileIdentity | None, bytes]],
 ) -> list[LineEndingObservation]:
     messages = {
-        os.fsdecode(message)
+        message.decode("utf-8", errors="backslashreplace")
         for name, (_, message) in inputs.items()
         if name.startswith("policy-unknown:")
     }
