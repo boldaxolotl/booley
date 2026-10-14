@@ -681,3 +681,52 @@ def test_containment_cleanup_prospective_and_escape(tmp_path):
     ):
         with pytest.raises(CleanupError):
             cleanup_module._safe_relative(root, raw)
+
+
+def test_findings_lock_timeout_preserves_referenced_cleanup_source(tmp_path, monkeypatch):
+    from booley.feedback import findings
+    from tests.feedback.test_findings import holding_findings_lock
+
+    root = _project(tmp_path)
+    directory = root / ".booley"
+    scratch = prepare_run(root, "run-lock-timeout")
+    source = scratch / "doctor.log"
+    source.write_text("retain evidence\n")
+    append(Finding(title="attached", attachments=[str(source)]), directory)
+    record_artifact(
+        root, "run-lock-timeout", source, producer="doctor", artifact_class="raw-evidence"
+    )
+    plan = preview_cleanup(root, run_id="run-lock-timeout")
+    before = findings.log_path(directory).read_bytes()
+    monkeypatch.setattr(findings, "_LOCK_TIMEOUT_S", 0.01)
+    with holding_findings_lock(directory):
+        result = apply_cleanup(plan)
+    assert any("doctor.log" in item for item in result.unresolved)
+    assert source.read_text() == "retain evidence\n"
+    assert findings.log_path(directory).read_bytes() == before
+    assert not (directory / "setup-evidence").exists()
+
+
+def test_duplicate_finding_ids_materialize_every_cleanup_attachment(tmp_path):
+    root = _project(tmp_path)
+    directory = root / ".booley"
+    scratch = prepare_run(root, "run-duplicates")
+    entries = []
+    for ordinal in range(2):
+        source = scratch / str(ordinal) / "capture.log"
+        source.parent.mkdir()
+        source.write_text(f"evidence {ordinal}\n")
+        record_artifact(
+            root, "run-duplicates", source.parent, producer="doctor", artifact_class="raw-evidence"
+        )
+        entries.append(Finding(title=f"row {ordinal}", id="F-1", attachments=[str(source)]))
+    path = directory / "findings.jsonl"
+    path.write_text("".join(entry.to_json() + "\n" for entry in entries))
+    result = apply_cleanup(preview_cleanup(root, run_id="run-duplicates"))
+    assert result.unresolved == ()
+    assert not scratch.exists()
+    reread = read_log(directory).entries
+    attachments = [Path(entry.attachments[0]) for entry in reread]
+    assert len(set(attachments)) == 2
+    assert [entry.id for entry in reread] == ["F-1", "F-1"]
+    assert [item.read_text() for item in attachments] == ["evidence 0", "evidence 1"]

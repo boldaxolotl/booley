@@ -8,6 +8,9 @@ reads through it, so a log that loses or mangles an entry loses a finding.
 from __future__ import annotations
 
 import json
+import multiprocessing
+from contextlib import contextmanager
+from pathlib import Path
 
 import pytest
 
@@ -144,10 +147,7 @@ def test_created_timestamp_is_stamped_once(booley_dir):
 def test_rewrite_replaces_the_log_atomically(booley_dir):
     append(Finding(title="a"), booley_dir)
     append(Finding(title="b"), booley_dir)
-    entries = read_log(booley_dir).entries
-    entries[0].bucket = "booley"
-
-    rewrite(entries, booley_dir)
+    rewrite(lambda entries: setattr(entries[0], "bucket", "booley"), booley_dir)
 
     reread = read_log(booley_dir)
     assert [e.bucket for e in reread.entries] == ["booley", "unknown"]
@@ -163,7 +163,7 @@ def test_rewrite_refuses_to_drop_unparseable_raw_evidence(booley_dir):
     before = path.read_bytes()
 
     with pytest.raises(CorruptFindingsLogError, match="would be lost"):
-        rewrite(read_log(booley_dir).entries, booley_dir)
+        rewrite(lambda _entries: None, booley_dir)
 
     assert path.read_bytes() == before
 
@@ -222,3 +222,345 @@ class TestFilability:
 
     def test_a_win_is_never_filable(self):
         assert not Finding(title="worked", kind="win", bucket="booley").is_filable()
+
+
+# Spawned workers use the same first parsed read in both the old and fixed APIs.
+def _publication_barrier(connection, publish):
+    def paused_publish(*args, **kwargs):
+        connection.send("read")
+        assert connection.poll(60), "parent did not release publication"
+        assert connection.recv() == "continue"
+        return publish(*args, **kwargs)
+
+    return paused_publish
+
+
+def _paused_feedback_writer(directory, connection, operation, attempted):
+    import argparse
+
+    from booley.feedback import cli, findings, materialize
+    from booley.feedback.render import Environment
+
+    findings._LOCK_TIMEOUT_S = 60
+    original = findings.read_log
+    wait_for_lock = getattr(findings, "wait_for_file_lock", None)
+    if wait_for_lock is not None and attempted is not None:
+
+        def record_wait(handle, **kwargs):
+            return wait_for_lock(handle, **kwargs, on_wait=attempted.set)
+
+        findings.wait_for_file_lock = record_wait
+    first = True
+
+    def paused_read(*args, **kwargs):
+        nonlocal first
+        log = original(*args, **kwargs)
+        if attempted is not None:
+            attempted.set()
+        if first and operation != "materialize":
+            first = False
+            connection.send("read")
+            assert connection.poll(60), "parent did not release writer"
+            assert connection.recv() == "continue"
+        return log
+
+    findings.read_log = paused_read
+    cli.read_log = paused_read
+    materialize.read_log = paused_read
+    directory = Path(directory)
+    if operation == "append":
+        findings.append(findings.Finding(title="concurrent"), directory)
+    elif operation == "triage":
+        parser = argparse.ArgumentParser()
+        cli.add_subparser(parser.add_subparsers(dest="command"))
+        args = parser.parse_args(["feedback", "triage", "F-1", "--bucket", "booley"])
+        assert cli._cmd_triage(args, directory) == 0
+    else:
+        materialize._rewrite_attachments_only = _publication_barrier(
+            connection, materialize._rewrite_attachments_only
+        )
+        materialize.materialize_attachments(
+            directory, [directory / "capture.log"], env=Environment()
+        )
+    connection.send("done")
+
+
+def _sidecar_is_held(directory):
+    from booley.core.file_lock import (
+        LockContentionError,
+        acquire_file_lock,
+        release_file_lock,
+    )
+
+    sidecar = directory / ".runtime" / "findings.lock"
+    sidecar.parent.mkdir(parents=True, exist_ok=True)
+    with sidecar.open("a+") as handle:
+        try:
+            acquire_file_lock(handle)
+        except LockContentionError:
+            return True
+        release_file_lock(handle)
+    return False
+
+
+def _receive(connection, expected):
+    assert connection.poll(60), f"worker did not send {expected}"
+    assert connection.recv() == expected
+
+
+def _finish_workers(workers):
+    for process, connection in workers:
+        process.join(60)
+        assert process.exitcode == 0
+        connection.close()
+
+
+def _stop_workers(workers):
+    for process, connection in workers:
+        if process.is_alive():
+            process.terminate()
+        process.join(10)
+        connection.close()
+
+
+def _start_writer(context, directory, operation, attempted=None):
+    parent, child = context.Pipe()
+    process = context.Process(
+        target=_paused_feedback_writer, args=(str(directory), child, operation, attempted)
+    )
+    process.start()
+    child.close()
+    return process, parent
+
+
+def test_concurrent_append_allocates_distinct_ids(booley_dir):
+    context = multiprocessing.get_context("spawn")
+    workers = []
+    try:
+        for _ in range(8):
+            workers.append(_start_writer(context, booley_dir, "append"))
+        # A locked reader excludes the other seven; the old API admits all eight.
+        from multiprocessing.connection import wait
+
+        ready = wait([connection for _, connection in workers], timeout=60)
+        assert ready
+        first = ready[0]
+        _receive(first, "read")
+        serialized = _sidecar_is_held(booley_dir)
+        if serialized:
+            first.send("continue")
+            _receive(first, "done")
+            remaining = [connection for _, connection in workers if connection is not first]
+            for _ in range(7):
+                ready = wait(remaining, timeout=60)
+                assert ready
+                connection = ready[0]
+                _receive(connection, "read")
+                connection.send("continue")
+                _receive(connection, "done")
+                remaining.remove(connection)
+        else:
+            for _, connection in workers:
+                if connection is not first:
+                    _receive(connection, "read")
+            for _, connection in workers:
+                connection.send("continue")
+            for _, connection in workers:
+                _receive(connection, "done")
+        _finish_workers(workers)
+        log = read_log(booley_dir)
+        assert log.corrupt_lines == 0
+        assert len(log.entries) == 8
+        assert len({entry.id for entry in log.entries}) == 8
+    finally:
+        _stop_workers(workers)
+
+
+def _race_feedback_append(directory, operation):
+    context = multiprocessing.get_context("spawn")
+    workers = []
+    try:
+        writer = _start_writer(context, directory, operation)
+        workers.append(writer)
+        _receive(writer[1], "read")
+        held = _sidecar_is_held(directory)
+        attempted = context.Event()
+        addition = _start_writer(context, directory, "append", attempted)
+        workers.append(addition)
+        assert attempted.wait(60), "appender did not attempt the transaction"
+        assert _sidecar_is_held(directory) == held
+        if held:
+            # Probe proves the writer really owns the shared sidecar, then let
+            # it publish before waiting for the blocked appender's parsed read.
+            writer[1].send("continue")
+            _receive(writer[1], "done")
+        _receive(addition[1], "read")
+        addition[1].send("continue")
+        _receive(addition[1], "done")
+        if not held:
+            writer[1].send("continue")
+            _receive(writer[1], "done")
+        _finish_workers(workers)
+    finally:
+        _stop_workers(workers)
+
+
+def test_triage_retains_concurrent_append(booley_dir):
+    append(Finding(title="original"), booley_dir)
+    _race_feedback_append(booley_dir, "triage")
+    log = read_log(booley_dir)
+    assert [entry.title for entry in log.entries] == ["original", "concurrent"]
+    assert log.entries[0].bucket == "booley"
+    assert log.corrupt_lines == 0
+
+
+def _hold_findings_lock(directory, connection):
+    from booley.core.file_lock import acquire_file_lock, release_file_lock
+
+    sidecar = Path(directory) / ".runtime" / "findings.lock"
+    sidecar.parent.mkdir(parents=True, exist_ok=True)
+    with sidecar.open("a+") as handle:
+        acquire_file_lock(handle)
+        connection.send("held")
+        try:
+            assert connection.poll(60), "parent did not release holder"
+            connection.recv()
+        finally:
+            release_file_lock(handle)
+
+
+@contextmanager
+def holding_findings_lock(directory):
+    context = multiprocessing.get_context("spawn")
+    parent, child = context.Pipe()
+    process = context.Process(target=_hold_findings_lock, args=(str(directory), child))
+    process.start()
+    child.close()
+    try:
+        _receive(parent, "held")
+        yield process
+    finally:
+        if process.is_alive():
+            parent.send("release")
+            process.join(10)
+        _stop_workers([(process, parent)])
+
+
+def test_timeout_changes_neither_log_nor_caller_and_killed_holder_recovers(
+    booley_dir, monkeypatch
+):
+    from booley.feedback import findings
+
+    append(Finding(title="original"), booley_dir)
+    path = log_path(booley_dir)
+    before = path.read_bytes()
+    candidate = Finding(title="waiting")
+    assert findings._LOCK_TIMEOUT_S == 5
+    monkeypatch.setattr(findings, "_LOCK_TIMEOUT_S", 0.01)
+    with holding_findings_lock(booley_dir) as holder:
+        with pytest.raises(findings.FindingsLockTimeoutError, match=r"append.*findings.lock"):
+            append(candidate, booley_dir)
+        with pytest.raises(findings.FindingsLockTimeoutError, match=r"rewrite.*findings.lock"):
+            rewrite(lambda entries: entries.clear(), booley_dir)
+        assert candidate.id == ""
+        assert path.read_bytes() == before
+        assert not path.with_suffix(".jsonl.tmp").exists()
+        holder.terminate()
+        holder.join(10)
+        assert not holder.is_alive()
+        assert append(candidate, booley_dir).id == "F-2"
+    assert (booley_dir / ".runtime" / "findings.lock").is_file()
+
+
+def test_explicit_id_collision_refuses_without_writing(booley_dir):
+    append(Finding(title="original", id="custom"), booley_dir)
+    before = log_path(booley_dir).read_bytes()
+    with pytest.raises(ValueError, match=r"custom.*already exists"):
+        append(Finding(title="duplicate", id="custom"), booley_dir)
+    assert log_path(booley_dir).read_bytes() == before
+
+
+def test_rewrite_preserves_unknown_json_and_latest_rows(booley_dir):
+    path = log_path(booley_dir)
+    path.write_text('{"title":"future","id":"F-1","future":{"nested":[1,2]}}\n\n')
+    append(Finding(title="new"), booley_dir)
+    rewrite(lambda entries: setattr(entries[0], "bucket", "booley"), booley_dir)
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    assert rows[0]["future"] == {"nested": [1, 2]}
+    assert rows[0]["bucket"] == "booley"
+    assert rows[1]["title"] == "new"
+
+
+@pytest.mark.parametrize("mutation", ["add", "remove", "reverse", "replace", "id"])
+def test_rewrite_rejects_structural_callback_edits(booley_dir, mutation):
+    append(Finding(title="one"), booley_dir)
+    append(Finding(title="two"), booley_dir)
+    path = log_path(booley_dir)
+    before = path.read_bytes()
+
+    def update(entries):
+        if mutation == "add":
+            entries.append(Finding(title="extra"))
+        elif mutation == "remove":
+            entries.pop()
+        elif mutation == "reverse":
+            entries.reverse()
+        elif mutation == "replace":
+            entries[0] = Finding.from_dict(json.loads(entries[0].to_json()))
+        else:
+            entries[0].id = "F-99"
+
+    with pytest.raises(ValueError, match="preserve rows"):
+        rewrite(update, booley_dir)
+    assert path.read_bytes() == before
+    assert not path.with_suffix(".jsonl.tmp").exists()
+    assert append(Finding(title="after failure"), booley_dir).id == "F-3"
+
+
+def test_rewrite_callback_exception_and_replace_failure_release_lock(booley_dir, monkeypatch):
+    append(Finding(title="original"), booley_dir)
+    path = log_path(booley_dir)
+    before = path.read_bytes()
+
+    def failed_update(entries):
+        entries[0].notes = "must not publish"
+        raise ValueError("invalid batch")
+
+    with pytest.raises(ValueError, match="invalid batch"):
+        rewrite(failed_update, booley_dir)
+    assert path.read_bytes() == before
+    assert not path.with_suffix(".jsonl.tmp").exists()
+    original_replace = Path.replace
+
+    def failed_replace(source, target):
+        if source == path.with_suffix(".jsonl.tmp"):
+            raise OSError("publication interrupted")
+        return original_replace(source, target)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "replace", failed_replace)
+        with pytest.raises(OSError, match="publication interrupted"):
+            rewrite(lambda entries: setattr(entries[0], "notes", "new"), booley_dir)
+    assert path.read_bytes() == before
+    assert path.with_suffix(".jsonl.tmp").exists()
+    rewrite(lambda entries: setattr(entries[0], "notes", "retry"), booley_dir)
+    assert read_log(booley_dir).entries[0].notes == "retry"
+    assert not path.with_suffix(".jsonl.tmp").exists()
+
+
+def test_lock_io_failure_is_not_misreported_as_timeout_or_written(booley_dir, monkeypatch):
+    from booley.feedback import findings
+
+    append(Finding(title="original"), booley_dir)
+    before = log_path(booley_dir).read_bytes()
+    candidate = Finding(title="not written")
+
+    def failed_lock(*_args, **_kwargs):
+        raise OSError("storage failure")
+
+    monkeypatch.setattr(findings, "wait_for_file_lock", failed_lock)
+    with pytest.raises(OSError, match="storage failure") as error:
+        append(candidate, booley_dir)
+    assert not isinstance(error.value, findings.FindingsLockTimeoutError)
+    assert candidate.id == ""
+    assert log_path(booley_dir).read_bytes() == before
