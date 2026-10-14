@@ -819,6 +819,10 @@ def _cmd_goal(args: argparse.Namespace, _project_root: Path) -> int:
                 _goal_checkout(args, _project_root),
                 campaign_reader=read_unpublished_results,
             )
+            from booley.mcp.sim_baseline_jobs import schedule_sim_baselines
+
+            for view in selection.views:
+                schedule_sim_baselines(resolve_booley_dir(_project_root), view.record)
             short = True if args.short else False if args.long else None
             print(
                 render_status(selection.views, short=short, project_wide=selection.project_wide)

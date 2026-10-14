@@ -544,6 +544,10 @@ def test_status_shows_frozen_runs_outcomes_and_a_rerun_command_per_failing_seed(
         "SIM:top (all selected tests pass, test a@x3): 3 Test Runs (1 passed, 1 failed, 1 missing): "
         f"a@{first} passed, a@{second} failed, a@{third} missing",
         f"  rerun a@{second}: booley flow sim --target top --test=a@{second}",
+        "SIM:top (all selected tests pass, test a@x3): baseline -> current: "
+        f"1 pending -> pass (a@{first}: baseline has not been scheduled yet), "
+        f"1 pending -> fail (a@{second}: baseline has not been scheduled yet), "
+        f"1 pending -> current unavailable (a@{third}: baseline has not been scheduled yet)",
     ]
     text = render_status((view,))
     assert "Test Runs\n" in text
@@ -584,10 +588,15 @@ def test_status_lines_name_pending_slots_and_runs_resolved_after_entry(
     assert suite == [
         f"{SIM_NAME}: 3 Test Runs (3 missing): a@1 missing, b@1 missing, late@1 missing",
         "  resolved after entry: late@1",
+        f"{SIM_NAME}: baseline -> current: 3 pending -> current unavailable "
+        "(a@1: no current Test Run evidence; b@1: no current Test Run evidence; "
+        "late@1: no current Test Run evidence)",
     ]
     assert pending == [
         "SIM:top (all selected tests pass, test x): 0 Test Runs (none): —",
         "  pending (does not exist yet): x",
+        "SIM:top (all selected tests pass, test x): baseline -> current: "
+        "baseline pending (Test Runs unresolved)",
     ]
     lint = build_status(GoalStore(mode.control), mode.record, work_dir=mode.worktree)
     assert all(goal.test_runs is not None for goal in lint.goals)
@@ -605,6 +614,9 @@ def test_dashboard_goal_detail_lists_the_frozen_test_runs(two: SimpleNamespace) 
     assert detail.test_runs == (
         f"{SIM_NAME}: 2 Test Runs (1 passed, 1 failed): a@1 passed, b@1 failed",
         "  rerun b@1: booley flow sim --target top --test=b@1",
+        f"{SIM_NAME}: baseline -> current: 1 pending -> pass "
+        "(a@1: baseline has not been scheduled yet), 1 pending -> fail "
+        "(b@1: baseline has not been scheduled yet)",
     )
     assert _evidence_detail(detail).startswith(detail.test_runs[0] + "\n  rerun b@1: ")
 

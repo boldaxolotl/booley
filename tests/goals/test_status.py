@@ -47,6 +47,8 @@ def test_corrupt_state_is_reported(goal_mode: SimpleNamespace) -> None:
         lint_status(goal_mode)
 
 
+# Four publish/status rounds; Windows CI has measured up to 31 s (3x headroom).
+@pytest.mark.timeout(120)
 def test_edit_twice_and_rerun(goal_mode: SimpleNamespace) -> None:
     publish(goal_mode)
     assert lint_status(goal_mode).status == "met"
@@ -176,6 +178,8 @@ def test_projection_conflict_reason_precedes_contract_reason(goal_mode):
     assert goal.reason == "Goal state differs from its selected immutable producer observation"
 
 
+# Windows CI has measured over 40% of the 60 s default; keep 3x headroom (#1202).
+@pytest.mark.timeout(120)
 @pytest.mark.parametrize("state", ["entering", "active", "finishing"])
 def test_scoped_selection_retains_occupying_states(goal_mode, tmp_path, state):
     from booley.goals.status import select_status

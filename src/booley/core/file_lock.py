@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextvars
 import errno
+import io
 import math
 import os
 import sys
@@ -67,7 +68,9 @@ def acquire_file_lock(handle: IO[Any]) -> None:
         try:
             handle.seek(0, os.SEEK_END)
             if handle.tell() == 0:
-                handle.write("\0")
+                # msvcrt locks a byte range, so an empty file needs one byte;
+                # write it in the handle's own mode (text or binary).
+                handle.write("\0" if isinstance(handle, io.TextIOBase) else b"\0")
                 handle.flush()
             handle.seek(0)
             msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)

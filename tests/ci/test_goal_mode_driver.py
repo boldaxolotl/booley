@@ -433,3 +433,51 @@ def test_status_parser_accepts_public_names_with_parenthesized_requirements():
             _ID,
             ["SYNTH:synth_core", "REVIEW:rtl_bugs"],
         )
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="the Goal driver runs only inside the Linux CI image"
+)
+def test_stop_baseline_jobs_cancels_detached_job_before_workspace_cleanup(tmp_path) -> None:
+    """A detached baseline Job must not keep writing into a deleted workspace."""
+    import subprocess
+    import threading
+
+    from booley.goals.sim_baseline_store import baseline_jobs_dir
+    from booley.runtime import job_records
+    from booley.runtime.process_group import new_group_kwargs
+    from booley.runtime.timefmt import utc_now_rfc3339
+
+    project = tmp_path / ".booley"
+    jobs = baseline_jobs_dir(project)
+    command = [sys.executable, "-c", "import time; time.sleep(120)"]
+    process = subprocess.Popen(command, **new_group_kwargs())
+    # The test is the parent, so reap the child to avoid a lingering zombie PID.
+    threading.Thread(target=process.wait, daemon=True).start()
+    record = job_records.JobRecord(
+        "sim-baseline-x", "sim_baseline", utc_now_rfc3339(), 60, argv=command
+    )
+    record.pid = process.pid
+    job_records.write_record(record, jobs)
+
+    driver.stop_baseline_jobs(project, timeout_s=30)
+
+    assert process.wait(timeout=5) != 0
+
+
+def test_stop_baseline_jobs_without_jobs_returns_immediately(tmp_path) -> None:
+    driver.stop_baseline_jobs(tmp_path / ".booley", timeout_s=0)
+
+
+def test_stop_baseline_jobs_reports_jobs_that_outlive_the_bound(tmp_path, monkeypatch) -> None:
+    from booley.runtime import job_records
+
+    stuck = job_records.JobRecord("sim-baseline-stuck", "sim_baseline", "now", 60, pid=4242)
+    signalled = []
+    monkeypatch.setattr(driver.job_records, "list_records", lambda _root: [stuck])
+    monkeypatch.setattr(driver.job_records, "is_active", lambda _record, _alive: True)
+    monkeypatch.setattr(driver, "request_group_termination", signalled.append)
+
+    with pytest.raises(driver.GoalDriverError, match="sim-baseline-stuck"):
+        driver.stop_baseline_jobs(tmp_path, timeout_s=0)
+    assert signalled == [driver.ProcessGroup(4242)]

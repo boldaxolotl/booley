@@ -180,6 +180,13 @@ def baseline_render_status(views: tuple[GoalStatusView, ...], *, short: bool | N
                     else "Goal unavailable (unsupported record)"
                 )
                 console.print(f"  {name}: {goal.status}")
+                if goal.sim_transitions is not None:
+                    from booley.goals.sim_transitions import transition_summary
+
+                    console.print(
+                        f"  {name}: baseline -> current: {transition_summary(goal.sim_transitions)}",
+                        soft_wrap=True,
+                    )
         else:
             console.print(f"Worktree: {view.record.worktree_path}")
             console.print(f"Branch: {view.record.branch}")

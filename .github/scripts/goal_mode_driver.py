@@ -17,6 +17,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -30,9 +31,13 @@ from booley.dev_support.demo_contract_codec import load_contract
 from booley.goals.model import GoalArg, GoalFamily, GoalRecord, GoalState, goal_arg_to_json
 from booley.goals.naming import resolve_spelling
 from booley.goals.presentation import goal_presentation
+from booley.goals.sim_baseline_store import baseline_jobs_dir
 from booley.goals.store import GoalStore
 from booley.goals.translate import translate_goals
+from booley.runtime import job_records
 from booley.runtime.atomic_files import atomic_replace_bytes
+from booley.runtime.pid import is_pid_alive
+from booley.runtime.process_group import ProcessGroup, request_group_termination
 from booley.runtime.project_prepare import prepare_project
 from booley.runtime.project_repositories import is_git_worktree_root
 from booley.targets.catalog import TargetCatalog
@@ -40,6 +45,8 @@ from booley.targets.domain import FuseSocError
 
 MCP_PROTOCOL_VERSION = "2026-07-28"
 TOOL_TIMEOUT_SECONDS = 600
+# Bound for detached baseline Jobs to unwind after cancellation.
+BASELINE_STOP_SECONDS = 60
 _ENTRY = re.compile(r"^Goal Mode ([A-Za-z0-9-]+) entered in (.+)\.$", re.MULTILINE)
 _EXIT = re.compile(r"EXIT_CODE:\s*(-?\d+)")
 _RUN = re.compile(r"run_id=([^\s)]+)")
@@ -357,6 +364,36 @@ def _resolved_targets(
     return resolved
 
 
+def stop_baseline_jobs(booley_dir: Path, *, timeout_s: float = BASELINE_STOP_SECONDS) -> None:
+    """Cancel detached report-only SIM baseline Jobs before the workspace is deleted.
+
+    Active SIM calls schedule baseline Jobs that outlive the MCP server. They
+    write under the disposable Project, so deleting it while they run races
+    their writes. A Job still inside its spawn grace (no PID yet) is awaited
+    until it stamps a PID and can be signalled.
+    """
+    jobs = baseline_jobs_dir(booley_dir)
+    deadline = time.monotonic() + timeout_s
+    signalled: set[int] = set()
+    while True:
+        active = [
+            record
+            for record in job_records.list_records(jobs)
+            if job_records.is_active(record, is_pid_alive)
+        ]
+        if not active:
+            return
+        for record in active:
+            if record.pid is not None and record.pid not in signalled:
+                # The supervisor leads its own process group; SIGTERM unwinds it.
+                request_group_termination(ProcessGroup(record.pid))
+                signalled.add(record.pid)
+        if time.monotonic() >= deadline:
+            names = ", ".join(sorted(record.run_id for record in active))
+            raise GoalDriverError(f"baseline Jobs still running after {timeout_s:g}s: {names}")
+        time.sleep(0.2)
+
+
 def validate(
     *,
     project: Path,
@@ -375,7 +412,10 @@ def validate(
         )
         if not preparation.ok:
             raise GoalDriverError(preparation.error)
-        return asyncio.run(_client_run(workspace, goals, python, readiness))
+        try:
+            return asyncio.run(_client_run(workspace, goals, python, readiness))
+        finally:
+            stop_baseline_jobs(workspace.booley_dir)
 
 
 def write_evidence(path: Path, result: dict[str, Any]) -> None:

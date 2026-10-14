@@ -533,6 +533,52 @@ Protected Inputs decide how evidence is produced: `booley.toml`,
 affected evidence. Never weaken tests or Targets to make a Goal pass. The
 Review Package flags `.core`, `tests.toml`, and `.sdc`/`.xdc` edits.
 
+### Simulation baseline reports
+
+Entering Goal Mode starts a background Job for each SIM Goal's frozen Test Runs
+at the Goal Branch's base contents. Adding a SIM Goal through an approved Goal
+Change schedules its baseline too. Entry returns while the Job runs; status
+shows the baseline as pending. Booley reuses a result for the same Target,
+resolved Test Run and dependent file contents across sessions and worktrees.
+Protected execution inputs are part of the cache identity too.
+
+`goal_status`, `booley goal status`, the Dashboard's Goal details and the Review
+Package show a summary for each SIM Goal. Every Test Run other than
+`pass -> pass` is named, with its Variant and seed:
+
+| Transition | Meaning |
+|---|---|
+| `pass -> pass` | Passed at baseline and passes at current contents. |
+| `fail -> pass` | Failed at baseline and passes now. |
+| `pass -> fail` | Passed at baseline and fails now: a regression. |
+| `fail -> fail` | Failed at baseline and still fails. |
+| `new (seen failing) -> pass` | Absent at baseline; a matching functional failure was recorded earlier in this session at different dependent contents. |
+| `new (never seen failing) -> pass` | Absent at baseline and no qualifying earlier failure was recorded. |
+| `new -> fail` | Absent at baseline and fails now. |
+
+Baseline and current evidence must name the same resolved Test Run, including
+Variant, seed and declared arguments. An existing Test with incompatible inputs
+is **not comparable**, with a reason. A new Test never runs against the baseline design
+using a newly authored testbench. A stale or missing current result is shown as unavailable
+rather than a transition. The Review Package calls attention to regressions and
+new Test Runs that passed without being seen failing.
+
+These reports do not change any Goal's met, unmet or stale state and never block
+Finish. A build error, timeout, interrupted Job, unavailable dependency or
+ungraded result is **unavailable**, with its reason, rather than a failing Test.
+Only a recorded functional Test failure counts as seen failing; a timeout or
+infrastructure error does not. Earlier evidence without that classification
+cannot prove a functional failure. Finish freezes the report as it is, so its
+Review Package may still show a pending baseline.
+
+Booley verifies versioned baseline dependencies against the base commit and
+uses captured entry configuration for an unversioned Booley Directory. Dependencies
+outside those pinned or captured inputs make the report unavailable. The Project
+must ignore Booley's baseline scratch directory, as Project Initialization
+configures it; otherwise Booley reports an unavailable baseline without leaving
+scratch files that would affect entry or Finish. The advice to reproduce a bug
+before editing remains unconditional.
+
 ### Changes and human decisions
 
 When a Goal needs to be added, relaxed, retargeted, or changed through a coverage

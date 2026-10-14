@@ -40,6 +40,8 @@ CASES = [
 ]
 
 
+# Windows CI has measured over 40% of the 60 s default; keep 3x headroom (#1202).
+@pytest.mark.timeout(120)
 @pytest.mark.parametrize(("family", "key", "expected"), CASES)
 def test_entry_status_dashboard_approval_completion_and_events_agree(
     layout, monkeypatch, capsys, family, key, expected

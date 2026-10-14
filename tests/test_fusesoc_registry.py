@@ -226,6 +226,7 @@ class TestCoreSetupHazards:
         hazards = core_setup_hazards(tmp_path)
         assert [(h.kind, h.path) for h in hazards] == [("recursive-symlink", link)]
         assert "ancestor" in hazards[0].detail
+        assert hazards[0].target == tmp_path.resolve()
 
     def test_fusesoc_ignore_suppresses_recursive_link(self, tmp_path: Path):
         library = tmp_path / "lib"

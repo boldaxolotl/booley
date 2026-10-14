@@ -102,6 +102,9 @@ def _terminal(store: GoalStore, record: GoalRecord) -> GoalView:
             _terminal_presentation(row, names),
             row["selected_observation"],
             tuple(row["original_observations"]),
+            test_runs=("Baseline -> final: " + row["simulation_baseline"]["summary"],)
+            if "simulation_baseline" in row
+            else (),
             artifacts=available_paths(
                 row["selected_observation"], (Path(record.worktree_path), store.booley_dir)
             ),

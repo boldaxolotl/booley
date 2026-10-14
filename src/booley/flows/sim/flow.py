@@ -2331,20 +2331,28 @@ def _test_report_entry(test: TestResult) -> dict[str, Any]:
     return entry
 
 
-def _test_run_rows(tests: Sequence[TestResult]) -> list[dict[str, object]]:
-    """One row per result that names its Test Run: what it is and how it ended."""
-    return [
-        test_run_row(
-            test.test_run,
-            test_run_grade(
-                passed=test.passed,
-                infrastructure=test.failure_kind == "infrastructure",
-                inconclusive=test.inconclusive,
-            ),
+def _test_run_rows(
+    tests: Sequence[TestResult], *, functional_metadata: bool = False
+) -> list[dict[str, object]]:
+    """One row per exact Test Run, retaining functional-failure proof for reports."""
+    rows = []
+    for test in tests:
+        if test.test_run is None:
+            continue
+        grade = test_run_grade(
+            passed=test.passed,
+            infrastructure=test.failure_kind == "infrastructure",
+            inconclusive=test.inconclusive,
         )
-        for test in tests
-        if test.test_run is not None
-    ]
+        row = test_run_row(test.test_run, grade)
+        if functional_metadata and grade == "fail":
+            row["functional_failure"] = (
+                not test.timed_out
+                and not test.inconclusive
+                and test.failure_kind != "infrastructure"
+            )
+        rows.append(row)
+    return rows
 
 
 def _test_verdict(test: TestResult) -> str:
@@ -6283,7 +6291,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
                 "passed_tests": passed_tests,
                 "failed_tests": failed_tests,
                 "skipped_tests": skipped_tests,
-                "test_runs": _test_run_rows(target_result.tests),
+                "test_runs": _test_run_rows(target_result.tests, functional_metadata=True),
             },
         )
 
@@ -6301,7 +6309,7 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
         frozen = self._frozen_test_runs()
         if frozen is None or target_result.inconclusive:
             return
-        rows = _test_run_rows(target_result.tests)
+        rows = _test_run_rows(target_result.tests, functional_metadata=True)
         for goal in frozen.of_target(self._target_names(target_result.target)):
             matched = goal.matching(rows)
             graded = any(row["grade"] in {"pass", "fail"} for row in matched)
@@ -6409,7 +6417,9 @@ class SimulateFlow(StandaloneMixin, BuiltinFlow):
             "baseline_workload_snapshot": (
                 baseline.workload_snapshot if baseline is not None else None
             ),
-            "test_runs": _test_run_rows([current] if current is not None else []),
+            "test_runs": _test_run_rows(
+                [current] if current is not None else [], functional_metadata=True
+            ),
         }
 
     def _baseline_refusal_for(

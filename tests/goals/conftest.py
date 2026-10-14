@@ -9,6 +9,7 @@ faked, so entry never needs FuseSoC.
 from __future__ import annotations
 
 import hashlib
+import os
 import subprocess
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import replace
@@ -26,6 +27,9 @@ from booley.goals import entry as entry_module
 from booley.goals import test_run_freezing
 from booley.goals.binding import GoalRunBinding, bind_run
 from booley.goals.store import GoalStore
+from booley.mcp import sim_baseline_jobs
+from booley.runtime import job_records
+from booley.runtime.timefmt import utc_now_rfc3339
 from booley.targets.domain import UnknownTargetError
 
 GIT_TIMEOUT_S = 30
@@ -119,9 +123,23 @@ def layout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleNa
     monkeypatch.setattr(test_run_freezing, "draw_seeds", counting_draw(501))
     stamps = iter(f"{DATE}T12{minute:02d}00Z" for minute in range(60))
     monkeypatch.setattr(entry_module, "compact_utc_now", lambda: next(stamps))
+    # Active Goal calls schedule detached baseline Jobs. A real Job would run
+    # without these fakes and race status reads, so keep it deterministically
+    # pending; tests that need the real supervisor pass ``launch`` explicitly.
+    monkeypatch.setattr(sim_baseline_jobs, "launch_baseline", pending_baseline_launch)
     reset_cache()
     yield SimpleNamespace(main=main, control=control, worktree=worktree)
     reset_cache()
+
+
+def pending_baseline_launch(_path: Path, request: Mapping[str, Any]) -> None:
+    """Record a live (this process) baseline Job without starting a worker."""
+    job_records.write_record(
+        job_records.JobRecord(
+            request["job_id"], "sim_baseline", utc_now_rfc3339(), 60, pid=os.getpid(), argv=[]
+        ),
+        Path(request["jobs_root"]),
+    )
 
 
 def write_project_files(booley_dir: Path) -> None:

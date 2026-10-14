@@ -41,6 +41,11 @@ def job_roots(*, container_root: Callable[[], Path | None] | None = None) -> tup
     store = project_goal_store()
     if store is None:
         return tuple(root for root in roots if root is not None)
+    from booley.goals.sim_baseline_store import baseline_jobs_dir
+
+    baseline = baseline_jobs_dir(store.booley_dir)
+    if baseline.is_dir():
+        roots.append(baseline)
     roots.extend(
         record_paths(store.booley_dir, rec.id).jobs_dir for rec in store.list_records().records
     )
