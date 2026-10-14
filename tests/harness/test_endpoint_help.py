@@ -350,3 +350,53 @@ def test_nested_custom_action_runs_once_before_help(
     assert exc.value.code == 0
     assert capsys.readouterr().err == ""
     assert calls == ["hint"]
+
+
+@pytest.mark.parametrize("nested", [False, True])
+@pytest.mark.parametrize("inside", [False, True])
+def test_help_preserves_registered_type_converters(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    nested: bool,
+    inside: bool,
+) -> None:
+    from booley.flows.endpoint_cli import human_endpoint_parser
+
+    class Registered(Custom):
+        def _add_args(self, parser):
+            if nested:
+                parser = parser.add_subparsers().add_parser("nested")
+            parser.register("type", "hexadecimal", lambda value: int(value, 16))
+            parser.add_argument("--number", type="hexadecimal")
+
+    register_custom(monkeypatch, Registered)
+    monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: inside)
+    tail = ["nested"] if nested else []
+    tail.extend(["--number", "ff", "--help"])
+    with pytest.raises(SystemExit) as direct:
+        human_endpoint_parser(Registered()).parse_args(tail)
+    assert direct.value.code == 0
+    expected = capsys.readouterr()
+    monkeypatch.setattr("sys.argv", ["booley", "flow", "custom", *tail])
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 0
+    assert capsys.readouterr() == expected
+
+
+@pytest.mark.parametrize("command", ["flow", "specialist"])
+def test_unknown_endpoint_help_cannot_list_from_host(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    command: str,
+) -> None:
+    monkeypatch.setattr("sys.argv", ["booley", command, "unknown-endpoint", "--help"])
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "Available" not in captured.err
+    assert "runs inside the Booley Sandbox" in captured.err

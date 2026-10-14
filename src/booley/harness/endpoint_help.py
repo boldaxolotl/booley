@@ -122,6 +122,8 @@ def _probe_parser(parser, visited: dict[int, argparse.ArgumentParser]) -> argpar
         if hasattr(parser, name):
             options[name] = getattr(parser, name)
     wrapped = _HelpProbeParser(parents=[parser], add_help=False, **options)
+    # Parent parsers transfer actions, but omit registered type converters.
+    wrapped._registries = parser._registries
     visited[id(parser)] = wrapped
     for action in wrapped._actions:
         if isinstance(action, argparse._SubParsersAction):

@@ -1496,6 +1496,7 @@ def _select_endpoint(args, endpoints: list[McpToolInfo], kind: str) -> McpToolIn
     info = next((item for item in choices if item.name == name), None)
     if info is not None:
         return info
+    _enforce_runtime_location(args.command)
     other = next((item for item in endpoints if item.name == canonical(raw_name)), None)
     suggestion = f" Use booley {other.kind} {other.name}." if other is not None else ""
     print(
