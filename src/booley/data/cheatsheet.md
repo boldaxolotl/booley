@@ -363,6 +363,7 @@ do not need these files.
 
 | Skill | Use it when | Result |
 |-------|-------------|--------|
+| `/booley-setup` | Set up an initialized Project; start on the host | `SETUP-PLAN.md`; configured Project; Doctor audit |
 | `/booley-goal` | Work needs mandatory evidence-backed Goals | Goals, evidence, and review |
 | `/booley-heal` | Doctor or Flow health has drifted | Repair safe findings; verify Doctor |
 | `/booley-feedback` | Report bugs, friction, praise, or ideas | Redact evidence; export for manual sharing |
@@ -387,7 +388,7 @@ The `booley-sandbox` image contains Booley's EDA toolchain, Developer Agent clie
 | Command | What it does |
 |---------|-------------|
 | `booley init` | Set up project + pull or build the image |
-| `booley init --force` | Rebuild from scratch (no cache) |
+| `booley init --force` | Refresh Booley-managed resources; keep caches and user files |
 | `booley doctor` | Verify image + container EDA tools |
 | `booley session up` | Start the Sandbox headlessly (no VS Code) |
 | `booley session enter [-- cmd]` | Shell into it, or run one command |
