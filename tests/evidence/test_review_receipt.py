@@ -131,18 +131,18 @@ def test_persisted_context_and_explicit_spec_are_tracked(tmp_path: Path, monkeyp
     assert contract["spec_source"] == str(explicit.resolve())
     assert review_receipt_drift(detail, tmp_path) == []
     (logs / "answered_questions.md").write_text("Use synchronous reset.\n", encoding="utf-8")
-    assert review_receipt_drift(detail, tmp_path) == ["decisions"]
+    assert review_receipt_drift(detail, tmp_path) == []
 
 
-def test_absent_optional_decisions_stays_fresh_until_created(tmp_path: Path, monkeypatch) -> None:
+def test_decisions_creation_does_not_change_receipt(tmp_path: Path, monkeypatch) -> None:
     detail, decisions = _ticket_detail(tmp_path, monkeypatch, decisions=None)
 
     assert review_receipt_drift(detail, tmp_path) == []
     decisions.write_bytes(b"")
-    assert review_receipt_drift(detail, tmp_path) == ["decisions"]
+    assert review_receipt_drift(detail, tmp_path) == []
 
 
-def test_removing_persisted_decisions_stales_receipt(tmp_path: Path, monkeypatch) -> None:
+def test_decisions_removal_does_not_change_receipt(tmp_path: Path, monkeypatch) -> None:
     detail, decisions = _ticket_detail(
         tmp_path,
         monkeypatch,
@@ -150,10 +150,10 @@ def test_removing_persisted_decisions_stales_receipt(tmp_path: Path, monkeypatch
     )
     decisions.unlink()
 
-    assert review_receipt_drift(detail, tmp_path) == ["decisions"]
+    assert review_receipt_drift(detail, tmp_path) == []
 
 
-def test_unreadable_persisted_decisions_raises_context_error(tmp_path: Path, monkeypatch) -> None:
+def test_decisions_are_never_read(tmp_path: Path, monkeypatch) -> None:
     detail, decisions = _ticket_detail(
         tmp_path,
         monkeypatch,
@@ -168,8 +168,8 @@ def test_unreadable_persisted_decisions_raises_context_error(tmp_path: Path, mon
 
     monkeypatch.setattr(Path, "read_bytes", fail_decisions_read)
 
-    with pytest.raises(ReviewContextError, match="synthetic read failure"):
-        review_receipt_drift(detail, tmp_path)
+    assert review_receipt_drift(detail, tmp_path) == []
+    assert not any(key.startswith("decisions_") for key in detail["contract"])
 
 
 def test_explicit_spec_is_tracked_in_review_receipt(tmp_path: Path, monkeypatch) -> None:

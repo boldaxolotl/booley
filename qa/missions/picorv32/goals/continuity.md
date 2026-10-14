@@ -38,7 +38,8 @@ Project Target/test definitions needed for `sim_dhry_checked` and its registered
     "family": "REVIEW",
     "review": "tb_quality",
     "verdict": "done",
-    "origin": "continuity"
+    "origin": "continuity",
+    "target": "sim_dhry_checked"
   }
 ]
 ```

@@ -781,7 +781,7 @@ def _map_review_inputs(view: CommittedView, detail: dict[str, Any]) -> None:
     if not isinstance(contract, dict):
         return
     contract = cast("dict[str, Any]", contract)
-    for name in ("spec", "ticket", "decisions"):
+    for name in ("spec", "ticket"):
         text = contract.get(name + "_source")
         if not isinstance(text, str) or not text:
             continue

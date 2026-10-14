@@ -448,7 +448,9 @@ def _prepare_pinned_artifact_history(layout, history):
     else:
         (layout.main / ".git/info/exclude").write_text("/.booley\nhistory.hex\n")
     git(layout.worktree, "commit", "-qm", "baseline data target")
-    record = enter_goals(layout, [{"family": "REVIEW", "review": "rtl_bugs", "verdict": "done"}])
+    record = enter_goals(
+        layout, [{"paths": ["rtl.v"], "family": "REVIEW", "review": "rtl_bugs", "verdict": "done"}]
+    )
     if history == "tracked-removed":
         git(layout.worktree, "rm", "history.hex")
         (layout.main / ".git/info/exclude").write_text("/.booley\nhistory.hex\n")

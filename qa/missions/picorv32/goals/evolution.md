@@ -105,44 +105,66 @@ gating. Implementation assets are `picorv32.v`, `testbench.v`, `testbench_wb.v`,
     "family": "REVIEW",
     "review": "rtl_bugs",
     "verdict": "clean",
-    "origin": "evolution"
+    "origin": "evolution",
+    "paths": [
+      "picorv32.v"
+    ]
   },
   {
     "family": "REVIEW",
     "review": "rtl_protocol",
     "verdict": "done",
-    "origin": "evolution"
+    "origin": "evolution",
+    "paths": [
+      "picorv32.v"
+    ]
   },
   {
     "family": "REVIEW",
     "review": "rtl_spec",
     "verdict": "done",
     "spec": "docs/riscv-zbb-spec.txt",
-    "origin": "evolution"
+    "origin": "evolution",
+    "paths": [
+      "picorv32.v"
+    ]
   },
   {
     "family": "REVIEW",
     "review": "rtl_code_style",
     "verdict": "done",
-    "origin": "evolution"
+    "origin": "evolution",
+    "paths": [
+      "picorv32.v"
+    ]
   },
   {
     "family": "REVIEW",
     "review": "rtl_optimization",
     "verdict": "done",
-    "origin": "evolution"
+    "origin": "evolution",
+    "paths": [
+      "picorv32.v"
+    ]
   },
   {
     "family": "REVIEW",
     "review": "rtl_security",
     "verdict": "done",
-    "origin": "evolution"
+    "origin": "evolution",
+    "paths": [
+      "picorv32.v"
+    ]
   },
   {
     "family": "REVIEW",
     "review": "tb_quality",
     "verdict": "done",
-    "origin": "evolution"
+    "origin": "evolution",
+    "paths": [
+      "testbench.v",
+      "testbench_wb.v"
+    ]
   }
 ]
 ```

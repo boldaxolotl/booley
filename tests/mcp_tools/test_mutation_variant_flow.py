@@ -412,7 +412,12 @@ def _concurrent_endpoints(layout, monkeypatch):
     layout.record = enter_goals(
         layout,
         [
-            {"family": "REVIEW", "review": "tb_quality", "verdict": "clean"},
+            {
+                "paths": ["tb/tb.sv"],
+                "family": "REVIEW",
+                "review": "tb_quality",
+                "verdict": "clean",
+            },
             {"family": "MUTATION", "target": "top", "scope": ["rtl.v"], "total": 1},
         ],
     )
@@ -420,7 +425,7 @@ def _concurrent_endpoints(layout, monkeypatch):
     endpoints = []
     for endpoint, arguments in [
         (MutationTesterSpecialist(), ["--target", "top", "--scope", "rtl.v"]),
-        (ReviewerSpecialist(), ["--scope", "tb/tb.sv", "--category", "tb", "--focus", "quality"]),
+        (ReviewerSpecialist(), ["--category", "tb", "--focus", "quality"]),
     ]:
         adapter = GoalFlowExecution(bind(layout, endpoint.name))
         endpoint.configure_flow_execution(adapter)

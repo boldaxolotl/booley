@@ -486,7 +486,7 @@ def _prepare_target_less_generated_record(
         layout,
         goals=[
             {"family": "LINT", "target": "top"},
-            {"family": "REVIEW", "review": "rtl_bugs", "verdict": "done"},
+            {"paths": ["rtl.v"], "family": "REVIEW", "review": "rtl_bugs", "verdict": "done"},
         ],
     )
     document = (

@@ -41,7 +41,7 @@ from booley.goals.generated_artifacts import (
     goal_target_surface,
     project_source,
 )
-from booley.goals.model import GoalSpec
+from booley.goals.model import GoalFamily, GoalSpec
 from booley.goals.target_surface import (
     TARGET_SURFACE_CATEGORY,
     TargetSurfaceError,
@@ -163,6 +163,8 @@ def stamp_goal_detail(
     describes the already validated declaration and avoids another read.
     """
     stamped = copy.deepcopy(dict(detail))
+    if key.endswith("_done") and stamped.get("verification_only"):
+        return stamped
     if key.startswith("coverage_"):
         try:
             stamped[WAIVER_POLICY_DETAIL_KEY] = _producer_waiver_policy(
@@ -286,9 +288,57 @@ def evaluate_goal_freshness(
     defect = _stamp_defect(stamp, required)
     if defect:
         return _stale(required, f"{defect}; re-run the Goal's Flow or Specialist")
+    if (
+        goal is not None
+        and goal.family is GoalFamily.REVIEW
+        and ("target" in goal.params or "paths" in goal.params)
+    ):
+        return _review_goal_freshness(key, entry, goal, work_dir, resolvers)
     return _compare_met_evidence(
         key, entry, cast("Mapping[str, Any]", stamp), required, goal, work_dir, resolvers
     )
+
+
+def _review_goal_freshness(
+    key: str, entry: Any, goal: GoalSpec, root: Path, resolvers: GoalFreshnessResolvers
+) -> VerificationFreshness:
+    """Review evidence covers exactly the Goal's declared files and requirements."""
+    from booley.flows.review_scope import resolve_review_files
+    from booley.goals.target_surface import review_target_surface
+
+    detail = _entry_detail(entry)
+    contract = detail.get("contract", {})
+    category = "rtl" if key.startswith("review_rtl_") else "tb"
+    try:
+        scope = resolve_review_files(root, category, goal.params)
+        target = goal.params.get("target")
+        if target is not None and contract.get("goal_target_surface") != review_target_surface(
+            root, target
+        ):
+            return _stale(
+                goal_required_categories(key),
+                "Review Target declaration changed; run a new discovery review",
+            )
+    except RESOLVER_ERRORS as exc:
+        return _stale(goal_required_categories(key), str(exc))
+    if any(not (root / path).is_file() for path in scope):
+        return _stale(
+            goal_required_categories(key),
+            "Review Goal files are missing; restore or retarget the Goal",
+        )
+    if scope != contract.get("scope"):
+        return _stale(
+            goal_required_categories(key), "Review Goal scope changed; run a new discovery review"
+        )
+    spec = goal.params.get("spec")
+    if spec and str((root / spec).resolve()) != contract.get("spec_source"):
+        return _stale(
+            goal_required_categories(key), "Review Goal specification changed; re-run Reviewer"
+        )
+    checked = evaluate_verification_freshness(
+        key, entry, work_dir=root, fingerprint_provider=resolvers.fingerprint
+    )
+    return checked or _stale(goal_required_categories(key), "Review receipt is missing")
 
 
 def _compare_met_evidence(

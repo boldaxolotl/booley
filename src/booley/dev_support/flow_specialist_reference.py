@@ -226,7 +226,7 @@ def _render_reviewer_reference(satisfies_args: dict[str, str] | None) -> list[st
         "The result links saved review evidence, including rejected proposals for "
         "inspection. Rejected proposals do not affect Criteria.",
         "",
-        'Call the `reviewer` Specialist from your Developer Agent session with `scope="<file,...>"`, `category="<category>"`, and `focus="<focus>"`.',
+        'Call the `reviewer` Specialist from your Developer Agent session with `category="<category>"` and `focus="<focus>"`.',
         "",
         "| Category | Focus | What it checks | Sets |",
         "|----------|-------|----------------|------|",
@@ -244,10 +244,21 @@ def _render_reviewer_reference(satisfies_args: dict[str, str] | None) -> list[st
     lines.extend(
         [
             "",
-            'Arguments: required `scope="<file,...>"` selects files; '
-            '`steer=["<context>"]` adds review context; `dry_run=true` validates and previews '
-            "without invoking a Specialist. The `spec` focus needs specification text: "
-            'use `spec="<path>"` or the spec file named by the Review Goal.',
+            '**Interactive Mode:** also pass `scope="<file,...>"`. Add `spec="<path>"` '
+            '(required for the `spec` focus) or `steer=["<context>"]` for context. '
+            "`dry_run=true` previews the call. Each new review replaces the previous findings.",
+            "",
+            "**Goal Mode:** the Review Goal fixes scope and spec, so `scope`, `spec` and "
+            "`steer` are refused. Declare each Review Goal with exactly one `target` or "
+            "`paths` (see the Goal catalog).",
+            "",
+            "**Verify fixes (both modes):** after fixing findings, call `reviewer` with "
+            "`verify=true` (CLI: `--verify`). It rechecks only the latest review's open "
+            "findings, finds nothing new, and passes when none remain open. To argue a "
+            'finding away, add `waive=[["<finding-id>", "<justification>"]]` (CLI: '
+            '`--waive <finding-id> "<justification>"`, repeatable); the Reviewer accepts '
+            "or rejects each. No other argument is accepted with verify. After repeated "
+            "failed verifies, Goal Mode stops and asks you to change or abandon the Goal.",
         ]
     )
     return lines

@@ -278,7 +278,8 @@ def test_actual_reviewer_replay_and_limit_reports_keep_the_goal_name(layout, mon
     from tests.goals.test_mcp_routing import _goal_reviewer_endpoint
 
     layout.record = enter_goals(
-        layout, [{"family": "REVIEW", "review": "rtl_bugs", "verdict": "clean"}]
+        layout,
+        [{"paths": ["rtl.v"], "family": "REVIEW", "review": "rtl_bugs", "verdict": "clean"}],
     )
     endpoint, _provider = _goal_reviewer_endpoint(layout, monkeypatch)
     key = layout.record.goals[0].spec.key

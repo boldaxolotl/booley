@@ -386,6 +386,12 @@ def proposal_facts(proposal: dict[str, Any], present: Callable[[object], str]) -
         "after": present(proposal["after"]),
         "rationale": proposal["rationale"],
     }
+    if proposal["kind"] == "retarget" and proposal["after"].get("family") == "review":
+        facts["review_retarget_effect"] = (
+            "Discards the prior review evidence and open-finding lifecycle. "
+            "Reducing the file scope or specification weakens the review requirement. "
+            "A new discovery review is required after approval."
+        )
     waiver = proposal.get("waiver")
     if waiver is not None:
         facts["waiver"] = {

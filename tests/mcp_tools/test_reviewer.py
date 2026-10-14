@@ -175,6 +175,9 @@ def _read_current_review_contract(endpoint: ReviewerSpecialist, state_file: Path
     """Load fixture state and upgrade it to the current receipt contract."""
     endpoint.read_state()
     _stamp_current_review_contract(endpoint, state_file)
+    if endpoint._open_findings(endpoint._get_prior_detail(endpoint._criterion_key()) or {}):
+        root = endpoint.args.work_dir
+        endpoint.parse_args(["--work-dir", str(root), "--verify"])
 
 
 def test_dry_run_does_not_invoke_agent_or_update_receipts(
@@ -234,13 +237,7 @@ def test_review_findings_outside_explicit_source_scope_are_dropped(
     ]
     output_lines: list[str] = []
 
-    with (
-        patch(
-            "booley.specialists.reviewer.resolve_documented_assumptions",
-            return_value=(None, None),
-        ),
-    ):
-        kept = endpoint._filter_review_issues(issues, output_lines)
+    kept = endpoint._filter_review_issues(issues, output_lines)
 
     assert [issue.file for issue in kept] == ["rtl/mod_a.sv"]
     assert output_lines == [
@@ -1385,18 +1382,12 @@ class TestReviewerToolArgs:
         assert "--category tb --focus spec" not in satisfies
 
     def test_focus_required(self, state_file: Path):
-        """RTL without --focus errors."""
         endpoint = ReviewerSpecialist()
-        # --focus is required by argparse, so omitting it raises SystemExit
-        with pytest.raises(SystemExit):
-            endpoint.parse_args(
-                [
-                    "--scope",
-                    "rtl/mod_a.sv",
-                    "--category",
-                    "rtl",
-                ]
-            )
+        endpoint.parse_args(["--scope", "rtl/mod_a.sv", "--category", "rtl"])
+        endpoint.read_state()
+        result = endpoint._run()
+        assert result.exit_code == 2
+        assert "--focus" in result.report_text
 
     def test_rtl_valid_focuses(self, state_file: Path):
         """--focus bugs validates OK for RTL."""
@@ -2053,8 +2044,8 @@ class TestFullRtlReview:
         rerun = t2._run()
         assert rerun.exit_code == 0
         assert rerun.criterion_met is True
-        assert "did NOT re-run" in rerun.report_text
-        assert mock_agent.call_count == 1
+        assert "RESULT: REVIEWED WITH FINDINGS" in rerun.report_text
+        assert mock_agent.call_count == 2
 
     @patch("booley.specialists.specialist._call_agent_sync")
     def test_steering_does_not_hide_open_done_correction(
@@ -2077,10 +2068,9 @@ class TestFullRtlReview:
         t2.read_state()
         rerun = t2._run()
         assert rerun.exit_code == 0
-        assert "explicit human approval" in rerun.report_text
-        assert rerun.detail["issues"] == 1
-        assert rerun.detail["CRITICAL"] == 1
-        assert "NO FINDINGS" not in rerun.report_text
+        assert rerun.detail["issues"] == 0
+        assert rerun.detail["issue_list"] == []
+        assert "NO FINDINGS" in rerun.report_text
         assert mock_agent.call_count == 2
 
     @patch("booley.specialists.specialist._call_agent_sync")
@@ -2601,7 +2591,7 @@ class TestOneShotGuard:
         st.save()
 
         endpoint.read_state()
-        result = endpoint._run()
+        result = endpoint._replay_done_verdict("review_rtl_bugs_done")
 
         assert result.exit_code == 0
         assert mock_agent.call_count == 0
@@ -2765,7 +2755,8 @@ class TestCleanModeInitial:
         st.save()
 
         endpoint.read_state()
-        result = endpoint._run()
+        endpoint._goal_mode = True
+        result = endpoint._run_clean_mode("review_rtl_bugs_clean")
 
         assert result.exit_code == 0
         assert mock_agent.call_count == 0
@@ -2846,6 +2837,12 @@ class TestCleanModeVerify:
         endpoint = ReviewerSpecialist()
         endpoint.parse_args([*_review_args(), "--steer", "Waive finding 1: required latency"])
         _read_current_review_contract(endpoint, state_file)
+        endpoint.args.waive = [
+            [
+                _finding_record(ReviewIssue.from_dict(_make_issue_dict("MINOR")))["finding_id"],
+                "Required observable latency",
+            ]
+        ]
         result = endpoint._run()
 
         assert result.exit_code == 0
@@ -3521,7 +3518,7 @@ class TestVerifyFixedPersistence:
             output=json.dumps(
                 {
                     "findings": [
-                        {"index": 2, "status": "STILL_PRESENT"},
+                        {"index": 1, "status": "STILL_PRESENT"},
                     ]
                 }
             ),
@@ -3570,73 +3567,15 @@ class TestVerifyFixedPersistence:
         assert result.detail["pending"][0]["summary"] == "Bug B"
         assert result.detail["pending"][0]["status"] == "still_present"
 
-    @patch("booley.specialists.specialist._call_agent_sync")
-    def test_previously_fixed_can_regress(
-        self,
-        mock_agent,
-        state_file: Path,
-    ):
-        """Model explicitly says STILL_PRESENT for a previously-fixed issue => regresses.
-
-        Setup uses the legacy ``issue_list`` field — the fallback path
-        should still classify items correctly into pending vs resolved.
-        """
-        mock_agent.return_value = MagicMock(
-            output=json.dumps(
-                {
-                    "findings": [
-                        {"index": 1, "status": "STILL_PRESENT"},
-                        {
-                            "index": 2,
-                            "status": "FIXED",
-                            "evidence": "rtl/mod_a.sv:7 — bug B addressed",
-                        },
-                    ]
-                }
-            ),
-            structured=None,
-        )
-        st = DevelopmentState.load(state_file)
-        st.set_criterion(
-            "review_rtl_bugs_clean",
-            met=False,
-            detail={
-                "issues": 2,
-                "issue_list": [
-                    {**_make_issue_dict("MAJOR", summary="Bug A"), "status": "fixed"},
-                    {**_make_issue_dict("MAJOR", summary="Bug B"), "status": "still_present"},
-                ],
-                "CRITICAL": 0,
-                "MAJOR": 2,
-                "MINOR": 0,
-                "verify_attempts": 0,
-                "original_issues": 2,
-                "elapsed_s": 30.0,
-            },
-        )
-        st.save()
-
+    def test_fixed_findings_are_not_rechecked(self, state_file: Path):
         endpoint = ReviewerSpecialist()
-        endpoint.parse_args(
-            [
-                "--scope",
-                "rtl/mod_a.sv",
-                "--category",
-                "rtl",
-                "--focus",
-                "bugs",
-            ]
+        endpoint.parse_args(_review_args())
+        prior = {"issue_list": [{**_make_issue_dict("MAJOR"), "status": "fixed"}]}
+        assert endpoint._open_findings(prior) == []
+        remaining, indices, _ = endpoint._parse_verify_output(
+            json.dumps({"findings": [{"index": 1, "status": "STILL_PRESENT"}]}), prior
         )
-        _read_current_review_contract(endpoint, state_file)
-        result = endpoint._run()
-
-        # Bug A regressed → pending; Bug B fixed → resolved.
-        assert len(result.detail["pending"]) == 1
-        assert result.detail["pending"][0]["summary"] == "Bug A"
-        assert result.detail["pending"][0]["status"] == "still_present"
-        assert len(result.detail["resolved"]) == 1
-        assert result.detail["resolved"][0]["summary"] == "Bug B"
-        assert result.detail["resolved"][0]["status"] == "fixed"
+        assert remaining == [] and indices == set()
 
 
 # ---------------------------------------------------------------------------
@@ -3689,9 +3628,8 @@ class TestDocumentedAssumptions:
 
         prompt = endpoint._build_prompt()
 
-        assert "## Documented Assumptions" in prompt
-        assert "rate=0" in prompt
-        assert "not an unexplained invention" in prompt
+        assert "## Documented Assumptions" not in prompt
+        assert "rate=0" not in prompt
 
     def test_no_section_without_the_file(self, review_logs: Path, state_file: Path):
         endpoint = ReviewerSpecialist()
@@ -3921,7 +3859,7 @@ def test_ambiguous_reviewer_mapping_cannot_be_narrowed_by_one_evaluation(tmp_pat
 
 
 def test_goal_spec_arg_ignores_ticket_document(tmp_path, monkeypatch):
-    from booley.evidence.review_receipt import _decisions_path, _ticket_path
+    from booley.evidence.review_receipt import _ticket_path
     from booley.specialists.reviewer import resolve_spec_content
 
     spec = tmp_path / "spec.md"
@@ -3933,7 +3871,6 @@ def test_goal_spec_arg_ignores_ticket_document(tmp_path, monkeypatch):
     assert source.startswith("spec file:")
     assert resolve_spec_content(None, tmp_path) == (None, "")
     assert _ticket_path(tmp_path) is None
-    assert _decisions_path(tmp_path, None) is not None
 
 
 @pytest.fixture

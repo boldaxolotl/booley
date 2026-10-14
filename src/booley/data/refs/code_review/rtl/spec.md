@@ -16,8 +16,6 @@ You are NOT a hardware design reviewer. Do NOT judge whether the spec is good en
 
 The specification text is inlined in this prompt under **## Specification** — it is the change-request text, or the external spec file the Review Goal names. The RTL files to review are listed under the scope section. Compare the two.
 
-If the developer recorded decisions for points the spec does not settle, they are inlined under **## Documented Assumptions**. Read that section before filing anything under section B: a behavior explained there is a documented judgement call, not an invention.
-
 ## Procedure
 
 1. Read the specification text carefully. Identify every **behavioral** requirement: edge cases, signal descriptions, FSM states, timing requirements, and example operations. Ignore any synthesis/area/cell/wire targets — those are evaluated mechanically, not by review.
@@ -39,7 +37,6 @@ A specification cannot enumerate every input, parameter value, and corner. The d
 So when the RTL handles something the spec never mentions — an out-of-range index, a parameter bound, an undefined opcode, a reset value for a signal the spec never discusses — ask **which** of these it is:
 
 - The choice **breaks something the spec does state** (wrong width on a spec'd port, changes a spec'd output on a spec'd input, adds a handshake condition that stalls a spec'd transaction) → **CRITICAL or MAJOR**. Quote the spec text it breaks.
-- The choice is listed under **## Documented Assumptions** → **not a finding**. Report it only if the recorded reasoning itself contradicts spec text, and then quote that text.
 - The choice is undocumented but reasonable, and touches only what the spec leaves open → **MINOR**, phrased as "spec is silent on X; RTL chose Y" so the developer can record or revise it.
 - You cannot point to spec text the behavior breaks, and the behavior is a plainly sensible engineering default (a reset value, a guard on an illegal input, a saturating bound) → **omit it**. "The spec does not mention this" is not, by itself, a finding.
 

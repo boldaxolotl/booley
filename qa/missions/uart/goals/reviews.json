@@ -2,17 +2,20 @@
   {
     "family": "REVIEW",
     "review": "rtl_security",
-    "verdict": "done"
+    "verdict": "done",
+    "target": "sim_uart"
   },
   {
     "family": "REVIEW",
     "review": "rtl_spec",
     "verdict": "done",
-    "spec": "spec/contract.md"
+    "spec": "spec/contract.md",
+    "target": "sim_uart"
   },
   {
     "family": "REVIEW",
     "review": "tb_quality",
-    "verdict": "done"
+    "verdict": "done",
+    "target": "sim_uart"
   }
 ]

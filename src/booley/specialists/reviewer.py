@@ -14,7 +14,6 @@ import argparse
 import hashlib
 import json
 import logging
-import os
 import time
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -23,14 +22,14 @@ from typing import Any, ClassVar
 from uuid import uuid4
 
 from booley.agent_workspace.state_projection import filter_state_file_for_category
-from booley.core.boundary import as_dict, as_str_list
+from booley.core.boundary import as_dict, as_int, as_str_list
 from booley.core.models import AgentCallParams
 from booley.criteria.freshness import review_policy_digest
+from booley.criteria.state import DevelopmentState
 from booley.evidence.review_receipt import (
     REVIEW_DETAIL_VERSION,
     ReviewInvocation,
     build_review_contract_detail,
-    review_invocation_changed,
 )
 from booley.evidence.review_vocabulary import (
     ALL_DISPOSITIONS,
@@ -38,10 +37,10 @@ from booley.evidence.review_vocabulary import (
     DISPOSITION_CURRENT,
     DISPOSITION_DEFERRED,
     DISPOSITION_OUT_OF_SCOPE,
-    DISPOSITION_SUPERSEDED,
 )
 from booley.flows.cli_help import CliHelp
 from booley.flows.execution_persistence import (
+    EvidenceDiscarded,
     done_findings_require_approval_for,
     execution_goal_name,
 )
@@ -52,9 +51,10 @@ from booley.mcp.base import (
     McpToolResult,
     read_source_dirs_from_toml,
 )
-from booley.runtime.booley_dir import resolve_booley_dir
+from booley.runtime.booley_dir import resolve_booley_dir, resolve_checkout_booley_dir
 from booley.runtime.exception_diagnostics import exception_report_text, log_exception
 from booley.runtime.execution_records import atomic_write_json
+from booley.runtime.file_lock import LockContentionError, nonblocking_file_lock
 from booley.runtime.paths import refs_dir
 from booley.specialists.verification_freshness import refresh_verification_freshness
 from booley.targets.flow_names import config_section
@@ -270,16 +270,6 @@ def _load_tb_project_policy(work_dir: Path) -> TbProjectPolicy:
 # Max spec content size before truncation (bytes)
 _SPEC_MAX_SIZE = 30_000
 
-# Max documented-assumptions content before truncation (bytes). Much smaller
-# than the spec budget: this file is a short list of judgement calls, and a
-# runaway one must not crowd out the spec it annotates.
-_ASSUMPTIONS_MAX_SIZE = 8_000
-
-# The Developer Agent records spec-silent judgement calls here.
-# Reviews inline it so a documented assumption reads
-# as a decision, not as an unexplained invention.
-_ASSUMPTIONS_FILENAME = "answered_questions.md"
-
 
 def _truncate_spec(content: str, *, label: str = "") -> str:
     """Truncate content to _SPEC_MAX_SIZE with a warning if needed."""
@@ -304,35 +294,6 @@ def resolve_spec_content(
         raise OSError(f"Specification file not found: {spec_path}")
     content = spec_path.read_text(encoding="utf-8", errors="replace")
     return _truncate_spec(content, label=str(spec_path)), f"spec file: {spec_path}"
-
-
-def resolve_documented_assumptions() -> tuple[str, str]:
-    """Load the developer's recorded spec-silent decisions, if any.
-
-    Returns (text, source_path); ("", "") when the file is absent or empty.
-    """
-    logs_dir = os.environ.get("BOOLEY_LOGS_DIR", "")
-    if not logs_dir:
-        return "", ""
-
-    path = Path(logs_dir) / _ASSUMPTIONS_FILENAME
-    if not path.is_file():
-        return "", ""
-
-    try:
-        content = path.read_text(encoding="utf-8", errors="replace").strip()
-    except OSError:
-        logger.warning("Could not read documented assumptions: %s", path)
-        return "", ""
-
-    if not content:
-        return "", ""
-    if len(content) > _ASSUMPTIONS_MAX_SIZE:
-        logger.warning(
-            "%s is %d bytes; truncating to %d", path, len(content), _ASSUMPTIONS_MAX_SIZE
-        )
-        content = content[:_ASSUMPTIONS_MAX_SIZE] + "\n\n[ASSUMPTIONS TRUNCATED]"
-    return content, str(path)
 
 
 @dataclass
@@ -424,47 +385,6 @@ def _finding_record(issue: ReviewIssue) -> dict[str, Any]:
     record["finding_id"] = hashlib.sha256(identity.encode()).hexdigest()[:16]
     record["status"] = issue.disposition or DISPOSITION_CURRENT
     return record
-
-
-def _merge_finding_records(
-    current: list[dict[str, Any]],
-    prior: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Merge advisory history without silently clearing corrective findings."""
-    from booley.evidence.review_dispositions import outstanding_done_findings
-
-    merged = {str(item.get("finding_id", "")): dict(item) for item in current}
-    for old in prior:
-        historical = dict(old)
-        finding_id = str(
-            old.get("finding_id") or _finding_record(ReviewIssue.from_dict(old))["finding_id"]
-        )
-        historical["finding_id"] = finding_id
-        outstanding = bool(
-            outstanding_done_findings({"review_history_done": {"detail": {"issue_list": [old]}}})
-        )
-        if finding_id in merged:
-            if outstanding:
-                merged[finding_id]["disposition"] = DISPOSITION_CURRENT
-                merged[finding_id]["status"] = DISPOSITION_CURRENT
-            continue
-        historical["status"] = DISPOSITION_CURRENT if outstanding else DISPOSITION_SUPERSEDED
-        merged[finding_id] = historical
-    return list(merged.values())
-
-
-def _review_observations(
-    existing_detail: dict[str, Any],
-    current: list[ReviewIssue],
-    *,
-    rediscovered: bool,
-) -> list[dict[str, Any]]:
-    prior = [
-        dict(item) for item in existing_detail.get("observations", []) if isinstance(item, dict)
-    ]
-    if not rediscovered:
-        return prior
-    return _merge_finding_records([_finding_record(issue) for issue in current], prior)
 
 
 def _validate_issue_dict(d: Any, allowed_category: str | None = None) -> list[str]:
@@ -811,7 +731,7 @@ def _format_status_and_counts(
 def _format_issue_line(issue: ReviewIssue) -> str:
     """Render one finding as a compact ``[C] file:line — summary`` display line."""
     tag = _SEVERITY_TAG.get(issue.severity.upper(), issue.severity[0])
-    return f"[{tag}] {issue.file}:{issue.line} — {issue.summary}"
+    return f"[{tag}] {issue.file}:{issue.line} — {issue.summary} (ID: {_finding_record(issue)['finding_id']})"
 
 
 def validate_scope_category(
@@ -870,10 +790,10 @@ class ReviewerSpecialist(Specialist):
     description: str = "Single-focus code review: reports issues by severity"
     cli_help: ClassVar[CliHelp | None] = CliHelp(
         summary=(
-            "Have an AI reviewer read the RTL or testbench files in --scope with one "
+            "Have an AI reviewer discover findings in Goal-owned files (Interactive: --scope) with one "
             "review focus and list the issues it finds by severity. Use it for a second "
             "opinion on a change before you merge it. The reviewer reads code and "
-            "never edits it."
+            "never edits it. Use --verify to check only the latest review's open findings; only --waive proposals may accompany verification."
         ),
         example="booley specialist reviewer --category rtl --focus bugs --scope rtl/fifo.sv",
     )
@@ -942,6 +862,227 @@ class ReviewerSpecialist(Specialist):
         self._review_run_id = ""
         self._acceptance_current: bool | None = None
         self._goal_receipt_replayed = False
+        self._goal_mode = False
+        self._resolved_scope: list[str] | None = None
+        self._goal_target_surface: dict[str, Any] | None = None
+        self._verify_prior: dict[str, Any] = {}
+        self._sampled_contract: dict[str, Any] | None = None
+        self._review_state_bytes: bytes | None = None
+
+    def read_state(self) -> DevelopmentState:
+        """Persist Interactive review history in the resolved Booley Directory."""
+        if self.args.state_file is None:
+            root = Path(self.args.work_dir).resolve()
+            checkout_id = hashlib.sha256(str(root).encode()).hexdigest()[:24]
+            self.args.state_file = (
+                resolve_checkout_booley_dir(root) / "reviewer-state" / checkout_id / "state.json"
+            )
+        self._review_state_bytes = self._read_review_state_bytes()
+        return super().read_state()
+
+    def _read_review_state_bytes(self) -> bytes | None:
+        try:
+            return Path(self.args.state_file).read_bytes() if self.args.state_file else None
+        except FileNotFoundError:
+            return None
+
+    @staticmethod
+    def _open_findings(detail: dict[str, Any]) -> list[dict[str, Any]]:
+        rows = detail.get("pending", detail.get("issue_list", []))
+        return [
+            {
+                **row,
+                "finding_id": row.get("finding_id")
+                or _finding_record(ReviewIssue.from_dict(row))["finding_id"],
+            }
+            for row in rows
+            if row.get("status") not in {"fixed", "waived", "excluded", "superseded"}
+            and row.get("disposition", "current") == "current"
+        ]
+
+    def _prepare_invocation(self) -> McpToolResult | None:
+        """Resolve caller intent before validating or changing review state."""
+        from booley.flows.execution_persistence import ReviewGoalInputs
+
+        self._goal_mode = isinstance(self._acceptance_recorder, ReviewGoalInputs)
+        if self._is_verify_pass():
+            return self._prepare_verify_invocation()
+        if getattr(self.args, "waive", []):
+            return McpToolResult(exit_code=EXIT_ERROR, report_text="--waive requires --verify")
+        if not self.args.category or not self.args.focus:
+            return McpToolResult(
+                exit_code=EXIT_ERROR, report_text="Discovery requires --category and --focus"
+            )
+        if self._goal_mode:
+            return self._prepare_goal_discovery()
+        return None
+
+    def _prepare_goal_discovery(self) -> McpToolResult | None:
+        forbidden = self._supplied_options() & {"--scope", "--spec", "--steer", "--instruction"}
+        if forbidden:
+            return McpToolResult(
+                exit_code=EXIT_ERROR,
+                report_text=f"{', '.join(sorted(forbidden))} refused: the Review Goal defines scope, spec and review context.",
+            )
+        try:
+            key = self._criterion_key()
+            open_key = next(
+                (
+                    name
+                    for name, entry in self.state.criteria.items()
+                    if name.startswith("review_")
+                    and name.endswith("_clean")
+                    and self._open_findings(entry.detail)
+                ),
+                None,
+            )
+            if open_key is not None:
+                return self._open_findings_refusal(open_key)
+            params = self._acceptance_recorder.review_goal_inputs(key)
+            self._resolved_scope = list(params.scope)
+            self._goal_target_surface = (
+                dict(params.target_surface) if params.target_surface is not None else None
+            )
+            self.args.spec = params.spec
+            self.args.steer = None
+        except (OSError, ValueError) as exc:
+            return McpToolResult(exit_code=EXIT_ERROR, report_text=str(exc))
+        missing = [
+            name for name in self._parse_scope() if not (Path(self.args.work_dir) / name).is_file()
+        ]
+        if missing:
+            return McpToolResult(
+                exit_code=EXIT_ERROR,
+                report_text=f"Review Goal files not found: {', '.join(missing)}",
+            )
+        return None
+
+    def _open_findings_refusal(self, key: str) -> McpToolResult:
+        return McpToolResult(
+            exit_code=EXIT_ERROR,
+            report_text=f"{execution_goal_name(self._acceptance_recorder, key)} has open findings. Resolve this clean review before starting another discovery review. Use reviewer --verify and --waive <finding-id> <justification>.",
+        )
+
+    def _supplied_options(self) -> set[str]:
+        return {word.split("=", 1)[0] for word in self._raw_argv if word.startswith("--")}
+
+    def _prepare_verify_invocation(self) -> McpToolResult | None:
+        allowed = {
+            "--verify",
+            "--waive",
+            "--work-dir",
+            "--project",
+            "--report-dir",
+            "--transcript-dir",
+        }
+        forbidden = self._supplied_options() - allowed
+        if forbidden:
+            return McpToolResult(
+                exit_code=EXIT_ERROR,
+                report_text=f"--verify accepts only --waive; refused {', '.join(sorted(forbidden))}",
+            )
+        selected = self._latest_review()
+        if selected is None:
+            return McpToolResult(
+                exit_code=EXIT_ERROR,
+                report_text="--verify refused: no prior review with open findings",
+            )
+        key, entry = selected
+        prior = deepcopy(entry.detail)
+        findings = self._open_findings(prior)
+        if not findings:
+            return McpToolResult(
+                exit_code=EXIT_ERROR,
+                report_text="--verify refused: the most recent review has no open findings",
+            )
+        if error := self._validate_waiver_proposals(findings):
+            return error
+        return self._restore_verify_context(key, prior, findings)
+
+    def _restore_verify_context(
+        self, key: str, prior: dict[str, Any], findings: list[dict[str, Any]]
+    ) -> McpToolResult | None:
+        contract = prior["contract"]
+        self.args.category, self.args.focus = contract["category"], contract["focus"]
+        self._resolved_scope = list(contract["scope"])
+        self.args.spec = contract.get("spec_source") or None
+        self.args.steer = None
+        if self._criterion_key() != key:
+            return McpToolResult(
+                exit_code=EXIT_ERROR,
+                report_text="Latest review no longer matches its Goal; run a review for the current Goal",
+            )
+        # Admission and publication fence the Goal revision. Verify uses the
+        # discovery contract even when the current Target no longer resolves.
+        if self._goal_mode:
+            root = Path(self.args.work_dir).resolve()
+            for path in self._resolved_scope:
+                if not (root / path).resolve().is_relative_to(root):
+                    return McpToolResult(
+                        exit_code=EXIT_ERROR,
+                        report_text=f"Review path {path!r} escapes the Goal worktree",
+                    )
+        if "pending" not in prior:
+            prior["resolved"] = [
+                *prior.get("resolved", []),
+                *[
+                    row
+                    for row in prior.get("issue_list", [])
+                    if row.get("status") in {"fixed", "waived", "excluded", "superseded"}
+                ],
+            ]
+        prior.setdefault(
+            "observations",
+            [
+                row
+                for row in prior.get("issue_list", [])
+                if row.get("disposition", "current") in _NON_CORRECTIVE_DISPOSITIONS
+                and row.get("status") not in {"fixed", "waived", "excluded", "superseded"}
+            ],
+        )
+        prior["pending"] = findings
+        self._verify_prior = prior
+        return None
+
+    def _next_review_order(self) -> int:
+        return 1 + max(
+            (
+                as_int(entry.detail.get("review_call_order"), default=0) or 0
+                for entry in self.state.criteria.values()
+            ),
+            default=0,
+        )
+
+    def _latest_review(self):
+        reviews = [
+            (key, entry)
+            for key, entry in self.state.criteria.items()
+            if key.startswith("review_") and entry.detail.get("contract")
+        ]
+        return (
+            max(
+                reviews,
+                key=lambda item: (
+                    as_int(item[1].detail.get("review_call_order"), default=0) or 0,
+                    item[1].updated_at,
+                    item[0],
+                ),
+            )
+            if reviews
+            else None
+        )
+
+    def _validate_waiver_proposals(self, findings: list[dict[str, Any]]) -> McpToolResult | None:
+        open_ids = {row["finding_id"] for row in findings}
+        seen = set()
+        for finding_id, justification in self.args.waive:
+            if finding_id not in open_ids or finding_id in seen or not justification.strip():
+                return McpToolResult(
+                    exit_code=EXIT_ERROR,
+                    report_text=f"Invalid --waive {finding_id!r}: name an open finding once with a nonempty justification",
+                )
+            seen.add(finding_id)
+        return None
 
     def _workspace_isolation_category(self) -> str | None:
         """Hide opposite-category sources only inside the private snapshot."""
@@ -960,26 +1101,34 @@ class ReviewerSpecialist(Specialist):
 
     def _is_verify_pass(self) -> bool:
         """True when this invocation will run verify (not initial) review."""
-        if not self._is_clean_mode():
-            return False
-        prior = self._get_prior_detail(self._criterion_key())
-        if prior is None:
-            return False
-        # ``pending`` is the new field, ``issue_list`` is legacy (kept for
-        # in-flight state migration). Either marks a prior review pass.
-        return "pending" in prior or "issue_list" in prior
+        return bool(getattr(self.args, "verify", False))
 
     def _add_agent_args(self, parser: argparse.ArgumentParser) -> None:
-        self._add_scope_arg(parser, help_text="Comma-separated file paths to review")
+        parser.add_argument(
+            "--scope", default=None, help="Interactive Mode: comma-separated review files"
+        )
+        parser.add_argument(
+            "--verify",
+            action="store_true",
+            help="Verify only the latest review call's open findings; no discovery",
+        )
+        parser.add_argument(
+            "--waive",
+            nargs=2,
+            action="append",
+            default=[],
+            metavar=("FINDING_ID", "JUSTIFICATION"),
+            help="Propose a waiver during --verify; repeatable",
+        )
         parser.add_argument(
             "--category",
-            required=True,
+            default=None,
             choices=["rtl", "tb"],
             help="Review category: rtl or tb",
         )
         parser.add_argument(
             "--focus",
-            required=True,
+            default=None,
             help=(
                 "Review focus category. "
                 f"RTL: {', '.join(sorted(RTL_FOCUS_CATEGORIES))}. "
@@ -1033,14 +1182,17 @@ class ReviewerSpecialist(Specialist):
             self.args.category,
             self.args.work_dir,
         )
-        errors.extend(scope_errors)
+        if not self._goal_mode:
+            errors.extend(scope_errors)
         _warn_unregistered_sources(scope_paths, self.args.work_dir)
 
         return errors
 
     def _parse_scope(self) -> list[str]:
         """Parse comma-separated scope paths."""
-        return [s.strip() for s in self.args.scope.split(",") if s.strip()]
+        if self._resolved_scope is not None:
+            return list(self._resolved_scope)
+        return [s.strip() for s in (self.args.scope or "").split(",") if s.strip()]
 
     def _parse_focus(self) -> set[str]:
         """Parse comma-separated focus categories."""
@@ -1065,14 +1217,17 @@ class ReviewerSpecialist(Specialist):
             self._scope_contract = resolve_review_scope(
                 self._parse_scope(),
                 category=self.args.category,
+                allow_support=self._goal_mode,
             )
         except ReviewContractError as exc:
             return str(exc)
         return None
 
     def _review_contract_detail(self) -> dict[str, Any]:
+        if self._sampled_contract is not None:
+            return deepcopy(self._sampled_contract)
         spec_arg = getattr(self.args, "spec", None)
-        return build_review_contract_detail(
+        contract = build_review_contract_detail(
             ReviewInvocation(
                 work_dir=Path(self.args.work_dir),
                 category=self.args.category,
@@ -1086,50 +1241,9 @@ class ReviewerSpecialist(Specialist):
                 ),
             )
         )
-
-    def _invalidate_changed_invocation_contract(self, crit_key: str) -> None:
-        """Restart any receipt when this invocation asks a new question."""
-        if not self.state:
-            return
-        entry = self.state.criteria.get(crit_key)
-        if entry is None:
-            return
-        if not entry.detail:
-            return
-        previous = as_dict(entry.detail.get("contract")) or {}
-        current = self._review_contract_detail()
-        if (
-            previous.get("mode") == "clean"
-            and current["mode"] == "done"
-            and entry.detail.get("goal_derivation")
-        ):
-            from booley.flows.execution_persistence import criterion_is_current_for
-
-            if criterion_is_current_for(self._acceptance_recorder, self.state, crit_key) is True:
-                previous = {**previous, "mode": "done"}
-        previous_version = (entry.detail or {}).get("review_detail_version")
-        if previous_version == REVIEW_DETAIL_VERSION and not review_invocation_changed(
-            previous, current
-        ):
-            return
-        entry.met = False
-        entry.stale = True
-        previous_detail = dict(entry.detail)
-        archive = self._write_review_evidence(previous_detail, "previous-receipt")
-        entry.detail = {
-            **previous_detail,
-            "stale_reason": "Reviewer scope or context changed; restarting discovery.",
-            "contract": current,
-            "review_detail_version": REVIEW_DETAIL_VERSION,
-            "needs_discovery": True,
-            "filtered": [],
-            "rejected": [],
-            "receipt_history": [*previous_detail.get("receipt_history", []), str(archive)],
-        }
-        self._clear_session_id(
-            f"reviewer-{self.args.category}-{next(iter(self._parse_focus()), '')}"
-        )
-        self.state.save()
+        if self._goal_target_surface is not None:
+            contract["goal_target_surface"] = dict(self._goal_target_surface)
+        return contract
 
     # --- System prompt construction ---
 
@@ -1238,17 +1352,7 @@ match the strength of the evidence.
     # --- Prompt construction ---
 
     def _build_prompt(self, *, focus_override: str | None = None) -> str:
-        """Build review task prompt (scope, focus, spec, steering).
-
-        The RTL and TB paths differ ONLY in how the ``## Focus:`` header is
-        derived — RTL joins a sorted multi-category set, TB uses a single
-        category (defaulting to ``quality``). The surrounding scaffold is
-        identical, so it lives here once.
-
-        Args:
-            focus_override: If set, use this focus instead of ``self.args.focus``.
-                Avoids mutating shared state.
-        """
+        """Build discovery context; focus_override leaves parsed arguments intact."""
         scope = self._parse_scope()
 
         if self.args.category == "rtl":
@@ -1284,12 +1388,6 @@ match the strength of the evidence.
             if spec_section:
                 sections.append(spec_section)
 
-        # Spec-silent decisions the developer already recorded. Without these a
-        # reasoned interpretation of an undefined corner reads as an invention.
-        assumptions_section = self._build_assumptions_section()
-        if assumptions_section:
-            sections.append(assumptions_section)
-
         # Change-type severity policy (TB only — the RTL guides carry no
         # coverage-expansion checks to relax).
         if self.args.category == "tb":
@@ -1316,23 +1414,6 @@ match the strength of the evidence.
         if not spec_content:
             return ""
         return f"## Specification (source: {spec_source})\n\n{spec_content}\n"
-
-    def _build_assumptions_section(self) -> str:
-        """Inline the developer's recorded spec-silent decisions.
-
-        Returns an empty string when nothing has been recorded.
-        """
-        content, source = resolve_documented_assumptions()
-        if not content:
-            return ""
-        return (
-            f"## Documented Assumptions (source: {source})\n\n"
-            "The developer recorded these decisions for points the spec does "
-            "not settle. A behavior explained here is a documented judgement "
-            "call, not an unexplained invention: report it only if the "
-            "reasoning contradicts spec text, and then quote the text it "
-            f"contradicts.\n\n{content}\n"
-        )
 
     def _build_tb_project_policy_section(self) -> str:
         """Render project-configured simulation contracts for TB review."""
@@ -1483,17 +1564,51 @@ object, even after calling the capability.
     # --- Main execution override ---
 
     def _run(self) -> McpToolResult:
+        """Serialize review calls so latest-only verification cannot lose its history."""
+        path = self.state.file_path
+        if path is None or getattr(self.args, "dry_run", False):
+            return self._run_review()
+        lock_path = path.with_suffix(".review.lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with lock_path.open("a+", encoding="ascii") as lock, nonblocking_file_lock(lock):
+                if self._read_review_state_bytes() != self._review_state_bytes:
+                    self.read_state()
+                try:
+                    return self._run_review()
+                finally:
+                    self._review_state_bytes = self._read_review_state_bytes()
+        except LockContentionError:
+            return McpToolResult(
+                exit_code=EXIT_ERROR,
+                report_text="Another review is running for this state; retry after it finishes.",
+            )
+        except EvidenceDiscarded as exc:
+            self.discard_evidence(exc)
+            return McpToolResult(exit_code=EXIT_ERROR, report_text=str(exc))
+
+    def _run_review(self) -> McpToolResult:
         """Single-focus review with terminal _done or disposition-loop _clean mode."""
         self._audit = {"filtered": [], "rejected": []}
         self._non_corrective_issues = []
         self._tb_project_policy = None
         self._scope_contract = None
+        self._sampled_contract = None
+        self._resolved_scope = None
+        self._goal_target_surface = None
         self._review_run_id = f"{self._invocation_id}-{uuid4().hex}"
+        try:
+            if error := self._prepare_invocation():
+                return error
+        except EvidenceDiscarded as exc:
+            self.discard_evidence(exc)
+            return McpToolResult(exit_code=EXIT_ERROR, report_text=str(exc))
         prepared = self._prepare_review_run()
         if isinstance(prepared, McpToolResult):
             return prepared
         if getattr(self.args, "dry_run", False):
             return self._dry_run_preview()
+        self._sampled_contract = self._review_contract_detail()
         result = self._execute_review(prepared)
         return self._publish_review_evidence(result, prepared)
 
@@ -1524,10 +1639,29 @@ object, even after calling the capability.
         return path
 
     def _record_review_detail(self, crit_key: str, met: bool, detail: dict[str, Any]) -> None:
+        criterion_met = met
+        if self._is_verify_pass() and crit_key.endswith("_done"):
+            prior_entry = self.state.criteria[crit_key]
+            prior = self._verify_prior
+            detail["contract"] = {
+                key: value
+                for key, value in prior["contract"].items()
+                if not key.startswith("decisions_")
+            }
+            for field in (
+                "_source_fingerprint",
+                "receipt_id",
+                "observation_count",
+                "review_outcome",
+                "gate_passed",
+            ):
+                if field in prior:
+                    detail[field] = deepcopy(prior[field])
+            criterion_met = prior_entry.met
         self._attach_review_evidence(
             detail, EXIT_SUCCESS if met else EXIT_FAILURE, f"receipt-{uuid4().hex}"
         )
-        self.set_criterion(crit_key, met, detail=detail)
+        self.set_criterion(crit_key, criterion_met, detail=detail)
 
     def _publish_review_evidence(self, result: McpToolResult, crit_key: str) -> McpToolResult:
         """Publish complete evidence even when a review cannot issue a receipt."""
@@ -1546,13 +1680,18 @@ object, even after calling the capability.
         if self._acceptance_current is not None:
             result.detail = deepcopy(result.detail)
         path = self._attach_review_evidence(result.detail, result.exit_code, "result")
-        if result.exit_code == EXIT_ERROR and self.state:
+        if (
+            result.exit_code == EXIT_ERROR
+            and self.state
+            and not (self._is_verify_pass() and crit_key.endswith("_done"))
+        ):
             self.set_criterion(crit_key, False, detail=result.detail)
         if (
             self.state
             and not getattr(self.args, "diagnostic", False)
             and not self._goal_receipt_replayed
             and self._acceptance_current is None
+            and self.evidence_discarded is None
         ):
             entry = self.state.criteria.get(crit_key)
             if entry is not None:
@@ -1594,7 +1733,7 @@ object, even after calling the capability.
         # Scope file existence guard: if review targets don't exist yet
         # (e.g., TB not coded yet), fail early instead of letting the LLM
         # agent silently report "0 issues" on non-existent code.
-        missing = self._check_scope_files_exist()
+        missing = [] if self._is_verify_pass() else self._check_scope_files_exist()
         if missing:
             names = ", ".join(missing)
             return McpToolResult(
@@ -1624,7 +1763,14 @@ object, even after calling the capability.
                 getattr(self.args, "work_dir", None),
             )
         except OSError as exc:
-            return McpToolResult(exit_code=EXIT_ERROR, report_text=str(exc))
+            recovery = ""
+            if self._is_verify_pass():
+                recovery = (
+                    " Restore the original specification before retrying --verify, or request an approved Goal Change."
+                    if self._goal_mode
+                    else " Restore the original specification or start a new Interactive discovery review."
+                )
+            return McpToolResult(exit_code=EXIT_ERROR, report_text=str(exc) + recovery)
         if SPEC_FOCUS not in self._parse_focus() or spec_content is not None:
             return None
         return McpToolResult(
@@ -1665,35 +1811,30 @@ object, even after calling the capability.
 
     def _execute_review(self, crit_key: str) -> McpToolResult:
         """Run one validated terminal or corrective review."""
-        self._invalidate_changed_invocation_contract(crit_key)
         prior = self._get_prior_detail(crit_key) or {}
-        self._audit = {name: list(prior.get(name) or []) for name in ("filtered", "rejected")}
-
-        # Refresh before either mode's idempotency guard.  Report submission
-        # uses this same operation, so Reviewer cannot replay a verdict which
-        # the acceptance path will immediately call stale.
-        from booley.flows.execution_persistence import criterion_is_current_for
-
-        self._goal_receipt_replayed = False
-        self._acceptance_current = (
-            criterion_is_current_for(self._acceptance_recorder, self.state, crit_key)
-            if self.state
-            else None
-        )
-        if self.state and self._acceptance_current is None:
-            refresh_verification_freshness(
-                self.state,
-                work_dir=Path(self.args.work_dir),
+        self._audit = {
+            name: list(prior.get(name) or [])
+            if self._is_verify_pass()
+            or (
+                prior.get("review_error")
+                and prior.get("contract") == self._review_contract_detail()
             )
+            else []
+            for name in ("filtered", "rejected")
+        }
+
+        self._refresh_review_freshness(crit_key)
 
         self.emit_progress(f"reviewing {self.args.category}/{next(iter(self._parse_focus()))}")
 
+        if self._is_verify_pass():
+            return self._run_clean_verify(crit_key, self._verify_prior)
         if self._is_clean_mode():
             return self._run_clean_mode(crit_key)
 
         # _done mode records terminal review completion, not cleanliness.
         # Fresh completed legacy receipts may still have an unmet cleanliness gate.
-        if self._done_receipt_completed(crit_key):
+        if self._goal_mode and self._done_receipt_completed(crit_key):
             self._goal_receipt_replayed = self._acceptance_current is not None
             return self._replay_done_verdict(crit_key)
 
@@ -1712,6 +1853,25 @@ object, even after calling the capability.
         elapsed = time.monotonic() - overall_start
         return self._build_result(issues, output_lines, elapsed=elapsed)
 
+    def _refresh_review_freshness(self, crit_key: str) -> None:
+        """Use the acceptance owner's freshness policy before replaying evidence."""
+        # Refresh before either mode's idempotency guard.  Report submission
+        # uses this same operation, so Reviewer cannot replay a verdict which
+        # the acceptance path will immediately call stale.
+        from booley.flows.execution_persistence import criterion_is_current_for
+
+        self._goal_receipt_replayed = False
+        self._acceptance_current = (
+            criterion_is_current_for(self._acceptance_recorder, self.state, crit_key)
+            if self.state
+            else None
+        )
+        if self.state and self._acceptance_current is None:
+            refresh_verification_freshness(
+                self.state,
+                work_dir=Path(self.args.work_dir),
+            )
+
     def _done_receipt_completed(self, crit_key: str) -> bool:
         """Replay only fresh completed review evidence, never incomplete/error detail."""
         entry = self.state.criteria.get(crit_key)
@@ -1721,7 +1881,6 @@ object, even after calling the capability.
         findings = detail.get("issue_list")
         return (
             detail.get("review_detail_version") == REVIEW_DETAIL_VERSION
-            and not detail.get("needs_discovery")
             and not detail.get("error")
             and isinstance(findings, list)
             and all(
@@ -1787,18 +1946,14 @@ object, even after calling the capability.
 
     def _run_clean_mode(self, crit_key: str) -> McpToolResult:
         """Drive the _clean criterion through initial review → verify loop."""
-        if self.state and self.state.is_met(crit_key) and self._acceptance_current is not False:
+        if (
+            self._goal_mode
+            and self.state.is_met(crit_key)
+            and self._acceptance_current is not False
+        ):
             self._goal_receipt_replayed = self._acceptance_current is not None
             return self._already_clean_result(crit_key)
-        prior_detail = self._get_prior_detail(crit_key)
-        if prior_detail is not None and prior_detail.get("needs_discovery"):
-            return self._run_clean_initial(crit_key)
-        has_prior_findings = prior_detail is not None and (
-            "pending" in prior_detail or "issue_list" in prior_detail
-        )
-        if not has_prior_findings:
-            return self._run_clean_initial(crit_key)
-        return self._run_clean_verify(crit_key, prior_detail)
+        return self._run_clean_initial(crit_key)
 
     def _run_clean_initial(self, crit_key: str) -> McpToolResult:
         """Run the first (no prior findings) review pass for _clean mode."""
@@ -1834,25 +1989,6 @@ object, even after calling the capability.
             logger.warning("Could not fingerprint sources for review freshness", exc_info=True)
             return ""
         return hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest()
-
-    def _rediscover_after_source_change(
-        self,
-        prior_detail: dict[str, Any],
-        pending: list[dict[str, Any]],
-    ) -> tuple[list[ReviewIssue] | None, list[str], str] | None:
-        """Run a fresh discovery pass after fixes changed reviewed sources."""
-        if pending:
-            return None
-        current = self._review_source_digest()
-        previous = str(prior_detail.get("review_source_digest", ""))
-        # Legacy in-flight state predates discovery fingerprints. Preserve its
-        # existing targeted-verify behavior; every newly-created clean review
-        # records the digest and receives the final discovery guarantee.
-        if not previous or (current and previous == current):
-            return None
-        self.emit_progress("final discovery: source changed after review findings")
-        issues, lines = self._run_single_review(phase="rediscovery")
-        return issues, lines, current
 
     def _replay_done_verdict(self, crit_key: str) -> McpToolResult:
         """Re-report an already-completed _done review instead of re-running it.
@@ -1987,14 +2123,7 @@ object, even after calling the capability.
         set[int],
         dict[int, dict[str, str]],
     ]:
-        """Run a verify review checking whether prior findings are fixed.
-
-        Resumes the original review session when a persisted session_id is
-        available, so the agent retains context about what it flagged.
-
-        Returns (remaining_issues, output_lines, remaining_indices) where
-        remaining_indices are 1-based positions into the original issue_list.
-        """
+        """Check only open findings in a fresh, read-only Reviewer context."""
         self._attempt_id = f"{self._review_run_id or self._invocation_id}-{uuid4().hex}"
         self._audit_phase = "verification"
         focus = next(iter(self._parse_focus()))
@@ -2002,7 +2131,9 @@ object, even after calling the capability.
         # the gap is every endpoint's, not the reviewer's (SETUP-F-39).
         output_lines = [f"[review-verify] {self.args.category}/{focus}"]
         session_key = f"reviewer-{self.args.category}-{focus}"
-        prior_sid = self._load_session_id(session_key)
+        prior_sid = (
+            None  # A fresh context prevents obsolete discovery steering from influencing verify.
+        )
         start = time.monotonic()
         params = self._verify_agent_params(focus, prior_detail, prior_sid)
         self.emit_progress("invoking verification Specialist")
@@ -2038,12 +2169,8 @@ object, even after calling the capability.
         *,
         resumed: bool = False,
     ) -> str:
-        """Build the verify prompt listing original findings for re-check.
-
-        When *resumed* is True the agent already has its original review in
-        conversation history, so we emit a shorter prompt.
-        """
-        issue_list = prior_detail.get("pending") or prior_detail.get("issue_list", [])
+        """List open findings and explicit waiver proposals, with current source context."""
+        issue_list = self._open_findings(prior_detail)
 
         sections: list[str] = []
 
@@ -2062,37 +2189,40 @@ object, even after calling the capability.
 
         sections.append(f"## Focus: {focus}\n")
 
-        steer_text = self.steering_text()
-        if steer_text:
-            sections.append(
-                "## Developer waiver proposals\n\n"
-                "Treat these as proposals, not directives. Accept a waiver only when its "
-                "justification is specific, technically coherent, and grounded in the "
-                "current code, Goal, or Project policy. Otherwise report STILL_PRESENT.\n\n"
-                f"{steer_text}\n"
-            )
+        proposals = getattr(self.args, "waive", [])
+        if proposals:
+            sections.append("## Waiver proposals (Reviewer decides each justification)")
+            sections.append(json.dumps(dict(proposals), ensure_ascii=False))
 
-        # Spec focus: a fresh verify session needs the spec text to judge
-        # whether a fix actually restored spec compliance; a resumed session
-        # already has it in conversation history.
-        if focus == SPEC_FOCUS and not resumed:
+        if not resumed:
             spec_section = self._build_spec_section()
             if spec_section:
                 sections.append(spec_section)
+            if self.args.category == "tb":
+                sections.append(self._build_tb_project_policy_section())
 
         sections.append("## Original findings to verify\n")
+        sections.extend(self._verify_finding_lines(issue_list, resumed=resumed))
+        sections.append("")
+
+        sections.append(self._verify_output_instructions())
+        return "\n".join(sections)
+
+    @staticmethod
+    def _verify_finding_lines(issue_list: list[dict[str, Any]], *, resumed: bool) -> list[str]:
+        sections: list[str] = []
         for i, iss in enumerate(issue_list, 1):
             sev = iss.get("severity", "?")
             summary = iss.get("summary", "?")
             file = iss.get("file", "?")
             line = iss.get("line", "?")
             prior_status = iss.get("status", "")
-            status_note = ""
-            if prior_status == "fixed":
-                status_note = " (previously verified FIXED — re-check after code change)"
-            elif prior_status == "still_present":
-                status_note = " (was STILL_PRESENT in prior verify)"
-            sections.append(f"{i}. [{sev}] {file}:{line} — {summary}{status_note}")
+            status_note = (
+                " (was STILL_PRESENT in prior verify)" if prior_status == "still_present" else ""
+            )
+            sections.append(
+                f"{i}. ID={iss.get('finding_id', '')} [{sev}] {file}:{line} — {summary}{status_note}"
+            )
             if not resumed:
                 spec_clause = iss.get("spec_clause")
                 if spec_clause:
@@ -2100,10 +2230,7 @@ object, even after calling the capability.
                 fix_suggestion = iss.get("fix_suggestion")
                 if fix_suggestion:
                     sections.append(f"   Original suggestion: {fix_suggestion}")
-        sections.append("")
-
-        sections.append(self._verify_output_instructions())
-        return "\n".join(sections)
+        return sections
 
     def _build_verify_system_prompt(self, focus: str) -> str:
         """System prompt for verify mode — check fixes, don't find new issues."""
@@ -2125,7 +2252,7 @@ object, even after calling the capability.
             "STILL_PRESENT — do not rubber-stamp.\n\n"
             "JUSTIFICATION REQUIRED: Every WAIVED status MUST include a specific "
             "``justification`` grounded in the current code, Goal, or Project "
-            "policy. Every accepted waiver is persisted and shown to the user, "
+            "policy. WAIVED is allowed only for an explicit waiver proposal for that finding ID. Every accepted waiver is persisted and shown to the user, "
             "regardless of severity. Reject vague convenience claims as "
             "STILL_PRESENT.\n\n"
             "Use Read, Grep, and Glob to inspect the current code."
@@ -2201,11 +2328,12 @@ Schema enforcement (applied upstream by the harness):
         """
         # ``pending`` is the new field; fall back to legacy ``issue_list``
         # so persisted review cycles can resume after a restart.
-        issue_list = prior_detail.get("pending") or prior_detail.get("issue_list", [])
+        issue_list = self._open_findings(prior_detail)
 
         diagnostics: list[dict[str, Any]] = []
         issue_count = len(issue_list)
         dispositions = self._extract_verify_dispositions(output, diagnostics, issue_count)
+        self._refuse_unsolicited_waivers(dispositions, issue_list, diagnostics)
         self._record_rejections(diagnostics, "verification")
 
         # For issues the model didn't mention, fall back to prior status.
@@ -2223,6 +2351,15 @@ Schema enforcement (applied upstream by the harness):
                 remaining.append(ReviewIssue.from_dict(iss_dict))
                 remaining_indices.add(i)
         return remaining, remaining_indices, dispositions
+
+    def _refuse_unsolicited_waivers(self, dispositions, issue_list, diagnostics) -> None:
+        requested = dict(getattr(self.args, "waive", []))
+        for index, disposition in list(dispositions.items()):
+            if disposition["status"] == VERIFY_STATUS_WAIVED:
+                finding_id = issue_list[index - 1].get("finding_id")
+                if finding_id not in requested:
+                    dispositions[index] = {"status": VERIFY_STATUS_STILL_PRESENT}
+                    diagnostics.append({"index": index, "reason": "unsolicited_waiver"})
 
     @staticmethod
     def _extract_verify_dispositions(
@@ -2646,12 +2783,7 @@ Schema enforcement (applied upstream by the harness):
             _finding_record(issue) for issue in [*all_issues, *self._non_corrective_issues]
         ]
         crit_key = self._criterion_key()
-        prior_records: list[dict[str, Any]] = []
-        if self.state and crit_key in self.state.criteria:
-            raw_prior = self.state.criteria[crit_key].detail.get("issue_list", [])
-            if isinstance(raw_prior, list):
-                prior_records = [dict(row) for row in raw_prior if isinstance(row, dict)]
-        records = _merge_finding_records(current_records, prior_records)
+        records = current_records
         from booley.evidence.review_dispositions import outstanding_done_findings
 
         corrective_records = outstanding_done_findings(
@@ -2667,6 +2799,7 @@ Schema enforcement (applied upstream by the harness):
     ) -> dict[str, Any]:
         return {
             "review_detail_version": REVIEW_DETAIL_VERSION,
+            "review_call_order": self._next_review_order(),
             **self._audit_detail(),
             "issues": len(outcome.issues),
             "observation_count": len(outcome.records),
@@ -2739,26 +2872,6 @@ Schema enforcement (applied upstream by the harness):
 
     # --- _clean mode result builders ---
 
-    @staticmethod
-    def _carry_review_obligations(
-        issues: list[ReviewIssue], prior: dict[str, Any]
-    ) -> list[ReviewIssue]:
-        """Preserve open obligations when discovery restarts its contract."""
-        old_pending = (
-            prior.get("pending", prior.get("issue_list", []))
-            if prior.get("needs_discovery")
-            else []
-        )
-        records = {_finding_record(issue)["finding_id"]: issue for issue in issues}
-        for row in old_pending:
-            if (
-                row.get("status") not in {"waived", "fixed", "excluded", DISPOSITION_SUPERSEDED}
-                and row.get("disposition", "current") == "current"
-            ):
-                issue = ReviewIssue.from_dict(row)
-                records.setdefault(_finding_record(issue)["finding_id"], issue)
-        return list(records.values())
-
     def _build_result_clean_initial(
         self,
         issues: list[ReviewIssue],
@@ -2767,36 +2880,19 @@ Schema enforcement (applied upstream by the harness):
         elapsed: float,
         crit_key: str,
     ) -> McpToolResult:
-        """Build result for initial _clean review. Met immediately if gate passes.
-
-        Detail uses the ``pending`` / ``resolved`` split: on the initial
-        pass every finding is pending (nothing has been verified fixed
-        yet) and ``resolved`` is empty.
-        """
-        prior = self._get_prior_detail(crit_key) or {}
-        issues = self._carry_review_obligations(issues, prior)
+        """Record discovery: every corrective finding starts open."""
         counts = count_by_severity(issues)
         gate_passed = not issues
 
         status, count_str = _format_status_and_counts(counts, gate_passed)
+        output_lines.extend(_format_issue_line(issue) for issue in issues)
         output_lines.append(f"\nRESULT: {status} ({count_str})")
 
         report_text = "\n".join(output_lines)
         # Print concise result summary to stdout (consumed by callers and tests)
         print(report_text)
 
-        detail: dict[str, Any] = {
-            "review_detail_version": REVIEW_DETAIL_VERSION,
-            **self._audit_detail(),
-            "issues": len(issues),
-            "pending": [_finding_record(iss) for iss in issues],
-            "resolved": list(prior.get("resolved", [])),
-            "observations": [_finding_record(iss) for iss in self._non_corrective_issues],
-            **counts,
-            "elapsed_s": round(elapsed, 1),
-            "review_source_digest": self._review_source_digest(),
-            "contract": self._review_contract_detail(),
-        }
+        detail = self._clean_discovery_detail(issues, counts, elapsed)
 
         if gate_passed:
             self._record_review_detail(crit_key, True, detail)
@@ -2818,6 +2914,25 @@ Schema enforcement (applied upstream by the harness):
             report_text=report_text,
         )
 
+    def _clean_discovery_detail(
+        self, issues: list[ReviewIssue], counts: dict[str, int], elapsed: float
+    ) -> dict[str, Any]:
+        detail: dict[str, Any] = {
+            "review_detail_version": REVIEW_DETAIL_VERSION,
+            "review_call_order": self._next_review_order(),
+            **self._audit_detail(),
+            "issues": len(issues),
+            "pending": [_finding_record(iss) for iss in issues],
+            "resolved": [],
+            "observations": [_finding_record(iss) for iss in self._non_corrective_issues],
+            **counts,
+            "elapsed_s": round(elapsed, 1),
+            "review_source_digest": self._review_source_digest(),
+            "contract": self._review_contract_detail(),
+        }
+
+        return detail
+
     def _build_result_clean_verify(
         self,
         remaining: list[ReviewIssue],
@@ -2829,19 +2944,12 @@ Schema enforcement (applied upstream by the harness):
         elapsed: float,
         crit_key: str,
     ) -> McpToolResult:
-        """Build result for a verify pass and optional final rediscovery."""
+        """Build a verify-only result without running discovery."""
         pending, resolved, original_issues = self._split_verify_findings(
             existing_detail, remaining_indices, dispositions
         )
-        rediscovery = self._apply_clean_rediscovery(
-            remaining, output_lines, existing_detail, pending, original_issues
-        )
-        if isinstance(rediscovery, McpToolResult):
-            return rediscovery
-        remaining, pending, original_issues, source_digest, rediscovered = rediscovery
-        observations = _review_observations(
-            existing_detail, self._non_corrective_issues, rediscovered=rediscovered
-        )
+        source_digest = self._review_source_digest()
+        observations = list(existing_detail.get("observations", []))
         return self._finish_clean_verify(
             _CleanVerifyContext(
                 remaining=remaining,
@@ -2857,33 +2965,17 @@ Schema enforcement (applied upstream by the harness):
             )
         )
 
-    def _apply_clean_rediscovery(
-        self,
-        remaining: list[ReviewIssue],
-        output_lines: list[str],
-        existing_detail: dict[str, Any],
-        pending: list[dict[str, Any]],
-        original_issues: int,
-    ) -> tuple[list[ReviewIssue], list[dict[str, Any]], int, str, bool] | McpToolResult:
-        source_digest = str(existing_detail.get("review_source_digest", ""))
-        rediscovery = self._rediscover_after_source_change(existing_detail, pending)
-        if rediscovery is None:
-            return remaining, pending, original_issues, source_digest, False
-        discovered, discovery_lines, source_digest = rediscovery
-        if discovered is None:
-            report = self._provider_failure_report(
-                discovery_lines, "Final clean-review discovery Specialist invocation failed"
-            )
-            return McpToolResult(exit_code=EXIT_ERROR, report_text=report)
-        output_lines.extend(["", "[review] final discovery after source changes"])
-        output_lines.extend(discovery_lines)
-        pending = [_finding_record(issue) for issue in discovered]
-        return discovered, pending, original_issues + len(discovered), source_digest, True
-
     def _finish_clean_verify(self, context: _CleanVerifyContext) -> McpToolResult:
         counts = count_by_severity(context.remaining)
         met = not context.pending
         status, count_str = _format_status_and_counts(counts, met)
+        checked = {row["finding_id"] for row in self._open_findings(context.existing_detail)}
+        status_lines = [
+            f"{row['finding_id']}: {row.get('status', 'still_present').upper()} — {row.get('summary', '')}"
+            for row in [*context.pending, *context.resolved]
+            if row.get("finding_id") in checked
+        ]
+        context.output_lines.extend(status_lines)
         context.output_lines.append(f"\nVERIFY RESULT: {status} ({count_str})")
         waiver_lines = self._clean_verify_waiver_lines(context.resolved)
         if waiver_lines:
@@ -2896,12 +2988,16 @@ Schema enforcement (applied upstream by the harness):
             focus = next(iter(self._parse_focus()))
             self._clear_session_id(f"reviewer-{self.args.category}-{focus}")
         lines = [f"{count_str}, verify {status} (attempt {verify_attempts}/2)"]
+        lines.extend(f"  {line}" for line in status_lines)
         lines.extend(f"  {line}" for line in waiver_lines)
-        lines.extend(f"  {_format_issue_line(issue)}" for issue in context.remaining)
         return McpToolResult(
             exit_code=EXIT_SUCCESS if met else 1,
             criterion_key=context.crit_key,
-            criterion_met=met,
+            criterion_met=(
+                self.state.criteria[context.crit_key].met
+                if context.crit_key.endswith("_done")
+                else met
+            ),
             display_lines=lines,
             detail=detail,
             report_text=report_text,
@@ -2924,19 +3020,30 @@ Schema enforcement (applied upstream by the harness):
         verify_attempts = context.existing_detail.get("verify_attempts", 0) + 1
         detail: dict[str, Any] = {
             "review_detail_version": REVIEW_DETAIL_VERSION,
+            "review_call_order": self._next_review_order(),
             **self._audit_detail(),
             "issues": len(context.remaining),
             "pending": context.pending,
             "resolved": context.resolved,
             "observations": context.observations,
             **counts,
+            "verification_only": True,
             "verify_attempts": verify_attempts,
             "total_verify_cycles": context.existing_detail.get("total_verify_cycles", 0) + 1,
             "original_issues": context.original_issues,
             "elapsed_s": round(context.elapsed, 1),
             "review_source_digest": context.source_digest,
-            "contract": self._review_contract_detail(),
+            "contract": {
+                **{
+                    k: v
+                    for k, v in context.existing_detail["contract"].items()
+                    if not k.startswith("decisions_")
+                },
+                "scope_hashes": self._review_contract_detail()["scope_hashes"],
+            },
         }
+        if context.crit_key.endswith("_done"):
+            detail["issue_list"] = [*context.pending, *context.resolved, *context.observations]
         return detail, verify_attempts
 
     def _split_verify_findings(
@@ -2954,7 +3061,7 @@ Schema enforcement (applied upstream by the harness):
         # 1-based remaining_indices from _parse_verify_output. Source list
         # is the prior cycle's open set (``pending``), with fallback to the
         # legacy ``issue_list`` to resume persisted review cycles.
-        prior_pending = existing_detail.get("pending") or existing_detail.get("issue_list", [])
+        prior_pending = self._open_findings(existing_detail)
         pending: list[dict[str, Any]] = []
         newly_resolved: list[dict[str, Any]] = []
         for i, iss_dict in enumerate(prior_pending, 1):
