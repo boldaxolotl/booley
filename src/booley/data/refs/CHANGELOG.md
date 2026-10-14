@@ -9,6 +9,10 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- `booley cheat` now lists available sections, like `booley cheat --list`.
+  Use combinable section flags to print selected sections, or `booley cheat --all`
+  for the whole cheatsheet.
+
 - Doctor treats unavailable sibling attributes and unsupported system-attributes
   discovery as unknown policy, rather than a conflict with a valid local rule.
   Existing attributes and worktree registrations are preserved; new shared

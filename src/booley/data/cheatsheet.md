@@ -41,7 +41,7 @@ Inside the Sandbox, for Interactive Mode, we recommend `booley` / `booley chat`,
 | `booley specialist` | mixed | List visible Specialists; run inside the Sandbox |
 | `booley feedback` | mixed | Record findings, friction, and impressions |
 | `booley cleanup` | mixed | Preview or apply manifest-owned Project Setup cleanup |
-| `booley cheat` | either | Show this reference, whole or by section |
+| `booley cheat` | either | List sections; use section flags or `--all` to print the reference |
 
 For Host Bootstrap, `--check-only` reports pending work without writing and
 `--force` refreshes Booley-managed resources while preserving caches and

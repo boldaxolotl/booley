@@ -78,7 +78,8 @@ Use the selector once, at the root, command, or nested operation. It also works 
 `chat`, `doctor`, `init`, `upgrade`, `cleanup`, and `feedback`, and on bare
 `booley` inside the Sandbox to select the Project for chat. On the host, bare
 `booley` prints help without resolving the selector.
-`auth --status` and `cheat --list` accept and ignore it without discovering a Project.
+`auth --status`, bare `cheat`, and `cheat --list` accept and ignore it without
+discovering a Project.
 `bootstrap`, `projects`, and `eda` retain their grammar
 and do not accept the new selector. Full option names are stable; ambiguous
 abbreviations produce an error. Arguments after a command's payload `--` stay opaque.
@@ -102,7 +103,7 @@ can see:
 ```bash
 booley doctor          # health check: configuration, Sandbox Image, EDA tools
 booley targets         # every Target Booley can see, grouped by core
-booley cheat           # a one-page summary of Booley's commands and files
+booley cheat           # available quick-reference sections
 ```
 
 Don't continue until `booley doctor` shows no failures or warnings.
@@ -110,9 +111,10 @@ Don't continue until `booley doctor` shows no failures or warnings.
 - If `booley` is not found, go back to the
   [installation instructions](../../README.md#installation).
 - If Booley says its version changed, type `/booley-heal` in the Developer Agent chat.
-- For a quick overview of Booley, start with `booley cheat`. It's long, so
-  `booley cheat --list` shows its sections and you can print just the ones you
-  need, for example `booley cheat --goals` or `booley cheat --commands --project-files`.
+- For a quick overview of Booley, start with `booley cheat`. It lists the
+  available sections; print the ones you need, for example `booley cheat --goals`
+  or `booley cheat --commands --project-files`. Use `booley cheat --all` for the
+  whole cheatsheet; `booley cheat --list` also shows the section list.
 - `booley doctor --deep` goes further and runs short real simulations, lints,
   and syntheses.
 
@@ -900,8 +902,8 @@ booley dashboard                  # sessions, Goals, and Jobs
 booley worktree new <name>        # .booley/worktrees/<name>, Paired Checkout or Snapshot
 
 # Quick reference
-booley cheat                      # the whole cheatsheet
-booley cheat --list               # its section names
+booley cheat                      # available sections (same as --list)
+booley cheat --all                # the whole cheatsheet
 booley cheat --goals              # Goal Mode workflow
 booley cheat --criteria           # evidence catalog (combine sections)
 

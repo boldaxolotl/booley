@@ -277,7 +277,8 @@ def test_canonical_replacements_dispatch(command, inside, cli_project, monkeypat
         cli._EARLY_COMMANDS, command, lambda args, root: calls.append((args.command, root)) or 19
     )
     assert cli.main() == 19
-    assert calls == [(command, cli_project)]
+    expected_root = None if command == "cheat" else cli_project
+    assert calls == [(command, expected_root)]
 
 
 @pytest.mark.parametrize("command", ["chat", "goal", "dashboard"])

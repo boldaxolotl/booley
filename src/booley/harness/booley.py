@@ -432,10 +432,8 @@ def _add_cheat_subparser(sub) -> None:
     cheat_p = sub.add_parser(
         "cheat", help="Print quick-reference cheatsheet", formatter_class=ProjectHelpFormatter
     )
-    # None given prints the whole sheet. Callers that need a single table (a
-    # skill authoring criteria, a user chasing one command) skip the rest.
     cheat_sections = cheat_p.add_argument_group(
-        "sections", "Print only these sections (combinable; default: the whole sheet)"
+        "sections", "Print only these sections (combinable; default: list section flags)"
     )
     for slug in cheatsheet.section_slugs():
         cheat_sections.add_argument(
@@ -444,8 +442,10 @@ def _add_cheat_subparser(sub) -> None:
             action="store_true",
             help=cheatsheet.section_help(slug),
         )
-    cheat_p.add_argument(
-        "--list", action="store_true", help="List section flags instead of printing the sheet"
+    cheat_views = cheat_p.add_mutually_exclusive_group()
+    cheat_views.add_argument("--list", action="store_true", help="List section flags (default)")
+    cheat_views.add_argument(
+        "--all", action="store_true", help="Print the whole cheatsheet, overriding section flags"
     )
 
 
@@ -1018,25 +1018,16 @@ def _live_criterion_endpoint_catalog(project_root: Path):
     )
 
 
-def _cmd_cheat(args: argparse.Namespace, project_root: Path | None) -> int:
-    if getattr(args, "list", False):
-        for slug in cheatsheet.section_slugs():
-            aliases = cheatsheet.section_flags(slug)[1:]
-            alias_names = ", ".join(f"--{name}" for name in aliases)
-            alias_note = f" (alias: {alias_names})" if aliases else ""
-            print(
-                f"  --{cheatsheet.section_flags(slug)[0]:<14}{cheatsheet.section_help(slug)}{alias_note}"
-            )
-        return 0
+def _cheat_lists_sections(args: argparse.Namespace) -> bool:
+    """Recognize the Project-independent section index, explicit or default."""
+    return getattr(args, "list", False) or (
+        not getattr(args, "all", False)
+        and not any(getattr(args, slug, False) for slug in cheatsheet.section_slugs())
+    )
 
-    cs = cheatsheet_path()
-    if not cs.exists():
-        print("cheatsheet not found", file=sys.stderr)
-        return 1
-    text = cs.read_text(encoding="utf-8")
 
-    # Splice Booley Flows and Specialists into separate sections so callers can ask
-    # for either catalog. Both stay live from the active project's registry.
+def _cheat_flow_reference(text: str, project_root: Path | None) -> str:
+    """Splice live Flow and Specialist catalogs, retaining committed fallbacks."""
     try:
         from booley.dev_support.flow_specialist_reference import (
             render_flow_reference,
@@ -1068,10 +1059,11 @@ def _cmd_cheat(args: argparse.Namespace, project_root: Path | None) -> int:
         # Markers absent, registry unavailable, or optional deps missing:
         # fall back to the committed block so `booley cheat` always renders.
         pass
+    return text
 
-    # Splice the criteria table live from the single source of truth
-    # (criteria.toml + injected endpoint relationships), including any
-    # project-defined criteria.
+
+def _cheat_criteria_reference(text: str, project_root: Path | None) -> str:
+    """Splice the active Project's Criteria and endpoint relationships."""
     try:
         from booley.criteria.reference import (
             splice_generated as splice_criteria,
@@ -1092,9 +1084,11 @@ def _cmd_cheat(args: argparse.Namespace, project_root: Path | None) -> int:
         )
     except Exception:  # noqa: BLE001 — best-effort live criteria splice; committed block remains on failure
         pass
+    return text
 
-    # Splice the synthesis_ok / fpga_impl_ok threshold-flavour table live from the
-    # param registry so documented flavours never drift from the validator.
+
+def _cheat_criteria_params_reference(text: str) -> str:
+    """Splice threshold flavours from the parameter registry."""
     try:
         from booley.criteria.reference import (
             render_criteria_params_reference,
@@ -1110,11 +1104,40 @@ def _cmd_cheat(args: argparse.Namespace, project_root: Path | None) -> int:
         )
     except Exception:  # noqa: BLE001 — best-effort live splice; committed block remains on failure
         pass
+    return text
+
+
+def _cmd_cheat(args: argparse.Namespace, project_root: Path | None) -> int:
+    if _cheat_lists_sections(args):
+        for slug in cheatsheet.section_slugs():
+            aliases = cheatsheet.section_flags(slug)[1:]
+            alias_names = ", ".join(f"--{name}" for name in aliases)
+            alias_note = f" (alias: {alias_names})" if aliases else ""
+            print(
+                f"  --{cheatsheet.section_flags(slug)[0]:<14}{cheatsheet.section_help(slug)}{alias_note}"
+            )
+        print(
+            "\nExample: booley cheat --commands --project-files\n"
+            "Use booley cheat --all for the whole cheatsheet."
+        )
+        return 0
+
+    cs = cheatsheet_path()
+    if not cs.exists():
+        print("cheatsheet not found", file=sys.stderr)
+        return 1
+    text = cs.read_text(encoding="utf-8")
+    text = _cheat_flow_reference(text, project_root)
+    text = _cheat_criteria_reference(text, project_root)
+    text = _cheat_criteria_params_reference(text)
 
     # Narrow to the requested sections (after splicing, so a filtered view still
-    # shows live registry/criteria tables). No flags = the whole sheet.
+    # shows live registry/criteria tables). --all keeps the whole sheet.
     text = cheatsheet.select(
-        text, [slug for slug in cheatsheet.section_slugs() if getattr(args, slug, False)]
+        text,
+        []
+        if getattr(args, "all", False)
+        else [slug for slug in cheatsheet.section_slugs() if getattr(args, slug, False)],
     )
 
     # Drop the HTML-comment markers so they don't reach the terminal.
@@ -1769,7 +1792,7 @@ def _optional_project_root(args: argparse.Namespace) -> Path | None:
     from booley.core.checkout_role import SourceCheckoutProjectError, require_project_checkout
     from booley.runtime.project_discovery import ProjectRootDiscoveryError
 
-    if getattr(args, "list", False):
+    if getattr(args, "command", None) == "cheat" and _cheat_lists_sections(args):
         return None
     try:
         root = (

@@ -1,10 +1,9 @@
 """Split the quick-reference cheatsheet into flag-addressable sections.
 
-``booley cheat`` prints the whole sheet by default, but most callers want one
-slice of it: the Goal skill only needs the criteria catalog, a user
-debugging a container only needs the Sandbox & Docker table. Section flags
-(``--criteria``, ``--flows``, ...) narrow the output so neither pays for the
-rest.
+``booley cheat`` lists the available sections by default; ``--all`` prints
+the whole sheet. Section flags (``--criteria``, ``--flows``, ...) select
+individual slices: the Goal skill only needs the criteria catalog, a user
+debugging a container only needs the Sandbox & Docker table.
 
 Sections are the ``### `` headings of ``data/cheatsheet.md``; the table below
 pins each to a stable CLI flag name. A heading in the file with no entry here
