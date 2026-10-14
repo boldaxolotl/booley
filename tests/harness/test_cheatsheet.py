@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import re
 from pathlib import Path
 
 import pytest
 
 from booley.harness import booley as tlr
 from booley.harness import cheatsheet
-from booley.runtime.paths import cheatsheet_path
+from booley.runtime.paths import cheatsheet_path, skills_dir
 
 SAMPLE = """## Booley: Quick Reference
 
@@ -271,8 +272,6 @@ if __name__ == "__main__":
 
 def test_command_table_matches_locations():
     """All public commands and their venues agree with top-level help."""
-    import re
-
     text = cheatsheet_path().read_text(encoding="utf-8").split("### Goal Mode")[0]
     sections = re.split(r"^#### ", text, flags=re.MULTILINE)[1:]
     locations = {}
@@ -288,3 +287,12 @@ def test_command_table_matches_locations():
             assert command not in locations
             locations[command] = location
     assert locations == {name: location.value for name, location in tlr.COMMAND_LOCATIONS.items()}
+
+
+def test_skills_table_lists_every_packaged_skill():
+    """Every packaged skill directory has a row in the cheatsheet Skills table (#1427)."""
+    _, bodies = cheatsheet.split_sections(cheatsheet_path().read_text(encoding="utf-8"))
+    listed = set(re.findall(r"^\| `/([\w-]+)`", bodies["Skills"], re.MULTILINE))
+    packaged = {path.name for path in skills_dir().iterdir() if (path / "SKILL.md").is_file()}
+    assert packaged, "no packaged skills found; skills_dir() is wrong"
+    assert listed == packaged

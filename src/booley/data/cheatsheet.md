@@ -363,6 +363,7 @@ do not need these files.
 
 | Skill | Use it when | Result |
 |-------|-------------|--------|
+| `/booley-setup` | Set up an initialized Project; start on the host | `SETUP-PLAN.md`; configured Project; Doctor audit |
 | `/booley-goal` | Work needs mandatory evidence-backed Goals | Goals, evidence, and review |
 | `/booley-heal` | Doctor or Flow health has drifted | Repair safe findings; verify Doctor |
 | `/booley-feedback` | Report bugs, friction, praise, or ideas | Redact evidence; export for manual sharing |
