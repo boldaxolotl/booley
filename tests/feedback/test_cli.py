@@ -7,6 +7,7 @@ reporting, redaction, and explicit-export wiring an agent actually touches.
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 
 import pytest
@@ -391,8 +392,8 @@ def test_actual_feedback_writers_keep_versioned_project_clean(run, project, monk
     assert _log(project).entries[0].bucket == "booley"
     assert_clean(state)
     assert materialize_attachments(state, [source], env=environment) == (source,)
-    assert list((state / "setup-evidence/attachments").glob("*.txt"))
-    assert list((state / "setup-evidence/attachments").glob("*.txt.json"))
+    assert list((state / "setup-evidence/attachments").rglob("*.txt"))
+    assert list((state / "setup-evidence/attachments").rglob("*.txt.json"))
     assert_clean(state)
     assert run("report") == 0
     name = "SETUP-REPORT.md" if origin == "setup" else "FEEDBACK-REPORT.md"
@@ -401,3 +402,159 @@ def test_actual_feedback_writers_keep_versioned_project_clean(run, project, monk
     assert run("export", "--all") == 0
     assert (state / "BOOLEY-FEEDBACK.md").is_file()
     assert_clean(state)
+
+
+@pytest.fixture
+def legacy_duplicate_log(project):
+    from booley.feedback.findings import Finding, log_path
+
+    entries = [
+        Finding(
+            title=title,
+            id=finding_id,
+            created="2026-01-01T00:00:00Z",
+            kind="impression",
+            bucket="booley",
+            notes="private body",
+            attachments=["never-include-attachment-path-in-error.log"],
+        )
+        for title, finding_id in [
+            ("unique", "F-1"),
+            ("first match", "F-2"),
+            ("second match", "F-2"),
+        ]
+    ]
+    path = log_path(project / ".booley")
+    path.write_text("".join(entry.to_json() + "\n" for entry in entries), encoding="utf-8")
+    return path
+
+
+@pytest.mark.parametrize("command", ["filed", "triage", "export"])
+def test_explicit_duplicate_id_refuses_every_match_without_output(
+    run, project, legacy_duplicate_log, capsys, command, tmp_path
+):
+    path = legacy_duplicate_log
+    before = path.read_bytes()
+    output = tmp_path / "export.md"
+    args = [command, "F-2"]
+    if command == "filed":
+        args = [command, "F-1", "F-2"]  # The entire batch must remain unchanged.
+    elif command == "triage":
+        args += ["--bucket", "project"]
+    else:
+        args += ["--output", str(output)]
+    assert run(*args) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    for detail in (
+        "F-2",
+        str(path),
+        "row 2",
+        "row 3",
+        "first match",
+        "second match",
+        "2026-01-01T00:00:00Z",
+    ):
+        assert detail in captured.err
+    assert "private body" not in captured.err
+    assert "never-include-attachment-path" not in captured.err
+    assert path.read_bytes() == before
+    assert not output.exists()
+    assert not (project / ".booley" / "BOOLEY-FEEDBACK.md").exists()
+    assert not path.with_suffix(".jsonl.tmp").exists()
+
+
+def test_export_all_keeps_every_legacy_duplicate_and_redacts(
+    run, project, legacy_duplicate_log, tmp_path
+):
+    path = legacy_duplicate_log
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    for row in rows:
+        row["notes"] = f"project path {project}"
+        row["attachments"] = []
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    before = path.read_bytes()
+    output = tmp_path / "all.md"
+    assert run("export", "--all", "--output", str(output)) == 0
+    body = output.read_text()
+    assert "first match" in body
+    assert "second match" in body
+    assert "unique" in body
+    assert str(project) not in body
+    assert "rocketwidget" not in body
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ("add", "--title", "blocked"),
+        ("friction", "--title", "blocked"),
+        ("say", "blocked"),
+        ("win", "--title", "blocked"),
+        ("filed", "F-1"),
+        ("triage", "F-1", "--bucket", "booley"),
+    ],
+)
+def test_mutating_dispatch_reports_lock_timeout_without_success(
+    run, project, monkeypatch, capsys, argv
+):
+    from booley.feedback import findings
+    from tests.feedback.test_findings import holding_findings_lock
+
+    directory = project / ".booley"
+    findings.append(findings.Finding(title="original"), directory)
+    path = findings.log_path(directory)
+    before = path.read_bytes()
+    monkeypatch.setattr(findings, "_LOCK_TIMEOUT_S", 0.01)
+    with holding_findings_lock(directory):
+        assert run(*argv) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "findings.lock" in captured.err
+    assert "busy" in captured.err
+    assert str(path) in captured.err
+    assert path.read_bytes() == before
+    assert not path.with_suffix(".jsonl.tmp").exists()
+
+
+@pytest.mark.parametrize("command", ["filed", "triage", "export"])
+def test_missing_explicit_id_does_not_write_log_or_export(
+    run, project, legacy_duplicate_log, tmp_path, capsys, command
+):
+    before = legacy_duplicate_log.read_bytes()
+    output = tmp_path / "missing.md"
+    args = [command, "F-99"]
+    if command == "export":
+        args += ["--output", str(output)]
+    assert run(*args) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "F-99" in captured.err
+    assert legacy_duplicate_log.read_bytes() == before
+    assert not output.exists()
+    assert not (project / ".booley" / "BOOLEY-FEEDBACK.md").exists()
+
+
+@pytest.mark.parametrize("command", ["filed", "triage"])
+def test_corrupt_log_mutation_preserves_raw_bytes(run, project, capsys, command):
+    path = project / ".booley" / "findings.jsonl"
+    path.write_text('{"title":"good","id":"F-1"}\n{unparseable evidence\n')
+    before = path.read_bytes()
+    assert run(command, "F-1") == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "unparseable" in captured.err
+    assert "would be lost" in captured.err
+    assert path.read_bytes() == before
+    assert not path.with_suffix(".jsonl.tmp").exists()
+
+
+def test_ambiguous_export_preserves_existing_output(run, legacy_duplicate_log, tmp_path, capsys):
+    target = tmp_path / "existing.md"
+    target.write_text("prior export")
+    before = legacy_duplicate_log.read_bytes()
+    assert run("export", "F-2", "--output", str(target)) == 1
+    assert capsys.readouterr().out == ""
+    assert target.read_text() == "prior export"
+    assert legacy_duplicate_log.read_bytes() == before
