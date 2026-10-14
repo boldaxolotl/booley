@@ -106,6 +106,9 @@ def build_status(
     observational: bool = False,
 ) -> GoalStatusView:
     """Read one coherent record/state/lifecycle projection without recovering it."""
+    from booley.runtime.booley_dir_migration import is_archived_record
+
+    observational = observational or is_archived_record(store.booley_dir, record.id)
     with store.record_lock(record.id, existing_only=observational):
         return _build_status(store, store.load(record.id), work_dir=work_dir, resolvers=resolvers)
 

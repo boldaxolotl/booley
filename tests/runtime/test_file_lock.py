@@ -148,3 +148,55 @@ def test_invocation_lock_probe_prunes_git_internals(tmp_path) -> None:
     ignored.touch()
 
     assert list(invocation_lock_paths(tmp_path)) == [expected]
+
+
+@pytest.mark.parametrize("binary", [False, True])
+def test_windows_preserved_empty_lock_uses_byte_zero_without_padding(monkeypatch, binary):
+    handle = _MemoryBinaryFile() if binary else _MemoryFile()
+    calls = []
+    adapter = SimpleNamespace(
+        LK_NBLCK=1,
+        LK_UNLCK=2,
+        locking=lambda fd, mode, count: calls.append((fd, mode, count, handle.tell())),
+    )
+    _install_fake_lock_module(monkeypatch, "win32", "msvcrt", adapter)
+    file_lock.wait_for_file_lock(handle, timeout_s=0, preserve_contents=True)
+    file_lock.release_file_lock(handle)
+    assert handle.getvalue() == (b"" if binary else "")
+    assert calls == [(7, 1, 1, 0), (7, 2, 1, 0)]
+
+
+def test_preserved_empty_lock_contends_across_processes(tmp_path):
+    import subprocess
+    from pathlib import Path
+
+    path = tmp_path / "existing.lock"
+    path.touch()
+    probe = """
+import sys
+sys.path.insert(0, sys.argv[2])
+from booley.core.file_lock import acquire_file_lock, release_file_lock, LockContentionError
+with open(sys.argv[1], 'r+') as handle:
+    try:
+        acquire_file_lock(handle, preserve_contents=True)
+    except LockContentionError:
+        print('busy')
+    else:
+        release_file_lock(handle)
+        print('acquired')
+"""
+    command = [
+        sys.executable,
+        "-c",
+        probe,
+        str(path),
+        str(Path(__file__).resolve().parents[2] / "src"),
+    ]
+    with path.open("r+") as handle:
+        file_lock.wait_for_file_lock(handle, timeout_s=0, preserve_contents=True)
+        blocked = subprocess.run(command, capture_output=True, text=True, check=True, timeout=20)
+        assert blocked.stdout.strip() == "busy"
+        file_lock.release_file_lock(handle)
+    available = subprocess.run(command, capture_output=True, text=True, check=True, timeout=20)
+    assert available.stdout.strip() == "acquired"
+    assert path.read_bytes() == b""

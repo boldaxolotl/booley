@@ -419,11 +419,8 @@ class GoalStore:
         if not paths.root.is_dir():
             raise GoalRecordNotFoundError(f"no Goal Record {goal_id} in {self.booley_dir}")
         try:
-            if existing_only:
-                if paths.lock_file.is_symlink():
-                    raise GoalStoreError("observational Goal lock is a symlink")
-                if os.name == "nt" and paths.lock_file.stat().st_size == 0:
-                    raise GoalStoreError("empty observational Goal lock is unavailable on Windows")
+            if existing_only and paths.lock_file.is_symlink():
+                raise GoalStoreError("observational Goal lock is a symlink")
             handle = paths.lock_file.open("r+" if existing_only else "a+", encoding="utf-8")
         except FileNotFoundError as exc:
             raise GoalRecordNotFoundError(f"Goal Record {goal_id} disappeared") from exc
@@ -436,7 +433,9 @@ class GoalStore:
                 handle.close()  # re-entry: this open file must not hold a second flock
                 yield held
                 return
-            yield from self._hold_record_lock(handle, paths.lock_file, goal_id, key)
+            yield from self._hold_record_lock(
+                handle, paths.lock_file, goal_id, key, existing_only=existing_only
+            )
 
     def _hold_record_lock(
         self,
@@ -444,9 +443,13 @@ class GoalStore:
         path: Path,
         goal_id: str,
         key: tuple[LockFileKey, LockOwner],
+        *,
+        existing_only: bool = False,
     ) -> Generator[RecordLock]:
         try:
-            wait_for_file_lock(handle, timeout_s=self.lock_timeout_s)
+            wait_for_file_lock(
+                handle, timeout_s=self.lock_timeout_s, preserve_contents=existing_only
+            )
         except LockTimeoutError as exc:
             raise GoalLockTimeoutError(f"Goal lock {path} stayed busy: {exc}") from exc
         lock = RecordLock(self.booley_dir, goal_id, key[0], key[1])

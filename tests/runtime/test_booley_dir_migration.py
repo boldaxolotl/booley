@@ -321,7 +321,7 @@ def test_migration_repairs_external_pair_without_moving_its_checkout(tmp_path):
     migration.apply_migration(_inspect(root))
     assert resolve_worktree_identity(external) == identity
     assert Path(git(external, "rev-parse", "--show-toplevel")) == external
-    assert git(external, "config", "core.hooksPath") == str(root / NEW / ".managed/hooks")
+    assert Path(git(external, "config", "core.hooksPath")) == root / NEW / ".managed/hooks"
     assert "prunable" not in git(root / NEW, "worktree", "list", "--porcelain")
 
 
@@ -659,7 +659,7 @@ def test_primary_git_pointer_file_migrates_and_repairs_registered_worktree(tmp_p
     moved = root / NEW / "worktrees/one"
     assert (root / ".git").read_bytes() == marker
     assert resolve_worktree_identity(moved) == identity
-    assert git(root, "config", "core.hooksPath") == str(root / NEW / ".managed/hooks")
+    assert Path(git(root, "config", "core.hooksPath")) == root / NEW / ".managed/hooks"
     assert (common / "info/exclude").read_text() == f"/{NEW}\n"
     assert "prunable" not in git(root, "worktree", "list", "--porcelain")
     assert Path(git(moved, "rev-parse", "--show-toplevel")) == moved
@@ -910,3 +910,22 @@ def test_managed_ignore_rewrite_preserves_unrelated_bytes_and_line_endings(tmp_p
     assert path.read_bytes() == before.replace(
         b"/" + OLD.encode() + b"/", b"/" + NEW.encode() + b"/"
     )
+
+
+def test_captured_archive_replays_with_windows_lock_adapter(tmp_path, monkeypatch):
+    import os
+    import sys
+    from types import SimpleNamespace
+
+    from booley.core import file_lock
+    from booley.goals import store
+
+    calls = []
+    adapter = SimpleNamespace(
+        LK_NBLCK=1, LK_UNLCK=2, locking=lambda fd, mode, count: calls.append((fd, mode, count))
+    )
+    monkeypatch.setitem(sys.modules, "msvcrt", adapter)
+    monkeypatch.setattr(file_lock, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(store, "os", SimpleNamespace(name="nt", getpid=os.getpid, fstat=os.fstat))
+    test_captured_v2_finish_replays_without_checkout_or_evidence_rewrite(tmp_path, "none")
+    assert any(mode == adapter.LK_NBLCK for _, mode, _ in calls)
