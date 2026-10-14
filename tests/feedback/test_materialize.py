@@ -202,3 +202,44 @@ def test_materialization_timeout_does_not_write_snapshots_or_log(tmp_path, monke
     assert source.read_text() == "keep evidence\n"
     assert not (directory / "setup-evidence").exists()
     assert not path.with_suffix(".jsonl.tmp").exists()
+
+
+def test_materialize_retains_concurrent_triage_attachment(tmp_path):
+    from booley.feedback.findings import read_log
+    from tests.feedback.test_findings import _race_feedback_append
+
+    directory = _project(tmp_path)
+    source = directory / "capture.log"
+    source.write_text("original evidence\n", encoding="utf-8")
+    late = directory / "late.log"
+    late.write_text("new evidence\n", encoding="utf-8")
+    append(Finding(title="original", attachments=[str(source)]), directory)
+    _race_feedback_append(directory, "materialize", "triage_attach")
+    finding = read_log(directory).entries[0]
+    assert str(late) in finding.attachments
+    migrated = next(Path(item) for item in finding.attachments if item != str(late))
+    assert migrated != source
+    assert migrated.read_text(encoding="utf-8") == "original evidence"
+
+
+def test_materialize_never_overwrites_legacy_snapshot(tmp_path):
+    directory = _project(tmp_path)
+    old = directory / "setup-evidence" / "attachments" / "F-1-0-3-x.log.txt"
+    old.parent.mkdir(parents=True)
+    old.write_text("preserved old evidence", encoding="utf-8")
+    source = tmp_path / "x.log"
+    source.write_text("new evidence\n", encoding="utf-8")
+    append(
+        Finding(
+            title="legacy snapshot",
+            attachments=[
+                str(old),
+                str(tmp_path / "missing1"),
+                str(tmp_path / "missing2"),
+                str(source),
+            ],
+        ),
+        directory,
+    )
+    materialize.materialize_attachments(directory, [source], env=Environment())
+    assert old.read_text(encoding="utf-8") == "preserved old evidence"

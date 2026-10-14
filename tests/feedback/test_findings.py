@@ -270,10 +270,13 @@ def _paused_feedback_writer(directory, connection, operation, attempted):
     directory = Path(directory)
     if operation == "append":
         findings.append(findings.Finding(title="concurrent"), directory)
-    elif operation == "triage":
+    elif operation in ("triage", "triage_attach"):
         parser = argparse.ArgumentParser()
         cli.add_subparser(parser.add_subparsers(dest="command"))
-        args = parser.parse_args(["feedback", "triage", "F-1", "--bucket", "booley"])
+        command = ["feedback", "triage", "F-1", "--bucket", "booley"]
+        if operation == "triage_attach":
+            command += ["--attach", str(directory / "late.log")]
+        args = parser.parse_args(command)
         assert cli._cmd_triage(args, directory) == 0
     else:
         materialize._rewrite_attachments_only = _publication_barrier(
@@ -376,7 +379,7 @@ def test_concurrent_append_allocates_distinct_ids(booley_dir):
         _stop_workers(workers)
 
 
-def _race_feedback_append(directory, operation):
+def _race_feedback_append(directory, operation, addition_operation="append"):
     context = multiprocessing.get_context("spawn")
     workers = []
     try:
@@ -385,7 +388,7 @@ def _race_feedback_append(directory, operation):
         _receive(writer[1], "read")
         held = _sidecar_is_held(directory)
         attempted = context.Event()
-        addition = _start_writer(context, directory, "append", attempted)
+        addition = _start_writer(context, directory, addition_operation, attempted)
         workers.append(addition)
         assert attempted.wait(60), "appender did not attempt the transaction"
         assert _sidecar_is_held(directory) == held

@@ -86,6 +86,7 @@ def _snapshot_path(root: Path, finding: Finding, row: int, index: int, source: P
         root
         / "setup-evidence"
         / "attachments"
+        / "rows"
         / f"{finding.id or 'finding'}-{row}-{index}-{name}.txt"
     )
 
