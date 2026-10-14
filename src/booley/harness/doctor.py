@@ -1072,6 +1072,7 @@ def _run_flow_and_core_phase(
             reporter.skip_,
             reporter.fail_,
             _note=reporter.note_,
+            _detail=info if verbose else None,
         )
 
 
@@ -3850,6 +3851,57 @@ def _check_core_schema(
         _pass(".core CAPI2 array-field schema valid")
 
 
+_RECURSIVE_SYMLINK_FIX = (
+    "add a FUSESOC_IGNORE marker in each link's containing directory or an enclosing "
+    "subtree (excludes all cores there); ensure markers are present in worktrees too, "
+    "or remove the links"
+)
+
+
+def _report_recursive_symlink_group(
+    root: Path,
+    target: Path,
+    paths: list[Path],
+    _fail: Fail,
+    _detail: Check | None,
+) -> None:
+    """Summarize one ancestor and expose every link in the verbose report."""
+    relative = sorted(path.relative_to(root).as_posix() for path in paths)
+    shown = ", ".join(relative[:3])
+    if len(relative) > 3:
+        shown += f", +{len(relative) - 3} more; run booley doctor --verbose for all link paths"
+    noun = "link" if len(relative) == 1 else "links"
+    verb = "resolves" if len(relative) == 1 else "resolve"
+    _fail(
+        f"FuseSoC recursive symlinks: {len(relative)} {noun} {verb} "
+        f"to ancestor {target} ({shown})",
+        _RECURSIVE_SYMLINK_FIX,
+    )
+    if _detail is not None:
+        for path in relative:
+            _detail(f"  recursive symlink {path}: directory link resolves to ancestor {target}")
+
+
+def _report_recursive_symlink_hazards(
+    root: Path,
+    hazards: list[fusesoc_registry.CoreSetupHazard],
+    _fail: Fail,
+    _detail: Check | None,
+) -> None:
+    """Group resolved ancestors without conflating unresolved chain cycles."""
+    groups: dict[Path, list[Path]] = {}
+    for hazard in hazards:
+        if hazard.kind != "recursive-symlink":
+            continue
+        if hazard.target is None:
+            rel = hazard.path.relative_to(root).as_posix()
+            _fail(f"FuseSoC recursive symlink {rel}: {hazard.detail}", _RECURSIVE_SYMLINK_FIX)
+        else:
+            groups.setdefault(hazard.target, []).append(hazard.path)
+    for target in sorted(groups, key=str):
+        _report_recursive_symlink_group(root, target, groups[target], _fail, _detail)
+
+
 def _check_core_setup_hazards(
     project: ProjectAudit,
     root: Path,
@@ -3857,6 +3909,7 @@ def _check_core_setup_hazards(
     _fail: Fail,
     *,
     _note: Check | None = None,
+    _detail: Check | None = None,
 ) -> None:
     """Catch offline-provider and recursive-symlink failures before FuseSoC."""
     note_sink = _note or _pass
@@ -3875,13 +3928,10 @@ def _check_core_setup_hazards(
         _pass(".core tree has no provider or recursive-symlink setup hazards")
         return
     for hazard in hazards:
-        rel = hazard.path.relative_to(root)
         if hazard.kind == "recursive-symlink":
-            _fail(
-                f"FuseSoC recursive symlink {rel}: {hazard.detail}",
-                "add a FUSESOC_IGNORE marker to the containing subtree or remove the link",
-            )
-        elif hazard.path in required_cores:
+            continue
+        rel = hazard.path.relative_to(root)
+        if hazard.path in required_cores:
             _fail(
                 f"in-tree .core {rel} has a provider block that requests a remote fetch",
                 "remove provider: from the in-tree core",
@@ -3890,6 +3940,7 @@ def _check_core_setup_hazards(
             note_sink(
                 f"vendored .core {rel} has a provider block, but no Doctor Target selects it"
             )
+    _report_recursive_symlink_hazards(root, hazards, _fail, _detail)
 
 
 def _doctor_target_incompatibility(
@@ -4110,10 +4161,11 @@ def _run_core_audit(
     _fail: Fail,
     *,
     _note: Check | None = None,
+    _detail: Check | None = None,
 ) -> None:
     """Coordinate the structural, security, and metadata core audits."""
     audit = _CoreAuditContext(project, _pass, _warn, _skip, _fail, _note or _pass)
-    _check_core_setup_hazards(project, audit.root, _pass, _fail, _note=audit.note)
+    _check_core_setup_hazards(project, audit.root, _pass, _fail, _note=audit.note, _detail=_detail)
     _check_core_schema(project, audit.root, _pass, _warn, _fail, _note=audit.note)
     catalog_and_refs = _enumerate_core_audit_targets(audit.root, _pass, _fail)
     if catalog_and_refs is None:
