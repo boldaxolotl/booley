@@ -90,6 +90,88 @@ def snapshot(count=12):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("shortcut", "job_filter", "expected_global", "expected_scoped"),
+    [
+        ("r", "recent", ["two"], []),
+        ("j", "running", ["one"], ["one"]),
+        ("a", "all", ["one", "two"], ["one"]),
+    ],
+)
+@pytest.mark.parametrize("scoped", [False, True])
+async def test_jobs_shortcut_returns_to_sessions(
+    shortcut, job_filter, expected_global, expected_scoped, scoped
+):
+    current = snapshot(2)
+    app = DashboardApp(lambda: current)
+    async with app.run_test(size=(90, 30)) as pilot:
+        if scoped:
+            await pilot.press("1")
+        await pilot.press(shortcut)
+        assert app.navigation.view == "jobs"
+        assert app.navigation.job_filter == job_filter
+        assert app.navigation.session == ("codex:00" if scoped else None)
+        expected = expected_scoped if scoped else expected_global
+        assert [json.loads(key)[1] for key in app.row_keys] == expected
+        previous = app.navigation
+        previous_rows = app.row_keys.copy()
+
+        await pilot.press("s")
+        assert app.navigation.view == "overview"
+        assert app.navigation.session is None
+        assert app.row_keys == [row.attribution.key for row in current.sessions]
+
+        await pilot.press("enter")
+        assert app.navigation.view == "session"
+        assert app.navigation.session == current.sessions[0].attribution.key
+        await pilot.press("escape", "escape")
+        assert app.navigation == previous
+        assert app.row_keys == previous_rows
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shortcut", ["j", "r", "a"])
+async def test_all_job_owners_shortcut_preserves_filter(shortcut):
+    current = snapshot(2)
+    app = DashboardApp(lambda: current)
+    async with app.run_test(size=(130, 30)) as pilot:
+        await pilot.press("1", shortcut)
+        job_filter = app.navigation.job_filter
+        await pilot.press("u")
+        assert app.navigation.view == "jobs"
+        assert app.navigation.session is None
+        assert app.navigation.job_filter == job_filter
+        expected = {"j": ["one"], "r": ["two"], "a": ["one", "two"]}
+        assert [json.loads(key)[1] for key in app.row_keys] == expected[shortcut]
+
+
+@pytest.mark.asyncio
+async def test_session_arrows_help_back_and_quit_shortcuts():
+    current = snapshot()
+    app = DashboardApp(lambda: current)
+    async with app.run_test(size=(90, 30)) as pilot:
+        for number in range(1, 10):
+            await pilot.press(str(number))
+            assert app.navigation.view == "session"
+            assert app.navigation.session == f"codex:{number - 1:02}"
+        await pilot.press("s", "down", "enter")
+        assert app.navigation.session == "codex:01"
+        await pilot.press("escape", "up", "enter")
+        assert app.navigation.session == "codex:00"
+        await pilot.press("j")
+        previous = app.navigation
+        previous_rows = app.row_keys.copy()
+        await pilot.press("?")
+        assert app.navigation.view == "help"
+        assert "Navigation is read-only" in str(app.query_one("#detail", Static).render())
+        await pilot.press("escape")
+        assert app.navigation == previous
+        assert app.row_keys == previous_rows
+        await pilot.press("q")
+        assert not app.is_running
+
+
+@pytest.mark.asyncio
 async def test_pilot_sessions_beyond_nine_scope_back_help_and_disconnect(monkeypatch):
     current = snapshot()
     proposal = SimpleNamespace(
@@ -166,7 +248,8 @@ async def test_pilot_sessions_beyond_nine_scope_back_help_and_disconnect(monkeyp
         await pilot.press("escape", "escape", "r")
         assert app.navigation.job_filter == "recent"
         assert app.row_keys == []
-        await pilot.press("s")
+        await pilot.press("u")
+        assert app.navigation.view == "jobs"
         assert app.navigation.session is None
         assert len(app.row_keys) == 1
         await pilot.press("?", "escape")
@@ -237,6 +320,9 @@ async def test_pilot_wide_aside_narrow_detail_and_terminal_selection():
     async with app.run_test(size=(130, 30)) as pilot:
         await pilot.press("j")
         assert app.query_one("#aside").display
+        previous = app.navigation
+        await pilot.press("enter")
+        assert app.navigation == previous
         table = app.query_one(DataTable)
         table.move_cursor(row=35, animate=False)
         await pilot.pause()
