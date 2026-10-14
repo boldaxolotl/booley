@@ -27,7 +27,7 @@ requires the Sandbox.
 | Command | Location | Purpose |
 |---------|----------|---------|
 | `booley` | either | Host: help; Sandbox: open the configured Developer Agent CLI |
-| `booley cheat` | either | Show this reference, whole or by section |
+| `booley cheat` | either | List sections; use section flags or `--all` to print the reference |
 | `booley doctor` | either | Check project, Sandbox, and toolchain health |
 | `booley help` | either | Show top-level help, same as `booley --help` |
 | `booley targets` | either | List or filter Targets; full detail resolution requires the Sandbox |

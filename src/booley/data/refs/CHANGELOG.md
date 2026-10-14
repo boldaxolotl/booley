@@ -19,6 +19,10 @@ Packaged release history starts at 0.2.7. For older changes, see
   callable but are omitted from top-level help; use `booley cheat --skills`
   for guided workflows.
 
+- `booley cheat` now lists available sections, like `booley cheat --list`.
+  Use combinable section flags to print selected sections, or `booley cheat --all`
+  for the whole cheatsheet.
+
 - The Booley Directory is now `.booley/`; use `BOOLEY_DIR` and
   `booley.runtime.booley_dir`. Full `booley init` migrates the previous directory
   and repairs linked RTL worktrees and Paired Checkouts. Finish or abandon all
