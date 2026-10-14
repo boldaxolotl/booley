@@ -23,6 +23,7 @@ import subprocess
 import sys
 import warnings
 from collections.abc import Callable
+from contextlib import nullcontext
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -1826,6 +1827,14 @@ def _dispatch_main() -> int:
     if binding is ProjectBinding.REQUIRED:
         _require_command_project(command, project_root)
 
+    return _dispatch_selected(args, command, project_root, binding)
+
+
+def _dispatch_selected(
+    args: argparse.Namespace, command: str, project_root: Path | None, binding: ProjectBinding
+) -> int:
+    """Dispatch an already validated selection under its host consumer admission."""
+    default_chat = getattr(args, "default_chat", False)
     # Bootstrap has no Project and must not even discover one. Its host-only
     # venue guard still runs before configuration or reconciliation.
     if not default_chat:
@@ -1848,7 +1857,14 @@ def _dispatch_main() -> int:
 
     if hasattr(args, "_cli_selection") and command in {"flow", "specialist"}:
         args._cli_endpoint_project = project_root
-    early = _handle_early_exits(args, project_root)
+    from booley.runtime.layout_consumers import directory_consumer
+
+    guarded = binding is ProjectBinding.REQUIRED and command not in {"init"}
+    scope = (
+        directory_consumer(project_root) if guarded and project_root is not None else nullcontext()
+    )
+    with scope:
+        early = _handle_early_exits(args, project_root)
     if early is not None:
         return early
     raise AssertionError(f"unhandled command: {command}")

@@ -2,7 +2,7 @@ schema = 2
 upstream_repository = "YosysHQ/picorv32"
 upstream_ref = "a473fc8fca393771d83b0ffcf0b14db3393339d8"
 project_repository = "boldaxolotl/booley-prj-picorv32"
-project_ref = "b1334cc5bb2416e62cf3e04c891966ad8d3e9637"
+project_ref = "e53c1896ab02595aa4ebb3a56b5aa7bd109177f9"
 toolchain_url = "https://github.com/xpack-dev-tools/riscv-none-elf-gcc-xpack/releases/download/v15.2.0-1/xpack-riscv-none-elf-gcc-15.2.0-1-linux-x64.tar.gz"
 toolchain_sha256 = "aaaa8060c914851a3e5ee1ba82cc3d6f80972f90638a05c6e823a37557a33758"
 

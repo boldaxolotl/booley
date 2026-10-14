@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from booley.core.booley_layout import BooleyLayoutError
+from booley.runtime.safe_storage import refuse_symlinks
 from booley.runtime.worktrees import list_worktrees
 
 
@@ -43,12 +44,14 @@ def registrations(repository: Path) -> list[dict[str, Any]]:
     """Capture branch AND detached checkouts without changing administrative names."""
     rows = []
     for entry in list_worktrees(repository):
-        path = entry.path.absolute()
+        path = entry.path.resolve()
         if not path.is_dir():
             rows.append({"path": str(path), "missing": True})
             continue
         admin = Path(git(path, "rev-parse", "--absolute-git-dir")).resolve()
-        common = Path(git(path, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+        common = Path(
+            git(path, "rev-parse", "--path-format=absolute", "--git-common-dir")
+        ).resolve()
         rows.append(
             {
                 "path": str(path),
@@ -64,6 +67,11 @@ def registrations(repository: Path) -> list[dict[str, Any]]:
 
 def edit(path: Path, content: bytes, moves: list[dict[str, Any]]) -> dict[str, Any]:
     """Retain exact before/after bytes for interruption-safe pointer publication."""
+    refuse_symlinks(path)
+    if not os.access(path, os.R_OK | os.W_OK) or not os.access(path.parent, os.W_OK):
+        raise BooleyLayoutError(f"managed file is not writable: {path}")
+    if not path.stat().st_mode & 0o222 or not path.parent.stat().st_mode & 0o222:
+        raise BooleyLayoutError(f"managed file is read-only: {path}")
     return {
         "path": str(mapped(path, moves)),
         "before": base64.b64encode(path.read_bytes()).decode(),

@@ -50,7 +50,7 @@ I recorded both videos, then replaced my narration with text-to-speech to stay a
 
 ### Level 2: Try the demo yourself
 
-**[Follow the demo repository's README](https://github.com/boldaxolotl/booley-prj-picorv32#readme)** to try the demo, after you [install Booley](#installation).
+**[Follow the demo repository's README](https://github.com/boldaxolotl/booley-prj-picorv32/blob/e53c1896ab02595aa4ebb3a56b5aa7bd109177f9/README.md)** to try the demo, after you [install Booley](#installation).
 
 ### Level 3: Use it on your own project
 

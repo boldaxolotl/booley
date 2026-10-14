@@ -91,20 +91,37 @@ def validate_selection(path: Path) -> None:
         require_current_layout(path.parent)
 
 
-def pending_journal(root: Path) -> Path | None:
-    """Find a Git-backed pending migration without invoking Git or creating files."""
+def git_common_directory(root: Path) -> Path | None:
+    """Read the stable Git administration path, including temporarily broken links."""
     marker = root / ".git"
     if marker.is_file():
         raw = marker.read_text().strip()
         if not raw.startswith("gitdir: "):
             raise BooleyLayoutError(f"invalid Git worktree marker: {marker}")
         admin = Path(raw.removeprefix("gitdir: "))
-        admin = admin if admin.is_absolute() else root / admin
-        common = admin / "commondir"
-        marker = (admin / common.read_text().strip()).resolve() if common.is_file() else admin
-    if marker.exists():
-        journal = marker / "booley" / "directory-migration.json"
-    else:
-        key = hashlib.sha256(str(root.resolve()).encode()).hexdigest()
-        journal = config_dir() / "directory-migrations" / key / "directory-migration.json"
+        marker = admin if admin.is_absolute() else root / admin
+        if not marker.is_dir() and RETIRED_DIR_NAME in marker.parts:
+            raise BooleyLayoutError(
+                "interrupted directory migration left a retired Git pointer; run `booley init` from the primary Project Root"
+            )
+        common = marker / "commondir"
+        if common.is_file():
+            marker = (marker / common.read_text().strip()).resolve()
+        # Retain a missing administrative path: a stale pointer cannot prove no journal.
+        return marker
+    return marker if marker.is_dir() else None
+
+
+def layout_metadata(root: Path) -> Path:
+    """Stable coordination state outside the moved directory and non-Git RTL trees."""
+    common = git_common_directory(root)
+    if common is not None:
+        return common / "booley"
+    key = hashlib.sha256(str(root.resolve()).encode()).hexdigest()
+    return config_dir() / "directory-migrations" / key
+
+
+def pending_journal(root: Path) -> Path | None:
+    """Find a pending migration without invoking Git or creating files."""
+    journal = layout_metadata(root) / "directory-migration.json"
     return journal if journal.is_file() else None

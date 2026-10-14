@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -19,10 +20,11 @@ from booley.core.booley_layout import (
     BooleyLayoutError,
     Layout,
     classify_layout,
+    layout_metadata,
     validate_environment,
 )
 from booley.core.checkout_role import require_project_checkout
-from booley.core.user_paths import config_dir
+from booley.core.project_identity import matches_project_label
 from booley.runtime.atomic_files import atomic_replace_bytes, fsync_directory
 from booley.runtime.directory_migration_git import (
     edit,
@@ -54,13 +56,15 @@ class Migration:
 
 
 def metadata_root(root: Path) -> Path:
-    """Operational state stays outside the moved directory and non-Git RTL trees."""
-    if (root / ".git").exists():
-        return (
-            Path(git(root, "rev-parse", "--path-format=absolute", "--git-common-dir")) / "booley"
+    """Stable storage shared with consumer admission and pending-layout checks."""
+    return layout_metadata(root)
+
+
+def _require_host_migration() -> None:
+    if os.environ.get("BOOLEY_CONTAINER") == "1":
+        raise BooleyLayoutError(
+            "directory migration must run on the host; run `booley init` from the primary Project Root there"
         )
-    key = hashlib.sha256(str(root.resolve()).encode()).hexdigest()
-    return config_dir() / "directory-migrations" / key
 
 
 def _identity(path: Path) -> list[int]:
@@ -82,6 +86,9 @@ def _move(source: Path, destination: Path) -> dict[str, Any]:
     ancestor = destination.parent
     while not ancestor.exists() and ancestor != ancestor.parent:
         ancestor = ancestor.parent
+    for parent in (source.parent, ancestor):
+        if not parent.stat().st_mode & 0o222 or not os.access(parent, os.W_OK):
+            raise BooleyLayoutError(f"migration parent is not writable: {parent}")
     if source.stat().st_dev != ancestor.stat().st_dev:
         raise BooleyLayoutError(f"migration must stay on one filesystem: {source}")
     return {"source": str(source), "destination": str(destination), "identity": _identity(source)}
@@ -92,6 +99,7 @@ def _capture(
 ) -> dict[str, Any]:
     old, new = root / RETIRED_DIR_NAME, root / BOOLEY_DIR_NAME
     observe(old)
+    _require_host_migration()
     moves = [_move(old, new)]
     rows = registrations(root) if (root / ".git").exists() else []
     if (root / ".git").is_file():
@@ -203,6 +211,7 @@ def inspect_migration(
     if journal.is_file():
         document = _read_journal(journal, root)
         observe(_record_directory(root, document))
+        _require_host_migration()
         return Migration(root, journal, document, observe, integrations)
     if (root / ".git").is_file():
         primary = Path(git(root, "worktree", "list", "--porcelain").splitlines()[0][9:])
@@ -329,11 +338,23 @@ def _validate_edits(data: dict[str, Any]) -> None:
         if path not in allowed and not _projected_path(path, checkouts, data["moves"]):
             raise ValueError("unbound migration edit")
         _unlinked(path.parent)
-        if "link_before" not in row:
-            base64.b64decode(row["before"], validate=True)
-            base64.b64decode(row["after"], validate=True)
-            if type(row["mode"]) is not int or not 0 <= row["mode"] <= 0o777:
-                raise ValueError("invalid managed file mode")
+        _validate_edit(row)
+
+
+def _validate_edit(row: dict[str, Any]) -> None:
+    if "link_before" in row:
+        if set(row) != {"path", "link_before", "link_after"} or any(
+            not isinstance(row.get(key), str) or not row[key] or "\x00" in row[key]
+            for key in ("link_before", "link_after")
+        ):
+            raise ValueError("invalid managed link edit")
+    else:
+        if set(row) != {"path", "before", "after", "mode"}:
+            raise ValueError("invalid managed file edit")
+        base64.b64decode(row["before"], validate=True)
+        base64.b64decode(row["after"], validate=True)
+        if type(row["mode"]) is not int or not 0 <= row["mode"] <= 0o777:
+            raise ValueError("invalid managed file mode")
 
 
 def _projected_path(path: Path, checkouts: set[Path], moves: list[dict[str, Any]]) -> bool:
@@ -376,6 +397,7 @@ def apply_migration(plan: Migration) -> None:
                 return
             if current.document != plan.document:
                 raise BooleyLayoutError("Project changed after migration planning; run init again")
+            _validate_edits(current.document)
             _save(current)
             _apply(current)
         finally:
@@ -477,6 +499,8 @@ def archival_path(directory: Path, path: Path, *, record_id: str | None = None) 
     if not index.is_file():
         return path
     data = _read_index(index)
+    if record_id is not None and record_id not in data["records"]:
+        return path
     if record_id is not None:
         record = directory / "goals" / record_id / "record.json"
         if data["records"].get(record_id) != hashlib.sha256(record.read_bytes()).hexdigest():
@@ -518,11 +542,14 @@ def historical_skip_note() -> str:
 
 def _refuse_live_sandboxes(root: Path, moves: list[dict[str, Any]]) -> None:
     """Do not rename live bind sources; inability to inspect an issued Project refuses."""
-    if not (root / ".devcontainer" / "devcontainer.json").is_file():
+    required = (root / ".devcontainer" / "devcontainer.json").is_file()
+    if not required and shutil.which("docker") is None:
         return
     result = subprocess.run(
         ["docker", "ps", "-q"], capture_output=True, text=True, timeout=30, check=False
     )
+    if result.returncode and not required:
+        return
     if result.returncode:
         raise BooleyLayoutError(
             "cannot inventory live Sandboxes; stop consumers and restore Docker before migration"
@@ -537,7 +564,11 @@ def _refuse_live_sandboxes(root: Path, moves: list[dict[str, Any]]) -> None:
         )
         if inspected.returncode:
             raise BooleyLayoutError(f"cannot inspect live Sandbox {container}")
-        for mount in json.loads(inspected.stdout)[0].get("Mounts", []):
+        document = json.loads(inspected.stdout)[0]
+        labels = document.get("Config", {}).get("Labels", {}) or {}
+        if matches_project_label(labels.get("booley.project-id"), str(root)):
+            raise BooleyLayoutError(f"stop live Sandbox {container} before running `booley init`")
+        for mount in document.get("Mounts", []):
             source = Path(mount.get("Source", "/__unavailable__"))
             if source == root or any(
                 Path(move["source"]).is_relative_to(source)

@@ -229,7 +229,7 @@ def _linked_layout(tmp_path, paired, relative):
     return old, outer
 
 
-@pytest.mark.parametrize("tamper", [False, True])
+@pytest.mark.parametrize("tamper", ["none", "corrupt", "missing_attempt", "missing_result"])
 def test_captured_v2_finish_replays_without_checkout_or_evidence_rewrite(tmp_path, tamper):
     import shutil
 
@@ -259,10 +259,15 @@ def test_captured_v2_finish_replays_without_checkout_or_evidence_rewrite(tmp_pat
         explain_html=True,
     )
     env = FinishEnvironment(ChangeEnvironment(EntryEnvironment(directory)))
-    if tamper:
-        (operation / "attempt.json").write_text("{}")
+    if tamper != "none":
+        if tamper == "corrupt":
+            (operation / "attempt.json").write_text("{}")
+        else:
+            (
+                operation / ("attempt.json" if tamper == "missing_attempt" else "result.json")
+            ).unlink()
         before = _snapshot(tmp_path)
-        with pytest.raises(LifecycleError, match="durable authority"):
+        with pytest.raises(LifecycleError, match=r"durable authority|missing"):
             finish_goal(call, env)
     else:
         before = _snapshot(tmp_path)
@@ -366,3 +371,182 @@ def test_captured_performance_evidence_is_preserved_as_opaque_state(tmp_path):
     assert (
         tmp_path / NEW / "runtime/performance-report.json"
     ).read_bytes() == fixture.read_bytes()
+
+
+def test_post_migration_record_uses_ordinary_current_paths(tmp_path):
+    from booley.goals.status import build_status
+
+    _repository(tmp_path)
+    (tmp_path / OLD).mkdir()
+    migration.apply_migration(_inspect(tmp_path))
+    directory = tmp_path / NEW
+    record = _record(directory, GoalState.ACTIVE, tmp_path)
+    assert migration.archival_path(directory, tmp_path, record_id=record.id) == tmp_path
+    assert not migration.is_archived_record(directory, record.id)
+    assert build_status(GoalStore(directory), record).record.id == record.id
+
+
+@pytest.mark.parametrize("variant", ["symlink", "read-only"])
+def test_known_managed_file_conflict_refuses_before_rename(tmp_path, variant):
+    _repository(tmp_path)
+    (tmp_path / OLD).mkdir()
+    path = tmp_path / ".gitignore"
+    if variant == "symlink":
+        target = tmp_path / "user-ignore"
+        target.write_text(f"/{OLD}\n")
+        path.symlink_to(target)
+    else:
+        path.write_text(f"/{OLD}\n")
+        path.chmod(0o444)
+    before = _snapshot(tmp_path)
+    with pytest.raises((BooleyLayoutError, OSError), match=r"symlink|read-only|writable"):
+        _inspect(tmp_path)
+    assert _snapshot(tmp_path) == before
+    path.chmod(0o644)
+
+
+def test_malformed_link_journal_refuses_before_any_rename(tmp_path, monkeypatch):
+    _repository(tmp_path)
+    (tmp_path / OLD).mkdir()
+    plan = _inspect(tmp_path)
+    monkeypatch.setattr(migration, "_apply", lambda plan: (_ for _ in ()).throw(OSError("stop")))
+    with pytest.raises(OSError):
+        migration.apply_migration(plan)
+    data = json.loads(plan.journal.read_bytes())
+    data["edits"].append({"path": str(tmp_path / "AGENTS.md"), "link_before": f"{OLD}/AGENTS.md"})
+    plan.journal.write_text(json.dumps(data))
+    before = _snapshot(tmp_path)
+    with pytest.raises(BooleyLayoutError, match="invalid managed link"):
+        _inspect(tmp_path)
+    assert _snapshot(tmp_path) == before
+
+
+def test_live_job_without_session_registry_refuses_unchanged(tmp_path):
+    import os
+
+    from booley.runtime.job_slots import CLASS_HEAVY, SlotStore
+
+    _repository(tmp_path)
+    directory = tmp_path / NEW
+    store = SlotStore(directory / "runtime/jobs/slots")
+    store.submit(CLASS_HEAVY, pid=os.getpid(), argv=["independent-job"])
+    directory.rename(tmp_path / OLD)
+    before = _snapshot(tmp_path)
+    with pytest.raises(BooleyLayoutError, match="live/unknown Job"):
+        _inspect(tmp_path)
+    assert _snapshot(tmp_path) == before
+
+
+def test_host_consumer_admission_is_visible_to_migration(tmp_path, monkeypatch):
+    from booley.runtime.layout_consumers import directory_consumer, require_quiescent
+
+    monkeypatch.delenv("BOOLEY_CONTAINER", raising=False)
+    _repository(tmp_path)
+    (tmp_path / NEW).mkdir()
+    with (
+        directory_consumer(tmp_path),
+        pytest.raises(BooleyLayoutError, match="directory consumer"),
+    ):
+        require_quiescent(tmp_path)
+    require_quiescent(tmp_path)
+
+
+def test_captured_abandonment_replays_without_live_checkout(tmp_path):
+    import shutil
+
+    from booley.goals.abandon import abandon_goal
+    from booley.goals.apply import ChangeEnvironment
+    from booley.goals.entry import EntryEnvironment
+    from booley.goals.finish import FinishEnvironment
+
+    fixture = Path(__file__).parent / "fixtures/directory_migration/abandoned-v2"
+    metadata = json.loads((fixture / "capture.json").read_bytes())
+    _repository(tmp_path)
+    shutil.copytree(fixture / "goals", tmp_path / OLD / "goals")
+    migration.apply_migration(_inspect(tmp_path))
+    directory = tmp_path / NEW
+    store = GoalStore(directory)
+    record = store.load(metadata["record_id"])
+    operation = directory / "goals" / record.id / "operations" / metadata["operation_id"]
+    result = json.loads((operation / "result.json").read_bytes())
+    before = _snapshot(tmp_path)
+    assert (
+        abandon_goal(
+            store,
+            Path(record.worktree_path),
+            FinishEnvironment(ChangeEnvironment(EntryEnvironment(directory))),
+            record_id=record.id,
+            operation_id=metadata["operation_id"],
+            instruction_quote=metadata["instruction_quote"],
+        )
+        == result
+    )
+    assert _snapshot(tmp_path) == before
+
+
+def test_home_watcher_state_is_not_adopted_even_with_dotfiles_repository(tmp_path, monkeypatch):
+    ancestor = tmp_path / NEW
+    ancestor.mkdir()
+    (ancestor / "booley.toml").write_text("# actual Project\n")
+    home = tmp_path / "user"
+    _repository(home)
+    (home / NEW).mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    assert resolve_booley_dir(home) == ancestor
+
+
+def test_owned_integration_rewrites_only_path_components_and_exact_variable(tmp_path):
+    from booley.harness.setup.directory_migration_integrations import _rewrite
+
+    path = tmp_path / "owned.json"
+    path.write_text(
+        f"/tmp/x{OLD}s/{OLD}/inputs {OLD}_suffix BOOLEY_PROJECT_DIR BOOLEY_PROJECT_DIRTY"
+    )
+    row = _rewrite(path, [])
+    migration._apply_edit(row)
+    assert (
+        path.read_text()
+        == f"/tmp/x{OLD}s/{NEW}/inputs {OLD}_suffix BOOLEY_DIR BOOLEY_PROJECT_DIRTY"
+    )
+
+
+def test_live_sandbox_label_refuses_without_local_spec_or_matching_mount(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from booley.core.project_identity import project_label_id
+
+    _repository(tmp_path)
+    (tmp_path / OLD).mkdir()
+    before = _snapshot(tmp_path)
+    monkeypatch.setattr(migration.shutil, "which", lambda name: "/fake/docker")
+    responses = iter(
+        [
+            SimpleNamespace(returncode=0, stdout="live-container\n"),
+            SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps(
+                    [
+                        {
+                            "Config": {
+                                "Labels": {"booley.project-id": project_label_id(str(tmp_path))}
+                            },
+                            "Mounts": [{"Source": "/desktop-remapped/source"}],
+                        }
+                    ]
+                ),
+            ),
+        ]
+    )
+    monkeypatch.setattr(migration.subprocess, "run", lambda *a, **kw: next(responses))
+    with pytest.raises(BooleyLayoutError, match="stop live Sandbox live-container"):
+        migration._refuse_live_sandboxes(tmp_path, [])
+    assert _snapshot(tmp_path) == before
+
+
+def test_local_retired_project_outranks_warmed_ancestor_cache(tmp_path):
+    (tmp_path / NEW).mkdir()
+    assert resolve_booley_dir(tmp_path) == tmp_path / NEW
+    child = tmp_path / "child"
+    (child / OLD).mkdir(parents=True)
+    with pytest.raises(BooleyLayoutError, match="booley init"):
+        resolve_booley_dir(child)

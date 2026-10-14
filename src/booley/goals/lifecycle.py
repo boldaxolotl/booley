@@ -160,6 +160,10 @@ def read_sealed_artifact(
             raise ValueError("immutable authority differs from the operation")
         _record_directory(authority, directory.parent.parent, record)
         path = directory / (name + ".json")
+        from booley.runtime.booley_dir_migration import is_archived_record
+
+        if is_archived_record(directory.parents[3], record.id) and not path.is_file():
+            raise ValueError("archived sealed artifact is missing")
         if path.exists() and json.loads(path.read_bytes()) != value:
             raise ValueError("persisted artifact differs from durable authority")
         return value
@@ -405,4 +409,7 @@ def archived_result(store: GoalStore, request: LifecycleRequest) -> dict[str, An
     # Observational locking never creates storage, recovers operations or publishes state.
     with store.record_lock(record.id, existing_only=True) as lock:
         operation = LifecycleOperation(store, lock, request, Path(record.worktree_path))
-        return operation.saved_result()
+        saved = operation.saved_result()
+        if saved is None:
+            raise LifecycleError("archived operation has no sealed result")
+        return saved

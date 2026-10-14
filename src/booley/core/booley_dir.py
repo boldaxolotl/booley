@@ -96,6 +96,32 @@ def _resolve_from_toml(current: Path) -> Path | None:
     return None
 
 
+def _validate_walkup_layout(current: Path) -> None:
+    """Local retired layouts outrank ancestor selections, including warmed caches."""
+    for parent in (current, *current.parents):
+        require_current_layout(parent)
+        if (parent / BOOLEY_DIR_NAME).is_dir() or (parent / "booley.toml").is_file():
+            break
+
+
+def _environment_selection() -> Path | None:
+    """Resolve the trusted CI/Docker selection, keeping the existing missing-path warning."""
+    env = os.environ.get("BOOLEY_DIR")
+    if env:
+        validate_selection(Path(env))
+        p = require_project_checkout(Path(env))
+        if not p.is_dir():
+            import warnings
+
+            warnings.warn(
+                f"BOOLEY_DIR={env!r} does not exist; using anyway",
+                stacklevel=2,
+            )
+        return p
+
+    return None
+
+
 def resolve_booley_dir(start: Path | None = None) -> Path:
     """Resolve the Booley Directory via 4-step discovery.
 
@@ -111,31 +137,18 @@ def resolve_booley_dir(start: Path | None = None) -> Path:
     current = Path(start or Path.cwd()).resolve()
     if start is not None:
         current = require_project_checkout(current)
+    if not os.environ.get("BOOLEY_DIR"):
+        _validate_walkup_layout(current)
     if _cache is not None:
         validate_selection(_cache)
         return _cache
 
-    # 1. Env var override (trusted — CI/Docker/tests set this explicitly)
-    env = os.environ.get("BOOLEY_DIR")
-    if env:
-        validate_selection(Path(env))
-        p = require_project_checkout(Path(env))
-        if not p.is_dir():
-            import warnings
-
-            warnings.warn(
-                f"BOOLEY_DIR={env!r} does not exist; using anyway",
-                stacklevel=2,
-            )
-        _cache = p
-        return _cache
+    explicit = _environment_selection()
+    if explicit is not None:
+        _cache = explicit
+        return explicit
 
     current = require_project_checkout(current)
-
-    for parent in (current, *current.parents):
-        require_current_layout(parent)
-        if (parent / BOOLEY_DIR_NAME).is_dir() or (parent / "booley.toml").is_file():
-            break
 
     # 2. Walk up to find booley.toml [project] dir override
     toml_result = _resolve_from_toml(current)
@@ -148,7 +161,6 @@ def resolve_booley_dir(start: Path | None = None) -> Path:
         candidate = parent / ".booley"
         if candidate.is_dir() and (
             candidate != Path.home() / BOOLEY_DIR_NAME
-            or (parent / ".git").exists()
             or any((candidate / name).is_file() for name in ("booley.toml", "pipeline.toml"))
         ):
             _cache = candidate

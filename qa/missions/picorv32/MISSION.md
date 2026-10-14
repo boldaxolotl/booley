@@ -9,7 +9,7 @@ at Booley, usually at handoffs: paired repos, evidence freshness, Grants, Sessio
 ## Pins and prerequisites
 - Booley: the candidate under test (set by the run skill; not pinned here).
 - Project: https://github.com/boldaxolotl/booley-prj-picorv32 @
-  `9e187ceae6357b47b50bdc835609b4570fd28832` (upstream RTL plus Stealth `.booley`).
+  `e53c1896ab02595aa4ebb3a56b5aa7bd109177f9` (upstream RTL plus Stealth `.booley`).
 - Upstream: https://github.com/YosysHQ/picorv32 @ `a473fc8fca393771d83b0ffcf0b14db3393339d8`.
 - Tools/host: Docker (≥6 GB free); the `booley init` Sandbox image (xPack GCC 15.2, srec_cat, dtc,
   Spike, `/opt/riscv-docs`, Icarus, Verilator, sv2v/Yosys/OpenROAD); a logged-in Codex or Claude

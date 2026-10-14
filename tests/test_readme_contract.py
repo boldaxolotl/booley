@@ -1,5 +1,6 @@
 """User-facing README wording and ordering contracts."""
 
+import tomllib
 from pathlib import Path
 
 from booley.goals.model import parse_goal_args
@@ -32,9 +33,11 @@ def test_primary_pipx_install_and_upgrade_are_pinned():
 def test_try_the_demo_leads_with_the_demo_readme_link():
     section = README.split("### Level 2: Try the demo yourself", 1)[1].split("\n### ", 1)[0]
 
+    contract = Path(__file__).resolve().parent.parent / ".github/contracts/picorv32-demo.toml"
+    pin = tomllib.loads(contract.read_text())["project_ref"]
     assert section.strip() == (
         "**[Follow the demo repository's README]"
-        "(https://github.com/boldaxolotl/booley-prj-picorv32#readme)** "
+        f"(https://github.com/boldaxolotl/booley-prj-picorv32/blob/{pin}/README.md)** "
         "to try the demo, after you [install Booley](#installation)."
     )
 

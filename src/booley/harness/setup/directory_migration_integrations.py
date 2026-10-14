@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -25,8 +26,13 @@ def _tracked(checkout: Path, path: Path) -> bool:
 
 def _rewrite(path: Path, moves: list[dict[str, Any]]) -> dict[str, Any] | None:
     before = path.read_bytes()
-    after = before.replace(RETIRED_DIR_NAME.encode(), BOOLEY_DIR_NAME.encode()).replace(
-        RETIRED_ENV.encode(), b"BOOLEY_DIR"
+    after = re.sub(
+        rb"(?<![A-Za-z0-9_.-])" + re.escape(RETIRED_DIR_NAME.encode()) + rb"(?=$|[/\\\"'\s])",
+        BOOLEY_DIR_NAME.encode(),
+        before,
+    )
+    after = re.sub(
+        rb"(?<![A-Za-z0-9_])" + RETIRED_ENV.encode() + rb"(?![A-Za-z0-9_])", b"BOOLEY_DIR", after
     )
     return edit(path, after, moves) if after != before else None
 
