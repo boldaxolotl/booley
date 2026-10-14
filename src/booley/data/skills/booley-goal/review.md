@@ -23,6 +23,8 @@ work. Use the returned package and file pointers; do not guess a latest record.
    human instruction. Open `done` findings need no second approval for Finish.
 
 If findings need fixes while Goal Mode is active, work in the same Goal Branch,
-rerun the affected evidence producers, commit, and Finish with a new operation
-ID and Session Summary. For separate follow-up work after Finish, enter a new
-Goal Mode from a clean linked worktree. Do not reset or rewrite terminal records.
+rerun the affected evidence producers (for `clean` review findings,
+`reviewer(verify=true)`; see [Review Goals](SKILL.md#review-goals)), commit,
+and Finish with a new operation ID and Session Summary. For separate follow-up
+work after Finish, enter a new Goal Mode from a clean linked worktree. Do not
+reset or rewrite terminal records.

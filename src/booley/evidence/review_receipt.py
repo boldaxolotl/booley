@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Any
 
 _TICKET_FILE = "ticket.md"
-_DECISIONS_FILE = "answered_questions.md"
 REVIEW_DETAIL_VERSION = 4
 FILTERING_SEMANTICS_REVISION = 1
 _FRESHNESS_ONLY_CONTRACT_FIELDS = frozenset({"scope_hashes"})
@@ -58,14 +57,6 @@ def _ticket_path(work_dir: Path) -> Path | None:
     return candidate if candidate is not None and candidate.is_file() else None
 
 
-def _decisions_path(work_dir: Path, ticket: Path | None) -> Path | None:
-    logs_value = os.environ.get("BOOLEY_LOGS_DIR")
-    candidate = Path(logs_value) / _DECISIONS_FILE if logs_value else None
-    if candidate is None and ticket is not None:
-        candidate = ticket.parent / _DECISIONS_FILE
-    return _resolved(candidate, work_dir)
-
-
 def _document_digest(path: Path | None) -> str:
     if path is None or not path.exists():
         return _digest("")
@@ -91,7 +82,6 @@ def build_review_contract_detail(invocation: ReviewInvocation) -> dict[str, Any]
         invocation.spec_path,
         invocation.work_dir,
     )
-    decisions = _decisions_path(invocation.work_dir, ticket)
     scope = tuple(sorted(path.replace("\\", "/").removeprefix("./") for path in invocation.scope))
     return {
         "version": REVIEW_DETAIL_VERSION,
@@ -105,8 +95,6 @@ def build_review_contract_detail(invocation: ReviewInvocation) -> dict[str, Any]
         "ticket_digest": _document_digest(ticket),
         "spec_source": str(spec.resolve()) if spec else "",
         "spec_digest": _document_digest(spec),
-        "decisions_source": str(decisions.resolve()) if decisions else "",
-        "decisions_digest": _document_digest(decisions),
         "tb_policy_digest": invocation.tb_policy_digest,
         "steering_digest": _digest(invocation.steering),
     }
@@ -186,11 +174,10 @@ def review_receipt_drift(
         return ["contract_version"]
     changed = [
         name
-        for name in ("ticket", "spec", "decisions")
+        for name in ("ticket", "spec")
         if _persisted_document_changed(
             contract,
             name,
-            allow_missing=name == "decisions",
         )
     ]
     raw_scope = contract.get("scope")
@@ -229,7 +216,7 @@ def current_review_receipt_identity(
         else ()
     )
     documents = {}
-    for name in ("ticket", "spec", "decisions"):
+    for name in ("ticket", "spec"):
         raw_path = contract.get(f"{name}_source")
         path = Path(raw_path) if isinstance(raw_path, str) and raw_path else None
         documents[name] = _document_digest(path)

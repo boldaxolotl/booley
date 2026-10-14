@@ -137,6 +137,30 @@ private reproducer handling; it creates a redacted export only on explicit
 human request and leaves submission to the human. Do not weaken a Goal to hide
 an infrastructure failure.
 
+## Review Goals
+
+- **Translate.** Each `REVIEW` Goal needs `review`, `verdict`, and exactly one
+  scope: `target` (its RTL or TB files plus dependency closure) or `paths`
+  (category-matching files relative to the Goal worktree). Spec review also
+  needs `spec`.
+- **Discover.** Call `reviewer(category="rtl", focus="bugs")` with the matching
+  category and focus only. The Goal supplies scope and spec; `scope`, `spec`
+  and `steer` are refused.
+- **`done`.** Discovery meets the Goal. Open findings are advisory: list them in
+  the Review Package. They need no verify and never block another review.
+- **`clean`.** Fix the findings, then call `reviewer(verify=true)`. It rechecks
+  only the latest review's open findings and adds none. To waive one, add
+  `waive=[["<finding-id>", "<justification>"]]`; the Reviewer decides. Verify
+  accepts no other review arguments.
+- **One open `clean` review at a time.** Verify reaches only the latest review,
+  so resolve each open `clean` review before discovering another focus.
+- **Freshness.** Editing reviewed files makes a pass stale. A changed spec, TB
+  policy or Target file selection needs new discovery; check `goal_status`
+  after verify.
+- **Budget.** Verify allows two attempts per category reset and three in total.
+  When exhausted, keep the findings and ask the human for a Goal Change or
+  abandonment.
+
 ## Propose and approve changes
 
 Use `goal_propose_change(operation="create", kind=..., rationale=...)` for

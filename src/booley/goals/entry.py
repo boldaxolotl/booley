@@ -551,6 +551,23 @@ def check_goal_targets(
                 f"Goal {goal_presentation(goal).text} compares against baseline Target {baseline!r}, which does "
                 "not exist at the base commit"
             )
+        if goal.family is GoalFamily.REVIEW:
+            from booley.flows.review_scope import UnresolvedReviewScopeError, resolve_review_files
+
+            target = goal.params.get("target")
+            if target is not None and not _target_exists(catalog, target):
+                warnings.append(
+                    f"Review Goal Target {target!r} does not exist yet; it stays unmet"
+                )
+            else:
+                try:
+                    resolve_review_files(
+                        work_dir, goal.key.removeprefix("review_").split("_")[0], goal.params
+                    )
+                except UnresolvedReviewScopeError as exc:
+                    warnings.append(f"{exc}; the Review Goal stays unmet")
+                except (ValueError, OSError) as exc:
+                    raise GoalEntryError(str(exc)) from exc
         spec = goal.params.get("spec")
         if isinstance(spec, str) and not (work_dir / spec).is_file():
             raise GoalEntryError(

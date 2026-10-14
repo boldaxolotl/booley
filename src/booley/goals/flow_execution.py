@@ -23,9 +23,10 @@ from booley.criteria.presentation import CriterionPresentation
 from booley.criteria.state import CriterionChange, DevelopmentState, StatePersistence
 from booley.evidence.acceptance import PairedProjectBaseline, ResolvedFlowAcceptance
 from booley.flows.campaign_results import CampaignResultsReader, StartedCampaign
-from booley.flows.execution_persistence import EvidenceDiscarded
+from booley.flows.execution_persistence import EvidenceDiscarded, ReviewInputs
 from booley.flows.frozen_test_runs import FrozenTestRuns
 from booley.flows.request import FlowRequest
+from booley.flows.review_scope import resolve_review_files
 from booley.flows.source_fingerprint import compute_source_fingerprint
 from booley.goals.binding import GoalRunBinding
 from booley.goals.checkout import CheckoutError, GoalCheckout
@@ -35,6 +36,7 @@ from booley.goals.paths import record_paths
 from booley.goals.presentation import UNAVAILABLE_GOAL, goal_presentation
 from booley.goals.recorder import GoalEvidenceRecorder
 from booley.goals.store import GoalStore, GoalStoreError
+from booley.goals.target_surface import TargetSurfaceError, review_target_surface
 from booley.goals.test_run_evidence import flow_test_runs
 from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
 
@@ -119,6 +121,27 @@ class GoalFlowExecution:
             else PairedProjectBaseline.entry_pinned(record.paired_project_base_sha)
         )
         return ResolvedFlowAcceptance(paired_project=paired)
+
+    def review_goal_inputs(self, key: str) -> ReviewInputs:
+        """Read only the exact Review Goal revision this run was admitted under."""
+        try:
+            record = GoalStore(self._binding.booley_dir).load(self._binding.record_id)
+        except GoalStoreError as exc:
+            raise EvidenceDiscarded(f"Review Goal cannot be read: {exc}") from exc
+        goal = next((item for item in record.goals if item.spec.key == key), None)
+        if goal is None or goal.spec_revision != self._binding.spec_revision(key):
+            raise EvidenceDiscarded("Review Goal is missing or changed; re-run")
+        params = goal.spec.params
+        category = "rtl" if key.startswith("review_rtl_") else "tb"
+        scope = tuple(resolve_review_files(self._binding.worktree_root, category, params))
+        target = params.get("target")
+        try:
+            surface = (
+                review_target_surface(self._binding.worktree_root, target) if target else None
+            )
+        except TargetSurfaceError as exc:
+            raise ValueError(f"Review Goal declaration cannot be read: {exc}") from exc
+        return ReviewInputs(scope, params.get("spec"), surface)
 
     def done_findings_require_approval(self) -> bool:
         """Goal completion exposes findings without changing its accepted completion policy."""

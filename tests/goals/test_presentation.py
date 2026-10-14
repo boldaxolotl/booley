@@ -99,7 +99,12 @@ def test_malformed_storage_never_falls_back_to_raw_keys(raw):
 def test_public_schema_spelling_preserves_legacy_translation(family):
     raw = {"family": family.name, "target": "core"}
     if family is GoalFamily.REVIEW:
-        raw = {"family": "REVIEW", "review": "rtl_bugs", "verdict": "clean"}
+        raw = {
+            "paths": ["rtl/mod_a.sv"],
+            "family": "REVIEW",
+            "review": "rtl_bugs",
+            "verdict": "clean",
+        }
     elif family is GoalFamily.CYCLE_COUNT:
         raw.update(test="stress", thresholds={"cycle_count_max": 10})
     elif family is GoalFamily.COVERAGE:

@@ -118,8 +118,13 @@ def test_review_done_with_findings_and_clean_unmet(layout, monkeypatch):
     layout.record = enter_goals(
         layout,
         [
-            {"family": "REVIEW", "review": "rtl_bugs", "verdict": "done"},
-            {"family": "REVIEW", "review": "rtl_code_style", "verdict": "clean"},
+            {"paths": ["rtl.v"], "family": "REVIEW", "review": "rtl_bugs", "verdict": "done"},
+            {
+                "paths": ["rtl.v"],
+                "family": "REVIEW",
+                "review": "rtl_code_style",
+                "verdict": "clean",
+            },
         ],
     )
     recorder = GoalEvidenceRecorder(bind(layout))

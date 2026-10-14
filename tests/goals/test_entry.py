@@ -215,7 +215,13 @@ def test_baseline_target_missing_at_head_is_refused(layout: SimpleNamespace) -> 
 
 
 def test_spec_review_needs_its_spec_file(layout: SimpleNamespace) -> None:
-    missing = {"family": "REVIEW", "review": "rtl_spec", "verdict": "clean", "spec": "nope.md"}
+    missing = {
+        "paths": ["rtl.v"],
+        "family": "REVIEW",
+        "review": "rtl_spec",
+        "verdict": "clean",
+        "spec": "nope.md",
+    }
     with pytest.raises(GoalEntryError, match=r"spec file 'nope\.md'"):
         enter_goal_mode(_request(layout, [missing]), _env(layout))
 
@@ -233,8 +239,20 @@ def test_existing_goal_branch_name_is_refused(layout: SimpleNamespace) -> None:
 
 def test_conflicting_goals_are_refused_before_any_write(layout: SimpleNamespace) -> None:
     goals = [
-        {"family": "REVIEW", "review": "rtl_spec", "verdict": "clean", "spec": "a.md"},
-        {"family": "REVIEW", "review": "rtl_spec", "verdict": "done", "spec": "b.md"},
+        {
+            "paths": ["rtl.v"],
+            "family": "REVIEW",
+            "review": "rtl_spec",
+            "verdict": "clean",
+            "spec": "a.md",
+        },
+        {
+            "paths": ["rtl.v"],
+            "family": "REVIEW",
+            "review": "rtl_spec",
+            "verdict": "done",
+            "spec": "b.md",
+        },
     ]
     with pytest.raises(GoalEntryError, match="different spec files"):
         enter_goal_mode(_request(layout, goals), _env(layout))

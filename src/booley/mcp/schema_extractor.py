@@ -56,7 +56,15 @@ def _argparse_type_to_schema(action: argparse.Action) -> dict[str, Any]:
     if isinstance(action, argparse._StoreFalseAction):
         return {"type": "boolean", "default": True}
     if isinstance(action, argparse._AppendAction):
-        return {"type": "array", "items": {"type": "string"}}
+        item: dict[str, Any] = {"type": "string"}
+        if isinstance(action.nargs, int) and action.nargs > 1:
+            item = {
+                "type": "array",
+                "items": item,
+                "minItems": action.nargs,
+                "maxItems": action.nargs,
+            }
+        return {"type": "array", "items": item}
 
     # nargs produces arrays
     if action.nargs in ("+", "*", argparse.REMAINDER):

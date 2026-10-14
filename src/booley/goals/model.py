@@ -251,6 +251,8 @@ class ReviewGoalArg:
     verdict: ReviewVerdict
     spec: str | None = None
     origin: str = AD_HOC_ORIGIN
+    target: str | None = None
+    paths: tuple[str, ...] = ()
     family: Literal[GoalFamily.REVIEW] = GoalFamily.REVIEW
 
 
@@ -469,7 +471,9 @@ def _parse_mutation_goal(raw: Mapping[str, Any], where: str) -> MutationGoalArg:
 
 
 def _parse_review_goal(raw: Mapping[str, Any], where: str) -> ReviewGoalArg:
-    _reject_unknown(raw, frozenset({"family", "review", "verdict", "spec", "origin"}), where)
+    _reject_unknown(
+        raw, frozenset({"family", "review", "verdict", "spec", "origin", "target", "paths"}), where
+    )
     review = _required_text(raw, "review", where)
     if review not in REVIEW_KINDS:
         raise GoalArgError(f"{where}.review must be one of {list(REVIEW_KINDS)}, got {review!r}")
@@ -482,9 +486,35 @@ def _parse_review_goal(raw: Mapping[str, Any], where: str) -> ReviewGoalArg:
             f"{where}.spec is required for review {SPEC_REVIEW_KIND!r} and "
             "accepted for no other review"
         )
+    if ("target" in raw) == ("paths" in raw):
+        raise GoalArgError(f"{where} requires exactly one of target or paths")
+    target = _target_name(raw, "target", where) if "target" in raw else None
+    paths = _review_paths(raw, where) if "paths" in raw else ()
     return ReviewGoalArg(
-        review, "clean" if verdict == "clean" else "done", spec, _origin(raw, where)
+        review,
+        "clean" if verdict == "clean" else "done",
+        spec,
+        _origin(raw, where),
+        target,
+        paths,
     )
+
+
+def _review_paths(raw: Mapping[str, Any], where: str) -> tuple[str, ...]:
+    try:
+        paths = require_list(raw["paths"], field=f"{where}.paths")
+    except BoundaryError as exc:
+        raise GoalArgError(str(exc)) from None
+    if not paths:
+        raise GoalArgError(f"{where}.paths must not be empty")
+    normalized: list[str] = []
+    for index, path in enumerate(paths):
+        value = _spec_path({"spec": path}, f"{where}.paths[{index}]")
+        value = PurePosixPath(value.replace("\\", "/")).as_posix()
+        if value == ".":
+            raise GoalArgError(f"{where}.paths must name individual files")
+        normalized.append(value)
+    return tuple(sorted(set(normalized)))
 
 
 def _spec_path(raw: Mapping[str, Any], where: str) -> str:
@@ -682,9 +712,13 @@ def goal_arg_json_schema() -> dict[str, Any]:
     review = {
         "review": {"enum": list(REVIEW_KINDS)},
         "verdict": {"enum": list(REVIEW_VERDICTS)},
+        "target": _target_schema(),
+        "paths": {"type": "array", "items": _STRING, "minItems": 1},
         "spec": {**_STRING, "description": f"Spec file; required for {SPEC_REVIEW_KIND!r}."},
     }
-    variants.append(_object(GoalFamily.REVIEW, review, ["review", "verdict"]))
+    review_schema = _object(GoalFamily.REVIEW, review, ["review", "verdict"])
+    review_schema["oneOf"] = [{"required": ["target"]}, {"required": ["paths"]}]
+    variants.append(review_schema)
     return {"oneOf": variants}
 
 

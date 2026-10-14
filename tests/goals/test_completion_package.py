@@ -32,7 +32,14 @@ def test_open_done_findings_finish_without_ticket_assessment_or_second_approval(
     monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
     layout.record = enter_goals(
         layout,
-        [{"family": "REVIEW", "review": "rtl_bugs", "verdict": "clean" if derived else "done"}],
+        [
+            {
+                "paths": ["rtl.v"],
+                "family": "REVIEW",
+                "review": "rtl_bugs",
+                "verdict": "clean" if derived else "done",
+            }
+        ],
     )
     endpoint, provider = _goal_reviewer_endpoint(layout, monkeypatch)
     provider.return_value.output = json.dumps({"issues": review_issues(True)})
@@ -186,7 +193,7 @@ def test_attempt_frozen_survives_real_status_and_reviewer_activity_without_new_e
 
     monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
     layout.record = enter_goals(
-        layout, [{"family": "REVIEW", "review": "rtl_bugs", "verdict": "done"}]
+        layout, [{"paths": ["rtl.v"], "family": "REVIEW", "review": "rtl_bugs", "verdict": "done"}]
     )
     endpoint, provider = _goal_reviewer_endpoint(layout, monkeypatch)
     provider.return_value.output = json.dumps({"issues": review_issues(True)})
@@ -487,7 +494,7 @@ def test_obsolete_simulation_after_approved_retarget_omits_inventory_without_rew
         layout,
         goals=[
             {"family": "SIM", "target": "top"},
-            {"family": "REVIEW", "review": "rtl_bugs", "verdict": "clean"},
+            {"paths": ["rtl.v"], "family": "REVIEW", "review": "rtl_bugs", "verdict": "clean"},
         ],
         criterion=SIM_KEY,
         criterion_detail=passing_sim(),

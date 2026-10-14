@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
@@ -45,6 +46,22 @@ class AcceptanceRecorder(Protocol):
         established for an execution that requires one.
         """
         ...
+
+
+@dataclass(frozen=True)
+class ReviewInputs:
+    """Resolved, immutable review selection supplied by the execution owner."""
+
+    scope: tuple[str, ...]
+    spec: str | None = None
+    target_surface: Mapping[str, Any] | None = None
+
+
+@runtime_checkable
+class ReviewGoalInputs(Protocol):
+    """Optional Goal-owned contract supplied by the admitted execution adapter."""
+
+    def review_goal_inputs(self, key: str) -> ReviewInputs: ...
 
 
 @runtime_checkable
