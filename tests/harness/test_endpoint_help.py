@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import subprocess
 from contextlib import contextmanager
+from pathlib import Path
+from typing import Any, ClassVar
 
 import pytest
 
@@ -14,7 +16,7 @@ from booley.mcp.registry import McpToolInfo
 
 
 @pytest.fixture
-def project(tmp_path, monkeypatch):
+def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, timeout=10)
     (tmp_path / ".booley").mkdir()
     monkeypatch.chdir(tmp_path)
@@ -31,8 +33,13 @@ def project(tmp_path, monkeypatch):
 @pytest.mark.parametrize("command,name", [("flow", "lint"), ("specialist", "reviewer")])
 @pytest.mark.parametrize("tail", [[], ["--target", "demo"]])
 def test_host_refusal_precedes_execution_admission(
-    project, command, name, tail, monkeypatch, capsys
-):
+    project: Path,
+    command: str,
+    name: str,
+    tail: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     import booley.runtime.layout_consumers as consumers
 
     monkeypatch.setattr(
@@ -47,8 +54,8 @@ def test_host_refusal_precedes_execution_admission(
 
 
 class Custom(McpTool):
-    name = "custom"
-    description = "Custom Flow"
+    name: ClassVar[str] = "custom"
+    description: ClassVar[str] = "Custom Flow"
 
     def _add_args(self, parser):
         parser.add_argument("--number", type=int)
@@ -58,13 +65,17 @@ class Custom(McpTool):
         pytest.fail("custom execution")
 
 
-def register_custom(monkeypatch, endpoint_type):
+def register_custom(monkeypatch: pytest.MonkeyPatch, endpoint_type: type[McpTool]) -> None:
     info = McpToolInfo(name="custom", path="custom.py", description="Custom", kind="flow")
     monkeypatch.setattr(cli, "_discover_project_mcp_tools", lambda _root: [info])
     monkeypatch.setattr(cli, "_load_mcp_tool_class", lambda _info: endpoint_type)
 
 
-def test_literal_help_after_separator_cannot_bypass_host_guard(project, monkeypatch, capsys):
+def test_literal_help_after_separator_cannot_bypass_host_guard(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     register_custom(monkeypatch, Custom)
     # Argparse and the dispatcher each consume one leading separator.
     # The final separator belongs to the custom parser's literal payload.
@@ -77,7 +88,11 @@ def test_literal_help_after_separator_cannot_bypass_host_guard(project, monkeypa
     assert "runs inside the Booley Sandbox" in captured.err
 
 
-def test_parser_error_is_reported_once(project, monkeypatch, capsys):
+def test_parser_error_is_reported_once(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     register_custom(monkeypatch, Custom)
     monkeypatch.setattr("sys.argv", ["booley", "flow", "custom", "--number", "bad", "--help"])
     with pytest.raises(SystemExit) as exc:
@@ -90,19 +105,31 @@ def test_parser_error_is_reported_once(project, monkeypatch, capsys):
     assert "runs inside" not in captured.err
 
 
-def test_custom_exit_zero_is_not_help(project, monkeypatch, capsys):
+@pytest.mark.parametrize("exit_code", [0, 2, 7])
+def test_custom_exit_is_not_help(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    exit_code: int,
+) -> None:
     calls = []
 
-    class ExitZero(argparse.Action):
-        def __call__(self, parser, namespace, values, option_string=None):
+    class ExitValue(argparse.Action):
+        def __call__(
+            self,
+            parser: argparse.ArgumentParser,
+            namespace: argparse.Namespace,
+            values: Any,
+            option_string: str | None = None,
+        ) -> None:
             calls.append("version")
             print("custom version")
-            parser.exit()
+            parser.exit(exit_code)
 
     class Versioned(Custom):
         def _add_args(self, parser):
             super()._add_args(parser)
-            parser.add_argument("--version", action=ExitZero, nargs=0)
+            parser.add_argument("--version", action=ExitValue, nargs=0)
 
     register_custom(monkeypatch, Versioned)
     monkeypatch.setattr("sys.argv", ["booley", "flow", "custom", "--version", "--help"])
@@ -115,7 +142,11 @@ def test_custom_exit_zero_is_not_help(project, monkeypatch, capsys):
     assert calls == ["version"]
 
 
-def test_named_help_retains_metadata_admission(project, monkeypatch, capsys):
+def test_named_help_retains_metadata_admission(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     import booley.runtime.layout_consumers as consumers
 
     events = []
@@ -138,9 +169,13 @@ def test_named_help_retains_metadata_admission(project, monkeypatch, capsys):
     assert events == ["admitted", "released"]
 
 
-def test_override_cannot_run_through_host_help(project, monkeypatch, capsys):
+def test_override_cannot_run_through_host_help(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     class Override(Custom):
-        def main(self, argv=None):
+        def main(self, argv: list[str] | None = None) -> int:
             pytest.fail("overridden main")
 
     register_custom(monkeypatch, Override)
@@ -149,7 +184,11 @@ def test_override_cannot_run_through_host_help(project, monkeypatch, capsys):
     assert "shared CLI" in capsys.readouterr().err
 
 
-def test_combined_quiet_help_preserves_flow_options(project, monkeypatch, capsys):
+def test_combined_quiet_help_preserves_flow_options(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     monkeypatch.setattr("sys.argv", ["booley", "flow", "lint", "-qh"])
     with pytest.raises(SystemExit) as exc:
         cli.main()
@@ -157,7 +196,11 @@ def test_combined_quiet_help_preserves_flow_options(project, monkeypatch, capsys
     assert "--quiet" in capsys.readouterr().out
 
 
-def test_help_named_option_is_not_a_help_action(project, monkeypatch, capsys):
+def test_help_named_option_is_not_a_help_action(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     class HelpLike(Custom):
         @property
         def _parser(self):
@@ -179,11 +222,20 @@ def test_help_named_option_is_not_a_help_action(project, monkeypatch, capsys):
     assert "runs inside the Booley Sandbox" in capsys.readouterr().err
 
 
-def test_help_looking_data_is_parsed_once_in_sandbox(project, monkeypatch):
+def test_help_looking_data_is_parsed_once_in_sandbox(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     calls = []
 
     class Hint(argparse.Action):
-        def __call__(self, parser, namespace, values, option_string=None):
+        def __call__(
+            self,
+            parser: argparse.ArgumentParser,
+            namespace: argparse.Namespace,
+            values: Any,
+            option_string: str | None = None,
+        ) -> None:
             calls.append("hint")
 
     class Hinted(Custom):
@@ -204,7 +256,11 @@ def test_help_looking_data_is_parsed_once_in_sandbox(project, monkeypatch):
     assert calls == ["hint"]
 
 
-def test_missing_project_error_precedes_host_venue_error(tmp_path, monkeypatch, capsys):
+def test_missing_project_error_precedes_host_venue_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     monkeypatch.chdir(tmp_path)
     for name in ("BOOLEY_DIR", "RTL_PROJECT_ROOT", "BOOLEY_CONTAINER"):
         monkeypatch.delenv(name, raising=False)

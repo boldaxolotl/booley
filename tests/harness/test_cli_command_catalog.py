@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import argparse
 import re
+from pathlib import Path
 
 import pytest
 
 from booley.harness import booley as cli
 
-PUBLIC_COMMANDS = [
+PUBLIC_COMMANDS: list[str] = [
     "chat",
     "dashboard",
     "flow",
@@ -41,6 +42,20 @@ def test_help_groups_public_commands_by_location() -> None:
             (PUBLIC_COMMANDS[9:], "host"),
         ]
         for command in commands
+    ]
+
+
+def test_usage_guide_has_the_same_public_inventory() -> None:
+    usage = Path(__file__).parents[2] / "docs/user/USAGE.md"
+    rows = re.findall(
+        r"^\| (Sandbox|Either|Host-only) \| ([^|]+) \|$",
+        usage.read_text(),
+        re.M,
+    )
+    assert [(location, re.findall(r"`(\w+)`", commands)) for location, commands in rows] == [
+        ("Sandbox", PUBLIC_COMMANDS[:5]),
+        ("Either", PUBLIC_COMMANDS[5:9]),
+        ("Host-only", PUBLIC_COMMANDS[9:]),
     ]
 
 
@@ -79,7 +94,11 @@ def test_skill_commands_are_hidden_but_remain_registered(command: str) -> None:
 )
 @pytest.mark.parametrize("inside", [False, True])
 def test_command_locations_enforce_the_audited_boundary(
-    command, location, inside, monkeypatch, capsys
+    command: str,
+    location: str,
+    inside: bool,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: inside)
     monkeypatch.setattr("sys.argv", ["booley", command])

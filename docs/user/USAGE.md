@@ -897,6 +897,12 @@ requires the Sandbox. Flow and Specialist listing and
 execution are Sandbox-only; their `-h` / `--help` pages also work on
 the host inside an initialized Project.
 
+| Location | Public commands, in order |
+|---|---|
+| Sandbox | `chat`, `dashboard`, `flow`, `specialist`, `worktree` |
+| Either | `cheat`, `doctor`, `help`, `targets` |
+| Host-only | `auth`, `bootstrap`, `eda`, `init`, `projects` |
+
 Commands used by skills remain available but are omitted from top-level help.
 Use `booley cheat --skills` for guided agent workflows.
 

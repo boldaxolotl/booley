@@ -7,6 +7,7 @@ import copy
 import re
 import shlex
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -64,7 +65,11 @@ ENDPOINTS = _endpoints()
 @pytest.mark.parametrize("inside", [False, True])
 @pytest.mark.parametrize("prefix", [[], ["-C", "missing"], ["--project", "help"]])
 def test_help_command_matches_help_flag_without_project(
-    inside, prefix, tmp_path, monkeypatch, capsys
+    inside: bool,
+    prefix: list[str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: inside)
@@ -241,7 +246,13 @@ def test_extension_without_cli_wording_keeps_its_description() -> None:
 @pytest.mark.parametrize("flag", ["-h", "--help"])
 @pytest.mark.parametrize("prefix", [[], ["--diagnostic"], ["--"]])
 def test_help_from_the_booley_entry_point(
-    command, inside, flag, prefix, tmp_path, monkeypatch, capsys
+    command: str,
+    inside: bool,
+    flag: str,
+    prefix: list[str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """The wording reaches a person who types the command inside a Project."""
     for name in ("RTL_PROJECT_ROOT", "BOOLEY_DIR", INVOCATION_ORIGIN_ENV):
