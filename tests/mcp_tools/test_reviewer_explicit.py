@@ -706,6 +706,10 @@ def test_done_verify_keeps_non_corrective_findings_and_completion_metadata(
     after = DevelopmentState.load(project / "state.json").criteria["review_rtl_bugs_done"].detail
     assert observation in after["issue_list"] and len(after["issue_list"]) == 2
     assert after["pending"] == [] and after["resolved"][0]["status"] == "fixed"
+    (receipt_path,) = verifier._evidence_path("unused").parent.glob(
+        f"{verifier._review_run_id}-receipt-*.json"
+    )
+    receipt_detail = json.loads(receipt_path.read_text())["detail"]
     for field in (
         "receipt_id",
         "_source_fingerprint",
@@ -715,6 +719,7 @@ def test_done_verify_keeps_non_corrective_findings_and_completion_metadata(
         "gate_passed",
     ):
         assert after[field] == before[field]
+        assert receipt_detail[field] == before[field]
     assert invoke.call_count == 1
 
 

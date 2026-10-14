@@ -1639,9 +1639,7 @@ object, even after calling the capability.
         return path
 
     def _record_review_detail(self, crit_key: str, met: bool, detail: dict[str, Any]) -> None:
-        self._attach_review_evidence(
-            detail, EXIT_SUCCESS if met else EXIT_FAILURE, f"receipt-{uuid4().hex}"
-        )
+        criterion_met = met
         if self._is_verify_pass() and crit_key.endswith("_done"):
             prior_entry = self.state.criteria[crit_key]
             prior = self._verify_prior
@@ -1659,9 +1657,11 @@ object, even after calling the capability.
             ):
                 if field in prior:
                     detail[field] = deepcopy(prior[field])
-            self.set_criterion(crit_key, prior_entry.met, detail=detail)
-        else:
-            self.set_criterion(crit_key, met, detail=detail)
+            criterion_met = prior_entry.met
+        self._attach_review_evidence(
+            detail, EXIT_SUCCESS if met else EXIT_FAILURE, f"receipt-{uuid4().hex}"
+        )
+        self.set_criterion(crit_key, criterion_met, detail=detail)
 
     def _publish_review_evidence(self, result: McpToolResult, crit_key: str) -> McpToolResult:
         """Publish complete evidence even when a review cannot issue a receipt."""
