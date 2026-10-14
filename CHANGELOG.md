@@ -34,6 +34,12 @@ Packaged release history starts at 0.2.7. For older changes, see
   Goal inspection and both repositories' worktree registrations before retiring
   any backup. Any collision, extra state or uncertainty requires human
   reconciliation; Booley never deletes or automatically combines these trees.
+  Interrupted migration retains its journal. If retry reports changed Git
+  identities, HEADs, metadata or conflicting files, stop external writers and
+  preserve the trees, Git metadata and journal before manually reconciling the
+  named conflicts. Do not delete the journal, prune worktrees or reset history
+  to bypass verification; rerun init only after the captured identities and
+  preserved local state have been reconciled.
 
 - Doctor defers generated cocotb test IDs, including generating function base
   names, to run-time results. An absent ID now lists cocotb's reported IDs in

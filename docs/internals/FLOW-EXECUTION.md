@@ -129,7 +129,5 @@ through `resolve_booley_dir` and selected configuration through
 
 The shared subtree is outside all mutable build generations and is never
 registered as a disposable `flow-cache` artifact. Setup cleanup preserves
-unowned legacy runtime residue. Legacy `.booley/project` resynchronization
-excludes precisely `project/.runtime/compiler-cache`, preserving adjacent
-runtime/authored content. Baseline core copying only copies the core subtree;
+unowned runtime residue. Baseline core copying only copies the core subtree;
 ordinary Project Git ignores exclude `.runtime` from source snapshots.

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from booley.core.booley_layout import BooleyLayoutError
 from booley.core.process_identity import ProcessIdentity
-from booley.runtime.job_records import JobRecordError, strict_records
+from booley.runtime.job_records import STATUS_RUNNING, JobRecordError, strict_records
 from booley.runtime.job_slots import JOB_CLASSES, SlotStore
 from booley.runtime.pid import DEAD, REUSED, ZOMBIE, is_pid_alive, observe_process
 from booley.runtime.safe_storage import refuse_symlinks
@@ -52,7 +52,7 @@ def _jobs(directory: Path) -> None:
             refuse_symlinks(root)
             for record in strict_records(root):
                 identity = ProcessIdentity.from_payload(record.process_identity)
-                if record.status == "running" or record.pid is not None:
+                if record.status == STATUS_RUNNING:
                     _require_dead(identity, record.pid, record.run_id)
     except JobRecordError as exc:
         raise BooleyLayoutError(f"cannot prove Job inactivity: {exc}") from exc

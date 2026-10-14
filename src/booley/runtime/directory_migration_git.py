@@ -40,11 +40,26 @@ def mapped(path: Path, moves: list[dict[str, Any]]) -> Path:
     return path
 
 
+def primary_checkout(repository: Path) -> Path:
+    """A primary gitfile shares its admin/common directory; linked checkouts do not."""
+    admin = Path(git(repository, "rev-parse", "--absolute-git-dir")).resolve()
+    common = Path(
+        git(repository, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    ).resolve()
+    if admin == common:
+        return repository.resolve()
+    raw = git(repository, "worktree", "list", "--porcelain").splitlines()[0]
+    return Path(raw.removeprefix("worktree ")).resolve()
+
+
 def registrations(repository: Path) -> list[dict[str, Any]]:
     """Capture branch AND detached checkouts without changing administrative names."""
     rows = []
-    for entry in list_worktrees(repository):
-        path = entry.path.resolve()
+    is_primary = primary_checkout(repository) == repository.resolve()
+    for position, entry in enumerate(list_worktrees(repository)):
+        # Git lists a separate common directory as its primary worktree, even
+        # when --show-toplevel proves this checkout owns the .git pointer file.
+        path = repository.resolve() if position == 0 and is_primary else entry.path.resolve()
         if not path.is_dir():
             rows.append({"path": str(path), "missing": True})
             continue
@@ -94,6 +109,7 @@ def pointer_edits(rows: list[dict[str, Any]], moves: list[dict[str, Any]]) -> li
                 raise BooleyLayoutError(f"affected registered worktree is missing: {row['path']}")
             continue
         checkout, admin = Path(row["path"]), Path(row["admin"])
+        edits.extend(_config_edits(checkout, admin, moves))
         if mapped(checkout, moves) == checkout and mapped(admin, moves) == admin:
             continue
         marker = checkout / ".git"
@@ -106,34 +122,28 @@ def pointer_edits(rows: list[dict[str, Any]], moves: list[dict[str, Any]]) -> li
                 prefix="gitdir: ",
             )
             edits.append(edit(marker, content, moves))
-            backlink = admin / "gitdir"
-            previous = backlink.read_text().strip()
-            edits.append(
-                edit(
-                    backlink,
-                    _pointer(
-                        mapped(marker, moves),
-                        mapped(admin, moves),
-                        not Path(previous).is_absolute(),
-                    ),
-                    moves,
-                )
-            )
-            common = admin / "commondir"
-            previous = common.read_text().strip()
-            edits.append(
-                edit(
-                    common,
-                    _pointer(
-                        mapped(Path(row["common"]), moves),
-                        mapped(admin, moves),
-                        not Path(previous).is_absolute(),
-                    ),
-                    moves,
-                )
-            )
-        edits.extend(_config_edits(checkout, admin, moves))
+            if admin != Path(row["common"]):
+                edits.extend(_linked_admin_edits(marker, admin, Path(row["common"]), moves))
     return edits
+
+
+def _linked_admin_edits(
+    marker: Path, admin: Path, common_dir: Path, moves: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    result = []
+    for name, target in (("gitdir", marker), ("commondir", common_dir)):
+        path = admin / name
+        previous = path.read_text().strip()
+        result.append(
+            edit(
+                path,
+                _pointer(
+                    mapped(target, moves), mapped(admin, moves), not Path(previous).is_absolute()
+                ),
+                moves,
+            )
+        )
+    return result
 
 
 def _config_edits(
@@ -179,9 +189,13 @@ def _map_config(
 def verify_registrations(rows: list[dict[str, Any]], moves: list[dict[str, Any]]) -> None:
     """Prove paths, administrative identities, HEADs, branches and lock state."""
     actual = {}
-    commons = {Path(row["common"]) for row in rows if not row.get("missing")}
-    for common in commons:
-        for row in registrations(mapped(common.parent, moves)):
+    primaries = {
+        Path(row["path"])
+        for row in rows
+        if not row.get("missing") and row["admin"] == row["common"]
+    }
+    for checkout in primaries:
+        for row in registrations(mapped(checkout, moves)):
             actual[row["path"]] = row
     for row in rows:
         path = mapped(Path(row["path"]), moves)

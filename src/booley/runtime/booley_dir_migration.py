@@ -20,6 +20,7 @@ from booley.core.booley_layout import (
     BooleyLayoutError,
     Layout,
     classify_layout,
+    git_common_directory,
     layout_metadata,
     validate_environment,
 )
@@ -28,9 +29,9 @@ from booley.core.project_identity import matches_project_label
 from booley.runtime.atomic_files import atomic_replace_bytes, fsync_directory
 from booley.runtime.directory_migration_git import (
     edit,
-    git,
     mapped,
     pointer_edits,
+    primary_checkout,
     registrations,
     verify_registrations,
 )
@@ -97,25 +98,10 @@ def _move(source: Path, destination: Path) -> dict[str, Any]:
 def _capture(
     root: Path, observe: Callable[[Path], None], integrations: IntegrationPlanner
 ) -> dict[str, Any]:
-    old, new = root / RETIRED_DIR_NAME, root / BOOLEY_DIR_NAME
+    old = root / RETIRED_DIR_NAME
     observe(old)
     _require_host_migration()
-    moves = [_move(old, new)]
-    rows = registrations(root) if (root / ".git").exists() else []
-    if (root / ".git").is_file():
-        primary = git(root, "worktree", "list", "--porcelain").splitlines()[0]
-        raise BooleyLayoutError(f"run `booley init` from the primary Project Root: {primary}")
-    if (old / ".git").exists():
-        rows += registrations(old)
-    for row in rows:
-        checkout = Path(row["path"])
-        nested = checkout / RETIRED_DIR_NAME
-        if checkout == root or not _exists(nested):
-            continue
-        classify_layout(checkout)
-        observe(nested)
-        destination = mapped(checkout, moves) / BOOLEY_DIR_NAME
-        moves.append(_move(nested, destination))
+    moves, rows = _participants(root, observe)
     from booley.runtime.worktree_relocation import WorktreeRelocationError, _validate_source
 
     for row in rows:
@@ -143,6 +129,35 @@ def _capture(
     }
 
 
+def _participants(
+    root: Path, observe: Callable[[Path], None]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    old, new = root / RETIRED_DIR_NAME, root / BOOLEY_DIR_NAME
+    common = git_common_directory(root)
+    if common is not None and common.is_relative_to(old):
+        raise BooleyLayoutError(
+            "RTL Git metadata would move; preserve and relocate it outside the Booley Directory before init"
+        )
+    moves = [_move(old, new)]
+    rows = registrations(root) if (root / ".git").exists() else []
+    if (root / ".git").is_file():
+        primary = primary_checkout(root)
+        if primary != root:
+            raise BooleyLayoutError(f"run `booley init` from the primary Project Root: {primary}")
+    if (old / ".git").exists():
+        rows += registrations(old)
+    for row in rows:
+        checkout = Path(row["path"])
+        nested = checkout / RETIRED_DIR_NAME
+        if checkout == root or not _exists(nested):
+            continue
+        classify_layout(checkout)
+        observe(nested)
+        destination = mapped(checkout, moves) / BOOLEY_DIR_NAME
+        moves.append(_move(nested, destination))
+    return moves, rows
+
+
 def _deduplicate(edits: list[dict[str, Any]]) -> list[dict[str, Any]]:
     result = {}
     for row in edits:
@@ -165,24 +180,20 @@ def _integration_edits(
     """Rewrite only generated integrations and exact managed exclude entries."""
     paths = {root, *(Path(row["path"]) for row in rows if not row.get("missing"))}
     edits = []
+    ignores = {checkout / ".gitignore" for checkout in paths}
+    ignores.update(Path(row["common"]) / "info/exclude" for row in rows if not row.get("missing"))
+    for path in ignores:
+        if path.is_file():
+            before = path.read_text()
+            after = "".join(
+                line.replace(RETIRED_DIR_NAME, BOOLEY_DIR_NAME)
+                if line.strip().rstrip("/") in {RETIRED_DIR_NAME, "/" + RETIRED_DIR_NAME}
+                else line
+                for line in before.splitlines(keepends=True)
+            )
+            if after != before:
+                edits.append(edit(path, after.encode(), moves))
     for checkout in paths:
-        for relative in (".git/info/exclude", ".gitignore"):
-            path = checkout / relative
-            if path.is_file():
-                before = path.read_text()
-                lines = before.splitlines(keepends=True)
-                after = "".join(
-                    line.replace(RETIRED_DIR_NAME, BOOLEY_DIR_NAME)
-                    if line.strip().rstrip("/")
-                    in {
-                        RETIRED_DIR_NAME,
-                        "/" + RETIRED_DIR_NAME,
-                    }
-                    else line
-                    for line in lines
-                )
-                if after != before:
-                    edits.append(edit(path, after.encode(), moves))
         for name in ("AGENTS.md", "CLAUDE.md"):
             link = checkout / name
             if link.is_symlink():
@@ -212,9 +223,10 @@ def inspect_migration(
         document = _read_journal(journal, root)
         observe(_record_directory(root, document))
         _require_host_migration()
+        _refuse_live_sandboxes(root, document["moves"], document["registrations"])
         return Migration(root, journal, document, observe, integrations)
     if (root / ".git").is_file():
-        primary = Path(git(root, "worktree", "list", "--porcelain").splitlines()[0][9:])
+        primary = primary_checkout(root)
         if (primary / RETIRED_DIR_NAME).is_dir():
             observe(primary / RETIRED_DIR_NAME)
     layout = classify_layout(root)
@@ -264,7 +276,12 @@ def _unlinked(path: Path) -> None:
 
 def _validate_moves(moves: list[dict[str, Any]], root: Path, rows: list[dict[str, Any]]) -> None:
     sources = {root / RETIRED_DIR_NAME}
-    commons = {root / ".git", root / RETIRED_DIR_NAME / ".git"}
+    commons = {git_common_directory(root), root / RETIRED_DIR_NAME / ".git"}
+    data_directory = root / RETIRED_DIR_NAME
+    if not data_directory.is_dir():
+        data_directory = root / BOOLEY_DIR_NAME
+    if (data_directory / ".git").exists():
+        commons.add(git_common_directory(data_directory))
     for row in rows:
         checkout = Path(row["path"])
         if not checkout.is_absolute() or ".." in checkout.parts:
@@ -306,6 +323,7 @@ def _validate_edits(data: dict[str, Any]) -> None:
             continue
         checkout, admin = Path(row["path"]), Path(row["admin"])
         checkouts.add(checkout)
+        allowed.add(Path(row["common"]) / "info/exclude")
         allowed.update(
             admin / name
             for name in (
@@ -620,6 +638,8 @@ def _refuse_live_sandboxes(
     for row in rows or []:
         checkout = Path(row["path"])
         roots.add(checkout.parent if checkout.name == RETIRED_DIR_NAME else checkout)
+        relocated = mapped(checkout, moves)
+        roots.add(relocated.parent if relocated.name == BOOLEY_DIR_NAME else relocated)
     for document in _running_sandboxes():
         labels = document.get("Config", {}).get("Labels", {}) or {}
         if any(
@@ -629,8 +649,8 @@ def _refuse_live_sandboxes(
         for mount in document.get("Mounts", []):
             source = Path(mount.get("Source", "/__unavailable__"))
             if source in roots or any(
-                Path(move["source"]).is_relative_to(source)
-                or source.is_relative_to(Path(move["source"]))
+                affected.is_relative_to(source) or source.is_relative_to(affected)
                 for move in moves
+                for affected in (Path(move["source"]), Path(move["destination"]))
             ):
                 raise BooleyLayoutError("stop live Sandbox before running `booley init`")

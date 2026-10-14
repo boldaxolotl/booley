@@ -35,7 +35,11 @@ def require_quiescent(root: Path) -> None:
                 raise ValueError("consumer lease exceeds size limit")
             data = json.loads(path.read_bytes())
             identity = ProcessIdentity.from_payload(data["process"])
-            if identity is None or data["root"] != str(root.resolve()):
+            if (
+                identity is None
+                or not isinstance(data["root"], str)
+                or not Path(data["root"]).is_absolute()
+            ):
                 raise ValueError("consumer identity differs")
         except (OSError, ValueError, KeyError, TypeError) as exc:
             raise BooleyLayoutError(f"cannot prove directory consumer inactive: {path}") from exc

@@ -2295,14 +2295,25 @@ def _run_init_unlocked(
 
 def _check_init_layout(args: argparse.Namespace, project_root: Path):
     """Observe layout and report migration independently of host Bootstrap/recovery."""
-    from booley.core.booley_layout import BooleyLayoutError
+    from booley.core.booley_layout import BooleyLayoutError, Layout, classify_layout
+    from booley.core.checkout_role import require_project_checkout
     from booley.harness.setup.directory_migration import inspect_migration
 
+    project_root = require_project_checkout(project_root)
+    if classify_layout(project_root) is Layout.RETIRED:
+        if getattr(args, "seed", False):
+            raise BooleyLayoutError(
+                "Run full `booley init` from the primary Project Root before --seed"
+            )
+        if getattr(args, "check_only", False):
+            info(
+                "Would rename the Booley Directory; required preflight checks follow, no changes made"
+            )
     migration = inspect_migration(project_root)
     if migration is not None:
         info(f"Pending Booley Directory migration at {project_root}; run `booley init`")
         if getattr(args, "seed", False):
-            raise RuntimeError(
+            raise BooleyLayoutError(
                 "Run full `booley init` from the primary Project Root before --seed"
             )
     return migration

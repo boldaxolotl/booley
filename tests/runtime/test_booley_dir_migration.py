@@ -627,3 +627,125 @@ def test_incomplete_docker_inventory_refuses_before_any_move(
     with pytest.raises(BooleyLayoutError, match="invalid inventory"):
         migration._refuse_live_sandboxes(tmp_path, [])
     assert _snapshot(tmp_path) == before
+
+
+@pytest.mark.parametrize("kind", ["separate", "submodule"])
+def test_primary_git_pointer_file_migrates_and_repairs_registered_worktree(tmp_path, kind):
+    if kind == "separate":
+        root = tmp_path / "rtl"
+        root.mkdir()
+        git(root, "init", "-q", "-b", "main", "--separate-git-dir", str(tmp_path / "metadata"))
+        git(root, "commit", "--allow-empty", "-qm", "base")
+    else:
+        parent, source = tmp_path / "parent", tmp_path / "source"
+        _repository(parent)
+        _repository(source)
+        git(parent, "-c", "protocol.file.allow=always", "submodule", "add", str(source), "rtl")
+        root = parent / "rtl"
+    old = root / OLD
+    old.mkdir()
+    worktree = old / "worktrees/one"
+    git(root, "worktree", "add", "--detach", str(worktree))
+    common = Path(git(root, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+    (common / "info/exclude").write_text(f"/{OLD}\n")
+    git(root, "config", "core.hooksPath", str(old / ".managed/hooks"))
+    identity = resolve_worktree_identity(worktree, create=True)
+    marker = (root / ".git").read_bytes()
+    migration.apply_migration(_inspect(root))
+    moved = root / NEW / "worktrees/one"
+    assert (root / ".git").read_bytes() == marker
+    assert resolve_worktree_identity(moved) == identity
+    assert git(root, "config", "core.hooksPath") == str(root / NEW / ".managed/hooks")
+    assert (common / "info/exclude").read_text() == f"/{NEW}\n"
+    assert "prunable" not in git(root, "worktree", "list", "--porcelain")
+    assert git(moved, "rev-parse", "--show-toplevel") == str(moved)
+
+
+def test_seed_on_retired_layout_reports_full_init_without_traceback_or_writes(tmp_path, capsys):
+    _repository(tmp_path)
+    (tmp_path / OLD).mkdir()
+    before = _snapshot(tmp_path)
+    assert run_init(argparse.Namespace(check_only=False, seed=True), tmp_path) == 2
+    assert "before --seed" in capsys.readouterr().out
+    assert _snapshot(tmp_path) == before
+
+
+def test_check_reports_pending_rename_even_when_docker_inventory_is_unavailable(
+    tmp_path, monkeypatch, capsys
+):
+    _repository(tmp_path)
+    (tmp_path / OLD).mkdir()
+    monkeypatch.setattr(
+        migration,
+        "_running_sandboxes",
+        lambda: (_ for _ in ()).throw(BooleyLayoutError("cannot inventory")),
+    )
+    before = _snapshot(tmp_path)
+    assert run_init(argparse.Namespace(check_only=True), tmp_path) == 2
+    output = capsys.readouterr().out
+    assert "Would rename" in output and "cannot inventory" in output
+    assert _snapshot(tmp_path) == before
+
+
+def test_recovery_rechecks_sandbox_inventory_before_any_further_write(tmp_path, monkeypatch):
+    _repository(tmp_path)
+    (tmp_path / OLD).mkdir()
+    plan = _inspect(tmp_path)
+    monkeypatch.setattr(migration, "_apply", lambda plan: (_ for _ in ()).throw(OSError("stop")))
+    with pytest.raises(OSError):
+        migration.apply_migration(plan)
+    monkeypatch.setattr(
+        migration,
+        "_running_sandboxes",
+        lambda: (_ for _ in ()).throw(BooleyLayoutError("cannot inventory")),
+    )
+    before = _snapshot(tmp_path)
+    with pytest.raises(BooleyLayoutError, match="cannot inventory"):
+        _inspect(tmp_path)
+    assert _snapshot(tmp_path) == before
+
+
+def test_terminal_job_with_retained_pid_migrates_unchanged(tmp_path):
+    import os
+
+    from booley.runtime.job_records import STATUS_DONE, JobRecord, write_record
+
+    _repository(tmp_path)
+    jobs = tmp_path / OLD / ".runtime/jobs"
+    write_record(
+        JobRecord(
+            "finished",
+            "simulate",
+            "2026-10-14T00:00:00Z",
+            60,
+            pid=os.getpid(),
+            status=STATUS_DONE,
+            exit_code=0,
+        ),
+        jobs,
+    )
+    before = (jobs / "finished.json").read_bytes()
+    migration.apply_migration(_inspect(tmp_path))
+    assert (tmp_path / NEW / ".runtime/jobs/finished.json").read_bytes() == before
+
+
+def test_dead_consumer_of_other_registered_root_does_not_block(tmp_path, monkeypatch):
+    import os
+    from types import SimpleNamespace
+
+    from booley.runtime import layout_consumers
+    from booley.runtime.pid import DEAD, capture_process_identity
+
+    _repository(tmp_path)
+    (tmp_path / OLD).mkdir()
+    leases = migration.metadata_root(tmp_path) / "directory-consumers"
+    leases.mkdir(parents=True)
+    identity = capture_process_identity(os.getpid())
+    (leases / "old-worktree.json").write_text(
+        json.dumps({"root": str(tmp_path / "other-worktree"), "process": identity.to_payload()})
+    )
+    monkeypatch.setattr(
+        layout_consumers, "observe_process", lambda identity: SimpleNamespace(state=DEAD)
+    )
+    migration.apply_migration(_inspect(tmp_path))
+    assert (tmp_path / NEW).is_dir()

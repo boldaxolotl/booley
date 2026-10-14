@@ -108,8 +108,8 @@ def git_common_directory(root: Path) -> Path | None:
         if common.is_file():
             marker = (marker / common.read_text().strip()).resolve()
         # Retain a missing administrative path: a stale pointer cannot prove no journal.
-        return marker
-    return marker if marker.is_dir() else None
+        return marker.resolve()
+    return marker.resolve() if marker.is_dir() else None
 
 
 def layout_metadata(root: Path) -> Path:
