@@ -255,7 +255,7 @@ experiment, not a setup requirement.
   and preserves existing local rules and registrations. Doctor reports this
   limitation as `git.attributes-policy-unknown`, independently of real policy
   conflicts. Inspect the policy from an environment where its source is
-  accessible; see [Doctor health](DOCTOR.md) for source-specific guidance and
+  accessible; see [Doctor health](https://github.com/boldaxolotl/Booley/blob/main/docs/user/DOCTOR.md) for source-specific guidance and
   waiver behavior. Normal init remains nonfatal, while unknown-only
   `booley init --check` exits 1 for incomplete inspection.
   With Stealth disabled, and in a Versioned Booley Directory, init adds the default as the first line of root `.gitattributes`
