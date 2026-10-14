@@ -1134,6 +1134,18 @@ def _policy_unknown(inputs: dict[str, tuple[_FileIdentity | None, bytes]]) -> bo
     return any(name.startswith("policy-unknown:") for name in inputs)
 
 
+def _unknown_policy_observations(
+    inputs: dict[str, tuple[_FileIdentity | None, bytes]],
+) -> list[LineEndingObservation]:
+    return [
+        _observation(
+            LineEndingObservationCode.ATTRIBUTES_POLICY_UNKNOWN, detail=os.fsdecode(message)
+        )
+        for name, (_, message) in inputs.items()
+        if name.startswith("policy-unknown:")
+    ]
+
+
 def unknown_attributes_policy_details(report: RepositoryLineEndingReport) -> tuple[str, ...]:
     """Stable inspection limitations, independent of confirmed policy and repair results."""
     return tuple(
@@ -1291,6 +1303,7 @@ def _attributes_plan(repository: LineEndingRepository, stealth: bool):
         common_identity, common_content = _policy_content(common)
         inputs = _upstream_attributes(repository.root)
         inputs.update(_effective_user_inputs(repository.root))
+        observations.extend(_unknown_policy_observations(inputs))
         upstream = _upstream_owned(inputs)
         default = has_managed_attributes(common_content)
         if default and upstream:
@@ -1338,14 +1351,6 @@ def _record_stealth_policy(
                 detail="untracked .gitattributes contains an old default; inspect and remove or migrate it manually if appropriate (Booley cannot prove ownership)",
             )
         )
-    for name, (_, message) in inputs.items():
-        if name.startswith("policy-unknown:"):
-            observations.append(
-                _observation(
-                    LineEndingObservationCode.ATTRIBUTES_POLICY_UNKNOWN,
-                    detail=os.fsdecode(message),
-                )
-            )
     if upstream:
         observations.append(
             _observation(

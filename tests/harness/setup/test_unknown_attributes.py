@@ -201,7 +201,8 @@ def test_unknown_sibling_does_not_publish_after_crlf_normalization(tmp_path):
 @pytest.mark.parametrize("failure", ["policy", "snapshot"])
 def test_unknown_never_erases_publication_error(tmp_path, monkeypatch, mode, failure):
     root, data, _local = _checkout(tmp_path, default=failure == "policy")
-    _git(root, "config", "--unset", "core.autocrlf")
+    if failure == "snapshot":
+        _git(root, "config", "--unset", "core.autocrlf")
     _missing_sibling(root, tmp_path)
     if failure == "policy":
 
@@ -213,10 +214,21 @@ def test_unknown_never_erases_publication_error(tmp_path, monkeypatch, mode, fai
         _fail_attributes_snapshot(monkeypatch)
     report = line_endings.reconcile_project_line_endings(root, data, mode=mode)
     assert report.status is Status.UNSAFE
+    assert _unknown(report.repositories[0])
     assert any(
         a.kind is ActionKind.PUBLISH_ATTRIBUTES and a.state is ActionState.REFUSED
         for a in report.repositories[0].actions
     )
+    reporter = _reporter(data)
+    doctor._report_repository_line_endings(
+        report.repositories[0], reporter.pass_, reporter.warn_, reporter.fail_
+    )
+    primary = (
+        "git.autocrlf-risk"
+        if failure == "snapshot" and mode is Mode.INSPECT
+        else "git.line-endings-unreadable"
+    )
+    assert {f.check_id for f in reporter.findings} == {"git.attributes-policy-unknown", primary}
 
 
 def test_sibling_becoming_unknown_refuses_publication(tmp_path, monkeypatch):
