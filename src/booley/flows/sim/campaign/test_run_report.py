@@ -217,7 +217,16 @@ def observation_test_run_rows(
                 f"observation of Test Run {observation['test_run']!r} has no recorded "
                 "Test Run with its fingerprint in the Simulation Campaign manifest"
             )
-        rows.append(test_run_row(run, _grade(observation)))
+        row = test_run_row(run, _grade(observation))
+        if row["grade"] == "fail":
+            row["functional_failure"] = (
+                observation["execution"] == "completed"
+                and observation["failure_class"] != "infrastructure"
+                and (observation["functional"] == "fail" or observation["assertions"] == "dirty")
+            )
+            if not row["functional_failure"]:
+                row["failure_execution"] = observation["execution"]
+        rows.append(row)
     return rows
 
 
@@ -267,7 +276,11 @@ def test_run_report_lines(
 
 def _rerun(selector: str, row: Mapping[str, object]) -> str:
     """The rerun command of one row."""
-    document = {key: value for key, value in row.items() if key != "grade"}
+    document = {
+        key: value
+        for key, value in row.items()
+        if key not in {"grade", "functional_failure", "failure_execution"}
+    }
     return rerun_command(selector, test_run_from_document(document))
 
 

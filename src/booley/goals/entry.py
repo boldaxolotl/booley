@@ -43,6 +43,7 @@ a Target resolution, or anything another thread or process must finish.
 
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -171,6 +172,7 @@ class EntryEnvironment:
     #: Where the seeds of multi-seed Goals come from, at entry and for the
     #: approved changes of the Goal Mode; tests supply a deterministic source.
     draw_seeds: SeedDraw = draw_seeds
+    schedule_baselines: Callable[[GoalRecord], None] | None = None
 
 
 @dataclass(frozen=True)
@@ -280,6 +282,11 @@ def enter_goal_mode(request: EntryRequest, env: EntryEnvironment) -> EntryResult
                 ) from exc
     except (GoalStoreError, CheckoutError) as exc:
         raise GoalEntryError(str(exc)) from exc
+    if env.schedule_baselines is not None:
+        try:
+            env.schedule_baselines(active)
+        except (OSError, ValueError, RuntimeError) as exc:
+            logging.getLogger(__name__).warning("Baseline scheduling unavailable: %s", exc)
     warnings = (*plan.warnings, *_session_warnings(env, identity))
     return EntryResult(
         active, warnings, goal_mode_rules(active.declared_protected_inputs), recovered
@@ -370,6 +377,12 @@ def _drive_entry(
     _boundary(env, "pinned")
     _write_initial_state(store, record, params, checkout.root)
     _boundary(env, "state_saved")
+    from booley.goals.sim_baseline_store import capture_entry_inputs
+
+    try:
+        capture_entry_inputs(store.project_dir, record)
+    except (OSError, ValueError, RuntimeError) as exc:
+        logging.getLogger(__name__).warning("Baseline input capture unavailable: %s", exc)
     _revalidate_before_activation(checkout, record, roots)
     record = _save(store, record, state=GoalState.ACTIVE)
     _boundary(env, "active")

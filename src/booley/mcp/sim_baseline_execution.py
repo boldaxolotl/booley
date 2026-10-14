@@ -1,0 +1,598 @@
+"""Execute independent SIM baseline observations using the existing baseline checkout.
+
+A detached supervisor owns the checkout. A bounded child runs the ordinary
+Simulation Flow with a standalone, in-memory adapter: no Goal state, ledger
+or campaign registration is reachable from it.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import threading
+import time
+from collections.abc import Callable, Mapping, Sequence
+from pathlib import Path
+from typing import Any
+
+from booley.core.boundary import require_dict, require_list, require_str_value
+from booley.core.file_lock import release_file_lock, wait_for_file_lock
+from booley.evidence.acceptance import PairedProjectBaseline
+from booley.flows.baseline_worktree import baseline_worktree
+from booley.flows.campaign_results import StartedCampaign
+from booley.flows.execution_persistence import StandaloneFlowExecution
+from booley.flows.frozen_test_runs import current_declaration
+from booley.flows.target_test_plan import TargetTestPlan
+from booley.flows.test_runs import TestRun, test_run_document
+from booley.fusesoc.fusesoc_registry import prepare_core_library_plan
+from booley.goals.checkout import GoalCheckout
+from booley.goals.committed_export import pinned_working_bytes, tracked_matches_pin
+from booley.goals.freshness import DEFAULT_RESOLVERS, goal_required_categories
+from booley.goals.model import GoalRecord
+from booley.goals.sim_baseline_store import (
+    SCHEMA,
+    baseline_root,
+    cache_path,
+    cached_result,
+    content_digest,
+    read_document,
+    relative_path,
+    request_runs,
+    result_key,
+    write_document,
+)
+from booley.goals.test_run_evidence import freshness_stamp
+from booley.goals.test_run_freezing import TargetPlans
+from booley.runtime.process_group import (
+    ProcessGroup,
+    capture_process_group,
+    new_group_kwargs,
+    request_group_termination,
+    terminate_process_group,
+)
+from booley.runtime.project_dir import resolve_checkout_project_dir
+from booley.runtime.worktree_paths import worktree_state_dir
+
+SIM_KEY = "sim_pass_baseline"
+# Digest of the canonical empty file list, for declaration-only fingerprint categories.
+EMPTY_CATEGORY_DIGEST = hashlib.sha256(b"[]").hexdigest()
+Execute = Callable[[Path, str, tuple[TestRun, ...], Path], dict[str, Any]]
+
+
+def contents_stamp(fingerprint: Mapping[str, Any]) -> str:
+    """Use the same dependent-content categories as candidate SIM evidence."""
+    stamp = freshness_stamp(SIM_KEY, {"_source_fingerprint": {"fingerprint": fingerprint}})
+    if stamp is None:
+        raise ValueError("baseline dependent contents cannot be fingerprinted")
+    return stamp
+
+
+def restore_entry_inputs(root: Path, request: Mapping[str, Any]) -> None:
+    """Restore captured configuration/cores, never a new testbench or live declaration."""
+    inputs = require_dict(request["inputs"], field="baseline entry inputs")
+    if inputs.get("error"):
+        raise ValueError(inputs["error"])
+    files = require_dict(inputs.get("files"), field="baseline input files")
+    links = require_dict(inputs.get("links"), field="baseline resolution links")
+    record = GoalRecord.from_json(request["record"])
+    project = root / relative_path(inputs["project_relative"])
+    project.mkdir(parents=True, exist_ok=True)
+    if record.project_snapshot is not None and (project / "cores").is_dir():
+        shutil.rmtree(project / "cores")
+    for name, data in files.items():
+        path = root / relative_path(name)
+        if path.is_symlink() or any(
+            parent.is_symlink() for parent in path.parents if parent != root
+        ):
+            raise ValueError("baseline input destination crosses a link")
+        if data is None:
+            path.unlink(missing_ok=True)
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(bytes.fromhex(require_str_value(data, field="baseline input bytes")))
+    for name, target in links.items():
+        path, destination = root / relative_path(name), root / relative_path(target)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.unlink(missing_ok=True)
+        path.symlink_to(
+            os.path.relpath(destination, path.parent), target_is_directory=destination.is_dir()
+        )
+    executable = require_dict(inputs.get("executable", {}), field="baseline executable inputs")
+    for name, enabled in executable.items():
+        path = root / relative_path(name)
+        if type(enabled) is not bool:
+            raise ValueError("baseline executable flag must be boolean")
+        if path.is_file():
+            path.chmod(path.stat().st_mode | 0o111 if enabled else path.stat().st_mode & ~0o111)
+    prepare_core_library_plan(root)
+
+
+def prove_base_contents(
+    root: Path, request: Mapping[str, Any], fingerprint: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Check dependency bytes against pinned Git objects or entry configuration bytes."""
+    record = GoalRecord.from_json(request["record"])
+    if GoalCheckout(root).head_sha() != record.base_sha:
+        raise ValueError("baseline checkout is not at the Goal base commit")
+    captured = require_dict(request["inputs"]["files"], field="entry input files")
+    projections: dict[Path, Any] = {}
+    proof: dict[str, str] = {}
+    for name in _dependent_files(fingerprint):
+        relative = relative_path(name)
+        path = root / relative
+        if not path.resolve().is_relative_to(root.resolve()):
+            raise ValueError(f"baseline dependency escapes checkout: {name}")
+        found = GoalCheckout(path.parent).containing_repository()
+        if found is None:
+            raise ValueError(f"baseline dependency has no pinned repository: {name}")
+        repository = found[0]
+        pin = _participant_pin(repository, root, record)
+        if repository not in projections:
+            projections[repository] = pinned_working_bytes(repository, pin)
+        projection = projections[repository]
+        if tracked_matches_pin(repository, pin, path.resolve(), projection=projection):
+            proof[str(name)] = pin
+        elif (
+            str(name) in captured
+            and captured[str(name)] is not None
+            and path.read_bytes().hex() == captured[str(name)]
+        ):
+            # Only unversioned configuration can use the independently captured entry bytes.
+            if os.fsencode(path.resolve().relative_to(repository).as_posix()) in projection.rows:
+                raise ValueError(f"versioned baseline dependency differs from base: {name}")
+            proof[str(name)] = "entry-snapshot"
+        else:
+            raise ValueError(f"baseline dependency differs from base or is unavailable: {name}")
+    _check_captured_inputs(root, request)
+    return {
+        "base_sha": record.base_sha,
+        "protected_digest": record.protected_digest,
+        "paired_base_sha": record.paired_project_base_sha,
+        "contents": contents_stamp(fingerprint),
+        "dependencies": proof,
+    }
+
+
+def _dependent_files(fingerprint: Mapping[str, Any]) -> set[str]:
+    names: set[str] = set()
+    for category in goal_required_categories(SIM_KEY):
+        group = require_dict(fingerprint[category], field="baseline fingerprint category")
+        names.update(
+            require_str_value(name, field="baseline dependency")
+            for name in require_list(group.get("files"), field="baseline fingerprint files")
+        )
+    return names
+
+
+def _check_captured_inputs(root: Path, request: Mapping[str, Any]) -> None:
+    for name, data in request["inputs"]["files"].items():
+        path = root / relative_path(name)
+        actual = path.read_bytes().hex() if path.is_file() else None
+        if actual != data:
+            raise ValueError(f"baseline entry input changed during execution: {name}")
+        executable = request["inputs"]["executable"].get(name)
+        if (
+            os.name != "nt"
+            and executable is not None
+            and bool(path.stat().st_mode & 0o111) != executable
+        ):
+            raise ValueError(f"baseline input executable state changed: {name}")
+    for relative in request["inputs"].get("protected_directories", []):
+        directory = root / relative_path(relative)
+        expected = {
+            name
+            for name, data in request["inputs"]["files"].items()
+            if data is not None and Path(name).is_relative_to(relative_path(relative))
+        }
+        actual = {
+            path.relative_to(root).as_posix()
+            for path in directory.rglob("*")
+            if path.is_file() and "__pycache__" not in path.parts
+        }
+        if actual != expected:
+            raise ValueError(f"baseline protected directory changed: {relative}")
+
+
+def _participant_pin(repository: Path, root: Path, record: GoalRecord) -> str:
+    from booley.runtime.pinned_history import raw_git
+
+    pin = GoalCheckout(repository).head_sha()
+    if repository == root:
+        return record.base_sha
+    if repository == resolve_checkout_project_dir(root):
+        if record.paired_project_base_sha != pin:
+            raise ValueError("baseline paired Project commit differs")
+        return pin
+    parent = GoalCheckout(repository.parent).containing_repository()
+    if parent is None or not parent[0].is_relative_to(root):
+        raise ValueError("baseline dependency has an unpinned nested repository")
+    parent_pin = _participant_pin(parent[0], root, record)
+    relative = repository.relative_to(parent[0]).as_posix()
+    entry = raw_git(parent[0], "ls-tree", parent_pin, "--", relative)
+    if not entry.startswith(f"160000 commit {pin}\t".encode()):
+        raise ValueError("baseline submodule does not match its base gitlink")
+    return pin
+
+
+def baseline_kind(plan: TargetTestPlan | None, run: TestRun) -> tuple[str, str]:
+    """Absence is new; an incompatible resolved Test Run is never a transition."""
+    if plan is None:
+        return "new", "Target absent at baseline"
+    if plan.adapter == "cocotb" and not plan.tests:
+        return "unavailable", "baseline cocotb Test discovery is not registered"
+    if run.test is not None and run.test not in plan.tests:
+        return "new", "Test absent at baseline"
+    if current_declaration(plan, run) != run:
+        return "not comparable", "baseline Variant, seed or declared arguments differ"
+    return "runnable", ""
+
+
+def _ignored_destination(root: Path, base: str) -> None:
+    destination = worktree_state_dir(root) / f".baseline-wt-{os.getpid()}-{base[:7]}"
+    owner = GoalCheckout(destination.parent).containing_repository()
+    if owner is None:
+        raise ValueError("baseline scratch has no repository owner")
+    result = subprocess.run(
+        ["git", "check-ignore", "--quiet", str(destination)],
+        cwd=owner[0],
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise ValueError("baseline scratch directory is not ignored; run Project initialization")
+
+
+def run_baseline(
+    path: Path, request: dict[str, Any], *, execute: Execute | None = None
+) -> list[dict[str, Any]]:
+    """Resolve the base's own declarations, reuse contents evidence, then run missing work."""
+    record = GoalRecord.from_json(request["record"])
+    root = Path(request["source_repository"])
+    _ignored_destination(root, record.base_sha)
+    paired = (
+        PairedProjectBaseline.absent()
+        if record.paired_project_base_sha is None
+        else PairedProjectBaseline.entry_pinned(record.paired_project_base_sha)
+    )
+    with baseline_worktree(root, record.base_sha, paired_project=paired) as checkout:
+        restore_entry_inputs(checkout, request)
+        request["owned_checkout"] = str(checkout)
+        request["scratch_parent"] = str(checkout.parent)
+        request["owned_paired_checkout"] = (
+            str(resolve_checkout_project_dir(checkout)) if record.paired_project_base_sha else None
+        )
+        write_document(path, request)
+        plans = TargetPlans(checkout)
+        plan = plans.plan(request["identity"]["target"])
+        runs = request_runs(request)
+        results, applicable = _classify_runs(plan, runs)
+        declaration = DEFAULT_RESOLVERS.surface_fingerprint(checkout, None)
+        empty = {"digest": EMPTY_CATEGORY_DIGEST, "files": []}
+        declaration_proof = prove_base_contents(
+            checkout, request, {"rtl": empty, "tb": empty, "target_surface": declaration}
+        )
+        declaration_proof["target_identity"] = (
+            plans.identity(request["identity"]["target"]) if plan is not None else None
+        )
+        for result in results:
+            result["proof"] = declaration_proof
+        if not applicable:
+            return results
+        target = request["identity"]["target"]
+        fingerprint = DEFAULT_RESOLVERS.fingerprint(checkout, target=target)
+        proof = prove_base_contents(checkout, request, fingerprint)
+        proof["target_identity"] = plans.identity(target)
+        return results + _observe_missing(
+            checkout, path, request, applicable, proof, execute or execute_child
+        )
+
+
+def _classify_runs(
+    plan: TargetTestPlan | None, runs: Sequence[TestRun]
+) -> tuple[list[dict[str, Any]], tuple[TestRun, ...]]:
+    results, applicable = [], []
+    for run in runs:
+        kind, reason = baseline_kind(plan, run)
+        if kind == "runnable":
+            applicable.append(run)
+        else:
+            results.append({**test_run_document(run), "grade": kind, "reason": reason})
+    return results, tuple(applicable)
+
+
+def _cache_lock_path(project: Path, proof: Mapping[str, Any]) -> Path:
+    key = {
+        "target": proof["target_identity"],
+        "contents": proof["contents"],
+        "protected_inputs": proof["protected_digest"],
+    }
+    return baseline_root(project) / "locks" / (content_digest(key) + ".lock")
+
+
+def _observe_missing(checkout, path, request, runs, proof, execute) -> list[dict[str, Any]]:
+    project, target, stamp = (
+        Path(request["project_dir"]),
+        request["identity"]["target"],
+        proof["contents"],
+    )
+    cache_target = proof["target_identity"]
+    lock_path = _cache_lock_path(project, proof)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+b") as handle:
+        wait_for_file_lock(handle, timeout_s=_remaining_seconds(path.parent))
+        try:
+            cached = {
+                run.name: cached_result(
+                    project, result_key(cache_target, run, stamp, proof["protected_digest"])
+                )
+                for run in runs
+            }
+            missing = tuple(run for run in runs if cached[run.name] is None)
+            observed = (
+                execute(checkout, target, missing, path.parent)
+                if missing
+                else {"rows": [], "stamps": [stamp]}
+            )
+            after = DEFAULT_RESOLVERS.fingerprint(checkout, target=target)
+            if (
+                contents_stamp(after) != stamp
+                or any(value != stamp for value in observed.get("stamps", []))
+                or (
+                    not observed.get("stamps")
+                    and any(row.get("grade") in {"pass", "fail"} for row in observed["rows"])
+                )
+            ):
+                raise ValueError(
+                    "baseline producer contents differ from the proven base fingerprint"
+                )
+            prove_base_contents(checkout, request, after)
+            return [
+                _publish_run(project, cache_target, run, proof, cached[run.name], observed)
+                for run in runs
+            ]
+        finally:
+            release_file_lock(handle)
+
+
+def _publish_run(project, target, run, proof, cached, observed) -> dict[str, Any]:
+    if cached is not None:
+        return {**test_run_document(run), "grade": cached["grade"], "proof": cached["proof"]}
+    matching = [
+        row
+        for row in observed["rows"]
+        if row.get("name") == run.name and row.get("fingerprint") == run.fingerprint
+    ]
+    grades = {row.get("grade") for row in matching}
+    grade = "fail" if "fail" in grades else "pass" if grades == {"pass"} else "unavailable"
+    result = {**test_run_document(run), "grade": grade, "proof": proof}
+    if grade == "unavailable":
+        reason = (
+            "; ".join(str(row["reason"]) for row in matching if row.get("reason"))
+            or observed.get("reason")
+            or "baseline Test Run produced no graded result"
+        )
+        result["reason"] = " ".join(str(reason).split())[:300]
+    else:
+        key = result_key(target, run, proof["contents"], proof["protected_digest"])
+        write_document(
+            cache_path(project, key),
+            {"schema": SCHEMA, "key": key, "grade": grade, "proof": proof},
+        )
+    return result
+
+
+def execute_child(
+    checkout: Path, target: str, runs: tuple[TestRun, ...], output: Path
+) -> dict[str, Any]:
+    """A watchdog survives MCP exit and cleans the whole simulator process group."""
+    from booley.mcp.sim_baseline_jobs import baseline_environment
+
+    document = output / "simulation-request.json"
+    write_document(
+        document,
+        {
+            "schema": SCHEMA,
+            "checkout": str(checkout),
+            "target": target,
+            "identity": {"runs": [test_run_document(run) for run in runs]},
+            "output": str(output),
+        },
+    )
+    command = [sys.executable, "-m", "booley.mcp.sim_baseline_execution", str(document)]
+    process = subprocess.Popen(command, env=baseline_environment(), **new_group_kwargs())
+    group = capture_process_group(process)
+    from booley.runtime.pid import capture_process_identity
+
+    request_path = output / "request.json"
+    owner = read_document(request_path)
+    identity = capture_process_identity(process.pid)
+    write_document(
+        request_path,
+        owner | {"child_process": None if identity is None else identity.to_payload()},
+    )
+    try:
+        process.wait(timeout=_remaining_seconds(output))
+        return read_document(output / "simulation-result.json")
+    finally:
+        terminate_process_group(process, group)
+
+
+def reap_owned_checkout(request: Mapping[str, Any], supervisor_pid: int) -> None:
+    """Recover SIGKILL debris only when ownership, pins and process idleness agree."""
+    from booley.core.process_identity import ProcessIdentity
+    from booley.flows.baseline_worktree import _cleanup_baseline_worktree
+    from booley.runtime.pid import ProcessState, observe_process
+    from booley.runtime.pinned_history import raw_git
+
+    value = request.get("owned_checkout")
+    if value is None:
+        return
+    checkout, source = Path(value), Path(request["source_repository"])
+    if not checkout.exists():
+        return
+    if (
+        checkout.parent != Path(request["scratch_parent"])
+        or not checkout.name.startswith(f".baseline-wt-{supervisor_pid}-")
+        or checkout.is_symlink()
+    ):
+        raise ValueError("interrupted baseline scratch ownership differs")
+    child = ProcessIdentity.from_payload(request.get("child_process"))
+    if request.get("child_process") is not None and (
+        child is None
+        or observe_process(child).state not in {ProcessState.DEAD, ProcessState.ZOMBIE}
+    ):
+        return  # no cleanup while a child may still consume the checkout
+    if GoalCheckout(checkout).head_sha() != request["identity"]["base_sha"]:
+        raise ValueError("interrupted baseline checkout pin differs")
+    actual = Path(
+        os.fsdecode(
+            raw_git(checkout, "rev-parse", "--path-format=absolute", "--git-common-dir").strip()
+        )
+    )
+    expected = Path(
+        os.fsdecode(
+            raw_git(source, "rev-parse", "--path-format=absolute", "--git-common-dir").strip()
+        )
+    )
+    if actual != expected:
+        raise ValueError("interrupted baseline repository differs")
+    paired = request.get("owned_paired_checkout")
+    if paired is not None:
+        paired = Path(paired)
+        if (
+            not paired.is_relative_to(checkout)
+            or GoalCheckout(paired).head_sha() != request["identity"]["paired_base_sha"]
+        ):
+            raise ValueError("interrupted paired baseline ownership differs")
+    _cleanup_baseline_worktree(source, checkout, paired)
+
+
+def _remaining_seconds(output: Path) -> float:
+    from booley.mcp.sim_baseline_jobs import BASELINE_TIMEOUT_S
+    from booley.runtime import job_records
+
+    request = read_document(output / "request.json")
+    job = job_records.read_record(request["job_id"], Path(request["jobs_root"]))
+    started = None if job is None else job_records.parse_stamp(job.started_at)
+    if started is None:
+        raise ValueError("baseline Job has no valid watchdog start time")
+    remaining = started + BASELINE_TIMEOUT_S - time.time() - 180
+    if remaining <= 0:
+        raise TimeoutError("baseline Job exceeded its total execution budget")
+    return min(3600, remaining)
+
+
+class BaselineExecution(StandaloneFlowExecution):
+    """Capture producer samples and authenticated campaigns, with no state persistence."""
+
+    def __init__(self, checkout: Path, target: str) -> None:
+        self.checkout, self.target = checkout, target
+        self.campaigns: list[StartedCampaign] = []
+        self.stamps: list[str] = []
+
+    def register_campaign(self, campaign: StartedCampaign) -> None:
+        self.campaigns.append(campaign)
+        self.stamps.append(
+            contents_stamp(DEFAULT_RESOLVERS.fingerprint(self.checkout, target=self.target))
+        )
+
+    def criterion_source_fingerprint(
+        self, key: str, root: Path, target: str | None
+    ) -> dict[str, Any]:
+        value = DEFAULT_RESOLVERS.fingerprint(root, target=self.target)
+        self.stamps.append(contents_stamp(value))
+        return value
+
+
+def simulate(request: Mapping[str, Any]) -> dict[str, Any]:
+    """The actual Simulation Flow seam: standalone execution plus authenticated results."""
+    from booley.flows.sim.flow import SimulateFlow
+    from booley.flows.sim.request import SimRequest
+    from booley.flows.sim.unpublished_results import read_unpublished_results
+
+    checkout, target, output = (
+        Path(request["checkout"]),
+        request["target"],
+        Path(request["output"]),
+    )
+    runs = request_runs(request)
+    adapter = BaselineExecution(checkout, target)
+    unnamed = len(runs) == 1 and runs[0].test is None
+    result = SimulateFlow().execute(
+        SimRequest(
+            target=target,
+            work_dir=checkout,
+            test=None if unnamed else tuple(run.name for run in runs),
+            seed=runs[0].seed if unnamed else None,
+            report_dir=output / "reports",
+        ),
+        adapter=adapter,
+    )
+    rows: list[dict[str, Any]] = []
+    for campaign in adapter.campaigns:
+        durable = read_unpublished_results(campaign.manifest_path, campaign.manifest_sha256)
+        rows.extend(dict(row) for row in durable.rows)
+        _exclude_uncompleted(rows)
+    return {
+        "schema": SCHEMA,
+        "rows": rows,
+        "stamps": adapter.stamps,
+        "reason": result.outcome.report_text,
+    }
+
+
+def _exclude_uncompleted(rows: list[dict[str, Any]]) -> None:
+    """Authenticated Campaign rows retain whether a failure was functional.
+
+    Shared Simulation grades an aborted design run as fail. Baseline reporting
+    instead needs a completed functional failure, so it reads the classification
+    the public authenticated reader retained from the immutable observation.
+    """
+    for row in rows:
+        if row.get("grade") == "fail" and row.get("functional_failure") is not True:
+            row["grade"] = "unavailable"
+            row["reason"] = "baseline Test Run " + str(
+                row.get("failure_execution", "did not complete")
+            )
+
+
+def _child_deadline(_signal: int, _frame: object) -> None:
+    raise TimeoutError("baseline simulation exceeded its total Job budget")
+
+
+def _child_watchdog(output: Path) -> threading.Timer:
+    """Keep the child's total budget bounded even if its supervisor is killed."""
+    timer = threading.Timer(
+        _remaining_seconds(output), lambda: request_group_termination(ProcessGroup(os.getpid()))
+    )
+    timer.daemon = True
+    timer.start()
+    return timer
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = sys.argv[1:] if argv is None else argv
+    if len(args) != 1:
+        return 2
+    request = read_document(Path(args[0]))
+    output = Path(request["output"]) / "simulation-result.json"
+    previous = signal.signal(signal.SIGTERM, _child_deadline)
+    timer = _child_watchdog(Path(request["output"]))
+    try:
+        write_document(output, simulate(request))
+    except (OSError, ValueError, RuntimeError) as exc:
+        write_document(output, {"schema": SCHEMA, "rows": [], "stamps": [], "reason": str(exc)})
+        return 2
+    finally:
+        timer.cancel()
+        signal.signal(signal.SIGTERM, previous)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
