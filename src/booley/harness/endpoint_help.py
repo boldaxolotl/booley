@@ -124,6 +124,8 @@ def _probe_parser(parser, visited: dict[int, argparse.ArgumentParser]) -> argpar
     wrapped = _HelpProbeParser(parents=[parser], add_help=False, **options)
     # Parent parsers transfer actions, but omit registered type converters.
     wrapped._registries = parser._registries
+    # Python 3.11 flattens titled groups containing mutually exclusive actions.
+    wrapped._action_groups = parser._action_groups
     visited[id(parser)] = wrapped
     for action in wrapped._actions:
         if isinstance(action, argparse._SubParsersAction):

@@ -400,3 +400,35 @@ def test_unknown_endpoint_help_cannot_list_from_host(
     assert captured.out == ""
     assert "Available" not in captured.err
     assert "runs inside the Booley Sandbox" in captured.err
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_help_preserves_titled_mutually_exclusive_groups(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    nested: bool,
+) -> None:
+    from booley.flows.endpoint_cli import human_endpoint_parser
+
+    class Grouped(Custom):
+        def _add_args(self, parser):
+            if nested:
+                parser = parser.add_subparsers().add_parser("nested")
+            group = parser.add_argument_group("Custom group")
+            exclusive = group.add_mutually_exclusive_group()
+            exclusive.add_argument("--one", action="store_true")
+            exclusive.add_argument("--two", action="store_true")
+
+    register_custom(monkeypatch, Grouped)
+    tail = ["nested", "--help"] if nested else ["--help"]
+    with pytest.raises(SystemExit) as direct:
+        human_endpoint_parser(Grouped()).parse_args(tail)
+    assert direct.value.code == 0
+    expected = capsys.readouterr()
+    assert "Custom group:" in expected.out
+    monkeypatch.setattr("sys.argv", ["booley", "flow", "custom", *tail])
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 0
+    assert capsys.readouterr() == expected
