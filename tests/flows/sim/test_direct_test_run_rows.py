@@ -114,7 +114,11 @@ def test_direct_criterion_detail_carries_the_rows(tmp_path: Path):
     detail = flow.state.criteria["sim_pass_lite"].detail
     assert detail["selected_tests"] == ["smoke", "stress"]
     assert detail["failed_tests"] == ["stress"]
-    assert detail["test_runs"] == report["test_runs"]
+    assert [
+        {key: value for key, value in row.items() if key != "functional_failure"}
+        for row in detail["test_runs"]
+    ] == report["test_runs"]
+    assert detail["test_runs"][-1]["functional_failure"] is True
     assert [row["grade"] for row in detail["test_runs"]] == ["pass", "fail"]
 
 

@@ -217,3 +217,42 @@ can select Goals without exposing internal keys in human text.
 ## Amendment (2026-10-13): Paired Checkout summaries
 
 Issue #1430 qualifies the Record and summary decision above: Finish keeps summaries local for authenticated Paired Checkouts, preserving independent Booley history. Other layouts retain the existing publication policy.
+
+
+## Amendment: report simulation baseline transitions (2026-10-14)
+
+Issue #1308's maintainer Agent Brief replaces the proposed transition Goals.
+SIM Goals retain their plain end-state requirement. Booley records each exact
+Frozen Test Run at the entry base, using the existing implementation-comparison
+baseline checkout mechanism with its default behavior unchanged. Entry captures
+unversioned declarations before activation; the baseline worker restores those
+inputs and proves dependency bytes against pinned Git objects or the captured
+entry configuration. Producer and post-run fingerprints must match that proof.
+Tests absent at base are reported as new and never run with a mixed testbench.
+Variant, seed or declared-input mismatches are not comparable.
+
+Baseline execution is a detached, bounded Job. Its requests, contents-addressed
+results and Job records live separately from candidate Goal evidence and Job
+fences. Entry retains protected programs with their executable state; changed
+protected controls cannot share a result. Cache identity is Target, full resolved Test Run and dependent-contents
+fingerprint. A base-selection index allows an identical second session to reuse
+its report without starting another Job. Baseline Jobs are visible through Job
+polling and the Dashboard, but Finish never inspects their records. Scheduling
+occurs only from active entry/change/status/run adapters, outside lifecycle locks;
+recovery, Finish, abandonment and observational Dashboard reads do not schedule.
+
+Status, Dashboard Goal details and the frozen Review Package share one per-Goal
+summary. The report distinguishes pass-to-pass, fail-to-pass, pass-to-fail,
+fail-to-fail, and new Tests that fail or pass with or without a proven earlier
+functional failure. Seen-failing evidence belongs to the same Goal Mode across
+specification revisions, matches the exact Target and Test Run, and precedes the
+pass at different dependent contents. Aggregate ever-failed state, infrastructure
+errors, timeouts and unclassified failures supply no such proof. Reports name
+every outcome other than pass-to-pass; review calls attention to regressions and
+new Tests that passed without being seen failing.
+
+Baseline pending, unavailable and not-comparable reports never change Goal state,
+entry success, completion authority or Finish. Finish does not wait: a short
+session can freeze a pending report. Red-first advice stays unconditional. This
+amendment adds no from-state argument, transition Goal, enforcement rule or
+baseline work for any other Goal family.

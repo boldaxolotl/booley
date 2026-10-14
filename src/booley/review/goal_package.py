@@ -116,12 +116,13 @@ def _validate_goal_row(row: dict[str, Any]) -> None:
         "selected_transaction",
     }
     if (
-        set(row) != fields
+        not fields <= set(row) <= fields | {"simulation_baseline"}
         or row["met"] is not True
         or row["fresh"] is not True
         or type(row["modified_target"]) is not bool
     ):
         raise ValueError("invalid completion Goal row")
+    _validate_baseline_report(row)
     for name in ("record_id", "key", "metric", "observation_sha256"):
         require_str_value(row[name], field=name)
     if require_int(row["spec_revision"], field="spec_revision") < 1:
@@ -148,6 +149,16 @@ def _validate_goal_row(row: dict[str, Any]) -> None:
         require_dict(detail.get("goal_derivation"), field="goal_derivation")
     if row["selected_transaction"] is not None:
         require_dict(row["selected_transaction"], field="selected_transaction")
+
+
+def _validate_baseline_report(row: dict[str, Any]) -> None:
+    if "simulation_baseline" in row:
+        baseline = require_dict(row["simulation_baseline"], field="simulation baseline")
+        require_str_value(baseline.get("summary"), field="baseline summary")
+        for run in require_list(baseline.get("runs"), field="baseline transitions"):
+            require_dict(run, field="baseline transition")
+        for name in require_list(baseline.get("attention"), field="baseline attention"):
+            require_str_value(name, field="baseline attention Test Run")
 
 
 def _test_run_lines(detail: dict[str, Any]) -> list[str]:
@@ -232,6 +243,11 @@ def _goal_lines(row: dict[str, Any], presenter: Callable[[object], str]) -> list
         + ("; bound Target modified" if row["modified_target"] else ""),
         f"  Evidence {selected['sequence']} ({row['observation_sha256']}), producer {selected['producer']}, invocation {selected['invocation_id']}, recorded {selected['recorded_at']}, spec revision {row['spec_revision']}.",
     ]
+    baseline = row.get("simulation_baseline")
+    if baseline is not None:
+        lines.append("  Baseline -> final: " + baseline["summary"])
+        if baseline["attention"]:
+            lines.append("  Review attention: " + ", ".join(baseline["attention"]))
     detail = selected["detail"]
     for finding in detail.get("pending", detail.get("issue_list", [])):
         lines.append("  Open finding: " + json.dumps(finding, sort_keys=True, ensure_ascii=False))

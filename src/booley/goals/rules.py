@@ -53,6 +53,10 @@ def goal_mode_rules(declared: DeclaredCapture | None = None) -> str:
         "passes, the test does not detect the bug and a later pass proves nothing; "
         "tell the human in chat, and propose a Goal change through "
         "`goal_propose_change` if a Goal depends on it.",
+        "Booley records each SIM Goal's baseline-to-final Test Run transitions. "
+        "A new Test Run that was never seen failing is visible in status and the review "
+        "package. Baselines run as background Jobs; pending or unavailable baseline "
+        "evidence is reported and never changes a Goal or blocks Finish.",
         "Finish needs every Goal met at a clean, committed HEAD plus a Session "
         "Summary. Commit your work on the Goal Branch.",
         "Check `goal_status` when unsure; `goal_status(rules=true)` repeats these rules.",

@@ -56,6 +56,29 @@ def test_windows_lock_seeds_empty_file_and_uses_byte_zero(monkeypatch: pytest.Mo
     assert calls == [(7, 1, 1, 0), (7, 2, 1, 0)]
 
 
+class _MemoryBinaryFile(io.BytesIO):
+    def fileno(self) -> int:
+        return 7
+
+
+def test_windows_lock_seeds_empty_binary_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Binary-mode lock files (``open("a+b")``) get a byte, not a str, seed."""
+    handle = _MemoryBinaryFile()
+    calls: list[tuple[int, int, int]] = []
+
+    def locking(fd: int, mode: int, count: int) -> None:
+        calls.append((fd, mode, count))
+
+    fake_msvcrt = SimpleNamespace(LK_NBLCK=1, LK_UNLCK=2, locking=locking)
+    _install_fake_lock_module(monkeypatch, "win32", "msvcrt", fake_msvcrt)
+
+    with file_lock.nonblocking_file_lock(handle):
+        assert handle.getvalue() == b"\0"
+        assert handle.tell() == 0
+
+    assert calls == [(7, 1, 1), (7, 2, 1)]
+
+
 def test_lock_contention_has_specific_exception(monkeypatch: pytest.MonkeyPatch) -> None:
     def flock(_fd: int, _flags: int) -> None:
         raise OSError(errno.EAGAIN, "busy")

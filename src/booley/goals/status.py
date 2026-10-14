@@ -22,7 +22,7 @@ from booley.goals.freshness import (
     GoalFreshnessResolvers,
     evaluate_goal_freshness,
 )
-from booley.goals.model import GoalRecord, RecordedGoal
+from booley.goals.model import GoalFamily, GoalRecord, RecordedGoal
 from booley.goals.paths import record_paths
 from booley.goals.presentation import GoalPresentation, goal_presentation
 from booley.goals.proposals import ProposalView, list_proposals
@@ -53,6 +53,7 @@ class GoalStatus:
     #: The Goal state differs from its selected immutable observation.
     state_conflict: bool = False
     presentation: GoalPresentation | None = None
+    sim_transitions: tuple[dict[str, Any], ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -134,7 +135,7 @@ def _build_status(
         protected[0] if protected else checkout_violation(store, record, root)
     )
     unaccounted = campaign_accounting.unaccounted_goals(store, record, state)
-    goals = _goal_statuses(record, state, paths.logs_dir, root, drift, resolvers, unaccounted)
+    goals = _goal_statuses(record, state, store, root, drift, resolvers, unaccounted)
     goals = _with_unfinished_runs(goals, campaign_accounting.started_without_result(store, record))
     return GoalStatusView(
         record,
@@ -150,7 +151,7 @@ def _build_status(
 def _goal_statuses(
     record: GoalRecord,
     state: DevelopmentState,
-    logs_dir: Path,
+    store: GoalStore,
     root: Path,
     drift: str,
     resolvers: GoalFreshnessResolvers,
@@ -162,6 +163,7 @@ def _goal_statuses(
     ledger yet (ADR 0072): it is unmet with that reason whatever the ledger
     says, because what is missing may be a failure.
     """
+    logs_dir = record_paths(store.project_dir, record.id).logs_dir
     history = validated_evidence_records(GOAL_SCOPE, logs_dir, state, {})
     latest = {row["criterion"]: row for row in history if row["role"] == "candidate"}
     plans = TargetPlans(root)
@@ -180,6 +182,13 @@ def _goal_statuses(
                 evidence_summary="evidence is incomplete",
                 reason=unaccounted[key],
             )
+        if goal.spec.family is GoalFamily.SIM:
+            from booley.goals.sim_transitions import goal_transitions
+
+            transitions = goal_transitions(
+                store.project_dir, record, goal, evidence, history, root, resolvers
+            )
+            status = replace(status, sim_transitions=tuple(transitions))
         statuses.append(status)
     return tuple(statuses)
 

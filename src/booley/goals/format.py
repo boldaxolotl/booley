@@ -236,6 +236,10 @@ def test_run_lines(goal: GoalStatus) -> list[str]:
     lines += [f"  rerun {run.name}: {run.rerun}" for run in failed[:_RERUN_LIMIT]]
     if len(failed) > _RERUN_LIMIT:
         lines.append(f"  ... and {len(failed) - _RERUN_LIMIT} more failing Test Runs")
+    if goal.sim_transitions is not None:
+        from booley.goals.sim_transitions import transition_summary
+
+        lines.append(f"{name}: baseline -> current: {transition_summary(goal.sim_transitions)}")
     return lines
 
 
@@ -276,6 +280,13 @@ def render_status(
             for goal in view.goals:
                 name = goal.presentation.text if goal.presentation else UNAVAILABLE_GOAL
                 console.print(f"  {name}: {goal.status}")
+                if goal.sim_transitions is not None:
+                    from booley.goals.sim_transitions import transition_summary
+
+                    console.print(
+                        f"  {name}: baseline -> current: {transition_summary(goal.sim_transitions)}",
+                        soft_wrap=True,
+                    )
         else:
             _render_long_status(console, view)
     return stream.getvalue().rstrip()

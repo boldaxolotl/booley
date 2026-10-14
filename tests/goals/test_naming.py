@@ -82,6 +82,8 @@ def test_catalog_spelling_agrees_on_actual_entry_status_mcp_dashboard_and_produc
     assert goal_presentation(store.load(loaded.id).goals[0].spec).name == expected
 
 
+# Windows CI has measured over 40% of the 60 s default; keep 3x headroom (#1202).
+@pytest.mark.timeout(120)
 def test_completion_freezes_name_without_extending_package_schema(layout, monkeypatch):
     from booley.criteria.state import DevelopmentState
     from booley.goals.finish import finish_goal
