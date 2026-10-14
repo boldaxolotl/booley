@@ -804,3 +804,24 @@ def test_unmoved_git_config_keeps_custom_formatting(tmp_path):
     before = config.read_bytes()
     migration.apply_migration(_inspect(tmp_path))
     assert config.read_bytes() == before
+
+
+@pytest.mark.parametrize("prefix", ["/history", r"C:\history"])
+def test_sealed_historical_directory_uses_recorded_path_flavor(tmp_path, prefix):
+    from booley.goals.lifecycle import LifecycleError, _record_directory
+
+    _repository(tmp_path)
+    record = _record(tmp_path / NEW, GoalState.FINISHED, tmp_path)
+    separator = "\\" if prefix.startswith("C:") else "/"
+    stored = prefix + separator + record.id
+    authority = {
+        "record_directory": {
+            "path": stored,
+            "identity": {"record_id": record.id, "worktree": record.worktree.to_json()},
+        }
+    }
+    current = tmp_path / NEW / "goals" / record.id
+    assert _record_directory(authority, current, record) == Path(stored)
+    authority["record_directory"]["path"] = prefix + separator + "other-record"
+    with pytest.raises(LifecycleError, match="identity was substituted"):
+        _record_directory(authority, current, record)

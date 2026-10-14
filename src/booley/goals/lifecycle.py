@@ -7,7 +7,7 @@ from collections.abc import Generator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from hashlib import sha256
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from booley.core.boundary import (
@@ -320,8 +320,10 @@ def _record_directory(authority: dict[str, Any], current: Path, record: GoalReco
     if (
         set(binding) != {"path", "identity"}
         or not isinstance(binding["path"], str)
-        or not Path(binding["path"]).is_absolute()
-        or Path(binding["path"]).name != record.id
+        or not any(
+            flavor(binding["path"]).is_absolute() and flavor(binding["path"]).name == record.id
+            for flavor in (PurePosixPath, PureWindowsPath)
+        )
         or current.name != record.id
     ):
         raise LifecycleError("immutable operation directory identity was substituted")
