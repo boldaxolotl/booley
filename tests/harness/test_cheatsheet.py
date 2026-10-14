@@ -296,3 +296,18 @@ def test_skills_table_lists_every_packaged_skill():
     packaged = {path.name for path in skills_dir().iterdir() if (path / "SKILL.md").is_file()}
     assert packaged, "no packaged skills found; skills_dir() is wrong"
     assert listed == packaged
+
+
+def test_init_force_row_matches_its_help():
+    """The `init --force` row keeps caches, as `init --help` says, not a no-cache rebuild."""
+    parser = tlr._build_parser()
+    commands = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
+    force = next(a for a in commands.choices["init"]._actions if "--force" in a.option_strings)
+    row = next(
+        line
+        for line in cheatsheet_path().read_text(encoding="utf-8").splitlines()
+        if line.startswith("| `booley init --force` |")
+    )
+    assert "caches" in force.help
+    assert "keep caches" in row
+    assert "no cache" not in row
