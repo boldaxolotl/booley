@@ -138,6 +138,7 @@ def resolve_booley_dir(start: Path | None = None) -> Path:
     if start is not None:
         current = require_project_checkout(current)
     if not os.environ.get("BOOLEY_DIR"):
+        current = require_project_checkout(current)
         _validate_walkup_layout(current)
     if _cache is not None:
         validate_selection(_cache)

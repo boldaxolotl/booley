@@ -1758,6 +1758,8 @@ class TestLoadAgentSettingsFromToml:
 
     @pytest.fixture(autouse=True)
     def _import(self):
+        from booley.runtime.agent_config import get_backend_config, set_backend_config
+
         mcp_stubs = {
             "mcp": MagicMock(),
             "mcp.server": MagicMock(),
@@ -1768,7 +1770,6 @@ class TestLoadAgentSettingsFromToml:
         }
         with patch.dict(sys.modules, mcp_stubs):
             from booley.mcp.server import _load_agent_settings_from_toml
-            from booley.runtime.agent_config import get_backend_config, set_backend_config
 
             self._load = _load_agent_settings_from_toml
             self._get = get_backend_config

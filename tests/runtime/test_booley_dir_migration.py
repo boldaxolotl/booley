@@ -32,6 +32,14 @@ def selection(monkeypatch):
     reset_cache()
 
 
+@pytest.fixture(autouse=True)
+def quiet_sandboxes(monkeypatch):
+    """Real-Git relocation cases model a quiescent host independently of other tests."""
+    original = migration._running_sandboxes
+    monkeypatch.setattr(migration, "_running_sandboxes", lambda: [])
+    return original
+
+
 def _inspect(root: Path):
     from booley.harness.setup.directory_migration import inspect_migration
 
@@ -510,7 +518,9 @@ def test_owned_integration_rewrites_only_path_components_and_exact_variable(tmp_
     )
 
 
-def test_live_sandbox_label_refuses_without_local_spec_or_matching_mount(tmp_path, monkeypatch):
+def test_live_sandbox_label_refuses_without_local_spec_or_matching_mount(
+    tmp_path, monkeypatch, quiet_sandboxes
+):
     from types import SimpleNamespace
 
     from booley.core.project_identity import project_label_id
@@ -518,6 +528,7 @@ def test_live_sandbox_label_refuses_without_local_spec_or_matching_mount(tmp_pat
     _repository(tmp_path)
     (tmp_path / OLD).mkdir()
     before = _snapshot(tmp_path)
+    monkeypatch.setattr(migration, "_running_sandboxes", quiet_sandboxes)
     monkeypatch.setattr(migration.shutil, "which", lambda name: "/fake/docker")
     responses = iter(
         [
@@ -538,7 +549,7 @@ def test_live_sandbox_label_refuses_without_local_spec_or_matching_mount(tmp_pat
         ]
     )
     monkeypatch.setattr(migration.subprocess, "run", lambda *a, **kw: next(responses))
-    with pytest.raises(BooleyLayoutError, match="stop live Sandbox live-container"):
+    with pytest.raises(BooleyLayoutError, match="stop live Sandbox"):
         migration._refuse_live_sandboxes(tmp_path, [])
     assert _snapshot(tmp_path) == before
 
@@ -550,3 +561,35 @@ def test_local_retired_project_outranks_warmed_ancestor_cache(tmp_path):
     (child / OLD).mkdir(parents=True)
     with pytest.raises(BooleyLayoutError, match="booley init"):
         resolve_booley_dir(child)
+
+
+@pytest.mark.parametrize("unavailable", ["binary", "daemon"])
+def test_unavailable_docker_refuses_without_local_spec_before_writes(
+    tmp_path, monkeypatch, quiet_sandboxes, unavailable
+):
+    from types import SimpleNamespace
+
+    _repository(tmp_path)
+    (tmp_path / OLD).mkdir()
+    before = _snapshot(tmp_path)
+    monkeypatch.setattr(migration, "_running_sandboxes", quiet_sandboxes)
+    monkeypatch.setattr(
+        migration.shutil, "which", lambda name: None if unavailable == "binary" else "/fake/docker"
+    )
+    monkeypatch.setattr(
+        migration.subprocess, "run", lambda *a, **kw: SimpleNamespace(returncode=1, stdout="")
+    )
+    with pytest.raises(BooleyLayoutError, match="cannot inventory live Sandboxes"):
+        migration._refuse_live_sandboxes(tmp_path, [])
+    assert _snapshot(tmp_path) == before
+
+
+def test_source_checkout_guard_precedes_unrelated_ancestor_layout(tmp_path):
+    from booley.core.checkout_role import SourceCheckoutProjectError
+
+    (tmp_path / OLD).mkdir()
+    source = tmp_path / "framework"
+    _repository(source)
+    (source / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
+    with pytest.raises(SourceCheckoutProjectError):
+        resolve_booley_dir(source)

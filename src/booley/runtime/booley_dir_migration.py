@@ -128,7 +128,7 @@ def _capture(
                     "Preserve local submodule changes; "
                     "use non-forced `git submodule deinit --all` only after reviewing them"
                 ) from exc
-    _refuse_live_sandboxes(root, moves)
+    _refuse_live_sandboxes(root, moves, rows)
     edits = pointer_edits(rows, moves) + _integration_edits(root, rows, moves)
     edits += integrations(root, rows, moves)
     return {
@@ -540,20 +540,20 @@ def historical_skip_note() -> str:
     return f"summary kept local; `{RETIRED_DIR_NAME}` is git-excluded"
 
 
-def _refuse_live_sandboxes(root: Path, moves: list[dict[str, Any]]) -> None:
-    """Do not rename live bind sources; inability to inspect an issued Project refuses."""
-    required = (root / ".devcontainer" / "devcontainer.json").is_file()
-    if not required and shutil.which("docker") is None:
-        return
+def _running_sandboxes() -> list[dict[str, Any]]:
+    """Inventory Docker on every migration; a missing local spec proves nothing."""
+    if shutil.which("docker") is None:
+        raise BooleyLayoutError(
+            "cannot inventory live Sandboxes; install/restore Docker before migration"
+        )
     result = subprocess.run(
         ["docker", "ps", "-q"], capture_output=True, text=True, timeout=30, check=False
     )
-    if result.returncode and not required:
-        return
     if result.returncode:
         raise BooleyLayoutError(
             "cannot inventory live Sandboxes; stop consumers and restore Docker before migration"
         )
+    documents = []
     for container in result.stdout.split():
         inspected = subprocess.run(
             ["docker", "inspect", container],
@@ -564,17 +564,37 @@ def _refuse_live_sandboxes(root: Path, moves: list[dict[str, Any]]) -> None:
         )
         if inspected.returncode:
             raise BooleyLayoutError(f"cannot inspect live Sandbox {container}")
-        document = json.loads(inspected.stdout)[0]
+        try:
+            values = json.loads(inspected.stdout)
+            if not isinstance(values, list) or len(values) != 1 or not isinstance(values[0], dict):
+                raise ValueError("expected one container object")
+            documents.append(values[0])
+        except (ValueError, TypeError, IndexError) as exc:
+            raise BooleyLayoutError(
+                f"cannot inspect live Sandbox {container}: invalid inventory"
+            ) from exc
+    return documents
+
+
+def _refuse_live_sandboxes(
+    root: Path, moves: list[dict[str, Any]], rows: list[dict[str, Any]] | None = None
+) -> None:
+    """Refuse active affected mounts and canonical/legacy Project labels."""
+    roots = {root}
+    for row in rows or []:
+        checkout = Path(row["path"])
+        roots.add(checkout.parent if checkout.name == RETIRED_DIR_NAME else checkout)
+    for document in _running_sandboxes():
         labels = document.get("Config", {}).get("Labels", {}) or {}
-        if matches_project_label(labels.get("booley.project-id"), str(root)):
-            raise BooleyLayoutError(f"stop live Sandbox {container} before running `booley init`")
+        if any(
+            matches_project_label(labels.get("booley.project-id"), str(path)) for path in roots
+        ):
+            raise BooleyLayoutError("stop live Sandbox before running `booley init`")
         for mount in document.get("Mounts", []):
             source = Path(mount.get("Source", "/__unavailable__"))
-            if source == root or any(
+            if source in roots or any(
                 Path(move["source"]).is_relative_to(source)
                 or source.is_relative_to(Path(move["source"]))
                 for move in moves
             ):
-                raise BooleyLayoutError(
-                    f"stop live Sandbox {container} before running `booley init`"
-                )
+                raise BooleyLayoutError("stop live Sandbox before running `booley init`")
