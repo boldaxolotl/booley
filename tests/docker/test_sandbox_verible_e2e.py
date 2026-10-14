@@ -19,6 +19,7 @@ FuseSoC resolutions.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import stat
 import subprocess
@@ -79,13 +80,18 @@ def _run_in_sandbox(args: list[str], mounts: list[str] | None = None, timeout: i
 def _require_verible_sandbox() -> None:
     if _docker() is None:
         pytest.skip("docker not available")
-    probe = subprocess.run(
-        [_docker(), "image", "inspect", _IMAGE],
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
-    )
+    try:
+        probe = subprocess.run(
+            [_docker(), "image", "inspect", _IMAGE],
+            capture_output=True,
+            text=True,
+            timeout=10 if os.name == "nt" else 60,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        if os.name != "nt":
+            raise
+        pytest.skip(f"Sandbox Image probe unavailable: {error}")
     if probe.returncode != 0:
         pytest.skip(f"{_IMAGE} image not built")
     have_bin = _run_in_sandbox(["sh", "-c", "command -v verible-verilog-lint"], timeout=120)
@@ -185,3 +191,27 @@ def test_sandbox_runs_use_unique_ci_container_names(monkeypatch: pytest.MonkeyPa
     names = [command[command.index("--name") + 1] for command in commands]
     assert len(set(names)) == 2
     assert all(name.startswith("booley-ci-123-1-verible-") for name in names)
+
+
+@pytest.mark.parametrize("failure", ["timeout", "unavailable"])
+@pytest.mark.parametrize("platform", ["nt", "posix"])
+def test_unavailable_image_probe_respects_platform_requirement(monkeypatch, failure, platform):
+    monkeypatch.setattr(shutil, "which", lambda _name: "docker")
+
+    def fail_probe(command, **kwargs):
+        assert command == ["docker", "image", "inspect", _IMAGE]
+        assert kwargs["timeout"] == (10 if platform == "nt" else 60)
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+        raise OSError("docker unavailable")
+
+    monkeypatch.setattr(subprocess, "run", fail_probe)
+    expected = (
+        pytest.skip.Exception
+        if platform == "nt"
+        else (subprocess.TimeoutExpired if failure == "timeout" else OSError)
+    )
+    with monkeypatch.context() as probe:
+        probe.setattr(os, "name", platform)
+        with pytest.raises(expected):
+            _require_verible_sandbox()

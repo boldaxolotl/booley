@@ -646,6 +646,10 @@ on VS Code folder attachment by default. Opt out with `[sandbox].dashboard=false
 Each session shows what its agent client last reported: working, waiting for
 tool call, or waiting for user input. Click a report, artifact, or evidence
 path in a detail view to open it in the editor.
+Press `s` for the session list, `j` for running Jobs, `r` for recent results,
+or `a` for all Jobs. From a session detail, Job shortcuts show that session's
+Jobs; press `u` to include all sessions and standalone Jobs. `Esc` returns to
+the previous view, and `?` shows help.
 
 For scripted inspection, `booley goal status` shows this worktree's Goal Mode,
 or every active Goal Mode in the Project when this worktree hosts none.

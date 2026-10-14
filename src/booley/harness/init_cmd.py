@@ -1831,7 +1831,12 @@ def _print_summary(ctx: InitContext) -> int:
         print(red("Setup incomplete — fix the errors above and re-run."))
         return exit_code
     if exit_code == 1:
-        print(yellow("Initialization has pending work; run `booley init`."))
+        print(
+            yellow(
+                "Initialization has pending work or incomplete checks. Run `booley init` "
+                "for pending changes; for incomplete checks, follow the source-specific guidance above."
+            )
+        )
         return exit_code
 
     # The send-off has to match what the advisories step just printed. Telling a fully

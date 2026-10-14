@@ -17,6 +17,27 @@ inside the Sandbox during initial Project Setup, after a Booley version change,
 after replacing the active Sandbox Image, or when investigating suspected
 machinery problems.
 
+Doctor warns with `git.attributes-policy-unknown` when a registered sibling
+worktree's user attributes cannot be inspected or Git cannot report its system
+attributes path. An unknown policy is an inspection limitation, not a confirmed
+conflict. Existing attributes and worktree registrations are preserved, and
+Project Initialization defers new shared local defaults until policy inspection
+is complete. Inspect an unavailable sibling from an environment where its
+registered path is accessible (the host if needed), or inspect the selected
+attributes file's type and access. For unsupported system-path discovery, use
+a Git build that supports discovery to inspect the system policy; the supported
+minimum Git version is unchanged.
+
+This warning can persist on supported older Git or in a Sandbox without host
+sibling access. Plain Doctor still exits 0 when there are only warnings, but
+unclean health prevents recording clean Doctor evidence. Normal init remains
+nonfatal; unknown-only `booley init --check` exits 1 and reports incomplete
+inspection. A waiver of `git.attributes-policy-unknown` does not waive genuine
+attributes conflicts or current-checkout inspection errors. Existing
+`git.line-endings-unreadable` waivers are not automatically applied to this new
+warning. Resolve the inspection limitation or accept it through a targeted
+waiver; do not remove a valid local rule or prune registrations to hide it.
+
 Deep Doctor is **current** when a qualifying deep run matches the executing
 Booley version and active immutable Sandbox Image, and no later completed failed
 or incomplete deep attempt supersedes it. The recorded date is informational;
