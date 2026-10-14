@@ -9,6 +9,11 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- Immutable-mode Pre-Sim Commands now run in the Project Root as documented,
+  including shared and ordinary Simulation Campaign launches with `run_cwd` set.
+  Hooks that relied on the previous working directory should
+  `cd "$BOOLEY_RUN_CWD"` explicitly.
+
 - `booley help` (including `help -h` and `help --help`) now shows the same
   top-level help as `booley --help`. Public commands are grouped as Sandbox,
   either location, and host-only, with alphabetical ordering within each group.
