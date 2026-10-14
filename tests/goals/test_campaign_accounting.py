@@ -310,6 +310,11 @@ def test_adoption_is_idempotent_and_survives_a_stop_after_each_write(
     assert len(list(evidence.iterdir() if evidence.exists() else [])) >= 1
     rows_after_stop = sorted(path.name for path in evidence.iterdir() if path.name[0].isdigit())
     assert campaign.registration().settled is False
+    # A late old report must not be merged into the adopted immutable observation.
+    path = record_paths(two.control, two.record.id).state_file
+    cached = json.loads(path.read_bytes())
+    cached["criteria"][SIM_KEY]["detail"] = {"obsolete_report_field": "old"}
+    path.write_text(json.dumps(cached))
     # The state differs from its newest observation: never met, and named unaccounted.
     assert _status(two).status == "unmet"
 
@@ -319,6 +324,15 @@ def test_adoption_is_idempotent_and_survives_a_stop_after_each_write(
         with pytest.raises(_InterruptedError):
             _account(two)
     assert _entry(two)["detail"][LEDGER_DETAIL_KEY]["runs"][0]["outcome"] == "failed"
+    from booley.criteria.evidence_ledger import validated_evidence_records
+    from booley.goals.recorder import GOAL_SCOPE
+    from booley.goals.state_store import load_goal_state
+
+    store = GoalStore(two.control)
+    state = load_goal_state(store, store.load(two.record.id))
+    selected = validated_evidence_records(GOAL_SCOPE, path.parent / "logs", state, {})[-1]
+    assert _entry(two)["detail"] == selected["detail"]
+    assert "obsolete_report_field" not in selected["detail"]
 
     _account(two)
     _account(two)  # an open registration is read on every pass: nothing is adopted twice

@@ -21,7 +21,8 @@ state saves through:
   would). ``timeline`` entries (by canonical JSON) and
   ``acceptance_transactions`` (by id) merge by identity, never by length:
   disk entries are kept in disk order, entries new to this instance are
-  appended in its order, and duplicates collapse. The merged state is written
+  appended in its order, and duplicates collapse. Evidence fields are then
+  projected from the selected immutable observations. The merged state is written
   with one atomic replacement (flushed through a writable handle) and becomes
   both this instance's values and its baseline.
 - **Refusals.** A save whose baseline holds a Criterion the instance lacks is
@@ -51,6 +52,7 @@ from booley.core.boundary import (
 from booley.criteria.categories import verification_fingerprint_categories
 from booley.criteria.state import CriterionEntry, DevelopmentState
 from booley.goals.binding import GoalRunBinding
+from booley.goals.evidence_projection import project_evidence
 from booley.goals.model import GoalFamily, GoalRecord, GoalSpec
 from booley.goals.paths import record_paths
 from booley.goals.publication import PublicationGate
@@ -204,9 +206,18 @@ def _validate_criterion(where: str, entry: dict[str, Any]) -> None:
 
 def load_goal_state(store: GoalStore, record: GoalRecord) -> DevelopmentState:
     """Read *record*'s state for presentation: fail-closed, declared Goals when missing."""
+    return load_goal_state_and_evidence(store, record)[0]
+
+
+def load_goal_state_and_evidence(
+    store: GoalStore, record: GoalRecord
+) -> tuple[DevelopmentState, list[dict[str, Any]]]:
+    """Read state and its immutable history as one coherent observational snapshot."""
     path = record_paths(store.booley_dir, record.id).state_file
     state = read_goal_state_file(path)
-    return declared_goal_state(record, record.worktree_path) if state is None else state
+    state = declared_goal_state(record, record.worktree_path) if state is None else state
+    history = project_evidence(record, state, path.parent / "logs")
+    return state, history
 
 
 def write_goal_state_file(path: Path, state: DevelopmentState) -> None:
@@ -353,9 +364,11 @@ class GoalStatePersistence:
     def read(self, path: Path) -> DevelopmentState:
         """The strict content of *path*, or the record's declared Goals when it is missing."""
         self._require_bound_file(path)
+        record = self._record()
         state = read_goal_state_file(path)
         if state is None:
-            state = declared_goal_state(self._record(), self._binding.worktree_root)
+            state = declared_goal_state(record, self._binding.worktree_root)
+        project_evidence(record, state, path.parent / "logs")
         return state
 
     def _require_bound_file(self, path: Path) -> None:
@@ -397,6 +410,8 @@ class GoalStatePersistence:
             merged = merge_states(base, local, disk)
             stamp = utc_now_rfc3339()
             written = _state_from_snapshot(merged, stamp)
+            project_evidence(self._record(), written, path.parent / "logs")
+            merged = state_snapshot(written)
             encoded = json.dumps(written.to_dict(), indent=2).encode("utf-8")
             atomic_replace_bytes(path, encoded, mode=_STATE_FILE_MODE)
         _apply_snapshot(state, merged, stamp)

@@ -229,10 +229,15 @@ def test_status_never_credits_projection_values_that_differ_from_selected_observ
         entry["params"]["cycle_count_max"] = 1000
     else:
         entry["detail"]["cycles"] = 1
+    immutable = {path: path.read_bytes() for path in paths.logs_dir.rglob("record.json")}
     paths.state_file.write_text(json.dumps(state))
     status = build_status(env.store, env.store.load(layout.record.id)).goals[0]
-    assert status.status != "met"
-    assert "selected immutable producer observation" in status.reason
+    assert status.status == ("met" if met else "unmet")
+    recovered = load_goal_state(env.store, env.store.load(layout.record.id))
+    assert recovered.criteria[CYCLE_KEY].met is met
+    assert recovered.criteria[CYCLE_KEY].params["cycle_count_max"] == (200 if met else 20)
+    assert recovered.criteria[CYCLE_KEY].detail["cycles"] != 1
+    assert {path: path.read_bytes() for path in immutable} == immutable
 
 
 @pytest.mark.parametrize("goal_receipt", [False, True])

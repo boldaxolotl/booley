@@ -183,10 +183,14 @@ def test_finish_refuses_before_publication(complete, change, message):
     elif change == "branch":
         git(complete.worktree, "checkout", "-qb", "sibling")
     elif change == "unmet":
+        from booley.criteria.state import DevelopmentState
+        from booley.goals.recorder import GoalEvidenceRecorder
+
+        recorder = GoalEvidenceRecorder(bind(complete, "failing-rerun"))
         path = record_paths(complete.control, complete.record.id).state_file
-        value = json.loads(path.read_bytes())
-        value["criteria"]["lint_clean_top"]["met"] = False
-        path.write_text(json.dumps(value))
+        state = DevelopmentState.load(path, recorder.state_persistence())
+        changes = state.set_criterion("lint_clean_top", False, detail={"warnings": 4})
+        recorder.record_changes(state, changes, invocation_id="fail", producer="lint")
     elif change == "protected":
         (complete.control / "booley.toml").write_bytes(b"[project]\nname='changed'\n")
     else:

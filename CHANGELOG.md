@@ -9,6 +9,11 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- Goal evidence fields in saved state now recover automatically from selected
+  valid immutable producer observations when Booley reads or saves Goal state.
+  Goal status reports remaining evidence or validation problems without treating
+  outdated saved evidence fields as an evidence conflict.
+
 - `booley help` (including `help -h` and `help --help`) now shows the same
   top-level help as `booley --help`. Public commands are grouped as Sandbox,
   either location, and host-only, with alphabetical ordering within each group.

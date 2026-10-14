@@ -52,7 +52,7 @@
       "mandatory": true,
       "ever_met": true,
       "ever_failed": true,
-      "updated_at": "2026-10-07T08:00:00Z",
+      "updated_at": "2026-10-07T10:00:00Z",
       "detail": {
         "_source_fingerprint": {
           "categories": [
@@ -110,7 +110,7 @@
       "met": true,
       "mandatory": true,
       "ever_met": true,
-      "updated_at": "2026-10-07T08:00:00Z",
+      "updated_at": "2026-10-07T10:00:00Z",
       "detail": {
         "_source_fingerprint": {
           "categories": [

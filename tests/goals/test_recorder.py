@@ -6,7 +6,7 @@ import hashlib
 import json
 import re
 from collections.abc import Callable
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -480,3 +480,246 @@ def test_target_changed_during_the_run_is_discarded(goal_mode: SimpleNamespace) 
 
     assert _paths(goal_mode).state_file.read_bytes() == before
     assert not (recorder.log_dir / "acceptance").exists()
+
+
+@pytest.mark.parametrize("schedule", ["lost_save", "reverse_save", "async_save"])
+def test_canonical_evidence_survives_late_or_missing_save(goal_mode, schedule):
+    import asyncio
+
+    recorder = GoalEvidenceRecorder(bind(goal_mode))
+    older = _load(goal_mode, recorder)
+    newer = _load(goal_mode, recorder)
+
+    def publish(state, warnings):
+        changes = state.set_criterion(LINT_KEY, True, detail={"warnings": warnings})
+        recorder.record_changes(state, changes, invocation_id="race", producer="lint")
+
+    async def interleave():
+        published = asyncio.Event()
+        saved = asyncio.Event()
+
+        async def first():
+            publish(older, 1)
+            published.set()
+            await saved.wait()
+            older.save()
+
+        async def second():
+            await published.wait()
+            publish(newer, 0)
+            newer.save()
+            saved.set()
+
+        await asyncio.wait_for(asyncio.gather(first(), second()), 5)
+
+    if schedule == "async_save":
+        asyncio.run(interleave())
+    else:
+        publish(older, 1)
+        if schedule == "reverse_save":
+            publish(newer, 0)
+            newer.save()
+            older.save()
+    disk = _load(goal_mode, recorder)
+    row = evidence_ledger.validated_evidence_records(GOAL_SCOPE, recorder.log_dir, disk, {})[-1]
+    assert disk.criteria[LINT_KEY].met == row["met"]
+    assert disk.criteria[LINT_KEY].params == row["params"]
+    assert disk.criteria[LINT_KEY].detail == row["detail"]
+
+
+def test_async_producer_adapters_keep_final_observations_after_old_reports(layout):
+    """External EDA/model results are stubbed at the actual EndpointState adapter."""
+    import asyncio
+
+    from booley.evidence.review_receipt import FILTERING_SEMANTICS_REVISION
+    from booley.flows.endpoint_state import EndpointState
+    from booley.goals.status import build_status
+    from booley.goals.store import GoalStore
+
+    class Producer(EndpointState):
+        def _run(self):
+            raise AssertionError("External execution is outside this persistence test")
+
+    goals = [{"family": family, "target": "top"} for family in ("LINT", "ELAB", "SYNTH")]
+    goals += [
+        {"family": "REVIEW", "review": kind, "verdict": "clean", "paths": ["rtl.v"]}
+        for kind in ("rtl_bugs", "rtl_protocol")
+    ]
+    layout = SimpleNamespace(**vars(layout), record=enter_goals(layout, goals))
+    recorder = GoalEvidenceRecorder(bind(layout))
+    snapshots = []
+
+    def publish(goal, final=False):
+        endpoint = Producer()
+        endpoint.name = (
+            "reviewer" if goal.spec.family.value == "review" else goal.spec.family.value
+        )
+        endpoint.configure_flow_execution(recorder)
+        endpoint._args = SimpleNamespace(
+            work_dir=str(layout.worktree),
+            target=goal.spec.target,
+            state_file=_paths(layout).state_file,
+            diagnostic=False,
+        )
+        endpoint.read_state()
+        endpoint.set_criterion(
+            goal.spec.key,
+            True,
+            detail={
+                "warnings": 0,
+                "issues": 0,
+                "pending": [],
+                "final": final,
+                "contract": {
+                    "scope": ["rtl.v"],
+                    "category": "rtl",
+                    "filtering_semantics_revision": FILTERING_SEMANTICS_REVISION,
+                },
+            },
+            source_target=goal.spec.target,
+        )
+        return endpoint.state
+
+    async def run():
+        ready = [asyncio.Event() for _ in range(len(layout.record.goals) + 1)]
+        ready[0].set()
+
+        async def producer(index, goal):
+            await ready[index].wait()
+            (layout.worktree / "rtl.v").write_text(f"module top; // source {index}\nendmodule\n")
+            snapshots.append(publish(goal))
+            ready[index + 1].set()
+
+        await asyncio.wait_for(
+            asyncio.gather(*(producer(i, goal) for i, goal in enumerate(layout.record.goals))), 10
+        )
+        before_rerun = build_status(GoalStore(layout.control), layout.record)
+        assert before_rerun.goals[0].status == "stale"
+        # Every old report loaded before this final set of completed producer runs.
+        for goal in layout.record.goals:
+            publish(goal, final=True)
+        for snapshot in reversed(snapshots):
+            snapshot.save()
+
+    asyncio.run(run())
+    _assert_final_projection(layout, recorder)
+
+
+def _assert_final_projection(layout, recorder):
+    from booley.goals.status import build_status
+    from booley.goals.store import GoalStore
+
+    disk = _load(layout, recorder)
+    history = evidence_ledger.validated_evidence_records(GOAL_SCOPE, recorder.log_dir, disk, {})
+    assert len(history) == 2 * len(layout.record.goals)
+    latest = {row["criterion"]: row for row in history}
+    for key, row in latest.items():
+        assert disk.criteria[key].detail == row["detail"]
+        assert disk.criteria[key].params == row["params"]
+        assert row["detail"]["final"] is True
+    status = build_status(GoalStore(layout.control), layout.record)
+    assert not any(goal.state_conflict for goal in status.goals)
+    assert all(goal.status == "met" for goal in status.goals), [
+        (g.key, g.status, g.reason) for g in status.goals
+    ]
+
+
+def test_projection_recovers_canonical_nested_detail_without_remerging(goal_mode):
+    recorder = GoalEvidenceRecorder(bind(goal_mode))
+    state = _load(goal_mode, recorder)
+    _v1(goal_mode, recorder, LINT_KEY, True, {"warnings": 0, "old": "remove"})
+    changes = state.set_criterion(LINT_KEY, True, detail={"warnings": 0})
+    changes = [
+        replace(
+            changes[0],
+            params={"target": "top", "runtime": {"pins": [1, 2]}},
+            detail={
+                "warnings": 0,
+                "nested": {"tuple": (1, {"items": [2, 3]})},
+                "receipt_id": "producer-receipt",
+            },
+        )
+    ]
+    recorder.record_changes(state, changes, invocation_id="canonical", producer="lint")
+    disk = _load(goal_mode, recorder)
+    row = evidence_ledger.validated_evidence_records(GOAL_SCOPE, recorder.log_dir, disk, {})[-1]
+    assert disk.criteria[LINT_KEY].params == row["params"]
+    assert disk.criteria[LINT_KEY].detail == row["detail"]
+    assert "old" not in disk.criteria[LINT_KEY].detail
+    assert row["detail"]["nested"]["tuple"] == [1, {"items": [2, 3]}]
+    assert disk.criteria[LINT_KEY].updated_at == row["recorded_at"]
+
+
+def test_in_memory_publication_also_mirrors_canonical_stamped_fields(goal_mode):
+    recorder = GoalEvidenceRecorder(bind(goal_mode))
+    state = DevelopmentState.from_json_object(_load(goal_mode, recorder).to_dict())
+    changes = state.set_criterion(LINT_KEY, True, detail={"warnings": 0})
+    recorder.record_changes(state, changes, invocation_id="memory", producer="lint")
+    row = evidence_ledger.validated_evidence_records(GOAL_SCOPE, recorder.log_dir, state, {})[-1]
+    assert state.criteria[LINT_KEY].detail == row["detail"]
+
+
+@pytest.mark.parametrize("family", ["LINT", "ELAB", "SYNTH", "FPGA", "MUTATION", "CYCLE_COUNT"])
+def test_rerun_replaces_conflicting_cache_for_each_flow_family(layout, family):
+    from booley.goals.status import build_status
+    from booley.goals.store import GoalStore
+
+    argument = {"family": family, "target": "top"}
+    if family == "MUTATION":
+        argument["scope"] = ["rtl.v"]
+    if family == "CYCLE_COUNT":
+        argument.update(test="smoke", thresholds={"cycle_count_max": 200})
+    layout = SimpleNamespace(**vars(layout), record=enter_goals(layout, [argument]))
+    key = layout.record.goals[0].spec.key
+    recorder = GoalEvidenceRecorder(bind(layout))
+    _v1(layout, recorder, key, False, {"warnings": 4})
+    path = _paths(layout).state_file
+    cached = json.loads(path.read_bytes())
+    cached["criteria"][key].update(met=True, detail={"conflicting": "old report"})
+    path.write_text(json.dumps(cached))
+    detail = {
+        **PASSING_SIM,
+        "warnings": 0,
+        "cycles": 100,
+        "cycle_observation": "observed",
+        "detected": 10,
+        "total_valid": 10,
+        "min_detected": 10,
+    }
+    state = _v1(layout, recorder, key, True, detail)
+    row = evidence_ledger.validated_evidence_records(GOAL_SCOPE, recorder.log_dir, state, {})[-1]
+    assert state.criteria[key].detail == row["detail"]
+    assert state.criteria[key].params == row["params"]
+    assert "conflicting" not in state.criteria[key].detail
+    status = build_status(GoalStore(layout.control), layout.record).goals[0]
+    assert status.status == "met", status.reason
+
+
+def test_baseline_role_invalidation_does_not_resurrect_an_older_candidate(goal_mode):
+    from booley.criteria.state import CriterionChange
+    from booley.evidence.fields import SOURCE_INVALIDATED_REASON
+    from booley.goals.status import build_status
+    from booley.goals.store import GoalStore
+
+    path = _paths(goal_mode).state_file
+    raw = json.loads(path.read_bytes())
+    raw["criteria"][LINT_KEY]["params"]["from_state"] = "fail"
+    path.write_text(json.dumps(raw))
+    recorder = GoalEvidenceRecorder(bind(goal_mode))
+    state = _v1(goal_mode, recorder, LINT_KEY, True, {"warnings": 0})
+    keys = state.reset_category("rtl")
+    assert LINT_KEY in keys
+    change = CriterionChange(
+        LINT_KEY,
+        False,
+        SOURCE_INVALIDATED_REASON,
+        dict(state.criteria[LINT_KEY].detail),
+        True,
+        dict(state.criteria[LINT_KEY].params),
+    )
+    recorder.record_changes(state, [change], invocation_id="reset", producer="coder")
+    loaded = _load(goal_mode, recorder)
+    assert loaded.criteria[LINT_KEY].stale is True
+    assert loaded.criteria[LINT_KEY].met is False
+    view = build_status(GoalStore(goal_mode.control), goal_mode.record)
+    assert next(goal for goal in view.goals if goal.key == LINT_KEY).status == "unmet"

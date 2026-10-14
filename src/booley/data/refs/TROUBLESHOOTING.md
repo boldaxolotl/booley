@@ -17,6 +17,18 @@ the config knobs named below see [CONFIG.md](https://github.com/boldaxolotl/Bool
 terms below (Sandbox, Target, EDA Provisioning, Specialist, Booley Flow, Developer
 Agent) see the glossary in [GLOSSARY.md](https://github.com/boldaxolotl/Booley/blob/main/docs/GLOSSARY.md).
 
+## Goal evidence and state recovery
+
+Selected immutable producer observations govern Goal evidence. A lost or delayed
+state save recovers automatically when Booley reads or saves Goal state; status
+reads preserve the state file and immutable observations. If a Goal lacks a usable
+current observation, status names the Goal, the evidence fields, and the producer
+to rerun. For ELAB, rerun `sim mode=elab_only` for its Target; for REVIEW, follow
+the Goal's review category and focus. A fresh successful producer run publishes
+consistent evidence and state. If publication still fails, report the persistence
+failure. Report ledger validation corruption with its diagnostic; preserve state
+and evidence files instead of editing or removing them.
+
 ## Monitoring Goal work
 
 Use `booley dashboard` inside the Sandbox for sessions, Goals, and Jobs.
