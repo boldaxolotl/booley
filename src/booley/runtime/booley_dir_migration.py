@@ -11,7 +11,7 @@ import shutil
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from booley.core.booley_layout import (
@@ -568,12 +568,48 @@ def _running_sandboxes() -> list[dict[str, Any]]:
             values = json.loads(inspected.stdout)
             if not isinstance(values, list) or len(values) != 1 or not isinstance(values[0], dict):
                 raise ValueError("expected one container object")
+            _validate_container_inventory(values[0])
             documents.append(values[0])
         except (ValueError, TypeError, IndexError) as exc:
             raise BooleyLayoutError(
                 f"cannot inspect live Sandbox {container}: invalid inventory"
             ) from exc
     return documents
+
+
+def _validate_container_inventory(document: dict[str, Any]) -> None:
+    config, mounts = document.get("Config"), document.get("Mounts")
+    if not isinstance(config, dict) or "Labels" not in config or not isinstance(mounts, list):
+        raise ValueError("container labels/mount inventory is incomplete")
+    labels = config["Labels"]
+    if labels is not None and (
+        not isinstance(labels, dict)
+        or any(
+            not isinstance(key, str) or not isinstance(value, str) for key, value in labels.items()
+        )
+    ):
+        raise ValueError("invalid container labels")
+    for mount in mounts:
+        if not isinstance(mount, dict) or mount.get("Type") not in {
+            "bind",
+            "volume",
+            "tmpfs",
+            "npipe",
+            "cluster",
+        }:
+            raise ValueError("invalid container mount inventory")
+        if mount["Type"] in {"bind", "volume"} and (
+            not isinstance(mount.get("Source"), str) or not mount["Source"]
+        ):
+            raise ValueError("container bind/volume source is unavailable")
+        if mount["Type"] in {"bind", "volume"} and (
+            "\x00" in mount["Source"]
+            or not (
+                PurePosixPath(mount["Source"]).is_absolute()
+                or PureWindowsPath(mount["Source"]).is_absolute()
+            )
+        ):
+            raise ValueError("container source is not an absolute path")
 
 
 def _refuse_live_sandboxes(

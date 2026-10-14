@@ -541,7 +541,7 @@ def test_live_sandbox_label_refuses_without_local_spec_or_matching_mount(
                             "Config": {
                                 "Labels": {"booley.project-id": project_label_id(str(tmp_path))}
                             },
-                            "Mounts": [{"Source": "/desktop-remapped/source"}],
+                            "Mounts": [{"Type": "bind", "Source": "/desktop-remapped/source"}],
                         }
                     ]
                 ),
@@ -593,3 +593,37 @@ def test_source_checkout_guard_precedes_unrelated_ancestor_layout(tmp_path):
     (source / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
     with pytest.raises(SourceCheckoutProjectError):
         resolve_booley_dir(source)
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        {},
+        {"Config": {}, "Mounts": []},
+        {"Config": {"Labels": {}}},
+        {"Config": {"Labels": {"bad": 1}}, "Mounts": []},
+        {"Config": {"Labels": {}}, "Mounts": [{"Type": "bind"}]},
+        {"Config": {"Labels": {}}, "Mounts": [None]},
+        {"Config": {"Labels": {}}, "Mounts": [{"Type": "bind", "Source": "../relative"}]},
+    ],
+)
+def test_incomplete_docker_inventory_refuses_before_any_move(
+    tmp_path, monkeypatch, quiet_sandboxes, document
+):
+    from types import SimpleNamespace
+
+    _repository(tmp_path)
+    (tmp_path / OLD).mkdir()
+    before = _snapshot(tmp_path)
+    monkeypatch.setattr(migration, "_running_sandboxes", quiet_sandboxes)
+    monkeypatch.setattr(migration.shutil, "which", lambda name: "/fake/docker")
+    responses = iter(
+        [
+            SimpleNamespace(returncode=0, stdout="live\n"),
+            SimpleNamespace(returncode=0, stdout=json.dumps([document])),
+        ]
+    )
+    monkeypatch.setattr(migration.subprocess, "run", lambda *a, **kw: next(responses))
+    with pytest.raises(BooleyLayoutError, match="invalid inventory"):
+        migration._refuse_live_sandboxes(tmp_path, [])
+    assert _snapshot(tmp_path) == before
