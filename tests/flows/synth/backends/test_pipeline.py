@@ -704,6 +704,7 @@ def test_all_authenticated_required_artifacts(tmp_path, subject, stage, state):
     assert outcome.yosys_complete is (stage != "yosys")
 
 
+@pytest.mark.skipif(os.name == "nt", reason="generated Makefile requires POSIX shell")
 @pytest.mark.parametrize("failing_stage", ["yosys", "openroad"])
 def test_generated_fake_synthesis_missing_outputs_are_infrastructure(
     tmp_path, monkeypatch, failing_stage

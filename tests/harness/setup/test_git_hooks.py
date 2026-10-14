@@ -2709,7 +2709,9 @@ _UNSAFE_DETAILS = {
     ObservationCode.LOCAL_POLICY_CONFLICT: "repository-local line-ending policy conflict",
 }
 _UNSAFE_CODES = tuple(
-    code for code in ObservationCode if code is not ObservationCode.UPSTREAM_POLICY
+    code
+    for code in ObservationCode
+    if code not in (ObservationCode.UPSTREAM_POLICY, ObservationCode.ATTRIBUTES_POLICY_UNKNOWN)
 )
 
 

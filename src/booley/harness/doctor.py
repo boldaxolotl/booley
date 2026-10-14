@@ -108,6 +108,7 @@ from booley.harness.setup.line_endings import (
     RepositoryLineEndingReport,
     line_ending_repository_display,
     reconcile_project_line_endings,
+    unknown_attributes_policy_details,
 )
 from booley.harness.setup.readiness import ProjectAudit
 from booley.runtime import (
@@ -1365,6 +1366,7 @@ def _report_repository_line_endings(
 ) -> None:
     repository = report.repository
     identity = line_ending_repository_display(repository.role, repository.root)
+    unknown = _report_unknown_attributes_policy(report, identity, _warn)
     crlf = _line_ending_observation(report, LineEndingObservationCode.CRLF_MISMATCH)
     if crlf is not None:
         _fail(
@@ -1401,7 +1403,23 @@ def _report_repository_line_endings(
         return
     if _report_attributes_migration(report, identity, _warn):
         return
+    if unknown:
+        return
     _pass(f"{identity}: working tree is container-safe (no CRLF checkouts, autocrlf off)")
+
+
+def _report_unknown_attributes_policy(
+    report: RepositoryLineEndingReport, identity: str, _warn: Check
+) -> bool:
+    details = unknown_attributes_policy_details(report)
+    if not details:
+        return False
+    emit = _warning_sink(_warn, "git.attributes-policy-unknown", subject=report.repository.role)
+    emit(
+        f"{identity}: attributes policy inspection incomplete: {'; '.join(details)}",
+        "preserve existing attributes and worktree registrations; inspect the policy at its source",
+    )
+    return True
 
 
 def _check_line_endings(

@@ -1198,7 +1198,8 @@ def test_older_git_with_unknown_system_path_suppresses_default_with_diagnostic(
     assert report.status is LineEndingStatus.SAFE
     assert not (root / ".git/info/attributes").exists()
     assert any(
-        "system attributes path unresolved" in (o.detail or "")
+        o.code is LineEndingObservationCode.ATTRIBUTES_POLICY_UNKNOWN
+        and "system attributes path unresolved" in (o.detail or "")
         for o in report.repositories[0].observations
     )
 
@@ -1274,7 +1275,8 @@ def test_inaccessible_sibling_user_policy_suppresses_default_with_diagnostic(
     assert report.status is LineEndingStatus.SAFE
     assert not (root / ".git/info/attributes").exists()
     assert any(
-        "cannot inspect sibling worktree" in (o.detail or "")
+        o.code is LineEndingObservationCode.ATTRIBUTES_POLICY_UNKNOWN
+        and "cannot inspect sibling worktree" in (o.detail or "")
         for o in report.repositories[0].observations
     )
 
