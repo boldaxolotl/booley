@@ -166,7 +166,7 @@ def test_result_paths_are_restored(tmp_path: Path) -> None:
     assert restored.captured_agent_capability_calls["ReportFindings"] == [{"path": expected}]
 
 
-def test_reviewer_invokes_agent_in_snapshot(tmp_path: Path) -> None:
+def test_reviewer_invokes_agent_in_snapshot(tmp_path: Path, monkeypatch) -> None:
     repo = _repo(tmp_path)
     (repo / "rtl").mkdir()
     (repo / "rtl" / "dut.sv").write_text("module dut; endmodule\n", encoding="utf-8")
@@ -176,10 +176,18 @@ def test_reviewer_invokes_agent_in_snapshot(tmp_path: Path) -> None:
 
     _write_core(repo)
     _git(["add", "rtl/dut.sv", "tb/tb.sv"], repo)
+    caller = repo / "caller"
+    (caller / "out").mkdir(parents=True)
+    (caller / "out/report.md").write_text("embedded opposite source\n")
+    (repo / "out").mkdir()
+    (repo / "out/keep.md").write_text("authored support\n")
+    monkeypatch.chdir(caller)
     params = AgentCallParams(prompt="review", model="test", cwd=repo)
 
     def fake_call(call_params: AgentCallParams, *, on_event) -> AgentResult:
         assert on_event is not None
+        assert not (Path(call_params.cwd) / "caller/out").exists()
+        assert (Path(call_params.cwd) / "out/keep.md").is_file()
         isolated_file = Path(call_params.cwd) / "tracked.sv"
         assert Path(call_params.cwd) != repo
         assert (Path(call_params.cwd) / "rtl" / "dut.sv").is_file()
@@ -190,7 +198,7 @@ def test_reviewer_invokes_agent_in_snapshot(tmp_path: Path) -> None:
         return AgentResult(output=f"finding in {isolated_file}")
 
     endpoint = ReviewerSpecialist()
-    endpoint._args = argparse.Namespace(category="rtl", scope="tracked.sv")
+    endpoint._args = argparse.Namespace(category="rtl", scope="tracked.sv", report_dir=Path("out"))
     with (
         patch("booley.specialists.specialist._call_agent_sync", side_effect=fake_call),
         patch("booley.specialists.specialist.parent_death_watchdog", return_value=nullcontext()),

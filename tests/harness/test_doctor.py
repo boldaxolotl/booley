@@ -8514,3 +8514,24 @@ def test_conditional_dependency_tb_tags_do_not_report_untagged_harness(tmp_path)
     rec = _audit(tmp_path)
     assert not any("none tagged tags:[tb]" in message for message in rec.fails())
     assert not any("untagged C/C++ harness" in message for _, message in rec.events)
+
+
+def test_untagged_cpp_warning_does_not_mislabel_hdl_from_another_target(tmp_path):
+    from tests.test_target_catalog import _category_sim_core
+
+    _category_sim_core(tmp_path)
+    core = tmp_path / "design.core"
+    text = (
+        core.read_text()
+        .replace("  broken_synth:\n    default_tool: yosys\n    filesets: [undefined]\n", "")
+        .replace("files: [shared/dut.sv]", "files: [shared/dut.sv, shared/tb.sv]")
+    )
+    text += (
+        "  sim_other:\n    flow: sim\n    flow_options: {tool: verilator}\n"
+        "    filesets: [rtl, harness]\n    toplevel: tb\n"
+    )
+    core.write_text(text)
+    rec = _audit(tmp_path)
+    warnings = [m for level, m in rec.events if level == "warn" and "untagged C/C++ harness" in m]
+    assert warnings and any("shared/main.cpp" in m for m in warnings)
+    assert all("shared/tb.sv" not in m for m in warnings)

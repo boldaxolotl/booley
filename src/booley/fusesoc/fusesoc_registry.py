@@ -1240,11 +1240,11 @@ def _partition_fileset_files(
         fileset = filesets.get(fs_name)
         if not isinstance(fileset, Mapping):
             continue
-        for path, _tags, is_include in _fileset_entries(fileset):
+        for path, tags, is_include in _fileset_entries(fileset):
             for declared in _possible_expression_values(path):
                 lexical = core_relative_to_project(core_file, project_root, declared)
                 rel = canonical_project_path(project_root, lexical)
-                if rel in effective_tb:
+                if rel in effective_tb or ("tb" in tags and "rtl" not in tags):
                     tb.append(rel)
                 elif include_headers or not is_include:
                     rtl.append(rel)

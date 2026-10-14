@@ -2793,3 +2793,31 @@ targets:
         setup_command_for_handle(handle, build_root=tmp_path / "build")
     assert isinstance(caught.value.__cause__, FuseSocError)
     assert isinstance(caught.value.__cause__.__cause__, SyntaxError)
+
+
+def test_restore_explicit_tb_tag_when_nonstrict_inventory_skips_core(tmp_path):
+    from booley.fusesoc.fusesoc_registry import ResolvedFile, _restore_tb_tags
+    from booley.targets.domain import TargetRef
+
+    core = tmp_path / "design.core"
+    core.write_text(
+        "CAPI=2:\nname: ::explicit:0\nfilesets:\n"
+        "  tb: {files: [tb.sv], tags: [tb]}\n"
+        "targets:\n  sim: {filesets: [tb], toplevel: tb}\n"
+        "  malformed: {filesets: [42]}\n"
+    )
+    ref = TargetRef("sim", "::explicit:0", core)
+    resolved = ResolvedTarget(
+        name="sim",
+        vlnv=ref.vlnv,
+        toplevel="tb",
+        eda_tool="verilator",
+        files=(ResolvedFile("tb.sv", "systemVerilogSource"),),
+        parameters={},
+        build_root=tmp_path,
+        edam_path=tmp_path / "unused.eda.yml",
+    )
+    restored = _restore_tb_tags(resolved, project_root=tmp_path, source_ref=ref)
+    assert restored.files[0].is_tb
+    with pytest.raises(FuseSocError, match=r"design\.core"):
+        fusesoc_registry.classified_sources(tmp_path, strict=True)

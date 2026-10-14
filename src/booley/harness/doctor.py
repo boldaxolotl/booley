@@ -4017,7 +4017,14 @@ def _check_sim_target_setup(
         except fusesoc_registry.FuseSocError:
             continue  # malformed CAPI2 is already reported by the schema audit
         explicit = fusesoc_registry.explicit_target_sources(project.project_root, ref)
-        inferred = sorted(set(sources.tb_files) - set(explicit.tb_files))
+        inferred = sorted(
+            item.path
+            for item in inputs.inspection_for(name).inputs
+            if item.file_type.lower() in {"cppsource", "csource"}
+            and "tb" in item.tags
+            and fusesoc_registry.canonical_project_path(project.project_root, item.path)
+            not in explicit.tb_files
+        )
         if inferred:
             _warn(
                 f"sim Target '{name}' untagged C/C++ harness files: {', '.join(inferred)}; add tags:[tb] to their fileset"
