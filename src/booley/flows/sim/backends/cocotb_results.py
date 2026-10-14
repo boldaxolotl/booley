@@ -25,8 +25,8 @@ Empirical XML states this parser is frozen against (spike S4, cocotb 2.0.1 and 2
   :func:`_failure_message` rather than one hard-coded attribute (F-36);
 * skipped — ``<skipped/>`` child (test excluded by ``COCOTB_TEST_FILTER``; a
   zero-match filter yields a file where *every* test is skipped, at rc=0);
-* absent — a ``tests.toml`` name with no matching ``@cocotb.test`` function
-  never appears in the XML (reactive validation, decision 7);
+* absent — a ``tests.toml`` ID not reported by cocotb never appears in the XML
+  (including a generating function's base name; reactive validation, decision 7);
 * no file — SIGKILL/segfault, ``ModuleNotFoundError`` (also rc=0!), or any
   crash before cocotb's shutdown handler ran.
 """
@@ -76,12 +76,10 @@ COCOTB_RESULTS_PREFIX = "[COCOTB_RESULTS] "
 # run.log next to result.json).
 _MAX_FAILURE_CHARS = 500
 
-# The actionable message for a tests.toml name that never reached the XML
-# (decision 7 — reactive validation, no proactive decorator scanning).
-ABSENT_TEST_MESSAGE = (
-    "no matching @cocotb.test function in the module — check the name in "
-    "tests.toml against the cocotb module's test functions"
-)
+# Keep absent-ID details below the campaign's 1536-character tail and 2048-byte
+# canonical JSON detail limits, including escaping when the detail is serialized.
+_MAX_ABSENT_DETAIL_CHARS = 1200
+_MAX_DISPLAY_NAME_CHARS = 120
 
 # cocotb's own console cry when it cannot import the test module, e.g.
 #     0.00ns CRITICAL cocotb.regression  Failed to import module test_eth_mac:
@@ -135,7 +133,7 @@ class CocotbTest:
     """One ``<testcase>`` from results.xml."""
 
     name: str
-    """Bare test-function name (the XML ``name`` attribute)."""
+    """Reported test ID (the XML ``name`` attribute), including generated IDs."""
 
     module: str
     """The declaring Python module (the XML ``classname`` attribute)."""
@@ -166,6 +164,12 @@ class CocotbResults:
 
     skipped_unselected: int = 0
     """Skipped XML entries omitted from the compact stdout transport."""
+
+    reported_names: tuple[str, ...] = ()
+    """Complete reported IDs for absent-name diagnostics after compaction.
+
+    These names carry no verdict evidence; omitted tests remain omitted.
+    """
 
 
 def parse_results_xml(path: Path | str) -> CocotbResults:
@@ -356,6 +360,46 @@ def _status_for_name(results: CocotbResults, name: str) -> CocotbTest | None:
     return entries[0]
 
 
+def _reported_names(results: CocotbResults) -> tuple[str, ...]:
+    """Deduplicate complete IDs in producer order, before filtering test entries."""
+    names = results.reported_names or tuple(test.name for test in results.tests)
+    return tuple(dict.fromkeys(names))
+
+
+def _display_name(name: str) -> str:
+    """Escape testbench-supplied control characters and bound one displayed ID."""
+    rendered = json.dumps(name, ensure_ascii=True)
+    if len(rendered) > _MAX_DISPLAY_NAME_CHARS:
+        return rendered[: _MAX_DISPLAY_NAME_CHARS - 4] + '..."'
+    return rendered
+
+
+def _absent_test_detail(name: str, results: CocotbResults) -> str:
+    """One bounded diagnostic shared by complete XML and compact consumers."""
+    prefix = f"no matching test ID {_display_name(name)} in cocotb results. "
+    remedy = "Check tests.toml against the rendered IDs in results.xml."
+    names = _reported_names(results)
+    preview: list[str] = []
+    # Reserve room for the omitted count and artifact pointer before adding IDs.
+    budget = _MAX_ABSENT_DETAIL_CHARS - len(prefix) - len(remedy) - 180
+    for candidate in names:
+        rendered = _display_name(candidate)
+        if len(", ".join((*preview, rendered))) > budget:
+            break
+        preview.append(rendered)
+    detail = prefix + "cocotb reported test IDs: " + (", ".join(preview) or "(none)")
+    if omitted := len(names) - len(preview):
+        detail += f"; {omitted} more (full IDs in cocotb_results.json)"
+    elif any(
+        len(json.dumps(candidate, ensure_ascii=True)) > _MAX_DISPLAY_NAME_CHARS
+        for candidate in names
+    ):
+        detail += "; long IDs abbreviated (full IDs in cocotb_results.json)"
+    if results.skipped_unselected and not results.reported_names:
+        detail += "; omitted skipped test names were not transported; see cocotb_results.json"
+    return detail + ". " + remedy
+
+
 def reconcile(
     selected: list[str],
     results: CocotbResults,
@@ -366,8 +410,8 @@ def reconcile(
     asked for must come back as a real pass/fail from the XML —
 
     * non-OK file state → every test inconclusive, carrying the state detail;
-    * name absent from the XML → inconclusive with the actionable
-      :data:`ABSENT_TEST_MESSAGE` (typo'd / undecorated test function);
+    * name absent from the XML → inconclusive with reported IDs and a
+      correction hint (typo'd, undecorated, or generating function base name);
     * present but ``skipped`` → inconclusive (the filter Booley built did not
       actually select it — a filter/name mismatch, never a pass);
     * fail → fail with the cocotb failure text;
@@ -383,7 +427,7 @@ def reconcile(
             continue
         entry = _status_for_name(results, name)
         if entry is None:
-            out.append((name, VERDICT_INCONCLUSIVE, ABSENT_TEST_MESSAGE))
+            out.append((name, VERDICT_INCONCLUSIVE, _absent_test_detail(name, results)))
         elif entry.status == VERDICT_FAIL:
             out.append((name, VERDICT_FAIL, entry.failure_text))
         elif entry.status == "skipped":
@@ -419,9 +463,12 @@ def results_payload(
         raise ValueError(f"unsupported Cocotb result verbosity: {verbosity}")
     tests = results.tests
     skipped_unselected = results.skipped_unselected
+    reported_names = results.reported_names
     if verbosity == "compact" and selected is not None:
         wanted = set(selected)
-        skipped_unselected = sum(
+        if wanted - {test.name for test in tests} and (reported_names or not skipped_unselected):
+            reported_names = _reported_names(results)
+        skipped_unselected += sum(
             1 for test in tests if test.status == "skipped" and test.name not in wanted
         )
         tests = tuple(test for test in tests if test.name in wanted or test.status != "skipped")
@@ -440,6 +487,8 @@ def results_payload(
         ],
         "skipped_unselected": skipped_unselected,
     }
+    if reported_names:
+        payload["reported_names"] = list(reported_names)
     return payload
 
 
@@ -492,11 +541,15 @@ def _transport_results(raw_payload: object) -> CocotbResults:
     )
     if skipped_unselected < 0:
         raise BoundaryError("skipped_unselected must be non-negative")
+    reported_names = require_list(payload.get("reported_names", []), field="reported_names")
+    if any(not isinstance(name, str) for name in reported_names):
+        raise BoundaryError("reported_names must contain only strings")
     return CocotbResults(
         state=state,
         tests=tests,
         detail=_transport_string(payload, "detail"),
         skipped_unselected=skipped_unselected,
+        reported_names=tuple(reported_names),
     )
 
 

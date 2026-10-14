@@ -6566,6 +6566,89 @@ async def run_test_tx(dut, ifg=12):
     pass
 """
 
+    @pytest.mark.parametrize(
+        ("body", "base"),
+        [
+            (_FACTORY_TB, "run_test"),
+            (_PARAMETRIZED_TB, "run_test_tx"),
+            (
+                _FACTORY_TB.replace("import TestFactory", "import TestFactory as Factory").replace(
+                    "TestFactory(run_test)", "Factory(run_test)"
+                ),
+                "run_test",
+            ),
+            (
+                _PARAMETRIZED_TB.replace("import cocotb", "import cocotb as c").replace(
+                    "@cocotb.", "@c."
+                ),
+                "run_test_tx",
+            ),
+        ],
+    )
+    def test_generating_base_name_is_deferred(self, tmp_path, body, base):
+        _write_cocotb_project(tmp_path, tb_body=body, tests=[base])
+        rec = _audit(tmp_path)
+        skips = [m for lvl, m in rec.events if lvl == "skip"]
+        assert any(base in m and "generating function" in m and "rendered IDs" in m for m in skips)
+        assert not any("tests.toml names all present" in m for _, m in rec.events)
+
+    @pytest.mark.parametrize(
+        "names",
+        [
+            ["test_plain"],
+            ["test_plain", "run_test_tx"],
+            ["test_plain", "run_test_tx/ifg=12", "typo"],
+        ],
+    )
+    def test_generating_module_defers_every_registered_name(self, tmp_path, names):
+        body = self._PARAMETRIZED_TB + "\n@cocotb.test()\nasync def test_plain(dut): pass\n"
+        _write_cocotb_project(tmp_path, tb_body=body, tests=names)
+        rec = _audit(tmp_path)
+        skips = [
+            m for lvl, m in rec.events if lvl == "skip" and "cannot be verified statically" in m
+        ]
+        assert len(skips) == 1
+        assert f"{len(names)} tests.toml name(s)" in skips[0]
+        assert all(name in skips[0] for name in names)
+        assert not any("tests.toml names all present" in m for _, m in rec.events)
+
+    @pytest.mark.parametrize("decorator", ["@cocotb.test()", "@cocotb.test", "@test()"])
+    def test_generation_words_in_comments_do_not_suppress_plain_checks(self, tmp_path, decorator):
+        body = f"import cocotb\nfrom cocotb import test\n# TestFactory generate_tests cocotb.parametrize\n{decorator}\nasync def test_reset(dut): pass\n"
+        _write_cocotb_project(tmp_path, tb_body=body, tests=["test_reset"])
+        rec = _audit(tmp_path)
+        assert any("tests.toml names all present" in m for lvl, m in rec.events if lvl == "pass")
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "async def test_reset(dut): pass\n",
+            "# def test_reset(dut):\n",
+            "class TB:\n    def test_reset(self): pass\n",
+        ],
+    )
+    def test_plain_function_search_does_not_earn_a_pass(self, tmp_path, body):
+        _write_cocotb_project(tmp_path, tb_body=body, tests=["test_reset"])
+        rec = _audit(tmp_path)
+        assert any(
+            "not found as" in m and "test_reset" in m for lvl, m in rec.events if lvl == "warn"
+        )
+        assert not any("tests.toml names all present" in m for _, m in rec.events)
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "not python!",
+            "\x00",
+            "import cocotb\n@cocotb.test(name='other')\nasync def test_reset(dut): pass\n",
+        ],
+    )
+    def test_unverifiable_source_never_passes_names(self, tmp_path, body):
+        _write_cocotb_project(tmp_path, tb_body=body, tests=["test_reset"])
+        rec = _audit(tmp_path)
+        assert any("cannot be verified statically" in m for lvl, m in rec.events if lvl == "skip")
+        assert not any("tests.toml names all present" in m for _, m in rec.events)
+
     def test_factory_generated_names_are_reported_unverifiable_not_missing(
         self,
         tmp_path: Path,
@@ -6607,7 +6690,7 @@ async def run_test_tx(dut, ifg=12):
         # names a test it does not define is still a real, greppable mismatch.
         _write_cocotb_project(
             tmp_path,
-            tb_body="import cocotb\n\n\nasync def test_reset(dut):\n    pass\n",
+            tb_body="import cocotb\n\n@cocotb.test()\nasync def test_reset(dut):\n    pass\n",
             tests=["test_reset", "test_typo"],
         )
         rec = _audit(tmp_path)
@@ -6618,7 +6701,7 @@ async def run_test_tx(dut, ifg=12):
     def test_all_names_present_still_passes(self, tmp_path: Path):
         _write_cocotb_project(
             tmp_path,
-            tb_body="import cocotb\n\n\nasync def test_reset(dut):\n    pass\n",
+            tb_body="import cocotb\n\n@cocotb.test()\nasync def test_reset(dut):\n    pass\n",
             tests=["test_reset"],
         )
         rec = _audit(tmp_path)

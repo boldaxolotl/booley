@@ -9,6 +9,10 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- Doctor defers generated cocotb test IDs, including generating function base
+  names, to run-time results. An absent ID now lists cocotb's reported IDs in
+  Simulation Flow diagnostics, including zero-match filters at compact verbosity.
+
 - Goals use one name everywhere, such as `SIM:sim_core` and `REVIEW:rtl_bugs`.
   Goal arguments now require uppercase capabilities (`family: "SIM"`). Existing
   Goal Records and pending proposals retain their stored identities. Project-owned

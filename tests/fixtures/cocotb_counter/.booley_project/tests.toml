@@ -19,7 +19,7 @@ tests = ["test_py_exception", "test_rtl_fatal"]
 [sim_hang]
 tests = ["test_hang"]
 
-# G10: a name with no matching @cocotb.test — must come back inconclusive
+# G10: an ID absent from cocotb results — must come back inconclusive
 # with the actionable message, never pass.
 [sim_bad]
 tests = ["test_reset", "test_bogus_name"]
