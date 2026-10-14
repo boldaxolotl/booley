@@ -459,7 +459,14 @@ def _campaign_projection(outcome: CampaignOutcome) -> dict[str, object]:
     facts = outcome.acceptance_facts.document
     campaign_id = str(facts["campaign_id"])
     target_directory = outcome.manifest_path.parents[1]
-    test_runs = evidence_test_run_rows(outcome)
+    test_runs = [
+        {
+            key: value
+            for key, value in row.items()
+            if key not in {"functional_failure", "failure_execution"}
+        }
+        for row in evidence_test_run_rows(outcome)
+    ]
     projection = {
         "$schema": SIMULATION_PROJECTION_SCHEMA,
         "flow": "sim",

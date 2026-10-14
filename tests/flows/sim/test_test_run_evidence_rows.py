@@ -33,9 +33,20 @@ def _outcome(tmp_path: Path, *runs):
     return _run_campaign(tmp_path, _hdl_plan(tmp_path, tuple((run,) for run in runs)))
 
 
-def _rows(*runs) -> list[dict]:
+def _rows(*runs, classified=True) -> list[dict]:
     # The executor of these tests runs no simulator: every Test Run fails.
-    return [{**test_run_document(run), "grade": "fail"} for run in runs]
+    return [
+        {
+            **test_run_document(run),
+            "grade": "fail",
+            **(
+                {"functional_failure": False, "failure_execution": "blocked_by_build"}
+                if classified
+                else {}
+            ),
+        }
+        for run in runs
+    ]
 
 
 def test_evidence_rows_are_the_recorded_test_runs_of_the_campaign(tmp_path: Path):
@@ -60,7 +71,7 @@ def test_projection_v3_carries_a_row_per_test_run_and_decodes(tmp_path: Path):
     projection = _campaign_projection(outcome)
 
     assert projection["$schema"] == "booley.simulation-projection/v3"
-    assert projection["test_runs"] == _rows(_RESET, _COUNT)
+    assert projection["test_runs"] == _rows(_RESET, _COUNT, classified=False)
     assert [
         (row["name"], row["test_run"], row["variant"], row["seed"], row["fingerprint"])
         for row in projection["tests"]

@@ -51,6 +51,8 @@ def test_type_exact_parameter_and_define_values_are_modified(before, after):
     assert json.loads(json.dumps(rows, sort_keys=True)) == rows
 
 
+# Windows CI has measured over 40% of the 60 s default; keep 3x headroom (#1202).
+@pytest.mark.timeout(120)
 def test_constraints_and_resolved_target_modifications_are_frozen_in_completion(layout):
     layout.record = enter_goals(layout, [{"family": "LINT", "target": "top"}])
     (layout.worktree / "timing.sdc").write_bytes(b"create_clock -period 10 clk\n")
