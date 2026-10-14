@@ -432,10 +432,8 @@ def _add_cheat_subparser(sub) -> None:
     cheat_p = sub.add_parser(
         "cheat", help="Print quick-reference cheatsheet", formatter_class=ProjectHelpFormatter
     )
-    # None given prints the whole sheet. Callers that need a single table (a
-    # skill authoring criteria, a user chasing one command) skip the rest.
     cheat_sections = cheat_p.add_argument_group(
-        "sections", "Print only these sections (combinable; default: the whole sheet)"
+        "sections", "Print only these sections (combinable; default: list section flags)"
     )
     for slug in cheatsheet.section_slugs():
         cheat_sections.add_argument(
@@ -444,8 +442,10 @@ def _add_cheat_subparser(sub) -> None:
             action="store_true",
             help=cheatsheet.section_help(slug),
         )
-    cheat_p.add_argument(
-        "--list", action="store_true", help="List section flags instead of printing the sheet"
+    cheat_views = cheat_p.add_mutually_exclusive_group()
+    cheat_views.add_argument("--list", action="store_true", help="List section flags (default)")
+    cheat_views.add_argument(
+        "--all", action="store_true", help="Print the whole cheatsheet, overriding section flags"
     )
 
 
@@ -1018,8 +1018,16 @@ def _live_criterion_endpoint_catalog(project_root: Path):
     )
 
 
+def _cheat_lists_sections(args: argparse.Namespace) -> bool:
+    """Recognize the Project-independent section index, explicit or default."""
+    return getattr(args, "list", False) or (
+        not getattr(args, "all", False)
+        and not any(getattr(args, slug, False) for slug in cheatsheet.section_slugs())
+    )
+
+
 def _cmd_cheat(args: argparse.Namespace, project_root: Path | None) -> int:
-    if getattr(args, "list", False):
+    if _cheat_lists_sections(args):
         for slug in cheatsheet.section_slugs():
             aliases = cheatsheet.section_flags(slug)[1:]
             alias_names = ", ".join(f"--{name}" for name in aliases)
@@ -1027,6 +1035,10 @@ def _cmd_cheat(args: argparse.Namespace, project_root: Path | None) -> int:
             print(
                 f"  --{cheatsheet.section_flags(slug)[0]:<14}{cheatsheet.section_help(slug)}{alias_note}"
             )
+        print(
+            "\nExample: booley cheat --commands --project-files\n"
+            "Use booley cheat --all for the whole cheatsheet."
+        )
         return 0
 
     cs = cheatsheet_path()
@@ -1112,9 +1124,12 @@ def _cmd_cheat(args: argparse.Namespace, project_root: Path | None) -> int:
         pass
 
     # Narrow to the requested sections (after splicing, so a filtered view still
-    # shows live registry/criteria tables). No flags = the whole sheet.
+    # shows live registry/criteria tables). --all keeps the whole sheet.
     text = cheatsheet.select(
-        text, [slug for slug in cheatsheet.section_slugs() if getattr(args, slug, False)]
+        text,
+        []
+        if getattr(args, "all", False)
+        else [slug for slug in cheatsheet.section_slugs() if getattr(args, slug, False)],
     )
 
     # Drop the HTML-comment markers so they don't reach the terminal.
@@ -1769,7 +1784,7 @@ def _optional_project_root(args: argparse.Namespace) -> Path | None:
     from booley.core.checkout_role import SourceCheckoutProjectError, require_project_checkout
     from booley.runtime.project_discovery import ProjectRootDiscoveryError
 
-    if getattr(args, "list", False):
+    if _cheat_lists_sections(args):
         return None
     try:
         root = (
