@@ -388,7 +388,7 @@ The `booley-sandbox` image contains Booley's EDA toolchain, Developer Agent clie
 | Command | What it does |
 |---------|-------------|
 | `booley init` | Set up project + pull or build the image |
-| `booley init --force` | Rebuild from scratch (no cache) |
+| `booley init --force` | Refresh Booley-managed resources; keep caches and user files |
 | `booley doctor` | Verify image + container EDA tools |
 | `booley session up` | Start the Sandbox headlessly (no VS Code) |
 | `booley session enter [-- cmd]` | Shell into it, or run one command |
