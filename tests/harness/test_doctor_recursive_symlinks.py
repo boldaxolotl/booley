@@ -165,11 +165,13 @@ def test_real_links_to_different_ancestors_are_grouped_by_resolved_target(tmp_pa
     for directory, target in (("a", ".."), ("nested/a", "../.."), ("nested/b", "..")):
         library = tmp_path / directory
         library.mkdir(parents=True)
-        symlink_or_skip(library / "self", target, target_is_directory=True)
+        link = library / "self"
+        # Windows relative symlink targets require native separators.
+        symlink_or_skip(link, Path(target), target_is_directory=True)
+        assert link.resolve(strict=True) == (library / target).resolve(strict=True)
     rec = _Rec()
     doctor._check_core_setup_hazards(_schema_audit(tmp_path), tmp_path, rec.p, rec.f)
     assert len(rec.fails()) == 2
-    # Windows resolution can canonicalize path spelling, including drive-letter case.
     assert any(
         f"2 links resolve to ancestor {tmp_path.resolve()} (" in message for message in rec.fails()
     ), rec.fails()
