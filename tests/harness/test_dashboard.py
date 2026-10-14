@@ -149,6 +149,23 @@ async def test_all_job_owners_shortcut_preserves_filter(shortcut, via_help):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("shortcut", ["j", "r", "a"])
+async def test_all_job_owners_shortcut_from_narrow_job_detail(shortcut):
+    current = snapshot(2)
+    app = DashboardApp(lambda: current)
+    async with app.run_test(size=(90, 30)) as pilot:
+        await pilot.press(shortcut, "enter")
+        assert app.navigation.view == "job"
+        job_filter = app.navigation.job_filter
+        await pilot.press("u")
+        assert app.navigation.view == "jobs"
+        assert app.navigation.session is None
+        assert app.navigation.job_filter == job_filter
+        expected = {"j": ["one"], "r": ["two"], "a": ["one", "two"]}
+        assert [json.loads(key)[1] for key in app.row_keys] == expected[shortcut]
+
+
+@pytest.mark.asyncio
 async def test_session_arrows_help_back_and_quit_shortcuts():
     current = snapshot()
     app = DashboardApp(lambda: current)

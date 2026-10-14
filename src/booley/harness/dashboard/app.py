@@ -36,7 +36,7 @@ READ_BUDGET = 1.0
 RECENT_JOBS = 50
 HELP = (
     "1-9 stable session shortcuts · arrows select rows\n"
-    "Enter inspects sessions, Goals, Jobs and proposals; activity rows are informational\n"
+    "Enter inspects sessions, Goals, Jobs and proposals; Booley call rows are informational\n"
     "Job details appear beside the list on wide terminals; Enter opens them on narrow terminals\n"
     "Esc back · j Running Jobs · r Recent results · a All Jobs in the current scope\n"
     "s Sessions · u Jobs from all sessions / standalone · ? help · q quit\n"
