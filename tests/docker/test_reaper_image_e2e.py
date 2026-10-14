@@ -179,8 +179,11 @@ def test_candidate_entrypoint_reaps_owned_topology(tmp_path: Path) -> None:
                 )
             )
             _start_reaper(daemon.client, daemon.image_id, topology)
-            _wait_for_log(daemon.client, topology.reaper, "live client attachments")
+            _wait_for_log(daemon.client, topology.reaper, "; 1 live client attachments")
             time.sleep(2)
+            attached_logs = daemon.client.run("logs", topology.reaper)
+            assert_ok(attached_logs)
+            assert "stopping " not in attached_logs.stdout + attached_logs.stderr
             assert _exists(daemon.client, "container", topology.session)
             assert _exists(daemon.client, "container", topology.relay)
             assert _exists(daemon.client, "network", topology.private)
@@ -216,8 +219,6 @@ def test_candidate_waits_between_passes_when_daemon_is_unreachable() -> None:
                 "-d",
                 "--name",
                 unavailable,
-                "-e",
-                "DOCKER_HOST=unix:///tmp/booley-missing-docker.sock",
                 "-e",
                 "BOOLEY_REAP_INTERVAL_SECONDS=2",
                 image,

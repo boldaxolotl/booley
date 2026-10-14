@@ -345,17 +345,7 @@ class TestCollectAndReap:
 
 
 def test_attached_sandbox_is_not_stopped():
-    run = FakeRun(
-        [
-            (lambda a: a[0] == "ps" and "-aq" not in a, _cp(stdout="abc\tname\n")),
-            (
-                lambda a: a[0] == "inspect" and "StartedAt" in a[-1],
-                _cp(stdout="1970-01-01T00:00:10Z"),
-            ),
-            (lambda a: a[0] == "inspect" and "ExecIDs" in a[-1], _cp(stdout='["abc123"]')),
-            (lambda a: a[0] == "exec", _cp(stdout="10")),
-        ]
-    )
+    run = _attachment_run()
     assert (
         reaper.reap_once(
             now=1000,
@@ -619,3 +609,65 @@ def test_http_failure_closes_connection(monkeypatch, error):
     with pytest.raises(http.client.HTTPException):
         reaper.inspect_exec("abc123")
     assert closed == [True]
+
+
+@pytest.mark.parametrize("final", [False, True])
+@pytest.mark.parametrize("timeout", [False, True])
+def test_exec_id_inspection_failure_in_either_phase_keeps(final, timeout):
+    runner = _attachment_run()
+    observations = iter([False, True] if final else [True])
+
+    def run(args):
+        if args[0] == "inspect" and "ExecIDs" in args[-1] and next(observations):
+            if timeout:
+                raise subprocess.TimeoutExpired("docker", 30)
+            return _cp(1)
+        return runner(args)
+
+    assert (
+        reaper.reap_once(
+            now=1000, idle_timeout=100, run=run, exec_inspector=lambda eid: {"Running": False}
+        )
+        == []
+    )
+    assert not runner.ran("stop")
+
+
+def test_concurrent_heartbeat_reader_does_not_hide_client_exec():
+    run = _attachment_run('["abc123", "def456"]')
+
+    def inspect(eid):
+        arguments = ["-c", reaper._HEARTBEAT_READ_SCRIPT] if eid == "abc123" else []
+        return {"Running": True, "ProcessConfig": {"entrypoint": "sh", "arguments": arguments}}
+
+    assert reaper.collect(run, exec_inspector=inspect)[0].attachments == 1
+
+
+def test_licensed_attachment_at_collection_preserves_topology():
+    run = _attachment_run()
+    run.rules.insert(
+        0,
+        (
+            lambda a: a[0] == "inspect" and "Labels" in a[-1],
+            _cp(
+                stdout=json.dumps(
+                    {"booley.license-profile": "test", "booley.project-id": "a" * 64}
+                )
+            ),
+        ),
+    )
+    assert (
+        reaper.reap_once(
+            now=1000,
+            idle_timeout=100,
+            run=run,
+            exec_inspector=lambda eid: {
+                "Running": True,
+                "ProcessConfig": {"entrypoint": "sh", "arguments": []},
+            },
+        )
+        == []
+    )
+    assert not run.ran("stop")
+    assert not run.ran("rm")
+    assert not run.ran("network", "rm")
