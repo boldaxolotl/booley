@@ -1219,7 +1219,8 @@ def test_source_project_binding_required_dispatch(tmp_path, monkeypatch, argv):
 
 
 @pytest.mark.parametrize("source", [True, False])
-def test_source_project_binding_cheat_selected_imports(tmp_path, monkeypatch, source):
+@pytest.mark.parametrize("view", ["--all", "--criteria"])
+def test_source_project_binding_cheat_selected_imports(tmp_path, monkeypatch, source, view):
     from booley.dev_support import flow_specialist_reference as reference
 
     project = tmp_path / "project"
@@ -1234,7 +1235,7 @@ def test_source_project_binding_cheat_selected_imports(tmp_path, monkeypatch, so
     monkeypatch.chdir(subdir)
     monkeypatch.setenv("BOOLEY_DIR", str(project / ".booley"))
     monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
-    monkeypatch.setattr(sys, "argv", ["booley", "cheat", "--all"])
+    monkeypatch.setattr(sys, "argv", ["booley", "cheat", view])
     monkeypatch.setattr(tlr, "_enforce_runtime_location", lambda *_: None)
     calls = []
     criteria_calls = []
@@ -1290,11 +1291,15 @@ def test_source_project_binding_selected_root(tmp_path, monkeypatch, command, se
 def test_source_project_binding_optional_discovery_failure(monkeypatch):
     from booley.runtime.project_discovery import ProjectRootDiscoveryError
 
+    calls = []
+
     def discover():
+        calls.append(True)
         raise ProjectRootDiscoveryError("ambiguous stale Project")
 
     monkeypatch.setattr(tlr, "find_project_root", discover)
     assert tlr._optional_project_root(Namespace(list=False, all=True)) is None
+    assert calls == [True]
 
 
 def test_source_project_binding_feedback_discovery_fallback(tmp_path, monkeypatch):

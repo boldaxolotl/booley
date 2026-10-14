@@ -1792,7 +1792,7 @@ def _optional_project_root(args: argparse.Namespace) -> Path | None:
     from booley.core.checkout_role import SourceCheckoutProjectError, require_project_checkout
     from booley.runtime.project_discovery import ProjectRootDiscoveryError
 
-    if _cheat_lists_sections(args):
+    if getattr(args, "command", None) == "cheat" and _cheat_lists_sections(args):
         return None
     try:
         root = (
