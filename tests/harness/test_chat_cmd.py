@@ -239,17 +239,17 @@ def test_claude_named_exec_preserves_codex_command(tmp_path, monkeypatch):
     assert len(reservations) == 1
 
 
-@pytest.mark.parametrize(
-    "error",
-    [
+def test_claude_reservation_failure_falls_back(tmp_path, monkeypatch, capsys):
+    for error in (
         BlockingIOError("busy"),
         PermissionError("unreadable"),
         ValueError("malformed"),
         OSError("save failed"),
-    ],
-    ids=["busy", "unreadable", "malformed", "save"],
-)
-def test_claude_reservation_failure_falls_back(tmp_path, monkeypatch, capsys, error):
+    ):
+        _check_claude_reservation_failure(tmp_path, monkeypatch, capsys, error)
+
+
+def _check_claude_reservation_failure(tmp_path, monkeypatch, capsys, error):
     _configure_claude(monkeypatch)
     reservations = []
 
