@@ -1457,8 +1457,12 @@ def test_auth_status_cli_preserves_omitted_app_selection(
 
     home = tmp_path / "home"
     home.mkdir()
-    project = tmp_path / "project"
+    ancestor = tmp_path / "ancestor"
+    (ancestor / ".booley").mkdir(parents=True)
+    project = ancestor / "project"
     project.mkdir()
+    (project / ".git").mkdir()
+    (project / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
     monkeypatch.chdir(project)
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
@@ -1531,3 +1535,24 @@ def test_refresh_cli_reports_verified_container_outcome(
         tlr._session_refresh(tlr._build_parser().parse_args(["session", "refresh"]), tmp_path) == 0
     )
     assert capsys.readouterr().out.strip() == expected
+
+
+@pytest.mark.parametrize(
+    "configuration",
+    ['[agent]\nauth="invalid"\n', '[agent]\nprovider="unknown"\n', "[agent\n"],
+)
+def test_auth_status_cli_refuses_corrupt_owned_project(
+    tmp_path, monkeypatch, capsys, configuration
+):
+    data = tmp_path / ".booley"
+    data.mkdir()
+    (data / "booley.toml").write_text(configuration)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    monkeypatch.setattr(sys, "argv", ["booley", "auth", "--status", "--project", str(tmp_path)])
+    monkeypatch.setattr(tlr, "_enforce_runtime_location", lambda *_: None)
+    monkeypatch.setattr(tlr, "_host_install_authority_error", lambda *_: None)
+    reset_cache()
+    assert tlr.main() == 1
+    captured = capsys.readouterr()
+    assert "agents run on" not in captured.out
+    assert "[XX]" in captured.out

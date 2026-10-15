@@ -694,7 +694,7 @@ def project_credential_policy(
     import tomllib
 
     if booley_dir is None:
-        from booley.runtime.booley_dir import resolve_authoritative_booley_dir
+        from booley.core.booley_dir import resolve_authoritative_booley_dir
 
         try:
             booley_dir = resolve_authoritative_booley_dir(project_root)

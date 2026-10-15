@@ -59,10 +59,11 @@ _MODE_DESC = {
 def _report_status(app: str | None = None, project_root: Path | None = None) -> int:
     """Report the launching process's credential under the selected Project policy."""
     from booley.config.agent import project_credential_policy
+    from booley.core.booley_dir import resolve_authoritative_booley_dir
 
     banner("Agent auth status")
     policy = "auto"
-    if project_root is not None and _project_is_initialized(project_root):
+    if project_root is not None and resolve_authoritative_booley_dir(project_root).is_dir():
         provider, policy = project_credential_policy(project_root)
         app = app or provider
     apps = [app] if app else list(auth_token.CREDENTIALS)
