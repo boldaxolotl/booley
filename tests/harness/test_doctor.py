@@ -8482,14 +8482,14 @@ def test_doctor_flags_missing_specialist_ignores_without_mutating(tmp_path):
         "reviewer-state/\n", ""
     )
     path = tmp_path / ".gitignore"
-    path.write_text(original)
+    path.write_text(original, encoding="utf-8")
     findings = _gitignore_probe(tmp_path)
     assert len(findings) == 1
     assert findings[0].severity == "warn"
     assert "mcp-tool-reports/" in findings[0].message
     assert "reviewer-state/" in findings[0].message
     assert findings[0].fix == "booley init"
-    assert path.read_text() == original
+    assert path.read_text(encoding="utf-8") == original
 
 
 @pytest.mark.parametrize("tagged", [False, True])

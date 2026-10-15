@@ -156,7 +156,7 @@ def _old_policy_checkouts(tmp_path, paired):
     )
     (directory / "booley.toml").write_text("[project]\nname='test'\n")
     old = PROJECT_GITIGNORE.replace("mcp-tool-reports/\n", "").replace("reviewer-state/\n", "")
-    (directory / ".gitignore").write_text(old)
+    (directory / ".gitignore").write_text(old, encoding="utf-8")
     git(root, "add", "-A")
     git(root, "commit", "-qm", "old ignores")
     owner = directory if paired else root
@@ -184,7 +184,7 @@ def test_reconciled_checkout_stays_clean_after_real_reviewer(tmp_path, monkeypat
 
     root, directory, worktree, selected_dir = _old_policy_checkouts(tmp_path, paired)
     init_cmd._backfill_project_gitignore(directory, InitContext(project_root=root))
-    assert "mcp-tool-reports/" not in (selected_dir / ".gitignore").read_text()
+    assert "mcp-tool-reports/" not in (selected_dir / ".gitignore").read_text(encoding="utf-8")
     init_cmd._backfill_project_gitignore(selected_dir, InitContext(project_root=worktree))
     policy_owner = selected_dir if paired else worktree
     git(policy_owner, "add", ".gitignore" if paired else ".booley/.gitignore")
