@@ -17,6 +17,7 @@ from booley.core.boundary import require_dict, require_str, require_str_value, r
 from booley.goals.model import WorktreeIdentity
 from booley.goals.store import REPOSITORY_ID_FILE, resolve_worktree_identity
 from booley.runtime.atomic_files import atomic_replace_bytes
+from booley.runtime.chat_sessions import codex_chat_owner
 from booley.runtime.handles import HandleStore, fallback_predecessors, session_writer
 from booley.runtime.pid import ProcessIdentity, ProcessState, observe_process
 from booley.runtime.safe_storage import refuse_symlinks
@@ -263,13 +264,20 @@ class SessionRegistry:
                 rows.append(replace(row, process_state=presence.process_state))
         return RegistrySnapshot(tuple(rows), snapshot.diagnostics, snapshot.unavailable)
 
-    def preserve_worktree(self, attribution: Attribution) -> Attribution:
+    def preserve_worktree(
+        self, attribution: Attribution, *, predecessor_keys: tuple[str, ...] = ()
+    ) -> Attribution:
         """Calls without a work directory refresh the caller's previous association."""
         if attribution.worktree_key:
             return attribution
-        path = self.path(attribution.key)
-        old = self._read(path) if path.exists() else None
-        prior = canonical_attribution(old.attribution) if old else None
+        prior = next(
+            (
+                canonical_attribution(row.attribution)
+                for _, row in self._predecessors(attribution, predecessor_keys)
+                if row.attribution.worktree_key
+            ),
+            None,
+        )
         return (
             replace(
                 attribution,
@@ -281,23 +289,68 @@ class SessionRegistry:
             else attribution
         )
 
-    def _predecessors(self, facts: Attribution) -> list[tuple[Path, SessionRow]]:
-        candidates = [self.path(facts.key)]
+    def chat_attribution(self, facts: Attribution) -> Attribution:
+        """All conversations in one explicitly isolated Codex tab share its session."""
+        if facts.kind != "thread":
+            return facts
+        try:
+            if facts.process is None:
+                # A completion may retain facts from before peer lookup recovered.
+                # Only a marked tab's established presence can redirect that key.
+                handles = HandleStore(self.booley_dir).load()
+                target = handles.aliases.get("chat:thread:" + facts.key)
+                if target and handles.aliases.get("chat:codex:" + target) == target:
+                    path = self.path(target)
+                    prior = self._read(path).attribution if path.exists() else None
+                    if (
+                        prior is not None
+                        and prior.kind == "process"
+                        and prior.namespace == facts.namespace
+                        and prior.process is not None
+                        and observe_process(prior.process, proc_root=self.proc_root).state
+                        == ProcessState.RUNNING
+                    ):
+                        return replace(facts, key=target, kind="process", process=prior.process)
+                return facts
+            owner = codex_chat_owner(self.booley_dir, facts.process, proc_root=self.proc_root)
+        except (OSError, ValueError, RuntimeError):
+            return facts  # Advisory naming failures never discard thread identity.
+        return (
+            replace(facts, key=process_session_key(owner), kind="process", process=owner)
+            if owner is not None
+            else facts
+        )
+
+    def _predecessors(
+        self, facts: Attribution, keys: tuple[str, ...] = ()
+    ) -> list[tuple[Path, SessionRow]]:
+        candidates = [self.path(key) for key in (facts.key, *keys)]
         if (
             facts.kind == "worktree"
             and facts.work_dir
             and not facts.worktree_key.startswith("path:")
         ):
             candidates.append(self.path("worktree:path:" + facts.work_dir))
-        return [(path, self._read(path)) for path in candidates if path.exists()]
+        return [(path, self._read(path)) for path in dict.fromkeys(candidates) if path.exists()]
 
-    def upsert(self, attribution: Attribution, tool: str, outcome: str, *, now: float) -> None:
+    def upsert(
+        self,
+        attribution: Attribution,
+        tool: str,
+        outcome: str,
+        *,
+        now: float,
+        predecessor_keys: tuple[str, ...] = (),
+    ) -> None:
         """Preserve first presence and migrate path fallbacks under the same writer lock."""
         with self._writer():
+            original_key = attribution.key
+            attribution = self.chat_attribution(attribution)
             path = self.path(attribution.key)
             refuse_symlinks(path)
-            predecessors = self._predecessors(attribution)
-            attribution = self.preserve_worktree(attribution)
+            predecessor_keys = (original_key, *predecessor_keys)
+            predecessors = self._predecessors(attribution, predecessor_keys)
+            attribution = self.preserve_worktree(attribution, predecessor_keys=predecessor_keys)
             row = _updated_row(attribution, [row for _, row in predecessors], tool, outcome, now)
             if (
                 not predecessors
@@ -308,7 +361,7 @@ class SessionRegistry:
             if len(payload) > MAX_ROW_BYTES:
                 raise ValueError("oversized session row")
             self._reserve_handle(
-                attribution, tuple(row.attribution.key for _, row in predecessors)
+                attribution, (*predecessor_keys, *(row.attribution.key for _, row in predecessors))
             )
             atomic_replace_bytes(path, payload)
             for prior_path, _ in predecessors:
@@ -329,6 +382,12 @@ class SessionRegistry:
                     *fallback_predecessors(facts.key, facts.work_dir),
                 ),
             )
+            if handles.aliases.get("chat:codex:" + facts.key) == facts.key:
+                for key in predecessors:
+                    if key.startswith("codex:"):
+                        # Keep ownership even when this thread already has a historic
+                        # allocation, which the handle contract never renumbers.
+                        handles.aliases["chat:thread:" + key] = facts.key
             if handles.labels() != before:
                 store.save(handles)
         except (OSError, ValueError, RuntimeError) as exc:

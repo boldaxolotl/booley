@@ -8,7 +8,8 @@ import sys
 from pathlib import Path
 
 from booley.config.settings import BackendConfigError, get_agent_settings, load_agent_settings
-from booley.runtime.booley_dir import resolve_checkout_booley_dir
+from booley.harness import codex_chat
+from booley.runtime.booley_dir import resolve_booley_dir, resolve_checkout_booley_dir
 
 
 def run(_args: argparse.Namespace, project_root: Path) -> int:
@@ -23,7 +24,13 @@ def run(_args: argparse.Namespace, project_root: Path) -> int:
 
     try:
         print(f"Booley is starting the {provider} interactive agent.", file=sys.stderr)
-        os.execvp(provider, [provider])
+        executable, argv = provider, [provider]
+        if provider == "codex":
+            try:
+                executable, argv = codex_chat.command(resolve_booley_dir(project_root))
+            except (OSError, ValueError, RuntimeError) as exc:
+                print(f"NOTE: Codex tab handle is unavailable: {exc}", file=sys.stderr)
+        os.execvp(executable, argv)
     except FileNotFoundError:
         print(
             f"ERROR: configured agent CLI '{provider}' was not found on PATH.",
