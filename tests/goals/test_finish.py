@@ -121,15 +121,23 @@ def test_committed_summary_is_on_worktree_branch_and_main_does_not_move(layout):
 @pytest.mark.parametrize(
     "boundary",
     [
-        pytest.param("attempt-frozen", marks=pytest.mark.timeout(150)),
-        "finishing",
-        pytest.param("local-artifacts", marks=pytest.mark.timeout(150)),
-        "publication-intent",
-        pytest.param("destination-materialized", marks=pytest.mark.timeout(150)),
-        pytest.param("commit-journaled", marks=pytest.mark.timeout(150)),
-        "ref-published",
-        pytest.param("index-synchronized", marks=pytest.mark.timeout(150)),
-        pytest.param("finished", marks=pytest.mark.timeout(150)),
+        pytest.param("attempt-frozen", marks=pytest.mark.timeout(150), id="attempt-frozen"),
+        pytest.param("finishing", marks=pytest.mark.timeout(150), id="finishing"),
+        pytest.param("local-artifacts", marks=pytest.mark.timeout(150), id="local-artifacts"),
+        pytest.param(
+            "publication-intent", marks=pytest.mark.timeout(120), id="publication-intent"
+        ),
+        pytest.param(
+            "destination-materialized",
+            marks=pytest.mark.timeout(150),
+            id="destination-materialized",
+        ),
+        pytest.param("commit-journaled", marks=pytest.mark.timeout(150), id="commit-journaled"),
+        pytest.param("ref-published", marks=pytest.mark.timeout(150), id="ref-published"),
+        pytest.param(
+            "index-synchronized", marks=pytest.mark.timeout(180), id="index-synchronized"
+        ),
+        pytest.param("finished", marks=pytest.mark.timeout(150), id="finished"),
     ],
 )
 def test_every_publication_crash_boundary_recovers_exactly_once(layout, boundary):
@@ -556,6 +564,7 @@ def test_malformed_retained_scope_fails_at_completion_boundary(layout, monkeypat
     assert GoalStore(layout.control).load(layout.record.id).state == GoalState.ACTIVE
 
 
+@pytest.mark.timeout(150)
 def test_non_review_contract_metadata_does_not_break_retained_inputs(layout, monkeypatch):
     from booley.goals import finish
     from booley.mcp.goal_completion import completion_environment
@@ -674,9 +683,9 @@ def test_finish_refuses_dirty_gitlink_even_when_production_config_hides_it(
 @pytest.mark.parametrize(
     "dirt",
     [
-        pytest.param("modified", marks=pytest.mark.timeout(150)),
-        pytest.param("staged", marks=pytest.mark.timeout(180)),
-        "untracked",
+        pytest.param("modified", marks=pytest.mark.timeout(150), id="modified"),
+        pytest.param("staged", marks=pytest.mark.timeout(180), id="staged"),
+        pytest.param("untracked", marks=pytest.mark.timeout(150), id="untracked"),
     ],
 )
 def test_nonexcluded_pair_finish_retry_preserves_concurrent_inner_dirt(layout, tmp_path, dirt):

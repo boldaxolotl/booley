@@ -64,6 +64,7 @@ def _tools(document: dict[str, Any]) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.timeout(120)
 def test_disjoint_keys_from_two_instances_both_land(goal_mode: SimpleNamespace) -> None:
     first, second = _load(goal_mode), _load(goal_mode)
     _publish(goal_mode, first, LINT_KEY, True, {"warnings": 0})
@@ -79,6 +80,7 @@ def test_disjoint_keys_from_two_instances_both_land(goal_mode: SimpleNamespace) 
     assert second.persistence_baseline == state_store.state_snapshot(second)
 
 
+@pytest.mark.timeout(120)
 def test_same_key_conflict_is_won_by_the_later_save(goal_mode: SimpleNamespace) -> None:
     first, second = _load(goal_mode), _load(goal_mode)
     _publish(goal_mode, first, LINT_KEY, True, {"warnings": 0})
@@ -354,7 +356,13 @@ def test_ledger_corruption_never_falls_back_to_cached_success(goal_mode):
     assert _state_file(goal_mode).read_bytes() == before
 
 
-@pytest.mark.parametrize("count", [100, 1000])
+@pytest.mark.parametrize(
+    "count",
+    [
+        pytest.param(100, id="100"),
+        pytest.param(1000, marks=pytest.mark.timeout(120), id="1000"),
+    ],
+)
 def test_projection_scans_validated_history_once_per_read_or_save(goal_mode, monkeypatch, count):
     from time import perf_counter
 

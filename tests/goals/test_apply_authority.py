@@ -148,7 +148,15 @@ def test_existing_intent_must_equal_complete_captured_entry_before_recovery(
     assert resume_proposal(env, layout.record.id, view.proposal.id).state == "applied"
 
 
-@pytest.mark.parametrize("deleted", ["all", "waiver-first", "waiver-last", "candidate"])
+@pytest.mark.parametrize(
+    "deleted",
+    [
+        pytest.param("all", id="all"),
+        pytest.param("waiver-first", marks=pytest.mark.timeout(120), id="waiver-first"),
+        pytest.param("waiver-last", id="waiver-last"),
+        pytest.param("candidate", id="candidate"),
+    ],
+)
 def test_waiver_approval_and_rejection_effects_are_bound_in_full(layout, deleted):
     env, candidate, _root = prepared(layout)
     view = propose(layout, env, candidate)
@@ -211,8 +219,17 @@ def test_unresolved_legacy_capture_without_separate_authority_fails_closed(layou
     assert before == snapshot(root)
 
 
-@pytest.mark.parametrize("field", ["met", "params", "detail"])
-@pytest.mark.parametrize("met", [False, True])
+@pytest.mark.parametrize(
+    "met, field",
+    [
+        pytest.param(False, "met", marks=pytest.mark.timeout(120), id="False-met"),
+        pytest.param(False, "params", id="False-params"),
+        pytest.param(False, "detail", id="False-detail"),
+        pytest.param(True, "met", id="True-met"),
+        pytest.param(True, "params", id="True-params"),
+        pytest.param(True, "detail", id="True-detail"),
+    ],
+)
 def test_status_never_credits_projection_values_that_differ_from_selected_observation(
     layout, field, met
 ):

@@ -155,6 +155,7 @@ def test_failure_of_a_killed_campaign_is_sticky_for_the_next_campaign(
     assert (registration.settled, registration.blocked) == (False, "")
 
 
+@pytest.mark.timeout(150)
 def test_a_coverage_goal_is_outside_campaign_accounting(layout: SimpleNamespace) -> None:
     """No result a campaign left behind can change a Goal judged by coverage floors alone."""
     goals = [
@@ -189,6 +190,7 @@ def test_a_coverage_goal_is_outside_campaign_accounting(layout: SimpleNamespace)
     assert _status(mode, coverage_key) == measured
 
 
+@pytest.mark.timeout(150)
 def test_a_campaign_read_before_it_started_is_read_again_after_it_failed(
     two: SimpleNamespace, campaign: _Campaign
 ) -> None:

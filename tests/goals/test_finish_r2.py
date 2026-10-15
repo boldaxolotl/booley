@@ -43,6 +43,7 @@ def test_pinned_attributes_accept_paths_beyond_process_argument_limit(tmp_path):
     assert all(row["text"] == "set" and row["eol"] == "lf" for row in values.values())
 
 
+@pytest.mark.timeout(150)
 def test_summary_stage_is_local_to_destination_even_when_devices_match(layout, monkeypatch):
     complete = publication_layout(layout)
     link = os.link

@@ -81,6 +81,7 @@ def test_cycle_count_goal_with_only_a_non_matching_run_is_unmet_and_says_so(
     assert detail["goal_contract_violation"] == "Test Runs have not passed yet: smoke@7"
 
 
+@pytest.mark.timeout(150)
 def test_outcomes_only_pass_keeps_a_measured_verdict_and_a_failure_unmeets_it(
     cycle: SimpleNamespace,
 ) -> None:

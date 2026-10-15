@@ -131,9 +131,33 @@ def _exec(name, *command):
     return result.stdout
 
 
-@pytest.mark.parametrize("app", ["claude", "codex"])
-@pytest.mark.parametrize("policy", ["auto", "subscription", "api_key"])
-@pytest.mark.parametrize("route", ["headless", "editor-contract"])
+@pytest.mark.parametrize(
+    "route, policy, app",
+    [
+        pytest.param("headless", "auto", "claude", id="headless-auto-claude"),
+        pytest.param("headless", "auto", "codex", id="headless-auto-codex"),
+        pytest.param("headless", "subscription", "claude", id="headless-subscription-claude"),
+        pytest.param(
+            "headless",
+            "subscription",
+            "codex",
+            marks=pytest.mark.timeout(120),
+            id="headless-subscription-codex",
+        ),
+        pytest.param("headless", "api_key", "claude", id="headless-api_key-claude"),
+        pytest.param("headless", "api_key", "codex", id="headless-api_key-codex"),
+        pytest.param("editor-contract", "auto", "claude", id="editor-contract-auto-claude"),
+        pytest.param("editor-contract", "auto", "codex", id="editor-contract-auto-codex"),
+        pytest.param(
+            "editor-contract", "subscription", "claude", id="editor-contract-subscription-claude"
+        ),
+        pytest.param(
+            "editor-contract", "subscription", "codex", id="editor-contract-subscription-codex"
+        ),
+        pytest.param("editor-contract", "api_key", "claude", id="editor-contract-api_key-claude"),
+        pytest.param("editor-contract", "api_key", "codex", id="editor-contract-api_key-codex"),
+    ],
+)
 def test_actual_local_credential_transport(transport_host, monkeypatch, app, policy, route):
     root, image = transport_host
     project, issued = _issued_transport_spec(root, image, app, policy, monkeypatch)

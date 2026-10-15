@@ -39,6 +39,7 @@ from booley.runtime.platform_paths import docker_mount_path, host_path_from_dock
 
 if TYPE_CHECKING:
     from booley.eda.provisioning.authority import LicenseProfile
+    from booley.runtime.session_admission import Sandbox
     from booley.runtime.session_issuance import Issuance
 
 logger = logging.getLogger(__name__)
@@ -154,28 +155,8 @@ def vscode_session_container(workspace: Path) -> str | None:
     renderer or extension host is still attached; callers such as the VaporView
     doctor check must probe their live service after finding the container.
     """
-    ours = session_container_name(workspace)
-    for name in _running_interactive_containers():
-        if name == ours:
-            continue
-        folder = _vscode_local_folder(name)
-        # Windows hosts stamp the label with a drive letter of either case.
-        if folder and folder.lower() == str(workspace).lower():
-            return name
-    return None
-
-
-def conflicting_vscode_session(workspace: Path) -> str | None:
-    """Name of a running VS Code devcontainer for *workspace*, if any.
-
-    Both containers mount the same per-project home-state volume read-write at
-    the agent's state dir, so running ours alongside VS Code's puts two agents on
-    one set of credentials, transcripts, and todos. That was impossible before —
-    "Reopen in Container" only ever made one — so warn rather than silently
-    create the second. Not an error: a one-off `session enter -- booley doctor`
-    beside an open editor is a reasonable thing to want.
-    """
-    return vscode_session_container(workspace)
+    selected = resolve_running_sandbox(workspace)
+    return selected.name if selected is not None and selected.vscode else None
 
 
 def sessions_on_stale_image(workspace: Path, image: str) -> list[str]:
@@ -458,12 +439,15 @@ def _warn_on_stale_session_containers(spec: dict, workspace: Path) -> None:
         )
 
 
-def _run(argv: list[str], *, capture: bool = True) -> subprocess.CompletedProcess:
+def _run(
+    argv: list[str], *, capture: bool = True, timeout: int | None = None
+) -> subprocess.CompletedProcess:
     logger.debug("running: %s", " ".join(argv))
     return subprocess.run(
         argv,
         env=argv.environment if isinstance(argv, DockerRunArgv) else None,
         capture_output=capture,
+        timeout=timeout,
         text=True,
         encoding="utf-8",
         errors="replace",
@@ -1038,6 +1022,15 @@ def _run_up_transaction(
         _discard_parked_session(parked)
 
 
+@dataclass(frozen=True, slots=True)
+class EnsureResult:
+    """Selected Sandbox and whether this invocation ran its startup hooks."""
+
+    name: str
+    vscode: bool
+    started: bool
+
+
 def _up_unlocked(
     workspace: Path,
     *,
@@ -1049,15 +1042,61 @@ def _up_unlocked(
     expected_wheel_sha256: str | None = None,
     recovery: bool = False,
 ) -> str:
-    """Create-or-start the Sandbox for *workspace*; return its name.
+    return _ensure_unlocked(
+        workspace,
+        rebuild=rebuild,
+        image_override=image_override,
+        expected_image_id=expected_image_id,
+        expected_payload_fingerprint=expected_payload_fingerprint,
+        expected_wheel_source_fingerprint=expected_wheel_source_fingerprint,
+        expected_wheel_sha256=expected_wheel_sha256,
+        recovery=recovery,
+    ).name
 
-    Idempotent, and split along the same seam the Dev Containers CLI uses:
-    ``postCreateCommand`` runs only when the container is created (it seeds the
-    agent's credentials and config), while ``postStartCommand`` runs on every
-    start (it revives the in-container MCP endpoint after a stop->start, which a
-    resumed container needs and a fresh one gets from postCreate anyway).
-    """
+
+def ensure(workspace: Path, *, rebuild: bool = False) -> EnsureResult:
+    """Ensure a Sandbox and expose startup metadata to the CLI."""
+    from booley.runtime.lifecycle_lock import host_lifecycle_lock
+
+    with host_lifecycle_lock("session up"):
+        _recover_before_lifecycle(workspace, "booley session up")
+        return _ensure_unlocked(workspace, rebuild=rebuild)
+
+
+def _ensure_unlocked(
+    workspace: Path,
+    *,
+    rebuild: bool = False,
+    image_override: str | None = None,
+    expected_image_id: str | None = None,
+    expected_payload_fingerprint: str | None = None,
+    expected_wheel_source_fingerprint: str | None = None,
+    expected_wheel_sha256: str | None = None,
+    recovery: bool = False,
+) -> EnsureResult:
+    """Reuse the selected Sandbox, or run the headless startup transaction."""
     request = _validate_up_request(workspace, image_override)
+    selected = resolve_running_sandbox(workspace)
+    if rebuild:
+        _refuse_editor(selected, "rebuild from the CLI")
+    if rebuild and selected is not None and selected.name != request.name:
+        raise SessionError(
+            f"headless Sandbox {selected.name!r} has an unexpected name; "
+            "stop it before rebuilding the canonical Sandbox"
+        )
+    if selected is not None and not rebuild:
+        _validate_selected_runtime(workspace, request, selected)
+        if expected_image_id is not None:
+            verify_refreshed_session(
+                workspace,
+                expected_image_id,
+                expected_payload_fingerprint,
+                expected_wheel_source_fingerprint=expected_wheel_source_fingerprint,
+                expected_wheel_sha256=expected_wheel_sha256,
+            )
+        return EnsureResult(selected.name, selected.vscode, False)
+    if resolve_running_sandbox(workspace) != selected:
+        raise SessionError("Sandbox identity changed before startup; retry")
     stale_vscode = _stopped_vscode_reconcile_candidates(
         workspace,
         request.issuance,
@@ -1078,7 +1117,7 @@ def _up_unlocked(
     # Last, so it judges the container that actually ended up running (a
     # just-created one trivially matches its image and stays silent).
     _warn_on_stale_session_containers(request.spec, workspace)
-    return request.name
+    return EnsureResult(request.name, False, True)
 
 
 def _recover_before_lifecycle(workspace: Path, retry_command: str | None) -> None:
@@ -1151,6 +1190,15 @@ def validate(workspace: Path) -> str:
         issuance = runtime_spec.validate(workspace, spec, dc.devcontainer_path(workspace))
     except runtime_spec.RuntimeSpecError as exc:
         raise SessionError(f"{exc}; {sandbox_remedy(workspace)}") from exc
+    selected = resolve_running_sandbox(workspace)
+    if selected is not None and not _container_matches_issuance(
+        selected.container_id,
+        issuance,
+        spec=spec,
+        workspace=workspace,
+        expected_id=selected.container_id,
+    ):
+        raise SessionError("running Sandbox does not match the current host issuance")
     return issuance.spec_sha256
 
 
@@ -1164,15 +1212,25 @@ def _prepare_unlocked(workspace: Path) -> str:
     from booley.eda.provisioning.licensing.flexnet_docker import RelayDockerError, validate_relay
     from booley.runtime import session_issuance as runtime_spec
 
+    selected = resolve_running_sandbox(workspace)
+    if selected is not None and not selected.vscode:
+        raise SessionError(
+            "headless Sandbox is running; run `booley session down` before opening VS Code"
+        )
     spec = _load_spec(workspace)
     issuance, quiesced = _authenticate_quiesce_validate(workspace, spec)
     if quiesced is not None:
         _remove_quiesced_legacy_container(quiesced)
-    _reconcile_stopped_vscode_containers(workspace, issuance)
+        selected = None
+    _reconcile_stopped_vscode_containers(
+        workspace, issuance, selected_editor_id=selected.container_id if selected else None
+    )
     from booley.runtime import session_admission
 
     try:
-        claim_created = session_admission.claim_vscode_start(workspace, run=_run)
+        claim_created = selected is None and session_admission.claim_vscode_start(
+            workspace, run=_run
+        )
     except session_admission.AdmissionError as exc:
         raise SessionError(str(exc)) from exc
     try:
@@ -1437,22 +1495,8 @@ def _strict_interactive_states(
 
 
 def strict_conflicting_vscode_session(workspace: Path) -> str | None:
-    """Find a conflicting VS Code Session or fail if Docker cannot prove absence."""
-    ours = session_container_name(workspace)
-    expected_folder = str(workspace).casefold()
-    for name, raw in _strict_running_interactive_states():
-        if name == ours:
-            continue
-        state = _decode_container_inspect(raw)
-        assert state is not None
-        config = state.get("Config")
-        labels = config.get("Labels") if isinstance(config, dict) else None
-        if not isinstance(labels, dict):
-            raise SessionError(f"Docker returned incomplete inspection for {name!r}")
-        folder = labels.get(_DEVCONTAINER_FOLDER_LABEL)
-        if isinstance(folder, str) and folder.casefold() == expected_folder:
-            return name
-    return None
+    """Compatibility entry point for structural editor selection."""
+    return vscode_session_container(workspace)
 
 
 def issued_runtime_drift_fix(
@@ -1501,12 +1545,14 @@ def _reconcile_stopped_vscode_containers(
     issuance: object,
     *,
     remove_unavailable_current: bool = True,
+    selected_editor_id: str | None = None,
 ) -> None:
     """Discard stopped VS Code containers that predate the current issuance."""
     for name in _stopped_vscode_reconcile_candidates(
         workspace,
         issuance,
         remove_unavailable_current=remove_unavailable_current,
+        selected_editor_id=selected_editor_id,
     ):
         _remove_stopped_session_container(name)
 
@@ -1516,6 +1562,7 @@ def _stopped_vscode_reconcile_candidates(
     issuance: object,
     *,
     remove_unavailable_current: bool,
+    selected_editor_id: str | None = None,
 ) -> list[str]:
     """Validate VS Code Sandbox state and return safe stopped cleanup targets."""
     from booley.runtime import session_issuance as runtime_spec
@@ -1536,6 +1583,8 @@ def _stopped_vscode_reconcile_candidates(
         if running is None:
             raise SessionError(f"cannot inspect state for Sandbox {name!r}")
         if running:
+            if selected_editor_id is not None and state.get("Id") == selected_editor_id:
+                continue
             if not issuance_matches:
                 raise SessionError(
                     f"running Sandbox {name!r} uses an older host issuance; "
@@ -1777,6 +1826,7 @@ def _container_matches_issuance(  # noqa: PLR0911, PLR0912, PLR0915 - fail-close
     *,
     spec: dict | None = None,
     workspace: Path | None = None,
+    expected_id: str | None = None,
 ) -> bool:
     """True when an existing container exactly matches its trusted issuance.
 
@@ -1812,6 +1862,10 @@ def _container_matches_issuance(  # noqa: PLR0911, PLR0912, PLR0915 - fail-close
     if not isinstance(decoded, list) or len(decoded) != 1 or not isinstance(decoded[0], dict):
         return False
     state = decoded[0]
+    if expected_id is not None and (
+        state.get("Id") != expected_id or _inspected_running(state) is not True
+    ):
+        return False
     config = state.get("Config", {})
     host = state.get("HostConfig", {})
     networks = state.get("NetworkSettings", {}).get("Networks", {})
@@ -1906,7 +1960,10 @@ def _canonical_bind_source(raw: object) -> str | None:
     if not isinstance(raw, str):
         return None
     host_path = host_path_from_docker_mount(raw)
-    return None if host_path is None else docker_mount_path(host_path)
+    try:
+        return None if host_path is None else docker_mount_path(host_path.resolve(strict=False))
+    except (OSError, RuntimeError):
+        return None
 
 
 def _mounts_match_spec(
@@ -2206,46 +2263,61 @@ def _warn_on_mangled_args(command: list[str]) -> None:
     )
 
 
-def _matching_running_project_runtime(workspace: Path, request: _UpRequest) -> str | None:
-    """Return one current running runtime, failing closed on conflicts or drift."""
-    candidates: list[tuple[str, bool]] = []
-    for name, raw in _strict_running_interactive_states():
-        if not _inspected_container_serves_workspace(name, raw, workspace):
-            continue
-        current = _container_matches_issuance(
-            name,
-            request.issuance,
-            spec=request.spec,
-            workspace=workspace,
-        )
-        candidates.append((name, current))
+def resolve_running_sandbox(workspace: Path) -> Sandbox | None:
+    """Select structurally, independently of the current host issuance."""
+    from booley.runtime import session_admission
 
+    try:
+        candidates = session_admission.running_project_sandboxes(workspace, run=_run)
+    except session_admission.AdmissionError as exc:
+        raise SessionError(str(exc)) from exc
     if len(candidates) > 1:
-        names = ", ".join(repr(name) for name, _current in candidates)
+        names = ", ".join(repr(item.name) for item in candidates)
         raise SessionError(
             f"multiple running Sandboxes serve this Project: {names}; "
             "stop all but the current issued Sandbox"
         )
-    if candidates and not candidates[0][1]:
+    return candidates[0] if candidates else None
+
+
+def _validate_selected_runtime(workspace: Path, request: _UpRequest, selected: Sandbox) -> None:
+    if not _container_matches_issuance(
+        selected.container_id,
+        request.issuance,
+        spec=request.spec,
+        workspace=workspace,
+        expected_id=selected.container_id,
+    ):
         raise SessionError(
-            f"running Sandbox {candidates[0][0]!r} does not match the current host "
+            f"running Sandbox {selected.name!r} does not match the current host "
             "issuance; rebuild or stop it before retrying"
         )
-    return candidates[0][0] if candidates else None
+
+
+def _refuse_editor(selected: Sandbox | None, action: str) -> None:
+    if selected is not None and selected.vscode:
+        raise SessionError(
+            f"VS Code owns the active Sandbox {selected.name!r}; "
+            f"cannot {action}; close the window or use 'Dev Containers: Rebuild Container' "
+            "or stop it through Dev Containers"
+        )
 
 
 def _select_or_start_project_runtime(workspace: Path) -> tuple[str, dict[str, str]]:
     """Select the one current runtime, or create/resume the headless Sandbox."""
     request = _validate_up_request(workspace, None)
+    selected = resolve_running_sandbox(workspace)
     remote_env = request.spec["remoteEnv"]
     command_env = {
         name: value
         for name, value in remote_env.items()
-        if auth_token.credential_for_env_var(name) is None
+        if name not in auth_token.CREDENTIAL_ENV_KEYS
     }
-    running = _matching_running_project_runtime(workspace, request)
-    if running is not None:
-        return running, command_env
+    if selected is not None:
+        _validate_selected_runtime(workspace, request, selected)
+        return selected.container_id, command_env
+    if resolve_running_sandbox(workspace) is not None:
+        raise SessionError("Sandbox appeared before startup; retry")
     _run_up_transaction(
         workspace,
         request,
@@ -2254,7 +2326,11 @@ def _select_or_start_project_runtime(workspace: Path) -> tuple[str, dict[str, st
         expected_payload_fingerprint=None,
     )
     _warn_on_stale_session_containers(request.spec, workspace)
-    return request.name, command_env
+    selected = resolve_running_sandbox(workspace)
+    if selected is None:
+        raise SessionError("Sandbox disappeared after startup; retry")
+    _validate_selected_runtime(workspace, request, selected)
+    return selected.container_id, command_env
 
 
 def run_project_command(workspace: Path, command: list[str], *, tty: bool = True) -> int:
@@ -2286,11 +2362,7 @@ def enter(workspace: Path, command: list[str] | None = None, *, tty: bool = True
     first if it exists but is stopped, so this is the one entry point a script
     needs.
     """
-    if command:
-        return run_project_command(workspace, command, tty=tty)
-    name = up(workspace)
-    argv = exec_argv(name, ["/bin/bash", "-l"], tty=tty)
-    return _run(argv, capture=False).returncode
+    return run_project_command(workspace, command or ["/bin/bash", "-l"], tty=tty)
 
 
 def verify_refreshed_session(
@@ -2390,43 +2462,28 @@ class DownResult:
 
     headless: bool = False
     relay: bool = False
-    vscode_stopped: tuple[str, ...] = ()
     claim_cleared: bool = False
 
     def __bool__(self) -> bool:
-        return self.headless or self.relay or bool(self.vscode_stopped) or self.claim_cleared
+        return self.headless or self.relay or self.claim_cleared
 
 
 def _down_unlocked(workspace: Path, *, remove: bool = True) -> DownResult:
     """Stop this Project's Sandboxes and clear pending editor capacity."""
     from booley.runtime import session_admission
 
-    name = session_container_name(workspace)
-    relay = _relay_resources(workspace)
-    session_exists = idk.container_exists(name)
-    relay_exists = _relay_objects_exist(relay)
+    selected = resolve_running_sandbox(workspace)
+    _refuse_editor(selected, "stop from the CLI")
     try:
-        vscode = session_admission.vscode_sandboxes(workspace, run=_run)
+        session_admission.vscode_sandboxes(workspace, run=_run)
     except session_admission.AdmissionError as exc:
         raise SessionError(str(exc)) from exc
-    verified_vscode = []
-    for item in vscode:
-        if not item.running:
-            continue
-        current = session_admission.vscode_sandboxes(workspace, run=_run)
-        match = next(
-            (
-                value
-                for value in current
-                if value.container_id == item.container_id
-                and value.name == item.name
-                and value.running
-            ),
-            None,
-        )
-        if match is None:
-            raise SessionError(f"cannot prove VS Code Sandbox {item.name!r} identity before stop")
-        verified_vscode.append(match)
+    name = selected.container_id if selected is not None else session_container_name(workspace)
+    relay = _relay_resources(workspace)
+    session_exists = selected is not None or idk.container_exists(name)
+    relay_exists = _relay_objects_exist(relay)
+    if resolve_running_sandbox(workspace) != selected:
+        raise SessionError("Sandbox identity changed before stop; retry")
     if session_exists:
         result = _run(["docker", "stop", name])
         if result.returncode:
@@ -2437,17 +2494,10 @@ def _down_unlocked(workspace: Path, *, remove: bool = True) -> DownResult:
             if result.returncode:
                 detail = result.stderr.strip() or result.stdout.strip() or "docker rm failed"
                 raise SessionError(f"cannot remove headless Sandbox {name!r}: {detail}")
-    stopped = []
-    for item in verified_vscode:
-        result = _run(["docker", "stop", item.container_id])
-        if result.returncode:
-            detail = result.stderr.strip() or result.stdout.strip() or "docker stop failed"
-            raise SessionError(f"cannot stop VS Code Sandbox {item.name!r}: {detail}")
-        stopped.append(item.name)
     if remove and relay_exists:
         _remove_license_relay(relay)
     claim_cleared = session_admission.clear_vscode_claim(workspace)
-    return DownResult(session_exists, relay_exists, tuple(stopped), claim_cleared)
+    return DownResult(session_exists, relay_exists, claim_cleared)
 
 
 def down(workspace: Path, *, remove: bool = True) -> DownResult:
@@ -2467,8 +2517,16 @@ def status(workspace: Path) -> str:
         return "recovery-pending"
     from booley.runtime import session_admission
 
+    selected = resolve_running_sandbox(workspace)
     try:
-        if session_admission.has_pending_claim(workspace):
+        pending = session_admission.has_pending_claim(workspace)
+        if selected is not None:
+            return (
+                f"running (owner: VS Code, name: {selected.name})"
+                if selected.vscode
+                else "running"
+            )
+        if pending:
             return "start-pending"
     except session_admission.AdmissionError as exc:
         raise SessionError(str(exc)) from exc

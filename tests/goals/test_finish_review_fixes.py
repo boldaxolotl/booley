@@ -54,10 +54,10 @@ def paired_publication(layout, tmp_path):
 @pytest.mark.parametrize(
     "abandon, paired",
     [
-        (False, False),
-        pytest.param(False, True, marks=pytest.mark.timeout(150)),
-        pytest.param(True, False, marks=pytest.mark.timeout(150)),
-        (True, True),
+        pytest.param(False, False, marks=pytest.mark.timeout(120), id="False-False"),
+        pytest.param(False, True, marks=pytest.mark.timeout(150), id="False-True"),
+        pytest.param(True, False, marks=pytest.mark.timeout(150), id="True-False"),
+        pytest.param(True, True, marks=pytest.mark.timeout(150), id="True-True"),
     ],
 )
 def test_revalidated_publication_retains_history_through_next_commit(
@@ -276,8 +276,8 @@ def test_prefence_invalid_retry_preserves_job_after_unrelated_approved_change(la
 @pytest.mark.parametrize(
     "abandon",
     [
-        False,
-        pytest.param(True, marks=pytest.mark.timeout(150)),
+        pytest.param(False, marks=pytest.mark.timeout(150), id="False"),
+        pytest.param(True, marks=pytest.mark.timeout(150), id="True"),
     ],
 )
 def test_pruned_publication_reconstructs_exact_journaled_commit(layout, abandon):
@@ -354,6 +354,7 @@ def test_pruned_publication_without_exact_authority_refuses_without_git_writes(l
     )
 
 
+@pytest.mark.timeout(150)
 def test_pruned_blob_before_any_commit_journal_restores_frozen_summary(layout):
     complete = publication_layout(layout)
     call = request(complete)

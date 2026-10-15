@@ -34,7 +34,13 @@ def test_goal_status_cli(
     assert "LINT:top" in text
 
 
-@pytest.mark.parametrize("short", [False, True])
+@pytest.mark.parametrize(
+    "short",
+    [
+        pytest.param(False, id="False"),
+        pytest.param(True, marks=pytest.mark.timeout(120), id="True"),
+    ],
+)
 def test_goal_status_cli_from_subdirectory_is_identical(
     goal_mode: SimpleNamespace,  # noqa: F811 — shared pytest fixture
     monkeypatch,

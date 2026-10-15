@@ -11,6 +11,11 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 - Under `auto`, issued Sandboxes now forward an exported `ANTHROPIC_API_KEY`, matching host and ephemeral Sandbox behavior; this can bill per token. Set `[agent] auth = "subscription"` to use subscription credentials instead. `booley auth --status` reports the selected Project/app policy and fails when its credential is missing; Doctor FAILs when a non-`auto` policy lacks its credential.
 
+
+- Session commands consistently reuse and report VS Code-owned Sandboxes; CLI
+  teardown and rebuild refuse editor ownership and point to Dev Containers.
+
+
 - Deep Doctor now warns when a simulation bad overlay fails to build, and requires
   an observed behavioral Test failure before accepting the bad case.
 

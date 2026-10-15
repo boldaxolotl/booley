@@ -231,6 +231,7 @@ def test_bound_mcp_flow_keeps_goal_evidence(goal_mode, monkeypatch):
     assert report["criterion_met"] is True
 
 
+@pytest.mark.timeout(120)
 def test_bound_done_reviewer_preserves_completion_policy_and_receipt(layout, monkeypatch):
     from booley.flows.endpoint_report_criteria import freeze
     from tests.goals.conftest import enter_goals

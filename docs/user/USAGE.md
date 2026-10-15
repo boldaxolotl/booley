@@ -682,9 +682,9 @@ the **host**, after `booley init`:
 booley session up                       # create or start the container
 booley session enter                    # open a shell inside it
 booley session enter -- booley doctor   # or run one command and exit
-booley session status                   # running | stopped | absent
+booley session status                   # running (with VS Code owner/name) | stopped | absent
 booley session refresh                  # rebuild the image and recreate the container
-booley session down                     # stop and remove it
+booley session down                     # stop and remove a headless Sandbox
 ```
 
 `booley session enter` works like a container terminal, so every
@@ -695,6 +695,11 @@ stops everything it started inside the container.
 the new one is ready. It won't replace a container that VS Code opened; use
 **Dev Containers: Rebuild Container** for that. If your EDA tools need a
 license server, run `booley session down` before refreshing.
+
+`up` and `enter` reuse the current Sandbox, including one owned by VS Code.
+`status` identifies a running VS Code Sandbox by owner and name. CLI `down`
+and `up --rebuild` refuse editor ownership: close the window or stop it through Dev Containers,
+and use **Dev Containers: Rebuild Container** to rebuild it.
 
 ## Auth & billing
 

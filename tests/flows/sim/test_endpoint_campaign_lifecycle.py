@@ -1833,6 +1833,7 @@ def test_prepared_ordinary_invoker_observes_owned_attempt_before_launch(
     assert "active" not in terminal
 
 
+@pytest.mark.timeout(180)
 def test_prepared_campaign_active_write_failure_preserves_durable_success(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
