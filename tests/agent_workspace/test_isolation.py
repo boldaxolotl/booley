@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from booley.agent_workspace.isolation import (
     CATEGORY_DIRS_DEFAULT,
     get_category_dirs,
@@ -129,3 +131,65 @@ class TestRemoveShadowPackage:
         with patch("booley.agent_workspace.isolation.shutil.rmtree", side_effect=OSError("perm")):
             remove_shadow_package(tmp_path)  # logs warning, doesn't raise
         assert shadow.is_dir()
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "not: [valid",
+        "filesets: broken",
+        "filesets: {rtl: {files: source.sv}}",
+        "filesets: {rtl: {files: [42]}}",
+        "filesets: {rtl: {files: [source.sv], tags: [42]}}",
+        "filesets: {rtl: {files: [source.sv], tags: [[tb]]}}",
+        "filesets: {rtl: {files: [source.sv], file_type: [cppSource]}}",
+        "filesets: {rtl: {files: [{source.sv: {tags: [42]}}]}}",
+        "filesets: {rtl: {files: [{source.sv: {file_type: 42}}]}}",
+        'filesets: {rtl: {files: [{source.sv: {is_include_file: "false"}}]}}',
+        "filesets: {rtl: {files: [source.sv]}}\ntargets: {sim: {filesets: [42]}}",
+    ],
+)
+def test_strict_inventory_refuses_malformed_discovered_core(tmp_path, content):
+    from booley.fusesoc.fusesoc_registry import FuseSocError, classified_sources
+
+    _write_core(tmp_path)
+    (tmp_path / "broken.core").write_text(content)
+    with pytest.raises(FuseSocError, match=r"broken.core"):
+        classified_sources(tmp_path, strict=True)
+
+
+def test_strict_inventory_refuses_escaping_declared_source(tmp_path):
+    from booley.fusesoc.fusesoc_registry import FuseSocError, classified_sources
+
+    core = _write_core(tmp_path)
+    core.write_text(core.read_text().replace("rtl/dut.sv", "../outside.sv"))
+    with pytest.raises(FuseSocError, match="escapes Project Root"):
+        classified_sources(tmp_path, strict=True)
+
+
+def test_strict_inventory_allows_metadata_core_without_filesets(tmp_path):
+    from booley.fusesoc.fusesoc_registry import classified_sources
+
+    _write_core(tmp_path)
+    (tmp_path / "metadata.core").write_text("CAPI=2:\nname: ::metadata:0\n")
+    assert "rtl/dut.sv" in classified_sources(tmp_path, strict=True).rtl_source_files
+
+
+@pytest.mark.parametrize("category", ["rtl", "tb"])
+@pytest.mark.parametrize(
+    "name",
+    ["unknown.C", "unknown.CPP", "unknown.H", "unknown.HXX", "unknown.HPP.bak", "unknown.C~"],
+)
+def test_unknown_uppercase_sources_and_backups_are_hidden(tmp_path, category, name):
+    from booley.agent_workspace.isolation import WorkspaceSnapshot, hide_opposite_sources
+
+    live, copy = tmp_path / "live", tmp_path / "copy"
+    live.mkdir()
+    copy.mkdir()
+    (live / name).write_text("// unknown source")
+    (copy / name).write_text("// unknown source")
+    hide_opposite_sources(
+        WorkspaceSnapshot(live, copy), category, category_files={"rtl": (), "tb": ()}
+    )
+    assert not (copy / name).exists()
+    assert (live / name).is_file()

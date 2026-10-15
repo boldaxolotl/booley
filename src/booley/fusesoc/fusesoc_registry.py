@@ -1172,6 +1172,53 @@ def vendored_files(project_root: Path | str) -> set[str]:
     return vendored
 
 
+def effective_source_tags(tags: tuple[str, ...], file_type: str, *, sim: bool) -> tuple[str, ...]:
+    """Preserve explicit roles; typed C/C++ Sim inputs otherwise belong to TB."""
+    if sim and file_type.lower() in {"cppsource", "csource"} and not ({"tb", "rtl"} & set(tags)):
+        return (*tags, "tb")
+    return tags
+
+
+def _sim_fileset_inventory(
+    root: Path, documents: Mapping[Path, Mapping[str, Any]]
+) -> dict[Path, set[str]]:
+    """Read Sim dependency declarations, never resolve unselected EDA Targets."""
+    from booley.targets.domain import flow_can_drive
+
+    inventory: dict[Path, set[str]] = {path: set() for path in documents}
+    for core_file, doc in documents.items():
+        targets = doc.get("targets") or {}
+        for name, target in targets.items():
+            ref = _enumerated_ref(doc, name, str(doc.get("name", "")), core_file)
+            if not flow_can_drive("sim", ref):
+                continue
+            inventory[core_file].update(possible_target_fileset_names(target))
+            for dependency in _selectable_core_closure_for_refs(root, [ref], documents=documents):
+                if dependency != core_file and dependency in documents:
+                    inventory[dependency].update(
+                        name
+                        for expression in _dependency_fileset_names(documents[dependency])
+                        for name in _possible_expression_values(expression)
+                    )
+    return inventory
+
+
+def _role_entries(
+    doc: Mapping[str, Any], core_file: Path, sim_sets: Collection[str]
+) -> Iterator[tuple[str, str, tuple[str, ...], bool, bool]]:
+    """Declared paths, effective tags, include status and explicit-role evidence."""
+    filesets = doc.get("filesets") or {}
+    for fs_name, fs in filesets.items():
+        for path, attrs in _fileset_file_attrs(fs):
+            tags = tuple(fs.get("tags") or ()) + tuple(attrs.get("tags") or ())
+            if {"tb", "rtl"} <= set(tags):
+                raise FuseSocError(f"{core_file}:{fs_name}: conflicting source roles for {path}")
+            explicit = bool({"tb", "rtl"} & set(tags))
+            kind = str(attrs.get("file_type", fs.get("file_type", "")))
+            tags = effective_source_tags(tags, kind, sim=fs_name in sim_sets)
+            yield fs_name, path, tags, bool(attrs.get("is_include_file")), explicit
+
+
 def _partition_fileset_files(
     core_file: Path,
     project_root: Path | str,
@@ -1180,12 +1227,16 @@ def _partition_fileset_files(
     rtl: list[str],
     tb: list[str],
     *,
+    effective_tb: set[str],
     include_headers: bool = False,
 ) -> None:
     """Append one core's fileset files into the RTL/TB partition, in place."""
     if not isinstance(filesets, Mapping):
         return
-    for fs_name in fileset_names:
+    names = [
+        name for expression in fileset_names for name in _possible_expression_values(expression)
+    ]
+    for fs_name in names:
         fileset = filesets.get(fs_name)
         if not isinstance(fileset, Mapping):
             continue
@@ -1193,7 +1244,7 @@ def _partition_fileset_files(
             for declared in _possible_expression_values(path):
                 lexical = core_relative_to_project(core_file, project_root, declared)
                 rel = canonical_project_path(project_root, lexical)
-                if "tb" in tags:
+                if rel in effective_tb or ("tb" in tags and "rtl" not in tags):
                     tb.append(rel)
                 elif include_headers or not is_include:
                     rtl.append(rel)
@@ -1267,6 +1318,7 @@ def target_source_files_for_ref(
     target_def = targets.get(ref.name) if isinstance(targets, Mapping) else None
     rtl: list[str] = []
     tb: list[str] = []
+    effective_tb = set(classified_sources(project_root).tb_files)
     _partition_fileset_files(
         ref.core_file,
         project_root,
@@ -1274,6 +1326,7 @@ def target_source_files_for_ref(
         target_fileset_names(target_def),
         rtl,
         tb,
+        effective_tb=effective_tb,
         include_headers=include_headers,
     )
 
@@ -1293,9 +1346,9 @@ def target_source_files_for_ref(
                 _dependency_fileset_names(dep_doc),
                 rtl,
                 tb,
+                effective_tb=effective_tb,
                 include_headers=include_headers,
             )
-
     # Preserve first-seen order while dropping duplicates: a file reachable
     # through two dependency paths must not be mutated or counted twice.
     return CoreSources(
@@ -1344,7 +1397,8 @@ def _possible_expression_values(value: str) -> list[str]:
     def _walk(nodes: list[Any]) -> None:
         for node in nodes:
             if isinstance(node, str):
-                values.extend(node.split())
+                # A leaf is one expanded value; spaces may belong to a filename.
+                values.append(node)
             elif isinstance(node, tuple) and len(node) == 3 and isinstance(node[2], list):
                 _walk(node[2])
 
@@ -1685,35 +1739,107 @@ def _core_files_root(core_file: Path, project_root: Path) -> Path:
     return core_file.parent
 
 
-def classified_sources(project_root: Path | str) -> CoreSources:
-    """Project-wide RTL/TB partition across **every** discovered ``.core``.
+def _validate_source_attributes(attrs: Mapping[str, Any], core_file: Path, location: str) -> None:
+    """Validate role/type metadata before it can affect category membership."""
+    if "tags" in attrs and not is_str_list(attrs["tags"]):
+        raise FuseSocError(f"{core_file}: {location}.tags must be an array of strings")
+    if "file_type" in attrs and not isinstance(attrs["file_type"], str):
+        raise FuseSocError(f"{core_file}: {location}.file_type must be a string")
+    if "is_include_file" in attrs and not isinstance(attrs["is_include_file"], bool):
+        raise FuseSocError(f"{core_file}: {location}.is_include_file must be a boolean")
 
-    The subprocess-free, target-agnostic ground truth for diff classification
-    (decision 13). Unlike :func:`target_source_files` — which is scoped to one
-    Target's filesets and drops ``is_include_file`` headers from the compile
-    list — this unions all filesets of all cores and keeps include headers on
-    the **RTL** side, because an edited ``.svh`` invalidates RTL builds and must
-    classify as an RTL change. Paths are normalized project-root-relative
-    (:func:`_core_relative_path`). Empty when no ``.core`` exists (pre-migration
-    projects; callers fall back to hardcoded directory prefixes).
-    """
-    root = Path(project_root)
-    rtl: set[str] = set()
-    tb: set[str] = set()
+
+def _validate_classification_doc(doc: Mapping[str, Any], core_file: Path) -> None:
+    """Validate the declaration shapes consumed by security-critical inventory."""
+    filesets = doc.get("filesets", {})
+    if not isinstance(filesets, Mapping):
+        raise FuseSocError(f"{core_file}: category isolation needs usable filesets")
+    for name, fileset in filesets.items():
+        if not isinstance(fileset, Mapping):
+            raise FuseSocError(f"{core_file}: invalid fileset {name}")
+        if "files" in fileset and not isinstance(fileset["files"], list):
+            raise FuseSocError(f"{core_file}: filesets.{name}.files must be array")
+        _validate_source_attributes(fileset, core_file, f"filesets.{name}")
+        for entry in fileset.get("files", ()):
+            if isinstance(entry, str):
+                continue
+            if not isinstance(entry, Mapping) or len(entry) != 1:
+                raise FuseSocError(f"{core_file}: malformed file declaration: {entry}")
+            path, attrs = next(iter(entry.items()))
+            if not isinstance(path, str) or not isinstance(attrs, Mapping):
+                raise FuseSocError(f"{core_file}: malformed source {path}")
+            _validate_source_attributes(attrs, core_file, path)
+    _validate_classification_targets(doc.get("targets", {}), core_file)
+
+
+def _validate_classification_targets(targets: Any, core_file: Path) -> None:
+    """Validate only Target fields needed to identify potential Sim inputs."""
+    if not isinstance(targets, Mapping):
+        raise FuseSocError(f"{core_file}: targets must be a mapping")
+    for name, target in targets.items():
+        if not isinstance(target, Mapping):
+            raise FuseSocError(f"{core_file}: invalid Target {name}")
+        for key in ("filesets", "filesets_append"):
+            if key in target and not is_str_list(target[key]):
+                raise FuseSocError(f"{core_file}: Target {name}.{key} must be array of strings")
+
+
+def _classification_documents(root: Path, *, strict: bool) -> dict[Path, Mapping[str, Any]]:
+    documents: dict[Path, Mapping[str, Any]] = {}
     for core_file in discover_cores(root):
         try:
             doc = read_core(core_file)
+            _validate_classification_doc(doc, core_file)
+            documents[core_file] = doc
         except FuseSocError:
-            continue
-        filesets = doc.get("filesets")
-        if not isinstance(filesets, Mapping):
-            continue
-        for fs in filesets.values():
-            if not isinstance(fs, Mapping):
-                continue
-            for path, tags, _is_include in _fileset_entries(fs):
-                rel = _core_relative_path(core_file, root, path)
-                (tb if "tb" in tags else rtl).add(rel)
+            if strict:
+                raise
+    if strict and not documents:
+        raise FuseSocError("category isolation requires a usable .core; run booley setup")
+    return documents
+
+
+def _classification_declarations(
+    root: Path, *, strict: bool
+) -> dict[str, list[tuple[str, bool, str]]]:
+    documents = _classification_documents(root, strict=strict)
+    sim_sets = _sim_fileset_inventory(root, documents)
+    declarations: dict[str, list[tuple[str, bool, str]]] = {}
+    for core_file, doc in documents.items():
+        for fs_name, path, tags, _include, explicit in _role_entries(
+            doc, core_file, sim_sets[core_file]
+        ):
+            for candidate in _possible_expression_values(path):
+                rel = _core_relative_path(core_file, root, candidate)
+                if strict and Path(rel).is_absolute():
+                    raise FuseSocError(f"{core_file}: source escapes Project Root: {path}")
+                declarations.setdefault(rel, []).append(
+                    ("tb" if "tb" in tags else "rtl", explicit, f"{core_file}:{fs_name}")
+                )
+    return declarations
+
+
+def classified_sources(project_root: Path | str, *, strict: bool = False) -> CoreSources:
+    """Exact conservative declaration inventory; selected inspection keeps conditions.
+
+    Strict isolation refuses unusable cores; diagnostic diff callers retain the
+    no-core fallback. Sim inference follows cheap dependency declarations only.
+    """
+    declarations = _classification_declarations(Path(project_root).resolve(), strict=strict)
+    rtl: list[str] = []
+    tb: list[str] = []
+    for path, roles in declarations.items():
+        explicit = {role for role, tagged, _origin in roles if tagged}
+        if len(explicit) > 1:
+            raise FuseSocError(f"conflicting source roles for {path}: {roles}")
+        role = (
+            next(iter(explicit))
+            if explicit
+            else ("tb" if any(r == "tb" for r, _, _ in roles) else "rtl")
+        )
+        (tb if role == "tb" else rtl).append(path)
+    if strict and not declarations:
+        raise FuseSocError("category isolation requires usable .core source declarations")
     return CoreSources(rtl_source_files=tuple(sorted(rtl)), tb_files=tuple(sorted(tb)))
 
 
@@ -1742,58 +1868,57 @@ def source_dirs_from_core(
     blindness). ``booley doctor`` FAILs the same condition up front.
     """
     root = Path(project_root)
-    rtl_dirs: set[str] = set()
-    tb_dirs: set[str] = set()
-    tb_incl: set[str] = set()
-    saw_core = False
+    documents = _classification_documents(root, strict=True)
+    sources = classified_sources(root)
+    effective_tb = set(sources.tb_files)
 
     def _entry(rel: str) -> str:
         parent = PurePosixPath(rel).parent.as_posix()
-        return rel if parent == "." else parent  # root file → verbatim path
+        return rel if parent == "." else parent
 
-    for core_file in discover_cores(root):
-        try:
-            doc = read_core(core_file)
-        except FuseSocError:
-            continue
-        filesets = doc.get("filesets")
-        if not isinstance(filesets, Mapping):
-            continue
-        saw_core = True
-        for fs in filesets.values():
-            if not isinstance(fs, Mapping):
-                continue
-            for path, tags, is_include in _fileset_entries(fs):
-                entry = _entry(_core_relative_path(core_file, root, path))
-                if "tb" in tags:
-                    tb_dirs.add(entry)
-                    if is_include:
-                        tb_incl.add(entry)
-                else:
-                    rtl_dirs.add(entry)
-    if not saw_core:
-        raise FuseSocError(
-            "project has no .core: a resolvable FuseSoC .core Target is a "
-            "precondition for every Booley Flow (ADR 0039) — author one (the "
-            "booley-setup skill's project-config step walks through it)"
+    tb_incl: set[str] = set()
+    for core_file, doc in documents.items():
+        for fileset in doc.get("filesets", {}).values():
+            for path, _tags, include in _fileset_entries(fileset):
+                for candidate in _possible_expression_values(path):
+                    rel = _core_relative_path(core_file, root, candidate)
+                    if include and rel in effective_tb:
+                        tb_incl.add(_entry(rel))
+    return (
+        sorted({_entry(path) for path in sources.rtl_source_files}),
+        sorted({_entry(path) for path in sources.tb_files}),
+        sorted(tb_incl),
+    )
+
+
+def explicit_target_sources(project_root: Path | str, ref: TargetRef) -> CoreSources:
+    """Raw tag inventory for Doctor; inferred harness roles are not explicit tags."""
+    rtl: list[str] = []
+    tb: list[str] = []
+    closure = _selectable_core_closure_for_refs(Path(project_root), [ref])
+    for core_file in sorted(closure):
+        doc = read_core(core_file)
+        names = (
+            possible_target_fileset_names((doc.get("targets") or {}).get(ref.name))
+            if core_file == ref.core_file
+            else _dependency_fileset_names(doc)
         )
-    return (sorted(rtl_dirs), sorted(tb_dirs), sorted(tb_incl))
+        for name in (
+            name for expression in names for name in _possible_expression_values(expression)
+        ):
+            fileset = (doc.get("filesets") or {}).get(name)
+            if not isinstance(fileset, Mapping):
+                continue
+            for path, tags, _include in _fileset_entries(fileset):
+                for candidate in _possible_expression_values(path):
+                    rel = _core_relative_path(core_file, Path(project_root), candidate)
+                    (tb if "tb" in tags else rtl).append(rel)
+    return CoreSources(rtl_source_files=tuple(rtl), tb_files=tuple(tb))
 
 
 def _sim_target_has_untagged_tb(project_root: Path | str, target: str) -> bool:
-    """True when a sim Target declares files but none carry ``tags:[tb]``.
-
-    A sim Target needs a testbench, and Source Isolation partitions RTL-vs-TB by
-    the ``tags:[tb]`` marker (decision 13).  A sim Target with files but **zero**
-    tb-tagged files means its testbench is untagged — the partition would
-    mis-classify TB as RTL (e.g. ``mutation_tester`` would mutate the TB).  ADR
-    0022 dec 13 makes that a **setup-time Source-Isolation error**; this is the
-    predicate the ``booley doctor`` audit (migration plan Phase 7 — "tagged TB
-    filesets") raises on.  Non-sim Targets (synth/fpga) legitimately have no TB
-    and are out of scope — callers gate on the Target's EDA tool first.
-    """
-    src = _target_source_files(project_root, target)
-    return bool(src.rtl_source_files) and not src.tb_files
+    sources = explicit_target_sources(project_root, _resolve_ref(project_root, target))
+    return bool(sources.rtl_source_files) and not sources.tb_files
 
 
 # ---------------------------------------------------------------------------
@@ -2043,7 +2168,9 @@ def _restore_tb_tags(
         return resolved
     tb_paths = {
         PurePosixPath(str(path).replace("\\", "/")).as_posix()
-        for path in target_source_files_for_ref(project_root, source_ref).tb_files
+        for path in target_source_files_for_ref(
+            project_root, source_ref, include_dependencies=True
+        ).tb_files
     }
     if not tb_paths:
         return resolved

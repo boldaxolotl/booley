@@ -32,7 +32,10 @@ The shown seed is illustrative. Supply the run's own 128-bit seed and freeze it
 before candidate evaluation. `candidate-inputs.json` contains `root`, the exact
 accepted `commit`, an explicit `sources` list of `{path, sha256}` records, and
 optional `include_files` records for headers. Paths are relative to the root.
-The root must be disjoint from this evaluator. Copy the entire original manifest
+`root` must be a Git checkout whose `HEAD` is exactly `commit`, such as the Goal
+worktree or a detached clone at that commit. The evaluator reads each source's
+bytes from that commit through Git and rejects a working-tree file that differs
+from it. The root must be disjoint from this evaluator. Copy the entire original manifest
 unchanged for both repair evaluations. Modified/missing cases, changed evaluator
 or public-input digests, and controls for another evaluator are rejected.
 
@@ -45,16 +48,16 @@ and each repair plus full rerun to 45 minutes; the operator stops starting new w
 when the mission timebox runs out.
 An operational timeout or evaluator failure is blocked, never an RTL mismatch.
 
-The 43 controls each require positive, independently corrupted and restored
-hardware: 129 simulator runs in total. The transport fixture covers MMIO and TX;
+The 45 controls each require positive, independently corrupted and restored
+hardware: 135 simulator runs in total. The transport fixture covers MMIO and TX;
 the separate receiver fixture covers exact-a RX at all four start phases with
 NF=0/1, even/odd parity reception, RX FIFO depth/order, RX watermark state, natural
 RX and injected event IRQ observation, transition-rich VAL history, and stalled
 exactly-once reads. The broader peripheral fixture sweeps exact-b and fractional
 RX, both parity-error modes, RX overflow, every break/parity threshold, every TX
 and RX watermark encoding, all three level IRQ sources, every materialized invalid
-address for reads and writes, both loopbacks, all override modes, and all reset
-contexts. Candidate admission requires every control for this evaluator identity.
+address for reads and writes, both loopbacks, NCO=0 TX stall, all override modes
+(including override with TX enabled), and all reset contexts. Candidate admission requires every control for this evaluator identity.
 Timeout controls separately omit read/receive/event resets, incorrectly reset on
 full-FIFO drops or W1C, suppress the IRQ, and move one clock outside each inclusive
 30B/34B boundary. A natural timeout IRQ control uses the same public timing bound.

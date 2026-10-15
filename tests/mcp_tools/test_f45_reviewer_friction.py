@@ -39,11 +39,22 @@ def _issue(category: str, file: str, summary: str) -> dict:
 
 
 @contextlib.contextmanager
-def _passthrough_workspace(params, _access, _category=None):
+def _passthrough_workspace(params, _access, _category=None, **_kwargs):
     yield params, None
 
 
 def _state(tmp_path: Path, monkeypatch, *criteria: str) -> Path:
+    from booley.runtime.booley_dir import reset_cache
+
+    data = tmp_path / ".booley"
+    data.mkdir(exist_ok=True)
+    (data / "booley.toml").write_text('[project]\nname="f45"\n')
+    monkeypatch.setenv("BOOLEY_DIR", str(data))
+    reset_cache()
+    if not list(tmp_path.glob("*.core")):
+        (tmp_path / "uart.core").write_text(
+            "CAPI=2:\nname: ::f45:0\nfilesets:\n  rtl: {files: [rtl/uart.sv]}\n"
+        )
     state_file = tmp_path / "state.json"
     state = DevelopmentState.load(state_file)
     state.slug = "f45-repro"
