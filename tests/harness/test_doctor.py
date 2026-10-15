@@ -2765,9 +2765,10 @@ targets:
         assert any("tests.toml invalid" in m for m in rec.fails())
 
 
-# ===========================================================================
+# ====================================================================
+
 # Interactive Mode persistent state-volume note
-# ===========================================================================
+# ====================================================================
 
 
 class TestWcpServerCheck:
@@ -2971,9 +2972,10 @@ class TestWcpPortProbe:
         assert doctor._wcp_port_listening(["docker", "exec", "c"], 54322) is None
 
 
-# ===========================================================================
+# ====================================================================
+
 # Stale devcontainer.json detection (predates the home-state persistence fix)
-# ===========================================================================
+# ====================================================================
 
 
 # ---------------------------------------------------------------------------
@@ -6106,9 +6108,10 @@ class TestDeveloperProbe:
             developer_probe.measure_developer_rss(tmp_path)
 
 
-# ===========================================================================
+# ====================================================================
+
 # Flow Target configured — cheap pass (F-9)
-# ===========================================================================
+# ====================================================================
 
 
 def _audit_with_flows(tmp_path: Path, flows: dict) -> doctor.ProjectAudit:
@@ -6155,9 +6158,10 @@ class TestCheckDoctorTargets:
         assert "flow_options.booley.doctor" in fails[0][1]
 
 
-# ===========================================================================
+# ====================================================================
+
 # Legacy tools-section .core targets (F-6)
-# ===========================================================================
+# ====================================================================
 
 
 class TestCheckLegacyCoreTargets:
@@ -7303,9 +7307,10 @@ class TestLineEndingsCheck:
         assert reporter.findings[0].severity == "warn"
 
 
-# ===========================================================================
+# ====================================================================
+
 # _check_subscription_creds_health — expired-creds gap (2026-07-23 incident)
-# ===========================================================================
+# ====================================================================
 
 
 class TestSubscriptionCredsHealth:
@@ -8518,6 +8523,21 @@ def test_wcp_project_sandbox_resolution(
         assert rec.kinds() == {"skip"}
         # Ownership alone must never claim an attached extension host.
         assert "pass" not in rec.kinds()
+
+
+def test_doctor_flags_missing_specialist_ignores_without_mutating(tmp_path):
+    original = project_gitignore.PROJECT_GITIGNORE.replace("mcp-tool-reports/\n", "").replace(
+        "reviewer-state/\n", ""
+    )
+    path = tmp_path / ".gitignore"
+    path.write_text(original, encoding="utf-8")
+    findings = _gitignore_probe(tmp_path)
+    assert len(findings) == 1
+    assert findings[0].severity == "warn"
+    assert "mcp-tool-reports/" in findings[0].message
+    assert "reviewer-state/" in findings[0].message
+    assert findings[0].fix == "booley init"
+    assert path.read_text(encoding="utf-8") == original
 
 
 @pytest.mark.parametrize("tagged", [False, True])

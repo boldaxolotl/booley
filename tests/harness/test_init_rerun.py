@@ -391,6 +391,8 @@ class TestProjectGitignoreBackfill:
 
         lines = (tmp_path / ".gitignore").read_text(encoding="utf-8").splitlines()
         assert "flow-reports/" in lines
+        assert "mcp-tool-reports/" in lines
+        assert "reviewer-state/" in lines
         assert "/logs/" in lines
         assert "/.baseline-wt-*/" in lines
         assert "__pycache__/" in lines
@@ -405,6 +407,8 @@ class TestProjectGitignoreBackfill:
         lines = gitignore.read_text(encoding="utf-8").splitlines()
         assert "my_custom_dir/" in lines
         assert lines.count("flow-reports/") == 1
+        assert lines.count("mcp-tool-reports/") == 1
+        assert lines.count("reviewer-state/") == 1
         assert lines.count("/logs/") == 1
         assert lines.count("/.baseline-wt-*/") == 1
         assert "__pycache__/" in lines

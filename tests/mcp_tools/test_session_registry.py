@@ -717,3 +717,49 @@ def test_no_worktree_fallback_never_becomes_a_job_owner():
 
     row = session_registry.resolve_attribution(None, metadata={}, client_name="")
     assert McpRequestContext(attribution=row).session_key() is None
+
+
+@pytest.mark.asyncio
+async def test_claude_peer_recovery_keeps_shared_worktree_presence_separate(
+    registry, tmp_path, monkeypatch
+):
+    from booley.mcp import session_observer
+    from booley.runtime.handles import HandleStore
+
+    monkeypatch.setattr(session_registry, "namespace", lambda *_args: SCOPE)
+    monkeypatch.setattr(session_observer, "observed_peer", lambda _request: None)
+    observer = SessionObserver(now=lambda: 100, budget=1)
+    monkeypatch.setattr(observer, "_registry", lambda: registry)
+    arguments = {"work_dir": str(tmp_path)}
+    try:
+        fallback = await observer.attribution(arguments, {}, "claude-code", tool="fallback_before")
+        await observer.record(fallback, "fallback_before", "completed")
+        fallback_row = registry.snapshot().rows[0]
+        assert fallback.kind == "worktree"
+        assert HandleStore(tmp_path).load().labels()[fallback.key] == "S1"
+        monkeypatch.setattr(session_observer, "observed_peer", lambda _request: IDENTITY)
+        peer = await observer.attribution(arguments, {}, "claude-code", tool="process")
+        await observer.record(peer, "process", "completed")
+        rows = {row.attribution.key: row for row in registry.snapshot().rows}
+        assert peer.kind == "process"
+        assert rows[fallback.key] == fallback_row
+        assert {call.tool for call in rows[peer.key].calls} == {"process"}
+        assert HandleStore(tmp_path).load().labels()[peer.key] == "S2"
+        monkeypatch.setattr(session_observer, "observed_peer", lambda _request: None)
+        later = await observer.attribution(arguments, {}, "claude-code", tool="fallback_after")
+        await observer.record(later, "fallback_after", "completed")
+        rows = {row.attribution.key: row for row in registry.snapshot().rows}
+        assert later.key == fallback.key
+        assert len(rows) == 2
+        assert rows[fallback.key].started_at == fallback_row.started_at
+        assert [call.tool for call in rows[fallback.key].calls] == [
+            "fallback_before",
+            "fallback_before",
+            "fallback_after",
+            "fallback_after",
+        ]
+        assert {call.tool for call in rows[peer.key].calls} == {"process"}
+        labels = HandleStore(tmp_path).load().labels()
+        assert (labels[fallback.key], labels[peer.key]) == ("S1", "S2")
+    finally:
+        observer.close()
