@@ -39,7 +39,7 @@ Triage is a conversation, one **brief** per turn.
 5. **Brief one cluster, then wait.** Order: `qa-bug` clusters first, then product
    clusters by severity. Start every brief, and every batch of low-severity
    clusters, with a progress line computed from `triage.md`:
-   `Progress: <decided>/<total> clusters · <decided>/<total> findings · <left> findings left`.
+   `Progress: <clusters decided>/<all clusters> clusters · <findings decided>/<all findings> findings · <findings left> findings left`.
    Each brief states:
    - what happened, with the decisive command and output excerpt from the evidence;
    - the cause, **verified against current `origin/main`** (`git fetch`, then

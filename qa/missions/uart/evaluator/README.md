@@ -48,16 +48,16 @@ and each repair plus full rerun to 45 minutes; the operator stops starting new w
 when the mission timebox runs out.
 An operational timeout or evaluator failure is blocked, never an RTL mismatch.
 
-The 44 controls each require positive, independently corrupted and restored
-hardware: 132 simulator runs in total. The transport fixture covers MMIO and TX;
+The 45 controls each require positive, independently corrupted and restored
+hardware: 135 simulator runs in total. The transport fixture covers MMIO and TX;
 the separate receiver fixture covers exact-a RX at all four start phases with
 NF=0/1, even/odd parity reception, RX FIFO depth/order, RX watermark state, natural
 RX and injected event IRQ observation, transition-rich VAL history, and stalled
 exactly-once reads. The broader peripheral fixture sweeps exact-b and fractional
 RX, both parity-error modes, RX overflow, every break/parity threshold, every TX
 and RX watermark encoding, all three level IRQ sources, every materialized invalid
-address for reads and writes, both loopbacks, NCO=0 TX stall, all override modes,
-and all reset contexts. Candidate admission requires every control for this evaluator identity.
+address for reads and writes, both loopbacks, NCO=0 TX stall, all override modes
+(including override with TX enabled), and all reset contexts. Candidate admission requires every control for this evaluator identity.
 Timeout controls separately omit read/receive/event resets, incorrectly reset on
 full-FIFO drops or W1C, suppress the IRQ, and move one clock outside each inclusive
 30B/34B boundary. A natural timeout IRQ control uses the same public timing bound.

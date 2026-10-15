@@ -25,6 +25,7 @@ localparam CORRUPT_INVALID = 0;
 localparam CORRUPT_LOOP = 0;
 localparam CORRUPT_OVERRIDE = 0;
 localparam CORRUPT_RELEASE = 0;
+localparam CORRUPT_OVERRIDE_TX_ENABLED = 0;
 localparam CORRUPT_RESET = 0;
 localparam CORRUPT_NCO_ZERO = 0;
 
@@ -65,7 +66,9 @@ wire [8:0] levels = {
 wire [8:0] visible_levels = CORRUPT_WATERMARK ? levels ^ 9'h103 : levels;
 wire loop_tx = CORRUPT_LOOP ? 1'b1 : rx_i;
 wire override_tx = CORRUPT_OVERRIDE ? ~override_control[1] : override_control[1];
-assign tx_o = override_control[0] ? override_tx : (control[5] ? loop_tx : tx_serial);
+// The override-TX-enabled corruption honors OVRD only while CTRL.TX is clear.
+wire override_active = override_control[0] && !(CORRUPT_OVERRIDE_TX_ENABLED && control[0]);
+assign tx_o = override_active ? override_tx : (control[5] ? loop_tx : tx_serial);
 assign irq_o = (events | visible_levels | force_level) & enabled & ~corrupt_level_mask;
 assign req_ready_o = !rsp_valid_o;
 
@@ -274,7 +277,7 @@ always @(posedge clk_i) begin
             end
         end else rx_accumulator <= rx_sum;
 
-        if (control[5] || override_control[0] || control[4] || !control[0]) begin
+        if (control[5] || override_active || control[4] || !control[0]) begin
             tx_active <= 0;
             tx_serial <= 1;
         end else if (!tx_active && tx_depth > 0 && (selected_nco != 0 || CORRUPT_NCO_ZERO)) begin

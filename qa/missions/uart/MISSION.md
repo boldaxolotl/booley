@@ -136,7 +136,7 @@ Try:
 - Confirm isolation (see the rules). Generate a fresh 32-hex-digit seed and run
   `python cases.py --seed <seed> --output <operator>/manifest.json`. Freeze the manifest, and
   check that every mandatory corner and the 96 seeded supplements are present.
-- Run `python controls.py <operator>/controls`. Each of the 44 controls must pass clean, fail
+- Run `python controls.py <operator>/controls`. Each of the 45 controls must pass clean, fail
   when corrupted, and pass again once restored. A misbehaving control is an evaluator `qa-bug`.
 - Build `candidate-inputs.json` from the accepted commit and run `run.py` per
   `evaluator/README.md`. Its `root` must be a Git checkout whose `HEAD` is that

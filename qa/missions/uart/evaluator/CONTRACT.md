@@ -118,7 +118,7 @@ Here each displayed `\n` means one LF byte, not a literal backslash and n, and t
 | UART-ERROR | Replace valid-character recovery payloads using the stream; preserve the selected error type, break threshold/parity mode, timeout control/depth-change operations and deliberately invalid bit. |
 | UART-FILTER | Select RX start phase from [0,1/4,1/2,3/4] of a nominal 16x period by `u1 mod 4`; preserve one-clock-noise width, false-start duration and filter mode. Use payload stream only for valid-character templates. |
 | UART-LOOP | Replace ordinary loopback payload bytes, preserve exactly one enabled loopback and prescribed return to normal operation. |
-| UART-OVERRIDE | Replace queued TX payload bytes; preserve low/high/release operation with TX disabled during the override and the payload transmitted after release. |
+| UART-OVERRIDE | Replace queued TX payload bytes; preserve low/high/release operation with TX disabled during the override and the payload transmitted after release. Release mode first overrides the pin low with TX enabled and an empty TX FIFO, then releases; OVRD pin control does not depend on CTRL.TX. |
 | UART-HISTORY | Use the next 16 bytes' low bits as a known transition pattern, held for one 16x sample period per bit, then its complement. Keep normal/NF-off mode, consistent phase/latency and bit-zero-newest oracle. |
 | UART-RESET | Replace pre-reset and recovery payload bytes, preserve the selected idle/active/occupied/pending-MMIO reset trigger and reset duration. |
 

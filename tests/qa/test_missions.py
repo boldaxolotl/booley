@@ -148,7 +148,7 @@ def test_mutation_scopes_name_source_files(fixture: Path) -> None:
     payload = JSON_BLOCK.findall(text)[0] if fixture.suffix == ".md" else text
     for goal in translate_goals(_goal_args(payload)).goals:
         if goal.family.value == "mutation":
-            for entry in goal.params["scope"]:
+            for entry in goal.params.get("scope", ()):
                 assert not entry.endswith(("/", "\\")), entry
                 assert Path(entry).suffix in {".v", ".sv", ".vhd", ".vhdl"}, entry
 

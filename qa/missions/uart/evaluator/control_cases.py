@@ -114,6 +114,13 @@ def control_cases() -> list[tuple]:
         peripheral(
             "override-release", "release", "override", mode="release", payload=[0x55, 0xAA]
         ),
+        peripheral(
+            "override-tx-enabled",
+            "override_tx_enabled",
+            "override",
+            mode="release",
+            payload=[0x55, 0xAA],
+        ),
         *[
             peripheral(f"reset-{mode}", "reset", "reset", mode=mode, payload=[0x55], nco=0x4000)
             for mode in ["idle", "active-tx", "active-rx", "occupied", "pending-mmio"]

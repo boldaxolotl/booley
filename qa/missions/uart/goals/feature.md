@@ -8,9 +8,9 @@ existing UART RTL or tests. Report corpus conflicts instead of inventing rules.
 `spec/contract.md` contains the frozen register definitions and MMIO addendum
 for spec review. Require fresh netlist/reports for synthesis. Error recovery is
 required behavior: after a framing error or a break, with parity enabled or
-disabled, the receiver starts the next character only on a START edge (idle high,
-then 1→0), as the corpus Reception section defines. The mutation Goal below is the
-only mutation gate; do not invent relative PPA or hidden coverage gates. Operator
+disabled, the receiver must resume receiving valid characters as the corpus
+Reception and error sections define; test it in the TB. The mutation Goal below is
+the only mutation gate; do not invent relative PPA or hidden coverage gates. Operator
 conformance evaluation is separate from Finish; the child sees no evaluator
 implementation, seed or generated cases.
 
@@ -63,7 +63,6 @@ implementation, seed or generated cases.
   {
     "family": "MUTATION",
     "target": "sim_uart",
-    "scope": ["rtl/qa_uart.sv"],
     "min_detected": 8,
     "total": 10,
     "origin": "feature"
