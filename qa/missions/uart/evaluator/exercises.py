@@ -186,7 +186,10 @@ async def baud(driver: Driver, parameters: dict) -> None:
         await driver.write(0x1C, 0x55)
         start = len(driver.tx)
         await driver.wait(4096)
-        driver.expect(set(driver.tx[start:]), {1}, "NCO zero: no TX progress during 4096 clocks")
+        # Distinct pin levels as a sorted list: observations must stay JSON-serializable.
+        driver.expect(
+            sorted(set(driver.tx[start:])), [1], "NCO zero: no TX progress during 4096 clocks"
+        )
 
 
 async def traffic(driver: Driver, parameters: dict) -> None:
@@ -472,33 +475,22 @@ async def loop(driver: Driver, parameters: dict) -> None:
 
 
 async def override(driver: Driver, parameters: dict) -> None:
+    """Drive the TX pin through OVRD, then release it and transmit the queued payload.
+
+    The corpus defines OVRD only as direct software control of the TX pin
+    (registers.md OVRD) and does not say what an enabled transmitter does with
+    its FIFO while overridden. TX therefore stays disabled during the override,
+    where queued bytes stack up by the Transmission prose, and is enabled only
+    after release.
+    """
     await driver.configure(control=2)
     for byte in parameters["payload"]:
         await driver.write(0x1C, byte)
-    mode = parameters["mode"]
-    level = int(mode in ["high", "release"])
+    level = int(parameters["mode"] in ["high", "release"])
     await driver.write(0x28, 1 | (level << 1))
-    if mode == "release":
-        await driver.configure()
-        start = len(driver.tx)
-        await driver.wait(14 * 64)
-        driver.expect(
-            all(value == 1 for value in driver.tx[start:]),
-            True,
-            "Enabled transmitter remains held until override release",
-        )
-    else:
-        await driver.wait(64)
-        driver.expect(driver.tx[-1], level, "TX override pin level")
+    await driver.wait(64)
+    driver.expect(driver.tx[-1], level, "TX override pin level")
     await driver.read(0x24, len(parameters["payload"]), 0xFF)
-    if mode == "release":
-        start = len(driver.tx)
-        await driver.write(0x28, 0)
-        await driver.wait((14 * len(parameters["payload"]) + 4) * 64)
-        result = check_tx(driver.tx[start:], parameters["payload"], 0x4000)
-        driver.expect(result["status"], "pass", "Override release: " + result["reason"])
-        await driver.read(0x24, 0, 0xFF)
-        return
     await driver.write(0x28, 0)
     await drain(driver, "tx", parameters["payload"])
 

@@ -68,7 +68,7 @@ also exercises the host, auth, runtime, policy, Doctor and feedback surfaces.
 ### 1. install — Candidate install routes (~15 min)
 Intent: the published install routes deliver exactly the declared build.
 Try:
-- Use the documented base-interpreter user install. In a new shell, version, executable,
+- Use the documented install route (README: pipx; `uv tool` as the alternative). In a new shell, version, executable,
   metadata and source commit agree, and nothing imports from a checkout. License is Apache-2.0;
   generated state and artifacts stay local.
 - On an externally managed distro, plain `pip` gets the documented rejection; the documented
@@ -136,10 +136,12 @@ Try:
 - Confirm isolation (see the rules). Generate a fresh 32-hex-digit seed and run
   `python cases.py --seed <seed> --output <operator>/manifest.json`. Freeze the manifest, and
   check that every mandatory corner and the 96 seeded supplements are present.
-- Run `python controls.py <operator>/controls`. Each of the 43 controls must pass clean, fail
+- Run `python controls.py <operator>/controls`. Each of the 44 controls must pass clean, fail
   when corrupted, and pass again once restored. A misbehaving control is an evaluator `qa-bug`.
 - Build `candidate-inputs.json` from the accepted commit and run `run.py` per
-  `evaluator/README.md`.
+  `evaluator/README.md`. Its `root` must be a Git checkout whose `HEAD` is that
+  `commit` (the Goal worktree or a detached clone); the evaluator reads source bytes
+  from the commit through Git, not from uncommitted working-tree edits.
 - Families: BUS (handshakes, single outstanding, 4-clock latencies, exactly-once effects,
   strobes, RO/WO, misaligned/unmapped, empty reads), REG (offsets, reset values, reserved bits,
   ALERT_TEST), TXRX (all 256 bytes, back-to-back, full duplex), BAUD (exact-a/b, fractional,
@@ -325,3 +327,9 @@ their starting state.
 - Host policy is daemon-wide; without a dedicated daemon, cap and egress cases disrupt others.
 - The Simulation Campaign fixture is SystemVerilog under Icarus, so its core sets `flow: sim` with
   `flow_options.iverilog_options: [-g2012]`. Without it the build fails on `string`.
+- The QA host's canonical install is `pip install --user --break-system-packages`, which is not a
+  documented user route. Verify the documented pipx/uv route in an isolated HOME, and don't report the
+  missing `pip --user` docs as a gap.
+- A candidate whose version string equals the latest release (only the commit differs) can't raise
+  a real pending upgrade review; reviews are keyed on the version. Simulate one by editing
+  `reviewed_through` and record that you did.

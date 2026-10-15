@@ -37,7 +37,10 @@ Triage is a conversation, one **brief** per turn.
    It is the resume point after an interruption or handoff. Show the maintainer a
    short overview (counts by kind and severity, the cluster order) and start.
 5. **Brief one cluster, then wait.** Order: `qa-bug` clusters first, then product
-   clusters by severity. Each brief states:
+   clusters by severity. Start every brief, and every batch of low-severity
+   clusters, with a progress line computed from `triage.md`:
+   `Progress: <decided>/<total> clusters · <decided>/<total> findings · <left> findings left`.
+   Each brief states:
    - what happened, with the decisive command and output excerpt from the evidence;
    - the cause, **verified against current `origin/main`** (`git fetch`, then
      `git show`/`git grep` on `origin/main`) with `file:line`: the build under test

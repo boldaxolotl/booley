@@ -62,8 +62,10 @@ an artifact root, and optionally `smoke` to also run the release smoke list.
   mission's prompts and Goal children; keep hidden faults and evaluator inputs
   with the operator.
 - Before creating anything outside the run dir (container, image, worktree,
-  branch, registration, grant, remote, mount, background process), append it to
-  `resources.md`. Cleanup releases exactly those rows.
+  branch, registration, grant, remote, mount, background process, file or
+  directory), append it to `resources.md`. Cleanup releases exactly those rows.
+- Write scratch files, backups and probe scripts under `<run-dir>/scratch/<area>/`,
+  never `/tmp`. Anything that must live elsewhere gets its row first.
 
 ## Run directory
 
@@ -115,7 +117,11 @@ Write each finding the moment you observe it, before any workaround or retry.
 5. **Cleanup.** Run the mission's cleanup area (Booley's own cleanup is under
    test), then release every remaining `resources.md` row and mark it. Keep the
    run dir. A release you cannot complete is marked `failed` with a note, and
-   is reported to the user.
+   is reported to the user. Before deleting a Project directory, copy each Goal
+   Record's `record.json`, `booley_state.json`, `operations/` and
+   `logs/acceptance/` into `evidence/cleanup/`; triage needs them to diagnose
+   Goal state findings. Last, list `/tmp/qa-*` and other run-named paths
+   outside the run dir; report any leftover without a row as a `qa-bug`.
 6. **Report.** Make sure `findings.md` and `log.md` are complete and tell the
    user: finding count by kind and severity, areas skipped, cleanup failures,
    smoke verdict, and that `booley-qa-triage` turns the findings into issues.

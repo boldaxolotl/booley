@@ -26,6 +26,7 @@ localparam CORRUPT_LOOP = 0;
 localparam CORRUPT_OVERRIDE = 0;
 localparam CORRUPT_RELEASE = 0;
 localparam CORRUPT_RESET = 0;
+localparam CORRUPT_NCO_ZERO = 0;
 
 reg [31:0] control, timeout_control;
 reg [7:0] fifo_control;
@@ -276,7 +277,7 @@ always @(posedge clk_i) begin
         if (control[5] || override_control[0] || control[4] || !control[0]) begin
             tx_active <= 0;
             tx_serial <= 1;
-        end else if (!tx_active && tx_depth > 0 && selected_nco != 0) begin
+        end else if (!tx_active && tx_depth > 0 && (selected_nco != 0 || CORRUPT_NCO_ZERO)) begin
             tx_frame <= {1'b1, tx_fifo[tx_head], 1'b0};
             tx_head = (tx_head + 1) % 32;
             tx_depth = tx_depth - 1;

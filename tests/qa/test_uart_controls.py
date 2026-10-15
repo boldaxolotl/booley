@@ -52,7 +52,7 @@ def test_control_publication_requires_stable_evaluator(monkeypatch, tmp_path, ch
 
         record = json.loads((destination / "controls.json").read_text())
         assert record["evaluator_sha256"] == "before"
-        assert len(record["results"]) == 129
+        assert len(record["results"]) == 132
 
 
 def test_successful_system_loopback_observations_are_serializable(monkeypatch):
@@ -90,6 +90,52 @@ def test_successful_system_loopback_observations_are_serializable(monkeypatch):
     driver = Driver()
     asyncio.run(exercises.loop(driver, {"mode": "system", "payload": [0x55], "nco": 0x4000}))
     json.dumps(driver.observations)
+
+
+def test_nco_zero_observations_are_serializable(monkeypatch):
+    """The NCO=0 stall oracle once stored a set, so observe.py could never publish it."""
+    evaluator = Path(__file__).resolve().parents[2] / "qa/missions/uart/evaluator"
+    monkeypatch.syspath_prepend(str(evaluator))
+    exercises = importlib.import_module("exercises")
+
+    class Driver:
+        def __init__(self):
+            self.tx = [1]
+            self.observations = []
+
+        async def configure(self, *args, **kwargs):
+            return None
+
+        async def write(self, *args, **kwargs):
+            return None
+
+        async def wait(self, cycles):
+            self.tx.extend([1] * cycles)
+
+        def expect(self, observed, expected, reason):
+            assert observed == expected
+            self.observations.append(
+                {"observed": observed, "expected": expected, "reason": reason}
+            )
+
+    driver = Driver()
+    asyncio.run(exercises.baud(driver, {"nco": 0, "payload": [0x55, 0xAA]}))
+    assert json.loads(json.dumps(driver.observations))[0]["observed"] == [1]
+
+
+def test_nco_zero_control_is_admitted(monkeypatch):
+    evaluator = Path(__file__).resolve().parents[2] / "qa/missions/uart/evaluator"
+    monkeypatch.syspath_prepend(str(evaluator))
+    control_cases = importlib.import_module("control_cases")
+    nco_zero = [item for item in control_cases.control_cases() if item[0] == "nco-zero"]
+    assert len(nco_zero) == 1
+    _, source, mutation, stimulus = nco_zero[0]
+    assert stimulus["operation"] == "baud" and stimulus["parameters"]["nco"] == 0
+    fixture = (evaluator / "controls" / f"{source}.sv").read_text()
+    assert f"CORRUPT_{mutation.upper()} = 0;" in fixture
+    assert {f"nco-zero-{variant}" for variant in control_cases.VARIANTS} <= set(
+        control_cases.expected_controls()
+    )
 
 
 def test_corrupt_control_sweep_retains_every_subcase(monkeypatch):
