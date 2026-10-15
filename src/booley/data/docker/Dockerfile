@@ -53,6 +53,9 @@ RUN --mount=type=bind,source=dist,target=/tmp/booley-dist,readonly \
         --wheel "$WHEEL" \
     && rm -f /tmp/booley-installed-files.txt
 
+# Build the image-local Dashboard extension from the installed wheel sources.
+RUN python -I -m booley.runtime.dashboard_extension
+
 # bwave — VCD waveform parser for RTL debug. The native binary is installed
 # OFF PATH, in two places that are one inode:
 #
