@@ -310,3 +310,53 @@ def test_advisory_boundary_failures_do_not_abort(goal_mode, monkeypatch, capsys,
     cli_goal_notice.warn_cli_goal_recording(goal_mode.worktree)
     assert "advisory unavailable" in capsys.readouterr().err
     assert _snapshot(goal_mode.main) == before
+
+
+def test_notice_does_not_select_cwd_directory_for_later_execution(
+    goal_mode, monkeypatch, tmp_path
+):
+    from booley.core import booley_dir
+    from booley.flows.cli_goal_notice import warn_cli_goal_recording
+    from booley.runtime.booley_dir import reset_cache, resolve_booley_dir
+
+    foreign = tmp_path / "cwd-project"
+    (foreign / ".booley").mkdir(parents=True)
+    monkeypatch.chdir(foreign)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    reset_cache()
+    expected = resolve_booley_dir(goal_mode.worktree)
+    reset_cache()
+    warn_cli_goal_recording(goal_mode.worktree)
+    assert booley_dir._cache is None
+    assert resolve_booley_dir(goal_mode.worktree) == expected
+
+
+def test_foreign_store_does_not_require_identity_for_unrelated_checkout(
+    goal_mode, monkeypatch, tmp_path, capsys
+):
+    from booley.flows.cli_goal_notice import warn_cli_goal_recording
+    from booley.runtime.booley_dir import reset_cache
+
+    unrelated = tmp_path / "unrelated"
+    unrelated.mkdir()
+    goal_fixtures.git(unrelated, "init", "-q")
+    monkeypatch.setenv("BOOLEY_DIR", str(goal_mode.control))
+    reset_cache()
+    before = _snapshot(tmp_path)
+    warn_cli_goal_recording(unrelated)
+    assert capsys.readouterr().err == ""
+    assert _snapshot(tmp_path) == before
+
+
+def test_malformed_identity_is_not_a_foreign_store(goal_mode, capsys):
+    import shutil
+
+    from booley.flows.cli_goal_notice import warn_cli_goal_recording
+    from booley.goals.store import REPOSITORY_ID_FILE
+
+    shutil.rmtree(goal_mode.control / "goals")
+    (goal_mode.main / ".git" / REPOSITORY_ID_FILE).write_text("malformed")
+    before = _snapshot(goal_mode.main)
+    warn_cli_goal_recording(goal_mode.worktree)
+    assert "advisory unavailable" in capsys.readouterr().err
+    assert _snapshot(goal_mode.main) == before
