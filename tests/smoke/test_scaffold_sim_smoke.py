@@ -95,6 +95,8 @@ def _assert_coverage(reports: Path, detail: dict) -> None:
 def test_real_scaffold_simulation_modes(
     tmp_path, monkeypatch, scaffold_native_binary, coverage, trace
 ):
+    if trace and os.name != "posix":
+        pytest.skip("real scaffold trace smoke requires POSIX FIFOs")
     monkeypatch.delenv("BOOLEY_DIR", raising=False)
     reset_cache()
     _write_project(tmp_path)

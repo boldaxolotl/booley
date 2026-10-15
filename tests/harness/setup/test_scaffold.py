@@ -650,6 +650,9 @@ def _assert_variant_sources_and_header(tmp_path, simulator, tb_style, asic, fpga
     assert ("tb_cpp" in core["filesets"]) is owned
     assert (tmp_path / "tb/sim_main.cpp").exists() is owned
     if owned:
+        assert doctor.sim_dump.dump_literals_in((tmp_path / "tb/sim_main.cpp").read_text()) == (
+            "dump.vcd",
+        )
         assert core["filesets"]["tb_cpp"] == {
             "files": [{"tb/sim_main.cpp": {"file_type": "cppSource"}}],
             "tags": ["tb"],

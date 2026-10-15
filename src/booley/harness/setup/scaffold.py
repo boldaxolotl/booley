@@ -655,7 +655,8 @@ int main(int argc, char** argv) {{
     top.trace(&trace, 99);
     const char* argument = context.commandArgsPlusMatch("tracefile=");
     const char* destination = argument[0] ? argument + sizeof("+tracefile=") - 1 : "";
-    trace.open(destination[0] ? destination : "dump.vcd");
+    if (destination[0]) trace.open(destination);
+    else trace.open("dump.vcd");
 #endif
     while (!context.gotFinish()) {{
         top.eval();
