@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import errno
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -37,9 +38,47 @@ def test_repeat_attach_one_view_and_no_filesystem_lock(tmp_path, monkeypatch, ca
     monkeypatch.setattr(command.socket, "socket", lambda *_: Owner())
     assert command.run_dashboard(tmp_path) == 0
     assert command.run_dashboard(tmp_path) == 0
+    assert command.run_dashboard(tmp_path, on_attach=True) == command.ALREADY_OPEN
     assert launched == ["run"]
     assert "already open" in capsys.readouterr().out
     assert list(tmp_path.iterdir()) == []
+
+
+def test_attach_policy_is_read_only_and_disabled_attach_never_starts(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setattr(command, "resolve_booley_dir", lambda _: tmp_path)
+    monkeypatch.setattr(command, "attach_blocker", lambda *_: "disabled by configuration")
+    monkeypatch.setattr(command, "run_dashboard", lambda *_: pytest.fail("must not start"))
+    assert command.run_attach(tmp_path, policy_only=True) == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "protocol": 1,
+        "enabled": False,
+        "reason": "disabled by configuration",
+        "already_open": False,
+    }
+    assert command.run_attach(tmp_path) == command.ATTACH_DISABLED
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_attach_rechecks_policy_before_launch_and_surfaces_bad_configuration(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setattr(command, "resolve_booley_dir", lambda _: tmp_path)
+    monkeypatch.setattr(command, "attach_blocker", lambda *_: "")
+    launches = []
+    monkeypatch.setattr(
+        command, "run_dashboard", lambda root, **kw: launches.append((root, kw)) or 0
+    )
+    assert command.run_attach(tmp_path) == 0
+    assert launches == [(tmp_path, {"on_attach": True})]
+
+    def invalid(*_):
+        raise ValueError("invalid dashboard configuration")
+
+    monkeypatch.setattr(command, "attach_blocker", invalid)
+    assert command.run_attach(tmp_path, policy_only=True) == 2
+    assert "invalid dashboard configuration" in capsys.readouterr().err
 
 
 def test_dashboard_without_unix_sockets_is_unavailable(tmp_path, monkeypatch, capsys):

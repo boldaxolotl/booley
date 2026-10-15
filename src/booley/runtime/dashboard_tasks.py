@@ -28,7 +28,7 @@ TASK = {
     "label": LABEL,
     "type": "shell",
     "command": "booley dashboard",
-    "runOptions": {"runOn": "folderOpen", "instanceLimit": 1},
+    "runOptions": {"instanceLimit": 1},
     "presentation": {"reveal": "always", "panel": "dedicated", "clear": False},
     "problemMatcher": [],
 }
@@ -66,6 +66,50 @@ def enabled(booley_dir: Path) -> bool:
     path = booley_dir / "booley.toml"
     data = tomllib.loads(path.read_bytes().decode("utf-8")) if path.exists() else {}
     return parse_dashboard(data)
+
+
+def attach_blocker(root: Path, booley_dir: Path) -> str:
+    """Explain an opt-out/conflict before the extension creates a terminal.
+
+    Ownership stores a host-side root, so runtime reads compare task bytes rather
+    than calling host reconciliation against the Sandbox's different mount path.
+    The manual task remains a shortcut; the extension never executes it by label.
+    """
+    if not enabled(booley_dir):
+        return "Dashboard attach disabled by [sandbox].dashboard."
+    if _opt_out(root / ".vscode"):
+        return "Dashboard attach disabled by .vscode/settings.json."
+    path = root / ".vscode/tasks.json"
+    if _task_file_tracked(root):
+        return (
+            "User-owned Dashboard task preserved; automatic opening is disabled."
+            if _names_dashboard_task(path)
+            else ""
+        )
+    return _attach_task_blocker(path, booley_dir)
+
+
+def _attach_task_blocker(path: Path, booley_dir: Path) -> str:
+    content = _bytes(path)
+    ownership = _bytes(booley_dir / "runtime/dashboard-task.json")
+    owner = (
+        require_dict(json.loads(ownership), field="Dashboard task ownership") if ownership else {}
+    )
+    if owner and owner.get("schema") != 1:
+        return "Unsupported Dashboard ownership; run booley init on the host."
+    document = Document(content.decode()) if content is not None else None
+    matching = _matching_tasks(document)[1] if document is not None else []
+    if owner.get("enabled") and not matching:
+        return "User-removed Dashboard task preserved; disable then enable to restore."
+    if len(matching) != 1 or not owner.get("enabled"):
+        return "Dashboard task unavailable or unowned; run booley init on the host."
+    task = matching[0]
+    assert document is not None
+    if document.source[task.start : task.end] != owner.get("task"):
+        return "User-edited Dashboard task preserved; automatic opening is disabled."
+    if task.value != TASK:
+        return "Dashboard task migration pending; run booley init on the host, then reattach."
+    return ""
 
 
 def _bytes(path: Path) -> bytes | None:

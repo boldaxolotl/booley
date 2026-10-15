@@ -2600,15 +2600,29 @@ dashboard = true
 quiet_after = 7200
 ```
 
-`dashboard = false` removes an unchanged Booley-owned attach task. Reconciliation runs on `booley init` or Sandbox refresh. Existing
-user tasks, comments, unknown fields, and user-edited Dashboard tasks are
-preserved. A same-label user task is preserved with a diagnostic. The owned task lives in `.vscode/tasks.json`; the Sandbox's VS Code settings
-enable `task.allowAutomaticTasks` so the task runs on attach. Set
-`"task.allowAutomaticTasks": "off"` in `.vscode/settings.json` to keep Booley from
-adding the task to that folder. When Git tracks `.vscode/tasks.json`, Booley leaves
-the file unchanged and `booley init` prints how to add the task yourself.
+The Sandbox Image bundles the Booley Dashboard workspace extension. Dev Containers
+installs it from the image on first attach; it opens the terminal view in a trusted
+window without changing VS Code's global automatic-task permission. An explicit
+user preference of `"task.allowAutomaticTasks": "off"` still suppresses automatic
+opening, as does the same opt-out in `.vscode/settings.json`. The editor's default
+off value alone does not disable the Dashboard.
+
+`dashboard = false` disables the opener and removes an unchanged Booley-owned
+manual task. Reconciliation runs on `booley init` or Sandbox refresh. On upgrade,
+it changes an unchanged old `folderOpen` task into a manual shortcut. Existing
+user tasks, comments and unknown fields are preserved. Edited, unowned or
+deliberately removed Dashboard tasks suppress automatic opening with a diagnostic.
+To restore an owned task you removed, set `dashboard = false`, run `booley init`
+on the host, then set it to true and run init again. Rebuild/reopen the Sandbox
+after an image upgrade; a live old container cannot install a new image artifact.
+
+The shortcut lives in `.vscode/tasks.json`. Tracked tasks files remain unchanged;
+an unrelated tracked tasks file does not block the extension. A tracked Dashboard
+task is treated as user-owned and keeps control of its own launch behavior.
 Booley adds a local `.vscode` Git exclusion only when it creates that directory;
-its ownership record persists across reconciliation.
+its ownership record persists across reconciliation. Check the **Booley Dashboard**
+Output channel if automatic opening is suppressed. Closing the view is respected
+until the next window session; `booley dashboard` always remains available manually.
 
 `quiet_after` is a finite number of seconds from 60 through 604800, default
 7200 (two hours). Quiet thread and worktree-fallback presence expires at this
