@@ -3024,11 +3024,11 @@ def test_licensed_prepared_matching_and_relay_drift_use_full_validation(issued, 
     adapter.prepare_spec(project, image)
     adapter.reissue(project, stamp.image_id, verbose=False)
     assert adapter.spec_is_current(project)
-    before = dc.devcontainer_path(project).read_bytes()
+    before = dc.devcontainer_path(project).read_text(encoding="utf-8")
     relay["identity"] = "sha256:" + "e" * 64
     changed = _RuntimeImages()
     changed.prepare_spec(project, image)
-    assert dc.render_devcontainer_json(changed._spec.spec).encode() == before
+    assert dc.render_devcontainer_json(changed._spec.spec) == before
     assert not changed.spec_is_current(project)
 
 

@@ -11,6 +11,10 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 - Sandbox refresh now reconciles specification changes, reports kept/replaced/rollback outcomes, and removes transaction-owned failed or superseded images.
 
+- The Dashboard opens by default on trusted VS Code Sandbox attachment through
+  an image-bundled workspace extension. Existing opt-outs remain respected;
+  run host `booley init` and rebuild/reopen the Sandbox after upgrading.
+
 - Newly scaffolded Verilator SystemVerilog projects now produce non-empty simulation traces and avoid Doctor's `sim.trace-unavailable` warning.
 - Goal evidence fields in saved state now recover automatically from selected
   valid immutable producer observations when Booley reads or saves Goal state.
