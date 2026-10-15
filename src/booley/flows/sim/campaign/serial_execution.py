@@ -782,7 +782,6 @@ def _run_hook(
         timeout_s=DEFAULT_TIMEOUT_S,
         simulator_environment=simulation_target_environment(handle),  # type: ignore[arg-type]
         run_cwd=str(run_cwd) if run_cwd is not None else None,
-        working_directory=run_cwd,
         expose_build_root=expose_build_root,
         commands=commands,
         test_runs=test_runs,

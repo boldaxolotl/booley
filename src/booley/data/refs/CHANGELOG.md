@@ -9,6 +9,11 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- Immutable-mode Pre-Sim Commands now run in the Project Root as documented,
+  including shared and ordinary Simulation Campaign launches with `run_cwd` set.
+  Hooks that relied on the previous working directory should
+  `cd "$BOOLEY_RUN_CWD"` explicitly.
+
 - Feedback additions now allocate distinct IDs across processes, and triage, filed stamps, and attachment materialization retain concurrent log additions through publication. Commands selecting a legacy duplicate ID refuse it and list its matches; busy writers fail after a bounded wait.
 
 - `booley help` (including `help -h` and `help --help`) now shows the same

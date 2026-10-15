@@ -5,6 +5,7 @@ import os
 import re
 import shlex
 import shutil
+import sys
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -1134,3 +1135,54 @@ def test_coverage_cleanup_failure_retains_authenticated_result(verdict) -> None:
     assert "artifact_persistence: partial cleanup denied" in outcome.output
     assert outcome.diagnostics[0].severity == "warning"
     assert outcome.diagnostics[0].code == "COV_ARTIFACT_PERSISTENCE_CLEANUP_FAILED"
+
+
+@pytest.mark.parametrize("configured", ["runs/literal", "runs/{test}/{attempt}"])
+def test_coverage_pre_sim_project_relative_hook_uses_project_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, configured: str
+) -> None:
+    from booley.flows.sim.campaign.run_directory import expand_run_directory
+
+    (tmp_path / "hook.py").write_text(
+        "import json, os\n"
+        "print(json.dumps(dict(cwd=os.getcwd(), root=os.environ['BOOLEY_PROJECT_ROOT'], "
+        "run=os.environ['BOOLEY_RUN_CWD'])))\n",
+        encoding="utf-8",
+    )
+    config = tmp_path / ".booley"
+    config.mkdir()
+    (config / "booley.toml").write_text(
+        "[flows.sim]\nrun_cwd = "
+        + json.dumps(configured)
+        + "\npre_run_commands = "
+        + json.dumps([shlex.quote(sys.executable) + " hook.py"])
+        + "\n",
+        encoding="utf-8",
+    )
+    run = expand_run_directory(
+        configured,
+        project_root=tmp_path,
+        campaign_id="campaign",
+        target_key="sim",
+        work_item_key="alpha",
+        attempt_key="attempt",
+    ).path
+    run.mkdir(parents=True)
+    execution, target, raw_path, captured = _execution_fixture(tmp_path, monkeypatch)
+    assert _build_coverage(execution, target).success
+    source_root, artifacts = execution.authenticated_image()
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    for artifact in artifacts:
+        destination = snapshot / artifact.relative_to(source_root)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(artifact, destination)
+    execution.bind_authenticated_attempt(snapshot, run)
+    result = execution.run(_run_request(target, raw_path))
+    assert result.verdict == "pass"
+    assert result.pre_sim is not None and result.pre_sim.status == "passed"
+    hook = json.loads(result.pre_sim.stdout_tail)
+    assert Path(hook["cwd"]).resolve() == tmp_path.resolve()
+    assert Path(hook["root"]).resolve() == tmp_path.resolve()
+    assert Path(hook["run"]).resolve() == run.resolve() != tmp_path.resolve()
+    assert "run_script" in captured

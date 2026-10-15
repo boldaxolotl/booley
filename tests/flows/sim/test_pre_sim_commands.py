@@ -131,7 +131,7 @@ def test_explicit_run_cwd_overrides_live_project_configuration(tmp_path: Path) -
     assert run.call_args.kwargs["env"]["BOOLEY_RUN_CWD"] == str(tmp_path / "frozen" / "sim")
 
 
-def test_immutable_campaign_hook_runs_from_cwd_without_build_access(
+def test_immutable_campaign_hook_runs_from_project_root_without_build_access(
     tmp_path: Path,
 ) -> None:
     handle = _handle(tmp_path)
@@ -147,12 +147,11 @@ def test_immutable_campaign_hook_runs_from_cwd_without_build_access(
             eda_tool="icarus",
             timeout_s=5,
             run_cwd=str(actual_cwd),
-            working_directory=actual_cwd,
             expose_build_root=False,
         )
 
     assert evidence is not None and evidence.status == "passed"
-    assert run.call_args.kwargs["cwd"] == actual_cwd
+    assert run.call_args.kwargs["cwd"] == tmp_path
     environment = run.call_args.kwargs["env"]
     assert environment["BOOLEY_RUN_CWD"] == str(actual_cwd)
     assert "BOOLEY_BUILD_ROOT" not in environment
