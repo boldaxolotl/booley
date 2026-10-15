@@ -74,7 +74,10 @@ Triage is a conversation, one **cluster summary** per turn.
      `needs-triage`. When the fix is decided, post the brief with
      `gh issue comment`, then replace `needs-triage` with `ready-for-agent`, so
      the issue never looks ready without its brief. Open design keeps
-     `needs-triage` and gets no brief.
+     `needs-triage` and gets no brief. When the approved fix does not fit one
+     PR, file a parent issue (context only, no brief, never
+     `ready-for-agent`) and one sub-issue per piece, each with its own brief
+     and `Blocked by` order, per the brief doc's "One PR per issue".
    - `comment on #<n>`: same drafting and scan, then `gh issue comment`.
    - `fix mission`: record the exact change in `triage.md`; mission edits are
      batched in step 7.

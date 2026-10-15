@@ -75,6 +75,23 @@ triage rules, the comment starts with the AI-disclaimer line, then a
 An issue with an open scope, behavior, or contract question is not
 `ready-for-agent`. Label it `needs-info` or `needs-triage` and post no brief.
 
+## One PR per issue
+
+A brief covers work that fits one pull request: one coherent change that can
+merge on its own and be reviewed in one pass. When the work does not fit,
+split it before it becomes `ready-for-agent`:
+
+- Create one GitHub sub-issue per piece, each with its own brief. Order them
+  with `Blocked by: #<n>` lines.
+- The parent issue tracks the sub-issues. It gets no brief and is never
+  `ready-for-agent`.
+- Draw each sub-issue's acceptance criteria from the parent's. Together, the
+  sub-issues cover all of them.
+
+The pipeline skips an issue that has open sub-issues. When its planner finds
+the work too large for one PR, it posts a proposed split, moves the issue back
+to `needs-triage`, and releases it.
+
 ## Legacy format
 
 Issues that carry a `## Fix` or `## Fix direction` body section instead of a
