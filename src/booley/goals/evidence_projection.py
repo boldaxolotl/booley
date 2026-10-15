@@ -17,7 +17,7 @@ def current_observations(
 ) -> list[dict[str, Any]]:
     """Keep complete current revision groups; refuse foreign records."""
     revisions = {goal.spec.key: goal.spec_revision for goal in record.goals}
-    current = []
+    current: list[dict[str, Any]] = []
     for row in rows:
         group = row["goal_identity"]
         if group["record_id"] != record.id:

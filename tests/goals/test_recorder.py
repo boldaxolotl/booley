@@ -515,7 +515,8 @@ def test_canonical_evidence_survives_late_or_missing_save(goal_mode, schedule):
             newer.save()
             saved.set()
 
-        await asyncio.wait_for(asyncio.gather(first(), second()), 5)
+        # Real publication invokes Git; the 5 s bound expired on Windows CI.
+        await asyncio.wait_for(asyncio.gather(first(), second()), 30)
 
     if schedule == "async_save":
         asyncio.run(interleave())
@@ -601,7 +602,9 @@ def test_async_producer_adapters_keep_final_observations_after_old_reports(layou
             ready[index + 1].set()
 
         await asyncio.wait_for(
-            asyncio.gather(*(producer(i, goal) for i, goal in enumerate(layout.record.goals))), 10
+            # Windows CI measured 31.40 s for this test; allow roughly 3x headroom.
+            asyncio.gather(*(producer(i, goal) for i, goal in enumerate(layout.record.goals))),
+            90,
         )
         before_rerun = build_status(GoalStore(layout.control), layout.record)
         assert before_rerun.goals[0].status == "stale"
