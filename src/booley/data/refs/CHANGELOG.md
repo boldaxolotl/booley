@@ -18,6 +18,8 @@ Packaged release history starts at 0.2.7. For older changes, see
   opposite-category scope in either mode, keeps Goal support-file review, and lists
   Interactive source kinds in refusal messages.
 
+- Sandbox refresh now reconciles specification changes, reports kept/replaced/rollback outcomes, and removes transaction-owned failed or superseded images.
+
 - The Dashboard opens by default on trusted VS Code Sandbox attachment through
   an image-bundled workspace extension. Existing opt-outs remain respected;
   run host `booley init` and rebuild/reopen the Sandbox after upgrading.

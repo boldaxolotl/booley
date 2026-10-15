@@ -196,3 +196,15 @@ def test_retained_resources_separate_current_project_from_other_project_keepers(
     assert len(notes) == 1 and "1 issued image keeper(s)" in notes[0].message
     assert len(report.details) == 1 and report.details[0].message.strip() == other
     assert report.details[0].after_finding == len(report.findings)
+
+
+def test_inside_isolation_drift_instructs_host_repair(monkeypatch):
+    from booley.audit.diagnostic_results import Findings
+
+    monkeypatch.setenv("BOOLEY_DIR", "/wrong")
+    report = Findings()
+    assert not inspection._check_runtime_isolation(report)
+    fix = report.report().findings[0].fix
+    assert "on the host" in fix
+    assert "booley doctor" in fix
+    assert "booley session refresh" not in fix

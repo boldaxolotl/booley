@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
@@ -14,6 +15,8 @@ from booley.runtime import interactive_docker as docker
 from booley.runtime.lifecycle_lock import host_lifecycle_lock
 from booley.runtime.session_issuance import keeper_image_for_identity
 from booley.runtime.session_refresh import shared_recovery_blocks_command
+
+logger = logging.getLogger(__name__)
 
 
 def _image_id(tag: str) -> str | None:
@@ -52,6 +55,10 @@ def forget_project(project: Path) -> tuple[Path, KeeperRelease]:
             forgotten = inventory.forget_project(
                 project, before_forget=lambda root: outcomes.append(_release_root(root))
             )
+            from booley.runtime.image_lifecycle import cleanup_owned_images
+
+            for retained in cleanup_owned_images(forgotten):
+                logger.warning("refresh image cleanup: %s", retained)
     except (RuntimeError, OSError) as exc:
         raise inventory.ProjectInventoryError(str(exc)) from exc
     return forgotten, outcomes[0]
@@ -122,6 +129,9 @@ def prune_keepers(confirm: str | None = None) -> PruneResult:
                     )
                     return result
                 _apply(result, roots)
+                from booley.runtime.image_lifecycle import cleanup_owned_images
+
+                result.retained.extend(cleanup_owned_images())
                 return result
     except (RuntimeError, OSError) as exc:
         raise inventory.ProjectInventoryError(str(exc)) from exc

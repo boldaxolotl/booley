@@ -254,6 +254,8 @@ class TestFullInitRerun:
         assert after == before
         assert not (repo / "CLAUDE.md").exists()
 
+    # Windows CI measured 40.6s; 3x rounded up to 30s requires 150s.
+    @pytest.mark.timeout(150)
     def test_second_run_preserves_user_edits_and_regenerates_managed_files(self, repo: Path):
         rc1 = _run_full_init(repo)
         assert rc1 in (0, 2)  # 2: docker/vscode absent -> dependency-detection step errs
@@ -690,8 +692,8 @@ class TestWindowsProjectDataLineEndings:
         assert "i/crlf" not in eol
         self._assert_safe_and_linked(repo, hardlink=force_hardlink_fallback)
 
-    # Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
-    @pytest.mark.timeout(210)
+    # Windows CI measured 73.8s; 3x rounded up to 30s requires 240s.
+    @pytest.mark.timeout(240)
     def test_crlf_project_data_behind_guidance_links_is_repaired(
         self,
         repo: Path,
