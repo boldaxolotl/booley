@@ -340,6 +340,8 @@ def _validate_criteria_projection(
             met=change["met"],
             mandatory=change["mandatory"],
         )
+        if change["role"] == "candidate":
+            entry["updated_at"] = envelope["recorded_at"]
         # DevelopmentState omits empty metadata in its persisted projection.
         for field in ("params", "detail"):
             if change[field]:

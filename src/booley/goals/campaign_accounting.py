@@ -107,6 +107,7 @@ from booley.flows.campaign_results import (
 from booley.flows.execution_persistence import EvidenceDiscarded
 from booley.goals.apply_barrier import pending_applies
 from booley.goals.binding import GoalBindingError, GoalRunBinding
+from booley.goals.evidence_projection import current_observations, project_evidence
 from booley.goals.model import GoalRecord, GoalState, RecordedGoal
 from booley.goals.paths import GoalRecordPaths, record_paths
 from booley.goals.publication import PublicationGate
@@ -587,6 +588,7 @@ class _LockedStateFile:
 
     def save(self, state: DevelopmentState) -> None:
         if state.file_path is not None:
+            project_evidence(self._record, state, state.file_path.parent / "logs")
             write_goal_state_file(state.file_path, state)
 
 
@@ -753,21 +755,25 @@ def _adopt(
         return False
     marker = _marker(registration, durable, passes=passes)
     history = evidence_ledger.validated_evidence_records(GOAL_SCOPE, run.paths.logs_dir, state, {})
-    mine = [row for row in history if row["criterion"] == key and row["role"] == "candidate"]
+    mine = [
+        row
+        for row in current_observations(run.record, history)
+        if row["criterion"] == key and row["role"] == "candidate"
+    ]
     adopted = [row for row in mine if row["detail"].get(ADOPTED_DETAIL_KEY) == marker]
     if adopted:
         newest = adopted[-1] if adopted[-1]["sequence"] == mine[-1]["sequence"] else None
         if newest is None or _mirrors(state, key, newest["met"], newest["detail"]):
             return False
-        state.set_criterion(key, bool(newest["met"]), detail=dict(newest["detail"]))
+        project_evidence(run.record, state, run.paths.logs_dir)
         return True
     detail = {
         ADOPTED_DETAIL_KEY: marker,
         **frozen.outcomes_detail(rows),
         SOURCE_FINGERPRINT_DETAIL_KEY: dict(registration.stamps[key]),
     }
-    change = _append(run, state, registration, goal, detail, history)
-    state.set_criterion(key, change.met, detail=dict(change.detail))
+    _append(run, state, registration, goal, detail, history)
+    project_evidence(run.record, state, run.paths.logs_dir)
     return True
 
 
