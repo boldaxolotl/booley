@@ -2705,15 +2705,23 @@ def test_old_credential_schema_requires_refresh(issued):
 @pytest.mark.parametrize(
     "damage", ["other-provider", "wrong-placeholder", "subscription-bind", "subscription-hook"]
 )
-def test_sealing_rejects_policy_violations_before_issuance(issued, monkeypatch, damage):
+@pytest.mark.parametrize("vivado_requested", [False, True])
+def test_sealing_rejects_policy_violations_before_issuance(
+    issued, monkeypatch, request, damage, vivado_requested
+):
     from booley.runtime import auth_token
 
     project, _, _, _ = issued
-    monkeypatch.setenv("HOME", str(project))
-    monkeypatch.setenv("USERPROFILE", str(project))
+    home = project.parent / "credential-home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
     (project / ".booley" / "booley.toml").write_text(
         '[agent]\nprovider="claude"\nauth="api_key"\n'
+        + ('[eda.vivado]\nprovisioning="image"\n' if vivado_requested else "")
     )
+    reset_cache()
+    request.addfinalizer(reset_cache)
     spec = dc.build_devcontainer_spec(
         "claude",
         credential_plan=auth_token.credential_plan("claude", "api_key"),
@@ -2722,6 +2730,8 @@ def test_sealing_rejects_policy_violations_before_issuance(issued, monkeypatch, 
         mcp_start_command=dc.mcp_post_start_command(),
     )
     spec["remoteEnv"]["BOOLEY_PRIMARY_AUTH"] = "api_key"
+    runtime_spec.pin_image(spec)
+    runtime_spec.seal(project, json.loads(json.dumps(spec)))
     if damage == "other-provider":
         spec["remoteEnv"]["OPENAI_API_KEY"] = "${localEnv:OPENAI_API_KEY}"
     elif damage == "wrong-placeholder":
@@ -2738,7 +2748,6 @@ def test_sealing_rejects_policy_violations_before_issuance(issued, monkeypatch, 
             if ".claude-creds-seed.json" in fragment
         )
         spec["postStartCommand"] = f"{fragment}; {spec['postStartCommand']}"
-    runtime_spec.pin_image(spec)
     with pytest.raises(runtime_spec.RuntimeSpecError, match=r"credential|seed"):
         runtime_spec.seal(project, spec)
 
