@@ -8470,3 +8470,18 @@ def test_goal_history_corrupt_standalone_is_active_and_preserves_history(tmp_pat
     assert exclude.read_bytes() == before
     assert (metadata / "HEAD.preserved").read_bytes() == head
     assert (metadata / "objects").is_dir()
+
+
+def test_doctor_flags_missing_specialist_ignores_without_mutating(tmp_path):
+    original = project_gitignore.PROJECT_GITIGNORE.replace("mcp-tool-reports/\n", "").replace(
+        "reviewer-state/\n", ""
+    )
+    path = tmp_path / ".gitignore"
+    path.write_text(original)
+    findings = _gitignore_probe(tmp_path)
+    assert len(findings) == 1
+    assert findings[0].severity == "warn"
+    assert "mcp-tool-reports/" in findings[0].message
+    assert "reviewer-state/" in findings[0].message
+    assert findings[0].fix == "booley init"
+    assert path.read_text() == original

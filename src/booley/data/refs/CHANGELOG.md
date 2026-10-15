@@ -14,6 +14,12 @@ Packaged release history starts at 0.2.7. For older changes, see
   Goal status reports remaining evidence or validation problems without treating
   outdated saved evidence fields as an evidence conflict.
 
+- CLI Flows and Specialists warn when their results cannot record active Goal
+  evidence; recording requires Goal-bound Developer Agent MCP calls with `work_dir`.
+  Unbound Flow/Specialist reports omit `criterion_key` and `criterion_met`; report
+  readers must use optional-key access. Rerun `booley init` in each existing
+  checkout and commit its managed ignore backfill for Specialist reports and state.
+
 - Immutable-mode Pre-Sim Commands now run in the Project Root as documented,
   including shared and ordinary Simulation Campaign launches with `run_cwd` set.
   Hooks that relied on the previous working directory should

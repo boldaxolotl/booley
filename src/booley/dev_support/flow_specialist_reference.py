@@ -334,7 +334,9 @@ def render_specialists_reference(*, project_mcp_tools_dir: Path | None = None) -
         "with the same flags. Common options are `-C/--project PATH`, `--report-dir`, "
         "`--diagnostic`, and `--target` where supported. `--timeout DURATION` accepts positive "
         "seconds (`90` or `90s`), minutes (`30m`), hours (`2h`), and combinations (`1h30m`). "
-        "Model-call minimum budgets apply; seconds-only providers round up.",
+        "Model-call minimum budgets apply; seconds-only providers round up. "
+        "CLI Flow and Specialist runs never record Goal evidence; use the Developer Agent's "
+        "Goal-bound MCP calls with `work_dir`.",
         "",
         "| Specialist | Purpose | Sets | Modifies code |",
         "|------------|---------|------|:-------------:|",

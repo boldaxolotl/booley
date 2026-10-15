@@ -3675,7 +3675,7 @@ class TestDeadEndMessagesNameARealAction:
 
         assert result.exit_code == 0
         assert "triage" not in result.report_text.lower()
-        assert "explicit human approval" in result.report_text
+        assert "explicit human approval" not in result.report_text
         assert mock_agent.call_count == 2
 
     def test_replay_message(self):
@@ -3822,9 +3822,7 @@ def test_final_reviewer_report_distinguishes_replay_from_error_evaluation(tmp_pa
 
     freeze(reviewer)
     report = json.loads(reviewer.write_report(result).read_text())
-    assert (report["criterion_key"], report["criterion_met"]) == (
-        (key, False) if evaluated else ("", None)
-    )
+    assert "criterion_key" not in report and "criterion_met" not in report
     assert report["$schema"] == "booley.specialist-report/v1"
     assert report["passed"] is False
 
@@ -3855,7 +3853,7 @@ def test_ambiguous_reviewer_mapping_cannot_be_narrowed_by_one_evaluation(tmp_pat
 
     freeze(reviewer)
     report = json.loads(reviewer.write_report(McpToolResult()).read_text())
-    assert (report["criterion_key"], report["criterion_met"]) == ("", None)
+    assert "criterion_key" not in report and "criterion_met" not in report
 
 
 def test_goal_spec_arg_ignores_ticket_document(tmp_path, monkeypatch):
@@ -3879,3 +3877,56 @@ def review_logs(tmp_path, monkeypatch):
     logs.mkdir()
     monkeypatch.setenv("BOOLEY_LOGS_DIR", str(logs))
     return logs
+
+
+@pytest.mark.parametrize("transport", [False, True])
+@patch("booley.specialists.specialist._call_agent_sync")
+def test_unbound_done_findings_do_not_claim_goal_approval(
+    mock_agent, state_file, monkeypatch, transport
+):
+    from booley.core.models import AgentResult
+    from booley.flows.cli_selection import invocation_context
+    from booley.runtime import runtime_context
+    from booley.runtime.booley_dir import reset_cache
+
+    root = state_file.parent
+    (root / "rtl").mkdir()
+    (root / "rtl/mod_a.sv").write_text("module mod_a; endmodule\n")
+    directory = root / ".booley"
+    directory.mkdir()
+    (directory / "booley.toml").write_text("[project]\n")
+    monkeypatch.setenv("BOOLEY_DIR", str(directory))
+    monkeypatch.chdir(root)
+    reset_cache()
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    mock_agent.return_value = AgentResult(
+        output=json.dumps({"issues": [_make_issue_dict("CRITICAL")]})
+    )
+    argv = [
+        "--work-dir",
+        str(root),
+        "--scope",
+        "rtl/mod_a.sv",
+        "--category",
+        "rtl",
+        "--focus",
+        "bugs",
+    ]
+    for _ in range(2):
+        with invocation_context(transport=transport):
+            endpoint = ReviewerSpecialist()
+            result = endpoint.execute_cli(argv)
+        assert result.exit_code == 0, result.outcome.report_text
+        assert "explicit human approval" not in result.outcome.report_text
+        assert "RESULT: REVIEWED WITH FINDINGS" in result.outcome.report_text
+        report = json.loads((endpoint.args.report_dir / "reviewer.json").read_text())
+        assert "criterion_key" not in report and "criterion_met" not in report
+    assert DevelopmentState.load(state_file).criteria["review_rtl_bugs_done"].detail["issue_list"]
+
+
+def test_external_legacy_acceptance_owner_keeps_approval_policy():
+    from tests.criteria.ledger_support import FixtureRecorder
+
+    endpoint = ReviewerSpecialist()
+    endpoint._acceptance_recorder = FixtureRecorder(identity={"generation": "d" * 32})
+    assert "explicit human approval" in " ".join(endpoint._done_approval_notice(True))

@@ -302,6 +302,12 @@ def _report_document(endpoint: EndpointState, result: EndpointOutcome) -> dict[s
         "elapsed_s": elapsed_s,
         "passed": passed,
     }
+    if (
+        endpoint.endpoint_kind in {"flow", "specialist"}
+        and not endpoint._acceptance_recorder.acceptance_identity()
+    ):
+        del report["criterion_key"]
+        del report["criterion_met"]
     if endpoint.endpoint_kind == "flow":
         report["$schema"] = (
             "booley.simulation-report/v3" if endpoint.name == "sim" else "booley.flow-report/v1"
@@ -597,6 +603,10 @@ def _finish_main(
                         display_label=display_label,
                         dry_run=dry_run,
                         identity=endpoint._display_identity,
+                        include_criterion=(
+                            endpoint.endpoint_kind not in {"flow", "specialist"}
+                            or bool(endpoint._acceptance_recorder.acceptance_identity())
+                        ),
                     ),
                 )
             except Exception:
