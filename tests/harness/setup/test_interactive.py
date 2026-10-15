@@ -113,3 +113,23 @@ def test_inspect_and_apply_use_the_same_history_visibility_policy(tmp_path, monk
     expected = (".devcontainer", ".claude", ".booley") if stealth else (".devcontainer", ".claude")
     inspect_exclusions.assert_called_once_with(tmp_path, expected)
     apply_exclusions.assert_called_once_with(tmp_path, expected)
+
+
+def test_refresh_preview_does_not_plan_or_apply_stopped_runtime_cleanup(tmp_path, monkeypatch):
+    from booley.harness.session_refresh import _RuntimeImages
+    from booley.runtime.session_refresh import RefreshImage
+
+    forbidden = Mock(
+        side_effect=AssertionError("init cleanup must not run while refresh parks predecessor")
+    )
+    monkeypatch.setattr(interactive, "inspect", forbidden)
+    monkeypatch.setattr(interactive, "apply", forbidden)
+    sources = Mock()
+    sources.runtime_image_id = "sha256:prepared"
+    adapter = _RuntimeImages()
+    monkeypatch.setattr(adapter, "_current_sources", lambda *_args: sources)
+    preview = Mock(return_value=_prepared(tmp_path))
+    monkeypatch.setattr(session_issuance, "preview", preview)
+    adapter.prepare_spec(tmp_path, RefreshImage("booley-sandbox", "sha256:prepared"))
+    preview.assert_called_once_with(tmp_path, sources.build, expected_image_id="sha256:prepared")
+    forbidden.assert_not_called()
