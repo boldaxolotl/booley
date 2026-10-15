@@ -173,3 +173,23 @@ def test_strict_inventory_allows_metadata_core_without_filesets(tmp_path):
     _write_core(tmp_path)
     (tmp_path / "metadata.core").write_text("CAPI=2:\nname: ::metadata:0\n")
     assert "rtl/dut.sv" in classified_sources(tmp_path, strict=True).rtl_source_files
+
+
+@pytest.mark.parametrize("category", ["rtl", "tb"])
+@pytest.mark.parametrize(
+    "name",
+    ["unknown.C", "unknown.CPP", "unknown.H", "unknown.HXX", "unknown.HPP.bak", "unknown.C~"],
+)
+def test_unknown_uppercase_sources_and_backups_are_hidden(tmp_path, category, name):
+    from booley.agent_workspace.isolation import WorkspaceSnapshot, hide_opposite_sources
+
+    live, copy = tmp_path / "live", tmp_path / "copy"
+    live.mkdir()
+    copy.mkdir()
+    (live / name).write_text("// unknown source")
+    (copy / name).write_text("// unknown source")
+    hide_opposite_sources(
+        WorkspaceSnapshot(live, copy), category, category_files={"rtl": (), "tb": ()}
+    )
+    assert not (copy / name).exists()
+    assert (live / name).is_file()

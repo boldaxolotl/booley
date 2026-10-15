@@ -13,7 +13,8 @@ Packaged release history starts at 0.2.7. For older changes, see
   shared-directory sources and Booley-owned copies; category isolation requires a
   usable core and removes unscoped unregistered source copies conservatively.
   Untagged C/C++ Sim harness inputs count as testbench sources and cannot be mutation
-  scope; Doctor identifies their missing TB tags. Reviewer refuses explicit
+  scope; Doctor identifies their missing TB tags. Reviewer accepts explicitly scoped
+  C/C++ testbench sources and headers in Interactive Mode, refuses explicit
   opposite-category scope in either mode, keeps Goal support-file review, and lists
   Interactive source kinds in refusal messages.
 

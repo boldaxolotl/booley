@@ -3904,3 +3904,65 @@ def test_same_directory_unregistered_scope_is_own_grant_with_warning(tmp_path, c
     assert validate_scope_category(["shared/new.sv"], "rtl", tmp_path) == []
     _warn_unregistered_sources(["shared/new.sv"], tmp_path)
     assert "shared/new.sv" in caplog.text
+
+
+@pytest.mark.parametrize("name", ["default.h", "rtl.c"])
+def test_cpp_opposite_role_refuses_before_provider(tmp_path, name):
+    (tmp_path / "design.core").write_text(
+        "CAPI=2:\nname: ::roles:0\nfilesets:\n  rtl:\n    files: [default.h, rtl.c]\n"
+        "  tb:\n    files: [tagged.hxx]\n    tags: [tb]\n"
+    )
+    (tmp_path / name).write_text("// source\n")
+    endpoint = ReviewerSpecialist()
+    endpoint.parse_args(
+        ["--work-dir", str(tmp_path), "--scope", name, "--category", "tb", "--focus", "quality"]
+    )
+    endpoint.read_state()
+    with patch("booley.specialists.specialist._call_agent_sync") as provider:
+        result = endpoint._run_review()
+    assert result.exit_code == 2
+    assert name in result.report_text
+    assert "tags:[tb]" in result.report_text
+    provider.assert_not_called()
+    assert validate_scope_category(["tagged.hxx"], "tb", tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    "scope,labels",
+    [
+        ("tb/main.cpp", ["c-cpp-testbench"]),
+        (
+            "tb/main.cpp,tb/test.py,tb/tb.sv",
+            ["hdl-testbench", "cocotb-testbench", "c-cpp-testbench"],
+        ),
+    ],
+)
+def test_cpp_guidance_preview_and_project_overlay(tmp_path, scope, labels):
+    endpoint = ReviewerSpecialist()
+    endpoint.parse_args(
+        ["--work-dir", str(tmp_path), "--scope", scope, "--category", "tb", "--focus", "quality"]
+    )
+    assert endpoint._resolve_scope_contract() is None
+    # Use the established project overlay path.
+    from booley.specialists.reviewer import _STYLE_OVERLAYS
+
+    overlay = tmp_path / _STYLE_OVERLAYS["tb"]
+    overlay.parent.mkdir(parents=True, exist_ok=True)
+    overlay.write_text("Project C lifecycle rule")
+    prompt = endpoint._build_system_prompt("quality")
+    assert "C/C++ testbench" in prompt
+    assert "Project C lifecycle rule" in prompt
+    assert ("Canonical style guide for SystemVerilog" in prompt) == ("tb/tb.sv" in scope)
+    assert endpoint._dry_run_preview().detail["guides"] == labels
+
+
+@pytest.mark.parametrize("suffix", ["hh", "hxx", "HH", "HXX"])
+def test_cpp_unregistered_header_warning(tmp_path, suffix, caplog):
+    from booley.specialists.reviewer import _warn_unregistered_sources
+    from tests.test_target_catalog import _category_sim_core
+
+    _category_sim_core(tmp_path)
+    path = f"shared/helper.{suffix}"
+    (tmp_path / path).write_text("// header")
+    _warn_unregistered_sources([path], tmp_path)
+    assert path in caplog.text

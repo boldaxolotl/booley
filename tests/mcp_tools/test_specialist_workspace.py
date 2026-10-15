@@ -620,3 +620,160 @@ def test_snapshot_sanitizes_checkout_and_goal_copies_despite_external_selection(
         assert (Path(isolated.cwd) / history.relative_to(repo) / "summary.md").is_file()
     assert all((root / "source-copy.md").is_file() for root in roots)
     reset_cache()
+
+
+def _cpp_review_project(tmp_path, monkeypatch):
+    from booley.runtime.booley_dir import reset_cache
+
+    repo = _repo(tmp_path)
+    data = repo / ".booley"
+    data.mkdir()
+    (data / "booley.toml").write_text('[project]\nname="snapshot"\n')
+    monkeypatch.setenv("BOOLEY_DIR", str(data))
+    monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
+    monkeypatch.chdir(repo)
+    reset_cache()
+    visible = [
+        "shared/main.cpp",
+        "shared/support.c",
+        "shared/api.h",
+        "shared/api.hpp",
+        "shared/override.hh",
+        "shared/tagged.hxx",
+        "shared/helper.CPP",
+    ]
+    hidden = [
+        "shared/dut.sv",
+        "shared/rtl.c",
+        "shared/unknown.C",
+        "shared/unknown.HXX",
+        "shared/backup.HPP.bak",
+        "tracked.sv",
+    ]
+    for name in visible + hidden:
+        path = repo / name
+        path.parent.mkdir(exist_ok=True)
+        path.write_text("// authored source\n")
+    (repo / "design.core").write_text("""CAPI=2:
+name: ::snapshot:0
+filesets:
+  rtl:
+    files: [shared/dut.sv, shared/rtl.c]
+    tags: [rtl]
+  cpp:
+    file_type: cppSource
+    files:
+      - shared/main.cpp
+      - shared/api.h: {is_include_file: true}
+      - shared/api.hpp: {is_include_file: true}
+      - shared/override.hh: {file_type: cSource, is_include_file: true}
+  c:
+    file_type: cSource
+    files: [shared/support.c]
+  tagged:
+    tags: [tb]
+    files: [shared/tagged.hxx]
+targets:
+  sim:
+    default_tool: verilator
+    filesets: [rtl, cpp, c, tagged]
+""")
+    _git(["add", "design.core", "shared/main.cpp", "shared/dut.sv", "shared/rtl.c"], repo)
+    before = {name: (repo / name).read_bytes() for name in visible + hidden}
+    status = subprocess.check_output(
+        ["git", "status", "--porcelain", "--", "shared", "tracked.sv"], cwd=repo
+    )
+    return repo, visible, hidden, before, status
+
+
+@pytest.mark.parametrize("category", ["tb", "rtl"])
+def test_interactive_cpp_review_uses_real_snapshot(tmp_path, monkeypatch, category):
+    """Admission, prompt, isolation and finding filtering use the same exact scope."""
+    import json
+
+    repo, visible, hidden, before, status = _cpp_review_project(tmp_path, monkeypatch)
+    if category == "rtl":
+        hidden = [name for name in visible if name != "shared/helper.CPP"] + [
+            "shared/helper.CPP",
+            "shared/unknown.C",
+            "shared/unknown.HXX",
+            "shared/backup.HPP.bak",
+            "tracked.sv",
+        ]
+        visible = ["shared/dut.sv", "shared/rtl.c"]
+    scope = visible if category == "tb" else ["shared/dut.sv"]
+    finding_path = "shared/api.hpp" if category == "tb" else "shared/dut.sv"
+    calls = []
+
+    def fake_call(params, *, on_event):
+        calls.append(params)
+        root = Path(params.cwd)
+        assert root != repo
+        for name in visible:
+            assert (root / name).is_file(), name
+            _git(["show", f"HEAD:{name}"], root)
+        for name in hidden:
+            assert not (root / name).exists(), name
+            assert (
+                subprocess.run(
+                    ["git", "cat-file", "-e", f"HEAD:{name}"],
+                    cwd=root,
+                    capture_output=True,
+                    check=False,
+                ).returncode
+                != 0
+            )
+        if category == "tb":
+            assert "C/C++ testbench" in params.system_prompt
+            assert "Canonical style guide for SystemVerilog" not in params.system_prompt
+            assert "Cocotb" not in params.system_prompt
+            assert "shared/helper.CPP" in params.prompt
+        issues = [
+            {
+                "severity": "MINOR",
+                "confidence": "HIGH",
+                "category": "quality" if category == "tb" else "bugs",
+                "file": str(root / path),
+                "line": 1,
+                "summary": summary,
+                "kind": "code_defect",
+                "disposition": "current",
+                "ticket_clause": "testbench quality",
+            }
+            for path, summary in [
+                (finding_path, "header finding"),
+                ("shared/unknown.C", "outside finding"),
+            ]
+        ]
+        return AgentResult(output=json.dumps({"issues": issues}))
+
+    endpoint = ReviewerSpecialist()
+    endpoint.parse_args(
+        [
+            "--work-dir",
+            str(repo),
+            "--category",
+            category,
+            "--focus",
+            "quality" if category == "tb" else "bugs",
+            "--scope",
+            ",".join(scope),
+            "--model",
+            "light",
+        ]
+    )
+    endpoint.read_state()
+    with (
+        patch("booley.specialists.specialist._call_agent_sync", side_effect=fake_call),
+        patch("booley.specialists.specialist.parent_death_watchdog", return_value=nullcontext()),
+    ):
+        result = endpoint._run_review()
+    assert calls, result.report_text
+    assert result.exit_code != 2, result.report_text
+    assert "header finding" in result.report_text
+    assert "outside finding" not in result.report_text
+    assert str(repo / finding_path) in result.report_text
+    assert before == {name: (repo / name).read_bytes() for name in before}
+    assert status == subprocess.check_output(
+        ["git", "status", "--porcelain", "--", "shared", "tracked.sv"], cwd=repo
+    )

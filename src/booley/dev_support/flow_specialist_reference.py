@@ -223,12 +223,13 @@ def _render_reviewer_reference(satisfies_args: dict[str, str] | None) -> list[st
         "every finding to be fixed "
         "or waived with a justification.",
         "",
-        "Interactive source review accepts Verilog/SystemVerilog (.v, .vh, .sv, .svh), "
-        "plus Python (.py) for category=tb, and refuses C/C++ kinds. Goal Mode also "
-        "accepts explicitly scoped support files, including C/C++. Sim C/C++ harness "
-        "inputs count as TB for isolation and cannot be mutation scope. Explicit "
-        "opposite-category sources are refused in either mode; unregistered scoped "
-        "sources retain the registration warning.",
+        "Interactive source review accepts Verilog/SystemVerilog (.v, .vh, .sv, .svh), plus "
+        "Python (.py) and explicitly scoped C/C++ testbench sources and headers (.c, .cc, .cpp, "
+        ".cxx, .h, .hh, .hpp, .hxx) for category=tb. Goal Mode also accepts other explicitly "
+        "scoped support files. Sim C/C++ harness inputs count as TB for isolation and cannot be "
+        "mutation scope. Declared opposite-category sources are refused in either mode; "
+        "unregistered scoped sources retain the registration warning and receive only an exact "
+        "per-file category grant.",
         "",
         "The result links saved review evidence, including rejected proposals for "
         "inspection. Rejected proposals do not affect Criteria.",

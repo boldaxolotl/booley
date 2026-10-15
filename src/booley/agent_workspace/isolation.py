@@ -137,9 +137,9 @@ _SOURCE_SUFFIXES = frozenset(
 
 
 def _source_like(path: Path) -> bool:
-    return bool(set(path.suffixes) & _SOURCE_SUFFIXES) or path.name.rstrip("~").endswith(
-        tuple(_SOURCE_SUFFIXES)
-    )
+    return bool(
+        {suffix.lower() for suffix in path.suffixes} & _SOURCE_SUFFIXES
+    ) or path.name.lower().rstrip("~").endswith(tuple(_SOURCE_SUFFIXES))
 
 
 def _configured_outputs(value: object) -> list[Path]:

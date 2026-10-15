@@ -162,7 +162,21 @@ def _get_tb_prefixes(work_dir: Path | None = None) -> tuple[str, ...]:
 
 # Source suffixes whose presence in a review scope but absence from any
 # ``.core`` fileset is worth surfacing (ADR 0026 follow-through).
-_SOURCE_SUFFIXES = (".v", ".sv", ".svh", ".vh", ".py", ".c", ".cc", ".cpp", ".cxx", ".h", ".hpp")
+_SOURCE_SUFFIXES = (
+    ".v",
+    ".sv",
+    ".svh",
+    ".vh",
+    ".py",
+    ".c",
+    ".cc",
+    ".cpp",
+    ".cxx",
+    ".h",
+    ".hh",
+    ".hpp",
+    ".hxx",
+)
 
 
 def _warn_unregistered_sources(
@@ -757,6 +771,13 @@ def validate_scope_category(
             opposite = set(sources.tb_files if category == "rtl" else sources.rtl_source_files)
             return [
                 f"Path '{path}' is an opposite-category source ({category} review)"
+                + (
+                    "; check .core role metadata; declare tags:[tb] only if this is testbench support"
+                    if category == "tb"
+                    and Path(path).suffix.lower()
+                    in {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx"}
+                    else ""
+                )
                 for path in scope_paths
                 if canonical_project_path(work_dir, path) in opposite
             ]
@@ -1331,6 +1352,14 @@ match the strength of the evidence.
             if self._scope_contract is None:
                 self._resolve_scope_contract()
             contract = self._scope_contract or ReviewScopeContract()
+            if contract.has_cpp:
+                sections.append(
+                    "## C/C++ testbench review\n"
+                    "Review the scoped C/C++ sources and headers for stimulus, checks, "
+                    "pass/fail reporting, simulator lifecycle, memory safety and determinism. "
+                    "Report findings only in explicit scope. HDL guides apply only to HDL files; "
+                    "Python guides apply only to Python files."
+                )
             names = []
             if contract.has_hdl:
                 names.append("tb-review.md")
@@ -1354,7 +1383,9 @@ match the strength of the evidence.
         """Append packaged and project-specific style guidance."""
         label = "RTL" if category == "rtl" else "Testbench"
         key = "rtl_style_guide" if category == "rtl" else "tb_style_guide"
-        style_content = self._read_guide(guide_paths[key])
+        contract = self._scope_contract or ReviewScopeContract()
+        skip_sv = category == "tb" and contract.has_cpp and not contract.has_hdl
+        style_content = "" if skip_sv else self._read_guide(guide_paths[key])
         if style_content:
             sections.extend([f"## {label} style guide\n", style_content, ""])
         overlay = self._read_style_overlay(category)
@@ -1815,6 +1846,8 @@ object, even after calling the capability.
                 guides.append("hdl-testbench")
             if contract.has_cocotb:
                 guides.append("cocotb-testbench")
+            if contract.has_cpp:
+                guides.append("c-cpp-testbench")
         summary = (
             f"reviewer dry-run: {self.args.category}/{focus}; "
             f"{len(self._parse_scope())} file(s); guides={','.join(guides)}"

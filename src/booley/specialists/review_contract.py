@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
+_CPP_SUFFIXES = frozenset({".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx"})
 _HDL_SUFFIXES = frozenset({".v", ".vh", ".sv", ".svh"})
 
 
@@ -27,6 +28,12 @@ class ReviewScopeContract:
     @property
     def has_hdl(self) -> bool:
         return bool(self.hdl_files)
+
+    @property
+    def has_cpp(self) -> bool:
+        return any(
+            PurePosixPath(path).suffix.lower() in _CPP_SUFFIXES for path in self.support_files
+        )
 
     def is_cocotb_file(self, path: str) -> bool:
         """Return whether *path* is a Python testbench in this scope."""
@@ -55,6 +62,7 @@ def resolve_review_scope(
         raise ReviewContractError("Review scope must contain at least one source file")
     cocotb: set[str] = set()
     hdl: set[str] = set()
+    support: set[str] = set()
     unsupported: list[str] = []
     for raw_path in scope:
         path = _normalize(raw_path)
@@ -63,6 +71,8 @@ def resolve_review_scope(
             cocotb.add(path)
         elif suffix in _HDL_SUFFIXES:
             hdl.add(path)
+        elif category == "tb" and suffix in _CPP_SUFFIXES:
+            support.add(path)
         else:
             unsupported.append(path)
     if unsupported and not allow_support:
@@ -70,7 +80,13 @@ def resolve_review_scope(
             f"Unsupported {category.upper()} source kind in --scope: "
             + ", ".join(sorted(unsupported))
             + ". Interactive review accepts .v, .vh, .sv, .svh"
-            + (", and .py for category=tb" if category == "tb" else "")
+            + (
+                ", .py and C/C++ (.c, .cc, .cpp, .cxx, .h, .hh, .hpp, .hxx) for category=tb"
+                if category == "tb"
+                else ""
+            )
             + "; see docs/user/USAGE.md. Goal Mode also accepts explicitly scoped support files."
         )
-    return ReviewScopeContract(frozenset(cocotb), frozenset(hdl), frozenset(unsupported))
+    return ReviewScopeContract(
+        frozenset(cocotb), frozenset(hdl), frozenset(support | set(unsupported))
+    )
