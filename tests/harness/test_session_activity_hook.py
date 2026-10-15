@@ -125,7 +125,8 @@ def test_codex_hook_keys_by_thread_and_prefers_a_subagents_own_thread(tmp_path):
     assert store.read("codex:root") is None
 
 
-def test_launched_codex_activity_uses_tab_identity_and_ignores_subagent_stop(tmp_path):
+@pytest.mark.parametrize("agent_id", ["child", "root"])
+def test_launched_codex_activity_uses_tab_identity_and_ignores_subagent_stop(tmp_path, agent_id):
     proc = proc_tree(tmp_path / "proc", CHAIN, {300: "codex"})
     owner = capture_process_identity(300, proc_root=proc)
     reserve_codex_chat(tmp_path, owner)
@@ -136,7 +137,7 @@ def test_launched_codex_activity_uses_tab_identity_and_ignores_subagent_stop(tmp
     assert store.read("codex:root") is None
     assert not hook.record(
         "codex",
-        {**payload, "hook_event_name": "Stop", "agent_id": "child"},
+        {**payload, "hook_event_name": "Stop", "agent_id": agent_id},
         project=tmp_path,
         now=NOW,
         proc_root=proc,
@@ -144,6 +145,22 @@ def test_launched_codex_activity_uses_tab_identity_and_ignores_subagent_stop(tmp
     )
     assert store.read(activity.process_session_key(owner)).state == activity.WORKING
     assert store.read("codex:child") is None
+    assert not hook.record(
+        "codex",
+        {**payload, "hook_event_name": "PreToolUse", "agent_id": agent_id},
+        project=tmp_path,
+        now=NOW,
+        proc_root=proc,
+        pid=500,
+    )
+    assert not hook.record(
+        "codex",
+        {**payload, "hook_event_name": "SubagentStop", "agent_id": agent_id},
+        project=tmp_path,
+        now=NOW,
+        proc_root=proc,
+        pid=500,
+    )
     assert hook.record(
         "codex",
         {**payload, "hook_event_name": "Stop"},

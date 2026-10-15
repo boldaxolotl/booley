@@ -21,11 +21,13 @@ def installed(tmp_path, monkeypatch):
     executable.parent.mkdir(parents=True)
     executable.write_text("#!/usr/bin/env node\n")
     (executable.parent.parent / "package.json").write_text('{"name":"@openai/codex"}')
+    node = tmp_path / "node"
+    node.write_bytes(b"\x7fELF")
     monkeypatch.setattr(codex_chat.sys, "platform", "linux")
     monkeypatch.setattr(
         codex_chat.shutil,
         "which",
-        lambda name: str(executable) if name == "codex" else "/bin/node",
+        lambda name: str(executable) if name == "codex" else str(node),
     )
     monkeypatch.setattr(
         codex_chat, "capture_process_identity", lambda _pid: ProcessIdentity(123, "fixture", 7)
@@ -36,9 +38,9 @@ def installed(tmp_path, monkeypatch):
 def test_npm_command_keeps_wrapper_and_reserves_handle(tmp_path, installed):
     project = tmp_path / "project"
     executable, argv = codex_chat.command(project)
-    assert executable == "/bin/node"
+    assert executable == str(tmp_path / "node")
     assert argv == [
-        "/bin/node",
+        str(tmp_path / "node"),
         str(Path(codex_chat.__file__).parents[1] / "data/codex_chat.mjs"),
         "S1",
         str(installed),
@@ -86,7 +88,9 @@ def test_npm_update_is_discovered_on_each_launch(tmp_path, installed, monkeypatc
     launcher = tmp_path / "codex"
     symlink_or_skip(launcher, installed)
     monkeypatch.setattr(
-        codex_chat.shutil, "which", lambda name: str(launcher) if name == "codex" else "/bin/node"
+        codex_chat.shutil,
+        "which",
+        lambda name: str(launcher) if name == "codex" else str(tmp_path / "node"),
     )
     project = tmp_path / "project"
     assert codex_chat.command(project)[1][-2] == str(installed)
@@ -138,6 +142,21 @@ def test_non_linux_launch_is_unchanged(tmp_path, monkeypatch):
     monkeypatch.setattr(codex_chat.sys, "platform", "win32")
     assert codex_chat.command(tmp_path) == ("codex", ["codex"])
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("shim_kind", ["script", "symlink"])
+def test_node_shims_fall_back_before_reserving_a_tab(tmp_path, installed, shim_kind):
+    node = tmp_path / "node"
+    node.unlink()
+    if shim_kind == "script":
+        node.write_text('#!/bin/sh\nexec /usr/bin/node "$@"\n')
+    else:
+        target = tmp_path / "volta-shim"
+        target.write_bytes(b"\x7fELF")
+        symlink_or_skip(node, target)
+    project = tmp_path / "project"
+    assert codex_chat.command(project) == ("codex", ["codex"])
+    assert not HandleStore(project).path.exists()
 
 
 def test_shim_preserves_arguments_environment_and_exit_status(tmp_path, monkeypatch):

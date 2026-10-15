@@ -29,6 +29,10 @@ def _command(executable: Path, handle: str) -> tuple[str, list[str]]:
     node = shutil.which("node")
     if node is None:
         raise FileNotFoundError("Codex's Node runtime was not found on PATH")
+    runtime = Path(node).resolve()
+    with runtime.open("rb") as stream:
+        if runtime.name not in {"node", "nodejs"} or stream.read(4) != b"\x7fELF":
+            raise ValueError("unrecognized Node runtime; launcher shims cannot own a tab")
     shim = Path(__file__).parents[1] / "data" / "codex_chat.mjs"
     return node, [node, str(shim), handle, str(executable), "--no-daemon"]
 

@@ -24,11 +24,12 @@ def run(_args: argparse.Namespace, project_root: Path) -> int:
 
     try:
         print(f"Booley is starting the {provider} interactive agent.", file=sys.stderr)
-        executable, argv = (
-            codex_chat.command(resolve_booley_dir(project_root))
-            if provider == "codex"
-            else (provider, [provider])
-        )
+        executable, argv = provider, [provider]
+        if provider == "codex":
+            try:
+                executable, argv = codex_chat.command(resolve_booley_dir(project_root))
+            except (OSError, ValueError, RuntimeError) as exc:
+                print(f"NOTE: Codex tab handle is unavailable: {exc}", file=sys.stderr)
         os.execvp(executable, argv)
     except FileNotFoundError:
         print(

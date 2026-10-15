@@ -41,6 +41,28 @@ def test_run_uses_named_codex_command(tmp_path, monkeypatch):
     assert executed == [("/bin/codex", ["S17", "--no-daemon"])]
 
 
+@pytest.mark.parametrize("error", [FileNotFoundError, ValueError, RuntimeError])
+def test_runtime_directory_failure_keeps_plain_codex_launch(tmp_path, monkeypatch, capsys, error):
+    config = type("Config", (), {"provider": "codex"})()
+    monkeypatch.setattr(chat_cmd, "resolve_checkout_booley_dir", lambda root: root)
+    monkeypatch.setattr(chat_cmd, "load_agent_settings", lambda _root, *, booley_dir: None)
+    monkeypatch.setattr(chat_cmd, "get_agent_settings", lambda: config)
+    monkeypatch.setattr(
+        chat_cmd, "resolve_booley_dir", lambda _root: (_ for _ in ()).throw(error("bad runtime"))
+    )
+    executed = []
+
+    def execvp(executable, argv):
+        executed.append((executable, argv))
+        raise _ExecCalledError
+
+    monkeypatch.setattr(chat_cmd.os, "execvp", execvp)
+    with pytest.raises(_ExecCalledError):
+        chat_cmd.run(argparse.Namespace(), tmp_path)
+    assert executed == [("codex", ["codex"])]
+    assert "Codex tab handle is unavailable: bad runtime" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize("provider", ["claude", "codex"])
 def test_run_replaces_process_with_configured_cli(tmp_path, monkeypatch, provider):
     booley_dir = tmp_path / "configured-project"

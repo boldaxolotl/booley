@@ -253,11 +253,7 @@ def record(
         return False
     if client == "codex":
         key = _codex_chat_key(project, proc_root, os.getpid() if pid is None else pid)
-        if key is not None and payload.get("agent_id") not in (
-            None,
-            "",
-            payload.get("session_id"),
-        ):
+        if key is not None and payload.get("agent_id") not in (None, ""):
             return False  # A subagent's Stop must not mark the main session idle.
         key = key or _codex_key(payload)
     else:

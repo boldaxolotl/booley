@@ -15,6 +15,8 @@ Native Linux installations can instead retain the launch PID and set `argv[0]`
 directly. Supported executable basenames are `codex` and the published
 x86_64/aarch64 Linux musl/gnu names; launcher, registry and hook agree on these
 boundaries. Unsupported installations and naming failures use the plain launch.
+This includes Node version-manager shims that add another process, and runtime
+directory resolution failures; neither should reserve an unusable tab identity.
 
 Pass `--no-daemon` for a named launch. The previous
 [session identity spike](0067-goal-mode-session-identity.md) observed multiple
@@ -90,9 +92,15 @@ Other regressions cover worktree/runtime directory disagreement and nested CLI
 boundaries for native and npm launches across supported executable basenames.
 Lifecycle-hook tests cover matching activity keys, ignoring a subagent Stop,
 excluding a nested CLI's Stop, and agreement with the registry on malformed maps.
+The pinned upstream [Codex hook dispatcher](https://github.com/openai/codex/blob/rust-v0.160.0/codex-rs/core/src/hook_runtime.rs)
+dispatches child completion as `SubagentStop`, which Booley ignores. Ordinary
+subagent tool hooks carry `agent_id`; these cannot update a named tab even when
+that ID equals their `session_id`. Actual subagent execution was not part of the
+offline TUI probe. A Claude observer regression also verifies that worktree
+fallback rows, histories and handles remain separate across peer recovery.
 
 The selected chat, attribution, registry, handle, activity, Dashboard and
-text-only Specialist suites passed 322 tests. Repository-wide Ruff lint and
+text-only Specialist suites passed 329 tests. Repository-wide Ruff lint and
 format checks also passed. The process-identity exception is recorded in
 [ADR 0068](../../adr/0068-booley-dashboard.md).
 

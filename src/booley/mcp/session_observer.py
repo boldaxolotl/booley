@@ -233,7 +233,7 @@ class SessionObserver:
                     peer=observed_peer(observation.request),
                 )
             ),
-            predecessor_keys=(fallback.key,),
+            predecessor_keys=(fallback.key,) if fallback.kind == "thread" else (),
         )
 
     def _publish(self, observation: _Observation, call: tuple[str, str, float]) -> None:
@@ -244,7 +244,9 @@ class SessionObserver:
             tool,
             outcome,
             now=now,
-            predecessor_keys=(observation.fallback.key,),
+            predecessor_keys=(observation.fallback.key,)
+            if observation.fallback.kind == "thread"
+            else (),
         )
 
     async def resolved(
