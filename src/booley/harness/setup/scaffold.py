@@ -349,12 +349,18 @@ def _counter_header(c: ScaffoldChoices, *, doctor_bad: bool) -> str:
 // is copied over the staged good RTL only for Doctor's bad simulation run, so
 // a clean scaffold proves that its Simulation Flow detects a behavioral bug.
 """
+    flows = ["simulate", "lint"]
+    if c.asic:
+        flows.append("synth")
+    if c.fpga_part:
+        flows.append("fpga")
+    enabled = " / ".join(flows)
     return f"""\
 // {c.name} — starter IP scaffolded by `booley init --scaffold`.
 //
 // A parameterized synchronous counter: small enough to read in a minute, real
-// enough to exercise every configured flow (simulate / lint / synth /
-// synth). Replace it with your design and keep the surrounding wiring — the
+// enough to exercise every configured flow ({enabled}).
+// Replace it with your design and keep the surrounding wiring — the
 // `.core` Targets, tests.toml entries, and testbench layout are the pattern.
 //
 // The timescale must match the testbench's: Verilator 5 promotes a
@@ -610,6 +616,67 @@ def _tb_fileset(c: ScaffoldChoices) -> str:
 """
 
 
+def _owns_sim_main(c: ScaffoldChoices) -> bool:
+    return c.sim_eda_tool == "verilator" and c.tb_style == "sv"
+
+
+def _sim_main_fileset(c: ScaffoldChoices) -> str:
+    if not _owns_sim_main(c):
+        return ""
+    return """\
+  tb_cpp:
+    files:
+      - tb/sim_main.cpp: {file_type: cppSource}
+    tags: [tb]
+"""
+
+
+def _sim_main(c: ScaffoldChoices) -> str:
+    return f"""// The SV testbench owns clock and stimulus. Honor Booley's tracefile argument.
+// Coverage builds must retain the exactly-once write hook while the model lives.
+#include "Vtb_{c.name}.h"
+#include "verilated.h"
+#if VM_TRACE
+#include "verilated_vcd_c.h"
+#endif
+#if VM_COVERAGE
+#include "booley_coverage.h"
+#endif
+
+int main(int argc, char** argv) {{
+    VerilatedContext context;
+    context.commandArgs(argc, argv);
+#if VM_TRACE
+    context.traceEverOn(true);
+#endif
+    Vtb_{c.name} top{{&context}};
+#if VM_TRACE
+    VerilatedVcdC trace;
+    top.trace(&trace, 99);
+    const char* argument = context.commandArgsPlusMatch("tracefile=");
+    const char* destination = argument[0] ? argument + sizeof("+tracefile=") - 1 : "";
+    trace.open(destination[0] ? destination : "dump.vcd");
+#endif
+    while (!context.gotFinish()) {{
+        top.eval();
+#if VM_TRACE
+        trace.dump(context.time());
+#endif
+        if (context.gotFinish() || !top.eventsPending()) break;
+        context.time(top.nextTimeSlot());
+    }}
+    top.final();
+#if VM_COVERAGE
+    booley_coverage_write();
+#endif
+#if VM_TRACE
+    trace.close();
+#endif
+    return context.gotFinish() ? 0 : 1;
+}}
+"""
+
+
 def _sim_flow_options(c: ScaffoldChoices) -> tuple[str, str]:
     """Return rendered simulation options and the matching toplevel."""
     sim_opts = [f"      tool: {c.sim_eda_tool}"]
@@ -624,9 +691,9 @@ def _sim_flow_options(c: ScaffoldChoices) -> tuple[str, str]:
         sim_toplevel = c.name  # cocotb drives the DUT directly — no HDL wrapper
     else:
         if c.sim_eda_tool == "verilator":
-            # --timing: event-driven TB (Verilator 5 NEEDTIMINGOPT otherwise);
-            # --main/--exe: generate + build the C++ main wrapper.
-            sim_opts.append("      verilator_options: [--timing, --main, --exe]")
+            sim_opts.extend(["        coverage:", "          custom_main_hooks: [write_hook]"])
+            # The SV TB owns timing; the authored main owns tracing and cleanup.
+            sim_opts.append("      verilator_options: [--timing, --exe]")
         elif c.sim_eda_tool == "icarus":
             sim_opts.append("      iverilog_options: [-g2012]")
         sim_toplevel = f"tb_{c.name}"  # a sim target's toplevel is its TB top
@@ -658,12 +725,13 @@ def _lint_language_option(c: ScaffoldChoices) -> str:
 
 def _sim_target(c: ScaffoldChoices) -> str:
     flow_options, toplevel = _sim_flow_options(c)
+    filesets = "rtl, tb, tb_cpp" if _owns_sim_main(c) else "rtl, tb"
     return f"""\
   sim:
     flow: sim
     flow_options:
 {flow_options}
-    filesets: [rtl, tb]
+    filesets: [{filesets}]
     toplevel: {toplevel}
     parameters: [WIDTH]
 """
@@ -709,7 +777,7 @@ def _fpga_target(c: ScaffoldChoices) -> str:
 
 def _core_file(c: ScaffoldChoices) -> str:
     """Render the public scaffold design description."""
-    filesets = _tb_fileset(c) + _constraint_filesets(c)
+    filesets = _tb_fileset(c) + _sim_main_fileset(c) + _constraint_filesets(c)
     targets = _sim_target(c) + _lint_target(c) + _synth_target(c) + _fpga_target(c)
     return f"""\
 CAPI=2:
@@ -771,7 +839,7 @@ def _booley_toml(c: ScaffoldChoices) -> str:
         "[flows]",
         "",
         "[flows.sim]",
-    ]
+    ] + (['trace_files = ["dump.vcd"]'] if _owns_sim_main(c) else [])
     lines += [
         "# A per-test non-RTL build step (e.g. compiling a firmware image before",
         "# each run) goes here — shell lines run inside the Sandbox, per test:",
@@ -869,6 +937,8 @@ def scaffold_files(c: ScaffoldChoices) -> dict[str, str]:
         files[f"tb/test_{c.name}.py"] = _cocotb_testbench(c)
     else:
         files[f"tb/tb_{c.name}.sv"] = _sv_testbench(c)
+    if _owns_sim_main(c):
+        files["tb/sim_main.cpp"] = _sim_main(c)
     if c.asic:
         files[f"constraints/{c.name}.sdc"] = _sdc_file(c)
     if c.fpga_part:

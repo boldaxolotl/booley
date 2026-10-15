@@ -9,6 +9,8 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- Newly scaffolded Verilator SystemVerilog projects now produce non-empty simulation traces and avoid Doctor's `sim.trace-unavailable` warning.
+
 - Immutable-mode Pre-Sim Commands now run in the Project Root as documented,
   including shared and ordinary Simulation Campaign launches with `run_cwd` set.
   Hooks that relied on the previous working directory should
