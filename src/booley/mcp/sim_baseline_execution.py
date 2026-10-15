@@ -48,6 +48,7 @@ from booley.goals.sim_baseline_store import (
 from booley.goals.test_run_evidence import freshness_stamp
 from booley.goals.test_run_freezing import TargetPlans
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
+from booley.runtime.git_ignore import ignored_paths
 from booley.runtime.process_group import (
     ProcessGroup,
     capture_process_group,
@@ -232,19 +233,22 @@ def baseline_kind(plan: TargetTestPlan | None, run: TestRun) -> tuple[str, str]:
 
 
 def _ignored_destination(root: Path, base: str) -> None:
-    destination = worktree_state_dir(root) / f".baseline-wt-{os.getpid()}-{base[:7]}"
+    destination = (worktree_state_dir(root) / f".baseline-wt-{os.getpid()}-{base[:7]}").resolve()
     owner = GoalCheckout(destination.parent).containing_repository()
     if owner is None:
         raise ValueError("baseline scratch has no repository owner")
-    result = subprocess.run(
-        ["git", "check-ignore", "--quiet", str(destination)],
-        cwd=owner[0],
-        capture_output=True,
-        timeout=30,
-        check=False,
-    )
-    if result.returncode != 0:
-        raise ValueError("baseline scratch directory is not ignored; run Project initialization")
+    policy = destination.parent / ".gitignore"
+    try:
+        ignored = ignored_paths(
+            owner[0].resolve(), [destination], directories=frozenset({destination})
+        )
+    except OSError as exc:
+        raise ValueError(f"baseline scratch ignore query failed (policy {policy}): {exc}") from exc
+    if destination not in ignored:
+        raise ValueError(
+            f"baseline scratch directory {destination} is not classified as ignored; "
+            f"expected /.baseline-wt-*/ in {policy}"
+        )
 
 
 def run_baseline(

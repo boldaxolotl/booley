@@ -771,3 +771,66 @@ def test_child_has_an_independent_bounded_watchdog(baseline, monkeypatch):
     timer = _child_watchdog(path.parent)
     assert timer is timers[0] and timer.daemon
     assert terminated == [os.getpid()]
+
+
+@pytest.fixture
+def initialized_policy(layout, monkeypatch, isolated_git_attributes, tmp_path):
+    """Select initialization's policy, with no ambient or blanket exclusion."""
+    from booley.harness.init_cmd import InitContext, _backfill_project_gitignore
+    from booley.runtime.worktree_paths import worktree_state_dir
+
+    for key in tuple(os.environ):
+        if key.startswith("GIT_CONFIG_") and key not in {
+            "GIT_CONFIG_GLOBAL",
+            "GIT_CONFIG_NOSYSTEM",
+        }:
+            monkeypatch.delenv(key)
+    empty = tmp_path / "empty-excludes"
+    empty.write_bytes(b"")
+    git(layout.main, "config", "core.excludesFile", str(empty))
+    exclude = layout.main / ".git/info/exclude"
+    assert exclude.read_text() == "/.booley\n"
+    exclude.write_bytes(b"")
+    selected = worktree_state_dir(layout.worktree)
+    assert selected == layout.control
+    _backfill_project_gitignore(selected, InitContext(project_root=layout.main))
+    assert "/.baseline-wt-*/" in (selected / ".gitignore").read_text().splitlines()
+    # The local Snapshot's configuration is a normal committed Project input.
+    write_tests_toml(layout, b'[top]\ntests = ["smoke"]\n')
+    git(layout.worktree, "add", ".booley")
+    git(layout.worktree, "commit", "-qm", "Project configuration")
+    return layout
+
+
+def test_initialized_directory_policy_runs_baseline_and_reports_transition(initialized_policy):
+    from booley.runtime.worktree_paths import worktree_state_dir
+
+    layout = initialized_policy
+    record = enter_goals(layout, [{"family": "SIM", "target": "top"}])
+    mode = SimpleNamespace(**vars(layout), record=record, launches=[])
+    selected = worktree_state_dir(layout.worktree)
+    policy = selected / ".gitignore"
+    before = policy.read_bytes()
+    scratch = selected / f".baseline-wt-{os.getpid()}-{record.base_sha[:7]}"
+    assert not scratch.exists()
+    assert (layout.main / ".git/info/exclude").read_bytes() == b""
+    checkouts = []
+
+    def execute(checkout, target, runs, output):
+        checkouts.append(checkout)
+        assert checkout == scratch
+        assert git(checkout, "rev-parse", "HEAD") == record.base_sha
+        result = _execute(checkout, target, runs, output)
+        result["rows"] = [run_row(run, "fail") for run in runs]
+        return result
+
+    assert _complete(mode, execute)[0]["grade"] == "fail"
+    _record(mode, "current", [run_row()])
+    summary = transition_summary(
+        build_status(GoalStore(layout.control), record).goals[0].sim_transitions
+    )
+    assert "fail -> pass" in summary
+    assert "unavailable" not in summary
+    assert checkouts == [scratch]
+    assert not scratch.exists()
+    assert policy.read_bytes() == before
