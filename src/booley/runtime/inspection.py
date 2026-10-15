@@ -366,7 +366,7 @@ def _inspect_current_runtime(request: RuntimeInspectionRequest, report: Findings
     return
 
 
-def _inspect_live_runtime(
+def _inspect_active_sandbox(
     request: RuntimeInspectionRequest,
     spec: dict,
     issuance: runtime_spec.Issuance,
@@ -384,6 +384,15 @@ def _inspect_live_runtime(
             report.fail("active Sandbox differs from current host issuance", "rebuild its Sandbox")
     except session_runtime.SessionError as exc:
         report.fail(str(exc), "resolve the Sandbox inventory before retrying")
+
+
+def _inspect_live_runtime(
+    request: RuntimeInspectionRequest,
+    spec: dict,
+    issuance: runtime_spec.Issuance,
+    report: Findings,
+) -> None:
+    _inspect_active_sandbox(request, spec, issuance, report)
     try:
         result = _list_issued_containers(request, issuance)
     except (OSError, subprocess.SubprocessError) as exc:

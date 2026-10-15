@@ -4184,7 +4184,9 @@ def test_project_sandbox_resolution_editor_status(workspace, monkeypatch):
 
     def run(argv, **kwargs):
         if argv[1] == "ps":
-            output = f"{container_id}\teditor\t{workspace}\t{project_id(str(workspace))}"
+            output = (
+                f"{container_id}\teditor\t{workspace}\t{project_id(str(workspace))}\tinteractive"
+            )
         elif argv[1:3] == ["container", "inspect"]:
             output = json.dumps(state)
         else:
@@ -4201,13 +4203,7 @@ def test_project_sandbox_resolution_editor_status(workspace, monkeypatch):
     assert sr.status(workspace) == "running (owner: VS Code, name: editor)"
 
 
-@pytest.fixture
-def project_sandbox_resolution(workspace, monkeypatch):
-    """Actual selection and issuance matching over deterministic Docker responses."""
-    from booley.runtime import session_admission
-
-    issuance = _test_issuance(workspace)
-    issuance.image_id = "sha256:" + "f" * 64
+def _project_resolution_data(workspace, issuance):
     spec = {
         "image": issuance.image_id,
         "remoteUser": "agent",
@@ -4243,6 +4239,10 @@ def project_sandbox_resolution(workspace, monkeypatch):
         "NetworkSettings": {"Networks": {"sandbox-network": {}}},
         "Mounts": [{"Type": "bind", "Source": str(workspace), "Destination": "/work", "RW": True}],
     }
+    return spec, state
+
+
+def _project_resolution_transport(state):
     documents = {state["Id"]: state}
     calls = []
 
@@ -4254,11 +4254,16 @@ def project_sandbox_resolution(workspace, monkeypatch):
                 if doc["State"].get("Running") is False:
                     continue
                 lab = doc["Config"]["Labels"]
+                if (
+                    "label=booley.role=interactive" in argv
+                    and lab.get("booley.role") != "interactive"
+                ):
+                    continue
                 fields = [key, doc.get("Name", "").removeprefix("/")]
                 if "--no-trunc" in argv or "-a" in argv:
                     fields.append(lab.get("devcontainer.local_folder", ""))
                 if "--no-trunc" in argv:
-                    fields.append(lab.get("booley.project-id", ""))
+                    fields.extend([lab.get("booley.project-id", ""), lab.get("booley.role", "")])
                 rows.append("\t".join(fields))
             return subprocess.CompletedProcess(argv, 0, "\n".join(rows), "")
         if argv[1:3] == ["container", "inspect"]:
@@ -4279,6 +4284,18 @@ def project_sandbox_resolution(workspace, monkeypatch):
             return doc["Config"]["Labels"].get("devcontainer.local_folder")
         return json.dumps(doc["Config"]["Labels"]) if "--format" in argv else json.dumps([doc])
 
+    return documents, calls, run, inspect
+
+
+@pytest.fixture
+def project_sandbox_resolution(workspace, monkeypatch):
+    """Actual selection and issuance matching over deterministic Docker responses."""
+    from booley.runtime import session_admission
+
+    issuance = _test_issuance(workspace)
+    issuance.image_id = "sha256:" + "f" * 64
+    spec, state = _project_resolution_data(workspace, issuance)
+    documents, calls, run, inspect = _project_resolution_transport(state)
     monkeypatch.setattr(
         session_admission, "running_project_sandboxes", real_running_project_sandboxes
     )
@@ -4366,7 +4383,20 @@ def test_project_sandbox_resolution_refuses_drift_before_attachment(
 
 @pytest.mark.parametrize("consumer", ["status", "up", "enter", "down", "prepare", "validate"])
 @pytest.mark.parametrize(
-    "problem", ["duplicate", "project-label", "root", "owner", "running", "id", "mount"]
+    "problem",
+    [
+        "duplicate",
+        "project-label",
+        "root",
+        "owner",
+        "owner-missing",
+        "canonical-owner-missing",
+        "canonical-relay",
+        "relay-owner",
+        "running",
+        "id",
+        "mount",
+    ],
 )
 def test_project_sandbox_resolution_fail_closed(
     workspace, project_sandbox_resolution, consumer, problem
@@ -4385,6 +4415,19 @@ def test_project_sandbox_resolution_fail_closed(
         state["Config"]["Labels"]["devcontainer.local_folder"] = str(workspace.parent)
     elif problem == "owner":
         state["Config"]["Labels"]["booley.role"] = "other"
+    elif problem == "owner-missing":
+        state["Config"]["Labels"].pop("booley.role")
+    elif problem == "canonical-owner-missing":
+        state["Name"] = "/" + sr.session_container_name(workspace)
+        state["Config"]["Labels"].clear()
+    elif problem == "canonical-relay":
+        state["Name"] = "/" + sr.session_container_name(workspace)
+        state["Config"]["Labels"].pop("devcontainer.local_folder")
+        state["Config"]["Labels"]["booley.role"] = "license-relay"
+        state["Mounts"] = []
+    elif problem == "relay-owner":
+        state["Config"]["Labels"].pop("devcontainer.local_folder")
+        state["Config"]["Labels"]["booley.role"] = "license-relay"
     elif problem == "running":
         state["State"].pop("Running")
     elif problem == "id":
@@ -4402,7 +4445,6 @@ def test_project_sandbox_resolution_prepare_allows_stale_editor_without_claim(
     fixture = project_sandbox_resolution
     fixture.state["Config"]["Labels"]["booley.spec-digest"] = "old"
     monkeypatch.setattr(sr, "_authenticate_quiesce_validate", lambda *_: (fixture.issuance, None))
-    monkeypatch.setattr(sr, "_reconcile_stopped_vscode_containers", lambda *_: None)
     monkeypatch.setattr(sr, "_requested_issued_license", lambda *_: None)
     monkeypatch.setattr(sr, "_preflight", lambda *_args, **_kw: None)
     from booley.runtime import session_admission
@@ -4463,7 +4505,13 @@ def test_project_sandbox_resolution_excludes_proven_foreign_uninspectable(
         result = fixture.run(argv, **kwargs)
         if argv[1] == "ps":
             result.stdout += "\n" + "\t".join(
-                ["c" * 64, "foreign-editor", str(foreign), project_label_id(str(foreign))]
+                [
+                    "c" * 64,
+                    "foreign-editor",
+                    str(foreign),
+                    project_label_id(str(foreign)),
+                    "interactive",
+                ]
             )
         return result
 
@@ -4582,3 +4630,78 @@ def test_project_sandbox_resolution_symlink_alias(workspace, project_sandbox_res
     alias = workspace.parent / "alias"
     alias.symlink_to(workspace, target_is_directory=True)
     assert sr.resolve_running_sandbox(alias).container_id == project_sandbox_resolution.state["Id"]
+
+
+def test_project_sandbox_resolution_legacy_prepare_reserves_after_removal(
+    workspace, project_sandbox_resolution, monkeypatch
+):
+    from booley.runtime import session_admission
+
+    fixture = project_sandbox_resolution
+    old = sr._LegacyVscodeContainer("editor", fixture.state["Id"])
+    monkeypatch.setattr(sr, "_authenticate_quiesce_validate", lambda *_: (fixture.issuance, old))
+    monkeypatch.setattr(
+        sr, "_remove_quiesced_legacy_container", lambda _: fixture.documents.clear()
+    )
+    monkeypatch.setattr(sr, "_requested_issued_license", lambda *_: None)
+    monkeypatch.setattr(sr, "_preflight", lambda *_args, **_kw: None)
+    claim = Mock(return_value=True)
+    monkeypatch.setattr(session_admission, "claim_vscode_start", claim)
+    assert sr.prepare(workspace) == fixture.issuance.spec_sha256
+    claim.assert_called_once_with(workspace, run=sr._run)
+
+
+@pytest.mark.parametrize("pending", [False, True])
+def test_project_sandbox_resolution_status_ignores_uninspectable_foreign(
+    workspace, project_sandbox_resolution, monkeypatch, pending
+):
+    import copy
+
+    from booley.core.project_identity import project_label_id
+    from booley.runtime import session_admission
+
+    fixture = project_sandbox_resolution
+    if pending:
+        fixture.documents.clear()
+        assert real_claim_vscode_start(workspace, run=fixture.run)
+        fixture.documents[fixture.state["Id"]] = fixture.state
+    foreign = copy.deepcopy(fixture.state)
+    root = workspace.parent / "foreign"
+    foreign["Id"], foreign["Name"] = "c" * 64, "/foreign-editor"
+    foreign["Config"]["Labels"].update(
+        {"devcontainer.local_folder": str(root), "booley.project-id": project_label_id(str(root))}
+    )
+    fixture.documents[foreign["Id"]] = foreign
+
+    def run(argv, **kwargs):
+        if argv[1:3] == ["container", "inspect"] and argv[3] == foreign["Id"]:
+            return subprocess.CompletedProcess(argv, 1, "", "foreign inspection denied")
+        return fixture.run(argv, **kwargs)
+
+    monkeypatch.setattr(sr, "_run", run)
+    monkeypatch.setattr(
+        session_admission, "has_pending_claim", lambda root: real_has_pending_claim(root, run=run)
+    )
+    assert sr.status(workspace) == "running (owner: VS Code, name: editor)"
+
+
+@pytest.mark.parametrize("kind", ["ordinary-service", "license-relay"])
+def test_project_sandbox_resolution_ignores_noninteractive_resources(
+    workspace, project_sandbox_resolution, kind
+):
+    import copy
+
+    fixture = project_sandbox_resolution
+    resource = copy.deepcopy(fixture.state)
+    resource["Id"], resource["Name"] = "d" * 64, "/" + kind
+    labels = resource["Config"]["Labels"]
+    labels.pop("devcontainer.local_folder")
+    if kind == "ordinary-service":
+        labels.clear()
+    else:
+        labels["booley.role"] = "license-relay"
+    resource["Mounts"] = []
+    fixture.documents[resource["Id"]] = resource
+    assert sr.resolve_running_sandbox(workspace).container_id == fixture.state["Id"]
+    if kind == "ordinary-service":
+        assert not any(resource["Id"] in call for call in fixture.calls if call[1] == "container")

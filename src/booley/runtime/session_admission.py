@@ -41,6 +41,10 @@ _SCHEMA_VERSION = 2
 _CLAIM_SUFFIX = ".json"
 _FOLDER_LABEL = "devcontainer.local_folder"
 _PROJECT_LABEL = "booley.project-id"
+_PROJECT_LISTING_FORMAT = (
+    '{{.ID}}\t{{.Names}}\t{{.Label "devcontainer.local_folder"}}'
+    '\t{{.Label "booley.project-id"}}\t{{.Label "booley.role"}}'
+)
 logger = logging.getLogger(__name__)
 
 
@@ -148,8 +152,13 @@ def clear_vscode_claim(project_root: Path) -> bool:
 def has_pending_claim(project_root: Path, *, run: Run = _run) -> bool:
     """Return whether this Project has a validated pending editor start."""
     root = _canonical_root(project_root)
-    _live, claims, _candidates, _diagnostics = _admission_snapshot(run, requesting_root=root)
-    return any(_same_project_root(claim.project_root, root) for claim in claims)
+    claims = tuple(claim for claim in _claims() if _same_project_root(claim.project_root, root))
+    if not claims:
+        return False
+    candidates = _vscode_inventory({root}, run)
+    _project_vscode_sandboxes(root, candidates)
+    remaining, _diagnostics = _reconcile_claims(claims, candidates, root)
+    return bool(remaining)
 
 
 def vscode_sandboxes(project_root: Path, *, run: Run = _run) -> tuple[Sandbox, ...]:
@@ -168,15 +177,7 @@ def running_project_sandboxes(project_root: Path, *, run: Run = _run) -> tuple[S
 
     root = _canonical_root(project_root)
     local_name = session_container_name(project_root)
-    command = [
-        "docker",
-        "ps",
-        "--no-trunc",
-        "--filter",
-        f"label={dc.INTERACTIVE_ROLE_LABEL}",
-        "--format",
-        '{{.ID}}\t{{.Names}}\t{{.Label "devcontainer.local_folder"}}\t{{.Label "booley.project-id"}}',
-    ]
+    command = ["docker", "ps", "--no-trunc", "--format", _PROJECT_LISTING_FORMAT]
     try:
         result = run(command, timeout=30)
         if result.returncode:
@@ -184,10 +185,18 @@ def running_project_sandboxes(project_root: Path, *, run: Run = _run) -> tuple[S
         items = {}
         for line in result.stdout.splitlines():
             fields = line.split("\t")
-            if len(fields) != 4 or not fields[0] or not fields[1]:
+            if len(fields) != 5 or not fields[0] or not fields[1]:
                 raise AdmissionError("Docker returned an incomplete Project Sandbox listing")
-            container_id, name, folder, project_id = fields
+            container_id, name, folder, project_id, role = fields
+            if not (folder or project_id or role or name == local_name):
+                continue
             if _foreign_listing(folder, project_id, name, root, local_name):
+                continue
+            if (
+                name != local_name
+                and role == "license-relay"
+                and _noninteractive_relay(container_id, name, run)
+            ):
                 continue
             item = _inspect(container_id, name, run, exact_id=True)
             if not _valid_identity(item, item.project_root):
@@ -204,6 +213,31 @@ def running_project_sandboxes(project_root: Path, *, run: Run = _run) -> tuple[S
         return tuple(items.values())
     except (OSError, subprocess.SubprocessError) as exc:
         raise AdmissionError(f"cannot inspect Project Sandboxes safely: {exc}") from exc
+
+
+def _noninteractive_relay(container_id: str, name: str, run: Run) -> bool:
+    """Exclude a relay only after proving it has no interactive workspace bind."""
+    result = run(
+        ["docker", "container", "inspect", container_id, "--format", "{{json .}}"], timeout=30
+    )
+    try:
+        if result.returncode:
+            raise AdmissionError(f"cannot inspect possible Sandbox {name}: {_detail(result)}")
+        document = require_dict(json.loads(result.stdout), field="possible Sandbox")
+        labels = _labels(require_dict(document.get("Config"), field="Config").get("Labels"))
+        mounts = require_list(document.get("Mounts"), field="Mounts")
+        return (
+            require_str(document, "Id") == container_id
+            and require_str(document, "Name").removeprefix("/") == name
+            and labels.get("booley.role") == "license-relay"
+            and _FOLDER_LABEL not in labels
+            and not any(
+                require_dict(mount, field="Mount").get("Destination") == "/work"
+                for mount in mounts
+            )
+        )
+    except (BoundaryError, ValueError) as exc:
+        raise AdmissionError(f"cannot inspect possible Sandbox {name}") from exc
 
 
 def _foreign_listing(folder: str, project_id: str, name: str, root: str, local_name: str) -> bool:
@@ -236,17 +270,8 @@ def _verify_workspace_mount(item: Sandbox, root: str, run: Run) -> None:
         ):
             raise AdmissionError("Sandbox identity changed during Project resolution")
         labels = _labels(require_dict(document.get("Config"), field="Config").get("Labels"))
-        mounts = require_list(document.get("Mounts"), field="Mounts")
-        roots = []
-        for raw in mounts:
-            mount = require_dict(raw, field="Mount")
-            if mount.get("Type") == "bind" and mount.get("Destination") == "/work":
-                source = host_path_from_docker_mount(require_str(mount, "Source"))
-                if source is not None:
-                    roots.append(_canonical_text(str(source)))
         if (
-            len(roots) != 1
-            or not _same_project_root(roots[0], root)
+            not _same_project_root(_workspace_mount_root(document, item.name), root)
             or labels.get("booley.role") != "interactive"
             or labels.get(_PROJECT_LABEL) != item.project_id
             or not _same_project_root(_project_root(document, labels, item.name), root)

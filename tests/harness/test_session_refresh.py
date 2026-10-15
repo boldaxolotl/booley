@@ -633,6 +633,22 @@ def test_refresh_project_sandbox_resolution_refuses_ambiguous_inventory(
     assert all(call[1] in ("ps", "container") for call in fixture.calls)
 
 
+def _refresh_race_start(workspace, fixture, events):
+    import copy
+
+    editor = copy.deepcopy(fixture.state)
+    headless = copy.deepcopy(editor)
+    headless["Id"], headless["Name"] = "b" * 64, "/" + sr.session_container_name(workspace)
+    headless["Config"]["Labels"].pop("devcontainer.local_folder")
+    fixture.documents.clear()
+
+    def start(*_args, **_kwargs):
+        events.append("up")
+        fixture.documents.update({editor["Id"]: editor, headless["Id"]: headless})
+
+    return start
+
+
 def test_project_sandbox_resolution_refresh_race_rolls_back(
     workspace, project_sandbox_resolution, monkeypatch
 ) -> None:
@@ -645,18 +661,7 @@ def test_project_sandbox_resolution_refresh_race_rolls_back(
     images = Mock(spec=session_refresh.RuntimeImageOperations)
     images.prepare.return_value = result
     images.commit.return_value = result
-    import copy
-
-    fixture = project_sandbox_resolution
-    editor = copy.deepcopy(fixture.state)
-    headless = copy.deepcopy(editor)
-    headless["Id"], headless["Name"] = "b" * 64, "/" + sr.session_container_name(workspace)
-    headless["Config"]["Labels"].pop("devcontainer.local_folder")
-    fixture.documents.clear()
-
-    def start(*_args, **_kwargs):
-        events.append("up")
-        fixture.documents.update({editor["Id"]: editor, headless["Id"]: headless})
+    start = _refresh_race_start(workspace, project_sandbox_resolution, events)
 
     with (
         patch.object(session_refresh, "capture_session_spec", return_value=snapshot),

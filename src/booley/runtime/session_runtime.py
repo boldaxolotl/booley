@@ -1000,8 +1000,27 @@ class EnsureResult:
     started: bool
 
 
-def _up_unlocked(workspace: Path, **kwargs: Any) -> str:
-    return _ensure_unlocked(workspace, **kwargs).name
+def _up_unlocked(
+    workspace: Path,
+    *,
+    rebuild: bool = False,
+    image_override: str | None = None,
+    expected_image_id: str | None = None,
+    expected_payload_fingerprint: str | None = None,
+    expected_wheel_source_fingerprint: str | None = None,
+    expected_wheel_sha256: str | None = None,
+    recovery: bool = False,
+) -> str:
+    return _ensure_unlocked(
+        workspace,
+        rebuild=rebuild,
+        image_override=image_override,
+        expected_image_id=expected_image_id,
+        expected_payload_fingerprint=expected_payload_fingerprint,
+        expected_wheel_source_fingerprint=expected_wheel_source_fingerprint,
+        expected_wheel_sha256=expected_wheel_sha256,
+        recovery=recovery,
+    ).name
 
 
 def ensure(workspace: Path, *, rebuild: bool = False) -> EnsureResult:
@@ -1168,7 +1187,10 @@ def _prepare_unlocked(workspace: Path) -> str:
     issuance, quiesced = _authenticate_quiesce_validate(workspace, spec)
     if quiesced is not None:
         _remove_quiesced_legacy_container(quiesced)
-    _reconcile_stopped_vscode_containers(workspace, issuance)
+        selected = None
+    _reconcile_stopped_vscode_containers(
+        workspace, issuance, selected_editor_id=selected.container_id if selected else None
+    )
     from booley.runtime import session_admission
 
     try:
@@ -1492,12 +1514,14 @@ def _reconcile_stopped_vscode_containers(
     issuance: object,
     *,
     remove_unavailable_current: bool = True,
+    selected_editor_id: str | None = None,
 ) -> None:
     """Discard stopped VS Code containers that predate the current issuance."""
     for name in _stopped_vscode_reconcile_candidates(
         workspace,
         issuance,
         remove_unavailable_current=remove_unavailable_current,
+        selected_editor_id=selected_editor_id,
     ):
         _remove_stopped_session_container(name)
 
@@ -1507,6 +1531,7 @@ def _stopped_vscode_reconcile_candidates(
     issuance: object,
     *,
     remove_unavailable_current: bool,
+    selected_editor_id: str | None = None,
 ) -> list[str]:
     """Validate VS Code Sandbox state and return safe stopped cleanup targets."""
     from booley.runtime import session_issuance as runtime_spec
@@ -1527,6 +1552,8 @@ def _stopped_vscode_reconcile_candidates(
         if running is None:
             raise SessionError(f"cannot inspect state for Sandbox {name!r}")
         if running:
+            if selected_editor_id is not None and state.get("Id") == selected_editor_id:
+                continue
             if not issuance_matches:
                 raise SessionError(
                     f"running Sandbox {name!r} uses an older host issuance; "
