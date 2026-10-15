@@ -9,6 +9,9 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- Deep Doctor now warns when a simulation bad overlay fails to build, and requires
+  an observed behavioral Test failure before accepting the bad case.
+
 - Sandbox refresh now reconciles specification changes, reports kept/replaced/rollback outcomes, and removes transaction-owned failed or superseded images.
 
 - The Dashboard opens by default on trusted VS Code Sandbox attachment through
