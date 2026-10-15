@@ -16,7 +16,7 @@ function fakeEditor({ trusted = true, remote = 'dev-container' }, records, setti
     const output = { appendLine: line => log.push(line), show() {}, dispose() {} };
     const listen = name => fn => { listeners[name] = fn; return { dispose() {} }; };
     return {
-        TerminalExitReason: {Process: 2, User: 3},
+        TerminalExitReason: {Shutdown: 1, Process: 2, User: 3, Extension: 4},
         env: { remoteName: remote, sessionId: 'fixture-window' },
         workspace: {
             isTrusted: trusted,
@@ -193,11 +193,13 @@ test('startup failures and late policy opt-outs remain visible in Output', async
 });
 
 
-test('a user-closed terminal is quiet even with a nonzero exit status', async () => {
-    const f = fixture();
-    await tick();
-    const terminal = f.terminals[0];
-    terminal.exitStatus = {code: 130, reason: f.vscode.TerminalExitReason.User};
-    f.listeners.close(terminal);
-    assert.equal(f.log.length, 0);
+test('user closure, editor shutdown and extension disposal stay quiet', async () => {
+    for (const name of ['User', 'Shutdown', 'Extension']) {
+        const f = fixture();
+        await tick();
+        const terminal = f.terminals[0];
+        terminal.exitStatus = {code: 130, reason: f.vscode.TerminalExitReason[name]};
+        f.listeners.close(terminal);
+        assert.equal(f.log.length, 0);
+    }
 });

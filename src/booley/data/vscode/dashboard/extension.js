@@ -108,7 +108,8 @@ class AttachController {
 
     closed(closed) {
         if (closed !== this.terminal) { return; }
-        if (closed.exitStatus?.reason === vscode.TerminalExitReason.User) {
+        if ([vscode.TerminalExitReason.User, vscode.TerminalExitReason.Shutdown,
+            vscode.TerminalExitReason.Extension].includes(closed.exitStatus?.reason)) {
             this.terminal = undefined;
             return;
         }

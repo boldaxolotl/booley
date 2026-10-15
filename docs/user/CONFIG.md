@@ -2607,6 +2607,11 @@ user preference of `"task.allowAutomaticTasks": "off"` still suppresses automati
 opening, as does the same opt-out in `.vscode/settings.json`. The editor's default
 off value alone does not disable the Dashboard.
 
+If you manage `[sandbox].image` yourself, include the current Booley wheel and
+build its bundled VSIX with `RUN python3 -I -m booley.runtime.dashboard_extension`
+in your image recipe. Dev Containers needs that artifact at attach time. Set
+`dashboard = false` if your image cannot supply it; manual opening remains available.
+
 `dashboard = false` disables the opener and removes an unchanged Booley-owned
 manual task. Reconciliation runs on `booley init` or Sandbox refresh. On upgrade,
 it changes an unchanged owned `folderOpen` task into a manual shortcut. Existing
