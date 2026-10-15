@@ -1545,8 +1545,10 @@ def _ordinary_public_hook_fixture(tmp_path, monkeypatch):
         "booley.flows.sim.build_session._icarus_tool_identity", lambda: "test-tool-closure"
     )
     flow = SimulateFlow()
+    # Publication tests must allow for Git for Windows shell startup under CI load.
     flow._simulation_execution_override = SimulationExecution(
-        invoke=_subprocess_invoker(project), options=SimulationOptions(timeout_ms=5000)
+        invoke=_subprocess_invoker(project),
+        options=SimulationOptions(timeout_ms=60_000 if os.name == "nt" else 5000),
     )
     return project, flow
 
