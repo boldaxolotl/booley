@@ -56,43 +56,69 @@ _MODE_DESC = {
 }
 
 
-def _report_status() -> int:
-    """Print the credential each detected app's agents would actually run on.
+def _report_status(app: str | None = None, project_root: Path | None = None) -> int:
+    """Report the launching process's credential under the selected Project policy."""
+    from booley.config.agent import project_credential_policy
 
-    Resolved with the agent CLI's own precedence (see
-    :func:`auth_token.effective_credential`) — an exported API key outranks
-    both the stored rotation-free token and the subscription login, so it must
-    never be reported as "falls back to a refreshing one".
-    """
     banner("Agent auth status")
-    at_rotation_risk = 0
-    for app, credential in auth_token.CREDENTIALS.items():
-        effective = auth_token.effective_credential(app)
-        env_token = (os.environ.get(credential.env_var) or "").strip()
-        stored = auth_token.read_stored_token(app)
-
+    policy = "auto"
+    if project_root is not None and _project_is_initialized(project_root):
+        provider, policy = project_credential_policy(project_root)
+        app = app or provider
+    apps = [app] if app else list(auth_token.CREDENTIALS)
+    usable = 0
+    info(f"configured auth = '{policy}'; inherited environment is that of this launching process")
+    for selected in apps:
+        plan = auth_token.credential_plan(selected, policy)
+        for message in auth_token.credential_warnings(plan):
+            warn(message)
+        effective = plan.selected
         if effective is None:
-            at_rotation_risk += 1
-            warn(f"{app}: no credential found — agents cannot authenticate")
-            info(f"       fix: run the app's login, export an API key, or booley auth --app {app}")
+            warn(
+                f"{selected}: no credential found under auth = '{policy}' — agents cannot authenticate"
+            )
+            if policy == "auto":
+                info(
+                    f"       fix: run the app's login, export an API key, or booley auth --app {selected}"
+                )
             continue
-
-        line = f"{app}: agents run on {effective.source} ({_MODE_DESC[effective.mode]})"
+        usable += 1
+        line = f"{selected}: agents run on {effective.source} ({_MODE_DESC[effective.mode]})"
         if effective.rotation_free:
             ok(line)
         else:
-            at_rotation_risk += 1
             warn(line)
             info("       a host-side login can revoke a running container's copy mid-run")
-            info(f"       fix: booley auth --app {app}")
+            if policy == "auto":
+                info(f"       fix: booley auth --app {selected}")
         for loser in effective.overridden:
             info(f"       {loser} is present but NOT used — the line above wins")
+        if auth_token.read_stored_token(selected) and not auth_token.stored_token_is_private(
+            selected
+        ):
+            warn(f"{selected}: stored credential is readable by others — chmod 600 it")
+        _report_token_storage(plan)
+    return 0 if usable else 1
 
-        if stored and not auth_token.stored_token_is_private(app):
-            warn(f"{app}: stored credential is readable by others — chmod 600 it")
-        if env_token and stored and env_token != stored:
-            warn(f"{app}: the exported value differs from the stored one; the exported one wins")
-    return 1 if at_rotation_risk == len(auth_token.CREDENTIALS) else 0
+
+def _report_token_storage(plan: auth_token.CredentialPlan) -> None:
+    credential = auth_token.credential_for_app(plan.app)
+    if credential is None or credential.env_var not in plan.allowed_env:
+        return
+    exported = (os.environ.get(credential.env_var) or "").strip()
+    stored = auth_token.read_stored_token(plan.app)
+    if exported and stored and exported != stored:
+        warn(f"{plan.app}: the exported value differs from the stored one; the exported one wins")
+
+
+def _safe_report_status(app: str | None, project_root: Path | None) -> int:
+    from booley.config.agent import BackendConfigError
+
+    try:
+        return _report_status(app, project_root)
+    except (ValueError, BackendConfigError) as exc:
+        err(str(exc))
+        return 1
 
 
 def _project_is_initialized(project_root: Path) -> bool:
@@ -247,7 +273,7 @@ def run_auth(args: argparse.Namespace, project_root: Path) -> int:
         sys.stdout.reconfigure(line_buffering=True)  # type: ignore[attr-defined]
 
     if getattr(args, "status", False):
-        return _report_status()
+        return _safe_report_status(getattr(args, "app", None), project_root)
 
     app = _resolve_app(args)
     if app is None:

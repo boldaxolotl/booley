@@ -2673,3 +2673,70 @@ def test_directory_alias_proof_refuses_missing_image_identity_before_docker(monk
     with pytest.raises(error, match="Sandbox image identity is unavailable"):
         check(None)
     probe.assert_not_called()
+
+
+@pytest.mark.parametrize("section", ["remoteEnv", "containerEnv"])
+@pytest.mark.parametrize("key", ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY"])
+def test_issued_spec_rejects_unplanned_credential_environment(issued, section, key):
+    project, spec, path, _ = issued
+    spec[section][key] = f"${{localEnv:{key}}}"
+    with pytest.raises(runtime_spec.RuntimeSpecError):
+        runtime_spec.validate(project, spec, path)
+
+
+def test_policy_change_requires_refresh_even_when_shell_exports_change(issued, monkeypatch):
+    project, spec, path, _ = issued
+    for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"):
+        monkeypatch.setenv(key, "SYNTHETIC")
+    runtime_spec.validate(project, spec, path)
+    (project / ".booley" / "booley.toml").write_text('[agent]\nauth="subscription"\n')
+    with pytest.raises(runtime_spec.RuntimeSpecError, match=r"credential policy/schema.*refresh"):
+        runtime_spec.validate(project, spec, path)
+
+
+def test_old_credential_schema_requires_refresh(issued):
+    project, spec, path, _ = issued
+    del spec["remoteEnv"]["BOOLEY_CREDENTIAL_SCHEMA"]
+    with pytest.raises(runtime_spec.RuntimeSpecError):
+        runtime_spec.validate(project, spec, path)
+
+
+@pytest.mark.parametrize(
+    "damage", ["other-provider", "wrong-placeholder", "subscription-bind", "subscription-hook"]
+)
+def test_sealing_rejects_policy_violations_before_issuance(issued, monkeypatch, damage):
+    from booley.runtime import auth_token
+
+    project, _, _, _ = issued
+    monkeypatch.setenv("HOME", str(project))
+    monkeypatch.setenv("USERPROFILE", str(project))
+    (project / ".booley" / "booley.toml").write_text(
+        '[agent]\nprovider="claude"\nauth="api_key"\n'
+    )
+    spec = dc.build_devcontainer_spec(
+        "claude",
+        credential_plan=auth_token.credential_plan("claude", "api_key"),
+        project_id=dc.canonical_project_id(project),
+        protected_devcontainer_source=str(project / ".devcontainer"),
+        mcp_start_command=dc.mcp_post_start_command(),
+    )
+    spec["remoteEnv"]["BOOLEY_PRIMARY_AUTH"] = "api_key"
+    if damage == "other-provider":
+        spec["remoteEnv"]["OPENAI_API_KEY"] = "${localEnv:OPENAI_API_KEY}"
+    elif damage == "wrong-placeholder":
+        spec["remoteEnv"]["ANTHROPIC_API_KEY"] = "${localEnv:CLAUDE_CODE_OAUTH_TOKEN}"
+    elif damage == "subscription-bind":
+        spec["mounts"].insert(
+            0,
+            "source=/synthetic/login,target=/home/agent/.claude-creds-seed.json,type=bind,readonly",
+        )
+    else:
+        fragment = next(
+            fragment
+            for fragment in runtime_spec._FIXED_SEED_FRAGMENTS
+            if ".claude-creds-seed.json" in fragment
+        )
+        spec["postStartCommand"] = f"{fragment}; {spec['postStartCommand']}"
+    runtime_spec.pin_image(spec)
+    with pytest.raises(runtime_spec.RuntimeSpecError, match=r"credential|seed"):
+        runtime_spec.seal(project, spec)

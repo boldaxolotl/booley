@@ -42,9 +42,10 @@ shadow the mounted subscription credentials. Hence :func:`resolve_token` returns
 
 from __future__ import annotations
 
+import json
 import os
 import stat
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from booley.core.user_paths import config_dir
@@ -141,7 +142,7 @@ def token_path(app: str = APP_CLAUDE) -> Path:
     return config_dir() / cred.filename
 
 
-def read_stored_token(app: str = APP_CLAUDE) -> str | None:
+def read_stored_token(app: str = APP_CLAUDE, *, home: Path | None = None) -> str | None:
     """*app*'s stored credential, or ``None`` when absent/unreadable/empty.
 
     Container-side, ``booley auth`` storage lives on the HOST — the generated
@@ -151,7 +152,12 @@ def read_stored_token(app: str = APP_CLAUDE) -> str | None:
     credential in both launch contexts; on the host the sidecar path simply does not
     exist.
     """
-    for path in (token_path(app), Path.home() / TOKEN_SEED_BASENAME[app]):
+    paths = (
+        (token_path(app), Path.home() / TOKEN_SEED_BASENAME[app])
+        if home is None
+        else (home / TOKEN_SEED_BASENAME[app],)
+    )
+    for path in paths:
         try:
             raw = path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError, KeyError):
@@ -174,9 +180,9 @@ def resolve_token(app: str = APP_CLAUDE) -> str | None:
     return env or read_stored_token(app)
 
 
-def subscription_creds_path(app: str = APP_CLAUDE) -> Path:
+def subscription_creds_path(app: str = APP_CLAUDE, *, home: Path | None = None) -> Path:
     """Absolute path of *app*'s refreshing login file (the subscription creds)."""
-    return Path.home() / _SUBSCRIPTION_CREDS[app]
+    return (home or Path.home()) / _SUBSCRIPTION_CREDS[app]
 
 
 # Modes for :class:`EffectiveCredential`. ``api_key`` and ``oauth_token`` are
@@ -235,7 +241,7 @@ def _api_key_policy_credential(
 
 
 def effective_credential(
-    app: str = APP_CLAUDE, policy: str = "auto"
+    app: str = APP_CLAUDE, policy: str = "auto", *, home: Path | None = None
 ) -> EffectiveCredential | None:
     """Resolve which credential *app*'s agents would actually use, CLI-style.
 
@@ -269,9 +275,9 @@ def effective_credential(
         return None
 
     env_token = (os.environ.get(cred.env_var) or "").strip()
-    stored = None if env_token else read_stored_token(app)
-    subs_path = subscription_creds_path(app)
-    has_subscription = subs_path.is_file()
+    stored = None if env_token else read_stored_token(app, home=home)
+    subs_path = subscription_creds_path(app, home=home)
+    has_subscription = subscription_available(app, policy, subs_path)
     subscription_desc = f"the subscription login at {subs_path}"
 
     api_key_var = API_KEY_ENV[app]
@@ -375,3 +381,176 @@ def stored_token_is_private(app: str = APP_CLAUDE) -> bool:
         return token_path(app).is_file()
     mode = stored_token_mode(app)
     return mode is not None and not mode & (stat.S_IRWXG | stat.S_IRWXO)
+
+
+CREDENTIAL_ENV_KEYS = frozenset({"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY"})
+CREDENTIAL_SCHEMA = "1"
+
+
+def subscription_available(app: str, policy: str, path: Path) -> bool:
+    """Inspect explicit-policy login material without exposing its contents."""
+    if policy == "auto":
+        return path.is_file()
+    if not path.exists():
+        return False
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    if app == APP_CODEX:
+        tokens = data.get("tokens")
+        key = data.get("OPENAI_API_KEY")
+        return (
+            isinstance(tokens, dict)
+            and any(
+                isinstance(tokens.get(name), str) and tokens[name].strip()
+                for name in ("access_token", "refresh_token")
+            )
+            and key in (None, "")
+        )
+    oauth = data.get("claudeAiOauth")
+    return isinstance(oauth, dict) and any(
+        isinstance(oauth.get(name), str) and oauth[name].strip()
+        for name in ("accessToken", "refreshToken")
+    )
+
+
+def allowed_credential_keys(app: str, policy: str) -> frozenset[str]:
+    """Deterministic transport permissions, independent of shell exports."""
+    if policy not in {"auto", "subscription", "api_key"}:
+        raise ValueError("invalid credential policy; refresh the Sandbox")
+    if app not in CREDENTIALS:
+        return frozenset()
+    if policy == "api_key":
+        return frozenset({API_KEY_ENV[app]})
+    if policy == "subscription":
+        return frozenset({ENV_VAR}) if app == APP_CLAUDE else frozenset()
+    return frozenset({API_KEY_ENV[app], CREDENTIALS[app].env_var})
+
+
+@dataclass(frozen=True)
+class CredentialPlan:
+    """One provider's billing selection and permitted credential transports."""
+
+    app: str
+    policy: str
+    selected: EffectiveCredential | None
+    allowed_env: frozenset[str]
+    values: tuple[tuple[str, str], ...] = field(repr=False)
+    subscription_seed: Path | None = None
+    token_seed: Path | None = None
+    config_seed: Path | None = None
+
+    @property
+    def forbidden_env(self) -> frozenset[str]:
+        return CREDENTIAL_ENV_KEYS - self.allowed_env
+
+    def child_environment(self, inherited: dict[str, str]) -> dict[str, str]:
+        """Render a child env without mutating the launching process."""
+        return {
+            **{k: v for k, v in inherited.items() if k not in self.forbidden_env},
+            **dict(self.values),
+        }
+
+    def require_credential(self) -> None:
+        """Pinned modes must never silently fall through to another source."""
+        if self.policy != "auto" and self.selected is None:
+            raise ValueError(
+                f"{self.app}: no usable credential under auth = '{self.policy}'; provide that credential and refresh the Sandbox"
+            )
+
+
+def inspect_config_seed(path: Path, policy: str) -> None:
+    """Refuse ambiguous auth-bearing Claude config; never edit host config."""
+    if policy == "auto" or not path.exists():
+        return
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeError) as exc:
+        raise ValueError(
+            "cannot inspect Claude config seed; remove the seed or use an inspected config"
+        ) from exc
+    if not isinstance(data, dict) or any(
+        data.get(key) for key in ("primaryApiKey", "apiKeyHelper", "customApiKeyResponses")
+    ):
+        raise ValueError(
+            "Claude config seed contains ambiguous credential state; use a config without credential fields"
+        )
+
+
+def credential_plan(
+    app: str = APP_CLAUDE, policy: str = "auto", *, home: Path | None = None
+) -> CredentialPlan:
+    """Resolve once, keeping secrets out of repr and serialized metadata."""
+    allowed = allowed_credential_keys(app, policy)
+    if app not in CREDENTIALS:
+        return CredentialPlan(app, policy, None, allowed, ())
+    values = {}
+    for key in allowed:
+        value = (os.environ.get(key) or "").strip()
+        if not value and key == CREDENTIALS[app].env_var:
+            value = read_stored_token(app, home=home) or ""
+        if value:
+            if any(character.isspace() for character in value):
+                raise ValueError("credential contains whitespace; cannot forward it safely")
+            values[key] = value
+    login = subscription_creds_path(app, home=home)
+    subscription = (
+        login if policy != "api_key" and subscription_available(app, policy, login) else None
+    )
+    token = token_path(app) if home is None else home / TOKEN_SEED_BASENAME[app]
+    token_seed = (
+        token
+        if CREDENTIALS[app].env_var in allowed
+        and token.is_file()
+        and read_stored_token(app, home=home)
+        else None
+    )
+    config = (home or Path.home()) / ".claude.json" if app == APP_CLAUDE else None
+    if config is not None:
+        inspect_config_seed(config, policy)
+        config = config if config.is_file() else None
+    return CredentialPlan(
+        app,
+        policy,
+        effective_credential(app, policy, home=home),
+        allowed,
+        tuple(sorted(values.items())),
+        subscription,
+        token_seed,
+        config,
+    )
+
+
+def copy_codex_auth(source: Path, destination: Path, policy: str = "auto") -> None:
+    """Reconcile a Booley-owned private auth copy at every invocation."""
+    import shutil
+
+    allowed_credential_keys(APP_CODEX, policy)
+    allowed = policy == "auto" or (
+        policy == "subscription" and subscription_available(APP_CODEX, policy, source)
+    )
+    if source.is_file() and allowed:
+        shutil.copyfile(source, destination)
+        destination.chmod(0o600)
+    else:
+        destination.unlink(missing_ok=True)
+
+
+def credential_warnings(plan: CredentialPlan) -> tuple[str, ...]:
+    """Nonsecret source-selection caveats for status presentation."""
+    if plan.app != APP_CLAUDE or plan.config_seed is None:
+        return ()
+    try:
+        data = json.loads(plan.config_seed.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeError):
+        return (
+            "Claude config could not be inspected; interactive credential approval is unknown",
+        )
+    if isinstance(data, dict) and data.get("customApiKeyResponses"):
+        return (
+            "Claude config records interactive API-key approval/rejection state; source selection does not attest interactive approval",
+        )
+    return ()

@@ -134,3 +134,25 @@ def test_text_only_regeneration_preserves_destination_preference(
     before = config.read_bytes()
     prepare_codex_text_only(["codex", "exec", "-"], params, {"CODEX_HOME": str(original)})
     assert config.read_bytes() == before
+
+
+def test_text_only_reused_output_clears_disallowed_or_disappeared_auth(tmp_path):
+    original = tmp_path / "original"
+    original.mkdir()
+    (original / "models_cache.json").write_text('{"models":[{"slug":"chosen"}]}')
+    native = original / "auth.json"
+    native.write_text('{"tokens":{"access_token":"SYNTHETIC"}}')
+    root = tmp_path / "invocation"
+    root.mkdir()
+    params = AgentCallParams(prompt="Explain", model="chosen", cwd=root, text_only=True)
+    command = ["codex", "exec", "-"]
+    environment = {"CODEX_HOME": str(original)}
+    _, child = prepare_codex_text_only(command, params, environment, auth_mode="subscription")
+    copied = Path(child["CODEX_HOME"]) / "auth.json"
+    assert copied.exists()
+    prepare_codex_text_only(command, params, environment, auth_mode="api_key")
+    assert not copied.exists()
+    prepare_codex_text_only(command, params, environment, auth_mode="subscription")
+    native.unlink()
+    prepare_codex_text_only(command, params, environment, auth_mode="subscription")
+    assert not copied.exists()

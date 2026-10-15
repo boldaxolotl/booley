@@ -568,9 +568,11 @@ class _Reporter:
         self.skip_(f"{description} skipped by --skip-agent-checks")
         return False
 
-    def fail_(self, msg: str, fix: str = "") -> None:
+    def fail_(
+        self, msg: str, fix: str = "", *, check_id: str | None = None, subject: str | None = None
+    ) -> None:
         assert self.findings is not None
-        self.findings.append(DiagnosticFinding(Severity.FAIL, str(msg), fix))
+        self.findings.append(DiagnosticFinding(Severity.FAIL, str(msg), fix, check_id, subject))
         err(f"FAIL  {msg}")
         if fix:
             info(f"  fix: {fix}")
@@ -2363,6 +2365,7 @@ def _run_mcp_checks(
         eda=project.eda,
         fpga_enabled=_flow_enabled(project, "fpga"),
         expected_cache_mount=nangate_pdk.CONTAINER_ROOT if nangate_pdk.is_ready() else None,
+        booley_dir=project.booley_dir,
     )
     reporter.diagnostics(inspection.inspect_runtime(request).report)
     _check_devcontainer_excludes(project.project_root, reporter.pass_, reporter.warn_)
@@ -2388,8 +2391,21 @@ def _run_agent_credential_checks(project: ProjectAudit, reporter: _Reporter) -> 
         return
     provider = _configured_provider(project)
     auth_policy = _configured_auth_policy(project)
+    try:
+        plan = auth_token.credential_plan(provider, auth_policy)
+    except ValueError as exc:
+        reporter.fail_(str(exc), check_id="agent.credential-policy", subject=provider)
+        return
     _check_agent_auth_token(
-        provider, reporter.pass_, reporter.warn_, reporter.skip_, policy=auth_policy
+        provider,
+        reporter.pass_,
+        reporter.warn_,
+        reporter.skip_,
+        policy=auth_policy,
+        plan=plan,
+        _fail=lambda message: reporter.fail_(
+            message, check_id="agent.credential-missing", subject=provider
+        ),
     )
     _check_oauth_token(
         provider,
@@ -2398,8 +2414,11 @@ def _run_agent_credential_checks(project: ProjectAudit, reporter: _Reporter) -> 
         reporter.skip_,
         policy=auth_policy,
         _note=reporter.note_,
+        plan=plan,
     )
-    _check_subscription_creds_health(provider, reporter.pass_, reporter.warn_, policy=auth_policy)
+    _check_subscription_creds_health(
+        provider, reporter.pass_, reporter.warn_, policy=auth_policy, plan=plan
+    )
 
 
 def _check_interactive_logs_tracked(
@@ -2529,13 +2548,7 @@ def _configured_provider(project: ProjectAudit | None) -> str:
 
 
 def _configured_auth_policy(project: ProjectAudit | None) -> str:
-    """The project's ``[agent] auth`` policy, defaulting to ``auto``.
-
-    Mirrors :func:`_configured_provider`: ``BOOLEY_PRIMARY_AUTH`` beats the
-    project's booley.toml. Doctor is fail-soft, so an invalid toml value
-    degrades to ``auto`` here — :func:`_validate_agent_table` already FAILed
-    on it upstream.
-    """
+    """Audit the selected Project policy; ambient handoff is only a no-Project fallback."""
     from booley.config.agent import (
         _DEFAULT_AUTH,
         _VALID_AUTH_MODES,
@@ -2544,10 +2557,8 @@ def _configured_auth_policy(project: ProjectAudit | None) -> str:
     )
 
     env_auth = (os.environ.get("BOOLEY_PRIMARY_AUTH") or "").strip()
-    if env_auth in _VALID_AUTH_MODES:
-        return env_auth
     if project is None:
-        return _DEFAULT_AUTH
+        return env_auth if env_auth in _VALID_AUTH_MODES else _DEFAULT_AUTH
     agent_section = project.booley_toml.get("agent")
     if not isinstance(agent_section, dict):
         return _DEFAULT_AUTH
@@ -2579,6 +2590,9 @@ def _check_agent_auth_token(
     _warn: Check,
     _skip: Check,
     policy: str = "auto",
+    *,
+    _fail: Check | None = None,
+    plan: auth_token.CredentialPlan | None = None,
 ) -> None:
     """ADR 0018: verify the agent's credential where it actually lives (not assumed).
 
@@ -2594,11 +2608,17 @@ def _check_agent_auth_token(
     credentials, so their absence is not a finding worth a warning.
     """
     _warn = _warning_sink(_warn, "agent.credential-missing", subject=provider)
+    plan = plan or auth_token.credential_plan(provider, policy)
+    if policy != "auto" and plan.selected is None:
+        (_fail or _warn)(
+            f"{provider}: no usable credential under auth = '{policy}'; provide the pinned credential"
+        )
+        return
     if not _agent_app_installed(provider):
         _skip(f"agent auth token check skipped - {_provider_not_installed_reason(provider)}")
         return
     label = _AGENT_APP_LABELS[provider]
-    effective = auth_token.effective_credential(provider, policy=policy)
+    effective = plan.selected
     if effective is None:
         hint = (
             f"[agent] auth = '{policy}' pins the billing mode — provide that credential "
@@ -2617,7 +2637,9 @@ def _check_agent_auth_token(
     _pass(line)
 
 
-def _rotation_free_state(provider: str, policy: str) -> tuple[bool, bool, str | None]:
+def _rotation_free_state(
+    provider: str, policy: str, plan: auth_token.CredentialPlan | None = None
+) -> tuple[bool, bool, str | None]:
     """The credentials that could cover *provider*: ``(api_key, env_token, stored)``.
 
     An exported API key outranks every other credential under the agent CLI's
@@ -2629,18 +2651,16 @@ def _rotation_free_state(provider: str, policy: str) -> tuple[bool, bool, str | 
     so none of them can be the rotation-free credential. For Codex that covers
     its env/stored key too (its token IS an API key).
     """
+    plan = plan or auth_token.credential_plan(provider, policy)
     credential = auth_token.CREDENTIALS[provider]
-    api_key_var = auth_token.API_KEY_ENV[provider]
-    env_token = bool((os.environ.get(credential.env_var) or "").strip())
-    stored = auth_token.read_stored_token(provider)
-    api_key = api_key_var != credential.env_var and bool(
-        (os.environ.get(api_key_var) or "").strip()
+    values = dict(plan.values)
+    api_key = credential.env_var != auth_token.API_KEY_ENV[provider] and bool(
+        values.get(auth_token.API_KEY_ENV[provider])
     )
-    if policy == "subscription":
-        api_key = False
-        if credential.env_var == api_key_var:
-            env_token = False
-            stored = None
+    env_token = credential.env_var in plan.allowed_env and bool(os.environ.get(credential.env_var))
+    stored = (
+        auth_token.read_stored_token(provider) if credential.env_var in plan.allowed_env else None
+    )
     return api_key, env_token, stored
 
 
@@ -2652,6 +2672,7 @@ def _check_oauth_token(
     policy: str = "auto",
     *,
     _note: Check | None = None,
+    plan: auth_token.CredentialPlan | None = None,
 ) -> None:
     """Report whether agents run on a rotation-free credential or a refreshing one.
 
@@ -2675,10 +2696,13 @@ def _check_oauth_token(
             f"rotation-free credential check skipped - {_provider_not_installed_reason(provider)}"
         )
         return
+    plan = plan or auth_token.credential_plan(provider, policy)
+    if policy == "api_key" and plan.selected is None:
+        return
     label = _AGENT_APP_LABELS[provider]
     credential = auth_token.CREDENTIALS[provider]
     api_key_var = auth_token.API_KEY_ENV[provider]
-    api_key, env_token, stored = _rotation_free_state(provider, policy)
+    api_key, env_token, stored = _rotation_free_state(provider, policy, plan)
 
     if not api_key and not env_token and not stored:
         message = (
@@ -2733,6 +2757,8 @@ def _check_subscription_creds_health(
     _pass: Check,
     _warn: Check,
     policy: str = "auto",
+    *,
+    plan: auth_token.CredentialPlan | None = None,
 ) -> None:
     """A PRESENT subscription login can still be DEAD — check what's checkable.
 
@@ -2759,9 +2785,10 @@ def _check_subscription_creds_health(
     ):
         return
     app = auth_token.APP_CLAUDE
-    rotation_free = bool(auth_token.resolve_token(app)) or (
-        policy != "subscription" and bool((os.environ.get("ANTHROPIC_API_KEY") or "").strip())
-    )
+    selected = (plan or auth_token.credential_plan(app, policy)).selected
+    rotation_free = bool(selected and selected.rotation_free)
+    if policy == "api_key":
+        return
 
     now = time.time()
     creds_path = auth_token.subscription_creds_path(app)

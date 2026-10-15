@@ -160,7 +160,7 @@ def command_project_bindings() -> dict[str, ProjectBinding]:
 def _command_project_binding(command: str, args: argparse.Namespace) -> ProjectBinding:
     binding = command_project_bindings()[command]
     if binding is ProjectBinding.AUTH:
-        return ProjectBinding.INDEPENDENT if args.status else ProjectBinding.REQUIRED
+        return ProjectBinding.OPTIONAL if args.status else ProjectBinding.REQUIRED
     return binding
 
 

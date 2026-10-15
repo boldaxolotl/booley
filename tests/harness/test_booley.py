@@ -1200,7 +1200,7 @@ def test_project_binding_registry_covers_parser():
 
 @pytest.mark.parametrize(
     "argv",
-    [["auth", "--status"], ["auth", "--status", "--clear"], ["cheat"], ["cheat", "--list"]],
+    [["cheat"], ["cheat", "--list"]],
 )
 def test_project_binding_independent_never_discovers(tmp_path, monkeypatch, argv):
     (tmp_path / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
@@ -1429,3 +1429,15 @@ def test_bare_cheat_project_names_section_replacement(capsys):
     notice = capsys.readouterr().err
     assert "--project" in notice
     assert "--project-files" in notice
+
+
+def test_auth_status_optional_context_preserves_source_checkout(tmp_path, monkeypatch):
+    (tmp_path / "pyproject.toml").write_text("[tool.booley]\nsource_checkout=true\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["booley", "auth", "--status"])
+    monkeypatch.setattr(tlr, "find_project_root", lambda: tmp_path)
+    monkeypatch.setattr(tlr, "_host_install_authority_error", lambda *_: None)
+    roots = []
+    monkeypatch.setitem(tlr._EARLY_COMMANDS, "auth", lambda args, root: roots.append(root) or 0)
+    assert tlr._dispatch_main() == 0
+    assert roots == [None]

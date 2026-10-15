@@ -9,6 +9,8 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- Under `auto`, issued Sandboxes now forward an exported `ANTHROPIC_API_KEY`, matching host and ephemeral Sandbox behavior; this can bill per token. Set `[agent] auth = "subscription"` to use subscription credentials instead. `booley auth --status` reports the selected Project/app policy and fails when its credential is missing; Doctor FAILs when a non-`auto` policy lacks its credential.
+
 - Goal evidence fields in saved state now recover automatically from selected
   valid immutable producer observations when Booley reads or saves Goal state.
   Goal status reports remaining evidence or validation problems without treating

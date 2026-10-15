@@ -204,8 +204,11 @@ class TestDockerRunArgv:
     def test_oauth_token_is_resolved_not_passed_literally(self, workspace: Path, monkeypatch):
         monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-tok")
         spec = _spec(forward_oauth_token=True)
-        env = _flag_values(_argv(spec, workspace), "-e")
-        assert "CLAUDE_CODE_OAUTH_TOKEN=sk-tok" in env
+        argv = _argv(spec, workspace)
+        env = _flag_values(argv, "-e")
+        assert "CLAUDE_CODE_OAUTH_TOKEN" in env
+        assert "sk-tok" not in str(argv)
+        assert argv.environment["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-tok"
 
 
 class TestHookArgv:
@@ -4232,3 +4235,24 @@ def test_mismatched_editor_stop_remove_down_releases_capacity(tmp_path, monkeypa
     assert sr._down_unlocked(project).claim_cleared
     admission.admit_start(project, target_name="headless", run=docker)
     assert admission.claim_vscode_start(project, run=docker)
+
+
+def test_spawn_passes_credential_in_child_env_without_secret_argv(workspace, monkeypatch):
+    captured = {}
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "SYNTHETIC_SECRET")
+    command = sr.docker_run_argv(_spec(forward_oauth_token=True), workspace, "test")
+    monkeypatch.setattr(
+        sr.subprocess, "run", lambda argv, **kwargs: captured.update(argv=argv, **kwargs)
+    )
+    sr._run(command)
+    assert "SYNTHETIC_SECRET" not in str(captured["argv"])
+    assert captured["env"]["CLAUDE_CODE_OAUTH_TOKEN"] == "SYNTHETIC_SECRET"
+
+
+def test_headless_api_policy_refuses_missing_key(workspace, monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    spec = _spec()
+    spec["remoteEnv"]["BOOLEY_PRIMARY_AUTH"] = "api_key"
+    spec["remoteEnv"]["ANTHROPIC_API_KEY"] = "${localEnv:ANTHROPIC_API_KEY}"
+    with pytest.raises(sr.SessionError, match=r"requires.*credential"):
+        sr.docker_run_argv(spec, workspace, "test")

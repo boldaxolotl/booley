@@ -284,7 +284,7 @@ class TestAuthStatusReport:
 
         rc, sink = self._run(monkeypatch)
 
-        assert rc == 1  # codex has nothing either → every app at rotation risk
+        assert rc == 0  # a refreshing login is usable despite its rotation warning
         assert any("claude" in m and "refreshing" in m for m in sink["warn"])
 
     def test_overridden_subscription_is_named(self, isolated_home, monkeypatch):
@@ -323,6 +323,8 @@ class TestInjection:
 
         cmd: list[str] = []
         runner = sandbox.DockerRunner.__new__(sandbox.DockerRunner)
+        runner.worktree = home / "project"
+        runner.worktree.mkdir()
         runner._append_api_key_env_file(cmd)
 
         assert "--env-file" in cmd
@@ -897,3 +899,39 @@ class TestClaudeMintLocation:
 
         assert rc == 1
         assert "credential was removed" in errors[0]
+
+
+@pytest.mark.parametrize(
+    "payload,valid",
+    [
+        (
+            {
+                "tokens": {"access_token": "SYNTHETIC"},
+                "OPENAI_API_KEY": None,
+                "last_refresh": "ordinary metadata",
+            },
+            True,
+        ),
+        ({"OPENAI_API_KEY": "SYNTHETIC"}, False),
+        ({"tokens": {"access_token": "SYNTHETIC"}, "OPENAI_API_KEY": "SYNTHETIC"}, False),
+        ({}, False),
+        ([], False),
+    ],
+)
+def test_codex_explicit_subscription_classifies_native_shape(isolated_home, payload, valid):
+    import json
+
+    path = auth_token.subscription_creds_path("codex")
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(payload))
+    selected = auth_token.effective_credential("codex", "subscription")
+    assert (selected is not None) == valid
+
+
+def test_plan_repr_never_contains_credential(isolated_home, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "SYNTHETIC_SECRET")
+    plan = auth_token.credential_plan("claude", "api_key")
+    assert "SYNTHETIC_SECRET" not in repr(plan)
+    assert plan.child_environment({"CLAUDE_CODE_OAUTH_TOKEN": "FORBIDDEN"}) == {
+        "ANTHROPIC_API_KEY": "SYNTHETIC_SECRET"
+    }

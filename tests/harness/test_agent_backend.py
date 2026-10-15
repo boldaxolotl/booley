@@ -144,7 +144,13 @@ class TestClaudeSdkLaunchContract:
     ):
         from booley.core.models import AgentCallParams
         from booley.runtime import _claude_backend as cb
+        from booley.runtime import auth_token
 
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "SYNTHETIC_KEY")
+        auth_token.store_token("SYNTHETIC_OAUTH", "claude")
         monkeypatch.delenv("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", raising=False)
         captured_options, fake_query = _capturing_successful_query()
@@ -1408,3 +1414,23 @@ class TestDispatchUsage:
         from booley.runtime import _claude_backend as cb
 
         cb._dispatch_usage(_raise_callback_error, self._counters_with(42), "claude-opus-4-8")
+
+
+def test_private_codex_auth_reconciles_same_cached_home(tmp_path, monkeypatch):
+    from booley.runtime import _codex_backend
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    original = tmp_path / ".codex" / "auth.json"
+    original.parent.mkdir()
+    original.write_text('{"tokens":{"access_token":"SYNTHETIC"}}')
+    private = tmp_path / "private" / ".codex"
+    private.mkdir(parents=True)
+    _codex_backend._populate_private_codex_home(private, {}, auth_mode="subscription")
+    assert (private / "auth.json").exists()
+    _codex_backend._populate_private_codex_home(private, {}, auth_mode="api_key")
+    assert not (private / "auth.json").exists()
+    _codex_backend._populate_private_codex_home(private, {}, auth_mode="subscription")
+    original.unlink()
+    _codex_backend._populate_private_codex_home(private, {}, auth_mode="subscription")
+    assert not (private / "auth.json").exists()

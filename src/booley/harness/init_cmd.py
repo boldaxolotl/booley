@@ -1210,6 +1210,7 @@ class _InteractiveSpecSources:
     app: str
     nangate_pdk_root: Path | object
     runtime_image_id: str | None
+    credential_plan: auth_token.CredentialPlan
     auth_source: Path | None
     token_seed: Path | None
     config_seed: Path | None
@@ -1224,6 +1225,7 @@ class _InteractiveSpecSources:
             )
         return dc.build_devcontainer_spec(
             self.app,
+            credential_plan=self.credential_plan,
             image=self.runtime_image_id or pi.project_sandbox_image(self.project_root),
             booley_dir_source=docker_mount_path(inputs.project_data_source),
             project_id=dc.canonical_project_id(self.project_root),
@@ -1232,7 +1234,6 @@ class _InteractiveSpecSources:
             mcp_start_command=dc.mcp_post_start_command(),
             memory=_project_sandbox_memory(self.project_root),
             dashboard=_dashboard_enabled(inputs.project_data_source),
-            forward_oauth_token=bool(auth_token.resolve_token(self.app)),
             token_seed_source=(docker_mount_path(self.token_seed) if self.token_seed else None),
             host_skills=list(self.host_skills),
             trusted_eda_mounts=trusted_eda_mounts,
@@ -1253,14 +1254,19 @@ def _interactive_spec_sources(
     runtime_image_id: str | None,
 ) -> _InteractiveSpecSources:
     app = agent_app or _select_interactive_app(ctx.project_root)
+    from booley.config.agent import project_credential_policy
+
+    _, policy = project_credential_policy(ctx.project_root)
+    plan = auth_token.credential_plan(app, policy)
     return _InteractiveSpecSources(
+        credential_plan=plan,
         project_root=ctx.project_root,
         app=app,
         nangate_pdk_root=nangate_pdk_root,
         runtime_image_id=runtime_image_id,
-        auth_source=_resolve_auth_token_source(app),
-        token_seed=_resolve_token_seed_source(app),
-        config_seed=_resolve_config_seed_source(app),
+        auth_source=plan.subscription_seed,
+        token_seed=plan.token_seed,
+        config_seed=plan.config_seed,
         host_skills=tuple(_resolve_host_skills_sources(ctx.project_root)),
         mask_paths=tuple(_project_mask_paths(ctx.project_root)),
     )

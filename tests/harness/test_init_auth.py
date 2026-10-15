@@ -102,3 +102,23 @@ def test_detect_auth_mode_reports_what_actually_bills(tmp_path, monkeypatch):
 
     monkeypatch.delenv("ANTHROPIC_API_KEY")
     assert init_cmd._detect_auth_mode("claude") == "subscription"
+
+
+def test_issued_policy_uses_selected_root_not_ambient_booley_dir(tmp_path, monkeypatch):
+    from booley.runtime import auth_token
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / "other"))
+    monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "subscription")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "SYNTHETIC_SECRET")
+    data = tmp_path / "project" / ".booley"
+    data.mkdir(parents=True)
+    (data / "booley.toml").write_text('[agent]\nprovider="claude"\nauth="api_key"\n')
+    sources = init_cmd._interactive_spec_sources(
+        InitContext(project_root=data.parent), init_cmd._NANGATE_PDK_NOT_REQUESTED, "claude", None
+    )
+    assert sources.credential_plan.policy == "api_key"
+    assert sources.credential_plan.selected.mode == auth_token.MODE_API_KEY
+    assert sources.auth_source is None

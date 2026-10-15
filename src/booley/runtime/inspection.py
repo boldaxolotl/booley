@@ -59,6 +59,7 @@ class RuntimeInspectionRequest:
     eda: dict[str, EdaConfig] | None = None
     fpga_enabled: bool = False
     expected_cache_mount: str | None = None
+    booley_dir: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -144,13 +145,15 @@ def _check_devcontainer_spec(request: RuntimeInspectionRequest, report: Findings
         return
     if not _image_current(request, spec, report):
         return
-    if not _seed_mounts_current(request, spec, report):
+    seed_currency = _seed_mounts_current(request, spec, report)
+    if seed_currency is False:
         return
     if not _viewer_extensions_current(request, spec, report):
         return
     if not _preview_terminal_current(request, spec, report):
         return
-    report.pass_("devcontainer.json present and structurally current")
+    if seed_currency is not None:
+        report.pass_("devcontainer.json present and structurally current")
 
 
 def _provider_persistence_current(
@@ -223,7 +226,9 @@ def _image_current(request: RuntimeInspectionRequest, spec: dict, report: Findin
     return True
 
 
-def _seed_mounts_current(request: RuntimeInspectionRequest, spec: dict, report: Findings) -> bool:
+def _seed_mounts_current(
+    request: RuntimeInspectionRequest, spec: dict, report: Findings
+) -> bool | None:
     if request.expected_cache_mount and not dc.spec_mounts_target(
         spec, request.expected_cache_mount
     ):
@@ -237,11 +242,12 @@ def _seed_mounts_current(request: RuntimeInspectionRequest, spec: dict, report: 
         return False
     remote_env = spec.get("remoteEnv")
     app = remote_env.get("BOOLEY_AGENT_APP") if isinstance(remote_env, dict) else None
-    if (
-        app in auth_token.CREDENTIALS
-        and auth_token.read_stored_token(app)
-        and spec_mounts_token_seed(spec) is False
-    ):
+    if app not in auth_token.CREDENTIALS:
+        return True
+    expected_seed = _expected_token_seed(request, app, report)
+    if expected_seed is None:
+        return None
+    if expected_seed and spec_mounts_token_seed(spec) is False:
         _spec_warning(
             request,
             report,
@@ -251,6 +257,30 @@ def _seed_mounts_current(request: RuntimeInspectionRequest, spec: dict, report: 
         )
         return False
     return True
+
+
+def _expected_token_seed(
+    request: RuntimeInspectionRequest, app: str, report: Findings
+) -> bool | None:
+    from booley.config.agent import BackendConfigError, project_credential_policy
+    from booley.core.booley_layout import BooleyLayoutError
+    from booley.core.checkout_role import SourceCheckoutProjectError
+
+    try:
+        _, policy = project_credential_policy(request.project_root, booley_dir=request.booley_dir)
+        return auth_token.credential_plan(app, policy).token_seed is not None
+    except (
+        BackendConfigError,
+        BooleyLayoutError,
+        SourceCheckoutProjectError,
+        ValueError,
+        OSError,
+    ):
+        report.fail(
+            "Sandbox credential mount expectation is unavailable: Project credential policy or seed could not be inspected",
+            "repair the selected Project credential policy and seed configuration, then refresh the Sandbox",
+        )
+        return None
 
 
 def _viewer_extensions_current(
@@ -644,7 +674,11 @@ def _check_interactive_state_volumes(
         return
 
     project_id = dc.canonical_project_id(project_root)
-    mine = {dc.state_volume_name(app, project_id) for app in (dc.APP_CLAUDE, dc.APP_CODEX)}
+    mine = {
+        dc.state_volume_name(app, project_id, policy)
+        for app in (dc.APP_CLAUDE, dc.APP_CODEX)
+        for policy in ("auto", "subscription", "api_key")
+    }
     others = sorted(v for v in vols if v not in mine)
 
     present_mine = sorted(v for v in vols if v in mine)
