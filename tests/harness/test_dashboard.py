@@ -762,11 +762,12 @@ def test_recent_results_are_newest_first_and_bounded(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("width", [90, 140])
-async def test_missing_report_resource_line_is_dim(tmp_path, width):
+@pytest.mark.parametrize("state", ["completed", "orphaned"])
+async def test_missing_report_resource_line_is_dim(tmp_path, width, state):
     from rich.text import Text
 
     record = JobRecord("fast", "sim", STAMP, 60, status="done", exit_code=0)
-    job = JobView(tmp_path, record, "completed")
+    job = JobView(tmp_path, record, state)
     current = replace(snapshot(1), jobs=JobSnapshot((job,)))
     app = DashboardApp(lambda: current)
     app.snapshot = current

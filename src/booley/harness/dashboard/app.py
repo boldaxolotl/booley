@@ -35,6 +35,8 @@ logger = logging.getLogger(__name__)
 READ_BUDGET = 1.0
 # "Recent" lists this many newest results; "All" lists everything the snapshot retains.
 RECENT_JOBS = 50
+# An orphaned process is known dead even though its Job record never finalized.
+_REPORT_DETAIL_STATES = TERMINAL_JOB_STATES | {"orphaned"}
 HELP = (
     "1-9 stable session shortcuts · arrows select rows\n"
     "Enter inspects sessions, Goals, Jobs and proposals; Booley call rows are informational\n"
@@ -195,7 +197,7 @@ def _job_row(job: JobView, now: float, owner: str) -> str:
 def _job_tool_lines(job: JobView) -> list[str]:
     report = job.report or {}
     tool = job.recorded_tools
-    if job.state not in TERMINAL_JOB_STATES:
+    if job.state not in _REPORT_DETAIL_STATES:
         return [f"EDA tool: {tool or job.eda_tool or '—'}"]
     expected = bool(isinstance(report.get("flow"), str) and report["flow"]) or (
         job.report is None and job.record.endpoint in {"sim", "lint", "synth", "fpga"}
@@ -204,7 +206,7 @@ def _job_tool_lines(job: JobView) -> list[str]:
 
 
 def _job_resource_lines(job: JobView) -> list[tuple[str, bool]]:
-    if job.state not in TERMINAL_JOB_STATES:
+    if job.state not in _REPORT_DETAIL_STATES:
         return [
             (
                 f"CPU: {'—' if job.cpu_percent is None else str(round(job.cpu_percent, 1)) + '% of one core'} · Memory: {_measure(job.memory)} · Peak memory: {_measure(job.peak_memory)}",

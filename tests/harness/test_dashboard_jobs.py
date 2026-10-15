@@ -608,7 +608,7 @@ def test_job_completed_between_refreshes_keeps_recorded_figures(tmp_path, monkey
         assert "CPU:" not in rendered
 
 
-@pytest.mark.parametrize("state", ["completed", "failed", "cancelled"])
+@pytest.mark.parametrize("state", ["completed", "failed", "cancelled", "orphaned"])
 def test_terminal_job_uses_recorded_resources_and_tool(tmp_path, state):
     from booley.harness.dashboard.jobs import JobView
 
@@ -647,10 +647,11 @@ def test_no_eda_specialist_hides_tool(tmp_path):
     assert "resources" not in job_detail(view)
 
 
-def test_terminal_job_without_report_explains_missing_resources(tmp_path):
+@pytest.mark.parametrize("state", ["completed", "orphaned"])
+def test_terminal_job_without_report_explains_missing_resources(tmp_path, state):
     from booley.harness.dashboard.jobs import JobView
 
-    text = job_detail(JobView(tmp_path, rec(status="done"), "completed"))
+    text = job_detail(JobView(tmp_path, rec(status="done"), state))
     assert "resources not recorded (no report)" in text
     assert "EDA tool: not recorded by this Flow" in text
 
@@ -723,3 +724,15 @@ def test_zero_resource_measurements_are_recorded(tmp_path):
     )
     assert "CPU time: 0s" in text
     assert "Peak memory (largest process): 0 MiB" in text
+
+
+@pytest.mark.parametrize("field", ["cpu_user_s", "cpu_sys_s", "peak_rss_mb"])
+def test_oversized_recorded_resource_is_unavailable(tmp_path, field):
+    from booley.harness.dashboard.jobs import JobView
+
+    resources = {"cpu_user_s": 1, "cpu_sys_s": 1, "peak_rss_mb": 32}
+    resources[field] = 10**400
+    report = json.loads(json.dumps({"flow": "sim", "resources": resources}))
+    text = job_detail(JobView(tmp_path, rec(status="done"), "completed", report=report))
+    assert "CPU time" not in text
+    assert "Peak memory" not in text

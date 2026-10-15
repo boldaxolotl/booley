@@ -38,7 +38,12 @@ class JobView(JobObservation):
     def recorded_resources(self) -> tuple[float, float] | None:
         """Validated recorded CPU seconds and largest-process RSS in MiB."""
         values = as_dict((self.report or {}).get("resources")) or {}
-        numbers = [as_float(values.get(key)) for key in ("cpu_user_s", "cpu_sys_s", "peak_rss_mb")]
+        try:
+            numbers = [
+                as_float(values.get(key)) for key in ("cpu_user_s", "cpu_sys_s", "peak_rss_mb")
+            ]
+        except OverflowError:
+            return None
         if any(value is None or value < 0 for value in numbers):
             return None
         user, system, peak = numbers

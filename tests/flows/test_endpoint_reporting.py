@@ -5,6 +5,7 @@ from __future__ import annotations
 import builtins
 import json
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -13,7 +14,9 @@ from booley.runtime.endpoint_execution import EndpointOutcome
 from tests.mcp_tools.test_base import ConcreteMcpTool
 
 
-def fake_accounting(monkeypatch, *, platform="linux", peak=32768):
+def fake_accounting(
+    monkeypatch: pytest.MonkeyPatch, *, platform: str = "linux", peak: int = 32768
+) -> list[int]:
     calls = []
 
     def getrusage(who):
@@ -37,7 +40,7 @@ def fake_accounting(monkeypatch, *, platform="linux", peak=32768):
     return calls
 
 
-def report_endpoint(tmp_path, *, target="sim"):
+def report_endpoint(tmp_path: Path, *, target: str = "sim") -> ConcreteMcpTool:
     endpoint = ConcreteMcpTool()
     endpoint.parse_args(["--report-dir", str(tmp_path), "--target", target])
     return endpoint

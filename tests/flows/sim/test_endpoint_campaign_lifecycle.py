@@ -8,6 +8,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -1895,7 +1896,9 @@ def test_prepared_campaign_active_write_failure_preserves_durable_success(
     assert final["observation_health"]["error"] == "OSError: advisory checkpoint unavailable"
 
 
-def completed_campaign_report(tmp_path, monkeypatch, *, reports=None):
+def completed_campaign_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, reports: Path | None = None
+) -> dict[str, Any]:
     """Produce an actual endpoint report with a deterministic fake EDA executable."""
     from booley.flows.sim.request import SimRequest
     from tests.flows.test_endpoint_reporting import fake_accounting
