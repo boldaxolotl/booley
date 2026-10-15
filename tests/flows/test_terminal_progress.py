@@ -23,6 +23,7 @@ from booley.flows.sim.flow import SimulateFlow
 from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.flows.terminal_progress import TerminalProgress, current_progress
 from booley.runtime.endpoint_execution import EndpointOutcome, ExecutionResult
+from tests.criteria.ledger_support import FixtureRecorder
 
 BUILTINS = (AsicSynthesizeFlow, FpgaImplFlow, SimulateFlow, LintFlow)
 
@@ -429,7 +430,13 @@ def test_cli_installs_only_at_human_adapter_boundary(tmp_path, monkeypatch, mode
         return ExecutionResult(0, EndpointOutcome())
 
     with patch.object(FlowSession, "execute_prepared", execute):
-        execute_cli(LintFlow(), args, adapter=object() if mode == "ticket" else None)
+        execute_cli(
+            LintFlow(),
+            args,
+            adapter=FixtureRecorder(identity={"generation": "d" * 32})
+            if mode == "ticket"
+            else None,
+        )
     assert (observed[0] is not None) == (mode == "human")
     assert current_progress() is None
     assert not (tmp_path / ".runtime" / "flow-console").exists()
@@ -832,7 +839,7 @@ def test_agent_console_and_display_bytes_match_existing_transport(
         print("verdict unchanged")
         return ExecutionResult(7, EndpointOutcome())
 
-    adapter = object() if mode == "ticket" else None
+    adapter = FixtureRecorder(identity={"generation": "d" * 32}) if mode == "ticket" else None
     with patch.object(FlowSession, "execute_prepared", execute):
         result = execute_cli(LintFlow(), ["--target", "demo"], adapter=adapter)
     captured = capsys.readouterr()

@@ -3148,7 +3148,10 @@ def test_standalone_elab_only_final_headline(tmp_path, met):
 
         freeze(flow.context)
         report = json.loads(flow.context.write_report(result).read_text())
-    assert (report["criterion_key"], report["criterion_met"]) == (
-        ("", None) if met is None else ("elab_pass_lite", met)
-    )
+    assert "criterion_key" not in report and "criterion_met" not in report
+    assert report["exit_code"] == result.exit_code
+    if met is None:
+        assert "elab_pass_lite" not in flow.state.criteria
+    else:
+        assert flow.state.criteria["elab_pass_lite"].met is met
     assert flow.state._file_path is None

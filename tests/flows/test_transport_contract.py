@@ -390,7 +390,7 @@ def test_real_lint_child_through_mcp_matches_cli(runtime, monkeypatch):
     cli = LintFlow().execute_cli(["--target", "lite"])
     assert cli.exit_code == 0
     cli_report = json.loads((runtime / "runtime/flow-reports/lint.json").read_text())
-    assert (cli_report["criterion_key"], cli_report["criterion_met"]) == ("lint_clean_lite", True)
+    assert "criterion_key" not in cli_report and "criterion_met" not in cli_report
 
     async def dispatch():
         jobs = server._JobManager(Mock())
@@ -405,7 +405,8 @@ def test_real_lint_child_through_mcp_matches_cli(runtime, monkeypatch):
 
     report = asyncio.run(asyncio.wait_for(dispatch(), timeout=20))
     assert report["exit_code"] == 0
-    for key in ("flow", "target", "criterion_key", "criterion_met", "passed", "eda_tool"):
+    assert "criterion_key" not in report and "criterion_met" not in report
+    for key in ("flow", "target", "passed", "eda_tool"):
         assert report[key] == cli_report[key]
     _assert_distinct_artifact_invocations(
         runtime,
@@ -550,7 +551,7 @@ def test_flow_exception_produces_actionable_report_without_console_traceback(
 @pytest.mark.parametrize("target", ["first", "first,second"])
 @pytest.mark.parametrize("met", [True, False])
 def test_partial_evaluation_final_report_and_completion(
-    flow_type, family, target, met, runtime, monkeypatch
+    external_acceptance_owner, flow_type, family, target, met, runtime, monkeypatch
 ):
     from booley.flows import endpoint_reporting
 
@@ -571,11 +572,13 @@ def test_partial_evaluation_final_report_and_completion(
     assert report["passed"] is False
     assert report["exit_code"] == 2
     end = events[-1]
-    assert (end["criterion_key"], end["criterion_met"]) == expected
+    assert (end.get("criterion_key", ""), end.get("criterion_met")) == expected
     assert flow.state.criteria[f"{family}_first"].met is met
 
 
-def test_reused_endpoint_resets_evaluation_before_early_gate(runtime, monkeypatch):
+def test_reused_endpoint_resets_evaluation_before_early_gate(
+    external_acceptance_owner, runtime, monkeypatch
+):
     from booley.runtime.endpoint_execution import EndpointOutcome
 
     flow = LintFlow()
@@ -594,7 +597,9 @@ def test_reused_endpoint_resets_evaluation_before_early_gate(runtime, monkeypatc
 
 
 @pytest.mark.parametrize("resume", [False, True])
-def test_candidate_mapping_excludes_baseline_prerequisite(runtime, monkeypatch, resume):
+def test_candidate_mapping_excludes_baseline_prerequisite(
+    external_acceptance_owner, runtime, monkeypatch, resume
+):
     from contextlib import nullcontext
     from types import SimpleNamespace
 
@@ -653,7 +658,7 @@ def test_candidate_mapping_excludes_baseline_prerequisite(runtime, monkeypatch, 
     "flow_type,family", [(AsicSynthesizeFlow, "synthesis_ok"), (FpgaImplFlow, "fpga_impl_ok")]
 )
 def test_frozen_candidate_bindings_do_not_shrink_after_partial_evaluation(
-    flow_type, family, runtime, monkeypatch
+    external_acceptance_owner, flow_type, family, runtime, monkeypatch
 ):
     from booley.criteria.state import DevelopmentState
     from booley.runtime.endpoint_execution import EndpointOutcome
@@ -680,7 +685,9 @@ def test_frozen_candidate_bindings_do_not_shrink_after_partial_evaluation(
     assert (report["criterion_key"], report["criterion_met"]) == ("", None)
 
 
-def test_override_freezes_parameter_bound_candidate_criteria(runtime, monkeypatch):
+def test_override_freezes_parameter_bound_candidate_criteria(
+    external_acceptance_owner, runtime, monkeypatch
+):
     from booley.criteria.state import DevelopmentState
     from booley.runtime.endpoint_execution import EndpointOutcome
 
@@ -719,7 +726,7 @@ def test_override_freezes_parameter_bound_candidate_criteria(runtime, monkeypatc
     [(AsicSynthesizeFlow, "synthesis_ok", "yosys"), (FpgaImplFlow, "fpga_impl_ok", "vivado")],
 )
 def test_single_basis_binding_uses_effective_key_and_ignores_baseline_only_binding(
-    flow_type, family, eda, runtime, monkeypatch
+    external_acceptance_owner, flow_type, family, eda, runtime, monkeypatch
 ):
     from booley.criteria.state import DevelopmentState
     from booley.evidence.acceptance import AcceptanceTargetBinding, ResolvedFlowAcceptance
@@ -800,7 +807,9 @@ def _report_targets(root, names=("first", "second"), flow="sim"):
     ],
 )
 @pytest.mark.parametrize("met", [True, False])
-def test_prepared_identity_partial_report_is_null(flow_type, family, met, runtime, monkeypatch):
+def test_prepared_identity_partial_report_is_null(
+    external_acceptance_owner, flow_type, family, met, runtime, monkeypatch
+):
     from booley.runtime.endpoint_execution import EndpointOutcome
 
     _report_targets(runtime, flow=flow_type.name)
@@ -935,7 +944,7 @@ def _report_campaign_state(runtime, handle, cycle_test, mode, missing_cycle):
 @pytest.mark.parametrize("resume", [False, True])
 @pytest.mark.parametrize("missing_cycle", [False, True])
 def test_prepared_campaign_plural_mapping_survives_partial_evaluation(
-    runtime, monkeypatch, mode, resume, missing_cycle
+    external_acceptance_owner, runtime, monkeypatch, mode, resume, missing_cycle
 ):
     from booley.runtime.endpoint_execution import EndpointOutcome
 
@@ -1015,7 +1024,14 @@ def _report_extension_type(endpoint_kind, key):
 @pytest.mark.parametrize("catalog", [True, False])
 @pytest.mark.parametrize("target", ["first", "first,second"])
 def test_declared_custom_flow_prepared_headline(
-    runtime, monkeypatch, binding, ticket, endpoint_kind, catalog, target
+    external_acceptance_owner,
+    runtime,
+    monkeypatch,
+    binding,
+    ticket,
+    endpoint_kind,
+    catalog,
+    target,
 ):
     from booley.criteria.state import DevelopmentState
 
@@ -1051,14 +1067,14 @@ def test_declared_custom_flow_prepared_headline(
     report = json.loads((flow.args.report_dir / "drc_check.json").read_text())
     assert (report["criterion_key"], report["criterion_met"]) == expected
     completion = next(event for event in events if event["type"] == "endpoint_end")
-    assert (completion["criterion_key"], completion["criterion_met"]) == expected
+    assert (completion.get("criterion_key", ""), completion.get("criterion_met")) == expected
 
 
 @pytest.mark.parametrize("endpoint_kind", ["flow", "specialist"])
 @pytest.mark.parametrize("target", ["first", "acme:lib:dut:1#first", "other:lib:x#first"])
 @pytest.mark.parametrize("other_target", ["first", "second"])
 def test_custom_fallback_excludes_only_proven_other_target(
-    runtime, monkeypatch, endpoint_kind, target, other_target
+    external_acceptance_owner, runtime, monkeypatch, endpoint_kind, target, other_target
 ):
     from booley.criteria.state import DevelopmentState
 
@@ -1082,14 +1098,14 @@ def test_custom_fallback_excludes_only_proven_other_target(
     report = json.loads((flow.args.report_dir / "drc_check.json").read_text())
     assert (report["criterion_key"], report["criterion_met"]) == expected
     completion = next(event for event in events if event["type"] == "endpoint_end")
-    assert (completion["criterion_key"], completion["criterion_met"]) == expected
+    assert (completion.get("criterion_key", ""), completion.get("criterion_met")) == expected
 
 
 @pytest.mark.parametrize("endpoint_kind", ["flow", "specialist"])
 @pytest.mark.parametrize("family", ["drc_rules", "cycle_count"])
 @pytest.mark.parametrize("test", ["selected", "other"])
 def test_custom_identity_uncertainty_respects_selected_workload(
-    runtime, monkeypatch, endpoint_kind, family, test
+    external_acceptance_owner, runtime, monkeypatch, endpoint_kind, family, test
 ):
     from booley.criteria.state import DevelopmentState
 
@@ -1121,7 +1137,7 @@ def test_custom_identity_uncertainty_respects_selected_workload(
     assert (report["criterion_key"], report["criterion_met"]) == expected
 
     completion = next(event for event in events if event["type"] == "endpoint_end")
-    assert (completion["criterion_key"], completion["criterion_met"]) == expected
+    assert (completion.get("criterion_key", ""), completion.get("criterion_met")) == expected
 
 
 @pytest.mark.parametrize("endpoint_kind", ["flow", "specialist"])
@@ -1129,7 +1145,7 @@ def test_custom_identity_uncertainty_respects_selected_workload(
 @pytest.mark.parametrize("direction", ["bare_to_qualified", "qualified_to_bare"])
 @pytest.mark.parametrize("name", ["first", "second"])
 def test_custom_alternate_selector_keeps_unevaluated_potential(
-    runtime, monkeypatch, endpoint_kind, binding, direction, name
+    external_acceptance_owner, runtime, monkeypatch, endpoint_kind, binding, direction, name
 ):
     from booley.criteria.state import DevelopmentState
 
@@ -1157,7 +1173,9 @@ def test_custom_alternate_selector_keeps_unevaluated_potential(
 
 
 @pytest.mark.parametrize("endpoint_kind", ["flow", "specialist"])
-def test_custom_evaluated_uncertain_false_is_a_verdict(runtime, monkeypatch, endpoint_kind):
+def test_custom_evaluated_uncertain_false_is_a_verdict(
+    external_acceptance_owner, runtime, monkeypatch, endpoint_kind
+):
     from booley.criteria.state import DevelopmentState
     from booley.runtime.endpoint_execution import EndpointOutcome
 
@@ -1189,7 +1207,7 @@ def test_custom_evaluated_uncertain_false_is_a_verdict(runtime, monkeypatch, end
 @pytest.mark.parametrize("ticket", ["none", "nonstrict", "strict"])
 @pytest.mark.parametrize("calls", ["both", "aggregate", "elab"])
 def test_combined_prepared_mode_freezes_both_eligible_families(
-    runtime, monkeypatch, ticket, calls
+    external_acceptance_owner, runtime, monkeypatch, ticket, calls
 ):
     from booley.criteria.state import DevelopmentState
 
@@ -1232,7 +1250,9 @@ def test_combined_prepared_mode_freezes_both_eligible_families(
 
 
 @pytest.mark.parametrize("name", ["mutation_tester", "coverage_analyst"])
-def test_specialist_public_completion_projects_actual_evaluations(runtime, monkeypatch, name):
+def test_specialist_public_completion_projects_actual_evaluations(
+    external_acceptance_owner, runtime, monkeypatch, name
+):
     from booley.mcp.base import McpToolResult
     from booley.specialists.coverage_analyst import CoverageAnalystSpecialist
     from booley.specialists.mutation_tester import MutationTesterSpecialist
@@ -1277,10 +1297,12 @@ def test_prepared_lint_without_evaluation_has_null_completion(runtime, monkeypat
     flow = LintFlow()
     result = flow.execute(flow.request_type(target="first", work_dir=runtime, **{mode: True}))
     assert (result.outcome.criterion_key, result.outcome.criterion_met) == ("", None)
-    assert (events[-1]["criterion_key"], events[-1]["criterion_met"]) == ("", None)
+    assert (events[-1].get("criterion_key", ""), events[-1].get("criterion_met")) == ("", None)
 
 
-def test_public_hooks_see_raw_then_projected_headline(runtime, monkeypatch):
+def test_public_hooks_see_raw_then_projected_headline(
+    external_acceptance_owner, runtime, monkeypatch
+):
     from booley.runtime.endpoint_execution import EndpointOutcome
 
     _report_targets(runtime, ("first",), flow="lint")
@@ -1344,9 +1366,9 @@ def test_public_ambiguous_reviewer_fallback_remains_unknown(runtime, monkeypatch
     assert reviewer._report_criteria.known is False
     assert (result.outcome.criterion_key, result.outcome.criterion_met) == ("", None)
     report = json.loads((reviewer.args.report_dir / "reviewer.json").read_text())
-    assert (report["criterion_key"], report["criterion_met"]) == ("", None)
+    assert "criterion_key" not in report and "criterion_met" not in report
     completion = next(event for event in events if event["type"] == "endpoint_end")
-    assert (completion["criterion_key"], completion["criterion_met"]) == ("", None)
+    assert (completion.get("criterion_key", ""), completion.get("criterion_met")) == ("", None)
 
 
 def test_sim_verbose_mcp_schema_deliberately_exposes_optional_boolean():
@@ -1358,3 +1380,38 @@ def test_sim_verbose_mcp_schema_deliberately_exposes_optional_boolean():
     }
     assert "verbose" not in schema.get("required", [])
     assert "verbose" not in flow_schema(LintFlow())["properties"]
+
+
+@pytest.fixture
+def external_acceptance_owner(monkeypatch):
+    """Retain projection coverage with the existing external ledger composition.
+
+    Unbound execution has separate absence tests. This owner supplies the real
+    legacy identity/recording contract, independently of Goal Mode.
+    """
+    from booley.flows.endpoint_state import EndpointState
+    from booley.mcp import flow_execution_selection
+    from tests.criteria.ledger_support import FixtureRecorder
+
+    recorder = FixtureRecorder(identity={"generation": "d" * 32, "authored_sha256": "e" * 64})
+    configure = EndpointState.configure_flow_execution
+
+    def configure_external(endpoint, adapter):
+        configure(endpoint, adapter)
+        endpoint._acceptance_recorder = recorder
+
+    monkeypatch.setattr(EndpointState, "configure_flow_execution", configure_external)
+    monkeypatch.setattr(
+        flow_execution_selection,
+        "_STANDALONE_SELECTION",
+        flow_execution_selection.FlowExecutionSelection(None, lambda: recorder),
+    )
+
+
+def test_direct_generic_completion_preserves_empty_criterion_fields():
+    from booley.flows.endpoint_events import _endpoint_end_event
+    from booley.runtime.endpoint_execution import EndpointOutcome
+
+    event = _endpoint_end_event("generic", None, EndpointOutcome(), 0.0)
+    assert event["criterion_key"] == ""
+    assert event["criterion_met"] is False

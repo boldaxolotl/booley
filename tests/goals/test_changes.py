@@ -237,6 +237,8 @@ def test_valid_retired_review_history_does_not_brick_current_projection(layout):
     assert projected.slug == current.id
 
 
+# Windows CI measured 30.4 s; preserve 3x/30s-rounded headroom (#1202).
+@pytest.mark.timeout(120)
 def test_source_invalidated_observation_cannot_be_resurrected_by_relaxation(layout):
     from booley.criteria.state import CriterionChange
     from booley.evidence.fields import SOURCE_INVALIDATED_REASON

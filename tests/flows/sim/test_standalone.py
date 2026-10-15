@@ -543,5 +543,6 @@ def test_memory_only_module_sweep_final_headline(tmp_path, monkeypatch, met):
 
     freeze(flow.context)
     report = json.loads(flow.context.write_report(result).read_text())
-    assert (report["criterion_key"], report["criterion_met"]) == ("elaborate_standalone", met)
+    assert "criterion_key" not in report and "criterion_met" not in report
+    assert flow.state.criteria["elaborate_standalone"].met is met
     assert flow.state._file_path is None
