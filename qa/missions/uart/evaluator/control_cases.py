@@ -108,10 +108,18 @@ def control_cases() -> list[tuple]:
         peripheral("level-injection", "level_injection", "control-level-injection"),
         peripheral("invalid-addresses", "invalid", "control-invalid-addresses"),
         peripheral("loopback", "loop", "control-loopback"),
+        peripheral("nco-zero", "nco_zero", "baud", payload=[0x55, 0xAA], nco=0),
         peripheral("override-low", "override", "override", mode="low", payload=[0x55, 0xAA]),
         peripheral("override-high", "override", "override", mode="high", payload=[0x55, 0xAA]),
         peripheral(
             "override-release", "release", "override", mode="release", payload=[0x55, 0xAA]
+        ),
+        peripheral(
+            "override-tx-enabled",
+            "override_tx_enabled",
+            "override",
+            mode="release",
+            payload=[0x55, 0xAA],
         ),
         *[
             peripheral(f"reset-{mode}", "reset", "reset", mode=mode, payload=[0x55], nco=0x4000)
