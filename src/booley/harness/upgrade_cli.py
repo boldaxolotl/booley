@@ -101,6 +101,8 @@ def run(args: argparse.Namespace, project_root: Path) -> int:
         return 2
     if getattr(args, "json", False):
         print(json.dumps(status.as_dict(), indent=2))
+    elif not is_status and status.already_current:
+        print(f"Booley release review already current through {status.reviewed_through}.")
     else:
         print(render_status(status))
     return 0 if is_status or status.condition is upgrade_review.ReviewCondition.CURRENT else 1

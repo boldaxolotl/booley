@@ -145,3 +145,34 @@ def test_human_status_command_uses_renderer(tmp_path: Path, monkeypatch, capsys)
 
     assert upgrade_cli.run(args, tmp_path) == 0
     assert "current through 1.2.3" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("json_output", [False, True])
+def test_acknowledge_first_and_repeat_contract(tmp_path, monkeypatch, capsys, json_output):
+    from tests.harness.test_upgrade_review import _changelog
+
+    booley_dir = _project(tmp_path)
+    monkeypatch.setattr("booley.__version__", "2.0.0")
+    monkeypatch.setattr(upgrade_review, "changelog_path", lambda: _changelog(tmp_path))
+    upgrade_review.observe(booley_dir, current_version="1.0.0")
+    upgrade_review.observe(booley_dir, current_version="2.0.0")
+    args = _build_parser().parse_args(
+        ["upgrade", "acknowledge", "--expected-target", "2.0.0"]
+        + (["--json"] if json_output else [])
+    )
+    assert upgrade_cli.run(args, tmp_path) == 0
+    first = capsys.readouterr().out
+    before = upgrade_review.state_path(booley_dir).read_bytes()
+    assert upgrade_cli.run(args, tmp_path) == 0
+    repeated = capsys.readouterr().out
+    assert upgrade_review.state_path(booley_dir).read_bytes() == before
+    if json_output:
+        assert json.loads(first) == json.loads(repeated)
+        assert "already_current" not in json.loads(repeated)
+    else:
+        assert "already current" not in first
+        assert "already current through 2.0.0" in repeated
+    upgrade_review.observe(booley_dir, current_version="3.0.0")
+    assert upgrade_cli.run(args, tmp_path) == 2
+    output = capsys.readouterr()
+    assert "pending target changed" in (output.out if json_output else output.err)

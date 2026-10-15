@@ -118,6 +118,13 @@ Don't continue until `booley doctor` shows no failures or warnings.
 - `booley doctor --deep` goes further and runs short real simulations, lints,
   and syntheses.
 
+## Upgrade review
+
+When Doctor reports `upgrade.review-pending`, run `booley upgrade status --json`
+and invoke `/booley-heal` to review the release changes. Follow the
+[Doctor upgrade-review workflow](DOCTOR.md#upgrade-review) for plain, deep, and
+host verification, acknowledgment, and the final plain check.
+
 ## Choose how to work
 
 Start with Interactive Mode to explore and run individual Flows. Use

@@ -13,7 +13,7 @@ import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import IO, Any
@@ -96,10 +96,12 @@ class ReviewStatus:
     pending_target: str | None = None
     first_seen_at: str | None = None
     diagnostic: str | None = None
+    already_current: bool = False
 
     def as_dict(self) -> dict[str, object]:
         """Return a stable JSON-ready status payload."""
         payload = asdict(self)
+        del payload["already_current"]
         payload["condition"] = self.condition.value
         return payload
 
@@ -342,6 +344,8 @@ def acknowledge(
             state = _read_state(state_path(booley_dir))
             if state is None:
                 raise AcknowledgmentError("upgrade review state does not exist; run status first")
+            if state.pending_target is None and state.reviewed_through == str(expected):
+                return replace(_status(booley_dir, running, state), already_current=True)
             if state.pending_target != str(expected):
                 actual = state.pending_target or "none"
                 raise AcknowledgmentError(
