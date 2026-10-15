@@ -572,6 +572,8 @@ def test_socket_transport_has_finite_timeout_and_fixed_endpoint(monkeypatch):
         def close(self):
             calls.append("closed")
 
+    # The production image is Linux; exercise its adapter with a complete fake on Windows.
+    monkeypatch.setattr(reaper.socket, "AF_UNIX", 1, raising=False)
     monkeypatch.setattr(reaper.socket, "socket", lambda *args: Socket())
     connection = reaper._EngineConnection()
     connection.connect()
