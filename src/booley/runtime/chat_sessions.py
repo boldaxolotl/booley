@@ -9,6 +9,15 @@ from booley.runtime.pid import ProcessIdentity, capture_process_identity
 from booley.runtime.session_activity import process_session_key
 
 MAX_ANCESTORS = 32
+CODEX_NATIVE_NAMES = frozenset(
+    {
+        "codex",
+        "codex-x86_64-unknown-linux-musl",
+        "codex-aarch64-unknown-linux-musl",
+        "codex-x86_64-unknown-linux-gnu",
+        "codex-aarch64-unknown-linux-gnu",
+    }
+)
 
 
 def _codex_process(proc_root: Path, pid: int) -> tuple[str, bool]:
@@ -16,7 +25,7 @@ def _codex_process(proc_root: Path, pid: int) -> tuple[str, bool]:
     executable = Path(
         str((proc_root / str(pid) / "exe").readlink()).removesuffix(" (deleted)")
     ).name
-    if executable != "codex":
+    if executable not in CODEX_NATIVE_NAMES:
         return executable, False
     with (proc_root / str(pid) / "cmdline").open("rb") as stream:
         argv = stream.read(4096).split(b"\0")

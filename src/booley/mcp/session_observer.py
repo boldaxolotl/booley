@@ -219,13 +219,12 @@ class SessionObserver:
         return await self._wait(observation.done) or observation.resolved or fallback
 
     def _resolve(self, observation: _Observation) -> Attribution:
-        if observation.resolved is not None:
-            return observation.resolved
         fallback = observation.fallback
         registry = self._registry()
         return registry.preserve_worktree(
             registry.chat_attribution(
-                resolve_attribution(
+                observation.resolved
+                or resolve_attribution(
                     observation.root,
                     metadata={"threadId": fallback.key.removeprefix("codex:")}
                     if fallback.kind == "thread"
@@ -233,7 +232,8 @@ class SessionObserver:
                     client_name=observation.client_name,
                     peer=observed_peer(observation.request),
                 )
-            )
+            ),
+            predecessor_keys=(fallback.key,),
         )
 
     def _publish(self, observation: _Observation, call: tuple[str, str, float]) -> None:

@@ -12,7 +12,9 @@ forward signals, and mirror exit status. Booley does not copy its vendor paths o
 package-manager detection. Resolve the executable and package on every launch;
 an npm update that retargets the executable symlink is covered by a unit test.
 Native Linux installations can instead retain the launch PID and set `argv[0]`
-directly. Unsupported installations and naming failures use the plain launch.
+directly. Supported executable basenames are `codex` and the published
+x86_64/aarch64 Linux musl/gnu names; launcher, registry and hook agree on these
+boundaries. Unsupported installations and naming failures use the plain launch.
 
 Pass `--no-daemon` for a named launch. The previous
 [session identity spike](0067-goal-mode-session-identity.md) observed multiple
@@ -82,13 +84,15 @@ ordinary unmarked ancestors, bounded/unreadable procfs, PID reuse, and migration
 of an existing registry row without renumbering historical allocations. Observer
 tests exercise predecessor migration after resuming an existing thread and after
 a transient peer-lookup failure, including absence of a false shared-worktree
-warning. Other regressions cover worktree/runtime directory disagreement and
-nested CLI boundaries for native and npm launches.
+warning, retention of omitted worktree facts, and late completions after the
+thread row has migrated. Persisted ownership cannot revive a vanished tab.
+Other regressions cover worktree/runtime directory disagreement and nested CLI
+boundaries for native and npm launches across supported executable basenames.
 Lifecycle-hook tests cover matching activity keys, ignoring a subagent Stop,
 excluding a nested CLI's Stop, and agreement with the registry on malformed maps.
 
 The selected chat, attribution, registry, handle, activity, Dashboard and
-text-only Specialist suites passed 301 tests. Repository-wide Ruff lint and
+text-only Specialist suites passed 322 tests. Repository-wide Ruff lint and
 format checks also passed. The process-identity exception is recorded in
 [ADR 0068](../../adr/0068-booley-dashboard.md).
 

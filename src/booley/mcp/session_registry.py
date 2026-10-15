@@ -264,13 +264,20 @@ class SessionRegistry:
                 rows.append(replace(row, process_state=presence.process_state))
         return RegistrySnapshot(tuple(rows), snapshot.diagnostics, snapshot.unavailable)
 
-    def preserve_worktree(self, attribution: Attribution) -> Attribution:
+    def preserve_worktree(
+        self, attribution: Attribution, *, predecessor_keys: tuple[str, ...] = ()
+    ) -> Attribution:
         """Calls without a work directory refresh the caller's previous association."""
         if attribution.worktree_key:
             return attribution
-        path = self.path(attribution.key)
-        old = self._read(path) if path.exists() else None
-        prior = canonical_attribution(old.attribution) if old else None
+        prior = next(
+            (
+                canonical_attribution(row.attribution)
+                for _, row in self._predecessors(attribution, predecessor_keys)
+                if row.attribution.worktree_key
+            ),
+            None,
+        )
         return (
             replace(
                 attribution,
@@ -284,9 +291,27 @@ class SessionRegistry:
 
     def chat_attribution(self, facts: Attribution) -> Attribution:
         """All conversations in one explicitly isolated Codex tab share its session."""
-        if facts.kind != "thread" or facts.process is None:
+        if facts.kind != "thread":
             return facts
         try:
+            if facts.process is None:
+                # A completion may retain facts from before peer lookup recovered.
+                # Only a marked tab's established presence can redirect that key.
+                handles = HandleStore(self.booley_dir).load()
+                target = handles.aliases.get("chat:thread:" + facts.key)
+                if target and handles.aliases.get("chat:codex:" + target) == target:
+                    path = self.path(target)
+                    prior = self._read(path).attribution if path.exists() else None
+                    if (
+                        prior is not None
+                        and prior.kind == "process"
+                        and prior.namespace == facts.namespace
+                        and prior.process is not None
+                        and observe_process(prior.process, proc_root=self.proc_root).state
+                        == ProcessState.RUNNING
+                    ):
+                        return replace(facts, key=target, kind="process", process=prior.process)
+                return facts
             owner = codex_chat_owner(self.booley_dir, facts.process, proc_root=self.proc_root)
         except (OSError, ValueError, RuntimeError):
             return facts  # Advisory naming failures never discard thread identity.
@@ -325,7 +350,7 @@ class SessionRegistry:
             refuse_symlinks(path)
             predecessor_keys = (original_key, *predecessor_keys)
             predecessors = self._predecessors(attribution, predecessor_keys)
-            attribution = self.preserve_worktree(attribution)
+            attribution = self.preserve_worktree(attribution, predecessor_keys=predecessor_keys)
             row = _updated_row(attribution, [row for _, row in predecessors], tool, outcome, now)
             if (
                 not predecessors
@@ -357,6 +382,12 @@ class SessionRegistry:
                     *fallback_predecessors(facts.key, facts.work_dir),
                 ),
             )
+            if handles.aliases.get("chat:codex:" + facts.key) == facts.key:
+                for key in predecessors:
+                    if key.startswith("codex:"):
+                        # Keep ownership even when this thread already has a historic
+                        # allocation, which the handle contract never renumbers.
+                        handles.aliases["chat:thread:" + key] = facts.key
             if handles.labels() != before:
                 store.save(handles)
         except (OSError, ValueError, RuntimeError) as exc:

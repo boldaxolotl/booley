@@ -121,6 +121,27 @@ def test_corrupt_handles_preserve_thread_presence_and_report_the_failure(tmp_pat
     assert "Session handle unavailable" in caplog.text
 
 
+def test_registry_keeps_late_peerless_updates_on_the_migrated_owner(tmp_path):
+    proc = tmp_path / "proc"
+    owner = process(proc, 100, 1, executable="node")
+    peer = process(proc, 101, 100)
+    registry = SessionRegistry(tmp_path, proc_root=proc)
+    earlier = Attribution("codex:main", "thread", "/repo", "git:known", namespace=SCOPE)
+    registry.upsert(earlier, "first", "started", now=100)
+    chat_sessions.reserve_codex_chat(tmp_path, owner)
+    current = Attribution("codex:main", "thread", "", "", process=peer, namespace=SCOPE)
+    registry.upsert(current, "second", "completed", now=101)
+    registry.upsert(earlier, "first", "completed", now=102)
+    (row,) = registry.snapshot().rows
+    assert row.attribution.key == process_session_key(owner)
+    assert row.attribution.worktree_key == "git:known"
+    assert [call.tool for call in row.calls] == ["first", "second", "first"]
+    assert not registry.path(earlier.key).exists()
+    # A historic alias cannot bind a fresh peerless client to a vanished tab.
+    (proc / "100/stat").unlink()
+    assert registry.chat_attribution(earlier) == earlier
+
+
 @pytest.mark.parametrize(
     "fault", ["invalid-parent", "self-parent", "missing-exe", "missing-parent"]
 )
@@ -177,18 +198,26 @@ async def test_observer_migrates_thread_rows_without_a_false_shared_warning(
     arguments, metadata = {"work_dir": str(tmp_path)}, {"threadId": "main"}
     if initial_peer_unavailable:
         chat_sessions.reserve_codex_chat(tmp_path, owner)
-    await observer.attribution(arguments, metadata, "codex-mcp-client")
+    earlier = await observer.attribution(arguments, metadata, "codex-mcp-client")
     assert registry.path("codex:main").exists()
     if not initial_peer_unavailable:
         chat_sessions.reserve_codex_chat(tmp_path, owner)
     monkeypatch.setattr(session_observer, "observed_peer", lambda _request: peer)
     try:
-        facts = await observer.attribution(arguments, metadata, "codex-mcp-client")
+        # The next tool can omit work_dir; migration must retain its association.
+        facts = await observer.attribution({}, metadata, "codex-mcp-client")
         assert facts.key == process_session_key(owner)
+        assert facts.work_dir == earlier.work_dir
+        assert facts.worktree_key == earlier.worktree_key
         assert not registry.path("codex:main").exists()
         assert [row.attribution.key for row in registry.snapshot().rows] == [facts.key]
         assert len(registry.snapshot().rows[0].calls) == 2
         assert await observer.shared(facts) == ((facts.key,), "")
+        # A delayed completion from before migration must not restore a thread row.
+        await observer.record(earlier, "late", "completed")
+        assert not registry.path("codex:main").exists()
+        assert [row.attribution.key for row in registry.snapshot().rows] == [facts.key]
+        assert await observer.shared(earlier) == ((facts.key,), "")
         # New threads get aliases without allocating their own display IDs.
         await observer.attribution(arguments, {"threadId": "child"}, "codex-mcp-client")
         assert (

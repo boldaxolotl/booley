@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 from booley.core.boundary import require_dict
-from booley.runtime.chat_sessions import reserve_codex_chat
+from booley.runtime.chat_sessions import CODEX_NATIVE_NAMES, reserve_codex_chat
 from booley.runtime.pid import capture_process_identity
 
 
@@ -17,6 +17,8 @@ def _command(executable: Path, handle: str) -> tuple[str, list[str]]:
     with executable.open("rb") as stream:
         magic = stream.read(4)
     if magic == b"\x7fELF":
+        if executable.name not in CODEX_NATIVE_NAMES:
+            raise ValueError("unrecognized Codex native executable")
         return str(executable), [handle, "--no-daemon"]
     package = executable.parent.parent / "package.json"
     if executable.name != "codex.js" or not package.is_file():

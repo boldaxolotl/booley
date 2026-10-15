@@ -51,9 +51,35 @@ def test_npm_command_keeps_wrapper_and_reserves_handle(tmp_path, installed):
     assert HandleStore(project).load().next_number == 2
 
 
-def test_native_command_keeps_exec_identity(tmp_path, installed):
-    installed.write_bytes(b"\x7fELF")
-    assert codex_chat.command(tmp_path / "project") == (str(installed), ["S1", "--no-daemon"])
+@pytest.mark.parametrize(
+    "name",
+    [
+        "codex",
+        "codex-x86_64-unknown-linux-musl",
+        "codex-aarch64-unknown-linux-musl",
+        "codex-x86_64-unknown-linux-gnu",
+        "codex-aarch64-unknown-linux-gnu",
+    ],
+)
+def test_native_command_keeps_exec_identity(tmp_path, installed, monkeypatch, name):
+    native = installed.with_name(name)
+    native.write_bytes(b"\x7fELF")
+    launcher = tmp_path / "codex"
+    symlink_or_skip(launcher, native)
+    monkeypatch.setattr(codex_chat.shutil, "which", lambda _name: str(launcher))
+    assert codex_chat.command(tmp_path / "project") == (str(native), ["S1", "--no-daemon"])
+
+
+@pytest.mark.parametrize("name", ["custom", "codex.js", "codex-helper", "codex-0.162.0"])
+def test_unrecognized_native_names_do_not_reserve_unusable_handles(
+    tmp_path, installed, monkeypatch, name
+):
+    native = installed.with_name(name)
+    native.write_bytes(b"\x7fELF")
+    monkeypatch.setattr(codex_chat.shutil, "which", lambda _name: str(native))
+    project = tmp_path / "project"
+    assert codex_chat.command(project) == ("codex", ["codex"])
+    assert not HandleStore(project).path.exists()
 
 
 def test_npm_update_is_discovered_on_each_launch(tmp_path, installed, monkeypatch):

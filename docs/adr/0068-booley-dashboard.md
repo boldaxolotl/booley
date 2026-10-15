@@ -314,6 +314,10 @@ cannot identify every session or remain meaningful across Dashboard restarts.
 - **Migration and liveness.** The observer carries the original thread key
   through process attribution so registration can migrate a previous thread row
   and establish handle aliases. Historical allocations are never renumbered.
+  Migration retains the predecessor's worktree when a call omits `work_dir`.
+  A thread-ownership alias redirects delayed peerless observations only while
+  that marked process is proven running in the same namespace; cached outcomes
+  are normalized again before observer ordering.
   Marked process rows follow process liveness rather than thread quiet expiry.
 - **Activity boundaries.** The lifecycle hook uses the same process identity
   and validates the same handle-map contract as the registry. Only the main
