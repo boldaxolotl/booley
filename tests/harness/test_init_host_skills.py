@@ -40,6 +40,7 @@ def _setup(tmp_path, monkeypatch, *, enabled=True):
     project_root = tmp_path / "proj"
     project_root.mkdir()
     _write_toml(project_root, enabled=enabled)
+    monkeypatch.setenv("BOOLEY_DIR", str(project_root / ".booley"))
     return project_root, home, builtin
 
 

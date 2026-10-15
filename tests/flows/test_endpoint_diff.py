@@ -76,3 +76,13 @@ def test_import_is_lazy_but_implicit_operation_refuses(tmp_path, monkeypatch):
         shared_infra.get_rtl_dir()
     with pytest.raises(ProjectRootDiscoveryError):
         _core_classified_sets(None)
+
+
+def test_shared_directory_diff_classifies_typed_sim_harness_exactly(tmp_path):
+    from booley.flows.endpoint_diff import _classify_files
+    from tests.test_target_catalog import _category_sim_core
+
+    _category_sim_core(tmp_path)
+    assert _classify_files(["shared/main.cpp"], tmp_path) == {"tb"}
+    assert _classify_files(["shared/dut.sv"], tmp_path) == {"rtl"}
+    assert _classify_files(["shared/new.sv"], tmp_path) == set()

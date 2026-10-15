@@ -69,8 +69,10 @@ timeout and admission cap cover all Booley Sandboxes, and every extra
 egress hostname becomes reachable from every Project.
 
 `max_sessions` is checked before a start would add a live Sandbox. At the limit,
-the command refuses, lists live Projects and ages, and explains how to stop one
-or raise the limit; it never evicts existing work. A pending VS Code start also
+the command refuses, lists live Projects and ages, and explains how to free capacity
+or raise the limit; it never evicts existing work. Use `session down` for a
+headless Sandbox; close the VS Code window or stop its Sandbox through Dev
+Containers for an editor-owned Sandbox. A pending VS Code start also
 holds a slot and can be cleared with the reported `session down` command after
 canceling the editor operation.
 
@@ -2588,9 +2590,8 @@ cannot be copied here by hand; they become approval files through a human-approv
 
 ### Dashboard and quiet Goal presence (`[goals]`)
 
-The Sandbox Dashboard opens on VS Code
-folder attachment by default. Configure these values in the Booley Directory's
-`booley.toml`:
+The Sandbox Dashboard opens on VS Code Sandbox attachment by default. Configure
+these values in the Booley Directory's `booley.toml`:
 
 ```toml
 [sandbox]
@@ -2600,15 +2601,9 @@ dashboard = true
 quiet_after = 7200
 ```
 
-`dashboard = false` removes an unchanged Booley-owned attach task. Reconciliation runs on `booley init` or Sandbox refresh. Existing
-user tasks, comments, unknown fields, and user-edited Dashboard tasks are
-preserved. A same-label user task is preserved with a diagnostic. The owned task lives in `.vscode/tasks.json`; the Sandbox's VS Code settings
-enable `task.allowAutomaticTasks` so the task runs on attach. Set
-`"task.allowAutomaticTasks": "off"` in `.vscode/settings.json` to keep Booley from
-adding the task to that folder. When Git tracks `.vscode/tasks.json`, Booley leaves
-the file unchanged and `booley init` prints how to add the task yourself.
-Booley adds a local `.vscode` Git exclusion only when it creates that directory;
-its ownership record persists across reconciliation.
+Set `dashboard = false` to disable automatic opening. You can always open the
+Dashboard manually with `booley dashboard` in the Sandbox. For opt-outs and
+startup problems, see [Dashboard troubleshooting](TROUBLESHOOTING.md#the-dashboard-does-not-open-on-sandbox-attach).
 
 `quiet_after` is a finite number of seconds from 60 through 604800, default
 7200 (two hours). Quiet thread and worktree-fallback presence expires at this

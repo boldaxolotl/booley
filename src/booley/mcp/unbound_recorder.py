@@ -25,6 +25,10 @@ class UnboundAcceptanceRecorder:
         raw = os.environ.get("BOOLEY_LOGS_DIR", "")
         return Path(raw) if raw else None
 
+    def done_findings_require_approval(self) -> bool:
+        """Interactive findings have no Goal acceptance approval gate."""
+        return False
+
     def acceptance_identity(self) -> dict[str, Any]:
         return {}
 

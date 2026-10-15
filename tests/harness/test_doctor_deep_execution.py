@@ -63,13 +63,11 @@ def _alias_doctor_project(flow_project, tmp_path, monkeypatch, host):
     return audit, data, alias
 
 
-@pytest.mark.parametrize("host", [True, False])
-def test_project_alias_doctor_executes_real_simulation(flow_project, tmp_path, monkeypatch, host):
+def _real_simulation_transport(monkeypatch, flow_project, alias, data, host):
     from pathlib import Path
 
     from booley.flows.sim.flow import SimulateFlow
 
-    audit, data, alias = _alias_doctor_project(flow_project, tmp_path, monkeypatch, host)
     real_run = subprocess.run
     executions = []
 
@@ -89,6 +87,42 @@ def test_project_alias_doctor_executes_real_simulation(flow_project, tmp_path, m
         return subprocess.CompletedProcess(argv, outcome.exit_code, outcome.report_text, "")
 
     monkeypatch.setattr(doctor.subprocess, "run", run)
+    return executions
+
+
+def _assert_real_bad_simulation_report(outcome, build_failure):
+    campaign = outcome.detail["campaigns"]["sim"]
+    assert campaign["complete"] is True
+    assert campaign["test_run_total"] == campaign["observation_total"] == 1
+    assert campaign["test_runs"][0]["grade"] == "fail"
+    observation = campaign["observations"][0]
+    assert campaign["test_runs"][0]["test"] == observation["test"] == "first"
+    if build_failure:
+        assert observation["execution"] == "blocked_by_build"
+        assert observation["failure_class"] == "design"
+        assert "%Error: BAD source" in observation["detail"]["reason"]
+    else:
+        assert campaign["build_stage"] == []
+        assert observation["execution"] == "completed"
+        assert observation["functional"] == "fail"
+        assert observation["failure_class"] != "infrastructure"
+
+
+@pytest.mark.parametrize("host", [True, False])
+@pytest.mark.parametrize("build_failure", [True, False])
+def test_project_alias_doctor_executes_real_simulation(
+    flow_project, tmp_path, monkeypatch, host, build_failure, capsys, request
+):
+    from booley.runtime.booley_dir import reset_cache
+
+    reset_cache()
+    request.addfinalizer(reset_cache)
+    audit, data, alias = _alias_doctor_project(flow_project, tmp_path, monkeypatch, host)
+    if not build_failure:
+        (data / "selftest/sim/bad-overlay/src/acme_lib_demo_1/rtl/tb.sv").write_text(
+            "module tb;\n// [SIM_RESULT] FAILED\nendmodule\n"
+        )
+    executions = _real_simulation_transport(monkeypatch, flow_project, alias, data, host)
     reporter, tracker = doctor._Reporter.create(), deep.DeepCheckTracker()
     doctor._run_deep_checks(
         audit,
@@ -105,8 +139,23 @@ def test_project_alias_doctor_executes_real_simulation(flow_project, tmp_path, m
         if outcome.exit_code == 2:
             assert "Invocation lock paths must not contain symlinks" in outcome.report_text
     assert [item.exit_code for item in executions] == [0, 0, 1]
-    assert tracker.missing == ()
-    assert reporter.result(0).clean
+    _assert_real_bad_simulation_report(executions[-1], build_failure)
+    output = capsys.readouterr().out
+    if build_failure:
+        assert tracker.missing == ("sim.selftest.bad",)
+        assert not reporter.result(0).clean
+        assert "bad overlay no longer builds" in output
+        assert str(data / "selftest/sim/bad-overlay") in output
+        assert "%Error: BAD source" in output
+        assert "correctly graded a failure" not in output
+        assert any(
+            finding.check_id == "flow.selftest-overlay-build-failed"
+            for finding in reporter.findings
+        )
+    else:
+        assert tracker.missing == ()
+        assert reporter.result(0).clean
+        assert "correctly graded a failure" in output
     reports = data / doctor._DOCTOR_TMP / "flow-reports"
     assert len(list(reports.glob("sim/*/targets/sim/campaign/manifest.json"))) == 3
     assert len(list(reports.glob("sim/*/progress.json"))) == 3
@@ -314,8 +363,11 @@ def test_session_up_reports_deep_once_through_all_health_branches(
     from booley.harness import booley as cli
 
     monkeypatch.setattr(cli, "_report_upgrade_before_session", lambda _: None)
-    monkeypatch.setattr(doctor.session_runtime, "conflicting_vscode_session", lambda _: None)
-    monkeypatch.setattr(doctor.session_runtime, "up", lambda *_args, **_kw: "sandbox")
+    monkeypatch.setattr(
+        doctor.session_runtime,
+        "ensure",
+        lambda *_args, **_kw: doctor.session_runtime.EnsureResult("sandbox", False, True),
+    )
     monkeypatch.setattr(
         health, "due_reason", lambda _: "plain expired" if early == "scheduled" else None
     )
@@ -420,7 +472,7 @@ def _qualification_project(tmp_path, monkeypatch, policy, missing, health_failur
     return audit
 
 
-def _qualification_transport(monkeypatch, missing):
+def _qualification_transport(monkeypatch, missing, project):
     real_run = subprocess.run
     commands = []
     completions = {}
@@ -450,6 +502,10 @@ def _qualification_transport(monkeypatch, missing):
         if "booley.flows.sim" in argv:
             kind = kwargs.get("env", {}).get(doctor.selftest_overlay.INTERNAL_KIND_ENV)
             commands.append(kind or "smoke")
+            if kind == "bad":
+                from tests.harness.test_doctor_selftest_builtin import _write_sim_bad_report
+
+                _write_sim_bad_report(argv, project=project)
             return subprocess.CompletedProcess(
                 argv,
                 1 if kind == "bad" else 0,
@@ -482,7 +538,7 @@ def test_runtime_policy_full_doctor_qualification(
     audit = _qualification_project(
         tmp_path, monkeypatch, policy, missing, health_failure, data_policy
     )
-    commands, completions = _qualification_transport(monkeypatch, missing)
+    commands, completions = _qualification_transport(monkeypatch, missing, audit)
     result = doctor.run_doctor_result(
         argparse.Namespace(deep=True, skip_agent_checks=False), tmp_path
     )
@@ -549,7 +605,7 @@ def test_pending_review_qualifies_once_and_ack_preserves_deep(tmp_path, monkeypa
         return None, audit
 
     monkeypatch.setattr(doctor, "_run_project_phase", project_phase)
-    commands, completions = _qualification_transport(monkeypatch, None)
+    commands, completions = _qualification_transport(monkeypatch, None, audit)
     plain = doctor.run_doctor_result(argparse.Namespace(deep=False), tmp_path)
     assert [f.check_id for f in plain.diagnostics.active_findings] == ["upgrade.review-pending"]
     assert not plain.clean and plain.exit_code == 0
@@ -582,7 +638,7 @@ def test_real_qualification_applies_warning_waiver_without_inventing_execution(
             'version=1\n[[waiver]]\ncheck="git.worktree-portability"\n'
             'reason="Reviewed policy exception"\npermanent=true\n'
         )
-    commands, _completions = _qualification_transport(monkeypatch, missing)
+    commands, _completions = _qualification_transport(monkeypatch, missing, audit)
     result = doctor.run_doctor_result(argparse.Namespace(deep=True), tmp_path)
     attempt = deep.load_deep_state(audit.booley_dir).latest_completed_attempt
     assert result.deep_status.current is (waived and missing is None)

@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 from collections.abc import Mapping
@@ -57,6 +58,15 @@ MAX_TOOL_NAME = 128
 MAX_THREAD_ID = 1024
 MAX_PARENT_DIRS = 128
 BOOLEY_DIR_NAME = ".booley"
+CODEX_NATIVE_NAMES = frozenset(
+    {
+        "codex",
+        "codex-x86_64-unknown-linux-musl",
+        "codex-aarch64-unknown-linux-musl",
+        "codex-x86_64-unknown-linux-gnu",
+        "codex-aarch64-unknown-linux-gnu",
+    }
+)
 
 
 def _process_key(proc_root: Path, pid: int) -> str | None:
@@ -131,6 +141,67 @@ def _codex_key(payload: Mapping[str, object]) -> str | None:
     return None
 
 
+def _chat_aliases(project: Path) -> dict[str, str]:
+    """Validate the same session-map contract as runtime.handles.HandleStore."""
+    path = project / "runtime/sessions/handles/map.json"
+    if any(part.is_symlink() for part in (path, *path.parents)):
+        raise ValueError("handle map is redirected")
+    with path.open("rb") as stream:
+        raw = stream.read(16 * 1024 * 1024 + 1)
+    if len(raw) > 16 * 1024 * 1024:
+        raise ValueError("handle map exceeds size bound")
+    data = json.loads(raw)
+    if not isinstance(data, dict) or type(data.get("schema")) is not int or data["schema"] != 1:
+        raise ValueError("unsupported handle map schema")
+    aliases, entries = data.get("aliases"), data.get("entries")
+    if not isinstance(aliases, dict) or not isinstance(entries, dict):
+        raise ValueError("invalid handle map")
+    numbers = set()
+    for key, label in entries.items():
+        match = re.fullmatch(r"S([1-9][0-9]*)", label) if isinstance(label, str) else None
+        if not key or match is None or int(match[1]) in numbers:
+            raise ValueError("invalid handle allocation")
+        numbers.add(int(match[1]))
+    for key, target in aliases.items():
+        if not key or key in entries or not isinstance(target, str) or target not in entries:
+            raise ValueError("invalid handle alias")
+    counter = data.get("next_number")
+    if type(counter) is not int or counter <= max(numbers, default=0):
+        raise ValueError("invalid handle counter")
+    return aliases
+
+
+def _codex_process(proc_root: Path, pid: int) -> tuple[str, bool]:
+    """Recognize CLI boundaries using the same rule as runtime.chat_sessions."""
+    executable = Path(
+        str((proc_root / str(pid) / "exe").readlink()).removesuffix(" (deleted)")
+    ).name
+    if executable not in CODEX_NATIVE_NAMES:
+        return executable, False
+    with (proc_root / str(pid) / "cmdline").open("rb") as stream:
+        argv = stream.read(4096).split(b"\0")
+    return executable, argv[1:2] != [b"app-server"]
+
+
+def _codex_chat_key(project: Path, proc_root: Path, pid: int) -> str | None:
+    """Only the launch's own CLI and its helpers can own the tab's activity."""
+    nearest_client = child = None
+    try:
+        aliases = _chat_aliases(project)
+        for ancestor in _ancestors(proc_root, pid):
+            executable, client = _codex_process(proc_root, ancestor)
+            if client and nearest_client is None:
+                nearest_client = ancestor
+            key = _process_key(proc_root, ancestor)
+            if key is not None and aliases.get("chat:codex:" + key) == key:
+                expected = child if executable in {"node", "nodejs"} else ancestor
+                return key if nearest_client == expected else None
+            child = ancestor
+    except (OSError, ValueError, UnicodeError, RecursionError):
+        pass  # Handle storage must not disable ordinary thread activity.
+    return None
+
+
 def _write(root: Path, key: str, state: str, tool: str, now: float) -> None:
     """Publish the session's signal with one atomic replacement."""
     root.mkdir(parents=True, exist_ok=True)
@@ -181,7 +252,10 @@ def record(
     if not isinstance(event, str) or not _reports_activity(payload):
         return False
     if client == "codex":
-        key = _codex_key(payload)
+        key = _codex_chat_key(project, proc_root, os.getpid() if pid is None else pid)
+        if key is not None and payload.get("agent_id") not in (None, ""):
+            return False  # A subagent's Stop must not mark the main session idle.
+        key = key or _codex_key(payload)
     else:
         key = _claude_key(
             os.environ if env is None else env,

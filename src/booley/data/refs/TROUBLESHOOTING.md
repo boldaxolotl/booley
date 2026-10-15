@@ -36,6 +36,35 @@ Inspect records with `booley goal status`; ask the Developer Agent
 for `goal_status(rules=true)` to recover evidence and rules after interruption.
 Read the Review Package and Session Summary when Finish succeeds.
 
+### The Dashboard does not open on Sandbox attach
+
+Use `booley dashboard` in the Sandbox to open it manually. Automatic opening uses
+the **Booley Dashboard** workspace extension bundled in the Sandbox Image, not
+VS Code's global permission for automatic tasks. After upgrading Booley, run
+`booley init` on the host and rebuild/reopen the Sandbox so its image contains
+the extension. A running container does not gain files from a newer image.
+
+Check **Output → Booley Dashboard** for an opt-out, task ownership conflict or
+startup error. `[sandbox].dashboard = false`, an explicit user automatic-task
+preference of off, and the folder opt-out in `.vscode/settings.json` suppress
+opening. A deliberately removed or edited Dashboard task also stays an opt-out.
+To restore a removed owned shortcut, set `dashboard = false`, run `booley init`
+on the host, then set it to true and run init again.
+
+Automatic opening requires a Git Project Root. Untrusted windows wait for trust.
+Headless sessions open no editor terminal. Closing the Dashboard does not restart
+it in the same window session; reopen it manually or reload the window.
+
+If no Output channel appears, check **Developer: Show Running Extensions** for
+`booley.dashboard` running in the container. A disabled extension must be enabled
+there. Doctor checks whether the bundled VSIX matches the installed Booley code;
+missing/stale image artifacts require a Sandbox Image rebuild.
+
+For a user-managed `[sandbox].image`, install the current Booley wheel and run
+`RUN python3 -I -m booley.runtime.dashboard_extension` as root in the image recipe,
+then restore its usual `USER`. Set `dashboard = false` if the image cannot supply
+the VSIX; `booley dashboard` remains available manually.
+
 ### A session shows `activity unknown`
 
 The Dashboard shows the activity that Claude Code or Codex reports through
@@ -706,8 +735,9 @@ a changed preview requires a new confirmation. Inventory absence is the explicit
 orphan policy, including historical issuance records: remember Projects whose
 pins you want to preserve. Inventoried roots (including missing, uninitialized,
 and Grant-only roots) and images used by any container are protected.
-Stopped and foreign containers count too. VS Code session down stops its
-container; explicitly remove that container before reclaiming its keeper.
+Stopped and foreign containers count too. For a VS Code-owned Sandbox, close
+the window or stop it through Dev Containers, then explicitly remove its
+container before reclaiming its keeper. CLI `session down` refuses editor ownership.
 
 The command releases exact keeper tags without force. Other tags or containers
 may retain the image bytes, so a released tag does not guarantee disk space was

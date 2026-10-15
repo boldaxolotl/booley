@@ -515,7 +515,8 @@ def test_final_report_uses_effective_evaluation(tmp_path, name, family, met):
 
     freeze(flow)
     report = json.loads(path.read_text())
-    assert (report["criterion_key"], report["criterion_met"]) == (f"{family}_core", met)
+    assert "criterion_key" not in report and "criterion_met" not in report
+    assert flow.state.criteria[f"{family}_core"].met is met
     assert report["$schema"] == (
         "booley.simulation-report/v3" if name == "sim" else "booley.flow-report/v1"
     )
@@ -553,6 +554,5 @@ def test_final_report_absent_verdict_is_null(tmp_path, target, keys):
 
     freeze(flow)
     report = json.loads(flow.write_report(outcome).read_text())
-    assert report["criterion_key"] == ""
-    assert report["criterion_met"] is None
+    assert "criterion_key" not in report and "criterion_met" not in report
     assert report["exit_code"] == 2

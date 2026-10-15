@@ -2661,16 +2661,11 @@ def _coverage_headline_state(tmp_path, monkeypatch, ticket):
 
 
 def _assert_coverage_headline_results(results, ticket, verdict, state_path):
-    expected = (
-        ("sim_pass_sim_0", verdict == "pass")
-        if ticket == "none"
-        else ("coverage_sim_0", False)
-        if ticket == "coverage_only"
-        else ("", None)
-    )
+    expected = ("coverage_sim_0", False) if ticket == "coverage_only" else ("", None)
     evaluation = "fail" if ticket in {"coverage", "coverage_only"} else "not_requested"
     for result in results:
         assert result.outcome.detail["targets"]["sim_0"]["evaluation"] == evaluation
+        assert result.outcome.detail["targets"]["sim_0"]["simulation"] == verdict
         assert (result.outcome.criterion_key, result.outcome.criterion_met) == expected
         assert result.exit_code == (1 if verdict == "fail" else 0), result.outcome
     if ticket == "undeclared":
@@ -2729,6 +2724,9 @@ def test_public_coverage_campaign_headline_fresh_and_resume(
     resumed = invoke(SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports))
     assert tuple(runs) == completed
     _assert_coverage_headline_results((fresh, resumed), ticket, verdict, state_path)
+    if ticket == "none":
+        report = json.loads((reports / "sim.json").read_text())
+        assert "criterion_key" not in report and "criterion_met" not in report
 
 
 @pytest.mark.parametrize("dry_run", [False, True])

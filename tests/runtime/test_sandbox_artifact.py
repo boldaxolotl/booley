@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+from tests.harness import test_session_runtime as resolution_fixtures
 
 from booley.runtime import sandbox_artifact as artifact
 from booley.runtime import session_runtime as sr
@@ -17,11 +18,17 @@ IMAGE = "sha256:" + "a" * 64
 CONTAINER = "b" * 64
 
 
+project_sandbox_resolution = resolution_fixtures.project_sandbox_resolution
+workspace = resolution_fixtures.workspace
+
+
 def _inspection(workspace: Path, *, image: str = IMAGE) -> str:
     return json.dumps(
         [
             {
                 "Id": CONTAINER,
+                "Name": "/editor",
+                "Mounts": [{"Type": "bind", "Source": str(workspace), "Destination": "/work"}],
                 "Image": image,
                 "Config": {
                     "Hostname": CONTAINER[:12],
@@ -251,3 +258,40 @@ def test_artifact_accepts_root_verified_project_identity(tmp_path, monkeypatch, 
     assert artifact.observe(tmp_path, container="editor").image_id == IMAGE
     data["Config"]["Labels"]["devcontainer.local_folder"] = str(tmp_path / "other")
     assert artifact.observe(tmp_path, container="editor").image_id is None
+
+
+@pytest.mark.parametrize("inventory", ["current", "duplicate", "unknown"])
+def test_artifact_project_sandbox_resolution(
+    workspace, project_sandbox_resolution, monkeypatch, inventory
+):
+    import copy
+
+    fixture = project_sandbox_resolution
+    monkeypatch.setattr(artifact.runtime_context, "inside_session_runtime", lambda: False)
+    monkeypatch.setattr(artifact, "_docker_stdout", sr._docker_stdout)
+    if inventory == "duplicate":
+        other = copy.deepcopy(fixture.state)
+        other["Id"], other["Name"] = "b" * 64, "/editor-two"
+        fixture.documents[other["Id"]] = other
+    elif inventory == "unknown":
+        fixture.state["Config"]["Labels"].pop("booley.project-id")
+    result = artifact.observe(workspace)
+    assert (result.container_id == fixture.state["Id"]) is (inventory == "current")
+    prepared = artifact._prepared_vscode_state(workspace, fixture.issuance.spec_sha256)
+    assert (prepared is not None) is (inventory == "current")
+
+
+def test_prepared_observer_selects_rebuilt_editor_after_stale_incarnation(
+    workspace, project_sandbox_resolution, monkeypatch
+):
+    fixture = project_sandbox_resolution
+    monkeypatch.setattr(artifact, "_docker_stdout", sr._docker_stdout)
+    fixture.state["Config"]["Labels"]["booley.spec-digest"] = "old"
+    assert artifact._prepared_vscode_state(workspace, fixture.issuance.spec_sha256) is None
+    fixture.documents.pop(fixture.state["Id"])
+    fixture.state["Id"] = "b" * 64
+    fixture.state["Config"]["Labels"]["booley.spec-digest"] = fixture.issuance.spec_sha256
+    fixture.documents[fixture.state["Id"]] = fixture.state
+    assert (
+        artifact._prepared_vscode_state(workspace, fixture.issuance.spec_sha256)["Id"] == "b" * 64
+    )

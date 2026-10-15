@@ -130,4 +130,4 @@ def test_goal_caller_supplies_done_approval_policy_without_shared_goal_dependenc
     from booley.mcp.unbound_recorder import UnboundAcceptanceRecorder
 
     assert not done_findings_require_approval_for(GoalFlowExecution(bind(goal_mode)))
-    assert done_findings_require_approval_for(UnboundAcceptanceRecorder())
+    assert not done_findings_require_approval_for(UnboundAcceptanceRecorder())

@@ -16,6 +16,7 @@ from tests.diagnostic_helpers import (
     _record_report,
     _runtime_probe_subprocess,
 )
+from tests.harness import test_session_runtime as resolution_fixtures
 
 from booley.harness import doctor
 from booley.harness.setup import readiness
@@ -28,6 +29,19 @@ from booley.runtime import (
 )
 from booley.runtime import devcontainer as dc
 from booley.runtime import interactive_docker as idk
+
+
+@pytest.fixture(autouse=True)
+def _isolate_active_inventory(monkeypatch):
+    # Existing issuance tests independently inspect retained/stopped resources.
+    # Active selection has its own real-inventory regressions below.
+    from booley.runtime import session_admission
+
+    monkeypatch.setattr(session_admission, "running_project_sandboxes", lambda *_a, **_kw: ())
+
+
+project_sandbox_resolution = resolution_fixtures.project_sandbox_resolution
+workspace = resolution_fixtures.workspace
 
 
 def test_host_doctor_rejects_unissued_session_spec(tmp_path, monkeypatch) -> None:
@@ -916,3 +930,69 @@ class TestDevcontainerSpecStaleness:
             lvl == "note" and "Python terminal activation" in m and "--seed" in m
             for lvl, m in rec.events
         )
+
+
+@pytest.mark.parametrize("duplicate", [False, True])
+def test_host_inspection_project_sandbox_resolution(
+    workspace, project_sandbox_resolution, monkeypatch, duplicate
+):
+    import copy
+
+    fixture = project_sandbox_resolution
+    if duplicate:
+        other = copy.deepcopy(fixture.state)
+        other["Id"], other["Name"] = "b" * 64, "/second-editor"
+        fixture.documents[other["Id"]] = other
+    monkeypatch.setattr(
+        inspection,
+        "_list_issued_containers",
+        lambda *_: subprocess.CompletedProcess([], 0, "", ""),
+    )
+    report = inspection.Findings()
+    inspection._inspect_live_runtime(
+        inspection.RuntimeInspectionRequest(workspace, fixture.spec["image"], "docker"),
+        fixture.spec,
+        fixture.issuance,
+        report,
+    )
+    messages = [item.message for item in report.report().findings]
+    assert any("multiple running Sandboxes" in message for message in messages) is duplicate
+
+
+def test_spec_warning_appends_one_owner_selected_workflow(tmp_path, monkeypatch):
+    from booley.audit.diagnostic_results import Findings
+    from booley.runtime import inspection, session_runtime
+
+    monkeypatch.setattr(
+        session_runtime, "sandbox_remedy", lambda _root: "run `booley session refresh` on the host"
+    )
+    request = inspection.RuntimeInspectionRequest(tmp_path, "booley-sandbox", None)
+    report = Findings()
+    inspection._spec_warning(request, report, "desired specification changed")
+    assert len(report.report().findings) == 1
+    message = report.report().findings[0].message
+    assert message.count("booley session refresh") == 1
+    assert "init --seed" not in message
+
+
+def test_host_inspection_reports_current_issuance_drift(
+    workspace, project_sandbox_resolution, monkeypatch
+):
+    fixture = project_sandbox_resolution
+    fixture.state["Config"]["User"] = "root"
+    monkeypatch.setattr(
+        inspection,
+        "_list_issued_containers",
+        lambda *_: subprocess.CompletedProcess([], 0, "", ""),
+    )
+    report = inspection.Findings()
+    inspection._inspect_live_runtime(
+        inspection.RuntimeInspectionRequest(workspace, fixture.spec["image"], "docker"),
+        fixture.spec,
+        fixture.issuance,
+        report,
+    )
+    assert any(
+        item.message == "active Sandbox differs from current host issuance"
+        for item in report.report().findings
+    )

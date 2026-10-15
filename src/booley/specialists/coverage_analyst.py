@@ -83,8 +83,8 @@ class CoverageAnalystSpecialist(Specialist):
             "Explain the results of one Coverage Campaign: which coverage holes remain "
             "and what to try next. Use it after `booley flow sim --coverage` leaves "
             "coverage short of where you want it. The suggestions are advisory and "
-            "your RTL and testbench sources are not changed; in a Goal, proposed "
-            "coverage waivers are recorded for your review."
+            "your RTL and testbench sources are not changed. Only Goal-bound MCP calls "
+            "record proposed coverage waivers for your review."
         ),
         example=(
             "booley specialist coverage_analyst "

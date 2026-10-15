@@ -2180,12 +2180,10 @@ def test_final_headline_contract_preserves_generic_endpoint(tmp_path, kind, call
 
     freeze(tool)
     report = json.loads(tool.write_report(result).read_text())
-    expected = (
-        ("legacy", True)
-        if kind == "mcp_tool"
-        else (("actual", False) if calls and calls[-1][0] == "actual" else ("", None))
-    )
-    assert (report["criterion_key"], report["criterion_met"]) == expected
+    if kind == "mcp_tool":
+        assert (report["criterion_key"], report["criterion_met"]) == ("legacy", True)
+    else:
+        assert "criterion_key" not in report and "criterion_met" not in report
     if kind == "mcp_tool":
         assert "$schema" not in report
     else:
@@ -2219,8 +2217,8 @@ def test_effective_aliases_and_thresholds_drive_final_report(tmp_path, aliases):
 
     freeze(tool)
     report = json.loads(tool.write_report(result).read_text())
-    expected = (aliases[0], False) if len(aliases) == 1 else ("", None)
-    assert (report["criterion_key"], report["criterion_met"]) == expected
+    assert "criterion_key" not in report and "criterion_met" not in report
+    assert all(tool.state.criteria[alias].met is False for alias in aliases)
 
 
 def test_recording_failure_retains_effective_report_verdict(tmp_path, monkeypatch):
@@ -2242,7 +2240,8 @@ def test_recording_failure_retains_effective_report_verdict(tmp_path, monkeypatc
 
     freeze(tool)
     report = json.loads(tool.write_report(result).read_text())
-    assert (report["criterion_key"], report["criterion_met"]) == ("actual", False)
+    assert "criterion_key" not in report and "criterion_met" not in report
+    assert tool.state.criteria["actual"].met is False
     assert report["passed"] is False
 
 
@@ -2259,7 +2258,9 @@ def test_effective_metric_threshold_overrides_raw_true_in_final_report(tmp_path)
 
     freeze(tool)
     report = json.loads(tool.write_report(McpToolResult(criterion_met=True)).read_text())
-    assert (report["criterion_key"], report["criterion_met"]) == ("synthesis_ok_demo", False)
+    assert "criterion_key" not in report and "criterion_met" not in report
+    assert tool.state.criteria["synthesis_ok_demo"].met is False
+    assert tool.state.criteria["synthesis_ok_demo"].detail["area_um2"] == 200
 
 
 def test_strict_rejected_evaluation_has_null_final_report(tmp_path):
@@ -2277,7 +2278,8 @@ def test_strict_rejected_evaluation_has_null_final_report(tmp_path):
             McpToolResult(criterion_key="undeclared", criterion_met=False)
         ).read_text()
     )
-    assert (report["criterion_key"], report["criterion_met"]) == ("", None)
+    assert "criterion_key" not in report and "criterion_met" not in report
+    assert "undeclared" not in tool.state.criteria
 
 
 def test_compatibility_detail_refresh_cannot_replace_final_headline(tmp_path, monkeypatch):
@@ -2297,7 +2299,8 @@ def test_compatibility_detail_refresh_cannot_replace_final_headline(tmp_path, mo
 
     freeze(tool)
     report = json.loads(tool.write_report(McpToolResult()).read_text())
-    assert (report["criterion_key"], report["criterion_met"]) == ("actual", False)
+    assert "criterion_key" not in report and "criterion_met" not in report
+    assert tool.state.criteria["actual"].met is False
     assert report["detail"]["artifact"] == "retained"
 
 
@@ -2314,7 +2317,7 @@ def test_preexisting_met_state_is_not_a_current_report_evaluation(tmp_path):
     report = json.loads(
         tool.write_report(McpToolResult(criterion_key="prior", criterion_met=True)).read_text()
     )
-    assert (report["criterion_key"], report["criterion_met"]) == ("", None)
+    assert "criterion_key" not in report and "criterion_met" not in report
     assert tool.state.criteria["prior"].met is True
 
 
@@ -2380,7 +2383,7 @@ def test_unprepared_report_does_not_run_catalog_mapping(tmp_path, monkeypatch):
         TargetCatalog, "build", lambda *_args: pytest.fail("early reporting resolved Targets")
     )
     report = json.loads(tool.write_report(McpToolResult(exit_code=2)).read_text())
-    assert (report["criterion_key"], report["criterion_met"]) == ("", None)
+    assert "criterion_key" not in report and "criterion_met" not in report
 
 
 @pytest.mark.parametrize("kind", ["flow", "specialist", "mcp_tool"])
@@ -2465,3 +2468,19 @@ def test_cycle_metadata_recomputed_after_atomic_publication_failure(
     assert result.exit_code == 2
     assert len(calls) == (3 if console_failure else 2)
     assert report["cycle_counts"]["sim"][0]["cycle_count"] == 1234
+
+
+@pytest.mark.parametrize("key,met", [("", False), (None, None), ("legacy", True)])
+def test_generic_completion_events_preserve_legacy_criterion_values(
+    tmp_path, monkeypatch, key, met
+):
+    events = []
+    monkeypatch.setattr("booley.flows.endpoint_reporting._write_display_event", events.append)
+    tool = ConcreteMcpTool()
+    monkeypatch.setattr(tool, "_run", lambda: McpToolResult(criterion_key=key, criterion_met=met))
+    result = tool.execute_cli(
+        ["--work-dir", str(tmp_path), "--report-dir", str(tmp_path / "reports")]
+    )
+    assert result.exit_code == 0
+    completion = next(event for event in events if event["type"] == "endpoint_end")
+    assert (completion["criterion_key"], completion["criterion_met"]) == (key, met)

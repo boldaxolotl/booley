@@ -8,11 +8,15 @@ from pathlib import Path
 
 import pytest
 from tests.diagnostic_helpers import _isolate_runtime_files
+from tests.harness import test_session_runtime as resolution_fixtures
 
 from booley.audit.diagnostic_results import Severity
 from booley.config.eda import EdaConfig
 from booley.eda.provisioning.policies import vivado
 from booley.runtime import inspection, runtime_context
+
+project_sandbox_resolution = resolution_fixtures.project_sandbox_resolution
+workspace = resolution_fixtures.workspace
 
 
 def _runtime_files(monkeypatch, state):
@@ -196,3 +200,35 @@ def test_retained_resources_separate_current_project_from_other_project_keepers(
     assert len(notes) == 1 and "1 issued image keeper(s)" in notes[0].message
     assert len(report.details) == 1 and report.details[0].message.strip() == other
     assert report.details[0].after_finding == len(report.findings)
+
+
+def test_host_inspection_reports_unknown_project_inventory(
+    workspace, project_sandbox_resolution, monkeypatch
+):
+    fixture = project_sandbox_resolution
+    fixture.state["Config"]["Labels"].pop("booley.project-id")
+    monkeypatch.setattr(
+        inspection,
+        "_list_issued_containers",
+        lambda *_: subprocess.CompletedProcess([], 0, "", ""),
+    )
+    report = inspection.Findings()
+    inspection._inspect_live_runtime(
+        inspection.RuntimeInspectionRequest(workspace, fixture.spec["image"], "docker"),
+        fixture.spec,
+        fixture.issuance,
+        report,
+    )
+    assert any("identity disagrees" in item.message for item in report.report().findings)
+
+
+def test_inside_isolation_drift_instructs_host_repair(monkeypatch):
+    from booley.audit.diagnostic_results import Findings
+
+    monkeypatch.setenv("BOOLEY_DIR", "/wrong")
+    report = Findings()
+    assert not inspection._check_runtime_isolation(report)
+    fix = report.report().findings[0].fix
+    assert "on the host" in fix
+    assert "booley doctor" in fix
+    assert "booley session refresh" not in fix

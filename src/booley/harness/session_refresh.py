@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from booley.harness import init_cmd
+from booley.runtime import session_issuance as issuance
 from booley.runtime import session_refresh as runtime_refresh
 from booley.runtime.image_lifecycle import LifecycleResult, PlanAction, PreparedConvergence
 from booley.runtime.session_runtime import SessionError
@@ -14,12 +16,15 @@ class _RuntimeImages:
     def __init__(self) -> None:
         self._inspection: LifecycleResult | None = None
         self._prepared: PreparedConvergence | None = None
+        self._spec: issuance.PreparedSessionSpec | None = None
+        self._sources: init_cmd._InteractiveSpecSources | None = None
 
     def inspect(self, project_root: Path, *, verbose: bool) -> None:
         self._inspection = init_cmd.inspect_refreshable_runtime_image(
             project_root,
             verbose=verbose,
         )
+        self._sources = self._current_sources(project_root, None)
 
     def prepare(
         self,
@@ -89,20 +94,73 @@ class _RuntimeImages:
             init_cmd.abort_runtime_image(self._prepared)
             self._prepared = None
 
-    def reissue(
-        self,
-        project_root: Path,
-        image_id: str,
-        *,
-        verbose: bool,
-    ) -> None:
-        init_cmd.reissue_session_spec(project_root, image_id, verbose=verbose)
+    def _current_sources(
+        self, project_root: Path, image_id: str | None
+    ) -> init_cmd._InteractiveSpecSources:
+        pdk = init_cmd.nangate_pdk
+        root = pdk.cache_root() if pdk.is_ready() else init_cmd._NANGATE_PDK_NOT_REQUESTED
+        return init_cmd._interactive_spec_sources(
+            init_cmd.InitContext(project_root=project_root, force=False, verbose=False),
+            root,
+            None,
+            image_id,
+        )
+
+    def prepare_spec(self, project_root: Path, image: runtime_refresh.RefreshImage) -> None:
+        current = self._current_sources(project_root, image.selected_id)
+        if (
+            self._sources is not None
+            and replace(self._sources, runtime_image_id=image.selected_id) != current
+        ):
+            raise SessionError("Sandbox inputs changed while preparing image candidates")
+        self._sources = current
+        self._spec = issuance.preview(
+            project_root, self._sources.build, expected_image_id=image.selected_id
+        )
+
+    def spec_is_current(self, project_root: Path) -> bool:
+        assert self._spec is not None
+        try:
+            issuance.inspect_prepared(project_root, self._spec)
+        except issuance.RuntimeSpecError:
+            return False
+        return True
+
+    def validate_spec(self, project_root: Path) -> None:
+        assert self._spec is not None and self._sources is not None
+        current = self._current_sources(project_root, self._sources.runtime_image_id or "")
+        if current != self._sources:
+            raise SessionError("Sandbox inputs changed while preparing refresh")
+        prepared = issuance.preview(
+            project_root, current.build, expected_image_id=self._sources.runtime_image_id
+        )
+        if prepared != self._spec:
+            raise SessionError("Sandbox authority or policy changed while preparing refresh")
+
+    def requires_license(self) -> bool:
+        assert self._spec is not None
+        return self._spec.inputs.license_profile_name is not None
+
+    def finalize(self, project_root: Path) -> None:
+        runtime_refresh.finalize_project(project_root)
+
+    def reissue(self, project_root: Path, image_id: str, *, verbose: bool) -> None:
+        del verbose
+        assert self._spec is not None and self._sources is not None
+        if self._sources.mask_paths:
+            init_cmd._mask_source_dir().mkdir(parents=True, exist_ok=True)
+        issuance.issue_prepared(
+            project_root,
+            self._spec,
+            current_builder=lambda: self._current_sources(project_root, image_id).build,
+            reconcile_dashboard=False,
+        )
 
 
 def refresh(
     project_root: Path,
     *,
     verbose: bool = False,
-) -> runtime_refresh.RefreshImage:
+) -> runtime_refresh.RefreshResult:
     """Refresh the selected image and replace its Sandbox atomically."""
     return runtime_refresh.refresh(project_root, _RuntimeImages(), verbose=verbose)

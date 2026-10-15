@@ -46,8 +46,13 @@ from tests.diagnostic_helpers import (
     _issued_runtime_state,
     _Rec,
 )
+from tests.harness import test_session_runtime as resolution_fixtures
 
 pytestmark = pytest.mark.usefixtures("isolated_git_attributes")
+
+
+project_sandbox_resolution = resolution_fixtures.project_sandbox_resolution
+workspace = resolution_fixtures.workspace
 
 
 def test_doctor_inputs_use_condition_selected_target_sources(tmp_path: Path) -> None:
@@ -304,7 +309,7 @@ def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixtu
             return subprocess.CompletedProcess(cmd, 0, stdout="git version 2.53.0\n", stderr="")
         if cmd[:3] == [sys.executable, "-c", "import booley.runtime"]:
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-        if cmd[1:3] == ["ps", "-aq"]:
+        if cmd[1] == "ps":
             # Live Sandbox inventory must see an empty container list.
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         if cmd[:2] == ["git", "ls-files"]:
@@ -2369,7 +2374,7 @@ filesets:
   tb:
     files: [tb/tb_dut.sv, tb/dpi_memutil.cc]
     tags: [tb]
-  cpp: {files: [tb/harness.cc]}
+  cpp: {files: [tb/harness.cc], file_type: cppSource}
 targets:
   sim:
     flow: sim
@@ -2760,9 +2765,10 @@ targets:
         assert any("tests.toml invalid" in m for m in rec.fails())
 
 
-# ===========================================================================
+# ====================================================================
+
 # Interactive Mode persistent state-volume note
-# ===========================================================================
+# ====================================================================
 
 
 class TestWcpServerCheck:
@@ -2966,9 +2972,10 @@ class TestWcpPortProbe:
         assert doctor._wcp_port_listening(["docker", "exec", "c"], 54322) is None
 
 
-# ===========================================================================
+# ====================================================================
+
 # Stale devcontainer.json detection (predates the home-state persistence fix)
-# ===========================================================================
+# ====================================================================
 
 
 # ---------------------------------------------------------------------------
@@ -5580,6 +5587,10 @@ class TestFailPathSelfTest:
 
         def fake_run(cmd, **kwargs):
             kind = kwargs["env"][selftest_overlay.INTERNAL_KIND_ENV]
+            if kind == "bad":
+                from tests.harness.test_doctor_selftest_builtin import _write_sim_bad_report
+
+                _write_sim_bad_report(cmd, project=project)
             return subprocess.CompletedProcess(cmd, exit_by_kind[kind], stdout="", stderr="")
 
         monkeypatch.setattr(doctor.subprocess, "run", fake_run)
@@ -5603,6 +5614,10 @@ class TestFailPathSelfTest:
         def fake_run(cmd, **kwargs):
             printed_before_run.append(capsys.readouterr().out)
             kind = kwargs["env"][selftest_overlay.INTERNAL_KIND_ENV]
+            if kind == "bad":
+                from tests.harness.test_doctor_selftest_builtin import _write_sim_bad_report
+
+                _write_sim_bad_report(cmd, project=project)
             return subprocess.CompletedProcess(cmd, {"good": 0, "bad": 1}[kind], "", "")
 
         monkeypatch.setattr(doctor.subprocess, "run", fake_run)
@@ -5635,6 +5650,10 @@ class TestFailPathSelfTest:
         def fake_run(cmd, **kwargs):
             seen.append((cmd, kwargs["env"]))
             kind = kwargs["env"][selftest_overlay.INTERNAL_KIND_ENV]
+            if kind == "bad":
+                from tests.harness.test_doctor_selftest_builtin import _write_sim_bad_report
+
+                _write_sim_bad_report(cmd, project=project)
             return subprocess.CompletedProcess(
                 cmd,
                 {"good": 0, "bad": 1}[kind],
@@ -5702,6 +5721,10 @@ class TestFailPathSelfTest:
         def fake_run(cmd, **kwargs):
             seen_cmds.append(cmd)
             kind = kwargs["env"][selftest_overlay.INTERNAL_KIND_ENV]
+            if kind == "bad":
+                from tests.harness.test_doctor_selftest_builtin import _write_sim_bad_report
+
+                _write_sim_bad_report(cmd, project=project)
             rc = {"good": 0, "bad": 1}[kind]
             return subprocess.CompletedProcess(cmd, rc, stdout="", stderr="")
 
@@ -6085,9 +6108,10 @@ class TestDeveloperProbe:
             developer_probe.measure_developer_rss(tmp_path)
 
 
-# ===========================================================================
+# ====================================================================
+
 # Flow Target configured — cheap pass (F-9)
-# ===========================================================================
+# ====================================================================
 
 
 def _audit_with_flows(tmp_path: Path, flows: dict) -> doctor.ProjectAudit:
@@ -6134,9 +6158,10 @@ class TestCheckDoctorTargets:
         assert "flow_options.booley.doctor" in fails[0][1]
 
 
-# ===========================================================================
+# ====================================================================
+
 # Legacy tools-section .core targets (F-6)
-# ===========================================================================
+# ====================================================================
 
 
 class TestCheckLegacyCoreTargets:
@@ -7282,9 +7307,10 @@ class TestLineEndingsCheck:
         assert reporter.findings[0].severity == "warn"
 
 
-# ===========================================================================
+# ====================================================================
+
 # _check_subscription_creds_health — expired-creds gap (2026-07-23 incident)
-# ===========================================================================
+# ====================================================================
 
 
 class TestSubscriptionCredsHealth:
@@ -8470,3 +8496,110 @@ def test_goal_history_corrupt_standalone_is_active_and_preserves_history(tmp_pat
     assert exclude.read_bytes() == before
     assert (metadata / "HEAD.preserved").read_bytes() == head
     assert (metadata / "objects").is_dir()
+
+
+@pytest.mark.parametrize("inventory", ["editor", "headless", "absent", "unknown"])
+def test_wcp_project_sandbox_resolution(
+    workspace, project_sandbox_resolution, monkeypatch, inventory
+):
+    fixture = project_sandbox_resolution
+    if inventory == "headless":
+        fixture.state["Config"]["Labels"].pop("devcontainer.local_folder")
+        fixture.state["Name"] = "/" + session_runtime.session_container_name(workspace)
+    elif inventory == "absent":
+        fixture.documents.clear()
+    elif inventory == "unknown":
+        fixture.state["Config"]["Labels"].pop("booley.project-id")
+    from booley.runtime import runtime_context
+
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    monkeypatch.setattr(doctor, "_vscode_extension_host_running", lambda _: False)
+    rec = _Rec()
+    doctor._check_wcp_server(TestWcpServerCheck._project(workspace), "docker", rec.p, rec.s, rec.f)
+    if inventory == "unknown":
+        assert rec.kinds() == {"fail"}
+        assert any("identity disagrees" in message for message in rec.fails())
+    else:
+        assert rec.kinds() == {"skip"}
+        # Ownership alone must never claim an attached extension host.
+        assert "pass" not in rec.kinds()
+
+
+def test_doctor_flags_missing_specialist_ignores_without_mutating(tmp_path):
+    original = project_gitignore.PROJECT_GITIGNORE.replace("mcp-tool-reports/\n", "").replace(
+        "reviewer-state/\n", ""
+    )
+    path = tmp_path / ".gitignore"
+    path.write_text(original, encoding="utf-8")
+    findings = _gitignore_probe(tmp_path)
+    assert len(findings) == 1
+    assert findings[0].severity == "warn"
+    assert "mcp-tool-reports/" in findings[0].message
+    assert "reviewer-state/" in findings[0].message
+    assert findings[0].fix == "booley init"
+    assert path.read_text(encoding="utf-8") == original
+
+
+@pytest.mark.parametrize("tagged", [False, True])
+@pytest.mark.parametrize("legacy", [False, True])
+def test_inferred_cpp_harness_does_not_mask_explicit_tb_tag_audit(tmp_path, tagged, legacy):
+    from tests.test_target_catalog import _category_sim_core
+
+    _category_sim_core(tmp_path)
+    core = tmp_path / "design.core"
+    text = core.read_text().replace(
+        "  broken_synth:\n    default_tool: yosys\n    filesets: [undefined]\n", ""
+    )
+    if legacy:
+        text = text.replace(
+            "    flow: sim\n    flow_options: {tool: verilator}", "    default_tool: verilator"
+        )
+    if not tagged:
+        text = text.replace(", tags: [tb]", "")
+    core.write_text(text)
+    rec = _audit(tmp_path)
+    warnings = [message for level, message in rec.events if level == "warn"]
+    assert any("shared/main.cpp" in message and "tags:[tb]" in message for message in warnings)
+    assert any("none tagged tags:[tb]" in message for message in rec.fails()) == (
+        not tagged and not legacy
+    )
+
+
+def test_conditional_dependency_tb_tags_do_not_report_untagged_harness(tmp_path):
+    (tmp_path / "dut.sv").write_text("module dut; endmodule\n")
+    (tmp_path / "tb.sv").write_text('module tb; initial $display("PASS"); endmodule\n')
+    (tmp_path / "design.core").write_text(
+        "CAPI=2:\nname: ::conditional_top:0\nfilesets:\n"
+        '  rtl: {files: [dut.sv], file_type: systemVerilogSource, depend: ["::conditional_tb:0"]}\n'
+        "targets:\n  sim:\n    flow: sim\n    flow_options: {tool: verilator}\n"
+        "    filesets: [rtl]\n    toplevel: tb\n"
+    )
+    (tmp_path / "dependency.core").write_text(
+        "CAPI=2:\nname: ::conditional_tb:0\nfilesets:\n"
+        "  tb: {files: [tb.sv], file_type: systemVerilogSource, tags: [tb]}\n"
+        'targets:\n  default: {filesets: ["tool_verilator ? (tb)"]}\n'
+    )
+    rec = _audit(tmp_path)
+    assert not any("none tagged tags:[tb]" in message for message in rec.fails())
+    assert not any("untagged C/C++ harness" in message for _, message in rec.events)
+
+
+def test_untagged_cpp_warning_does_not_mislabel_hdl_from_another_target(tmp_path):
+    from tests.test_target_catalog import _category_sim_core
+
+    _category_sim_core(tmp_path)
+    core = tmp_path / "design.core"
+    text = (
+        core.read_text()
+        .replace("  broken_synth:\n    default_tool: yosys\n    filesets: [undefined]\n", "")
+        .replace("files: [shared/dut.sv]", "files: [shared/dut.sv, shared/tb.sv]")
+    )
+    text += (
+        "  sim_other:\n    flow: sim\n    flow_options: {tool: verilator}\n"
+        "    filesets: [rtl, harness]\n    toplevel: tb\n"
+    )
+    core.write_text(text)
+    rec = _audit(tmp_path)
+    warnings = [m for level, m in rec.events if level == "warn" and "untagged C/C++ harness" in m]
+    assert warnings and any("shared/main.cpp" in m for m in warnings)
+    assert all("shared/tb.sv" not in m for m in warnings)

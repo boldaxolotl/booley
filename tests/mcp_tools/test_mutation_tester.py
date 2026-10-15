@@ -392,10 +392,9 @@ class TestCreatorPrompt:
         p = endpoint._build_creator_prompt()
         assert "Developer Agent Context" not in p
 
-    def test_uses_configured_testbench_dirs_for_boundary(self, tmp_path: Path):
-        # ADR 0026: the read-boundary TB dirs come from the .core tags:[tb]
-        # partition — the tb fileset's source dir (verif/) plus its include
-        # header dir (checks/, an is_include_file entry).
+    def test_uses_configured_testbench_files_for_boundary(self, tmp_path: Path):
+        # The read boundary names exact TB sources and include headers from
+        # the .core tags:[tb] partition, rather than their parent directories.
         (tmp_path / "design.core").write_text(
             "CAPI=2:\n"
             "name: ::demo\n"
@@ -414,8 +413,8 @@ class TestCreatorPrompt:
         endpoint = _make_endpoint(tmp_path, scope="rtl/mod_a.sv")
         p = endpoint._build_creator_prompt()
 
-        assert "verif/" in p
-        assert "checks/" in p
+        assert "verif/tb_top.sv" in p
+        assert "checks/asserts.svh" in p
         assert "tb/ or any configured" not in p
 
     def test_flat_repo_boundary_names_testbench_file_not_directory(self, tmp_path: Path):
@@ -698,7 +697,11 @@ def _patch_resolve_target(monkeypatch, *, eda_tool: str | None = "verilator"):
                     ),
                     "core_closure": lambda _self, _handles: frozenset(),
                     "inspect": lambda _self, _handle: SimpleNamespace(
-                        parameters=dict(_TARGET_PARAMETERS)
+                        parameters=dict(_TARGET_PARAMETERS),
+                        rtl_files=tuple(
+                            path.relative_to(work_dir).as_posix()
+                            for path in (Path(work_dir) / "rtl").glob("*.sv")
+                        ),
                     ),
                 },
             )()
@@ -1643,11 +1646,11 @@ class TestValidateScopeAgainstTarget:
         assert "does not match" in result.report_text
         assert "Did you mean 'rtl/counter.sv'" in result.report_text
 
-    def test_fails_open_when_target_unresolvable(self, tmp_path: Path):
-        # No .core authored → sim can't resolve → the guard must not block an
-        # Interactive-Mode --dut-files run.
+    def test_refuses_when_target_unresolvable(self, tmp_path: Path):
         endpoint = _make_endpoint(tmp_path, target="sim")
-        assert endpoint._validate_scope_against_target(["anything.sv"]) is None
+        result = endpoint._validate_scope_against_target(["anything.sv"])
+        assert result is not None
+        assert "cannot inspect Target" in result.report_text
 
 
 # ---------------------------------------------------------------------------
@@ -1922,6 +1925,8 @@ class TestCocotbSimDispatch:
         )
 
         endpoint = _make_endpoint(tmp_path, monkeypatch, target="default", scope=scope, count=1)
+        # This test isolates runner compatibility; inspection refusal has its own tests.
+        monkeypatch.setattr(endpoint, "_validate_scope_against_target", lambda _scope: None)
         result = endpoint._run()
 
         assert result.exit_code == EXIT_ERROR
@@ -2021,7 +2026,7 @@ def test_scope_rejects_rtl_symlink_outside_project(tmp_path: Path) -> None:
     assert "does not match" in rejected.report_text
 
 
-def test_scope_fails_open_when_identity_resolution_fails(tmp_path: Path) -> None:
+def test_scope_refuses_when_identity_resolution_fails(tmp_path: Path) -> None:
     _author_scope_core(tmp_path)
     endpoint = _make_endpoint(tmp_path, target="sim")
     catalog = TargetCatalog.build(tmp_path)
@@ -2032,4 +2037,51 @@ def test_scope_fails_open_when_identity_resolution_fails(tmp_path: Path) -> None
             fusesoc_registry, "canonical_project_path", side_effect=OSError("unreadable")
         ),
     ):
-        assert endpoint._validate_scope_against_target(["rtl/counter.sv"]) is None
+        result = endpoint._validate_scope_against_target(["rtl/counter.sv"])
+        assert result is not None
+        assert "unreadable" in result.report_text
+
+
+def test_cpp_sim_harness_is_not_mutation_scope(tmp_path):
+    _author_scope_core(tmp_path)
+    core = tmp_path / "design.core"
+    core.write_text(
+        core.read_text()
+        .replace(
+            "  tb:\n",
+            "  harness:\n    files: [tb/sim_main.cpp]\n    file_type: cppSource\n  tb:\n",
+        )
+        .replace("filesets: [rtl, tb]", "filesets: [rtl, tb, harness]")
+    )
+    (tmp_path / "tb/sim_main.cpp").write_text("int main() {}\n")
+    endpoint = _make_endpoint(tmp_path, target="sim")
+    result = endpoint._validate_scope_against_target(["tb/sim_main.cpp"])
+    assert result is not None
+    assert result.exit_code != 0
+
+
+def test_cpp_scope_refuses_before_creator_and_build(tmp_path):
+    _author_scope_core(tmp_path)
+    source = tmp_path / "tb/sim_main.cpp"
+    source.write_text("int main() {}\n")
+    endpoint = _make_endpoint(tmp_path, target="sim", scope="tb/sim_main.cpp")
+    with (
+        patch.object(endpoint, "_invoke_creator") as creator,
+        patch.object(endpoint, "_run_elab") as build,
+    ):
+        result = endpoint._run()
+    assert result.exit_code != 0
+    assert "not an HDL RTL mutation source" in result.report_text
+    creator.assert_not_called()
+    build.assert_not_called()
+
+
+def test_creator_boundary_uses_exact_tb_files_in_shared_directory(tmp_path):
+    from tests.test_target_catalog import _category_sim_core
+
+    _category_sim_core(tmp_path)
+    endpoint = _make_endpoint(tmp_path, target="sim", scope="shared/dut.sv")
+    assert endpoint._validate_scope_against_target(["shared/dut.sv"]) is None
+    prompt = endpoint._build_creator_prompt()
+    assert "shared/main.cpp" in prompt
+    assert "testbench source/include directory" not in prompt
