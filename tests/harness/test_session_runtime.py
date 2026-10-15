@@ -865,7 +865,8 @@ class TestPrepareMigration:
             sr.prepare(workspace)
 
         assert "spec changed after stop" in str(caught.value)
-        assert f"docker start {container_id}" in str(caught.value)
+        assert "was stopped and preserved" in str(caught.value)
+        assert "docker start" not in str(caught.value)
         assert [call.args[0] for call in run.call_args_list] == [["docker", "stop", container_id]]
 
     def test_multiple_authenticated_legacy_containers_are_not_stopped(
@@ -3696,10 +3697,13 @@ class TestSessionRefresh:
     def test_refresh_configures_progress_before_reconciling_image(self, tmp_path: Path):
         from booley.harness import booley, session_refresh
         from booley.harness.booley import _build_parser
-        from booley.runtime.image_lifecycle import LifecycleResult, Status
 
         args = _build_parser().parse_args(["session", "refresh"])
-        result = LifecycleResult("booley-sandbox", "sha256:fresh", Status.CHANGED)
+        from booley.runtime.session_refresh import RefreshImage, RefreshResult
+
+        result = RefreshResult(
+            RefreshImage("booley-sandbox", "sha256:fresh"), "replaced", "old", "new"
+        )
         events: list[str] = []
         with (
             patch.object(
@@ -4270,3 +4274,93 @@ def test_headless_api_policy_refuses_late_export_without_transport(
         spec["remoteEnv"].pop(credential, None)
     with pytest.raises(sr.SessionError, match="refresh"):
         sr.docker_run_argv(spec, workspace, "test")
+
+
+@pytest.mark.parametrize(
+    "state,expected",
+    [
+        ("managed", "booley session refresh"),
+        ("licensed", "booley session down"),
+        ("withdrawn", "booley init --seed"),
+        ("external", "rebuild/pull"),
+        ("vscode", "stop the Sandbox in VS Code"),
+        ("runtime", "booley session up --rebuild"),
+    ],
+)
+def test_drift_remedy_has_one_state_appropriate_workflow(tmp_path, monkeypatch, state, expected):
+    from types import SimpleNamespace
+
+    from booley.runtime import runtime_context, session_issuance, session_runtime
+
+    monkeypatch.setattr(session_runtime, "_authenticated_recovery_available", lambda _root: True)
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+
+    def issuance(_root):
+        if state == "withdrawn":
+            raise session_issuance.IssuanceUnavailableError("withdrawn")
+        return SimpleNamespace(license_profile="site" if state == "licensed" else None)
+
+    monkeypatch.setattr(session_issuance, "load_issued_snapshot", issuance)
+    monkeypatch.setattr(
+        session_runtime,
+        "strict_conflicting_vscode_session",
+        lambda _root: "editor" if state == "vscode" else None,
+    )
+    monkeypatch.setattr(
+        session_runtime.project_image, "project_sandbox_image", lambda _root: "selected"
+    )
+    monkeypatch.setattr(
+        session_runtime.project_image,
+        "is_managed_sandbox_image",
+        lambda *_args: state != "external",
+    )
+    remedy = session_runtime.sandbox_remedy(tmp_path, runtime_only=state == "runtime")
+    assert expected in remedy
+    if state in {"managed", "licensed"}:
+        assert remedy.count("booley session refresh") == 1
+        assert "init --seed" not in remedy
+
+
+def test_vscode_drift_remedy_preserves_editor_ownership(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from booley.runtime import runtime_context, session_issuance
+
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    monkeypatch.setattr(
+        session_issuance,
+        "load_issued_snapshot",
+        lambda _root: SimpleNamespace(license_profile=None),
+    )
+    monkeypatch.setattr(sr, "strict_conflicting_vscode_session", lambda _root: "editor")
+    monkeypatch.setattr(sr.project_image, "project_sandbox_image", lambda _root: "selected")
+    monkeypatch.setattr(sr.project_image, "is_managed_sandbox_image", lambda *_args: True)
+    remedy = sr.sandbox_remedy(tmp_path)
+    assert "booley init --force" in remedy
+    assert "Dev Containers: Rebuild Container" in remedy
+    assert "booley session refresh" not in remedy
+
+
+def test_inside_sandbox_remedy_requires_host_observation(tmp_path, monkeypatch):
+    from booley.runtime import runtime_context
+
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    remedy = sr.sandbox_remedy(tmp_path)
+    assert "on the host" in remedy
+    assert "booley doctor" in remedy
+    assert "booley session refresh" not in remedy
+
+
+@pytest.mark.parametrize(
+    "state,expected",
+    [(None, None), ({"Id": ""}, None), ({"Id": "immutable-container"}, "immutable-container")],
+)
+def test_refresh_identity_requires_verified_immutable_container(
+    tmp_path, monkeypatch, state, expected
+):
+    monkeypatch.setattr(sr, "_strict_refresh_container", lambda _name: state)
+    if expected is None:
+        with pytest.raises(sr.SessionError, match="immutable container identity"):
+            sr.refresh_container_id(tmp_path)
+    else:
+        assert sr.refresh_container_id(tmp_path) == expected

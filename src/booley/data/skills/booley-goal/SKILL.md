@@ -96,7 +96,8 @@ Default Seed.
   simulation Goal is met when all are `passed`; they may pass in separate
   runs. A failure stays until the code changes: do not rerun a failed seed
   hoping for a pass. Reproduce it with the rerun command `goal_status`
-  prints, then fix the cause.
+  prints for reproduction only, then fix the cause and record evidence through
+  a Goal-bound MCP `sim` call with `work_dir`.
 - A Cycle Count Goal is measured by a run of its frozen Test Run, which must
   pass. A coverage Goal is measured by one `coverage=true` run of exactly its
   frozen Test Runs and is decided by its coverage floors alone: it can be met
@@ -118,7 +119,8 @@ stays unmet" in the packaged troubleshooting guide:
 ## Work and evidence
 
 Work only in the Goal worktree and commit on its Goal Branch. Use the relevant
-Booley Flows and Specialists, passing `work_dir` every time. Shell output,
+Booley Flows and Specialists through Goal-bound MCP calls, passing `work_dir`
+every time. CLI runs never record Goal evidence. Shell output,
 Developer Agent prose, and manually edited records cannot meet a Goal. Consult
 `goal_status` for unmet or stale Goals and rerun their producers after code
 changes. Selected immutable observations govern evidence; cache discrepancies

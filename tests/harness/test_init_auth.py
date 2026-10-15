@@ -104,21 +104,32 @@ def test_detect_auth_mode_reports_what_actually_bills(tmp_path, monkeypatch):
     assert init_cmd._detect_auth_mode("claude") == "subscription"
 
 
-def test_issued_policy_uses_selected_root_not_ambient_booley_dir(tmp_path, monkeypatch):
+@pytest.mark.parametrize("external", [False, True])
+def test_issued_policy_uses_authorized_source_not_ambient_auth_handoff(
+    tmp_path, monkeypatch, external
+):
     from booley.runtime import auth_token
 
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
-    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / "other"))
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
     monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "subscription")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "SYNTHETIC_SECRET")
     data = tmp_path / "project" / ".booley"
     data.mkdir(parents=True)
     (data / "booley.toml").write_text('[agent]\nprovider="claude"\nauth="api_key"\n')
+    selected = data
+    if external:
+        selected = tmp_path / "trusted-external-data"
+        selected.mkdir()
+        (selected / "booley.toml").write_text((data / "booley.toml").read_text())
+        (data / "booley.toml").write_text('[agent]\nprovider="claude"\nauth="subscription"\n')
+        monkeypatch.setenv("BOOLEY_DIR", str(selected))
     sources = init_cmd._interactive_spec_sources(
         InitContext(project_root=data.parent), init_cmd._NANGATE_PDK_NOT_REQUESTED, "claude", None
     )
+    assert sources.project_data_source == selected
     assert sources.credential_plan.policy == "api_key"
     assert sources.credential_plan.selected.mode == auth_token.MODE_API_KEY
     assert sources.auth_source is None

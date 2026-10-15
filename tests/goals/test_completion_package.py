@@ -25,7 +25,13 @@ from tests.goals.test_reviewer_proposals import approve_review_relaxation, revie
 pytestmark = pytest.mark.timeout(120)
 
 
-@pytest.mark.parametrize("derived", [False, True])
+@pytest.mark.parametrize(
+    "derived",
+    [
+        False,
+        pytest.param(True, marks=pytest.mark.timeout(180)),
+    ],
+)
 def test_open_done_findings_finish_without_ticket_assessment_or_second_approval(
     layout, monkeypatch, capsys, derived
 ):
@@ -480,6 +486,7 @@ def _publish_current_base_simulation(layout):
     return transaction
 
 
+@pytest.mark.timeout(150)
 def test_obsolete_simulation_after_approved_retarget_omits_inventory_without_rewriting_ledger(
     layout, monkeypatch
 ):

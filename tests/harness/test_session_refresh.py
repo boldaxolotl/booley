@@ -18,6 +18,14 @@ from booley.runtime.session_issuance import Issuance
 from booley.runtime.session_spec import SessionSpecSnapshot
 
 
+@pytest.fixture(autouse=True)
+def isolated_refresh_outputs(monkeypatch):
+    finalize = session_refresh.finalize_project
+    monkeypatch.setattr(sr, "refresh_container_id", lambda _root: "container-new")
+    monkeypatch.setattr(session_refresh, "finalize_project", lambda _root: None)
+    return finalize
+
+
 def _result() -> session_refresh.RefreshImage:
     return session_refresh.RefreshImage(
         "booley-sandbox",
@@ -75,7 +83,7 @@ def _snapshot(root: Path) -> SessionSpecSnapshot:
 
 
 def test_candidate_is_prepared_before_running_target_is_parked(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, capsys
 ) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     active = True
@@ -86,6 +94,7 @@ def test_candidate_is_prepared_before_running_target_is_parked(
 
     def park(*_args) -> sr.ParkedSession:
         nonlocal active
+        assert "planned: replace Sandbox after verification" in capsys.readouterr().out
         active = False
         events.append("park")
         return parked
@@ -101,6 +110,7 @@ def test_candidate_is_prepared_before_running_target_is_parked(
         return result
 
     images = Mock(spec=session_refresh.RuntimeImageOperations)
+    images.requires_license.return_value = False
     images.prepare.side_effect = prepare_image
     images.commit.side_effect = commit_image
     images.reissue.side_effect = lambda *_args, **_kwargs: events.append("reissue")
@@ -123,7 +133,7 @@ def test_candidate_is_prepared_before_running_target_is_parked(
             side_effect=lambda *_args: events.append("discard"),
         ),
     ):
-        assert session_refresh.refresh(tmp_path, images) is result
+        assert session_refresh.refresh(tmp_path, images).image is result
 
     assert events == ["prepare", "park", "commit", "reissue", "up", "discard"]
 
@@ -133,7 +143,9 @@ def test_candidate_failure_leaves_running_session_and_spec_untouched(
 ) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     images = Mock(spec=session_refresh.RuntimeImageOperations)
+    images.requires_license.return_value = False
     images.prepare.side_effect = RuntimeError("candidate build failed")
+    monkeypatch.setattr(session_refresh, "_load_recovery_issuance", lambda *_: _issuance(tmp_path))
     with (
         patch.object(sr, "strict_conflicting_vscode_session", return_value=None),
         patch.object(session_refresh, "capture_session_spec") as capture,
@@ -142,7 +154,7 @@ def test_candidate_failure_leaves_running_session_and_spec_untouched(
     ):
         session_refresh.refresh(tmp_path, images)
 
-    capture.assert_not_called()
+    capture.assert_called_once()
     park.assert_not_called()
     images.abort.assert_called_once_with()
 
@@ -171,6 +183,7 @@ def test_commit_mismatch_names_every_refresh_image_field(
         replacement_issuance=None,
     )
     images = Mock(spec=session_refresh.RuntimeImageOperations)
+    images.requires_license.return_value = False
     images.commit.return_value = committed
     monkeypatch.setattr(session_refresh, "_write_journal", lambda _journal: None)
 
@@ -186,6 +199,7 @@ def test_incomplete_rollback_reports_recovery_container(tmp_path: Path, monkeypa
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     parked = _parked(tmp_path)
     images = Mock(spec=session_refresh.RuntimeImageOperations)
+    images.requires_license.return_value = False
     images.prepare.return_value = _result()
     images.commit.side_effect = RuntimeError("commit failed")
     with (
@@ -214,6 +228,7 @@ def test_incomplete_rollback_reports_recovery_container(tmp_path: Path, monkeypa
 
 def test_vscode_owner_is_rejected_before_image_inspection(tmp_path: Path) -> None:
     images = Mock(spec=session_refresh.RuntimeImageOperations)
+    images.requires_license.return_value = False
     with (
         patch.object(sr, "strict_conflicting_vscode_session", return_value="vscode-owned"),
         pytest.raises(sr.SessionError, match="VS Code owns"),
@@ -224,7 +239,7 @@ def test_vscode_owner_is_rejected_before_image_inspection(tmp_path: Path) -> Non
 
 
 def test_current_graph_issuance_and_running_sandbox_are_a_true_noop(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, capsys
 ) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     result = session_refresh.RefreshImage(
@@ -233,6 +248,7 @@ def test_current_graph_issuance_and_running_sandbox_are_a_true_noop(
         image_graph_changed=False,
     )
     images = Mock(spec=session_refresh.RuntimeImageOperations)
+    images.requires_license.return_value = False
     images.prepare.return_value = result
     images.commit.return_value = result
     parked = replace(_parked(tmp_path), image_id="sha256:fresh")
@@ -249,17 +265,19 @@ def test_current_graph_issuance_and_running_sandbox_are_a_true_noop(
         patch.object(sr, "park_planned_session") as park,
         patch.object(sr, "_up_unlocked") as up,
     ):
-        assert session_refresh.refresh(tmp_path, images) == result
+        assert session_refresh.refresh(tmp_path, images).image == result
 
     images.commit.assert_called_once_with()
     park.assert_not_called()
     up.assert_not_called()
+    assert "planned:" not in capsys.readouterr().out
 
 
 def test_noop_commit_mismatch_names_refresh_image_field(tmp_path: Path, monkeypatch) -> None:
     prepared = replace(_result(), image_graph_changed=False)
     committed = replace(prepared, wheel_sha256="unexpected-wheel")
     images = Mock(spec=session_refresh.RuntimeImageOperations)
+    images.requires_license.return_value = False
     images.commit.return_value = committed
     monkeypatch.setattr(session_refresh, "_is_current_running_session", lambda *_args: True)
     monkeypatch.setattr(sr, "verify_refreshed_session", lambda *_args, **_kwargs: None)
@@ -284,6 +302,7 @@ def test_vscode_start_after_creation_discards_new_candidate(tmp_path: Path, monk
     candidate_issuance = _issuance(tmp_path, "sha256:fresh")
     events: list[str] = []
     images = Mock(spec=session_refresh.RuntimeImageOperations)
+    images.requires_license.return_value = False
     images.prepare.return_value = result
     images.commit.return_value = result
     with (
@@ -340,6 +359,7 @@ def test_refresh_without_immutable_image_id_rolls_back_spec(tmp_path: Path, monk
     result = session_refresh.RefreshImage("booley-sandbox", None)  # type: ignore[arg-type]
     snapshot = _snapshot(tmp_path)
     images = Mock(spec=session_refresh.RuntimeImageOperations)
+    images.requires_license.return_value = False
     images.prepare.return_value = result
     with (
         patch.object(sr, "strict_conflicting_vscode_session", return_value=None),
@@ -356,6 +376,7 @@ def test_refresh_without_immutable_image_id_rolls_back_spec(tmp_path: Path, monk
 
 
 def test_harness_refresh_composes_image_operations_in_order(tmp_path: Path) -> None:
+    (tmp_path / ".booley").mkdir()
     inspection = LifecycleResult("booley-sandbox", "sha256:old", Status.CURRENT)
     refreshed = LifecycleResult(
         "booley-sandbox",
@@ -407,8 +428,8 @@ def test_harness_refresh_composes_image_operations_in_order(tmp_path: Path) -> N
             side_effect=lambda value: events.append(("commit", value)) or refreshed,
         ),
         patch.object(
-            harness_refresh.init_cmd,
-            "reissue_session_spec",
+            harness_refresh._RuntimeImages,
+            "reissue",
             side_effect=lambda root, image_id, *, verbose: events.append(
                 ("reissue", root, image_id, verbose)
             ),
@@ -467,6 +488,7 @@ def test_harness_runtime_images_rejects_commit_without_selected_id(monkeypatch) 
 
 
 def test_harness_runtime_image_wrappers_delegate(monkeypatch, tmp_path: Path) -> None:
+    (tmp_path / ".booley").mkdir()
     plan = Mock()
     prepared = Mock()
     result = LifecycleResult("booley-sandbox", "sha256:id", Status.CURRENT)
@@ -604,3 +626,168 @@ def test_prepare_runtime_image_reports_planned_step_identity(monkeypatch, tmp_pa
 
     assert init_cmd.prepare_runtime_image(tmp_path) is prepared
     assert any("inputs-changed inputs" in message for message in messages)
+
+
+@pytest.mark.parametrize("has_predecessor", [False, True])
+def test_verified_rollback_names_real_predecessor_or_absent_runtime(
+    tmp_path, monkeypatch, has_predecessor
+):
+    parked = _parked(tmp_path) if has_predecessor else None
+    journal = session_refresh._new_journal(
+        tmp_path, _snapshot(tmp_path), _issuance(tmp_path), parked
+    )
+    monkeypatch.setattr(session_refresh, "_load_journal", lambda _project: journal)
+    restored = Mock(
+        return_value=session_refresh.RecoveryResult(
+            tmp_path, session_refresh.RecoveryOutcome.RESTORED
+        )
+    )
+    monkeypatch.setattr(session_refresh, "_restore_journal", restored)
+    with pytest.raises(sr.SessionError) as caught:
+        session_refresh._recover_failed_refresh(tmp_path, sr.SessionError("wheel probe failed"))
+    restored.assert_called_once_with(journal)
+    if has_predecessor:
+        assert (
+            str(caught.value)
+            == "rolled back to container-prior; candidate failed: wheel probe failed"
+        )
+    else:
+        assert (
+            str(caught.value)
+            == "candidate failed: wheel probe failed; restored prior issuance; no prior Sandbox"
+        )
+        assert "rolled back to" not in str(caught.value)
+
+
+def test_adding_license_refuses_before_parking_even_stopped_predecessor(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    images = Mock(spec=session_refresh.RuntimeImageOperations)
+    images.requires_license.return_value = True
+    images.prepare.return_value = _result()
+    monkeypatch.setattr(sr, "strict_conflicting_vscode_session", lambda _root: None)
+    monkeypatch.setattr(session_refresh, "capture_session_spec", lambda _root: _snapshot(tmp_path))
+    monkeypatch.setattr(
+        session_refresh, "_load_recovery_issuance", lambda *_args: _issuance(tmp_path)
+    )
+    monkeypatch.setattr(
+        sr, "plan_session_refresh", lambda *_args: replace(_parked(tmp_path), was_running=False)
+    )
+    park = Mock()
+    monkeypatch.setattr(sr, "park_planned_session", park)
+    with pytest.raises(sr.SessionError, match="cannot add a licensed relay"):
+        session_refresh.refresh(tmp_path, images)
+    park.assert_not_called()
+    images.reissue.assert_not_called()
+
+
+def test_abort_failure_cannot_skip_parked_predecessor_recovery(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    images = Mock(spec=session_refresh.RuntimeImageOperations)
+    images.requires_license.return_value = False
+    images.prepare.return_value = _result()
+    images.commit.side_effect = RuntimeError("commit failed")
+    images.abort.side_effect = RuntimeError("cleanup inventory failed")
+    restored = Mock()
+    monkeypatch.setattr(sr, "strict_conflicting_vscode_session", lambda _root: None)
+    monkeypatch.setattr(session_refresh, "capture_session_spec", lambda _root: _snapshot(tmp_path))
+    monkeypatch.setattr(
+        session_refresh, "_load_recovery_issuance", lambda *_args: _issuance(tmp_path)
+    )
+    monkeypatch.setattr(sr, "plan_session_refresh", lambda *_args: _parked(tmp_path))
+    monkeypatch.setattr(sr, "park_planned_session", lambda *_args: None)
+    monkeypatch.setattr(session_refresh, "_restore_journal", restored)
+    with pytest.raises(
+        sr.SessionError, match="rolled back to container-prior; candidate failed: commit failed"
+    ):
+        session_refresh.refresh(tmp_path, images)
+    restored.assert_called_once()
+
+
+def test_unauthenticated_predecessor_requires_reseed_even_with_valid_stamp(tmp_path, monkeypatch):
+    from booley.runtime import runtime_context
+
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    monkeypatch.setattr(sr, "strict_conflicting_vscode_session", lambda _root: None)
+    monkeypatch.setattr(
+        session_refresh.runtime_spec, "load_issued_snapshot", lambda _root: _issuance(tmp_path)
+    )
+    monkeypatch.setattr(
+        session_refresh.runtime_spec,
+        "load_recovery_snapshot",
+        Mock(side_effect=session_refresh.runtime_spec.RuntimeSpecError("prior keeper is missing")),
+    )
+    with pytest.raises(sr.SessionError) as caught:
+        session_refresh._load_recovery_issuance(tmp_path, _snapshot(tmp_path))
+    assert "booley init --seed" in str(caught.value)
+    assert "booley session refresh" not in str(caught.value)
+
+
+@pytest.mark.parametrize("stealth", [False, True])
+def test_forward_finalization_uses_authorized_dashboard_source_and_exclusions(
+    tmp_path, monkeypatch, isolated_refresh_outputs, stealth
+):
+    from booley import commit_policy
+    from booley.runtime import dashboard_tasks
+    from booley.runtime import git as runtime_git
+
+    source = tmp_path / "authorized-data"
+    calls = []
+    monkeypatch.setattr(
+        session_refresh.runtime_spec, "authorized_project_data_source", lambda _root: source
+    )
+    monkeypatch.setattr(commit_policy, "stealth_enabled", lambda _root: stealth)
+    monkeypatch.setattr(
+        dashboard_tasks,
+        "reconcile",
+        lambda project, directory: calls.append(("dashboard", project, directory)),
+    )
+    monkeypatch.setattr(
+        runtime_git,
+        "add_git_excludes",
+        lambda project, patterns: calls.append(("excludes", project, patterns)),
+    )
+    isolated_refresh_outputs(tmp_path)
+    expected = (".devcontainer", ".claude", ".booley") if stealth else (".devcontainer", ".claude")
+    assert calls == [("dashboard", tmp_path, source), ("excludes", tmp_path, expected)]
+
+
+def test_ancillary_failure_after_verified_commit_keeps_forward_journal(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    journal = session_refresh._prepared_journal(
+        tmp_path, _snapshot(tmp_path), _issuance(tmp_path), _parked(tmp_path), _result()
+    )
+    journal = replace(
+        journal,
+        phase=session_refresh._RefreshPhase.VERIFIED,
+        direction=session_refresh._RecoveryDirection.COMMITTED_FORWARD,
+        replacement_issuance=_issuance(tmp_path, "sha256:fresh"),
+    )
+    session_refresh._write_journal(journal)
+    images = Mock(spec=session_refresh.RuntimeImageOperations)
+    images.finalize.side_effect = RuntimeError("tasks busy")
+    discard = Mock()
+    monkeypatch.setattr(sr, "discard_refresh_session", discard)
+    with pytest.raises(
+        sr.SessionError, match="replacement committed; final reconciliation is incomplete"
+    ) as caught:
+        session_refresh._finish_refresh(journal, _result(), images)
+    assert "rolled back" not in str(caught.value)
+    assert session_refresh._load_journal(tmp_path) == journal
+    discard.assert_called_once_with(journal.prior_runtime)
+    images.abort.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_image_gc_deferral_does_not_block_completed_runtime(
+    tmp_path, monkeypatch, caplog, failure
+):
+    from booley.runtime import image_lifecycle
+
+    def cleanup(_project):
+        if failure:
+            raise image_lifecycle.ImageLifecycleError("inventory unavailable")
+        return ("immutable image retained by another Project",)
+
+    monkeypatch.setattr(image_lifecycle, "cleanup_owned_images", cleanup)
+    session_refresh._cleanup_owned_images(tmp_path)
+    assert ("deferred" if failure else "retained by another Project") in caplog.text

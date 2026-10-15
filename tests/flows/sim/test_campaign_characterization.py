@@ -773,6 +773,7 @@ def test_standalone_legacy_simulation_final_report_is_run_local(
 
     freeze(flow.context)
     report = json.loads(path.read_text())
-    assert (report["criterion_key"], report["criterion_met"]) == ("sim_pass_lite", met)
+    assert "criterion_key" not in report and "criterion_met" not in report
+    assert flow.state.criteria["sim_pass_lite"].met is met
     assert "elab_pass_lite" not in flow.state.criteria
     assert flow.state._file_path is None

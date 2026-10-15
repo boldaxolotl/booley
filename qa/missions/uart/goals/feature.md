@@ -6,9 +6,14 @@ preserve interface, full required behavior and Target contracts. Use only the
 mission's allowed documentation and ordinary Project inspection; retrieve no
 existing UART RTL or tests. Report corpus conflicts instead of inventing rules.
 `spec/contract.md` contains the frozen register definitions and MMIO addendum
-for spec review. Require fresh netlist/reports for synthesis. Do not invent relative PPA,
-hidden coverage or mutation gates. Operator conformance evaluation is separate
-from Finish; the child sees no evaluator implementation, seed or generated cases.
+for spec review. Require fresh netlist/reports for synthesis. Error recovery is
+required behavior: after a framing error or a break, with parity enabled or
+disabled, the receiver must resume receiving valid characters as the corpus
+Reception and error sections define; test it in the TB. The mutation Goal below is
+the only mutation gate. It mutates `rtl/qa_uart.sv`, the scaffold's design file, so keep
+the UART implementation there. Do not invent relative PPA or hidden coverage gates. Operator
+conformance evaluation is separate from Finish; the child sees no evaluator
+implementation, seed or generated cases.
 
 ## Goals
 
@@ -55,6 +60,14 @@ from Finish; the child sees no evaluator implementation, seed or generated cases
     "spec": "spec/contract.md",
     "origin": "feature",
     "target": "sim_uart"
+  },
+  {
+    "family": "MUTATION",
+    "target": "sim_uart",
+    "scope": ["rtl/qa_uart.sv"],
+    "min_detected": 8,
+    "total": 10,
+    "origin": "feature"
   },
   {
     "family": "REVIEW",

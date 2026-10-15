@@ -51,6 +51,7 @@ from booley import __version__
 from booley.commit_policy import stealth_enabled
 from booley.config.host_config import retired_project_policy_message
 from booley.core.boundary import as_dict, as_str, require_dict
+from booley.core.config_paths import resolve_toml
 from booley.fusesoc.core_projection import (
     PROJECTED_CORE_GLOB,
     CoreProjectionError,
@@ -162,7 +163,11 @@ from booley.runtime.project_gitignore import (
     PROJECT_GITIGNORE_PATTERNS,
     missing_gitignore_patterns,
 )
-from booley.runtime.session_issuance import SessionSpecInputs
+from booley.runtime.session_issuance import (
+    RuntimeSpecError,
+    SessionSpecInputs,
+    authorized_project_data_source,
+)
 from booley.runtime.timefmt import detect_host_timezone
 
 # ---------------------------------------------------------------------------
@@ -898,7 +903,8 @@ def inspect_refreshable_runtime_image(
     if lifecycle_plan.nodes[0].role is image_lifecycle.ImageRole.EXTERNAL:
         raise RuntimeError(
             "the selected Sandbox Image cannot use managed refresh: it is externally managed. "
-            "Rebuild it explicitly, then run `booley session up --rebuild`."
+            "Rebuild/pull it explicitly, then on the host run `booley session down`, "
+            "`booley init --seed`, and `booley session up`."
         )
     stale = tuple(
         step
@@ -947,7 +953,6 @@ def prepare_runtime_image(
             if node.reference == step.reference
         )
         info(f"  {step.action.value:<5} {step.role.value:<20} {step.reason.code} {identity[:12]}")
-    info("  replace Sandbox after verification")
     return image_lifecycle.prepare(lifecycle_plan, verbose=verbose)
 
 
@@ -986,13 +991,13 @@ def _dashboard_enabled(booley_dir: Path) -> bool:
     return enabled(booley_dir)
 
 
-def _project_sandbox_memory(project_root: Path) -> str:
+def _project_sandbox_memory(project_root: Path, project_data_source: Path | None = None) -> str:
     """Return the project's single container memory limit (ADR 0028), or ''.
 
     Parsed through ``_parse_sandbox_config`` so legacy tier tables /
     ``memory_tiers`` keys get their retirement warning here too.
     """
-    toml_path = project_root / ".booley" / "booley.toml"
+    toml_path = resolve_toml(project_data_source or authorized_project_data_source(project_root))
     if not toml_path.is_file():
         return ""
     try:
@@ -1005,7 +1010,7 @@ def _project_sandbox_memory(project_root: Path) -> str:
     return _parse_sandbox_config(data).memory
 
 
-def _project_mask_paths(project_root: Path) -> list[str]:
+def _project_mask_paths(project_root: Path, project_data_source: Path | None = None) -> list[str]:
     """Validated ``[sandbox].mask_paths`` — workspace subtrees to hide.
 
     Workspace-root-relative POSIX paths the Sandbox must NOT see
@@ -1017,7 +1022,7 @@ def _project_mask_paths(project_root: Path) -> list[str]:
     the user believing a path is
     hidden when it is not, which is worse than masking nothing loudly.
     """
-    toml_path = project_root / ".booley" / "booley.toml"
+    toml_path = resolve_toml(project_data_source or authorized_project_data_source(project_root))
     raw = _load_sandbox_config(toml_path).get("mask_paths")
     error = dc.mask_paths_error(raw)
     if error:
@@ -1038,13 +1043,16 @@ def _mask_source_dir() -> Path:
     return auth_token.config_dir() / "empty-mask"
 
 
-def _select_interactive_app(project_root: Path | None = None) -> str:
+def _select_interactive_app(
+    project_root: Path | None = None, project_data_source: Path | None = None
+) -> str:
     """Return the project's declared agent app, never one inferred from the host."""
     if project_root is not None:
         from booley.config.agent import _VALID_PROVIDERS, _parse_provider
-        from booley.core.config_paths import resolve_booley_toml
 
-        config_path = resolve_booley_toml(project_root)
+        config_path = resolve_toml(
+            project_data_source or authorized_project_data_source(project_root)
+        )
         if config_path.is_file():
             try:
                 import tomllib
@@ -1132,7 +1140,9 @@ def _report_seeded_mounts(
         )
 
 
-def _resolve_host_skills_sources(project_root: Path) -> list[tuple[str, str]]:
+def _resolve_host_skills_sources(
+    project_root: Path, project_data_source: Path | None = None
+) -> list[tuple[str, str]]:
     """Return ``(name, docker_source)`` pairs for the user's HOST agent skills.
 
     Gated on ``[sandbox] mount_host_skills``. Scans the two host skill dirs an
@@ -1148,7 +1158,9 @@ def _resolve_host_skills_sources(project_root: Path) -> list[tuple[str, str]]:
     by a stale host symlink, and the container's built-ins always win. Entries
     are de-duplicated by skill name (first dir scanned wins) and by real path.
     """
-    raw = _load_sandbox_config(project_root / ".booley" / "booley.toml")
+    raw = _load_sandbox_config(
+        resolve_toml(project_data_source or authorized_project_data_source(project_root))
+    )
     if not bool(raw.get("mount_host_skills", False)):
         return []
 
@@ -1216,8 +1228,16 @@ class _InteractiveSpecSources:
     config_seed: Path | None
     host_skills: tuple[tuple[str, str], ...]
     mask_paths: tuple[str, ...]
+    project_data_source: Path
+    memory: str
+    dashboard: bool
+    timezone: str
 
     def build(self, inputs: SessionSpecInputs) -> dict:
+        if inputs.project_data_source != self.project_data_source:
+            raise RuntimeError(
+                "authorized Booley Directory changed during specification preparation"
+            )
         trusted_eda_mounts = list(inputs.trusted_eda_mounts)
         if isinstance(self.nangate_pdk_root, Path):
             trusted_eda_mounts.append(
@@ -1232,8 +1252,8 @@ class _InteractiveSpecSources:
             auth_token_source=(docker_mount_path(self.auth_source) if self.auth_source else None),
             config_seed_source=(docker_mount_path(self.config_seed) if self.config_seed else None),
             mcp_start_command=dc.mcp_post_start_command(),
-            memory=_project_sandbox_memory(self.project_root),
-            dashboard=_dashboard_enabled(inputs.project_data_source),
+            memory=self.memory,
+            dashboard=self.dashboard,
             token_seed_source=(docker_mount_path(self.token_seed) if self.token_seed else None),
             host_skills=list(self.host_skills),
             trusted_eda_mounts=trusted_eda_mounts,
@@ -1243,7 +1263,7 @@ class _InteractiveSpecSources:
             fixed_container_env=dict(inputs.fixed_container_environment) or None,
             mask_paths=list(self.mask_paths),
             mask_source=docker_mount_path(_mask_source_dir()) if self.mask_paths else "",
-            local_timezone=detect_host_timezone(),
+            local_timezone=self.timezone,
         )
 
 
@@ -1253,10 +1273,11 @@ def _interactive_spec_sources(
     agent_app: str | None,
     runtime_image_id: str | None,
 ) -> _InteractiveSpecSources:
-    app = agent_app or _select_interactive_app(ctx.project_root)
     from booley.config.agent import project_credential_policy
 
-    _, policy = project_credential_policy(ctx.project_root)
+    source = authorized_project_data_source(ctx.project_root)
+    app = agent_app or _select_interactive_app(ctx.project_root, source)
+    _, policy = project_credential_policy(ctx.project_root, booley_dir=source)
     plan = auth_token.credential_plan(app, policy)
     return _InteractiveSpecSources(
         credential_plan=plan,
@@ -1267,8 +1288,12 @@ def _interactive_spec_sources(
         auth_source=plan.subscription_seed,
         token_seed=plan.token_seed,
         config_seed=plan.config_seed,
-        host_skills=tuple(_resolve_host_skills_sources(ctx.project_root)),
-        mask_paths=tuple(_project_mask_paths(ctx.project_root)),
+        host_skills=tuple(_resolve_host_skills_sources(ctx.project_root, source)),
+        mask_paths=tuple(_project_mask_paths(ctx.project_root, source)),
+        project_data_source=source,
+        memory=_project_sandbox_memory(ctx.project_root, source),
+        dashboard=_dashboard_enabled(source),
+        timezone=detect_host_timezone(),
     )
 
 
@@ -1418,7 +1443,13 @@ def _step_interactive(
     ):
         return
 
-    sources = _interactive_spec_sources(ctx, nangate_pdk_root, agent_app, runtime_image_id)
+    try:
+        sources = _interactive_spec_sources(ctx, nangate_pdk_root, agent_app, runtime_image_id)
+    except RuntimeSpecError as exc:
+        detail = str(exc)
+        err(f"Sandbox authorization failed closed: {detail}")
+        ctx.record("interactive", "err", detail)
+        return
     request = interactive_init.InteractiveInitRequest(
         project_root=ctx.project_root,
         build_spec=sources.build,

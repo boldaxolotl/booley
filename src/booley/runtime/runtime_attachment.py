@@ -51,8 +51,9 @@ class ExecutionResult:
 class SupervisedExecutionDriver:
     """Drive one preallocated execution ID through bounded terminal proof."""
 
-    def __init__(self, project_data: Path) -> None:
+    def __init__(self, project_data: Path, *, project_root: Path | None = None) -> None:
         self._project_data = project_data
+        self._project_root = project_root
 
     def run(self, execution_id: ExecutionId, transport_argv: list[str]) -> ExecutionResult:
         paths = execution_paths(execution_id, booley_dir=self._project_data)
@@ -62,7 +63,7 @@ class SupervisedExecutionDriver:
             process = subprocess.Popen(transport_argv)
             try:
                 result = _drive_execution(process, paths, pending)
-                _report_protocol_failure(result)
+                _report_protocol_failure(result, self._project_root)
                 return result
             finally:
                 _stop_transport(process)
@@ -221,13 +222,37 @@ def _drive_execution(
     return protocol_failure or ExecutionResult(125, "unrecoverable", False, "recovery_timeout")
 
 
-def _report_protocol_failure(result: ExecutionResult) -> None:
+def _report_protocol_failure(result: ExecutionResult, project_root: Path | None = None) -> None:
     if result.terminal_cause not in {"protocol_mismatch", "protocol_unavailable"}:
         return
-    logger.error(
-        "Sandbox execution protocol is unavailable or incompatible; "
-        "run `booley session refresh` and retry"
+    from booley.runtime import (
+        image_identity,
+        interactive_docker,
+        session_issuance,
+        session_runtime,
     )
+
+    remedy = "inspect the published image/wheel execution protocol on the host before rebuilding the Sandbox"
+    if project_root is not None:
+        try:
+            issued = session_issuance.load_issued_snapshot(project_root)
+            path = session_runtime.dc.devcontainer_path(project_root)
+            import json
+
+            spec = json.loads(path.read_text())
+            session_issuance.validate(project_root, spec, path)
+            stale = (
+                interactive_docker.compare_issued_build(issued.image).status
+                is image_identity.Status.MISMATCH
+            )
+            remedy = session_runtime.sandbox_remedy(project_root, runtime_only=not stale)
+            if not stale and result.terminal_cause == "protocol_unavailable":
+                remedy = (
+                    "verify/repair the published image/wheel execution protocol, then " + remedy
+                )
+        except (session_issuance.RuntimeSpecError, OSError, ValueError):
+            remedy = session_runtime.sandbox_remedy(project_root)
+    logger.error("Sandbox execution protocol is unavailable or incompatible; %s", remedy)
 
 
 def run_command(
@@ -251,4 +276,6 @@ def run_command(
         tty=tty,
         env={**(env or {}), RUNTIME_EXECUTION_ENV: execution_id},
     )
-    return SupervisedExecutionDriver(project_data).run(execution_id, docker_argv)
+    return SupervisedExecutionDriver(project_data, project_root=project_root).run(
+        execution_id, docker_argv
+    )

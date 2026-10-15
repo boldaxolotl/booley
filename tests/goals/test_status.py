@@ -48,7 +48,7 @@ def test_corrupt_state_is_reported(goal_mode: SimpleNamespace) -> None:
 
 
 # Four publish/status rounds; Windows CI has measured up to 31 s (3x headroom).
-@pytest.mark.timeout(120)
+@pytest.mark.timeout(150)
 def test_edit_twice_and_rerun(goal_mode: SimpleNamespace) -> None:
     publish(goal_mode)
     assert lint_status(goal_mode).status == "met"

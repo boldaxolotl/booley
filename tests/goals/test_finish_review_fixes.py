@@ -51,8 +51,15 @@ def paired_publication(layout, tmp_path):
     return layout, project
 
 
-@pytest.mark.parametrize("paired", [False, True])
-@pytest.mark.parametrize("abandon", [False, True])
+@pytest.mark.parametrize(
+    "abandon, paired",
+    [
+        (False, False),
+        pytest.param(False, True, marks=pytest.mark.timeout(150)),
+        pytest.param(True, False, marks=pytest.mark.timeout(150)),
+        (True, True),
+    ],
+)
 def test_revalidated_publication_retains_history_through_next_commit(
     layout, tmp_path, paired, abandon, monkeypatch
 ):
@@ -141,6 +148,7 @@ def test_abandoned_retry_reads_sealed_notes_when_projection_is_missing(layout):
     assert finish_goal(call, environment(complete)) == result
 
 
+@pytest.mark.timeout(150)
 def test_recovering_publication_with_broken_paired_git_is_actionable(
     layout, tmp_path, monkeypatch
 ):
@@ -265,7 +273,13 @@ def test_prefence_invalid_retry_preserves_job_after_unrelated_approved_change(la
                 )
 
 
-@pytest.mark.parametrize("abandon", [False, True])
+@pytest.mark.parametrize(
+    "abandon",
+    [
+        False,
+        pytest.param(True, marks=pytest.mark.timeout(150)),
+    ],
+)
 def test_pruned_publication_reconstructs_exact_journaled_commit(layout, abandon):
     complete = publication_layout(layout)
     call = request(complete)

@@ -100,3 +100,12 @@ def test_concise_guidance_names_supported_utilities_and_exceptions(
     }
     for name in ("booley_targets", "booley_report"):
         assert f"`{name}`" in text, f"{path} must name {name} in its routing guidance"
+
+
+@pytest.mark.parametrize(
+    "path", ["docs/user/USAGE.md", "src/booley/data/skills/booley-goal/SKILL.md"]
+)
+def test_goal_evidence_instructions_exclude_cli(path):
+    text = (REPO_ROOT / path).read_text()
+    assert "CLI runs never record Goal evidence" in text
+    assert "Goal-bound" in text and "MCP" in text and "`work_dir`" in text

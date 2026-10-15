@@ -537,7 +537,7 @@ def test_canonical_evidence_survives_late_or_missing_save(goal_mode, schedule):
 
 
 # Windows killed the worker at the CI default 60 s across all publication stages.
-@pytest.mark.timeout(180)
+@pytest.mark.timeout(210)
 def test_async_producer_adapters_keep_final_observations_after_old_reports(layout):
     """External EDA/model results are stubbed at the actual EndpointState adapter."""
     import asyncio

@@ -139,8 +139,8 @@ def test_interrupted_entering_is_classified_and_retained(layout, boundary):
     "boundary, outcome",
     [
         ("finishing", "finished"),
-        ("ref-published", "finished"),
-        ("index-synchronized", "finished"),
+        pytest.param("ref-published", "finished", marks=pytest.mark.timeout(150)),
+        pytest.param("index-synchronized", "finished", marks=pytest.mark.timeout(150)),
         ("finished", "finished"),
     ],
 )

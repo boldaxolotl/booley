@@ -15,8 +15,8 @@ from typing import Any, Literal
 
 from booley.agent_workspace.isolation import (
     WorkspaceSnapshot,
-    get_category_dirs,
     hide_opposite_sources,
+    owned_copy_roots,
 )
 from booley.core.models import AgentCallParams, AgentResult
 
@@ -62,8 +62,7 @@ def _safe_symlink_target(
         relative = source.resolve(strict=False).relative_to(real_root)
     except ValueError:
         return None
-    raw_target = source.readlink()
-    return snapshot_root / relative if raw_target.is_absolute() else raw_target
+    return snapshot_root / relative
 
 
 def _copy_path(
@@ -73,13 +72,15 @@ def _copy_path(
     snapshot_root: Path,
 ) -> None:
     """Copy one git-visible path without following symlinks."""
+    if not source.parent.resolve().is_relative_to(real_root):
+        raise ValueError(f"source parent escapes Project Root: {source.relative_to(real_root)}")
     if not source.exists() and not source.is_symlink():
         return  # tracked deletion in the live worktree
     destination.parent.mkdir(parents=True, exist_ok=True)
     if source.is_symlink():
         target = _safe_symlink_target(source, real_root, snapshot_root)
         if target is not None:
-            destination.symlink_to(target)
+            destination.symlink_to(target, target_is_directory=source.is_dir())
     elif source.is_dir():
         destination.mkdir(exist_ok=True)
         for child in source.iterdir():
@@ -148,11 +149,34 @@ def restore_result_paths(result: AgentResult, snapshot: WorkspaceSnapshot) -> Ag
     )
 
 
+def _project_category_paths(
+    project_root: Path, repository_root: Path, scope: tuple[str, ...]
+) -> tuple[dict[str, tuple[str, ...]], tuple[str, ...]]:
+    """Resolve Project-owned roles, then express them in the copied Git tree."""
+    from booley.fusesoc.fusesoc_registry import canonical_project_path, classified_sources
+
+    sources = classified_sources(project_root, strict=True)
+    prefix = project_root.relative_to(repository_root)
+    category_files = {
+        category: tuple((prefix / path).as_posix() for path in paths)
+        for category, paths in (
+            ("rtl", sources.rtl_source_files),
+            ("tb", sources.tb_files),
+        )
+    }
+    return category_files, tuple(
+        (prefix / canonical_project_path(project_root, path)).as_posix() for path in scope
+    )
+
+
 @contextmanager
 def isolated_agent_workspace(
     params: AgentCallParams,
     access: WorkspaceAccess,
     category: str | None = None,
+    *,
+    scope: tuple[str, ...] = (),
+    excluded_roots: tuple[Path, ...] = (),
 ) -> Iterator[tuple[AgentCallParams, WorkspaceSnapshot | None]]:
     """Point a read-only agent call at a category-isolated disposable copy."""
     if access == "read_write":
@@ -163,17 +187,22 @@ def isolated_agent_workspace(
 
     real_cwd = Path(params.cwd).resolve()
     real_root = _git_root(real_cwd)
-    category_dirs = get_category_dirs(real_root) if category is not None else None
+    category_files = None
+    if category is not None:
+        category_files, scope = _project_category_paths(real_cwd, real_root, scope)
+        excluded_roots = (*owned_copy_roots(real_cwd), *excluded_roots)
     relative_cwd = real_cwd.relative_to(real_root)
     with tempfile.TemporaryDirectory(prefix="booley-specialist-ro-") as temp_dir:
         snapshot = WorkspaceSnapshot(real_root, Path(temp_dir).resolve())
         _populate_snapshot(real_root, snapshot.snapshot_root)
         if category is not None:
-            assert category_dirs is not None
+            assert category_files is not None
             hide_opposite_sources(
                 snapshot,
                 category,
-                category_dirs=category_dirs,
+                category_files=category_files,
+                scope=scope,
+                excluded_roots=excluded_roots,
                 cwd=snapshot.snapshot_root / relative_cwd,
             )
         _initialize_snapshot_git(snapshot.snapshot_root)

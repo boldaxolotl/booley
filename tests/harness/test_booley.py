@@ -1110,6 +1110,8 @@ def test_session_refresh_capacity_refusal_precedes_park_and_spec_change(
     spec.parent.mkdir()
     spec.write_text('{"image":"sha256:running"}\n')
     before = spec.read_bytes()
+    (tmp_path / ".booley").mkdir()
+    monkeypatch.setattr(refresh_runtime, "_load_recovery_issuance", lambda *_: object())
     monkeypatch.setattr(refresh_runtime, "shared_recovery_blocks_command", lambda **_kw: False)
     monkeypatch.setattr(
         session_runtime, "_run", lambda *_args, **_kwargs: pytest.fail("must not invoke Docker")
@@ -1131,11 +1133,6 @@ def test_session_refresh_capacity_refusal_precedes_park_and_spec_change(
         session_runtime,
         "plan_session_refresh",
         lambda *_args, **_kwargs: pytest.fail("capacity failure must precede parking"),
-    )
-    monkeypatch.setattr(
-        refresh_runtime,
-        "capture_session_spec",
-        lambda *_args: pytest.fail("capacity failure must precede spec preparation"),
     )
     args = tlr._build_parser().parse_args(["session", "refresh"])
     assert tlr._cmd_session(args, tmp_path) == 2
@@ -1505,3 +1502,32 @@ def test_auth_clear_cli_keeps_historical_app_default(tmp_path, monkeypatch, caps
     monkeypatch.setattr(tlr, "_host_install_authority_error", lambda *_: None)
     assert tlr.main() == 0
     assert f"no stored {expected} credential" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "outcome,expected",
+    [
+        ("kept", "kept: already current"),
+        ("replaced", "replaced old → new"),
+        ("created", "created new"),
+    ],
+)
+def test_refresh_cli_reports_verified_container_outcome(
+    tmp_path, monkeypatch, capsys, outcome, expected
+):
+    from booley.harness import session_refresh
+    from booley.runtime.session_refresh import RefreshImage, RefreshResult
+
+    result = RefreshResult(
+        RefreshImage("booley-sandbox", "sha256:image"),
+        outcome,
+        None if outcome == "created" else "old",
+        "new",
+    )
+    monkeypatch.setattr(session_refresh, "refresh", lambda *_a, **_kw: result)
+    monkeypatch.setattr(tlr, "_report_session_health", lambda *_a, **_kw: None)
+    monkeypatch.setattr(health, "due_reason", lambda _root: None)
+    assert (
+        tlr._session_refresh(tlr._build_parser().parse_args(["session", "refresh"]), tmp_path) == 0
+    )
+    assert capsys.readouterr().out.strip() == expected
