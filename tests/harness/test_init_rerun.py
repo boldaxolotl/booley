@@ -691,7 +691,7 @@ class TestWindowsProjectDataLineEndings:
         self._assert_safe_and_linked(repo, hardlink=force_hardlink_fallback)
 
     # Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
-    @pytest.mark.timeout(90)
+    @pytest.mark.timeout(210)
     def test_crlf_project_data_behind_guidance_links_is_repaired(
         self,
         repo: Path,

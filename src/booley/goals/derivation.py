@@ -17,6 +17,7 @@ from typing import Any, cast
 from booley.criteria.evidence_ledger import canonical_json, validated_evidence_records
 from booley.criteria.state import CriterionChange, CriterionEntry, DevelopmentState
 from booley.evidence.review_receipt import REVIEW_DETAIL_VERSION
+from booley.goals.evidence_projection import selected_candidates
 from booley.goals.freshness import (
     DEFAULT_RESOLVERS,
     GoalFreshnessResolvers,
@@ -42,20 +43,10 @@ def selected_observations(
     record: GoalRecord, state: DevelopmentState, booley_dir: Path
 ) -> dict[str, dict[str, Any]]:
     """Latest selected producer observations under complete original identity groups."""
-    revisions = {goal.spec.key: goal.spec_revision for goal in record.goals}
     records = validated_evidence_records(
         GOAL_SCOPE, record_paths(booley_dir, record.id).logs_dir, state, {}
     )
-    return {
-        row["criterion"]: row
-        for row in records
-        if row["role"] == "candidate"
-        and row["goal_identity"]["record_id"] == record.id
-        and all(
-            revisions.get(key) == revision
-            for key, revision in row["goal_identity"]["spec_revisions"].items()
-        )
-    }
+    return selected_candidates(record, records)
 
 
 def fresh_observation(

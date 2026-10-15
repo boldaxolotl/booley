@@ -1,0 +1,27 @@
+{
+  "name": "dashboard",
+  "publisher": "booley",
+  "displayName": "Booley Dashboard",
+  "description": "Open the terminal Dashboard when attaching to a Booley Sandbox.",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "engines": { "vscode": "^1.95.0" },
+  "main": "./extension.js",
+  "extensionKind": ["workspace"],
+  "activationEvents": ["onStartupFinished"],
+  "capabilities": { "untrustedWorkspaces": { "supported": "limited" } },
+  "contributes": {
+    "configuration": {
+      "title": "Booley Dashboard",
+      "properties": {
+        "booley.dashboard.attachProtocol": {
+          "type": "integer",
+          "enum": [0, 1],
+          "default": 0,
+          "scope": "machine",
+          "description": "Booley-generated Sandbox attach protocol. Zero disables automatic opening."
+        }
+      }
+    }
+  }
+}

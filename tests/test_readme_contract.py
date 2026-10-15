@@ -10,12 +10,12 @@ from booley.goals.translate import translate_goals
 README = (Path(__file__).resolve().parent.parent / "README.md").read_text(encoding="utf-8")
 
 
-def test_integrated_development_environment_features_lead_with_one_window():
+def test_integrated_development_environment_features_lead_with_typed_flows():
     section = README.split("## Integrated Development Environment", 1)[1].split("\n## ", 1)[0]
     features = (
-        "**One Window:**",
-        "**Reproducible team environment:**",
         "**A typed interface for each Booley Flow:**",
+        "**Reproducible team environment:**",
+        "**One Window:**",
     )
 
     assert [section.index(feature) for feature in features] == sorted(

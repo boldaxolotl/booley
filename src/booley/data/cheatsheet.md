@@ -418,5 +418,5 @@ optional alternative in the attached container window.
 **`booley chat`, `booley goal`, and `booley dashboard` run in the Sandbox.**
 Bare `booley` prints help on the host and starts the configured Developer Agent in the
 Sandbox. For parallel Goal work, use one linked worktree per session. The
-Dashboard attach task defaults on; set `[sandbox].dashboard=false` to opt out.
+Dashboard automatic opening defaults on; set `[sandbox].dashboard=false` to opt out.
 `booley init` and `booley session` run on the host; Doctor works on either side.

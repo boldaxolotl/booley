@@ -9,13 +9,14 @@ from pathlib import Path
 from typing import Any, Literal
 
 from booley.core.boundary import as_str
-from booley.criteria.evidence_ledger import AcceptanceLedgerError, validated_evidence_records
+from booley.criteria.evidence_ledger import AcceptanceLedgerError
 from booley.criteria.state import DevelopmentState
 from booley.flows.campaign_results import CampaignResultsReader
 from booley.goals import campaign_accounting
 from booley.goals.apply_barrier import pending_applies
 from booley.goals.change_policy import conflict
 from booley.goals.checkout import CheckoutError, GoalCheckout, branch_ref
+from booley.goals.evidence_projection import selected_candidates
 from booley.goals.format import format_criterion_metric, format_met_goal_metric
 from booley.goals.freshness import (
     DEFAULT_RESOLVERS,
@@ -26,15 +27,12 @@ from booley.goals.model import GoalFamily, GoalRecord, RecordedGoal
 from booley.goals.paths import record_paths
 from booley.goals.presentation import GoalPresentation, goal_presentation
 from booley.goals.proposals import ProposalView, list_proposals
-from booley.goals.recorder import GOAL_SCOPE
-from booley.goals.state_store import load_goal_state
+from booley.goals.state_store import load_goal_state_and_evidence
 from booley.goals.store import GoalStore, GoalStoreError
 from booley.goals.test_run_freezing import TargetPlans, ensure_test_run_resolutions
 from booley.goals.test_run_goals import names_test_runs
 from booley.goals.test_run_status import TestRunJudgement, judge_test_runs
 from booley.goals.warnings import goal_warnings, protected_warnings
-
-_STATE_CONFLICT = "state conflicts with immutable evidence"
 
 logger = logging.getLogger(__name__)
 
@@ -136,7 +134,7 @@ def _build_status(
     paths = record_paths(store.booley_dir, record.id)
     proposals = list_proposals(paths.root)
     interrupted = pending_applies(paths.root)
-    state = load_goal_state(store, record)
+    state, history = load_goal_state_and_evidence(store, record)
     if state.slug != record.id:
         raise GoalStoreError(f"Goal state belongs to {state.slug}, not {record.id}")
     protected = protected_warnings(record, store.booley_dir, root)
@@ -144,7 +142,7 @@ def _build_status(
         protected[0] if protected else checkout_violation(store, record, root)
     )
     unaccounted = campaign_accounting.unaccounted_goals(store, record, state)
-    goals = _goal_statuses(record, state, store, root, drift, resolvers, unaccounted)
+    goals = _goal_statuses(record, state, history, store, root, drift, resolvers, unaccounted)
     goals = _with_unfinished_runs(goals, campaign_accounting.started_without_result(store, record))
     return GoalStatusView(
         record,
@@ -160,6 +158,7 @@ def _build_status(
 def _goal_statuses(
     record: GoalRecord,
     state: DevelopmentState,
+    history: list[dict[str, Any]],
     store: GoalStore,
     root: Path,
     drift: str,
@@ -172,9 +171,7 @@ def _goal_statuses(
     ledger yet (ADR 0072): it is unmet with that reason whatever the ledger
     says, because what is missing may be a failure.
     """
-    logs_dir = record_paths(store.booley_dir, record.id).logs_dir
-    history = validated_evidence_records(GOAL_SCOPE, logs_dir, state, {})
-    latest = {row["criterion"]: row for row in history if row["role"] == "candidate"}
+    latest = selected_candidates(record, history)
     plans = TargetPlans(root)
     statuses: list[GoalStatus] = []
     for goal in record.goals:
@@ -184,7 +181,7 @@ def _goal_statuses(
         status = _goal_status(goal, entry, evidence, record, root, drift, resolvers)
         status = _with_test_runs(status, goal, record, evidence, history, plans)
         status = replace(status, presentation=goal_presentation(goal.spec, _entry_facts(entry)))
-        if key in unaccounted and status.status != "unmet":
+        if key in unaccounted and (status.status != "unmet" or evidence is None):
             status = replace(
                 status,
                 status="unmet",
@@ -243,16 +240,15 @@ def _with_test_runs(
     """*status* judged by the Goal's frozen Test Runs as well (ADR 0072).
 
     A Goal that is judged by Test Runs is met only when they allow it; when
-    they do not, it is unmet with the named reason. Two verdicts keep their
-    own reason: state that conflicts with its evidence, and stale evidence,
-    unless the frozen runs themselves can no longer be judged (pending,
-    gone or changed): rerunning cannot cure that.
+    they do not, it is unmet with the named reason. Stale evidence keeps its
+    own reason unless the frozen runs themselves can no longer be judged
+    (pending, gone or changed): rerunning cannot cure that.
     """
     if not names_test_runs(goal.spec):
         return status
     judgement = judge_test_runs(goal, record, evidence, history, plans)
     stale = status.status == "stale" and not judgement.blocking
-    if not judgement.reason or status.state_conflict or stale:
+    if not judgement.reason or stale:
         return replace(status, test_runs=judgement)
     summary = status.evidence_summary if status.status == "unmet" else "Test Runs do not pass"
     return GoalStatus(status.key, "unmet", summary, judgement.reason, judgement)
@@ -268,10 +264,6 @@ def _goal_status(
     resolvers: GoalFreshnessResolvers,
 ) -> GoalStatus:
     key = goal.spec.key
-    projection = "" if entry is None else _projection_violation(entry, evidence)
-    if entry is not None and projection:
-        verdict: Literal["stale", "unmet"] = "stale" if entry.met else "unmet"
-        return GoalStatus(key, verdict, _STATE_CONFLICT, projection, state_conflict=True)
     if entry is None or not entry.met:
         metric = (
             "no evidence"
@@ -279,7 +271,19 @@ def _goal_status(
             else format_criterion_metric(key, entry)
         )
         violation = entry.detail.get("goal_contract_violation") if entry and entry.detail else None
-        reason = as_str(violation, "") or ""
+        reason = drift or as_str(violation, "") or ""
+        if evidence is None and not reason:
+            producer = {
+                GoalFamily.ELAB: "sim mode=elab_only",
+                GoalFamily.REVIEW: "Reviewer",
+                GoalFamily.CYCLE_COUNT: "sim",
+                GoalFamily.COVERAGE: "sim",
+                GoalFamily.MUTATION: "mutation_tester",
+            }.get(goal.spec.family, goal.spec.family.value.lower())
+            reason = (
+                f"{goal_presentation(goal.spec).name} has no current immutable observation "
+                f"for met, params and detail; rerun {producer} for this Goal"
+            )
         return GoalStatus(key, "unmet", metric or "unmet", reason)
     reason = drift or _revision_violation(goal, evidence, record)
     if not reason:
@@ -289,16 +293,6 @@ def _goal_status(
     if reason:
         return GoalStatus(key, "stale", "evidence is stale", reason)
     return GoalStatus(key, "met", format_met_goal_metric(key, entry))
-
-
-def _projection_violation(entry: Any, evidence: dict[str, Any] | None) -> str:
-    if evidence is not None and (
-        entry.met != evidence["met"]
-        or (entry.params or {}) != evidence["params"]
-        or entry.detail != evidence["detail"]
-    ):
-        return "Goal state differs from its selected immutable producer observation"
-    return ""
 
 
 def _revision_violation(
@@ -388,7 +382,7 @@ def _archived_status(store: GoalStore, record: GoalRecord) -> GoalStatusView:
     """Inspect terminal frozen facts without reopening old inputs or judging live freshness."""
     from booley.runtime.booley_dir_migration import archival_path
 
-    state = load_goal_state(store, record)
+    state, _history = load_goal_state_and_evidence(store, record)
     rows: list[GoalStatus] = []
     for goal in record.goals:
         entry = state.criteria.get(goal.spec.key)
