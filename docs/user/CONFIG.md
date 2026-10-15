@@ -2602,15 +2602,18 @@ quiet_after = 7200
 
 The Sandbox Image bundles the Booley Dashboard workspace extension. Dev Containers
 installs it from the image on first attach; it opens the terminal view in a trusted
-window opened at a Git Project Root without changing VS Code's global automatic-task permission. An explicit
+window opened at a Git Project Root without changing VS Code's global
+automatic-task permission. An explicit
 user preference of `"task.allowAutomaticTasks": "off"` still suppresses automatic
 opening, as does the same opt-out in `.vscode/settings.json`. The editor's default
 off value alone does not disable the Dashboard.
 
 If you manage `[sandbox].image` yourself, include the current Booley wheel and
 build its bundled VSIX with `RUN python3 -I -m booley.runtime.dashboard_extension`
-in your image recipe. Dev Containers needs that artifact at attach time. Set
-`dashboard = false` if your image cannot supply it; manual opening remains available.
+in your image recipe. Run this build step as root, then restore your image's
+usual `USER`. Dev Containers needs that artifact at attach time. Set
+`dashboard = false` if your image cannot supply it; `booley dashboard` remains
+available manually.
 
 `dashboard = false` disables the opener and removes an unchanged Booley-owned
 manual task. Reconciliation runs on `booley init` or Sandbox refresh. On upgrade,
