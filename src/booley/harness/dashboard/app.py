@@ -192,27 +192,71 @@ def _job_row(job: JobView, now: float, owner: str) -> str:
     )
 
 
-def job_detail(job: JobView, *, now: float | None = None) -> str:
-    """Execution outcome and design verdict remain distinct; no inline logs."""
+def _job_tool_lines(job: JobView) -> list[str]:
+    report = job.report or {}
+    tool = job.recorded_tools
+    if job.state not in TERMINAL_JOB_STATES:
+        return [f"EDA tool: {tool or job.eda_tool or '—'}"]
+    expected = bool(isinstance(report.get("flow"), str) and report["flow"]) or (
+        job.report is None and job.record.endpoint in {"sim", "lint", "synth", "fpga"}
+    )
+    return [f"EDA tool: {tool or 'not recorded by this Flow'}"] if tool or expected else []
+
+
+def _job_resource_lines(job: JobView) -> list[tuple[str, bool]]:
+    if job.state not in TERMINAL_JOB_STATES:
+        return [
+            (
+                f"CPU: {'—' if job.cpu_percent is None else str(round(job.cpu_percent, 1)) + '% of one core'} · Memory: {_measure(job.memory)} · Peak memory: {_measure(job.peak_memory)}",
+                False,
+            )
+        ]
+    if job.report is None:
+        return [("resources not recorded (no report)", True)]
+    resources = job.recorded_resources
+    if resources is None:
+        return []
+    cpu, peak = resources
+    return [(f"CPU time: {cpu:g}s · Peak memory (largest process): {peak:g} MiB", False)]
+
+
+def _job_detail_document(
+    job: JobView, *, now: float | None = None
+) -> tuple[str, tuple[tuple[int, int], ...]]:
     rec, report = job.record, job.report or {}
     paths = job_paths(job)
-    return "\n".join(
-        [
-            f"{_job_label(job)} · {rec.endpoint}",
-            f"Run ID: {rec.run_id}",
-            f"Execution: {job.state} · exit {rec.exit_code}",
-            f"Design verdict: {report.get('passed', 'unavailable')}",
-            f"Flow configuration: {' '.join(rec.argv) or '—'}",
-            f"EDA tool: {report.get('eda_tool') or report.get('tool') or job.eda_tool or '—'}",
-            f"Start: {rec.run_started_at or rec.started_at} · End: {rec.ended_at or '—'}",
-            f"Elapsed: {_elapsed(job, now)}",
-            f"Stage: {job.stage or '—'}",
-            f"CPU: {'—' if job.cpu_percent is None else str(round(job.cpu_percent, 1)) + '% of one core'} · Memory: {_measure(job.memory)} · Peak memory: {_measure(job.peak_memory)}",
-            f"Result: {report.get('summary', report.get('detail', 'unavailable'))}",
-            "Metrics / failure details: " + _reported_metrics(report),
-            "Artifacts:\n" + ("\n".join(paths) or "—"),
+    before = [
+        f"{_job_label(job)} · {rec.endpoint}",
+        f"Run ID: {rec.run_id}",
+        f"Execution: {job.state} · exit {rec.exit_code}",
+        f"Design verdict: {report.get('passed', 'unavailable')}",
+        f"Flow configuration: {' '.join(rec.argv) or '—'}",
+        *_job_tool_lines(job),
+        f"Start: {rec.run_started_at or rec.started_at} · End: {rec.ended_at or '—'}",
+        f"Elapsed: {_elapsed(job, now)}",
+        f"Stage: {job.stage or '—'}",
+    ]
+    lines = (
+        [(line, False) for line in before]
+        + _job_resource_lines(job)
+        + [
+            (f"Result: {report.get('summary', report.get('detail', 'unavailable'))}", False),
+            ("Metrics / failure details: " + _reported_metrics(report), False),
+            ("Artifacts:\n" + ("\n".join(paths) or "—"), False),
         ]
     )
+    spans = []
+    offset = 0
+    for line, dim in lines:
+        if dim:
+            spans.append((offset, offset + len(line)))
+        offset += len(line) + 1
+    return "\n".join(line for line, _dim in lines), tuple(spans)
+
+
+def job_detail(job: JobView, *, now: float | None = None) -> str:
+    """Execution outcome and design verdict remain distinct; no inline logs."""
+    return _job_detail_document(job, now=now)[0]
 
 
 def job_paths(job: JobView) -> tuple[str, ...]:
@@ -803,7 +847,14 @@ class DashboardApp(App[None]):
         aside.display = dedicated or (nav.view == "jobs" and self.size.width >= 120)
         self.query_one(DataTable).display = not dedicated
         aside.styles.width = "100%" if dedicated else "50%"
-        self.query_one("#detail", Static).update(linked_text(detail, paths))
+        rendered = linked_text(detail, paths)
+        job = self._selected_job() if nav.view in {"job", "jobs"} else None
+        if job is not None:
+            body, spans = _job_detail_document(job, now=self.snapshot.observed_at)
+            prefix = len(detail) - len(body)
+            for start, end in spans:
+                rendered.stylize("dim", prefix + start, prefix + end)
+        self.query_one("#detail", Static).update(rendered)
 
     def _job_detail(self, job: JobView) -> str:
         return (

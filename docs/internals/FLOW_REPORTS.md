@@ -44,8 +44,24 @@ Consumers must use the numbered `<report-root>/<name>/<N>/...` paths.
 | `criterion_key`, `criterion_met` | For Flow/Specialist reports with an acceptance identity (normally Goal-bound), the effective key and boolean verdict when exactly one applicable Criterion maps to the invocation and was evaluated. Empty key and `null` verdict for zero/multiple mapped Criteria, no evaluation, or every multi-Target invocation (including partial runs). Unbound Flow/Specialist reports omit both fields; consumers must use optional-key access. `passed` remains independent of this verdict. |
 | `timestamp`, `elapsed_s`, `slug` | Start time, duration, and execution identity: the Goal Record ID for Goal-bound runs or the supplied execution identity for Interactive runs; normally empty for standalone diagnostics. |
 | `detail` | Flow-specific results and pointers to per-Target files. |
-| `eda_tool`, `run_id`, `report_text` | The EDA tool used, the job ID, and the printed verdict card, when present. |
+| `eda_tool`, `eda_tools` | Resolved EDA identity, when known. One selected Target uses scalar `eda_tool`; multiple selected Targets use `eda_tools`, a map from Target selector to tool or `null` for unresolved/unreached Targets, even when all use the same tool. Unknown single-Target identity is omitted. Standalone frontend identity remains scalar. Specialists that run an EDA tool report it; Specialists without one omit these keys. |
+| `resources` | Optional process accounting: `cpu_user_s`, `cpu_sys_s` in seconds and `peak_rss_mb` in MiB. |
+| `run_id`, `report_text` | The Job ID and printed verdict card, when present. |
 | `usage` | For Specialists that call a model: `input_tokens`, `output_tokens`, `cached_tokens`, `cache_create_tokens`, and `cost_usd`. |
+
+Resource accounting is captured once when the final report is built; numbered
+and flat copies carry the same snapshot. CPU sums the endpoint process and its
+waited-for children (`RUSAGE_SELF` plus `RUSAGE_CHILDREN`). Peak memory is the
+maximum of their high-water marks: the **largest process**, not a simultaneous
+process-tree total. RSS is converted from KiB on Linux and from bytes on Darwin
+to MiB. Detached or unwaited children are excluded. `elapsed_s` remains wall time.
+
+These kernel counters cover the process lifetime. Jobs normally own short-lived
+endpoint processes; repeated in-process calls can include earlier calls' work.
+A resumed Campaign records only the resuming process, not its original lifetime.
+Where `resource` is unavailable, `resources` is omitted. An operational accounting
+error is logged and omits the field while still publishing the report. Older
+reports may also lack these optional measurements; consumers must not invent zeros.
 
 ## Progress
 
