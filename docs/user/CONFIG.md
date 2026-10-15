@@ -2588,9 +2588,8 @@ cannot be copied here by hand; they become approval files through a human-approv
 
 ### Dashboard and quiet Goal presence (`[goals]`)
 
-The Sandbox Dashboard opens on VS Code
-folder attachment by default. Configure these values in the Booley Directory's
-`booley.toml`:
+The Sandbox Dashboard opens on VS Code Sandbox attachment by default. Configure
+these values in the Booley Directory's `booley.toml`:
 
 ```toml
 [sandbox]
@@ -2600,37 +2599,9 @@ dashboard = true
 quiet_after = 7200
 ```
 
-The Sandbox Image bundles the Booley Dashboard workspace extension. Dev Containers
-installs it from the image on first attach; it opens the terminal view in a trusted
-window opened at a Git Project Root without changing VS Code's global
-automatic-task permission. An explicit
-user preference of `"task.allowAutomaticTasks": "off"` still suppresses automatic
-opening, as does the same opt-out in `.vscode/settings.json`. The editor's default
-off value alone does not disable the Dashboard.
-
-If you manage `[sandbox].image` yourself, include the current Booley wheel and
-build its bundled VSIX with `RUN python3 -I -m booley.runtime.dashboard_extension`
-in your image recipe. Run this build step as root, then restore your image's
-usual `USER`. Dev Containers needs that artifact at attach time. Set
-`dashboard = false` if your image cannot supply it; `booley dashboard` remains
-available manually.
-
-`dashboard = false` disables the opener and removes an unchanged Booley-owned
-manual task. Reconciliation runs on `booley init` or Sandbox refresh. On upgrade,
-it changes an unchanged owned `folderOpen` task into a manual shortcut. Existing
-user tasks, comments and unknown fields are preserved. Edited, unowned or
-deliberately removed Dashboard tasks suppress automatic opening with a diagnostic.
-To restore an owned task you removed, set `dashboard = false`, run `booley init`
-on the host, then set it to true and run init again. Rebuild/reopen the Sandbox
-after an image upgrade; a running container cannot install a new image artifact.
-
-The shortcut lives in `.vscode/tasks.json`. Tracked tasks files remain unchanged;
-an unrelated tracked tasks file does not block the extension. A tracked Dashboard
-task is treated as user-owned and keeps control of its own launch behavior.
-Booley adds a local `.vscode` Git exclusion only when it creates that directory;
-its ownership record persists across reconciliation. Check the **Booley Dashboard**
-Output channel if automatic opening is suppressed. Closing the view is respected
-until the next window session; `booley dashboard` always remains available manually.
+Set `dashboard = false` to disable automatic opening. You can always open the
+Dashboard manually with `booley dashboard` in the Sandbox. For opt-outs and
+startup problems, see [Dashboard troubleshooting](TROUBLESHOOTING.md#the-dashboard-does-not-open-on-sandbox-attach).
 
 `quiet_after` is a finite number of seconds from 60 through 604800, default
 7200 (two hours). Quiet thread and worktree-fallback presence expires at this
