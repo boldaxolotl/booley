@@ -683,7 +683,13 @@ def test_windows_recovery_commands_quote_powershell_metacharacters(monkeypatch):
 
 
 @pytest.mark.parametrize("vscode", [False, True])
-def test_capacity_refusal_names_owner_recovery(tmp_path, vscode):
+@pytest.mark.parametrize("shell", ["posix", "nt"])
+def test_capacity_refusal_names_owner_recovery(tmp_path, monkeypatch, vscode, shell):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        session_admission, "os", SimpleNamespace(name=shell, path=session_admission.os.path)
+    )
     item = session_admission.Sandbox(
         "id",
         "sandbox",
@@ -698,7 +704,8 @@ def test_capacity_refusal_names_owner_recovery(tmp_path, vscode):
         session_admission.SandboxHostPolicy(max_sessions=1), (item,), (), datetime.now(UTC)
     )
     assert ("Dev Containers" in message) is vscode
-    assert ("booley session down" in message) is not vscode
+    down = "& 'booley' 'session' 'down'" if shell == "nt" else "booley session down"
+    assert (down in message) is not vscode
 
 
 def test_project_root_identity_preserves_posix_case_and_symlinks(tmp_path):

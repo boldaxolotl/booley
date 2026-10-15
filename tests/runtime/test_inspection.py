@@ -973,3 +973,26 @@ def test_spec_warning_appends_one_owner_selected_workflow(tmp_path, monkeypatch)
     message = report.report().findings[0].message
     assert message.count("booley session refresh") == 1
     assert "init --seed" not in message
+
+
+def test_host_inspection_reports_current_issuance_drift(
+    workspace, project_sandbox_resolution, monkeypatch
+):
+    fixture = project_sandbox_resolution
+    fixture.state["Config"]["User"] = "root"
+    monkeypatch.setattr(
+        inspection,
+        "_list_issued_containers",
+        lambda *_: subprocess.CompletedProcess([], 0, "", ""),
+    )
+    report = inspection.Findings()
+    inspection._inspect_live_runtime(
+        inspection.RuntimeInspectionRequest(workspace, fixture.spec["image"], "docker"),
+        fixture.spec,
+        fixture.issuance,
+        report,
+    )
+    assert any(
+        item.message == "active Sandbox differs from current host issuance"
+        for item in report.report().findings
+    )

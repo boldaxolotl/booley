@@ -4355,8 +4355,9 @@ def test_project_sandbox_resolution_editor_refuses_cli_mutation(
 
 
 @pytest.mark.parametrize("change", ["stale", "user", "workdir", "id", "stopped"])
+@pytest.mark.parametrize("consumer", ["enter", "validate"])
 def test_project_sandbox_resolution_refuses_drift_before_attachment(
-    workspace, project_sandbox_resolution, monkeypatch, change
+    workspace, project_sandbox_resolution, monkeypatch, change, consumer
 ):
     fixture = project_sandbox_resolution
     if change == "stale":
@@ -4381,7 +4382,10 @@ def test_project_sandbox_resolution_refuses_drift_before_attachment(
     attached = Mock()
     monkeypatch.setattr("booley.runtime.runtime_attachment.run_command", attached)
     with pytest.raises(sr.SessionError, match="current host issuance"):
-        sr.enter(workspace, tty=False)
+        if consumer == "enter":
+            sr.enter(workspace, tty=False)
+        else:
+            sr.validate(workspace)
     attached.assert_not_called()
 
 
@@ -4799,3 +4803,33 @@ def test_refresh_identity_requires_verified_immutable_container(
             sr.refresh_container_id(tmp_path)
     else:
         assert sr.refresh_container_id(tmp_path) == expected
+
+
+@pytest.mark.parametrize("problem", ["changed-id", "malformed", "denied"])
+def test_project_sandbox_resolution_revalidation_fails_closed(
+    workspace, project_sandbox_resolution, monkeypatch, problem
+):
+    fixture = project_sandbox_resolution
+    inspections = 0
+
+    def run(argv, **kwargs):
+        nonlocal inspections
+        result = fixture.run(argv, **kwargs)
+        if argv[1:3] == ["container", "inspect"]:
+            inspections += 1
+            if inspections == 2:
+                if problem == "denied":
+                    return subprocess.CompletedProcess(argv, 1, "", "inspection denied")
+                state = json.loads(result.stdout)
+                if problem == "changed-id":
+                    state["Id"] = "b" * 64
+                else:
+                    state.pop("Mounts")
+                result.stdout = json.dumps(state)
+        return result
+
+    monkeypatch.setattr(sr, "_run", run)
+    with pytest.raises(sr.SessionError, match=r"identity changed|cannot revalidate"):
+        sr.down(workspace)
+    assert inspections == 2
+    assert all(call[1] in ("ps", "container") for call in fixture.calls)
