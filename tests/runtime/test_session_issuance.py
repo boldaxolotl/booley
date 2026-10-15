@@ -2854,9 +2854,9 @@ def test_refresh_replaces_spec_drift_without_image_change(issued, monkeypatch, t
     monkeypatch.setattr(session_runtime, "discard_refresh_session", lambda *_: None)
     monkeypatch.setattr(session_runtime, "refresh_container_id", lambda *_: "new", raising=False)
     result = session_refresh.refresh(project, Images())
+    assert events == ["park", "reissue", "up"]
     assert result.outcome == "replaced"
     assert result.previous_container_id == "old" and result.container_id == "new"
-    assert events == ["park", "reissue", "up"]
     assert runtime_spec.validate(
         project,
         json.loads(dc.devcontainer_path(project).read_text()),
