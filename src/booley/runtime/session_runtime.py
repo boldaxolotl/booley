@@ -2477,6 +2477,19 @@ SANDBOX_HOST_INSPECTION_REMEDY = (
 )
 
 
+def _authenticated_recovery_available(workspace: Path) -> bool:
+    from booley.runtime import session_issuance as runtime_spec
+
+    try:
+        spec = _load_spec(workspace)
+        if not isinstance(spec, dict):
+            return False
+        runtime_spec.load_recovery_snapshot(workspace, spec, dc.devcontainer_path(workspace))
+    except (SessionError, runtime_spec.RuntimeSpecError):
+        return False
+    return True
+
+
 def sandbox_remedy(
     workspace: Path, *, runtime_only: bool = False, recovery_unavailable: bool = False
 ) -> str:
@@ -2511,7 +2524,7 @@ def sandbox_remedy(
     workflow = "run `booley session refresh` on the host"
     if external:
         workflow = "rebuild/pull the selected external image, then run `booley session down`, `booley init --seed`, and `booley session up` on the host"
-    elif recovery_unavailable:
+    elif recovery_unavailable or not _authenticated_recovery_available(workspace):
         workflow = (
             "on the host run `booley session down`, `booley init --seed`, and `booley session up`"
         )

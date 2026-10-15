@@ -3030,3 +3030,17 @@ def test_licensed_prepared_matching_and_relay_drift_use_full_validation(issued, 
     changed.prepare_spec(project, image)
     assert dc.render_devcontainer_json(changed._spec.spec).encode() == before
     assert not changed.spec_is_current(project)
+
+
+def test_validate_tampered_spec_selects_reseed_instead_of_circular_refresh(issued, monkeypatch):
+    from booley.runtime import runtime_context
+
+    project, spec, path, _stamp = issued
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    monkeypatch.setattr(session_runtime, "strict_conflicting_vscode_session", lambda _root: None)
+    spec["remoteEnv"]["UNISSUED_SETTING"] = "changed"
+    path.write_text(json.dumps(spec))
+    with pytest.raises(session_runtime.SessionError) as caught:
+        session_runtime.validate(project)
+    assert "booley init --seed" in str(caught.value)
+    assert "booley session refresh" not in str(caught.value)

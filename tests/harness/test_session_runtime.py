@@ -4254,6 +4254,7 @@ def test_drift_remedy_has_one_state_appropriate_workflow(tmp_path, monkeypatch, 
 
     from booley.runtime import runtime_context, session_issuance, session_runtime
 
+    monkeypatch.setattr(session_runtime, "_authenticated_recovery_available", lambda _root: True)
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
 
     def issuance(_root):
