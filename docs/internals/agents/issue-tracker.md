@@ -16,6 +16,11 @@ operations.
 Infer the repository from `git remote -v`; `gh` does this automatically inside
 the clone.
 
+## Agent Briefs
+
+A `ready-for-agent` issue needs an Agent Brief comment. Write and place it per
+[agent-brief.md](agent-brief.md).
+
 ## Pull requests as a triage surface
 
 **PRs as a request surface: no.**

@@ -60,18 +60,21 @@ Triage is a conversation, one **brief** per turn.
 6. **Act on the decision immediately**, then log it in `triage.md` and brief the
    next cluster.
    - `file` (a product or doc cluster, or a `qa-bug` the maintainer asks to file):
-     draft the issue in a local file with problem, repro, build identity, the verified
-     cause, the **approved fix direction only** under a `## Fix` heading, and
-     acceptance criteria. When the
-     blast radius is yes or likely, the fix section starts with **Step 1: audit**,
-     naming the suspected places and the pattern to search for; the fix then
-     covers every affected place the audit finds. When the decision widens scope in
-     other ways (for example "add a Doctor check"), write that into the issue too.
-     Follow the issue rules in `AGENTS.md`: scan title and body with the
-     confidential-content guard, then `gh issue create`. Label with `bug`,
-     `documentation`, or `enhancement`, and with the triage role from
-     `docs/internals/agents/triage-labels.md` (`ready-for-agent` when the fix is
-     decided, `needs-triage` for open design).
+     draft two local files. The issue body holds the context: problem, repro,
+     build identity, the verified cause with `file:line`, and the blast radius
+     assessment. The Agent Brief holds the **approved fix direction only**, per
+     `docs/internals/agents/agent-brief.md`. When the blast radius is yes or
+     likely, the brief's `**Audit:**` field names the pattern and the suspected
+     places, and an acceptance criterion requires fixing every place the audit
+     finds. When the decision widens scope in other ways (for example "add a
+     Doctor check"), write that into the brief too. Follow the issue rules in
+     `AGENTS.md`: scan title, body, and brief with the confidential-content
+     guard, `gh issue create`, then post the brief at once with
+     `gh issue comment`. Label with the brief's Category (`bug`,
+     `documentation`, or `enhancement`) and the triage role from
+     `docs/internals/agents/triage-labels.md`: `ready-for-agent` only when the
+     fix is decided and the brief is posted; `needs-triage` for open design,
+     with no brief.
    - `comment on #<n>`: same drafting and scan, then `gh issue comment`.
    - `fix mission`: record the exact change in `triage.md`; mission edits are
      batched in step 7.
