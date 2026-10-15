@@ -820,7 +820,29 @@ def test_target_less_legacy_artifact_stamp_stales_once_and_rerun_clears(layout, 
     previous = value["criteria"]["review_rtl_bugs_done"]["detail"]["_source_fingerprint"]
     previous["fingerprint"] = compute_source_fingerprint(layout.worktree)
     previous["fingerprint"]["target_surface"] = target_surface_fingerprint(layout.worktree, None)
-    paths.state_file.write_text(json.dumps(value))
+    from booley.criteria.evidence_ledger import record_changes
+    from booley.criteria.state import CriterionChange, DevelopmentState
+    from booley.goals.recorder import GOAL_SCOPE, goal_identity
+
+    # A real historical observation carries the legacy stamp; cache edits heal.
+    key = "review_rtl_bugs_done"
+    cached = value["criteria"][key]
+    cached["detail"]["review_detail_version"] = 3
+    state = DevelopmentState.from_json_object(value)
+    record_changes(
+        paths.logs_dir,
+        state,
+        [
+            CriterionChange(
+                key, cached["met"], "legacy producer", cached["detail"], True, cached["params"]
+            )
+        ],
+        scope=GOAL_SCOPE,
+        invocation_id="legacy",
+        producer="reviewer",
+        execution_id="",
+        identity=goal_identity(layout.record.id, {key: 1}),
+    )
     assert build_status(GoalStore(layout.control), layout.record).goals[0].status == "stale"
     rerun, provider = _goal_reviewer_endpoint(layout, monkeypatch)
     assert rerun._run().exit_code == 0

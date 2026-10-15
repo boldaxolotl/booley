@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import replace
 from pathlib import Path
@@ -647,7 +648,17 @@ def test_real_detached_supervisor_publishes_without_a_goal_binding(layout):
     while report["status"] == "pending" and time.monotonic() < deadline:
         time.sleep(0.05)
         report = baseline_observations(layout.control, record, goal)
-    assert report["status"] == "complete", report
+    if report["status"] != "complete":
+        diagnostic = json.dumps(report, indent=2)
+        identity = request_identity(record, goal, entry_inputs(layout.control, record))
+        log = request_path(layout.control, identity).parent / "job.log"
+        if log.is_file():
+            with log.open("rb") as handle:
+                handle.seek(0, os.SEEK_END)
+                handle.seek(max(0, handle.tell() - 8192))
+                diagnostic += "\nOwned baseline job.log (last 8192 bytes):\n"
+                diagnostic += handle.read(8192).decode("utf-8", errors="replace")
+        pytest.fail(diagnostic)
     assert report["results"] == []
     job = job_records.read_record(report["job_id"], Path(report["jobs_root"]))
     assert job is not None and job.binding is None

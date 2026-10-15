@@ -209,3 +209,73 @@ def test_an_applied_line_with_a_non_canonical_time_is_corrupt(
         stream.write(json.dumps(applied) + "\n")
     with pytest.raises(ChangeLogCorruptError, match="RFC 3339"):
         read_change_log(path)
+
+
+def test_valid_retired_review_history_does_not_brick_current_projection(layout):
+    from dataclasses import replace
+
+    from booley.criteria.state import DevelopmentState
+    from booley.goals.paths import record_paths
+    from booley.goals.recorder import GoalEvidenceRecorder
+    from booley.goals.state_store import load_goal_state
+    from tests.goals.conftest import bind, enter_goals
+
+    layout.record = enter_goals(
+        layout,
+        [{"family": "REVIEW", "review": "rtl_bugs", "verdict": "clean", "paths": ["rtl.v"]}],
+    )
+    recorder = GoalEvidenceRecorder(bind(layout))
+    state = DevelopmentState.load(
+        record_paths(layout.control, layout.record.id).state_file, recorder.state_persistence()
+    )
+    key = layout.record.goals[0].spec.key
+    changes = state.set_criterion(key, False, detail={"issues": 1})
+    recorder.record_changes(state, changes, invocation_id="review", producer="reviewer")
+    # An approved removal retires the key while preserving immutable history.
+    current = replace(layout.record, goals=())
+    projected = load_goal_state(GoalStore(layout.control), current)
+    assert projected.slug == current.id
+
+
+def test_source_invalidated_observation_cannot_be_resurrected_by_relaxation(layout):
+    from booley.criteria.state import CriterionChange
+    from booley.evidence.fields import SOURCE_INVALIDATED_REASON
+    from booley.goals.state_store import load_goal_state
+    from tests.goals.test_proposals import CYCLE_KEY, approve, proposal, publish, setup_cycle
+
+    env = setup_cycle(layout)
+    from booley.criteria.state import DevelopmentState
+    from booley.goals.paths import record_paths
+    from booley.goals.recorder import GoalEvidenceRecorder
+    from tests.goals.conftest import bind
+
+    publish(layout)
+    approve(layout, env, proposal(layout, env, maximum=200).proposal.id)
+    recorder = GoalEvidenceRecorder(bind(layout))
+    state = DevelopmentState.load(
+        record_paths(layout.control, layout.record.id).state_file, recorder.state_persistence()
+    )
+    keys = state.reset_category("rtl")
+    assert CYCLE_KEY in keys
+    (layout.worktree / "rtl.v").write_text("module top; wire changed; endmodule\n")
+    recorder.record_changes(
+        state,
+        [
+            CriterionChange(
+                key,
+                False,
+                SOURCE_INVALIDATED_REASON,
+                dict(state.criteria[key].detail),
+                True,
+                dict(state.criteria[key].params),
+            )
+            for key in keys
+        ],
+        invocation_id="invalidated",
+        producer="coder",
+    )
+    assert state.criteria[CYCLE_KEY].stale is True
+    approve(layout, env, proposal(layout, env, maximum=300).proposal.id)
+    current = load_goal_state(env.store, env.store.load(layout.record.id))
+    assert current.criteria[CYCLE_KEY].met is False
+    assert current.criteria[CYCLE_KEY].detail == {}

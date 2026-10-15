@@ -223,6 +223,10 @@ def test_invalid_or_stale_evidence_cannot_become_success(layout, defect):
             row = json.loads(path.read_bytes())
             row["goal_identity"]["record_id"] = "foreign-20261006T120000Z"
             path.write_text(json.dumps(row))
+    if defect == "foreign":
+        with pytest.raises(AcceptanceLedgerError, match="another Goal Record"):
+            proposal(layout, env)
+        return
     view = proposal(layout, env)
     approve(layout, env, view.proposal.id)
     state = load_goal_state(env.store, env.store.load(layout.record.id))
