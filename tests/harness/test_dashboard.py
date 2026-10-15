@@ -511,19 +511,17 @@ def test_responsive_goal_selection_uses_the_displayed_column_count(monkeypatch):
 @pytest.mark.parametrize(
     "report,due,expected",
     [
-        ({"counts": {"fail": 0, "warn": 0}}, None, ()),
-        ({"counts": {"fail": 0, "warn": 0}}, "expired", ("Doctor health stale: expired",)),
+        ({"counts": {"fail": 0, "warn": 0}}, None, ("Doctor: OK",)),
+        ({"counts": {"fail": 0, "warn": 0}}, "expired", ("Doctor: OK · stale",)),
         (
             {"counts": {"fail": 1, "warn": 0}},
             "inputs changed",
-            ("failure · stale: inputs changed",),
+            ("Doctor: 1 FAIL · stale",),
         ),
-        (None, None, ("Doctor health unavailable: no readable automatic result",)),
+        (None, None, ("Doctor: unavailable: no readable automatic result",)),
     ],
 )
-def test_health_nonconsuming_clean_hidden_and_freshness(
-    tmp_path, monkeypatch, report, due, expected
-):
+def test_health_nonconsuming_compact_and_freshness(tmp_path, monkeypatch, report, due, expected):
     diagnostics = DiagnosticReport(
         (DiagnosticFinding(Severity.FAIL, "failure"),)
         if report is not None and report["counts"]["fail"]
@@ -541,7 +539,6 @@ def test_health_nonconsuming_clean_hidden_and_freshness(
         return snapshot
 
     monkeypatch.setattr(model.health, "read_health", read)
-    monkeypatch.setattr(model.health_presentation, "brief_message", lambda _: "failure")
     monkeypatch.setattr(
         model.upgrade_review,
         "read_status",
@@ -553,7 +550,7 @@ def test_health_nonconsuming_clean_hidden_and_freshness(
     monkeypatch.setattr(
         model.upgrade_review, "observe", lambda *_a, **_k: pytest.fail("upgrade state changed")
     )
-    assert model.health_lines(tmp_path, tmp_path) == expected
+    assert tuple(line.text for line in model.health_lines(tmp_path, tmp_path)) == expected
     assert reads == [True]
     assert list(tmp_path.iterdir()) == []
 
@@ -758,3 +755,222 @@ def test_recent_results_are_newest_first_and_bounded(monkeypatch):
     assert [job.record.run_id for job in app._jobs()] == ["3", "2", "1"]
     app.navigation = Navigation("jobs", None, "all")
     assert [job.record.run_id for job in app._jobs()] == ["3", "2", "1"]
+
+
+def _header_health(monkeypatch, tmp_path, fail=2, warn=1, due=None, missing=False, upgrade=False):
+    findings = tuple(
+        DiagnosticFinding(Severity.FAIL, "sentinel finding [path] " * 20) for _ in range(fail)
+    )
+    findings += tuple(
+        DiagnosticFinding(Severity.WARN, "sentinel warning", check_id="test.warning")
+        for _ in range(warn)
+    )
+    findings += (
+        DiagnosticFinding(Severity.PASS, "passed"),
+        DiagnosticFinding(Severity.WAIVED, "waived", check_id="test.waived"),
+    )
+    observed = (
+        None
+        if missing
+        else health.HealthSnapshot(
+            DiagnosticReport(findings), "hash", tmp_path / "sentinel[transcript].log", due
+        )
+    )
+    monkeypatch.setattr(health, "read_health", lambda _: observed)
+    condition = (
+        upgrade_review.ReviewCondition.PENDING
+        if upgrade
+        else upgrade_review.ReviewCondition.CURRENT
+    )
+    monkeypatch.setattr(
+        upgrade_review,
+        "read_status",
+        lambda _: upgrade_review.ReviewStatus(condition, "1", "path", pending_target="2"),
+    )
+    return model.health_lines(tmp_path, tmp_path)
+
+
+def _rich_payload(widget):
+    from rich.text import Text
+
+    assert isinstance(widget.content, Text), "header must mount styled Rich Text"
+    return widget.content
+
+
+def _style_at(text, offset=0):
+    from rich.console import Console
+
+    return text.get_style_at_offset(Console(), offset)
+
+
+@pytest.mark.asyncio
+async def test_pilot_header_semantic_styles(monkeypatch, tmp_path):
+    from rich.style import Style
+
+    from booley.harness import colors
+    from booley.harness.dashboard.resources import Resources
+
+    current = model.DashboardSnapshot(
+        health=_header_health(monkeypatch, tmp_path, upgrade=True),
+        diagnostics=("diagnostic [literal/path]",),
+        resources=Resources(12.5, 1024**3, 2 * 1024**3, 3 * 1024**3, 4),
+    )
+    app = DashboardApp(lambda: current)
+    monkeypatch.setattr(app, "_content", lambda: ("Scope [literal]\ndetail [path]", [], []))
+    async with app.run_test(size=(160, 30)) as pilot:
+        await pilot.pause()
+        orientation = _rich_payload(app.query_one("#orientation", Static))
+        assert orientation.plain == "Scope [literal]\ndetail [path]"
+        assert _style_at(orientation) == Style.parse(f"bold color({colors.PALETTE_DODGER_BLUE})")
+        assert _style_at(orientation, orientation.plain.index("detail")) == Style()
+        doctor = _rich_payload(app.query_one("#health", Static))
+        assert doctor.plain.splitlines()[0] == "Doctor: 2 FAIL · 1 WARN"
+        assert _style_at(doctor) == Style.parse("bold red")
+        assert "Upgrade review" in doctor.plain
+        assert _style_at(doctor, doctor.plain.index("Upgrade")) == Style()
+        assert _style_at(doctor, doctor.plain.index("diagnostic")) == Style()
+        widget = app.query_one("#resources", Static)
+        resources = _rich_payload(widget)
+        assert (
+            resources.plain
+            == "Sandbox CPU 12.5% of 4 CPUs · Memory 1.0 GiB / 2.0 GiB · Free disk 3.0 GiB"
+        )
+        chrome = Style.parse(f"color({colors.PALETTE_MAUVE})")
+        for label in ("Sandbox CPU", "Memory", "Free disk"):
+            assert _style_at(resources, resources.plain.index(label)) == chrome
+        segments = list(widget.render_line(0))
+        painted = [(char, segment.style) for segment in segments for char in segment.text]
+        assert painted[0][1].color.get_truecolor() == chrome.color.get_truecolor()
+        assert (
+            painted[resources.plain.index("12.5")][1].color.get_truecolor()
+            == app.screen.rich_style.color.get_truecolor()
+        )
+        print(
+            "Header painted resource label/value colors:",
+            painted[0][1],
+            painted[resources.plain.index("12.5")][1],
+        )
+
+
+@pytest.mark.asyncio
+async def test_pilot_stale_notice_uses_attention_style():
+    from rich.style import Style
+
+    from booley.harness import colors
+
+    current = model.DashboardSnapshot()
+    app = DashboardApp(lambda: current)
+    async with app.run_test(size=(120, 30)):
+        app._show_stale("read failed [path]")
+        content = _rich_payload(app.query_one("#health", Static))
+        assert content.plain == "Dashboard data unavailable/stale: read failed [path]"
+        assert _style_at(content) == Style.parse(f"color({colors.PALETTE_ORANGE})")
+        app.render_snapshot()
+        assert "read failed" not in str(app.query_one("#health", Static).content)
+
+
+@pytest.mark.parametrize(
+    "fail,warn,due,missing,expected,style",
+    [
+        (2, 1, None, False, "Doctor: 2 FAIL · 1 WARN", "bold red"),
+        (2, 0, None, False, "Doctor: 2 FAIL", "bold red"),
+        (0, 1, None, False, "Doctor: 1 WARN", "yellow"),
+        (0, 0, None, False, "Doctor: OK", "dim"),
+        (2, 1, "expired reason", False, "Doctor: 2 FAIL · 1 WARN · stale", "bold red"),
+        (0, 0, None, True, "Doctor: unavailable: no readable automatic result", "dim"),
+        (0, 0, "expired reason", False, "Doctor: OK · stale", "dim"),
+    ],
+    ids=["fail-warn", "fail-only", "warn-only", "clean", "stale", "no-snapshot", "clean-stale"],
+)
+@pytest.mark.asyncio
+async def test_pilot_compact_doctor_line(
+    monkeypatch, tmp_path, fail, warn, due, missing, expected, style
+):
+    from rich.style import Style
+
+    current = model.DashboardSnapshot(
+        health=_header_health(monkeypatch, tmp_path, fail, warn, due, missing)
+    )
+    app = DashboardApp(lambda: current)
+    async with app.run_test(size=(160, 30)):
+        widget = app.query_one("#health", Static)
+        assert str(widget.content) == expected, "Doctor header must contain compact counts only"
+        content = _rich_payload(widget)
+        assert len(content.plain.splitlines()) == 1
+        assert "sentinel" not in content.plain
+        assert "expired reason" not in content.plain
+        assert _style_at(content) == Style.parse(style)
+
+
+def test_goal_statuses_use_shared_semantic_styles():
+    from rich.style import Style
+
+    from booley.harness import colors
+    from booley.harness.dashboard import app as app_module
+
+    styles = getattr(app_module, "SEMANTIC_STYLE", {})
+    assert styles, "Dashboard needs a shared semantic style map"
+    expected = {
+        "passing": "green",
+        "failing": "bold red",
+        "needs recheck": f"color({colors.PALETTE_ORANGE})",
+        "not yet run": "dim",
+        "checking": f"color({colors.PALETTE_DODGER_BLUE})",
+    }
+    for state, style in expected.items():
+        if state == "checking":
+            continue
+        goal = model.GoalDetail(
+            "fixture",
+            state,
+            CriterionPresentation("Label [path]", "", "", "", "detail"),
+            checking=True,
+        )
+        text = app_module._goal_text(goal)
+        assert text.plain == f"checking · {state} · Label [path] · detail"
+        assert goal.state == state
+        assert _style_at(text) == Style.parse(expected["checking"])
+        assert _style_at(text, len("checking · ")) == Style.parse(style)
+        assert _style_at(text, text.plain.index("Label")) == Style.parse(expected["checking"])
+    for alias in ("pass", "met", "passing"):
+        assert styles[alias] == "green"
+    assert styles["ok"] == "dim"
+    for aliases in (
+        ("fail", "failing"),
+        ("running", "checking"),
+        ("attention", "needs recheck"),
+        ("unknown", "not run", "not yet run", "unavailable", "ok"),
+    ):
+        assert len({styles[alias] for alias in aliases}) == 1
+    assert styles["warn"] == "yellow"
+
+
+def test_dashboard_palette_imports_have_no_copied_codes():
+    import ast
+
+    from booley.harness import colors
+    from booley.harness.dashboard import app as app_module
+
+    tree = ast.parse(Path(app_module.__file__).read_text())
+    imported = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module == "booley.harness.colors"
+        for alias in node.names
+    }
+    assert {"PALETTE_MAUVE", "PALETTE_ORANGE", "PALETTE_DODGER_BLUE"} <= imported, (
+        "Dashboard must import the palette owner constants"
+    )
+    codes = {
+        colors.PALETTE_MAUVE,
+        colors.PALETTE_ORANGE,
+        colors.PALETTE_DODGER_BLUE,
+        colors.PALETTE_MINT,
+        colors.PALETTE_LAVENDER,
+    }
+    for path in Path(app_module.__file__).parent.glob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.Constant):
+                assert node.value not in codes if isinstance(node.value, int) else True
+                if isinstance(node.value, str):
+                    assert not any(f"color({code})" in node.value for code in codes)

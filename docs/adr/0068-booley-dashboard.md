@@ -1,6 +1,6 @@
 # Booley Dashboard replaces the Console
 
-Status: accepted (2026-10-06; proposed 2026-10-03; amended 2026-10-06: session identity; amended 2026-10-11: open implementation choices; amended 2026-10-14: persistent handles; amended 2026-10-15: Sandbox attach, see Amendments)
+Status: accepted (2026-10-06; proposed 2026-10-03; amended 2026-10-06: session identity; amended 2026-10-11: open implementation choices; amended 2026-10-14: persistent handles; amended 2026-10-15: Sandbox attach; amended 2026-10-16: compact Doctor health, see Amendments)
 
 The Console showed one Ticket execution at a time. Goal Mode (ADR 0067)
 removes Ticket execution and runs several agent sessions, often unattended,
@@ -325,3 +325,12 @@ cannot identify every session or remain meaningful across Dashboard restarts.
   Codex CLI, such as `codex exec`, retains its own thread attribution and cannot
   update the outer tab's signal. The nearest CLI must belong to the marked
   launch; its app-server helpers do not constitute another interactive client.
+
+### 2026-10-16: Compact Doctor health (#1511)
+
+The Dashboard always shows one compact Doctor line: active FAIL and WARN counts,
+or dim `Doctor: OK` for a clean result. A due result adds ` · stale`, and an
+unreadable result shows a dim unavailable notice. This supersedes the earlier
+“Health only when attention is needed” and “Hide the healthy Doctor line” rules.
+Independent upgrade-review notices and non-consuming, read-only snapshot rules
+remain unchanged; full findings stay in the existing Doctor presentations.
