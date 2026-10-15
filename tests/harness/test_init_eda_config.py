@@ -25,7 +25,7 @@ def test_init_rejects_host_provisioning_on_windows(
     monkeypatch.delenv("BOOLEY_DIR", raising=False)
     monkeypatch.setattr(eda_config.sys, "platform", "win32")
     monkeypatch.setattr(init_cmd, "_devcontainer_is_tracked", lambda _project: False)
-    monkeypatch.setattr(init_cmd, "_select_interactive_app", lambda _project: "none")
+    monkeypatch.setattr(init_cmd, "_select_interactive_app", lambda _project, _source=None: "none")
     reset_cache()
     try:
         context = InitContext(project_root=project)

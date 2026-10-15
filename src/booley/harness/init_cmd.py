@@ -163,7 +163,11 @@ from booley.runtime.project_gitignore import (
     PROJECT_GITIGNORE_PATTERNS,
     missing_gitignore_patterns,
 )
-from booley.runtime.session_issuance import SessionSpecInputs, authorized_project_data_source
+from booley.runtime.session_issuance import (
+    RuntimeSpecError,
+    SessionSpecInputs,
+    authorized_project_data_source,
+)
 from booley.runtime.timefmt import detect_host_timezone
 
 # ---------------------------------------------------------------------------
@@ -1435,7 +1439,13 @@ def _step_interactive(
     ):
         return
 
-    sources = _interactive_spec_sources(ctx, nangate_pdk_root, agent_app, runtime_image_id)
+    try:
+        sources = _interactive_spec_sources(ctx, nangate_pdk_root, agent_app, runtime_image_id)
+    except RuntimeSpecError as exc:
+        detail = str(exc)
+        err(f"Sandbox authorization failed closed: {detail}")
+        ctx.record("interactive", "err", detail)
+        return
     request = interactive_init.InteractiveInitRequest(
         project_root=ctx.project_root,
         build_spec=sources.build,
