@@ -357,7 +357,7 @@ def _inspect_current_runtime(request: RuntimeInspectionRequest, report: Findings
     ):
         report.fail(
             "host-provisioned Vivado is absent from the Sandbox",
-            "stop the Sandbox through its owning app, then on the host run `booley session refresh`",
+            session_runtime.SANDBOX_HOST_INSPECTION_REMEDY,
         )
         return
     if mounted:
@@ -463,7 +463,7 @@ def _check_runtime_isolation(report: Findings) -> bool:
     if os.environ.get("BOOLEY_DIR") != "/booley-project":
         report.fail(
             "Sandbox Booley Directory identity differs from /booley-project",
-            "stop the Sandbox through its owning app, then on the host run `booley session refresh`",
+            session_runtime.SANDBOX_HOST_INSPECTION_REMEDY,
         )
         return False
     required = Path("/booley-project")
@@ -478,7 +478,7 @@ def _check_runtime_isolation(report: Findings) -> bool:
     if not required.is_dir() or any(_runtime_path_exposed(path) for path in forbidden):
         report.fail(
             "Sandbox exposes a forbidden host-authority surface",
-            "stop the Sandbox through its owning app, then on the host run `booley session refresh`",
+            session_runtime.SANDBOX_HOST_INSPECTION_REMEDY,
         )
         return False
     report.pass_("Sandbox Booley Directory and host-authority isolation verified")
@@ -560,13 +560,13 @@ def _mounted_vivado_files(report: Findings) -> bool:
     except OSError as exc:
         report.fail(
             f"mounted Vivado wrapper is unreadable: {exc}",
-            "stop the Sandbox through its owning app, then on the host run `booley session refresh`",
+            session_runtime.SANDBOX_HOST_INSPECTION_REMEDY,
         )
         return False
     if digest != wrapper_sha256() or not os.access(executable, os.X_OK):
         report.fail(
             "mounted Vivado wrapper/release layout differs from built-in policy",
-            "stop the Sandbox through its owning app, then on the host run `booley session refresh`",
+            session_runtime.SANDBOX_HOST_INSPECTION_REMEDY,
         )
         return False
     compatibility = (
@@ -577,7 +577,7 @@ def _mounted_vivado_files(report: Findings) -> bool:
     if any(not path.is_file() for path in compatibility):
         report.fail(
             "Sandbox Image lacks the fixed Vivado compatibility libraries or locale",
-            "stop the Sandbox through its owning app, then on the host run `booley session refresh`",
+            session_runtime.SANDBOX_HOST_INSPECTION_REMEDY,
         )
         return False
     return True
@@ -594,7 +594,7 @@ def _mounted_vivado_topology(report: Findings) -> bool:
     if len(matches) != 1 or "ro" not in matches[0][5].split(","):
         report.fail(
             "Vivado release root is not one exact read-only runtime mount",
-            "stop the Sandbox through its owning app, then on the host run `booley session refresh`",
+            session_runtime.SANDBOX_HOST_INSPECTION_REMEDY,
         )
         return False
     license_pointer = os.environ.get("XILINXD_LICENSE_FILE")
@@ -604,7 +604,7 @@ def _mounted_vivado_topology(report: Findings) -> bool:
     ):
         report.fail(
             "XILINXD_LICENSE_FILE differs from the fixed private-relay contract",
-            "stop the Sandbox through its owning app, then on the host run `booley session refresh`",
+            session_runtime.SANDBOX_HOST_INSPECTION_REMEDY,
         )
         return False
     return True

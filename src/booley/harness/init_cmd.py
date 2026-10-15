@@ -1270,7 +1270,7 @@ def _interactive_spec_sources(
     runtime_image_id: str | None,
 ) -> _InteractiveSpecSources:
     source = authorized_project_data_source(ctx.project_root)
-    app = agent_app or _select_interactive_app(ctx.project_root)
+    app = agent_app or _select_interactive_app(ctx.project_root, source)
     return _InteractiveSpecSources(
         project_root=ctx.project_root,
         app=app,

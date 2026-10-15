@@ -205,7 +205,6 @@ def test_inside_isolation_drift_instructs_host_repair(monkeypatch):
     report = Findings()
     assert not inspection._check_runtime_isolation(report)
     fix = report.report().findings[0].fix
-    assert "owning app" in fix
     assert "on the host" in fix
-    assert fix.count("booley session refresh") == 1
-    assert "init --seed" not in fix
+    assert "booley doctor" in fix
+    assert "booley session refresh" not in fix

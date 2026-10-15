@@ -789,7 +789,7 @@ def _load_recovery_issuance(
         return runtime_spec.load_issued_snapshot(project_root)
     except runtime_spec.RuntimeSpecError as exc:
         raise sr.SessionError(
-            f"cannot preserve the prior Sandbox: {exc}; {sr.sandbox_remedy(project_root)}"
+            f"cannot preserve the prior Sandbox: {exc}; {sr.sandbox_remedy(project_root, recovery_unavailable=True)}"
         ) from exc
 
 
@@ -947,15 +947,19 @@ def _refresh_unlocked(
                 "refresh cannot add a licensed relay topology to an existing Sandbox; "
                 "run `booley session down` then `booley session refresh`"
             )
+        action = "replace" if parked is not None else "create"
+        print(f"  planned: {action} Sandbox after verification")
         journal = _prepared_journal(
             project, prepared.snapshot, prepared.issuance, parked, prepared.image
         )
         result, journal = _reconcile_refresh_image(journal, prepared.image, images)
         journal = _issue_and_verify_replacement(journal, result, images, verbose=verbose)
     except BaseException as exc:
-        images.abort()
-        if _load_journal(project) is not None:
-            _recover_failed_refresh(project, exc)
+        try:
+            images.abort()
+        finally:
+            if _load_journal(project) is not None:
+                _recover_failed_refresh(project, exc)
         raise
     return _finish_refresh(journal, result, images)
 

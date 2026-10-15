@@ -2471,13 +2471,21 @@ def refresh_container_id(workspace: Path) -> str:
     return identity
 
 
-def sandbox_remedy(workspace: Path, *, runtime_only: bool = False) -> str:
+SANDBOX_HOST_INSPECTION_REMEDY = (
+    "on the host run `booley doctor` to inspect Sandbox ownership and issuance, "
+    "then follow its reported repair workflow"
+)
+
+
+def sandbox_remedy(
+    workspace: Path, *, runtime_only: bool = False, recovery_unavailable: bool = False
+) -> str:
     """Choose one host workflow after authenticating ownership and issuance."""
     from booley.runtime import session_issuance as runtime_spec
     from booley.runtime.runtime_context import inside_session_runtime
 
     if inside_session_runtime():
-        return "stop the Sandbox through its owning app, then on the host run `booley session refresh`"
+        return SANDBOX_HOST_INSPECTION_REMEDY
     try:
         prior = runtime_spec.load_issued_snapshot(workspace)
     except runtime_spec.RuntimeSpecError:
@@ -2490,16 +2498,25 @@ def sandbox_remedy(workspace: Path, *, runtime_only: bool = False) -> str:
         return (
             "restore Docker connectivity and inspect Sandbox ownership on the host before repair"
         )
-    prefix = "stop the Sandbox in VS Code, then " if owner else ""
     selected = project_image.project_sandbox_image(workspace)
-    if not project_image.is_managed_sandbox_image(workspace, selected):
+    external = not project_image.is_managed_sandbox_image(workspace, selected)
+    if owner:
+        prerequisite = "rebuild/pull the selected external image, then " if external else ""
         return (
-            prefix
-            + "rebuild/pull the selected external image, then run `booley session down`, `booley init --seed`, and `booley session up` on the host"
+            "stop the Sandbox in VS Code, then "
+            + prerequisite
+            + "on the host run `booley init --force`, "
+            "then use Dev Containers: Rebuild Container"
         )
     workflow = "run `booley session refresh` on the host"
-    if runtime_only:
+    if external:
+        workflow = "rebuild/pull the selected external image, then run `booley session down`, `booley init --seed`, and `booley session up` on the host"
+    elif recovery_unavailable:
+        workflow = (
+            "on the host run `booley session down`, `booley init --seed`, and `booley session up`"
+        )
+    elif runtime_only:
         workflow = "run `booley session down`, then `booley session up --rebuild` on the host"
     elif prior.license_profile is not None:
         workflow = "run `booley session down`, then `booley session refresh` on the host"
-    return prefix + workflow
+    return workflow

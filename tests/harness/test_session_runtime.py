@@ -4277,6 +4277,36 @@ def test_drift_remedy_has_one_state_appropriate_workflow(tmp_path, monkeypatch, 
     )
     remedy = session_runtime.sandbox_remedy(tmp_path, runtime_only=state == "runtime")
     assert expected in remedy
-    if state in {"managed", "licensed", "vscode"}:
+    if state in {"managed", "licensed"}:
         assert remedy.count("booley session refresh") == 1
         assert "init --seed" not in remedy
+
+
+def test_vscode_drift_remedy_preserves_editor_ownership(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from booley.runtime import runtime_context, session_issuance
+
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    monkeypatch.setattr(
+        session_issuance,
+        "load_issued_snapshot",
+        lambda _root: SimpleNamespace(license_profile=None),
+    )
+    monkeypatch.setattr(sr, "strict_conflicting_vscode_session", lambda _root: "editor")
+    monkeypatch.setattr(sr.project_image, "project_sandbox_image", lambda _root: "selected")
+    monkeypatch.setattr(sr.project_image, "is_managed_sandbox_image", lambda *_args: True)
+    remedy = sr.sandbox_remedy(tmp_path)
+    assert "booley init --force" in remedy
+    assert "Dev Containers: Rebuild Container" in remedy
+    assert "booley session refresh" not in remedy
+
+
+def test_inside_sandbox_remedy_requires_host_observation(tmp_path, monkeypatch):
+    from booley.runtime import runtime_context
+
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    remedy = sr.sandbox_remedy(tmp_path)
+    assert "on the host" in remedy
+    assert "booley doctor" in remedy
+    assert "booley session refresh" not in remedy
