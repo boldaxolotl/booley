@@ -725,7 +725,10 @@ def _reject_existing_vscode(project_root: Path) -> None:
 
 
 def _reject_vscode_started(project_root: Path, consequence: str) -> None:
-    vscode = sr.strict_conflicting_vscode_session(project_root)
+    try:
+        vscode = sr.strict_conflicting_vscode_session(project_root)
+    except sr.SessionError as exc:
+        raise sr.SessionError(f"{exc}; {consequence}") from exc
     if vscode:
         raise sr.SessionError(f"VS Code started Sandbox {vscode!r} during refresh; {consequence}")
 

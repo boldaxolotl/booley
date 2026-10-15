@@ -706,8 +706,9 @@ a changed preview requires a new confirmation. Inventory absence is the explicit
 orphan policy, including historical issuance records: remember Projects whose
 pins you want to preserve. Inventoried roots (including missing, uninitialized,
 and Grant-only roots) and images used by any container are protected.
-Stopped and foreign containers count too. VS Code session down stops its
-container; explicitly remove that container before reclaiming its keeper.
+Stopped and foreign containers count too. For a VS Code-owned Sandbox, close
+the window or stop it through Dev Containers, then explicitly remove its
+container before reclaiming its keeper. CLI `session down` refuses editor ownership.
 
 The command releases exact keeper tags without force. Other tags or containers
 may retain the image bytes, so a released tag does not guarantee disk space was

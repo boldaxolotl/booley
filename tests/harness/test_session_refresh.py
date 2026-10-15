@@ -16,6 +16,10 @@ from booley.runtime import session_runtime as sr
 from booley.runtime.image_lifecycle import LifecycleResult, Status
 from booley.runtime.session_issuance import Issuance
 from booley.runtime.session_spec import SessionSpecSnapshot
+from tests.harness import test_session_runtime as resolution_fixtures
+
+project_sandbox_resolution = resolution_fixtures.project_sandbox_resolution
+workspace = resolution_fixtures.workspace
 
 
 def _result() -> session_refresh.RefreshImage:
@@ -604,3 +608,86 @@ def test_prepare_runtime_image_reports_planned_step_identity(monkeypatch, tmp_pa
 
     assert init_cmd.prepare_runtime_image(tmp_path) is prepared
     assert any("inputs-changed inputs" in message for message in messages)
+
+
+@pytest.mark.parametrize("problem", ["duplicate", "unknown"])
+def test_refresh_project_sandbox_resolution_refuses_ambiguous_inventory(
+    workspace, project_sandbox_resolution, problem
+):
+    import copy
+
+    fixture = project_sandbox_resolution
+    if problem == "duplicate":
+        second = copy.deepcopy(fixture.state)
+        second["Id"], second["Name"] = "b" * 64, "/headless"
+        second["Config"]["Labels"].pop("devcontainer.local_folder")
+        fixture.documents[second["Id"]] = second
+    else:
+        fixture.state["Config"]["Labels"].pop("booley.project-id")
+    cause = "multiple running Sandboxes" if problem == "duplicate" else "identity disagrees"
+    with pytest.raises(sr.SessionError, match=cause):
+        session_refresh._reject_existing_vscode(workspace)
+    consequence = "new headless Session is being rolled back"
+    with pytest.raises(sr.SessionError, match=consequence):
+        session_refresh._reject_vscode_started(workspace, consequence)
+    assert all(call[1] in ("ps", "container") for call in fixture.calls)
+
+
+def test_project_sandbox_resolution_refresh_race_rolls_back(
+    workspace, project_sandbox_resolution, monkeypatch
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(workspace / "config"))
+    result = _result()
+    snapshot = _snapshot(workspace)
+    prior_issuance = _issuance(workspace)
+    candidate_issuance = _issuance(workspace, "sha256:fresh")
+    events: list[str] = []
+    images = Mock(spec=session_refresh.RuntimeImageOperations)
+    images.prepare.return_value = result
+    images.commit.return_value = result
+    import copy
+
+    fixture = project_sandbox_resolution
+    editor = copy.deepcopy(fixture.state)
+    headless = copy.deepcopy(editor)
+    headless["Id"], headless["Name"] = "b" * 64, "/" + sr.session_container_name(workspace)
+    headless["Config"]["Labels"].pop("devcontainer.local_folder")
+    fixture.documents.clear()
+
+    def start(*_args, **_kwargs):
+        events.append("up")
+        fixture.documents.update({editor["Id"]: editor, headless["Id"]: headless})
+
+    with (
+        patch.object(session_refresh, "capture_session_spec", return_value=snapshot),
+        patch.object(session_refresh, "_load_recovery_issuance", return_value=prior_issuance),
+        patch.object(
+            session_refresh.runtime_spec, "load_issued_snapshot", return_value=candidate_issuance
+        ),
+        patch.object(sr, "plan_session_refresh", return_value=None),
+        patch.object(
+            sr,
+            "_up_unlocked",
+            side_effect=start,
+        ),
+        patch.object(
+            session_refresh,
+            "restore_session_spec",
+            side_effect=lambda *_args: events.append("restore-spec"),
+        ),
+        patch.object(
+            sr,
+            "discard_refresh_candidate",
+            side_effect=lambda root, issuance: events.append(
+                f"discard:{root == workspace}:{issuance == candidate_issuance}"
+            ),
+        ),
+        patch.object(session_refresh, "_verify_restored_journal"),
+        pytest.raises(
+            sr.SessionError,
+            match=r"multiple running Sandboxes.*new headless Session is being rolled back",
+        ),
+    ):
+        session_refresh.refresh(workspace, images)
+
+    assert events == ["up", "restore-spec", "discard:True:True"]

@@ -9,6 +9,9 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- Session commands consistently reuse and report VS Code-owned Sandboxes; CLI
+  teardown and rebuild refuse editor ownership and point to Dev Containers.
+
 - Goal evidence fields in saved state now recover automatically from selected
   valid immutable producer observations when Booley reads or saves Goal state.
   Goal status reports remaining evidence or validation problems without treating

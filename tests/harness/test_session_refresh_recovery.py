@@ -285,7 +285,7 @@ def test_checked_in_committed_fixture_resumes_forward(
     created = Mock()
 
     with (
-        patch.object(sr, "_strict_running_interactive_states", return_value=[]),
+        patch.object(sr, "resolve_running_sandbox", return_value=None),
         patch.object(sr, "_strict_all_interactive_states", return_value=[]),
         patch.object(sr, "_preflight"),
         patch.object(sr, "_warn_on_image_drift"),

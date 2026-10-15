@@ -64,11 +64,16 @@ def _alias_doctor_project(flow_project, tmp_path, monkeypatch, host):
 
 
 @pytest.mark.parametrize("host", [True, False])
-def test_project_alias_doctor_executes_real_simulation(flow_project, tmp_path, monkeypatch, host):
+def test_project_alias_doctor_executes_real_simulation(
+    flow_project, tmp_path, monkeypatch, host, request
+):
     from pathlib import Path
 
     from booley.flows.sim.flow import SimulateFlow
+    from booley.runtime.booley_dir import reset_cache
 
+    reset_cache()
+    request.addfinalizer(reset_cache)
     audit, data, alias = _alias_doctor_project(flow_project, tmp_path, monkeypatch, host)
     real_run = subprocess.run
     executions = []
@@ -314,8 +319,11 @@ def test_session_up_reports_deep_once_through_all_health_branches(
     from booley.harness import booley as cli
 
     monkeypatch.setattr(cli, "_report_upgrade_before_session", lambda _: None)
-    monkeypatch.setattr(doctor.session_runtime, "conflicting_vscode_session", lambda _: None)
-    monkeypatch.setattr(doctor.session_runtime, "up", lambda *_args, **_kw: "sandbox")
+    monkeypatch.setattr(
+        doctor.session_runtime,
+        "ensure",
+        lambda *_args, **_kw: doctor.session_runtime.EnsureResult("sandbox", False, True),
+    )
     monkeypatch.setattr(
         health, "due_reason", lambda _: "plain expired" if early == "scheduled" else None
     )
