@@ -9,6 +9,9 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- Deep Doctor now warns when a simulation bad overlay fails to build, and requires
+  an observed behavioral Test failure before accepting the bad case.
+
 - Immutable-mode Pre-Sim Commands now run in the Project Root as documented,
   including shared and ordinary Simulation Campaign launches with `run_cwd` set.
   Hooks that relied on the previous working directory should

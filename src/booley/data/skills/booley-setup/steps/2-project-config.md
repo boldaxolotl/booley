@@ -735,7 +735,9 @@ What goes here:
   Flow needs a conventional deliberately bad fixture that the Flow grades as a
   design failure; Doctor infers each known-good case from the Flow's configured
   first Doctor Target. For simulation, mirror replacement build-tree files beneath
-  `.booley/selftest/sim/bad-overlay/`; Doctor applies the overlay only
+  `.booley/selftest/sim/bad-overlay/`; the overlay must build and then fail the
+  selected smoke Test behaviorally — a compile-only failure is insufficient.
+  Doctor applies the overlay only
   to its bad run, so do not leak this internal fixture through a
   `pre_run_commands` branch. Lint uses a Target named `lint_selftest_bad` in a
   dedicated `.core`, marked `flow_options.booley.doctor_selftest: true`, with a

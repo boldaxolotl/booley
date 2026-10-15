@@ -5580,6 +5580,10 @@ class TestFailPathSelfTest:
 
         def fake_run(cmd, **kwargs):
             kind = kwargs["env"][selftest_overlay.INTERNAL_KIND_ENV]
+            if kind == "bad":
+                from tests.harness.test_doctor_selftest_builtin import _write_sim_bad_report
+
+                _write_sim_bad_report(cmd, project=project)
             return subprocess.CompletedProcess(cmd, exit_by_kind[kind], stdout="", stderr="")
 
         monkeypatch.setattr(doctor.subprocess, "run", fake_run)
@@ -5603,6 +5607,10 @@ class TestFailPathSelfTest:
         def fake_run(cmd, **kwargs):
             printed_before_run.append(capsys.readouterr().out)
             kind = kwargs["env"][selftest_overlay.INTERNAL_KIND_ENV]
+            if kind == "bad":
+                from tests.harness.test_doctor_selftest_builtin import _write_sim_bad_report
+
+                _write_sim_bad_report(cmd, project=project)
             return subprocess.CompletedProcess(cmd, {"good": 0, "bad": 1}[kind], "", "")
 
         monkeypatch.setattr(doctor.subprocess, "run", fake_run)
@@ -5635,6 +5643,10 @@ class TestFailPathSelfTest:
         def fake_run(cmd, **kwargs):
             seen.append((cmd, kwargs["env"]))
             kind = kwargs["env"][selftest_overlay.INTERNAL_KIND_ENV]
+            if kind == "bad":
+                from tests.harness.test_doctor_selftest_builtin import _write_sim_bad_report
+
+                _write_sim_bad_report(cmd, project=project)
             return subprocess.CompletedProcess(
                 cmd,
                 {"good": 0, "bad": 1}[kind],
@@ -5702,6 +5714,10 @@ class TestFailPathSelfTest:
         def fake_run(cmd, **kwargs):
             seen_cmds.append(cmd)
             kind = kwargs["env"][selftest_overlay.INTERNAL_KIND_ENV]
+            if kind == "bad":
+                from tests.harness.test_doctor_selftest_builtin import _write_sim_bad_report
+
+                _write_sim_bad_report(cmd, project=project)
             rc = {"good": 0, "bad": 1}[kind]
             return subprocess.CompletedProcess(cmd, rc, stdout="", stderr="")
 
