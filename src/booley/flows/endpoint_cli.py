@@ -96,12 +96,15 @@ def add_common_args(
             metavar="TARGET[,TARGET...]",
             help=target_help,
         )
+    from booley.flows.cli_help import SurfaceHelp
+
     parser.add_argument(
         "--diagnostic",
         action="store_true",
-        help=(
+        help=SurfaceHelp(
             "Run without satisfying Goals. Use for a Flow/Target combination "
-            "outside the active Goal definition."
+            "outside the active Goal definition.",
+            cli="Run diagnostically. CLI runs never record Goal evidence; use Goal-bound MCP calls with work_dir.",
         ),
     )
 
@@ -135,6 +138,14 @@ def parse_args(endpoint, argv: list[str] | None = None) -> argparse.Namespace:
         elif len(endpoint._args.steer) == 1:
             endpoint._args.steer = endpoint._args.steer[0]
     apply_environment(endpoint._args, endpoint.endpoint_kind)
+    if (
+        not transport_invocation()
+        and endpoint.endpoint_kind in {"flow", "specialist"}
+        and not endpoint._acceptance_recorder.acceptance_identity()
+    ):
+        from booley.harness.cli_goal_notice import warn_cli_goal_recording
+
+        warn_cli_goal_recording(endpoint._args.work_dir)
     return endpoint._args
 
 

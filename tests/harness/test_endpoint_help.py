@@ -511,3 +511,14 @@ def test_extension_action_can_resolve_conflicts_with_help_options(
         cli.main()
     assert exc.value.code == 0
     assert capsys.readouterr() == expected
+
+
+def test_diagnostic_help_is_truthful_only_on_human_surface():
+    from booley.flows.builtin_cli import build_parser
+    from booley.flows.lint.flow import LintFlow
+
+    human = " ".join(build_parser(LintFlow(), human=True).format_help().split())
+    transport = build_parser(LintFlow()).format_help()
+    assert "CLI runs never record Goal evidence" in human
+    assert "Run without satisfying Goals" in transport
+    assert "CLI runs never" not in transport

@@ -122,11 +122,12 @@ def _environment_selection() -> Path | None:
     return None
 
 
-def resolve_booley_dir(start: Path | None = None) -> Path:
+def resolve_booley_dir(start: Path | None = None, *, cache_result: bool = True) -> Path:
     """Resolve the Booley Directory via 4-step discovery.
 
     Args:
         start: Directory to start walking up from. Defaults to cwd.
+        cache_result: Cache a newly discovered selection; existing cache reads remain valid.
     """
     global _cache
     validate_environment()
@@ -146,7 +147,8 @@ def resolve_booley_dir(start: Path | None = None) -> Path:
 
     explicit = _environment_selection()
     if explicit is not None:
-        _cache = explicit
+        if cache_result:
+            _cache = explicit
         return explicit
 
     current = require_project_checkout(current)
@@ -154,8 +156,9 @@ def resolve_booley_dir(start: Path | None = None) -> Path:
     # 2. Walk up to find booley.toml [project] dir override
     toml_result = _resolve_from_toml(current)
     if toml_result is not None:
-        _cache = toml_result
-        return _cache
+        if cache_result:
+            _cache = toml_result
+        return toml_result
 
     # 3. Walk up from start looking for .booley/
     for parent in [current, *current.parents]:
@@ -164,8 +167,9 @@ def resolve_booley_dir(start: Path | None = None) -> Path:
             candidate != Path.home() / BOOLEY_DIR_NAME
             or any((candidate / name).is_file() for name in ("booley.toml", "pipeline.toml"))
         ):
-            _cache = candidate
-            return _cache
+            if cache_result:
+                _cache = candidate
+            return candidate
 
     raise FileNotFoundError("No .booley/ found. Run 'booley init' to set up the project.")
 
