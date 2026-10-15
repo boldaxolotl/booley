@@ -15,6 +15,7 @@ from booley.criteria.state import DevelopmentState
 from booley.goals import state_store
 from booley.goals.binding import GoalRunBinding, bind_run
 from booley.goals.paths import record_paths
+from booley.goals.recorder import GoalEvidenceRecorder
 from booley.goals.state_store import (
     GoalStateError,
     GoalStatePersistence,
@@ -22,7 +23,7 @@ from booley.goals.state_store import (
     merge_states,
 )
 from booley.goals.store import GoalStore
-from tests.goals.conftest import LINT_KEY, SIM_KEY
+from tests.goals.conftest import LINT_KEY, SIM_KEY, passing_sim
 
 # Each spawned writer imports Booley afresh (~1-3 s); three steps stay far below this.
 _EVENT_TIMEOUT_S = 30
@@ -41,6 +42,15 @@ def _load(layout: SimpleNamespace, binding: GoalRunBinding | None = None) -> Dev
     return DevelopmentState.load(_state_file(layout), persistence)
 
 
+def _publish(layout, state, key, met, detail):
+    if key == SIM_KEY:
+        detail = {**passing_sim(), **detail}
+    changes = state.set_criterion(key, met, detail=detail)
+    GoalEvidenceRecorder(_bind(layout)).record_changes(
+        state, changes, invocation_id="test", producer="test"
+    )
+
+
 def _disk(layout: SimpleNamespace) -> dict[str, Any]:
     return json.loads(_state_file(layout).read_text(encoding="utf-8"))
 
@@ -56,8 +66,8 @@ def _tools(document: dict[str, Any]) -> list[str]:
 
 def test_disjoint_keys_from_two_instances_both_land(goal_mode: SimpleNamespace) -> None:
     first, second = _load(goal_mode), _load(goal_mode)
-    first.set_criterion(LINT_KEY, True, detail={"warnings": 0})
-    second.set_criterion(SIM_KEY, True, detail={"passed_tests": ["smoke"]})
+    _publish(goal_mode, first, LINT_KEY, True, {"warnings": 0})
+    _publish(goal_mode, second, SIM_KEY, True, {"passed_tests": ["smoke"]})
 
     first.save()
     second.save()
@@ -71,8 +81,8 @@ def test_disjoint_keys_from_two_instances_both_land(goal_mode: SimpleNamespace) 
 
 def test_same_key_conflict_is_won_by_the_later_save(goal_mode: SimpleNamespace) -> None:
     first, second = _load(goal_mode), _load(goal_mode)
-    first.set_criterion(LINT_KEY, True, detail={"warnings": 0})
-    second.set_criterion(LINT_KEY, False, detail={"warnings": 4})
+    _publish(goal_mode, first, LINT_KEY, True, {"warnings": 0})
+    _publish(goal_mode, second, LINT_KEY, False, {"warnings": 4})
 
     first.save()
     second.save()
@@ -110,11 +120,11 @@ def test_shadow_adoption_keeps_a_competing_write(goal_mode: SimpleNamespace) -> 
     live = _load(goal_mode)
     shadow = deepcopy(live)
     assert shadow.persistence_baseline == live.persistence_baseline
-    shadow.set_criterion(LINT_KEY, True, detail={"warnings": 0})
+    _publish(goal_mode, shadow, LINT_KEY, True, {"warnings": 0})
     shadow.save()
     live.adopt(shadow)
     competitor = _load(goal_mode)
-    competitor.set_criterion(SIM_KEY, True, detail={"passed_tests": ["smoke"]})
+    _publish(goal_mode, competitor, SIM_KEY, True, {"passed_tests": ["smoke"]})
     competitor.save()
 
     live.record_mcp_tool_run("lint", 0)
@@ -131,11 +141,11 @@ def test_partial_copy_back_without_adoption_still_merges_by_key(
     """A writer that copies some fields back without the baseline loses nothing it did not touch."""
     live = _load(goal_mode)
     shadow = deepcopy(live)
-    shadow.set_criterion(LINT_KEY, True, detail={"warnings": 0})
+    _publish(goal_mode, shadow, LINT_KEY, True, {"warnings": 0})
     shadow.save()
     live.criteria = shadow.criteria  # field copy, baseline left behind
     competitor = _load(goal_mode)
-    competitor.set_criterion(SIM_KEY, True, detail={"passed_tests": ["smoke"]})
+    _publish(goal_mode, competitor, SIM_KEY, True, {"passed_tests": ["smoke"]})
     competitor.save()
 
     live.save()
@@ -176,7 +186,7 @@ def test_failed_save_leaves_instance_and_baseline_unchanged(
     assert _state_file(goal_mode).read_bytes() == before
     monkeypatch.undo()
     state.save()
-    assert _disk(goal_mode)["criteria"][LINT_KEY]["met"] is True
+    assert _disk(goal_mode)["criteria"][LINT_KEY]["met"] is False
 
 
 def test_merge_keeps_disk_order_and_appends_local_entries() -> None:
@@ -307,3 +317,113 @@ def test_malformed_criterion_field_raises(
 
     with pytest.raises(GoalStateError, match=f"corrupt Goal state.*{field}"):
         _load(goal_mode)
+
+
+def test_interrupted_append_recovers_observationally_without_state_write(goal_mode, monkeypatch):
+    recorder = GoalEvidenceRecorder(_bind(goal_mode))
+    state = _load(goal_mode)
+    changes = state.set_criterion(LINT_KEY, True, detail={"warnings": 0})
+    before = _state_file(goal_mode).read_bytes()
+
+    def interrupted(*args, **kwargs):
+        raise OSError("publication interrupted after append")
+
+    monkeypatch.setattr(state_store, "atomic_replace_bytes", interrupted)
+    with pytest.raises(OSError, match="publication interrupted"):
+        recorder.record_changes(state, changes, invocation_id="crash", producer="lint")
+    recovered = load_goal_state(GoalStore(goal_mode.control), goal_mode.record)
+    assert recovered.criteria[LINT_KEY].met is True
+    assert recovered.criteria[LINT_KEY].detail["warnings"] == 0
+    assert _state_file(goal_mode).read_bytes() == before
+
+
+def test_ledger_corruption_never_falls_back_to_cached_success(goal_mode):
+    from booley.criteria.evidence_ledger import AcceptanceLedgerError
+
+    state = _load(goal_mode)
+    _publish(goal_mode, state, LINT_KEY, True, {"warnings": 0})
+    logs = record_paths(goal_mode.control, goal_mode.record.id).logs_dir
+    (row,) = logs.rglob("record.json")
+    row.write_bytes(b"{malformed")
+    before = _state_file(goal_mode).read_bytes()
+    with pytest.raises(AcceptanceLedgerError):
+        _load(goal_mode)
+    assert _state_file(goal_mode).read_bytes() == before
+
+
+@pytest.mark.parametrize("count", [100, 1000])
+def test_projection_scans_validated_history_once_per_read_or_save(goal_mode, monkeypatch, count):
+    from time import perf_counter
+
+    from booley.criteria import evidence_ledger
+    from booley.criteria.state import CriterionChange
+    from booley.goals.recorder import GOAL_SCOPE, goal_identity
+
+    state = _load(goal_mode)
+    recorder = GoalEvidenceRecorder(_bind(goal_mode))
+    evidence_ledger.record_changes(
+        recorder.log_dir,
+        state,
+        [
+            CriterionChange(
+                LINT_KEY,
+                True,
+                "observed",
+                {"warnings": 0, "index": index},
+                True,
+                dict(state.criteria[LINT_KEY].params),
+            )
+            for index in range(count)
+        ],
+        scope=GOAL_SCOPE,
+        invocation_id="history",
+        producer="lint",
+        execution_id="",
+        identity=goal_identity(goal_mode.record.id, {LINT_KEY: 1}),
+    )
+    original = evidence_ledger.validated_evidence_records
+    calls = []
+
+    def validated(*args, **kwargs):
+        calls.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(evidence_ledger, "validated_evidence_records", validated)
+    started = perf_counter()
+    state = _load(goal_mode)
+    assert len(calls) == 1
+    assert state.criteria[LINT_KEY].detail["index"] == count - 1
+    state.save()
+    assert len(calls) == 2
+    print(f"{count} observations: read+save {perf_counter() - started:.4f}s")
+
+
+def test_baseline_failure_keeps_frozen_pins_and_transition_history_without_success(goal_mode):
+    from booley.criteria.evidence_ledger import record_changes
+    from booley.criteria.state import CriterionChange
+    from booley.goals.recorder import GOAL_SCOPE, goal_identity
+
+    path = _state_file(goal_mode)
+    raw = json.loads(path.read_bytes())
+    pins = {"target": "top", "from_state": "fail", "_baseline_ref": "frozen-base"}
+    raw["criteria"][LINT_KEY]["params"] = pins
+    path.write_text(json.dumps(raw))
+    state = _load(goal_mode)
+    logs = record_paths(goal_mode.control, goal_mode.record.id).logs_dir
+    record_changes(
+        logs,
+        state,
+        [CriterionChange(LINT_KEY, False, "baseline failed", {"warnings": 3}, True, pins)],
+        scope=GOAL_SCOPE,
+        invocation_id="baseline",
+        producer="lint",
+        execution_id="",
+        identity=goal_identity(goal_mode.record.id, {LINT_KEY: 1}),
+    )
+    recovered = _load(goal_mode)
+    entry = recovered.criteria[LINT_KEY]
+    assert (entry.met, entry.detail, entry.params) == (False, {}, pins)
+    assert entry.ever_failed is True
+    assert len(entry.transition_evidence) == 1
+    recovered.save()
+    assert _load(goal_mode).criteria[LINT_KEY].transition_evidence == entry.transition_evidence

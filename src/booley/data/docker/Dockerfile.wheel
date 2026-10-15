@@ -30,7 +30,7 @@ RUN --mount=type=bind,source=dist,target=/tmp/booley-dist,readonly \
 
 # Dev Containers installs this image-local VSIX before activating extensions.
 # The sources ship in the wheel; building it needs no npm or Marketplace access.
-RUN python3 -m booley.runtime.dashboard_extension
+RUN python3 -I -m booley.runtime.dashboard_extension
 
 # Install the native binary and create its package-data hard link in this ONE
 # RUN.  An exported layer diff cannot record a hard link whose other name lives

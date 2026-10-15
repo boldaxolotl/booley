@@ -291,7 +291,8 @@ cannot identify every session or remain meaningful across Dashboard restarts.
   conflicts, deliberate removals and pending migration suppress the new opener.
   Existing compare-and-swap publication and issuance rollback remain in force.
 - **Terminal lifetime.** One launch attempt per editor window session persists
-  through an extension-host restart. A new window/reload can open the view again;
+  through an extension-host restart, which leaves its terminal running. A new
+  window/reload can open the view again;
   deliberately closing it does not restart it in that session. The extension
   disposes only terminals it owns, with no terminal-name-based cleanup. Output
   channel diagnostics distinguish policy opt-outs and startup failures.

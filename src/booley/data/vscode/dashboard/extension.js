@@ -108,6 +108,10 @@ class AttachController {
 
     closed(closed) {
         if (closed !== this.terminal) { return; }
+        if (closed.exitStatus?.reason === vscode.TerminalExitReason.User) {
+            this.terminal = undefined;
+            return;
+        }
         if ([0, 3, 4].includes(closed.exitStatus?.code)) {
             if (closed.exitStatus.code === 3) {
                 this.output.appendLine('The Dashboard is already open in this Sandbox.');
@@ -118,7 +122,7 @@ class AttachController {
             closed.dispose();
         } else if (closed.exitStatus?.code !== undefined ||
             closed.exitStatus?.reason === vscode.TerminalExitReason.Process) {
-            this.output.appendLine(`Dashboard startup failed (exit ${closed.exitStatus.code ?? 'unknown'}); run booley dashboard for details.`);
+            this.output.appendLine(`Dashboard process failed (exit ${closed.exitStatus.code ?? 'unknown'}); run booley dashboard for details.`);
             this.output.show(true);
         }
         this.terminal = undefined;
@@ -127,7 +131,7 @@ class AttachController {
     dispose() {
         this.disposed = true;
         this.abort.abort();
-        this.terminal?.dispose();
+        // VS Code owns terminal lifetime across extension-host restarts.
     }
 }
 

@@ -13,6 +13,11 @@ Packaged release history starts at 0.2.7. For older changes, see
   an image-bundled workspace extension. Existing opt-outs remain respected;
   run host `booley init` and rebuild/reopen the Sandbox after upgrading.
 
+- Goal evidence fields in saved state now recover automatically from selected
+  valid immutable producer observations when Booley reads or saves Goal state.
+  Goal status reports remaining evidence or validation problems without treating
+  outdated saved evidence fields as an evidence conflict.
+
 - Immutable-mode Pre-Sim Commands now run in the Project Root as documented,
   including shared and ordinary Simulation Campaign launches with `run_cwd` set.
   Hooks that relied on the previous working directory should

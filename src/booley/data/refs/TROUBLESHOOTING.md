@@ -17,6 +17,18 @@ the config knobs named below see [CONFIG.md](https://github.com/boldaxolotl/Bool
 terms below (Sandbox, Target, EDA Provisioning, Specialist, Booley Flow, Developer
 Agent) see the glossary in [GLOSSARY.md](https://github.com/boldaxolotl/Booley/blob/main/docs/GLOSSARY.md).
 
+## Goal evidence and state recovery
+
+Selected immutable producer observations govern Goal evidence. A lost or delayed
+state save recovers automatically when Booley reads or saves Goal state; status
+reads preserve the state file and immutable observations. If a Goal lacks a usable
+current observation, status names the Goal, the evidence fields, and the producer
+to rerun. For ELAB, rerun `sim mode=elab_only` for its Target; for REVIEW, follow
+the Goal's review category and focus. A fresh successful producer run publishes
+consistent evidence and state. If publication still fails, report the persistence
+failure. Report ledger validation corruption with its diagnostic; preserve state
+and evidence files instead of editing or removing them.
+
 ## Monitoring Goal work
 
 Use `booley dashboard` inside the Sandbox for sessions, Goals, and Jobs.
@@ -36,7 +48,7 @@ Check **Output → Booley Dashboard** for an opt-out, task ownership conflict or
 startup error. `[sandbox].dashboard = false`, an explicit user automatic-task
 preference of off, and the folder opt-out in `.vscode/settings.json` suppress
 opening. A deliberately removed or edited Dashboard task also stays an opt-out;
-see [Dashboard configuration](CONFIG.md#dashboard-and-quiet-goal-presence-goals)
+see [Dashboard configuration](https://github.com/boldaxolotl/Booley/blob/main/docs/user/CONFIG.md#dashboard-and-quiet-goal-presence-goals)
 for restoration. Automatic opening requires a Git Project Root. Untrusted windows wait for trust. Headless sessions open no
 editor terminal. Closing the Dashboard does not restart it in the same window
 session; reopen it manually or reload the window.

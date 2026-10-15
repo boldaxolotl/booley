@@ -154,6 +154,7 @@ test('an extension-host restart respects the attempt, while a new window can ope
     const f = fixture();
     await tick();
     for (const disposable of f.context.subscriptions) { disposable.dispose(); }
+    assert.equal(f.terminals[0].disposed, false, "extension-host shutdown must preserve its view");
     f.reactivate();
     await tick();
     assert.equal(f.calls.length, 1);
@@ -189,4 +190,14 @@ test('startup failures and late policy opt-outs remain visible in Output', async
         assert.equal(f.log.length, 1);
         assert.match(f.log[0], code === 4 ? /disabled/ : /failed/);
     }
+});
+
+
+test('a user-closed terminal is quiet even with a nonzero exit status', async () => {
+    const f = fixture();
+    await tick();
+    const terminal = f.terminals[0];
+    terminal.exitStatus = {code: 130, reason: f.vscode.TerminalExitReason.User};
+    f.listeners.close(terminal);
+    assert.equal(f.log.length, 0);
 });
