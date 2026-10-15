@@ -20,12 +20,15 @@ from booley.runtime import auth_token, session_issuance, session_runtime
 def transport_image():
     if not shutil.which("docker"):
         pytest.skip("Docker executable unavailable")
-    found = subprocess.run(
-        ["docker", "image", "inspect", "booley-sandbox:latest"],
-        capture_output=True,
-        timeout=20,
-        check=False,
-    )
+    try:
+        found = subprocess.run(
+            ["docker", "image", "inspect", "booley-sandbox:latest"],
+            capture_output=True,
+            timeout=20,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.skip("Docker daemon/image inspection timed out; local transport unavailable")
     if found.returncode:
         pytest.skip("Docker daemon or local booley-sandbox:latest unavailable")
     image = f"booley-auth-transport-{uuid.uuid4().hex[:12]}:test"
@@ -226,3 +229,21 @@ def test_editor_missing_api_key_cannot_fall_back(transport_host, monkeypatch):
             timeout=30,
             check=False,
         )
+
+
+@pytest.mark.parametrize("phase", ["inspect", "build"])
+def test_transport_prerequisite_timeout_skips_only_unavailable_inspection(monkeypatch, phase):
+    monkeypatch.setattr(shutil, "which", lambda _name: "/synthetic/docker")
+
+    def docker(command, **kwargs):
+        if command[1:3] == ["image", "inspect"]:
+            assert kwargs["timeout"] == 20
+            if phase == "inspect":
+                raise subprocess.TimeoutExpired(command, 20)
+            return subprocess.CompletedProcess(command, 0)
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    monkeypatch.setattr(subprocess, "run", docker)
+    expected = pytest.skip.Exception if phase == "inspect" else subprocess.TimeoutExpired
+    with pytest.raises(expected, match="timed out"):
+        next(transport_image.__wrapped__())
