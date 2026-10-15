@@ -143,7 +143,7 @@ def parse_args(endpoint, argv: list[str] | None = None) -> argparse.Namespace:
         and endpoint.endpoint_kind in {"flow", "specialist"}
         and not endpoint._acceptance_recorder.acceptance_identity()
     ):
-        from booley.flows.cli_goal_notice import warn_cli_goal_recording
+        from booley.harness.cli_goal_notice import warn_cli_goal_recording
 
         warn_cli_goal_recording(endpoint._args.work_dir)
     return endpoint._args

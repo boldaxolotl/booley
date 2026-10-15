@@ -82,7 +82,7 @@ def execute_cli(
     request, quiet = _parse_cli(flow, argv)
     flow.context = FlowSession(flow, adapter or StandaloneFlowExecution())
     if not transport_invocation() and not flow.context._acceptance_recorder.acceptance_identity():
-        from booley.flows.cli_goal_notice import warn_cli_goal_recording
+        from booley.harness.cli_goal_notice import warn_cli_goal_recording
 
         warn_cli_goal_recording(request.work_dir)
     flow.context._args = request

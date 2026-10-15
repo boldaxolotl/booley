@@ -133,7 +133,7 @@ def test_store_selection_matches_actual_worktree(
 ):
     import shutil
 
-    from booley.flows.cli_goal_notice import warn_cli_goal_recording
+    from booley.harness.cli_goal_notice import warn_cli_goal_recording
     from booley.runtime.booley_dir import reset_cache, resolve_booley_dir
 
     other = tmp_path / "other-store"
@@ -171,9 +171,9 @@ def test_store_selection_matches_actual_worktree(
 
 @pytest.mark.parametrize("damage", ["corrupt", "identity"])
 def test_lookup_failures_are_read_only_advisories(goal_mode, capsys, damage):
-    from booley.flows.cli_goal_notice import warn_cli_goal_recording
     from booley.goals.paths import record_paths
     from booley.goals.store import REPOSITORY_ID_FILE
+    from booley.harness.cli_goal_notice import warn_cli_goal_recording
 
     if damage == "corrupt":
         record_paths(goal_mode.control, goal_mode.record.id).record_file.write_text("broken")
@@ -186,7 +186,7 @@ def test_lookup_failures_are_read_only_advisories(goal_mode, capsys, damage):
 
 
 def test_non_git_project_is_silent_and_read_only(tmp_path, capsys):
-    from booley.flows.cli_goal_notice import warn_cli_goal_recording
+    from booley.harness.cli_goal_notice import warn_cli_goal_recording
 
     (tmp_path / ".booley").mkdir()
     before = _snapshot(tmp_path)
@@ -259,7 +259,7 @@ def test_configured_main_store_outvotes_foreign_environment(
 ):
     import shutil
 
-    from booley.flows.cli_goal_notice import warn_cli_goal_recording
+    from booley.harness.cli_goal_notice import warn_cli_goal_recording
     from booley.runtime.booley_dir import reset_cache
 
     configured = goal_mode.main / "booley-data"
@@ -278,7 +278,7 @@ def test_configured_main_store_outvotes_foreign_environment(
 
 
 def test_git_checkout_without_goal_identity_is_silent(layout, capsys):
-    from booley.flows.cli_goal_notice import warn_cli_goal_recording
+    from booley.harness.cli_goal_notice import warn_cli_goal_recording
 
     before = _snapshot(layout.main)
     warn_cli_goal_recording(layout.worktree)
@@ -291,7 +291,7 @@ def test_advisory_boundary_failures_do_not_abort(goal_mode, monkeypatch, capsys,
     import subprocess
 
     from booley.core.checkout_role import SourceCheckoutProjectError
-    from booley.flows import cli_goal_notice
+    from booley.harness import cli_goal_notice
 
     error = (
         SourceCheckoutProjectError("source checkout cannot be a Project")
@@ -316,7 +316,7 @@ def test_notice_does_not_select_cwd_directory_for_later_execution(
     goal_mode, monkeypatch, tmp_path
 ):
     from booley.core import booley_dir
-    from booley.flows.cli_goal_notice import warn_cli_goal_recording
+    from booley.harness.cli_goal_notice import warn_cli_goal_recording
     from booley.runtime.booley_dir import reset_cache, resolve_booley_dir
 
     foreign = tmp_path / "cwd-project"
@@ -334,7 +334,7 @@ def test_notice_does_not_select_cwd_directory_for_later_execution(
 def test_foreign_store_does_not_require_identity_for_unrelated_checkout(
     goal_mode, monkeypatch, tmp_path, capsys
 ):
-    from booley.flows.cli_goal_notice import warn_cli_goal_recording
+    from booley.harness.cli_goal_notice import warn_cli_goal_recording
     from booley.runtime.booley_dir import reset_cache
 
     unrelated = tmp_path / "unrelated"
@@ -351,8 +351,8 @@ def test_foreign_store_does_not_require_identity_for_unrelated_checkout(
 def test_malformed_identity_is_not_a_foreign_store(goal_mode, capsys):
     import shutil
 
-    from booley.flows.cli_goal_notice import warn_cli_goal_recording
     from booley.goals.store import REPOSITORY_ID_FILE
+    from booley.harness.cli_goal_notice import warn_cli_goal_recording
 
     shutil.rmtree(goal_mode.control / "goals")
     (goal_mode.main / ".git" / REPOSITORY_ID_FILE).write_text("malformed")
