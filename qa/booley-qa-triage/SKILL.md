@@ -18,7 +18,7 @@ that derived root, never from the process working directory.
 
 Input: one or more QA run directories (each has `findings.md` and `log.md`).
 The maintainer decides; you verify each finding and prepare the decision.
-Triage is a conversation, one **brief** per turn.
+Triage is a conversation, one **cluster summary** per turn.
 
 1. **Read.** Read every run's `log.md` and `findings.md` in full. Note each
    run's identity header (build under test, mission revision) so findings from
@@ -36,11 +36,11 @@ Triage is a conversation, one **brief** per turn.
    with its finding refs, the decision, and the issue number or mission change.
    It is the resume point after an interruption or handoff. Show the maintainer a
    short overview (counts by kind and severity, the cluster order) and start.
-5. **Brief one cluster, then wait.** Order: `qa-bug` clusters first, then product
-   clusters by severity. Start every brief, and every batch of low-severity
-   clusters, with a progress line computed from `triage.md`:
+5. **Summarize one cluster, then wait.** Order: `qa-bug` clusters first, then product
+   clusters by severity. Start every cluster summary, and every batch of
+   low-severity clusters, with a progress line computed from `triage.md`:
    `Progress: <clusters decided>/<all clusters> clusters · <findings decided>/<all findings> findings · <findings left> findings left`.
-   Each brief states:
+   Each cluster summary states:
    - what happened, with the decisive command and output excerpt from the evidence;
    - the cause, **verified against current `origin/main`** (`git fetch`, then
      `git show`/`git grep` on `origin/main`) with `file:line`: the build under test
@@ -57,8 +57,8 @@ Triage is a conversation, one **brief** per turn.
 
    Wait for the maintainer's decision. Answer their questions with more code
    reading before re-proposing. Done when the maintainer has decided this cluster.
-6. **Act on the decision immediately**, then log it in `triage.md` and brief the
-   next cluster.
+6. **Act on the decision immediately**, then log it in `triage.md` and summarize
+   the next cluster.
    - `file` (a product or doc cluster, or a `qa-bug` the maintainer asks to file):
      draft two local files. The issue body holds the context: problem, repro,
      build identity, the verified cause with `file:line`, and the blast radius
@@ -69,12 +69,12 @@ Triage is a conversation, one **brief** per turn.
      finds. When the decision widens scope in other ways (for example "add a
      Doctor check"), write that into the brief too. Follow the issue rules in
      `AGENTS.md`: scan title, body, and brief with the confidential-content
-     guard, `gh issue create`, then post the brief at once with
-     `gh issue comment`. Label with the brief's Category (`bug`,
-     `documentation`, or `enhancement`) and the triage role from
-     `docs/internals/agents/triage-labels.md`: `ready-for-agent` only when the
-     fix is decided and the brief is posted; `needs-triage` for open design,
-     with no brief.
+     guard, then `gh issue create` with the category label (`bug`,
+     `documentation`, or `enhancement`, matching the brief's Category) and
+     `needs-triage`. When the fix is decided, post the brief with
+     `gh issue comment`, then replace `needs-triage` with `ready-for-agent`, so
+     the issue never looks ready without its brief. Open design keeps
+     `needs-triage` and gets no brief.
    - `comment on #<n>`: same drafting and scan, then `gh issue comment`.
    - `fix mission`: record the exact change in `triage.md`; mission edits are
      batched in step 7.

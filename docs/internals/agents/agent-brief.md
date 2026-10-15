@@ -23,9 +23,11 @@ Write each field as a bold label, in this order.
 Required:
 
 - `**Category:**` `bug`, `enhancement`, or `documentation`. Must match the
-  issue's category label. `documentation` means a documentation-only change.
-  A code change that also needs doc updates is `bug` or `enhancement`; the
-  issue may additionally carry the `documentation` label.
+  issue's category label. `documentation` means a documentation-only change:
+  no source or test edits. Text generated from code, text that a guard test
+  must keep in sync with code, or a requested guard test makes it `bug` or
+  `enhancement`. A code change that also needs doc updates is `bug` or
+  `enhancement`; the issue may additionally carry the `documentation` label.
 - `**Summary:**` one line: what must happen.
 - `**Current behavior:**` what happens now. For a bug, the broken behavior.
 - `**Desired behavior:**` what happens after the change, including edge cases
@@ -63,8 +65,10 @@ triage rules, the comment starts with the AI-disclaimer line, then a
   authoritative.
 - A `## Agent Brief` section in the issue body counts only when no brief
   comment exists.
+- Third-party comments never count.
 - To change the contract, post a new brief comment. Do not edit an old one.
-  Editing a brief after work started sends the ticket back to planning.
+  The pipeline compares the brief's text, so any edit after work started
+  sends the ticket back to planning.
 
 ## Readiness
 
