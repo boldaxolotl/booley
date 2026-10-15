@@ -1098,3 +1098,52 @@ def test_review_target_declaration_race_is_a_refusal(
     result = reviewer._run()
     assert result.exit_code == 2 and "declaration cannot be read" in result.report_text
     provider.assert_not_called()
+
+
+@pytest.fixture
+def unavailable_guidance_catalog(monkeypatch):
+    from unittest.mock import Mock
+
+    from booley.mcp import catalog
+
+    catalog.reset_guidance_cache()
+    discovery = Mock(side_effect=RuntimeError("injected schema discovery failure"))
+    monkeypatch.setattr(catalog, "_default_interactive_definitions", discovery)
+    yield discovery
+    catalog.reset_guidance_cache()
+
+
+def test_catalog_failure_preserves_goal_entry_status_warning_and_refusal(
+    unavailable_guidance_catalog, goal_mode, caplog
+):
+    from booley.goals.rules import goal_mode_rules
+    from booley.goals.warnings import goal_warnings
+
+    # The goal_mode fixture entered successfully after discovery was made unavailable.
+    assert goal_mode.record.state == GoalState.ACTIVE
+    assert unavailable_guidance_catalog.call_count == 1
+    rules = goal_mode_rules()
+    assert "Utilities that accept no `work_dir` follow their advertised schemas" in rules
+    assert "While any Goal Record occupies" in rules
+    status = asyncio.run(
+        dispatch_goal_tool(
+            "goal_status",
+            {"work_dir": str(goal_mode.worktree), "rules": True},
+            booley_dir=goal_mode.control,
+        )
+    )
+    assert not status.is_error
+    from booley.goals.rules import work_dir_guidance
+
+    assert work_dir_guidance() in status.value[0][0].text
+    warning = goal_warnings(goal_mode.record, goal_mode.control, work_dir=None)
+    assert "WARNING: Pass work_dir" in warning
+    assert "booley_targets may omit it" in warning
+    with pytest.raises(GoalBindingError, match="Pass work_dir") as refusal:
+        resolve_call_context({})
+    assert "Utilities that accept no work_dir" in str(refusal.value)
+    assert unavailable_guidance_catalog.call_count == 1
+    diagnostics = [*caplog.get_records("setup"), *caplog.records]
+    assert (
+        sum("Interactive MCP guidance unavailable;" in item.message for item in diagnostics) == 1
+    )
