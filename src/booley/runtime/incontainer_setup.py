@@ -660,28 +660,6 @@ def codex_auth_path(home: Path | None = None) -> Path:
     return (home or _agent_home()) / ".codex" / "auth.json"
 
 
-def _token_seed_path(app: str, home: Path | None = None) -> Path | None:
-    """Where the spec mounts *app*'s stored rotation-free credential."""
-    basename = auth_token.TOKEN_SEED_BASENAME.get(app)
-    return None if basename is None else (home or _agent_home()) / basename
-
-
-def _effective_token(app: str, home: Path | None = None) -> str | None:
-    """The credential to apply: non-empty ambient env var first, seed second."""
-    credential = auth_token.credential_for_app(app)
-    if credential is None:
-        return None
-    ambient = (os.environ.get(credential.env_var) or "").strip()
-    if ambient:
-        return ambient
-    seed = _token_seed_path(app, home)
-    try:
-        stored = seed.read_text(encoding="utf-8").strip() if seed else ""
-    except (OSError, UnicodeDecodeError):
-        stored = ""
-    return stored or None
-
-
 def _write_private_json(path: Path, data: dict) -> None:
     """Write *data* as JSON with mode 0600 from the first byte (it holds a secret)."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -830,13 +808,75 @@ def _apply_claude_permission_mode(home: Path | None = None) -> str:
     return "written"
 
 
+def _validate_persisted_policy(app: str, policy: str, home: Path | None) -> None:
+    """Refuse incompatible user state; clear only recognized managed entries."""
+    base = home or _agent_home()
+    if app == auth_token.APP_CLAUDE:
+        auth_token.inspect_config_seed(base / ".claude.json", policy)
+        settings = claude_settings_path(home)
+        if settings.exists():
+            try:
+                data = json.loads(settings.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                raise ValueError("cannot inspect Claude settings; recreate the Sandbox") from exc
+            if not isinstance(data, dict) or data.get("apiKeyHelper"):
+                raise ValueError(
+                    "Claude settings contain ambiguous credential state; recreate the Sandbox"
+                )
+            environment = data.get("env", {})
+            if not isinstance(environment, dict) or (
+                policy == "subscription" and environment.get("ANTHROPIC_API_KEY")
+            ):
+                raise ValueError(
+                    "Claude settings conflict with subscription policy; recreate the Sandbox"
+                )
+        if policy == "api_key":
+            if (base / ".claude" / ".credentials.json").exists():
+                raise ValueError(
+                    "Claude login conflicts with API-key policy; recreate the policy-partitioned Sandbox"
+                )
+            _apply_claude_credential(None, home)
+    elif app == auth_token.APP_CODEX:
+        _validate_codex_persisted_policy(policy, home)
+
+
+def _validate_codex_persisted_policy(policy: str, home: Path | None) -> None:
+    path = codex_auth_path(home)
+    if not path.exists():
+        return
+    if policy == "subscription":
+        _apply_codex_credential(None, home)
+        if path.exists() and not auth_token.subscription_available(
+            auth_token.APP_CODEX, policy, path
+        ):
+            raise ValueError(
+                "Codex credential state conflicts with subscription policy; recreate the Sandbox"
+            )
+    elif policy == "api_key":
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise ValueError(
+                "cannot inspect Codex credential state; recreate the Sandbox"
+            ) from exc
+        if not isinstance(data, dict) or set(data) != {"OPENAI_API_KEY"}:
+            raise ValueError(
+                "Codex login conflicts with API-key policy; recreate the policy-partitioned Sandbox"
+            )
+
+
 def apply_stored_credential(app: str, home: Path | None = None) -> str:
     """Apply the ``booley auth`` credential for *app*. Returns a short status.
 
     ``"written"``/``"current"``/``"cleared"``/``"none"`` — see the per-app
     helpers. Unknown apps are a no-op.
     """
-    token = _effective_token(app, home)
+    policy = os.environ.get("BOOLEY_PRIMARY_AUTH", "auto")
+    plan = auth_token.credential_plan(app, policy, home=home or _agent_home())
+    credential = auth_token.credential_for_app(app)
+    token = dict(plan.values).get(credential.env_var) if credential else None
+    if policy != "auto":
+        _validate_persisted_policy(app, policy, home)
     if app == auth_token.APP_CLAUDE:
         return _apply_claude_credential(token, home)
     if app == auth_token.APP_CODEX:

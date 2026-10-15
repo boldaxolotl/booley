@@ -155,6 +155,7 @@ def test_failure_of_a_killed_campaign_is_sticky_for_the_next_campaign(
     assert (registration.settled, registration.blocked) == (False, "")
 
 
+@pytest.mark.timeout(150)
 def test_a_coverage_goal_is_outside_campaign_accounting(layout: SimpleNamespace) -> None:
     """No result a campaign left behind can change a Goal judged by coverage floors alone."""
     goals = [
@@ -189,6 +190,7 @@ def test_a_coverage_goal_is_outside_campaign_accounting(layout: SimpleNamespace)
     assert _status(mode, coverage_key) == measured
 
 
+@pytest.mark.timeout(150)
 def test_a_campaign_read_before_it_started_is_read_again_after_it_failed(
     two: SimpleNamespace, campaign: _Campaign
 ) -> None:
@@ -310,6 +312,11 @@ def test_adoption_is_idempotent_and_survives_a_stop_after_each_write(
     assert len(list(evidence.iterdir() if evidence.exists() else [])) >= 1
     rows_after_stop = sorted(path.name for path in evidence.iterdir() if path.name[0].isdigit())
     assert campaign.registration().settled is False
+    # A late old report must not be merged into the adopted immutable observation.
+    path = record_paths(two.control, two.record.id).state_file
+    cached = json.loads(path.read_bytes())
+    cached["criteria"][SIM_KEY]["detail"] = {"obsolete_report_field": "old"}
+    path.write_text(json.dumps(cached))
     # The state differs from its newest observation: never met, and named unaccounted.
     assert _status(two).status == "unmet"
 
@@ -319,6 +326,15 @@ def test_adoption_is_idempotent_and_survives_a_stop_after_each_write(
         with pytest.raises(_InterruptedError):
             _account(two)
     assert _entry(two)["detail"][LEDGER_DETAIL_KEY]["runs"][0]["outcome"] == "failed"
+    from booley.criteria.evidence_ledger import validated_evidence_records
+    from booley.goals.recorder import GOAL_SCOPE
+    from booley.goals.state_store import load_goal_state
+
+    store = GoalStore(two.control)
+    state = load_goal_state(store, store.load(two.record.id))
+    selected = validated_evidence_records(GOAL_SCOPE, path.parent / "logs", state, {})[-1]
+    assert _entry(two)["detail"] == selected["detail"]
+    assert "obsolete_report_field" not in selected["detail"]
 
     _account(two)
     _account(two)  # an open registration is read on every pass: nothing is adopted twice
@@ -452,11 +468,14 @@ def test_failure_in_a_stopped_transaction_is_folded_by_the_next_campaign(
     assert _status(two).reason.startswith("goal-test-run-failed")
 
 
+@pytest.mark.parametrize("previous_observation", [False, True])
 def test_an_unselected_transaction_keeps_its_goal_unmet_until_it_is_completed(
     two: SimpleNamespace,
+    previous_observation: bool,
 ) -> None:
-    _record(two, "run-0", [run_row(A), run_row(B)])
-    assert _status(two).status == "met"
+    if previous_observation:
+        _record(two, "run-0", [run_row(A), run_row(B)])
+        assert _status(two).status == "met"
     stopped = GoalEvidenceRecorder(
         bind(two, "run-a"), publication_checkpoint=_interrupt("after:acceptance_commit")
     )
@@ -582,7 +601,7 @@ def test_the_review_package_lists_campaigns_that_were_never_fully_accounted_for(
     assert '"quarantined"' in lines[2]
 
 
-@pytest.mark.timeout(120)
+@pytest.mark.timeout(150)
 def test_finish_accounts_first_and_refuses_while_a_campaign_runs_or_cannot_be_read(
     two: SimpleNamespace, campaign: _Campaign
 ) -> None:

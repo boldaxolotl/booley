@@ -685,3 +685,32 @@ def _parse_agent_and_models(
         models_section = {}
 
     return (auth, _parse_tier_models(models_section), provider, _parse_role_models(models_section))
+
+
+def project_credential_policy(
+    project_root: Path, *, booley_dir: Path | None = None
+) -> tuple[str, str]:
+    """Read policy at an already-selected root, failing closed on invalid input."""
+    import tomllib
+
+    if booley_dir is None:
+        from booley.core.booley_dir import resolve_authoritative_booley_dir
+
+        try:
+            booley_dir = resolve_authoritative_booley_dir(project_root)
+        except FileNotFoundError:
+            booley_dir = project_root / ".booley"
+    path = _resolve_booley_toml(booley_dir)
+    if not path.exists():
+        return _DEFAULT_PROVIDER, _DEFAULT_AUTH
+    try:
+        with path.open("rb") as stream:
+            data = tomllib.load(stream)
+    except (OSError, ValueError) as exc:
+        raise BackendConfigError(
+            "cannot read Project credential policy; repair booley.toml"
+        ) from exc
+    agent = data.get("agent", {})
+    if not isinstance(agent, dict):
+        raise BackendConfigError("booley.toml [agent] must be a table")
+    return parse_provider(agent) or _DEFAULT_PROVIDER, parse_auth(agent) or _DEFAULT_AUTH

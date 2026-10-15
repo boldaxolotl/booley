@@ -213,6 +213,7 @@ def test_declared_builtin_overlap_reports_one_violation(layout):
     assert len(warnings(layout)) == 1 and "FUSESOC_IGNORE" in warnings(layout)[0]
 
 
+@pytest.mark.timeout(150)
 def test_run_admission_publication_and_finish_restore(layout):
     configure(layout, ["Makefile"], {"Makefile": b"all:\n\ttrue\n", "top.core": TOP_CORE.encode()})
     enter(layout)

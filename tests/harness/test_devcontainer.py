@@ -912,3 +912,23 @@ def test_project_resource_name_identity_bytes_remain_stable(tmp_path):
     expected = hashlib.sha256(os.path.normcase(str(tmp_path.resolve())).encode()).hexdigest()[:32]
     assert devcontainer.canonical_project_id(tmp_path) == expected
     assert expected in devcontainer.state_volume_mount("claude", expected)
+
+
+def test_explicit_policy_partitions_persistent_state(tmp_path, monkeypatch):
+    from booley.runtime import auth_token
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    specs = [
+        dc.build_devcontainer_spec(
+            "claude",
+            project_id="one-project",
+            credential_plan=auth_token.credential_plan("claude", mode),
+        )
+        for mode in ("auto", "subscription", "api_key")
+    ]
+    volumes = [next(mount for mount in spec["mounts"] if "type=volume" in mount) for spec in specs]
+    assert len(set(volumes)) == 3
+    assert "-subscription," in volumes[1]
+    assert "-api_key," in volumes[2]

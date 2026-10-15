@@ -175,6 +175,7 @@ def _public_hook_endpoint(flow, invocation):
         flow=flow,
         name="sim",
         endpoint_kind="flow",
+        _acceptance_recorder=flow.context._acceptance_recorder,
         _report_criteria=ReportCriteria(frozen=True),
         _reserved_invocation_dir=invocation,
         _start_time=time.monotonic(),
@@ -572,6 +573,7 @@ def test_infrastructure_campaign_reaches_persisted_endpoint_reports(
         flow=flow,
         name="sim",
         endpoint_kind="flow",
+        _acceptance_recorder=flow.context._acceptance_recorder,
         _report_criteria=ReportCriteria(frozen=True),
         _reserved_invocation_dir=invocation,
         _start_time=time.monotonic(),
@@ -1058,7 +1060,7 @@ def test_campaign_recording_failure_retains_evaluated_final_report(tmp_path):
 
     freeze(tool)
     report = json.loads(tool.write_report(EndpointOutcome(exit_code=2)).read_text())
-    assert (report["criterion_key"], report["criterion_met"]) == ("sim_pass_sim", True)
+    assert "criterion_key" not in report and "criterion_met" not in report
     assert report["passed"] is False
     assert tool.state.criteria["sim_pass_sim"].met is False
 
@@ -1084,9 +1086,12 @@ def test_standalone_campaign_has_only_current_conclusive_workload_verdict(tmp_pa
 
     freeze(tool)
     report = json.loads(tool.write_report(EndpointOutcome()).read_text())
-    assert (report["criterion_key"], report["criterion_met"]) == (
-        ("sim_pass_sim", True) if conclusive else ("", None)
-    )
+    assert "criterion_key" not in report and "criterion_met" not in report
+    if conclusive:
+        assert tool.state.criteria["sim_pass_sim"].met is True
+        assert tool.state.criteria["sim_pass_sim"].detail["selected_tests"] == ["smoke"]
+    else:
+        assert "sim_pass_sim" not in tool.state.criteria
     assert tool.state._file_path is None
     assert not (tmp_path / "state.json").exists()
 
@@ -1828,6 +1833,7 @@ def test_prepared_ordinary_invoker_observes_owned_attempt_before_launch(
     assert "active" not in terminal
 
 
+@pytest.mark.timeout(180)
 def test_prepared_campaign_active_write_failure_preserves_durable_success(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

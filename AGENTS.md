@@ -58,6 +58,8 @@ simulation, synthesis, linting, and ticket workflows.
   `docs/internals/agents/issue-tracker.md`.
 - **Triage labels:** Use the standard Matt Pocock labels. See
   `docs/internals/agents/triage-labels.md`.
+- **Agent Briefs:** `ready-for-agent` issues need one. See
+  `docs/internals/agents/agent-brief.md`.
 - **Domain docs:** Read `GLOSSARY-MAP.md`, then the glossary for each context the
   work touches. ADR history lives under `docs/adr/`. See
   `docs/internals/agents/domain.md`.

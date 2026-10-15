@@ -121,15 +121,23 @@ def test_committed_summary_is_on_worktree_branch_and_main_does_not_move(layout):
 @pytest.mark.parametrize(
     "boundary",
     [
-        "attempt-frozen",
-        "finishing",
-        "local-artifacts",
-        "publication-intent",
-        "destination-materialized",
-        "commit-journaled",
-        "ref-published",
-        "index-synchronized",
-        "finished",
+        pytest.param("attempt-frozen", marks=pytest.mark.timeout(150), id="attempt-frozen"),
+        pytest.param("finishing", marks=pytest.mark.timeout(150), id="finishing"),
+        pytest.param("local-artifacts", marks=pytest.mark.timeout(150), id="local-artifacts"),
+        pytest.param(
+            "publication-intent", marks=pytest.mark.timeout(120), id="publication-intent"
+        ),
+        pytest.param(
+            "destination-materialized",
+            marks=pytest.mark.timeout(150),
+            id="destination-materialized",
+        ),
+        pytest.param("commit-journaled", marks=pytest.mark.timeout(150), id="commit-journaled"),
+        pytest.param("ref-published", marks=pytest.mark.timeout(150), id="ref-published"),
+        pytest.param(
+            "index-synchronized", marks=pytest.mark.timeout(180), id="index-synchronized"
+        ),
+        pytest.param("finished", marks=pytest.mark.timeout(150), id="finished"),
     ],
 )
 def test_every_publication_crash_boundary_recovers_exactly_once(layout, boundary):
@@ -183,10 +191,14 @@ def test_finish_refuses_before_publication(complete, change, message):
     elif change == "branch":
         git(complete.worktree, "checkout", "-qb", "sibling")
     elif change == "unmet":
+        from booley.criteria.state import DevelopmentState
+        from booley.goals.recorder import GoalEvidenceRecorder
+
+        recorder = GoalEvidenceRecorder(bind(complete, "failing-rerun"))
         path = record_paths(complete.control, complete.record.id).state_file
-        value = json.loads(path.read_bytes())
-        value["criteria"]["lint_clean_top"]["met"] = False
-        path.write_text(json.dumps(value))
+        state = DevelopmentState.load(path, recorder.state_persistence())
+        changes = state.set_criterion("lint_clean_top", False, detail={"warnings": 4})
+        recorder.record_changes(state, changes, invocation_id="fail", producer="lint")
     elif change == "protected":
         (complete.control / "booley.toml").write_bytes(b"[project]\nname='changed'\n")
     else:
@@ -201,8 +213,8 @@ def test_finish_refuses_before_publication(complete, change, message):
     assert GoalStore(complete.control).load(complete.record.id).state is GoalState.ACTIVE
 
 
-# Native Windows passed call: 43.475s; 3x rounded to 30s requires 150s.
-@pytest.mark.timeout(150)
+# Windows JUnit measured 57.805s; 3x rounded to 30s requires 180s.
+@pytest.mark.timeout(180)
 def test_revalidation_retains_attempt_and_permanently_fences_old_run(layout):
     from booley.goals.publication import EvidenceDiscarded, PublicationGate
 
@@ -237,6 +249,7 @@ def test_revalidation_retains_attempt_and_permanently_fences_old_run(layout):
     assert second["history_path"] != f".booley/goals/history/{complete.record.id}.md"
 
 
+@pytest.mark.timeout(150)
 def test_replacement_entry_does_not_receive_old_retry_or_abandon(complete):
     call = request(complete)
     result = finish_goal(call, environment(complete))
@@ -341,6 +354,7 @@ def test_late_pre_finish_job_cannot_change_terminal_state_or_package(complete):
     assert Path(result["package"]).read_bytes() == before
 
 
+@pytest.mark.timeout(210)
 def test_publication_during_pre_fence_crash_requires_revalidation_and_permanent_fence(complete):
     from booley.goals.publication import EvidenceDiscarded, PublicationGate
 
@@ -550,6 +564,7 @@ def test_malformed_retained_scope_fails_at_completion_boundary(layout, monkeypat
     assert GoalStore(layout.control).load(layout.record.id).state == GoalState.ACTIVE
 
 
+@pytest.mark.timeout(150)
 def test_non_review_contract_metadata_does_not_break_retained_inputs(layout, monkeypatch):
     from booley.goals import finish
     from booley.mcp.goal_completion import completion_environment
@@ -592,14 +607,14 @@ def paired_publication_layout(layout, tmp_path, *, selected=None):
     return layout
 
 
-# Windows measured 60.3s (None), 75.3s (local-artifacts), and 66.9s (finished).
+# Windows measured 81.4s (None), 80.5s (local-artifacts), and 76.4s (finished).
 # Budgets retain 3x headroom, rounded to the next 30-second multiple.
 @pytest.mark.parametrize(
     "boundary",
     [
-        pytest.param(None, marks=pytest.mark.timeout(210)),
-        pytest.param("local-artifacts", marks=pytest.mark.timeout(240)),
-        pytest.param("finished", marks=pytest.mark.timeout(210)),
+        pytest.param(None, marks=pytest.mark.timeout(270)),
+        pytest.param("local-artifacts", marks=pytest.mark.timeout(270)),
+        pytest.param("finished", marks=pytest.mark.timeout(240)),
     ],
 )
 def test_nonexcluded_pair_finish_retry_and_next_entry_stay_local(layout, tmp_path, boundary):
@@ -665,7 +680,14 @@ def test_finish_refuses_dirty_gitlink_even_when_production_config_hides_it(
     assert (layout.worktree / "child/rtl.v").read_bytes() == b"user work\n"
 
 
-@pytest.mark.parametrize("dirt", ["modified", "staged", "untracked"])
+@pytest.mark.parametrize(
+    "dirt",
+    [
+        pytest.param("modified", marks=pytest.mark.timeout(150), id="modified"),
+        pytest.param("staged", marks=pytest.mark.timeout(180), id="staged"),
+        pytest.param("untracked", marks=pytest.mark.timeout(150), id="untracked"),
+    ],
+)
 def test_nonexcluded_pair_finish_retry_preserves_concurrent_inner_dirt(layout, tmp_path, dirt):
     layout = paired_publication_layout(layout, tmp_path)
     call = request(layout)

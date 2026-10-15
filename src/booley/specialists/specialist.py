@@ -302,6 +302,14 @@ class Specialist(McpTool):
         """Category whose opposite sources must be absent from a read-only snapshot."""
         return None
 
+    def _workspace_isolation_scope(self) -> tuple[str, ...]:
+        """Exact authorized sources; subclasses may already have resolved scope."""
+        return tuple(
+            part.strip()
+            for part in (getattr(self.args, "scope", "") or "").split(",")
+            if part.strip()
+        )
+
     @abstractmethod
     def _build_prompt(self) -> str:
         """Build the agent prompt. Implemented by subclasses."""
@@ -315,20 +323,13 @@ class Specialist(McpTool):
         params: AgentCallParams,
         on_event: Any = None,
     ) -> Any:
-        """Call an agent and accumulate token/cost usage.
+        """Call an isolated agent and accumulate token/cost usage.
 
-        Automatically attaches a streaming callback that writes
-        specialist_thinking events to display.jsonl when on_event
-        is not provided.
-
-        Also auto-injects the per-specialist nested MCP-tool allowlist
-        from ``booley.runtime.nested_mcp_capabilities`` when the caller hasn't
-        set ``params.nested_mcp_tools`` — that's the single source of
-        truth, so call sites don't pass it.
-
-        The call is wrapped in the parent-death watchdog: an agent turn is
-        the one place a Specialist burns money, so a run whose client has
-        disconnected must not survive it (SETUP-F-36).
+        Missing callbacks stream specialist_thinking events to display.jsonl.
+        Missing per-Specialist nested MCP-tool allowlists come from
+        booley.runtime.nested_mcp_capabilities, the shared authority.
+        A parent-death watchdog bounds this expensive call to the client's
+        lifetime (SETUP-F-36).
         """
         if on_event is None:
             on_event = self._make_streaming_callback()
@@ -341,6 +342,12 @@ class Specialist(McpTool):
             params,
             self.workspace_access,
             self._workspace_isolation_category(),
+            scope=self._workspace_isolation_scope(),
+            excluded_roots=(
+                (Path(self.args.report_dir).resolve(),)
+                if getattr(self.args, "report_dir", None)
+                else ()
+            ),
         ) as (
             call_params,
             snapshot,

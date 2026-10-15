@@ -514,6 +514,7 @@ def test_invalid_exec_ids_keep(ids):
         (b"\xff", 200, ValueError),
         (b"x" * (reaper._EXEC_RESPONSE_LIMIT + 1), 200, ValueError),
     ],
+    ids=["valid", "http-error", "non-object", "invalid-json", "invalid-utf8", "oversized"],
 )
 def test_engine_transport_validates_and_closes(monkeypatch, body, status, error):
     calls = []

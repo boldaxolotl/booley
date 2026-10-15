@@ -111,24 +111,21 @@ class DockerSandboxConfig:
 # ---------------------------------------------------------------------------
 
 
-def _append_auth_mounts(docker_cmd: list[str]) -> None:
-    """Mount CLI auth files read-only for OAuth inside containers."""
-    codex_auth = Path.home() / ".codex" / "auth.json"
-    if codex_auth.is_file():
-        docker_cmd.extend(
-            [
-                "-v",
-                f"{_docker_mount_path(codex_auth)}:/home/agent/.codex/auth.json:ro",
-            ]
-        )
-    claude_auth = Path.home() / ".claude" / ".credentials.json"
-    if claude_auth.is_file():
-        docker_cmd.extend(
-            [
-                "-v",
-                f"{_docker_mount_path(claude_auth)}:/home/agent/.claude/.credentials.json:ro",
-            ]
-        )
+def _append_auth_mounts(
+    docker_cmd: list[str], plans: tuple[auth_token.CredentialPlan, ...] | None = None
+) -> None:
+    """Mount only login files permitted by the selected Project policy."""
+    plans = (
+        plans
+        if plans is not None
+        else tuple(auth_token.credential_plan(app) for app in auth_token.CREDENTIALS)
+    )
+    for plan in plans:
+        if plan.subscription_seed:
+            relative = ".claude/.credentials.json" if plan.app == "claude" else ".codex/auth.json"
+            docker_cmd.extend(
+                ["-v", f"{_docker_mount_path(plan.subscription_seed)}:/home/agent/{relative}:ro"]
+            )
 
 
 def _append_persistent_volumes(docker_cmd: list[str]) -> None:
@@ -240,8 +237,9 @@ class DockerRunner:
         if tty:
             docker_cmd.insert(3, "-t")
 
-        self._append_api_key_env_file(docker_cmd)
-        _append_auth_mounts(docker_cmd)
+        plans = self._credential_plans()
+        self._append_api_key_env_file(docker_cmd, plans)
+        _append_auth_mounts(docker_cmd, plans)
         _append_persistent_volumes(docker_cmd)
         _append_extra_mounts(docker_cmd, self.config.extra_mounts)
         _append_env_vars(docker_cmd, self.config.extra_env, proxy_url)
@@ -355,40 +353,18 @@ class DockerRunner:
         )
         return ["/bin/sh", "-lc", script, "booley-preflight", *cmd]
 
-    def _append_api_key_env_file(self, docker_cmd: list[str]) -> None:
+    def _credential_plans(self) -> tuple[auth_token.CredentialPlan, ...]:
+        from booley.config.agent import project_credential_policy
+
+        _, policy = project_credential_policy(self.worktree)
+        return tuple(auth_token.credential_plan(app, policy) for app in auth_token.CREDENTIALS)
+
+    def _append_api_key_env_file(
+        self, docker_cmd: list[str], plans: tuple[auth_token.CredentialPlan, ...] | None = None
+    ) -> None:
         """Write API keys to a transient env-file and append --env-file flag."""
-        from booley.config.agent import resolve_auth_policy
-
-        # [agent] auth = "subscription": the API keys are exactly what must NOT
-        # reach the agents (an exported key outranks — and bills over — the
-        # subscription under the agent CLI's precedence), so they are not
-        # forwarded. Claude's OAuth token still rides: it bills the
-        # subscription and is the rotation-free credential for long runs.
-        scrubbed: frozenset[str] = frozenset()
-        if resolve_auth_policy() == "subscription":
-            scrubbed = frozenset(auth_token.API_KEY_ENV.values())
-
-        # CLAUDE_CODE_OAUTH_TOKEN rides along so a one-year `claude setup-token`
-        # credential reaches headless in-container runs. Only set vars are
-        # written (the walrus guard), so an unset token is simply omitted.
-        _api_keys = {
-            k: v
-            for k in (
-                "ANTHROPIC_API_KEY",
-                "OPENAI_API_KEY",
-                "CLAUDE_CODE_OAUTH_TOKEN",
-            )
-            if k not in scrubbed and (v := os.environ.get(k))
-        }
-        # A credential stored by `booley auth` fills the gap when nothing is
-        # exported; an exported value still wins (setdefault). Covers both apps:
-        # Claude's OAuth token and Codex's API key. Never inject an empty value —
-        # it would shadow the mounted subscription credentials.
-        for credential in auth_token.CREDENTIALS.values():
-            if credential.env_var in scrubbed:
-                continue
-            if stored := auth_token.resolve_token(credential.app):
-                _api_keys.setdefault(credential.env_var, stored)
+        plans = self._credential_plans() if plans is None else plans
+        _api_keys = {key: value for plan in plans for key, value in plan.values}
         self._env_file: Path | None = None
         if not _api_keys:
             return

@@ -319,7 +319,7 @@ def canonical_project_id(project_root: Path) -> str:
     return project_name_id(str(project_root.resolve(strict=True)))
 
 
-def state_volume_name(app: str, project_id: str) -> str | None:
+def state_volume_name(app: str, project_id: str, policy: str = "auto") -> str | None:
     """Name of the persistent home-state volume for *app* and *project_id*.
 
     Returns ``None`` for apps without a persisted state dir. The single format
@@ -327,10 +327,11 @@ def state_volume_name(app: str, project_id: str) -> str | None:
     """
     if app not in _APP_STATE_DIR:
         return None
-    return f"booley-{app}-state-{project_id}"
+    suffix = "" if policy == "auto" else f"-{policy}"
+    return f"booley-{app}-state-{project_id}{suffix}"
 
 
-def state_volume_mount(app: str, project_id: str) -> str | None:
+def state_volume_mount(app: str, project_id: str, policy: str = "auto") -> str | None:
     """Return the persistent home-state volume mount for *app*, or ``None``.
 
     Per-project + per-app naming keeps projects isolated: every interactive
@@ -340,7 +341,7 @@ def state_volume_mount(app: str, project_id: str) -> str | None:
     target = _APP_STATE_DIR.get(app)
     if target is None:
         return None
-    name = state_volume_name(app, project_id)
+    name = state_volume_name(app, project_id, policy)
     return _volume_mount(name, target)
 
 
@@ -863,9 +864,41 @@ def _git_environment(project_source: str | None, fixed: dict[str, str] | None) -
     return environment
 
 
+def _policy_sources(
+    app: str, plan: auth_token.CredentialPlan | None, login: str | None, token: str | None
+) -> tuple[str | None, str | None]:
+    if plan is None:
+        return login, token
+    if plan.app != app:
+        raise ValueError("credential plan provider differs from Sandbox app")
+    return login if plan.subscription_seed else None, token if plan.token_seed else None
+
+
+def _policy_state_mounts(
+    app: str, project_id: str, mounts: list[str], plan: auth_token.CredentialPlan | None
+) -> list[str]:
+    if plan is None:
+        return mounts
+    old_state = state_volume_mount(app, project_id)
+    new_state = state_volume_mount(app, project_id, plan.policy)
+    return [str(new_state) if mount == old_state else mount for mount in mounts]
+
+
+def _policy_remote_environment(
+    remote: dict[str, str], plan: auth_token.CredentialPlan | None
+) -> None:
+    remote["BOOLEY_PRIMARY_AUTH"] = plan.policy if plan else "auto"
+    remote["BOOLEY_CREDENTIAL_SCHEMA"] = auth_token.CREDENTIAL_SCHEMA
+    if plan is not None:
+        for key in auth_token.CREDENTIAL_ENV_KEYS:
+            remote.pop(key, None)
+        remote.update({key: f"${{localEnv:{key}}}" for key, _ in plan.values})
+
+
 def build_devcontainer_spec(
     app: str = APP_NONE,
     *,
+    credential_plan: auth_token.CredentialPlan | None = None,
     image: str = SANDBOX_IMAGE,
     booley_dir_source: str = DEFAULT_BOOLEY_DIR_SOURCE,
     project_id: str = "${localWorkspaceFolderBasename}",
@@ -962,6 +995,9 @@ def build_devcontainer_spec(
         # exact visibility the project configured away.
         raise ValueError("mask_paths given without mask_source (the empty host dir to bind)")
 
+    auth_token_source, token_seed_source = _policy_sources(
+        app, credential_plan, auth_token_source, token_seed_source
+    )
     auth_target = _auth_target_for_app(app)
     # Both apps refresh their credential file in-container, so both need the
     # sidecar-seed + writable-copy treatment (see _APP_CREDS_SEED_TARGET).
@@ -984,8 +1020,10 @@ def build_devcontainer_spec(
         mask_paths,
         mask_source,
     )
+    mounts = _policy_state_mounts(app, project_id, mounts, credential_plan)
     identity_env = _git_environment(booley_dir_source, fixed_container_env)
     remote_env = _build_remote_env(app, forward_oauth_token, local_timezone)
+    _policy_remote_environment(remote_env, credential_plan)
     remote_env.update(identity_env)
     run_args = _build_run_args(memory)
 
@@ -1064,8 +1102,11 @@ def build_devcontainer_spec(
             **_PYTHON_TERMINAL_SETTINGS,
         },
     }
+    from booley.runtime.dashboard_extension import VSIX_PATH
+
     if dashboard:
-        vscode["settings"]["task.allowAutomaticTasks"] = "on"
+        vscode["extensions"].append(VSIX_PATH)
+    vscode["settings"]["booley.dashboard.attachProtocol"] = 1 if dashboard else 0
     if extension:
         # Pin the agent extension workspace-side (reinforces the
         # container-install above; enforcement is client-side).

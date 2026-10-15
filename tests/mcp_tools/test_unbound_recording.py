@@ -74,7 +74,7 @@ def test_unbound_identity_and_reviewer_policies() -> None:
     recorder = UnboundAcceptanceRecorder()
     assert recorder.acceptance_identity() == {}
     assert not isinstance(recorder, CriterionFreshness)
-    assert done_findings_require_approval_for(recorder) is True
+    assert done_findings_require_approval_for(recorder) is False
 
 
 def test_unbound_recording_without_logs_is_a_noop(tmp_path: Path) -> None:

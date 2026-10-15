@@ -93,6 +93,24 @@ class RefreshImage:
     wheel_source_fingerprint: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class RefreshResult:
+    """Verified outcome, identified by immutable container IDs."""
+
+    image: RefreshImage
+    outcome: str
+    previous_container_id: str | None
+    container_id: str
+
+    @property
+    def message(self) -> str:
+        if self.outcome == "kept":
+            return "kept: already current"
+        if self.outcome == "created":
+            return f"created {self.container_id}"
+        return f"replaced {self.previous_container_id} → {self.container_id}"
+
+
 class RuntimeImageOperations(Protocol):
     """Image operations composed by the Project Initialization caller."""
 
@@ -105,6 +123,16 @@ class RuntimeImageOperations(Protocol):
     def commit(self) -> RefreshImage: ...
 
     def abort(self) -> None: ...
+
+    def prepare_spec(self, project_root: Path, image: RefreshImage) -> None: ...
+
+    def spec_is_current(self, project_root: Path) -> bool: ...
+
+    def validate_spec(self, project_root: Path) -> None: ...
+
+    def requires_license(self) -> bool: ...
+
+    def finalize(self, project_root: Path) -> None: ...
 
     def reissue(
         self,
@@ -503,6 +531,7 @@ def _restore_journal(journal: _RefreshJournal) -> RecoveryResult:
         raise sr.SessionError("; ".join(errors))
     _verify_restored_journal(journal)
     _delete_journal(project)
+    _cleanup_owned_images(project)
     return RecoveryResult(project, RecoveryOutcome.RESTORED)
 
 
@@ -570,7 +599,9 @@ def _resume_journal(journal: _RefreshJournal) -> RecoveryResult:
     if journal.prior_runtime is not None:
         sr.discard_refresh_session(journal.prior_runtime)
     _recover_prepared_image_tags(journal.prepared_images, restore=False)
+    finalize_project(journal.project_root)
     _delete_journal(journal.project_root)
+    _cleanup_owned_images(journal.project_root)
     return RecoveryResult(journal.project_root, RecoveryOutcome.RESUMED)
 
 
@@ -583,6 +614,15 @@ def _recover_prepared_image_tags(
     from booley.runtime import image_lifecycle
 
     docker = image_lifecycle._docker_adapter()
+    for image in images:
+        candidate = docker.image_id(image.candidate_reference)
+        if candidate is not None and candidate != image.candidate_id:
+            raise sr.SessionError("candidate tag changed before recovery")
+        managed = docker.image_id(image.reference)
+        if restore and managed not in {image.candidate_id, image.prior_id, None}:
+            raise sr.SessionError(
+                "managed tag has an unexpected immutable identity before recovery"
+            )
     for image in reversed(images):
         if image.candidate_reference == image.reference:
             continue
@@ -725,7 +765,10 @@ def _reject_existing_vscode(project_root: Path) -> None:
 
 
 def _reject_vscode_started(project_root: Path, consequence: str) -> None:
-    vscode = sr.strict_conflicting_vscode_session(project_root)
+    try:
+        vscode = sr.strict_conflicting_vscode_session(project_root)
+    except sr.SessionError as exc:
+        raise sr.SessionError(f"{exc}; {consequence}") from exc
     if vscode:
         raise sr.SessionError(f"VS Code started Sandbox {vscode!r} during refresh; {consequence}")
 
@@ -748,7 +791,9 @@ def _load_recovery_issuance(
             return runtime_spec.load_recovery_snapshot(project_root, spec, snapshot.spec_path)
         return runtime_spec.load_issued_snapshot(project_root)
     except runtime_spec.RuntimeSpecError as exc:
-        raise sr.SessionError(f"cannot preserve the prior Sandbox: {exc}") from exc
+        raise sr.SessionError(
+            f"cannot preserve the prior Sandbox: {exc}; {sr.sandbox_remedy(project_root, recovery_unavailable=True)}"
+        ) from exc
 
 
 def _reconcile_refresh_image(
@@ -827,48 +872,99 @@ def _recover_failed_refresh(project_root: Path, original: BaseException) -> None
             f"Session refresh failed ({original}); recovery was incomplete: {recovery_error}"
         ) from original
 
+    if current.prior_runtime is None:
+        message = f"candidate failed: {original}; restored prior issuance; no prior Sandbox"
+    else:
+        message = (
+            f"rolled back to {current.prior_runtime.container_id}; candidate failed: {original}"
+        )
+    raise sr.SessionError(message) from original
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedRefresh:
+    image: RefreshImage
+    snapshot: SessionSpecSnapshot
+    issuance: runtime_spec.Issuance
+    parked: sr.ParkedSession | None
+
+
+def _prepare_refresh(
+    project: Path, prior: runtime_spec.Issuance, images: RuntimeImageOperations, *, verbose: bool
+) -> _PreparedRefresh:
+    image = images.prepare(project, verbose=verbose)
+    if not image.selected_id:
+        raise sr.SessionError("refresh did not produce an immutable Sandbox Image ID")
+    snapshot = capture_session_spec(project)
+    issuance = _load_recovery_issuance(project, snapshot)
+    if issuance != prior:
+        raise sr.SessionError("prior Sandbox issuance changed during refresh preparation")
+    parked = sr.plan_session_refresh(project, issuance)
+    images.prepare_spec(project, image)
+    images.validate(image)
+    images.validate_spec(project)
+    return _PreparedRefresh(image, snapshot, issuance, parked)
+
+
+def _finish_refresh(
+    journal: _RefreshJournal, result: RefreshImage, images: RuntimeImageOperations
+) -> RefreshResult:
+    project = journal.project_root
+    try:
+        container_id = sr.refresh_container_id(project)
+        if journal.prior_runtime is not None:
+            sr.discard_refresh_session(journal.prior_runtime)
+        images.finalize(project)
+    except Exception as exc:
+        raise sr.SessionError(
+            f"replacement committed; final reconciliation is incomplete: {exc}"
+        ) from exc
+    _delete_journal(project)
+    _cleanup_owned_images(project)
+    parked = journal.prior_runtime
+    return RefreshResult(
+        result,
+        "replaced" if parked else "created",
+        parked.container_id if parked else None,
+        container_id,
+    )
+
 
 def _refresh_unlocked(
-    project_root: Path,
-    images: RuntimeImageOperations,
-    *,
-    verbose: bool,
-) -> RefreshImage:
+    project_root: Path, images: RuntimeImageOperations, *, verbose: bool
+) -> RefreshResult:
     project = project_root.resolve(strict=True)
     _reject_existing_vscode(project)
+    prior = _load_recovery_issuance(project, capture_session_spec(project))
     images.inspect(project, verbose=verbose)
     try:
-        prepared_result = images.prepare(project, verbose=verbose)
-        if not prepared_result.selected_id:
-            raise sr.SessionError("refresh did not produce an immutable Sandbox Image ID")
-        snapshot = capture_session_spec(project)
-        issuance = _load_recovery_issuance(project, snapshot)
-        parked = sr.plan_session_refresh(project, issuance)
-        images.validate(prepared_result)
-        committed = _try_complete_noop(project, prepared_result, issuance, parked, images)
+        prepared = _prepare_refresh(project, prior, images, verbose=verbose)
+        parked = prepared.parked
+        committed = _try_complete_noop(project, prepared.image, prepared.issuance, parked, images)
         if committed is not None:
-            return committed
-        journal = _prepared_journal(project, snapshot, issuance, parked, prepared_result)
-        result, journal = _reconcile_refresh_image(
-            journal,
-            prepared_result,
-            images,
+            images.finalize(project)
+            assert parked is not None and parked.container_id is not None
+            return RefreshResult(committed, "kept", parked.container_id, parked.container_id)
+        if parked is not None and images.requires_license():
+            raise sr.SessionError(
+                "refresh cannot add a licensed relay topology to an existing Sandbox; "
+                "run `booley session down` then `booley session refresh`"
+            )
+        action = "replace" if parked is not None else "create"
+        print(f"  planned: {action} Sandbox after verification")
+        journal = _prepared_journal(
+            project, prepared.snapshot, prepared.issuance, parked, prepared.image
         )
-        journal = _issue_and_verify_replacement(
-            journal,
-            result,
-            images,
-            verbose=verbose,
-        )
+        result, journal = _reconcile_refresh_image(journal, prepared.image, images)
+        journal = _issue_and_verify_replacement(journal, result, images, verbose=verbose)
     except BaseException as exc:
-        images.abort()
-        if _load_journal(project) is not None:
-            _recover_failed_refresh(project, exc)
+        try:
+            images.abort()
+        finally:
+            if _load_journal(project) is not None:
+                _recover_failed_refresh(project, exc)
         raise
-    if journal.prior_runtime is not None:
-        sr.discard_refresh_session(journal.prior_runtime)
-    _delete_journal(project)
-    return result
+    return _finish_refresh(journal, result, images)
 
 
 def _try_complete_noop(
@@ -878,7 +974,9 @@ def _try_complete_noop(
     parked: sr.ParkedSession | None,
     images: RuntimeImageOperations,
 ) -> RefreshImage | None:
-    if not _is_current_running_session(prepared, issuance, parked):
+    if not _is_current_running_session(prepared, issuance, parked) or not images.spec_is_current(
+        project
+    ):
         return None
     try:
         sr.verify_refreshed_session(
@@ -941,7 +1039,7 @@ def refresh(
     images: RuntimeImageOperations,
     *,
     verbose: bool = False,
-) -> RefreshImage:
+) -> RefreshResult:
     """Refresh the selected image and replace its headless Session atomically."""
     with host_lifecycle_lock("session refresh"):
         recovered = shared_recovery_blocks_command(read_only=False)
@@ -950,3 +1048,27 @@ def refresh(
                 "recovered interrupted Sandbox host state; run `booley session refresh` again"
             )
         return _refresh_unlocked(project_root, images, verbose=verbose)
+
+
+def finalize_project(project: Path) -> None:
+    """Reconcile ancillary files only after the runtime has committed forward."""
+    from booley.commit_policy import stealth_enabled
+    from booley.runtime import dashboard_tasks
+    from booley.runtime.git import add_git_excludes
+
+    source = runtime_spec.authorized_project_data_source(project)
+    dashboard_tasks.reconcile(project, source)
+    names = (".devcontainer", ".claude")
+    add_git_excludes(project, (*names, ".booley") if stealth_enabled(project) else names)
+
+
+def _cleanup_owned_images(project: Path) -> None:
+    from booley.runtime import image_lifecycle
+
+    try:
+        retained_images = image_lifecycle.cleanup_owned_images(project)
+    except image_lifecycle.ImageLifecycleError as exc:
+        sr.logger.warning("refresh image cleanup deferred: %s", exc)
+        return
+    for retained in retained_images:
+        sr.logger.warning("refresh image cleanup: %s", retained)

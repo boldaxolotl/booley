@@ -7,7 +7,6 @@ MCP configuration or skills are inherited into the empty analysis workspace.
 """
 
 import json
-import shutil
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -43,6 +42,8 @@ def prepare_codex_text_only(
     command: list[str],
     params: AgentCallParams,
     environment: Mapping[str, str],
+    *,
+    auth_mode: str = "auto",
 ) -> tuple[list[str], dict[str, str]]:
     """Build an isolated invocation config; missing exact model metadata is an error."""
     original = Path(
@@ -62,9 +63,9 @@ def prepare_codex_text_only(
     private.mkdir(exist_ok=True, mode=0o700)
     catalog = private / "model-catalog.json"
     catalog.write_text(json.dumps({"models": [model]}), encoding="utf-8")
-    if (original / "auth.json").is_file():
-        shutil.copyfile(original / "auth.json", private / "auth.json")
-        (private / "auth.json").chmod(0o600)
+    from .auth_token import copy_codex_auth
+
+    copy_codex_auth(original / "auth.json", private / "auth.json", auth_mode)
     if params.nested_mcp_tools:
         nested_env = {
             **(params.nested_mcp_env or {}),

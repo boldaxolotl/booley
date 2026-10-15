@@ -28,6 +28,10 @@ RUN --mount=type=bind,source=dist,target=/tmp/booley-dist,readonly \
     && rm -f /tmp/booley-installed-files.txt \
     && test "$(python3 -m pip list --format=json | python3 -c 'import json,sys; print(sum(p["name"].lower().replace("_", "-") == "booley-rtl" for p in json.load(sys.stdin)))')" -eq 1
 
+# Dev Containers installs this image-local VSIX before activating extensions.
+# The sources ship in the wheel; building it needs no npm or Marketplace access.
+RUN python3 -I -m booley.runtime.dashboard_extension
+
 # Install the native binary and create its package-data hard link in this ONE
 # RUN.  An exported layer diff cannot record a hard link whose other name lives
 # in a lower layer, so splitting them (issue #828) stores the bytes twice or

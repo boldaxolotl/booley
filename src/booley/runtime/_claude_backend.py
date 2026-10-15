@@ -114,17 +114,13 @@ class ClaudeSDKBackend:
     def health_check(self) -> str | None:
         from booley.runtime import auth_token
 
-        if (
-            self._auth_mode == "api_key"
-            and not (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
-        ):
+        plan = auth_token.credential_plan(auth_token.APP_CLAUDE, self._auth_mode)
+        if self._auth_mode == "api_key" and plan.selected is None:
             return (
                 "[agent] auth = 'api_key' but ANTHROPIC_API_KEY is not set — "
                 "export it, or switch auth to 'subscription' or 'auto'"
             )
-        if self._auth_mode == "subscription" and (
-            auth_token.effective_credential(auth_token.APP_CLAUDE, policy="subscription") is None
-        ):
+        if self._auth_mode == "subscription" and (plan.selected is None):
             return (
                 "[agent] auth = 'subscription' but no subscription credential found "
                 "(no login at ~/.claude/.credentials.json and no CLAUDE_CODE_OAUTH_TOKEN) — "
@@ -140,6 +136,9 @@ class ClaudeSDKBackend:
         """Call a Claude agent via the Agent SDK with retry."""
         on_event = kwargs.pop("on_event", None)
 
+        from .auth_token import credential_plan
+
+        credential_plan("claude", self._auth_mode).require_credential()
         options = _build_sdk_options(params, auth_mode=self._auth_mode)
         _log_call_start(params)
 
@@ -418,12 +417,13 @@ def _claude_env_overrides(auth_mode: str) -> dict[str, str]:
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1"
         )
     }
-    if auth_mode == "subscription":
-        env_overrides["ANTHROPIC_API_KEY"] = ""
-    if auth_mode != "api_key":
-        stored = auth_token.resolve_token(auth_token.APP_CLAUDE)
-        if stored and not (os.environ.get(auth_token.ENV_VAR) or "").strip():
-            env_overrides[auth_token.ENV_VAR] = stored
+    plan = auth_token.credential_plan(auth_token.APP_CLAUDE, auth_mode)
+    for key in plan.forbidden_env:
+        if os.environ.get(key) or (key == "ANTHROPIC_API_KEY" and auth_mode == "subscription"):
+            env_overrides[key] = ""
+    for key, value in plan.values:
+        if not os.environ.get(key):
+            env_overrides[key] = value
     return env_overrides
 
 

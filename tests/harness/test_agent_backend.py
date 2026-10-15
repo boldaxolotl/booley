@@ -144,7 +144,13 @@ class TestClaudeSdkLaunchContract:
     ):
         from booley.core.models import AgentCallParams
         from booley.runtime import _claude_backend as cb
+        from booley.runtime import auth_token
 
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "SYNTHETIC_KEY")
+        auth_token.store_token("SYNTHETIC_OAUTH", "claude")
         monkeypatch.delenv("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", raising=False)
         captured_options, fake_query = _capturing_successful_query()
@@ -1408,3 +1414,103 @@ class TestDispatchUsage:
         from booley.runtime import _claude_backend as cb
 
         cb._dispatch_usage(_raise_callback_error, self._counters_with(42), "claude-opus-4-8")
+
+
+def test_private_codex_auth_reconciles_same_cached_home(tmp_path, monkeypatch):
+    from booley.runtime import _codex_backend
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    original = tmp_path / ".codex" / "auth.json"
+    original.parent.mkdir()
+    original.write_text('{"tokens":{"access_token":"SYNTHETIC"}}')
+    private = tmp_path / "private" / ".codex"
+    private.mkdir(parents=True)
+    _codex_backend._populate_private_codex_home(private, {}, auth_mode="subscription")
+    assert (private / "auth.json").exists()
+    _codex_backend._populate_private_codex_home(private, {}, auth_mode="api_key")
+    assert not (private / "auth.json").exists()
+    _codex_backend._populate_private_codex_home(private, {}, auth_mode="subscription")
+    original.unlink()
+    _codex_backend._populate_private_codex_home(private, {}, auth_mode="subscription")
+    assert not (private / "auth.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_nested_codex_sets_cli_home_to_validated_private_copy(tmp_path, monkeypatch):
+    import asyncio
+
+    from booley.core.models import AgentCallParams
+    from booley.runtime import _codex_backend
+
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "unrelated"))
+    monkeypatch.setattr(_codex_backend, "_inside_container", lambda: True)
+    monkeypatch.setattr(
+        _codex_backend,
+        "_ensure_nested_codex_home",
+        lambda *args, **kwargs: str(tmp_path / "private"),
+    )
+    captured = {}
+
+    async def spawn(*args, **kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    _, sessions = await _codex_backend._codex_spawn(
+        ["codex"], AgentCallParams(prompt="x", model="chosen", cwd=tmp_path)
+    )
+    assert captured["env"]["CODEX_HOME"] == str(tmp_path / "private" / ".codex")
+    assert sessions == tmp_path / "private" / ".codex" / "sessions"
+
+
+def test_private_codex_copy_uses_cli_home(tmp_path, monkeypatch):
+    from booley.runtime import _codex_backend
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    default = tmp_path / ".codex" / "auth.json"
+    default.parent.mkdir()
+    default.write_text('{"OPENAI_API_KEY":"SYNTHETIC_DEFAULT_KEY"}')
+    alternate = tmp_path / "alternate"
+    alternate.mkdir()
+    login = '{"tokens":{"access_token":"SYNTHETIC_SELECTED_LOGIN"}}'
+    (alternate / "auth.json").write_text(login)
+    monkeypatch.setenv("CODEX_HOME", str(alternate))
+    private = tmp_path / "private"
+    private.mkdir()
+    _codex_backend._populate_private_codex_home(private, {}, auth_mode="subscription")
+    assert (private / "auth.json").read_text() == login
+
+
+@pytest.mark.asyncio
+async def test_subscription_codex_pins_relative_cli_home_before_changing_cwd(
+    tmp_path, monkeypatch
+):
+    import asyncio
+
+    from booley.core.models import AgentCallParams
+    from booley.runtime import _codex_backend
+
+    parent = tmp_path / "parent"
+    child = tmp_path / "child"
+    for directory, content in (
+        (parent, '{"tokens":{"access_token":"SYNTHETIC_LOGIN"}}'),
+        (child, '{"OPENAI_API_KEY":"SYNTHETIC_KEY"}'),
+    ):
+        (directory / "alternate").mkdir(parents=True)
+        (directory / "alternate" / "auth.json").write_text(content)
+    monkeypatch.chdir(parent)
+    monkeypatch.setenv("CODEX_HOME", "alternate")
+    monkeypatch.setattr(_codex_backend, "_inside_container", lambda: False)
+    captured = {}
+
+    async def spawn(*args, **kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    await _codex_backend._codex_spawn(
+        ["codex"], AgentCallParams(prompt="x", model="chosen", cwd=child), "subscription"
+    )
+    assert captured["env"]["CODEX_HOME"] == str(parent / "alternate")

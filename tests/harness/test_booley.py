@@ -356,11 +356,12 @@ def test_session_up_observes_upgrade_before_runtime_start(tmp_path, monkeypatch)
     monkeypatch.setattr(
         tlr, "_report_upgrade_before_session", lambda _root: events.append("observe")
     )
-    monkeypatch.setattr(session_runtime, "conflicting_vscode_session", lambda _root: None)
     monkeypatch.setattr(
         session_runtime,
-        "up",
-        lambda *_args, **_kwargs: events.append("up") or "session",
+        "ensure",
+        lambda *_args, **_kwargs: (
+            events.append("up") or session_runtime.EnsureResult("session", False, True)
+        ),
     )
     monkeypatch.setattr(health, "due_reason", lambda _root: None)
     monkeypatch.setattr(tlr, "_report_session_health", lambda *_args, **_kwargs: None)
@@ -1031,10 +1032,9 @@ def test_at_cap_session_start_reports_status_two_without_success(
     args = tlr._build_parser().parse_args(["session", command])
     monkeypatch.setattr(tlr, "_report_upgrade_before_session", lambda _root: None)
     monkeypatch.setattr(health, "due_reason", lambda _root: None)
-    monkeypatch.setattr(sr, "conflicting_vscode_session", lambda _root: None)
     monkeypatch.setattr(
         sr,
-        command,
+        "ensure" if command == "up" else command,
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             sr.SessionError("Sandbox start refused: host is at sandbox.max_sessions=1")
         ),
@@ -1110,6 +1110,8 @@ def test_session_refresh_capacity_refusal_precedes_park_and_spec_change(
     spec.parent.mkdir()
     spec.write_text('{"image":"sha256:running"}\n')
     before = spec.read_bytes()
+    (tmp_path / ".booley").mkdir()
+    monkeypatch.setattr(refresh_runtime, "_load_recovery_issuance", lambda *_: object())
     monkeypatch.setattr(refresh_runtime, "shared_recovery_blocks_command", lambda **_kw: False)
     monkeypatch.setattr(
         session_runtime, "_run", lambda *_args, **_kwargs: pytest.fail("must not invoke Docker")
@@ -1131,11 +1133,6 @@ def test_session_refresh_capacity_refusal_precedes_park_and_spec_change(
         session_runtime,
         "plan_session_refresh",
         lambda *_args, **_kwargs: pytest.fail("capacity failure must precede parking"),
-    )
-    monkeypatch.setattr(
-        refresh_runtime,
-        "capture_session_spec",
-        lambda *_args: pytest.fail("capacity failure must precede spec preparation"),
     )
     args = tlr._build_parser().parse_args(["session", "refresh"])
     assert tlr._cmd_session(args, tmp_path) == 2
@@ -1200,7 +1197,7 @@ def test_project_binding_registry_covers_parser():
 
 @pytest.mark.parametrize(
     "argv",
-    [["auth", "--status"], ["auth", "--status", "--clear"], ["cheat"], ["cheat", "--list"]],
+    [["cheat"], ["cheat", "--list"]],
 )
 def test_project_binding_independent_never_discovers(tmp_path, monkeypatch, argv):
     (tmp_path / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
@@ -1429,3 +1426,133 @@ def test_bare_cheat_project_names_section_replacement(capsys):
     notice = capsys.readouterr().err
     assert "--project" in notice
     assert "--project-files" in notice
+
+
+def test_auth_status_optional_context_preserves_source_checkout(tmp_path, monkeypatch):
+    (tmp_path / "pyproject.toml").write_text("[tool.booley]\nsource_checkout=true\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["booley", "auth", "--status"])
+    monkeypatch.setattr(tlr, "find_project_root", lambda: tmp_path)
+    monkeypatch.setattr(tlr, "_host_install_authority_error", lambda *_: None)
+    roots = []
+    monkeypatch.setitem(tlr._EARLY_COMMANDS, "auth", lambda args, root: roots.append(root) or 0)
+    assert tlr._dispatch_main() == 0
+    assert roots == [None]
+
+
+@pytest.mark.parametrize(
+    "in_project,app,expected_apps,expected_rc",
+    [
+        (False, None, ("claude", "codex"), 0),
+        (True, None, ("codex",), 0),
+        (True, "claude", ("claude",), 1),
+        (False, "claude", ("claude",), 1),
+        (False, "codex", ("codex",), 0),
+    ],
+)
+def test_auth_status_cli_preserves_omitted_app_selection(
+    tmp_path, monkeypatch, capsys, in_project, app, expected_apps, expected_rc
+):
+    from booley.runtime import auth_token
+
+    home = tmp_path / "home"
+    home.mkdir()
+    ancestor = tmp_path / "ancestor"
+    (ancestor / ".booley").mkdir(parents=True)
+    project = ancestor / "project"
+    project.mkdir()
+    (project / ".git").mkdir()
+    (project / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+    monkeypatch.chdir(project)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    for key in (*auth_token.CREDENTIAL_ENV_KEYS, "BOOLEY_DIR", "RTL_PROJECT_ROOT", "CODEX_HOME"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "SYNTHETIC_CODEX_KEY")
+    argv = ["booley", "auth", "--status"]
+    if in_project:
+        data = project / ".booley"
+        data.mkdir()
+        (data / "booley.toml").write_text('[agent]\nprovider="codex"\nauth="api_key"\n')
+        argv.extend(["--project", str(project)])
+    if app:
+        argv.extend(["--app", app])
+    monkeypatch.setattr(sys, "argv", argv)
+    monkeypatch.setattr(tlr, "_enforce_runtime_location", lambda *_: None)
+    monkeypatch.setattr(tlr, "_host_install_authority_error", lambda *_: None)
+    reset_cache()
+    assert tlr.main() == expected_rc
+    output = capsys.readouterr().out
+    for client in ("claude", "codex"):
+        assert (f"{client}:" in output) == (client in expected_apps)
+    assert "SYNTHETIC_CODEX_KEY" not in output
+
+
+@pytest.mark.parametrize("app,expected", [(None, "claude"), ("codex", "codex")])
+def test_auth_clear_cli_keeps_historical_app_default(tmp_path, monkeypatch, capsys, app, expected):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
+    data = tmp_path / ".booley"
+    data.mkdir()
+    (data / "booley.toml").write_text('[agent]\nprovider="codex"\nauth="api_key"\n')
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    argv = ["booley", "auth", "--clear", "--project", str(tmp_path)]
+    if app:
+        argv.extend(["--app", app])
+    monkeypatch.setattr(sys, "argv", argv)
+    monkeypatch.setattr(tlr, "_enforce_runtime_location", lambda *_: None)
+    monkeypatch.setattr(tlr, "_host_install_authority_error", lambda *_: None)
+    assert tlr.main() == 0
+    assert f"no stored {expected} credential" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "outcome,expected",
+    [
+        ("kept", "kept: already current"),
+        ("replaced", "replaced old → new"),
+        ("created", "created new"),
+    ],
+)
+def test_refresh_cli_reports_verified_container_outcome(
+    tmp_path, monkeypatch, capsys, outcome, expected
+):
+    from booley.harness import session_refresh
+    from booley.runtime.session_refresh import RefreshImage, RefreshResult
+
+    result = RefreshResult(
+        RefreshImage("booley-sandbox", "sha256:image"),
+        outcome,
+        None if outcome == "created" else "old",
+        "new",
+    )
+    monkeypatch.setattr(session_refresh, "refresh", lambda *_a, **_kw: result)
+    monkeypatch.setattr(tlr, "_report_session_health", lambda *_a, **_kw: None)
+    monkeypatch.setattr(health, "due_reason", lambda _root: None)
+    assert (
+        tlr._session_refresh(tlr._build_parser().parse_args(["session", "refresh"]), tmp_path) == 0
+    )
+    assert capsys.readouterr().out.strip() == expected
+
+
+@pytest.mark.parametrize(
+    "configuration",
+    ['[agent]\nauth="invalid"\n', '[agent]\nprovider="unknown"\n', "[agent\n"],
+)
+def test_auth_status_cli_refuses_corrupt_owned_project(
+    tmp_path, monkeypatch, capsys, configuration
+):
+    data = tmp_path / ".booley"
+    data.mkdir()
+    (data / "booley.toml").write_text(configuration)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    monkeypatch.setattr(sys, "argv", ["booley", "auth", "--status", "--project", str(tmp_path)])
+    monkeypatch.setattr(tlr, "_enforce_runtime_location", lambda *_: None)
+    monkeypatch.setattr(tlr, "_host_install_authority_error", lambda *_: None)
+    reset_cache()
+    assert tlr.main() == 1
+    captured = capsys.readouterr()
+    assert "agents run on" not in captured.out
+    assert "[XX]" in captured.out

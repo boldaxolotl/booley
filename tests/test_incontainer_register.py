@@ -1289,3 +1289,38 @@ def test_codex_permission_writer_validates_notice_before_publication(tmp_path, m
     with pytest.raises(ValueError, match=re.escape(str(path))):
         reg._apply_codex_permission_mode(tmp_path)
     assert path.read_text() == source
+
+
+@pytest.mark.parametrize("app", ["claude", "codex"])
+def test_policy_switch_clears_only_managed_credential_entries(tmp_path, monkeypatch, app):
+    from booley.runtime import auth_token
+
+    monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "auto")
+    for key in auth_token.CREDENTIAL_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    sidecar = tmp_path / auth_token.TOKEN_SEED_BASENAME[app]
+    sidecar.write_text("SYNTHETIC")
+    assert reg.apply_stored_credential(app, tmp_path) == "written"
+    policy = "api_key" if app == "claude" else "subscription"
+    monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", policy)
+    reg.apply_stored_credential(app, tmp_path)
+    if app == "claude":
+        assert "CLAUDE_CODE_OAUTH_TOKEN" not in reg.claude_settings_path(tmp_path).read_text()
+    else:
+        assert not reg.codex_auth_path(tmp_path).exists()
+
+
+def test_api_policy_refuses_user_login_without_deleting_it(tmp_path, monkeypatch):
+    monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "api_key")
+    login = tmp_path / ".claude" / ".credentials.json"
+    login.parent.mkdir()
+    login.write_text('{"claudeAiOauth":{"accessToken":"SYNTHETIC_USER"}}')
+    before = login.read_bytes()
+    settings = reg.claude_settings_path(tmp_path)
+    settings.write_text('{"env":{"CLAUDE_CODE_OAUTH_TOKEN":"SYNTHETIC_MANAGED"},"theme":"dark"}')
+    settings_before = settings.read_bytes()
+    with pytest.raises(ValueError, match="conflicts") as caught:
+        reg.apply_stored_credential("claude", tmp_path)
+    assert "SYNTHETIC" not in str(caught.value)
+    assert login.read_bytes() == before
+    assert settings.read_bytes() == settings_before

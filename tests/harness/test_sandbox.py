@@ -251,3 +251,35 @@ class TestEphemeralArgv:
         config = DockerSandboxConfig(needs_network=False)
         runner = DockerRunner(config, worktree=Path("/tmp/wt"))
         runner.stop_proxy()  # should not raise
+
+
+def test_ephemeral_auth_uses_runner_project_policy(tmp_path, monkeypatch):
+    from booley.runtime import auth_token
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "subscription")
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / "wrong-project"))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "SYNTHETIC_KEY")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "SYNTHETIC_OAUTH")
+    data = tmp_path / "project" / ".booley"
+    data.mkdir(parents=True)
+    (data / "booley.toml").write_text('[agent]\nprovider="claude"\nauth="api_key"\n')
+    login = auth_token.subscription_creds_path("claude")
+    login.parent.mkdir()
+    login.write_text('{"claudeAiOauth":{"accessToken":"SYNTHETIC_LOGIN"}}')
+    runner = DockerRunner(
+        DockerSandboxConfig(image="test-image", needs_network=False), data.parent
+    )
+    command = runner._build_docker_cmd(["true"])
+    try:
+        body = runner._env_file.read_text()
+        assert "ANTHROPIC_API_KEY=SYNTHETIC_KEY" in body
+        assert "CLAUDE_CODE_OAUTH_TOKEN" not in body
+        assert ".credentials.json" not in " ".join(command)
+        assert "SYNTHETIC" not in " ".join(command)
+    finally:
+        runner._env_file.unlink(missing_ok=True)

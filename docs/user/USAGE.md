@@ -78,8 +78,10 @@ Use the selector once, at the root, command, or nested operation. It also works 
 `chat`, `doctor`, `init`, `upgrade`, `cleanup`, and `feedback`, and on bare
 `booley` inside the Sandbox to select the Project for chat. On the host, bare
 `booley` prints help without resolving the selector.
-`auth --status`, bare `cheat`, and `cheat --list` accept and ignore it without
-discovering a Project.
+`auth --status` optionally uses the selected Project and its auth policy; outside
+a Project it reports both supported AI agent clients (Claude Code and Codex),
+unless `--app` selects one. Bare `cheat` and `cheat --list` accept and ignore the
+selector without discovering a Project.
 `bootstrap`, `projects`, and `eda` retain their grammar
 and do not accept the new selector. Full option names are stable; ambiguous
 abbreviations produce an error. Arguments after a command's payload `--` stay opaque.
@@ -117,6 +119,13 @@ Don't continue until `booley doctor` shows no failures or warnings.
   whole cheatsheet; `booley cheat --list` also shows the section list.
 - `booley doctor --deep` goes further and runs short real simulations, lints,
   and syntheses.
+
+## Upgrade review
+
+When Doctor reports `upgrade.review-pending`, run `booley upgrade status --json`
+and invoke `/booley-heal` to review the release changes. Follow the
+[Doctor upgrade-review workflow](DOCTOR.md#upgrade-review) for plain, deep, and
+host verification, acknowledgment, and the final plain check.
 
 ## Choose how to work
 
@@ -466,9 +475,10 @@ frozen Test Run is `passed`, `failed` or `missing`:
 - It is `missing` until it has run. An `error` or `inconclusive` Test Run
   leaves the outcome as it was.
 
-A `--diagnostic` run changes none of these outcomes, even when it runs a
+A diagnostic MCP run changes none of these outcomes, even when it runs a
 frozen Test Run. Its report names the Goals whose frozen Test Runs ran and
-the ones that failed; run again without `--diagnostic` to record them.
+the ones that failed; use a Goal-bound Developer Agent MCP call with `work_dir`
+and without `diagnostic` to record them. CLI runs never record Goal evidence.
 
 A simulation Goal is met when every frozen Test Run is `passed`. They do not
 have to pass in one invocation: 20 seeds can pass over several runs and
@@ -679,9 +689,9 @@ the **host**, after `booley init`:
 booley session up                       # create or start the container
 booley session enter                    # open a shell inside it
 booley session enter -- booley doctor   # or run one command and exit
-booley session status                   # running | stopped | absent
+booley session status                   # running (with VS Code owner/name) | stopped | absent
 booley session refresh                  # rebuild the image and recreate the container
-booley session down                     # stop and remove it
+booley session down                     # stop and remove a headless Sandbox
 ```
 
 `booley session enter` works like a container terminal, so every
@@ -692,6 +702,11 @@ stops everything it started inside the container.
 the new one is ready. It won't replace a container that VS Code opened; use
 **Dev Containers: Rebuild Container** for that. If your EDA tools need a
 license server, run `booley session down` before refreshing.
+
+`up` and `enter` reuse the current Sandbox, including one owned by VS Code.
+`status` identifies a running VS Code Sandbox by owner and name. CLI `down`
+and `up --rebuild` refuse editor ownership: close the window or stop it through Dev Containers,
+and use **Dev Containers: Rebuild Container** to rebuild it.
 
 ## Auth & billing
 
@@ -790,7 +805,7 @@ LLM-powered Specialists running in scoped, isolated workspaces:
 
 Ask your Developer Agent session to invoke a Specialist by name with the arguments below. Or run `booley specialist <name> [args...]` inside the Sandbox. `booley specialist` lists visible Specialists; `booley specialist <name> --help` shows their arguments. `--model`, `--max-turns`, and `--timeout` are CLI-only controls.
 
-For example: `booley specialist reviewer --category rtl --focus bugs --scope rtl`. The supported module alternative is `python -m booley.specialists.reviewer` with the same flags. Common options are `-C/--project PATH`, `--report-dir`, `--diagnostic`, and `--target` where supported. `--timeout DURATION` accepts positive seconds (`90` or `90s`), minutes (`30m`), hours (`2h`), and combinations (`1h30m`). Model-call minimum budgets apply; seconds-only providers round up.
+For example: `booley specialist reviewer --category rtl --focus bugs --scope rtl`. The supported module alternative is `python -m booley.specialists.reviewer` with the same flags. Common options are `-C/--project PATH`, `--report-dir`, `--diagnostic`, and `--target` where supported. `--timeout DURATION` accepts positive seconds (`90` or `90s`), minutes (`30m`), hours (`2h`), and combinations (`1h30m`). Model-call minimum budgets apply; seconds-only providers round up. CLI Flow and Specialist runs never record Goal evidence; use the Developer Agent's Goal-bound MCP calls with `work_dir`.
 
 | Specialist | Purpose | Sets | Modifies code |
 |------------|---------|------|:-------------:|
@@ -805,6 +820,8 @@ Call the `coverage_analyst` Specialist from your Developer Agent session with `c
 #### `reviewer`
 
 Read-only, single-focus code review. It reports `CRITICAL`, `MAJOR`, and `MINOR` findings. In Interactive Mode, review the selected files using your specification or steering. In Goal Mode, `done` reports findings without requiring fixes; the review package includes open findings. `clean` requires every finding to be fixed or waived with a justification.
+
+Interactive source review accepts Verilog/SystemVerilog (.v, .vh, .sv, .svh), plus Python (.py) and explicitly scoped C/C++ testbench sources and headers (.c, .cc, .cpp, .cxx, .h, .hh, .hpp, .hxx) for category=tb. Goal Mode also accepts other explicitly scoped support files. Sim C/C++ harness inputs count as TB for isolation and cannot be mutation scope. Declared opposite-category sources are refused in either mode; unregistered scoped sources retain the registration warning and receive only an exact per-file category grant.
 
 The result links saved review evidence, including rejected proposals for inspection. Rejected proposals do not affect Criteria.
 

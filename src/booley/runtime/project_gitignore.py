@@ -47,6 +47,8 @@ PROJECT_GITIGNORE_PATTERNS = (
     "/.directory-relocation.json",
     "tmp/",
     "flow-reports/",
+    "mcp-tool-reports/",
+    "reviewer-state/",
     "/logs/",
     "/.baseline-wt-*/",
     "tickets/board/",

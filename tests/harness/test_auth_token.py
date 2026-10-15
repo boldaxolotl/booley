@@ -284,7 +284,7 @@ class TestAuthStatusReport:
 
         rc, sink = self._run(monkeypatch)
 
-        assert rc == 1  # codex has nothing either → every app at rotation risk
+        assert rc == 0  # a refreshing login is usable despite its rotation warning
         assert any("claude" in m and "refreshing" in m for m in sink["warn"])
 
     def test_overridden_subscription_is_named(self, isolated_home, monkeypatch):
@@ -323,6 +323,8 @@ class TestInjection:
 
         cmd: list[str] = []
         runner = sandbox.DockerRunner.__new__(sandbox.DockerRunner)
+        runner.worktree = home / "project"
+        runner.worktree.mkdir()
         runner._append_api_key_env_file(cmd)
 
         assert "--env-file" in cmd
@@ -897,3 +899,78 @@ class TestClaudeMintLocation:
 
         assert rc == 1
         assert "credential was removed" in errors[0]
+
+
+@pytest.mark.parametrize(
+    "payload,valid",
+    [
+        (
+            {
+                "tokens": {"access_token": "SYNTHETIC"},
+                "OPENAI_API_KEY": None,
+                "last_refresh": "ordinary metadata",
+            },
+            True,
+        ),
+        ({"OPENAI_API_KEY": "SYNTHETIC"}, False),
+        ({"tokens": {"access_token": "SYNTHETIC"}, "OPENAI_API_KEY": "SYNTHETIC"}, False),
+        ({}, False),
+        ([], False),
+    ],
+)
+def test_codex_explicit_subscription_classifies_native_shape(isolated_home, payload, valid):
+    import json
+
+    path = auth_token.subscription_creds_path("codex")
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(payload))
+    selected = auth_token.effective_credential("codex", "subscription")
+    assert (selected is not None) == valid
+
+
+def test_plan_repr_never_contains_credential(isolated_home, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "SYNTHETIC_SECRET")
+    plan = auth_token.credential_plan("claude", "api_key")
+    assert "SYNTHETIC_SECRET" not in repr(plan)
+    assert plan.child_environment({"CLAUDE_CODE_OAUTH_TOKEN": "FORBIDDEN"}) == {
+        "ANTHROPIC_API_KEY": "SYNTHETIC_SECRET"
+    }
+
+
+def test_codex_auth_refresh_preserves_complete_copy_on_interruption(tmp_path, monkeypatch):
+    import shutil
+
+    source = tmp_path / "source.json"
+    destination = tmp_path / "auth.json"
+    source.write_text('{"OPENAI_API_KEY":"NEW_SYNTHETIC"}')
+    previous = b'{"OPENAI_API_KEY":"OLD_SYNTHETIC"}'
+    destination.write_bytes(previous)
+
+    def interrupted_copy(source, target, *args, **kwargs):
+        Path(target).write_text('{"OPENAI_API_KEY":')
+        raise OSError("synthetic interrupted copy")
+
+    monkeypatch.setattr(shutil, "copyfile", interrupted_copy)
+    with pytest.raises(OSError, match="interrupted"):
+        auth_token.copy_codex_auth(source, destination)
+    assert destination.read_bytes() == previous
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["auth.json", "source.json"]
+
+
+def test_codex_subscription_plan_uses_cli_home(isolated_home, monkeypatch, tmp_path):
+    default = auth_token.subscription_creds_path("codex")
+    default.parent.mkdir(parents=True)
+    default.write_text('{"tokens":{"access_token":"SYNTHETIC_LOGIN"}}')
+    alternate = tmp_path / "alternate"
+    alternate.mkdir()
+    (alternate / "auth.json").write_text('{"OPENAI_API_KEY":"SYNTHETIC_KEY"}')
+    monkeypatch.setenv("CODEX_HOME", str(alternate))
+    assert auth_token.credential_plan("codex", "subscription").selected is None
+    (alternate / "auth.json").write_text(default.read_text())
+    plan = auth_token.credential_plan("codex", "subscription")
+    assert plan.subscription_seed == alternate / "auth.json"
+    assert plan.selected is not None
+    assert (
+        auth_token.subscription_creds_path("codex", home=tmp_path)
+        == tmp_path / ".codex" / "auth.json"
+    )

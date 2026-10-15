@@ -32,7 +32,7 @@ def parse_quiet_after(data: Mapping[str, Any]) -> float:
 
 
 def parse_dashboard(data: Mapping[str, Any]) -> bool:
-    """The single strict parser for the Dashboard attach-task knob."""
+    """The single strict parser for the Dashboard attachment preference."""
     from booley.core.boundary import require_bool, require_dict
 
     return require_bool(

@@ -1098,15 +1098,16 @@ def test_coverage_ledger_failure_retains_evaluated_final_report(tmp_path):
     tool.parse_args(["--work-dir", str(tmp_path), "--report-dir", str(tmp_path / "reports")])
     tool._state = state
 
-    class FailedRecorder:
-        def acceptance_identity(self):
-            return {}
+    from tests.criteria.ledger_support import FixtureRecorder
 
+    class FailedRecorder(FixtureRecorder):
         def record_changes(self, *_args, **_kwargs):
             raise OSError("coverage ledger unavailable")
 
+    recorder = FailedRecorder(identity={"generation": "d" * 32})
+    tool._acceptance_recorder = recorder
     plan = replace(
-        plan, acceptance=CoverageAcceptance(state, FailedRecorder(), tool.record_report_criteria)
+        plan, acceptance=CoverageAcceptance(state, recorder, tool.record_report_criteria)
     )
     outcome = run_coverage_target(plan, NativeExecution(), Progress())
     assert outcome.exit_code == 2

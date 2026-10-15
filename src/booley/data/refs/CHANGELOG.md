@@ -14,6 +14,47 @@ Packaged release history starts at 0.2.7. For older changes, see
   or absent. Inspection failures keep the Sandbox for that pass; after the exec
   ends, the existing idle timeout applies without a new grace interval.
 
+- Under `auto`, issued Sandboxes now forward an exported `ANTHROPIC_API_KEY`, matching host and ephemeral Sandbox behavior; this can bill per token. Set `[agent] auth = "subscription"` to use subscription credentials instead. `booley auth --status` reports the selected Project/app policy and fails when its credential is missing; Doctor FAILs when a non-`auto` policy lacks its credential.
+
+- Deep Doctor now qualifies when only the expected upgrade-review warning remains,
+  names other warning blockers without calling them failures, and preserves that
+  evidence through acknowledgment. Exact already-current acknowledgment retries
+  succeed without rewriting review state.
+
+- Session commands consistently reuse and report VS Code-owned Sandboxes; CLI
+  teardown and rebuild refuse editor ownership and point to Dev Containers.
+
+
+- Deep Doctor now warns when a simulation bad overlay fails to build, and requires
+  an observed behavioral Test failure before accepting the bad case.
+
+- Specialist category snapshots hide opposite-category sources per file, including
+  shared-directory sources and Booley-owned copies; category isolation requires a
+  usable core and removes unscoped unregistered source copies conservatively.
+  Untagged C/C++ Sim harness inputs count as testbench sources and cannot be mutation
+  scope; Doctor identifies their missing TB tags. Reviewer accepts explicitly scoped
+  C/C++ testbench sources and headers in Interactive Mode, refuses explicit
+  opposite-category scope in either mode, keeps Goal support-file review, and lists
+  Interactive source kinds in refusal messages.
+
+- Sandbox refresh now reconciles specification changes, reports kept/replaced/rollback outcomes, and removes transaction-owned failed or superseded images.
+
+- The Dashboard opens by default on trusted VS Code Sandbox attachment through
+  an image-bundled workspace extension. Existing opt-outs remain respected;
+  run host `booley init` and rebuild/reopen the Sandbox after upgrading.
+
+- Newly scaffolded Verilator SystemVerilog projects now produce non-empty simulation traces and avoid Doctor's `sim.trace-unavailable` warning.
+- Goal evidence fields in saved state now recover automatically from selected
+  valid immutable producer observations when Booley reads or saves Goal state.
+  Goal status reports remaining evidence or validation problems without treating
+  outdated saved evidence fields as an evidence conflict.
+
+- CLI Flows and Specialists warn when their results cannot record active Goal
+  evidence; recording requires Goal-bound Developer Agent MCP calls with `work_dir`.
+  Unbound Flow/Specialist reports omit `criterion_key` and `criterion_met`; report
+  readers must use optional-key access. Rerun `booley init` in each existing
+  checkout and commit its managed ignore backfill for Specialist reports and state.
+
 - Immutable-mode Pre-Sim Commands now run in the Project Root as documented,
   including shared and ordinary Simulation Campaign launches with `run_cwd` set.
   Hooks that relied on the previous working directory should

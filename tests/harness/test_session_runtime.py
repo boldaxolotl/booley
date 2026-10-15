@@ -34,6 +34,12 @@ from booley.runtime.session_admission import (
     clear_vscode_claim as real_clear_vscode_claim,
 )
 from booley.runtime.session_admission import (
+    has_pending_claim as real_has_pending_claim,
+)
+from booley.runtime.session_admission import (
+    running_project_sandboxes as real_running_project_sandboxes,
+)
+from booley.runtime.session_admission import (
     vscode_sandboxes as real_vscode_sandboxes,
 )
 from tests.lifecycle_lock_support import held_lifecycle_lock, observe_lifecycle_contention
@@ -51,6 +57,9 @@ def _isolate_session_admission(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.setattr(session_admission, "clear_vscode_claim", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(session_admission, "has_pending_claim", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(session_admission, "vscode_sandboxes", lambda *_args, **_kwargs: ())
+    monkeypatch.setattr(
+        session_admission, "running_project_sandboxes", lambda *_args, **_kwargs: ()
+    )
 
 
 @pytest.fixture
@@ -204,8 +213,11 @@ class TestDockerRunArgv:
     def test_oauth_token_is_resolved_not_passed_literally(self, workspace: Path, monkeypatch):
         monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-tok")
         spec = _spec(forward_oauth_token=True)
-        env = _flag_values(_argv(spec, workspace), "-e")
-        assert "CLAUDE_CODE_OAUTH_TOKEN=sk-tok" in env
+        argv = _argv(spec, workspace)
+        env = _flag_values(argv, "-e")
+        assert "CLAUDE_CODE_OAUTH_TOKEN" in env
+        assert "sk-tok" not in str(argv)
+        assert argv.environment["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-tok"
 
 
 class TestHookArgv:
@@ -862,7 +874,8 @@ class TestPrepareMigration:
             sr.prepare(workspace)
 
         assert "spec changed after stop" in str(caught.value)
-        assert f"docker start {container_id}" in str(caught.value)
+        assert "was stopped and preserved" in str(caught.value)
+        assert "docker start" not in str(caught.value)
         assert [call.args[0] for call in run.call_args_list] == [["docker", "stop", container_id]]
 
     def test_multiple_authenticated_legacy_containers_are_not_stopped(
@@ -2973,7 +2986,7 @@ class TestDownAndStatus:
         monkeypatch.setattr(sr, "_relay_objects_exist", lambda _relay: False)
         monkeypatch.setattr(
             session_admission,
-            "vscode_sandboxes",
+            "running_project_sandboxes",
             Mock(side_effect=session_admission.AdmissionError("identity disagrees")),
         )
 
@@ -2987,32 +3000,32 @@ class TestDownAndStatus:
     ) -> None:
         from booley.runtime import session_admission
 
-        item = SimpleNamespace(container_id="editor-id", name="editor", running=True)
+        item = SimpleNamespace(container_id="editor-id", name="editor", running=True, vscode=True)
         discovered = Mock(side_effect=[(item,), (item,)])
-        monkeypatch.setattr(session_admission, "vscode_sandboxes", discovered)
+        monkeypatch.setattr(session_admission, "running_project_sandboxes", discovered)
         monkeypatch.setattr(session_admission, "clear_vscode_claim", lambda _root: True)
         monkeypatch.setattr(sr.idk, "container_exists", lambda _name: False)
         monkeypatch.setattr(sr, "_relay_objects_exist", lambda _relay: False)
         run = Mock(return_value=subprocess.CompletedProcess([], 0, "", ""))
         monkeypatch.setattr(sr, "_run", run)
 
-        result = sr.down(workspace)
-
-        assert result.vscode_stopped == ("editor",)
-        assert result.claim_cleared
-        assert ["docker", "stop", "editor-id"] in [_argv_of(call) for call in run.call_args_list]
+        with pytest.raises(sr.SessionError, match="VS Code owns"):
+            sr.down(workspace)
+        run.assert_not_called()
 
     def test_down_rejects_vscode_that_disappears_before_stop(
         self, workspace: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from booley.runtime import session_admission
 
-        item = SimpleNamespace(container_id="editor-id", name="editor", running=True)
-        monkeypatch.setattr(session_admission, "vscode_sandboxes", Mock(side_effect=[(item,), ()]))
+        item = SimpleNamespace(container_id="editor-id", name="editor", running=True, vscode=True)
+        monkeypatch.setattr(
+            session_admission, "running_project_sandboxes", Mock(side_effect=[(item,), ()])
+        )
         monkeypatch.setattr(sr.idk, "container_exists", lambda _name: False)
         monkeypatch.setattr(sr, "_relay_objects_exist", lambda _relay: False)
 
-        with pytest.raises(sr.SessionError, match="cannot prove VS Code Sandbox"):
+        with pytest.raises(sr.SessionError, match="VS Code owns"):
             sr.down(workspace)
 
     @pytest.mark.parametrize("failure", ["stop", "rm"])
@@ -3039,9 +3052,9 @@ class TestDownAndStatus:
     ) -> None:
         from booley.runtime import session_admission
 
-        item = SimpleNamespace(container_id="editor-id", name="editor", running=True)
+        item = SimpleNamespace(container_id="editor-id", name="editor", running=True, vscode=True)
         monkeypatch.setattr(
-            session_admission, "vscode_sandboxes", lambda *_args, **_kwargs: (item,)
+            session_admission, "running_project_sandboxes", lambda *_args, **_kwargs: (item,)
         )
         monkeypatch.setattr(sr.idk, "container_exists", lambda _name: False)
         monkeypatch.setattr(sr, "_relay_objects_exist", lambda _relay: False)
@@ -3051,7 +3064,7 @@ class TestDownAndStatus:
             lambda argv, **_kwargs: subprocess.CompletedProcess(argv, 1, "", "denied"),
         )
 
-        with pytest.raises(sr.SessionError, match="cannot stop VS Code Sandbox"):
+        with pytest.raises(sr.SessionError, match="VS Code owns"):
             sr.down(workspace)
 
     def test_status_reports_pending_editor_start(
@@ -3094,99 +3107,6 @@ class TestDownAndStatus:
 # ---------------------------------------------------------------------------
 # conflicting_vscode_session()
 # ---------------------------------------------------------------------------
-
-
-class TestConflictingVscodeSession:
-    """VS Code's container and ours mount the same home-state volume rw, so a
-    second live container puts two agents on one set of credentials."""
-
-    def _patch_docker(self, monkeypatch, names: str, folders: dict[str, str]):
-        def fake_run(argv, **_kw):
-            if argv[:2] == ["docker", "ps"]:
-                return subprocess.CompletedProcess([], 0, names, "")
-            if argv[:2] == ["docker", "inspect"]:
-                return subprocess.CompletedProcess([], 0, folders.get(argv[2], ""), "")
-            return subprocess.CompletedProcess([], 1, "", "")
-
-        monkeypatch.setattr(sr, "_run", fake_run)
-
-    def test_detects_vscode_container_for_this_folder(self, workspace: Path, monkeypatch):
-        self._patch_docker(monkeypatch, "goofy_ellis\n", {"goofy_ellis": str(workspace)})
-        assert sr.conflicting_vscode_session(workspace) == "goofy_ellis"
-
-    def test_ignores_our_own_container(self, workspace: Path, monkeypatch):
-        ours = sr.session_container_name(workspace)
-        self._patch_docker(monkeypatch, f"{ours}\n", {ours: str(workspace)})
-        assert sr.conflicting_vscode_session(workspace) is None
-
-    def test_ignores_a_vscode_container_for_another_folder(self, workspace: Path, monkeypatch):
-        self._patch_docker(monkeypatch, "other\n", {"other": str(workspace.parent / "elsewhere")})
-        assert sr.conflicting_vscode_session(workspace) is None
-
-    def test_drive_letter_case_does_not_defeat_the_match(self, workspace: Path, monkeypatch):
-        # Dev Containers stamps the label with whatever case the host used.
-        self._patch_docker(monkeypatch, "vsc\n", {"vsc": str(workspace).upper()})
-        assert sr.conflicting_vscode_session(workspace) == "vsc"
-
-    def test_unlabelled_container_is_not_a_conflict(self, workspace: Path, monkeypatch):
-        self._patch_docker(monkeypatch, "plain\n", {"plain": ""})
-        assert sr.conflicting_vscode_session(workspace) is None
-
-    def test_docker_failure_is_not_a_conflict(self, workspace: Path, monkeypatch):
-        monkeypatch.setattr(
-            sr, "_run", lambda *_a, **_k: subprocess.CompletedProcess([], 1, "", "")
-        )
-        assert sr.conflicting_vscode_session(workspace) is None
-
-    def test_strict_probe_fails_closed_when_docker_inventory_fails(
-        self, workspace: Path, monkeypatch
-    ):
-        monkeypatch.setattr(sr, "_docker_stdout", lambda *_args: None)
-
-        with pytest.raises(sr.SessionError, match="cannot inventory"):
-            sr.strict_conflicting_vscode_session(workspace)
-
-    def test_strict_probe_detects_vscode_container(self, workspace: Path, monkeypatch):
-        raw = json.dumps(
-            [
-                {
-                    "Config": {
-                        "Labels": {
-                            "booley.role": "interactive",
-                            "devcontainer.local_folder": str(workspace),
-                        }
-                    }
-                }
-            ]
-        )
-        monkeypatch.setattr(
-            sr,
-            "_strict_running_interactive_states",
-            lambda: [("vscode-owned", raw)],
-        )
-
-        assert sr.strict_conflicting_vscode_session(workspace) == "vscode-owned"
-
-    def test_strict_probe_ignores_our_container(self, workspace: Path, monkeypatch):
-        ours = sr.session_container_name(workspace)
-        monkeypatch.setattr(
-            sr,
-            "_strict_running_interactive_states",
-            lambda: [(ours, json.dumps([_refresh_state()]))],
-        )
-
-        assert sr.strict_conflicting_vscode_session(workspace) is None
-
-    def test_strict_probe_rejects_incomplete_container_labels(self, workspace: Path, monkeypatch):
-        raw = json.dumps([{"Config": {"Labels": None}}])
-        monkeypatch.setattr(
-            sr,
-            "_strict_running_interactive_states",
-            lambda: [("unknown", raw)],
-        )
-
-        with pytest.raises(sr.SessionError, match="incomplete inspection"):
-            sr.strict_conflicting_vscode_session(workspace)
 
 
 class TestSessionsOnStaleImage:
@@ -3393,8 +3313,10 @@ class TestRunProjectCommand:
             patch.object(sr, "_validate_up_request", return_value=request),
             patch.object(
                 sr,
-                "_strict_running_interactive_states",
-                return_value=[("vscode-runtime", self._vscode_state(workspace))],
+                "resolve_running_sandbox",
+                return_value=SimpleNamespace(
+                    name="vscode-runtime", container_id="vscode-runtime", vscode=True
+                ),
             ),
             patch.object(sr, "_container_matches_issuance", return_value=True),
             patch.object(sr, "_run_up_transaction") as start,
@@ -3418,7 +3340,16 @@ class TestRunProjectCommand:
         command = ["claude", "setup-token"]
         with (
             patch.object(sr, "_validate_up_request", return_value=request),
-            patch.object(sr, "_strict_running_interactive_states", return_value=[]),
+            patch.object(
+                sr,
+                "resolve_running_sandbox",
+                side_effect=[
+                    None,
+                    None,
+                    SimpleNamespace(name=request.name, container_id=request.name, vscode=False),
+                ],
+            ),
+            patch.object(sr, "_container_matches_issuance", return_value=True),
             patch.object(sr, "_run_up_transaction") as start,
             patch.object(sr, "_warn_on_stale_session_containers"),
             patch("booley.runtime.lifecycle_lock.host_lifecycle_lock", return_value=nullcontext()),
@@ -3444,14 +3375,15 @@ class TestRunProjectCommand:
 
     def test_ignores_running_runtime_for_another_project(self, workspace: Path):
         request = self._request(workspace)
-        other = workspace.parent / "other-project"
-        running = [
-            ("other-runtime", self._vscode_state(other)),
-            ("vscode-runtime", self._vscode_state(workspace)),
-        ]
         with (
             patch.object(sr, "_validate_up_request", return_value=request),
-            patch.object(sr, "_strict_running_interactive_states", return_value=running),
+            patch.object(
+                sr,
+                "resolve_running_sandbox",
+                return_value=SimpleNamespace(
+                    name="vscode-runtime", container_id="vscode-runtime", vscode=True
+                ),
+            ),
             patch.object(sr, "_container_matches_issuance", return_value=True),
             patch.object(sr, "_run_up_transaction") as start,
             patch("booley.runtime.lifecycle_lock.host_lifecycle_lock", return_value=nullcontext()),
@@ -3523,8 +3455,10 @@ class TestRunProjectCommand:
             patch.object(sr, "_validate_up_request", return_value=request),
             patch.object(
                 sr,
-                "_strict_running_interactive_states",
-                return_value=[("stale-runtime", self._vscode_state(workspace))],
+                "resolve_running_sandbox",
+                return_value=SimpleNamespace(
+                    name="stale-runtime", container_id="stale-runtime", vscode=True
+                ),
             ),
             patch.object(sr, "_container_matches_issuance", return_value=False),
             patch.object(sr, "_run_up_transaction") as start,
@@ -3537,14 +3471,13 @@ class TestRunProjectCommand:
 
     def test_multiple_running_runtimes_are_refused(self, workspace: Path):
         request = self._request(workspace)
-        ours = request.name
-        running = [
-            (ours, json.dumps([{"Config": {"Labels": {}}}])),
-            ("vscode-runtime", self._vscode_state(workspace)),
-        ]
         with (
             patch.object(sr, "_validate_up_request", return_value=request),
-            patch.object(sr, "_strict_running_interactive_states", return_value=running),
+            patch.object(
+                sr,
+                "resolve_running_sandbox",
+                side_effect=sr.SessionError("multiple running Sandboxes"),
+            ),
             patch.object(sr, "_container_matches_issuance", return_value=True),
             patch.object(sr, "_run_up_transaction") as start,
             patch("booley.runtime.lifecycle_lock.host_lifecycle_lock", return_value=nullcontext()),
@@ -3671,7 +3604,6 @@ class TestSessionRefresh:
         booley_config = tmp_path / "xdg" / "booley"
         booley_config.chmod(0o755)
         monkeypatch.setattr(booley, "_report_upgrade_before_session", lambda _root: None)
-        monkeypatch.setattr(sr, "conflicting_vscode_session", lambda _root: None)
         monkeypatch.setattr(health, "due_reason", lambda _root: None)
         monkeypatch.setattr(session_refresh, "has_pending_refresh", lambda _root: False)
         monkeypatch.setattr(
@@ -3693,10 +3625,13 @@ class TestSessionRefresh:
     def test_refresh_configures_progress_before_reconciling_image(self, tmp_path: Path):
         from booley.harness import booley, session_refresh
         from booley.harness.booley import _build_parser
-        from booley.runtime.image_lifecycle import LifecycleResult, Status
 
         args = _build_parser().parse_args(["session", "refresh"])
-        result = LifecycleResult("booley-sandbox", "sha256:fresh", Status.CHANGED)
+        from booley.runtime.session_refresh import RefreshImage, RefreshResult
+
+        result = RefreshResult(
+            RefreshImage("booley-sandbox", "sha256:fresh"), "replaced", "old", "new"
+        )
         events: list[str] = []
         with (
             patch.object(
@@ -4063,8 +3998,9 @@ class TestSessionRefresh:
         assert booley._cmd_session(down_args, tmp_path) == 0
         capsys.readouterr()
 
-        monkeypatch.setattr(sr, "conflicting_vscode_session", lambda _root: None)
-        monkeypatch.setattr(sr, "up", lambda *_args, **_kwargs: "session")
+        monkeypatch.setattr(
+            sr, "ensure", lambda *_args, **_kwargs: sr.EnsureResult("session", False, True)
+        )
         monkeypatch.setattr(health, "due_reason", lambda _root: "Doctor inputs changed")
         monkeypatch.setattr(
             health,
@@ -4232,3 +4168,738 @@ def test_mismatched_editor_stop_remove_down_releases_capacity(tmp_path, monkeypa
     assert sr._down_unlocked(project).claim_cleared
     admission.admit_start(project, target_name="headless", run=docker)
     assert admission.claim_vscode_start(project, run=docker)
+
+
+def test_spawn_passes_credential_in_child_env_without_secret_argv(workspace, monkeypatch):
+    captured = {}
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "SYNTHETIC_SECRET")
+    command = sr.docker_run_argv(_spec(forward_oauth_token=True), workspace, "test")
+    monkeypatch.setattr(
+        sr.subprocess, "run", lambda argv, **kwargs: captured.update(argv=argv, **kwargs)
+    )
+    sr._run(command)
+    assert "SYNTHETIC_SECRET" not in str(captured["argv"])
+    assert captured["env"]["CLAUDE_CODE_OAUTH_TOKEN"] == "SYNTHETIC_SECRET"
+
+
+def test_headless_api_policy_refuses_missing_key(workspace, monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    spec = _spec()
+    spec["remoteEnv"]["BOOLEY_PRIMARY_AUTH"] = "api_key"
+    spec["remoteEnv"]["ANTHROPIC_API_KEY"] = "${localEnv:ANTHROPIC_API_KEY}"
+    with pytest.raises(sr.SessionError, match=r"requires.*credential"):
+        sr.docker_run_argv(spec, workspace, "test")
+
+
+@pytest.mark.parametrize("app,key", [("claude", "ANTHROPIC_API_KEY"), ("codex", "OPENAI_API_KEY")])
+def test_headless_api_policy_refuses_late_export_without_transport(
+    workspace, monkeypatch, app, key
+):
+    monkeypatch.setenv(key, "SYNTHETIC_LATE_KEY")
+    spec = _spec()
+    spec["remoteEnv"]["BOOLEY_AGENT_APP"] = app
+    spec["remoteEnv"]["BOOLEY_PRIMARY_AUTH"] = "api_key"
+    for credential in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"):
+        spec["remoteEnv"].pop(credential, None)
+    with pytest.raises(sr.SessionError, match="refresh"):
+        sr.docker_run_argv(spec, workspace, "test")
+
+
+def test_project_sandbox_resolution_editor_status(workspace, monkeypatch):
+    from booley.core.project_identity import project_label_id as project_id
+
+    container_id = "a" * 64
+    state = {
+        "Id": container_id,
+        "Name": "/editor",
+        "Created": "2026-01-01T00:00:00Z",
+        "State": {"Running": True, "StartedAt": "2026-01-01T00:00:00Z"},
+        "Config": {
+            "Labels": {
+                "booley.role": "interactive",
+                "booley.project-id": project_id(str(workspace)),
+                "devcontainer.local_folder": str(workspace),
+            }
+        },
+        "Mounts": [{"Type": "bind", "Source": str(workspace), "Destination": "/work"}],
+    }
+
+    def run(argv, **kwargs):
+        if argv[1] == "ps":
+            output = (
+                f"{container_id}\teditor\t{workspace}\t{project_id(str(workspace))}\tinteractive"
+            )
+        elif argv[1:3] == ["container", "inspect"]:
+            output = json.dumps(state)
+        else:
+            pytest.fail(f"unexpected mutation: {argv}")
+        return subprocess.CompletedProcess(argv, 0, output, "")
+
+    from booley.runtime import session_admission
+
+    monkeypatch.setattr(
+        session_admission, "running_project_sandboxes", real_running_project_sandboxes
+    )
+    monkeypatch.setattr(sr, "_run", run)
+    monkeypatch.setattr(sr.idk, "container_exists", lambda _: False)
+    assert sr.status(workspace) == "running (owner: VS Code, name: editor)"
+
+
+def _project_resolution_data(workspace, issuance):
+    spec = {
+        "image": issuance.image_id,
+        "remoteUser": "agent",
+        "workspaceFolder": "/work",
+        "workspaceMount": "source=${localWorkspaceFolder},target=/work,type=bind",
+        "mounts": [],
+        "containerEnv": {"CONTAINER": "yes"},
+        "remoteEnv": {"BOOLEY_DIR": "/booley-project", "CLAUDE_CODE_OAUTH_TOKEN": "secret"},
+        "runArgs": ["--network", "sandbox-network"],
+    }
+    labels = _vscode_labels(workspace, issuance)
+    state = {
+        "Id": "a" * 64,
+        "Name": "/editor",
+        "Image": issuance.image_id,
+        "Created": "2026-01-01T00:00:00Z",
+        "State": {"Running": True, "StartedAt": "2026-01-01T00:00:00Z"},
+        "Config": {
+            "Labels": labels,
+            "Image": spec["image"],
+            "User": "agent",
+            "WorkingDir": "/work",
+            "Env": ["CONTAINER=yes"],
+        },
+        "HostConfig": {
+            "CapDrop": ["ALL"],
+            "Privileged": False,
+            "PublishAllPorts": False,
+            "SecurityOpt": ["no-new-privileges"],
+            "PidsLimit": 4096,
+            "Memory": 0,
+        },
+        "NetworkSettings": {"Networks": {"sandbox-network": {}}},
+        "Mounts": [{"Type": "bind", "Source": str(workspace), "Destination": "/work", "RW": True}],
+    }
+    return spec, state
+
+
+def _project_resolution_transport(state):
+    documents = {state["Id"]: state}
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        if argv[1] == "ps":
+            rows = []
+            for key, doc in documents.items():
+                if doc["State"].get("Running") is False:
+                    continue
+                lab = doc["Config"]["Labels"]
+                if (
+                    "label=booley.role=interactive" in argv
+                    and lab.get("booley.role") != "interactive"
+                ):
+                    continue
+                fields = [key, doc.get("Name", "").removeprefix("/")]
+                if "--no-trunc" in argv or "-a" in argv:
+                    fields.append(lab.get("devcontainer.local_folder", ""))
+                if "--no-trunc" in argv:
+                    fields.extend([lab.get("booley.project-id", ""), lab.get("booley.role", "")])
+                rows.append("\t".join(fields))
+            return subprocess.CompletedProcess(argv, 0, "\n".join(rows), "")
+        if argv[1:3] == ["container", "inspect"]:
+            return subprocess.CompletedProcess(argv, 0, json.dumps(documents[argv[3]]), "")
+        pytest.fail(f"unexpected mutation: {argv}")
+
+    def inspect(argv):
+        calls.append(argv)
+        if argv[1] == "ps":
+            return "\n".join(doc["Name"].removeprefix("/") for doc in documents.values())
+        reference = argv[2]
+        doc = documents.get(reference) or next(
+            (doc for doc in documents.values() if doc.get("Name") == "/" + reference), None
+        )
+        if doc is None:
+            return None
+        if "--format" in argv and "index .Config.Labels" in argv[-1]:
+            return doc["Config"]["Labels"].get("devcontainer.local_folder")
+        return json.dumps(doc["Config"]["Labels"]) if "--format" in argv else json.dumps([doc])
+
+    return documents, calls, run, inspect
+
+
+@pytest.fixture
+def project_sandbox_resolution(workspace, monkeypatch):
+    """Actual selection and issuance matching over deterministic Docker responses."""
+    from booley.runtime import session_admission
+
+    issuance = _test_issuance(workspace)
+    issuance.image_id = "sha256:" + "f" * 64
+    spec, state = _project_resolution_data(workspace, issuance)
+    documents, calls, run, inspect = _project_resolution_transport(state)
+    monkeypatch.setattr(
+        session_admission, "running_project_sandboxes", real_running_project_sandboxes
+    )
+    monkeypatch.setattr(sr, "_run", run)
+    monkeypatch.setattr(sr, "_docker_stdout", inspect)
+    monkeypatch.setattr(sr, "_recover_before_lifecycle", lambda *_: None)
+    monkeypatch.setattr(sr, "_load_spec", lambda _: spec)
+    monkeypatch.setattr(runtime_spec, "validate", lambda *_: issuance)
+    monkeypatch.setattr(
+        sr,
+        "_validate_up_request",
+        lambda *_: sr._UpRequest(
+            spec,
+            issuance,
+            None,
+            sr.session_container_name(workspace),
+            runtime_spec.labels(issuance),
+            None,
+        ),
+    )
+    return SimpleNamespace(
+        state=state, documents=documents, calls=calls, spec=spec, issuance=issuance, run=run
+    )
+
+
+def test_project_sandbox_resolution_reuses_editor_for_up_and_both_enters(
+    workspace, project_sandbox_resolution, monkeypatch
+):
+    fixture = project_sandbox_resolution
+    attached = Mock(return_value=SimpleNamespace(exit_code=0))
+    monkeypatch.setattr("booley.runtime.runtime_attachment.run_command", attached)
+    assert sr.up(workspace) == "editor"
+    assert sr.enter(workspace, ["hostname"], tty=False) == 0
+    assert sr.enter(workspace, tty=True) == 0
+    assert [call.args[1] for call in attached.call_args_list] == ["a" * 64] * 2
+    assert attached.call_args.args[2] == ["/bin/bash", "-l"]
+    assert attached.call_args.kwargs == {"tty": True, "env": {"BOOLEY_DIR": "/booley-project"}}
+    assert sr.validate(workspace) == fixture.issuance.spec_sha256
+    assert all(call[1] in ("ps", "container", "inspect") for call in fixture.calls)
+
+
+@pytest.mark.parametrize("action", ["down", "rebuild"])
+@pytest.mark.parametrize("stale", [False, True])
+def test_project_sandbox_resolution_editor_refuses_cli_mutation(
+    workspace, project_sandbox_resolution, action, stale
+):
+    fixture = project_sandbox_resolution
+    if stale:
+        fixture.state["Config"]["Labels"]["booley.spec-digest"] = "old"
+    with pytest.raises(sr.SessionError, match="VS Code owns"):
+        sr.down(workspace) if action == "down" else sr.up(workspace, rebuild=True)
+    assert all(call[1] in ("ps", "container") for call in fixture.calls)
+
+
+@pytest.mark.parametrize("change", ["stale", "user", "workdir", "id", "stopped"])
+@pytest.mark.parametrize("consumer", ["enter", "validate"])
+def test_project_sandbox_resolution_refuses_drift_before_attachment(
+    workspace, project_sandbox_resolution, monkeypatch, change, consumer
+):
+    fixture = project_sandbox_resolution
+    if change == "stale":
+        fixture.state["Config"]["Labels"]["booley.spec-digest"] = "old"
+    elif change == "user":
+        fixture.state["Config"]["User"] = "root"
+    elif change == "workdir":
+        fixture.state["Config"]["WorkingDir"] = "/"
+    else:
+        original = sr._docker_stdout
+
+        def replaced(argv):
+            result = original(argv)
+            if "--format" not in argv:
+                state = json.loads(result)[0]
+                state["Id"] = "b" * 64 if change == "id" else state["Id"]
+                state["State"]["Running"] = change != "stopped"
+                return json.dumps([state])
+            return result
+
+        monkeypatch.setattr(sr, "_docker_stdout", replaced)
+    attached = Mock()
+    monkeypatch.setattr("booley.runtime.runtime_attachment.run_command", attached)
+    with pytest.raises(sr.SessionError, match="current host issuance"):
+        if consumer == "enter":
+            sr.enter(workspace, tty=False)
+        else:
+            sr.validate(workspace)
+    attached.assert_not_called()
+
+
+@pytest.mark.parametrize("consumer", ["status", "up", "enter", "down", "prepare", "validate"])
+@pytest.mark.parametrize(
+    "problem",
+    [
+        "duplicate",
+        "project-label",
+        "root",
+        "owner",
+        "owner-missing",
+        "canonical-owner-missing",
+        "canonical-relay",
+        "relay-owner",
+        "running",
+        "id",
+        "mount",
+    ],
+)
+def test_project_sandbox_resolution_fail_closed(
+    workspace, project_sandbox_resolution, consumer, problem
+):
+    import copy
+
+    fixture = project_sandbox_resolution
+    state = fixture.state
+    if problem == "duplicate":
+        other = copy.deepcopy(state)
+        other["Id"], other["Name"] = "b" * 64, "/editor-two"
+        fixture.documents[other["Id"]] = other
+    elif problem == "project-label":
+        state["Config"]["Labels"].pop("booley.project-id")
+    elif problem == "root":
+        state["Config"]["Labels"]["devcontainer.local_folder"] = str(workspace.parent)
+    elif problem == "owner":
+        state["Config"]["Labels"]["booley.role"] = "other"
+    elif problem == "owner-missing":
+        state["Config"]["Labels"].pop("booley.role")
+    elif problem == "canonical-owner-missing":
+        state["Name"] = "/" + sr.session_container_name(workspace)
+        state["Config"]["Labels"].clear()
+    elif problem == "canonical-relay":
+        state["Name"] = "/" + sr.session_container_name(workspace)
+        state["Config"]["Labels"].pop("devcontainer.local_folder")
+        state["Config"]["Labels"]["booley.role"] = "license-relay"
+        state["Mounts"] = []
+    elif problem == "relay-owner":
+        state["Config"]["Labels"].pop("devcontainer.local_folder")
+        state["Config"]["Labels"]["booley.role"] = "license-relay"
+    elif problem == "running":
+        state["State"].pop("Running")
+    elif problem == "id":
+        state.pop("Id")
+    else:
+        state["Mounts"][0]["Source"] = str(workspace.parent)
+    with pytest.raises(sr.SessionError):
+        getattr(sr, consumer)(workspace)
+    assert all(call[1] in ("ps", "container") for call in fixture.calls)
+
+
+def test_project_sandbox_resolution_prepare_allows_stale_editor_without_claim(
+    workspace, project_sandbox_resolution, monkeypatch
+):
+    fixture = project_sandbox_resolution
+    fixture.state["Config"]["Labels"]["booley.spec-digest"] = "old"
+    monkeypatch.setattr(sr, "_authenticate_quiesce_validate", lambda *_: (fixture.issuance, None))
+    monkeypatch.setattr(sr, "_requested_issued_license", lambda *_: None)
+    monkeypatch.setattr(sr, "_preflight", lambda *_args, **_kw: None)
+    from booley.runtime import session_admission
+
+    claim = Mock()
+    monkeypatch.setattr(session_admission, "claim_vscode_start", claim)
+    assert sr.prepare(workspace) == fixture.issuance.spec_sha256
+    claim.assert_not_called()
+
+
+def test_project_sandbox_resolution_headless_prepare_refuses_before_legacy_quiesce(
+    workspace, project_sandbox_resolution, monkeypatch
+):
+    fixture = project_sandbox_resolution
+    fixture.state["Name"] = "/" + sr.session_container_name(workspace)
+    fixture.state["Config"]["Labels"].pop("devcontainer.local_folder")
+    authenticate = Mock()
+    monkeypatch.setattr(sr, "_authenticate_quiesce_validate", authenticate)
+    with pytest.raises(sr.SessionError, match="headless Sandbox is running"):
+        sr.prepare(workspace)
+    authenticate.assert_not_called()
+
+
+@pytest.mark.parametrize("problem", ["listing", "inspect", "malformed", "changed-id"])
+def test_project_sandbox_resolution_inventory_errors(
+    workspace, project_sandbox_resolution, monkeypatch, problem
+):
+    fixture = project_sandbox_resolution
+
+    def run(argv, **kwargs):
+        if (problem == "listing" and argv[1] == "ps") or (
+            problem == "inspect" and argv[1] == "container"
+        ):
+            return subprocess.CompletedProcess(argv, 1, "", "Docker unavailable")
+        if problem == "malformed" and argv[1] == "ps":
+            return subprocess.CompletedProcess(argv, 0, "missing-fields", "")
+        result = fixture.run(argv, **kwargs)
+        if problem == "changed-id" and argv[1] == "container":
+            document = json.loads(result.stdout)
+            document["Id"] = "c" * 64
+            return subprocess.CompletedProcess(argv, 0, json.dumps(document), "")
+        return result
+
+    monkeypatch.setattr(sr, "_run", run)
+    with pytest.raises(sr.SessionError):
+        sr.up(workspace)
+
+
+def test_project_sandbox_resolution_excludes_proven_foreign_uninspectable(
+    workspace, project_sandbox_resolution, monkeypatch
+):
+    from booley.core.project_identity import project_label_id
+
+    fixture = project_sandbox_resolution
+    foreign = workspace.parent / "foreign"
+
+    def run(argv, **kwargs):
+        result = fixture.run(argv, **kwargs)
+        if argv[1] == "ps":
+            result.stdout += "\n" + "\t".join(
+                [
+                    "c" * 64,
+                    "foreign-editor",
+                    str(foreign),
+                    project_label_id(str(foreign)),
+                    "interactive",
+                ]
+            )
+        return result
+
+    monkeypatch.setattr(sr, "_run", run)
+    assert sr.resolve_running_sandbox(workspace).container_id == fixture.state["Id"]
+
+
+def test_project_sandbox_resolution_status_does_not_hide_editor_behind_claim(
+    workspace, project_sandbox_resolution, monkeypatch
+):
+    from booley.runtime import session_admission
+
+    monkeypatch.setattr(session_admission, "has_pending_claim", lambda _: True)
+    assert sr.status(workspace) == "running (owner: VS Code, name: editor)"
+
+
+def test_project_sandbox_resolution_cli_editor_reuse_reports_due(
+    workspace, project_sandbox_resolution, monkeypatch, capsys
+):
+    import argparse
+
+    from booley.harness import booley as cli
+    from booley.harness import doctor
+    from booley.runtime import health
+
+    monkeypatch.setattr(cli, "_report_upgrade_before_session", lambda _: None)
+    monkeypatch.setattr(health, "due_reason", lambda _: "expired")
+    monkeypatch.setattr(
+        doctor,
+        "observe_deep_status",
+        lambda *_a, **_kw: SimpleNamespace(render=lambda: "deep status"),
+    )
+    assert cli._session_up(argparse.Namespace(rebuild=False), workspace) == 0
+    captured = capsys.readouterr()
+    assert "Reusing Sandbox owned by VS Code: editor" in captured.out
+    assert "Automatic Doctor is due" in captured.err
+    assert "Automatic Doctor is running" not in captured.err
+
+
+def test_project_sandbox_resolution_stale_headless_rebuild_keeps_transaction(
+    workspace, project_sandbox_resolution, monkeypatch
+):
+    fixture = project_sandbox_resolution
+    fixture.state["Config"]["Labels"].pop("devcontainer.local_folder")
+    fixture.state["Config"]["Labels"]["booley.spec-digest"] = "stale"
+    fixture.state["Name"] = "/" + sr.session_container_name(workspace)
+    monkeypatch.setattr(sr, "_stopped_vscode_reconcile_candidates", lambda *_a, **_kw: [])
+    transaction = Mock()
+    monkeypatch.setattr(sr, "_run_up_transaction", transaction)
+    monkeypatch.setattr(sr, "_warn_on_stale_session_containers", lambda *_: None)
+    assert sr.up(workspace, rebuild=True) == sr.session_container_name(workspace)
+    assert transaction.call_args.kwargs["rebuild"]
+
+
+def test_project_sandbox_resolution_consumed_claim_status(
+    workspace, project_sandbox_resolution, monkeypatch
+):
+    from booley.runtime import session_admission
+
+    fixture = project_sandbox_resolution
+    state = fixture.documents.pop(fixture.state["Id"])
+    assert real_claim_vscode_start(workspace, run=fixture.run)
+    claim = session_admission._store().root / session_admission._claim_filename(str(workspace))
+    assert claim.exists()
+    fixture.documents[state["Id"]] = state
+    monkeypatch.setattr(
+        session_admission,
+        "has_pending_claim",
+        lambda root: real_has_pending_claim(root, run=fixture.run),
+    )
+    assert sr.status(workspace) == "running (owner: VS Code, name: editor)"
+    assert not claim.exists()
+
+
+def test_project_sandbox_resolution_never_touches_claim_store(
+    workspace, project_sandbox_resolution, monkeypatch
+):
+    from booley.runtime import session_admission
+
+    store = Mock(side_effect=AssertionError("structural selection must be read-only"))
+    monkeypatch.setattr(session_admission, "_store", store)
+    assert sr.resolve_running_sandbox(workspace).name == "editor"
+    store.assert_not_called()
+
+
+def test_project_sandbox_resolution_current_headless_reuses_immutable_id(
+    workspace, project_sandbox_resolution, monkeypatch
+):
+    fixture = project_sandbox_resolution
+    fixture.state["Name"] = "/" + sr.session_container_name(workspace)
+    fixture.state["Config"]["Labels"].pop("devcontainer.local_folder")
+    fixture.state["Config"]["Env"] += [
+        f"{key}={value}" for key, value in fixture.spec["remoteEnv"].items()
+    ]
+    attached = Mock(return_value=SimpleNamespace(exit_code=0))
+    monkeypatch.setattr("booley.runtime.runtime_attachment.run_command", attached)
+    assert sr.status(workspace) == "running"
+    assert sr.up(workspace) == sr.session_container_name(workspace)
+    assert sr.enter(workspace, ["hostname"], tty=False) == 0
+    assert attached.call_args.args[1] == fixture.state["Id"]
+
+
+@pytest.mark.parametrize("stopped", [False, True])
+def test_project_sandbox_resolution_no_live_runtime(
+    workspace, project_sandbox_resolution, monkeypatch, stopped
+):
+    fixture = project_sandbox_resolution
+    fixture.state["State"]["Running"] = False
+    monkeypatch.setattr(sr.idk, "container_exists", lambda _: stopped)
+    monkeypatch.setattr(sr.idk, "container_running", lambda _: False)
+    assert sr.resolve_running_sandbox(workspace) is None
+    assert sr.status(workspace) == ("stopped" if stopped else "absent")
+
+
+def test_project_sandbox_resolution_symlink_alias(workspace, project_sandbox_resolution):
+    alias = workspace.parent / "alias"
+    alias.symlink_to(workspace, target_is_directory=True)
+    assert sr.resolve_running_sandbox(alias).container_id == project_sandbox_resolution.state["Id"]
+
+
+def test_project_sandbox_resolution_legacy_prepare_reserves_after_removal(
+    workspace, project_sandbox_resolution, monkeypatch
+):
+    from booley.runtime import session_admission
+
+    fixture = project_sandbox_resolution
+    old = sr._LegacyVscodeContainer("editor", fixture.state["Id"])
+    monkeypatch.setattr(sr, "_authenticate_quiesce_validate", lambda *_: (fixture.issuance, old))
+    monkeypatch.setattr(
+        sr, "_remove_quiesced_legacy_container", lambda _: fixture.documents.clear()
+    )
+    monkeypatch.setattr(sr, "_requested_issued_license", lambda *_: None)
+    monkeypatch.setattr(sr, "_preflight", lambda *_args, **_kw: None)
+    claim = Mock(return_value=True)
+    monkeypatch.setattr(session_admission, "claim_vscode_start", claim)
+    assert sr.prepare(workspace) == fixture.issuance.spec_sha256
+    claim.assert_called_once_with(workspace, run=sr._run)
+
+
+@pytest.mark.parametrize("pending", [False, True])
+def test_project_sandbox_resolution_status_ignores_uninspectable_foreign(
+    workspace, project_sandbox_resolution, monkeypatch, pending
+):
+    import copy
+
+    from booley.core.project_identity import project_label_id
+    from booley.runtime import session_admission
+
+    fixture = project_sandbox_resolution
+    if pending:
+        fixture.documents.clear()
+        assert real_claim_vscode_start(workspace, run=fixture.run)
+        fixture.documents[fixture.state["Id"]] = fixture.state
+    foreign = copy.deepcopy(fixture.state)
+    root = workspace.parent / "foreign"
+    foreign["Id"], foreign["Name"] = "c" * 64, "/foreign-editor"
+    foreign["Config"]["Labels"].update(
+        {"devcontainer.local_folder": str(root), "booley.project-id": project_label_id(str(root))}
+    )
+    fixture.documents[foreign["Id"]] = foreign
+
+    def run(argv, **kwargs):
+        if argv[1:3] == ["container", "inspect"] and argv[3] == foreign["Id"]:
+            return subprocess.CompletedProcess(argv, 1, "", "foreign inspection denied")
+        return fixture.run(argv, **kwargs)
+
+    monkeypatch.setattr(sr, "_run", run)
+    monkeypatch.setattr(
+        session_admission, "has_pending_claim", lambda root: real_has_pending_claim(root, run=run)
+    )
+    assert sr.status(workspace) == "running (owner: VS Code, name: editor)"
+
+
+@pytest.mark.parametrize("kind", ["ordinary-service", "license-relay"])
+def test_project_sandbox_resolution_ignores_noninteractive_resources(
+    workspace, project_sandbox_resolution, kind
+):
+    import copy
+
+    fixture = project_sandbox_resolution
+    resource = copy.deepcopy(fixture.state)
+    resource["Id"], resource["Name"] = "d" * 64, "/" + kind
+    labels = resource["Config"]["Labels"]
+    labels.pop("devcontainer.local_folder")
+    if kind == "ordinary-service":
+        labels.clear()
+    else:
+        labels["booley.role"] = "license-relay"
+    resource["Mounts"] = []
+    fixture.documents[resource["Id"]] = resource
+    assert sr.resolve_running_sandbox(workspace).container_id == fixture.state["Id"]
+    if kind == "ordinary-service":
+        assert not any(resource["Id"] in call for call in fixture.calls if call[1] == "container")
+
+
+@pytest.mark.parametrize(
+    "state,expected",
+    [
+        ("managed", "booley session refresh"),
+        ("licensed", "booley session down"),
+        ("withdrawn", "booley init --seed"),
+        ("external", "rebuild/pull"),
+        ("vscode", "stop the Sandbox in VS Code"),
+        ("runtime", "booley session up --rebuild"),
+    ],
+)
+def test_drift_remedy_has_one_state_appropriate_workflow(tmp_path, monkeypatch, state, expected):
+    from types import SimpleNamespace
+
+    from booley.runtime import runtime_context, session_issuance, session_runtime
+
+    monkeypatch.setattr(session_runtime, "_authenticated_recovery_available", lambda _root: True)
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+
+    def issuance(_root):
+        if state == "withdrawn":
+            raise session_issuance.IssuanceUnavailableError("withdrawn")
+        return SimpleNamespace(license_profile="site" if state == "licensed" else None)
+
+    monkeypatch.setattr(session_issuance, "load_issued_snapshot", issuance)
+    monkeypatch.setattr(
+        session_runtime,
+        "strict_conflicting_vscode_session",
+        lambda _root: "editor" if state == "vscode" else None,
+    )
+    monkeypatch.setattr(
+        session_runtime.project_image, "project_sandbox_image", lambda _root: "selected"
+    )
+    monkeypatch.setattr(
+        session_runtime.project_image,
+        "is_managed_sandbox_image",
+        lambda *_args: state != "external",
+    )
+    remedy = session_runtime.sandbox_remedy(tmp_path, runtime_only=state == "runtime")
+    assert expected in remedy
+    if state in {"managed", "licensed"}:
+        assert remedy.count("booley session refresh") == 1
+        assert "init --seed" not in remedy
+
+
+def test_vscode_drift_remedy_preserves_editor_ownership(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from booley.runtime import runtime_context, session_issuance
+
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    monkeypatch.setattr(
+        session_issuance,
+        "load_issued_snapshot",
+        lambda _root: SimpleNamespace(license_profile=None),
+    )
+    monkeypatch.setattr(sr, "strict_conflicting_vscode_session", lambda _root: "editor")
+    monkeypatch.setattr(sr.project_image, "project_sandbox_image", lambda _root: "selected")
+    monkeypatch.setattr(sr.project_image, "is_managed_sandbox_image", lambda *_args: True)
+    remedy = sr.sandbox_remedy(tmp_path)
+    assert "booley init --force" in remedy
+    assert "Dev Containers: Rebuild Container" in remedy
+    assert "booley session refresh" not in remedy
+
+
+def test_inside_sandbox_remedy_requires_host_observation(tmp_path, monkeypatch):
+    from booley.runtime import runtime_context
+
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    remedy = sr.sandbox_remedy(tmp_path)
+    assert "on the host" in remedy
+    assert "booley doctor" in remedy
+    assert "booley session refresh" not in remedy
+
+
+@pytest.mark.parametrize(
+    "state,expected",
+    [(None, None), ({"Id": ""}, None), ({"Id": "immutable-container"}, "immutable-container")],
+)
+def test_refresh_identity_requires_verified_immutable_container(
+    tmp_path, monkeypatch, state, expected
+):
+    monkeypatch.setattr(sr, "_strict_refresh_container", lambda _name: state)
+    if expected is None:
+        with pytest.raises(sr.SessionError, match="immutable container identity"):
+            sr.refresh_container_id(tmp_path)
+    else:
+        assert sr.refresh_container_id(tmp_path) == expected
+
+
+@pytest.mark.parametrize("problem", ["changed-id", "malformed", "denied"])
+def test_project_sandbox_resolution_revalidation_fails_closed(
+    workspace, project_sandbox_resolution, monkeypatch, problem
+):
+    fixture = project_sandbox_resolution
+    inspections = 0
+
+    def run(argv, **kwargs):
+        nonlocal inspections
+        result = fixture.run(argv, **kwargs)
+        if argv[1:3] == ["container", "inspect"]:
+            inspections += 1
+            if inspections == 2:
+                if problem == "denied":
+                    return subprocess.CompletedProcess(argv, 1, "", "inspection denied")
+                state = json.loads(result.stdout)
+                if problem == "changed-id":
+                    state["Id"] = "b" * 64
+                else:
+                    state.pop("Mounts")
+                result.stdout = json.dumps(state)
+        return result
+
+    monkeypatch.setattr(sr, "_run", run)
+    with pytest.raises(sr.SessionError, match=r"identity changed|cannot revalidate"):
+        sr.down(workspace)
+    assert inspections == 2
+    assert all(call[1] in ("ps", "container") for call in fixture.calls)
+
+
+@pytest.mark.parametrize("owner", ["editor", "headless"])
+@pytest.mark.parametrize("command", [None, ["hostname"]])
+def test_enter_preserves_container_credentials_without_literal_placeholder_overrides(
+    workspace, project_sandbox_resolution, monkeypatch, owner, command
+):
+    from booley.runtime import auth_token, runtime_attachment
+
+    fixture = project_sandbox_resolution
+    for key in auth_token.CREDENTIAL_ENV_KEYS:
+        fixture.spec["remoteEnv"][key] = "${localEnv:" + key + "}"
+    if owner == "headless":
+        fixture.state["Config"]["Labels"].pop("devcontainer.local_folder")
+        fixture.state["Name"] = "/" + sr.session_container_name(workspace)
+        fixture.state["Config"]["Env"] += [
+            f"{key}={sr.substitute(value, workspace)}"
+            for key, value in fixture.spec["remoteEnv"].items()
+        ]
+    captured = []
+
+    def run(_driver, _execution_id, argv):
+        captured.extend(argv)
+        return runtime_attachment.ExecutionResult(0, "terminal", True, "complete")
+
+    monkeypatch.setattr(runtime_attachment.SupervisedExecutionDriver, "run", run)
+    assert sr.enter(workspace, command, tty=False) == 0
+    overrides = [captured[index + 1] for index, value in enumerate(captured) if value == "-e"]
+    assert not any(item.split("=", 1)[0] in auth_token.CREDENTIAL_ENV_KEYS for item in overrides)
+    assert "BOOLEY_DIR=/booley-project" in overrides
+    assert fixture.state["Id"] in captured
+    assert captured[-len(command or ["/bin/bash", "-l"]) :] == (command or ["/bin/bash", "-l"])

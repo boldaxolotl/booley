@@ -1,6 +1,6 @@
 # Booley Dashboard replaces the Console
 
-Status: accepted (2026-10-06; proposed 2026-10-03; amended 2026-10-06: session identity; amended 2026-10-11: open implementation choices; amended 2026-10-14: persistent handles, see Amendments)
+Status: accepted (2026-10-06; proposed 2026-10-03; amended 2026-10-06: session identity; amended 2026-10-11: open implementation choices; amended 2026-10-14: persistent handles; amended 2026-10-15: Sandbox attach, see Amendments)
 
 The Console showed one Ticket execution at a time. Goal Mode (ADR 0067)
 removes Ticket execution and runs several agent sessions, often unattended,
@@ -11,7 +11,7 @@ The overview stays concise; session, Goal, and Job details have separate views.
 
 ## Decisions
 
-- **One per Sandbox.** A devcontainer task opens the Dashboard in a VS Code
+- **One per Sandbox.** A bundled workspace extension opens the Dashboard in a VS Code
   terminal on Sandbox attach. It covers every worktree and session in that
   Sandbox. No host-wide view across Sandboxes in v1. The client is not shown:
   a Sandbox runs one agent client.
@@ -263,3 +263,65 @@ cannot identify every session or remain meaningful across Dashboard restarts.
   prevent session presence publication or Job execution. Invalid maps are
   diagnosed rather than reset; a
   16 MiB map bound fails allocation rather than recycling prior handles.
+
+## Amendments (2026-10-15)
+
+- **Attach through a workspace extension.** VS Code defines
+  `task.allowAutomaticTasks` as an application preference, so a devcontainer's
+  remote Machine setting cannot enable a `folderOpen` task. Application images
+  build a deterministic VSIX from wheel-owned sources at
+  `/usr/local/libexec/booley/dashboard.vsix`; Dev Containers installs that local
+  artifact before extension activation. No Marketplace publication or local
+  editor/profile extension installation is required. The extension and every
+  Dashboard process run inside the Sandbox.
+- **Explicit policy, fixed process.** In a trusted Dev Containers window with
+  the generated attach protocol enabled and one Git Project Root opened, the
+  extension reads live policy through
+  `booley dashboard --attach-policy`, then opens a transient terminal running
+  the fixed executable and arguments `booley dashboard --on-attach`. Python
+  rechecks configuration and ownership immediately before starting the existing
+  Dashboard. A Sandbox socket remains the final singleton guard. Ordinary manual
+  `booley dashboard` retains its behavior.
+- **Preserve preferences and task ownership.** The extension does not enable
+  unrelated automatic tasks. An explicit user automatic-task preference of off,
+  the existing folder opt-out, and `[sandbox].dashboard = false` suppress attach.
+  Default-off automatic-task permission is distinct from an explicit user opt-out.
+  The owned task remains a manual shortcut; reconciliation removes its old
+  `folderOpen` option only when its bytes still match ownership. Retained task
+  conflicts, deliberate removals and pending migration suppress the new opener.
+  Existing compare-and-swap publication and issuance rollback remain in force.
+- **Terminal lifetime.** One launch attempt per editor window session persists
+  through an extension-host restart, which leaves its terminal running. A new
+  window/reload can open the view again;
+  deliberately closing it does not restart it in that session. The extension
+  disposes only terminals it owns, with no terminal-name-based cleanup. Output
+  channel diagnostics distinguish policy opt-outs and startup failures.
+
+## Amendments (2026-10-15, Codex chat tab identity)
+
+- **Marked Codex launches are an exception to thread identity.** The earlier
+  prohibition on Codex process keys assumes a shared daemon. A named
+  `booley chat` launch passes `--no-daemon`, reserves its process identity's
+  handle, and marks that allocation before exec. Its own native CLI, including
+  app-server helpers, resolves to that one process session. Built-in subagent
+  conversations receive no separate Booley IDs. Ordinary unmarked Codex clients
+  retain thread identity. This gives a terminal a stable handle without making
+  the first conversation to call Booley its owner.
+- **One runtime owner.** Launch reservations, MCP registration and lifecycle
+  signals use the shared runtime Booley Directory, including `BOOLEY_DIR` when
+  set. Checkout-specific agent-provider settings can still come from a local
+  worktree snapshot. They do not choose a separate handle registry.
+- **Migration and liveness.** The observer carries the original thread key
+  through process attribution so registration can migrate a previous thread row
+  and establish handle aliases. Historical allocations are never renumbered.
+  Migration retains the predecessor's worktree when a call omits `work_dir`.
+  A thread-ownership alias redirects delayed peerless observations only while
+  that marked process is proven running in the same namespace; cached outcomes
+  are normalized again before observer ordering.
+  Marked process rows follow process liveness rather than thread quiet expiry.
+- **Activity boundaries.** The lifecycle hook uses the same process identity
+  and validates the same handle-map contract as the registry. Only the main
+  conversation's events update that tab's activity. A separately launched inner
+  Codex CLI, such as `codex exec`, retains its own thread attribution and cannot
+  update the outer tab's signal. The nearest CLI must belong to the marked
+  launch; its app-server helpers do not constitute another interactive client.
