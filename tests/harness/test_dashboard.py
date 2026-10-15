@@ -853,12 +853,12 @@ async def test_pilot_header_semantic_styles(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_pilot_stale_notice_uses_attention_style():
+async def test_pilot_stale_notice_uses_attention_style(monkeypatch, tmp_path):
     from rich.style import Style
 
     from booley.harness import colors
 
-    current = model.DashboardSnapshot()
+    current = model.DashboardSnapshot(health=_header_health(monkeypatch, tmp_path))
     app = DashboardApp(lambda: current)
     async with app.run_test(size=(120, 30)):
         app._show_stale("read failed [path]")
@@ -866,7 +866,9 @@ async def test_pilot_stale_notice_uses_attention_style():
         assert content.plain == "Dashboard data unavailable/stale: read failed [path]"
         assert _style_at(content) == Style.parse(f"color({colors.PALETTE_ORANGE})")
         app.render_snapshot()
-        assert "read failed" not in str(app.query_one("#health", Static).content)
+        restored = _rich_payload(app.query_one("#health", Static))
+        assert restored.plain == "Doctor: 2 FAIL · 1 WARN"
+        assert _style_at(restored) == Style.parse("bold red")
 
 
 @pytest.mark.parametrize(

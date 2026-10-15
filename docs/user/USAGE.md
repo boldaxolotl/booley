@@ -662,8 +662,8 @@ Jobs; press `u` to include all sessions and standalone Jobs. `Esc` returns to
 the previous view, and `?` shows help.
 
 The header shows compact Doctor health: nonzero FAIL and WARN counts, or
-`Doctor: OK` when clean. A stale result adds ` · stale`; an unreadable result
-shows a dim unavailable notice. Full findings remain available through
+`Doctor: OK` when clean. A stale result adds ` · stale`; a missing or unreadable
+result shows a dim unavailable notice. Full findings remain available through
 `booley doctor` or the existing Doctor transcript.
 
 Sessions have short, persistent Project handles such as `S17`. Jobs include

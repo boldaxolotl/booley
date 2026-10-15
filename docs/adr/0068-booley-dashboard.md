@@ -329,8 +329,9 @@ cannot identify every session or remain meaningful across Dashboard restarts.
 ### 2026-10-16: Compact Doctor health (#1511)
 
 The Dashboard always shows one compact Doctor line: active FAIL and WARN counts,
-or dim `Doctor: OK` for a clean result. A due result adds ` · stale`, and an
-unreadable result shows a dim unavailable notice. This supersedes the earlier
-“Health only when attention is needed” and “Hide the healthy Doctor line” rules.
+or dim `Doctor: OK` for a clean result. A due result adds ` · stale`, and a
+missing or unreadable result shows a dim unavailable notice. This supersedes the
+earlier “Health only when attention is needed” and “Hide the healthy Doctor line”
+rules.
 Independent upgrade-review notices and non-consuming, read-only snapshot rules
 remain unchanged; full findings stay in the existing Doctor presentations.
