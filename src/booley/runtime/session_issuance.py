@@ -125,6 +125,9 @@ _ALLOWED_REMOTE_ENV = (
     _REQUIRED_REMOTE_ENV
     | set(git_identity_environment(GitIdentity("Dev", "dev@localhost")))
     | {
+        "ANTHROPIC_API_KEY",
+        "BOOLEY_PRIMARY_AUTH",
+        "BOOLEY_CREDENTIAL_SCHEMA",
         "CLAUDE_CODE_OAUTH_TOKEN",
         "OPENAI_API_KEY",
         LOCAL_TIMEZONE_ENV,
@@ -1141,7 +1144,8 @@ def _validate_generated_spec(
         raise RuntimeSpecError(
             "issued image no longer proves the canonical Booley Directory alias"
         )
-    _validate_state_volume(mounts, app, project)
+    _validate_credential_policy(spec, project, Path(issuance.project_data_source))
+    _validate_state_volume(mounts, app, project, spec["remoteEnv"]["BOOLEY_PRIMARY_AUTH"])
     _require_exact_readonly_mount(mounts, expected_devcontainer_mount(project), last=True)
     vivado_mounts = [item for item in mounts if _mount_target(item) == CONTAINER_TARGET]
     if requirements.installation_mount is not None:
@@ -1275,12 +1279,75 @@ def _validate_remote_environment(remote: dict[str, Any]) -> None:
             )
         )
     app = remote.get("BOOLEY_AGENT_APP")
-    credential_key = {"claude": "CLAUDE_CODE_OAUTH_TOKEN", "codex": "OPENAI_API_KEY"}.get(
-        app if isinstance(app, str) else ""
-    )
-    for key in ("CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY"):
-        if key in remote and (key != credential_key or remote[key] != f"${{localEnv:{key}}}"):
+    from booley.runtime import auth_token
+
+    policy = remote.get("BOOLEY_PRIMARY_AUTH", "auto")
+    try:
+        allowed = auth_token.allowed_credential_keys(str(app), policy)
+    except ValueError as exc:
+        raise RuntimeSpecError("invalid Sandbox credential policy; refresh the Sandbox") from exc
+    for key in auth_token.CREDENTIAL_ENV_KEYS:
+        if key in remote and (key not in allowed or remote[key] != f"${{localEnv:{key}}}"):
             raise RuntimeSpecError("devcontainer.json credential environment has drifted")
+
+
+def _validate_credential_policy(spec: dict[str, Any], project: Path, project_data: Path) -> None:
+    from booley.config.agent import project_credential_policy
+    from booley.runtime import auth_token
+    from booley.runtime import devcontainer as dc
+
+    _, policy = project_credential_policy(project, booley_dir=project_data)
+    remote = spec.get("remoteEnv", {})
+    if (
+        remote.get("BOOLEY_PRIMARY_AUTH") != policy
+        or remote.get("BOOLEY_CREDENTIAL_SCHEMA") != auth_token.CREDENTIAL_SCHEMA
+    ):
+        raise RuntimeSpecError(
+            "Sandbox credential policy/schema has drifted; refresh and recreate the Sandbox"
+        )
+    app = remote.get("BOOLEY_AGENT_APP")
+    allowed = auth_token.allowed_credential_keys(str(app), policy)
+    forbidden_targets = {
+        target for provider, target in dc._APP_CREDS_SEED_TARGET.items() if provider != app
+    }
+    forbidden_targets.update(
+        target for provider, target in dc._APP_TOKEN_SEED_TARGET.items() if provider != app
+    )
+    if policy == "api_key":
+        forbidden_targets.update(dc._APP_CREDS_SEED_TARGET.values())
+    credential = auth_token.CREDENTIALS.get(app)
+    if credential is not None and credential.env_var not in allowed:
+        forbidden_targets.add(dc._APP_TOKEN_SEED_TARGET[app])
+    _validate_credential_seed_sources(spec, str(app), policy)
+    hooks = " ".join(str(spec.get(key, "")) for key in ("postCreateCommand", "postStartCommand"))
+    for target in forbidden_targets:
+        if target in hooks or any(_mount_target(raw) == target for raw in spec.get("mounts", [])):
+            raise RuntimeSpecError(
+                "Sandbox credential seed violates Project auth policy; refresh the Sandbox"
+            )
+
+
+def _validate_credential_seed_sources(spec: dict[str, Any], app: str, policy: str) -> None:
+    from booley.runtime import auth_token
+    from booley.runtime import devcontainer as dc
+
+    if policy == "auto":
+        return
+    for raw in spec.get("mounts", []):
+        fields = _mount_fields(raw)
+        target = fields.get("target")
+        source = Path(fields.get("source", ""))
+        if target == dc._APP_CREDS_SEED_TARGET.get(app) and not auth_token.subscription_available(
+            app, policy, source
+        ):
+            raise RuntimeSpecError(
+                "Sandbox login seed is not a recognized subscription credential"
+            )
+        if target == dc._CLAUDE_CONFIG_SEED_TARGET:
+            try:
+                auth_token.inspect_config_seed(source, policy)
+            except ValueError as exc:
+                raise RuntimeSpecError(str(exc)) from exc
 
 
 def _validate_environment(spec: dict[str, Any], license_environment: str | None) -> None:
@@ -1777,10 +1844,12 @@ def _require_project_data_mount(
     return shadow_target
 
 
-def _validate_state_volume(mounts: list[str], app: object, project: Path) -> None:
+def _validate_state_volume(
+    mounts: list[str], app: object, project: Path, policy: str = "auto"
+) -> None:
     from booley.runtime import devcontainer as dc
 
-    expected = dc.state_volume_mount(str(app), dc.canonical_project_id(project))
+    expected = dc.state_volume_mount(str(app), dc.canonical_project_id(project), policy)
     targets = {f"{dc.AGENT_HOME}/.claude", f"{dc.AGENT_HOME}/.codex"}
     actual = [raw for raw in mounts if _mount_target(raw) in targets]
     if actual != ([] if expected is None else [expected]):

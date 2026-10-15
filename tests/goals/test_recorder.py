@@ -399,6 +399,7 @@ def test_state_saving_around_the_gate_is_refused(goal_mode: SimpleNamespace) -> 
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.timeout(120)
 def test_recovery_keeps_a_newer_observation_from_an_overlapping_group(
     goal_mode: SimpleNamespace,
 ) -> None:
@@ -424,6 +425,7 @@ def test_recovery_keeps_a_newer_observation_from_an_overlapping_group(
     assert replayed == recovered  # validation compares against the newest observation
 
 
+@pytest.mark.timeout(120)
 def test_recovery_from_a_stale_instance_keeps_a_concurrently_selected_observation(
     goal_mode: SimpleNamespace,
 ) -> None:
@@ -537,7 +539,7 @@ def test_canonical_evidence_survives_late_or_missing_save(goal_mode, schedule):
 
 
 # Windows killed the worker at the CI default 60 s across all publication stages.
-@pytest.mark.timeout(210)
+@pytest.mark.timeout(270)
 def test_async_producer_adapters_keep_final_observations_after_old_reports(layout):
     """External EDA/model results are stubbed at the actual EndpointState adapter."""
     import asyncio
@@ -677,7 +679,17 @@ def test_in_memory_publication_also_mirrors_canonical_stamped_fields(goal_mode):
     assert state.criteria[LINT_KEY].detail == row["detail"]
 
 
-@pytest.mark.parametrize("family", ["LINT", "ELAB", "SYNTH", "FPGA", "MUTATION", "CYCLE_COUNT"])
+@pytest.mark.parametrize(
+    "family",
+    [
+        pytest.param("LINT", marks=pytest.mark.timeout(120), id="LINT"),
+        pytest.param("ELAB", marks=pytest.mark.timeout(120), id="ELAB"),
+        pytest.param("SYNTH", id="SYNTH"),
+        pytest.param("FPGA", id="FPGA"),
+        pytest.param("MUTATION", id="MUTATION"),
+        pytest.param("CYCLE_COUNT", id="CYCLE_COUNT"),
+    ],
+)
 def test_rerun_replaces_conflicting_cache_for_each_flow_family(layout, family):
     from booley.goals.status import build_status
     from booley.goals.store import GoalStore

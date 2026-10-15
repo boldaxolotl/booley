@@ -1222,6 +1222,7 @@ class _InteractiveSpecSources:
     app: str
     nangate_pdk_root: Path | object
     runtime_image_id: str | None
+    credential_plan: auth_token.CredentialPlan
     auth_source: Path | None
     token_seed: Path | None
     config_seed: Path | None
@@ -1230,7 +1231,6 @@ class _InteractiveSpecSources:
     project_data_source: Path
     memory: str
     dashboard: bool
-    forward_oauth_token: bool
     timezone: str
 
     def build(self, inputs: SessionSpecInputs) -> dict:
@@ -1245,6 +1245,7 @@ class _InteractiveSpecSources:
             )
         return dc.build_devcontainer_spec(
             self.app,
+            credential_plan=self.credential_plan,
             image=self.runtime_image_id or pi.project_sandbox_image(self.project_root),
             booley_dir_source=docker_mount_path(inputs.project_data_source),
             project_id=dc.canonical_project_id(self.project_root),
@@ -1253,7 +1254,6 @@ class _InteractiveSpecSources:
             mcp_start_command=dc.mcp_post_start_command(),
             memory=self.memory,
             dashboard=self.dashboard,
-            forward_oauth_token=self.forward_oauth_token,
             token_seed_source=(docker_mount_path(self.token_seed) if self.token_seed else None),
             host_skills=list(self.host_skills),
             trusted_eda_mounts=trusted_eda_mounts,
@@ -1273,22 +1273,26 @@ def _interactive_spec_sources(
     agent_app: str | None,
     runtime_image_id: str | None,
 ) -> _InteractiveSpecSources:
+    from booley.config.agent import project_credential_policy
+
     source = authorized_project_data_source(ctx.project_root)
     app = agent_app or _select_interactive_app(ctx.project_root, source)
+    _, policy = project_credential_policy(ctx.project_root, booley_dir=source)
+    plan = auth_token.credential_plan(app, policy)
     return _InteractiveSpecSources(
+        credential_plan=plan,
         project_root=ctx.project_root,
         app=app,
         nangate_pdk_root=nangate_pdk_root,
         runtime_image_id=runtime_image_id,
-        auth_source=_resolve_auth_token_source(app),
-        token_seed=_resolve_token_seed_source(app),
-        config_seed=_resolve_config_seed_source(app),
+        auth_source=plan.subscription_seed,
+        token_seed=plan.token_seed,
+        config_seed=plan.config_seed,
         host_skills=tuple(_resolve_host_skills_sources(ctx.project_root, source)),
         mask_paths=tuple(_project_mask_paths(ctx.project_root, source)),
         project_data_source=source,
         memory=_project_sandbox_memory(ctx.project_root, source),
         dashboard=_dashboard_enabled(source),
-        forward_oauth_token=bool(auth_token.resolve_token(app)),
         timezone=detect_host_timezone(),
     )
 

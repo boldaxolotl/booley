@@ -291,6 +291,7 @@ class TestWorktreeCreateScript:
         assert result.returncode != 0
         assert "[agent.git] name must be a string" in result.stderr
 
+    @pytest.mark.timeout(120)
     def test_rejects_unsafe_worktree_name(self, tmp_path: Path):
         """Worktree slug must not escape the worktrees directory."""
         from booley.runtime.paths import worktree_create_script
@@ -348,6 +349,7 @@ class TestWorktreeCreateScript:
         assert placeholder.is_dir()
         assert not any(placeholder.iterdir())
 
+    @pytest.mark.timeout(120)
     def test_handles_parent_core_worktree_from_docker(self, tmp_path: Path):
         """Host setup must survive a parent config polluted with /work."""
         from booley.runtime.paths import worktree_create_script

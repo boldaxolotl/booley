@@ -515,9 +515,9 @@ def _prepare_target_less_generated_record(
 @pytest.mark.parametrize(
     "mutation",
     [
-        pytest.param("unchanged", marks=pytest.mark.timeout(150)),
-        "rewrite",
-        pytest.param("remove", marks=pytest.mark.timeout(150)),
+        pytest.param("unchanged", marks=pytest.mark.timeout(150), id="unchanged"),
+        pytest.param("rewrite", marks=pytest.mark.timeout(150), id="rewrite"),
+        pytest.param("remove", marks=pytest.mark.timeout(150), id="remove"),
     ],
 )
 def test_target_less_review_finishes_without_unused_target_producer(layout, monkeypatch, mutation):

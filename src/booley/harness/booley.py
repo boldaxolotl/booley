@@ -160,7 +160,7 @@ def command_project_bindings() -> dict[str, ProjectBinding]:
 def _command_project_binding(command: str, args: argparse.Namespace) -> ProjectBinding:
     binding = command_project_bindings()[command]
     if binding is ProjectBinding.AUTH:
-        return ProjectBinding.INDEPENDENT if args.status else ProjectBinding.REQUIRED
+        return ProjectBinding.OPTIONAL if args.status else ProjectBinding.REQUIRED
     return binding
 
 
@@ -502,8 +502,11 @@ def _add_auth_subparser(sub) -> None:
     auth_p.add_argument(
         "--app",
         choices=("claude", "codex"),
-        default="claude",
-        help="Which agent app to authenticate (default: claude)",
+        default=None,
+        help=(
+            "AI agent client (credential changes default to claude; "
+            "status uses the Project provider or both clients)"
+        ),
     )
     auth_p.add_argument(
         "--status", action="store_true", help="Report which credential each agent would use"

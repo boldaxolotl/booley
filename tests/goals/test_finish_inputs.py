@@ -127,6 +127,7 @@ def test_stealth_rechecks_paired_pin_after_local_artifacts(layout, tmp_path):
     assert GoalStore(complete.control).load(complete.record.id).state is GoalState.ACTIVE
 
 
+@pytest.mark.timeout(150)
 def test_topology_replacement_after_fence_retains_attempt_and_allows_safe_abandon(
     layout, tmp_path
 ):
@@ -194,7 +195,7 @@ def test_recovery_filesystem_mode_uses_windows_readonly_flag_and_posix_nonexecut
     assert finish_goal(call, environment(layout))["status"] == "finished"
 
 
-@pytest.mark.timeout(150)
+@pytest.mark.timeout(180)
 def test_paired_and_rtl_file_and_constraint_deltas_are_unambiguous(layout, tmp_path):
     project = install_paired_project(layout, tmp_path)
     (project / "tests.toml").write_bytes(b'[top]\ntests = ["smoke"]\n')

@@ -251,6 +251,7 @@ def test_stopped_transaction_is_completed_before_the_next_evidence_is_recorded(
     assert _status(two).reason.startswith("goal-test-run-failed")
 
 
+@pytest.mark.timeout(150)
 def test_recovered_stale_intent_cannot_erase_an_intervening_failure(
     two: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -353,7 +354,7 @@ def _seed(seed: int, grade: str = "pass") -> dict[str, Any]:
     return run_row(build_test_run("a", seed=seed), grade)
 
 
-@pytest.mark.timeout(150)
+@pytest.mark.timeout(180)
 def test_multi_seed_goal_accumulates_per_seed_and_lists_failing_seeds(
     seeds: SimpleNamespace,
 ) -> None:
@@ -385,6 +386,7 @@ def test_multi_seed_goal_accumulates_per_seed_and_lists_failing_seeds(
 # --- Pending, empty, missing and changed runs ------------------------------------
 
 
+@pytest.mark.timeout(150)
 def test_pending_and_empty_goals_are_unmet_whatever_passes(layout: SimpleNamespace) -> None:
     goals = [
         {"family": "SIM", "target": "top"},

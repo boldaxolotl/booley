@@ -229,18 +229,16 @@ class CodexBackend:
     def health_check(self) -> str | None:
         from booley.runtime import auth_token
 
+        plan = auth_token.credential_plan(auth_token.APP_CODEX, self._auth_mode)
         codex_bin = shutil.which("codex")
         if codex_bin is None:
             return "Codex CLI not found on PATH (npm i -g @openai/codex)"
-        if self._auth_mode == "api_key" and auth_token.resolve_token(auth_token.APP_CODEX) is None:
+        if self._auth_mode == "api_key" and plan.selected is None:
             return (
                 "[agent] auth = 'api_key' but no OPENAI_API_KEY is exported or stored — "
                 "export it, run `booley auth --app codex`, or switch auth"
             )
-        if (
-            self._auth_mode == "subscription"
-            and not auth_token.subscription_creds_path(auth_token.APP_CODEX).is_file()
-        ):
+        if self._auth_mode == "subscription" and plan.selected is None:
             return (
                 "[agent] auth = 'subscription' but no Codex login found at ~/.codex/auth.json — "
                 "run `codex login` or switch auth"
@@ -478,7 +476,10 @@ def _ticket_home_scope() -> str:
 
 
 def _populate_private_codex_home(
-    codex_dir: Path, booley_env: dict[str, str], enabled_mcp_tools: list[str] | None = None
+    codex_dir: Path,
+    booley_env: dict[str, str],
+    enabled_mcp_tools: list[str] | None = None,
+    auth_mode: str = "auto",
 ) -> None:
     """Regenerate one destination config and copy the existing native credential."""
     from .mcp_config import generate_codex_config
@@ -491,15 +492,16 @@ def _populate_private_codex_home(
         ),
         encoding="utf-8",
     )
-    original_auth = Path(os.environ.get("HOME", "/home/agent")) / ".codex" / "auth.json"
-    if original_auth.exists():
-        shutil.copy2(original_auth, codex_dir / "auth.json")
+    from .auth_token import copy_codex_auth, subscription_creds_path
+
+    copy_codex_auth(subscription_creds_path("codex"), codex_dir / "auth.json", auth_mode)
 
 
 def _ensure_nested_codex_home(
     parent_label: str,
     allowed_mcp_tools: list[str] | None,
     extra_env: dict[str, str] | None = None,
+    auth_mode: str = "auto",
 ) -> str:
     """Create a cached private home exposing only the nested agent's MCP allowlist.
 
@@ -517,9 +519,14 @@ def _ensure_nested_codex_home(
     allowlist_str = ",".join(sorted(allowlist))
     ticket_scope = _ticket_home_scope()
     env_str = json.dumps(extra_env or {}, sort_keys=True, separators=(",", ":"))
-    cache_key = f"{ticket_scope}:{allowlist_str or '_none'}:{env_str}"
+    cache_key = f"{ticket_scope}:{allowlist_str or '_none'}:{env_str}:{auth_mode}"
     cached = _NESTED_HOMES.get(cache_key)
     if cached is not None:
+        from .auth_token import copy_codex_auth, subscription_creds_path
+
+        copy_codex_auth(
+            subscription_creds_path("codex"), Path(cached) / ".codex" / "auth.json", auth_mode
+        )
         return cached
 
     # Dir name: short hash of the cache key, plus a hint of the parent_label
@@ -541,7 +548,7 @@ def _ensure_nested_codex_home(
     booley_env["BOOLEY_NESTED_AGENT"] = "1"
     booley_env["BOOLEY_NESTED_MCP_TOOLS"] = ",".join(allowlist)
 
-    _populate_private_codex_home(codex_dir, booley_env)
+    _populate_private_codex_home(codex_dir, booley_env, auth_mode=auth_mode)
 
     _NESTED_HOMES[cache_key] = str(nested)
     return _NESTED_HOMES[cache_key]
@@ -559,13 +566,19 @@ async def _codex_spawn(
     An unlabeled caller uses "_anonymous" with an empty allowlist.
     """
     env = None
+    if auth_mode != "auto" and os.environ.get("CODEX_HOME"):
+        from .auth_token import subscription_creds_path
+
+        env = {**os.environ, "CODEX_HOME": str(subscription_creds_path("codex").parent)}
     if _inside_container() and not params.text_only:
         env = dict(os.environ)
         env["HOME"] = _ensure_nested_codex_home(
             params.label or "_anonymous",
             params.nested_mcp_tools,
             params.nested_mcp_env,
+            auth_mode=auth_mode,
         )
+        env["CODEX_HOME"] = str(Path(env["HOME"]) / ".codex")
 
     if auth_mode == "subscription":
         # [agent] auth = "subscription": drop the API key so Codex bills the
@@ -577,9 +590,16 @@ async def _codex_spawn(
     if params.text_only:
         from .text_only_agent import prepare_codex_text_only
 
-        cmd, env = prepare_codex_text_only(cmd, params, dict(os.environ))
+        cmd, env = prepare_codex_text_only(cmd, params, dict(os.environ), auth_mode=auth_mode)
         if auth_mode == "subscription":
             env.pop("OPENAI_API_KEY", None)
+
+    from .auth_token import credential_plan
+
+    plan = credential_plan("codex", auth_mode)
+    plan.require_credential()
+    if auth_mode != "auto" or plan.values:
+        env = plan.child_environment(dict(os.environ) if env is None else env)
 
     proc = await asyncio.create_subprocess_exec(
         *cmd,

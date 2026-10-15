@@ -226,11 +226,19 @@ def substitute(value: str, workspace: Path) -> str:
     return _LOCAL_ENV_RE.sub(lambda m: _local_env(m.group(1)), value)
 
 
+class DockerRunArgv(list[str]):
+    """Docker arguments plus an explicit secret-bearing child environment."""
+
+    def __init__(self, arguments: list[str], environment: dict[str, str]) -> None:
+        super().__init__(arguments)
+        self.environment = environment
+
+
 def docker_run_argv(
     spec: dict,
     workspace: Path,
     name: str,
-) -> list[str]:
+) -> DockerRunArgv:
     """Derive the ``docker run`` argv for *spec*.
 
     Mirrors how the Dev Containers CLI consumes the spec:
@@ -245,16 +253,34 @@ def docker_run_argv(
     if not image:
         raise SessionError("devcontainer.json has no 'image' key")
 
-    argv = ["docker", "run", "-d", "--name", name]
+    argv = DockerRunArgv(["docker", "run", "-d", "--name", name], dict(os.environ))
+    remote = spec.get("remoteEnv") or {}
+    policy = remote.get("BOOLEY_PRIMARY_AUTH", "auto")
+    allowed = auth_token.allowed_credential_keys(remote.get("BOOLEY_AGENT_APP", "none"), policy)
 
     for mount in [spec.get("workspaceMount"), *(spec.get("mounts") or [])]:
         if mount:
             argv += ["--mount", substitute(str(mount), workspace)]
 
-    for key, value in (spec.get("containerEnv") or {}).items():
-        argv += ["-e", f"{key}={substitute(str(value), workspace)}"]
-    for key, value in (spec.get("remoteEnv") or {}).items():
-        argv += ["-e", f"{key}={substitute(str(value), workspace)}"]
+    for section in (spec.get("containerEnv") or {}, remote):
+        for key, value in section.items():
+            resolved = substitute(str(value), workspace)
+            if key in auth_token.CREDENTIAL_ENV_KEYS:
+                if key not in allowed or str(value) != f"${{localEnv:{key}}}":
+                    raise SessionError("credential environment violates Sandbox policy")
+                argv.environment[key] = resolved
+                argv += ["-e", key]
+            else:
+                argv += ["-e", f"{key}={resolved}"]
+    if policy == "api_key":
+        key = auth_token.API_KEY_ENV.get(remote.get("BOOLEY_AGENT_APP"))
+        if key and (
+            (key not in remote and key not in (spec.get("containerEnv") or {}))
+            or not argv.environment.get(key)
+        ):
+            raise SessionError(
+                "API-key policy requires the launching process credential; refresh the Sandbox"
+            )
 
     if spec.get("remoteUser"):
         argv += ["--user", str(spec["remoteUser"])]
@@ -419,6 +445,7 @@ def _run(
     logger.debug("running: %s", " ".join(argv))
     return subprocess.run(
         argv,
+        env=argv.environment if isinstance(argv, DockerRunArgv) else None,
         capture_output=capture,
         timeout=timeout,
         text=True,
@@ -2284,7 +2311,7 @@ def _select_or_start_project_runtime(workspace: Path) -> tuple[str, dict[str, st
     command_env = {
         name: value
         for name, value in remote_env.items()
-        if auth_token.credential_for_env_var(name) is None
+        if name not in auth_token.CREDENTIAL_ENV_KEYS
     }
     if selected is not None:
         _validate_selected_runtime(workspace, request, selected)

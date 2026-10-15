@@ -435,10 +435,30 @@ def test_proved_post_cas_legacy_replays_frozen_recipe_without_recapture(layout, 
 @pytest.mark.parametrize(
     "successor, boundary",
     [
-        pytest.param("file", "index-lock-acquired", marks=pytest.mark.timeout(150)),
-        pytest.param("file", "index-lock-filled", marks=pytest.mark.timeout(150)),
-        pytest.param("symlink", "index-lock-acquired", marks=pytest.mark.timeout(150)),
-        ("symlink", "index-lock-filled"),
+        pytest.param(
+            "file",
+            "index-lock-acquired",
+            marks=pytest.mark.timeout(150),
+            id="file-index-lock-acquired",
+        ),
+        pytest.param(
+            "file",
+            "index-lock-filled",
+            marks=pytest.mark.timeout(150),
+            id="file-index-lock-filled",
+        ),
+        pytest.param(
+            "symlink",
+            "index-lock-acquired",
+            marks=pytest.mark.timeout(150),
+            id="symlink-index-lock-acquired",
+        ),
+        pytest.param(
+            "symlink",
+            "index-lock-filled",
+            marks=pytest.mark.timeout(150),
+            id="symlink-index-lock-filled",
+        ),
     ],
 )
 def test_owned_index_lock_never_truncates_or_hands_off_successor(

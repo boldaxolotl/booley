@@ -2682,6 +2682,82 @@ def test_directory_alias_proof_refuses_missing_image_identity_before_docker(monk
     probe.assert_not_called()
 
 
+@pytest.mark.parametrize("section", ["remoteEnv", "containerEnv"])
+@pytest.mark.parametrize("key", ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY"])
+def test_issued_spec_rejects_unplanned_credential_environment(issued, section, key):
+    project, spec, path, _ = issued
+    spec[section][key] = f"${{localEnv:{key}}}"
+    with pytest.raises(runtime_spec.RuntimeSpecError):
+        runtime_spec.validate(project, spec, path)
+
+
+def test_policy_change_requires_refresh_even_when_shell_exports_change(issued, monkeypatch):
+    project, spec, path, _ = issued
+    for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"):
+        monkeypatch.setenv(key, "SYNTHETIC")
+    runtime_spec.validate(project, spec, path)
+    (project / ".booley" / "booley.toml").write_text('[agent]\nauth="subscription"\n')
+    with pytest.raises(runtime_spec.RuntimeSpecError, match=r"credential policy/schema.*refresh"):
+        runtime_spec.validate(project, spec, path)
+
+
+def test_old_credential_schema_requires_refresh(issued):
+    project, spec, path, _ = issued
+    del spec["remoteEnv"]["BOOLEY_CREDENTIAL_SCHEMA"]
+    with pytest.raises(runtime_spec.RuntimeSpecError):
+        runtime_spec.validate(project, spec, path)
+
+
+@pytest.mark.parametrize(
+    "damage", ["other-provider", "wrong-placeholder", "subscription-bind", "subscription-hook"]
+)
+@pytest.mark.parametrize("vivado_requested", [False, True])
+def test_sealing_rejects_policy_violations_before_issuance(
+    issued, monkeypatch, request, damage, vivado_requested
+):
+    from booley.runtime import auth_token
+
+    project, _, _, _ = issued
+    home = project.parent / "credential-home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    (project / ".booley" / "booley.toml").write_text(
+        '[agent]\nprovider="claude"\nauth="api_key"\n'
+        + ('[eda.vivado]\nprovisioning="image"\n' if vivado_requested else "")
+    )
+    reset_cache()
+    request.addfinalizer(reset_cache)
+    spec = dc.build_devcontainer_spec(
+        "claude",
+        credential_plan=auth_token.credential_plan("claude", "api_key"),
+        project_id=dc.canonical_project_id(project),
+        protected_devcontainer_source=str(project / ".devcontainer"),
+        mcp_start_command=dc.mcp_post_start_command(),
+    )
+    spec["remoteEnv"]["BOOLEY_PRIMARY_AUTH"] = "api_key"
+    runtime_spec.pin_image(spec)
+    runtime_spec.seal(project, json.loads(json.dumps(spec)))
+    if damage == "other-provider":
+        spec["remoteEnv"]["OPENAI_API_KEY"] = "${localEnv:OPENAI_API_KEY}"
+    elif damage == "wrong-placeholder":
+        spec["remoteEnv"]["ANTHROPIC_API_KEY"] = "${localEnv:CLAUDE_CODE_OAUTH_TOKEN}"
+    elif damage == "subscription-bind":
+        spec["mounts"].insert(
+            0,
+            "source=/synthetic/login,target=/home/agent/.claude-creds-seed.json,type=bind,readonly",
+        )
+    else:
+        fragment = next(
+            fragment
+            for fragment in runtime_spec._FIXED_SEED_FRAGMENTS
+            if ".claude-creds-seed.json" in fragment
+        )
+        spec["postStartCommand"] = f"{fragment}; {spec['postStartCommand']}"
+    with pytest.raises(runtime_spec.RuntimeSpecError, match=r"credential|seed"):
+        runtime_spec.seal(project, spec)
+
+
 def test_refresh_adapter_observes_git_drift_with_unchanged_image(issued, monkeypatch):
     """Exercise the real init builder and prepared-spec comparison, not a drift mock."""
     from booley.harness import init_cmd
@@ -2733,12 +2809,8 @@ def _refresh_source_mutator(project, tmp_path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: home)
-    forwarding = {"present": False}
-    monkeypatch.setattr(
-        init_cmd.auth_token,
-        "resolve_token",
-        lambda _app: "fixture" if forwarding["present"] else None,
-    )
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     timezone = {"value": "UTC"}
     monkeypatch.setattr(init_cmd, "detect_host_timezone", lambda: timezone["value"])
     pdk = tmp_path / "pdk"
@@ -2775,7 +2847,7 @@ def _refresh_source_mutator(project, tmp_path, monkeypatch):
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text("fixture")
         if setting == "credential-forwarding":
-            forwarding["present"] = True
+            monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "SYNTHETIC_REFRESH_OAUTH")
         if setting == "pdk":
             ready["value"] = True
         _mutate_issuance_identity(setting, project, tmp_path, config, monkeypatch)

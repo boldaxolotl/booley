@@ -397,19 +397,18 @@ def dispatch(argv, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "route", ["targets", "chat", "doctor", "init", "session", "cleanup", "upgrade", "feedback"]
+    "route",
+    ["targets", "chat", "doctor", "init", "session", "cleanup", "upgrade", "feedback", "auth"],
 )
 def test_handlers_receive_selected_checkout(projects, monkeypatch, route):
     captured = []
     monkeypatch.setitem(cli._EARLY_COMMANDS, route, lambda args, root: captured.append(root) or 0)
-    nested = {"cleanup": ["preview"], "upgrade": ["status"]}.get(route, [])
+    nested = {"cleanup": ["preview"], "upgrade": ["status"], "auth": ["--status"]}.get(route, [])
     assert dispatch([route, *nested, "-C", "../b/rtl"], monkeypatch) == 0
     assert captured == [projects[1]]
 
 
-@pytest.mark.parametrize(
-    "route, operation", [("auth", "--status"), ("cheat", "--list"), ("cheat", None)]
-)
+@pytest.mark.parametrize("route, operation", [("cheat", "--list"), ("cheat", None)])
 def test_independent_operations_ignore_selection(projects, monkeypatch, route, operation):
     monkeypatch.setattr(cli, "_resolve_cli_selection", lambda _args: pytest.fail("discovery"))
     monkeypatch.setitem(cli._EARLY_COMMANDS, route, lambda _args, _root: 0)
