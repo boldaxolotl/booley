@@ -146,6 +146,10 @@ class RuntimeSpecError(RuntimeError):
     """A Sandbox spec is missing, drifted, or outside issued policy."""
 
 
+class IssuanceUnavailableError(RuntimeSpecError):
+    """The host cannot authenticate a predecessor for managed refresh."""
+
+
 @dataclass(frozen=True)
 class Issuance:
     """Host-observed inputs covered by one exact spec digest."""
@@ -639,11 +643,48 @@ def _session_spec_inputs(
     )
 
 
+def _revalidate_prepared(
+    project: Path,
+    prepared: PreparedSessionSpec,
+    leased: eda_requirements.SessionRequirementsSnapshot,
+    current_builder: Callable[[], SpecBuilder] | None,
+) -> None:
+    if current_builder is not None:
+        current = _prepare_spec(
+            project, current_builder(), leased, expected_image_id=prepared.spec["image"]
+        )
+        if current != prepared:
+            raise RuntimeSpecError("Sandbox inputs changed after specification preparation")
+    current_inputs = _session_spec_inputs(project, leased.build)
+    if prepared.inputs != current_inputs:
+        raise RuntimeSpecError(
+            "Sandbox authority changed after its specification was prepared: "
+            + format_differences(asdict(prepared.inputs), asdict(current_inputs))
+        )
+    prospective = _prospective_issuance(
+        project,
+        prepared.spec,
+        prepared.digest,
+        leased.runtime,
+        prepared.inputs.project_data_source,
+    )
+    if prepared.prospective_issuance != prospective:
+        raise RuntimeSpecError(
+            "Sandbox policy changed after its specification was prepared: "
+            + format_differences(
+                _issuance_mapping(prepared.prospective_issuance),
+                _issuance_mapping(prospective),
+            )
+        )
+
+
 def issue_prepared(
     project_root: Path,
     prepared: PreparedSessionSpec,
     *,
     force_dependencies: bool = False,
+    current_builder: Callable[[], SpecBuilder] | None = None,
+    reconcile_dashboard: bool = True,
 ) -> Issuance:
     """Persist one exact preview after revalidating its authority inputs."""
     project = project_root.resolve(strict=True)
@@ -654,33 +695,18 @@ def issue_prepared(
             project,
             vivado_enabled=flow_enabled("fpga", project),
         ) as leased:
-            current_inputs = _session_spec_inputs(project, leased.build)
-            if prepared.inputs != current_inputs:
-                raise RuntimeSpecError(
-                    "Sandbox authority changed after its specification was prepared: "
-                    + format_differences(asdict(prepared.inputs), asdict(current_inputs))
-                )
-            prospective = _prospective_issuance(
-                project,
-                prepared.spec,
-                prepared.digest,
-                leased.runtime,
-                prepared.inputs.project_data_source,
-            )
-            if prepared.prospective_issuance != prospective:
-                raise RuntimeSpecError(
-                    "Sandbox policy changed after its specification was prepared: "
-                    + format_differences(
-                        _issuance_mapping(prepared.prospective_issuance),
-                        _issuance_mapping(prospective),
-                    )
-                )
+            _revalidate_prepared(project, prepared, leased, current_builder)
             requirements = eda_requirements.prepare_runtime_dependencies(
                 project,
                 leased,
                 force_relay=force_dependencies,
             )
-            return _persist_prepared(project, prepared, requirements=requirements)
+            return _persist_prepared(
+                project,
+                prepared,
+                requirements=requirements,
+                reconcile_dashboard=reconcile_dashboard,
+            )
     except (FlowConfigError, eda_requirements.SessionRequirementsError) as exc:
         raise RuntimeSpecError(str(exc)) from exc
 
@@ -729,6 +755,7 @@ def _persist_prepared(
     prepared: PreparedSessionSpec,
     *,
     requirements: eda_requirements.SessionEdaRequirements | None = None,
+    reconcile_dashboard: bool = True,
 ) -> Issuance:
     """Persist and issue one prepared spec, restoring its predecessor on failure."""
     from booley.runtime import dashboard_tasks, devcontainer
@@ -737,10 +764,7 @@ def _persist_prepared(
     path = devcontainer.devcontainer_path(project)
     previous = path.read_bytes() if path.is_file() else None
     previous_mode = stat.S_IMODE(path.stat().st_mode) if previous is not None else 0o644
-    stamp_paths = (
-        stamp_path_for_identity(str(project)),
-        _legacy_stamp_path(str(project)),
-    )
+    stamp_paths = (stamp_path_for_identity(str(project)), _legacy_stamp_path(str(project)))
     stamp_snapshots = tuple(_file_snapshot(item, default_mode=0o600) for item in stamp_paths)
     previous_issuance = None
     previous_stamp_path = _stamp_read_path(project)
@@ -755,7 +779,10 @@ def _persist_prepared(
     task_transaction = None
     try:
         written = devcontainer.write_devcontainer(project, prepared.spec)
-        task_transaction = dashboard_tasks.reconcile(project, prepared.inputs.project_data_source)
+        if reconcile_dashboard:
+            task_transaction = dashboard_tasks.reconcile(
+                project, prepared.inputs.project_data_source
+            )
         if requirements is None:
             return _issue_document(project, prepared.spec, written)
         return _issue_document_with_requirements(
@@ -1123,6 +1150,7 @@ def _validate_generated_spec(
         raise RuntimeSpecError("devcontainer.json exposes Vivado without host authorization")
     _validate_overlaps(mounts)
     _validate_mount_surfaces(mounts, project_data_workspace_target)
+    assert issuance.project_data_source is not None
     _validate_git_identity_environment(spec, Path(issuance.project_data_source))
     _validate_environment(spec, requirements.license_environment)
     _validate_run_args(
@@ -1205,9 +1233,7 @@ def _validate_git_identity_environment(spec: dict[str, Any], project_data: Path)
     container, remote = _environment_sections(spec)
     for section in (container, remote):
         if any(section.get(key) != value for key, value in expected.items()):
-            raise RuntimeSpecError(
-                "[agent.git] Sandbox identity has drifted; refresh and recreate the Sandbox"
-            )
+            raise RuntimeSpecError("[agent.git] Sandbox identity has drifted")
 
 
 def _environment_sections(spec: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -1249,7 +1275,9 @@ def _validate_remote_environment(remote: dict[str, Any]) -> None:
             )
         )
     app = remote.get("BOOLEY_AGENT_APP")
-    credential_key = {"claude": "CLAUDE_CODE_OAUTH_TOKEN", "codex": "OPENAI_API_KEY"}.get(app)
+    credential_key = {"claude": "CLAUDE_CODE_OAUTH_TOKEN", "codex": "OPENAI_API_KEY"}.get(
+        app if isinstance(app, str) else ""
+    )
     for key in ("CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY"):
         if key in remote and (key != credential_key or remote[key] != f"${{localEnv:{key}}}"):
             raise RuntimeSpecError("devcontainer.json credential environment has drifted")
@@ -1261,9 +1289,7 @@ def _validate_environment(spec: dict[str, Any], license_environment: str | None)
     # compiler cache gets the actionable refresh hint, not a generic key diff.
     issued_roots = (container.get(COMPILER_CACHE_ROOT_ENV), remote.get(COMPILER_CACHE_ROOT_ENV))
     if issued_roots != (ISSUED_COMPILER_CACHE_ROOT, ISSUED_COMPILER_CACHE_ROOT):
-        raise RuntimeSpecError(
-            "Compiler-cache root differs from fixed Sandbox policy; refresh the Sandbox"
-        )
+        raise RuntimeSpecError("Compiler-cache root differs from fixed Sandbox policy")
     allowed_container = {
         COMPILER_CACHE_ROOT_ENV,
         *git_identity_environment(GitIdentity("Dev", "dev@localhost")),
@@ -1461,7 +1487,7 @@ def _pin_project_data_mount(
     if shadow_target is None:
         if _project_data_alias_capable(_resolve_image_id(str(spec.get("image", "")))):
             raise RuntimeSpecError(
-                "selected image alias hides the external Booley Directory source; managed images require init or refresh; for an explicitly selected external image, select an image with an ordinary /booley-project directory"
+                "selected image alias hides the external Booley Directory source; an ordinary /booley-project directory is required"
             )
         return
     if any(_mount_target(raw) == shadow_target for raw in mounts):
@@ -1942,12 +1968,11 @@ def _load_stamp(path: Path) -> Issuance:
                 os.close(descriptor)
         stamp = issuance_from_document(raw)
     except FileNotFoundError as exc:
-        raise RuntimeSpecError(
-            "Sandbox issuance was withdrawn (EDA grant change, invalidation or Project forget); "
-            "run booley init --seed on the host to reissue"
+        raise IssuanceUnavailableError(
+            "Sandbox issuance was withdrawn (EDA grant change, invalidation or Project forget)"
         ) from exc
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, RuntimeSpecError) as exc:
-        raise RuntimeSpecError(f"host-issued spec stamp is corrupt: {exc}") from exc
+        raise IssuanceUnavailableError(f"host-issued spec stamp is corrupt: {exc}") from exc
     if os.name != "nt" and (info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600):
         raise RuntimeSpecError(f"host-issued spec stamp has insecure ownership/mode: {path}")
     if os.name != "nt":

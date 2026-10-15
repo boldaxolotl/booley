@@ -9,6 +9,22 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- Specialist category snapshots hide opposite-category sources per file, including
+  shared-directory sources and Booley-owned copies; category isolation requires a
+  usable core and removes unscoped unregistered source copies conservatively.
+  Untagged C/C++ Sim harness inputs count as testbench sources and cannot be mutation
+  scope; Doctor identifies their missing TB tags. Reviewer accepts explicitly scoped
+  C/C++ testbench sources and headers in Interactive Mode, refuses explicit
+  opposite-category scope in either mode, keeps Goal support-file review, and lists
+  Interactive source kinds in refusal messages.
+
+- Sandbox refresh now reconciles specification changes, reports kept/replaced/rollback outcomes, and removes transaction-owned failed or superseded images.
+
+- The Dashboard opens by default on trusted VS Code Sandbox attachment through
+  an image-bundled workspace extension. Existing opt-outs remain respected;
+  run host `booley init` and rebuild/reopen the Sandbox after upgrading.
+
+- Newly scaffolded Verilator SystemVerilog projects now produce non-empty simulation traces and avoid Doctor's `sim.trace-unavailable` warning.
 - Goal evidence fields in saved state now recover automatically from selected
   valid immutable producer observations when Booley reads or saves Goal state.
   Goal status reports remaining evidence or validation problems without treating

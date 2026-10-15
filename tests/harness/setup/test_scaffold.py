@@ -8,6 +8,8 @@ actual writes in a tmp repo.
 from __future__ import annotations
 
 import argparse
+import re
+import subprocess
 import tomllib
 from pathlib import Path
 
@@ -86,6 +88,7 @@ def test_default_combo_files_and_shapes() -> None:
     assert set(files) == {
         "rtl/my_ip.sv",
         "tb/tb_my_ip.sv",
+        "tb/sim_main.cpp",
         "my_ip.core",
         "verif/booley_doctor_selftest.core",
         "verif/booley_doctor_selftest/lint_bad.sv",
@@ -100,8 +103,8 @@ def test_default_combo_files_and_shapes() -> None:
     sim = core["targets"]["sim"]
     assert sim["flow"] == "sim"
     assert sim["flow_options"]["tool"] == "verilator"
-    # Event-driven TB needs --timing; --main/--exe build the C++ wrapper.
-    assert sim["flow_options"]["verilator_options"] == ["--timing", "--main", "--exe"]
+    # The owned C++ main drives the event scheduler and trace lifecycle.
+    assert sim["flow_options"]["verilator_options"] == ["--timing", "--exe"]
     assert sim["toplevel"] == "tb_my_ip"
     assert core["filesets"]["tb"]["tags"] == ["tb"]
 
@@ -131,7 +134,7 @@ def test_default_combo_files_and_shapes() -> None:
     # drop multi-line bodies for no privacy gain.
     assert cfg["stealth"] == {"enabled": False}
     # Target selection lives beside each Target in the .core file.
-    assert cfg["flows"]["sim"] == {}
+    assert cfg["flows"]["sim"] == {"trace_files": ["dump.vcd"]}
     assert cfg["flows"]["lint"] == {}
     assert "elab" not in cfg["flows"]
     assert cfg["flows"]["synth"] == {}
@@ -545,3 +548,180 @@ def test_step_check_only_writes_nothing(tmp_path: Path, monkeypatch, capsys) -> 
     assert ctx.results[-1].status == "warn"
     assert list(tmp_path.iterdir()) == []
     capsys.readouterr()
+
+
+def _track_scaffold(root: Path) -> None:
+    for args in (
+        ["init", "-q"],
+        ["add", "."],
+        [
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "scaffold",
+        ],
+    ):
+        subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, timeout=10)
+
+
+def _seed_doctor_init_state(root: Path) -> None:
+    """Seed state owned by regular init without suppressing project checks."""
+    from booley.harness.setup.guidance_links import ensure_guidance_links
+    from booley.runtime import devcontainer as dc
+    from booley.runtime.project_gitignore import PROJECT_GITIGNORE
+    from tests.harness.test_doctor import _seed_interactive
+
+    booley_dir = root / ".booley"
+    (booley_dir / "FUSESOC_IGNORE").touch()
+    (booley_dir / ".gitignore").write_text(PROJECT_GITIGNORE)
+    (booley_dir / "AGENTS.md").write_text("Run Booley Flows inside the Sandbox.\n")
+    ensure_guidance_links(root, booley_dir)
+    _seed_interactive(root)
+    dc.write_devcontainer(
+        root, dc.build_devcontainer_spec(dc.APP_CLAUDE, image=doctor.pi.project_image_name(root))
+    )
+    (root / ".git/info/attributes").unlink()
+    (root / ".git/info/exclude").write_text("/.devcontainer\n/home/\n")
+    for key, value in (
+        ("gc.worktreePruneExpire", "never"),
+        ("worktree.useRelativePaths", "true"),
+        ("core.autocrlf", "false"),
+    ):
+        subprocess.run(["git", "config", key, value], cwd=root, check=True, timeout=10)
+    config = booley_dir / "booley.toml"
+    config.write_text(config.read_text() + '\n[agent]\nprovider = "claude"\nauth = "auto"\n')
+    _track_scaffold(root)
+
+
+def _healthy_host_doctor(root: Path, monkeypatch) -> None:
+    """Run all Doctor checks with healthy host/process observations."""
+    from tests.harness.test_doctor import _patch_environment
+
+    _seed_doctor_init_state(root)
+    real_run = subprocess.run
+    _patch_environment(
+        monkeypatch,
+        root,
+        root / ".booley",
+        mcp_tools=[
+            "synth",
+            "bwave",
+            "coverage_analyst",
+            "lint",
+            "mutation_tester",
+            "reviewer",
+            "sim",
+            "fpga",
+        ],
+    )
+    host_run = subprocess.run
+
+    def run(command, **kwargs):
+        if command[0] == "git":
+            return real_run(command, **kwargs)
+        marker = re.search(r"BOOLEY_VIVADO_STARTUP_[0-9a-f]{32}", " ".join(map(str, command)))
+        if marker:
+            return subprocess.CompletedProcess(command, 0, marker[0] + "\n", "")
+        return host_run(command, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    result = doctor.run_doctor_result(
+        argparse.Namespace(deep=False), root, read_only=True, record_clean=False
+    )
+    assert not [
+        (f.check_id, f.subject, f.message)
+        for f in result.findings
+        if f.severity in {"warn", "fail"}
+    ]
+
+
+def _assert_variant_sources_and_header(tmp_path, simulator, tb_style, asic, fpga):
+    rtl = (tmp_path / "rtl/my_ip.sv").read_text()
+    header = rtl.split("every configured flow (")[1].split(")")[0]
+    enabled = ["simulate", "lint"] + (["synth"] if asic else []) + (["fpga"] if fpga else [])
+    assert header.replace("//", "").split() == " / ".join(enabled).split()
+    core = yaml.safe_load((tmp_path / "my_ip.core").read_text())
+    owned = simulator == "verilator" and tb_style == "sv"
+    config = tomllib.loads((tmp_path / ".booley/booley.toml").read_text())
+    assert config["flows"]["sim"] == ({"trace_files": ["dump.vcd"]} if owned else {})
+    assert ("tb_cpp" in core["filesets"]) is owned
+    assert (tmp_path / "tb/sim_main.cpp").exists() is owned
+    if owned:
+        assert doctor.sim_dump.dump_literals_in((tmp_path / "tb/sim_main.cpp").read_text()) == (
+            "dump.vcd",
+        )
+        assert core["filesets"]["tb_cpp"] == {
+            "files": [{"tb/sim_main.cpp": {"file_type": "cppSource"}}],
+            "tags": ["tb"],
+        }
+        assert core["targets"]["sim"]["filesets"] == ["rtl", "tb", "tb_cpp"]
+        assert core["targets"]["sim"]["flow_options"]["booley"]["coverage"] == {
+            "custom_main_hooks": ["write_hook"]
+        }
+    catalog = TargetCatalog.build(tmp_path)
+    sources = doctor._CoreAuditInputs(catalog, {h.name: h for h in catalog.list()}).sources_for(
+        "sim"
+    )
+    tb = "tb/tb_my_ip.sv" if tb_style == "sv" else "tb/test_my_ip.py"
+    assert set(sources.tb_files) == {tb, *(["tb/sim_main.cpp"] if owned else [])}
+    assert sources.rtl_source_files == ("rtl/my_ip.sv",)
+
+
+@pytest.mark.usefixtures("isolated_git_attributes")
+@pytest.mark.parametrize("simulator", ["verilator", "icarus"])
+@pytest.mark.parametrize("tb_style", ["sv", "cocotb"])
+@pytest.mark.parametrize("linter", ["verilator", "verible"])
+@pytest.mark.parametrize("asic,fpga", [(False, False), (True, False), (False, True), (True, True)])
+def test_scaffold_variants_have_no_doctor_warnings_and_enabled_header(
+    tmp_path, monkeypatch, simulator, tb_style, linter, asic, fpga
+):
+    args = _args(
+        sim_eda_tool=simulator,
+        tb_style=tb_style,
+        lint_eda_tool=linter,
+        asic=asic,
+        fpga_part="xc7a35tcpg236-1" if fpga else None,
+    )
+    assert step_scaffold(_ctx(tmp_path, monkeypatch), args)
+    _track_scaffold(tmp_path)
+    cfg = tmp_path / ".booley"
+    project = doctor.ProjectAudit(
+        tmp_path,
+        cfg,
+        tomllib.loads((cfg / "booley.toml").read_text()),
+        tomllib.loads((cfg / "tests.toml").read_text()),
+        "sim",
+    )
+    reporter = doctor._Reporter.create()
+    doctor._run_core_audit(
+        project,
+        reporter.pass_,
+        reporter.warn_,
+        reporter.skip_,
+        reporter.fail_,
+        _note=reporter.note_,
+    )
+    findings = reporter.result(0).findings
+    assert not [
+        (f.check_id, f.subject, f.message) for f in findings if f.severity in {"warn", "fail"}
+    ]
+    _assert_variant_sources_and_header(tmp_path, simulator, tb_style, asic, fpga)
+    _healthy_host_doctor(tmp_path, monkeypatch)
+
+
+@pytest.mark.parametrize("category", ["rtl", "tb"])
+def test_scaffold_trace_main_isolation(tmp_path, monkeypatch, category):
+    from booley.core.models import AgentCallParams
+    from booley.specialists.specialist_workspace import isolated_agent_workspace
+
+    assert step_scaffold(_ctx(tmp_path, monkeypatch), _args(asic=False))
+    _track_scaffold(tmp_path)
+    params = AgentCallParams(prompt="review", model="test", cwd=tmp_path)
+    with isolated_agent_workspace(params, "read_only", category) as (isolated, _snapshot):
+        root = Path(isolated.cwd)
+        assert (root / "rtl/my_ip.sv").exists() is (category == "rtl")
+        assert (root / "tb/tb_my_ip.sv").exists() is (category == "tb")
+        assert (root / "tb/sim_main.cpp").exists() is (category == "tb")

@@ -208,6 +208,8 @@ def test_completion_marks_canonical_bound_target_from_qualified_selector(
     assert json.loads(Path(result["package"]).read_bytes())["goals"][0]["modified_target"]
 
 
+# Windows CI measured 66.1s; keep at least 3x headroom for publication work.
+@pytest.mark.timeout(210)
 @pytest.mark.parametrize("earlier", ["stale-index", "committed-edit"])
 def test_later_finish_does_not_wedge_on_earlier_published_attempt(layout, earlier):
     complete = publication_layout(layout)

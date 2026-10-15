@@ -18,10 +18,13 @@ from booley.core.boundary import (
     BoundaryError,
     is_str_list,
     require_dict,
+    require_int,
     require_opt_str,
     require_str,
 )
 from booley.core.differences import format_differences
+from booley.core.private_store import PrivateStore
+from booley.core.user_paths import config_dir
 from booley.runtime import project_image
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.runtime.build_stamp import (
@@ -353,6 +356,8 @@ class DockerPort(Protocol):
 
     def repo_digests(self, image: str) -> tuple[str, ...]: ...
 
+    def image_ids(self) -> frozenset[str]: ...
+
     def image_references(self) -> tuple[ImageReference, ...]: ...
 
     def container_image_ids(self) -> frozenset[str]: ...
@@ -410,13 +415,210 @@ def _active_layout_parent(reference: str) -> bool:
         return True
 
 
-def _discard_orphaned_candidates(docker: DockerPort) -> None:
-    """Remove unjournaled transaction tags left by a process crash."""
-    for image in docker.image_references():
-        if _candidate_reference_is_transactional(image.reference) and not _active_layout_parent(
-            image.reference
+def _discard_orphaned_candidates(docker: DockerPort, project: Path | None = None) -> None:
+    """Release only transaction refs explicitly recorded for this Project."""
+    store = _owned_store()
+    if project is None or not store.validate_existing_directory():
+        return
+    releases = []
+    for path in sorted(store.root.glob(_owned_prefix(project) + "*.json")):
+        _root, refs, _owned = _read_owned_record(store, path.name)
+        for reference, expected in refs.items():
+            if not _candidate_reference_is_transactional(reference):
+                continue
+            actual = docker.image_id(reference)
+            if actual is not None and actual != expected:
+                raise ImageLifecycleError("recorded candidate reference changed before cleanup")
+            if actual is not None:
+                releases.append(reference)
+    for reference in releases:
+        docker.remove_tag(reference)
+    cleanup_owned_images(project, docker=docker)
+
+
+def _owned_store() -> PrivateStore:
+    anchor = config_dir()
+    return PrivateStore(
+        anchor / "eda" / "session-refresh-images",
+        anchor,
+        "refresh image ownership",
+        ImageLifecycleError,
+    )
+
+
+def _owned_prefix(project: Path) -> str:
+    return hashlib.sha256(str(project.resolve()).encode()).hexdigest() + "-"
+
+
+def record_owned_images(
+    project: Path,
+    transaction: str,
+    references: dict[str, str],
+    owned_ids: tuple[str, ...],
+) -> None:
+    """Persist exact acquisition proof before releasing any candidate reference."""
+    if any(not is_local_image_id(image) for image in (*references.values(), *owned_ids)):
+        raise ImageLifecycleError("image ownership requires exact immutable IDs")
+    if not re.fullmatch(r"[a-zA-Z0-9-]+", transaction):
+        raise ImageLifecycleError("invalid image ownership transaction")
+    store = _owned_store()
+    store.ensure_directory()
+    name = _owned_prefix(project) + transaction + ".json"
+    previous_refs: dict[str, str] = {}
+    previous_ids: list[str] = []
+    if (store.root / name).exists():
+        old = _read_owned_record(store, name)
+        previous_refs = old[1]
+        previous_ids = list(old[2])
+    store.atomic_write_text(
+        name,
+        json.dumps(
+            {
+                "version": 1,
+                "project_root": str(project.resolve()),
+                "transaction": transaction,
+                "references": {**previous_refs, **references},
+                "owned_ids": list(dict.fromkeys([*previous_ids, *owned_ids])),
+            },
+            sort_keys=True,
+        )
+        + "\n",
+    )
+
+
+def _read_owned_record(
+    store: PrivateStore, name: str
+) -> tuple[Path, dict[str, str], tuple[str, ...]]:
+    try:
+        raw = require_dict(store.read_json(name), field="refresh image record")
+        if (
+            set(raw) != {"version", "project_root", "transaction", "references", "owned_ids"}
+            or require_int(raw["version"], field="refresh image record version") != 1
         ):
-            docker.remove_tag(image.reference)
+            raise ImageLifecycleError("invalid refresh image record fields/version")
+        project = Path(require_str(raw, "project_root"))
+        transaction = require_str(raw, "transaction")
+        if (
+            not project.is_absolute()
+            or str(project.resolve()) != str(project)
+            or name != _owned_prefix(project) + transaction + ".json"
+        ):
+            raise ImageLifecycleError("invalid refresh image record identity")
+        refs = require_dict(raw["references"], field="owned image references")
+        ids = raw["owned_ids"]
+        if not is_str_list(ids) or any(
+            not isinstance(k, str) or not isinstance(v, str) for k, v in refs.items()
+        ):
+            raise ImageLifecycleError("invalid refresh image ownership proof")
+        if any(not is_local_image_id(image) for image in (*refs.values(), *ids)):
+            raise ImageLifecycleError("image ownership requires exact immutable IDs")
+        return project, dict(refs), tuple(ids)
+    except (BoundaryError, OSError, ValueError) as exc:
+        raise ImageLifecycleError(f"cannot read refresh image ownership: {exc}") from exc
+
+
+def _owned_image_blocker(image: str, docker: DockerPort) -> str:
+    if any(row.image_id == image for row in docker.image_references()):
+        return "tag/keeper"
+    if docker.repo_digests(image):
+        return "registry digest"
+    if image in docker.container_image_ids():
+        return "container"
+    layers = docker.image_layers(image)
+    for other in docker.image_ids() - {image}:
+        other_layers = docker.image_layers(other)
+        if layers and other_layers[: len(layers)] == layers:
+            return "child"
+    return ""
+
+
+def cleanup_owned_images(
+    project: Path | None = None, *, docker: DockerPort | None = None
+) -> tuple[str, ...]:
+    """Retry only proven records; in-use image bytes never block runtime recovery."""
+    store = _owned_store()
+    if not store.validate_existing_directory():
+        return ()
+    adapter = docker or _docker_adapter()
+    retained = []
+    for path in sorted(store.root.glob("*.json")):
+        if project is not None and not path.name.startswith(_owned_prefix(project)):
+            continue
+        root, refs, owned = _read_owned_record(store, path.name)
+        remaining = []
+        for image in reversed(owned):
+            if image not in adapter.image_ids():
+                continue
+            reason = _owned_image_blocker(image, adapter)
+            if reason:
+                remaining.append(image)
+                retained.append(f"{image}: retained ({reason})")
+                continue
+            try:
+                adapter.remove_tag(image)  # exact ID, non-force, --no-prune
+            except ImageLifecycleError as exc:
+                remaining.append(image)
+                retained.append(f"{image}: deferred ({exc})")
+        if remaining:
+            transaction = path.name.removeprefix(_owned_prefix(root)).removesuffix(".json")
+            store.atomic_write_text(
+                path.name,
+                json.dumps(
+                    {
+                        "version": 1,
+                        "project_root": str(root),
+                        "transaction": transaction,
+                        "references": refs,
+                        "owned_ids": list(reversed(remaining)),
+                    },
+                    sort_keys=True,
+                )
+                + "\n",
+            )
+        else:
+            path.unlink()
+    return tuple(retained)
+
+
+class _OwnedBuild:
+    """Track acquisition proof even when candidate verification later fails."""
+
+    def __init__(
+        self, project: Path, transaction: str, docker: DockerPort, builder: TransactionBuildPort
+    ) -> None:
+        self.references: dict[str, str] = {}
+        self.project, self.transaction, self.docker, self.builder = (
+            project,
+            transaction,
+            docker,
+            builder,
+        )
+
+    def record_reused_reference(self, reference: str, image_id: str) -> None:
+        """Own the staging alias while leaving preexisting image bytes unowned."""
+        self.references[reference] = image_id
+        record_owned_images(self.project, self.transaction, {reference: image_id}, ())
+
+    def prepare(
+        self, node: ImageNode, *, candidate_reference: str, parent_reference: str | None
+    ) -> str:
+        before = self.docker.image_ids()
+        built = candidate_reference
+        try:
+            built = self.builder.prepare(
+                node, candidate_reference=candidate_reference, parent_reference=parent_reference
+            )
+            return built
+        finally:
+            refs = {
+                ref: image
+                for ref in {candidate_reference, built}
+                if (ref == candidate_reference or _candidate_reference_is_transactional(ref))
+                and (image := self.docker.image_id(ref)) is not None
+            }
+            self.references.update(refs)
+            owned = tuple(image for image in refs.values() if image not in before)
+            record_owned_images(self.project, self.transaction, refs, owned)
 
 
 def _build_adapter(
@@ -1000,11 +1202,13 @@ def _planned_reason(
     return _node_ancestry_reason(node, docker)
 
 
-def _node_provenance_reason(node: ImageNode, docker: DockerPort) -> Diagnostic | None:
-    if docker.label(node.reference, LABEL_SCHEMA) != PROVENANCE_SCHEMA or docker.label(
-        node.reference, LABEL_ARTIFACT_ROLE
-    ) != (node.role.value if node.role else None):
+def _node_provenance_reason(node: ImageNode, docker: DockerPort) -> Diagnostic | None:  # noqa: PLR0911 -- ordered provenance mismatches
+    if docker.label(node.reference, LABEL_SCHEMA) != PROVENANCE_SCHEMA:
         return Diagnostic("legacy-migration", "artifact uses an older image topology")
+    if docker.label(node.reference, LABEL_ARTIFACT_ROLE) != (
+        node.role.value if node.role else None
+    ):
+        return Diagnostic("topology-changed", "selected image layer role changed")
     if docker.label(node.reference, LABEL_EFFECTIVE_INPUTS) != node.effective_inputs or any(
         docker.label(node.reference, name) != expected
         for name, expected in _image_contract_labels(node).items()
@@ -1325,13 +1529,21 @@ def prepare(
     )
     if current.input_snapshot != lifecycle_plan.input_snapshot:
         raise ImageLifecycleError("image inputs or Bootstrap base changed before preparation")
-    _discard_orphaned_candidates(resolved_docker)
+    _discard_orphaned_candidates(resolved_docker, lifecycle_plan.project_root)
     resolved_builder = builder or _transaction_build_adapter(
         lifecycle_plan.project_root,
         resolved_docker,
         verbose=verbose,
     )
-    return _prepare_graph(lifecycle_plan, uuid4().hex[:16], resolved_docker, resolved_builder)
+    transaction = uuid4().hex
+    tracked = _OwnedBuild(
+        lifecycle_plan.project_root, transaction, resolved_docker, resolved_builder
+    )
+    try:
+        return _prepare_graph(lifecycle_plan, transaction, resolved_docker, tracked)
+    except BaseException:
+        cleanup_owned_images(lifecycle_plan.project_root, docker=resolved_docker)
+        raise
 
 
 def _prepare_upstream(lifecycle_plan, transaction_id, resolved_docker, resolved_builder):
@@ -1354,15 +1566,33 @@ def _prepare_upstream(lifecycle_plan, transaction_id, resolved_docker, resolved_
             realized[node.reference] = acquired
             candidate_references.extend(candidates)
     except BaseException:
-        _discard_candidate_references(candidate_references, resolved_docker)
+        _discard_candidate_references(
+            candidate_references,
+            resolved_docker,
+            _candidate_expectations(resolved_builder, prepared),
+        )
         raise
     return prepared, realized, candidate_references
 
 
-def _discard_candidate_references(references, docker) -> None:
+def _discard_candidate_references(references, docker, expected) -> None:
+    releases = []
     for reference in references:
-        if docker.image_id(reference) is not None:
-            docker.remove_tag(reference)
+        actual = docker.image_id(reference)
+        if actual is None:
+            continue
+        if actual != expected.get(reference):
+            raise ImageLifecycleError("candidate reference changed before abort; preserved")
+        releases.append(reference)
+    for reference in releases:
+        docker.remove_tag(reference)
+
+
+def _candidate_expectations(builder, prepared=()) -> dict[str, str]:
+    expected = {image.candidate_reference: image.image_id for image in prepared}
+    if isinstance(builder, _OwnedBuild):
+        expected.update(builder.references)
+    return expected
 
 
 def _prepare_graph(lifecycle_plan, transaction_id, resolved_docker, resolved_builder):
@@ -1386,6 +1616,7 @@ def _prepare_graph(lifecycle_plan, transaction_id, resolved_docker, resolved_bui
             resolved_builder,
         )
         if layout_image is not None:
+            assert layout_prior is not None
             prepared.append(layout_image)
             candidate_references.extend(layout_candidates)
             prior_tags = (
@@ -1393,7 +1624,9 @@ def _prepare_graph(lifecycle_plan, transaction_id, resolved_docker, resolved_bui
                 layout_prior,
             )
     except BaseException:
-        _discard_candidate_references(candidate_references, resolved_docker)
+        _discard_candidate_references(
+            candidate_references, resolved_docker, _candidate_expectations(resolved_builder)
+        )
         raise
     return PreparedConvergence(
         lifecycle_plan,
@@ -1419,28 +1652,35 @@ def _prepare_node(
     if step.action is PlanAction.REUSE:
         source = step.source_reference or node.reference
         if node.role is ImageRole.EXTERNAL:
-            return PreparedImage(node.reference, source, docker.image_id(source), None), ()
+            identity = docker.image_id(source)
+            if identity is None:
+                raise ImageLifecycleError("selected external image disappeared before preparation")
+            return PreparedImage(node.reference, source, identity, None), ()
         verified = _verify_prepared_image(node, source, parent_artifact, docker)
         if source != node.reference:
             candidate = _candidate_reference(transaction_id, node)
             docker.tag(verified.image_id, candidate)
+            if isinstance(builder, _OwnedBuild):
+                builder.record_reused_reference(candidate, verified.image_id)
             return replace(verified, reference=node.reference, candidate_reference=candidate), (
                 candidate,
             )
         return replace(verified, reference=node.reference), ()
     candidate = _candidate_reference(transaction_id, node)
     candidates = [candidate]
+    expected: dict[str, str] = {}
     try:
         built = builder.prepare(
             node, candidate_reference=candidate, parent_reference=parent_reference
         )
         if built not in candidates and built != node.reference:
             candidates.append(built)
+        if identity := docker.image_id(built):
+            expected[built] = identity
         return _verify_prepared_image(node, built, parent_artifact, docker), tuple(candidates)
     except BaseException:
-        for reference in candidates:
-            if docker.image_id(reference) is not None:
-                docker.remove_tag(reference)
+        expected.update(_candidate_expectations(builder))
+        _discard_candidate_references(candidates, docker, expected)
         raise
 
 
@@ -1507,12 +1747,21 @@ def abort(
     """Discard transaction references without disturbing managed tags."""
     resolved_docker = docker or _docker_adapter()
     for image in prepared.candidates:
+        if image.candidate_reference == image.reference:
+            continue
+        actual = resolved_docker.image_id(image.candidate_reference)
+        if actual is not None and actual != image.image_id:
+            raise ImageLifecycleError("candidate tag changed before cleanup")
+    for image in prepared.candidates:
         if (
             image.candidate_reference.startswith("booley-lifecycle-")
             and image.candidate_reference != image.reference
             and resolved_docker.image_id(image.candidate_reference) is not None
         ):
+            if resolved_docker.image_id(image.candidate_reference) != image.image_id:
+                raise ImageLifecycleError("candidate tag changed before cleanup")
             resolved_docker.remove_tag(image.candidate_reference)
+    cleanup_owned_images(prepared.plan.project_root, docker=resolved_docker)
 
 
 def commit(
@@ -2237,6 +2486,22 @@ class _DockerCli:
             raise ImageLifecycleError(f"Docker returned malformed RepoDigests for {image!r}")
         return tuple(value for value in normalized if value is not None)
 
+    def image_ids(self) -> frozenset[str]:
+        try:
+            result = subprocess.run(
+                ["docker", "image", "ls", "--all", "--quiet", "--no-trunc"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise ImageLifecycleError(f"cannot inventory immutable image IDs: {exc}") from exc
+        ids = result.stdout.splitlines()
+        if result.returncode or any(not is_local_image_id(item) for item in ids):
+            raise ImageLifecycleError("cannot inventory immutable image IDs")
+        return frozenset(ids)
+
     def image_references(self) -> tuple[ImageReference, ...]:
         try:
             result = subprocess.run(
@@ -2434,6 +2699,7 @@ def _prepare_layout_child(
     node = _layout_node(original.project_root, upstream[-1], parent_image.image_id)
     reason = _planned_reason(node, docker, parent_invalid=False)
     action = PlanAction.BUILD if reason else PlanAction.REUSE
+    assert node.role is ImageRole.PROJECT_DATA_LAYOUT
     step = PlanStep(
         node.reference, node.role, action, reason or Diagnostic("current", "verified layout")
     )

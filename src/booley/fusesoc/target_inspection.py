@@ -113,7 +113,7 @@ def _inspect_inputs(
             )
             tags = tuple(item.get("tags") or ())
             canonical_path = fusesoc_registry.canonical_project_path(root, path)
-            if canonical_path in canonical_tb_paths and "tb" not in tags:
+            if canonical_path in canonical_tb_paths and not ({"tb", "rtl"} & set(tags)):
                 tags = (*tags, "tb")
             inputs.append(
                 TargetInput(

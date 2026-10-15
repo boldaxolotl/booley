@@ -149,6 +149,11 @@ def _old_policy_checkouts(tmp_path, paired):
         (root / ".gitignore").write_text("/.booley/\n")
     (root / "rtl").mkdir()
     (root / "rtl/top.sv").write_text("module top; endmodule\n")
+    (root / "design.core").write_text(
+        "CAPI=2:\nname: ::ignore_regression:0\nfilesets:\n"
+        "  rtl: {files: [rtl/top.sv], file_type: systemVerilogSource}\n"
+        "targets:\n  default: {filesets: [rtl], toplevel: top}\n"
+    )
     (directory / "booley.toml").write_text("[project]\nname='test'\n")
     old = PROJECT_GITIGNORE.replace("mcp-tool-reports/\n", "").replace("reviewer-state/\n", "")
     (directory / ".gitignore").write_text(old)
@@ -202,7 +207,6 @@ def test_reconciled_checkout_stays_clean_after_real_reviewer(tmp_path, monkeypat
     from booley.runtime.booley_dir import reset_cache
 
     reset_cache()
-    monkeypatch.setattr("booley.flows.review_scope._classify_files", lambda *_a: {"rtl"})
     result = ReviewerSpecialist().execute_cli(
         ["-C", str(selected_rtl), "--scope", "rtl/top.sv", "--category", "rtl", "--focus", "bugs"]
     )

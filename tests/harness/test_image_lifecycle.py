@@ -65,6 +65,9 @@ class FakeDocker:
     def repo_digests(self, image: str) -> tuple[str, ...]:
         return self.registry_identities.get(image, ())
 
+    def image_ids(self) -> frozenset[str]:
+        return frozenset(row[0] for row in self.images.values())
+
     def image_references(self) -> tuple[lifecycle.ImageReference, ...]:
         return tuple(
             lifecycle.ImageReference(reference, image_id)
@@ -661,8 +664,8 @@ def test_prepare_removes_orphaned_transaction_candidates(tmp_path: Path) -> None
 
     lifecycle._discard_orphaned_candidates(docker)
 
-    assert stale not in docker.images
-    assert docker.mutations == [("remove_tag", stale)]
+    assert stale in docker.images
+    assert docker.mutations == []
 
 
 def test_parent_artifact_kind_is_part_of_reuse_ancestry(
@@ -3319,7 +3322,7 @@ def test_orphaned_layout_parent_tag_is_transactional_and_removed(tmp_path):
     tag = "127.0.0.1:1/booley-lifecycle-" + "a" * 32 + "-layout-parent:candidate"
     docker = FakeDocker({tag: ("parent-id", {})})
     lifecycle._discard_orphaned_candidates(docker)
-    assert tag not in docker.images
+    assert tag in docker.images
 
 
 class _LegacyLayoutFixtureBuilder:
@@ -3420,8 +3423,8 @@ def test_layout_parent_cleanup_requires_safe_platform_process_proof(monkeypatch)
     monkeypatch.setattr("booley.runtime.pid.is_pid_alive", absent)
     docker = FakeDocker({tag: ("parent-id", {})})
     lifecycle._discard_orphaned_candidates(docker)
-    assert tag not in docker.images
-    assert calls == [123]
+    assert tag in docker.images
+    assert calls == []
 
 
 def test_init_reports_layout_probe_failure_without_traceback(tmp_path, monkeypatch):
@@ -3921,3 +3924,263 @@ def test_verified_source_context_preserves_builder_errors_and_cleanup(monkeypatc
         assert root == Path("verified-source")
         raise ValueError("builder failure")
     assert closed == [True]
+
+
+def test_owned_image_cleanup_preserves_foreign_references(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    docker = FakeDocker(
+        {"candidate": ("sha256:" + "a" * 64, {}), "foreign": ("sha256:" + "a" * 64, {})}
+    )
+    lifecycle.record_owned_images(
+        tmp_path, "transaction", {"candidate": "sha256:" + "a" * 64}, ("sha256:" + "a" * 64,)
+    )
+    docker.remove_tag("candidate")
+    assert lifecycle.cleanup_owned_images(tmp_path, docker=docker)
+    assert ("remove_tag", "sha256:" + "a" * 64) not in docker.mutations
+    docker.remove_tag("foreign")
+    docker.images["sha256:" + "a" * 64] = ("sha256:" + "a" * 64, {})
+    assert not lifecycle.cleanup_owned_images(tmp_path, docker=docker)
+    assert ("remove_tag", "sha256:" + "a" * 64) in docker.mutations
+
+
+def test_unknown_transaction_tags_are_never_orphan_ownership():
+    docker = FakeDocker({"booley-lifecycle-unknown:candidate": ("sha256:foreign", {})})
+    lifecycle._discard_orphaned_candidates(docker)
+    assert docker.mutations == []
+
+
+@pytest.mark.parametrize("consumer", ["alias", "keeper", "container", "child", "docker-conflict"])
+def test_owned_gc_defers_every_live_consumer(tmp_path, monkeypatch, consumer):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    image = "sha256:" + "a" * 64
+    child = "sha256:" + "b" * 64
+    docker = FakeDocker({image: (image, {})})
+    if consumer in {"alias", "keeper"}:
+        docker.images["foreign" if consumer == "alias" else "booley-issued-other:session"] = (
+            image,
+            {},
+        )
+    if consumer == "container":
+        docker.used_image_ids = frozenset({image})
+    if consumer == "child":
+        docker.images[child] = (child, {lifecycle.LABEL_PARENT_ARTIFACT: image})
+    if consumer == "docker-conflict":
+
+        def conflict(_identity):
+            raise lifecycle.ImageLifecycleError("image is being used by a running container")
+
+        monkeypatch.setattr(docker, "remove_tag", conflict)
+    lifecycle.record_owned_images(tmp_path, "transaction", {}, (image,))
+    assert lifecycle.cleanup_owned_images(tmp_path, docker=docker)
+    assert ("remove_tag", image) not in docker.mutations
+    assert (
+        lifecycle._owned_store()
+        .root.joinpath(lifecycle._owned_prefix(tmp_path) + "transaction.json")
+        .exists()
+    )
+
+
+def test_owned_gc_retries_record_in_fresh_process(tmp_path, monkeypatch):
+    import os
+    import sys
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    image = "sha256:" + "a" * 64
+    lifecycle.record_owned_images(tmp_path, "transaction", {}, (image,))
+    code = """
+from pathlib import Path
+from booley.runtime import image_lifecycle as lifecycle, session_refresh
+class Docker:
+    def image_ids(self): return frozenset({IMAGE})
+    def image_references(self): return ()
+    def repo_digests(self, image): return ()
+    def container_image_ids(self): return frozenset()
+    def image_layers(self, image): return (image,)
+    def remove_tag(self, image): print("deleted", image)
+assert session_refresh.pending_refresh_projects() == ()
+assert lifecycle.cleanup_owned_images(Path(PROJECT), docker=Docker()) == ()
+"""
+    code = "IMAGE=" + repr(image) + "\nPROJECT=" + repr(str(tmp_path)) + "\n" + code
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+        env={**os.environ, "PYTHONPATH": str(Path(__file__).parents[2] / "src")},
+    )
+    assert result.returncode == 0, result.stderr
+    assert "deleted " + image in result.stdout
+    assert list(lifecycle._owned_store().root.glob("*.json")) == []
+
+
+def test_candidate_identity_conflict_refuses_all_cleanup_before_mutation():
+    first, second = "sha256:" + "a" * 64, "sha256:" + "b" * 64
+    docker = FakeDocker({"ours": (first, {}), "reassigned": (second, {})})
+    with pytest.raises(lifecycle.ImageLifecycleError, match="changed before abort"):
+        lifecycle._discard_candidate_references(
+            ["ours", "reassigned"], docker, {"ours": first, "reassigned": first}
+        )
+    assert docker.mutations == []
+
+
+def test_cached_candidate_bytes_are_not_new_transaction_ownership(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    image = "sha256:" + "a" * 64
+    docker = FakeDocker({"preexisting": (image, {})})
+
+    class Cached:
+        def prepare(self, _node, *, candidate_reference, parent_reference):
+            docker.tag(image, candidate_reference)
+            return candidate_reference
+
+    builder = lifecycle._OwnedBuild(tmp_path, "transaction", docker, Cached())
+    reference = "booley-lifecycle-transaction:candidate"
+    builder.prepare(None, candidate_reference=reference, parent_reference=None)
+    _root, refs, owned = lifecycle._read_owned_record(
+        lifecycle._owned_store(), lifecycle._owned_prefix(tmp_path) + "transaction.json"
+    )
+    assert refs == {reference: image} and owned == ()
+    docker.remove_tag(reference)
+    assert lifecycle.cleanup_owned_images(tmp_path, docker=docker) == ()
+    assert ("remove_tag", image) not in docker.mutations
+
+
+@pytest.mark.parametrize(
+    "schema,expected",
+    [(lifecycle.PROVENANCE_SCHEMA, "topology-changed"), ("legacy", "legacy-migration")],
+)
+def test_manual_overlay_role_transition_is_not_legacy_schema_migration(schema, expected):
+    node = SimpleNamespace(reference="project", role=lifecycle.ImageRole.PROJECT_OVERLAY)
+    docker = FakeDocker(
+        {
+            "project": (
+                "sha256:prior",
+                {
+                    lifecycle.LABEL_SCHEMA: schema,
+                    lifecycle.LABEL_ARTIFACT_ROLE: lifecycle.ImageRole.WHEEL_OVERLAY.value,
+                },
+            )
+        }
+    )
+    assert lifecycle._node_provenance_reason(node, docker).code == expected
+
+
+@pytest.mark.parametrize("reassigned", [False, True])
+def test_recorded_orphan_cleanup_checks_identity_and_preserves_foreign_alias(
+    tmp_path, monkeypatch, reassigned
+):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    image, foreign = "sha256:" + "a" * 64, "sha256:" + "b" * 64
+    candidate = "booley-lifecycle-recorded:candidate"
+    docker = FakeDocker(
+        {candidate: (foreign if reassigned else image, {}), "foreign": (image, {})}
+    )
+    lifecycle.record_owned_images(tmp_path, "recorded", {candidate: image, "foreign": image}, ())
+    if reassigned:
+        with pytest.raises(lifecycle.ImageLifecycleError, match="changed before cleanup"):
+            lifecycle._discard_orphaned_candidates(docker, tmp_path)
+        assert docker.mutations == []
+    else:
+        lifecycle._discard_orphaned_candidates(docker, tmp_path)
+        assert docker.image_id(candidate) is None
+        assert docker.image_id("foreign") == image
+        assert docker.mutations == [("remove_tag", candidate)]
+
+
+@pytest.mark.parametrize(
+    "transaction,identity", [("../escape", "sha256:" + "a" * 64), ("valid", "sha256:short")]
+)
+def test_acquisition_proof_rejects_invalid_identity_before_persistence(
+    tmp_path, monkeypatch, transaction, identity
+):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    with pytest.raises(lifecycle.ImageLifecycleError):
+        lifecycle.record_owned_images(tmp_path, transaction, {}, (identity,))
+    assert not lifecycle._owned_store().root.exists()
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("version", 2),
+        ("project_root", "relative"),
+        ("transaction", "another"),
+        ("owned_ids", [123]),
+        ("references", {"candidate": 123}),
+        ("owned_ids", ["sha256:short"]),
+        ("references", []),
+    ],
+)
+def test_corrupt_ownership_record_cannot_authorize_deletion(tmp_path, monkeypatch, field, value):
+    import json
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    image = "sha256:" + "a" * 64
+    lifecycle.record_owned_images(tmp_path, "transaction", {}, (image,))
+    store = lifecycle._owned_store()
+    name = lifecycle._owned_prefix(tmp_path) + "transaction.json"
+    record = store.read_json(name)
+    record[field] = value
+    store.atomic_write_text(name, json.dumps(record))
+    docker = FakeDocker({image: (image, {})})
+    with pytest.raises(lifecycle.ImageLifecycleError):
+        lifecycle.cleanup_owned_images(tmp_path, docker=docker)
+    assert docker.mutations == []
+    assert (store.root / name).exists()
+
+
+def test_registry_digest_and_already_deleted_owned_images_are_safe(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    image, absent = "sha256:" + "a" * 64, "sha256:" + "b" * 64
+    docker = FakeDocker({image: (image, {})})
+    docker.registry_identities[image] = ("registry.example/image@sha256:" + "a" * 64,)
+    lifecycle.record_owned_images(tmp_path, "transaction", {}, (image, absent))
+    retained = lifecycle.cleanup_owned_images(tmp_path, docker=docker)
+    assert len(retained) == 1 and "registry digest" in retained[0]
+    assert docker.mutations == []
+    docker.registry_identities.clear()
+    assert lifecycle.cleanup_owned_images(tmp_path, docker=docker) == ()
+
+
+def test_failed_candidate_construction_releases_only_recorded_tags(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    root = _project(tmp_path)
+    docker = FakeDocker({})
+    _wire(monkeypatch, docker)
+    planned = lifecycle.plan(lifecycle.ProjectImageScope(root), docker=docker)
+    before = dict(docker.images)
+
+    class FailingBuilder(TransactionBuilder):
+        def prepare(self, node, *, candidate_reference, parent_reference):
+            super().prepare(
+                node, candidate_reference=candidate_reference, parent_reference=parent_reference
+            )
+            raise lifecycle.ImageLifecycleError("partial construction failed")
+
+    with pytest.raises(lifecycle.ImageLifecycleError, match="partial construction failed"):
+        lifecycle.prepare(planned, docker=docker, builder=FailingBuilder(docker))
+    assert docker.images == before
+    assert list(lifecycle._owned_store().root.glob("*.json")) == []
+
+
+@pytest.mark.parametrize("response", ["valid", "malformed", "failed", "timeout"])
+def test_docker_inventory_requires_complete_exact_id_evidence(monkeypatch, response):
+    image = "sha256:" + "a" * 64
+
+    def run(argv, **kwargs):
+        assert argv == ["docker", "image", "ls", "--all", "--quiet", "--no-trunc"]
+        assert kwargs["timeout"] == 30
+        if response == "timeout":
+            raise subprocess.TimeoutExpired(argv, 30)
+        return SimpleNamespace(
+            returncode=1 if response == "failed" else 0,
+            stdout=("short" if response == "malformed" else image) + "\n",
+        )
+
+    monkeypatch.setattr(lifecycle.subprocess, "run", run)
+    if response == "valid":
+        assert lifecycle._DockerCli().image_ids() == frozenset({image})
+    else:
+        with pytest.raises(lifecycle.ImageLifecycleError, match="cannot inventory"):
+            lifecycle._DockerCli().image_ids()
