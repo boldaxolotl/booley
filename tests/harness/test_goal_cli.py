@@ -366,6 +366,7 @@ def test_goal_project_selection_main_without_occupant(
     assert [store.load(mode.record.id) for mode in (goal_mode, other)] == before
 
 
+@pytest.mark.timeout(120)  # Windows CI: 33.9 s including fixtures; retain 3x headroom.
 def test_goal_status_project_selection_no_option(goal_mode, monkeypatch, capsys, selection_cli):  # noqa: F811 — shared fixture
     other = second_goal(goal_mode, monkeypatch)
     nested = goal_mode.worktree / "nested"
