@@ -555,5 +555,4 @@ def test_final_report_absent_verdict_is_null(tmp_path, target, keys):
     freeze(flow)
     report = json.loads(flow.write_report(outcome).read_text())
     assert "criterion_key" not in report and "criterion_met" not in report
-    assert "criterion_key" not in report and "criterion_met" not in report
     assert report["exit_code"] == 2

@@ -125,7 +125,9 @@ def test_normalized_module_selection_warns(goal_mode, monkeypatch, capsys, selec
     assert goal_mode.record.id in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("store_kind", ["foreign", "external", "ambiguous", "cached"])
+@pytest.mark.parametrize(
+    "store_kind", ["foreign", "corrupt-foreign", "external", "ambiguous", "cached"]
+)
 def test_store_selection_matches_actual_worktree(
     goal_mode, monkeypatch, capsys, tmp_path, store_kind
 ):
@@ -137,8 +139,14 @@ def test_store_selection_matches_actual_worktree(
     other = tmp_path / "other-store"
     other.mkdir()
     (other / "booley.toml").write_text("[project]\n")
-    if store_kind != "foreign":
+    if store_kind not in {"foreign", "corrupt-foreign"}:
         shutil.copytree(goal_mode.control / "goals", other / "goals")
+    if store_kind == "corrupt-foreign":
+        from booley.goals.paths import record_paths
+
+        broken = record_paths(other, goal_mode.record.id).record_file
+        broken.parent.mkdir(parents=True)
+        broken.write_text("broken")
     if store_kind in {"external", "cached"}:
         shutil.rmtree(goal_mode.control / "goals")
     monkeypatch.setenv("BOOLEY_DIR", str(other))
@@ -151,6 +159,9 @@ def test_store_selection_matches_actual_worktree(
     warn_cli_goal_recording(goal_mode.worktree)
     output = capsys.readouterr().err
     assert _snapshot(tmp_path) == before
+    if store_kind == "corrupt-foreign":
+        assert "Other Goal store advisory unavailable" in output
+        assert output.count("WARN:") == 1
     if store_kind == "ambiguous":
         assert "advisory unavailable" in output
         assert "several Booley Directories" in output
@@ -273,3 +284,29 @@ def test_git_checkout_without_goal_identity_is_silent(layout, capsys):
     warn_cli_goal_recording(layout.worktree)
     assert capsys.readouterr().err == ""
     assert _snapshot(layout.main) == before
+
+
+@pytest.mark.parametrize("failure", ["source-checkout", "git-timeout"])
+def test_advisory_boundary_failures_do_not_abort(goal_mode, monkeypatch, capsys, failure):
+    import subprocess
+
+    from booley.core.checkout_role import SourceCheckoutProjectError
+    from booley.flows import cli_goal_notice
+
+    error = (
+        SourceCheckoutProjectError("source checkout cannot be a Project")
+        if failure == "source-checkout"
+        else subprocess.TimeoutExpired("git", 30)
+    )
+
+    def fail(*_args):
+        raise error
+
+    boundary = (
+        "resolve_authoritative_booley_dir" if failure == "source-checkout" else "primary_checkout"
+    )
+    monkeypatch.setattr(cli_goal_notice, boundary, fail)
+    before = _snapshot(goal_mode.main)
+    cli_goal_notice.warn_cli_goal_recording(goal_mode.worktree)
+    assert "advisory unavailable" in capsys.readouterr().err
+    assert _snapshot(goal_mode.main) == before

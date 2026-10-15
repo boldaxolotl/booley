@@ -1406,3 +1406,12 @@ def external_acceptance_owner(monkeypatch):
         "_STANDALONE_SELECTION",
         flow_execution_selection.FlowExecutionSelection(None, lambda: recorder),
     )
+
+
+def test_direct_generic_completion_preserves_empty_criterion_fields():
+    from booley.flows.endpoint_events import _endpoint_end_event
+    from booley.runtime.endpoint_execution import EndpointOutcome
+
+    event = _endpoint_end_event("generic", None, EndpointOutcome(), 0.0)
+    assert event["criterion_key"] == ""
+    assert event["criterion_met"] is False
