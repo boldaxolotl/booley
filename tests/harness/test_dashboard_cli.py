@@ -69,6 +69,7 @@ def test_attach_rechecks_policy_before_launch_and_surfaces_bad_configuration(
 ):
     monkeypatch.setattr(command, "resolve_booley_dir", lambda _: tmp_path)
     monkeypatch.setattr(command, "attach_blocker", lambda *_: "")
+    monkeypatch.setattr(command, "_dashboard_is_open", lambda: False)
     launches = []
     monkeypatch.setattr(
         command, "run_dashboard", lambda root, **kw: launches.append((root, kw)) or 0

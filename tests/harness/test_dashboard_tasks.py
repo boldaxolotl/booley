@@ -69,9 +69,9 @@ def test_old_owned_automatic_task_migrates_without_losing_user_content(project, 
     with monkeypatch.context() as previous:
         previous.setattr(tasks, "TASK", old)
         tasks.reconcile(project.root, project.data)
-    original = project.file.read_text()
-    project.file.write_text(
-        original.replace('"version": "2.0.0"', '"version": "2.0.0", "user": 42')
+    original = project.file.read_bytes()
+    project.file.write_bytes(
+        original.replace(b'"version": "2.0.0"', b'"version": "2.0.0", "user": 42')
     )
     tasks.reconcile(project.root, project.data)
     document = Document(project.file.read_text()).root.value
