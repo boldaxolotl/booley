@@ -506,3 +506,61 @@ def test_json_decoder_recursion_failure_is_isolated(tmp_path, monkeypatch):
     labels, diagnostics = store.snapshot()
     assert labels == {} and "nested JSON" in diagnostics[0]
     assert store.path.read_bytes() == before
+
+
+def test_pre_reserved_process_handle_is_reused_by_registry(tmp_path, monkeypatch):
+    from booley.runtime.pid import ProcessIdentity
+    from booley.runtime.session_activity import process_session_key
+
+    reserve = getattr(handles, "reserve_session_handle", None)
+    assert callable(reserve), "public session handle reservation is required"
+    peer = ProcessIdentity(os.getpid() + 100000, "fixture", 101)
+    key = process_session_key(peer)
+    assert reserve(tmp_path, key) == "S1"
+    store = handles.HandleStore(tmp_path)
+    assert store.load().labels() == {key: "S1"}
+    registry = SessionRegistry(tmp_path)
+    assert registry.snapshot().rows == ()
+    assert reserve(tmp_path, key) == "S1"
+    monkeypatch.setattr(session_registry, "namespace", lambda *_: "fixture")
+    facts = session_registry.resolve_attribution(
+        tmp_path, metadata={}, client_name="claude-code", peer=peer
+    )
+    assert facts.kind == "process" and facts.key == key
+    registry.upsert(facts, "status", "completed", now=100)
+    registry.backfill_handles()
+    registry.upsert(facts, "status", "completed", now=101)
+    assert registry.snapshot().rows[0].attribution.key == key
+    assert store.load().labels() == {key: "S1"}
+    assert store.load().next_number == 2
+    assert (
+        reserve(tmp_path, process_session_key(ProcessIdentity(peer.pid + 1, "fixture", 102)))
+        == "S2"
+    )
+    assert store.load().next_number == 3
+
+
+def test_launch_reservation_preserves_corrupt_store(tmp_path):
+    store = handles.HandleStore(tmp_path)
+    store.root.mkdir(parents=True)
+    store.path.write_text("broken")
+    with pytest.raises(ValueError):
+        handles.reserve_session_handle(tmp_path, "pid:fixture:7:1")
+    assert store.path.read_text() == "broken"
+
+
+def test_launch_reservation_propagates_save_failure(tmp_path, monkeypatch):
+    def fail_save(*_args):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(handles, "atomic_replace_bytes", fail_save)
+    with pytest.raises(OSError, match="disk full"):
+        handles.reserve_session_handle(tmp_path, "pid:fixture:7:1")
+    assert not handles.HandleStore(tmp_path).path.exists()
+    assert SessionRegistry(tmp_path).snapshot().rows == ()
+
+
+def test_launch_reservation_uses_the_registry_writer_lock(tmp_path):
+    with handles.session_writer(tmp_path), pytest.raises(BlockingIOError):
+        handles.reserve_session_handle(tmp_path, "pid:fixture:7:1")
+    assert not handles.HandleStore(tmp_path).path.exists()
