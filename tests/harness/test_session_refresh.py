@@ -20,8 +20,10 @@ from booley.runtime.session_spec import SessionSpecSnapshot
 
 @pytest.fixture(autouse=True)
 def isolated_refresh_outputs(monkeypatch):
+    finalize = session_refresh.finalize_project
     monkeypatch.setattr(sr, "refresh_container_id", lambda _root: "container-new")
     monkeypatch.setattr(session_refresh, "finalize_project", lambda _root: None)
+    return finalize
 
 
 def _result() -> session_refresh.RefreshImage:
@@ -718,3 +720,74 @@ def test_unauthenticated_predecessor_requires_reseed_even_with_valid_stamp(tmp_p
         session_refresh._load_recovery_issuance(tmp_path, _snapshot(tmp_path))
     assert "booley init --seed" in str(caught.value)
     assert "booley session refresh" not in str(caught.value)
+
+
+@pytest.mark.parametrize("stealth", [False, True])
+def test_forward_finalization_uses_authorized_dashboard_source_and_exclusions(
+    tmp_path, monkeypatch, isolated_refresh_outputs, stealth
+):
+    from booley import commit_policy
+    from booley.runtime import dashboard_tasks
+    from booley.runtime import git as runtime_git
+
+    source = tmp_path / "authorized-data"
+    calls = []
+    monkeypatch.setattr(
+        session_refresh.runtime_spec, "authorized_project_data_source", lambda _root: source
+    )
+    monkeypatch.setattr(commit_policy, "stealth_enabled", lambda _root: stealth)
+    monkeypatch.setattr(
+        dashboard_tasks,
+        "reconcile",
+        lambda project, directory: calls.append(("dashboard", project, directory)),
+    )
+    monkeypatch.setattr(
+        runtime_git,
+        "add_git_excludes",
+        lambda project, patterns: calls.append(("excludes", project, patterns)),
+    )
+    isolated_refresh_outputs(tmp_path)
+    expected = (".devcontainer", ".claude", ".booley") if stealth else (".devcontainer", ".claude")
+    assert calls == [("dashboard", tmp_path, source), ("excludes", tmp_path, expected)]
+
+
+def test_ancillary_failure_after_verified_commit_keeps_forward_journal(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    journal = session_refresh._prepared_journal(
+        tmp_path, _snapshot(tmp_path), _issuance(tmp_path), _parked(tmp_path), _result()
+    )
+    journal = replace(
+        journal,
+        phase=session_refresh._RefreshPhase.VERIFIED,
+        direction=session_refresh._RecoveryDirection.COMMITTED_FORWARD,
+        replacement_issuance=_issuance(tmp_path, "sha256:fresh"),
+    )
+    session_refresh._write_journal(journal)
+    images = Mock(spec=session_refresh.RuntimeImageOperations)
+    images.finalize.side_effect = RuntimeError("tasks busy")
+    discard = Mock()
+    monkeypatch.setattr(sr, "discard_refresh_session", discard)
+    with pytest.raises(
+        sr.SessionError, match="replacement committed; final reconciliation is incomplete"
+    ) as caught:
+        session_refresh._finish_refresh(journal, _result(), images)
+    assert "rolled back" not in str(caught.value)
+    assert session_refresh._load_journal(tmp_path) == journal
+    discard.assert_called_once_with(journal.prior_runtime)
+    images.abort.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_image_gc_deferral_does_not_block_completed_runtime(
+    tmp_path, monkeypatch, caplog, failure
+):
+    from booley.runtime import image_lifecycle
+
+    def cleanup(_project):
+        if failure:
+            raise image_lifecycle.ImageLifecycleError("inventory unavailable")
+        return ("immutable image retained by another Project",)
+
+    monkeypatch.setattr(image_lifecycle, "cleanup_owned_images", cleanup)
+    session_refresh._cleanup_owned_images(tmp_path)
+    assert ("deferred" if failure else "retained by another Project") in caplog.text

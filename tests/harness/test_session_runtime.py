@@ -4311,3 +4311,18 @@ def test_inside_sandbox_remedy_requires_host_observation(tmp_path, monkeypatch):
     assert "on the host" in remedy
     assert "booley doctor" in remedy
     assert "booley session refresh" not in remedy
+
+
+@pytest.mark.parametrize(
+    "state,expected",
+    [(None, None), ({"Id": ""}, None), ({"Id": "immutable-container"}, "immutable-container")],
+)
+def test_refresh_identity_requires_verified_immutable_container(
+    tmp_path, monkeypatch, state, expected
+):
+    monkeypatch.setattr(sr, "_strict_refresh_container", lambda _name: state)
+    if expected is None:
+        with pytest.raises(sr.SessionError, match="immutable container identity"):
+            sr.refresh_container_id(tmp_path)
+    else:
+        assert sr.refresh_container_id(tmp_path) == expected
