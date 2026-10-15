@@ -84,3 +84,27 @@ class TestFailureExcerpt:
     def test_tail_trimmed_to_limit(self):
         run = CommandRun(argv=["x"], returncode=1, stderr="A" * 10000)
         assert len(run.failure_excerpt(limit=100)) == 100
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="requires Linux scratch guards")
+def test_real_command_child_observes_registered_workspace_guard():
+    from pathlib import Path
+
+    from booley.runtime.temporary_workspace import temporary_workspace
+
+    with temporary_workspace() as raw:
+        result = run_command(
+            [
+                PY,
+                "-c",
+                "import json, os, pathlib, sys; "
+                'marker=json.loads((pathlib.Path(sys.argv[1])/".booley-lease.json").read_text()); '
+                'assert any(state.get("supervisor", {}).get("pid") == os.getppid() '
+                'for state in marker["launches"].values()); print("guarded")',
+                raw,
+            ],
+            timeout=5,
+        )
+        assert result.ok, result.stderr
+        assert result.stdout == "guarded\n"
+    assert not Path(raw).exists()

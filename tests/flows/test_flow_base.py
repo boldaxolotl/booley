@@ -86,7 +86,16 @@ class TestBooleyFlowExecution:
                 return_value=McpToolResult(exit_code=EXIT_SUCCESS, report_text="ok"),
             ) as run,
         ):
-            exit_code = flow.main(["--target", "sim_core", "--work-dir", str(tmp_path)])
+            exit_code = flow.main(
+                [
+                    "--target",
+                    "sim_core",
+                    "--work-dir",
+                    str(tmp_path),
+                    "--report-dir",
+                    str(tmp_path / "reports"),
+                ]
+            )
 
         assert exit_code == EXIT_SUCCESS
         run.assert_called_once_with()
@@ -211,6 +220,10 @@ class TestResourceEvidence:
     def test_local_execution_relocates_python_and_pytest_caches(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        from booley.runtime.booley_dir import reset_cache
+
+        monkeypatch.setenv("BOOLEY_DIR", str(tmp_path))
+        reset_cache()
         helper = tmp_path / "custom_helper.py"
         helper.write_text("VALUE = 7\n", encoding="utf-8")
         nested = tmp_path / "test_custom.py"
@@ -556,3 +569,115 @@ def test_final_report_absent_verdict_is_null(tmp_path, target, keys):
     assert report["criterion_key"] == ""
     assert report["criterion_met"] is None
     assert report["exit_code"] == 2
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="requires Linux child ownership")
+def test_killed_flow_owner_retains_scratch_for_detached_eda_child(tmp_path, linux_subreaper):
+    import json
+    import subprocess
+
+    from booley.runtime import temporary_workspace as tw
+
+    ready, release, report = [tmp_path / name for name in ("ready", "release", "report")]
+    native = tmp_path / "fake-eda.py"
+    native.write_text(
+        "import json, os, pathlib, sys, time\n"
+        "ready, release = map(pathlib.Path, sys.argv[1:])\n"
+        "guardian = os.getppid()\n"
+        "if os.fork() == 0:\n"
+        "    os.setsid()\n"
+        "    ready.write_text(json.dumps([guardian, os.getpid()]))\n"
+        "    end = time.monotonic() + 15\n"
+        "    while not release.exists() and time.monotonic() < end: time.sleep(.01)\n"
+        "    os._exit(0)\n"
+    )
+    code = (
+        "import pathlib, sys\n"
+        "from booley.flows.base import BooleyFlow\n"
+        "from booley.runtime.temporary_workspace import temporary_workspace\n"
+        "class Flow(BooleyFlow):\n"
+        "    def _add_args(self, parser): pass\n"
+        "    def _get_cwd(self): return pathlib.Path(sys.argv[1])\n"
+        "    def _extra_subprocess_env(self): return {}\n"
+        "with temporary_workspace() as root:\n"
+        "    pathlib.Path(sys.argv[4]).write_text(root)\n"
+        "    Flow()._execute_local([sys.executable, sys.argv[2], sys.argv[3], sys.argv[5]], timeout=20)\n"
+    )
+    env = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[2] / "src")}
+    worker = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            code,
+            str(tmp_path),
+            str(native),
+            str(ready),
+            str(report),
+            str(release),
+        ],
+        env=env,
+    )
+    guardian = None
+
+    def wait(predicate, seconds=5):
+        end = time.monotonic() + seconds
+        while not predicate() and time.monotonic() < end:
+            time.sleep(0.01)
+        assert predicate()
+
+    try:
+        wait(lambda: ready.exists() and report.exists())
+        guardian, native_pid = json.loads(ready.read_text())
+        root = Path(report.read_text())
+        worker.kill()
+        worker.wait(timeout=10)
+        tw.sweep_stale_workspaces()
+        assert root.is_dir()
+        assert Path(f"/proc/{native_pid}").exists()
+        release.touch()
+        wait(
+            lambda: Path(f"/proc/{guardian}/stat").read_text().rsplit(")", 1)[1].split()[0] == "Z"
+        )
+        os.waitpid(guardian, 0)
+        guardian = None
+        tw.sweep_stale_workspaces()
+        assert not root.exists()
+        assert not Path(f"/proc/{native_pid}").exists()
+    finally:
+        release.touch()
+        if worker.poll() is None:
+            worker.kill()
+        worker.wait(timeout=10)
+        if guardian is not None:
+            wait(
+                lambda: (
+                    Path(f"/proc/{guardian}/stat").read_text().rsplit(")", 1)[1].split()[0] == "Z"
+                )
+            )
+            os.waitpid(guardian, 0)
+
+
+@pytest.fixture
+def linux_subreaper():
+    import ctypes
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    previous = ctypes.c_int()
+    assert libc.prctl(37, ctypes.byref(previous), 0, 0, 0) == 0
+    assert libc.prctl(36, 1, 0, 0, 0) == 0
+    try:
+        yield
+    finally:
+        assert libc.prctl(36, previous.value, 0, 0, 0) == 0
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="requires Linux scratch guards")
+def test_guarded_missing_eda_command_preserves_missing_result(tmp_path):
+    from booley.runtime.temporary_workspace import temporary_workspace
+
+    flow = EchoFlow()
+    flow.parse_args(["--target", "synthetic", "--work-dir", str(tmp_path)])
+    with temporary_workspace() as raw:
+        result = flow._execute_local([str(tmp_path / "missing-eda-command")], timeout=5)
+        assert result.returncode == -1
+    assert not Path(raw).exists()

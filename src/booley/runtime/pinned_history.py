@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import re
 import subprocess
-import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -13,6 +12,7 @@ from pathlib import Path, PurePosixPath
 from booley.runtime.git_environment import inherited_git_environment
 from booley.runtime.history_commit import FileCommitError
 from booley.runtime.publication_ownership import PublicationOwnership
+from booley.runtime.temporary_workspace import run_guarded, temporary_workspace
 
 
 @dataclass(frozen=True)
@@ -41,7 +41,7 @@ def raw_git(
     }
     environment.update(env or {})
     try:
-        result = subprocess.run(
+        result = run_guarded(
             ["git", *args],
             cwd=repository,
             env=environment,
@@ -167,7 +167,7 @@ def build_commit(repository: Path, parent: str, path: str, blob: str, message: s
 def publication_tree(repository: Path, parent: str, path: str, blob: str) -> str:
     """Build the literal single-path tree in a private index, preserving every pinned row."""
     _validate_path(path)
-    with tempfile.TemporaryDirectory(prefix="booley-pinned-history-") as scratch:
+    with temporary_workspace(prefix="booley-pinned-history-") as scratch:
         env = {"GIT_INDEX_FILE": str(Path(scratch) / "index")}
         raw_git(repository, "read-tree", parent, env=env)
         raw_git(
@@ -342,7 +342,7 @@ def synchronize_index(
     lock_identity = os.fstat(descriptor)
     handed_off = False
     try:
-        with os.fdopen(descriptor, "wb") as output, tempfile.TemporaryDirectory() as scratch:
+        with os.fdopen(descriptor, "wb") as output, temporary_workspace() as scratch:
             private = Path(scratch) / "index"
             if index.exists():
                 private.write_bytes(index.read_bytes())

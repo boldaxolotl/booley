@@ -152,14 +152,6 @@ def _private_codex_destination(tmp_path, monkeypatch, kind):
     from booley.runtime.agent_backend import AgentCallParams
     from booley.runtime.text_only_agent import prepare_codex_text_only
 
-    monkeypatch.setattr(cb, "_NESTED_HOMES", {})
-    monkeypatch.setattr(
-        cb,
-        "Path",
-        lambda value: (
-            tmp_path / Path(value).name if str(value).startswith("/tmp/codex-") else Path(value)
-        ),
-    )
     monkeypatch.setenv("HOME", str(tmp_path / "ambient"))
     if kind == "text-only":
         original = tmp_path / "original"
@@ -175,14 +167,18 @@ def _private_codex_destination(tmp_path, monkeypatch, kind):
 
         def create():
             _, env = prepare_codex_text_only(
-                ["codex", "exec", "-"], params, {"CODEX_HOME": str(original)}
+                ["codex", "exec", "-"],
+                params,
+                {"CODEX_HOME": str(original)},
+                private=tmp_path / "private-codex",
             )
             return Path(env["CODEX_HOME"])
     else:
-        writer = cb._ensure_nested_codex_home
 
         def create():
-            return Path(writer("test", ["lint"])) / ".codex"
+            destination = tmp_path / "private-codex"
+            cb._populate_private_codex_home(destination, {}, ["lint"])
+            return destination
 
     return create, create() / "config.toml"
 
@@ -194,7 +190,6 @@ def test_private_writer_invalid_or_incompatible_config_preserves_destination(
 ):
     import builtins
 
-    from booley.runtime import _codex_backend as cb
     from booley.runtime import mcp_config
 
     create, config = _private_codex_destination(tmp_path, monkeypatch, kind)
@@ -202,7 +197,6 @@ def test_private_writer_invalid_or_incompatible_config_preserves_destination(
     if failure == "nonbool":
         source = source.replace(b"warning=false", b'warning="invalid"')
     config.write_bytes(source)
-    cb._NESTED_HOMES.clear()
     mcp_config._codex_toml_parser.cache_clear()
     real_import = builtins.__import__
 

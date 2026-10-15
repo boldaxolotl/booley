@@ -9,7 +9,7 @@ let the sub-agent re-invoke its own parent (Specialist → MCP → Specialist �
 
 This module is the single source of truth for "which MCP tools does
 specialist X want its nested sub-agent to see?". The developer-side
-spawn path (``harness._codex_backend._ensure_nested_codex_home``) bakes
+spawn path (``harness._codex_backend._prepare_private_home``) bakes
 the allowlist into ``BOOLEY_NESTED_MCP_TOOLS`` env on the nested Codex
 config; the nested MCP server reads that env on startup and filters
 MCP-tool discovery accordingly.

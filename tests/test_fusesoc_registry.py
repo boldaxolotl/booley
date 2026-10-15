@@ -2792,3 +2792,36 @@ targets:
         setup_command_for_handle(handle, build_root=tmp_path / "build")
     assert isinstance(caught.value.__cause__, FuseSocError)
     assert isinstance(caught.value.__cause__.__cause__, SyntaxError)
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="requires Linux scratch guards")
+def test_real_fusesoc_setup_child_observes_registered_workspace_guard(tmp_path):
+    from booley.runtime.temporary_workspace import temporary_workspace
+
+    with temporary_workspace() as raw:
+        build = Path(raw) / "build"
+        build.mkdir()
+        edam = build / "synthetic.eda.yml"
+        edam.write_text("name: synthetic\ntoplevel: top\nfiles: []\nparameters: {}\n")
+        command = [
+            sys.executable,
+            "-c",
+            "import json, os, pathlib, sys; "
+            'marker=json.loads((pathlib.Path(sys.argv[1])/".booley-lease.json").read_text()); '
+            'assert any(state.get("supervisor", {}).get("pid") == os.getppid() '
+            'for state in marker["launches"].values())',
+            raw,
+        ]
+        result = fusesoc_registry._run_setup_command(
+            command,
+            project_root=tmp_path,
+            build_root=build,
+            target="synth",
+            vlnv="::synthetic:0",
+            source_ref=None,
+            fusesoc_cmd=command[:1],
+            env=None,
+            runner=subprocess.run,
+        )
+        assert result.toplevel == "top"
+    assert not Path(raw).exists()

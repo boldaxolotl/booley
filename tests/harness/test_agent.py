@@ -55,6 +55,7 @@ from booley.runtime.agent_backend import (
     _codex_parse_events,
     _codex_sandbox_mode,
 )
+from booley.runtime.temporary_workspace import LeaseLaunch
 
 
 def _assistant_message():
@@ -355,22 +356,25 @@ class TestCodexBackend:
         process.wait = AsyncMock(return_value=-9)
 
         async def force_timeout(awaitable, timeout):
-            assert timeout == 7200
-            awaitable.close()
-            raise TimeoutError
+            if timeout == 7200:
+                awaitable.close()
+                raise TimeoutError
+            assert timeout == 5
+            return await awaitable
 
         with (
             patch(
                 "booley.runtime._codex_backend._codex_spawn",
                 new_callable=AsyncMock,
-                return_value=(process, tmp_path),
+                return_value=(process, tmp_path, LeaseLaunch([], {}, (), "")),
             ),
             patch("booley.runtime._codex_backend.asyncio.wait_for", new=force_timeout),
             pytest.raises(AgentTimeoutError, match="7200s"),
         ):
             await _codex_run_subprocess([], params, full_prompt="task", on_event=None)
 
-        process.kill.assert_called_once_with()
+        process.terminate.assert_called_once_with()
+        process.kill.assert_not_called()
         process.wait.assert_awaited_once_with()
 
     @pytest.mark.asyncio
@@ -388,7 +392,7 @@ class TestCodexBackend:
         with patch(
             "booley.runtime._codex_backend._codex_spawn",
             new_callable=AsyncMock,
-            return_value=(process, tmp_path),
+            return_value=(process, tmp_path, LeaseLaunch([], {}, (), "")),
         ):
             task = asyncio.create_task(
                 _codex_run_subprocess([], params, full_prompt="task", on_event=None)
@@ -398,7 +402,8 @@ class TestCodexBackend:
             with pytest.raises(asyncio.CancelledError):
                 await task
 
-        process.kill.assert_called_once_with()
+        process.terminate.assert_called_once_with()
+        process.kill.assert_not_called()
         process.wait.assert_awaited()
 
     @pytest.mark.asyncio
@@ -838,3 +843,16 @@ class TestCallAgent:
         assert len(lines) >= 2
         data = json.loads(lines[-1])
         assert data["content"][0]["text"] == "working on it"
+
+
+@pytest.mark.asyncio
+async def test_codex_guardian_shutdown_escalates_and_reaps():
+    from booley.runtime._codex_backend import _terminate_process
+
+    process = MagicMock()
+    process.returncode = None
+    process.wait = AsyncMock(side_effect=[TimeoutError, -9])
+    await _terminate_process(process)
+    process.terminate.assert_called_once_with()
+    process.kill.assert_called_once_with()
+    assert process.wait.await_count == 2

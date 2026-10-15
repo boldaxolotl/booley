@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import importlib
 import os
 import shutil
 import sys
 import tempfile
 from collections.abc import Generator, Iterator
-from contextlib import ExitStack
+from contextlib import ExitStack, suppress
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
@@ -19,6 +20,27 @@ _SOURCE_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_SOURCE_ROOT / "src"))
 
 pytest_plugins = ["tests.timeout_evidence", "tests.timeout_headroom"]
+
+# Prefer the installed SDK for native-transport contracts. The harness's optional
+# lightweight fallback is still available when the SDK is absent.
+with suppress(ImportError):
+    importlib.import_module("claude_agent_sdk")
+
+
+@pytest.fixture(autouse=True)
+def isolated_scratch_registry(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
+    """Runtime startup/allocation hooks must never inspect a developer's scratch."""
+    namespace = tmp_path_factory.mktemp("synthetic-agent-state")
+    home = namespace / "home"
+    home.mkdir()
+    # Tests may call their own monkeypatch.undo() mid-body. This independent
+    # lifetime must continue protecting startup hooks and auth-source lookups.
+    with pytest.MonkeyPatch.context() as isolated:
+        isolated.setenv("HOME", str(home))
+        isolated.setenv("USERPROFILE", str(home))
+        isolated.delenv("CODEX_HOME", raising=False)
+        isolated.setenv("BOOLEY_SCRATCH_ROOT", str(namespace / "owned-scratch-registry"))
+        yield
 
 
 @pytest.fixture

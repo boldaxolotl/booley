@@ -6,7 +6,6 @@ import hashlib
 import os
 import shutil
 import subprocess
-import tempfile
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
@@ -30,6 +29,7 @@ from booley.runtime.docker_capacity import (
 )
 from booley.runtime.image_build_contracts import source_image_build_contracts
 from booley.runtime.paths import docker_data_dir
+from booley.runtime.temporary_workspace import temporary_workspace
 from booley.runtime.version_attribution import VersionOrigin
 
 if TYPE_CHECKING:
@@ -283,7 +283,7 @@ class _IncrementalBuildAdapter:
         tag = f"127.0.0.1:1/booley-lifecycle-{os.getpid()}-{uuid4().hex}-layout-parent:candidate"
         self.docker.tag(parent_id, tag)
         try:
-            with tempfile.TemporaryDirectory(prefix="booley-layout-context-") as directory:
+            with temporary_workspace(prefix="booley-layout-context-") as directory:
                 if self.docker.image_id(tag) != parent_id:
                     raise ImageLifecycleError(
                         "Booley Directory layout parent tag changed before build"
@@ -445,7 +445,7 @@ class _IncrementalBuildAdapter:
         if not node.generated_files:
             yield node.recipe, build_context
             return
-        with tempfile.TemporaryDirectory(prefix="booley-project-build-") as directory:
+        with temporary_workspace(prefix="booley-project-build-") as directory:
             context = Path(directory) / "context"
             if build_context.is_dir():
                 shutil.copytree(build_context, context, symlinks=True)

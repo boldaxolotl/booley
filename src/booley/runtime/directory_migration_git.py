@@ -5,20 +5,19 @@ from __future__ import annotations
 import base64
 import os
 import stat
-import subprocess
-import tempfile
 from pathlib import Path
 from typing import Any
 
 from booley.core.booley_layout import BooleyLayoutError, git_common_directory
 from booley.runtime.safe_storage import refuse_symlinks
+from booley.runtime.temporary_workspace import run_guarded, temporary_workspace
 from booley.runtime.worktrees import list_worktrees
 
 
 def git(root: Path, *args: str) -> str:
     """Run bounded, observational Git without index refresh or lazy fetch."""
     env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_NO_LAZY_FETCH": "1"}
-    result = subprocess.run(
+    result = run_guarded(
         ["git", "-C", str(root), *args],
         capture_output=True,
         text=True,
@@ -53,7 +52,7 @@ def primary_checkout(repository: Path) -> Path:
     candidate = Path(raw.removeprefix("worktree ")).resolve()
     if git_common_directory(candidate) == common:
         return candidate
-    configured = subprocess.run(
+    configured = run_guarded(
         ["git", "--git-dir", str(common), "config", "--get", "core.worktree"],
         capture_output=True,
         text=True,
@@ -173,7 +172,7 @@ def _config_edits(
         config = admin / name
         if not config.is_file():
             continue
-        with tempfile.TemporaryDirectory(prefix="booley-migration-config-") as temporary:
+        with temporary_workspace(prefix="booley-migration-config-") as temporary:
             draft = Path(temporary) / "config"
             draft.write_bytes(config.read_bytes())
             for key, relative_base in (("core.worktree", admin), ("core.hooksPath", checkout)):
@@ -187,7 +186,7 @@ def _config_edits(
 def _map_config(
     config: Path, draft: Path, key: str, base: Path, moves: list[dict[str, Any]]
 ) -> None:
-    result = subprocess.run(
+    result = run_guarded(
         ["git", "config", "--file", str(config), "--get", key],
         capture_output=True,
         text=True,

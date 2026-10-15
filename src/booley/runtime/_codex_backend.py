@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import copy
 import json
 import logging
@@ -47,6 +48,33 @@ from .agent_errors import (
     is_usage_limit,
 )
 from .prompt_artifacts import adjacent_artifact_paths, write_prompt_artifacts
+from .temporary_workspace import (
+    LeaseLaunch,
+    launch_failed,
+    launch_finished,
+    prepare_launch,
+    registry_root,
+    temporary_workspace,
+    validate_native_command,
+)
+
+_PRIVATE_HOME = contextvars.ContextVar("booley_private_codex_home", default=None)
+
+
+@contextlib.contextmanager
+def _invocation_home():
+    current = _PRIVATE_HOME.get()
+    if current is not None:
+        yield current
+        return
+    with temporary_workspace(prefix="codex-home-", kind="codex-home") as raw:
+        home = Path(raw)
+        token = _PRIVATE_HOME.set(home)
+        try:
+            yield home
+        finally:
+            _PRIVATE_HOME.reset(token)
+
 
 logger = logging.getLogger(__name__)
 
@@ -309,7 +337,20 @@ class CodexBackend:
         transcript_path: Path | None,
         on_event: Any = None,
     ) -> AgentResult:
-        """Single Codex CLI invocation."""
+        """Single Codex CLI invocation, including preparation and result cleanup."""
+        with _invocation_home():
+            return await self._call_in_home(
+                params, full_prompt=full_prompt, transcript_path=transcript_path, on_event=on_event
+            )
+
+    async def _call_in_home(
+        self,
+        params: AgentCallParams,
+        *,
+        full_prompt: str,
+        transcript_path: Path | None,
+        on_event: Any = None,
+    ) -> AgentResult:
         source = transcript_path_for_label(transcript_path, params.label)
         paths = (params.artifact_paths or adjacent_artifact_paths)(source)
         transcript_path, cmd, schema_file = self._prepare_call(
@@ -441,7 +482,7 @@ def _codex_build_cmd(
     if output_format is not None:
         patched = _codex_ensure_additional_properties(output_format)
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".json", delete=False, encoding="utf-8"
+            mode="w", suffix=".json", delete=False, encoding="utf-8", dir=_PRIVATE_HOME.get()
         ) as sf:
             json.dump(patched, sf)
             schema_file = sf
@@ -462,141 +503,109 @@ def _codex_thread_id(events: list[dict[str, Any]]) -> str | None:
     return None
 
 
-_NESTED_HOMES: dict[str, str] = {}
-
-
-def _ticket_home_scope() -> str:
-    """Return a filesystem-safe namespace unique to this ticket run."""
-    import hashlib
-    import os
-
-    slug = os.environ.get("BOOLEY_SLUG", "").strip() or "ticket"
-    identity = f"{slug}-pid-{os.getpid()}"
-    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in identity)[:32]
-    digest = hashlib.sha1(identity.encode("utf-8")).hexdigest()[:8]
-    return f"{safe or 'ticket'}-{digest}"
+def _canonical_codex_home(environment: dict[str, str]) -> Path:
+    return Path(
+        environment.get("CODEX_HOME") or Path(environment.get("HOME", str(Path.home()))) / ".codex"
+    ).absolute()
 
 
 def _populate_private_codex_home(
-    codex_dir: Path, booley_env: dict[str, str], enabled_mcp_tools: list[str] | None = None
+    codex_dir: Path,
+    booley_env: dict[str, str],
+    enabled_mcp_tools: list[str] | None = None,
+    *,
+    canonical: Path | None = None,
 ) -> None:
-    """Regenerate one destination config and copy the existing native credential."""
+    """Generate private capabilities and link only the canonical native auth file."""
     from .mcp_config import generate_codex_config
 
+    original = canonical or _canonical_codex_home(dict(os.environ))
+    codex_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     config_path = codex_dir / "config.toml"
-    existing = config_path.read_text(encoding="utf-8") if config_path.exists() else None
-    config_path.write_text(
-        generate_codex_config(
-            enabled_mcp_tools=enabled_mcp_tools, extra_env=booley_env, existing_config=existing
-        ),
-        encoding="utf-8",
+    source_config = config_path if config_path.exists() else original / "config.toml"
+    existing = source_config.read_text(encoding="utf-8") if source_config.exists() else None
+    config = generate_codex_config(
+        enabled_mcp_tools=enabled_mcp_tools, extra_env=booley_env, existing_config=existing
     )
-    original_auth = Path(os.environ.get("HOME", "/home/agent")) / ".codex" / "auth.json"
-    if original_auth.exists():
-        shutil.copy2(original_auth, codex_dir / "auth.json")
+    auth = original / "auth.json"
+    if auth.is_file():
+        private_auth = codex_dir / "auth.json"
+        if private_auth.is_symlink() or private_auth.exists():
+            private_auth.unlink()
+        private_auth.symlink_to(auth)
+        config = 'cli_auth_credentials_store = "file"\n' + config
+    config_path.write_text(config, encoding="utf-8")
 
 
-def _ensure_nested_codex_home(
-    parent_label: str,
-    allowed_mcp_tools: list[str] | None,
-    extra_env: dict[str, str] | None = None,
-) -> str:
-    """Create a cached private home exposing only the nested agent's MCP allowlist.
-
-    Developer homes expose Specialists; allowing a Specialist to inherit that
-    configuration can recursively spawn itself. Each caller declares its safe
-    Flow allowlist. Empty/None lists expose no MCP tools. The cache identity is
-    the ticket scope, allowlist and explicitly scoped environment; a cache hit
-    leaves the existing config untouched.
-    """
-    import hashlib
-    import os
-
-    allowlist = list(allowed_mcp_tools or [])
-    # Deterministic cache key from the allowlist content. Empty -> "_none".
-    allowlist_str = ",".join(sorted(allowlist))
-    ticket_scope = _ticket_home_scope()
-    env_str = json.dumps(extra_env or {}, sort_keys=True, separators=(",", ":"))
-    cache_key = f"{ticket_scope}:{allowlist_str or '_none'}:{env_str}"
-    cached = _NESTED_HOMES.get(cache_key)
-    if cached is not None:
-        return cached
-
-    # Dir name: short hash of the cache key, plus a hint of the parent_label
-    # for easier debugging when poking around /tmp.
-    digest = hashlib.sha1(cache_key.encode("utf-8")).hexdigest()[:8]
-    safe_label = "".join(c if c.isalnum() or c in "-_" else "_" for c in (parent_label or "anon"))[
-        :40
-    ]
-    nested = Path(f"/tmp/codex-nested-home-{ticket_scope}-{safe_label}-{digest}")
-    codex_dir = nested / ".codex"
-    codex_dir.mkdir(parents=True, exist_ok=True)
-
-    # Forward all BOOLEY_* env so MCP-spawned MCP endpoint subprocesses (run_sim_batch,
-    # bwave, etc.) can locate the project, logs dir, and ticket slug. Codex
-    # *replaces* the MCP process env when [env] is present, so we have to
-    # enumerate everything the child needs.
-    booley_env = {k: v for k, v in os.environ.items() if k.startswith("BOOLEY_")}
-    booley_env.update(extra_env or {})
-    booley_env["BOOLEY_NESTED_AGENT"] = "1"
-    booley_env["BOOLEY_NESTED_MCP_TOOLS"] = ",".join(allowlist)
-
-    _populate_private_codex_home(codex_dir, booley_env)
-
-    _NESTED_HOMES[cache_key] = str(nested)
-    return _NESTED_HOMES[cache_key]
+def _prepare_private_home(params: AgentCallParams, home: Path) -> dict[str, str]:
+    environment = dict(os.environ)
+    canonical = _canonical_codex_home(environment)
+    private = home / ".codex"
+    allowlist = list(params.nested_mcp_tools or [])
+    booley_env = {key: value for key, value in environment.items() if key.startswith("BOOLEY_")}
+    booley_env.update(params.nested_mcp_env or {})
+    booley_env.update(
+        BOOLEY_NESTED_AGENT="1",
+        BOOLEY_NESTED_MCP_TOOLS=",".join(allowlist),
+        BOOLEY_SCRATCH_ROOT=str(registry_root()),
+    )
+    _populate_private_codex_home(private, booley_env, allowlist, canonical=canonical)
+    for name in ("models_cache.json", "version.json"):
+        if (canonical / name).is_file():
+            shutil.copy2(canonical / name, private / name)
+    if params.session_state_dir is not None:
+        params.session_state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        (private / "sessions").symlink_to(
+            params.session_state_dir.absolute(), target_is_directory=True
+        )
+    return {**environment, "HOME": str(home), "CODEX_HOME": str(private)}
 
 
 async def _codex_spawn(
     cmd: list[str],
     params: AgentCallParams,
     auth_mode: str = "auto",
-) -> tuple[asyncio.subprocess.Process, Path]:
+) -> tuple[asyncio.subprocess.Process, Path, LeaseLaunch]:
     """Spawn the codex subprocess with piped I/O.
 
     Inside a container, a private HOME exposes the recursion-safe MCP tools
     in ``params.nested_mcp_tools`` and carries the scoped MCP environment.
     An unlabeled caller uses "_anonymous" with an empty allowlist.
     """
-    env = None
-    if _inside_container() and not params.text_only:
-        env = dict(os.environ)
-        env["HOME"] = _ensure_nested_codex_home(
-            params.label or "_anonymous",
-            params.nested_mcp_tools,
-            params.nested_mcp_env,
-        )
-
-    if auth_mode == "subscription":
-        # [agent] auth = "subscription": drop the API key so Codex bills the
-        # auth.json login instead of the key. Host-side the env is otherwise
-        # inherited, so the scrub forces an explicit copy.
-        env = dict(os.environ) if env is None else env
-        env.pop("OPENAI_API_KEY", None)
-
+    home = _PRIVATE_HOME.get()
+    assert home is not None
+    env = _prepare_private_home(params, home)
     if params.text_only:
         from .text_only_agent import prepare_codex_text_only
 
-        cmd, env = prepare_codex_text_only(cmd, params, dict(os.environ))
-        if auth_mode == "subscription":
-            env.pop("OPENAI_API_KEY", None)
-
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        limit=16 * 1024 * 1024,
-        cwd=str(Path(params.cwd).resolve()),
-        env=env,
-    )
+        cmd, env = prepare_codex_text_only(cmd, params, dict(os.environ), private=home / ".codex")
+        env["HOME"] = str(home)
+    if auth_mode == "subscription":
+        env.pop("OPENAI_API_KEY", None)
+    launch = prepare_launch(cmd, params.workspace_guard_fds)
+    try:
+        if launch.roots:
+            validate_native_command(cmd, {"cwd": params.cwd, "env": env})
+        proc = await asyncio.create_subprocess_exec(
+            *launch.command,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            limit=16 * 1024 * 1024,
+            cwd=str(Path(params.cwd).resolve()),
+            env=env,
+            **launch.kwargs,
+        )
+    except OSError:
+        launch_failed(launch)
+        raise
     codex_home = (env or os.environ).get("CODEX_HOME")
     if codex_home:
         session_root = Path(codex_home) / "sessions"
     else:
         home = (env or os.environ).get("HOME", str(Path.home()))
         session_root = Path(home) / ".codex" / "sessions"
-    return proc, session_root
+    return proc, session_root, launch
 
 
 async def _codex_run_subprocess(
@@ -607,8 +616,22 @@ async def _codex_run_subprocess(
     on_event: Any,
     auth_mode: str = "auto",
 ) -> tuple[str, str, int]:
-    """Spawn codex exec, stream I/O, return (stdout, stderr, returncode)."""
-    proc, session_root = await _codex_spawn(cmd, params, auth_mode)
+    """Spawn codex exec, stream I/O, and release each invocation's private home."""
+    with _invocation_home():
+        return await _codex_run_in_home(
+            cmd, params, full_prompt=full_prompt, on_event=on_event, auth_mode=auth_mode
+        )
+
+
+async def _codex_run_in_home(
+    cmd: list[str],
+    params: AgentCallParams,
+    *,
+    full_prompt: str,
+    on_event: Any,
+    auth_mode: str = "auto",
+) -> tuple[str, str, int]:
+    proc, session_root, launch = await _codex_spawn(cmd, params, auth_mode)
     stdout_buf = bytearray()
     stderr_buf = bytearray()
     live_usage = CodexLiveUsage(params.model, on_event, session_root)
@@ -639,11 +662,14 @@ async def _codex_run_subprocess(
             with contextlib.suppress(asyncio.CancelledError):
                 await stderr_task
 
-    await _run_codex_work(
-        _stream_and_drain(),
-        proc,
-        timeout_seconds=params.timeout_seconds,
-    )
+    try:
+        await _run_codex_work(
+            _stream_and_drain(),
+            proc,
+            timeout_seconds=params.timeout_seconds,
+        )
+    finally:
+        launch_finished(launch)
 
     return (
         bytes(stdout_buf).decode("utf-8", errors="replace"),
@@ -655,8 +681,12 @@ async def _codex_run_subprocess(
 async def _terminate_process(proc: asyncio.subprocess.Process) -> None:
     """Kill a backend process and wait for its resources to be reaped."""
     if proc.returncode is None:
+        proc.terminate()
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=5)
+    except TimeoutError:
         proc.kill()
-    await proc.wait()
+        await asyncio.wait_for(proc.wait(), timeout=1)
 
 
 async def _run_codex_work(
@@ -671,8 +701,9 @@ async def _run_codex_work(
     except TimeoutError as err:
         await _terminate_process(proc)
         raise AgentTimeoutError(f"Codex timed out after {timeout_seconds}s") from err
-    except asyncio.CancelledError:
-        await _terminate_process(proc)
+    except BaseException:
+        cleanup = asyncio.create_task(_terminate_process(proc))
+        await asyncio.shield(cleanup)
         raise
 
 

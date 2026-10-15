@@ -6,7 +6,6 @@ import hashlib
 import os
 import stat
 import subprocess
-import tempfile
 from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -24,6 +23,7 @@ from booley.runtime.git_attributes_policy import (
 )
 from booley.runtime.history_commit import FileCommitError
 from booley.runtime.pinned_history import raw_git, tree_rows
+from booley.runtime.temporary_workspace import temporary_workspace
 
 AMBIENT_ATTRIBUTES_ERROR = (
     "unsupported ambient input attributes; Finish accepts Booley's managed info/attributes "
@@ -64,7 +64,7 @@ def shadow_repository(
     repository: Path, info_attributes: bytes
 ) -> Generator[tuple[Path, dict[str, str]]]:
     """Object-only scratch repository with only the explicitly captured local policy."""
-    with tempfile.TemporaryDirectory(prefix="booley-pinned-bytes-") as scratch:
+    with temporary_workspace(prefix="booley-pinned-bytes-") as scratch:
         shadow, template = Path(scratch) / "repository", Path(scratch) / "template"
         template.mkdir()
         algorithm = (

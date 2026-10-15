@@ -5,7 +5,6 @@ from __future__ import annotations
 import copy
 import hashlib
 import os
-import tempfile
 from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
@@ -53,6 +52,7 @@ from booley.runtime.project_repositories import (
     paired_project_repository,
     parse_porcelain_z,
 )
+from booley.runtime.temporary_workspace import temporary_workspace
 from booley.targets.catalog import TargetCatalog
 from booley.targets.declared_inputs import HDL_SUFFIXES
 
@@ -361,7 +361,7 @@ def committed_view(
     selection: InputSelection, record: GoalRecord, *, control_project: Path, baseline: bool = False
 ) -> Generator[CommittedView]:
     """One pinned view for freshness, semantic diff and package; no ambient fallback."""
-    with tempfile.TemporaryDirectory(prefix="booley-goal-inputs-") as scratch:
+    with temporary_workspace(prefix="booley-goal-inputs-") as scratch:
         root = Path(scratch) / "rtl"
         snapshot = (
             None

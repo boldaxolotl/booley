@@ -47,6 +47,8 @@ class AgentCallParams:
     reasoning_effort: str | None = None
     session_id: str | None = None
     resume_session: bool = False
+    workspace_guard_fds: tuple[int, ...] = ()
+    session_state_dir: Path | None = None
 
     # Names of sub-agent capability calls whose ``input`` dicts should be captured
     # and surfaced on ``AgentResult.captured_agent_capability_calls``. Used when a

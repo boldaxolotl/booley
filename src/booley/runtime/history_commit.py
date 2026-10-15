@@ -33,9 +33,10 @@ from __future__ import annotations
 
 import os
 import subprocess
-import tempfile
 from collections.abc import Callable
 from pathlib import Path
+
+from booley.runtime.temporary_workspace import run_guarded, temporary_workspace
 
 # A branch that moves under us this many times in one call is left for the
 # caller to retry later rather than retried forever.
@@ -81,7 +82,7 @@ def git(
 ) -> subprocess.CompletedProcess[str]:
     """Run ``git`` in *repository*; raise :class:`FileCommitError` if it cannot run."""
     try:
-        return subprocess.run(
+        return run_guarded(
             ["git", *args],
             cwd=repository,
             capture_output=True,
@@ -143,7 +144,7 @@ def _index_blob(repository: Path, path: str) -> str | None:
 
 def build_commit(repository: Path, parent: str | None, path: str, blob: str, message: str) -> str:
     """Return a commit of *parent*'s tree plus *blob* at *path*, via a private index."""
-    with tempfile.TemporaryDirectory(prefix="booley-history-") as scratch:
+    with temporary_workspace(prefix="booley-history-") as scratch:
         env = {**os.environ, "GIT_INDEX_FILE": str(Path(scratch) / "index")}
         if parent is None:
             require_git(repository, "read-tree", "--empty", env=env)

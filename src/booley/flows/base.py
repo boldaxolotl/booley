@@ -36,6 +36,12 @@ from booley.runtime import runtime_context
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome, ExecutionResult
 from booley.runtime.python_artifacts import relocate_python_artifacts
+from booley.runtime.temporary_workspace import (
+    launch_failed,
+    launch_finished,
+    prepare_launch,
+    validate_native_command,
+)
 from booley.targets.catalog import PreparedTargetSelection
 from booley.targets.domain import TARGET_AWARE_FLOWS, FuseSocError, TargetHandle
 
@@ -119,23 +125,33 @@ def _popen_kwargs_with_lease() -> dict[str, Any]:
 def _start_local_process(cmd, cwd, env, scope):
     if scope is not None and scope.cancelled():
         return None
+    launch = prepare_launch(cmd)
+    kwargs = _popen_kwargs_with_lease()
+    inherited = tuple(kwargs.get("pass_fds", ()))
+    kwargs.update(launch.kwargs)
+    if inherited:
+        kwargs["pass_fds"] = tuple(dict.fromkeys((*inherited, *kwargs.get("pass_fds", ()))))
     try:
+        if launch.roots:
+            validate_native_command(cmd, {"cwd": cwd, "env": env})
         proc = subprocess.Popen(
-            cmd,
+            launch.command,
             cwd=cwd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
             env=env,
-            **_popen_kwargs_with_lease(),
+            **kwargs,
         )
         if scope is not None:
             scope.processes.register(proc)
-        return proc
+        return proc, launch
     except FileNotFoundError:
+        launch_failed(launch)
         logger.error("Command not found: %s", cmd[0])
         return None
-    except BaseException:
+    except OSError:
+        launch_failed(launch)
         raise
 
 
@@ -388,20 +404,25 @@ class FlowMechanics:
                 env["PYTHONUNBUFFERED"] = "1"
         start = time.monotonic()
         oom_before = _cgroup_oom_kill_count()
-        proc = _start_local_process(cmd, cwd, env, scope)
-        if proc is None:
+        started_process = _start_local_process(cmd, cwd, env, scope)
+        if started_process is None:
             if observer is not None:
                 observer.end_command()
             return SubprocessResult(returncode=-1)
+        proc, launch = started_process
         memory_monitor = _ProcessTreeMemoryMonitor(proc.pid)
         memory_monitor.start()
-        if observer is not None:
-            return _observe_local_process(
-                proc, observer, scope, memory_monitor, oom_before, start, timeout
+        try:
+            if observer is not None:
+                return _observe_local_process(
+                    proc, observer, scope, memory_monitor, oom_before, start, timeout
+                )
+            return _communicate_local_process(
+                cmd, proc, scope, memory_monitor, oom_before, start, timeout
             )
-        return _communicate_local_process(
-            cmd, proc, scope, memory_monitor, oom_before, start, timeout
-        )
+
+        finally:
+            launch_finished(launch)
 
     def _execute(self, cmd: list[str], *, timeout: int | None = None) -> SubprocessResult:
         """Run a subprocess locally (inside the Sandbox, ADR 0028)."""

@@ -83,7 +83,14 @@ def test_cli_reports_invalid_v3_findings_before_calling_model(tmp_path: Path) ->
     model = Model()
 
     outcome = CoverageAnalystSpecialist(model=model).execute_cli(
-        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+        [
+            "--report-dir",
+            str(tmp_path / "analysis-reports"),
+            "--work-dir",
+            str(tmp_path),
+            "--campaign",
+            str(path),
+        ]
     )
 
     assert outcome.exit_code == 2
@@ -103,7 +110,14 @@ def test_cli_invalid_v3_report_is_bounded_and_control_safe(tmp_path: Path) -> No
     model = Model()
 
     outcome = CoverageAnalystSpecialist(model=model).execute_cli(
-        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+        [
+            "--report-dir",
+            str(tmp_path / "analysis-reports"),
+            "--work-dir",
+            str(tmp_path),
+            "--campaign",
+            str(path),
+        ]
     )
 
     assert outcome.exit_code == 2
@@ -203,7 +217,14 @@ def test_large_current_campaign_uses_scoped_evidence_tool_without_oversized_prom
         )
 
     result = CoverageAnalystSpecialist(model=bounded_model).execute_cli(
-        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+        [
+            "--report-dir",
+            str(tmp_path / "analysis-reports"),
+            "--work-dir",
+            str(tmp_path),
+            "--campaign",
+            str(path),
+        ]
     )
 
     assert result.exit_code == 0
@@ -226,7 +247,14 @@ def test_persisted_current_analysis_does_not_encode_the_complete_campaign(tmp_pa
     monkeypatch.setattr(coverage_analysis, "encode_coverage_campaign", reject_full_encode)
 
     result = CoverageAnalystSpecialist(model=Model()).execute_cli(
-        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+        [
+            "--report-dir",
+            str(tmp_path / "analysis-reports"),
+            "--work-dir",
+            str(tmp_path),
+            "--campaign",
+            str(path),
+        ]
     )
 
     assert result.exit_code == 0
@@ -240,7 +268,14 @@ def test_retained_v3_analysis_uses_bounded_evidence_envelope(tmp_path: Path) -> 
     model = Model()
 
     result = CoverageAnalystSpecialist(model=model).execute_cli(
-        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+        [
+            "--report-dir",
+            str(tmp_path / "analysis-reports"),
+            "--work-dir",
+            str(tmp_path),
+            "--campaign",
+            str(path),
+        ]
     )
 
     assert result.exit_code == 0
@@ -264,7 +299,14 @@ def test_persisted_collector_error_rejects_before_provider_and_evidence_session(
     model = Model()
 
     result = CoverageAnalystSpecialist(model=model).execute_cli(
-        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+        [
+            "--report-dir",
+            str(tmp_path / "analysis-reports"),
+            "--work-dir",
+            str(tmp_path),
+            "--campaign",
+            str(path),
+        ]
     )
 
     assert result.exit_code == 2
@@ -324,7 +366,16 @@ def test_model_short_references_resolve_to_exact_report_point_ids(tmp_path, monk
 
     report = (
         CoverageAnalystSpecialist(model=referencing_model)
-        .execute_cli(["--work-dir", str(tmp_path), "--campaign", str(path)])
+        .execute_cli(
+            [
+                "--report-dir",
+                str(tmp_path / "analysis-reports"),
+                "--work-dir",
+                str(tmp_path),
+                "--campaign",
+                str(path),
+            ]
+        )
         .outcome.detail
     )
 
@@ -353,7 +404,14 @@ def test_unknown_model_short_references_report_all_json_pointers(tmp_path):
         )
 
     result = CoverageAnalystSpecialist(model=invalid_model).execute_cli(
-        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+        [
+            "--report-dir",
+            str(tmp_path / "analysis-reports"),
+            "--work-dir",
+            str(tmp_path),
+            "--campaign",
+            str(path),
+        ]
     )
 
     assert result.exit_code == 2
@@ -383,7 +441,14 @@ def test_delivered_legacy_exact_model_ids_remain_compatible(tmp_path, monkeypatc
         )
 
     result = CoverageAnalystSpecialist(model=legacy_model).execute_cli(
-        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+        [
+            "--report-dir",
+            str(tmp_path / "analysis-reports"),
+            "--work-dir",
+            str(tmp_path),
+            "--campaign",
+            str(path),
+        ]
     )
 
     assert result.exit_code == 0
@@ -404,7 +469,14 @@ def test_undelivered_legacy_exact_model_id_is_rejected(tmp_path):
         )
 
     result = CoverageAnalystSpecialist(model=unsupported_legacy_model).execute_cli(
-        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+        [
+            "--report-dir",
+            str(tmp_path / "analysis-reports"),
+            "--work-dir",
+            str(tmp_path),
+            "--campaign",
+            str(path),
+        ]
     )
 
     assert result.exit_code == 2
@@ -602,7 +674,16 @@ def test_cli_analysis_never_loads_or_saves_harness_criteria(tmp_path, monkeypatc
 def test_cli_reports_unfinished_model_as_analysis_error(tmp_path, failure):
     path = persist_campaign(tmp_path)
     analyst = CoverageAnalystSpecialist(model=lambda params: AgentResult(**{failure: True}))
-    result = analyst.execute_cli(["--work-dir", str(tmp_path), "--campaign", str(path)])
+    result = analyst.execute_cli(
+        [
+            "--report-dir",
+            str(tmp_path / "analysis-reports"),
+            "--work-dir",
+            str(tmp_path),
+            "--campaign",
+            str(path),
+        ]
+    )
     assert result.exit_code == 2
     assert "model did not finish" in result.outcome.report_text
 
@@ -622,7 +703,16 @@ def test_cli_distinguishes_empty_and_malformed_model_output(
         model=lambda _params: AgentResult(output=output, structured=None)
     )
 
-    result = analyst.execute_cli(["--work-dir", str(tmp_path), "--campaign", str(path)])
+    result = analyst.execute_cli(
+        [
+            "--report-dir",
+            str(tmp_path / "analysis-reports"),
+            "--work-dir",
+            str(tmp_path),
+            "--campaign",
+            str(path),
+        ]
+    )
 
     assert result.exit_code == 2
     assert expected in result.outcome.report_text
@@ -687,7 +777,14 @@ def test_cli_reports_result_error_terminal_text(tmp_path):
         raise provider_error
 
     result = CoverageAnalystSpecialist(model=fail).execute_cli(
-        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+        [
+            "--report-dir",
+            str(tmp_path / "analysis-reports"),
+            "--work-dir",
+            str(tmp_path),
+            "--campaign",
+            str(path),
+        ]
     )
 
     assert result.exit_code == 2
@@ -703,7 +800,14 @@ def test_cli_does_not_misclassify_internal_runtime_error_as_provider_failure(tmp
         raise RuntimeError("internal bug")
 
     result = CoverageAnalystSpecialist(model=fail).execute_cli(
-        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+        [
+            "--report-dir",
+            str(tmp_path / "analysis-reports"),
+            "--work-dir",
+            str(tmp_path),
+            "--campaign",
+            str(path),
+        ]
     )
 
     assert result.exit_code == 2
@@ -725,7 +829,14 @@ def test_cli_reports_backend_input_limit_as_actionable_error(tmp_path):
         )
 
     result = CoverageAnalystSpecialist(model=oversized).execute_cli(
-        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+        [
+            "--report-dir",
+            str(tmp_path / "analysis-reports"),
+            "--work-dir",
+            str(tmp_path),
+            "--campaign",
+            str(path),
+        ]
     )
 
     assert result.exit_code == 2
@@ -745,7 +856,14 @@ def test_cli_rejects_partial_report_after_evidence_budget_exhaustion(tmp_path):
         )
 
     result = CoverageAnalystSpecialist(model=exhausted_model).execute_cli(
-        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+        [
+            "--report-dir",
+            str(tmp_path / "analysis-reports"),
+            "--work-dir",
+            str(tmp_path),
+            "--campaign",
+            str(path),
+        ]
     )
 
     assert result.exit_code == 2
@@ -766,7 +884,14 @@ def test_cli_rejects_partial_report_after_terminal_evidence_error(tmp_path):
         )
 
     result = CoverageAnalystSpecialist(model=failed_evidence_model).execute_cli(
-        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+        [
+            "--report-dir",
+            str(tmp_path / "analysis-reports"),
+            "--work-dir",
+            str(tmp_path),
+            "--campaign",
+            str(path),
+        ]
     )
 
     assert result.exit_code == 2
@@ -793,7 +918,14 @@ def test_cli_rejects_malformed_persisted_evidence_audit(tmp_path, monkeypatch):
         )
 
     result = CoverageAnalystSpecialist(model=corrupting_model).execute_cli(
-        ["--work-dir", str(tmp_path), "--campaign", str(path)]
+        [
+            "--report-dir",
+            str(tmp_path / "analysis-reports"),
+            "--work-dir",
+            str(tmp_path),
+            "--campaign",
+            str(path),
+        ]
     )
 
     assert result.exit_code == 2
@@ -824,7 +956,14 @@ def test_relative_campaign_resolves_against_selected_work_dir(tmp_path):
         ["--work-dir", str(tmp_path), "--campaign", str(path.relative_to(tmp_path))]
     )
     result = analyst.execute_cli(
-        ["--work-dir", str(tmp_path), "--campaign", str(path.relative_to(tmp_path))]
+        [
+            "--report-dir",
+            str(tmp_path / "analysis-reports"),
+            "--work-dir",
+            str(tmp_path),
+            "--campaign",
+            str(path.relative_to(tmp_path)),
+        ]
     )
     assert result.exit_code == 0
 
@@ -839,6 +978,8 @@ def test_default_wrapper_keeps_role_usage_and_exposes_only_evidence_tool(tmp_pat
     options_seen = []
 
     monkeypatch.setattr(_claude_backend, "query", _successful_claude_query(options_seen))
+    # This test models the SDK stream, including its native discovery boundary.
+    monkeypatch.setattr(_claude_backend, "_native_sdk_cli", lambda _: "/synthetic/claude")
     set_backend_config(
         BackendConfig(
             settings=AgentSettings(
@@ -851,6 +992,8 @@ def test_default_wrapper_keeps_role_usage_and_exposes_only_evidence_tool(tmp_pat
     try:
         result = CoverageAnalystSpecialist().execute_cli(
             [
+                "--report-dir",
+                str(tmp_path / "analysis-reports"),
                 "--work-dir",
                 str(tmp_path),
                 "--campaign",

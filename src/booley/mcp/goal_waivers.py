@@ -8,7 +8,6 @@ Journal enters this immediate, recoverable live-promotion lifecycle.
 from __future__ import annotations
 
 import hashlib
-import tempfile
 from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from dataclasses import replace
@@ -65,6 +64,7 @@ from booley.goals.waiver_policy import (
     waiver_policy_fingerprint,
 )
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
+from booley.runtime.temporary_workspace import temporary_workspace
 from booley.targets.catalog import TargetCatalog
 
 
@@ -260,7 +260,7 @@ class GoalWaiverService:
             proposal.waiver.anchor, proposal.waiver.directory, stamps, (evidence,)
         )
         effects = self._promotion_effects(plan, proposal)
-        with tempfile.TemporaryDirectory(prefix="booley-goal-waiver-") as temporary:
+        with temporary_workspace(prefix="booley-goal-waiver-") as temporary:
             waivers = load_promoted_waiver_set(
                 plan, self._roots(), Path(temporary), self._targets()
             )

@@ -23,7 +23,6 @@ import copy
 import logging
 import os
 import re
-import tempfile
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -63,7 +62,9 @@ from booley.fusesoc import fusesoc_registry
 from booley.runtime import job_slots
 from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
 from booley.runtime.platform_paths import posix_relpath
+from booley.runtime.temporary_workspace import temporary_workspace
 from booley.runtime.timefmt import utc_now_rfc3339
+from booley.runtime.worktree_paths import worktree_state_dir
 from booley.targets.domain import TargetHandle
 from booley.targets.flow_names import config_section
 from booley.targets.parameter_integrity import validate_top_parameter_intent
@@ -467,9 +468,9 @@ class FpgaImplFlow(BuiltinFlow[FpgaRequest]):
         for target in targets:
             try:
                 if self.args.dry_run:
-                    with tempfile.TemporaryDirectory(
+                    with temporary_workspace(
                         prefix=".booley-fpga-plan-",
-                        dir=self.args.work_dir,
+                        parent=worktree_state_dir(Path(self.args.work_dir)),
                     ) as scratch:
                         recipe = self._resolve_fpga_recipe(
                             target,

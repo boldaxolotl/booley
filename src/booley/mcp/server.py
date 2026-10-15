@@ -2838,7 +2838,18 @@ def _load_agent_settings_from_toml() -> None:
         logger.debug("Failed to load agent settings from booley.toml", exc_info=True)
 
 
+def _sweep_startup_workspaces() -> None:
+    if os.environ.get("BOOLEY_NESTED_AGENT") == "1" or os.environ.get("BOOLEY_MCP_NESTED") == "1":
+        return
+    from booley.flows.baseline_worktree import sweep_project_workspaces
+    from booley.runtime.temporary_workspace import sweep_stale_workspaces
+
+    sweep_stale_workspaces()
+    sweep_project_workspaces(Path.cwd())
+
+
 async def _main() -> None:
+    _sweep_startup_workspaces()
     _maybe_configure_interactive_logs_dir()
     _load_agent_settings_from_toml()
     lifetime = _McpLifetime.from_env()
@@ -2887,6 +2898,7 @@ def _run_http(port: int) -> None:
     """
     import uvicorn
 
+    _sweep_startup_workspaces()
     _maybe_configure_interactive_logs_dir()
     _load_agent_settings_from_toml()
     lifetime = _McpLifetime.from_env(self_exit=False)

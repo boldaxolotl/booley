@@ -9,6 +9,12 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- Nested Codex calls now share the canonical Sandbox credential file while
+  keeping their configuration isolated, and remove private homes after each
+  call. Startup and Specialist launches recover newly marked scratch from dead
+  owners only when descendant processes and ownership can be proven safe.
+  Old unmarked or uncertain leftovers remain for verified operator cleanup.
+
 - Immutable-mode Pre-Sim Commands now run in the Project Root as documented,
   including shared and ordinary Simulation Campaign launches with `run_cwd` set.
   Hooks that relied on the previous working directory should

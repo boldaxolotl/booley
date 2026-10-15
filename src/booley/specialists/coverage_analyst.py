@@ -11,7 +11,6 @@ import json
 import logging
 from collections.abc import Callable
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import ClassVar, cast
 
 from claude_agent_sdk import ClaudeSDKError
@@ -48,6 +47,7 @@ from booley.runtime.exception_diagnostics import (
     write_exception_diagnostic,
 )
 from booley.runtime.sandbox_layout import canonical_project_alias_path
+from booley.runtime.temporary_workspace import active_guard_fds, temporary_workspace
 
 from .coverage_analysis import (
     CoverageAnalysisReport,
@@ -176,7 +176,7 @@ class CoverageAnalystSpecialist(Specialist):
             self._evidence_sources = None
 
     def _analyze_text(self, prompt: str) -> object:
-        with TemporaryDirectory(prefix="booley-coverage-analysis-") as directory:
+        with temporary_workspace(prefix="booley-coverage-analysis-") as directory:
             campaign = getattr(self, "_evidence_campaign_path", None)
             if campaign is None:
                 raise CoverageAnalysisError("Coverage evidence session is unavailable")
@@ -193,6 +193,7 @@ class CoverageAnalystSpecialist(Specialist):
             prompt=prompt,
             model=self._resolve_model(),
             cwd=directory,
+            workspace_guard_fds=active_guard_fds(),
             allowed_agent_capabilities=[],
             nested_mcp_tools=["coverage_evidence"],
             nested_mcp_env=self._evidence_environment(directory, campaign, audit_path),
@@ -365,7 +366,7 @@ def analyze_coverage_campaign(
     invocation_id = str(campaign.invocation["id"])
     if not invocation_id.isdecimal():
         raise CoverageAnalysisError("Campaign invocation id must be numeric")
-    with TemporaryDirectory(prefix="booley-coverage-campaign-") as directory:
+    with temporary_workspace(prefix="booley-coverage-campaign-") as directory:
         root = Path(directory)
         invocation_dir = root / "reports" / "sim" / invocation_id
         target_dir = target_report_directory(invocation_dir, campaign.target.selector)

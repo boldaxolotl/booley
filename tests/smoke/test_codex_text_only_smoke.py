@@ -135,7 +135,10 @@ def _run_probe(binary: str, work: Path, original: Path, port: int, bypass: bool)
     if bypass:
         command.append("--dangerously-bypass-approvals-and-sandbox")
     command, environment = prepare_codex_text_only(
-        [*command, "-"], params, {**os.environ, "CODEX_HOME": str(original)}
+        [*command, "-"],
+        params,
+        {**os.environ, "CODEX_HOME": str(original)},
+        private=work.parent / "private-codex",
     )
     return subprocess.run(
         command,

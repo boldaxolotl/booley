@@ -32,6 +32,8 @@ from collections.abc import Iterator
 from enum import Enum
 from pathlib import Path, PurePosixPath
 
+from booley.runtime.temporary_workspace import run_guarded, temporary_workspace
+
 #: Generated stamp module, relative to the Booley repository root. Gitignored.
 STAMP_RELPATH = "src/booley/_build_commit.py"
 DEVELOPMENT_CONTEXT_RELPATH = "src/booley/data/development-build-context.tar.gz"
@@ -118,7 +120,7 @@ def _git_output(booley_root: Path, *args: str) -> str:
     is otherwise fine, so they collapse to the empty string.
     """
     try:
-        result = subprocess.run(
+        result = run_guarded(
             ["git", "-C", str(booley_root), *args],
             capture_output=True,
             text=True,
@@ -491,7 +493,7 @@ def extracted_development_context() -> Iterator[Path]:
     package_root = Path(__file__).resolve().parents[1]
     archive_path = embedded_development_context_path()
     stamp_source = package_root / "_build_commit.py"
-    with tempfile.TemporaryDirectory(prefix="booley-image-source-") as temporary:
+    with temporary_workspace(prefix="booley-image-source-") as temporary:
         root = Path(temporary)
         _extract_development_context(
             archive_path,

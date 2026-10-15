@@ -13,6 +13,7 @@ import json
 import logging
 import re
 import sys
+from pathlib import Path
 from typing import Any
 
 from booley.config.settings import STEP_TIERS
@@ -57,6 +58,12 @@ async def call_agent(
     container-only (ADR 0028), so specialists already execute inside the
     Sandbox and the old per-call DockerSandboxBackend wrap is gone.
     """
+    from booley.flows.baseline_worktree import sweep_project_workspaces
+
+    from .temporary_workspace import sweep_stale_workspaces
+
+    sweep_stale_workspaces()
+    sweep_project_workspaces(Path(params.cwd))
     cfg = get_backend_config()
 
     if step_name is not None and step_name in STEP_TIERS:

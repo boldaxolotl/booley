@@ -7,14 +7,11 @@ MCP configuration or skills are inherited into the empty analysis workspace.
 """
 
 import json
-import shutil
 from collections.abc import Mapping
 from pathlib import Path
 
 from booley.core.boundary import require_dict, require_list
 from booley.core.models import AgentCallParams
-
-from .mcp_config import generate_codex_config
 
 _DISABLED_FEATURES = (
     "shell_tool",
@@ -43,11 +40,14 @@ def prepare_codex_text_only(
     command: list[str],
     params: AgentCallParams,
     environment: Mapping[str, str],
+    *,
+    private: Path,
 ) -> tuple[list[str], dict[str, str]]:
     """Build an isolated invocation config; missing exact model metadata is an error."""
-    original = Path(
-        environment.get("CODEX_HOME") or Path(environment.get("HOME", str(Path.home()))) / ".codex"
-    )
+    from ._codex_backend import _canonical_codex_home, _populate_private_codex_home
+    from .temporary_workspace import registry_root
+
+    original = _canonical_codex_home(dict(environment))
     selected = _exact_model(original, params.model)
     model = {
         **selected,
@@ -58,23 +58,25 @@ def prepare_codex_text_only(
         "node_repl_disabled": True,
         "supports_search_tool": False,
     }
-    private = Path(params.cwd) / ".text-only-codex"
-    private.mkdir(exist_ok=True, mode=0o700)
+    private.mkdir(parents=True, exist_ok=True, mode=0o700)
     catalog = private / "model-catalog.json"
     catalog.write_text(json.dumps({"models": [model]}), encoding="utf-8")
-    if (original / "auth.json").is_file():
-        shutil.copyfile(original / "auth.json", private / "auth.json")
-        (private / "auth.json").chmod(0o600)
-    if params.nested_mcp_tools:
-        nested_env = {
-            **(params.nested_mcp_env or {}),
-            "BOOLEY_NESTED_AGENT": "1",
-            "BOOLEY_NESTED_MCP_TOOLS": ",".join(params.nested_mcp_tools),
-        }
-        config_path = private / "config.toml"
-        existing = config_path.read_text(encoding="utf-8") if config_path.exists() else None
-        config_path.write_text(
-            generate_codex_config(extra_env=nested_env, existing_config=existing), encoding="utf-8"
+    nested_env = {
+        **(params.nested_mcp_env or {}),
+        "BOOLEY_NESTED_AGENT": "1",
+        "BOOLEY_SCRATCH_ROOT": str(registry_root()),
+        "BOOLEY_NESTED_MCP_TOOLS": ",".join(params.nested_mcp_tools or []),
+    }
+    _populate_private_codex_home(
+        private,
+        nested_env,
+        params.nested_mcp_tools or [],
+        canonical=original,
+    )
+    if not params.nested_mcp_tools:
+        config = private / "config.toml"
+        config.write_text(
+            config.read_text(encoding="utf-8").split("[mcp_servers.", 1)[0], encoding="utf-8"
         )
     env = {**environment, "CODEX_HOME": str(private)}
     settings = [

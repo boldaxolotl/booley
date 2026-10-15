@@ -57,6 +57,7 @@ from booley.fusesoc.core_projection import (
     reconcile_isolated_registry,
     reconcile_projected_cores,
 )
+from booley.runtime.temporary_workspace import run_guarded
 from booley.targets.domain import (
     CoreCollisionError,
     CoreSources,
@@ -2322,8 +2323,9 @@ def _run_setup_command(
 ) -> ResolvedTarget:
     logger.debug("resolving target via: %s", " ".join(cmd))
     try:
-        proc = runner(
+        proc = run_guarded(
             cmd,
+            runner=runner,
             cwd=str(project_root),
             env=dict(env) if env is not None else None,
             capture_output=True,

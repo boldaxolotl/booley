@@ -49,6 +49,7 @@ from booley.runtime.incontainer_git_identity import (
     load_git_identity,
 )
 from booley.runtime.platform_paths import docker_mount_path, host_path_from_docker_mount
+from booley.runtime.temporary_workspace import temporary_workspace
 from booley.runtime.timefmt import LOCAL_TIMEZONE_ENV
 
 _IS_WINDOWS = os.name == "nt"
@@ -1875,7 +1876,7 @@ def _validate_image_contract(image_id: str) -> None:
     if created.returncode != 0 or not container:
         raise RuntimeSpecError("cannot create inert container for Sandbox Image inspection")
     try:
-        with tempfile.TemporaryDirectory(prefix="booley-image-contract-") as raw:
+        with temporary_workspace(prefix="booley-image-contract-") as raw:
             root = Path(raw)
             sources = {
                 "/usr/local/bin/vivado": root / "vivado-wrapper",

@@ -39,6 +39,13 @@ from booley.runtime.submodule_materialization import (
     SubmoduleMaterializationError,
     materialize_project_submodules,
 )
+from booley.runtime.temporary_workspace import (
+    baseline_project_scope,
+    register_baseline,
+    run_guarded,
+    sweep_stale_workspaces,
+    temporary_workspace,
+)
 from booley.runtime.worktree_paths import worktree_creation_config, worktree_state_dir
 from booley.targets.domain import TargetHandle
 
@@ -56,7 +63,7 @@ class BaselineWorktreeError(RuntimeError):
 
 def git_short_sha(ref: str, cwd: Path) -> str:
     """Resolve *ref* to its short SHA, falling back to a truncated ref string."""
-    result = subprocess.run(
+    result = run_guarded(
         ["git", "rev-parse", "--short", ref],
         cwd=cwd,
         capture_output=True,
@@ -124,24 +131,30 @@ def baseline_worktree(
     paired_project: PairedProjectBaseline | None = None,
 ) -> Iterator[Path]:
     """Yield a fully materialized detached worktree for *ref*, then remove it."""
-    project_root = Path(project_root)
-    wt_dir = _create_baseline_worktree(project_root, ref)
-    paired_baseline: Path | None = None
-    try:
-        paired_baseline = _install_paired_project_baseline(
-            project_root,
-            wt_dir,
-            paired_project or PairedProjectBaseline.standalone(),
-        )
-        _materialize_baseline_submodules(project_root, wt_dir, ref)
-        if paired_baseline is None:
-            _copy_stealth_cores(project_root, wt_dir, ref)
-            _copy_baseline_configuration(project_root, wt_dir)
-        _copy_root_quarantine_marker(project_root, wt_dir)
-        prepare_core_library_plan(wt_dir)
-        yield wt_dir
-    finally:
-        _cleanup_baseline_worktree(project_root, wt_dir, paired_baseline)
+    project_root = Path(project_root).resolve()
+    parent = worktree_state_dir(project_root)
+    parent.mkdir(parents=True, exist_ok=True)
+    metadata = _baseline_metadata(project_root)
+    with baseline_project_scope(project_root):
+        sweep_stale_workspaces(parent=parent)
+        with temporary_workspace(prefix="baseline-", parent=parent, kind="baseline") as raw:
+            container = Path(raw)
+            register_baseline(container, metadata)
+            wt_dir = _create_baseline_worktree(
+                project_root, ref, destination=container / ".baseline-wt-rtl"
+            )
+            paired_baseline = _install_paired_project_baseline(
+                project_root,
+                wt_dir,
+                paired_project or PairedProjectBaseline.standalone(),
+            )
+            _materialize_baseline_submodules(project_root, wt_dir, ref)
+            if paired_baseline is None:
+                _copy_stealth_cores(project_root, wt_dir, ref)
+                _copy_baseline_configuration(project_root, wt_dir)
+            _copy_root_quarantine_marker(project_root, wt_dir)
+            prepare_core_library_plan(wt_dir)
+            yield wt_dir
 
 
 def _copy_baseline_configuration(project_root: Path, worktree: Path) -> None:
@@ -155,9 +168,8 @@ def _copy_baseline_configuration(project_root: Path, worktree: Path) -> None:
         shutil.copy2(source, destination)
 
 
-def _create_baseline_worktree(project_root: Path, ref: str) -> Path:
-    short = git_short_sha(ref, project_root)
-    worktree = worktree_state_dir(project_root) / f".baseline-wt-{os.getpid()}-{short}"
+def _create_baseline_worktree(project_root: Path, ref: str, *, destination: Path) -> Path:
+    worktree = destination
     worktree.parent.mkdir(parents=True, exist_ok=True)
     _git(project_root, "config", "gc.worktreePruneExpire", "never", timeout=30)
     result = _git(
@@ -188,6 +200,84 @@ def _materialize_baseline_submodules(project_root: Path, worktree: Path, ref: st
         raise BaselineWorktreeError(
             f"initializing submodules for baseline ref {ref!r} failed offline: {exc}"
         ) from exc
+
+
+def _repository_identity(repository: Path) -> dict[str, Any]:
+    result = _git(
+        repository, "rev-parse", "--path-format=absolute", "--git-common-dir", timeout=30
+    )
+    if result.returncode:
+        raise BaselineWorktreeError("cannot establish baseline repository administration")
+    common = Path(result.stdout.strip()).resolve()
+    identity = common.stat()
+    return {"path": str(repository.resolve()), "common": [identity.st_dev, identity.st_ino]}
+
+
+def _baseline_metadata(project_root: Path) -> dict[str, Any]:
+    paired = paired_project_repository(project_root)
+    return {
+        "project": _repository_identity(project_root),
+        "paired": _repository_identity(paired.worktree) if paired is not None else None,
+    }
+
+
+def _registered_paths(repository: Path) -> set[Path]:
+    result = _git(repository, "worktree", "list", "--porcelain", "-z", timeout=30)
+    if result.returncode:
+        raise BaselineWorktreeError("cannot validate exact baseline worktree registrations")
+    return {
+        Path(field.removeprefix("worktree ")).absolute()
+        for field in result.stdout.split("\0")
+        if field.startswith("worktree ")
+    }
+
+
+def _remove_owned_registration(repository: Path, payload: Path) -> bool:
+    registrations = _registered_paths(repository)
+    if payload not in registrations:
+        # Partial add may leave ordinary files. An unexplained gitfile is never
+        # permission to delete a checkout belonging to another registration.
+        return not (payload / ".git").exists()
+    if payload.is_symlink() or payload.absolute() != payload.resolve():
+        return False
+    result = _git(repository, "worktree", "remove", "--force", str(payload), timeout=60)
+    return result.returncode == 0 and payload not in _registered_paths(repository)
+
+
+def cleanup_owned_baseline(
+    container: Path,
+    marker: dict[str, Any],
+    project_root: Path | None,
+) -> bool:
+    """Remove exact paired then RTL registrations using only current Project authority."""
+    if project_root is None or container.parent != worktree_state_dir(project_root).absolute():
+        logger.warning("Retaining baseline scratch without trusted current Project: %s", container)
+        return False
+    try:
+        if marker.get("baseline") != _baseline_metadata(project_root):
+            return False
+        payload = container / ".baseline-wt-rtl"
+        paired = paired_project_repository(project_root)
+        if paired is not None and not _remove_owned_registration(
+            paired.worktree, payload / ".booley"
+        ):
+            return False
+        return _remove_owned_registration(project_root, payload)
+    except (OSError, ValueError, BaselineWorktreeError) as exc:
+        logger.warning("Retaining baseline scratch after registration cleanup failed: %s", exc)
+        return False
+
+
+def sweep_project_workspaces(project_root: Path) -> None:
+    """Inspect only the trusted current checkout and its selected Booley Directory."""
+    try:
+        parents = {project_root.resolve(), worktree_state_dir(project_root).absolute()}
+        with baseline_project_scope(project_root):
+            for parent in parents:
+                if (parent / ".booley-registry.lock").is_file():
+                    sweep_stale_workspaces(parent=parent)
+    except (OSError, RuntimeError, ValueError) as exc:
+        logger.warning("Project scratch cleanup retained uncertain ownership: %s", exc)
 
 
 def _cleanup_baseline_worktree(
@@ -488,7 +578,7 @@ def _repoint(link: Path, target: Path) -> None:
 
 def _git(cwd: Path, *args: str, timeout: int) -> subprocess.CompletedProcess[str]:
     """Run a git subcommand under *cwd*, never raising on non-zero exit."""
-    return subprocess.run(
+    return run_guarded(
         ["git", *args],
         cwd=cwd,
         capture_output=True,

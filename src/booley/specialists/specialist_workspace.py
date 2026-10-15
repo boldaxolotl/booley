@@ -5,8 +5,6 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import subprocess
-import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import replace
@@ -19,18 +17,20 @@ from booley.agent_workspace.isolation import (
     hide_opposite_sources,
 )
 from booley.core.models import AgentCallParams, AgentResult
+from booley.runtime.temporary_workspace import active_guard_fds, run_guarded, temporary_workspace
 
 WorkspaceAccess = Literal["read_only", "read_write"]
 
 
 def _run_git(args: list[str], cwd: Path, *, text: bool = True) -> str | bytes:
     """Run a bounded git plumbing command or fail with its diagnostic."""
-    result = subprocess.run(
+    result = run_guarded(
         ["git", *args],
         cwd=cwd,
         check=True,
         capture_output=True,
         text=text,
+        timeout=30,
     )
     return result.stdout
 
@@ -163,10 +163,15 @@ def isolated_agent_workspace(
 
     real_cwd = Path(params.cwd).resolve()
     real_root = _git_root(real_cwd)
+    from booley.flows.baseline_worktree import sweep_project_workspaces
+
+    sweep_project_workspaces(real_root)
     category_dirs = get_category_dirs(real_root) if category is not None else None
     relative_cwd = real_cwd.relative_to(real_root)
-    with tempfile.TemporaryDirectory(prefix="booley-specialist-ro-") as temp_dir:
-        snapshot = WorkspaceSnapshot(real_root, Path(temp_dir).resolve())
+    with temporary_workspace(prefix="specialist-ro-", kind="specialist") as temp_dir:
+        payload = Path(temp_dir) / "workspace"
+        payload.mkdir()
+        snapshot = WorkspaceSnapshot(real_root, payload.resolve())
         _populate_snapshot(real_root, snapshot.snapshot_root)
         if category is not None:
             assert category_dirs is not None
@@ -182,6 +187,9 @@ def isolated_agent_workspace(
         isolated = replace(
             params,
             cwd=snapshot.snapshot_root / relative_cwd,
+            workspace_guard_fds=tuple(
+                dict.fromkeys((*params.workspace_guard_fds, *active_guard_fds()))
+            ),
             prompt=_replace_path(params.prompt, old, new),
             system_prompt=_replace_path(params.system_prompt, old, new),
         )
