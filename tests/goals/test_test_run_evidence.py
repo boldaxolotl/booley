@@ -304,6 +304,7 @@ def _evidence_file(layout: SimpleNamespace, sequence: int) -> Any:
 def test_tampered_state_ledger_is_refused(two: SimpleNamespace) -> None:
     _record(two, "run-1", [run_row(A, "fail"), run_row(B)], met=False)
     path = _state_file(two)
+    immutable = {row: row.read_bytes() for row in (path.parent / "logs").rglob("record.json")}
     state = json.loads(path.read_text(encoding="utf-8"))
     entry = state["criteria"][SIM_KEY]
     entry["met"] = True
@@ -311,7 +312,13 @@ def test_tampered_state_ledger_is_refused(two: SimpleNamespace) -> None:
     path.write_text(json.dumps(state), encoding="utf-8")
     status = _status(two)
     assert status.status != "met"
-    assert status.evidence_summary == "state conflicts with immutable evidence"
+    assert status.reason.startswith("goal-test-run-failed")
+    from booley.goals.state_store import load_goal_state
+
+    recovered = load_goal_state(GoalStore(two.control), two.record)
+    assert _outcomes(recovered.criteria[SIM_KEY].detail)["a@1"] == "failed"
+
+    assert {row: row.read_bytes() for row in immutable} == immutable
 
 
 def test_substituted_contributor_is_refused(two: SimpleNamespace) -> None:

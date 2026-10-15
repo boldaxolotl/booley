@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -44,7 +46,7 @@ def test_new_directory_task_and_idempotent_disable(project, monkeypatch):
     task = Document(project.file.read_bytes().decode()).root.value["tasks"][0]
     assert task["command"] == "booley dashboard"
     assert "options" not in task
-    assert task["runOptions"] == {"runOn": "folderOpen", "instanceLimit": 1}
+    assert task["runOptions"] == {"instanceLimit": 1}
     assert project.exclude.read_bytes().startswith(baseline)
     assert not tasks.inspect(project.root, project.data).pending
     (project.data / "booley.toml").write_text("[sandbox]\ndashboard = false\n")
@@ -54,6 +56,108 @@ def test_new_directory_task_and_idempotent_disable(project, monkeypatch):
     (project.data / "booley.toml").write_text("[sandbox]\ndashboard = true\n")
     tasks.reconcile(project.root, project.data)
     assert b"/.vscode\n" in project.exclude.read_bytes()
+
+
+def test_attach_task_does_not_require_global_automatic_task_permission(project):
+    tasks.reconcile(project.root, project.data)
+    task = Document(project.file.read_text()).root.value["tasks"][0]
+    assert "runOn" not in task["runOptions"]
+
+
+def test_old_owned_automatic_task_migrates_without_losing_user_content(project, monkeypatch):
+    old = {**tasks.TASK, "runOptions": {"runOn": "folderOpen", "instanceLimit": 1}}
+    with monkeypatch.context() as previous:
+        previous.setattr(tasks, "TASK", old)
+        tasks.reconcile(project.root, project.data)
+    original = project.file.read_bytes()
+    project.file.write_bytes(
+        original.replace(b'"version": "2.0.0"', b'"version": "2.0.0", "user": 42')
+    )
+    tasks.reconcile(project.root, project.data)
+    document = Document(project.file.read_text()).root.value
+    assert document["user"] == 42
+    assert "runOn" not in document["tasks"][0]["runOptions"]
+
+
+def test_runtime_attach_accepts_host_ownership_at_a_different_mount(project):
+    import json
+
+    tasks.reconcile(project.root, project.data)
+    owner_path = project.data / "runtime/dashboard-task.json"
+    owner = json.loads(owner_path.read_bytes())
+    owner["root"] = "/host-side/project"
+    owner_path.write_text(json.dumps(owner))
+    before = {path: path.read_bytes() for path in (project.file, owner_path, project.exclude)}
+    assert tasks.attach_blocker(project.root, project.data) == ""
+    assert before == {path: path.read_bytes() for path in before}
+
+
+@pytest.mark.parametrize("conflict", ["removed", "edited", "unowned", "old", "disabled", "off"])
+def test_runtime_attach_preserves_opt_out_and_migration_conflicts(project, monkeypatch, conflict):
+    if conflict == "old":
+        with monkeypatch.context() as previous:
+            previous.setattr(tasks, "TASK", {**tasks.TASK, "runOptions": {"runOn": "folderOpen"}})
+            tasks.reconcile(project.root, project.data)
+    else:
+        tasks.reconcile(project.root, project.data)
+    if conflict == "removed":
+        project.file.unlink()
+    elif conflict == "edited":
+        project.file.write_text(project.file.read_text().replace("booley dashboard", "custom"))
+    elif conflict == "unowned":
+        (project.data / "runtime/dashboard-task.json").unlink()
+    elif conflict == "disabled":
+        (project.data / "booley.toml").write_text("[sandbox]\ndashboard = false\n")
+    elif conflict == "off":
+        (project.file.parent / "settings.json").write_text('{"task.allowAutomaticTasks":"off"}')
+    before = project.file.read_bytes() if project.file.exists() else None
+    assert tasks.attach_blocker(project.root, project.data)
+    assert (project.file.read_bytes() if project.file.exists() else None) == before
+
+
+def test_runtime_attach_does_not_require_editing_tracked_unrelated_tasks(project, monkeypatch):
+    project.file.parent.mkdir()
+    project.file.write_text('{"version":"2.0.0","tasks":[]}')
+    monkeypatch.setattr(tasks, "_task_file_tracked", lambda _: True)
+    assert tasks.attach_blocker(project.root, project.data) == ""
+    project.file.write_text('{"tasks":[{"label":"Booley Dashboard","command":"user"}]}')
+    assert "User-owned" in tasks.attach_blocker(project.root, project.data)
+
+
+def test_tracking_a_task_file_does_not_erase_a_recorded_removal(project, monkeypatch):
+    tasks.reconcile(project.root, project.data)
+    project.file.write_text('{"tasks":[]}')
+    monkeypatch.setattr(tasks, "_task_file_tracked", lambda _: True)
+    assert "User-removed" in tasks.attach_blocker(project.root, project.data)
+    (project.data / "booley.toml").write_text("[sandbox]\ndashboard = false\n")
+    transaction = tasks.reconcile(project.root, project.data)
+    assert len(transaction.applied) == 1
+    assert project.file.read_text() == '{"tasks":[]}'
+    (project.data / "booley.toml").write_text("[sandbox]\ndashboard = true\n")
+    assert tasks.attach_blocker(project.root, project.data) == ""
+
+
+@pytest.mark.parametrize(
+    "source,blocked",
+    [
+        (r'{"tasks":[{"label":"\u0042ooley Dashboard"}]}', True),
+        ('{// "Booley Dashboard" is only a comment\n"tasks":[]}', False),
+    ],
+)
+def test_tracked_dashboard_detection_uses_decoded_task_labels(
+    project, monkeypatch, source, blocked
+):
+    project.file.parent.mkdir()
+    project.file.write_text(source)
+    monkeypatch.setattr(tasks, "_task_file_tracked", lambda _: True)
+    assert bool(tasks.attach_blocker(project.root, project.data)) is blocked
+
+
+def test_invalid_folder_settings_produce_a_boundary_error(project):
+    tasks.reconcile(project.root, project.data)
+    (project.file.parent / "settings.json").write_text("[]")
+    with pytest.raises(ValueError, match="object"):
+        tasks.attach_blocker(project.root, project.data)
 
 
 def test_disable_retains_exclude_ownership_until_user_tail_allows_removal(project, monkeypatch):
@@ -203,7 +307,14 @@ def test_spec_builder_pure_automatic_tasks_setting(tmp_path):
     settings = devcontainer.build_devcontainer_spec(dashboard=True)["customizations"]["vscode"][
         "settings"
     ]
-    assert settings["task.allowAutomaticTasks"] == "on"
+    assert settings["booley.dashboard.attachProtocol"] == 1
+    assert "task.allowAutomaticTasks" not in settings
+    assert (
+        devcontainer.build_devcontainer_spec()["customizations"]["vscode"]["settings"][
+            "booley.dashboard.attachProtocol"
+        ]
+        == 0
+    )
     assert (
         "task.allowAutomaticTasks"
         not in devcontainer.build_devcontainer_spec()["customizations"]["vscode"]["settings"]
@@ -236,27 +347,36 @@ def test_both_issuance_success_paths_and_failure_rollback(project, monkeypatch, 
     assert not project.file.exists()
 
 
-def test_issuance_failure_after_task_publication_restores_previous_files(project, monkeypatch):
+@pytest.mark.parametrize("legacy", [False, True])
+def test_issuance_failure_after_task_publication_restores_previous_files(
+    project, monkeypatch, legacy
+):
+    if legacy:
+        with monkeypatch.context() as previous:
+            previous.setattr(tasks, "TASK", {**tasks.TASK, "runOptions": {"runOn": "folderOpen"}})
+            tasks.reconcile(project.root, project.data)
     prepared = session_issuance.PreparedSessionSpec(
         {"image": "sha256:fixture"},
         "digest",
         session_issuance.SessionSpecInputs(project.data, (), (), None, None),
         None,
     )
-    before = project.exclude.read_bytes()
+    paths = (project.file, project.exclude, project.data / "runtime/dashboard-task.json")
+    before = {path: path.read_bytes() if path.exists() else None for path in paths}
     monkeypatch.setattr(session_issuance, "_current_keeper_id", lambda _: None)
     monkeypatch.setattr(session_issuance, "_restore_keeper", lambda *_: None)
 
     def fail(*_args):
         assert project.file.exists()
+        assert (
+            "runOn" not in Document(project.file.read_text()).root.value["tasks"][0]["runOptions"]
+        )
         raise session_issuance.RuntimeSpecError("fixture issuance failure")
 
     monkeypatch.setattr(session_issuance, "_issue_document", fail)
     with pytest.raises(session_issuance.RuntimeSpecError, match="fixture issuance failure"):
         session_issuance._persist_prepared(project.root, prepared)
-    assert not project.file.exists()
-    assert project.exclude.read_bytes() == before
-    assert not (project.data / "runtime/dashboard-task.json").exists()
+    assert {path: path.read_bytes() if path.exists() else None for path in paths} == before
 
 
 def test_dashboard_disabled_leaves_unowned_malformed_tasks_unobserved(project, monkeypatch):
@@ -528,19 +648,24 @@ def test_tracked_task_file_is_preserved_with_informational_notice(
     with monkeypatch.context() as changed_task:
         changed_task.setattr(tasks, "TASK", {**tasks.TASK, "command": "booley dashboard --new"})
         plan = tasks.inspect(tmp_path, data)
-        assert not plan.pending and not plan.diagnostics
+        assert plan.pending == (owned and disabled)
+        assert not plan.diagnostics
         # An owned task already carries the Dashboard label: nothing to tell the user.
         assert len(plan.notices) == (0 if disabled or owned else 1)
         if not disabled and not owned:
             assert plan.notices == (
                 "Dashboard task not installed: .vscode/tasks.json is tracked by Git; add the task yourself or set [sandbox].dashboard = false",
             )
-        assert not tasks.reconcile(tmp_path, data).applied
+        assert bool(tasks.reconcile(tmp_path, data).applied) == (owned and disabled)
     after = {
         path.relative_to(tmp_path): path.read_bytes()
         for path in tmp_path.rglob("*")
         if path.is_file() and ".git" not in path.parts
     }
+    if owned and disabled:
+        owner = Path(".booley/runtime/dashboard-task.json")
+        assert json.loads(after.pop(owner))["enabled"] is False
+        before.pop(owner)
     assert after == before
 
 

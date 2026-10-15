@@ -17,12 +17,53 @@ the config knobs named below see [CONFIG.md](https://github.com/boldaxolotl/Bool
 terms below (Sandbox, Target, EDA Provisioning, Specialist, Booley Flow, Developer
 Agent) see the glossary in [GLOSSARY.md](https://github.com/boldaxolotl/Booley/blob/main/docs/GLOSSARY.md).
 
+## Goal evidence and state recovery
+
+Selected immutable producer observations govern Goal evidence. A lost or delayed
+state save recovers automatically when Booley reads or saves Goal state; status
+reads preserve the state file and immutable observations. If a Goal lacks a usable
+current observation, status names the Goal, the evidence fields, and the producer
+to rerun. For ELAB, rerun `sim mode=elab_only` for its Target; for REVIEW, follow
+the Goal's review category and focus. A fresh successful producer run publishes
+consistent evidence and state. If publication still fails, report the persistence
+failure. Report ledger validation corruption with its diagnostic; preserve state
+and evidence files instead of editing or removing them.
+
 ## Monitoring Goal work
 
 Use `booley dashboard` inside the Sandbox for sessions, Goals, and Jobs.
 Inspect records with `booley goal status`; ask the Developer Agent
 for `goal_status(rules=true)` to recover evidence and rules after interruption.
 Read the Review Package and Session Summary when Finish succeeds.
+
+### The Dashboard does not open on Sandbox attach
+
+Use `booley dashboard` in the Sandbox to open it manually. Automatic opening uses
+the **Booley Dashboard** workspace extension bundled in the Sandbox Image, not
+VS Code's global permission for automatic tasks. After upgrading Booley, run
+`booley init` on the host and rebuild/reopen the Sandbox so its image contains
+the extension. A running container does not gain files from a newer image.
+
+Check **Output → Booley Dashboard** for an opt-out, task ownership conflict or
+startup error. `[sandbox].dashboard = false`, an explicit user automatic-task
+preference of off, and the folder opt-out in `.vscode/settings.json` suppress
+opening. A deliberately removed or edited Dashboard task also stays an opt-out.
+To restore a removed owned shortcut, set `dashboard = false`, run `booley init`
+on the host, then set it to true and run init again.
+
+Automatic opening requires a Git Project Root. Untrusted windows wait for trust.
+Headless sessions open no editor terminal. Closing the Dashboard does not restart
+it in the same window session; reopen it manually or reload the window.
+
+If no Output channel appears, check **Developer: Show Running Extensions** for
+`booley.dashboard` running in the container. A disabled extension must be enabled
+there. Doctor checks whether the bundled VSIX matches the installed Booley code;
+missing/stale image artifacts require a Sandbox Image rebuild.
+
+For a user-managed `[sandbox].image`, install the current Booley wheel and run
+`RUN python3 -I -m booley.runtime.dashboard_extension` as root in the image recipe,
+then restore its usual `USER`. Set `dashboard = false` if the image cannot supply
+the VSIX; `booley dashboard` remains available manually.
 
 ### A session shows `activity unknown`
 

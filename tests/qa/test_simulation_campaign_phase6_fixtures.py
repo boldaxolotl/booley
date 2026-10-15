@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import json
 from collections.abc import Callable
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -236,7 +237,7 @@ def _recover_transaction(
             detail={"campaign_id": facts["campaign_id"], "ordinal": ordinal},
         )
     ]
-    logs = tmp_path / "logs"
+    logs = state_file.parent / "logs"
 
     def record() -> AcceptanceTransaction:
         return record_or_verify_transaction(
@@ -317,9 +318,61 @@ def _acceptance_args(evidence: RecoveryEvidence) -> tuple[object, ...]:
 def test_acceptance_recovery_validator_authenticates_real_v2_evidence(
     tmp_path: Path, coverage_met: bool
 ) -> None:
-    _module().validate_acceptance_recovery(
-        *_acceptance_args(_acceptance_evidence(tmp_path, coverage_met=coverage_met))
-    )
+    evidence = _acceptance_evidence(tmp_path, coverage_met=coverage_met)
+    transaction = evidence.transaction
+    archived = json.loads(transaction.archived.read_bytes())["criteria"]
+    recovered = json.loads(transaction.recovered.read_bytes())["criteria"]
+    envelope = json.loads(transaction.transaction.read_bytes())["envelope"]
+    rows = list(transaction.evidence_root.glob(f"*.tx.{transaction.transaction_id}/record.json"))
+    assert len(rows) == len(envelope["changes"])
+    for path in rows:
+        row = json.loads(path.read_bytes())
+        key = row["criterion"]
+        assert recovered[key]["updated_at"] == row["recorded_at"] == envelope["recorded_at"]
+        assert recovered[key]["updated_at"] != archived[key]["updated_at"]
+    _module().validate_acceptance_recovery(*_acceptance_args(evidence))
+
+
+def test_candidate_timestamp_projection_preserves_unchanged_criterion() -> None:
+    archived = {
+        "criteria": {
+            key: {"met": False, "mandatory": True, "updated_at": "2026-09-21T01:00:00Z"}
+            for key in ("changed", "untouched")
+        }
+    }
+    recovered = deepcopy(archived)
+    stamp = "2026-09-22T01:02:03Z"
+    recovered["criteria"]["changed"].update(met=True, ever_met=True, updated_at=stamp)
+    envelope = {
+        "recorded_at": stamp,
+        "changes": [
+            {
+                "key": "changed",
+                "met": True,
+                "mandatory": True,
+                "reason": "passed",
+                "params": {},
+                "detail": {},
+                "role": "candidate",
+            }
+        ],
+    }
+    validate = _module()._validate_criteria_projection
+    validate(archived, recovered, envelope)
+    assert recovered["criteria"]["untouched"] == archived["criteria"]["untouched"]
+    recovered["criteria"]["untouched"]["updated_at"] = stamp
+    with pytest.raises(ValueError, match="Criteria mutation"):
+        validate(archived, recovered, envelope)
+
+
+def _restore_archived_timestamp(evidence: RecoveryEvidence) -> None:
+    archived = json.loads(evidence.transaction.archived.read_bytes())
+
+    def restore(document):
+        for key, entry in archived["criteria"].items():
+            document["criteria"][key]["updated_at"] = entry["updated_at"]
+
+    _mutate_json(evidence.transaction.recovered, restore)
 
 
 def _mutate_json(path: Path, mutation: Callable[[dict[str, Any]], None]) -> None:
@@ -392,6 +445,16 @@ def _add_duplicate_commit(evidence: RecoveryEvidence) -> None:
         (_add_extra_record, "outside its commit"),
         (_add_duplicate_intent, "multiple acceptance intents"),
         (_add_duplicate_commit, "multiple transactions"),
+        (_restore_archived_timestamp, "Criteria mutation"),
+        (
+            lambda e: _mutate_json(
+                e.transaction.recovered,
+                lambda d: d["criteria"]["sim_pass_sim_toggle"].update(
+                    updated_at="2026-09-23T00:00:00Z"
+                ),
+            ),
+            "Criteria mutation",
+        ),
         (
             lambda e: e.transaction.failed.write_text(e.transaction.failed.read_text() + " "),
             "archived state bytes",

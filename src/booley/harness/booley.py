@@ -433,7 +433,10 @@ def _build_parser() -> argparse.ArgumentParser:
     add_worktree_subparser(sub)
     _add_utility_subparsers(sub)
     _add_goal_subparser(sub)
-    sub.add_parser("dashboard", help="Open the read-only Sandbox Dashboard")
+    dashboard = sub.add_parser("dashboard", help="Open the read-only Sandbox Dashboard")
+    attach = dashboard.add_mutually_exclusive_group()
+    attach.add_argument("--attach-policy", action="store_true", help=argparse.SUPPRESS)
+    attach.add_argument("--on-attach", action="store_true", help=argparse.SUPPRESS)
 
     _install_project_options(parser)
     _decorate_command_help(sub)
@@ -830,9 +833,11 @@ def _add_goal_subparser(sub) -> None:
     )
 
 
-def _cmd_dashboard(_args: argparse.Namespace, project_root: Path) -> int:
-    from booley.harness.dashboard.command import run_dashboard
+def _cmd_dashboard(args: argparse.Namespace, project_root: Path) -> int:
+    from booley.harness.dashboard.command import run_attach, run_dashboard
 
+    if args.attach_policy or args.on_attach:
+        return run_attach(project_root, policy_only=args.attach_policy)
     return run_dashboard(project_root)
 
 
@@ -1264,7 +1269,7 @@ def _session_refresh(args: argparse.Namespace, project_root: Path) -> int:
         project_root,
         startup_due_reason=health.due_reason(project_root),
     )
-    print(f"Refreshed Sandbox: {result.selected_reference} ({result.selected_id})")
+    print(result.message)
     return 0
 
 

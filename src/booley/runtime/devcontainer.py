@@ -1064,8 +1064,11 @@ def build_devcontainer_spec(
             **_PYTHON_TERMINAL_SETTINGS,
         },
     }
+    from booley.runtime.dashboard_extension import VSIX_PATH
+
     if dashboard:
-        vscode["settings"]["task.allowAutomaticTasks"] = "on"
+        vscode["extensions"].append(VSIX_PATH)
+    vscode["settings"]["booley.dashboard.attachProtocol"] = 1 if dashboard else 0
     if extension:
         # Pin the agent extension workspace-side (reinforces the
         # container-install above; enforcement is client-side).

@@ -77,7 +77,7 @@ def test_caller_fences(goal_mode: SimpleNamespace, drift: str) -> None:
         edit_protected(goal_mode)
     else:
         bump_spec(goal_mode, LINT_KEY)
-    assert lint_status(goal_mode).status == "stale"
+    assert lint_status(goal_mode).status == ("unmet" if drift == "spec" else "stale")
 
 
 def test_status_inside_outside_and_rendering(goal_mode: SimpleNamespace) -> None:
@@ -96,7 +96,25 @@ def test_revision_without_evidence_cannot_become_met(goal_mode: SimpleNamespace)
     raw = json.loads(path.read_text())
     raw["criteria"][LINT_KEY]["met"] = True
     path.write_text(json.dumps(raw))
-    assert lint_status(goal_mode).status == "stale"
+    assert lint_status(goal_mode).status == "unmet"
+
+
+@pytest.mark.parametrize("drift", ["checkout", "protected", "apply"])
+def test_missing_evidence_reports_the_blocker_before_a_producer_rerun(
+    goal_mode, drift, monkeypatch
+):
+    if drift == "checkout":
+        git(goal_mode.worktree, "checkout", "--detach")
+    elif drift == "protected":
+        edit_protected(goal_mode)
+    else:
+        monkeypatch.setattr("booley.goals.status.pending_applies", lambda root: ["pending"])
+    goal = lint_status(goal_mode)
+    assert goal.status == "unmet"
+    assert goal.reason
+    assert "rerun lint" not in goal.reason
+    if drift == "apply":
+        assert "recovery is required" in goal.reason
 
 
 def test_candidate_target_appearing_stays_unmet(layout: SimpleNamespace) -> None:
@@ -168,10 +186,11 @@ def test_unmet_invalid_contract_reason_is_ignored(goal_mode, violation):
     raw["criteria"][LINT_KEY]["detail"] = {"warnings": 2, "goal_contract_violation": violation}
     path.write_text(json.dumps(raw))
     goal = lint_status(goal_mode)
-    assert (goal.status, goal.evidence_summary, goal.reason) == ("unmet", "2 warnings", "")
+    assert (goal.status, goal.evidence_summary) == ("unmet", "no evidence")
+    assert "rerun lint" in goal.reason
 
 
-def test_projection_conflict_reason_precedes_contract_reason(goal_mode):
+def test_selected_evidence_recovers_cache_tampering(goal_mode):
     publish(goal_mode)
     path = record_paths(goal_mode.control, goal_mode.record.id).state_file
     raw = json.loads(path.read_text())
@@ -179,8 +198,8 @@ def test_projection_conflict_reason_precedes_contract_reason(goal_mode):
     raw["criteria"][LINT_KEY]["detail"]["goal_contract_violation"] = "untrusted explanation"
     path.write_text(json.dumps(raw))
     goal = lint_status(goal_mode)
-    assert goal.status == "unmet"
-    assert goal.reason == "Goal state differs from its selected immutable producer observation"
+    assert goal.status == "met"
+    assert goal.reason == ""
 
 
 # Windows CI has measured over 40% of the 60 s default; keep 3x headroom (#1202).
@@ -238,3 +257,40 @@ def test_same_path_with_replacement_identity_uses_project_fallback(goal_mode):
     assert selection.project_wide is True
     assert [view.record.id for view in selection.views] == [goal_mode.record.id]
     assert selection.views == status_views(store, worktree)
+
+
+def test_status_uses_the_same_history_snapshot_as_its_projection(goal_mode, monkeypatch):
+    from booley.criteria import evidence_ledger
+
+    publish(goal_mode)
+    original = evidence_ledger.validated_evidence_records
+    calls = []
+
+    def once(*args, **kwargs):
+        rows = original(*args, **kwargs)
+        calls.append(rows)
+        return rows
+
+    monkeypatch.setattr(evidence_ledger, "validated_evidence_records", once)
+    assert lint_status(goal_mode).status == "met"
+    # Campaign accounting does its own safety reads; the projection/history pair
+    # itself must be shared, never independently sampled by _goal_statuses.
+    selected_reads = [rows for rows in calls if rows]
+    assert len(selected_reads) == 1
+
+
+@pytest.mark.parametrize(
+    "family, producer", [("ELAB", "sim mode=elab_only"), ("MUTATION", "mutation_tester")]
+)
+def test_missing_observation_names_goal_fields_and_actual_producer(layout, family, producer):
+    from tests.goals.conftest import enter_goals
+
+    argument = {"family": family, "target": "top"}
+    if family == "MUTATION":
+        argument["scope"] = ["rtl.v"]
+    layout.record = enter_goals(layout, [argument])
+    status = build_status(GoalStore(layout.control), layout.record).goals[0]
+    assert status.status == "unmet"
+    assert f"{family}:top" in status.reason
+    assert "met, params and detail" in status.reason
+    assert f"rerun {producer}" in status.reason

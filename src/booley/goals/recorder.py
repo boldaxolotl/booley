@@ -232,19 +232,16 @@ class GoalProjection:
         """
         if not records:
             return records
-        current = self._current_revisions()
-        newest: dict[str, dict[str, Any]] = {}
-        for payload in evidence_ledger.validated_evidence_records(
-            GOAL_SCOPE, log_dir, self.with_disk_selection(state), identity
-        ):
-            group = payload[GoalIdentity.identity_field]
-            if group["record_id"] != self.record_id or any(
-                current.get(key) != revision for key, revision in group["spec_revisions"].items()
-            ):
-                continue
-            seen = newest.get(payload["criterion"])
-            if seen is None or payload["sequence"] > seen["sequence"]:
-                newest[payload["criterion"]] = payload
+        from booley.goals.evidence_projection import selected_candidates
+
+        self._current_revisions()  # Publication-only replay retains the apply barrier.
+        record = self.store.load(self.record_id)
+        newest = selected_candidates(
+            record,
+            evidence_ledger.validated_evidence_records(
+                GOAL_SCOPE, log_dir, self.with_disk_selection(state), identity
+            ),
+        )
         return [
             newer
             if (newer := newest.get(payload["criterion"], payload))["sequence"]
@@ -379,7 +376,7 @@ class GoalEvidenceRecorder:
         producer: str,
         transaction_id: str | None = None,
     ) -> None:
-        """V1: append each change as Goal evidence, then mirror the stamped detail into *state*.
+        """V1: append and save canonical Goal evidence under the publication gate.
 
         Records carry the binding's invocation id (the run id), not *invocation_id*.
         """
@@ -400,7 +397,13 @@ class GoalEvidenceRecorder:
                 )
             except AcceptanceLedgerError as exc:
                 raise AcceptanceRecordingError(str(exc)) from exc
-        _mirror_into_state(state, stamped)
+            if state.file_path is None:
+                from booley.goals.evidence_projection import project_evidence
+
+                project_evidence(
+                    self._gate.store.load(self._binding.record_id), state, self.log_dir
+                )
+            state.save()
 
     def record_or_verify_transaction(
         self,
@@ -615,13 +618,3 @@ def _require_goal_persistence(state: DevelopmentState) -> None:
         raise AcceptanceRecordingError(
             "Goal evidence needs a state loaded through the Goal state persistence"
         )
-
-
-def _mirror_into_state(state: DevelopmentState, changes: Sequence[CriterionChange]) -> None:
-    """Make *state*'s entries carry exactly what the ledger recorded for them."""
-    for change in changes:
-        entry = state.criteria.get(change.key)
-        if entry is None:
-            continue
-        entry.detail = dict(change.detail)
-        entry.met = change.met

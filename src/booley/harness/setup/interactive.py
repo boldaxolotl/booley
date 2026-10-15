@@ -57,7 +57,7 @@ class InteractiveInitPlan:
         if self.runtime_cleanup_pending:
             details.append("stopped Sandbox resources")
         if self.dashboard_tasks.pending:
-            details.append("Dashboard attach task")
+            details.append("Dashboard manual shortcut")
         details.extend(self.dashboard_tasks.diagnostics)
         return tuple(details)
 
