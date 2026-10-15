@@ -230,9 +230,23 @@ itself is fine and still queryable.
 ## Installation fails with `externally-managed-environment`
 
 Recent distributions ship Python as an *externally managed* environment
-(PEP 668), where system Python refuses user package installation. Follow the
-README's Ubuntu/Debian pipx preparation, run `pipx ensurepath`, reopen your
-terminal, then run `pipx install booley-rtl` and `booley bootstrap`.
+(PEP 668), where system Python refuses user package installation. On Ubuntu or
+Debian, install pipx from the distribution package; a pip-installed pipx fails
+there because stock Python has no `ensurepip` until the `python3-venv` package,
+which the `pipx` package depends on, is installed:
+
+```bash
+sudo apt install pipx
+pipx ensurepath
+```
+
+Reopen your terminal, then install Booley and prepare the host:
+
+```bash
+pipx install booley-rtl
+booley bootstrap
+```
+
 If you already have uv, use `uv tool install booley-rtl` instead.
 These persistent isolated wheel installs can own host state. Source/editable
 checkouts and temporary or ephemeral installs remain ineligible.
