@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import shutil
 import subprocess
 import zipfile
@@ -65,9 +66,18 @@ def test_every_sandbox_app_gets_the_image_local_extension():
 def test_workspace_extension_lifecycle_in_node():
     node = shutil.which("node")
     if node is None:
+        if os.environ.get("CI"):
+            pytest.fail("CI must run the Dashboard lifecycle suite: install Node.js")
         pytest.skip("Node.js is required for the Dashboard extension lifecycle suite")
     script = Path(__file__).parents[1] / "vscode/dashboard.test.cjs"
     result = subprocess.run(
         [node, "--test", str(script)], capture_output=True, text=True, timeout=30, check=False
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_disabled_dashboard_does_not_require_extension_in_image():
+    spec = devcontainer.build_devcontainer_spec(dashboard=False)
+    settings = spec["customizations"]["vscode"]
+    assert dashboard_extension.VSIX_PATH not in settings["extensions"]
+    assert settings["settings"]["booley.dashboard.attachProtocol"] == 0

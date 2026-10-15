@@ -4,6 +4,7 @@ import errno
 import json
 import socket
 import sys
+from itertools import islice
 from pathlib import Path
 
 from booley.harness.dashboard.app import DashboardApp
@@ -29,13 +30,16 @@ def _dashboard_is_open() -> bool:
     scope = namespace()
     if not scope or not hasattr(socket, "AF_UNIX"):
         raise RuntimeError("Sandbox Dashboard ownership is unavailable")
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
-        try:
-            probe.bind("\0booley-dashboard:" + scope)
-        except OSError as exc:
-            if exc.errno == errno.EADDRINUSE:
+    address = "@booley-dashboard:" + scope
+    # A probe must not reserve the live view's socket, even momentarily. Linux
+    # exposes abstract addresses here, in the caller's network namespace.
+    with Path("/proc/net/unix").open(encoding="utf-8") as sockets:
+        for index, row in enumerate(islice(sockets, 65537)):
+            if index == 65536:
+                raise RuntimeError("Sandbox socket inventory exceeds 65536 entries")
+            fields = row.split()
+            if len(fields) == 8 and fields[-1] == address:
                 return True
-            raise
     return False
 
 

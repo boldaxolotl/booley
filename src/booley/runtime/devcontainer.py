@@ -1066,7 +1066,8 @@ def build_devcontainer_spec(
     }
     from booley.runtime.dashboard_extension import VSIX_PATH
 
-    vscode["extensions"].append(VSIX_PATH)
+    if dashboard:
+        vscode["extensions"].append(VSIX_PATH)
     vscode["settings"]["booley.dashboard.attachProtocol"] = 1 if dashboard else 0
     if extension:
         # Pin the agent extension workspace-side (reinforces the

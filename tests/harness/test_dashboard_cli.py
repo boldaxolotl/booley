@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import errno
 import json
+import os
+import socket
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -111,3 +114,17 @@ def test_goal_and_dashboard_configuration_is_always_validated():
     assert not project_schema.audit_known_tables(data).findings
     assert not project_schema.audit_sandbox_table(data).is_valid
     assert not project_schema.audit_goals_table(data).is_valid
+
+
+def test_dashboard_preflight_observes_without_reserving_a_socket(monkeypatch):
+    if not Path("/proc/net/unix").exists() or not hasattr(socket, "AF_UNIX"):
+        pytest.skip("Linux abstract socket inventory is required")
+    scope = f"pid:[attach-policy-test-{os.getpid()}]"
+    monkeypatch.setattr(command, "namespace", lambda: scope)
+    assert not command._dashboard_is_open()
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as owner:
+        owner.bind("\0booley-dashboard:" + scope)
+        with monkeypatch.context() as probe:
+            probe.setattr(command.socket, "socket", lambda *_: pytest.fail("probe must not bind"))
+            assert command._dashboard_is_open()
+    assert not command._dashboard_is_open()

@@ -2,6 +2,8 @@
 
 const vscode = require('vscode');
 const { execFile } = require('node:child_process');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const BOOLEY = '/usr/local/bin/booley';
 const PROTOCOL = 'booley.dashboard.attachProtocol';
@@ -64,7 +66,12 @@ class AttachController {
             this.output.appendLine('Dashboard attach requires one opened Sandbox Project folder.');
             return undefined;
         }
-        return folders[0].uri;
+        const root = folders[0].uri;
+        if (!fs.existsSync(path.join(root.fsPath, '.git'))) {
+            this.output.appendLine('Dashboard auto-open requires a Git Project Root.');
+            return undefined;
+        }
+        return root;
     }
 
     async open() {
@@ -105,7 +112,14 @@ class AttachController {
             if (closed.exitStatus.code === 3) {
                 this.output.appendLine('The Dashboard is already open in this Sandbox.');
             }
+            if (closed.exitStatus.code === 4) {
+                this.output.appendLine('Dashboard attach was disabled before startup; check Project policy.');
+            }
             closed.dispose();
+        } else if (closed.exitStatus?.code !== undefined ||
+            closed.exitStatus?.reason === vscode.TerminalExitReason.Process) {
+            this.output.appendLine(`Dashboard startup failed (exit ${closed.exitStatus.code ?? 'unknown'}); run booley dashboard for details.`);
+            this.output.show(true);
         }
         this.terminal = undefined;
     }

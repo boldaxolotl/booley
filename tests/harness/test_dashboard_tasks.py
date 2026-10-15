@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -120,6 +122,42 @@ def test_runtime_attach_does_not_require_editing_tracked_unrelated_tasks(project
     assert tasks.attach_blocker(project.root, project.data) == ""
     project.file.write_text('{"tasks":[{"label":"Booley Dashboard","command":"user"}]}')
     assert "User-owned" in tasks.attach_blocker(project.root, project.data)
+
+
+def test_tracking_a_task_file_does_not_erase_a_recorded_removal(project, monkeypatch):
+    tasks.reconcile(project.root, project.data)
+    project.file.write_text('{"tasks":[]}')
+    monkeypatch.setattr(tasks, "_task_file_tracked", lambda _: True)
+    assert "User-removed" in tasks.attach_blocker(project.root, project.data)
+    (project.data / "booley.toml").write_text("[sandbox]\ndashboard = false\n")
+    transaction = tasks.reconcile(project.root, project.data)
+    assert len(transaction.applied) == 1
+    assert project.file.read_text() == '{"tasks":[]}'
+    (project.data / "booley.toml").write_text("[sandbox]\ndashboard = true\n")
+    assert tasks.attach_blocker(project.root, project.data) == ""
+
+
+@pytest.mark.parametrize(
+    "source,blocked",
+    [
+        (r'{"tasks":[{"label":"\u0042ooley Dashboard"}]}', True),
+        ('{// "Booley Dashboard" is only a comment\n"tasks":[]}', False),
+    ],
+)
+def test_tracked_dashboard_detection_uses_decoded_task_labels(
+    project, monkeypatch, source, blocked
+):
+    project.file.parent.mkdir()
+    project.file.write_text(source)
+    monkeypatch.setattr(tasks, "_task_file_tracked", lambda _: True)
+    assert bool(tasks.attach_blocker(project.root, project.data)) is blocked
+
+
+def test_invalid_folder_settings_produce_a_boundary_error(project):
+    tasks.reconcile(project.root, project.data)
+    (project.file.parent / "settings.json").write_text("[]")
+    with pytest.raises(ValueError, match="object"):
+        tasks.attach_blocker(project.root, project.data)
 
 
 def test_disable_retains_exclude_ownership_until_user_tail_allows_removal(project, monkeypatch):
@@ -610,19 +648,24 @@ def test_tracked_task_file_is_preserved_with_informational_notice(
     with monkeypatch.context() as changed_task:
         changed_task.setattr(tasks, "TASK", {**tasks.TASK, "command": "booley dashboard --new"})
         plan = tasks.inspect(tmp_path, data)
-        assert not plan.pending and not plan.diagnostics
+        assert plan.pending == (owned and disabled)
+        assert not plan.diagnostics
         # An owned task already carries the Dashboard label: nothing to tell the user.
         assert len(plan.notices) == (0 if disabled or owned else 1)
         if not disabled and not owned:
             assert plan.notices == (
                 "Dashboard task not installed: .vscode/tasks.json is tracked by Git; add the task yourself or set [sandbox].dashboard = false",
             )
-        assert not tasks.reconcile(tmp_path, data).applied
+        assert bool(tasks.reconcile(tmp_path, data).applied) == (owned and disabled)
     after = {
         path.relative_to(tmp_path): path.read_bytes()
         for path in tmp_path.rglob("*")
         if path.is_file() and ".git" not in path.parts
     }
+    if owned and disabled:
+        owner = Path(".booley/runtime/dashboard-task.json")
+        assert json.loads(after.pop(owner))["enabled"] is False
+        before.pop(owner)
     assert after == before
 
 

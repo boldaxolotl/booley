@@ -275,7 +275,8 @@ cannot identify every session or remain meaningful across Dashboard restarts.
   editor/profile extension installation is required. The extension and every
   Dashboard process run inside the Sandbox.
 - **Explicit policy, fixed process.** In a trusted Dev Containers window with
-  the generated attach protocol enabled, the extension reads live policy through
+  the generated attach protocol enabled and one Git Project Root opened, the
+  extension reads live policy through
   `booley dashboard --attach-policy`, then opens a transient terminal running
   the fixed executable and arguments `booley dashboard --on-attach`. Python
   rechecks configuration and ownership immediately before starting the existing

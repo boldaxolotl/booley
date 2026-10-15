@@ -30,14 +30,14 @@ Use `booley dashboard` in the Sandbox to open it manually. Automatic opening use
 the **Booley Dashboard** workspace extension bundled in the Sandbox Image, not
 VS Code's global permission for automatic tasks. After upgrading Booley, run
 `booley init` on the host and rebuild/reopen the Sandbox so its image contains
-the extension. An old live container does not gain files from a newer image.
+the extension. A running container does not gain files from a newer image.
 
 Check **Output → Booley Dashboard** for an opt-out, task ownership conflict or
 startup error. `[sandbox].dashboard = false`, an explicit user automatic-task
 preference of off, and the folder opt-out in `.vscode/settings.json` suppress
 opening. A deliberately removed or edited Dashboard task also stays an opt-out;
 see [Dashboard configuration](CONFIG.md#dashboard-and-quiet-goal-presence-goals)
-for restoration. Untrusted windows wait for trust. Headless sessions open no
+for restoration. Automatic opening requires a Git Project Root. Untrusted windows wait for trust. Headless sessions open no
 editor terminal. Closing the Dashboard does not restart it in the same window
 session; reopen it manually or reload the window.
 

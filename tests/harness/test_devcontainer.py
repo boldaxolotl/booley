@@ -295,7 +295,6 @@ class TestAppExtension:
             "mshr-h.veriloghdl",
             "bitwisecook.tcl",
             "ms-vscode.live-server",
-            "/usr/local/libexec/booley/dashboard.vsix",
         ]
         assert vscode["settings"]["remote.extensionKind"] == {ext: ["workspace"]}
         assert vscode["settings"]["vaporview.wcp.enabled"] is True
@@ -313,7 +312,6 @@ class TestAppExtension:
             "mshr-h.veriloghdl",
             "bitwisecook.tcl",
             "ms-vscode.live-server",
-            "/usr/local/libexec/booley/dashboard.vsix",
         ]
         assert vscode["settings"]["vaporview.wcp.enabled"] is True
         assert vscode["settings"]["vaporview.wcp.port"] == 54322
@@ -330,7 +328,6 @@ class TestAppExtension:
             "mshr-h.veriloghdl",
             "bitwisecook.tcl",
             "ms-vscode.live-server",
-            "/usr/local/libexec/booley/dashboard.vsix",
         ]
         assert vscode["settings"]["vaporview.wcp.enabled"] is True
         assert vscode["settings"]["vaporview.wcp.port"] == 54322

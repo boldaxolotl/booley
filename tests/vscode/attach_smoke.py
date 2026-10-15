@@ -61,6 +61,17 @@ exports.activate = async () => {
                         {cwd:'/work', timeout:10000});
                     result.duplicateExit = 0;
                 } catch (error) { result.duplicateExit = error.status; }
+                let duplicateClosed = false;
+                const listener = vscode.window.onDidCloseTerminal(t => {
+                    if (t === duplicate) { duplicateClosed = true; result.duplicateTerminalExit = t.exitStatus?.code; }
+                });
+                const duplicate = vscode.window.createTerminal({name:'Booley duplicate probe',
+                    shellPath:'/usr/local/bin/booley', shellArgs:['dashboard', '--on-attach'],
+                    cwd:'/work', isTransient:true});
+                for (let j = 0; j < 40 && !duplicateClosed; j++) { await wait(100); }
+                result.duplicateTerminalClosed = duplicateClosed;
+                listener.dispose();
+                duplicate.dispose();
                 terminal.sendText('q', false);
                 for (let j = 0; j < 40 && running().length; j++) { await wait(100); }
                 await wait(500);
@@ -143,7 +154,8 @@ def prepare(
         "workspaceFolder": "/work",
         "remoteUser": "agent",
         "updateRemoteUserUID": False,
-        "remoteEnv": {"BOOLEY_DIR": "/work/booley-state", "BOOLEY_MCP_MODE": "interactive"},
+        "mounts": [f"source={data},target=/booley-project,type=bind"],
+        "remoteEnv": {"BOOLEY_DIR": "/booley-project", "BOOLEY_MCP_MODE": "interactive"},
         "customizations": customization,
         "shutdownAction": "stopContainer",
     }
@@ -172,6 +184,7 @@ def check_result(result: dict, *, reload_window: bool = False) -> None:
     assert result["automaticPermission"] == "off", "Global automatic-task permission changed"
     assert result["namespace"] == result["terminalNamespace"], "Terminal ran outside the Sandbox"
     assert result["processes"] == 1 and result["duplicateExit"] == 3, "Singleton contract failed"
+    assert result["duplicateTerminalClosed"] and result["duplicateTerminalExit"] == 3
     assert result["afterClose"] == 0, "Dashboard restarted after deliberate close"
     if reload_window:
         assert result["reloadSessionChanged"], (

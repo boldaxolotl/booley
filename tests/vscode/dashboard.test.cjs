@@ -16,6 +16,7 @@ function fakeEditor({ trusted = true, remote = 'dev-container' }, records, setti
     const output = { appendLine: line => log.push(line), show() {}, dispose() {} };
     const listen = name => fn => { listeners[name] = fn; return { dispose() {} }; };
     return {
+        TerminalExitReason: {Process: 2, User: 3},
         env: { remoteName: remote, sessionId: 'fixture-window' },
         workspace: {
             isTrusted: trusted,
@@ -56,7 +57,12 @@ function fixture(options = {}) {
     }
     const module = { exports: {} };
     vm.runInNewContext(source, { exports: module.exports, AbortController,
-        require: name => name === 'vscode' ? vscode : { execFile } });
+        require: name => {
+            if (name === 'vscode') { return vscode; }
+            if (name === 'node:child_process') { return {execFile}; }
+            if (name === 'node:fs') { return {existsSync: () => options.git !== false}; }
+            return require(name);
+        } });
     const state = new Map();
     const context = { subscriptions: [], workspaceState: {
         get: (key, fallback) => state.has(key) ? state.get(key) : fallback,
@@ -87,7 +93,7 @@ test('default-off application permission still opens one fixed remote process', 
 
 test('explicit off, host folder, unrelated remote and disabled protocol are inert', async () => {
     for (const options of [{ permission: 'off' }, { remote: null },
-        { remote: 'ssh-remote' }, { protocol: 0 }]) {
+        { remote: 'ssh-remote' }, { protocol: 0 }, { git: false }]) {
         const f = fixture(options);
         await tick();
         assert.equal(f.calls.length, 0);
@@ -171,4 +177,16 @@ test('only owned terminals are cleaned up, and closing never causes a restart', 
     f.listeners.config({ affectsConfiguration: () => true });
     await tick();
     assert.equal(f.calls.length, 1);
+});
+
+test('startup failures and late policy opt-outs remain visible in Output', async () => {
+    for (const code of [1, 2, 4]) {
+        const f = fixture();
+        await tick();
+        const terminal = f.terminals[0];
+        terminal.exitStatus = {code};
+        f.listeners.close(terminal);
+        assert.equal(f.log.length, 1);
+        assert.match(f.log[0], code === 4 ? /disabled/ : /failed/);
+    }
 });

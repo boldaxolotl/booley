@@ -24,6 +24,28 @@ Inspect records with `booley goal status`; ask the Developer Agent
 for `goal_status(rules=true)` to recover evidence and rules after interruption.
 Read the Review Package and Session Summary when Finish succeeds.
 
+### The Dashboard does not open on Sandbox attach
+
+Use `booley dashboard` in the Sandbox to open it manually. Automatic opening uses
+the **Booley Dashboard** workspace extension bundled in the Sandbox Image, not
+VS Code's global permission for automatic tasks. After upgrading Booley, run
+`booley init` on the host and rebuild/reopen the Sandbox so its image contains
+the extension. A running container does not gain files from a newer image.
+
+Check **Output → Booley Dashboard** for an opt-out, task ownership conflict or
+startup error. `[sandbox].dashboard = false`, an explicit user automatic-task
+preference of off, and the folder opt-out in `.vscode/settings.json` suppress
+opening. A deliberately removed or edited Dashboard task also stays an opt-out;
+see [Dashboard configuration](CONFIG.md#dashboard-and-quiet-goal-presence-goals)
+for restoration. Automatic opening requires a Git Project Root. Untrusted windows wait for trust. Headless sessions open no
+editor terminal. Closing the Dashboard does not restart it in the same window
+session; reopen it manually or reload the window.
+
+If no Output channel appears, check **Developer: Show Running Extensions** for
+`booley.dashboard` running in the container. A disabled extension must be enabled
+there. Doctor checks whether the bundled VSIX matches the installed Booley code;
+missing/stale image artifacts require a Sandbox Image rebuild.
+
 ### A session shows `activity unknown`
 
 The Dashboard shows the activity that Claude Code or Codex reports through

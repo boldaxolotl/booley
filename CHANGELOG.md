@@ -9,6 +9,10 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- The Dashboard opens by default on trusted VS Code Sandbox attachment through
+  an image-bundled workspace extension. Existing opt-outs remain respected;
+  run host `booley init` and rebuild/reopen the Sandbox after upgrading.
+
 - Immutable-mode Pre-Sim Commands now run in the Project Root as documented,
   including shared and ordinary Simulation Campaign launches with `run_cwd` set.
   Hooks that relied on the previous working directory should

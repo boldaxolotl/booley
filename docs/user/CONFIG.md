@@ -2602,19 +2602,19 @@ quiet_after = 7200
 
 The Sandbox Image bundles the Booley Dashboard workspace extension. Dev Containers
 installs it from the image on first attach; it opens the terminal view in a trusted
-window without changing VS Code's global automatic-task permission. An explicit
+window opened at a Git Project Root without changing VS Code's global automatic-task permission. An explicit
 user preference of `"task.allowAutomaticTasks": "off"` still suppresses automatic
 opening, as does the same opt-out in `.vscode/settings.json`. The editor's default
 off value alone does not disable the Dashboard.
 
 `dashboard = false` disables the opener and removes an unchanged Booley-owned
 manual task. Reconciliation runs on `booley init` or Sandbox refresh. On upgrade,
-it changes an unchanged old `folderOpen` task into a manual shortcut. Existing
+it changes an unchanged owned `folderOpen` task into a manual shortcut. Existing
 user tasks, comments and unknown fields are preserved. Edited, unowned or
 deliberately removed Dashboard tasks suppress automatic opening with a diagnostic.
 To restore an owned task you removed, set `dashboard = false`, run `booley init`
 on the host, then set it to true and run init again. Rebuild/reopen the Sandbox
-after an image upgrade; a live old container cannot install a new image artifact.
+after an image upgrade; a running container cannot install a new image artifact.
 
 The shortcut lives in `.vscode/tasks.json`. Tracked tasks files remain unchanged;
 an unrelated tracked tasks file does not block the extension. A tracked Dashboard
