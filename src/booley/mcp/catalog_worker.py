@@ -12,6 +12,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from pydantic import TypeAdapter
+
 from booley.core.boundary import require_dict
 from booley.runtime.process_group import (
     capture_process_group,
@@ -21,6 +23,7 @@ from booley.runtime.process_group import (
 
 DISCOVERY_TIMEOUT_SECONDS = 15.0
 _MAX_OUTPUT_BYTES = 4 * 1024 * 1024
+_DIAGNOSTIC_BYTES = 4096
 
 
 def run_schema_worker(
@@ -60,10 +63,19 @@ def run_schema_worker(
             group = capture_process_group(process)
             try:
                 _wait_for_worker(process, output, result, cancel)
+            except RuntimeError as exc:
+                raise RuntimeError(f"{exc}\n{_diagnostic_tail(directory / 'worker.log')}") from exc
             finally:
                 # Also terminate descendants that outlive a successfully exited importer.
                 terminate_process_group(process, group, grace_seconds=0.2)
         return _read_result(result)
+
+
+def _diagnostic_tail(path: Path) -> str:
+    """Retain a bounded importer diagnostic before its temporary log is removed."""
+    with path.open("rb") as stream:
+        stream.seek(max(0, path.stat().st_size - _DIAGNOSTIC_BYTES))
+        return stream.read(_DIAGNOSTIC_BYTES).decode(errors="replace").strip()
 
 
 def _wait_for_worker(process, output, result: Path, cancel: threading.Event) -> None:
@@ -101,6 +113,7 @@ def _main(request: Path, result: Path) -> None:
     from booley.mcp.server import _import_and_extract_file
 
     definitions, errors = [], []
+    adapter = TypeAdapter(dict[str, Any])
     for raw_path in json.loads(request.read_text()):
         path = Path(raw_path)
         sys.path.insert(0, str(path.parent))
@@ -109,7 +122,12 @@ def _main(request: Path, result: Path) -> None:
         finally:
             sys.path.pop(0)
         if definition is not None:
-            definitions.append(definition)
+            try:
+                # Match the SDK's JSON serialization of Path/Enum defaults,
+                # while isolating an unsupported value to its own endpoint.
+                definitions.append(adapter.dump_python(definition, mode="json"))
+            except (TypeError, ValueError) as exc:
+                errors.append(f"INVALID CUSTOM MCP SCHEMA: {definition['name']}: {exc}")
         if error is not None:
             errors.append(error)
     result.write_text(json.dumps({"definitions": definitions, "errors": errors}))

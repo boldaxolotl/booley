@@ -6,6 +6,7 @@ import asyncio
 
 import pytest
 from mcp import Client, MCPError
+from mcp.client.subscriptions import ToolsListChanged
 from mcp.server.transport_security import TransportSecurityMiddleware
 from mcp.types import INTERNAL_ERROR, INVALID_PARAMS, CallToolRequestParams, TextContent
 from starlette.requests import Request
@@ -159,7 +160,8 @@ async def _notification_exercise(sdk, directory, *, edit_before_list=False):
                 (directory / "booley.toml").write_text("[flows.sim]\nenabled = false\n")
                 if edit_before_list:
                     await client.list_tools()
-                await asyncio.wait_for(anext(subscription), 4)
+                event = await asyncio.wait_for(anext(subscription), 4)
+                assert isinstance(event, ToolsListChanged)
                 received = True
         except (MCPError, TimeoutError):
             pass
@@ -194,7 +196,7 @@ def test_running_catalog_sends_list_changed(tmp_path, monkeypatch):
             ):
                 action()
                 event = await asyncio.wait_for(anext(subscription), 4)
-                assert event is not None
+                assert isinstance(event, ToolsListChanged)
 
     try:
         asyncio.run(exercise())
@@ -218,7 +220,7 @@ def test_list_refresh_does_not_consume_pending_notification(tmp_path, monkeypatc
         reset_cache()
 
 
-async def _http_notification_case(tmp_path, monkeypatch, *, legacy):
+async def _http_notification_case(tmp_path, monkeypatch, *, legacy, concurrent=False):
     import socket
     from contextlib import asynccontextmanager
 
@@ -253,6 +255,9 @@ async def _http_notification_case(tmp_path, monkeypatch, *, legacy):
 
     try:
         async with serving() as url:
+            if concurrent:
+                await _concurrent_http_notifications(url, directory, sdk)
+                return
             if not legacy:
                 await _notification_exercise(url, directory)
                 return
@@ -267,6 +272,32 @@ def test_http_json_client_receives_catalog_change_subscription(tmp_path, monkeyp
 
 def test_legacy_http_json_client_receives_catalog_change(tmp_path, monkeypatch):
     asyncio.run(_http_notification_case(tmp_path, monkeypatch, legacy=True))
+
+
+def test_concurrent_http_clients_share_poller_and_survive_peer_disconnect(tmp_path, monkeypatch):
+    asyncio.run(_http_notification_case(tmp_path, monkeypatch, legacy=False, concurrent=True))
+
+
+async def _concurrent_http_notifications(url, directory, sdk):
+    async with (
+        Client(url, mode="2026-07-28") as first,
+        first.listen(tools_list_changed=True) as first_events,
+    ):
+        async with (
+            Client(url, mode="2026-07-28") as second,
+            second.listen(tools_list_changed=True) as second_events,
+        ):
+            (directory / "booley.toml").write_text("[flows.sim]\nenabled = false\n")
+            events = await asyncio.wait_for(
+                asyncio.gather(anext(first_events), anext(second_events)), 4
+            )
+            assert all(isinstance(event, ToolsListChanged) for event in events)
+            assert "sim" not in {tool.name for tool in (await second.list_tools()).tools}
+        assert sdk.lifespan.__self__._running
+        (directory / "booley.toml").write_text("[flows.sim]\nenabled = true\n")
+        event = await asyncio.wait_for(anext(first_events), 4)
+        assert isinstance(event, ToolsListChanged)
+        assert "sim" in {tool.name for tool in (await first.list_tools()).tools}
 
 
 async def _legacy_http_notification(url, directory):

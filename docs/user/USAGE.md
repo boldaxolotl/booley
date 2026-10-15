@@ -801,9 +801,10 @@ their supported change-delivery channel (a subscription on modern clients or
 the notification stream on handshake clients), then request the list again.
 
 Capability settings come from the selected Booley Directory's `booley.toml`.
-Editing a Project Root `booley.toml` that selects that directory also
-invalidates the list, but does not relocate the running server. Changing the
-selected Project or process environment/mode requires starting a new server.
+When `BOOLEY_DIR` is unset, editing a Project Root `booley.toml` that selects
+that directory also invalidates the list, but does not relocate the running
+server. Changing the selected Project or process environment/mode requires
+starting a new server.
 
 <!-- BEGIN GENERATED: flows -->
 **Booley Flows**

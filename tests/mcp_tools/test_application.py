@@ -312,3 +312,96 @@ def test_finished_schema_worker_still_enforces_output_bound(tmp_path, monkeypatc
     finished = SimpleNamespace(poll=lambda: 0, returncode=0)
     with pytest.raises(RuntimeError, match="exceeded output limit"):
         catalog_worker._wait_for_worker(finished, output, tmp_path / "result", threading.Event())
+
+
+@pytest.mark.parametrize("default", ["Path('build')", "object()"])
+def test_schema_worker_preserves_valid_siblings_and_wire_defaults(tmp_path, default):
+    from booley.mcp.catalog_worker import run_schema_worker
+    from tests.mcp_tools.test_live_catalog import write_endpoint
+
+    path = write_endpoint(tmp_path, option="artifact")
+    path.write_text(
+        "from pathlib import Path\n"
+        + path.read_text().replace(
+            "parser.add_argument('--artifact', help='Current option')",
+            f"parser.add_argument('--artifact', type=Path, default={default})",
+        )
+    )
+    sibling = write_endpoint(tmp_path, name="valid_sibling")
+    try:
+        definitions, errors = run_schema_worker({"local_check": path, "valid_sibling": sibling})
+    except RuntimeError:
+        definitions, errors = [], []
+    by_name = {item["name"]: item for item in definitions}
+    assert "valid_sibling" in by_name, "schema worker must preserve valid endpoint definitions"
+    if default.startswith("Path"):
+        assert by_name["local_check"]["schema"]["properties"]["artifact"]["default"] == "build"
+        assert not errors
+    else:
+        assert "local_check" not in by_name
+        assert errors and "local_check" in errors[0]
+
+
+def test_replacement_logs_custom_schema_errors_without_retaining_startup_errors(caplog):
+    startup_errors = []
+    application = _application([_definition()], errors=startup_errors)
+    broken = _definition("broken", is_custom=True, schema={"type": "invalid"})
+    with caplog.at_level("WARNING"):
+        application.replace_tools([broken, _definition("valid")])
+    assert "INVALID CUSTOM MCP SCHEMA: broken" in caplog.text, (
+        "live catalog must log rejected custom schemas"
+    )
+    assert not startup_errors
+    assert [item.name for item in application.list_tools()] == ["valid"]
+
+
+def test_worker_failure_retains_bounded_importer_diagnostic(tmp_path):
+    from booley.mcp.catalog_worker import run_schema_worker
+    from tests.mcp_tools.test_live_catalog import write_endpoint
+
+    path = write_endpoint(tmp_path)
+    path.write_text("print('schema importer diagnostic', flush=True)\nraise SystemExit(7)\n")
+    with pytest.raises(RuntimeError) as raised:
+        run_schema_worker({"local_check": path})
+    assert "schema importer diagnostic" in str(raised.value), (
+        "worker failure must retain importer diagnostic"
+    )
+    assert "exited 7" in str(raised.value)
+
+
+@pytest.mark.parametrize("delay, error", [(8.25, RuntimeError), (0, ValueError)])
+def test_cancelled_schema_discovery_owns_worker_until_cleanup(monkeypatch, delay, error):
+    import threading
+
+    from booley.mcp import live_catalog
+
+    entered, release, reaped = (threading.Event() for _ in range(3))
+
+    def worker(paths, cancel):
+        entered.set()
+        assert cancel.wait(3)
+        assert release.wait(12)
+        reaped.set()
+        raise error("worker cleanup completed")
+
+    monkeypatch.setattr(live_catalog, "run_schema_worker", worker)
+
+    async def exercise():
+        task = asyncio.create_task(live_catalog._async_schemas({}))
+        assert await asyncio.to_thread(entered.wait, 2)
+        task.cancel()
+        try:
+            await asyncio.sleep(delay)
+            premature = delay > 0 and task.done()
+        finally:
+            release.set()
+        outcome = None
+        try:
+            await task
+        except (asyncio.CancelledError, RuntimeError, ValueError) as exc:
+            outcome = exc
+        assert not premature and isinstance(outcome, asyncio.CancelledError) and reaped.is_set(), (
+            "cancelled schema discovery must retain ownership until worker cleanup finishes"
+        )
+
+    asyncio.run(exercise())

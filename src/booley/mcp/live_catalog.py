@@ -117,7 +117,7 @@ class LiveCatalog:
             item["name"]: item for item in endpoints if not item.get("is_custom")
         }
         self._custom_cache = [item for item in endpoints if item.get("is_custom")]
-        self._custom_key = self._custom_fingerprint()
+        self._custom_key = self._custom_fingerprint(self._candidates())
         self._failed: tuple[object, Exception] | None = None
         self._stable = {
             item.name
@@ -155,14 +155,10 @@ class LiveCatalog:
         ensure_unique_names(candidates)
         return candidates
 
-    def _custom_fingerprint(self) -> tuple:
+    def _custom_fingerprint(self, candidates: list[Any]) -> tuple:
         return (
             self._source_fingerprint(),
-            tuple(
-                (item.name, item.path)
-                for item in self._candidates()
-                if Path(item.path).is_absolute()
-            ),
+            tuple((item.name, item.path) for item in candidates if Path(item.path).is_absolute()),
         )
 
     def needs_refresh(self, name: str) -> bool:
@@ -201,10 +197,7 @@ class LiveCatalog:
         custom = {
             item.name: Path(item.path) for item in candidates if Path(item.path).is_absolute()
         }
-        key = (
-            self._source_fingerprint(),
-            tuple((name, str(path)) for name, path in custom.items()),
-        )
+        key = self._custom_fingerprint(candidates)
         if key != self._custom_key:
             definitions, custom_errors = await _async_schemas(custom)
             self._custom_cache, self._custom_key = definitions, key
@@ -234,6 +227,8 @@ async def _async_schemas(paths: dict[str, Path]) -> tuple[Definitions, list[str]
         # AnyIO cancellation is level-triggered; shield the reaping join from
         # the SDK's cancelled task group as well as from asyncio cancellation.
         with anyio.CancelScope(shield=True):
-            with contextlib.suppress(RuntimeError, TimeoutError):
-                await asyncio.wait_for(asyncio.shield(task), 8)
+            # The runner already bounds discovery and process-tree cleanup.
+            # A shorter outer timeout could abandon Windows taskkill/reaping.
+            with contextlib.suppress(Exception):
+                await asyncio.shield(task)
         raise

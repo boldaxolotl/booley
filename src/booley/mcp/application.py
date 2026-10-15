@@ -7,6 +7,7 @@ catalog and one validated call path.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -21,6 +22,8 @@ from jsonschema.validators import validator_for
 
 from booley.core.boundary import BoundaryError, as_dict, require_dict
 from booley.mcp.session_registry import Attribution
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,7 +138,6 @@ class McpApplication:
         self._dispatch = dispatch
         self._request_dispatch = request_dispatch
         self._canonicalize = canonicalize
-        self._on_discovery_error = on_discovery_error
         self._generation = _CatalogGeneration({}, {}, {})
         for source in definitions:
             try:
@@ -184,14 +186,17 @@ class McpApplication:
 
     def replace_tools(self, definitions: Iterable[Mapping[str, Any]]) -> None:
         """Validate a complete candidate before publishing one atomic generation."""
+        errors: list[str] = []
         candidate = McpApplication(
             definitions,
             dispatch=self._dispatch,
             canonicalize=self._canonicalize,
-            on_discovery_error=self._on_discovery_error,
+            on_discovery_error=errors.append,
             request_dispatch=self._request_dispatch,
         )
         self._generation = candidate._generation
+        for error in errors:
+            logger.warning("%s", error)
 
     def _register(self, source: Mapping[str, Any]) -> None:
         name = str(source["name"])

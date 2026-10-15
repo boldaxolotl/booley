@@ -307,6 +307,27 @@ def test_hidden_and_removed_calls_refresh_before_dispatch(project, monkeypatch):
     asyncio.run(exercise())
 
 
+def test_new_custom_call_refreshes_and_dispatches_published_source(project, monkeypatch):
+    seen = []
+
+    async def dispatch(name, arguments, source, *args, **kwargs):
+        seen.append((name, arguments, source["custom_path"]))
+        return [TextContent(type="text", text="new endpoint dispatched")]
+
+    monkeypatch.setattr(server, "_dispatch_booley_mcp_tool", dispatch)
+    sdk, _ = server._build_server()
+
+    async def exercise():
+        async with live_client(sdk) as client:
+            path = write_endpoint(project)
+            result = await client.call_tool("local_check", {"first": "hello"})
+            assert not result.is_error
+            assert "new endpoint dispatched" in result.content[0].text
+            assert seen == [("local_check", {"first": "hello"}, str(path))]
+
+    asyncio.run(exercise())
+
+
 def test_duplicate_refresh_is_atomic_and_corrected_import_recovers(project):
     application, _, _ = server._build_mcp_catalog(server._McpLifetime(None, None))
     catalog = application.live_catalog
