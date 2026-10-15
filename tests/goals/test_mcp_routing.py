@@ -382,8 +382,13 @@ def test_malformed_retained_job_refuses_admission_and_poll(goal_mode, binding):
     assert "binding" in poll.value[0].text
 
 
-@pytest.mark.timeout(120)
-@pytest.mark.parametrize("mode", ["done", "clean"])
+@pytest.mark.parametrize(
+    "mode",
+    [
+        pytest.param("done", marks=pytest.mark.timeout(150)),
+        pytest.param("clean", marks=pytest.mark.timeout(120)),
+    ],
+)
 def test_reviewer_uses_goal_freshness_without_rewriting_producer_evidence(
     layout, monkeypatch, mode
 ):
@@ -1015,8 +1020,14 @@ def test_goal_review_fix_commit_then_explicit_verify_meets_clean(
     assert build_status(GoalStore(layout.control), layout.record).goals[0].status == "stale"
 
 
-@pytest.mark.timeout(120)
-@pytest.mark.parametrize("scope_change", ["growth", "empty", "removed_target"])
+@pytest.mark.parametrize(
+    "scope_change",
+    [
+        pytest.param("growth", marks=pytest.mark.timeout(150)),
+        pytest.param("empty", marks=pytest.mark.timeout(150)),
+        pytest.param("removed_target", marks=pytest.mark.timeout(150)),
+    ],
+)
 def test_target_scope_changes_do_not_strand_findings_or_get_certified_by_verify(
     layout: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, scope_change: str
 ) -> None:

@@ -28,7 +28,7 @@ TASK = {
     "label": LABEL,
     "type": "shell",
     "command": "booley dashboard",
-    "runOptions": {"runOn": "folderOpen", "instanceLimit": 1},
+    "runOptions": {"instanceLimit": 1},
     "presentation": {"reveal": "always", "panel": "dedicated", "clear": False},
     "problemMatcher": [],
 }
@@ -66,6 +66,58 @@ def enabled(booley_dir: Path) -> bool:
     path = booley_dir / "booley.toml"
     data = tomllib.loads(path.read_bytes().decode("utf-8")) if path.exists() else {}
     return parse_dashboard(data)
+
+
+def attach_blocker(root: Path, booley_dir: Path) -> str:
+    """Explain an opt-out/conflict before the extension creates a terminal.
+
+    Ownership stores a host-side root, so runtime reads compare task bytes rather
+    than calling host reconciliation against the Sandbox's different mount path.
+    The manual task remains a shortcut; the extension never executes it by label.
+    """
+    if not enabled(booley_dir):
+        return "Dashboard attach disabled by [sandbox].dashboard."
+    if _opt_out(root / ".vscode"):
+        return "Dashboard attach disabled by .vscode/settings.json."
+    path = root / ".vscode/tasks.json"
+    if _task_file_tracked(root):
+        if _names_dashboard_task(path):
+            return "User-owned Dashboard task preserved; automatic opening is disabled."
+        owner = _read_ownership(booley_dir)
+        return (
+            "User-removed Dashboard task preserved; disable then enable to restore."
+            if owner.get("enabled")
+            else ""
+        )
+    return _attach_task_blocker(path, booley_dir)
+
+
+def _read_ownership(booley_dir: Path) -> dict[str, Any]:
+    ownership = _bytes(booley_dir / "runtime/dashboard-task.json")
+    owner = (
+        require_dict(json.loads(ownership), field="Dashboard task ownership") if ownership else {}
+    )
+    if owner and owner.get("schema") != 1:
+        raise ValueError("Unsupported Dashboard ownership; run booley init on the host.")
+    return owner
+
+
+def _attach_task_blocker(path: Path, booley_dir: Path) -> str:
+    content = _bytes(path)
+    owner = _read_ownership(booley_dir)
+    document = Document(content.decode()) if content is not None else None
+    matching = _matching_tasks(document)[1] if document is not None else []
+    if owner.get("enabled") and not matching:
+        return "User-removed Dashboard task preserved; disable then enable to restore."
+    if len(matching) != 1 or not owner.get("enabled"):
+        return "Dashboard task unavailable or unowned; run booley init on the host."
+    task = matching[0]
+    assert document is not None
+    if document.source[task.start : task.end] != owner.get("task"):
+        return "User-edited Dashboard task preserved; automatic opening is disabled."
+    if task.value != TASK:
+        return "Dashboard task migration pending; run booley init on the host, then reattach."
+    return ""
 
 
 def _bytes(path: Path) -> bytes | None:
@@ -142,14 +194,31 @@ def _task_file_tracked(root: Path) -> bool:
 def _names_dashboard_task(path: Path) -> bool:
     """Whether a user-maintained tasks file already carries the Dashboard task."""
     content = _bytes(path)
-    return content is not None and json.dumps(LABEL).encode() in content
+    return content is not None and bool(_matching_tasks(Document(content.decode()))[1])
+
+
+def _disable_tracked_ownership(root: Path, booley_dir: Path) -> TaskPlan:
+    """Reset a recorded opt-out without modifying a now user-tracked task file."""
+    path = booley_dir / "runtime/dashboard-task.json"
+    before = _bytes(path)
+    if before is None:
+        return TaskPlan()
+    owner = _read_ownership(booley_dir)
+    if owner.get("root") != str(root.resolve()):
+        raise ValueError("foreign Dashboard task ownership")
+    if not owner.get("enabled"):
+        return TaskPlan()
+    after = (json.dumps({**owner, "enabled": False}, sort_keys=True) + "\n").encode()
+    return TaskPlan(changes=(FileChange(path, before, after),))
 
 
 def _inspect(root: Path, booley_dir: Path, common_dir: Path) -> TaskPlan:
     folder = root / ".vscode"
     active = enabled(booley_dir)
     if _task_file_tracked(root):
-        if not active or _names_dashboard_task(folder / "tasks.json"):
+        if not active:
+            return _disable_tracked_ownership(root, booley_dir)
+        if _names_dashboard_task(folder / "tasks.json"):
             return TaskPlan()
         notice = (
             "Dashboard task not installed: .vscode/tasks.json is tracked by Git; "

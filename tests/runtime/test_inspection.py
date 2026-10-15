@@ -957,3 +957,19 @@ def test_host_inspection_project_sandbox_resolution(
     )
     messages = [item.message for item in report.report().findings]
     assert any("multiple running Sandboxes" in message for message in messages) is duplicate
+
+
+def test_spec_warning_appends_one_owner_selected_workflow(tmp_path, monkeypatch):
+    from booley.audit.diagnostic_results import Findings
+    from booley.runtime import inspection, session_runtime
+
+    monkeypatch.setattr(
+        session_runtime, "sandbox_remedy", lambda _root: "run `booley session refresh` on the host"
+    )
+    request = inspection.RuntimeInspectionRequest(tmp_path, "booley-sandbox", None)
+    report = Findings()
+    inspection._spec_warning(request, report, "desired specification changed")
+    assert len(report.report().findings) == 1
+    message = report.report().findings[0].message
+    assert message.count("booley session refresh") == 1
+    assert "init --seed" not in message

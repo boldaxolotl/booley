@@ -103,6 +103,13 @@ def _issue_runtime_request(project, *, active: bool):
     )
 
 
+@pytest.fixture(autouse=True)
+def headless_repair_owner(monkeypatch):
+    from booley.runtime import session_runtime
+
+    monkeypatch.setattr(session_runtime, "strict_conflicting_vscode_session", lambda _root: None)
+
+
 @pytest.fixture(params=[False, True], ids=["no-active-eda", "active-image-eda"])
 def issued_environment(request, tmp_path, monkeypatch):
     active = request.param

@@ -176,3 +176,19 @@ def test_shared_and_selected_fingerprints_match_current_layout_golden(tmp_path):
     )
     assert rows == json.loads(_GOLDEN_1337)
     assert json.dumps(rows, sort_keys=True, separators=(",", ":")) == _GOLDEN_1337
+
+
+@pytest.mark.parametrize("target", [None, "sim"])
+def test_sim_harness_fingerprint_preserves_all_selected_inputs(tmp_path, target):
+    from tests.test_target_catalog import _category_sim_core
+
+    _category_sim_core(tmp_path)
+    fingerprint = compute_source_fingerprint(tmp_path, target=target)
+    assert fingerprint["rtl"]["files"] == ["shared/dut.sv"]
+    assert {"shared/main.cpp", "shared/driver.c", "shared/api.h", "shared/tb.sv"} <= set(
+        fingerprint["tb"]["files"]
+    )
+    assert ("shared/unused.cpp" in fingerprint["tb"]["files"]) == (target is None)
+    before = fingerprint["tb"]["digest"]
+    (tmp_path / "shared/main.cpp").write_text("// changed harness\n")
+    assert compute_source_fingerprint(tmp_path, target=target)["tb"]["digest"] != before

@@ -79,6 +79,7 @@ from booley.flows.sim.config import (
 )
 from booley.flows.sim.edam import normalize_eda_tool
 from booley.flows.target_test_plan import TargetTestPlan, build_target_test_plan
+from booley.flows.test_runs import parse_test_selector
 from booley.fusesoc import (
     core_security,
     fusesoc_registry,
@@ -2178,6 +2179,17 @@ def _check_current_runtime_activity_hooks(_pass: Check, _warn: Check) -> None:
     _pass("Dashboard session-activity hooks installed")
 
 
+def _check_current_runtime_dashboard_extension(_pass: Check, _warn: Check) -> None:
+    """Check image-owned delivery independently of editor trust and user preferences."""
+    from booley.runtime.dashboard_extension import installed_error
+
+    error = installed_error()
+    if error:
+        _warn(f"{error}; rebuild the Sandbox Image, then rebuild/reopen the Sandbox")
+        return
+    _pass("Dashboard workspace extension bundled in the Sandbox Image")
+
+
 def _check_container_runtime_payload(
     check: Callable[[str, list[str], str], None],
 ) -> None:
@@ -2223,6 +2235,7 @@ def _run_container_checks(
     if runtime_context.inside_session_runtime():
         _check_current_runtime_web_isolation(_pass, _fail)
         _check_current_runtime_activity_hooks(_pass, _warn)
+        _check_current_runtime_dashboard_extension(_pass, _warn)
         _skip(_no_docker_skip_reason())
         return
     if not docker_exe:
@@ -4014,13 +4027,28 @@ def _check_sim_target_setup(
 ) -> None:
     """Run source-backed setup checks for every simulation Target."""
     for name, ref in sorted(inputs.refs.items()):
-        if ref.flow != "sim":
+        if not flow_can_drive("sim", ref):
             continue
         try:
             sources = inputs.sources_for(name)
         except fusesoc_registry.FuseSocError:
             continue  # malformed CAPI2 is already reported by the schema audit
-        _check_sim_target_tb_staging(name, sources, _pass, _fail)
+        explicit = fusesoc_registry.explicit_target_sources(project.project_root, ref)
+        inferred = sorted(
+            item.path
+            for item in inputs.inspection_for(name).inputs
+            if item.file_type.lower() in {"cppsource", "csource"}
+            and "tb" in item.tags
+            and fusesoc_registry.canonical_project_path(project.project_root, item.path)
+            not in explicit.tb_files
+        )
+        if inferred:
+            _warn(
+                f"sim Target '{name}' untagged C/C++ harness files: {', '.join(inferred)}; add tags:[tb] to their fileset"
+            )
+        if ref.flow != "sim":
+            continue  # preserve legacy setup auditing while still warning on inferred roles
+        _check_sim_target_tb_staging(name, explicit, _pass, _fail)
         _check_sim_verdict_setup(
             project,
             project.project_root,
@@ -5639,6 +5667,28 @@ def _report_native_dependencies(
         )
 
 
+def _native_dependency_sources(project: ProjectAudit) -> list[str]:
+    """Collect selected compile inputs from both source roles for native scanning."""
+    seeds = _project_target_matrix(project).seed_targets
+    if not seeds:
+        return []
+    sources: list[str] = []
+    try:
+        catalog = TargetCatalog.build(project.project_root)
+    except FuseSocError:
+        return []
+    for token in seeds:
+        try:
+            sources.extend(
+                item.path
+                for item in catalog.inspect(catalog.select(token)).inputs
+                if not item.is_include
+            )
+        except FuseSocError:
+            continue  # an unresolvable Target is already reported elsewhere
+    return sources
+
+
 def _audit_native_dependencies(project: ProjectAudit, _pass: Check, _warn: Check) -> None:
     """Warn when a Target's C/C++ sources need a native package the image lacks.
 
@@ -5651,20 +5701,8 @@ def _audit_native_dependencies(project: ProjectAudit, _pass: Check, _warn: Check
     Advisory by design — this is a curated header list, not a resolver, so it
     can only be a hint. It never fails the gate.
     """
-    seeds = _project_target_matrix(project).seed_targets
-    if not seeds:
-        return
     root = project.project_root
-    sources: list[str] = []
-    try:
-        catalog = TargetCatalog.build(root)
-    except FuseSocError:
-        return
-    for token in seeds:
-        try:
-            sources.extend(catalog.inspect(catalog.select(token)).rtl_files)
-        except FuseSocError:
-            continue  # an unresolvable Target is already reported elsewhere
+    sources = _native_dependency_sources(project)
 
     needed: dict[str, set[str]] = {}
     scanned = 0
@@ -6285,6 +6323,7 @@ def _run_selftest_checks(
             expect_pass=True,
             flow_runtime=flow_runtime,
             _pass=_pass,
+            _warn=_warn,
             _skip=_skip,
             _fail=_fail,
         )
@@ -6296,6 +6335,7 @@ def _run_selftest_checks(
             expect_pass=False,
             flow_runtime=flow_runtime,
             _pass=_pass,
+            _warn=_warn,
             _skip=_skip,
             _fail=_fail,
         )
@@ -6404,6 +6444,99 @@ def _execute_selftest(
     return result
 
 
+def _selftest_report_path(project: ProjectAudit) -> Path:
+    return project.booley_dir / _DOCTOR_TMP / "flow-reports" / "sim.json"
+
+
+def _read_selftest_campaign(project: ProjectAudit, case: _SelftestCase, rc: int) -> dict:
+    report = require_dict(json.loads(_selftest_report_path(project).read_text(encoding="utf-8")))
+    if report.get("$schema") != "booley.simulation-report/v3" or report.get("flow") != "sim":
+        raise ValueError("report is not a Simulation Flow v3 report")
+    if require_int(report.get("exit_code"), field="exit_code") != rc:
+        raise ValueError("report exit code does not match this invocation")
+    campaigns = require_dict(require_dict(report.get("detail")).get("campaigns"))
+    campaign = require_dict(campaigns.get(case.target), field="selected campaign")
+    if campaign.get("complete") is not True:
+        raise ValueError("selected Simulation Campaign is incomplete")
+    return campaign
+
+
+def _selftest_observation_pairs(campaign: dict) -> list[tuple[dict, dict]]:
+    rows = require_list(campaign.get("test_runs"), field="test_runs")
+    observations = require_list(campaign.get("observations"), field="observations")
+    if (
+        require_int(campaign.get("test_run_total")) != len(rows)
+        or require_int(campaign.get("observation_total")) != len(observations)
+        or len(rows) != len(observations)
+        or campaign.get("test_runs_truncated") is not False
+        or campaign.get("observations_truncated") is not False
+    ):
+        raise ValueError("Test Run rows and observations are truncated or inconsistent")
+    pairs = [
+        (require_dict(row), require_dict(obs)) for row, obs in zip(rows, observations, strict=True)
+    ]
+    if any(
+        "test" not in row or "test" not in obs or row["test"] != obs["test"] for row, obs in pairs
+    ):
+        raise ValueError("Test Run rows and observations do not correspond")
+    return pairs
+
+
+def _selftest_row_selected(row: dict, case: _SelftestCase) -> bool:
+    if row["test"] is None:
+        if row.get("variant") is not None:
+            raise ValueError("unnamed Test Run has a Variant")
+        return case.test is None
+    recorded = parse_test_selector(require_str(row, "name"))
+    if row["test"] != recorded.test or row.get("variant") != recorded.variant:
+        raise ValueError("Test Run name contradicts its Test or Variant")
+    if case.test is None:
+        return True
+    selected = parse_test_selector(case.test)
+    return recorded.test == selected.test and recorded.variant == selected.variant
+
+
+def _sim_selftest_evidence(campaign: dict, case: _SelftestCase) -> tuple[bool, str | None]:
+    pairs = _selftest_observation_pairs(campaign)
+    selected = [(row, obs) for row, obs in pairs if _selftest_row_selected(row, case)]
+    for _row, obs in selected:
+        if obs.get("execution") == "blocked_by_build" and obs.get("failure_class") == "design":
+            detail = require_dict(obs.get("detail"))
+            return False, require_str(detail, "reason")
+    if require_list(campaign.get("build_stage"), field="build_stage"):
+        raise ValueError("report contains failed build-stage evidence")
+    for row, obs in selected:
+        if (
+            row.get("grade") == "fail"
+            and obs.get("execution") == "completed"
+            and obs.get("failure_class") in (None, "design")
+            and (obs.get("functional") == "fail" or obs.get("assertions") == "dirty")
+        ):
+            return True, None
+    raise ValueError("no selected completed behavioral Test failure was observed")
+
+
+def _grade_sim_bad_selftest(project, case, result, label, _pass, _warn) -> bool:
+    try:
+        campaign = _read_selftest_campaign(project, case, result.returncode)
+        accepted, compiler_reason = _sim_selftest_evidence(campaign, case)
+    except (OSError, ValueError, BoundaryError) as exc:
+        _warning_sink(_warn, "flow.selftest-evidence-unvalidated", subject="sim")(
+            f"{label} fail-path unvalidated - {exc}"
+        )
+        return False
+    if not accepted:
+        overlay = selftest_overlay.bad_overlay_dir(project.booley_dir, "sim").resolve()
+        _warning_sink(_warn, "flow.selftest-overlay-build-failed", subject="sim")(
+            f"{label}: bad overlay no longer builds against the current design — update {overlay}"
+        )
+        for line in (compiler_reason or "").splitlines()[-8:]:
+            info(f"    {line[:300]}")
+        return False
+    _pass(f"{label} correctly graded a failure")
+    return True
+
+
 def _grade_selftest_result(
     result: subprocess.CompletedProcess,
     label: str,
@@ -6452,6 +6585,7 @@ def _run_one_selftest(
     expect_pass: bool,
     flow_runtime: _DoctorFlowRuntime,
     _pass: Check,
+    _warn: Check,
     _skip: Check,
     _fail: Fail,
 ) -> bool:
@@ -6470,10 +6604,20 @@ def _run_one_selftest(
     if prepared is None:
         return False
     cmd, env, timeout_s = prepared
+    if flow_name == "sim" and not expect_pass:
+        try:
+            _selftest_report_path(project).unlink(missing_ok=True)
+        except OSError as exc:
+            _fail(
+                f"{label} cannot clear prior report: {exc}", "remove the Doctor-owned sim report"
+            )
+            return False
     _announce_long_check(label, f"real EDA run; timeout {_format_minutes(timeout_s)}")
     result = _execute_selftest(project, cmd, env, timeout_s, label, flow_name, _fail=_fail)
     if result is None:
         return False
+    if flow_name == "sim" and not expect_pass and result.returncode == _TOOL_EXIT_DESIGN_FAIL:
+        return _grade_sim_bad_selftest(project, case, result, label, _pass, _warn)
     _grade_selftest_result(result, label, expect_pass=expect_pass, _pass=_pass, _fail=_fail)
 
     return True

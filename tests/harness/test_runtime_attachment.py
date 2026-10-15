@@ -368,7 +368,7 @@ def test_missing_container_protocol_fails_fast_with_actionable_message(
 
     assert result.exit_code == 125
     assert result.terminal_cause == "protocol_unavailable"
-    assert "booley session refresh" in caplog.text
+    assert "execution protocol" in caplog.text
     assert time.monotonic() - started < 1
 
 
@@ -397,5 +397,54 @@ def test_protocol_version_mismatch_fails_closed(tmp_path: Path, monkeypatch, cap
     assert result.exit_code == 125
     assert result.tree_terminal is False
     assert result.terminal_cause == "protocol_mismatch"
-    assert "booley session refresh" in caplog.text
+    assert "execution protocol" in caplog.text
     assert time.monotonic() - started < 2
+
+
+@pytest.mark.parametrize(
+    "stale,cause,expected",
+    [
+        (True, "protocol_mismatch", "refresh"),
+        (False, "protocol_mismatch", "rebuild"),
+        (False, "protocol_unavailable", "verify/repair"),
+    ],
+)
+def test_protocol_repair_distinguishes_spec_drift_from_runtime_defect(
+    tmp_path, monkeypatch, caplog, stale, cause, expected
+):
+    from types import SimpleNamespace
+
+    from booley.runtime import (
+        image_identity,
+        interactive_docker,
+        session_issuance,
+        session_runtime,
+    )
+
+    path = tmp_path / "devcontainer.json"
+    path.write_text("{}")
+    monkeypatch.setattr(
+        session_issuance, "load_issued_snapshot", lambda _root: SimpleNamespace(image="immutable")
+    )
+    monkeypatch.setattr(session_runtime.dc, "devcontainer_path", lambda _root: path)
+    monkeypatch.setattr(session_issuance, "validate", lambda *_args: None)
+    monkeypatch.setattr(
+        interactive_docker,
+        "compare_issued_build",
+        lambda _image: SimpleNamespace(
+            status=image_identity.Status.MISMATCH if stale else image_identity.Status.MATCH
+        ),
+    )
+    monkeypatch.setattr(
+        session_runtime,
+        "sandbox_remedy",
+        lambda _root, *, runtime_only: "rebuild" if runtime_only else "refresh",
+    )
+    runtime_attachment._report_protocol_failure(
+        runtime_attachment.ExecutionResult(125, "unrecoverable", False, cause), tmp_path
+    )
+    assert expected in caplog.text
+    if stale:
+        assert "rebuild" not in caplog.text
+    else:
+        assert "refresh" not in caplog.text

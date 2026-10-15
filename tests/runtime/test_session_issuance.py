@@ -199,7 +199,9 @@ def test_issue_prepared_revalidates_authority_and_persists_exact_preview(
 
     assert result is issuance
     assert events == ["validate authority", "validate policy", "prepare dependencies"]
-    persist.assert_called_once_with(project, prepared, requirements=requirements)
+    persist.assert_called_once_with(
+        project, prepared, requirements=requirements, reconcile_dashboard=True
+    )
 
 
 def test_issue_prepared_rejects_authority_drift_before_persisting(
@@ -530,8 +532,7 @@ def test_every_project_requires_exact_host_stamp(issued) -> None:
 
 
 _WITHDRAWN_ISSUANCE = (
-    "Sandbox issuance was withdrawn (EDA grant change, invalidation or Project forget); "
-    "run booley init --seed on the host to reissue"
+    "Sandbox issuance was withdrawn (EDA grant change, invalidation or Project forget)"
 )
 
 
@@ -671,15 +672,18 @@ def _revoke_issued_project(project: Path, monkeypatch: pytest.MonkeyPatch) -> Mo
     return docker
 
 
-@pytest.mark.parametrize("boundary", ["enter", "cli", "refresh"])
+@pytest.mark.parametrize("boundary", ["up", "ensure", "enter", "cli", "refresh"])
 def test_real_revoke_reports_withdrawal_at_enter_and_cli(
     issued, monkeypatch, capsys, boundary
 ) -> None:
     project, _spec, _path, _stamp = issued
     docker = _revoke_issued_project(project, monkeypatch)
-    if boundary == "enter":
+    if boundary in {"up", "ensure", "enter"}:
         with pytest.raises(session_runtime.SessionError) as raised:
-            session_runtime.enter(project, ["true"], tty=False)
+            if boundary == "enter":
+                session_runtime.enter(project, ["true"], tty=False)
+            else:
+                getattr(session_runtime, boundary)(project)
         assert _WITHDRAWN_ISSUANCE in str(raised.value)
         assert "corrupt" not in str(raised.value)
     elif boundary == "cli":
@@ -691,7 +695,7 @@ def test_real_revoke_reports_withdrawal_at_enter_and_cli(
     else:
         with pytest.raises(session_runtime.SessionError) as refresh_error:
             session_refresh._load_recovery_issuance(project)
-        assert str(refresh_error.value) == (
+        assert str(refresh_error.value).startswith(
             "cannot preserve the prior Sandbox: " + _WITHDRAWN_ISSUANCE
         )
     docker.assert_not_called()
@@ -874,6 +878,9 @@ def test_no_eda_issuance_and_validation_never_open_authority_store(
         )
         monkeypatch.setattr(session_runtime, "_preflight", lambda *_args, **_kwargs: None)
         monkeypatch.setattr(session_admission, "admit_start", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(
+            session_admission, "running_project_sandboxes", lambda *_args, **_kwargs: ()
+        )
         monkeypatch.setattr(session_runtime.idk, "container_exists", lambda _name: False)
         monkeypatch.setattr(
             session_runtime,
@@ -2135,7 +2142,7 @@ def test_compiler_cache_identity_is_fixed_and_old_specs_need_refresh(issued, sec
         runtime_spec.validate(project, spec, path)
     # An old Sandbox authenticates against its own stamp; the environment
     # check must then name the actionable fix, not a generic key diff.
-    with pytest.raises(runtime_spec.RuntimeSpecError, match="refresh the Sandbox"):
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="Compiler-cache root differs"):
         runtime_spec._validate_environment(spec, None)
 
 
@@ -2342,7 +2349,7 @@ def test_issued_git_environment_rejects_missing_and_drift(issued, section, key, 
         spec[section].pop(key)
     else:
         spec[section][key] = drift
-    with pytest.raises(runtime_spec.RuntimeSpecError, match=r"\[agent.git\].*refresh.*recreate"):
+    with pytest.raises(runtime_spec.RuntimeSpecError, match=r"\[agent.git\].*drifted"):
         runtime_spec._validate_git_identity_environment(spec, Path(stamp.project_data_source))
 
 
@@ -2357,7 +2364,7 @@ def test_issuance_pins_authoritative_external_identity_and_detects_stale_config(
         assert spec[section]["GIT_CONFIG_VALUE_1"] == "external@example.invalid"
     runtime_spec._validate_git_identity_environment(spec, tmp_path)
     (tmp_path / "booley.toml").write_text('[agent.git]\nname="Changed Agent"\n')
-    with pytest.raises(runtime_spec.RuntimeSpecError, match="refresh and recreate"):
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="identity has drifted"):
         runtime_spec._validate_git_identity_environment(spec, tmp_path)
 
 
@@ -2673,3 +2680,373 @@ def test_directory_alias_proof_refuses_missing_image_identity_before_docker(monk
     with pytest.raises(error, match="Sandbox image identity is unavailable"):
         check(None)
     probe.assert_not_called()
+
+
+def test_refresh_adapter_observes_git_drift_with_unchanged_image(issued, monkeypatch):
+    """Exercise the real init builder and prepared-spec comparison, not a drift mock."""
+    from booley.harness import init_cmd
+    from booley.harness.session_refresh import _RuntimeImages
+
+    project, _spec, _path, stamp = issued
+    monkeypatch.setattr(init_cmd, "_resolve_auth_token_source", lambda _app: None)
+    monkeypatch.setattr(init_cmd, "_resolve_token_seed_source", lambda _app: None)
+    monkeypatch.setattr(init_cmd, "_resolve_config_seed_source", lambda _app: None)
+    monkeypatch.setattr(init_cmd.auth_token, "resolve_token", lambda _app: None)
+    adapter = _RuntimeImages()
+    image = session_refresh.RefreshImage(
+        "booley-sandbox", stamp.image_id, image_graph_changed=False
+    )
+    adapter.prepare_spec(project, image)
+    adapter.reissue(project, image.selected_id, verbose=False)
+    assert adapter.spec_is_current(project)
+    config = project / ".booley" / "booley.toml"
+    config.write_text('[agent.git]\nname = "Changed Name"\nemail = "changed@example.test"\n')
+    changed = _RuntimeImages()
+    changed.prepare_spec(project, image)
+    assert not changed.spec_is_current(project)
+    changed.reissue(project, image.selected_id, verbose=False)
+    assert changed.spec_is_current(project)
+    current = json.loads(dc.devcontainer_path(project).read_text())
+    assert "Changed Name" in current["containerEnv"].values()
+
+
+def _mutate_issuance_identity(setting, project, tmp_path, config, monkeypatch):
+    if setting == "project-data-source":
+        source = tmp_path / "new-trusted-source"
+        source.mkdir()
+        (source / "booley.toml").write_text(config.read_text())
+        monkeypatch.setenv("BOOLEY_DIR", str(source))
+        reset_cache()
+    if setting == "eda-policy":
+        monkeypatch.setattr(
+            eda_requirements, "POLICY_REVISION", eda_requirements.POLICY_REVISION + 1
+        )
+    if setting == "validator":
+        validator = runtime_spec._find_trusted_validator(project)
+        assert validator is not None
+        validator.write_text("#!/bin/sh\nexit 1\n")
+
+
+def _refresh_source_mutator(project, tmp_path, monkeypatch):
+    from booley.harness import init_cmd
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    forwarding = {"present": False}
+    monkeypatch.setattr(
+        init_cmd.auth_token,
+        "resolve_token",
+        lambda _app: "fixture" if forwarding["present"] else None,
+    )
+    timezone = {"value": "UTC"}
+    monkeypatch.setattr(init_cmd, "detect_host_timezone", lambda: timezone["value"])
+    pdk = tmp_path / "pdk"
+    pdk.mkdir()
+    ready = {"value": False}
+    monkeypatch.setattr(init_cmd.nangate_pdk, "is_ready", lambda: ready["value"])
+    monkeypatch.setattr(init_cmd.nangate_pdk, "cache_root", lambda: pdk)
+    config = project / ".booley" / "booley.toml"
+    config.write_text('[agent]\nprovider="claude"\n')
+
+    def mutate(setting):
+        changes = {
+            "git-name": '[agent.git]\nname="Changed Name"\n',
+            "git-email": '[agent.git]\nemail="changed@example.test"\n',
+            "provider": '[agent]\nprovider="codex"\n',
+            "memory": '[sandbox]\nmemory="8g"\n',
+            "masks": '[sandbox]\nmask_paths=["private"]\n',
+            "dashboard": "[sandbox]\ndashboard=false\n",
+            "skills": "[sandbox]\nmount_host_skills=true\n",
+        }
+        if setting in changes:
+            prefix = "" if setting == "provider" else '[agent]\nprovider="claude"\n'
+            config.write_text(prefix + changes[setting])
+        if setting == "timezone":
+            timezone["value"] = "Asia/Tbilisi"
+        files = {
+            "auth-bind": home / ".claude" / ".credentials.json",
+            "config-seed": home / ".claude.json",
+            "token-seed": init_cmd.auth_token.token_path("claude"),
+            "skills": home / ".agents" / "skills" / "custom" / "SKILL.md",
+        }
+        if setting in files:
+            target = files[setting]
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("fixture")
+        if setting == "credential-forwarding":
+            forwarding["present"] = True
+        if setting == "pdk":
+            ready["value"] = True
+        _mutate_issuance_identity(setting, project, tmp_path, config, monkeypatch)
+
+    return mutate
+
+
+@pytest.mark.parametrize(
+    "setting",
+    [
+        "git-name",
+        "git-email",
+        "provider",
+        "memory",
+        "masks",
+        "dashboard",
+        "timezone",
+        "auth-bind",
+        "config-seed",
+        "token-seed",
+        "credential-forwarding",
+        "skills",
+        "pdk",
+        "project-data-source",
+        "eda-policy",
+        "validator",
+    ],
+)
+def test_refresh_replaces_spec_drift_without_image_change(issued, monkeypatch, tmp_path, setting):
+    from booley.harness.session_refresh import _RuntimeImages
+
+    project, _spec, _path, stamp = issued
+    mutate = _refresh_source_mutator(project, tmp_path, monkeypatch)
+    image = session_refresh.RefreshImage(
+        "booley-sandbox", stamp.image_id, image_graph_changed=False
+    )
+    initial = _RuntimeImages()
+    initial.prepare_spec(project, image)
+    initial.reissue(project, image.selected_id, verbose=False)
+    current = runtime_spec.load_issued_snapshot(project)
+    mutate(setting)
+    events = []
+
+    class Images(_RuntimeImages):
+        def inspect(self, *_args, **_kwargs):
+            pass
+
+        def prepare(self, *_args, **_kwargs):
+            return image
+
+        def validate(self, *_args, **_kwargs):
+            pass
+
+        def commit(self):
+            return image
+
+        def abort(self):
+            pass
+
+        def finalize(self, *_args):
+            pass
+
+        def reissue(self, *args, **kwargs):
+            events.append("reissue")
+            super().reissue(*args, **kwargs)
+
+    name = session_runtime.session_container_name(project)
+    parked = session_runtime.ParkedSession(
+        name,
+        name + "-pre-refresh",
+        True,
+        project_id="project",
+        reconnect_egress=False,
+        container_id="old",
+        image_id=current.image_id,
+    )
+    monkeypatch.setattr(session_runtime, "strict_conflicting_vscode_session", lambda *_: None)
+    monkeypatch.setattr(session_runtime, "plan_session_refresh", lambda *_: parked)
+    monkeypatch.setattr(session_runtime, "park_planned_session", lambda *_: events.append("park"))
+    monkeypatch.setattr(session_runtime, "verify_refreshed_session", lambda *a, **k: None)
+    monkeypatch.setattr(session_runtime, "_up_unlocked", lambda *a, **k: events.append("up"))
+    monkeypatch.setattr(session_runtime, "discard_refresh_session", lambda *_: None)
+    monkeypatch.setattr(session_runtime, "refresh_container_id", lambda *_: "new", raising=False)
+    result = session_refresh.refresh(project, Images())
+    assert events == ["park", "reissue", "up"]
+    assert result.outcome == "replaced"
+    assert result.previous_container_id == "old" and result.container_id == "new"
+    assert runtime_spec.validate(
+        project,
+        json.loads(dc.devcontainer_path(project).read_text()),
+        dc.devcontainer_path(project),
+    )
+
+
+@pytest.mark.parametrize("boundary", ["before-park", "issuance-lease"])
+def test_refresh_rejects_config_races_without_publishing(issued, monkeypatch, boundary):
+    from booley.harness.session_refresh import _RuntimeImages
+
+    project, _spec, path, stamp = issued
+    adapter = _RuntimeImages()
+    image = session_refresh.RefreshImage(
+        "booley-sandbox", stamp.image_id, image_graph_changed=False
+    )
+    adapter.prepare_spec(project, image)
+    before = path.read_bytes(), runtime_spec.stamp_path(project).read_bytes()
+    config = project / ".booley" / "booley.toml"
+    if boundary == "before-park":
+        config.write_text('[sandbox]\nmemory="8g"\n')
+        with pytest.raises(session_runtime.SessionError, match="inputs changed"):
+            adapter.validate_spec(project)
+    else:
+        lease = runtime_spec.eda_requirements.lease_build_requirements
+
+        @contextmanager
+        def mutate(*args, **kwargs):
+            with lease(*args, **kwargs) as requirements:
+                config.write_text('[sandbox]\nmemory="8g"\n')
+                yield requirements
+
+        monkeypatch.setattr(runtime_spec.eda_requirements, "lease_build_requirements", mutate)
+        with pytest.raises(runtime_spec.RuntimeSpecError, match="inputs changed"):
+            adapter.reissue(project, image.selected_id, verbose=False)
+    assert (path.read_bytes(), runtime_spec.stamp_path(project).read_bytes()) == before
+
+
+@pytest.mark.parametrize("setting", ["provider", "memory", "masks", "skills"])
+def test_refresh_builder_uses_trusted_external_booley_directory(
+    issued, monkeypatch, tmp_path, setting
+):
+    from booley.harness import init_cmd
+    from booley.harness.session_refresh import _RuntimeImages
+
+    project, _spec, _path, stamp = issued
+    external = tmp_path / "trusted-data"
+    external.mkdir()
+    home = tmp_path / "home"
+    skill = home / ".agents" / "skills" / "custom"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("fixture")
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.setenv("BOOLEY_DIR", str(external))
+    reset_cache()
+    values = {
+        "provider": '[agent]\nprovider="codex"\n',
+        "memory": '[sandbox]\nmemory="8g"\n',
+        "masks": '[sandbox]\nmask_paths=["private"]\n',
+        "skills": "[sandbox]\nmount_host_skills=true\n",
+    }
+    (external / "pipeline.toml").write_text(values[setting])
+    ctx = init_cmd.InitContext(project_root=project, force=False, verbose=False)
+    sources = init_cmd._interactive_spec_sources(
+        ctx, init_cmd._NANGATE_PDK_NOT_REQUESTED, None, stamp.image_id
+    )
+    assert sources.project_data_source == external
+    assert {
+        "provider": sources.app == "codex",
+        "memory": sources.memory == "8g",
+        "masks": sources.mask_paths == ("private",),
+        "skills": bool(sources.host_skills),
+    }[setting]
+    # The actual preview uses this same authorized source.
+    adapter = _RuntimeImages()
+    adapter.prepare_spec(project, session_refresh.RefreshImage("booley-sandbox", stamp.image_id))
+    monkeypatch.delenv("BOOLEY_DIR")
+    reset_cache()
+    (project / "booley.toml").write_text('[project]\ndir="' + external.as_posix() + '"\n')
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="cannot authorize"):
+        init_cmd._interactive_spec_sources(
+            ctx, init_cmd._NANGATE_PDK_NOT_REQUESTED, None, stamp.image_id
+        )
+
+
+def test_refresh_dashboard_tasks_unchanged_until_verified_finalization(issued, monkeypatch):
+    from booley.harness.session_refresh import _RuntimeImages
+    from booley.runtime import dashboard_tasks
+
+    project, _spec, _path, stamp = issued
+    reconcile = Mock(side_effect=AssertionError("precommit dashboard mutation"))
+    monkeypatch.setattr(dashboard_tasks, "reconcile", reconcile)
+    adapter = _RuntimeImages()
+    adapter.prepare_spec(project, session_refresh.RefreshImage("booley-sandbox", stamp.image_id))
+    adapter.reissue(project, stamp.image_id, verbose=False)
+    reconcile.assert_not_called()
+
+
+@pytest.mark.parametrize("operation", ["add", "revoke"])
+def test_real_grant_changes_refuse_refresh_then_allow_authorized_reseed(
+    issued, monkeypatch, operation
+):
+    from booley.harness import init_cmd
+    from booley.harness.session_refresh import _RuntimeImages
+
+    project, _spec, _path, stamp = issued
+    monkeypatch.setattr(session_refresh, "shared_recovery_blocks_command", lambda **_kw: False)
+    monkeypatch.setattr(session_runtime, "strict_conflicting_vscode_session", lambda _root: None)
+    monkeypatch.setattr(eda_grants, "cleanup_project_resources_for_identity", lambda _identity: ())
+    profile = authority.register_license(
+        "site",
+        server_ipv4="10.20.30.40",
+        server_hostid="licenses.example.internal",
+        lmgrd_port=2100,
+        vendor_port=2101,
+    )
+    if operation == "add":
+        eda_grants.GrantCoordinator().add(
+            project, "vivado", installation=None, license_profile=profile.name
+        )
+    else:
+        authority._add_grant(project, "vivado", license_profile=profile.name)
+        eda_grants.GrantCoordinator().revoke(project, "vivado")
+    assert not runtime_spec.stamp_path(project).exists()
+    images = Mock(spec=session_refresh.RuntimeImageOperations)
+    with pytest.raises(session_runtime.SessionError, match="cannot preserve the prior Sandbox"):
+        session_refresh.refresh(project, images)
+    images.inspect.assert_not_called()
+    images.prepare.assert_not_called()
+    # Host init's builder and issuance boundary can reseed using current authority.
+    # This Project does not request EDA; a grant alone never mounts or licenses it.
+    adapter = _RuntimeImages()
+    adapter.prepare_spec(project, session_refresh.RefreshImage("booley-sandbox", stamp.image_id))
+    monkeypatch.setattr(runtime_spec, "_current_keeper_id", lambda _project: None)
+    adapter.reissue(project, stamp.image_id, verbose=False)
+    renewed = runtime_spec.inspect_prepared(project, adapter._spec)
+    assert renewed.license_profile is None
+    assert renewed.installation is None
+    assert init_cmd.authorized_project_data_source(project) == project / ".booley"
+
+
+def test_licensed_prepared_matching_and_relay_drift_use_full_validation(issued, monkeypatch):
+    """Non-withdrawing relay-byte drift; real grant withdrawal is tested separately."""
+    from booley.harness.session_refresh import _RuntimeImages
+
+    project, _spec, _path, stamp = issued
+    (project / ".booley" / "booley.toml").write_text(
+        '[flows.fpga]\nenabled=true\n[eda.vivado]\nprovisioning="image"\n'
+    )
+    reset_cache()
+    profile = authority.register_license(
+        "site",
+        server_ipv4="10.20.30.40",
+        server_hostid="licenses.example.internal",
+        lmgrd_port=2100,
+        vendor_port=2101,
+    )
+    # Initial authenticated fixture, not a real-user add transition.
+    authority._add_grant(project, "vivado", license_profile=profile.name)
+    relay = {"identity": "sha256:" + "d" * 64}
+    monkeypatch.setattr(eda_requirements, "ensure_relay_image", lambda **_kwargs: False)
+    monkeypatch.setattr(eda_requirements, "_relay_image_id", lambda: relay["identity"])
+    adapter = _RuntimeImages()
+    image = session_refresh.RefreshImage("booley-sandbox", stamp.image_id)
+    adapter.prepare_spec(project, image)
+    adapter.reissue(project, stamp.image_id, verbose=False)
+    assert adapter.spec_is_current(project)
+    before = dc.devcontainer_path(project).read_text(encoding="utf-8")
+    relay["identity"] = "sha256:" + "e" * 64
+    changed = _RuntimeImages()
+    changed.prepare_spec(project, image)
+    assert dc.render_devcontainer_json(changed._spec.spec) == before
+    assert not changed.spec_is_current(project)
+
+
+def test_validate_tampered_spec_selects_reseed_instead_of_circular_refresh(issued, monkeypatch):
+    from booley.runtime import runtime_context
+
+    project, spec, path, _stamp = issued
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    monkeypatch.setattr(session_runtime, "strict_conflicting_vscode_session", lambda _root: None)
+    spec["remoteEnv"]["UNISSUED_SETTING"] = "changed"
+    path.write_text(json.dumps(spec))
+    with pytest.raises(session_runtime.SessionError) as caught:
+        session_runtime.validate(project)
+    assert "booley init --seed" in str(caught.value)
+    assert "booley session refresh" not in str(caught.value)

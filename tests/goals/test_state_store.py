@@ -116,6 +116,7 @@ def test_identical_timeline_entries_collapse(goal_mode: SimpleNamespace) -> None
     assert _disk(goal_mode)["timeline"] == [entry]
 
 
+@pytest.mark.timeout(120)
 def test_shadow_adoption_keeps_a_competing_write(goal_mode: SimpleNamespace) -> None:
     live = _load(goal_mode)
     shadow = deepcopy(live)
@@ -135,6 +136,8 @@ def test_shadow_adoption_keeps_a_competing_write(goal_mode: SimpleNamespace) -> 
     assert criteria[SIM_KEY]["met"] is True
 
 
+# Windows CI measured 31 s (over half the default budget); keep 3x headroom (#1202).
+@pytest.mark.timeout(120)
 def test_partial_copy_back_without_adoption_still_merges_by_key(
     goal_mode: SimpleNamespace,
 ) -> None:

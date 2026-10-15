@@ -369,14 +369,14 @@ def _warn_on_image_drift(spec: dict, workspace: Path) -> None:
     elif comparison.status is image_identity.Status.MISMATCH:
         logger.warning(
             "devcontainer.json image '%s' != [sandbox].image '%s' — this session "
-            "runs the stale spec image. Re-run `booley init --seed`, then "
-            "`booley session down` and `booley session up` to pick up the new one.",
+            "runs the stale spec image; %s",
             spec_image,
             expected,
+            sandbox_remedy(workspace),
         )
 
 
-def _warn_on_stale_booley_bake(spec: dict) -> None:
+def _warn_on_stale_booley_bake(spec: dict, workspace: Path | None = None) -> None:
     """Warn only when the issued immutable image proves code drift."""
     image = spec.get("image")
     if not isinstance(image, str) or not image:
@@ -384,10 +384,12 @@ def _warn_on_stale_booley_bake(spec: dict) -> None:
     result = idk.compare_issued_build(image)
     if result.status is image_identity.Status.MISMATCH:
         logger.warning(
-            "issued Sandbox Image '%s' contains stale Booley code (%s). Rebuild "
-            "with `booley session refresh`.",
+            "issued Sandbox Image '%s' contains stale Booley code (%s); %s",
             image,
             result.detail,
+            sandbox_remedy(workspace)
+            if workspace is not None
+            else "run `booley session refresh` on the host",
         )
 
 
@@ -665,6 +667,8 @@ def plan_session_refresh(workspace: Path, issuance: Issuance) -> ParkedSession |
                 {"missing_expected_labels": []},
                 {"missing_expected_labels": missing_labels},
             )
+            + "; "
+            + sandbox_remedy(workspace, runtime_only=True)
         )
     _ensure_unlicensed_refresh(workspace, issuance, labels)
     backup = f"{name}-pre-refresh"
@@ -855,7 +859,7 @@ def _validate_up_request(workspace: Path, image_override: str | None) -> _UpRequ
         issuance = runtime_spec.validate(workspace, spec, dc.devcontainer_path(workspace))
     except runtime_spec.RuntimeSpecError as exc:
         raise SessionError(
-            f"refusing Sandbox startup: {exc}; run `booley init --seed` on the host"
+            f"refusing Sandbox startup: {exc}; {sandbox_remedy(workspace)}"
         ) from exc
     _warn_on_image_drift(spec, workspace)
     if image_override is not None and image_override != spec.get("image"):
@@ -864,7 +868,7 @@ def _validate_up_request(workspace: Path, image_override: str | None) -> _UpRequ
         )
     profile = _requested_issued_license(workspace, issuance)
     _preflight(spec, license_required=profile is not None)
-    _warn_on_stale_booley_bake(spec)
+    _warn_on_stale_booley_bake(spec, workspace)
     return _UpRequest(
         spec,
         issuance,
@@ -951,7 +955,7 @@ def _run_up_transaction(
     ):
         raise SessionError(
             f"existing Sandbox {request.name!r} does not match the current host "
-            "issuance; run `booley session up --rebuild`"
+            f"issuance; {sandbox_remedy(workspace, runtime_only=True)}"
         )
     candidate_ready = False
     relay_created = False
@@ -1044,10 +1048,10 @@ def _ensure_unlocked(
     recovery: bool = False,
 ) -> EnsureResult:
     """Reuse the selected Sandbox, or run the headless startup transaction."""
+    request = _validate_up_request(workspace, image_override)
     selected = resolve_running_sandbox(workspace)
     if rebuild:
         _refuse_editor(selected, "rebuild from the CLI")
-    request = _validate_up_request(workspace, image_override)
     if rebuild and selected is not None and selected.name != request.name:
         raise SessionError(
             f"headless Sandbox {selected.name!r} has an unexpected name; "
@@ -1155,7 +1159,10 @@ def validate(workspace: Path) -> str:
         raise SessionError("Sandbox recovery is pending; run a lifecycle command")
 
     spec = _load_spec(workspace)
-    issuance = runtime_spec.validate(workspace, spec, dc.devcontainer_path(workspace))
+    try:
+        issuance = runtime_spec.validate(workspace, spec, dc.devcontainer_path(workspace))
+    except runtime_spec.RuntimeSpecError as exc:
+        raise SessionError(f"{exc}; {sandbox_remedy(workspace)}") from exc
     selected = resolve_running_sandbox(workspace)
     if selected is not None and not _container_matches_issuance(
         selected.container_id,
@@ -1270,7 +1277,7 @@ def _authenticate_quiesce_validate(
     except runtime_spec.RuntimeSpecError as exc:
         recovery = _quiesced_validation_recovery(quiesced)
         raise SessionError(
-            f"refusing Sandbox preparation: {exc}; run `booley init --seed` on the host{recovery}"
+            f"refusing Sandbox preparation: {exc}; {sandbox_remedy(workspace)}{recovery}"
         ) from exc
     return issuance, quiesced
 
@@ -1384,10 +1391,7 @@ def _quiesced_validation_recovery(container: _LegacyVscodeContainer | None) -> s
     raw = _docker_stdout(["docker", "inspect", container.container_id])
     if raw is None:
         return f"; legacy container {container.name!r} is no longer present"
-    return (
-        f"; legacy container {container.name!r} was stopped; recover it with "
-        f"`docker start {container.container_id}` if needed"
-    )
+    return f"; legacy container {container.name!r} was stopped and preserved"
 
 
 def _remove_quiesced_legacy_container(container: _LegacyVscodeContainer) -> None:
@@ -2274,8 +2278,8 @@ def _refuse_editor(selected: Sandbox | None, action: str) -> None:
 
 def _select_or_start_project_runtime(workspace: Path) -> tuple[str, dict[str, str]]:
     """Select the one current runtime, or create/resume the headless Sandbox."""
-    selected = resolve_running_sandbox(workspace)
     request = _validate_up_request(workspace, None)
+    selected = resolve_running_sandbox(workspace)
     remote_env = request.spec["remoteEnv"]
     command_env = {
         name: value
@@ -2514,3 +2518,76 @@ def _project_data_alias_capable(image_id: str) -> bool:
         return project_data_alias_capable(image_id)
     except DockerImageError as exc:
         raise SessionError(str(exc)) from exc
+
+
+def refresh_container_id(workspace: Path) -> str:
+    """Require the immutable identity of the verified canonical Sandbox."""
+    state = _strict_refresh_container(session_container_name(workspace))
+    identity = state.get("Id") if state else None
+    if not isinstance(identity, str) or not identity:
+        raise SessionError("verified replacement Sandbox has no immutable container identity")
+    return identity
+
+
+SANDBOX_HOST_INSPECTION_REMEDY = (
+    "on the host run `booley doctor` to inspect Sandbox ownership and issuance, "
+    "then follow its reported repair workflow"
+)
+
+
+def _authenticated_recovery_available(workspace: Path) -> bool:
+    from booley.runtime import session_issuance as runtime_spec
+
+    try:
+        spec = _load_spec(workspace)
+        if not isinstance(spec, dict):
+            return False
+        runtime_spec.load_recovery_snapshot(workspace, spec, dc.devcontainer_path(workspace))
+    except (SessionError, runtime_spec.RuntimeSpecError):
+        return False
+    return True
+
+
+def sandbox_remedy(
+    workspace: Path, *, runtime_only: bool = False, recovery_unavailable: bool = False
+) -> str:
+    """Choose one host workflow after authenticating ownership and issuance."""
+    from booley.runtime import session_issuance as runtime_spec
+    from booley.runtime.runtime_context import inside_session_runtime
+
+    if inside_session_runtime():
+        return SANDBOX_HOST_INSPECTION_REMEDY
+    try:
+        prior = runtime_spec.load_issued_snapshot(workspace)
+    except runtime_spec.RuntimeSpecError:
+        prior = None
+    if prior is None:
+        return "stop any VS Code Sandbox through its owning app, then on the host run `booley session down`, `booley init --seed`, and `booley session up`"
+    try:
+        owner = strict_conflicting_vscode_session(workspace)
+    except SessionError:
+        return (
+            "restore Docker connectivity and inspect Sandbox ownership on the host before repair"
+        )
+    selected = project_image.project_sandbox_image(workspace)
+    external = not project_image.is_managed_sandbox_image(workspace, selected)
+    if owner:
+        prerequisite = "rebuild/pull the selected external image, then " if external else ""
+        return (
+            "stop the Sandbox in VS Code, then "
+            + prerequisite
+            + "on the host run `booley init --force`, "
+            "then use Dev Containers: Rebuild Container"
+        )
+    workflow = "run `booley session refresh` on the host"
+    if external:
+        workflow = "rebuild/pull the selected external image, then run `booley session down`, `booley init --seed`, and `booley session up` on the host"
+    elif recovery_unavailable or not _authenticated_recovery_available(workspace):
+        workflow = (
+            "on the host run `booley session down`, `booley init --seed`, and `booley session up`"
+        )
+    elif runtime_only:
+        workflow = "run `booley session down`, then `booley session up --rebuild` on the host"
+    elif prior.license_profile is not None:
+        workflow = "run `booley session down`, then `booley session refresh` on the host"
+    return workflow

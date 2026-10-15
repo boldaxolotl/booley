@@ -150,6 +150,8 @@ Call the `coverage_analyst` Specialist from your Developer Agent session with `c
 
 Read-only, single-focus code review. It reports `CRITICAL`, `MAJOR`, and `MINOR` findings. In Interactive Mode, review the selected files using your specification or steering. In Goal Mode, `done` reports findings without requiring fixes; the review package includes open findings. `clean` requires every finding to be fixed or waived with a justification.
 
+Interactive source review accepts Verilog/SystemVerilog (.v, .vh, .sv, .svh), plus Python (.py) and explicitly scoped C/C++ testbench sources and headers (.c, .cc, .cpp, .cxx, .h, .hh, .hpp, .hxx) for category=tb. Goal Mode also accepts other explicitly scoped support files. Sim C/C++ harness inputs count as TB for isolation and cannot be mutation scope. Declared opposite-category sources are refused in either mode; unregistered scoped sources retain the registration warning and receive only an exact per-file category grant.
+
 The result links saved review evidence, including rejected proposals for inspection. Rejected proposals do not affect Criteria.
 
 Call the `reviewer` Specialist from your Developer Agent session with `category="<category>"` and `focus="<focus>"`.
@@ -416,5 +418,5 @@ optional alternative in the attached container window.
 **`booley chat`, `booley goal`, and `booley dashboard` run in the Sandbox.**
 Bare `booley` prints help on the host and starts the configured Developer Agent in the
 Sandbox. For parallel Goal work, use one linked worktree per session. The
-Dashboard attach task defaults on; set `[sandbox].dashboard=false` to opt out.
+Dashboard automatic opening defaults on; set `[sandbox].dashboard=false` to opt out.
 `booley init` and `booley session` run on the host; Doctor works on either side.

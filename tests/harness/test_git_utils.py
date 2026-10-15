@@ -46,8 +46,22 @@ def _init_repo(path: Path) -> Path:
     # Initial commit so HEAD exists
     (path / "init.txt").write_text("init", encoding="utf-8")
     subprocess.run(["git", "-C", str(path), "add", "init.txt"], capture_output=True, check=True)
+    # A detached maintenance process would race later byte-for-byte repository snapshots.
     subprocess.run(
-        ["git", "-C", str(path), "commit", "-m", "init"], capture_output=True, check=True
+        [
+            "git",
+            "-c",
+            "maintenance.auto=false",
+            "-c",
+            "gc.auto=0",
+            "-C",
+            str(path),
+            "commit",
+            "-m",
+            "init",
+        ],
+        capture_output=True,
+        check=True,
     )
     return path
 

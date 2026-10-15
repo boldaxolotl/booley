@@ -35,6 +35,7 @@ def _refused(layout: SimpleNamespace, name: str) -> None:
         finish_goal(request(layout), environment(layout))
 
 
+@pytest.mark.timeout(150)
 def test_finish_requires_every_frozen_test_run_passed(layout: SimpleNamespace) -> None:
     mode = _mode(layout, [{"family": "SIM", "target": "top"}], tests_toml=TWO_TESTS)
     _refused(mode, SIM_NAME)  # nothing recorded

@@ -25,6 +25,12 @@ from booley.runtime.session_spec import SessionSpecSnapshot
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "session_refresh"
 
 
+@pytest.fixture(autouse=True)
+def isolated_refresh_outputs(monkeypatch):
+    monkeypatch.setattr(sr, "refresh_container_id", lambda _root: "container-new")
+    monkeypatch.setattr(session_refresh, "finalize_project", lambda _root: None)
+
+
 def _replace_fixture_markers(value: object, replacements: dict[str, str]) -> object:
     if isinstance(value, str):
         for marker, replacement in replacements.items():
@@ -352,9 +358,10 @@ def test_refresh_persists_recovery_identity_before_parking(tmp_path: Path, monke
         patch.object(session_refresh, "restore_session_spec"),
         patch.object(sr, "restore_refresh_session"),
         patch.object(session_refresh, "_verify_restored_journal"),
-        pytest.raises(RuntimeError, match="parking failed"),
+        pytest.raises(sr.SessionError, match=r"rolled back.*parking failed"),
     ):
         images = Mock(spec=session_refresh.RuntimeImageOperations)
+        images.requires_license.return_value = False
         prepared = session_refresh.RefreshImage("booley-sandbox", "sha256:fresh")
         images.prepare.return_value = prepared
         images.commit.return_value = prepared
@@ -598,6 +605,7 @@ def test_inline_recovery_keeps_journal_on_unrecoverable_failure(
         raise RuntimeError("Docker unreachable")
 
     images = Mock(spec=session_refresh.RuntimeImageOperations)
+    images.requires_license.return_value = False
     prepared = session_refresh.RefreshImage("booley-sandbox", "sha256:fresh")
     images.prepare.return_value = prepared
     images.commit.side_effect = fail_during_image_refresh

@@ -231,6 +231,7 @@ from booley.runtime.image_build_contracts import expected_image_build_contracts
 class Docker:
     def __init__(self): self.images = {}
     def image_id(self, ref): return self.images.get(ref, (None, {}))[0]
+    def image_ids(self): return frozenset(row[0] for row in self.images.values())
     def label(self, ref, name): return self.images.get(ref, (None, {}))[1].get(name)
     def image_layers(self, ref):
         record = self.images.get(ref) or next((row for row in self.images.values() if row[0] == ref), None)

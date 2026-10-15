@@ -247,7 +247,9 @@ class TestSourceDirsFromCore:
 
         from booley.fusesoc.fusesoc_registry import FuseSocError
 
-        with pytest.raises(FuseSocError, match=r"no \.core"):
+        with pytest.raises(
+            FuseSocError, match=r"category isolation requires a usable \.core; run booley setup"
+        ):
             source_dirs_from_core(tmp_path)
 
 

@@ -220,3 +220,15 @@ def test_host_inspection_reports_unknown_project_inventory(
         report,
     )
     assert any("identity disagrees" in item.message for item in report.report().findings)
+
+
+def test_inside_isolation_drift_instructs_host_repair(monkeypatch):
+    from booley.audit.diagnostic_results import Findings
+
+    monkeypatch.setenv("BOOLEY_DIR", "/wrong")
+    report = Findings()
+    assert not inspection._check_runtime_isolation(report)
+    fix = report.report().findings[0].fix
+    assert "on the host" in fix
+    assert "booley doctor" in fix
+    assert "booley session refresh" not in fix
