@@ -296,3 +296,32 @@ cannot identify every session or remain meaningful across Dashboard restarts.
   deliberately closing it does not restart it in that session. The extension
   disposes only terminals it owns, with no terminal-name-based cleanup. Output
   channel diagnostics distinguish policy opt-outs and startup failures.
+
+## Amendments (2026-10-15, Codex chat tab identity)
+
+- **Marked Codex launches are an exception to thread identity.** The earlier
+  prohibition on Codex process keys assumes a shared daemon. A named
+  `booley chat` launch passes `--no-daemon`, reserves its process identity's
+  handle, and marks that allocation before exec. Its own native CLI, including
+  app-server helpers, resolves to that one process session. Built-in subagent
+  conversations receive no separate Booley IDs. Ordinary unmarked Codex clients
+  retain thread identity. This gives a terminal a stable handle without making
+  the first conversation to call Booley its owner.
+- **One runtime owner.** Launch reservations, MCP registration and lifecycle
+  signals use the shared runtime Booley Directory, including `BOOLEY_DIR` when
+  set. Checkout-specific agent-provider settings can still come from a local
+  worktree snapshot. They do not choose a separate handle registry.
+- **Migration and liveness.** The observer carries the original thread key
+  through process attribution so registration can migrate a previous thread row
+  and establish handle aliases. Historical allocations are never renumbered.
+  Migration retains the predecessor's worktree when a call omits `work_dir`.
+  A thread-ownership alias redirects delayed peerless observations only while
+  that marked process is proven running in the same namespace; cached outcomes
+  are normalized again before observer ordering.
+  Marked process rows follow process liveness rather than thread quiet expiry.
+- **Activity boundaries.** The lifecycle hook uses the same process identity
+  and validates the same handle-map contract as the registry. Only the main
+  conversation's events update that tab's activity. A separately launched inner
+  Codex CLI, such as `codex exec`, retains its own thread attribution and cannot
+  update the outer tab's signal. The nearest CLI must belong to the marked
+  launch; its app-server helpers do not constitute another interactive client.

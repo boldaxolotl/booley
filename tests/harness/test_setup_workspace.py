@@ -278,6 +278,7 @@ class TestWorktreeCreateScript:
         assert _git(worktree, "config", "user.name").stdout.strip() == "Dev"
         assert _git(worktree, "config", "user.email").stdout.strip() == "dev@localhost"
 
+    @pytest.mark.timeout(120)  # Windows CI: 37.4 s including fixtures; retain 3x headroom.
     def test_invalid_git_identity_fails_worktree_creation(self, tmp_path: Path):
         project_root, project_data = _submodule_project(tmp_path)
         (project_data / "booley.toml").write_text(
