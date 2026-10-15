@@ -653,6 +653,9 @@ another Developer Agent in another container terminal and invoke `/booley-goal` 
 Jobs share the Project's [admission caps](CONFIG.md#jobs--concurrency-jobs).
 `booley dashboard` shows sessions, Goals, and Jobs inside the Sandbox; it opens
 on VS Code folder attachment by default. Opt out with `[sandbox].dashboard=false`.
+
+On Linux, the Dashboard makes a best-effort attempt to name its process `dashboard` and set a supported interactive terminal's title to `Booley Dashboard`. It requests restoration of the previous title during exit cleanup. Redirected output, `TERM=dumb`, and a nonempty `NO_COLOR` setting receive no title escape sequences.
+
 Each session shows what its agent client last reported: working, waiting for
 tool call, or waiting for user input. Click a report, artifact, or evidence
 path in a detail view to open it in the editor.
