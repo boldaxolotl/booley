@@ -4256,3 +4256,17 @@ def test_headless_api_policy_refuses_missing_key(workspace, monkeypatch):
     spec["remoteEnv"]["ANTHROPIC_API_KEY"] = "${localEnv:ANTHROPIC_API_KEY}"
     with pytest.raises(sr.SessionError, match=r"requires.*credential"):
         sr.docker_run_argv(spec, workspace, "test")
+
+
+@pytest.mark.parametrize("app,key", [("claude", "ANTHROPIC_API_KEY"), ("codex", "OPENAI_API_KEY")])
+def test_headless_api_policy_refuses_late_export_without_transport(
+    workspace, monkeypatch, app, key
+):
+    monkeypatch.setenv(key, "SYNTHETIC_LATE_KEY")
+    spec = _spec()
+    spec["remoteEnv"]["BOOLEY_AGENT_APP"] = app
+    spec["remoteEnv"]["BOOLEY_PRIMARY_AUTH"] = "api_key"
+    for credential in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"):
+        spec["remoteEnv"].pop(credential, None)
+    with pytest.raises(sr.SessionError, match="refresh"):
+        sr.docker_run_argv(spec, workspace, "test")

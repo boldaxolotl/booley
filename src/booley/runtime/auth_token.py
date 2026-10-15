@@ -182,6 +182,8 @@ def resolve_token(app: str = APP_CLAUDE) -> str | None:
 
 def subscription_creds_path(app: str = APP_CLAUDE, *, home: Path | None = None) -> Path:
     """Absolute path of *app*'s refreshing login file (the subscription creds)."""
+    if app == APP_CODEX and home is None and (codex_home := os.environ.get("CODEX_HOME")):
+        return Path(codex_home).resolve() / "auth.json"
     return (home or Path.home()) / _SUBSCRIPTION_CREDS[app]
 
 
@@ -527,14 +529,24 @@ def credential_plan(
 def copy_codex_auth(source: Path, destination: Path, policy: str = "auto") -> None:
     """Reconcile a Booley-owned private auth copy at every invocation."""
     import shutil
+    import tempfile
 
     allowed_credential_keys(APP_CODEX, policy)
     allowed = policy == "auto" or (
         policy == "subscription" and subscription_available(APP_CODEX, policy, source)
     )
     if source.is_file() and allowed:
-        shutil.copyfile(source, destination)
-        destination.chmod(0o600)
+        descriptor, temporary = tempfile.mkstemp(
+            prefix=f".{destination.name}.", dir=destination.parent
+        )
+        os.close(descriptor)
+        temporary_path = Path(temporary)
+        try:
+            shutil.copyfile(source, temporary_path)
+            temporary_path.chmod(0o600)
+            temporary_path.replace(destination)
+        finally:
+            temporary_path.unlink(missing_ok=True)
     else:
         destination.unlink(missing_ok=True)
 

@@ -293,7 +293,10 @@ def docker_run_argv(
                 argv += ["-e", f"{key}={resolved}"]
     if policy == "api_key":
         key = auth_token.API_KEY_ENV.get(remote.get("BOOLEY_AGENT_APP"))
-        if key and not argv.environment.get(key):
+        if key and (
+            (key not in remote and key not in (spec.get("containerEnv") or {}))
+            or not argv.environment.get(key)
+        ):
             raise SessionError(
                 "API-key policy requires the launching process credential; refresh the Sandbox"
             )

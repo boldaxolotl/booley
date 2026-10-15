@@ -935,3 +935,42 @@ def test_plan_repr_never_contains_credential(isolated_home, monkeypatch):
     assert plan.child_environment({"CLAUDE_CODE_OAUTH_TOKEN": "FORBIDDEN"}) == {
         "ANTHROPIC_API_KEY": "SYNTHETIC_SECRET"
     }
+
+
+def test_codex_auth_refresh_preserves_complete_copy_on_interruption(tmp_path, monkeypatch):
+    import shutil
+
+    source = tmp_path / "source.json"
+    destination = tmp_path / "auth.json"
+    source.write_text('{"OPENAI_API_KEY":"NEW_SYNTHETIC"}')
+    previous = b'{"OPENAI_API_KEY":"OLD_SYNTHETIC"}'
+    destination.write_bytes(previous)
+
+    def interrupted_copy(source, target, *args, **kwargs):
+        Path(target).write_text('{"OPENAI_API_KEY":')
+        raise OSError("synthetic interrupted copy")
+
+    monkeypatch.setattr(shutil, "copyfile", interrupted_copy)
+    with pytest.raises(OSError, match="interrupted"):
+        auth_token.copy_codex_auth(source, destination)
+    assert destination.read_bytes() == previous
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["auth.json", "source.json"]
+
+
+def test_codex_subscription_plan_uses_cli_home(isolated_home, monkeypatch, tmp_path):
+    default = auth_token.subscription_creds_path("codex")
+    default.parent.mkdir(parents=True)
+    default.write_text('{"tokens":{"access_token":"SYNTHETIC_LOGIN"}}')
+    alternate = tmp_path / "alternate"
+    alternate.mkdir()
+    (alternate / "auth.json").write_text('{"OPENAI_API_KEY":"SYNTHETIC_KEY"}')
+    monkeypatch.setenv("CODEX_HOME", str(alternate))
+    assert auth_token.credential_plan("codex", "subscription").selected is None
+    (alternate / "auth.json").write_text(default.read_text())
+    plan = auth_token.credential_plan("codex", "subscription")
+    assert plan.subscription_seed == alternate / "auth.json"
+    assert plan.selected is not None
+    assert (
+        auth_token.subscription_creds_path("codex", home=tmp_path)
+        == tmp_path / ".codex" / "auth.json"
+    )

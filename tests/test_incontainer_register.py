@@ -1316,7 +1316,11 @@ def test_api_policy_refuses_user_login_without_deleting_it(tmp_path, monkeypatch
     login.parent.mkdir()
     login.write_text('{"claudeAiOauth":{"accessToken":"SYNTHETIC_USER"}}')
     before = login.read_bytes()
+    settings = reg.claude_settings_path(tmp_path)
+    settings.write_text('{"env":{"CLAUDE_CODE_OAUTH_TOKEN":"SYNTHETIC_MANAGED"},"theme":"dark"}')
+    settings_before = settings.read_bytes()
     with pytest.raises(ValueError, match="conflicts") as caught:
         reg.apply_stored_credential("claude", tmp_path)
     assert "SYNTHETIC" not in str(caught.value)
     assert login.read_bytes() == before
+    assert settings.read_bytes() == settings_before

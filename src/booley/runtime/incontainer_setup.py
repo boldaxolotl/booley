@@ -831,11 +831,11 @@ def _validate_persisted_policy(app: str, policy: str, home: Path | None) -> None
                     "Claude settings conflict with subscription policy; recreate the Sandbox"
                 )
         if policy == "api_key":
-            _apply_claude_credential(None, home)
             if (base / ".claude" / ".credentials.json").exists():
                 raise ValueError(
                     "Claude login conflicts with API-key policy; recreate the policy-partitioned Sandbox"
                 )
+            _apply_claude_credential(None, home)
     elif app == auth_token.APP_CODEX:
         _validate_codex_persisted_policy(policy, home)
 

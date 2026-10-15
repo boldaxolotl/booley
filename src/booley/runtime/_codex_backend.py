@@ -492,10 +492,9 @@ def _populate_private_codex_home(
         ),
         encoding="utf-8",
     )
-    original_auth = Path(os.environ.get("HOME", "/home/agent")) / ".codex" / "auth.json"
-    from .auth_token import copy_codex_auth
+    from .auth_token import copy_codex_auth, subscription_creds_path
 
-    copy_codex_auth(original_auth, codex_dir / "auth.json", auth_mode)
+    copy_codex_auth(subscription_creds_path("codex"), codex_dir / "auth.json", auth_mode)
 
 
 def _ensure_nested_codex_home(
@@ -523,10 +522,10 @@ def _ensure_nested_codex_home(
     cache_key = f"{ticket_scope}:{allowlist_str or '_none'}:{env_str}:{auth_mode}"
     cached = _NESTED_HOMES.get(cache_key)
     if cached is not None:
-        from .auth_token import copy_codex_auth
+        from .auth_token import copy_codex_auth, subscription_creds_path
 
         copy_codex_auth(
-            Path.home() / ".codex" / "auth.json", Path(cached) / ".codex" / "auth.json", auth_mode
+            subscription_creds_path("codex"), Path(cached) / ".codex" / "auth.json", auth_mode
         )
         return cached
 
@@ -567,6 +566,10 @@ async def _codex_spawn(
     An unlabeled caller uses "_anonymous" with an empty allowlist.
     """
     env = None
+    if auth_mode != "auto" and os.environ.get("CODEX_HOME"):
+        from .auth_token import subscription_creds_path
+
+        env = {**os.environ, "CODEX_HOME": str(subscription_creds_path("codex").parent)}
     if _inside_container() and not params.text_only:
         env = dict(os.environ)
         env["HOME"] = _ensure_nested_codex_home(
@@ -575,6 +578,7 @@ async def _codex_spawn(
             params.nested_mcp_env,
             auth_mode=auth_mode,
         )
+        env["CODEX_HOME"] = str(Path(env["HOME"]) / ".codex")
 
     if auth_mode == "subscription":
         # [agent] auth = "subscription": drop the API key so Codex bills the
