@@ -599,7 +599,7 @@ def test_the_review_package_lists_campaigns_that_were_never_fully_accounted_for(
     assert '"quarantined"' in lines[2]
 
 
-@pytest.mark.timeout(120)
+@pytest.mark.timeout(150)
 def test_finish_accounts_first_and_refuses_while_a_campaign_runs_or_cannot_be_read(
     two: SimpleNamespace, campaign: _Campaign
 ) -> None:

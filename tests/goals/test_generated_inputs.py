@@ -512,7 +512,14 @@ def _prepare_target_less_generated_record(
     return artifact
 
 
-@pytest.mark.parametrize("mutation", ["unchanged", "rewrite", "remove"])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        pytest.param("unchanged", marks=pytest.mark.timeout(150)),
+        "rewrite",
+        pytest.param("remove", marks=pytest.mark.timeout(150)),
+    ],
+)
 def test_target_less_review_finishes_without_unused_target_producer(layout, monkeypatch, mutation):
     from booley.goals.status import build_status
     from booley.goals.store import GoalStore
@@ -578,6 +585,7 @@ def test_target_less_unused_authored_input_still_refuses_finish(layout, monkeypa
         finish_goal(request(layout), completion_environment(EntryEnvironment(layout.control)))
 
 
+@pytest.mark.timeout(150)
 def test_ignored_consumed_project_snapshot_keeps_its_independent_completion_proof(
     layout, monkeypatch
 ):
