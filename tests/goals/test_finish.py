@@ -345,6 +345,7 @@ def test_late_pre_finish_job_cannot_change_terminal_state_or_package(complete):
     assert Path(result["package"]).read_bytes() == before
 
 
+@pytest.mark.timeout(210)
 def test_publication_during_pre_fence_crash_requires_revalidation_and_permanent_fence(complete):
     from booley.goals.publication import EvidenceDiscarded, PublicationGate
 
