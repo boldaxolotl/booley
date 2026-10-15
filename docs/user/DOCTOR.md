@@ -39,8 +39,9 @@ warning. Resolve the inspection limitation or accept it through a targeted
 waiver; do not remove a valid local rule or prune registrations to hide it.
 
 Deep Doctor is **current** when a qualifying deep run matches the executing
-Booley version and active immutable Sandbox Image, and no later completed failed
-or incomplete deep attempt supersedes it. The recorded date is informational;
+Booley version and active immutable Sandbox Image, and no later completed failed,
+warning-blocked, or incomplete deep attempt supersedes it. The recorded date is
+informational;
 deep evidence has no age expiry. Current means prior qualifying setup validation;
 it does not guarantee a new deep run will pass after arbitrary design edits.
 
@@ -60,7 +61,8 @@ of a Sandbox already running from that image. Selecting an image in configuratio
 also does not substitute it for the active image.
 
 A qualifying deep run must have no active health failures or unwaived warnings
-and must complete every applicable deep check: the Specialist provider authorization
+except exactly `upgrade.review-pending`, the release-review gate. It must complete
+every applicable deep check: the Specialist provider authorization
 and memory probe, selected Simulation/Lint/ASIC Synthesis smokes, enabled sim/lint
 good-and-bad self-tests, and selected-core live resolution. Disabled capabilities
 and intentionally excluded FPGA implementation are legitimate exclusions.
@@ -74,8 +76,11 @@ FuseSoC resolution inside that Sandbox does not require Docker on its PATH.
 A host-side deep invocation cannot qualify when it skips the in-Sandbox Specialist
 provider probe; run deep Doctor inside the Sandbox for full evidence.
 
-A completed failed or incomplete deep attempt retains historical success but
-makes deep Doctor due until a later qualifying run succeeds. Cancellation or an
+A completed failed, warning-blocked, or incomplete deep attempt retains historical
+success but makes deep Doctor due until a later qualifying run succeeds. Warning-only
+attempts say “did not qualify” and name the unwaived warning IDs; actual failures
+say “failed.” Older unsuccessful records with unknown health details say “did not
+qualify; legacy health verdict details unavailable.” Cancellation or an
 unexpected abort before a completed result leaves the previous evidence intact;
 version or image drift still applies independently. Successful and failed plain
 runs leave deep evidence unchanged.
@@ -105,6 +110,35 @@ commands can only observe evidence that was successfully saved.
 
 Deep due is advisory: it does not affect health warnings, exit codes or execution, and never schedules or automatically launches deep
 checks. Automatic plain Doctor retains its existing scheduling policy.
+
+## Upgrade review
+
+A Booley version change records a pending release review and emits
+`upgrade.review-pending`. This gate remains an active warning for plain Doctor
+health, but alone does not prevent a complete deep run from qualifying. Every
+other active warning, every failure, and missing execution evidence still blocks
+deep qualification.
+
+Run `booley upgrade status --json` to capture the pending target. Review state is
+`runtime/upgrade_review.json` inside the resolved Booley Directory (default
+`.booley/`, configurable per Project). Invoke `/booley-heal` to review the packaged
+changes and repair findings. Verify plain Doctor in the Sandbox, then one
+qualifying deep Doctor in the Sandbox, and plain Doctor on the host before:
+
+```console
+booley upgrade acknowledge --expected-target <captured-target>
+```
+
+Acknowledgment compares the expected target with the running version and the
+locked persisted pending target. A changed target, stale runtime, corrupt or
+missing state, or missing packaged release entry rejects a pending transition
+without erasing it. An exact retry with no pending target and reviewed version
+equal to both the running and expected versions exits 0 with “already current”
+and leaves state untouched. The same result on an initially current baseline
+does not prove a new release review occurred.
+
+Run final plain Doctor to confirm the pending warning disappears and deep remains
+current; acknowledgment and plain Doctor preserve the qualifying deep evidence.
 
 ## Project checks and Goal state
 

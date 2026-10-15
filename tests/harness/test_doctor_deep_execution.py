@@ -557,6 +557,18 @@ def test_runtime_policy_full_doctor_qualification(
         ) is (data_policy == "false")
     state = deep.load_deep_state(audit.booley_dir)
     assert state.latest_completed_attempt.outcome is expected
+    attempt = state.latest_completed_attempt
+    assert attempt.failure_count == int(health_failure or missing == "core")
+    warnings = tuple(
+        sorted({f.check_id for f in result.diagnostics.active_findings if f.severity == "warn"})
+    )
+    assert attempt.blocking_warning_ids == warnings
+    assert attempt.blocking_warning_count == len(
+        [f for f in result.diagnostics.active_findings if f.severity == "warn"]
+    )
+    if expected is deep.DeepOutcome.FAILED and not (health_failure or missing == "core"):
+        assert "latest-attempt-not-qualified" in [r.code for r in result.deep_status.reasons]
+        assert "failed" not in result.deep_status.render()
     assert result.deep_status.current is (expected is deep.DeepOutcome.SUCCESS)
     assert result.clean is (
         policy == "true" and data_policy != "false" and missing != "core" and not health_failure
@@ -578,3 +590,60 @@ def test_runtime_policy_full_doctor_qualification(
     if expected is deep.DeepOutcome.SUCCESS:
         assert state.latest_completed_attempt.complete
         assert not state.latest_completed_attempt.reasons
+
+
+def test_pending_review_qualifies_once_and_ack_preserves_deep(tmp_path, monkeypatch):
+    from booley.harness import upgrade_review
+    from tests.harness.test_upgrade_review import _changelog
+
+    monkeypatch.setattr(booley, "__version__", "2.0.0")
+    audit = _qualification_project(tmp_path, monkeypatch, "true", None, False, None)
+    upgrade_review.observe(audit.booley_dir, current_version="1.0.0")
+
+    def project_phase(_root, reporter, **_kwargs):
+        doctor._check_upgrade_review(audit.booley_dir, reporter)
+        return None, audit
+
+    monkeypatch.setattr(doctor, "_run_project_phase", project_phase)
+    commands, completions = _qualification_transport(monkeypatch, None, audit)
+    plain = doctor.run_doctor_result(argparse.Namespace(deep=False), tmp_path)
+    assert [f.check_id for f in plain.diagnostics.active_findings] == ["upgrade.review-pending"]
+    assert not plain.clean and plain.exit_code == 0
+    result = doctor.run_doctor_result(argparse.Namespace(deep=True), tmp_path)
+    assert not result.clean and result.exit_code == 0
+    assert result.deep_status.current
+    state = deep.load_deep_state(audit.booley_dir)
+    assert state.last_success == state.latest_completed_attempt
+    assert state.last_success.outcome is deep.DeepOutcome.SUCCESS
+    before = deep.deep_stamp_path(audit.booley_dir).read_bytes()
+    upgrade_review.acknowledge(audit.booley_dir, "2.0.0", packaged_changelog=_changelog(tmp_path))
+    final = doctor.run_doctor_result(argparse.Namespace(deep=False), tmp_path)
+    assert final.clean and final.deep_status.current
+    assert deep.deep_stamp_path(audit.booley_dir).read_bytes() == before
+    assert (
+        deep.load_deep_state(audit.booley_dir).last_success.attempt_id
+        == state.last_success.attempt_id
+    )
+    assert commands == ["smoke", "good", "bad", "core"]
+    assert len(completions) == 5
+
+
+@pytest.mark.parametrize("waived,missing", [(False, None), (True, None), (True, "developer")])
+def test_real_qualification_applies_warning_waiver_without_inventing_execution(
+    tmp_path, monkeypatch, waived, missing
+):
+    audit = _qualification_project(tmp_path, monkeypatch, "false", missing, False, None)
+    if waived:
+        (audit.booley_dir / "doctor-waivers.toml").write_text(
+            'version=1\n[[waiver]]\ncheck="git.worktree-portability"\n'
+            'reason="Reviewed policy exception"\npermanent=true\n'
+        )
+    commands, _completions = _qualification_transport(monkeypatch, missing, audit)
+    result = doctor.run_doctor_result(argparse.Namespace(deep=True), tmp_path)
+    attempt = deep.load_deep_state(audit.booley_dir).latest_completed_attempt
+    assert result.deep_status.current is (waived and missing is None)
+    assert attempt.failure_count == 0
+    assert attempt.blocking_warning_ids == (() if waived else ("git.worktree-portability",))
+    assert attempt.complete is (missing is None)
+    assert result.counts["waived"] == (3 if waived else 0)
+    assert commands == ["smoke", "good", "bad", "core"]
