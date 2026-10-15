@@ -547,7 +547,7 @@ def test_snapshot_refuses_tracked_file_beneath_external_symlink_parent(tmp_path)
     symlink_or_skip(parent, external, target_is_directory=True)
     params = AgentCallParams(prompt="review", model="test", cwd=repo)
     with (
-        pytest.raises(ValueError, match=r"source parent escapes.*replaced/evidence.md"),
+        pytest.raises(ValueError, match=r"source parent escapes.*replaced[\\/]evidence\.md"),
         isolated_agent_workspace(params, "read_only", "rtl"),
     ):
         pytest.fail("provider must not receive an externally populated snapshot")
