@@ -52,7 +52,12 @@ def test_all_applicable_reasons_are_reported_and_success_retained():
     status = deep.evaluate_deep_status(
         deep.DeepState(success, failed), version="new", image_id=OTHER_IMAGE
     )
-    assert _codes(status) == ["version-changed", "image-changed", "latest-attempt-failed"]
+    assert _codes(status) == [
+        "version-changed",
+        "image-changed",
+        "latest-attempt-not-qualified",
+        "latest-attempt-incomplete",
+    ]
     assert status.last_success == success
 
 
@@ -373,7 +378,7 @@ def test_unsaved_failure_is_due_in_this_invocation_without_erasing_history():
     )
     assert not status.current and status.storage_failed
     assert status.last_success == success
-    assert _codes(status) == ["latest-attempt-failed"]
+    assert _codes(status) == ["latest-attempt-not-qualified", "latest-attempt-incomplete"]
     assert state.latest_completed_attempt == success
 
 
@@ -425,3 +430,247 @@ def test_inside_currency_uses_live_package_version(tmp_path, monkeypatch):
         ),
     )
     assert _codes(doctor.observe_deep_status(tmp_path)) == ["version-changed"]
+
+
+def test_warning_only_attempt_names_warning_without_claiming_failure(tmp_path, monkeypatch):
+    booley_dir = _stub_orchestration(tmp_path, monkeypatch)
+
+    def run(*args):
+        args[-1].warn_(doctor.warning("git.worktree-portability", "policy warning"))
+        return deep.DeepAttemptSummary((), (), IMAGE)
+
+    monkeypatch.setattr(doctor, "_run_deep_phase", run)
+    result = doctor.run_doctor_result(argparse.Namespace(deep=True), tmp_path)
+    assert result.exit_code == 0 and not result.clean
+    assert "latest-attempt-not-qualified" in _codes(result.deep_status)
+    assert "git.worktree-portability" in result.deep_status.render()
+    assert "failed" not in result.deep_status.render()
+    assert (
+        deep.load_deep_state(booley_dir).latest_completed_attempt.outcome
+        == deep.DeepOutcome.FAILED
+    )
+
+
+@pytest.mark.parametrize(
+    "severity,identifier,current",
+    [
+        ("warn", "upgrade.review-pending", True),
+        ("fail", "upgrade.review-pending", False),
+        ("warn", "upgrade.runtime-stale", False),
+    ],
+)
+def test_only_exact_pending_warning_is_exempt(
+    tmp_path, monkeypatch, severity, identifier, current
+):
+    from booley.audit.diagnostic_results import DiagnosticFinding, Severity
+
+    booley_dir = _stub_orchestration(tmp_path, monkeypatch)
+    result = doctor.DoctorRunResult(
+        {},
+        (DiagnosticFinding(Severity(severity), "finding", check_id=identifier),),
+        int(severity == "fail"),
+    )
+    reported = doctor._report_deep_currency(
+        tmp_path,
+        SimpleNamespace(booley_dir=booley_dir),
+        result,
+        deep.DeepAttemptSummary((), (), IMAGE),
+        True,
+    )
+    assert reported.deep_status.current is current
+    assert result.clean is False
+    attempt = deep.load_deep_state(booley_dir).latest_completed_attempt
+    assert attempt.failure_count == int(severity == "fail")
+
+
+@pytest.mark.parametrize("missing", [(), ("sim.selftest.good",)])
+@pytest.mark.parametrize("waived", [False, True])
+def test_waivers_never_supply_missing_execution(tmp_path, monkeypatch, missing, waived):
+    from booley.audit.diagnostic_results import DiagnosticFinding, Severity
+
+    booley_dir = _stub_orchestration(tmp_path, monkeypatch)
+    finding = DiagnosticFinding(
+        Severity.WAIVED if waived else Severity.WARN,
+        "warning",
+        check_id="flow.fail-path-unvalidated",
+    )
+    result = doctor.DoctorRunResult({}, (finding,), 0)
+    reported = doctor._report_deep_currency(
+        tmp_path,
+        SimpleNamespace(booley_dir=booley_dir),
+        result,
+        deep.DeepAttemptSummary(missing, (), IMAGE),
+        True,
+    )
+    assert reported.deep_status.current is (waived and not missing)
+    codes = _codes(reported.deep_status)
+    assert ("latest-attempt-incomplete" in codes) is bool(missing)
+    assert ("latest-attempt-not-qualified" in codes) is (not waived)
+
+
+@pytest.mark.parametrize("warning_ids", [tuple(f"check-{i}" for i in range(70)), ("a" * 193,)])
+def test_health_blocker_bounds_preserve_readable_evidence(tmp_path, warning_ids):
+    attempt = deep.DeepAttemptSummary((), (), IMAGE).attempt(
+        version=booley.__version__, clean=False, failure_count=0, blocking_warning_ids=warning_ids
+    )
+    assert deep.record_deep_attempt(tmp_path, attempt)
+    loaded = deep.load_deep_state(tmp_path).latest_completed_attempt
+    assert loaded == attempt
+    assert loaded.blocking_warning_count == len(warning_ids)
+    assert len(loaded.blocking_warning_ids) <= 64
+    rendered = deep.evaluate_deep_status(
+        deep.load_deep_state(tmp_path), version=booley.__version__, image_id=IMAGE
+    ).render()
+    assert "failed" not in rendered
+    if len(warning_ids) > 64:
+        assert "additional warning blocker" in rendered
+    else:
+        assert "warning-identity-unavailable" in rendered
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("failure_count", True),
+        ("failure_count", -1),
+        ("failure_count", None),
+        ("blocking_warning_count", True),
+        ("blocking_warning_count", -1),
+        ("blocking_warning_count", 0),
+        ("blocking_warning_ids", ["bad/id"]),
+        ("blocking_warning_ids", ["a" * 193]),
+        ("blocking_warning_ids", ["x"] * 65),
+    ],
+)
+def test_invalid_health_details_rejected_on_write_and_read(tmp_path, field, value):
+    from booley.core.boundary import BoundaryError
+
+    attempt = deep.DeepAttemptSummary((), (), IMAGE).attempt(
+        version=booley.__version__,
+        clean=False,
+        failure_count=0,
+        blocking_warning_ids=("warning.id",),
+    )
+    assert deep.record_deep_attempt(tmp_path, attempt)
+    path = deep.deep_stamp_path(tmp_path)
+    document = json.loads(path.read_text())
+    document["latest_completed_attempt"][field] = value
+    path.write_text(json.dumps(document))
+    assert deep.load_deep_state(tmp_path) == deep.DeepState()
+    with pytest.raises(BoundaryError):
+        deep.record_deep_attempt(
+            tmp_path,
+            replace(attempt, **{field: tuple(value) if isinstance(value, list) else value}),
+        )
+
+
+@pytest.mark.parametrize("reasons", [(), ("sim.selftest.bad",)])
+def test_legacy_failed_health_is_unknown_and_never_migrated(tmp_path, reasons):
+    attempt = replace(_attempt(2, deep.DeepOutcome.FAILED), reasons=reasons)
+    assert deep.record_deep_attempt(tmp_path, _attempt())
+    assert deep.record_deep_attempt(tmp_path, attempt)
+    before = deep.deep_stamp_path(tmp_path).read_bytes()
+    status = deep.evaluate_deep_status(
+        deep.load_deep_state(tmp_path), version=booley.__version__, image_id=IMAGE
+    )
+    assert "latest-attempt-not-qualified" in _codes(status)
+    assert "legacy health verdict details unavailable" in status.render()
+    assert "failed" not in status.render()
+    assert deep.deep_stamp_path(tmp_path).read_bytes() == before
+
+
+def test_mixed_actual_failure_warning_and_missing_execution_are_preserved(tmp_path):
+    attempt = deep.DeepAttemptSummary(("sim.selftest.bad",), (), IMAGE).attempt(
+        version=booley.__version__,
+        clean=False,
+        failure_count=2,
+        blocking_warning_ids=("git.worktree-portability",),
+    )
+    assert deep.record_deep_attempt(tmp_path, attempt)
+    status = deep.evaluate_deep_status(
+        deep.load_deep_state(tmp_path), version=booley.__version__, image_id=IMAGE
+    )
+    assert "latest-attempt-failed" in _codes(status)
+    assert "latest-attempt-incomplete" in _codes(status)
+    assert "2 failure(s)" in status.render()
+    assert "git.worktree-portability" in status.render()
+    assert "sim.selftest.bad" in status.render()
+
+
+def _legacy_decode_attempt(raw: object) -> deep.DeepAttempt | None:
+    # Frozen schema-1 decoder: optional health fields did not exist here.
+    import re
+
+    from booley.core.boundary import (
+        BoundaryError,
+        require_bool,
+        require_dict,
+        require_int,
+        require_list,
+        require_opt_str,
+        require_str,
+        require_str_value,
+    )
+    from booley.runtime.image_provenance import is_local_image_id
+    from booley.runtime.timefmt import parse_timestamp
+
+    _SAFE_ID = re.compile(r"[a-zA-Z0-9_.:-]{1,192}")
+    _VERSION = re.compile(r"[a-zA-Z0-9_.+-]{1,128}")
+    _MAX_REASONS = 64
+    if raw is None:
+        return None
+    values = require_dict(raw, field="deep attempt")
+    completed_at = require_str(values, "completed_at")
+    parse_timestamp(completed_at)
+    order = require_int(values.get("completion_order_ns"), field="completion_order_ns")
+    attempt_id, version = require_str(values, "attempt_id"), require_str(values, "booley_version")
+    image_id = require_opt_str(values, "image_id")
+    complete = require_bool(values, "complete")
+    outcome = deep.DeepOutcome(require_str(values, "outcome"))
+    reasons = tuple(require_str_value(item) for item in require_list(values.get("reasons")))
+    if order <= 0 or not _SAFE_ID.fullmatch(attempt_id) or not _VERSION.fullmatch(version):
+        raise BoundaryError("invalid deep ordering or version")
+    if image_id is not None and not is_local_image_id(image_id):
+        raise BoundaryError("invalid deep image identity")
+    if len(reasons) > _MAX_REASONS or any(not _SAFE_ID.fullmatch(item) for item in reasons):
+        raise BoundaryError("invalid deep reason identifiers")
+    if outcome == deep.DeepOutcome.SUCCESS and (not complete or image_id is None or reasons):
+        raise BoundaryError("success lacks qualifying execution evidence")
+    return deep.DeepAttempt(
+        completed_at, order, attempt_id, version, image_id, outcome, complete, reasons
+    )
+
+
+def _legacy_merge(state: deep.DeepState, attempt: deep.DeepAttempt) -> deep.DeepState:
+    success, latest = state.last_success, state.latest_completed_attempt
+    if attempt.outcome == deep.DeepOutcome.SUCCESS and (
+        success is None or attempt.order > success.order
+    ):
+        success = attempt
+    if latest is None or attempt.order > latest.order:
+        latest = attempt
+    return deep.DeepState(success, latest)
+
+
+def test_frozen_legacy_reader_and_merger_retain_success_with_new_warning_record(tmp_path):
+    success = deep.DeepAttemptSummary((), (), IMAGE).attempt(
+        version=booley.__version__, clean=True, failure_count=0, blocking_warning_ids=()
+    )
+    warning = deep.DeepAttemptSummary((), (), IMAGE).attempt(
+        version=booley.__version__,
+        clean=False,
+        failure_count=0,
+        blocking_warning_ids=("git.worktree-portability",),
+    )
+    assert deep.record_deep_attempt(tmp_path, success)
+    assert deep.record_deep_attempt(tmp_path, warning)
+    document = json.loads(deep.deep_stamp_path(tmp_path).read_text())
+    legacy_success = _legacy_decode_attempt(document["last_success"])
+    legacy_warning = _legacy_decode_attempt(document["latest_completed_attempt"])
+    assert legacy_warning.outcome is deep.DeepOutcome.FAILED
+    merged = _legacy_merge(deep.DeepState(legacy_success, legacy_success), legacy_warning)
+    assert merged.last_success == legacy_success
+    assert merged.latest_completed_attempt == legacy_warning
+    assert not deep.evaluate_deep_status(
+        merged, version=booley.__version__, image_id=IMAGE
+    ).current

@@ -305,3 +305,79 @@ def test_doctor_emits_stable_diagnostic_finding(monkeypatch, tmp_path: Path) -> 
 
     assert reporter.findings is not None
     assert reporter.findings[0].check_id == "upgrade.review-state-corrupt"
+
+
+def test_repeat_acknowledgment_is_locked_no_write(tmp_path, monkeypatch):
+    booley_dir = _project(tmp_path)
+    upgrade_review.observe(booley_dir, current_version="1.0.0")
+    upgrade_review.observe(booley_dir, current_version="2.0.0")
+    first = upgrade_review.acknowledge(
+        booley_dir, "2.0.0", current_version="2.0.0", packaged_changelog=_changelog(tmp_path)
+    )
+    before = upgrade_review.state_path(booley_dir).read_bytes()
+    monkeypatch.setattr(upgrade_review, "_atomic_write", lambda *_args: pytest.fail("retry wrote"))
+    repeated = upgrade_review.acknowledge(
+        booley_dir, "2.0.0", current_version="2.0.0", packaged_changelog=tmp_path / "missing"
+    )
+    assert repeated.condition is upgrade_review.ReviewCondition.CURRENT
+    assert repeated.already_current and not first.already_current
+    assert "already_current" not in repeated.as_dict()
+    assert upgrade_review.state_path(booley_dir).read_bytes() == before
+
+
+@pytest.mark.parametrize("reviewed", ["1.0.0", "2.0.0", "3.0.0"])
+def test_no_pending_requires_exact_current_baseline(tmp_path, monkeypatch, reviewed):
+    booley_dir = _project(tmp_path)
+    upgrade_review.observe(booley_dir, current_version=reviewed)
+    before = upgrade_review.state_path(booley_dir).read_bytes()
+    monkeypatch.setattr(upgrade_review, "_atomic_write", lambda *_args: pytest.fail("wrote"))
+    if reviewed == "2.0.0":
+        assert upgrade_review.acknowledge(
+            booley_dir, "2.0.0", current_version="2.0.0"
+        ).already_current
+    else:
+        with pytest.raises(upgrade_review.AcknowledgmentError):
+            upgrade_review.acknowledge(booley_dir, "2.0.0", current_version="2.0.0")
+    assert upgrade_review.state_path(booley_dir).read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "content,expected,running",
+    [
+        (None, "2.0.0", "2.0.0"),
+        ("{broken", "2.0.0", "2.0.0"),
+        ('{"schema":1,"reviewed_through":"2.0.0"}', "invalid", "2.0.0"),
+        ('{"schema":1,"reviewed_through":"2.0.0"}', "2.0.0", "1.0.0"),
+    ],
+)
+def test_repeat_guard_never_accepts_missing_corrupt_or_mismatched_state(
+    tmp_path, content, expected, running
+):
+    booley_dir = _project(tmp_path)
+    path = upgrade_review.state_path(booley_dir)
+    if content is not None:
+        path.write_text(content)
+    with pytest.raises(upgrade_review.AcknowledgmentError):
+        upgrade_review.acknowledge(booley_dir, expected, current_version=running)
+    assert (path.read_text() if path.exists() else None) == content
+
+
+def test_newer_observation_interleaved_at_lock_is_not_erased(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+
+    booley_dir = _project(tmp_path)
+    upgrade_review.observe(booley_dir, current_version="2.0.0")
+    locked = upgrade_review._locked
+
+    @contextmanager
+    def interleave(directory):
+        with monkeypatch.context() as scoped:
+            scoped.setattr(upgrade_review, "_locked", locked)
+            upgrade_review.observe(directory, current_version="3.0.0")
+        with locked(directory):
+            yield
+
+    monkeypatch.setattr(upgrade_review, "_locked", interleave)
+    with pytest.raises(upgrade_review.AcknowledgmentError, match="pending target changed"):
+        upgrade_review.acknowledge(booley_dir, "2.0.0", current_version="2.0.0")
+    assert _payload(booley_dir)["pending_target"] == "3.0.0"

@@ -9,6 +9,11 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- Deep Doctor now qualifies when only the expected upgrade-review warning remains,
+  names other warning blockers without calling them failures, and preserves that
+  evidence through acknowledgment. Exact already-current acknowledgment retries
+  succeed without rewriting review state.
+
 - Goal evidence fields in saved state now recover automatically from selected
   valid immutable producer observations when Booley reads or saves Goal state.
   Goal status reports remaining evidence or validation problems without treating

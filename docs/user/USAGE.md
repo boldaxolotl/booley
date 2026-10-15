@@ -118,6 +118,34 @@ Don't continue until `booley doctor` shows no failures or warnings.
 - `booley doctor --deep` goes further and runs short real simulations, lints,
   and syntheses.
 
+## Upgrade review
+
+When Booley reports a version change, `upgrade.review-pending` means the Project
+has packaged release changes to review. Run `booley upgrade status --json` and
+capture its pending target, then invoke `/booley-heal` in the Developer Agent chat.
+The durable state is `runtime/upgrade_review.json` in the resolved Booley Directory:
+`.booley/` by default, or the Project's configured location.
+
+After reviewing the packaged changes and repairing findings, verify plain Doctor
+in the Sandbox, one qualifying `booley doctor --deep` in the Sandbox, and plain
+Doctor on the host. Before acknowledgment, exactly the expected pending-review
+warning may remain; any other active warning or failure blocks completion. The
+pending warning alone permits deep qualification, which still requires every
+applicable check to execute. Then acknowledge the captured target:
+
+```console
+booley upgrade acknowledge --expected-target <captured-target>
+```
+
+This is a compare-and-swap: a newer target, stale running version, missing packaged
+release entry, or missing/corrupt state rejects the transition without clearing
+review. Repeating the command succeeds with “already current” and no state write
+only when the reviewed, running, and expected versions match and nothing is
+pending. Exit 0 on an initially current baseline does not establish that a new
+review occurred. Run final plain Doctor to confirm the pending warning is gone;
+deep remains current without another deep run. See [Doctor](DOCTOR.md#upgrade-review)
+for the qualification and acknowledgment details.
+
 ## Choose how to work
 
 Start with Interactive Mode to explore and run individual Flows. Use

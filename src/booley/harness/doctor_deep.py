@@ -57,6 +57,9 @@ class DeepAttempt:
     outcome: DeepOutcome
     complete: bool
     reasons: tuple[str, ...] = ()
+    failure_count: int | None = None
+    blocking_warning_count: int | None = None
+    blocking_warning_ids: tuple[str, ...] | None = None
 
     @property
     def order(self) -> tuple[int, bool, str]:
@@ -125,7 +128,14 @@ class DeepAttemptSummary:
     def complete(self) -> bool:
         return not self.missing_checks and not self.identity_reasons and self.image_id is not None
 
-    def attempt(self, *, version: str, clean: bool) -> DeepAttempt:
+    def attempt(
+        self,
+        *,
+        version: str,
+        clean: bool,
+        failure_count: int | None = None,
+        blocking_warning_ids: tuple[str, ...] | None = None,
+    ) -> DeepAttempt:
         """Freeze completion only after all orchestration returns normally."""
         outcome = (
             DeepOutcome.FAILED
@@ -133,7 +143,20 @@ class DeepAttemptSummary:
             else (DeepOutcome.SUCCESS if self.complete else DeepOutcome.INCOMPLETE)
         )
         reasons = tuple(sorted(set(self.missing_checks + self.identity_reasons)))[:_MAX_REASONS]
-        return DeepAttempt(
+        warning_count = len(blocking_warning_ids) if blocking_warning_ids is not None else None
+        warning_ids = (
+            tuple(
+                sorted(
+                    {
+                        item if _SAFE_ID.fullmatch(item) else "warning-identity-unavailable"
+                        for item in blocking_warning_ids
+                    }
+                )
+            )[:_MAX_REASONS]
+            if blocking_warning_ids is not None
+            else None
+        )
+        attempt = DeepAttempt(
             utc_now_rfc3339(),
             time.time_ns(),
             uuid.uuid4().hex,
@@ -142,7 +165,12 @@ class DeepAttemptSummary:
             outcome,
             self.complete,
             reasons,
+            failure_count,
+            warning_count,
+            warning_ids,
         )
+        _decode_attempt(_attempt_payload(attempt))
+        return attempt
 
 
 class DeepCheckTracker:
@@ -191,9 +219,57 @@ def _decode_attempt(raw: object) -> DeepAttempt | None:
         raise BoundaryError("invalid deep reason identifiers")
     if outcome == DeepOutcome.SUCCESS and (not complete or image_id is None or reasons):
         raise BoundaryError("success lacks qualifying execution evidence")
+    failures, warnings, warning_ids = _decode_health(values, outcome)
     return DeepAttempt(
-        completed_at, order, attempt_id, version, image_id, outcome, complete, reasons
+        completed_at,
+        order,
+        attempt_id,
+        version,
+        image_id,
+        outcome,
+        complete,
+        reasons,
+        failures,
+        warnings,
+        warning_ids,
     )
+
+
+def _decode_health(
+    values: dict, outcome: DeepOutcome
+) -> tuple[int | None, int | None, tuple[str, ...] | None]:
+    fields = ("failure_count", "blocking_warning_count", "blocking_warning_ids")
+    if not any(field in values for field in fields):
+        return None, None, None
+    failures = require_int(values.get("failure_count"), field="failure_count")
+    warnings = require_int(values.get("blocking_warning_count"), field="blocking_warning_count")
+    ids = tuple(
+        require_str_value(item) for item in require_list(values.get("blocking_warning_ids"))
+    )
+    if not 0 <= failures <= 2**31 - 1 or not 0 <= warnings <= 2**31 - 1:
+        raise BoundaryError("invalid deep health counts")
+    if (
+        len(ids) > _MAX_REASONS
+        or len(set(ids)) != len(ids)
+        or any(not _SAFE_ID.fullmatch(item) for item in ids)
+        or warnings < len(ids)
+        or bool(warnings) != bool(ids)
+    ):
+        raise BoundaryError("invalid deep warning identifiers")
+    if (outcome == DeepOutcome.FAILED) != bool(failures or warnings):
+        raise BoundaryError("deep health outcome contradicts blockers")
+    return failures, warnings, ids
+
+
+def _attempt_payload(attempt: DeepAttempt) -> dict:
+    payload = asdict(attempt)
+    payload["reasons"] = list(attempt.reasons)
+    if attempt.blocking_warning_ids is not None:
+        payload["blocking_warning_ids"] = list(attempt.blocking_warning_ids)
+    for field in ("failure_count", "blocking_warning_count", "blocking_warning_ids"):
+        if payload[field] is None:
+            del payload[field]
+    return payload
 
 
 def load_deep_state(booley_dir: Path) -> DeepState:
@@ -230,7 +306,18 @@ def _publish(path: Path, state: DeepState) -> None:
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump({"schema_version": 1, **asdict(state)}, handle)
+            json.dump(
+                {
+                    "schema_version": 1,
+                    "last_success": _attempt_payload(state.last_success)
+                    if state.last_success
+                    else None,
+                    "latest_completed_attempt": _attempt_payload(state.latest_completed_attempt)
+                    if state.latest_completed_attempt
+                    else None,
+                },
+                handle,
+            )
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
@@ -241,6 +328,7 @@ def _publish(path: Path, state: DeepState) -> None:
 
 def record_deep_attempt(booley_dir: Path, attempt: DeepAttempt) -> bool:
     """Atomically merge completed evidence under a bounded shared runtime lock."""
+    _decode_attempt(_attempt_payload(attempt))
     path = deep_stamp_path(booley_dir)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -289,10 +377,8 @@ def evaluate_deep_status(
         reasons.append(DeepReason("image-changed", "Sandbox Image changed"))
     latest = state.latest_completed_attempt
     if latest is not None and latest.outcome == DeepOutcome.FAILED:
-        reasons.append(
-            DeepReason("latest-attempt-failed", "latest deep health check failed", latest.reasons)
-        )
-    elif latest is not None and latest.outcome == DeepOutcome.INCOMPLETE:
+        reasons.append(_health_reason(latest))
+    if latest is not None and (latest.outcome == DeepOutcome.INCOMPLETE or latest.reasons):
         checks = ", ".join(latest.reasons[:8])
         detail = f" ({checks})" if checks else ""
         reasons.append(
@@ -303,3 +389,26 @@ def evaluate_deep_status(
             )
         )
     return DeepStatus(not reasons, success, tuple(reasons), storage_failed)
+
+
+def _health_reason(attempt: DeepAttempt) -> DeepReason:
+    if attempt.failure_count is None:
+        return DeepReason(
+            "latest-attempt-not-qualified",
+            "latest deep attempt did not qualify; legacy health verdict details unavailable",
+        )
+    ids = attempt.blocking_warning_ids or ()
+    warning_text = ", ".join(ids[:8])
+    additional = (attempt.blocking_warning_count or 0) - len(ids[:8])
+    if additional:
+        warning_text += f"; {additional} additional warning blocker(s)"
+    detail = f": unwaived warning {warning_text}" if ids else ""
+    if attempt.failure_count:
+        return DeepReason(
+            "latest-attempt-failed",
+            f"latest deep health check failed ({attempt.failure_count} failure(s)){detail}",
+            ids,
+        )
+    return DeepReason(
+        "latest-attempt-not-qualified", f"latest deep attempt did not qualify{detail}", ids
+    )

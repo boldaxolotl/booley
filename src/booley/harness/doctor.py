@@ -766,7 +766,26 @@ def _report_deep_currency(
         except (FileNotFoundError, OSError):
             booley_dir = None
         if booley_dir is not None:
-            attempt = summary.attempt(version=booley.__version__, clean=result.clean)
+            blockers = tuple(
+                finding
+                for finding in result.diagnostics.active_findings
+                if not (
+                    finding.severity == Severity.WARN
+                    and finding.check_id == "upgrade.review-pending"
+                )
+            )
+            failures = sum(finding.severity == Severity.FAIL for finding in blockers)
+            warnings = tuple(
+                finding.check_id
+                for finding in blockers
+                if finding.severity == Severity.WARN and finding.check_id is not None
+            )
+            attempt = summary.attempt(
+                version=booley.__version__,
+                clean=not blockers,
+                failure_count=failures,
+                blocking_warning_ids=warnings,
+            )
             storage_failed = not doctor_deep.record_deep_attempt(booley_dir, attempt)
     status = observe_deep_status(project_root, unsaved_attempt=attempt if storage_failed else None)
     if storage_failed:

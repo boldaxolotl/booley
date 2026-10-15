@@ -216,7 +216,9 @@ workaround a Booley success.
 
 When plain Doctor has no active findings other than the expected
 `upgrade.review-pending` warning and the delivered files are settled, run
-`booley doctor --deep`. A clean run is the final deep evidence; do not repeat it
+`booley doctor --deep`. A complete, qualifying run with no active findings other
+than the expected `upgrade.review-pending` warning is the final deep evidence;
+do not repeat it
 when no deep-relevant input changed. Deep
 checks can take minutes or tens of minutes. Run a long invocation in a managed
 background session or detached with output redirected to a file, then poll it;
@@ -229,7 +231,8 @@ editing anything. During repair, exercise the affected Flow and Target directly
 instead of rerunning the whole deep matrix after each edit.
 
 After deep repairs, run plain Doctor again because deep-side changes can regress
-non-deep checks. Once the repair is settled and plain Doctor is clean, rerun deep
+non-deep checks. Once the repair is settled and plain Doctor has no active findings
+other than the expected `upgrade.review-pending` warning, rerun deep
 Doctor as the final evidence; the earlier failed run cannot serve as evidence.
 
 Changes affecting project configuration, Targets, dependencies, or the Sandbox require all of this evidence:
