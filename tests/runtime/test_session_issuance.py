@@ -672,15 +672,18 @@ def _revoke_issued_project(project: Path, monkeypatch: pytest.MonkeyPatch) -> Mo
     return docker
 
 
-@pytest.mark.parametrize("boundary", ["enter", "cli", "refresh"])
+@pytest.mark.parametrize("boundary", ["up", "ensure", "enter", "cli", "refresh"])
 def test_real_revoke_reports_withdrawal_at_enter_and_cli(
     issued, monkeypatch, capsys, boundary
 ) -> None:
     project, _spec, _path, _stamp = issued
     docker = _revoke_issued_project(project, monkeypatch)
-    if boundary == "enter":
+    if boundary in {"up", "ensure", "enter"}:
         with pytest.raises(session_runtime.SessionError) as raised:
-            session_runtime.enter(project, ["true"], tty=False)
+            if boundary == "enter":
+                session_runtime.enter(project, ["true"], tty=False)
+            else:
+                getattr(session_runtime, boundary)(project)
         assert _WITHDRAWN_ISSUANCE in str(raised.value)
         assert "corrupt" not in str(raised.value)
     elif boundary == "cli":
@@ -875,6 +878,9 @@ def test_no_eda_issuance_and_validation_never_open_authority_store(
         )
         monkeypatch.setattr(session_runtime, "_preflight", lambda *_args, **_kwargs: None)
         monkeypatch.setattr(session_admission, "admit_start", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(
+            session_admission, "running_project_sandboxes", lambda *_args, **_kwargs: ()
+        )
         monkeypatch.setattr(session_runtime.idk, "container_exists", lambda _name: False)
         monkeypatch.setattr(
             session_runtime,

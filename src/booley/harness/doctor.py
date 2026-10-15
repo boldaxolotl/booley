@@ -2972,7 +2972,11 @@ def _check_wcp_server(
     if not docker_exe:
         _skip(f"{description} - container runtime unavailable")
         return
-    container = session_runtime.vscode_session_container(project.project_root)
+    try:
+        container = session_runtime.vscode_session_container(project.project_root)
+    except session_runtime.SessionError as exc:
+        _fail(f"{description} - {exc}", "resolve the Sandbox inventory before retrying")
+        return
     if container is None:
         _skip(f"{description} - no VS Code devcontainer running for this project")
         return

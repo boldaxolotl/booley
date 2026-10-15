@@ -46,8 +46,13 @@ from tests.diagnostic_helpers import (
     _issued_runtime_state,
     _Rec,
 )
+from tests.harness import test_session_runtime as resolution_fixtures
 
 pytestmark = pytest.mark.usefixtures("isolated_git_attributes")
+
+
+project_sandbox_resolution = resolution_fixtures.project_sandbox_resolution
+workspace = resolution_fixtures.workspace
 
 
 def test_doctor_inputs_use_condition_selected_target_sources(tmp_path: Path) -> None:
@@ -304,7 +309,7 @@ def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixtu
             return subprocess.CompletedProcess(cmd, 0, stdout="git version 2.53.0\n", stderr="")
         if cmd[:3] == [sys.executable, "-c", "import booley.runtime"]:
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-        if cmd[1:3] == ["ps", "-aq"]:
+        if cmd[1] == "ps":
             # Live Sandbox inventory must see an empty container list.
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         if cmd[:2] == ["git", "ls-files"]:
@@ -8491,6 +8496,33 @@ def test_goal_history_corrupt_standalone_is_active_and_preserves_history(tmp_pat
     assert exclude.read_bytes() == before
     assert (metadata / "HEAD.preserved").read_bytes() == head
     assert (metadata / "objects").is_dir()
+
+
+@pytest.mark.parametrize("inventory", ["editor", "headless", "absent", "unknown"])
+def test_wcp_project_sandbox_resolution(
+    workspace, project_sandbox_resolution, monkeypatch, inventory
+):
+    fixture = project_sandbox_resolution
+    if inventory == "headless":
+        fixture.state["Config"]["Labels"].pop("devcontainer.local_folder")
+        fixture.state["Name"] = "/" + session_runtime.session_container_name(workspace)
+    elif inventory == "absent":
+        fixture.documents.clear()
+    elif inventory == "unknown":
+        fixture.state["Config"]["Labels"].pop("booley.project-id")
+    from booley.runtime import runtime_context
+
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    monkeypatch.setattr(doctor, "_vscode_extension_host_running", lambda _: False)
+    rec = _Rec()
+    doctor._check_wcp_server(TestWcpServerCheck._project(workspace), "docker", rec.p, rec.s, rec.f)
+    if inventory == "unknown":
+        assert rec.kinds() == {"fail"}
+        assert any("identity disagrees" in message for message in rec.fails())
+    else:
+        assert rec.kinds() == {"skip"}
+        # Ownership alone must never claim an attached extension host.
+        assert "pass" not in rec.kinds()
 
 
 def test_doctor_flags_missing_specialist_ignores_without_mutating(tmp_path):

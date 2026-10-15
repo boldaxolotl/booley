@@ -9,6 +9,10 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- Session commands consistently reuse and report VS Code-owned Sandboxes; CLI
+  teardown and rebuild refuse editor ownership and point to Dev Containers.
+
+
 - Deep Doctor now warns when a simulation bad overlay fails to build, and requires
   an observed behavioral Test failure before accepting the bad case.
 

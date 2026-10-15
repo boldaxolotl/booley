@@ -69,8 +69,10 @@ timeout and admission cap cover all Booley Sandboxes, and every extra
 egress hostname becomes reachable from every Project.
 
 `max_sessions` is checked before a start would add a live Sandbox. At the limit,
-the command refuses, lists live Projects and ages, and explains how to stop one
-or raise the limit; it never evicts existing work. A pending VS Code start also
+the command refuses, lists live Projects and ages, and explains how to free capacity
+or raise the limit; it never evicts existing work. Use `session down` for a
+headless Sandbox; close the VS Code window or stop its Sandbox through Dev
+Containers for an editor-owned Sandbox. A pending VS Code start also
 holds a slot and can be cleared with the reported `session down` command after
 canceling the editor operation.
 

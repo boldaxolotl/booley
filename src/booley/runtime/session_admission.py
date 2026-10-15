@@ -23,7 +23,7 @@ from booley.config.host_config import (
 )
 from booley.core.boundary import (
     BoundaryError,
-    require_bool,
+    require_bool_value,
     require_dict,
     require_list,
     require_str,
@@ -41,6 +41,10 @@ _SCHEMA_VERSION = 2
 _CLAIM_SUFFIX = ".json"
 _FOLDER_LABEL = "devcontainer.local_folder"
 _PROJECT_LABEL = "booley.project-id"
+_PROJECT_LISTING_FORMAT = (
+    '{{.ID}}\t{{.Names}}\t{{.Label "devcontainer.local_folder"}}'
+    '\t{{.Label "booley.project-id"}}\t{{.Label "booley.role"}}'
+)
 logger = logging.getLogger(__name__)
 
 
@@ -148,14 +152,136 @@ def clear_vscode_claim(project_root: Path) -> bool:
 def has_pending_claim(project_root: Path, *, run: Run = _run) -> bool:
     """Return whether this Project has a validated pending editor start."""
     root = _canonical_root(project_root)
-    _live, claims, _candidates, _diagnostics = _admission_snapshot(run, requesting_root=root)
-    return any(_same_project_root(claim.project_root, root) for claim in claims)
+    claims = tuple(claim for claim in _claims() if _same_project_root(claim.project_root, root))
+    if not claims:
+        return False
+    candidates = _vscode_inventory({root}, run)
+    _project_vscode_sandboxes(root, candidates)
+    remaining, _diagnostics = _reconcile_claims(claims, candidates, root)
+    return bool(remaining)
 
 
 def vscode_sandboxes(project_root: Path, *, run: Run = _run) -> tuple[Sandbox, ...]:
     """Return strictly identified VS Code Sandboxes for one Project."""
     root = _canonical_root(project_root)
     return _project_vscode_sandboxes(root, _vscode_inventory({root}, run))
+
+
+def running_project_sandboxes(project_root: Path, *, run: Run = _run) -> tuple[Sandbox, ...]:
+    """Read one Project's running inventory without touching admission claims.
+
+    Listing hints exclude only positively identified foreign Projects. Every
+    possibly relevant object is inspected, so uncertainty never means absence.
+    """
+    from booley.runtime.session_runtime import session_container_name
+
+    root = _canonical_root(project_root)
+    local_name = session_container_name(project_root)
+    command = ["docker", "ps", "--no-trunc", "--format", _PROJECT_LISTING_FORMAT]
+    try:
+        result = run(command, timeout=30)
+        if result.returncode:
+            raise AdmissionError("cannot enumerate Project Sandboxes safely: " + _detail(result))
+        items = {}
+        for line in result.stdout.splitlines():
+            fields = line.split("\t")
+            if len(fields) != 5 or not fields[0] or not fields[1]:
+                raise AdmissionError("Docker returned an incomplete Project Sandbox listing")
+            container_id, name, folder, project_id, role = fields
+            if not (folder or project_id or role or name == local_name):
+                continue
+            if _foreign_listing(folder, project_id, name, root, local_name):
+                continue
+            if (
+                name != local_name
+                and role == "license-relay"
+                and _noninteractive_relay(container_id, name, run)
+            ):
+                continue
+            item = _inspect(container_id, name, run, exact_id=True)
+            if not _valid_identity(item, item.project_root):
+                raise AdmissionError(_identity_recovery(item, root))
+            local_root = _same_project_root(item.project_root, root)
+            local_label = matches_project_label(item.project_id, root) or (
+                local_root and _valid_identity(item, root)
+            )
+            if local_root != local_label or (name == local_name and not local_root):
+                raise AdmissionError(_identity_recovery(item, root))
+            if local_root and item.running:
+                _verify_workspace_mount(item, root, run)
+                items[item.container_id] = item
+        return tuple(items.values())
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise AdmissionError(f"cannot inspect Project Sandboxes safely: {exc}") from exc
+
+
+def _noninteractive_relay(container_id: str, name: str, run: Run) -> bool:
+    """Exclude a relay only after proving it has no interactive workspace bind."""
+    result = run(
+        ["docker", "container", "inspect", container_id, "--format", "{{json .}}"], timeout=30
+    )
+    try:
+        if result.returncode:
+            raise AdmissionError(f"cannot inspect possible Sandbox {name}: {_detail(result)}")
+        document = require_dict(json.loads(result.stdout), field="possible Sandbox")
+        labels = _labels(require_dict(document.get("Config"), field="Config").get("Labels"))
+        mounts = require_list(document.get("Mounts"), field="Mounts")
+        return (
+            require_str(document, "Id") == container_id
+            and require_str(document, "Name").removeprefix("/") == name
+            and labels.get("booley.role") == "license-relay"
+            and _FOLDER_LABEL not in labels
+            and not any(
+                require_dict(mount, field="Mount").get("Destination") == "/work"
+                for mount in mounts
+            )
+        )
+    except (BoundaryError, ValueError) as exc:
+        raise AdmissionError(f"cannot inspect possible Sandbox {name}") from exc
+
+
+def _foreign_listing(folder: str, project_id: str, name: str, root: str, local_name: str) -> bool:
+    if not folder or not project_id or name == local_name:
+        return False
+    try:
+        foreign_root = _canonical_text(folder)
+    except AdmissionError:
+        return False
+    return (
+        not _same_project_root(foreign_root, root)
+        and matches_project_label(project_id, foreign_root)
+        and not matches_project_label(project_id, root)
+    )
+
+
+def _verify_workspace_mount(item: Sandbox, root: str, run: Run) -> None:
+    container_id = item.container_id
+    result = run(
+        ["docker", "container", "inspect", container_id, "--format", "{{json .}}"], timeout=30
+    )
+    try:
+        if result.returncode:
+            raise AdmissionError(f"cannot revalidate Sandbox {container_id}: {_detail(result)}")
+        # The second probe verifies full identity again, rather than trusting a name.
+        document = require_dict(json.loads(result.stdout), field="Sandbox")
+        if (
+            require_str(document, "Id") != container_id
+            or require_str(document, "Name").removeprefix("/") != item.name
+        ):
+            raise AdmissionError("Sandbox identity changed during Project resolution")
+        labels = _labels(require_dict(document.get("Config"), field="Config").get("Labels"))
+        if (
+            not _same_project_root(_workspace_mount_root(document, item.name), root)
+            or labels.get("booley.role") != "interactive"
+            or labels.get(_PROJECT_LABEL) != item.project_id
+            or not _same_project_root(_project_root(document, labels, item.name), root)
+            or require_dict(document.get("State"), field="State").get("Running") is not True
+        ):
+            raise AdmissionError(
+                "Sandbox Project root/mount identity is contradictory or unavailable"
+            )
+    except (BoundaryError, ValueError) as exc:
+        raise AdmissionError(f"cannot revalidate Sandbox {container_id} identity") from exc
 
 
 def _policy() -> SandboxHostPolicy:
@@ -222,8 +348,10 @@ def _vscode_inventory(project_roots: set[str], run: Run) -> tuple[Sandbox, ...]:
     return tuple(items)
 
 
-def _inspect(container_id: str, listed_name: str, run: Run) -> Sandbox:
-    result = run(["docker", "container", "inspect", container_id, "--format", "{{json .}}"])
+def _inspect(container_id: str, listed_name: str, run: Run, *, exact_id: bool = False) -> Sandbox:
+    result = run(
+        ["docker", "container", "inspect", container_id, "--format", "{{json .}}"], timeout=30
+    )
     if result.returncode:
         raise AdmissionError(f"cannot inspect Sandbox {listed_name}: {_detail(result)}")
     try:
@@ -231,11 +359,13 @@ def _inspect(container_id: str, listed_name: str, run: Run) -> Sandbox:
         config = require_dict(document.get("Config"), field="Config")
         state = require_dict(document.get("State"), field="State")
         labels = _labels(config.get("Labels"))
-        running = require_bool(state, "Running", field="State.Running")
+        running = require_bool_value(state.get("Running"), field="State.Running")
         started = _docker_time(require_str(state, "StartedAt"), allow_zero=not running)
         created = _docker_time(require_str(document, "Created"), allow_zero=False)
         name = require_str(document, "Name").removeprefix("/")
         root = _project_root(document, labels, listed_name)
+        if exact_id and require_str(document, "Id") != container_id:
+            raise AdmissionError(f"Sandbox identity changed while inspecting {listed_name}")
     except (BoundaryError, ValueError, json.JSONDecodeError) as exc:
         raise AdmissionError(
             f"Docker returned incomplete inspection for Sandbox {listed_name}"
@@ -270,19 +400,23 @@ def _labels(raw: object) -> dict[str, str]:
 def _project_root(document: dict[str, Any], labels: dict[str, str], name: str) -> str:
     if folder := labels.get(_FOLDER_LABEL):
         return _canonical_text(folder)
+    return _workspace_mount_root(document, name)
+
+
+def _workspace_mount_root(document: dict[str, Any], name: str) -> str:
     mounts = require_list(document.get("Mounts"), field="Mounts")
+    roots = []
     for index, raw in enumerate(mounts):
         mount = require_dict(raw, field=f"Mounts[{index}]")
         mount_type = require_str(mount, "Type")
         destination = require_str(mount, "Destination")
-        if mount_type != "bind" or destination != "/work":
-            continue
-        source = require_str(mount, "Source")
-        host_path = host_path_from_docker_mount(source)
-        if host_path is None:
-            break
-        return _canonical_text(str(host_path))
-    raise AdmissionError(f"cannot identify owning Project for Sandbox {name}")
+        if mount_type == "bind" and destination == "/work":
+            host_path = host_path_from_docker_mount(require_str(mount, "Source"))
+            if host_path is not None:
+                roots.append(_canonical_text(str(host_path)))
+    if len(roots) != 1:
+        raise AdmissionError(f"cannot identify owning Project for Sandbox {name}")
+    return roots[0]
 
 
 def _docker_time(value: str, *, allow_zero: bool) -> datetime | None:
@@ -453,18 +587,28 @@ def _claim_filename(project_root: str) -> str:
 
 
 def _canonical_root(project_root: Path) -> str:
-    return str(project_root.resolve(strict=False))
+    try:
+        return str(project_root.resolve(strict=False))
+    except (OSError, RuntimeError) as exc:
+        raise AdmissionError(f"cannot resolve Project path {project_root}: {exc}") from exc
 
 
 def _canonical_text(value: str) -> str:
-    path = Path(value)
+    path = host_path_from_docker_mount(value)
+    if path is None:
+        raise AdmissionError(f"Project path is unavailable: {value!r}")
     if not path.is_absolute() or ".." in path.parts:
         raise AdmissionError(f"Project path is not canonical: {value!r}")
-    return str(path.resolve(strict=False))
+    return _canonical_root(path)
 
 
 def _same_project_root(left: str, right: str) -> bool:
-    return os.path.normcase(left) == os.path.normcase(right)
+    if os.path.normcase(left) == os.path.normcase(right):
+        return True
+    try:
+        return Path(left).samefile(Path(right))
+    except OSError:
+        return False
 
 
 def _report_recovery_capacity(run: Run) -> None:
@@ -507,6 +651,11 @@ def _refusal(
         lines.append(f"- pending editor start: Project {claim.project_root}")
     roots = sorted({item.project_root for item in live} | {claim.project_root for claim in claims})
     for root in roots:
+        if any(item.vscode and _same_project_root(item.project_root, root) for item in live):
+            lines.append(
+                f"Free capacity for {root}: close the VS Code window or use Dev Containers to stop its Sandbox."
+            )
+            continue
         argv = ["booley", "session", "down", "--project", root]
         command = _command(argv)
         shell = " in PowerShell" if os.name == "nt" else ""

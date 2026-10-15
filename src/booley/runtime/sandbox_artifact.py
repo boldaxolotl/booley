@@ -26,9 +26,7 @@ from booley.core.boundary import (
     require_dict,
     require_int,
     require_str,
-    require_str_value,
 )
-from booley.core.project_identity import matches_project_label
 from booley.runtime import runtime_context
 from booley.runtime.image_provenance import is_local_image_id
 
@@ -57,30 +55,45 @@ def _docker_stdout(argv: list[str]) -> str | None:
 
 
 def _container_state(workspace: Path, container: str) -> dict | None:
-    from booley.runtime import session_runtime as sr
-
     raw = _docker_stdout(["docker", "inspect", container])
-    state = sr._decode_container_inspect(raw) if raw is not None else None
+    from booley.runtime.session_runtime import _decode_container_inspect
+
+    state = _decode_container_inspect(raw) if raw is not None else None
     if state is None:
         return None
+    from booley.runtime import session_admission
+
     try:
         config = require_dict(state.get("Config"), field="Config")
         labels = require_dict(config.get("Labels"), field="Labels")
         running = require_dict(state.get("State"), field="State").get("Running")
-        owned = labels.get("booley.role") == "interactive" and matches_project_label(
-            labels.get("booley.project-id"), str(workspace.resolve(strict=True))
+        root = session_admission._canonical_root(workspace)
+        observed = session_admission._project_root(state, labels, container)
+        label_roots = [root, observed]
+        folder = labels.get("devcontainer.local_folder")
+        if isinstance(folder, str) and session_admission._same_project_root(
+            session_admission._canonical_text(folder), root
+        ):
+            label_roots.append(folder)
+        owned = (
+            labels.get("booley.role") == "interactive"
+            and session_admission._same_project_root(observed, root)
+            and session_admission._same_project_root(
+                session_admission._workspace_mount_root(state, container), root
+            )
+            and any(
+                session_admission.matches_project_label(labels.get("booley.project-id"), value)
+                for value in label_roots
+            )
         )
         if not owned or running is not True:
             return None
-        name = require_str_value(
-            state.get("Name", container), field="container name"
-        ).removeprefix("/")
-        if not sr._inspected_container_serves_workspace(name, raw, workspace):
-            return None
         image_id, container_id = require_str(state, "Image"), require_str(state, "Id")
+        if _CONTAINER_ID.fullmatch(container) and container_id != container:
+            return None
         if not is_local_image_id(image_id) or _CONTAINER_ID.fullmatch(container_id) is None:
             return None
-    except (BoundaryError, OSError, ValueError):
+    except (BoundaryError, OSError, ValueError, session_admission.AdmissionError):
         return None
     return state
 
@@ -92,24 +105,13 @@ def observe(workspace: Path, *, container: str | None = None) -> SandboxArtifact
     from booley.runtime import session_runtime as sr
 
     if container is None:
-        names = _docker_stdout(
-            [
-                "docker",
-                "ps",
-                "--filter",
-                f"label={sr.dc.INTERACTIVE_ROLE_LABEL}",
-                "--format",
-                "{{.Names}}",
-            ]
-        )
-        states = [
-            state
-            for name in (names or "").splitlines()
-            if (state := _container_state(workspace, name)) is not None
-        ]
-        if len(states) != 1:
+        try:
+            selected = sr.resolve_running_sandbox(workspace)
+        except sr.SessionError as exc:
+            return SandboxArtifact(unavailable_reason=f"sandbox-inventory-unavailable: {exc}")
+        if selected is None:
             return SandboxArtifact(unavailable_reason="sandbox-absent-or-ambiguous")
-        state = states[0]
+        state = _container_state(workspace, selected.container_id)
     else:
         state = _container_state(workspace, container)
     if state is None:
@@ -282,20 +284,15 @@ def launch_vscode_observer(workspace: Path, spec_digest: str) -> None:
 def _prepared_vscode_state(workspace: Path, spec_digest: str) -> dict | None:
     from booley.runtime import session_runtime as sr
 
-    names = _docker_stdout(
-        [
-            "docker",
-            "ps",
-            "--filter",
-            f"label={sr.dc.INTERACTIVE_ROLE_LABEL}",
-            "--filter",
-            f"label=devcontainer.local_folder={workspace}",
-            "--format",
-            "{{.Names}}",
-        ]
+    try:
+        selected = sr.resolve_running_sandbox(workspace)
+    except sr.SessionError:
+        return None
+    state = (
+        _container_state(workspace, selected.container_id)
+        if selected is not None and selected.vscode
+        else None
     )
-    candidates = (names or "").splitlines()
-    state = _container_state(workspace, candidates[0]) if len(candidates) == 1 else None
     if state is None or state["Config"]["Labels"].get("booley.spec-digest") != spec_digest:
         return None
     return state

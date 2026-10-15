@@ -1197,15 +1197,18 @@ def _cmd_cheat(args: argparse.Namespace, project_root: Path | None) -> int:
     return 0
 
 
-def _report_session_health(project_root: Path, *, startup_due_reason: str | None = None) -> None:
+def _report_session_health(
+    project_root: Path, *, startup_due_reason: str | None = None, started: bool = True
+) -> None:
     """Surface the result, or the scheduled check, after Sandbox start."""
     from booley.runtime import health, health_presentation
 
     due_reason = startup_due_reason or health.due_reason(project_root)
     if due_reason is not None:
+        timing = "from before startup " if started else ""
         print(
-            f"Automatic Doctor is running in the Sandbox ({due_reason}); "
-            "persisted findings from before startup will not be reported as current.",
+            f"Automatic Doctor is {'running' if started else 'due'} in the Sandbox ({due_reason}); "
+            f"persisted findings {timing}will not be reported as current.",
             file=sys.stderr,
         )
         return
@@ -1222,20 +1225,14 @@ def _session_up(args: argparse.Namespace, project_root: Path) -> int:
     from booley.runtime import session_runtime as sr
 
     _report_upgrade_before_session(project_root)
-    vscode = sr.conflicting_vscode_session(project_root)
     startup_due_reason = health.due_reason(project_root)
-    name = sr.up(project_root, rebuild=getattr(args, "rebuild", False))
-    if vscode:
-        print(
-            f"warning: VS Code is already running a Sandbox for this "
-            f"folder ({vscode}).\n"
-            f"  Both mount the agent's home-state volume read-write, so two "
-            f"agents now share one\n"
-            f"  set of credentials, transcripts, and todos. Prefer the VS Code "
-            f"container, or close it.",
-            file=sys.stderr,
-        )
-    _report_session_health(project_root, startup_due_reason=startup_due_reason)
+    result = sr.ensure(project_root, rebuild=getattr(args, "rebuild", False))
+    name = result.name
+    if result.vscode:
+        print(f"Reusing Sandbox owned by VS Code: {name}")
+    _report_session_health(
+        project_root, startup_due_reason=startup_due_reason, started=result.started
+    )
     from booley.harness.doctor import observe_deep_status
 
     print(observe_deep_status(project_root, container=name).render())
@@ -1290,8 +1287,6 @@ def _session_down(_args: argparse.Namespace, project_root: Path) -> int:
         details = []
         if result.headless:
             details.append(f"removed {sr.session_container_name(project_root)}")
-        if result.vscode_stopped:
-            details.append("stopped VS Code Sandbox " + ", ".join(result.vscode_stopped))
         if result.claim_cleared:
             details.append("cleared pending editor start claim")
         print("; ".join(details) or "removed Sandbox resources")

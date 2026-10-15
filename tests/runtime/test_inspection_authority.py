@@ -76,7 +76,7 @@ def _fake_runtime_transport(monkeypatch):
             return subprocess.CompletedProcess(argv, 0, json.dumps(document), "")
         if argv[1] == "run" and "--entrypoint=python3" in argv and "canonical-alias" in argv[-1]:
             return subprocess.CompletedProcess(argv, 0, "directory\n", "")
-        if argv[1:3] == ["ps", "-aq"]:
+        if argv[1] == "ps":
             return subprocess.CompletedProcess(argv, int(observations["listing_error"]), "", "")
         pytest.fail(f"unexpected command: {argv}")
 

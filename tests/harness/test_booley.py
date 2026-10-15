@@ -356,11 +356,12 @@ def test_session_up_observes_upgrade_before_runtime_start(tmp_path, monkeypatch)
     monkeypatch.setattr(
         tlr, "_report_upgrade_before_session", lambda _root: events.append("observe")
     )
-    monkeypatch.setattr(session_runtime, "conflicting_vscode_session", lambda _root: None)
     monkeypatch.setattr(
         session_runtime,
-        "up",
-        lambda *_args, **_kwargs: events.append("up") or "session",
+        "ensure",
+        lambda *_args, **_kwargs: (
+            events.append("up") or session_runtime.EnsureResult("session", False, True)
+        ),
     )
     monkeypatch.setattr(health, "due_reason", lambda _root: None)
     monkeypatch.setattr(tlr, "_report_session_health", lambda *_args, **_kwargs: None)
@@ -1031,10 +1032,9 @@ def test_at_cap_session_start_reports_status_two_without_success(
     args = tlr._build_parser().parse_args(["session", command])
     monkeypatch.setattr(tlr, "_report_upgrade_before_session", lambda _root: None)
     monkeypatch.setattr(health, "due_reason", lambda _root: None)
-    monkeypatch.setattr(sr, "conflicting_vscode_session", lambda _root: None)
     monkeypatch.setattr(
         sr,
-        command,
+        "ensure" if command == "up" else command,
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             sr.SessionError("Sandbox start refused: host is at sandbox.max_sessions=1")
         ),
