@@ -16,7 +16,7 @@ Apply these rules to every mission area that uses a Goal child.
 - While any Goal is active, pass absolute `work_dir` on every built-in Booley
   MCP call that takes it: Flows, Specialists, Goal calls, `booley_targets` and
   `booley_report`. `booley_status`, `booley_poll`, `booley_cancel`, and
-  `bwave` have no `work_dir` argument and reject one. For any other MCP call, follow its advertised schema.
+  `bwave` have no `work_dir` argument. For any other MCP call, follow its advertised schema.
   Independent non-Goal areas use the primary checkout root. Finish or
   explicitly abandon every Goal before closing its area and starting the next
   area.

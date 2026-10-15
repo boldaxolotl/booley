@@ -128,28 +128,23 @@ ROUTING_DOCUMENTS = (
 _IDENTIFIER = r"[a-z][a-z0-9_]*"
 
 
-def _guidance_names(text: str) -> set[str]:
-    """Extract tool positions independently of the registered names."""
-    text = re.sub(r"`python3 [^`]+`", "", text)
-    text = re.sub(r"```(?:python|bash|sh)\n.*?```", "", text, flags=re.DOTALL)
-    text = " ".join(text.split())
+def _inventory_names(text: str) -> set[str]:
+    """Read designated MCP-name columns in Markdown and terminal inventories."""
+    text = re.sub(r"\x1b\[[0-9;]*m", "", text)
+    headings = r"(?:MCP tool|Step/tool|Booley Flow|Specialist)"
     names = set()
-    if text.startswith("| MCP tool |"):
-        names.update(re.findall(rf"`({_IDENTIFIER})`", text))
-    names.update(re.findall(rf"\b({_IDENTIFIER})\(", text))
-    for pattern in (
-        rf"Check `({_IDENTIFIER})`",
-        rf"(?:approval through|Goal change through) `({_IDENTIFIER})`",
-        rf"operation_id to ({_IDENTIFIER})\b",
-        rf"MCP tool `({_IDENTIFIER})`",
-        rf"(?:call|Check) `({_IDENTIFIER})`",
-        rf"(?:Use the|through the) ({_IDENTIFIER}) tool",
-        rf"`({_IDENTIFIER})` tool exposes",
-        rf"(?:sees only|expose only) `({_IDENTIFIER})`",
-        rf"Discovery must expose exactly ({_IDENTIFIER})",
-        rf"mcp__booley__({_IDENTIFIER})\b",
-    ):
-        names.update(re.findall(pattern, text))
+    markdown = rf"(?m)^\| {headings} \|[^\n]*\n\|[-: |]+\n((?:\|[^\n]*(?:\n|$))+)"
+    terminal = rf"(?m)^  {headings} {{3,}}[^\n]*\n  [─ ]+\n((?:  \S[^\n]*(?:\n|$))+)"
+    for rows in re.findall(markdown, text):
+        names.update(re.findall(rf"(?m)^\|\s*`({_IDENTIFIER})(?:\([^`]*\))?`\s*\|", rows))
+    for rows in re.findall(terminal, text):
+        names.update(re.findall(rf"(?m)^  ({_IDENTIFIER})(?:\([^)]*\))? {{3,}}", rows))
+    return names
+
+
+def _routing_list_names(text: str) -> set[str]:
+    """Extract bounded advertised inventories, keeping parameters out of name slots."""
+    names = set()
     for pattern in (
         r"Available MCP tools: ([^.]+)",
         r"long-running endpoint \(([^)]+)\)",
@@ -168,10 +163,44 @@ def _guidance_names(text: str) -> set[str]:
             names.update(re.findall(rf"\b({_IDENTIFIER})\b", inventory))
             names.difference_update({"and", "WARNING", "Pass", "work_dir"})
     names.update(
-        re.findall(rf"`({_IDENTIFIER})`", text.split("Pass `work_dir`")[-1].split(". ")[0])
+        re.findall(
+            rf"`({_IDENTIFIER})`",
+            text.rsplit("Pass `work_dir`", maxsplit=1)[-1].split(". ", maxsplit=1)[0],
+        )
         if "Pass `work_dir`" in text
         else ()
     )
+    # Utility names in the accepting list follow a capability category; commas
+    # and conjunctions bound names without interpreting parameters or English.
+    accepting = rf"Goal (?:tools|calls)((?:(?:, (?:and )?| and )`?{_IDENTIFIER}`?)+)"
+    for inventory in re.findall(accepting, text):
+        names.update(set(re.findall(_IDENTIFIER, inventory)) - {"and"})
+    return names
+
+
+def _guidance_names(text: str) -> set[str]:
+    """Extract tool positions independently of the registered names."""
+    text = re.sub(r"`python3 [^`]+`", "", text)
+    text = re.sub(r"```(?:python|bash|sh)\n.*?```", "", text, flags=re.DOTALL)
+    names = _inventory_names(text)
+    text = " ".join(text.split())
+    if text.startswith("| MCP tool |"):
+        names.update(re.findall(rf"`({_IDENTIFIER})`", text))
+    names.update(re.findall(rf"\b({_IDENTIFIER})\(", text))
+    for pattern in (
+        rf"\b(?i:call|check|use|MCP(?: tool)?|rerun command) `({_IDENTIFIER})`",
+        rf"(?:name from|`missing` in|producer remedy in) `({_IDENTIFIER})`",
+        rf"`({_IDENTIFIER})` (?:lists|with `work_dir`)",
+        rf"(?:approval through|Goal change through) `({_IDENTIFIER})`",
+        rf"operation_id to ({_IDENTIFIER})\b",
+        rf"(?:Use the|through the) ({_IDENTIFIER}) tool",
+        rf"`({_IDENTIFIER})` tool exposes",
+        rf"(?:sees only|expose only) `({_IDENTIFIER})`",
+        rf"Discovery must expose exactly ({_IDENTIFIER})",
+        rf"mcp__booley__({_IDENTIFIER})\b",
+    ):
+        names.update(re.findall(pattern, text))
+    names.update(_routing_list_names(text))
     # Strip wire prefixes after collecting whole invocation identifiers.
     return {name.removeprefix("mcp__booley__") for name in names}
 
@@ -271,7 +300,8 @@ def test_guidance_guard_ignores_parameters_and_english():
     text = (
         "to run; to meet a Goal; to recover its saved result; to finish; to Booley Flows. "
         "Pass record_id and a caller-stable operation_id. work_dir (absolute root). "
-        "`.core` `tests.toml` `flow_options.booley.doctor`"
+        "`.core` `tests.toml` `flow_options.booley.doctor` "
+        "Bare `booley` prints help. `full` prints every testcase."
     )
     assert not _guidance_names(text)
 
@@ -359,3 +389,63 @@ def test_exceptional_names_require_their_documented_mode(monkeypatch, mode, name
         _assert_guidance_names(f"MCP tool `{name}`", interactive, "unqualified")
     qualified = set(_qualified_catalog(monkeypatch, mode))
     _assert_guidance_names(f"MCP tool `{name}`", qualified, mode)
+
+
+@pytest.mark.parametrize("rendered", [False, True], ids=["markdown", "terminal"])
+@pytest.mark.parametrize("name", ["goal_enter", "sim", "coverage_analyst"])
+def test_guidance_guard_rejects_unknown_actual_inventory_cell(name, rendered, monkeypatch):
+    from booley.harness.render_md import render
+
+    text = (REPO_ROOT / "src/booley/data/cheatsheet.md").read_text()
+    available = set(_builtin_routing_catalog(monkeypatch))
+    original = render(text) if rendered else text
+    _assert_guidance_names(original, available, "original cheat inventory")
+    changed = text.replace(f"| `{name}` |", "| `not_a_registered_tool` |", 1)
+    assert changed != text
+    changed = render(changed) if rendered else changed
+    with pytest.raises(AssertionError, match="not_a_registered_tool"):
+        _assert_guidance_names(changed, available, "mutated cheat inventory")
+
+
+@pytest.mark.parametrize(
+    "path, phrase",
+    [
+        pytest.param("src/booley/data/skills/booley-goal/SKILL.md", phrase, id=label)
+        for label, phrase in (
+            ("capital-call", "Call `goal_finish`"),
+            ("lowercase-check", "check `goal_status`"),
+            ("use", "Use `booley_targets`"),
+            ("mcp-noun", "MCP `goal_status`"),
+            ("name-from", "name from `goal_status`"),
+            ("state-in", "`missing` in `goal_status`"),
+            ("remedy-in", "producer remedy in `goal_status`"),
+            ("rerun-command", "rerun command `goal_status`"),
+            ("with-work-dir", "`goal_finish` with `work_dir`"),
+        )
+    ]
+    + [
+        pytest.param("src/booley/data/cheatsheet.md", "`goal_status` lists", id="lists"),
+        *[
+            pytest.param(path, "Goal tools, `booley_targets`", id=f"accepting-{index}")
+            for index, path in enumerate(ROUTING_DOCUMENTS[:3])
+        ],
+        pytest.param("qa/shared/GOAL-CHILD.md", "Goal calls, `booley_targets`", id="accepting-qa"),
+    ],
+)
+def test_guidance_guard_rejects_unknown_actual_prose_tool(path, phrase, monkeypatch):
+    text = " ".join((REPO_ROOT / path).read_text().split())
+    available = set(_builtin_routing_catalog(monkeypatch))
+    _assert_guidance_names(text, available, "original prose")
+    assert phrase in text
+    # These are MCP-name positions; parameter/config spans alongside them stay intact.
+    names = re.findall(r"`([a-z_]+)`", phrase)
+    name = names[0] if names[0] != "missing" else names[1]
+    changed = text.replace(phrase, phrase.replace(f"`{name}`", "`not_a_registered_tool`"), 1)
+    with pytest.raises(AssertionError, match="not_a_registered_tool"):
+        _assert_guidance_names(changed, available, "mutated prose")
+
+
+def test_guidance_guard_rejects_unknown_plain_accepting_utility():
+    text = "Pass work_dir to Booley Flows, Specialists, Goal tools, not_a_registered_tool."
+    with pytest.raises(AssertionError, match="not_a_registered_tool"):
+        _assert_guidance_names(text, {"booley_targets"}, "plain routing producer")
