@@ -4022,13 +4022,28 @@ def _check_sim_target_setup(
 ) -> None:
     """Run source-backed setup checks for every simulation Target."""
     for name, ref in sorted(inputs.refs.items()):
-        if ref.flow != "sim":
+        if not flow_can_drive("sim", ref):
             continue
         try:
             sources = inputs.sources_for(name)
         except fusesoc_registry.FuseSocError:
             continue  # malformed CAPI2 is already reported by the schema audit
-        _check_sim_target_tb_staging(name, sources, _pass, _fail)
+        explicit = fusesoc_registry.explicit_target_sources(project.project_root, ref)
+        inferred = sorted(
+            item.path
+            for item in inputs.inspection_for(name).inputs
+            if item.file_type.lower() in {"cppsource", "csource"}
+            and "tb" in item.tags
+            and fusesoc_registry.canonical_project_path(project.project_root, item.path)
+            not in explicit.tb_files
+        )
+        if inferred:
+            _warn(
+                f"sim Target '{name}' untagged C/C++ harness files: {', '.join(inferred)}; add tags:[tb] to their fileset"
+            )
+        if ref.flow != "sim":
+            continue  # preserve legacy setup auditing while still warning on inferred roles
+        _check_sim_target_tb_staging(name, explicit, _pass, _fail)
         _check_sim_verdict_setup(
             project,
             project.project_root,
@@ -5647,6 +5662,28 @@ def _report_native_dependencies(
         )
 
 
+def _native_dependency_sources(project: ProjectAudit) -> list[str]:
+    """Collect selected compile inputs from both source roles for native scanning."""
+    seeds = _project_target_matrix(project).seed_targets
+    if not seeds:
+        return []
+    sources: list[str] = []
+    try:
+        catalog = TargetCatalog.build(project.project_root)
+    except FuseSocError:
+        return []
+    for token in seeds:
+        try:
+            sources.extend(
+                item.path
+                for item in catalog.inspect(catalog.select(token)).inputs
+                if not item.is_include
+            )
+        except FuseSocError:
+            continue  # an unresolvable Target is already reported elsewhere
+    return sources
+
+
 def _audit_native_dependencies(project: ProjectAudit, _pass: Check, _warn: Check) -> None:
     """Warn when a Target's C/C++ sources need a native package the image lacks.
 
@@ -5659,20 +5696,8 @@ def _audit_native_dependencies(project: ProjectAudit, _pass: Check, _warn: Check
     Advisory by design — this is a curated header list, not a resolver, so it
     can only be a hint. It never fails the gate.
     """
-    seeds = _project_target_matrix(project).seed_targets
-    if not seeds:
-        return
     root = project.project_root
-    sources: list[str] = []
-    try:
-        catalog = TargetCatalog.build(root)
-    except FuseSocError:
-        return
-    for token in seeds:
-        try:
-            sources.extend(catalog.inspect(catalog.select(token)).rtl_files)
-        except FuseSocError:
-            continue  # an unresolvable Target is already reported elsewhere
+    sources = _native_dependency_sources(project)
 
     needed: dict[str, set[str]] = {}
     scanned = 0

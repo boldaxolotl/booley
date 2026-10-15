@@ -900,3 +900,82 @@ def test_authored_flag_selects_empty_parameter_and_dependency(tmp_path):
     sources = fusesoc_registry.target_source_files_for_ref(tmp_path, ref)
     assert "conditional_tb.sv" in sources.tb_files
     assert "top.sv" in sources.rtl_source_files
+
+
+def _category_sim_core(root: Path) -> None:
+    """Typed harnesses share the source directory and default/lint filesets."""
+    (root / "shared").mkdir(exist_ok=True)
+    for name in ("dut.sv", "tb.sv", "main.cpp", "driver.c", "api.h", "unused.cpp"):
+        (root / "shared" / name).write_text("// source\n")
+    (root / "design.core").write_text("""CAPI=2:
+name: ::category:0
+filesets:
+  rtl: {files: [shared/dut.sv], file_type: systemVerilogSource}
+  tb: {files: [shared/tb.sv], file_type: systemVerilogSource, tags: [tb]}
+  harness:
+    files:
+      - shared/main.cpp
+      - shared/api.h: {is_include_file: true}
+      - shared/driver.c: {file_type: cSource}
+      - target_other ? (shared/unused.cpp)
+    file_type: cppSource
+targets:
+  default: {filesets: [rtl, harness], toplevel: dut}
+  sim:
+    flow: sim
+    flow_options: {tool: verilator}
+    filesets: [rtl, tb, harness]
+    toplevel: tb
+  lint:
+    flow: lint
+    flow_options: {tool: verilator}
+    filesets: [rtl, harness]
+    toplevel: dut
+  broken_synth:
+    default_tool: yosys
+    filesets: [undefined]
+""")
+
+
+def test_typed_sim_harness_roles_preserve_selected_compile_inputs(tmp_path):
+    _category_sim_core(tmp_path)
+    catalog = TargetCatalog.build(tmp_path)
+    for name in ("sim", "lint"):
+        inspection = catalog.inspect(catalog.select(name))
+        assert inspection.rtl_files == ("shared/dut.sv",)
+        assert {"shared/main.cpp", "shared/driver.c"} <= set(inspection.tb_files)
+        assert "shared/unused.cpp" not in {item.path for item in inspection.inputs}
+        header = next(item for item in inspection.inputs if item.path == "shared/api.h")
+        assert header.is_include
+        assert "tb" in header.tags
+        assert (
+            next(item for item in inspection.inputs if item.path == "shared/driver.c").file_type
+            == "cSource"
+        )
+    sources = fusesoc_registry.classified_sources(tmp_path, strict=True)
+    assert sources.rtl_source_files == ("shared/dut.sv",)
+    assert set(sources.tb_files) == {
+        "shared/tb.sv",
+        "shared/main.cpp",
+        "shared/api.h",
+        "shared/driver.c",
+        "shared/unused.cpp",
+    }
+
+
+def test_explicit_role_wins_over_sim_inference_and_conflicts_refuse(tmp_path):
+    _category_sim_core(tmp_path)
+    core = tmp_path / "design.core"
+    core.write_text(
+        core.read_text().replace("- shared/main.cpp", "- shared/main.cpp: {tags: [rtl]}")
+    )
+    sources = fusesoc_registry.classified_sources(tmp_path, strict=True)
+    assert "shared/main.cpp" in sources.rtl_source_files
+    catalog = TargetCatalog.build(tmp_path)
+    inspection = catalog.inspect(catalog.select("sim"))
+    assert "shared/main.cpp" in inspection.rtl_files
+    core.write_text(
+        core.read_text().replace("files: [shared/tb.sv]", "files: [shared/tb.sv, shared/main.cpp]")
+    )
+    with pytest.raises(fusesoc_registry.FuseSocError, match=r"conflicting source roles.*main.cpp"):
+        fusesoc_registry.classified_sources(tmp_path, strict=True)
