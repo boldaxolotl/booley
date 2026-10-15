@@ -117,30 +117,60 @@ def _license_bytes() -> bytes:
     return resources.files("booley").joinpath("data", "licenses", LICENSE_FILENAME).read_bytes()
 
 
-def validation_errors(root: Path | None = None) -> tuple[str, ...]:
-    """Return every missing or checksum-mismatched cache member."""
-    root = root or cache_root()
-    errors: list[str] = []
-    for item in FILES:
-        path = root / item.destination
-        if not path.is_file():
-            errors.append(f"missing {item.destination}")
-            continue
-        try:
-            actual = _sha256(path)
-        except OSError as exc:
-            errors.append(f"cannot read {item.destination}: {exc}")
-            continue
-        if actual != item.sha256:
-            errors.append(f"checksum mismatch for {item.destination}")
+@dataclass(frozen=True)
+class CacheInspection:
+    """Separate cache work Bootstrap can perform from inaccessible state."""
 
-    license_path = root / LICENSE_FILENAME
+    pending: tuple[str, ...]
+    errors: tuple[str, ...]
+
+
+def _inspect_member(root: Path, item: PinnedFile) -> CacheInspection:
+    path = root / item.destination
     try:
-        if license_path.read_bytes() != _license_bytes():
-            errors.append(f"missing or changed {LICENSE_FILENAME}")
-    except OSError:
-        errors.append(f"missing or changed {LICENSE_FILENAME}")
-    return tuple(errors)
+        if not stat.S_ISREG(path.stat().st_mode):
+            return CacheInspection((f"missing {item.destination}",), ())
+        actual = _sha256(path)
+    except FileNotFoundError:
+        return CacheInspection((f"missing {item.destination}",), ())
+    except OSError as exc:
+        return CacheInspection((), (f"cannot read {path}: {exc}; restore read access to {path}",))
+    pending = (f"checksum mismatch for {item.destination}",) if actual != item.sha256 else ()
+    return CacheInspection(pending, ())
+
+
+def _inspect_license(root: Path) -> CacheInspection:
+    path = root / LICENSE_FILENAME
+    try:
+        actual = path.read_bytes()
+    except FileNotFoundError:
+        return CacheInspection((f"missing or changed {LICENSE_FILENAME}",), ())
+    except OSError as exc:
+        return CacheInspection((), (f"cannot read {path}: {exc}; restore read access to {path}",))
+    try:
+        expected = _license_bytes()
+    except OSError as exc:
+        return CacheInspection(
+            (), (f"cannot read packaged {LICENSE_FILENAME}: {exc}; reinstall Booley",)
+        )
+    pending = (f"missing or changed {LICENSE_FILENAME}",) if actual != expected else ()
+    return CacheInspection(pending, ())
+
+
+def inspect_cache(root: Path | None = None) -> CacheInspection:
+    """Inspect every pinned file without hiding permission errors as pending."""
+    root = root or cache_root()
+    results = (*(_inspect_member(root, item) for item in FILES), _inspect_license(root))
+    return CacheInspection(
+        tuple(message for result in results for message in result.pending),
+        tuple(message for result in results for message in result.errors),
+    )
+
+
+def validation_errors(root: Path | None = None) -> tuple[str, ...]:
+    """Return every missing, checksum-mismatched, or unreadable cache member."""
+    result = inspect_cache(root)
+    return (*result.pending, *result.errors)
 
 
 def is_ready(root: Path | None = None) -> bool:

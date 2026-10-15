@@ -187,6 +187,86 @@ def reconcile_sidecars(
     return SidecarResult(tuple(findings))
 
 
+def inspect_sidecars(
+    policy: SandboxHostPolicy | None,
+    *,
+    booley_root: Path | None = None,
+) -> SidecarResult:
+    """Inspect every independent sidecar resource for Bootstrap CLI only."""
+    docker = _docker_adapter()
+    try:
+        specs = _image_specs(booley_root)
+    except (SidecarError, OSError) as exc:
+        findings = [SidecarFinding("sidecar-images", SidecarState.ERROR, str(exc))]
+    else:
+        findings = [_reconcile_image(spec, Intent.CHECK, docker) for spec in specs]
+    findings.append(_reconcile_network(Intent.CHECK, docker))
+    if policy is None:
+        findings.extend(
+            SidecarFinding(
+                resource,
+                SidecarState.ERROR,
+                "cannot inspect desired container state without valid host policy; repair host config",
+            )
+            for resource in ("proxy", "reaper")
+        )
+    else:
+        fingerprint = policy_fingerprint(policy)
+        findings.extend(
+            _inspect_bootstrap_container(spec, fingerprint, docker)
+            for spec in _inspection_container_specs(policy, fingerprint)
+        )
+    return SidecarResult(tuple(findings))
+
+
+def _inspection_container_specs(
+    policy: SandboxHostPolicy,
+    fingerprint: str,
+) -> tuple[_ContainerSpec, ...]:
+    return (
+        _ContainerSpec(
+            "proxy",
+            legacy.PROXY_CONTAINER,
+            legacy.PROXY_IMAGE,
+            "egress-proxy",
+            tuple(_proxy_run_args(policy, fingerprint)),
+            legacy.EGRESS_NETWORK,
+        ),
+        _ContainerSpec(
+            "reaper",
+            legacy.REAPER_CONTAINER,
+            legacy.REAPER_IMAGE,
+            "reaper",
+            tuple(_reaper_run_args(policy, fingerprint)),
+        ),
+    )
+
+
+def _inspect_bootstrap_container(
+    spec: _ContainerSpec,
+    fingerprint: str,
+    docker: _DockerPort,
+) -> SidecarFinding:
+    try:
+        state = _inspect_container(spec.name, docker)
+        _verify_container_ownership(spec.name, spec.role, state)
+        image = _inspect_image(spec.image, docker)
+        if image is None:
+            return SidecarFinding(
+                spec.resource,
+                SidecarState.PENDING,
+                f"{spec.name} needs missing image {spec.image}",
+            )
+        network_ready = spec.required_network is None or spec.required_network in state.networks
+        if _container_matches(state, image[0], fingerprint) and state.running and network_ready:
+            return SidecarFinding(spec.resource, SidecarState.CURRENT, f"{spec.name} is current")
+        return SidecarFinding(
+            spec.resource, SidecarState.PENDING, f"{spec.name} is missing, stopped, or stale"
+        )
+    except SidecarError as exc:
+        return SidecarFinding(spec.resource, SidecarState.ERROR, str(exc))
+
+
 def _reconcile_containers(
     policy: SandboxHostPolicy,
     intent: Intent,

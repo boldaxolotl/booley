@@ -430,6 +430,19 @@ def test_init_renders_host_table_alias_and_preserves_priority(
         "host_install_error",
         lambda _skills: "isolated fixture stops before infrastructure",
     )
+    monkeypatch.setattr(
+        bootstrap,
+        "inspect_bootstrap",
+        lambda **_kw: pytest.fail("Init must use legacy reconciliation"),
+    )
+    monkeypatch.setattr(
+        bootstrap, "_prerequisite_findings", lambda: pytest.fail("fixture must not probe the host")
+    )
+    monkeypatch.setattr(
+        bootstrap.subprocess,
+        "run",
+        lambda *_a, **_kw: pytest.fail("fixture must not run external commands"),
+    )
     policies = []
 
     def reconcile(intent, **kwargs):

@@ -665,8 +665,8 @@ def test_public_adapter_check_only_does_not_register(monkeypatch):
     )
     monkeypatch.setattr(
         bootstrap_cli,
-        "reconcile_bootstrap",
-        lambda intent, **_kwargs: bootstrap.BootstrapResult(intent, ()),
+        "inspect_bootstrap",
+        lambda **_kwargs: bootstrap.BootstrapResult(Intent.CHECK, ()),
     )
 
     status = bootstrap_cli.run_bootstrap(
@@ -687,7 +687,7 @@ def test_public_adapter_check_only_reports_unsafe_private_store(
     booley_config = _prepare_empty_invalidation_store(config_root, tmp_path / "project")
     booley_config.chmod(0o755)
     expected = bootstrap.BootstrapResult(Intent.CHECK, (_current("ready"),))
-    monkeypatch.setattr(bootstrap_cli, "reconcile_bootstrap", lambda *_a, **_kw: expected)
+    monkeypatch.setattr(bootstrap_cli, "inspect_bootstrap", lambda *_a, **_kw: expected)
 
     status = bootstrap_cli.run_bootstrap(
         SimpleNamespace(force=False, check_only=True, verbose=False)
@@ -713,7 +713,7 @@ def test_public_adapter_check_only_accepts_repaired_private_store(
     booley_config = _prepare_empty_invalidation_store(config_root, tmp_path / "project")
     booley_config.chmod(0o700)
     expected = bootstrap.BootstrapResult(Intent.CHECK, (_current("ready"),))
-    monkeypatch.setattr(bootstrap_cli, "reconcile_bootstrap", lambda *_a, **_kw: expected)
+    monkeypatch.setattr(bootstrap_cli, "inspect_bootstrap", lambda *_a, **_kw: expected)
 
     assert (
         bootstrap_cli.run_bootstrap(SimpleNamespace(force=False, check_only=True, verbose=False))
@@ -731,7 +731,7 @@ def test_public_adapter_check_only_accepts_shared_xdg_root_at_0755(
     _prepare_empty_invalidation_store(config_root, tmp_path / "project")
     config_root.chmod(0o755)
     expected = bootstrap.BootstrapResult(Intent.CHECK, (_current("ready"),))
-    monkeypatch.setattr(bootstrap_cli, "reconcile_bootstrap", lambda *_a, **_kw: expected)
+    monkeypatch.setattr(bootstrap_cli, "inspect_bootstrap", lambda *_a, **_kw: expected)
 
     assert (
         bootstrap_cli.run_bootstrap(SimpleNamespace(force=False, check_only=True, verbose=False))
@@ -1534,7 +1534,7 @@ def test_cli_renders_each_exit_class(
         Intent.CHECK,
         (bootstrap.BootstrapFinding("resource", state, "detail"),),
     )
-    monkeypatch.setattr(bootstrap_cli, "reconcile_bootstrap", lambda *_args, **_kwargs: result)
+    monkeypatch.setattr(bootstrap_cli, "inspect_bootstrap", lambda *_args, **_kwargs: result)
     status = bootstrap_cli.run_bootstrap(
         SimpleNamespace(force=False, check_only=True, verbose=True)
     )
@@ -1722,3 +1722,390 @@ def test_cli_invalid_registration_never_prints_update_success(
     else:
         assert "persisted validation failed" in output
         assert original(state).revision == "new"
+
+
+# These CLI regressions isolate external state while retaining real registration,
+# skill planning, cache validation, and sidecar orchestration.
+def _inspection_environment(monkeypatch, tmp_path, *, recorded=True):
+    from booley.config import editor
+    from booley.runtime import session_refresh
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    source, path = _inspection_installation(monkeypatch, tmp_path, recorded)
+    monkeypatch.setattr(session_refresh, "shared_recovery_blocks_command", lambda **_kwargs: False)
+    monkeypatch.setattr(editor, "resolve_editor_management_command", lambda: "/fake/code")
+    monkeypatch.setattr(bootstrap.shutil, "which", lambda name: "/fake/" + name)
+    calls = []
+    run = _inspection_subprocess(calls)
+
+    monkeypatch.setattr(bootstrap.subprocess, "run", run)
+    base = LifecycleResult("base", None, Status.STALE)
+    monkeypatch.setattr(bootstrap, "reconcile_images", lambda *_a, **_kw: base)
+    cache = _inspection_cache(monkeypatch, tmp_path)
+
+    docker = _InspectionDocker()
+    monkeypatch.setattr(bootstrap.host_sidecars, "_docker_adapter", lambda: docker)
+    return SimpleNamespace(
+        home=home,
+        identity_path=path,
+        cache=cache,
+        docker=docker,
+        run=run,
+        calls=calls,
+        source=source,
+    )
+
+
+def _inspection_installation(monkeypatch, tmp_path, recorded):
+    import json
+    from dataclasses import asdict
+
+    from booley.runtime import host_install
+
+    source = tmp_path / "package" / "skills"
+    (source / "example").mkdir(parents=True)
+    (source / "example" / "SKILL.md").write_text("# Example\n", encoding="utf-8")
+    identity = host_install.HostInstallationIdentity(
+        1,
+        "/opt/bin/booley",
+        "/opt/bin/python",
+        "/opt/site-packages",
+        "1.0",
+        "abc123",
+        "f" * 64,
+    )
+    monkeypatch.setattr(host_install, "_eligibility_error", lambda _source: None)
+    monkeypatch.setattr(host_install, "current_host_installation", lambda _source: identity)
+    monkeypatch.setattr(bootstrap, "current_host_installation", lambda _source: identity)
+    monkeypatch.setattr(bootstrap, "skills_dir", lambda: source)
+    monkeypatch.setattr(bootstrap, "active_qa_source_root", lambda _revision: None)
+    monkeypatch.setattr(bootstrap, "load_host_policy", lambda **_kwargs: SandboxHostPolicy())
+    path = host_install.host_installation_path()
+    if recorded:
+        path.parent.mkdir(parents=True, mode=0o700)
+        path.write_text(json.dumps(asdict(identity)), encoding="utf-8")
+    return source, path
+
+
+def _inspection_cache(monkeypatch, tmp_path):
+    import hashlib
+
+    from booley.harness import nangate_pdk
+
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    member = nangate_pdk.PinnedFile("member", "member", hashlib.sha256(b"ok").hexdigest())
+    monkeypatch.setattr(nangate_pdk, "FILES", (member,))
+    monkeypatch.setattr(nangate_pdk, "cache_root", lambda: cache)
+    monkeypatch.setattr(nangate_pdk, "_license_bytes", lambda: b"license")
+
+    return cache
+
+
+def _inspection_subprocess(calls):
+    def run(command, **kwargs):
+        assert kwargs.get("timeout")
+        assert not any(arg in command for arg in ("--install-extension", "build", "pull", "run"))
+        calls.append(command)
+        output = "git version 2.48.0" if command[0].endswith("git") else "available"
+        if "--list-extensions" in command:
+            output = ""
+        return subprocess.CompletedProcess(command, 0, output, "")
+
+    return run
+
+
+class _InspectionDocker:
+    def __init__(self):
+        self.failure = None
+        self.calls = []
+
+    def run(self, args, *, timeout=30):
+        assert timeout
+        assert "inspect" in args, args
+        self.calls.append(args)
+        resource = (
+            "proxy-image"
+            if args[2] == bootstrap.host_sidecars.legacy.PROXY_IMAGE
+            else "reaper-image"
+            if args[2] == bootstrap.host_sidecars.legacy.REAPER_IMAGE
+            else "network"
+            if args[0] == "network"
+            else "proxy"
+            if args[2] == bootstrap.host_sidecars.legacy.PROXY_CONTAINER
+            else "reaper"
+        )
+        if resource == self.failure:
+            raise bootstrap.host_sidecars.SidecarError("access denied " + resource)
+        return subprocess.CompletedProcess(args, 1, "", "No such object")
+
+
+def _run_inspection(capsys):
+    status = bootstrap_cli.run_bootstrap(SimpleNamespace(check_only=True))
+    output = capsys.readouterr().out
+    return status, output
+
+
+def _assert_complete(output):
+    for resource in (
+        "host-config",
+        "git",
+        "docker",
+        "vscode",
+        "vscode-dev-containers",
+        "skills",
+        "nangate45",
+        "base-image",
+        "proxy-image",
+        "reaper-image",
+        "network",
+        "proxy",
+        "reaper",
+        "host-install",
+    ):
+        assert f" {resource}:" in output, f"missing resource {resource}"
+
+
+def _tree_snapshot(root):
+    return {
+        str(p.relative_to(root)): (
+            stat.S_IMODE(p.lstat().st_mode),
+            _snapshot_bytes(p) if p.is_file() and not p.is_symlink() else None,
+        )
+        for p in root.rglob("*")
+    }
+
+
+def _snapshot_bytes(path, reader=Path.open):
+    # Observe disk contents even when a test injects an application read failure.
+    with reader(path, "rb") as stream:
+        return stream.read()
+
+
+def test_check_only_fresh_config_reports_all_pending_without_writes(monkeypatch, tmp_path, capsys):
+    _inspection_environment(monkeypatch, tmp_path, recorded=False)
+    before = _tree_snapshot(tmp_path)
+    status, output = _run_inspection(capsys)
+    assert status == 1, "fresh eligible wheel must be pending"
+    _assert_complete(output)
+    for line in output.splitlines():
+        if "[!!]" in line and "qa-skills:" not in line:
+            assert "booley bootstrap" in line
+    assert _tree_snapshot(tmp_path) == before
+
+
+def _deny_cache_read(monkeypatch, environment):
+    from booley.harness import nangate_pdk
+
+    member = environment.cache / "member"
+    member.write_bytes(b"ok")
+    (environment.cache / nangate_pdk.LICENSE_FILENAME).write_bytes(b"license")
+    original = Path.open
+
+    def denied(path, *args, **kwargs):
+        if path == member:
+            raise PermissionError("access denied")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", denied)
+
+
+@pytest.mark.parametrize(
+    "resource",
+    ["host-install", "git", "vscode-dev-containers", "skills", "nangate45", "base-image"],
+)
+def test_check_only_continues_after_resource_error(monkeypatch, tmp_path, capsys, resource):
+    environment = _inspection_environment(monkeypatch, tmp_path)
+    if resource == "host-install":
+        environment.identity_path.write_text("{invalid", encoding="utf-8")
+    elif resource in {"git", "vscode-dev-containers"}:
+
+        def failed(command, **kwargs):
+            if (resource == "git" and command[0].endswith("git")) or (
+                resource == "vscode-dev-containers" and "--list-extensions" in command
+            ):
+                return subprocess.CompletedProcess(command, 1, "", "probe denied")
+            return environment.run(command, **kwargs)
+
+        monkeypatch.setattr(bootstrap.subprocess, "run", failed)
+    elif resource == "skills":
+        target = environment.home / ".agents" / "skills"
+        target.mkdir(parents=True)
+        (target / ".booley-skill-links.json").write_text("{invalid", encoding="utf-8")
+    elif resource == "nangate45":
+        _deny_cache_read(monkeypatch, environment)
+    else:
+
+        def broken(*_args, **_kwargs):
+            raise bootstrap.ImageLifecycleError("cannot inspect base image: access denied")
+
+        monkeypatch.setattr(bootstrap, "reconcile_images", broken)
+    before = _tree_snapshot(tmp_path)
+    status, output = _run_inspection(capsys)
+    assert _tree_snapshot(tmp_path) == before
+    if resource == "nangate45":
+        assert "[XX] nangate45:" in output, "cache access failure must be ERROR"
+    _assert_complete(output)
+    assert status == 2
+    line = next(line for line in output.splitlines() if f" {resource}:" in line)
+    assert any(word in line.lower() for word in ("restore", "install", "access", "repair", "fix"))
+
+
+def test_check_only_invalid_policy_still_inspects_independent_resources(
+    monkeypatch, tmp_path, capsys
+):
+    _inspection_environment(monkeypatch, tmp_path)
+
+    def invalid(**_kwargs):
+        raise HostConfigError(tmp_path / "config.toml", "sandbox.max_sessions", "invalid value")
+
+    monkeypatch.setattr(bootstrap, "load_host_policy", invalid)
+    status, output = _run_inspection(capsys)
+    _assert_complete(output)
+    assert status == 2
+    for resource in ("proxy", "reaper"):
+        assert "policy" in next(line for line in output.splitlines() if f" {resource}:" in line)
+
+
+def test_check_only_prerequisite_error_lists_pending_with_remedies(monkeypatch, tmp_path, capsys):
+    environment = _inspection_environment(monkeypatch, tmp_path)
+
+    def failed(command, **kwargs):
+        if command[-1] == "info":
+            return subprocess.CompletedProcess(command, 1, "", "daemon access denied")
+        return environment.run(command, **kwargs)
+
+    monkeypatch.setattr(bootstrap.subprocess, "run", failed)
+    status, output = _run_inspection(capsys)
+    _assert_complete(output)
+    assert status == 2
+    for line in output.splitlines():
+        if "[!!]" in line:
+            assert "booley bootstrap" in line
+    assert "daemon" in output and "access" in output
+    assert not environment.docker.calls
+
+
+def test_check_only_cache_permission_error_is_not_pending(monkeypatch, tmp_path, capsys):
+    environment = _inspection_environment(monkeypatch, tmp_path)
+    _deny_cache_read(monkeypatch, environment)
+    before = _tree_snapshot(tmp_path)
+    status, output = _run_inspection(capsys)
+    assert _tree_snapshot(tmp_path) == before
+    assert "[XX] nangate45:" in output, "cache access failure must be ERROR"
+    assert status == 2
+    _assert_complete(output)
+    assert str(environment.cache / "member") in output
+    assert "access" in output
+
+
+def test_check_only_pending_recovery_lists_resources_without_recovering(
+    monkeypatch, tmp_path, capsys
+):
+    from booley.runtime import session_refresh
+
+    _inspection_environment(monkeypatch, tmp_path)
+
+    def pending(*, read_only):
+        assert read_only, "inspection must not attempt recovery"
+        return True
+
+    monkeypatch.setattr(session_refresh, "shared_recovery_blocks_command", pending)
+    status, output = _run_inspection(capsys)
+    assert status == 1, "pending recovery must be pending"
+    _assert_complete(output)
+    assert "attempt recovery" in output
+
+
+def test_check_only_recovery_error_preserves_other_findings(monkeypatch, tmp_path, capsys):
+    from booley.runtime import session_refresh, session_runtime
+
+    _inspection_environment(monkeypatch, tmp_path)
+
+    def failed(*, read_only):
+        assert read_only
+        raise session_runtime.SessionError("unsafe journal; restore permissions")
+
+    monkeypatch.setattr(session_refresh, "shared_recovery_blocks_command", failed)
+    before = _tree_snapshot(tmp_path)
+    status, output = _run_inspection(capsys)
+    assert _tree_snapshot(tmp_path) == before
+    _assert_complete(output)
+    assert status == 2
+    assert "restore permissions" in output
+
+
+def test_complete_inspection_never_takes_lock_or_registers(monkeypatch, tmp_path, capsys):
+    _inspection_environment(monkeypatch, tmp_path, recorded=False)
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("read-only inspection attempted mutation")
+
+    monkeypatch.setattr(bootstrap_cli, "host_lifecycle_lock", forbidden)
+    monkeypatch.setattr(bootstrap_cli, "register_host_installation", forbidden)
+    monkeypatch.setattr(bootstrap.nangate_pdk, "fetch", forbidden)
+    monkeypatch.setattr(bootstrap.nangate_pdk, "secure_config_dir_for_cache", forbidden)
+    status, _output = _run_inspection(capsys)
+    assert status == 1
+
+
+def test_complete_inspection_missing_docker_does_not_execute_it(monkeypatch, tmp_path, capsys):
+    environment = _inspection_environment(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        bootstrap.shutil, "which", lambda name: None if name == "docker" else "/fake/" + name
+    )
+    status, output = _run_inspection(capsys)
+    _assert_complete(output)
+    assert status == 2
+    assert environment.docker.calls == []
+    assert all(not command[0].endswith("docker") for command in environment.calls)
+    assert "PATH" in output
+
+
+def test_complete_inspection_invalid_candidate_preserves_qa_warning(monkeypatch, tmp_path, capsys):
+    from booley.runtime import host_install
+
+    _inspection_environment(monkeypatch, tmp_path)
+
+    def invalid(_source):
+        raise host_install.HostInstallationError("invalid build; reinstall Booley")
+
+    monkeypatch.setattr(host_install, "current_host_installation", invalid)
+    monkeypatch.setattr(bootstrap, "current_host_installation", invalid)
+    status, output = _run_inspection(capsys)
+    _assert_complete(output)
+    assert status == 2
+    assert "[!!] qa-skills:" in output
+    assert "--without-qa-skills" in output
+
+
+def test_complete_inspection_all_current_and_warning_only(monkeypatch, tmp_path):
+    from booley.harness import nangate_pdk
+
+    environment = _inspection_environment(monkeypatch, tmp_path)
+    bootstrap.reconcile_host_skills(environment.source, dry_run=False, allow_retarget=True)
+    (environment.cache / "member").write_bytes(b"ok")
+    (environment.cache / nangate_pdk.LICENSE_FILENAME).write_bytes(b"license")
+
+    def current_extensions(command, **kwargs):
+        if "--list-extensions" in command:
+            return subprocess.CompletedProcess(
+                command, 0, bootstrap.DEV_CONTAINERS_EXTENSION_ID, ""
+            )
+        return environment.run(command, **kwargs)
+
+    monkeypatch.setattr(bootstrap.subprocess, "run", current_extensions)
+    result = bootstrap.inspect_bootstrap(include_images=False)
+    assert result.exit_status == 0
+    assert not any("image" in finding.resource for finding in result.findings)
+    monkeypatch.setattr(
+        bootstrap,
+        "_host_agent_cli_finding",
+        lambda: bootstrap.BootstrapFinding(
+            "host-agent-cli", bootstrap.BootstrapState.WARNING, "optional CLI missing"
+        ),
+    )
+    assert bootstrap.inspect_bootstrap(include_images=False).exit_status == 0

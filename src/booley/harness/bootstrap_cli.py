@@ -6,6 +6,7 @@ from booley.harness.bootstrap import (
     BootstrapFinding,
     BootstrapResult,
     BootstrapState,
+    inspect_bootstrap,
     reconcile_bootstrap,
 )
 from booley.harness.colors import accent, bold_chrome, green, red, yellow
@@ -57,18 +58,29 @@ def run_bootstrap(args: object) -> int:
     return status
 
 
-def _check_bootstrap(args: object) -> BootstrapResult | None:
+def _check_bootstrap(args: object) -> BootstrapResult:
     from booley.runtime import issuance_invalidation, session_runtime
     from booley.runtime.session_refresh import shared_recovery_blocks_command
 
+    findings: tuple[BootstrapFinding, ...] = ()
     try:
         recovery_pending = shared_recovery_blocks_command(read_only=True)
     except (issuance_invalidation.InvalidationError, session_runtime.SessionError) as exc:
-        return _recovery_error(Intent.CHECK, exc)
-    if recovery_pending:
-        print(yellow("Interrupted Sandbox host state requires recovery."))
-        return None
-    return reconcile_bootstrap(Intent.CHECK, verbose=getattr(args, "verbose", False))
+        findings = _recovery_error(Intent.CHECK, exc).findings
+    else:
+        if recovery_pending:
+            findings = (
+                BootstrapFinding(
+                    "runtime-recovery",
+                    BootstrapState.PENDING,
+                    "Interrupted Sandbox host state requires recovery; run `booley bootstrap` "
+                    "to attempt recovery, then run it again",
+                ),
+            )
+    result = inspect_bootstrap(verbose=getattr(args, "verbose", False))
+    return BootstrapResult(
+        Intent.CHECK, (*findings, *result.findings), result.policy, result.base_image
+    )
 
 
 def _mutate_bootstrap(
@@ -167,7 +179,8 @@ def _render_result(result: BootstrapResult) -> int:
     }
     for finding in result.findings:
         color, glyph = glyphs[finding.state]
-        print(f"  {color(glyph)} {finding.resource}: {finding.detail}")
+        detail = _inspection_detail(finding) if result.intent is Intent.CHECK else finding.detail
+        print(f"  {color(glyph)} {finding.resource}: {detail}")
     if result.exit_status == 0:
         print(green("Host Bootstrap is current."))
     elif result.exit_status == 1:
@@ -182,3 +195,28 @@ def _qa_warning(result: BootstrapResult) -> bool:
         finding.resource == "qa-skills" and finding.state is BootstrapState.WARNING
         for finding in result.findings
     )
+
+
+def _inspection_detail(finding: BootstrapFinding) -> str:
+    """Attach Bootstrap remedies without changing legacy Doctor diagnostics."""
+    if finding.state is BootstrapState.PENDING:
+        suffix = "" if "booley bootstrap" in finding.detail else "; run `booley bootstrap`"
+        return finding.detail + suffix
+    if finding.state is not BootstrapState.ERROR:
+        return finding.detail
+    remedies = {
+        "host-config": "repair the host config at the path above and retry",
+        "host-install": "restore read access to the recorded identity or reinstall a valid canonical wheel",
+        "git": "install supported Git and put git on PATH, then retry",
+        "docker": "install Docker on PATH, start its daemon and restore Docker access, then retry",
+        "vscode": "install a supported VS Code editor and its shell command, then retry",
+        "vscode-dev-containers": "restore access to the editor extension-management command and retry",
+        "skills": "repair access to the named packaged skills or skill-link manifest and retry",
+        "nangate45": "restore read access to the named cache paths and retry",
+        "runtime-recovery": "repair the journal permissions or unsafe state described above and retry",
+    }
+    remedy = remedies.get(
+        finding.resource,
+        "restore Docker inspection access, reinstall missing package inputs, or remove/rename the named foreign Docker resource after checking ownership, then retry",
+    )
+    return f"{finding.detail}; {remedy}"

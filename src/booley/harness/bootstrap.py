@@ -30,7 +30,12 @@ from booley.harness.setup.skills import (
     reconcile_host_skills,
 )
 from booley.runtime.docker_capacity import DockerBuildPlan, ensure_docker_build_capacity
-from booley.runtime.host_install import current_host_installation, host_install_error
+from booley.runtime.host_install import (
+    HostInstallationError,
+    current_host_installation,
+    host_install_error,
+    inspect_host_installation,
+)
 from booley.runtime.paths import skills_dir
 from booley.runtime.qa_skill_selection import (
     QA_SKILL_NAMES,
@@ -92,6 +97,113 @@ class BootstrapResult:
         if any(finding.state is BootstrapState.PENDING for finding in self.findings):
             return 1 if self.intent is Intent.CHECK else 2
         return 0
+
+
+def inspect_bootstrap(*, verbose: bool = False, include_images: bool = True) -> BootstrapResult:
+    """Collect complete read-only readiness for the Bootstrap CLI."""
+    findings: list[BootstrapFinding] = []
+    try:
+        policy = _load_bootstrap_policy(findings)
+    except HostConfigError as exc:
+        policy = None
+        findings.append(BootstrapFinding("host-config", BootstrapState.ERROR, str(exc)))
+    else:
+        findings.append(
+            BootstrapFinding("host-config", BootstrapState.CURRENT, "host policy is valid")
+        )
+    findings.append(_inspect_installation())
+    prerequisites = _prerequisite_findings()
+    findings.extend(prerequisites)
+    findings.append(_reconcile_vscode_dev_containers(Intent.CHECK))
+    findings.append(_inspect_skills())
+    try:
+        _append_qa_finding(findings, Intent.CHECK, False, False)
+    except HostInstallationError as exc:
+        findings.append(_qa_warning(str(exc)))
+    findings.append(_inspect_nangate())
+    if not include_images:
+        return BootstrapResult(Intent.CHECK, tuple(findings), policy)
+    docker = next(item for item in prerequisites if item.resource == "docker")
+    return _inspect_bootstrap_images(findings, policy, docker, verbose=verbose)
+
+
+def _inspect_installation() -> BootstrapFinding:
+    installation = inspect_host_installation(skills_dir())
+    state = (
+        BootstrapState.ERROR
+        if installation.error
+        else BootstrapState.PENDING
+        if installation.pending
+        else BootstrapState.CURRENT
+    )
+    return BootstrapFinding(
+        "host-install",
+        state,
+        installation.error
+        or (
+            "canonical host installation is not recorded"
+            if installation.pending
+            else "canonical installation is current"
+        ),
+    )
+
+
+def _inspect_skills() -> BootstrapFinding:
+    source = skills_dir()
+    try:
+        if not source.is_dir():
+            return BootstrapFinding(
+                "skills", BootstrapState.ERROR, f"packaged skills missing: {source}"
+            )
+        reconciliations = reconcile_host_skills(source, dry_run=True, allow_retarget=True)
+    except OSError as exc:
+        return BootstrapFinding(
+            "skills", BootstrapState.ERROR, f"cannot read skills at {source}: {exc}"
+        )
+    return _skill_reconciliation_finding(Intent.CHECK, reconciliations, qa=False)
+
+
+def _inspect_nangate() -> BootstrapFinding:
+    root = nangate_pdk.cache_root()
+    inspection = nangate_pdk.inspect_cache(root)
+    if inspection.errors:
+        return BootstrapFinding(
+            "nangate45", BootstrapState.ERROR, "; ".join((*inspection.errors, *inspection.pending))
+        )
+    if inspection.pending:
+        return BootstrapFinding("nangate45", BootstrapState.PENDING, "; ".join(inspection.pending))
+    return BootstrapFinding("nangate45", BootstrapState.CURRENT, f"verified cache at {root}")
+
+
+def _inspect_bootstrap_images(
+    findings: list[BootstrapFinding],
+    policy: SandboxHostPolicy | None,
+    docker: BootstrapFinding,
+    *,
+    verbose: bool,
+) -> BootstrapResult:
+    if docker.state is BootstrapState.ERROR:
+        findings.extend(
+            BootstrapFinding(
+                resource,
+                BootstrapState.ERROR,
+                f"inspection blocked by Docker: {docker.detail}; restore Docker daemon access",
+            )
+            for resource in (
+                "base-image",
+                "proxy-image",
+                "reaper-image",
+                "network",
+                "proxy",
+                "reaper",
+            )
+        )
+        return BootstrapResult(Intent.CHECK, tuple(findings), policy)
+    base, finding = _reconcile_base_image(Intent.CHECK, verbose=verbose)
+    findings.append(finding)
+    sidecars = host_sidecars.inspect_sidecars(policy)
+    findings.extend(_sidecar_finding(item) for item in sidecars.findings)
+    return BootstrapResult(Intent.CHECK, tuple(findings), policy, base)
 
 
 def reconcile_bootstrap(  # noqa: PLR0911 - fixed-order failures stop dependent mutations.

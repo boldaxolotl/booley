@@ -812,3 +812,83 @@ def test_failure_helpers_and_docker_adapter() -> None:
             adapter.run(["info"])
     finally:
         sidecars.legacy._run_docker = original
+
+
+def test_check_only_missing_sidecar_images_and_containers_are_pending(
+    monkeypatch, tmp_path, capsys
+):
+    from tests.harness.test_bootstrap import (
+        _inspection_environment,
+        _run_inspection,
+        _tree_snapshot,
+    )
+
+    _inspection_environment(monkeypatch, tmp_path)
+    before = _tree_snapshot(tmp_path)
+    status, output = _run_inspection(capsys)
+    for resource in ("proxy-image", "reaper-image", "network", "proxy", "reaper"):
+        assert f"[!!] {resource}:" in output, f"sidecar {resource} must be pending"
+    assert status == 1
+    assert _tree_snapshot(tmp_path) == before
+
+
+@pytest.mark.parametrize("resource", ["proxy-image", "reaper-image", "network", "proxy"])
+def test_check_only_continues_after_sidecar_error(monkeypatch, tmp_path, capsys, resource):
+    from tests.harness.test_bootstrap import (
+        _assert_complete,
+        _inspection_environment,
+        _run_inspection,
+    )
+
+    environment = _inspection_environment(monkeypatch, tmp_path)
+    environment.docker.failure = resource
+    status, output = _run_inspection(capsys)
+    _assert_complete(output)
+    assert status == 2
+    assert f"[XX] {resource}:" in output
+    assert "access" in output
+
+
+def test_complete_inspection_foreign_container_with_missing_image_remains_error(
+    monkeypatch, tmp_path, capsys
+):
+    from tests.harness.test_bootstrap import (
+        _assert_complete,
+        _inspection_environment,
+        _run_inspection,
+    )
+
+    _inspection_environment(monkeypatch, tmp_path)
+
+    def inspect(name, _docker):
+        if name == sidecars.legacy.PROXY_CONTAINER:
+            return sidecars._ContainerState(True, labels={})
+        return sidecars._ContainerState(False)
+
+    monkeypatch.setattr(sidecars, "_inspect_container", inspect)
+    status, output = _run_inspection(capsys)
+    _assert_complete(output)
+    assert status == 2
+    assert "[XX] proxy:" in output and "foreign name collision" in output
+    assert "[!!] reaper:" in output
+
+
+@pytest.mark.parametrize("error_type", [sidecars.SidecarError, PermissionError])
+def test_complete_inspection_checks_network_and_containers_after_recipe_failure(
+    monkeypatch, error_type
+):
+    def unavailable(_root):
+        raise error_type("packaged recipes unavailable")
+
+    monkeypatch.setattr(sidecars, "_image_specs", unavailable)
+    monkeypatch.setattr(
+        sidecars, "_docker_adapter", lambda: FakeDocker(_cp(1, stderr="No such object"))
+    )
+    result = sidecars.inspect_sidecars(SandboxHostPolicy())
+    assert [finding.resource for finding in result.findings] == [
+        "sidecar-images",
+        "network",
+        "proxy",
+        "reaper",
+    ]
+    assert result.findings[0].state is sidecars.SidecarState.ERROR
