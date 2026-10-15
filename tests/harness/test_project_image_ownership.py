@@ -14,6 +14,8 @@ from tests.harness.test_image_lifecycle import (
     _wire,
 )
 
+RELEASE_ID = "sha256:" + "e" * 64
+
 
 def _bootstrap_base(monkeypatch, docker):
     _wire(monkeypatch, docker)
@@ -227,7 +229,7 @@ def test_complete_release_adopts_two_private_outputs_without_runtime_base(
             lifecycle.LABEL_WHEEL_SHA256: "f" * 64,
         }
     )
-    docker.images[logical] = ("sha256:release", labels)
+    docker.images[logical] = (RELEASE_ID, labels)
     for directory in ["first", "second"]:
         project = _project(tmp_path / directory, logical)
         observed = lifecycle.plan(
@@ -238,8 +240,8 @@ def test_complete_release_adopts_two_private_outputs_without_runtime_base(
         prepared = lifecycle.prepare(observed, docker=docker, builder=TransactionBuilder(docker))
         result = lifecycle.commit(prepared, docker=docker)
         assert result.selected_reference == project_image_name(project)
-        assert result.selected_id == "sha256:release"
-    assert docker.images[logical] == ("sha256:release", labels)
+        assert result.selected_id == RELEASE_ID
+    assert docker.images[logical] == (RELEASE_ID, labels)
     assert lifecycle.STABLE_RUNTIME_BASE_IMAGE not in docker.images
 
 
@@ -484,7 +486,7 @@ def test_release_overlay_preserves_lone_user_requirements(tmp_path, monkeypatch)
             lifecycle.LABEL_WHEEL_SHA256: "f" * 64,
         }
     )
-    docker.images[lifecycle.BASE_IMAGE] = ("sha256:release", labels)
+    docker.images[lifecycle.BASE_IMAGE] = (RELEASE_ID, labels)
     directory = root / ".booley/docker"
     directory.mkdir()
     requirements = directory / "requirements.txt"
@@ -499,6 +501,6 @@ def test_release_overlay_preserves_lone_user_requirements(tmp_path, monkeypatch)
     )
     lifecycle.commit(prepared, docker=docker)
     assert requirements.read_bytes() == body
-    assert prepared.candidates[-1].parent_artifact == "sha256:release"
+    assert prepared.candidates[-1].parent_artifact == RELEASE_ID
     repeated = lifecycle.plan(scope, docker=docker, artifact_policy=policy)
     assert lifecycle.planned_result(repeated, docker).status is lifecycle.Status.CURRENT
