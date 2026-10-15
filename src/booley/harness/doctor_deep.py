@@ -144,18 +144,7 @@ class DeepAttemptSummary:
         )
         reasons = tuple(sorted(set(self.missing_checks + self.identity_reasons)))[:_MAX_REASONS]
         warning_count = len(blocking_warning_ids) if blocking_warning_ids is not None else None
-        warning_ids = (
-            tuple(
-                sorted(
-                    {
-                        item if _SAFE_ID.fullmatch(item) else "warning-identity-unavailable"
-                        for item in blocking_warning_ids
-                    }
-                )
-            )[:_MAX_REASONS]
-            if blocking_warning_ids is not None
-            else None
-        )
+        warning_ids = _bounded_warning_ids(blocking_warning_ids)
         attempt = DeepAttempt(
             utc_now_rfc3339(),
             time.time_ns(),
@@ -171,6 +160,17 @@ class DeepAttemptSummary:
         )
         _decode_attempt(_attempt_payload(attempt))
         return attempt
+
+
+def _bounded_warning_ids(ids: tuple[str, ...] | None) -> tuple[str, ...] | None:
+    if ids is None:
+        return None
+    valid = {item for item in ids if _SAFE_ID.fullmatch(item)}
+    if len(valid) != len(set(ids)):
+        marker = "warning-identity-unavailable"
+        valid.discard(marker)
+        return tuple(sorted((*sorted(valid)[: _MAX_REASONS - 1], marker)))
+    return tuple(sorted(valid)[:_MAX_REASONS])
 
 
 class DeepCheckTracker:

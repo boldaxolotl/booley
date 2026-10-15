@@ -508,7 +508,14 @@ def test_waivers_never_supply_missing_execution(tmp_path, monkeypatch, missing, 
     assert ("latest-attempt-not-qualified" in codes) is (not waived)
 
 
-@pytest.mark.parametrize("warning_ids", [tuple(f"check-{i}" for i in range(70)), ("a" * 193,)])
+@pytest.mark.parametrize(
+    "warning_ids",
+    [
+        tuple(f"check-{i}" for i in range(70)),
+        ("a" * 193,),
+        (*tuple(f"check-{i}" for i in range(64)), "a" * 193),
+    ],
+)
 def test_health_blocker_bounds_preserve_readable_evidence(tmp_path, warning_ids):
     attempt = deep.DeepAttemptSummary((), (), IMAGE).attempt(
         version=booley.__version__, clean=False, failure_count=0, blocking_warning_ids=warning_ids
@@ -518,6 +525,8 @@ def test_health_blocker_bounds_preserve_readable_evidence(tmp_path, warning_ids)
     assert loaded == attempt
     assert loaded.blocking_warning_count == len(warning_ids)
     assert len(loaded.blocking_warning_ids) <= 64
+    if any(len(identity) > 192 for identity in warning_ids):
+        assert "warning-identity-unavailable" in loaded.blocking_warning_ids
     rendered = deep.evaluate_deep_status(
         deep.load_deep_state(tmp_path), version=booley.__version__, image_id=IMAGE
     ).render()
