@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -23,7 +25,8 @@ def installed(tmp_path, monkeypatch):
     (executable.parent.parent / "package.json").write_text('{"name":"@openai/codex"}')
     node = tmp_path / "node"
     node.write_bytes(b"\x7fELF")
-    monkeypatch.setattr(codex_chat.sys, "platform", "linux")
+    # Simulate the launcher platform without changing the host's file-lock backend.
+    monkeypatch.setattr(codex_chat, "sys", SimpleNamespace(platform="linux", stderr=sys.stderr))
     monkeypatch.setattr(
         codex_chat.shutil,
         "which",
@@ -139,7 +142,7 @@ def test_naming_failures_retain_plain_launch(tmp_path, installed, monkeypatch, f
 
 
 def test_non_linux_launch_is_unchanged(tmp_path, monkeypatch):
-    monkeypatch.setattr(codex_chat.sys, "platform", "win32")
+    monkeypatch.setattr(codex_chat, "sys", SimpleNamespace(platform="win32", stderr=sys.stderr))
     assert codex_chat.command(tmp_path) == ("codex", ["codex"])
     assert list(tmp_path.iterdir()) == []
 
