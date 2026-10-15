@@ -15,7 +15,13 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from booley.feedback import render
-from booley.feedback.findings import CorruptFindingsLogError, Finding, log_path, read_log
+from booley.feedback.findings import (
+    CorruptFindingsLogError,
+    Finding,
+    log_path,
+    read_log,
+    transaction,
+)
 
 MAX_ATTACHMENT_LINES = 120
 MAX_ATTACHMENT_CHARS = 8000
@@ -73,11 +79,15 @@ def _write_snapshot(path: Path, text: str, metadata: dict[str, object]) -> None:
     meta_tmp.replace(meta)
 
 
-def _snapshot_path(root: Path, finding: Finding, index: int, source: Path) -> Path:
+def _snapshot_path(root: Path, finding: Finding, row: int, index: int, source: Path) -> Path:
     """Choose a stable, non-user-controlled evidence filename."""
     name = _SAFE_NAME.sub("-", source.name).strip("-") or "attachment.log"
     return (
-        root / "setup-evidence" / "attachments" / f"{finding.id or 'finding'}-{index}-{name}.txt"
+        root
+        / "setup-evidence"
+        / "attachments"
+        / "rows"
+        / f"{finding.id or 'finding'}-{row}-{index}-{name}.txt"
     )
 
 
@@ -90,16 +100,16 @@ def _attachment_matches(raw: str, booley_dir: Path, sources: set[Path]) -> Path 
 def _rewrite_attachments_only(booley_dir: Path, entries: list[Finding]) -> None:
     """Atomically update attachments while retaining newer JSON fields."""
     path = log_path(booley_dir)
-    replacements = {entry.id: entry.attachments for entry in entries}
+    replacements = {row: entry.attachments for row, entry in enumerate(entries)}
+    row = 0
     output: list[str] = []
     for raw_line in path.read_text(encoding="utf-8").splitlines(keepends=True):
         if not raw_line.strip():
             output.append(raw_line)
             continue
         value = json.loads(raw_line)
-        finding_id = value.get("id") if isinstance(value, dict) else None
-        if finding_id in replacements:
-            value["attachments"] = replacements[finding_id]
+        value["attachments"] = replacements[row]
+        row += 1
         output.append(json.dumps(value, ensure_ascii=False, sort_keys=True) + "\n")
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text("".join(output), encoding="utf-8")
@@ -110,14 +120,14 @@ def _rewrite_selected(
     booley_dir: Path,
     sources: set[Path],
     entries: list[Finding],
-) -> tuple[set[Path], dict[str, list[str]]]:
+) -> tuple[set[Path], dict[int, list[str]]]:
     """Snapshot selected attachments and return the changed source map."""
     changed: set[Path] = set()
-    before: dict[str, list[str]] = {}
+    before: dict[int, list[str]] = {}
     from booley.feedback import render
 
-    for finding in entries:
-        before[finding.id] = [
+    for row, finding in enumerate(entries):
+        before[row] = [
             line
             for attachment in finding.attachments
             for line in render._attachment_block(
@@ -132,7 +142,7 @@ def _rewrite_selected(
                 content, metadata = _excerpt(source)
             except OSError as exc:
                 raise MaterializationError(f"cannot read attachment {source}: {exc}") from exc
-            target = _snapshot_path(booley_dir, finding, index, source)
+            target = _snapshot_path(booley_dir, finding, row, index, source)
             _write_snapshot(target, content, metadata)
             finding.attachments[index] = str(target)
             changed.add(source)
@@ -169,12 +179,20 @@ def materialize_attachments(
     selected = {Path(source).expanduser().resolve(strict=False) for source in sources}
     if not selected:
         return ()
+    environment = env or render.collect_environment()
+    with transaction(booley_dir, operation="materialize attachments in"):
+        return _materialize_locked(booley_dir, selected, environment)
+
+
+def _materialize_locked(
+    booley_dir: Path, selected: set[Path], environment: render.Environment
+) -> tuple[Path, ...]:
+    """Keep fresh render proofs, snapshots, and raw publication in one transaction."""
     log = read_log(booley_dir)
     if log.corrupt_lines:
         raise CorruptFindingsLogError(
             f"refusing attachment materialization: {log.corrupt_lines} corrupt Findings Log line(s)"
         )
-    environment = env or render.collect_environment()
     before_proof = _render_proofs(booley_dir, log.entries, environment)
     changed, _ = _rewrite_selected(booley_dir, selected, log.entries)
     if not changed:

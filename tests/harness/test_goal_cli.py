@@ -127,6 +127,8 @@ def second_goal(mode, monkeypatch):
     return other
 
 
+# Windows CI observed 30.2 s; retain the required 50% timeout headroom.
+@pytest.mark.timeout(120)
 @pytest.mark.parametrize("detail", [None, True, False])
 @pytest.mark.parametrize("caller", ["occupant", "nested", "main", "outside", "abandoned"])
 @pytest.mark.parametrize("multiple", [False, True])
