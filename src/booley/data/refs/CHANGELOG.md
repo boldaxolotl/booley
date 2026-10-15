@@ -9,6 +9,9 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- Deep Doctor now warns when a simulation bad overlay fails to build, and requires
+  an observed behavioral Test failure before accepting the bad case.
+
 - Specialist category snapshots hide opposite-category sources per file, including
   shared-directory sources and Booley-owned copies; category isolation requires a
   usable core and removes unscoped unregistered source copies conservatively.

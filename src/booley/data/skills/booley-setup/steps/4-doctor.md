@@ -83,9 +83,11 @@ over that severity bug with a project waiver.
   `flow_options.booley.doctor_selftest: true`, and use an undeclared **RHS**
   reference (an undeclared LHS is only an implicit-net warning). The marker
   keeps the bad Target out of public listings and ordinary Flow selection while
-  Doctor retains access. For simulation, mirror the broken staged firmware or
-  vectors under `.booley/selftest/sim/bad-overlay/`; Doctor runs the
-  same smoke test normally and with that overlay. Do not add
+  Doctor retains access. For simulation, mirror deliberately faulty staged RTL,
+  firmware, or vectors under `.booley/selftest/sim/bad-overlay/`; Doctor runs the
+  same smoke Test normally and with that overlay. The overlay must compile and
+  then fail behaviorally; a timeout or crash is insufficient. A stale overlay
+  that fails to build WARNs: refresh it to match the current design. Do not add
   a Project self-test mapping. A `bad` that FALSE-PASSES or returns
   an infra error is a hard FAIL: fix the Flow or fixture.
 

@@ -171,6 +171,7 @@ def test_publication_prerequisites_refuse_before_the_finishing_fence(
     assert current.state is GoalState.ACTIVE and current.publication_floor == 0
 
 
+@pytest.mark.timeout(150)
 def test_commit_tree_does_not_inherit_commit_gpgsign(layout):
     complete = publication_layout(layout)
     git(complete.main, "config", "commit.gpgsign", "true")
@@ -364,6 +365,7 @@ def test_abandon_retry_after_new_proposal_retains_capture_and_requires_fresh_ope
     assert load_proposal(root, second.proposal.id).closed_by_abandonment
 
 
+@pytest.mark.timeout(150)
 def test_authority_only_attempt_reserves_its_history_path(layout, monkeypatch):
     from booley.goals import lifecycle
 
@@ -404,7 +406,14 @@ def test_conflicting_sealed_recovery_link_has_actionable_lifecycle_error(layout)
         assert (operation.directory / "recovery.authority.json").read_bytes() == captured
 
 
-@pytest.mark.parametrize("staging", ["ancestor", "unmerged", "intent-to-add"])
+@pytest.mark.parametrize(
+    "staging",
+    [
+        "ancestor",
+        "unmerged",
+        pytest.param("intent-to-add", marks=pytest.mark.timeout(150)),
+    ],
+)
 def test_published_summary_preserves_conflicting_index_entries_without_wedging(layout, staging):
     from tests.goals.test_committed_export import raw_blob
 

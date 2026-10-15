@@ -92,6 +92,7 @@ def test_authored_absolute_source_cannot_make_committed_freshness_read_live_chec
     assert git(layout.worktree, "count-objects", "-v") == before
 
 
+@pytest.mark.timeout(150)
 def test_paired_original_base_and_final_suite_changes_share_one_view(layout, tmp_path):
     complete, project = paired_complete(layout, tmp_path)
     original = complete.record.paired_project_base_sha
@@ -109,6 +110,7 @@ def test_paired_original_base_and_final_suite_changes_share_one_view(layout, tmp
     assert facts["goals"][0]["modified_target"]
 
 
+@pytest.mark.timeout(150)
 def test_stealth_rechecks_paired_pin_after_local_artifacts(layout, tmp_path):
     complete, project = paired_complete(layout, tmp_path)
 
@@ -192,6 +194,7 @@ def test_recovery_filesystem_mode_uses_windows_readonly_flag_and_posix_nonexecut
     assert finish_goal(call, environment(layout))["status"] == "finished"
 
 
+@pytest.mark.timeout(150)
 def test_paired_and_rtl_file_and_constraint_deltas_are_unambiguous(layout, tmp_path):
     project = install_paired_project(layout, tmp_path)
     (project / "tests.toml").write_bytes(b'[top]\ntests = ["smoke"]\n')

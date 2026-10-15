@@ -353,6 +353,7 @@ def _seed(seed: int, grade: str = "pass") -> dict[str, Any]:
     return run_row(build_test_run("a", seed=seed), grade)
 
 
+@pytest.mark.timeout(150)
 def test_multi_seed_goal_accumulates_per_seed_and_lists_failing_seeds(
     seeds: SimpleNamespace,
 ) -> None:

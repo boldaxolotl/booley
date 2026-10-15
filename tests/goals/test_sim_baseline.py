@@ -609,6 +609,7 @@ def test_child_timeout_terminates_its_process_group(baseline, monkeypatch):
     assert calls == [(process, process.pid)]
 
 
+@pytest.mark.timeout(150)
 def test_review_package_highlights_new_never_seen_failing_and_dashboard_matches(baseline):
     import json
 

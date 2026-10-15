@@ -9,7 +9,11 @@ proving the fail path. The gate is now backend-agnostic: only a disabled Flow
 
 from __future__ import annotations
 
+import json
 import subprocess
+from pathlib import Path
+
+import pytest
 
 from booley.fusesoc import selftest_overlay
 from booley.harness import doctor
@@ -78,12 +82,70 @@ def _audit(
     )
 
 
+def _simulation_failure_report(target="sim_core", test="hello_world", variant=None):
+    name = test + (f"+{variant}" if variant else "") + "@1" if test else None
+    return {
+        "$schema": "booley.simulation-report/v3",
+        "flow": "sim",
+        "exit_code": 1,
+        "detail": {
+            "campaigns": {
+                target: {
+                    "complete": True,
+                    "build_stage": [],
+                    "test_run_total": 1,
+                    "test_runs_truncated": False,
+                    "observation_total": 1,
+                    "observations_truncated": False,
+                    "test_runs": [
+                        {
+                            "name": name,
+                            "test": test,
+                            "variant": variant,
+                            "seed": 1,
+                            "args": [],
+                            "env": {},
+                            "fingerprint": "sha256:" + "a" * 64,
+                            "grade": "fail",
+                        }
+                    ],
+                    "observations": [
+                        {
+                            "test": test,
+                            "execution": "completed",
+                            "failure_class": "design",
+                            "functional": "fail",
+                            "assertions": "clean",
+                            "detail": {"reason": ""},
+                        }
+                    ],
+                }
+            }
+        },
+    }
+
+
+def _write_sim_bad_report(cmd, *, project=None):
+    # Host transports render container paths; use the owning Project when supplied.
+    root = (
+        project.booley_dir / doctor._DOCTOR_TMP / "flow-reports"
+        if project
+        else Path(cmd[cmd.index("--report-dir") + 1])
+    )
+    target = cmd[cmd.index("--target") + 1]
+    test = cmd[cmd.index("--test") + 1] if "--test" in cmd else None
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "sim.json").write_text(json.dumps(_simulation_failure_report(target, test)))
+
+
 def _run(monkeypatch, project, exit_by_kind):
     # In-container in-place execution path (F-17): no docker wrap needed.
     _set_venue(monkeypatch, True)
 
     def fake_run(cmd, **kwargs):
         kind = kwargs["env"][selftest_overlay.INTERNAL_KIND_ENV]
+        if kind == "bad" and "booley.flows.sim" in cmd:
+            _write_sim_bad_report(cmd, project=project)
         return subprocess.CompletedProcess(cmd, exit_by_kind[kind], stdout="", stderr="")
 
     monkeypatch.setattr(doctor.subprocess, "run", fake_run)
@@ -112,6 +174,8 @@ def test_good_and_bad_runs_pin_the_same_smoke_test(tmp_path, monkeypatch):
     def fake_run(cmd, **kwargs):
         seen_tests.append(cmd[cmd.index("--test") + 1])
         kind = kwargs["env"][selftest_overlay.INTERNAL_KIND_ENV]
+        if kind == "bad" and "booley.flows.sim" in cmd:
+            _write_sim_bad_report(cmd, project=project)
         return subprocess.CompletedProcess(cmd, {"good": 0, "bad": 1}[kind], stdout="", stderr="")
 
     monkeypatch.setattr(doctor.subprocess, "run", fake_run)
@@ -175,6 +239,8 @@ def test_lint_selftest_uses_conventional_bad_target(tmp_path, monkeypatch):
     def fake_run(cmd, **kwargs):
         seen_targets.append(cmd[cmd.index("--target") + 1])
         kind = kwargs["env"][selftest_overlay.INTERNAL_KIND_ENV]
+        if kind == "bad" and "booley.flows.sim" in cmd:
+            _write_sim_bad_report(cmd, project=project)
         return subprocess.CompletedProcess(cmd, {"good": 0, "bad": 1}[kind], stdout="", stderr="")
 
     monkeypatch.setattr(doctor.subprocess, "run", fake_run)
@@ -251,3 +317,223 @@ def test_unvalidated_warning_names_the_sim_footprint_tradeoff(tmp_path, monkeypa
 def test_footprint_note_exists_for_every_selftest_tool():
     """A Flow added to the self-test registry without a note would silently lose it."""
     assert set(doctor._SELFTEST_FLOWS) <= set(doctor._SELFTEST_FOOTPRINT_NOTE)
+
+
+def _evidence_mutations(report, campaign, observation):
+    return {
+        "incomplete": (campaign, "complete", False),
+        "wrong-exit": (report, "exit_code", 0),
+        "wrong-flow": (report, "flow", "lint"),
+        "wrong-schema": (report, "$schema", "booley.simulation-report/v2"),
+        "truncated": (campaign, "observations_truncated", True),
+        "rows-truncated": (campaign, "test_runs_truncated", True),
+        "wrong-count": (campaign, "test_run_total", 2),
+        "wrong-observation-count": (campaign, "observation_total", 2),
+        "bool-count": (campaign, "test_run_total", True),
+        "mismatched-pair": (observation, "test", "other"),
+        "timeout": (observation, "execution", "timed_out"),
+        "crash": (observation, "execution", "crashed"),
+        "infra": (observation, "failure_class", "infrastructure"),
+        "inconclusive": (observation, "functional", "inconclusive"),
+        "nonfailing-row": (campaign["test_runs"][0], "grade", "pass"),
+        "build-stage": (campaign, "build_stage", [{"failure_class": "infrastructure"}]),
+        "wrong-variant": (campaign["test_runs"][0], "variant", "other"),
+        "wrong-name": (campaign["test_runs"][0], "name", "other@1"),
+        "malformed-detail": (report, "detail", []),
+        "malformed-row": (campaign, "test_runs", [42]),
+        "malformed-observation": (campaign, "observations", [42]),
+    }
+
+
+def _evidence_case(kind):
+    report = _simulation_failure_report()
+    campaign = report["detail"]["campaigns"]["sim_core"]
+    observation = campaign["observations"][0]
+    changes = _evidence_mutations(report, campaign, observation)
+    if kind in changes:
+        owner, key, value = changes[kind]
+        owner[key] = value
+    elif kind == "missing-rows":
+        del campaign["test_runs"]
+    elif kind == "wrong-target":
+        report["detail"]["campaigns"]["other"] = report["detail"]["campaigns"].pop("sim_core")
+    elif kind == "wrong-test":
+        campaign["test_runs"][0]["test"] = observation["test"] = "other"
+    elif kind == "build-failed":
+        observation.update(
+            execution="blocked_by_build",
+            failure_class="design",
+            functional="not_run",
+            detail={"reason": "%Error: stale ports"},
+        )
+    elif kind == "unpaired-failures":
+        second_row = dict(campaign["test_runs"][0], grade="pass")
+        second_observation = dict(observation)
+        observation["functional"] = "pass"
+        campaign["test_runs"].append(second_row)
+        campaign["observations"].append(second_observation)
+        campaign.update(test_run_total=2, observation_total=2)
+    elif kind == "dirty-assertions":
+        observation.update(functional="pass", assertions="dirty")
+    return report
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "behavioral",
+        "dirty-assertions",
+        "build-failed",
+        "missing",
+        "malformed",
+        "scalar",
+        "incomplete",
+        "wrong-exit",
+        "wrong-flow",
+        "wrong-schema",
+        "truncated",
+        "rows-truncated",
+        "wrong-count",
+        "wrong-observation-count",
+        "bool-count",
+        "mismatched-pair",
+        "timeout",
+        "crash",
+        "infra",
+        "inconclusive",
+        "nonfailing-row",
+        "build-stage",
+        "missing-rows",
+        "wrong-target",
+        "wrong-test",
+        "wrong-variant",
+        "wrong-name",
+        "malformed-detail",
+        "malformed-row",
+        "malformed-observation",
+        "unpaired-failures",
+        "stale",
+    ],
+)
+def test_sim_bad_requires_own_selected_behavioral_evidence(tmp_path, monkeypatch, kind, capsys):
+    project = _audit(tmp_path)
+    _set_venue(monkeypatch, True)
+    path = doctor._selftest_report_path(project)
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(_simulation_failure_report()))
+
+    def run(cmd, **kwargs):
+        bad = kwargs["env"][selftest_overlay.INTERNAL_KIND_ENV] == "bad"
+        if bad:
+            assert not path.exists(), "prior report must be removed before executing bad case"
+            if kind not in {"missing", "stale"}:
+                text = (
+                    "{"
+                    if kind == "malformed"
+                    else json.dumps(42 if kind == "scalar" else _evidence_case(kind))
+                )
+                path.write_text(text)
+        return subprocess.CompletedProcess(cmd, 1 if bad else 0, "", "")
+
+    monkeypatch.setattr(doctor.subprocess, "run", run)
+    reporter, tracker = doctor._Reporter.create(), doctor.doctor_deep.DeepCheckTracker()
+    doctor._run_selftest_checks(
+        project,
+        _runtime(project),
+        reporter.pass_,
+        reporter.warn_,
+        reporter.skip_,
+        reporter.fail_,
+        completeness=tracker,
+    )
+    accepted = kind in {"behavioral", "dirty-assertions"}
+    assert tracker.missing == (() if accepted else ("sim.selftest.bad",))
+    assert reporter.counts["fail"] == 0
+    assert reporter.counts["warn"] == (0 if accepted else 1)
+    if not accepted:
+        expected = (
+            "flow.selftest-overlay-build-failed"
+            if kind == "build-failed"
+            else "flow.selftest-evidence-unvalidated"
+        )
+        assert reporter.findings[-1].check_id == expected
+    if kind == "build-failed":
+        output = capsys.readouterr().out
+        assert str(project.booley_dir / "selftest/sim/bad-overlay") in output
+        assert "%Error: stale ports" in output
+
+
+@pytest.mark.parametrize(
+    "selected,test,variant",
+    [
+        (None, None, None),
+        (None, "discovered_cocotb", None),
+        ("cocotb_test", "cocotb_test", None),
+        ("hello_world+fast", "hello_world", "fast"),
+    ],
+)
+def test_selected_test_identity_accepts_actual_failure(tmp_path, selected, test, variant):
+    project = _audit(tmp_path)
+    path = doctor._selftest_report_path(project)
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(_simulation_failure_report(test=test, variant=variant)))
+    rec = _Rec()
+    accepted = doctor._grade_sim_bad_selftest(
+        project,
+        doctor._SelftestCase("sim_core", selected, "case"),
+        subprocess.CompletedProcess([], 1, "", ""),
+        "bad sim",
+        rec.p,
+        rec.w,
+    )
+    assert accepted
+    assert rec.events == [("pass", "bad sim correctly graded a failure")]
+
+
+def test_waived_runtime_evidence_warning_still_incomplete(tmp_path, monkeypatch):
+    from booley.audit.doctor_waivers import load_doctor_waivers
+
+    project = _audit(tmp_path)
+    (project.booley_dir / "doctor-waivers.toml").write_text(
+        'version=1\n[[waiver]]\ncheck="flow.selftest-evidence-unvalidated"\n'
+        'reason="Reviewed exclusion"\npermanent=true\n'
+    )
+    _set_venue(monkeypatch, True)
+    monkeypatch.setattr(
+        doctor.subprocess,
+        "run",
+        lambda cmd, **kw: subprocess.CompletedProcess(
+            cmd, 1 if kw["env"][selftest_overlay.INTERNAL_KIND_ENV] == "bad" else 0, "", ""
+        ),
+    )
+    reporter = doctor._Reporter.create(load_doctor_waivers(project.booley_dir))
+    tracker = doctor.doctor_deep.DeepCheckTracker()
+    doctor._run_selftest_checks(
+        project,
+        _runtime(project),
+        reporter.pass_,
+        reporter.warn_,
+        reporter.skip_,
+        reporter.fail_,
+        completeness=tracker,
+    )
+    assert reporter.result(0).clean
+    assert reporter.counts["waived"] == 1
+    assert tracker.missing == ("sim.selftest.bad",)
+
+
+def test_unremovable_report_fails_without_executing_bad_case(tmp_path, monkeypatch):
+    project = _audit(tmp_path)
+    doctor._selftest_report_path(project).mkdir(parents=True)
+    _set_venue(monkeypatch, True)
+    executions = []
+
+    def run(cmd, **kwargs):
+        executions.append(kwargs["env"][selftest_overlay.INTERNAL_KIND_ENV])
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(doctor.subprocess, "run", run)
+    rec = _Rec()
+    doctor._run_selftest_checks(project, _runtime(project), rec.p, rec.w, rec.s, rec.f)
+    assert executions == ["good"]
+    assert any("cannot clear prior report" in message for message in rec.fails())
