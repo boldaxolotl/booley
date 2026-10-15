@@ -1,0 +1,140 @@
+"""Codex launcher compatibility and npm shim contracts, without model calls."""
+
+from __future__ import annotations
+
+import json
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from booley.harness import codex_chat
+from booley.runtime.handles import HandleStore
+from booley.runtime.pid import ProcessIdentity
+from tests.conftest import symlink_or_skip
+
+
+@pytest.fixture
+def installed(tmp_path, monkeypatch):
+    executable = tmp_path / "@openai" / "codex" / "bin" / "codex.js"
+    executable.parent.mkdir(parents=True)
+    executable.write_text("#!/usr/bin/env node\n")
+    (executable.parent.parent / "package.json").write_text('{"name":"@openai/codex"}')
+    monkeypatch.setattr(codex_chat.sys, "platform", "linux")
+    monkeypatch.setattr(
+        codex_chat.shutil,
+        "which",
+        lambda name: str(executable) if name == "codex" else "/bin/node",
+    )
+    monkeypatch.setattr(
+        codex_chat, "capture_process_identity", lambda _pid: ProcessIdentity(123, "fixture", 7)
+    )
+    return executable
+
+
+def test_npm_command_keeps_wrapper_and_reserves_handle(tmp_path, installed):
+    project = tmp_path / "project"
+    executable, argv = codex_chat.command(project)
+    assert executable == "/bin/node"
+    assert argv == [
+        "/bin/node",
+        str(Path(codex_chat.__file__).parents[1] / "data/codex_chat.mjs"),
+        "S1",
+        str(installed),
+        "--no-daemon",
+    ]
+    handles = HandleStore(project).load()
+    assert handles.labels()["pid:fixture:123:7"] == "S1"
+    assert handles.labels()["chat:codex:pid:fixture:123:7"] == "S1"
+    assert codex_chat.command(project) == (executable, argv)
+    assert HandleStore(project).load().next_number == 2
+
+
+def test_native_command_keeps_exec_identity(tmp_path, installed):
+    installed.write_bytes(b"\x7fELF")
+    assert codex_chat.command(tmp_path / "project") == (str(installed), ["S1", "--no-daemon"])
+
+
+def test_npm_update_is_discovered_on_each_launch(tmp_path, installed, monkeypatch):
+    launcher = tmp_path / "codex"
+    symlink_or_skip(launcher, installed)
+    monkeypatch.setattr(
+        codex_chat.shutil, "which", lambda name: str(launcher) if name == "codex" else "/bin/node"
+    )
+    project = tmp_path / "project"
+    assert codex_chat.command(project)[1][-2] == str(installed)
+    updated = tmp_path / "updated" / "bin" / "codex.js"
+    updated.parent.mkdir(parents=True)
+    updated.write_text("#!/usr/bin/env node\n")
+    (updated.parent.parent / "package.json").write_text('{"name":"@openai/codex"}')
+    launcher.unlink()
+    symlink_or_skip(launcher, updated)
+    assert codex_chat.command(project)[1][-2] == str(updated)
+    assert HandleStore(project).load().next_number == 2
+
+
+@pytest.mark.parametrize(
+    "failure", ["script", "package", "identity", "store", "lock", "node", "missing"]
+)
+def test_naming_failures_retain_plain_launch(tmp_path, installed, monkeypatch, failure):
+    project = tmp_path / "project"
+    if failure == "script":
+        renamed = installed.with_name("custom")
+        installed.rename(renamed)
+        monkeypatch.setattr(codex_chat.shutil, "which", lambda _name: str(renamed))
+    elif failure == "package":
+        (installed.parent.parent / "package.json").write_text('{"name":"another-package"}')
+    elif failure == "identity":
+        monkeypatch.setattr(codex_chat, "capture_process_identity", lambda _pid: None)
+    elif failure == "store":
+        store = HandleStore(project)
+        store.root.mkdir(parents=True)
+        store.path.write_text("broken")
+    elif failure == "lock":
+
+        def locked(*_args):
+            raise BlockingIOError("session writer is busy")
+
+        monkeypatch.setattr(codex_chat, "reserve_codex_chat", locked)
+    elif failure == "node":
+        monkeypatch.setattr(
+            codex_chat.shutil, "which", lambda name: str(installed) if name == "codex" else None
+        )
+    else:
+        monkeypatch.setattr(codex_chat.shutil, "which", lambda _name: None)
+    assert codex_chat.command(project) == ("codex", ["codex"])
+    if failure != "store":
+        assert not HandleStore(project).path.exists()
+
+
+def test_non_linux_launch_is_unchanged(tmp_path, monkeypatch):
+    monkeypatch.setattr(codex_chat.sys, "platform", "win32")
+    assert codex_chat.command(tmp_path) == ("codex", ["codex"])
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_shim_preserves_arguments_environment_and_exit_status(tmp_path, monkeypatch):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is required to exercise the npm shim")
+    entrypoint = tmp_path / "wrapper.mjs"
+    entrypoint.write_text(
+        "console.log(JSON.stringify({title:process.title,argv:process.argv.slice(1),"
+        "marker:process.env.BOOLEY_SHIM_TEST}));process.exit(17);"
+    )
+    monkeypatch.setenv("BOOLEY_SHIM_TEST", "inherited")
+    shim = Path(codex_chat.__file__).parents[1] / "data/codex_chat.mjs"
+    result = subprocess.run(
+        [node, str(shim), "S123", str(entrypoint), "argument with spaces", "--no-daemon"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 17
+    assert json.loads(result.stdout) == {
+        "title": "S123",
+        "argv": [str(entrypoint), "argument with spaces", "--no-daemon"],
+        "marker": "inherited",
+    }

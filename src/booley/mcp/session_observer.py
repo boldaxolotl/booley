@@ -149,7 +149,7 @@ class SessionObserver:
                 self._remember(facts, observation)
                 if self._latest_observation(observation):
                     call = observation.call
-                    await asyncio.to_thread(self._publish, facts, call)
+                    await asyncio.to_thread(self._publish, observation, call)
                     if observation.call != call:
                         self._enqueue(observation)
                 if not observation.done.done():
@@ -222,20 +222,30 @@ class SessionObserver:
         if observation.resolved is not None:
             return observation.resolved
         fallback = observation.fallback
-        return self._registry().preserve_worktree(
-            resolve_attribution(
-                observation.root,
-                metadata={"threadId": fallback.key.removeprefix("codex:")}
-                if fallback.kind == "thread"
-                else {},
-                client_name=observation.client_name,
-                peer=observed_peer(observation.request),
+        registry = self._registry()
+        return registry.preserve_worktree(
+            registry.chat_attribution(
+                resolve_attribution(
+                    observation.root,
+                    metadata={"threadId": fallback.key.removeprefix("codex:")}
+                    if fallback.kind == "thread"
+                    else {},
+                    client_name=observation.client_name,
+                    peer=observed_peer(observation.request),
+                )
             )
         )
 
-    def _publish(self, facts: Attribution, call: tuple[str, str, float]) -> None:
+    def _publish(self, observation: _Observation, call: tuple[str, str, float]) -> None:
         tool, outcome, now = call
-        self._registry().upsert(facts, tool, outcome, now=now)
+        assert observation.resolved is not None
+        self._registry().upsert(
+            observation.resolved,
+            tool,
+            outcome,
+            now=now,
+            predecessor_keys=(observation.fallback.key,),
+        )
 
     async def resolved(
         self, facts: Attribution | None, *, budget: float = 0.5

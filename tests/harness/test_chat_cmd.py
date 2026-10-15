@@ -15,6 +15,32 @@ class _ExecCalledError(Exception):
     """Stop a mocked process replacement while preserving its arguments."""
 
 
+@pytest.fixture(autouse=True)
+def plain_codex_launch(monkeypatch):
+    monkeypatch.setattr(chat_cmd, "resolve_booley_dir", lambda root: root)
+    monkeypatch.setattr(chat_cmd.codex_chat, "command", lambda _directory: ("codex", ["codex"]))
+
+
+def test_run_uses_named_codex_command(tmp_path, monkeypatch):
+    config = type("Config", (), {"provider": "codex"})()
+    monkeypatch.setattr(chat_cmd, "resolve_checkout_booley_dir", lambda root: root)
+    monkeypatch.setattr(chat_cmd, "load_agent_settings", lambda _root, *, booley_dir: None)
+    monkeypatch.setattr(chat_cmd, "get_agent_settings", lambda: config)
+    monkeypatch.setattr(
+        chat_cmd.codex_chat, "command", lambda _directory: ("/bin/codex", ["S17", "--no-daemon"])
+    )
+    executed = []
+
+    def execvp(executable, argv):
+        executed.append((executable, argv))
+        raise _ExecCalledError
+
+    monkeypatch.setattr(chat_cmd.os, "execvp", execvp)
+    with pytest.raises(_ExecCalledError):
+        chat_cmd.run(argparse.Namespace(), tmp_path)
+    assert executed == [("/bin/codex", ["S17", "--no-daemon"])]
+
+
 @pytest.mark.parametrize("provider", ["claude", "codex"])
 def test_run_replaces_process_with_configured_cli(tmp_path, monkeypatch, provider):
     booley_dir = tmp_path / "configured-project"
@@ -105,3 +131,34 @@ def test_run_loads_provider_from_resolved_booley_directory(tmp_path, monkeypatch
         chat_cmd.run(argparse.Namespace(), project_root)
 
     assert executed == [("codex", ["codex"])]
+
+
+def test_worktree_provider_config_uses_the_shared_runtime_handle_map(tmp_path, monkeypatch):
+    from booley.runtime.booley_dir import reset_cache, resolve_booley_dir
+
+    worktree = tmp_path / "worktree"
+    local = worktree / ".booley"
+    shared = tmp_path / "project" / ".booley"
+    local.mkdir(parents=True)
+    shared.mkdir(parents=True)
+    (local / "booley.toml").write_text('[agent]\nprovider="codex"\n')
+    (shared / "booley.toml").write_text('[agent]\nprovider="claude"\n')
+    monkeypatch.setenv("BOOLEY_DIR", str(shared))
+    monkeypatch.setattr(chat_cmd, "resolve_booley_dir", resolve_booley_dir)
+    directories = []
+    monkeypatch.setattr(
+        chat_cmd.codex_chat,
+        "command",
+        lambda directory: (directories.append(directory) or "codex", ["S17", "--no-daemon"]),
+    )
+    monkeypatch.setattr(
+        chat_cmd.os, "execvp", lambda *_args: (_ for _ in ()).throw(_ExecCalledError)
+    )
+    reset_cache()
+    try:
+        with pytest.raises(_ExecCalledError):
+            chat_cmd.run(argparse.Namespace(), worktree)
+        assert directories == [shared]
+        assert chat_cmd.get_agent_settings().provider == "codex"
+    finally:
+        reset_cache()

@@ -14,6 +14,8 @@ import pytest
 
 from booley.mcp.session_registry import SessionRegistry
 from booley.runtime import session_activity as activity
+from booley.runtime.chat_sessions import reserve_codex_chat
+from booley.runtime.handles import HandleStore
 from booley.runtime.pid import capture_process_identity
 from booley.runtime.session_activity import ActivityStore
 
@@ -30,6 +32,9 @@ def proc_tree(root, parents, commands=None):
         directory = root / str(pid)
         (directory / "ns").mkdir(parents=True)
         (directory / "comm").write_text((commands or {}).get(pid, "sh") + "\n", encoding="utf-8")
+        executable = (commands or {}).get(pid, "sh")
+        (directory / "exe").symlink_to("/bin/" + executable)
+        (directory / "cmdline").write_bytes(executable.encode() + b"\0")
         fields = ["S", str(parent), *["0"] * 17, str(1000 + pid)]
         (directory / "stat").write_text(f"{pid} (a b) c) " + " ".join(fields), encoding="utf-8")
         try:
@@ -118,6 +123,104 @@ def test_codex_hook_keys_by_thread_and_prefers_a_subagents_own_thread(tmp_path):
     assert store.read("codex:root").state == activity.WORKING
     assert record({"hook_event_name": "SessionEnd", "session_id": "root"})
     assert store.read("codex:root") is None
+
+
+def test_launched_codex_activity_uses_tab_identity_and_ignores_subagent_stop(tmp_path):
+    proc = proc_tree(tmp_path / "proc", CHAIN, {300: "codex"})
+    owner = capture_process_identity(300, proc_root=proc)
+    reserve_codex_chat(tmp_path, owner)
+    payload = {"hook_event_name": "UserPromptSubmit", "session_id": "root"}
+    assert hook.record("codex", payload, project=tmp_path, now=NOW, proc_root=proc, pid=500)
+    store = ActivityStore(tmp_path)
+    assert store.read(activity.process_session_key(owner)).state == activity.WORKING
+    assert store.read("codex:root") is None
+    assert not hook.record(
+        "codex",
+        {**payload, "hook_event_name": "Stop", "agent_id": "child"},
+        project=tmp_path,
+        now=NOW,
+        proc_root=proc,
+        pid=500,
+    )
+    assert store.read(activity.process_session_key(owner)).state == activity.WORKING
+    assert store.read("codex:child") is None
+    assert hook.record(
+        "codex",
+        {**payload, "hook_event_name": "Stop"},
+        project=tmp_path,
+        now=NOW,
+        proc_root=proc,
+        pid=500,
+    )
+    assert store.read(activity.process_session_key(owner)).state == activity.WAITING_USER
+
+
+def test_codex_activity_survives_broken_handle_map(tmp_path):
+    path = tmp_path / "runtime/sessions/handles/map.json"
+    path.parent.mkdir(parents=True)
+    path.write_text("broken")
+    assert hook.record(
+        "codex",
+        {"hook_event_name": "Stop", "session_id": "root"},
+        project=tmp_path,
+        now=NOW,
+    )
+    assert ActivityStore(tmp_path).read("codex:root").state == activity.WAITING_USER
+
+
+@pytest.mark.parametrize("launcher", ["node", "codex"])
+def test_nested_codex_stop_never_marks_the_outer_tab_idle(tmp_path, launcher):
+    parents = {100: 1, 101: 100, 200: 101, 201: 200, 202: 201, 300: 101}
+    commands = {100: launcher, 101: "codex" if launcher == "node" else "sh", 201: "codex"}
+    proc = proc_tree(tmp_path / "proc", parents, commands)
+    owner = capture_process_identity(100, proc_root=proc)
+    reserve_codex_chat(tmp_path, owner)
+    payload = {"hook_event_name": "UserPromptSubmit", "session_id": "outer"}
+    assert hook.record("codex", payload, tmp_path, NOW, proc_root=proc, pid=300)
+    assert hook.record(
+        "codex",
+        {"hook_event_name": "Stop", "session_id": "nested"},
+        tmp_path,
+        NOW,
+        proc_root=proc,
+        pid=202,
+    )
+    store = ActivityStore(tmp_path)
+    assert store.read(activity.process_session_key(owner)).state == activity.WORKING
+    assert store.read("codex:nested").state == activity.WAITING_USER
+
+
+@pytest.mark.parametrize("corruption", ["schema", "label", "alias", "counter", "duplicate"])
+def test_hook_rejects_the_same_corrupt_handle_maps_as_the_registry(tmp_path, corruption):
+    proc = proc_tree(tmp_path / "proc", CHAIN, {300: "codex"})
+    owner = capture_process_identity(300, proc_root=proc)
+    reserve_codex_chat(tmp_path, owner)
+    store = HandleStore(tmp_path)
+    data = json.loads(store.path.read_bytes())
+    key = activity.process_session_key(owner)
+    if corruption == "schema":
+        data["schema"] = True
+    elif corruption == "label":
+        data["entries"][key] = 42
+    elif corruption == "alias":
+        data["aliases"]["invalid"] = "missing"
+    elif corruption == "counter":
+        data["next_number"] = True
+    else:
+        data["entries"]["another"] = "S1"
+    store.path.write_text(json.dumps(data))
+    with pytest.raises(ValueError):
+        store.load()
+    assert hook.record(
+        "codex",
+        {"hook_event_name": "Stop", "session_id": "root"},
+        tmp_path,
+        NOW,
+        proc_root=proc,
+        pid=500,
+    )
+    assert ActivityStore(tmp_path).read(key) is None
+    assert ActivityStore(tmp_path).read("codex:root").state == activity.WAITING_USER
 
 
 def run_main(monkeypatch, capsys, argv, stdin, project=None):

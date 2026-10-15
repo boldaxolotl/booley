@@ -17,6 +17,7 @@ from booley.core.boundary import require_dict, require_str, require_str_value, r
 from booley.goals.model import WorktreeIdentity
 from booley.goals.store import REPOSITORY_ID_FILE, resolve_worktree_identity
 from booley.runtime.atomic_files import atomic_replace_bytes
+from booley.runtime.chat_sessions import codex_chat_owner
 from booley.runtime.handles import HandleStore, fallback_predecessors, session_writer
 from booley.runtime.pid import ProcessIdentity, ProcessState, observe_process
 from booley.runtime.safe_storage import refuse_symlinks
@@ -281,22 +282,49 @@ class SessionRegistry:
             else attribution
         )
 
-    def _predecessors(self, facts: Attribution) -> list[tuple[Path, SessionRow]]:
-        candidates = [self.path(facts.key)]
+    def chat_attribution(self, facts: Attribution) -> Attribution:
+        """All conversations in one explicitly isolated Codex tab share its session."""
+        if facts.kind != "thread" or facts.process is None:
+            return facts
+        try:
+            owner = codex_chat_owner(self.booley_dir, facts.process, proc_root=self.proc_root)
+        except (OSError, ValueError, RuntimeError):
+            return facts  # Advisory naming failures never discard thread identity.
+        return (
+            replace(facts, key=process_session_key(owner), kind="process", process=owner)
+            if owner is not None
+            else facts
+        )
+
+    def _predecessors(
+        self, facts: Attribution, keys: tuple[str, ...] = ()
+    ) -> list[tuple[Path, SessionRow]]:
+        candidates = [self.path(key) for key in (facts.key, *keys)]
         if (
             facts.kind == "worktree"
             and facts.work_dir
             and not facts.worktree_key.startswith("path:")
         ):
             candidates.append(self.path("worktree:path:" + facts.work_dir))
-        return [(path, self._read(path)) for path in candidates if path.exists()]
+        return [(path, self._read(path)) for path in dict.fromkeys(candidates) if path.exists()]
 
-    def upsert(self, attribution: Attribution, tool: str, outcome: str, *, now: float) -> None:
+    def upsert(
+        self,
+        attribution: Attribution,
+        tool: str,
+        outcome: str,
+        *,
+        now: float,
+        predecessor_keys: tuple[str, ...] = (),
+    ) -> None:
         """Preserve first presence and migrate path fallbacks under the same writer lock."""
         with self._writer():
+            original_key = attribution.key
+            attribution = self.chat_attribution(attribution)
             path = self.path(attribution.key)
             refuse_symlinks(path)
-            predecessors = self._predecessors(attribution)
+            predecessor_keys = (original_key, *predecessor_keys)
+            predecessors = self._predecessors(attribution, predecessor_keys)
             attribution = self.preserve_worktree(attribution)
             row = _updated_row(attribution, [row for _, row in predecessors], tool, outcome, now)
             if (
@@ -308,7 +336,7 @@ class SessionRegistry:
             if len(payload) > MAX_ROW_BYTES:
                 raise ValueError("oversized session row")
             self._reserve_handle(
-                attribution, tuple(row.attribution.key for _, row in predecessors)
+                attribution, (*predecessor_keys, *(row.attribution.key for _, row in predecessors))
             )
             atomic_replace_bytes(path, payload)
             for prior_path, _ in predecessors:
