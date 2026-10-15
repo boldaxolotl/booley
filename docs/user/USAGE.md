@@ -169,8 +169,8 @@ work, with one linked worktree and Goal Branch per session.
 
    Claude receives its persistent session handle, such as `S17`, as its
    process and chat name. After its first Booley MCP request, the Dashboard
-   shows that same handle. If naming is unavailable, Booley prints a short
-   note and starts Claude normally. Direct CLI launches and extension panels
+   normally shows that same handle. If naming is unavailable, Booley prints a
+   short note and starts Claude normally. Direct CLI launches and extension panels
    keep their usual naming.
 
    From then on you are using that CLI's own chat. To pass it extra options,
