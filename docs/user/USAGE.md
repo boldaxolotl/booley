@@ -79,8 +79,9 @@ Use the selector once, at the root, command, or nested operation. It also works 
 `booley` inside the Sandbox to select the Project for chat. On the host, bare
 `booley` prints help without resolving the selector.
 `auth --status` optionally uses the selected Project and its auth policy; outside
-a Project it reports all supported apps unless `--app` selects one. Bare `cheat`
-and `cheat --list` accept and ignore the selector without discovering a Project.
+a Project it reports both supported AI agent clients (Claude Code and Codex),
+unless `--app` selects one. Bare `cheat` and `cheat --list` accept and ignore the
+selector without discovering a Project.
 `bootstrap`, `projects`, and `eda` retain their grammar
 and do not accept the new selector. Full option names are stable; ambiguous
 abbreviations produce an error. Arguments after a command's payload `--` stay opaque.

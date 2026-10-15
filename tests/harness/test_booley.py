@@ -1441,3 +1441,67 @@ def test_auth_status_optional_context_preserves_source_checkout(tmp_path, monkey
     monkeypatch.setitem(tlr._EARLY_COMMANDS, "auth", lambda args, root: roots.append(root) or 0)
     assert tlr._dispatch_main() == 0
     assert roots == [None]
+
+
+@pytest.mark.parametrize(
+    "in_project,app,expected_apps,expected_rc",
+    [
+        (False, None, ("claude", "codex"), 0),
+        (True, None, ("codex",), 0),
+        (True, "claude", ("claude",), 1),
+        (False, "claude", ("claude",), 1),
+        (False, "codex", ("codex",), 0),
+    ],
+)
+def test_auth_status_cli_preserves_omitted_app_selection(
+    tmp_path, monkeypatch, capsys, in_project, app, expected_apps, expected_rc
+):
+    from booley.runtime import auth_token
+
+    home = tmp_path / "home"
+    home.mkdir()
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    for key in (*auth_token.CREDENTIAL_ENV_KEYS, "BOOLEY_DIR", "RTL_PROJECT_ROOT", "CODEX_HOME"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "SYNTHETIC_CODEX_KEY")
+    argv = ["booley", "auth", "--status"]
+    if in_project:
+        data = project / ".booley"
+        data.mkdir()
+        (data / "booley.toml").write_text('[agent]\nprovider="codex"\nauth="api_key"\n')
+        argv.extend(["--project", str(project)])
+    if app:
+        argv.extend(["--app", app])
+    monkeypatch.setattr(sys, "argv", argv)
+    monkeypatch.setattr(tlr, "_enforce_runtime_location", lambda *_: None)
+    monkeypatch.setattr(tlr, "_host_install_authority_error", lambda *_: None)
+    reset_cache()
+    assert tlr.main() == expected_rc
+    output = capsys.readouterr().out
+    for client in ("claude", "codex"):
+        assert (f"{client}:" in output) == (client in expected_apps)
+    assert "SYNTHETIC_CODEX_KEY" not in output
+
+
+@pytest.mark.parametrize("app,expected", [(None, "claude"), ("codex", "codex")])
+def test_auth_clear_cli_keeps_historical_app_default(tmp_path, monkeypatch, capsys, app, expected):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
+    data = tmp_path / ".booley"
+    data.mkdir()
+    (data / "booley.toml").write_text('[agent]\nprovider="codex"\nauth="api_key"\n')
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    argv = ["booley", "auth", "--clear", "--project", str(tmp_path)]
+    if app:
+        argv.extend(["--app", app])
+    monkeypatch.setattr(sys, "argv", argv)
+    monkeypatch.setattr(tlr, "_enforce_runtime_location", lambda *_: None)
+    monkeypatch.setattr(tlr, "_host_install_authority_error", lambda *_: None)
+    assert tlr.main() == 0
+    assert f"no stored {expected} credential" in capsys.readouterr().out

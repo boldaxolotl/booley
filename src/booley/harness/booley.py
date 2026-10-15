@@ -499,8 +499,11 @@ def _add_auth_subparser(sub) -> None:
     auth_p.add_argument(
         "--app",
         choices=("claude", "codex"),
-        default="claude",
-        help="Which agent app to authenticate (default: claude)",
+        default=None,
+        help=(
+            "AI agent client (credential changes default to claude; "
+            "status uses the Project provider or both clients)"
+        ),
     )
     auth_p.add_argument(
         "--status", action="store_true", help="Report which credential each agent would use"
