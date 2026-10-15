@@ -343,7 +343,10 @@ def project(endpoint: EndpointState, outcome: EndpointOutcome) -> None:
     """Normalize only endpoints owned by the common headline contract."""
     if endpoint.endpoint_kind not in {"flow", "specialist"}:
         return
-    if not endpoint._report_criteria.frozen:
+    if (
+        not endpoint._acceptance_recorder.acceptance_identity()
+        or not endpoint._report_criteria.frozen
+    ):
         outcome.criterion_key = ""
         outcome.criterion_met = None
         return

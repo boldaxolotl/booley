@@ -171,7 +171,8 @@ def test_specialist_reference_lists_every_reviewer_focus_and_mutation_mode() -> 
 def test_specialist_examples_use_connected_session_arguments_without_cli_flags() -> None:
     rendered = render_specialists_reference()
     assert "booley specialist <name> [args...]" in rendered
-    assert "MCP" not in rendered
+    assert "CLI Flow and Specialist runs never record Goal evidence" in rendered
+    assert "Goal-bound MCP calls with `work_dir`" in rendered
     assert "CLI-only controls" in rendered
     for name in ("coverage_analyst", "reviewer", "mutation_tester"):
         assert f"Call the `{name}` Specialist from your Developer Agent session" in rendered

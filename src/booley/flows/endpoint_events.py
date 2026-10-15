@@ -247,6 +247,7 @@ def _endpoint_end_event(
     display_label: str | None = None,
     dry_run: bool = False,
     identity: DisplayIdentity | None = None,
+    include_criterion: bool = True,
 ) -> dict:
     """Build an endpoint_end display event dict."""
     event = {
@@ -271,6 +272,9 @@ def _endpoint_end_event(
         "summary": result.summary,
         "timestamp": utc_now_rfc3339(),
     }
+    if not include_criterion:
+        del event["criterion_key"]
+        del event["criterion_met"]
     if display_label:
         event["display_label"] = display_label
     return _event_identity(event, identity)
