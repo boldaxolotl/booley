@@ -622,13 +622,51 @@ def test_snapshot_sanitizes_checkout_and_goal_copies_despite_external_selection(
     reset_cache()
 
 
-def _cpp_review_project(tmp_path, monkeypatch):
+_CPP_REVIEW_CORE = """CAPI=2:
+name: ::snapshot:0
+filesets:
+  rtl:
+    files: [shared/dut.sv, {shared/rtl.c: {file_type: cSource}}]
+    tags: [rtl]
+  cpp:
+    file_type: cppSource
+    files:
+      - shared/main.cpp
+      - shared/api.h: {is_include_file: true}
+      - shared/api.hpp: {is_include_file: true}
+      - shared/override.hh: {file_type: cSource, is_include_file: true}
+  c:
+    file_type: cSource
+    files: [shared/support.c]
+  tagged:
+    tags: [tb]
+    files: [shared/tagged.hxx]
+targets:
+  sim:
+    default_tool: verilator
+    filesets: [rtl, cpp, c, tagged]
+"""
+
+
+def _cpp_source_status(repo):
+    return subprocess.check_output(
+        ["git", "status", "--porcelain", "--", "shared", "tracked.sv"], cwd=repo
+    )
+
+
+def _cpp_review_project(tmp_path, monkeypatch, layout="flat"):
     from booley.runtime.booley_dir import reset_cache
 
     repo = _repo(tmp_path)
+    if layout != "flat":
+        repo = repo / "hw"
+        repo.mkdir()
     data = repo / ".booley"
     data.mkdir()
-    (data / "booley.toml").write_text('[project]\nname="snapshot"\n')
+    config = '[project]\nname="snapshot"\n'
+    if layout == "nested-stealth":
+        config += "[stealth]\nenabled=true\n"
+    (data / "booley.toml").write_text(config)
     monkeypatch.setenv("BOOLEY_DIR", str(data))
     monkeypatch.delenv("BOOLEY_LOGS_DIR", raising=False)
     monkeypatch.chdir(repo)
@@ -654,47 +692,72 @@ def _cpp_review_project(tmp_path, monkeypatch):
         path = repo / name
         path.parent.mkdir(exist_ok=True)
         path.write_text("// authored source\n")
-    (repo / "design.core").write_text("""CAPI=2:
-name: ::snapshot:0
-filesets:
-  rtl:
-    files: [shared/dut.sv, shared/rtl.c]
-    tags: [rtl]
-  cpp:
-    file_type: cppSource
-    files:
-      - shared/main.cpp
-      - shared/api.h: {is_include_file: true}
-      - shared/api.hpp: {is_include_file: true}
-      - shared/override.hh: {file_type: cSource, is_include_file: true}
-  c:
-    file_type: cSource
-    files: [shared/support.c]
-  tagged:
-    tags: [tb]
-    files: [shared/tagged.hxx]
-targets:
-  sim:
-    default_tool: verilator
-    filesets: [rtl, cpp, c, tagged]
-""")
-    _git(["add", "design.core", "shared/main.cpp", "shared/dut.sv", "shared/rtl.c"], repo)
+    core_base = data / "cores" if layout == "nested-stealth" else repo
+    core_base.mkdir(exist_ok=True)
+    core_path = core_base / "design.core"
+    core_path.write_text(_CPP_REVIEW_CORE)
+    _git(["add", "--force", str(core_path.relative_to(repo))], repo)
+    _git(["add", "shared/main.cpp", "shared/dut.sv", "shared/rtl.c"], repo)
     before = {name: (repo / name).read_bytes() for name in visible + hidden}
-    status = subprocess.check_output(
-        ["git", "status", "--porcelain", "--", "shared", "tracked.sv"], cwd=repo
-    )
+    status = _cpp_source_status(repo)
     return repo, visible, hidden, before, status
 
 
-@pytest.mark.parametrize("category", ["tb", "rtl"])
-def test_interactive_cpp_review_uses_real_snapshot(tmp_path, monkeypatch, category):
-    """Admission, prompt, isolation and finding filtering use the same exact scope."""
+def _assert_cpp_review_snapshot(params, repo, visible, hidden, category):
+    root = Path(params.cwd)
+    assert root != repo
+    for name in visible:
+        assert (root / name).is_file(), name
+        _git(["show", f"HEAD:./{name}"], root)
+    for name in hidden:
+        assert not (root / name).exists(), name
+        assert (
+            subprocess.run(
+                ["git", "cat-file", "-e", f"HEAD:./{name}"],
+                cwd=root,
+                capture_output=True,
+                check=False,
+            ).returncode
+            != 0
+        )
+    if category == "tb":
+        assert "C/C++ testbench" in params.system_prompt
+        assert "Canonical style guide for SystemVerilog" not in params.system_prompt
+        assert "Cocotb" not in params.system_prompt
+        assert "shared/helper.CPP" in params.prompt
+
+
+def _cpp_review_result(root, category, finding_path):
     import json
 
-    repo, visible, hidden, before, status = _cpp_review_project(tmp_path, monkeypatch)
+    issues = [
+        {
+            "severity": "MINOR",
+            "confidence": "HIGH",
+            "category": "quality" if category == "tb" else "bugs",
+            "file": str(root / path),
+            "line": 1,
+            "summary": summary,
+            "kind": "code_defect",
+            "disposition": "current",
+            "ticket_clause": "testbench quality",
+        }
+        for path, summary in [
+            (finding_path, "header finding"),
+            ("shared/unknown.C", "outside finding"),
+        ]
+    ]
+    return AgentResult(output=json.dumps({"issues": issues}))
+
+
+@pytest.mark.parametrize("category", ["tb", "rtl"])
+@pytest.mark.parametrize("layout", ["flat", "nested", "nested-stealth"])
+def test_interactive_cpp_review_uses_real_snapshot(tmp_path, monkeypatch, category, layout):
+    """Admission, prompt, isolation and finding filtering use the same exact scope."""
+    repo, visible, hidden, before, status = _cpp_review_project(tmp_path, monkeypatch, layout)
     if category == "rtl":
-        hidden = [name for name in visible if name != "shared/helper.CPP"] + [
-            "shared/helper.CPP",
+        hidden = [
+            *visible,
             "shared/unknown.C",
             "shared/unknown.HXX",
             "shared/backup.HPP.bak",
@@ -707,45 +770,8 @@ def test_interactive_cpp_review_uses_real_snapshot(tmp_path, monkeypatch, catego
 
     def fake_call(params, *, on_event):
         calls.append(params)
-        root = Path(params.cwd)
-        assert root != repo
-        for name in visible:
-            assert (root / name).is_file(), name
-            _git(["show", f"HEAD:{name}"], root)
-        for name in hidden:
-            assert not (root / name).exists(), name
-            assert (
-                subprocess.run(
-                    ["git", "cat-file", "-e", f"HEAD:{name}"],
-                    cwd=root,
-                    capture_output=True,
-                    check=False,
-                ).returncode
-                != 0
-            )
-        if category == "tb":
-            assert "C/C++ testbench" in params.system_prompt
-            assert "Canonical style guide for SystemVerilog" not in params.system_prompt
-            assert "Cocotb" not in params.system_prompt
-            assert "shared/helper.CPP" in params.prompt
-        issues = [
-            {
-                "severity": "MINOR",
-                "confidence": "HIGH",
-                "category": "quality" if category == "tb" else "bugs",
-                "file": str(root / path),
-                "line": 1,
-                "summary": summary,
-                "kind": "code_defect",
-                "disposition": "current",
-                "ticket_clause": "testbench quality",
-            }
-            for path, summary in [
-                (finding_path, "header finding"),
-                ("shared/unknown.C", "outside finding"),
-            ]
-        ]
-        return AgentResult(output=json.dumps({"issues": issues}))
+        _assert_cpp_review_snapshot(params, repo, visible, hidden, category)
+        return _cpp_review_result(Path(params.cwd), category, finding_path)
 
     endpoint = ReviewerSpecialist()
     endpoint.parse_args(
@@ -774,6 +800,38 @@ def test_interactive_cpp_review_uses_real_snapshot(tmp_path, monkeypatch, catego
     assert "outside finding" not in result.report_text
     assert str(repo / finding_path) in result.report_text
     assert before == {name: (repo / name).read_bytes() for name in before}
-    assert status == subprocess.check_output(
-        ["git", "status", "--porcelain", "--", "shared", "tracked.sv"], cwd=repo
+    assert status == _cpp_source_status(repo)
+
+
+@pytest.mark.parametrize("category", ["rtl", "tb"])
+@pytest.mark.parametrize("suffix", ["sv", "cpp"])
+@pytest.mark.parametrize("conditional", [False, True])
+def test_spaced_source_cannot_gain_opposite_scope(tmp_path, category, suffix, conditional):
+    from booley.specialists.reviewer import validate_scope_category
+    from booley.targets.catalog import TargetCatalog
+
+    repo = _repo(tmp_path)
+    name = f"shared/source with space.{suffix}"
+    source = repo / name
+    source.parent.mkdir()
+    source.write_text("authored source\n")
+    opposite = "tb" if category == "rtl" else "rtl"
+    expression = f"tool_verilator ? ({name})" if conditional else name
+    kind = "cppSource" if suffix == "cpp" else "systemVerilogSource"
+    (repo / "design.core").write_text(
+        f'CAPI=2:\nname: ::spaced:0\nfilesets:\n  scoped:\n    files: ["{expression}"]\n'
+        f"    tags: [{opposite}]\n    file_type: {kind}\n"
+        "targets:\n  sim: {default_tool: verilator, filesets: [scoped], toplevel: dut}\n"
     )
+    params = AgentCallParams(prompt="review", model="test", cwd=repo)
+    with (
+        pytest.raises(ValueError, match="opposite-category"),
+        isolated_agent_workspace(params, "read_only", category, scope=(name,)),
+    ):
+        pytest.fail("declared opposite source reached provider snapshot")
+    catalog = TargetCatalog.build(repo)
+    inspection = catalog.inspect(catalog.select("sim"))
+    partition = inspection.tb_files if opposite == "tb" else inspection.rtl_files
+    assert name in partition
+    assert validate_scope_category([name], category, repo)
+    assert source.read_text() == "authored source\n"

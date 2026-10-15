@@ -1397,7 +1397,8 @@ def _possible_expression_values(value: str) -> list[str]:
     def _walk(nodes: list[Any]) -> None:
         for node in nodes:
             if isinstance(node, str):
-                values.extend(node.split())
+                # A leaf is one expanded value; spaces may belong to a filename.
+                values.append(node)
             elif isinstance(node, tuple) and len(node) == 3 and isinstance(node[2], list):
                 _walk(node[2])
 

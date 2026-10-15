@@ -149,6 +149,26 @@ def restore_result_paths(result: AgentResult, snapshot: WorkspaceSnapshot) -> Ag
     )
 
 
+def _project_category_paths(
+    project_root: Path, repository_root: Path, scope: tuple[str, ...]
+) -> tuple[dict[str, tuple[str, ...]], tuple[str, ...]]:
+    """Resolve Project-owned roles, then express them in the copied Git tree."""
+    from booley.fusesoc.fusesoc_registry import canonical_project_path, classified_sources
+
+    sources = classified_sources(project_root, strict=True)
+    prefix = project_root.relative_to(repository_root)
+    category_files = {
+        category: tuple((prefix / path).as_posix() for path in paths)
+        for category, paths in (
+            ("rtl", sources.rtl_source_files),
+            ("tb", sources.tb_files),
+        )
+    }
+    return category_files, tuple(
+        (prefix / canonical_project_path(project_root, path)).as_posix() for path in scope
+    )
+
+
 @contextmanager
 def isolated_agent_workspace(
     params: AgentCallParams,
@@ -169,12 +189,8 @@ def isolated_agent_workspace(
     real_root = _git_root(real_cwd)
     category_files = None
     if category is not None:
-        from booley.fusesoc.fusesoc_registry import canonical_project_path, classified_sources
-
-        sources = classified_sources(real_root, strict=True)
-        scope = tuple(canonical_project_path(real_root, path) for path in scope)
-        category_files = {"rtl": sources.rtl_source_files, "tb": sources.tb_files}
-        excluded_roots = (*owned_copy_roots(real_root), *excluded_roots)
+        category_files, scope = _project_category_paths(real_cwd, real_root, scope)
+        excluded_roots = (*owned_copy_roots(real_cwd), *excluded_roots)
     relative_cwd = real_cwd.relative_to(real_root)
     with tempfile.TemporaryDirectory(prefix="booley-specialist-ro-") as temp_dir:
         snapshot = WorkspaceSnapshot(real_root, Path(temp_dir).resolve())
