@@ -78,7 +78,7 @@ Look for: a stale `booley` on PATH, version/commit mismatch, docs that don't mat
 ### 2. bootstrap-init — Bootstrap, scaffold and init variants (~30 min)
 Intent: onboard a greenfield Project on an empty origin; bootstrap runs implicitly.
 Try:
-- Bootstrap check-only reports `pending`. Then run `booley init --scaffold` without an explicit
+- Bootstrap check-only reports `pending`. Then run `booley init --scaffold qa_uart` without an explicit
   bootstrap: choose the provider, Verilator for sim and lint, a SystemVerilog TB and ASIC
   support. It should reconcile the host automatically, after which check-only reports clean.
 - Repeat `init` and bootstrap: source, config, generated state, images and skills must not
