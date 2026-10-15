@@ -9,6 +9,7 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- Newly scaffolded Verilator SystemVerilog projects now produce non-empty simulation traces and avoid Doctor's `sim.trace-unavailable` warning.
 - Goal evidence fields in saved state now recover automatically from selected
   valid immutable producer observations when Booley reads or saves Goal state.
   Goal status reports remaining evidence or validation problems without treating
