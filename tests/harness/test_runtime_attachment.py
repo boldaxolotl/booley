@@ -368,7 +368,7 @@ def test_missing_container_protocol_fails_fast_with_actionable_message(
 
     assert result.exit_code == 125
     assert result.terminal_cause == "protocol_unavailable"
-    assert "booley session refresh" in caplog.text
+    assert "execution protocol" in caplog.text
     assert time.monotonic() - started < 1
 
 
@@ -397,5 +397,5 @@ def test_protocol_version_mismatch_fails_closed(tmp_path: Path, monkeypatch, cap
     assert result.exit_code == 125
     assert result.tree_terminal is False
     assert result.terminal_cause == "protocol_mismatch"
-    assert "booley session refresh" in caplog.text
+    assert "execution protocol" in caplog.text
     assert time.monotonic() - started < 2

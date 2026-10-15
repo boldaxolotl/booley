@@ -1264,7 +1264,7 @@ def _session_refresh(args: argparse.Namespace, project_root: Path) -> int:
         project_root,
         startup_due_reason=health.due_reason(project_root),
     )
-    print(f"Refreshed Sandbox: {result.selected_reference} ({result.selected_id})")
+    print(result.message)
     return 0
 
 
