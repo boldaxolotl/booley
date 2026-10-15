@@ -177,13 +177,15 @@ class TestAlreadyFiled:
 
     def test_filed_findings_are_absent_from_a_later_report(self, project, booley_dir):
         """The dedup that makes a second bug report safe on a long-lived project."""
-        old = append(_bug(title="a setup-run finding", origin="setup"), booley_dir)
-        old.mark_filed("https://github.com/boldaxolotl/Booley/issues/1")
-        log = read_log(booley_dir)
-        log.entries[0].mark_filed("https://github.com/boldaxolotl/Booley/issues/1")
+        append(_bug(title="a setup-run finding", origin="setup"), booley_dir)
         from booley.feedback.findings import rewrite
 
-        rewrite(log.entries, booley_dir)
+        rewrite(
+            lambda entries: entries[0].mark_filed(
+                "https://github.com/boldaxolotl/Booley/issues/1"
+            ),
+            booley_dir,
+        )
         append(_bug(title="a bug hit months later"), booley_dir)
 
         report = render_booley_report(read_log(booley_dir), project, booley_dir=booley_dir)
@@ -194,22 +196,25 @@ class TestAlreadyFiled:
     def test_a_filed_finding_is_not_reported_as_lacking_evidence(self, project, booley_dir):
         """It is complete; it has simply been sent. Listing it as withheld would
         read as "you forgot something" forever."""
-        entry = append(_bug(), booley_dir)
-        entry.mark_filed("manual")
+        append(_bug(), booley_dir)
         from booley.feedback.findings import rewrite
 
-        rewrite([entry], booley_dir)
+        rewrite(lambda entries: entries[0].mark_filed("manual"), booley_dir)
         report = render_booley_report(read_log(booley_dir), project, booley_dir=booley_dir)
         assert report.withheld == []
         assert not report.has_content
 
     def test_the_user_report_still_shows_it(self, project, booley_dir):
         """Local memory of what was reported, and where it went."""
-        entry = append(_bug(), booley_dir)
-        entry.mark_filed("https://github.com/boldaxolotl/Booley/issues/7")
+        append(_bug(), booley_dir)
         from booley.feedback.findings import rewrite
 
-        rewrite([entry], booley_dir)
+        rewrite(
+            lambda entries: entries[0].mark_filed(
+                "https://github.com/boldaxolotl/Booley/issues/7"
+            ),
+            booley_dir,
+        )
         user_path, _ = write_user_report(project, booley_dir)
         assert "issues/7" in user_path.read_text(encoding="utf-8")
 

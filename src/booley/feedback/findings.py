@@ -28,17 +28,20 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, Literal
 
+from booley.core.file_lock import LockTimeoutError, release_file_lock, wait_for_file_lock
 from booley.runtime.booley_dir import resolve_booley_dir
 from booley.runtime.timefmt import utc_now_rfc3339
 
 logger = logging.getLogger(__name__)
 
 LOG_NAME = "findings.jsonl"
+_LOCK_TIMEOUT_S = 5.0
 
 Severity = Literal["blocker", "workaround", "note"]
 Bucket = Literal["project", "booley", "docs", "unknown"]
@@ -316,47 +319,107 @@ def _next_id(existing: Iterable[Finding]) -> str:
     return f"F-{highest + 1}"
 
 
-def append(finding: Finding, booley_dir: Path | None = None) -> Finding:
-    """Append *finding* to the log, assigning its id, and return it.
+class FindingsLockTimeoutError(LockTimeoutError):
+    """A Findings Log transaction could not acquire its sidecar in time."""
 
-    The read-then-append is not atomic across processes, so two concurrent
-    writers can hand out the same ``F-N``. That is deliberate: a duplicate
-    label is cosmetic and self-evident in the report, whereas locking the log
-    would let a wedged agent block every other writer for the rest of the run.
-    Ordering within a single ``O_APPEND`` write is guaranteed by the OS, so no
-    entry is ever lost or interleaved mid-line.
+
+class AmbiguousFindingIdError(ValueError):
+    """An explicit ID matches multiple legacy Findings Log rows."""
+
+
+class UnknownFindingIdError(ValueError):
+    """An explicit ID does not exist in the Findings Log."""
+
+
+def select_unique(log: FindingsLog, finding_id: str) -> Finding:
+    """Resolve one explicit ID, refusing to guess among legacy duplicates."""
+    matches = [(row, entry) for row, entry in enumerate(log.entries, 1) if entry.id == finding_id]
+    if not matches:
+        raise UnknownFindingIdError(f"No finding {finding_id} in {log.path}")
+    if len(matches) > 1:
+        details = "; ".join(
+            f"row {row}: {entry.title!r} (created {entry.created})" for row, entry in matches
+        )
+        raise AmbiguousFindingIdError(f"Ambiguous finding {finding_id} in {log.path}: {details}")
+    return matches[0][1]
+
+
+@contextmanager
+def transaction(booley_dir: Path | None = None, *, operation: str = "update") -> Iterator[Path]:
+    """Hold the persistent sidecar across a complete fresh-read transaction.
+
+    The OS releases ownership on process death; a bounded wait refuses busy
+    writers. Never unlink the sidecar: existing waiters must share its inode.
     """
     directory = booley_dir or resolve_booley_dir()
-    directory.mkdir(parents=True, exist_ok=True)
-    path = directory / LOG_NAME
-    if not finding.id:
-        finding.id = _next_id(read_log(directory).entries)
-    # Single write() of one newline-terminated line: O_APPEND makes that atomic
-    # up to PIPE_BUF-sized payloads, which is what keeps concurrent appends from
-    # shredding each other's lines.
-    with path.open("a", encoding="utf-8") as fh:
-        fh.write(finding.to_json() + "\n")
+    sidecar = directory / ".runtime" / "findings.lock"
+    sidecar.parent.mkdir(parents=True, exist_ok=True)
+    with sidecar.open("a+", encoding="utf-8") as handle:
+        try:
+            wait_for_file_lock(handle, timeout_s=_LOCK_TIMEOUT_S)
+        except LockTimeoutError as exc:
+            raise FindingsLockTimeoutError(
+                f"cannot {operation} {log_path(directory)}: lock {sidecar} "
+                f"remained busy for {_LOCK_TIMEOUT_S:g}s"
+            ) from exc
+        try:
+            yield directory
+        finally:
+            release_file_lock(handle)
+
+
+def append(finding: Finding, booley_dir: Path | None = None) -> Finding:
+    """Allocate a distinct ID and append while holding the bounded sidecar lock."""
+    with transaction(booley_dir, operation="append to") as directory:
+        entries = read_log(directory).entries
+        if finding.id and any(entry.id == finding.id for entry in entries):
+            raise ValueError(f"finding ID {finding.id} already exists in {log_path(directory)}")
+        if not finding.id:
+            finding.id = _next_id(entries)
+        with log_path(directory).open("a", encoding="utf-8") as handle:
+            handle.write(finding.to_json() + "\n")
     return finding
 
 
-def rewrite(entries: list[Finding], booley_dir: Path | None = None) -> Path:
-    """Replace the log wholesale — used by triage, which re-buckets entries.
+def _publish_updates(path: Path, entries: list[Finding], raw_rows: list[dict[str, Any]]) -> None:
+    """Merge known fields onto original rows without dropping newer JSON keys."""
+    output = []
+    for raw, entry in zip(raw_rows, entries, strict=True):
+        raw.update(asdict(entry))
+        output.append(json.dumps(raw, ensure_ascii=False, sort_keys=True) + "\n")
+    temporary = path.with_suffix(".jsonl.tmp")
+    temporary.write_text("".join(output), encoding="utf-8")
+    temporary.replace(path)
 
-    Written to a sibling temp file and renamed so an interrupted triage leaves
-    the previous log intact rather than a truncated one.  A log containing an
-    unparseable raw line is never rewritten: callers must repair or preserve
-    that evidence first, rather than silently replacing the file with only the
-    parseable subset.
+
+def rewrite(update: Callable[[list[Finding]], None], booley_dir: Path | None = None) -> Path:
+    """Apply in-place field updates to fresh rows, then publish atomically.
+
+    Callbacks cannot add, remove, replace, reorder, or change IDs. Corrupt raw
+    evidence and newer JSON fields survive: corrupt logs refuse publication.
     """
-    path = log_path(booley_dir)
-    current = read_log(booley_dir)
-    if current.corrupt_lines:
-        raise CorruptFindingsLogError(
-            f"refusing to rewrite {path}: {current.corrupt_lines} unparseable "
-            "line(s) would be lost"
+    with transaction(booley_dir, operation="rewrite") as directory:
+        current = read_log(directory)
+        if current.corrupt_lines:
+            raise CorruptFindingsLogError(
+                f"refusing to rewrite {current.path}: {current.corrupt_lines} unparseable "
+                "line(s) would be lost. Repair or preserve those raw lines first."
+            )
+        raw_rows = (
+            [
+                json.loads(line)
+                for line in current.path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            if current.path.exists()
+            else []
         )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".jsonl.tmp")
-    tmp.write_text("".join(e.to_json() + "\n" for e in entries), encoding="utf-8")
-    tmp.replace(path)
-    return path
+        original = [(entry, entry.id) for entry in current.entries]
+        update(current.entries)
+        if len(current.entries) != len(original) or any(
+            entry is not previous or entry.id != finding_id
+            for entry, (previous, finding_id) in zip(current.entries, original, strict=False)
+        ):
+            raise ValueError("rewrite callback must preserve rows, order, and finding IDs")
+        _publish_updates(current.path, current.entries, raw_rows)
+    return current.path

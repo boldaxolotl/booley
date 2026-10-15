@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shlex
+import sys
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
@@ -1107,3 +1109,88 @@ def test_request_publication_rejects_changed_attempt_after_success(tmp_path, cor
     assert sorted(p.name for p in (request.attempt_directory / "pre-sim").iterdir()) == [
         "0001.json"
     ]
+
+
+def _project_relative_hook_campaign(tmp_path: Path, route: str, configured: str):
+    from tests.flows.sim.test_endpoint_campaign_lifecycle import _pre_sim_plan
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "hook.py").write_text(
+        "import json, os\n"
+        "print(json.dumps(dict(cwd=os.getcwd(), root=os.environ['BOOLEY_PROJECT_ROOT'], "
+        "run=os.environ['BOOLEY_RUN_CWD'])))\n",
+        encoding="utf-8",
+    )
+    command = shlex.quote(sys.executable) + " hook.py"
+    config = project / ".booley"
+    config.mkdir()
+    (config / "booley.toml").write_text(
+        "[flows.sim]\nrun_cwd = "
+        + json.dumps(configured)
+        + "\npre_run_commands = "
+        + json.dumps([command])
+        + "\n",
+        encoding="utf-8",
+    )
+    templated = "{" in configured
+    if not templated:
+        (project / configured).mkdir(parents=True)
+
+    def configure(document):
+        document["workload"]["run_cwd"] = {
+            "configured": configured,
+            "kind": "templated" if templated else "literal",
+            "placeholders": ["test", "attempt"] if templated else [],
+        }
+        document["work_items"][0]["run_directory"] = {
+            "configured": configured,
+            "kind": "templated" if templated else "literal",
+            "collision_template": "runs/test/attempt" if templated else configured,
+        }
+        document["build_variants"][0]["sharing_eligible"] = route == "shared"
+
+    access = "legacy-per-test" if route == "legacy-per-test" else "immutable"
+    plan, disclosures = _pre_sim_plan(access, (command,), configure)
+    return project, plan, disclosures
+
+
+@pytest.mark.parametrize("route", ["shared", "private", "legacy-per-test"])
+@pytest.mark.parametrize("configured", ["runs/literal", "runs/{test}/{attempt}"])
+def test_campaign_pre_sim_project_relative_hook_uses_project_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, route: str, configured: str
+) -> None:
+    project, plan, disclosures = _project_relative_hook_campaign(tmp_path, route, configured)
+    build = tmp_path / "build"
+    build.mkdir()
+    (build / "simv").write_bytes(b"image")
+    counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
+    monkeypatch.setattr(serial_execution, "simulation_target_environment", lambda _handle: {})
+    store = CampaignStore(tmp_path / "campaign")
+    store.publish_manifest(plan.manifest)
+    request = _request(
+        store, plan.manifest, plan.manifest.document["work_items"][0], project, invocation=1
+    )
+    result = _executor(build, counters, disclosures=disclosures).execute(request)
+    firings = store.pre_sim_references(request.attempt_directory)
+    firing = json.loads((request.attempt_directory / firings[0]["path"]).read_text())
+    assert firing["status"] == "passed", firing
+    captured = json.loads(firing["stdout_tail"])
+    assert Path(captured["cwd"]).resolve() == project.resolve()
+    assert Path(captured["root"]).resolve() == project.resolve()
+    run = Path(captured["run"])
+    if route != "legacy-per-test":
+        attempt = json.loads((request.attempt_directory / "attempt.json").read_text())
+        assert run.resolve() == Path(attempt["run_directory"]["resolved"]).resolve()
+        assert run.resolve() != project.resolve()
+    elif "{" not in configured:
+        assert run.resolve() == (project / configured).resolve()
+    else:
+        assert run.is_absolute() and run.resolve().is_relative_to(project.resolve())
+    assert result.document["grade"] == "pass"
+    assert counters["launch"] == 1
+    builds = list(store.root.rglob("build-result.json"))
+    assert len(builds) == 1
+    assert result.document["build_result"]["sharing"] == (
+        "shared_variant" if route == "shared" else "private_work_item"
+    )
