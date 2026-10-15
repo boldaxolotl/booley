@@ -785,6 +785,26 @@ EDA program runs underneath depends on the Target; see
 [SUPPORTED-EDA-TOOLS.md](SUPPORTED-EDA-TOOLS.md). `booley cheat --flows` and
 `booley cheat --specialists` print the same lists.
 
+### Updating available capabilities
+
+Edits to the selected Booley Directory's `booley.toml` capability settings
+(`[flows.<name>].enabled` and `[specialists.<name>].enabled`) update the running
+MCP server without restarting the Sandbox. Every tool-list request reads the
+current settings: disabled Flows and Specialists disappear, and enabling them
+restores their full schemas and descriptions. Installing, renaming, removing,
+or editing custom endpoint files under that directory's `mcp_tools/` also
+refreshes discovery and schemas.
+
+The server emits `notifications/tools/list_changed` when configuration or
+custom endpoint inputs change. Clients that cache the list must listen through
+their supported change-delivery channel (a subscription on modern clients or
+the notification stream on handshake clients), then request the list again.
+
+Capability settings come from the selected Booley Directory's `booley.toml`.
+Editing a Project Root `booley.toml` that selects that directory also
+invalidates the list, but does not relocate the running server. Changing the
+selected Project or process environment/mode requires starting a new server.
+
 <!-- BEGIN GENERATED: flows -->
 **Booley Flows**
 

@@ -133,7 +133,7 @@ First check the [supported EDA tool matrix](../user/SUPPORTED-EDA-TOOLS.md). If 
 
 ## Chapter 1: Discovery, Visibility, and Configuration
 
-MCP tools are discovered from either the installed Booley package or the project's `.booley/mcp_tools/` directory. Discovery is inclusive by default: every valid implementation is enabled unless its own configuration section says otherwise.
+MCP tools are discovered from either the installed Booley package or `mcp_tools/` under the runtime-selected Booley Directory (by default, `.booley/mcp_tools/`). Discovery is inclusive by default: every valid implementation is enabled unless its own configuration section says otherwise.
 
 ### Default Discovery and Explicit Opt-Out
 
@@ -159,6 +159,14 @@ image or uses a supported built-in EDA provisioning policy.
 The framework reads Flow settings from `[flows.<name>]` and Specialist
 settings from `[specialists.<name>]`. At this layer the shared effect is that
 `enabled = false` removes the capability from normal discovery.
+
+Each list request reads current settings from the selected Booley Directory's
+`booley.toml`. Changes to that configuration and installation, removal, rename,
+or schema edits of custom endpoints refresh the running catalog. Disabled Flows
+and Specialists remain hidden until enabled, when their full schemas return.
+The server invalidates cached lists with `notifications/tools/list_changed`;
+clients must listen on their supported notification/subscription channel.
+Process mode and environment changes still require a new server.
 
 [CONFIG.md](../user/CONFIG.md#flow-and-specialist-availability-enabled) owns the exact TOML
 schema, resolution order, defaults, and built-in per-Flow/endpoint settings. A
@@ -567,14 +575,15 @@ if __name__ == "__main__":
 
 #### Wire It In
 
-Save each class under `.booley/mcp_tools/` and define every Criterion
+Save each class under `mcp_tools/` in the selected Booley Directory (by default,
+`.booley/mcp_tools/`) and define every Criterion
 named by `satisfies` as described in Chapter 3. An undefined Criterion draws a
 shared endpoint-validation warning. Registering a project Criterion does not
 make it selectable as a new Goal family.
 
 #### Try It in Interactive Mode
 
-Interactive Mode is the normal way to try a Custom Flow or Specialist. Once the MCP tool file exists, restart the Sandbox (for example, stop and reopen the dev container) so its MCP server rebuilds the MCP tool registry. Then ask the Claude Code or Codex agent to use it, just as you would a built-in capability:
+Interactive Mode is the normal way to try a Custom Flow or Specialist. Once the MCP tool file exists, request a fresh MCP tool list or use the client's tool-list change notification channel. The running server refreshes discovery without restarting the Sandbox. Then ask the Claude Code or Codex agent to use it, just as you would a built-in capability:
 
 - *"Run `drc_check` on the `variant_a` Target with the signoff rule set."*
 - *"Ask `protocol_reviewer` to check `rtl/axi_slave.sv`."*
@@ -644,7 +653,7 @@ not hide files.
 
 #### Find Its Logs
 
-Interactive session logs land under `.booley/.interactive_logs/<session-id>/`. A bound Goal run keeps receipts and logs under the Goal Record's `logs/` and machine-owned reports under its `.runtime/flow-reports/`. Use the exact returned artifact paths. If a custom MCP tool does not appear, check its syntax and literal metadata, confirm the appropriate `[flows.<name>]` or `[specialists.<name>]` section is enabled, run Doctor's shared endpoint checks, and restart the Sandbox so MCP discovery runs again.
+Interactive session logs land under `.booley/.interactive_logs/<session-id>/`. A bound Goal run keeps receipts and logs under the Goal Record's `logs/` and machine-owned reports under its `.runtime/flow-reports/`. Use the exact returned artifact paths. If a custom MCP tool does not appear, check its syntax and literal metadata, confirm the appropriate `[flows.<name>]` or `[specialists.<name>]` section is enabled, run Doctor's shared endpoint checks, and request a fresh MCP tool list or use the client's tool-list change notification channel.
 
 ---
 
@@ -829,7 +838,7 @@ For built-in Booley Flows, use `booley doctor` to catch unavailable dependencies
 ### Extending It: Validate a Custom Flow
 
 1. Run `booley doctor` and resolve every active custom-MCP-tool and Criterion finding.
-2. Restart the Sandbox and confirm the MCP tool appears on the MCP surface.
+2. Request a fresh MCP tool list and confirm the MCP tool appears on the MCP surface.
 3. Invoke it in Interactive Mode with a known passing case and a known failing case.
 4. Use `booley flow <name> ...` for a Flow inside the Sandbox to isolate argument parsing and result interpretation from agent behavior; invoke a non-Flow endpoint through the Interactive Mode agent.
 5. For a direct Flow, confirm exit 0, 1, and 2 mean met, unmet, and unable to run respectively; for a non-Flow endpoint, confirm the agent reports those verdict states clearly.
@@ -847,7 +856,7 @@ For built-in Booley Flows, use `booley doctor` to catch unavailable dependencies
 | Add another host-provisioned EDA tool | Implement and validate a built-in policy; custom MCP tools cannot add host mounts or execution paths |
 | Define when my Flow should run | Create a Criterion in `criteria.toml`, reference it in `satisfies` |
 | Configure a built-in Booley Flow | Use the per-Flow reference in [CONFIG.md](../user/CONFIG.md#booleytoml) |
-| Try a custom MCP tool | Restart the Sandbox, then ask the Interactive Mode agent to invoke it |
+| Try a custom MCP tool | Request a fresh MCP tool list, then ask the Interactive Mode agent to invoke it |
 | Debug MCP tool discovery | `booley doctor` for aggregate checks; inspect shared endpoint-validation diagnostics |
 | See base criteria for reference | Check `data/criteria.toml` in the Booley package |
 | Wrap a legacy script as a Flow | Subclass `BooleyFlow`, call the script via `_build_command` |

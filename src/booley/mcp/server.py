@@ -91,10 +91,18 @@ from booley.mcp.goal_tools import (
     goal_tool_defs,
 )
 from booley.mcp.job_lifecycle import JobLifecycle, JobPoll, JobResult, _poll_status
+from booley.mcp.live_catalog import (
+    LiveCatalog,
+    custom_directory,
+    ensure_unique_names,
+    project_fingerprint,
+    selected_directory,
+)
 from booley.mcp.report_encoding import ReportEncoder
 from booley.mcp.session_observer import SessionMaintenanceApp, SessionObserver
 from booley.mcp.session_peer import PeerBoundary
 from booley.mcp.session_registry import Attribution
+from booley.mcp.tool_changes import ChangingToolsServer, ToolChanges
 from booley.runtime import job_records as jobrec
 from booley.runtime import pid, runtime_context
 from booley.runtime.booley_dir import resolve_booley_dir
@@ -426,6 +434,7 @@ def _discover_booley_mcp_tools() -> tuple[list[dict[str, Any]], list[str]]:
         specialist_config=specialist_config,
         flow_config=flow_config,
     )
+    ensure_unique_names(filtered_endpoints)
     allowed_names = {t.name for t in filtered_endpoints}
 
     custom_mcp_tool_paths = _index_custom_mcp_tools(project_mcp_tools_dir, allowed_names)
@@ -655,44 +664,15 @@ def _discover_custom_mcp_tools(
 
     Returns (results, errors).
     """
-    results: list[dict[str, Any]] = []
-    errors: list[str] = []
-    for _mcp_tool_name, py_path in custom_mcp_tool_paths.items():
-        mcp_tool_def, err = _import_and_extract_file(py_path)
-        if err is not None:
-            errors.append(err)
-        if mcp_tool_def is not None:
-            if not _mcp_tool_visible(mcp_tool_def["name"]):
-                continue
-            results.append(mcp_tool_def)
-    return results, errors
+    from booley.mcp.catalog_worker import run_schema_worker
+
+    definitions, errors = run_schema_worker(custom_mcp_tool_paths)
+    return [item for item in definitions if _mcp_tool_visible(item["name"])], errors
 
 
 def get_project_mcp_tools_dir() -> Path | None:
-    """Resolve the project-defined MCP endpoint directory.
-
-    Public API: the harness CLI (booley.py) depends on this name rather than
-    reaching into a peer module's private helper (principle 9).
-    """
-    booley_dir = os.environ.get("BOOLEY_DIR", "")
-    if booley_dir:
-        d = Path(booley_dir) / "mcp_tools"
-        legacy = Path(booley_dir) / "tools"
-        if legacy.is_dir() and not d.is_dir():
-            raise RuntimeError(
-                f"{legacy} is retired; rename it to {d} and migrate legacy `Tool` classes "
-                "to McpTool, Specialist, or BooleyFlow"
-            )
-        return d if d.is_dir() else None
-    cwd = Path.cwd()
-    d = cwd / ".booley" / "mcp_tools"
-    legacy = cwd / ".booley" / "tools"
-    if legacy.is_dir() and not d.is_dir():
-        raise RuntimeError(
-            f"{legacy} is retired; rename it to {d} and migrate legacy `Tool` classes "
-            "to McpTool, Specialist, or BooleyFlow"
-        )
-    return d if d.is_dir() else None
+    """Resolve custom endpoints through the runtime-selected Booley Directory."""
+    return custom_directory(selected_directory())
 
 
 def _get_endpoint_config() -> tuple[dict[str, Any], dict[str, Any]]:
@@ -2453,6 +2433,8 @@ def _build_mcp_application(
     mcp_tools: list[dict[str, Any]],
     discovery_errors: list[str],
     lifetime: _McpLifetime,
+    *,
+    live: bool = False,
 ) -> McpApplication:
     """Build the SDK-independent catalog and endpoint dispatcher."""
     from booley.targets.flow_names import canonical
@@ -2502,6 +2484,27 @@ def _build_mcp_application(
     status_mcp_tool_names.extend(
         tool.name for tool in application.list_tools() if tool.name in mcp_tool_index
     )
+
+    def publish_names(endpoints: list[dict[str, Any]]) -> None:
+        advertised = {tool.name for tool in application.list_tools()}
+        endpoint_index = _build_mcp_tool_index(endpoints)
+        status_mcp_tool_names[:] = sorted(advertised.intersection(endpoint_index))
+
+    if live:
+        from booley.core.checkout_role import SourceCheckoutProjectError
+
+        # Schema-only adapters may supply definitions without selecting a Project.
+        # Real discovery still enforces the source-checkout guard.
+        with contextlib.suppress(SourceCheckoutProjectError):
+            application.live_catalog = LiveCatalog(
+                application,
+                mcp_tools,
+                definitions_provider=lambda endpoints: list(_all_mcp_tool_defs(endpoints)),
+                builtin_provider=_discover_builtin_mcp_tools,
+                visible=_mcp_tool_visible,
+                on_publish=publish_names,
+            )
+
     return application
 
 
@@ -2509,9 +2512,20 @@ def _build_mcp_catalog(
     lifetime: _McpLifetime,
 ) -> tuple[McpApplication, list[dict[str, Any]], list[str]]:
     """Discover and validate the catalog shared by live startup and probes."""
+    from booley.core.checkout_role import SourceCheckoutProjectError
+
+    directory = None
+    with contextlib.suppress(SourceCheckoutProjectError):
+        directory = selected_directory()
+    initial_fingerprint = project_fingerprint(directory)
     mcp_tools, discovery_errors = _discover_booley_mcp_tools()
     logger.info("Discovered %d Booley MCP tools", len(mcp_tools))
-    application = _build_mcp_application(mcp_tools, discovery_errors, lifetime)
+    application = _build_mcp_application(mcp_tools, discovery_errors, lifetime, live=True)
+    if (
+        application.live_catalog is not None
+        and application.live_catalog.fingerprint() != initial_fingerprint
+    ):
+        raise RuntimeError("MCP catalog inputs changed during startup; retry startup")
     return application, mcp_tools, discovery_errors
 
 
@@ -2711,6 +2725,8 @@ def _build_sdk_server(application: McpApplication, lifetime: _McpLifetime) -> Se
         _params: PaginatedRequestParams | None,
     ) -> ListToolsResult:
         lifetime.mark_activity()
+        if application.live_catalog is not None:
+            await application.live_catalog.refresh()
         request = await _observed_request_context(
             _ctx, CallToolRequestParams(name="tools/list", meta=_ctx.meta), lifetime.sessions
         )
@@ -2723,16 +2739,32 @@ def _build_sdk_server(application: McpApplication, lifetime: _McpLifetime) -> Se
     ) -> CallToolResult | InputRequiredResult:
         lifetime.mark_mcp_endpoint_start()
         try:
+            from booley.targets.flow_names import canonical
+
+            catalog = application.live_catalog
+            if catalog is not None and catalog.needs_refresh(canonical(params.name)):
+                await catalog.refresh()
             return await _call_application_tool(application, params, _ctx, lifetime.sessions)
         finally:
             lifetime.mark_mcp_endpoint_end()
 
-    server = Server(
+    changes = (
+        ToolChanges(application.live_catalog) if application.live_catalog is not None else None
+    )
+    server_type = ChangingToolsServer if changes is not None else Server
+    server = server_type(
         "booley",
         version=__version__,
         on_list_tools=handle_list_tools,
         on_call_tool=handle_call_tool,
+        **(
+            {"lifespan": changes.lifespan, "on_subscriptions_listen": changes.listen}
+            if changes is not None
+            else {}
+        ),
     )
+    if changes is not None:
+        server.middleware.append(changes.remember_legacy_peer)
     server.middleware.append(
         RequestStateBoundary(
             RequestStateSecurity.ephemeral(audience="booley"), default_audience="booley"

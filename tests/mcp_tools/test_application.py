@@ -181,3 +181,134 @@ def test_boolean_schema_alternatives_return_argument_errors(alternatives):
     payload = asyncio.run(application.call_tool("echo", {"family": "invalid"}))
     assert payload.is_error
     assert payload.content[0].text.startswith("Invalid tool arguments at $:")
+
+
+def test_replacement_validates_before_publishing_and_preserves_dispatch():
+    calls = []
+    application = _application([_definition()], calls=calls)
+    original = application.list_tools()
+    with pytest.raises(ValueError, match="Duplicate"):
+        application.replace_tools([_definition("second"), _definition("second")])
+    assert application.list_tools() == original
+    application.replace_tools([_definition("second")])
+    asyncio.run(application.call_tool("second", {"text": "new"}))
+    assert calls[0][0] == "second"
+
+
+def test_inflight_dispatch_keeps_one_generation_metadata():
+    entered, release = asyncio.Event(), asyncio.Event()
+    seen = []
+
+    async def dispatch(name, arguments, source):
+        entered.set()
+        await release.wait()
+        seen.append(source["description"])
+        return [SimpleNamespace(text="done")]
+
+    application = McpApplication(
+        [_definition()],
+        dispatch=dispatch,
+        canonicalize=lambda name: name,
+        on_discovery_error=lambda message: None,
+    )
+
+    async def exercise():
+        task = asyncio.create_task(application.call_tool("echo", {"text": "old"}))
+        await entered.wait()
+        application.replace_tools([_definition(description="New description")])
+        release.set()
+        await task
+        assert seen == ["Echo text"]
+        assert application.list_tools()[0].description == "New description"
+
+    asyncio.run(exercise())
+
+
+def test_live_status_preserves_independent_names_and_observation_precedes_import(
+    tmp_path, monkeypatch
+):
+    from booley.mcp import live_catalog, server
+    from booley.runtime.booley_dir import reset_cache
+    from tests.mcp_tools.test_live_catalog import write_endpoint
+
+    directory = tmp_path / ".booley"
+    directory.mkdir()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("BOOLEY_DIR", str(directory))
+    monkeypatch.setenv("BOOLEY_MCP_MODE", "interactive")
+    for key in ("BOOLEY_NESTED_AGENT", "BOOLEY_MCP_TOOLS", "BOOLEY_COVERAGE_CAMPAIGN"):
+        monkeypatch.delenv(key, raising=False)
+    reset_cache()
+    seen, imports = [], []
+
+    async def status(name, arguments, jobs, names):
+        seen.append(set(names))
+        return [SimpleNamespace(text="ready")]
+
+    def worker(paths, cancel):
+        imports.append(paths)
+        return [], []
+
+    monkeypatch.setattr(server, "_dispatch_special_mcp_tool", status)
+    monkeypatch.setattr(live_catalog, "run_schema_worker", worker)
+    application, _, _ = server._build_mcp_catalog(server._McpLifetime(None, None))
+
+    async def exercise():
+        await application.call_tool("booley_status", {})
+        write_endpoint(directory)
+        (directory / "booley.toml").write_text("[flows.sim]\nenabled = false\n")
+        assert await application.live_catalog.observe_change()
+        assert imports == []
+        await application.live_catalog.refresh()
+        assert len(imports) == 1
+        await application.call_tool("booley_status", {})
+        assert "bwave" in seen[0]
+        assert seen[1] == seen[0] - {"sim"}
+
+    try:
+        asyncio.run(exercise())
+    finally:
+        reset_cache()
+
+
+def test_duplicate_custom_names_reject_complete_live_and_startup_candidates(tmp_path, monkeypatch):
+    from booley.mcp import server
+    from booley.runtime.booley_dir import reset_cache
+    from tests.mcp_tools.test_live_catalog import write_endpoint
+
+    directory = tmp_path / ".booley"
+    directory.mkdir()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("BOOLEY_DIR", str(directory))
+    reset_cache()
+    application, _, _ = server._build_mcp_catalog(server._McpLifetime(None, None))
+    original = application.list_tools()
+    write_endpoint(directory, "first")
+    second = write_endpoint(directory, "second")
+    second.write_text(second.read_text().replace("name = 'second'", "name = 'first'"))
+    try:
+        rejected = False
+        try:
+            asyncio.run(application.live_catalog.refresh())
+        except ValueError:
+            rejected = True
+        assert rejected, "duplicate custom names must reject the complete candidate"
+        assert application.list_tools() == original
+        with pytest.raises(ValueError, match="Duplicate"):
+            server._build_mcp_catalog(server._McpLifetime(None, None))
+    finally:
+        reset_cache()
+
+
+def test_finished_schema_worker_still_enforces_output_bound(tmp_path, monkeypatch):
+    import io
+    import threading
+
+    from booley.mcp import catalog_worker
+
+    monkeypatch.setattr(catalog_worker, "_MAX_OUTPUT_BYTES", 1024)
+    output = io.BytesIO(b"x" * 1025)
+    output.seek(0, 2)
+    finished = SimpleNamespace(poll=lambda: 0, returncode=0)
+    with pytest.raises(RuntimeError, match="exceeded output limit"):
+        catalog_worker._wait_for_worker(finished, output, tmp_path / "result", threading.Event())
