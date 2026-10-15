@@ -9,6 +9,11 @@ Packaged release history starts at 0.2.7. For older changes, see
 
 ## Unreleased
 
+- The idle reaper keeps Sandboxes while a client Docker exec is running, including
+  editor and terminal attachments, even when the Booley activity heartbeat is stale
+  or absent. Inspection failures keep the Sandbox for that pass; after the exec
+  ends, the existing idle timeout applies without a new grace interval.
+
 - Under `auto`, issued Sandboxes now forward an exported `ANTHROPIC_API_KEY`, matching host and ephemeral Sandbox behavior; this can bill per token. Set `[agent] auth = "subscription"` to use subscription credentials instead. `booley auth --status` reports the selected Project/app policy and fails when its credential is missing; Doctor FAILs when a non-`auto` policy lacks its credential.
 
 - Deep Doctor now qualifies when only the expected upgrade-review warning remains,

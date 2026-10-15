@@ -5,8 +5,11 @@ The reaper is self-contained; docker is mocked via the injected ``run`` callable
 
 from __future__ import annotations
 
+import http.client
 import json
 import subprocess
+
+import pytest
 
 from booley.docker import reaper
 from booley.docker.reaper import SessionContainer, parse_docker_time, select_reap
@@ -107,6 +110,8 @@ class FakeRun:
                 return resp
         if args[0] == "inspect" and ".Config.Labels" in args[-1]:
             return _cp(0, stdout="{}")
+        if args[0] == "inspect" and "ExecIDs" in args[-1]:
+            return _cp(stdout="null")
         return _cp(0)
 
     def ran(self, *needles):
@@ -176,6 +181,8 @@ class TestCollectAndReap:
                 return _cp(0, stdout="1970-01-01T00:00:10Z")
             if args[0] == "exec":
                 return _cp(0, stdout=next(heartbeat_reads))
+            if args[0] == "inspect" and "ExecIDs" in args[-1]:
+                return _cp(stdout="[]")
             return _cp(0, stdout="{}")
 
         assert reaper.reap_once(now=1000, idle_timeout=100, run=run) == []
@@ -208,6 +215,8 @@ class TestCollectAndReap:
                 return (
                     _cp(1, stderr="daemon unavailable") if value is None else _cp(0, stdout=value)
                 )
+            if args[0] == "inspect" and "ExecIDs" in args[-1]:
+                return _cp(stdout="[]")
             return _cp(0, stdout="{}")
 
         assert reaper.reap_once(now=1000, idle_timeout=100, run=run) == []
@@ -224,6 +233,8 @@ class TestCollectAndReap:
                 return _cp(0, stdout=started)
             if args[0] == "exec":
                 return _cp(0, stdout=next(heartbeat_reads[args[1]]))
+            if args[0] == "inspect" and "ExecIDs" in args[-1]:
+                return _cp(stdout="[]")
             return _cp(0, stdout="{}")
 
         assert reaper.reap_once(now=1000, idle_timeout=100, run=run) == []
@@ -331,3 +342,335 @@ class TestCollectAndReap:
             "network:booley-license-outbound-cccccccccccccccc",
             "network:booley-license-private-cccccccccccccccc",
         )
+
+
+def test_attached_sandbox_is_not_stopped():
+    run = _attachment_run()
+    assert (
+        reaper.reap_once(
+            now=1000,
+            idle_timeout=100,
+            run=run,
+            exec_inspector=lambda eid: {
+                "Running": True,
+                "ProcessConfig": {"entrypoint": "shell", "arguments": []},
+            },
+        )
+        == []
+    )
+    assert not run.ran("stop", "abc")
+
+
+def _attachment_run(ids='["abc123"]', heartbeat="10"):
+    return FakeRun(
+        [
+            (lambda a: a[0] == "ps" and "-aq" not in a, _cp(stdout="abc\tname\n")),
+            (
+                lambda a: a[0] == "inspect" and "StartedAt" in a[-1],
+                _cp(stdout="1970-01-01T00:00:10Z"),
+            ),
+            (lambda a: a[0] == "inspect" and "ExecIDs" in a[-1], _cp(stdout=ids)),
+            (lambda a: a[0] == "exec", _cp(stdout=heartbeat)),
+        ]
+    )
+
+
+@pytest.mark.parametrize("heartbeat", ["10", reaper._HEARTBEAT_MISSING])
+@pytest.mark.parametrize("entrypoint", ["code", "sh", "sleep", "arbitrary"])
+def test_live_exec_preserves_stale_or_missing_heartbeat(heartbeat, entrypoint, caplog):
+    run = _attachment_run(heartbeat=heartbeat)
+    with caplog.at_level("INFO"):
+        assert (
+            reaper.reap_once(
+                now=10000,
+                idle_timeout=100,
+                run=run,
+                exec_inspector=lambda eid: {
+                    "Running": True,
+                    "ProcessConfig": {"entrypoint": entrypoint, "arguments": ["sentinel-secret"]},
+                },
+            )
+            == []
+        )
+    assert "live client attachments" in caplog.text
+    assert "sentinel-secret" not in caplog.text
+    assert not run.ran("stop")
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"Running": False},
+        {
+            "Running": True,
+            "ProcessConfig": {
+                "entrypoint": "sh",
+                "arguments": ["-c", reaper._HEARTBEAT_READ_SCRIPT],
+            },
+        },
+    ],
+)
+def test_exited_exec_and_exact_reaper_reader_do_not_protect(value, caplog):
+    run = _attachment_run()
+    with caplog.at_level("INFO"):
+        assert reaper.reap_once(
+            now=1000, idle_timeout=100, run=run, exec_inspector=lambda eid: value
+        ) == ["abc"]
+    assert "no live client attachments" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {},
+        {"Running": 1},
+        {"Running": "true"},
+        {"Running": True},
+        {"Running": True, "ProcessConfig": {"entrypoint": "sh", "arguments": None}},
+    ],
+)
+def test_malformed_exec_preserves_sandbox(value, caplog):
+    run = _attachment_run()
+    assert (
+        reaper.reap_once(now=1000, idle_timeout=100, run=run, exec_inspector=lambda eid: value)
+        == []
+    )
+    assert "unknown client exec inspection" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        OSError(),
+        TimeoutError(),
+        ValueError(),
+        http.client.BadStatusLine("broken"),
+        http.client.IncompleteRead(b""),
+    ],
+)
+def test_inspector_failure_in_either_phase_preserves_sandbox(error):
+    for final in [False, True]:
+        run = _attachment_run()
+        observations = iter([False, True] if final else [True])
+
+        def inspect(eid, observations=observations):
+            if next(observations):
+                raise error
+            return {"Running": False}
+
+        assert reaper.reap_once(now=1000, idle_timeout=100, run=run, exec_inspector=inspect) == []
+        assert not run.ran("stop")
+
+
+def test_attachment_appearing_at_final_inspection_preserves_licensed_topology():
+    run = _attachment_run()
+    run.rules.insert(
+        0,
+        (
+            lambda a: a[0] == "inspect" and "Labels" in a[-1],
+            _cp(
+                stdout=json.dumps(
+                    {"booley.license-profile": "test", "booley.project-id": "a" * 64}
+                )
+            ),
+        ),
+    )
+    states = iter([False, True])
+    assert (
+        reaper.reap_once(
+            now=1000,
+            idle_timeout=100,
+            run=run,
+            exec_inspector=lambda eid: {
+                "Running": next(states),
+                "ProcessConfig": {"entrypoint": "sh", "arguments": []},
+            },
+        )
+        == []
+    )
+    assert not run.ran("stop")
+    assert not run.ran("rm")
+
+
+@pytest.mark.parametrize("ids", ["null", "[]"])
+def test_empty_exec_ids_reap_using_start_when_heartbeat_missing(ids):
+    assert reaper.reap_once(
+        now=1000, idle_timeout=100, run=_attachment_run(ids, reaper._HEARTBEAT_MISSING)
+    ) == ["abc"]
+
+
+@pytest.mark.parametrize("ids", ["{}", '"abc"', "[1]", '["../../x"]', "invalid"])
+def test_invalid_exec_ids_keep(ids):
+    assert reaper.reap_once(now=1000, idle_timeout=100, run=_attachment_run(ids)) == []
+
+
+@pytest.mark.parametrize(
+    "body,status,error",
+    [
+        (b'{"Running": false}', 200, None),
+        (b"{}", 404, ValueError),
+        (b"[]", 200, ValueError),
+        (b"broken", 200, ValueError),
+        (b"\xff", 200, ValueError),
+        (b"x" * (reaper._EXEC_RESPONSE_LIMIT + 1), 200, ValueError),
+    ],
+    ids=["valid", "http-error", "non-object", "invalid-json", "invalid-utf8", "oversized"],
+)
+def test_engine_transport_validates_and_closes(monkeypatch, body, status, error):
+    calls = []
+
+    class Response:
+        def read(self, limit):
+            assert limit == reaper._EXEC_RESPONSE_LIMIT + 1
+            return body
+
+    response = Response()
+    response.status = status
+
+    class Connection:
+        def request(self, method, path):
+            calls.append((method, path))
+
+        def getresponse(self):
+            return response
+
+        def close(self):
+            calls.append("closed")
+
+    monkeypatch.setattr(reaper, "_EngineConnection", Connection)
+    if error:
+        with pytest.raises(error):
+            reaper.inspect_exec("abc123")
+    else:
+        assert reaper.inspect_exec("abc123") == {"Running": False}
+    assert calls == [("GET", "/exec/abc123/json"), "closed"]
+
+
+def test_production_cli_pins_socket_and_scrubs_context(monkeypatch):
+    monkeypatch.setenv("DOCKER_HOST", "tcp://elsewhere")
+    monkeypatch.setenv("DOCKER_CONTEXT", "other")
+
+    def run(args, **kwargs):
+        assert args[:3] == ["docker", "--host", "unix:///var/run/docker.sock"]
+        assert "DOCKER_HOST" not in kwargs["env"]
+        assert "DOCKER_CONTEXT" not in kwargs["env"]
+        return _cp()
+
+    monkeypatch.setattr(subprocess, "run", run)
+    reaper._run(["ps"])
+
+
+def test_socket_transport_has_finite_timeout_and_fixed_endpoint(monkeypatch):
+    calls = []
+
+    class Socket:
+        def settimeout(self, timeout):
+            assert 0 < timeout <= 5
+
+        def connect(self, path):
+            calls.append(path)
+
+        def close(self):
+            calls.append("closed")
+
+    # The production image is Linux; exercise its adapter with a complete fake on Windows.
+    monkeypatch.setattr(reaper.socket, "AF_UNIX", 1, raising=False)
+    monkeypatch.setattr(reaper.socket, "socket", lambda *args: Socket())
+    connection = reaper._EngineConnection()
+    connection.connect()
+    connection.close()
+    assert calls == ["/var/run/docker.sock", "closed"]
+
+
+def test_definite_attachment_wins_over_other_unknown_exec():
+    run = _attachment_run('["abc123", "def456"]')
+
+    def inspect(eid):
+        if eid == "abc123":
+            raise ValueError("disappeared")
+        return {"Running": True, "ProcessConfig": {"entrypoint": "cat", "arguments": []}}
+
+    containers = reaper.collect(run, exec_inspector=inspect)
+    assert containers[0].attachments == 1
+    assert reaper.select_reap(containers, now=10000, idle_timeout=1) == []
+
+
+@pytest.mark.parametrize(
+    "error", [http.client.BadStatusLine("broken"), http.client.IncompleteRead(b"")]
+)
+def test_http_failure_closes_connection(monkeypatch, error):
+    closed = []
+
+    class Connection:
+        def request(self, *args):
+            raise error
+
+        def close(self):
+            closed.append(True)
+
+    monkeypatch.setattr(reaper, "_EngineConnection", Connection)
+    with pytest.raises(http.client.HTTPException):
+        reaper.inspect_exec("abc123")
+    assert closed == [True]
+
+
+@pytest.mark.parametrize("final", [False, True])
+@pytest.mark.parametrize("timeout", [False, True])
+def test_exec_id_inspection_failure_in_either_phase_keeps(final, timeout):
+    runner = _attachment_run()
+    observations = iter([False, True] if final else [True])
+
+    def run(args):
+        if args[0] == "inspect" and "ExecIDs" in args[-1] and next(observations):
+            if timeout:
+                raise subprocess.TimeoutExpired("docker", 30)
+            return _cp(1)
+        return runner(args)
+
+    assert (
+        reaper.reap_once(
+            now=1000, idle_timeout=100, run=run, exec_inspector=lambda eid: {"Running": False}
+        )
+        == []
+    )
+    assert not runner.ran("stop")
+
+
+def test_concurrent_heartbeat_reader_does_not_hide_client_exec():
+    run = _attachment_run('["abc123", "def456"]')
+
+    def inspect(eid):
+        arguments = ["-c", reaper._HEARTBEAT_READ_SCRIPT] if eid == "abc123" else []
+        return {"Running": True, "ProcessConfig": {"entrypoint": "sh", "arguments": arguments}}
+
+    assert reaper.collect(run, exec_inspector=inspect)[0].attachments == 1
+
+
+def test_licensed_attachment_at_collection_preserves_topology():
+    run = _attachment_run()
+    run.rules.insert(
+        0,
+        (
+            lambda a: a[0] == "inspect" and "Labels" in a[-1],
+            _cp(
+                stdout=json.dumps(
+                    {"booley.license-profile": "test", "booley.project-id": "a" * 64}
+                )
+            ),
+        ),
+    )
+    assert (
+        reaper.reap_once(
+            now=1000,
+            idle_timeout=100,
+            run=run,
+            exec_inspector=lambda eid: {
+                "Running": True,
+                "ProcessConfig": {"entrypoint": "sh", "arguments": []},
+            },
+        )
+        == []
+    )
+    assert not run.ran("stop")
+    assert not run.ran("rm")
+    assert not run.ran("network", "rm")

@@ -52,6 +52,8 @@ max_sessions = 4
 egress_allowlist = []
 ```
 
+`idle_timeout_seconds` applies when no client Docker exec is running and the later of the last valid Booley heartbeat and container start time is older than the timeout (start time alone when the heartbeat is absent). Booley MCP calls and supervised commands update the heartbeat. Running execs used by Sandbox Attachments, such as VS Code and terminal shells, or other clients prevent reaping for their entire lifetime; the reaper's heartbeat reads do not. An inspection failure keeps the Sandbox for that pass. Closing an attachment does not reset the heartbeat timestamp.
+
 The file is user-owned: Booley reads it but never rewrites it. Parsing is
 strict. Unknown tables or keys, malformed TOML, wrong types, non-positive
 limits, and invalid egress entries stop Host Bootstrap before mutation. Egress

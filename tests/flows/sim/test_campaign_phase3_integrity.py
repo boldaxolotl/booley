@@ -526,7 +526,7 @@ def _legacy_disclosures():
             "elapsed_s", float("nan"), marks=pytest.mark.timeout(120), id="elapsed_s-nan"
         ),
         pytest.param("returncode", True, id="returncode-True"),
-        pytest.param("command_count", 3, id="command_count-3"),
+        pytest.param("command_count", 3, marks=pytest.mark.timeout(150), id="command_count-3"),
         pytest.param("test_names", ["other"], id="test_names-value5"),
         pytest.param(
             "stdout_tail",

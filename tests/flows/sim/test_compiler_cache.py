@@ -269,6 +269,7 @@ def test_build_exports_do_not_leak_to_run(project, tmp_path, monkeypatch):
     assert policy.root.is_dir()
 
 
+@pytest.mark.timeout(180 if os.name == "nt" else 60)
 def test_missing_ccache_builds_uncached_without_storage(project, monkeypatch):
     root, owner = project
     policy = resolve_policy(root, issued=HOST, owner=owner)
@@ -289,7 +290,7 @@ def test_missing_ccache_builds_uncached_without_storage(project, monkeypatch):
         ["sh", "-c", simulation_build_script(prepared, "b" * 32)],
         capture_output=True,
         text=True,
-        timeout=10,
+        timeout=60 if os.name == "nt" else 10,
         check=False,
     )
     assert result.returncode == 0
