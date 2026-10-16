@@ -806,16 +806,22 @@ def initialized_policy(layout, isolated_git_excludes):
     return layout
 
 
-def test_initialized_directory_policy_runs_baseline_and_reports_transition(initialized_policy):
+@pytest.mark.parametrize("abbrev", [7, 12])
+def test_initialized_directory_policy_runs_baseline_and_reports_transition(
+    initialized_policy, abbrev
+):
     from booley.runtime.worktree_paths import worktree_state_dir
 
     layout = initialized_policy
+    git(layout.main, "config", "core.abbrev", str(abbrev))
     record = enter_goals(layout, [{"family": "SIM", "target": "top"}])
     mode = SimpleNamespace(**vars(layout), record=record, launches=[])
     selected = worktree_state_dir(layout.worktree)
     policy = selected / ".gitignore"
     before = policy.read_bytes()
-    scratch = selected / f".baseline-wt-{os.getpid()}-{record.base_sha[:7]}"
+    short = git(layout.worktree, "rev-parse", "--short", record.base_sha)
+    assert len(short) == abbrev
+    scratch = selected / f".baseline-wt-{os.getpid()}-{short}"
     assert not scratch.exists()
     assert (layout.main / ".git/info/exclude").read_bytes() == b""
     checkouts = []

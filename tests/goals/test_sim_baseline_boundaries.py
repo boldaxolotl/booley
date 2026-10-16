@@ -482,17 +482,21 @@ def test_scratch_refusal_names_selected_owner_policy_without_creating_directory(
 
 
 @pytest.mark.parametrize("exists", [False, True])
-def test_scratch_symlink_is_refused_without_touching_target(scratch_policy, exists):
+@pytest.mark.parametrize("abbrev", [7, 12])
+def test_scratch_symlink_is_refused_without_touching_target(scratch_policy, exists, abbrev):
     from tests.conftest import symlink_or_skip
     from tests.goals.conftest import git
 
     layout = scratch_policy
     (layout.control / ".gitignore").write_bytes(b"/.baseline-wt-*/\n")
+    git(layout.main, "config", "core.abbrev", str(abbrev))
     base = git(layout.main, "rev-parse", "HEAD")
+    short = git(layout.worktree, "rev-parse", "--short", base)
+    assert len(short) == abbrev
     target = layout.control / ".baseline-wt-target"
     if exists:
         target.mkdir()
-    scratch = layout.control / f".baseline-wt-{os.getpid()}-{base[:7]}"
+    scratch = layout.control / f".baseline-wt-{os.getpid()}-{short}"
     symlink_or_skip(scratch, target, target_is_directory=True)
     with pytest.raises(ValueError, match=r"baseline scratch.*symlink"):
         execution._ignored_destination(layout.worktree, base)

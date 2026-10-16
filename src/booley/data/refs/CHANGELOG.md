@@ -12,6 +12,7 @@ Packaged release history starts at 0.2.7. For older changes, see
 - SIM Goal baseline observations now run with initialization's directory-only
   scratch ignore rule. An unignored baseline scratch directory identifies the
   expected `/.baseline-wt-*/` rule and the selected `.gitignore` policy file.
+  Existing scratch symlinks are refused before baseline creation.
 
 - The idle reaper keeps Sandboxes while a client Docker exec is running, including
   editor and terminal attachments, even when the Booley activity heartbeat is stale

@@ -22,7 +22,7 @@ from typing import Any
 from booley.core.boundary import require_dict, require_list, require_str_value
 from booley.core.file_lock import release_file_lock, wait_for_file_lock
 from booley.evidence.acceptance import PairedProjectBaseline
-from booley.flows.baseline_worktree import baseline_worktree
+from booley.flows.baseline_worktree import baseline_worktree, baseline_worktree_path
 from booley.flows.campaign_results import StartedCampaign
 from booley.flows.execution_persistence import StandaloneFlowExecution
 from booley.flows.frozen_test_runs import current_declaration
@@ -56,7 +56,6 @@ from booley.runtime.process_group import (
     request_group_termination,
     terminate_process_group,
 )
-from booley.runtime.worktree_paths import worktree_state_dir
 
 SIM_KEY = "sim_pass_baseline"
 # Digest of the canonical empty file list, for declaration-only fingerprint categories.
@@ -233,8 +232,9 @@ def baseline_kind(plan: TargetTestPlan | None, run: TestRun) -> tuple[str, str]:
 
 
 def _ignored_destination(root: Path, base: str) -> None:
-    state_dir = worktree_state_dir(root).resolve()
-    destination = state_dir / f".baseline-wt-{os.getpid()}-{base[:7]}"
+    scratch = baseline_worktree_path(root, base)
+    state_dir = scratch.parent.resolve()
+    destination = state_dir / scratch.name
     policy = state_dir / ".gitignore"
     if destination.is_symlink():
         raise ValueError(
