@@ -588,7 +588,10 @@ def _recovery_path(root: Path, entry: ManifestEntry, journal: dict[str, Any]) ->
     quarantine = Path(state["quarantine"])
     if quarantine.parent != path.parent or not quarantine.name.startswith(".booley-cleanup-"):
         raise CleanupBlockedError("invalid quarantine boundary")
-    _absolute(root, quarantine.relative_to(root).as_posix())
+    try:
+        _absolute(root, quarantine.relative_to(root).as_posix())
+    except CleanupError as exc:
+        raise CleanupBlockedError("invalid quarantine boundary") from exc
     return quarantine if quarantine.exists() or quarantine.is_symlink() else path
 
 
@@ -650,12 +653,15 @@ def _directory_observation(
 ) -> list[dict[str, Any]]:
     """Observe immediate unknown children; normalize matching owned absences/retries."""
     hidden = set()
+    recovery_names = {}
     for name, state in journal.items():
         entry = known.get(name)
         if entry and state.get("quarantine"):
             quarantine = Path(state["quarantine"])
-            if quarantine.parent == path and entry.identity.matches(quarantine):
-                hidden.add(quarantine.name)
+            if quarantine.parent == path and quarantine.name.startswith(".booley-cleanup-"):
+                recovery_names[quarantine.name] = name
+                if entry.identity.matches(quarantine):
+                    hidden.add(quarantine.name)
     children = []
     for child in sorted(path.iterdir()):
         if child.name in hidden or (control_directory and child.name == "manifest.json"):
@@ -664,7 +670,12 @@ def _directory_observation(
         entry = known.get(relative)
         if entry and entry.identity.matches(child):
             continue
-        children.append({"name": child.name, "identity": asdict(FileIdentity.from_path(child))})
+        children.append(
+            {
+                "name": recovery_names.get(child.name, child.name),
+                "identity": asdict(FileIdentity.from_path(child)),
+            }
+        )
     return children
 
 
