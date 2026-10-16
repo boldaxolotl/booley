@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shutil
 import subprocess
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -105,6 +107,18 @@ def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
 def _write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
+
+
+@pytest.fixture(autouse=True)
+def local_git_namespace(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Direct module calls use local temporary repositories, outside a Sandbox."""
+    from booley.runtime.booley_dir import reset_cache
+
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    reset_cache()
+    yield
+    reset_cache()
 
 
 @pytest.fixture
@@ -303,9 +317,16 @@ def test_user_command_pairs_committed_project_and_prints_removal(versioned_proje
         assert git(paired, "config", "--worktree", "--get", key) == value
     output = capsys.readouterr()
     assert output.out.strip() == str(worktree)
-    from booley.runtime.project_worktree_pairing import worktree_removal_instructions
+    import shlex
 
-    assert worktree_removal_instructions(root, worktree, "real-paired") in output.err
+    assert (
+        f"git -C {shlex.quote(str(source))} worktree remove {shlex.quote(str(paired))}"
+        in output.err
+    )
+    assert (
+        f"git -C {shlex.quote(str(root))} worktree remove {shlex.quote(str(worktree))}"
+        in output.err
+    )
     assert git(source, "config", "extensions.worktreeConfig") == "true"
     assert git(source, "config", "gc.worktreePruneExpire") == "never"
     assert _new("real-paired", root) == 1
@@ -1099,6 +1120,8 @@ def test_worktree_new_after_managed_bundle_runtime_init(tmp_path, monkeypatch, p
     _managed_git(root, "commit", "-qm", "prepared RTL")
     baseline = _managed_git(data, "rev-parse", "HEAD")
     assert _run_full_init(root) == 0
+    # This direct local fixture models a supported issued namespace.
+    _issued_removal_spec(root, host=str(root))
     assert _new("runtime-init", root) == 0
     paired = worktree_cmd.worktree_path(root, "runtime-init") / ".booley"
     assert bundle.is_file()
@@ -1297,3 +1320,147 @@ def test_responsible_canonical_negation_keeps_per_path_input(
     assert "inputs: authored.json;" in error
     assert "booley init" not in error
     _assert_creation_absent(root, "responsible")
+
+
+def _issued_removal_spec(
+    root: Path, host: str = "/host/projects/chip", problem: str | None = None
+) -> None:
+    version = re.match(r"git version (\d+)\.(\d+)", _git(root, "--version").stdout)
+    assert version and tuple(map(int, version.groups())) >= (2, 48), "Git >=2.48 required"
+    mounts = [
+        f"source={host}/.devcontainer,target=/work/.devcontainer,type=bind,readonly",
+        f"source={host}/.booley,target=/work/.booley,type=bind",
+    ]
+    if problem == "missing-source":
+        mounts.pop(0)
+    elif problem == "duplicate-source":
+        mounts.append(mounts[0])
+    elif problem == "external-bind":
+        mounts[1] = "source=/external/state,target=/work/.booley,type=bind"
+    _write(root / ".devcontainer/devcontainer.json", json.dumps({"mounts": mounts}))
+    for repository in (root, root / ".booley"):
+        if (repository / ".git").exists():
+            assert _git(repository, "config", "worktree.useRelativePaths", "true").returncode == 0
+
+
+def test_snapshot_prints_host_removal_steps(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _issued_removal_spec(project)
+    assert _new("snapshot", project) == 0
+    output = capsys.readouterr()
+    assert output.out.strip() == str(project / ".booley/worktrees/snapshot")
+    command = (
+        "git -C /host/projects/chip worktree remove /host/projects/chip/.booley/worktrees/snapshot"
+    )
+    assert command in output.err
+
+
+def test_paired_prints_host_removal_steps(
+    versioned_project: Path, python_outer: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = versioned_project
+    _issued_removal_spec(root)
+    assert _new("paired", root) == 0
+    output = capsys.readouterr()
+    assert output.out.strip() == str(root / ".booley/worktrees/paired")
+    inner = "git -C /host/projects/chip/.booley worktree remove /host/projects/chip/.booley/worktrees/paired/.booley"
+    outer = (
+        "git -C /host/projects/chip worktree remove /host/projects/chip/.booley/worktrees/paired"
+    )
+    assert inner in output.err
+    assert output.err.index(inner) < output.err.index(outer) < output.err.index("branch -D")
+
+
+@pytest.mark.parametrize("problem", ["missing-source", "duplicate-source", "external-bind"])
+def test_unusable_host_removal_refuses_before_creation(
+    project: Path, capsys: pytest.CaptureFixture[str], problem: str
+) -> None:
+    _issued_removal_spec(project, problem=problem)
+    before = [
+        _git(project, *args).stdout
+        for args in (
+            ("worktree", "list", "--porcelain"),
+            ("show-ref",),
+            ("config", "--local", "--list"),
+        )
+    ]
+    result = _new("refused", project)
+    assert result == 1, "unusable host removal must refuse before creation"
+    assert not (project / ".booley/worktrees/refused").exists()
+    after = [
+        _git(project, *args).stdout
+        for args in (
+            ("worktree", "list", "--porcelain"),
+            ("show-ref",),
+            ("config", "--local", "--list"),
+        )
+    ]
+    assert after == before
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert "host" in output.err and "Sandbox" in output.err
+
+
+@pytest.mark.parametrize("kind", ["snapshot", "paired"])
+def test_printed_removal_commands_remove_clean_worktrees(
+    tmp_path: Path, request: pytest.FixtureRequest, capsys: pytest.CaptureFixture[str], kind: str
+) -> None:
+    import shlex
+
+    root = request.getfixturevalue("project" if kind == "snapshot" else "versioned_project")
+    _clean_removal_project(root, kind)
+    host = tmp_path / "host-view"
+    _issued_removal_spec(root, host=str(host))
+    assert _new("remove", root) == 0
+    output = capsys.readouterr()
+    worktree = root / ".booley/worktrees/remove"
+    _write(worktree / ".booley/reviewer-evidence/report.json", "evidence")
+    _write(worktree / ".booley/findings.jsonl", "findings")
+    archive = tmp_path / "archive"
+    shutil.copytree(worktree / ".booley", archive, ignore=shutil.ignore_patterns(".git"))
+    root.rename(host)
+    commands = [
+        shlex.split(line.split(": ", 1)[1])
+        for line in output.err.splitlines()
+        if ": git -C " in line and "worktree remove" in line
+    ]
+    assert len(commands) == (2 if kind == "paired" else 1)
+    for command in commands:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
+        assert result.returncode == 0, result.stderr
+    assert not (host / ".booley/worktrees/remove").exists()
+    for repository in (host, host / ".booley") if kind == "paired" else (host,):
+        assert (
+            "/worktrees/remove" not in _git(repository, "worktree", "list", "--porcelain").stdout
+        )
+    assert (archive / "reviewer-evidence/report.json").read_text() == "evidence"
+    assert (archive / "findings.jsonl").read_text() == "findings"
+
+
+def test_printed_removal_commands_preserve_dirty_worktree(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import shlex
+
+    assert _new("dirty-removal", project) == 0
+    output = capsys.readouterr()
+    worktree = project / ".booley/worktrees/dirty-removal"
+    (worktree / "README.md").write_text("precious tracked work")
+    (worktree / "untracked.txt").write_text("precious untracked work")
+    line = next(line for line in output.err.splitlines() if "Snapshot worktree: " in line)
+    command = shlex.split(line.split(": ", 1)[1])
+    assert "--force" not in command
+    result = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
+    assert result.returncode != 0
+    assert (worktree / "README.md").read_text() == "precious tracked work"
+    assert (worktree / "untracked.txt").read_text() == "precious untracked work"
+
+
+def _clean_removal_project(root: Path, kind: str) -> None:
+    # Only ignored state may accompany a clean removable checkout.
+    _write(root / ".git/info/exclude", "/.booley/\n/.devcontainer/\n")
+    if kind == "snapshot":
+        _write(root / ".gitignore", ".booley/\n")
+        assert _git(root, "add", ".gitignore").returncode == 0
+        assert _git(root, "commit", "-qm", "ignore state").returncode == 0

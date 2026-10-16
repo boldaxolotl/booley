@@ -26,7 +26,7 @@ from booley.runtime.project_repositories import (
     parse_porcelain_z,
     run_git,
 )
-from booley.runtime.worktree_paths import worktree_creation_config
+from booley.runtime.worktree_paths import HostRemovalContext, worktree_creation_config
 
 
 class ProjectPairingError(RuntimeError):
@@ -266,20 +266,29 @@ def validate_project_pairing(source: Path | None, name: str) -> None:
         _require_base(source, f"booley-worktree/{name}")
 
 
-def worktree_removal_instructions(project_root: Path, worktree: Path, name: str) -> str:
-    """Format absolute inner/outer removal and explicit Project branch cleanup."""
-    root, outer = project_root.resolve(), worktree.resolve()
-    source = root / BOOLEY_DIR_NAME
-
-    def quote(path: Path) -> str:
-        return shlex.quote(str(path))
-
-    return (
-        f"Remove the Paired Checkout first: git -C {quote(source)} worktree remove {quote(outer / BOOLEY_DIR_NAME)}\n"
-        f"Then remove the outer worktree: git -C {quote(root)} worktree remove {quote(outer)}\n"
-        f"To reuse the name, delete the Project branch after preserving its commits: "
-        f"git -C {quote(source)} branch -D {shlex.quote(f'booley-worktree/{name}')}"
-    )
+def worktree_removal_instructions(context: HostRemovalContext, name: str) -> str:
+    """Render a prevalidated host recipe; never force-delete local work."""
+    root, source, outer = map(str, (context.root, context.source, context.destination))
+    lines = [
+        "Before removal, preserve needed commits and copy all needed ignored/untracked "
+        "files and referenced attachments outside the worktree (including its Booley Directory's "
+        "reviewer-evidence/, findings.jsonl, handoffs/, mcp-tool-reports/, runtime/ and .runtime/). "
+        "Git history does not preserve these files; copied paths are not automatically restored. "
+        "Do not overwrite main logs or restore runtime locks/PIDs.",
+        "Run removal from a host terminal (POSIX shell or Git Bash):",
+    ]
+    if context.paired:
+        lines.append(
+            f"Remove the Paired Checkout first: git -C {shlex.quote(source)} worktree remove {shlex.quote(outer + '/' + BOOLEY_DIR_NAME)}"
+        )
+    label = "Then remove the outer worktree" if context.paired else "Remove the Snapshot worktree"
+    lines.append(f"{label}: git -C {shlex.quote(root)} worktree remove {shlex.quote(outer)}")
+    if context.paired:
+        lines.append(
+            "To reuse the name, delete the Project branch after preserving its commits: "
+            f"git -C {shlex.quote(source)} branch -D {shlex.quote(f'booley-worktree/{name}')}"
+        )
+    return "\n".join(lines)
 
 
 def remove_creation_lock(project_root: Path, name: str) -> None:

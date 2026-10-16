@@ -481,3 +481,70 @@ def test_stop_baseline_jobs_reports_jobs_that_outlive_the_bound(tmp_path, monkey
     with pytest.raises(driver.GoalDriverError, match="sim-baseline-stuck"):
         driver.stop_baseline_jobs(tmp_path, timeout_s=0)
     assert signalled == [driver.ProcessGroup(4242)]
+
+
+def test_workspace_creation_uses_real_worktree_preflight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import subprocess
+
+    from tests.harness.test_worktree_cmd import _git
+
+    from booley.runtime import runtime_context
+
+    # The real CLI enforces Sandbox venue; its process sees the existing detector.
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).parents[2] / "src"))
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    source, state = _real_workspace_source(tmp_path)
+    owned = tmp_path / "owned"
+    owned.mkdir()
+    workspace = driver.create_workspace(source, state, owned)
+    assert (workspace.worktree / ".booley/.git").is_file()
+    for repository in (workspace.primary, workspace.booley_dir):
+        listing = _git(repository, "worktree", "list", "--porcelain")
+        assert listing.returncode == 0
+        assert str(workspace.worktree) in listing.stdout
+        assert (
+            _git(
+                repository, "config", "--bool", "--get", "worktree.useRelativePaths"
+            ).stdout.strip()
+            == "true"
+        )
+    for pointer in (workspace.worktree / ".git", workspace.worktree / ".booley/.git"):
+        assert not Path(pointer.read_text().strip().removeprefix("gitdir: ")).is_absolute()
+    result = subprocess.run(
+        [sys.executable, "-m", "booley.harness.booley", "worktree", "new", "second"],
+        cwd=workspace.primary,
+        env=driver.os.environ
+        | {"BOOLEY_DIR": str(workspace.booley_dir), "PROJECT_ROOT": str(workspace.primary)},
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == str(workspace.primary / ".booley/worktrees/second")
+    assert f"git -C {workspace.primary} worktree remove" in result.stderr
+    assert f"git -C {workspace.booley_dir} worktree remove" in result.stderr
+
+
+def _real_workspace_source(tmp_path: Path) -> tuple[Path, Path]:
+    from tests.harness.test_worktree_cmd import _git, _write
+
+    from booley.runtime.project_gitignore import PROJECT_GITIGNORE
+
+    source = tmp_path / "source"
+    source.mkdir()
+    state = source / ".booley"
+    _write(source / "rtl.v", "module top; endmodule")
+    _write(source / ".gitignore", ".booley/\n.devcontainer/\n")
+    _write(state / "booley.toml", "[agent.git]\nname='Test'\nemail='test@example.invalid'\n")
+    _write(state / ".gitignore", PROJECT_GITIGNORE)
+    for repository in (source, state):
+        assert _git(repository, "init").returncode == 0
+        assert _git(repository, "config", "user.name", "Test").returncode == 0
+        assert _git(repository, "config", "user.email", "test@example.invalid").returncode == 0
+        assert _git(repository, "add", ".").returncode == 0
+        assert _git(repository, "commit", "-qm", "init").returncode == 0
+    return source, state

@@ -33,6 +33,7 @@ from booley.runtime.project_worktree_pairing import (
     validate_project_pairing,
     worktree_removal_instructions,
 )
+from booley.runtime.worktree_paths import HostRemovalError, host_removal_context
 
 # Same single-path-component rule the script enforces; checking it at the
 # CLI boundary gives an argparse error before any process starts.
@@ -139,27 +140,42 @@ def _run_current(args: argparse.Namespace, project_root: Path) -> int:
     worktree = worktree_path(project_root, args.name)
     created = False
     source = None
+    instructions = None
     try:
         source = project_pairing_source(project_root)
         validate_project_pairing(source, args.name)
+        context = host_removal_context(project_root, worktree, paired=source is not None)
+        instructions = worktree_removal_instructions(context, args.name)
         _create_outer(args.name, project_root, paired_project=source is not None)
         created = True
-        paired = pair_project_worktree(project_root, worktree, args.name, source=source)
+        pair_project_worktree(project_root, worktree, args.name, source=source)
     except BaseException as exc:
         if created:
             _rollback_creation(project_root, worktree, args.name, exc)
-        if not isinstance(exc, (WorktreeCreationError, ProjectPairingError, OSError)):
+        if not isinstance(
+            exc, (WorktreeCreationError, ProjectPairingError, HostRemovalError, OSError)
+        ):
             raise
         print(f"ERROR: {exc}", file=sys.stderr)
         if source is not None and _is_named_pair(worktree, args.name):
-            print(
-                worktree_removal_instructions(project_root, worktree, args.name), file=sys.stderr
+            instructions = instructions or _existing_pair_removal(
+                project_root, worktree, args.name
             )
+            if instructions is not None:
+                print(instructions, file=sys.stderr)
         return 1
     print(worktree)
-    if paired:
-        print(worktree_removal_instructions(project_root, worktree, args.name), file=sys.stderr)
+    print(instructions, file=sys.stderr)
     return 0
+
+
+def _existing_pair_removal(root: Path, worktree: Path, name: str) -> str | None:
+    """Keep a secondary removal diagnostic from hiding the original refusal."""
+    try:
+        context = host_removal_context(root, worktree, paired=True)
+        return worktree_removal_instructions(context, name)
+    except (HostRemovalError, OSError):
+        return None
 
 
 def _rollback_creation(root: Path, worktree: Path, name: str, failure: BaseException) -> None:

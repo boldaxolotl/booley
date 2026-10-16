@@ -389,10 +389,24 @@ class TestWorktreeLinkPolicyStep:
         assert read_worktree_prune_expire(booley_dir) == WORKTREE_PRUNE_VALUE
 
 
+@pytest.fixture
+def _initialized_hook_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Vendoring requires this Project's state, independent of earlier tests."""
+    from booley.runtime.booley_dir import reset_cache
+
+    (tmp_path / ".booley").mkdir()
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    reset_cache()
+    yield
+    reset_cache()
+
+
 class TestProjectCommitMsgHookVendoring:
     """Project Git policy is one managed bundle plus two outer adapters."""
 
-    def test_vendors_runtime_helpers_alongside_scripts(self, tmp_path: Path):
+    def test_vendors_runtime_helpers_alongside_scripts(
+        self, tmp_path: Path, _initialized_hook_state: None
+    ) -> None:
         from booley.harness.setup.git_hooks import (
             _LEGACY_MANAGED_HOOKS,
             _step_project_git_hooks,
@@ -412,7 +426,9 @@ class TestProjectCommitMsgHookVendoring:
         assert ctx.results[-1].name == "project_git_hooks"
         assert ctx.results[-1].status == "ok"
 
-    def test_installed_hook_is_lf_not_crlf(self, tmp_path: Path):
+    def test_installed_hook_is_lf_not_crlf(
+        self, tmp_path: Path, _initialized_hook_state: None
+    ) -> None:
         """QA_REPORT D0a: the hook must be written with LF newlines.
 
         On a Windows host, Path.write_text with the default newline translates
@@ -2947,6 +2963,9 @@ def _paired_hook_fixture(tmp_path, monkeypatch):
 
     monkeypatch.delenv("BOOLEY_DIR", raising=False)
     monkeypatch.delenv("BOOLEY_SKIP_PUSH_GUARD", raising=False)
+    from booley.runtime import runtime_context
+
+    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
     root = versioned_project.__wrapped__(tmp_path)
     # Default runtime worktrees lie inside Project state; the existing push
     # guard rejects their physical path independently of bundle resolution.

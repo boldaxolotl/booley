@@ -264,7 +264,6 @@ def create_workspace(
     """Clone participants and invoke the normal user worktree command."""
     primary = directory / "primary"
     env = os.environ | {
-        "BOOLEY_IN_SANDBOX": "1",
         "BOOLEY_DIR": str(primary / ".booley"),
         "PROJECT_ROOT": str(primary),
     }
@@ -273,10 +272,25 @@ def create_workspace(
     with (primary / ".git/info/exclude").open("a", encoding="utf-8") as stream:
         stream.write("\n/.booley\n/.booley-projected-*.core\n")
     for repository in (primary, *((primary / ".booley",) if paired else ())):
+        _run(["git", "config", "worktree.useRelativePaths", "true"], repository, env)
         _run(["git", "config", "user.name", "Booley CI"], repository, env)
         _run(
             ["git", "config", "user.email", "booley-ci@users.noreply.github.com"], repository, env
         )
+    # Run-owned synthetic Sandbox inputs map the same local namespace.
+    definition = primary / ".devcontainer/devcontainer.json"
+    definition.parent.mkdir(parents=True, exist_ok=True)
+    definition.write_text(
+        json.dumps(
+            {
+                "mounts": [
+                    f"source={primary}/.devcontainer,target=/work/.devcontainer,type=bind,readonly",
+                    f"source={primary}/.booley,target=/work/.booley,type=bind",
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
     _run(
         [str(python), "-m", "booley.harness.booley", "worktree", "new", "ci-demo"],
         primary,
