@@ -84,11 +84,9 @@ def preview_runtime_inputs(inputs: Iterable[TargetInput]) -> tuple[str, ...]:
     return tuple(copyto for _item, copyto in iter_runtime_inputs(inputs))
 
 
-def runtime_input_conflicts(source: Path, destination: Path) -> bool:
-    """Whether an existing destination cannot preserve the declared input bytes."""
-    return (destination.exists() or destination.is_symlink()) and not (
-        destination.is_file() and filecmp.cmp(source, destination, shallow=False)
-    )
+def runtime_input_matches(source: Path, destination: Path) -> bool:
+    """Whether the destination preserves the declared input bytes."""
+    return destination.is_file() and filecmp.cmp(source, destination, shallow=False)
 
 
 def inspect_runtime_destination(run_cwd: Path, value: str) -> Path | None:
@@ -180,7 +178,7 @@ def _stage_one(run: Path, item: _RuntimeInput, overlay_root: Path) -> tuple[Path
     if _is_owned_link(destination, item.relative, overlay_root):
         return _replace_owned_link(destination, item.overlay)
     if destination.exists() or destination.is_symlink():
-        if runtime_input_conflicts(item.source, destination):
+        if not runtime_input_matches(item.source, destination):
             raise RuntimeInputError(f"run input conflicts with an existing path: {item.relative}")
         return None
     destination.symlink_to(item.overlay)
@@ -345,7 +343,7 @@ def _expose_campaign_input(
     if owned_run_directory and destination.resolve(strict=False) == authoritative.resolve():
         return "copy", True
     if destination.exists() or destination.is_symlink():
-        if runtime_input_conflicts(authoritative, destination):
+        if not runtime_input_matches(authoritative, destination):
             raise RuntimeInputError(f"run input conflicts with an existing path: {relative}")
         return "identical_existing", False
     shutil.copyfile(authoritative, destination, follow_symlinks=False)
@@ -404,5 +402,5 @@ __all__ = [
     "materialize_campaign_runtime_inputs",
     "materialize_runtime_inputs",
     "preview_runtime_inputs",
-    "runtime_input_conflicts",
+    "runtime_input_matches",
 ]

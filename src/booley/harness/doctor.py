@@ -4278,7 +4278,7 @@ def _check_sim_copyto_collisions(
         RuntimeInputError,
         inspect_runtime_destination,
         iter_runtime_inputs,
-        runtime_input_conflicts,
+        runtime_input_matches,
     )
 
     configured = resolve_run_cwd(root)
@@ -4303,7 +4303,9 @@ def _check_sim_copyto_collisions(
                 destination = inspect_runtime_destination(run, copyto)
                 if destination is None or not source.is_file():
                     continue
-                if not runtime_input_conflicts(source, destination):
+                if not (destination.exists() or destination.is_symlink()):
+                    continue
+                if runtime_input_matches(source, destination):
                     continue
             except (RuntimeInputError, OSError):
                 continue  # Missing/generated/unreadable inputs cannot be compared.
