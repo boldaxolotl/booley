@@ -8,11 +8,19 @@ import stat
 import sys
 import threading
 import time
+from contextlib import nullcontext
 from pathlib import Path
 
 import pytest
 
-from booley.runtime import booley_dir, execution_records, job_slots, runtime_attachment
+from booley.runtime import (
+    booley_dir,
+    execution_records,
+    job_slots,
+    lifecycle_lock,
+    runtime_attachment,
+    session_runtime,
+)
 from booley.runtime.pid import RUNNING, UNKNOWN, ProcessIdentity, observe_process
 
 _SRC_ROOT = Path(__file__).parents[2] / "src"
@@ -78,6 +86,50 @@ def _interrupt_when(predicate, *, timeout_s: float = 5.0) -> None:
             os.kill(os.getpid(), signal.SIGINT)
             return
         time.sleep(0.01)
+
+
+@pytest.mark.parametrize(
+    ("denied", "exit_code", "diagnostic"),
+    [
+        pytest.param(False, 127, "command not found", id="missing-command"),
+        pytest.param(True, 126, "permission denied", id="permission-denied"),
+    ],
+)
+def test_spawn_failure_preserves_command_status(
+    tmp_path: Path, monkeypatch, capfd, denied, exit_code, diagnostic
+) -> None:
+    root = tmp_path / "project"
+    data = root / ".booley"
+    data.mkdir(parents=True)
+    _fake_docker(tmp_path, monkeypatch, data)
+    monkeypatch.setattr(lifecycle_lock, "host_lifecycle_lock", lambda *_: nullcontext())
+    monkeypatch.setattr(session_runtime, "_recover_before_lifecycle", lambda *_: None)
+    monkeypatch.setattr(
+        session_runtime,
+        "_select_or_start_project_runtime",
+        lambda _: ("session-name", {"BOOLEY_DIR": str(data)}),
+    )
+    executable = "booley-test-missing-command-1572"
+    if denied:
+        command = tmp_path / "command"
+        command.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        command.chmod(0o644)
+        executable = str(command)
+
+    result = session_runtime.enter(root, [executable, "private-argument"], tty=False)
+
+    assert result == exit_code
+    captured = capfd.readouterr()
+    assert captured.err == f"{diagnostic}: {executable}\n"
+    assert captured.out == ""
+    records = list((data / ".runtime" / "executions").glob("*/record.json"))
+    assert len(records) == 1
+    payload = execution_records.read_json(records[0])
+    assert payload["state"] == "terminal"
+    assert payload["exit_code"] == exit_code
+    assert payload["tree_terminal"] is True
+    assert payload["terminal_cause"] == "spawn_error"
+    assert payload["leader"] is None
 
 
 def test_normal_command_uses_structured_terminal_result(tmp_path: Path, monkeypatch) -> None:
