@@ -1814,16 +1814,6 @@ class TestBuiltinDiscoveryGate:
 
     @pytest.fixture(autouse=True)
     def _import(self, monkeypatch):
-        mcp_stubs = {
-            "mcp": MagicMock(),
-            "mcp.server": MagicMock(),
-            "mcp.server.models": MagicMock(),
-            "mcp.server.request_state": MagicMock(),
-            "mcp.server.stdio": MagicMock(),
-            "mcp.types": MagicMock(),
-        }
-        with patch.dict(sys.modules, mcp_stubs):
-            pass
         # MCP visibility filters must not leak in from the invoking shell.
         for var in ("BOOLEY_NESTED_AGENT", "BOOLEY_MCP_TOOLS", "BOOLEY_MCP_MODE"):
             monkeypatch.delenv(var, raising=False)
