@@ -96,7 +96,7 @@ def _interrupt_when(predicate, *, timeout_s: float = 5.0) -> None:
     ],
 )
 def test_spawn_failure_preserves_command_status(
-    tmp_path: Path, monkeypatch, capfd, denied, exit_code, diagnostic
+    tmp_path: Path, monkeypatch, capfd, caplog, denied, exit_code, diagnostic
 ) -> None:
     root = tmp_path / "project"
     data = root / ".booley"
@@ -109,7 +109,7 @@ def test_spawn_failure_preserves_command_status(
         "_select_or_start_project_runtime",
         lambda _: ("session-name", {"BOOLEY_DIR": str(data)}),
     )
-    executable = "booley-test-missing-command-1572"
+    executable = str(tmp_path / "missing-command")
     if denied:
         command = tmp_path / "command"
         command.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
@@ -122,6 +122,7 @@ def test_spawn_failure_preserves_command_status(
     captured = capfd.readouterr()
     assert captured.err == f"{diagnostic}: {executable}\n"
     assert captured.out == ""
+    assert caplog.records == []
     records = list((data / ".runtime" / "executions").glob("*/record.json"))
     assert len(records) == 1
     payload = execution_records.read_json(records[0])
