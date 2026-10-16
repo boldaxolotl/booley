@@ -164,14 +164,8 @@ work, with one linked worktree and Goal Branch per session.
 
    | Provider | Same as running |
    | --- | --- |
-   | `claude` | `claude -n S<n>` with the same process name ([Claude Code](https://code.claude.com/docs/en/quickstart)) |
+   | `claude` | `claude` ([Claude Code](https://code.claude.com/docs/en/quickstart)) |
    | `codex` | `codex` ([Codex CLI](https://developers.openai.com/codex/cli)) |
-
-   Claude receives its persistent session handle, such as `S17`, as its
-   process and chat name. After its first Booley MCP request, the Dashboard
-   normally shows that same handle. If naming is unavailable, Booley prints a
-   short note and starts Claude normally. Direct CLI launches and extension panels
-   keep their usual naming.
 
    From then on you are using that CLI's own chat. To pass it extra options,
    run `claude` or `codex` directly. To run several sessions, open more
