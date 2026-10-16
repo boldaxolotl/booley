@@ -194,7 +194,10 @@ For any other missing MCP tool:
    `[specialists.<name>].enabled` is not `false`.
 2. For a custom MCP tool, fix Python syntax and make `name` and `description` literal
    class attributes so AST discovery can read them.
-3. Restart the Sandbox after adding or renaming the file.
+3. Request a fresh MCP tool list, or use the client's tool-list change
+   notification channel. Installing, renaming, removing, or editing custom
+   endpoint files and capability settings updates the running server without
+   restarting the Sandbox.
 4. Check whether the MCP server was deliberately narrowed for a Specialist or
    through the explicit `BOOLEY_MCP_TOOLS` environment filter.
 
