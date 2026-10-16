@@ -1,5 +1,6 @@
 """Canonical credential links and private per-invocation configuration lifetime."""
 
+import asyncio
 import json
 import tomllib
 from pathlib import Path
@@ -141,23 +142,25 @@ def test_private_destination_update_preserves_boolean_preference(tmp_path):
 async def test_actual_cli_failure_reaps_and_removes_home(
     tmp_path, synthetic_nested_environment, monkeypatch, termination
 ):
-    import asyncio
     import sys
 
     from booley.core.models import AgentCallParams
     from booley.runtime import _codex_backend as cb
-    from booley.runtime.agent_errors import AgentTimeoutError
 
     report = tmp_path / "failure-home"
     script = tmp_path / "fake-hanging-codex.py"
     script.write_text(_HANGING_CODEX_SCRIPT)
-    params = AgentCallParams(prompt="synthetic", model="chosen", cwd=tmp_path, timeout_seconds=1)
+    params = AgentCallParams(
+        prompt="synthetic",
+        model="chosen",
+        cwd=tmp_path,
+        timeout_seconds=5 if termination == "timeout" else 20,
+    )
+    reader_failure = asyncio.Event()
     if termination == "reader_error":
 
         async def broken_read(*args):
-            deadline = asyncio.get_running_loop().time() + 5
-            while not report.exists() and asyncio.get_running_loop().time() < deadline:
-                await asyncio.sleep(0.01)
+            await reader_failure.wait()
             raise ValueError("synthetic stream error")
 
         monkeypatch.setattr(cb, "_read_stdout", broken_read)
@@ -169,32 +172,24 @@ async def test_actual_cli_failure_reaps_and_removes_home(
             on_event=None,
         )
     )
-    deadline = asyncio.get_running_loop().time() + 5
-    while not report.exists() and asyncio.get_running_loop().time() < deadline:
-        await asyncio.sleep(0.01)
-    assert report.exists()
-    home = Path(report.read_text())
-    assert home.is_dir()
-    if termination == "cancel":
+    try:
+        [home] = await _published_native_homes([report])
+        expected = _trigger_native_failure(task, termination, reader_failure)
+        with pytest.raises(expected):
+            await asyncio.wait_for(task, timeout=8)
+        assert_native_workspace_lifetimes([home])
+        assert set((tmp_path / "registry").glob("booley-owned-codex-home-*")) == (
+            {home} if home.exists() else set()
+        )
+    finally:
         task.cancel()
-        expected = asyncio.CancelledError
-    elif termination == "reader_error":
-        expected = ValueError
-    else:
-        expected = AgentTimeoutError
-    with pytest.raises(expected):
-        await asyncio.wait_for(task, timeout=8)
-    assert_native_workspace_lifetimes([home])
-    assert set((tmp_path / "registry").glob("booley-owned-codex-home-*")) == (
-        {home} if home.exists() else set()
-    )
+        await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), timeout=8)
 
 
 @pytest.mark.asyncio
 async def test_concurrent_calls_cleanup_only_the_completed_home(
     tmp_path, synthetic_nested_environment
 ):
-    import asyncio
     import sys
 
     from booley.core.models import AgentCallParams
@@ -216,14 +211,7 @@ async def test_concurrent_calls_cleanup_only_the_completed_home(
         for report, release in zip(reports, releases, strict=True)
     ]
     try:
-        deadline = asyncio.get_running_loop().time() + 5
-        while (
-            not all(report.exists() for report in reports)
-            and asyncio.get_running_loop().time() < deadline
-        ):
-            await asyncio.sleep(0.01)
-        assert all(report.exists() for report in reports)
-        homes = [Path(report.read_text()) for report in reports]
+        homes = await _published_native_homes(reports)
         assert homes[0] != homes[1]
         releases[0].touch()
         await asyncio.wait_for(tasks[0], timeout=5)
@@ -531,10 +519,38 @@ def _seed_native_rollout(home: Path, identity: str, tmp_path: Path) -> Path:
     return rollout
 
 
+def _trigger_native_failure(task, termination, reader_failure) -> type[BaseException]:
+    from booley.runtime.agent_errors import AgentTimeoutError
+
+    if termination == "cancel":
+        task.cancel()
+        return asyncio.CancelledError
+    if termination == "reader_error":
+        reader_failure.set()
+        return ValueError
+    return AgentTimeoutError
+
+
+async def _published_native_homes(reports: list[Path]) -> list[Path]:
+    deadline = asyncio.get_running_loop().time() + 5
+    while (
+        not all(report.exists() for report in reports)
+        and asyncio.get_running_loop().time() < deadline
+    ):
+        await asyncio.sleep(0.01)
+    assert all(report.exists() for report in reports)
+    homes = [Path(report.read_text()) for report in reports]
+    assert all(home.is_absolute() and home.is_dir() for home in homes)
+    return homes
+
+
 _HANGING_CODEX_SCRIPT = (
     "import os, pathlib, sys, time\n"
     "sys.stdin.read()\n"
-    'pathlib.Path(sys.argv[1]).write_text(os.environ["HOME"])\n'
+    "report = pathlib.Path(sys.argv[1])\n"
+    "staging = report.with_suffix('.tmp')\n"
+    'staging.write_text(os.environ["HOME"])\n'
+    "staging.replace(report)\n"
     "time.sleep(15)\n"
 )
 
@@ -543,7 +559,9 @@ _CONCURRENT_CODEX_SCRIPT = (
     "import os, pathlib, sys, time\n"
     "sys.stdin.read()\n"
     "report, release = map(pathlib.Path, sys.argv[1:])\n"
-    'report.write_text(os.environ["HOME"])\n'
+    "staging = report.with_suffix('.tmp')\n"
+    'staging.write_text(os.environ["HOME"])\n'
+    "staging.replace(report)\n"
     "end = time.monotonic() + 15\n"
     "while not release.exists() and time.monotonic() < end: time.sleep(.01)\n"
 )
