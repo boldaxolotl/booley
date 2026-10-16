@@ -165,14 +165,21 @@ class GitDirectories:
     common_dir: Path
 
 
-def git_directories(path: Path) -> GitDirectories:
+def git_directories(path: Path, *, timeout_s: float = 30) -> GitDirectories:
     """Return the Git directory and common directory of the checkout containing *path*.
 
     Both come from one bounded ``git rev-parse`` with absolute path output, so
     every spelling of one checkout yields the same resolved pair. Raises
     :class:`GitDirectoryInspectionError` when *path* is not inside a checkout.
     """
-    result = run_git(path, "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir")
+    result = run_git(
+        path,
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-dir",
+        "--git-common-dir",
+        timeout_s=timeout_s,
+    )
     detail = result.stderr.strip() or result.stdout.strip()
     if result.returncode != 0:
         raise GitDirectoryInspectionError(f"{path} is not a Git checkout: {detail}")
@@ -217,7 +224,7 @@ def parse_porcelain_z(stdout: str) -> tuple[ProjectRepositoryChange, ...]:
     return tuple(changes)
 
 
-def run_git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+def run_git(cwd: Path, *args: str, timeout_s: float = 30) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
             ["git", *args],
@@ -226,7 +233,7 @@ def run_git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
             capture_output=True,
             text=True,
             encoding="utf-8",
-            timeout=30,
+            timeout=timeout_s,
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:

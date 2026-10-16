@@ -45,7 +45,9 @@ class GoalCheckout:
 
     root: Path
 
-    def _git(self, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    def _git(
+        self, *args: str, check: bool = True, timeout_s: float = GIT_TIMEOUT_S
+    ) -> subprocess.CompletedProcess[str]:
         try:
             result = subprocess.run(
                 ["git", *args],
@@ -55,7 +57,7 @@ class GoalCheckout:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                timeout=GIT_TIMEOUT_S,
+                timeout=timeout_s,
                 check=False,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
@@ -152,6 +154,27 @@ class GoalCheckout:
         ref = branch_ref(branch)
         result = self._git("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}", check=False)
         return result.stdout.strip() if result.returncode == 0 else None
+
+    def has_branch(self, branch: str, *, timeout_s: float = GIT_TIMEOUT_S) -> bool:
+        """Whether local *branch* exists; :class:`CheckoutError` when Git cannot tell.
+
+        Only a silent exit 1 of ``rev-parse --verify --quiet`` means absent;
+        any other failure (not a repository, a broken ref) is no answer.
+        """
+        result = self._git(
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            branch_ref(branch),
+            check=False,
+            timeout_s=timeout_s,
+        )
+        if result.returncode == 0:
+            return True
+        if result.returncode == 1 and not (result.stdout.strip() or result.stderr.strip()):
+            return False
+        detail = result.stderr.strip() or f"exit {result.returncode}"
+        raise CheckoutError(f"cannot tell whether branch {branch} exists in {self.root}: {detail}")
 
     def require_valid_branch_name(self, branch: str) -> None:
         """Raise :class:`CheckoutError` unless *branch* is a valid branch name."""
