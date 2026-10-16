@@ -230,9 +230,7 @@ def test_inspection_failures_are_location_specific(project, monkeypatch):
     monkeypatch.setattr(pt.os, "scandir", unreadable)
     result = pt.inspect_project_trackability(root, selected)
     assert any(str(selected / "cores") in e and "unreadable" in e for e in result.errors)
-    monkeypatch.setattr(
-        pt, "query_ignores", lambda *args: (_ for _ in ()).throw(OSError("Git failed"))
-    )
+    monkeypatch.setattr(pt, "_git", lambda *args: (_ for _ in ()).throw(OSError("Git failed")))
     assert any("Git failed" in e for e in pt.inspect_project_trackability(root, selected).errors)
 
 
@@ -314,3 +312,94 @@ def test_managed_root_attributes_are_candidates(project):
     (root / ".gitattributes").write_text("* text=auto eol=lf\n")
     (root / ".gitignore").write_text(".gitattributes\n")
     assert pt.inspect_project_trackability(root, selected).ignored[0].paths == (".gitattributes",)
+
+
+def test_unavailable_indexed_input_owner_does_not_hide_other_inputs(project):
+    root, selected = project
+    git(root, "commit", "--allow-empty", "-qm", "seed")
+    commit = git(root, "rev-parse", "HEAD")
+    git(root, "update-index", "--add", "--cacheinfo", f"160000,{commit},.booley/cores/ip")
+    unavailable = selected / "cores/ip"
+    unavailable.mkdir(parents=True)
+    (root / ".gitignore").write_text("booley.toml\n")
+    result = pt.inspect_project_trackability(root, selected)
+    assert any(str(unavailable) in error for error in result.errors)
+    assert result.ignored[0].paths == (".booley/booley.toml",)
+
+
+def test_embedded_symlink_probe_does_not_hide_physical_inputs(project):
+    root, selected = project
+    physical = root / "control"
+    selected.rename(physical)
+    selected.symlink_to(physical, target_is_directory=True)
+    (root / ".gitignore").write_text("control/booley.toml\n")
+    result = pt.inspect_project_trackability(root, selected)
+    assert any(group.paths == ("control/booley.toml",) for group in result.ignored)
+    assert any("symlink ancestor" in error for error in result.errors)
+
+
+def test_embedded_ticket_history_is_not_deduplicated_with_goal_probe(project):
+    from booley.harness import doctor
+
+    root, selected = project
+    history = selected / "tickets/history/old.md"
+    history.parent.mkdir(parents=True)
+    history.write_text("summary")
+    (root / ".gitignore").write_text("*.md\n")
+    reporter = doctor._Reporter.create()
+    doctor._check_goal_history_ignored(root, selected, reporter.pass_, reporter.warn_)
+    doctor._check_project_trackability(root, selected, reporter.warn_)
+    assert any("tickets/history/old.md" in finding.message for finding in reporter.findings)
+
+
+def test_broken_nested_owner_does_not_hide_sibling_or_root_inputs(project):
+    root, selected = project
+    broken = selected / "cores/a-broken"
+    broken.mkdir(parents=True)
+    (broken / ".git").write_text("gitdir: missing-administration\n")
+    sibling = selected / "cores/z-good.core"
+    sibling.write_text("input")
+    (root / ".gitignore").write_text("booley.toml\n*.core\n")
+    result = pt.inspect_project_trackability(root, selected)
+    assert any(str(broken) in error for error in result.errors)
+    assert {path for group in result.ignored for path in group.paths} == {
+        ".booley/booley.toml",
+        ".booley/cores/z-good.core",
+    }
+
+
+@pytest.mark.parametrize("name", ["tmp", "runtime", "worktrees"])
+def test_files_named_like_transient_directories_are_inputs(project, name):
+    root, selected = project
+    (selected / "hooks").mkdir()
+    (selected / "hooks" / name).write_text("authored input")
+    (root / ".gitignore").write_text(f".booley/hooks/{name}\n")
+    result = pt.inspect_project_trackability(root, selected)
+    assert any(group.paths == (f".booley/hooks/{name}",) for group in result.ignored)
+
+
+def test_linked_worktree_info_exclude_has_distinct_source_identity(project):
+    root, _selected = project
+    git(root, "add", ".booley/booley.toml")
+    git(root, "commit", "-qm", "seed")
+    checkout = root.parent / "linked"
+    git(root, "worktree", "add", "-q", "--detach", str(checkout))
+    (root / ".git/info/exclude").write_text("booley.toml\n")
+    group = pt.inspect_project_trackability(checkout, checkout / ".booley").ignored[0]
+    assert group.subject == "RTL repository:.git/info/exclude:booley.toml"
+
+
+def test_broken_input_tree_owner_does_not_hide_other_trees(project):
+    root, selected = project
+    broken = selected / "cores"
+    broken.mkdir()
+    (broken / ".git").write_text("gitdir: missing-administration\n")
+    (selected / "hooks").mkdir()
+    (selected / "hooks/check.py").write_text("input")
+    (root / ".gitignore").write_text("booley.toml\n*.py\n")
+    result = pt.inspect_project_trackability(root, selected)
+    assert any(str(broken) in error for error in result.errors)
+    assert {path for group in result.ignored for path in group.paths} == {
+        ".booley/booley.toml",
+        ".booley/hooks/check.py",
+    }

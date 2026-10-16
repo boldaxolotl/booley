@@ -61,20 +61,12 @@ class IgnoredInputs:
     pattern: str
     paths: tuple[str, ...]
     history: bool
+    source_identity: str
 
     @property
     def subject(self) -> str:
         """Stable waiver identity, independent of HOME and source line shifts."""
-        source = Path(self.source)
-        if source.is_absolute():
-            source_key = (
-                source.relative_to(self.owner).as_posix()
-                if source.is_relative_to(self.owner)
-                else "global-excludes"
-            )
-        else:
-            source_key = source.as_posix()
-        return f"{self.role}:{source_key}:{self.pattern}"
+        return f"{self.role}:{self.source_identity}:{self.pattern}"
 
     @property
     def message(self) -> str:
@@ -140,22 +132,28 @@ def _parse_matches(output: bytes) -> tuple[IgnoreMatch, ...]:
     return tuple(matches)
 
 
-def query_ignores(owner: Path, paths: tuple[str, ...]) -> tuple[IgnoreMatch, ...]:
-    """Query NUL-safe effective rules, respecting authenticated gitlink boundaries."""
+def _query_paths(
+    owner: Path, paths: tuple[str, ...], links: tuple[Path, ...]
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
     selected = []
-    links = _gitlinks(owner)
+    errors = []
     for path in paths:
         boundary = next((link for link in links if (owner / path).is_relative_to(link)), None)
         if boundary is None:
             if any(parent.is_symlink() for parent in (owner / path).parents if parent != owner):
-                raise OSError(
+                errors.append(
                     f"trackability inspection incomplete at {owner / path}: symlink ancestor"
                 )
-            selected.append(path)
+            else:
+                selected.append(path)
         elif not is_git_worktree_root(boundary):
-            raise OSError(
+            errors.append(
                 f"trackability inspection incomplete at unavailable submodule {boundary}"
             )
+    return tuple(selected), tuple(errors)
+
+
+def _matches(owner: Path, selected: tuple[str, ...]) -> tuple[IgnoreMatch, ...]:
     if not selected:
         return ()
     payload = b"".join(os.fsencode(path) + b"\0" for path in selected)
@@ -165,6 +163,14 @@ def query_ignores(owner: Path, paths: tuple[str, ...]) -> tuple[IgnoreMatch, ...
     if any(match.path not in selected for match in matches):
         raise OSError(f"malformed Git check-ignore paths at {owner}")
     return matches
+
+
+def query_ignores(owner: Path, paths: tuple[str, ...]) -> tuple[IgnoreMatch, ...]:
+    """Query NUL-safe effective rules, respecting authenticated gitlink boundaries."""
+    selected, errors = _query_paths(owner, paths, _gitlinks(owner))
+    if errors:
+        raise OSError("; ".join(errors))
+    return _matches(owner, selected)
 
 
 def _owner(directory: Path) -> Path:
@@ -188,17 +194,30 @@ def _walk_inputs(
         for entry in children:
             path = Path(entry.path)
             relative = path.relative_to(selected).as_posix()
-            if entry.name == ".git" or project_transient_pattern(relative + "/probe"):
+            if entry.name == ".git":
                 continue
             if entry.is_dir(follow_symlinks=False):
-                if (path / ".git").exists():
-                    owners.add(_owner(path))
+                if project_transient_pattern(relative + "/probe"):
+                    continue
+                if not _discover_owner(path, owners, errors):
+                    continue
                 paths.extend(_walk_inputs(path, selected, owners, errors))
             elif not project_transient_pattern(relative):
                 paths.append(path)
     except OSError as exc:
         errors.append(f"trackability inspection incomplete at {directory}: {exc}")
     return paths
+
+
+def _discover_owner(directory: Path, owners: set[Path], errors: list[str]) -> bool:
+    if not (directory / ".git").exists():
+        return True
+    try:
+        owners.add(_owner(directory))
+    except OSError as exc:
+        errors.append(str(exc))
+        return False
+    return True
 
 
 def _managed_attributes(owner: Path, errors: list[str]) -> list[Path]:
@@ -221,9 +240,7 @@ def _candidates(selected: Path, owners: set[Path], errors: list[str]) -> list[Pa
         directory = selected / name
         if directory.is_symlink():
             paths.append(directory)
-        elif directory.is_dir():
-            if (directory / ".git").exists():
-                owners.add(_owner(directory))
+        elif directory.is_dir() and _discover_owner(directory, owners, errors):
             paths.extend(_walk_inputs(directory, selected, owners, errors))
     return paths
 
@@ -231,22 +248,66 @@ def _candidates(selected: Path, owners: set[Path], errors: list[str]) -> list[Pa
 def _groups(
     owner: Path, role: str, selected: Path, matches: tuple[IgnoreMatch, ...], embedded: bool
 ) -> list[IgnoredInputs]:
-    grouped: dict[tuple[str, int, str, bool], list[str]] = {}
+    if not matches:
+        return []
+    grouped: dict[tuple[str, int, str, str], list[str]] = {}
+    info_exclude = Path(
+        os.fsdecode(_git(owner, ["rev-parse", "--git-path", "info/exclude"])).removesuffix("\n")
+    )
+    info_exclude = (owner / info_exclude).resolve()
     for match in matches:
         path = owner / match.path
-        history = embedded and (
-            match.path == HISTORY_PROBE
-            or any(
-                path.is_relative_to(selected / family)
-                for family in ("goals/history", "tickets/history")
+        family = ""
+        if embedded:
+            family = next(
+                (
+                    name
+                    for name in ("goals/history", "tickets/history")
+                    if path.is_relative_to(selected / name)
+                ),
+                "goals/history" if match.path == HISTORY_PROBE else "",
             )
-        )
-        key = (match.source, match.line, match.pattern, history)
+        key = (match.source, match.line, match.pattern, family)
         grouped.setdefault(key, []).append(match.path)
     return [
-        IgnoredInputs(owner, role, source, line, pattern, tuple(paths), history)
-        for (source, line, pattern, history), paths in grouped.items()
+        IgnoredInputs(
+            owner,
+            role,
+            source,
+            line,
+            pattern,
+            tuple(paths),
+            bool(family),
+            _source_identity(owner, source, info_exclude),
+        )
+        for (source, line, pattern, family), paths in grouped.items()
     ]
+
+
+def _source_identity(owner: Path, source: str, info_exclude: Path) -> str:
+    path = Path(source)
+    if (owner / path).resolve() == info_exclude:
+        return ".git/info/exclude"
+    if path.is_absolute():
+        return (
+            path.relative_to(owner).as_posix() if path.is_relative_to(owner) else "global-excludes"
+        )
+    return path.as_posix()
+
+
+def _inspect_owner(
+    owner: Path, selected: Path, candidates: list[str], errors: list[str]
+) -> tuple[IgnoreMatch, ...]:
+    links = _gitlinks(owner)
+    for link in links:
+        if not any(link.is_relative_to(selected / name) for name in _INPUT_TREES):
+            continue
+        relative = link.relative_to(selected).as_posix()
+        if not project_transient_pattern(relative + "/probe") and not is_git_worktree_root(link):
+            errors.append(f"trackability inspection incomplete at unavailable submodule {link}")
+    paths, query_errors = _query_paths(owner, tuple(candidates), links)
+    errors.extend(query_errors)
+    return _matches(owner, paths)
 
 
 def inspect_project_trackability(
@@ -270,13 +331,13 @@ def inspect_project_trackability(
         embedded = primary == rtl_owner
         if embedded:
             paths.append(root / HISTORY_PROBE)
-        batches: dict[Path, list[str]] = {}
+        batches: dict[Path, list[str]] = {owner: [] for owner in sorted(owners)}
         for path in sorted(set(paths)):
             owner = max((o for o in owners if path.is_relative_to(o)), key=lambda o: len(o.parts))
             batches.setdefault(owner, []).append(path.relative_to(owner).as_posix())
         for owner, candidates in batches.items():
             try:
-                matches = query_ignores(owner, tuple(candidates))
+                matches = _inspect_owner(owner, selected, candidates, errors)
                 role = "RTL repository" if owner == rtl_owner else "Booley repository"
                 if owner not in {primary, rtl_owner}:
                     role += f" ({owner.relative_to(selected).as_posix()})"
@@ -287,4 +348,4 @@ def inspect_project_trackability(
                 errors.append(str(exc))
     except (OSError, RuntimeError) as exc:
         errors.append(f"trackability inspection incomplete at {selected}: {exc}")
-    return TrackabilityInspection(tuple(ignored), tuple(errors))
+    return TrackabilityInspection(tuple(ignored), tuple(dict.fromkeys(errors)))
