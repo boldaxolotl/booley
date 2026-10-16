@@ -49,6 +49,7 @@ def test_audit_inventory_covers_project_resources_and_excludes_shared(tmp_path, 
 @pytest.mark.parametrize("consumer", ["container", "foreign-alias", "registry", "child"])
 def test_purge_revalidates_usage_and_retains_foreign_aliases(tmp_path, monkeypatch, consumer):
     root, docker = resource_environment(tmp_path, monkeypatch)
+    docker.engine_last_tag_deletion = True
     image = next(iter(docker.image_ids()))
     own = next(iter(resources.volume_names(str(root))))
     docker.volumes[own] = {"Name": own}
@@ -80,6 +81,7 @@ def test_inherited_origin_without_acquisition_proof_is_retained(tmp_path, monkey
 
 def test_two_projects_release_only_their_acquired_aliases(tmp_path, monkeypatch):
     root, docker = resource_environment(tmp_path, monkeypatch)
+    docker.engine_last_tag_deletion = True
     image = next(iter(docker.image_ids()))
     other = tmp_path / "other"
     other_alias = _claim(other, docker, image)
@@ -95,6 +97,7 @@ def test_last_project_claimant_collects_shared_origin_after_both_purges(
     tmp_path, monkeypatch, reverse, child
 ):
     root, docker = resource_environment(tmp_path, monkeypatch)
+    docker.engine_last_tag_deletion = True
     image = next(iter(docker.image_ids()))
     other = tmp_path / "other"
     _claim(other, docker, image)
@@ -108,6 +111,7 @@ def test_last_project_claimant_collects_shared_origin_after_both_purges(
     assert (image in docker.image_ids()) == child
     if child:
         docker.images.pop(derivative)
+        resources.purge(str(first), docker=docker)
         resources.purge(str(last), docker=docker)
         assert image not in docker.image_ids()
     assert not any(image in raw["origins"] for raw in resources._records())
@@ -202,8 +206,19 @@ def test_keeper_observation_never_becomes_an_acquisition_or_alias_claim(tmp_path
     docker.tag(image, keeper)
     resources.retain_cleanup_identity(identity)
     resources.observe_keeper(identity, docker)
-    docker.remove_tag(resources._project_image_name(str(root)))
-    docker.remove_tag(keeper)
+    replacement = "sha256:" + "f" * 64
+    docker.images[replacement] = (replacement, {})
+    alias = resources._project_image_name(str(root))
+    # Retagging leaves old bytes dangling; deleting their last tag would not.
+    docker.tag(replacement, alias)
+    resources.record_adoption(
+        SimpleNamespace(
+            plan=SimpleNamespace(project_root=root),
+            candidates=(SimpleNamespace(reference=alias, image_id=replacement),),
+            prior_tags=(),
+        )
+    )
+    docker.tag(replacement, keeper)
     assert resources.proven_origin(image, docker)
     assert resources.snapshot(identity, docker=docker).images[0].image_id == image
     resources.purge(identity, docker=docker)
@@ -225,3 +240,109 @@ def test_corrupt_claim_cannot_widen_alias_authority(tmp_path, monkeypatch):
     with pytest.raises(resources.ResourceError, match="namespace"):
         resources.purge(str(root), docker=docker)
     assert docker.images == before
+
+
+def _strict_chain(tmp_path, monkeypatch, *, owned_child):
+    root, docker = resource_environment(tmp_path, monkeypatch)
+    docker.engine_last_tag_deletion = True
+    parent = next(iter(docker.image_ids()))
+    child = "sha256:" + "c" * 64
+    labels = dict(docker.images[parent][1])
+    labels[lifecycle.LABEL_PARENT_ARTIFACT] = parent
+    docker.images[child] = (child, labels)
+    if owned_child:
+        resources.record_acquisition(str(root), (child,), docker)
+        alias = resources._project_image_name(str(root)) + "-child"
+        docker.tag(child, alias)
+        resources.record_adoption(
+            SimpleNamespace(
+                plan=SimpleNamespace(project_root=root),
+                candidates=(SimpleNamespace(reference=alias, image_id=child),),
+                prior_tags=(),
+            )
+        )
+    return root, docker, parent, child
+
+
+def test_last_tag_purge_preserves_registry_identity_and_bytes(tmp_path, monkeypatch):
+    root, docker = resource_environment(tmp_path, monkeypatch)
+    docker.engine_last_tag_deletion = True
+    image = next(iter(docker.image_ids()))
+    digest = "registry/image@" + image
+    docker.registry_identities[image] = (digest,)
+    resources.purge(str(root), docker=docker)
+    assert image in docker.image_ids(), "registry-protected bytes were removed by last-tag cleanup"
+    assert docker.repo_digests(image) == (digest,)
+
+
+def test_last_tag_purge_cleans_owned_chain_leaves_before_parents(tmp_path, monkeypatch):
+    root, docker, parent, child = _strict_chain(tmp_path, monkeypatch, owned_child=True)
+    failure = None
+    try:
+        resources.purge(str(root), docker=docker)
+    except resources.ResourceError as exc:
+        failure = str(exc)
+    assert failure is None, "owned leaf chain cleanup did not finish: " + str(failure)
+    assert parent not in docker.image_ids() and child not in docker.image_ids()
+
+
+def test_last_tag_purge_retains_foreign_child_without_failing(tmp_path, monkeypatch):
+    root, docker, parent, child = _strict_chain(tmp_path, monkeypatch, owned_child=False)
+    failure = None
+    try:
+        resources.purge(str(root), docker=docker)
+    except resources.ResourceError as exc:
+        failure = str(exc)
+    assert failure is None, "protected child made purge fail: " + str(failure)
+    assert parent in docker.image_ids() and child in docker.image_ids()
+    assert docker.image_id(resources._project_image_name(str(root))) == parent
+
+
+def test_last_tag_missing_other_project_alias_keeps_durable_claim(tmp_path, monkeypatch):
+    root, docker = resource_environment(tmp_path, monkeypatch)
+    docker.engine_last_tag_deletion = True
+    image = next(iter(docker.image_ids()))
+    other = tmp_path / "other"
+    alias = _claim(other, docker, image)
+    docker.remove_tag(alias)
+    resources.purge(str(root), docker=docker)
+    assert image in docker.image_ids(), "missing shared alias claim lost its image bytes"
+    resources.purge(str(other), docker=docker)
+    assert image in docker.image_ids()
+    resources.purge(str(root), docker=docker)
+    assert image not in docker.image_ids()
+
+
+@pytest.mark.parametrize("multiple_tags", [False, True])
+def test_last_tag_unproven_aliases_remain_without_created_id_authority(
+    tmp_path, monkeypatch, multiple_tags
+):
+    root, docker = resource_environment(tmp_path, monkeypatch)
+    docker.engine_last_tag_deletion = True
+    labels = dict(next(iter(docker.images.values()))[1])
+    docker.images.clear()
+    image = "sha256:" + "e" * 64
+    docker.images[image] = (image, labels)
+    alias = _claim(root, docker, image)
+    if multiple_tags:
+        docker.tag(image, "foreign:alias")
+    resources.purge(str(root), docker=docker)
+    assert image in docker.image_ids() and docker.image_id(alias) == image
+    assert ("remove_tag", alias) not in docker.mutations
+
+
+def test_exact_image_removal_is_bounded_and_nonforce(monkeypatch):
+    import subprocess
+
+    observed = {}
+    image = "sha256:" + "a" * 64
+
+    def timeout(command, **kwargs):
+        observed.update(command=command, **kwargs)
+        raise subprocess.TimeoutExpired(command, kwargs.get("timeout", 0))
+
+    monkeypatch.setattr(lifecycle.subprocess, "run", timeout)
+    with pytest.raises(lifecycle.ImageLifecycleError, match="could not remove"):
+        lifecycle._DockerCli().remove_tag(image)
+    assert observed["timeout"] == 30
+    assert observed["command"] == ["docker", "image", "rm", "--no-prune", image]

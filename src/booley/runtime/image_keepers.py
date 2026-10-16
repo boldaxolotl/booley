@@ -8,6 +8,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import asdict, replace
 from pathlib import Path
+from typing import Literal
 
 from booley.projects import inventory
 from booley.projects.image_keepers import Candidate, KeeperRelease, PruneResult
@@ -24,6 +25,14 @@ def _image_id(tag: str) -> str | None:
     return docker.validated_image_id(value) if value is not None else None
 
 
+def _keeper_release_reason(tag: str, image: str, identity: str | None = None) -> str:
+    from booley.runtime import image_lifecycle, project_resources
+
+    return project_resources.alias_release_reason(
+        identity, tag, image, image_lifecycle._docker_adapter()
+    )
+
+
 def _release_root(project: Path) -> KeeperRelease:
     tag = keeper_image_for_identity(str(project))
     image = _image_id(tag)
@@ -35,6 +44,15 @@ def _release_root(project: Path) -> KeeperRelease:
         raise RuntimeError("keeper changed during forget; retry")
     if image in docker.container_image_ids_strict():
         return KeeperRelease("retained-in-use", tag, image)
+    reason = _keeper_release_reason(tag, image, str(project))
+    if reason:
+        return KeeperRelease(
+            "retained-unproven" if reason.startswith("unproven") else "retained-protected",
+            tag,
+            image,
+        )
+    if _image_id(tag) != image:
+        raise RuntimeError("keeper changed during forget; retry")
     docker.remove_image_tag(tag)
     return KeeperRelease("released", tag, image)
 
@@ -94,6 +112,19 @@ def _protected_tags(roots: frozenset[str]) -> frozenset[str]:
     return frozenset(keeper_image_for_identity(root) for root in roots)
 
 
+def _candidate_reason(
+    tag: str, image: str, protected: frozenset[str], containers: frozenset[str]
+) -> Literal["inventoried", "in-use", "unproven", "protected", "inventory-absent"]:
+    if tag in protected:
+        return "inventoried"
+    if image in containers:
+        return "in-use"
+    reason = _keeper_release_reason(tag, image)
+    if reason:
+        return "unproven" if reason.startswith("unproven") else "protected"
+    return "inventory-absent"
+
+
 def _preview(roots: frozenset[str]) -> PruneResult:
     protected = _protected_tags(roots)
     containers = docker.container_image_ids_strict()
@@ -102,13 +133,7 @@ def _preview(roots: frozenset[str]) -> PruneResult:
         image = _image_id(tag)
         if image is None:
             raise RuntimeError("keeper disappeared during preview; retry")
-        reason = (
-            "inventoried"
-            if tag in protected
-            else "in-use"
-            if image in containers
-            else "inventory-absent"
-        )
+        reason = _candidate_reason(tag, image, protected, containers)
         candidates.append(Candidate(tag, image, reason == "inventory-absent", reason))
     values = tuple(candidates)
     digest = hashlib.sha256(
@@ -129,6 +154,9 @@ def _apply(result: PruneResult, roots: Callable[[], frozenset[str]]) -> None:
             image = _image_id(candidate.tag)
             containers = docker.container_image_ids_strict()
             if candidate.tag in protected or image != candidate.image_id or image in containers:
+                result.retained.append(candidate.tag)
+                continue
+            if _keeper_release_reason(candidate.tag, candidate.image_id):
                 result.retained.append(candidate.tag)
                 continue
             docker.remove_image_tag(candidate.tag)

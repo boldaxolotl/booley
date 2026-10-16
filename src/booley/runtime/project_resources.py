@@ -361,7 +361,8 @@ def _candidate_ids(identity: str, docker: DockerPort) -> set[str]:
     return result & docker.image_ids()
 
 
-def _image_reason(image: str, docker: DockerPort) -> str:
+def alias_blocker(image: str, docker: DockerPort) -> str:
+    """Protect bytes before tag removal, which may itself delete the image."""
     if not proven_origin(image, docker):
         return "unproven historical origin/acquisition"
     if image in docker.container_image_ids():
@@ -374,6 +375,26 @@ def _image_reason(image: str, docker: DockerPort) -> str:
         for other in docker.image_ids() - {image}
     ):
         return "child"
+    return ""
+
+
+def alias_release_reason(identity: str | None, alias: str, image: str, docker: DockerPort) -> str:
+    """A proven alias must not remove the final pin of another Project's claim."""
+    if reason := alias_blocker(image, docker):
+        return reason
+    other_alias = any(
+        row.reference != alias and row.image_id == image for row in docker.image_references()
+    )
+    if has_other_claim(image, identity) and not other_alias:
+        return "other Project claimant"
+    return ""
+
+
+def _image_reason(image: str, docker: DockerPort, identity: str | None = None) -> str:
+    if reason := alias_blocker(image, docker):
+        return reason
+    if has_other_claim(image, identity):
+        return "other Project claimant"
     if any(row.image_id == image for row in docker.image_references()):
         return "tag/keeper"
     return "unused"
@@ -396,7 +417,7 @@ def snapshot(identity: str, *, docker: DockerPort) -> ResourceReport:
                 image,
                 image,
                 size if type(size) is int else sizes.get(image),
-                _image_reason(image, docker),
+                _image_reason(image, docker, identity),
                 tuple(row.reference for row in docker.image_references() if row.image_id == image),
             )
         )
@@ -417,36 +438,33 @@ def snapshot(identity: str, *, docker: DockerPort) -> ResourceReport:
     return report
 
 
-def _other_claim(image: str, identity: str, docker: DockerPort) -> bool:
-    for raw in _records():
-        if raw["project_root"] == identity:
-            continue
-        if any(
-            expected == image and docker.image_id(alias) == image
-            for alias, expected in raw["aliases"].items()
-        ):
-            return True
-    return False
+def has_other_claim(image: str, identity: str | None) -> bool:
+    """Durable claims protect bytes even when their physical alias is missing."""
+    return any(
+        raw["project_root"] != identity and image in raw["aliases"].values() for raw in _records()
+    )
 
 
 def _release_aliases(identity: str, docker: DockerPort, removed: list[str]) -> None:
     raw = _load(identity)
-    for alias, image in list(raw["aliases"].items()):
+    aliases = sorted(
+        raw["aliases"].items(), key=lambda row: len(docker.image_layers(row[1])), reverse=True
+    )
+    for alias, image in aliases:
         actual = docker.image_id(alias)
-        if actual is not None and (
-            actual != image
-            or image in docker.container_image_ids()
-            or not proven_origin(image, docker)
-        ):
+        if actual == image and alias_release_reason(identity, alias, image, docker):
             continue
-        if actual is not None and docker.image_id(alias) != image:
-            continue
-        if actual is not None:
+        if actual == image:
+            if docker.image_id(alias) != image:
+                continue
             docker.remove_tag(alias)
             removed.append(alias)
         raw["retirements"][alias + "@" + image] = image
         del raw["aliases"][alias]
         _save(raw)
+        # A last-tag removal can delete bytes itself. Collect dangling leaves
+        # before attempting parent aliases on engines that retain those bytes.
+        _collect_images(identity, docker, removed)
 
 
 def _collect_images(identity: str, docker: DockerPort, removed: list[str]) -> None:
@@ -459,9 +477,7 @@ def _collect_images(identity: str, docker: DockerPort, removed: list[str]) -> No
     for _ in range(len(candidates)):
         progress = False
         for image in sorted(candidates & docker.image_ids()):
-            if _image_reason(image, docker) == "unused" and not _other_claim(
-                image, identity, docker
-            ):
+            if _image_reason(image, docker, identity) == "unused":
                 docker.remove_tag(image)
                 removed.append(image)
                 progress = True

@@ -4222,6 +4222,7 @@ class ResourceDocker(FakeDocker):
         self.containers = {}
         self.networks = {}
         self.fail_remove = None
+        self.engine_last_tag_deletion = True
 
     def tag(self, source, target):
         if old := self.images.get(target):
@@ -4236,9 +4237,34 @@ class ResourceDocker(FakeDocker):
             assert not any(row.image_id == image for row in self.image_references())
             self.images.pop(image, None)
         else:
+            old = self.images.get(image)
+            if old and self.engine_last_tag_deletion:
+                self._engine_remove_last_alias(image, old[0])
             old = self.images.pop(image, None)
-            if old and not any(row[0] == old[0] for row in self.images.values()):
+            if (
+                old
+                and not self.engine_last_tag_deletion
+                and not any(row[0] == old[0] for row in self.images.values())
+            ):
                 self.images[old[0]] = old
+
+    def _engine_remove_last_alias(self, alias, identity):
+        others = [
+            row
+            for row in self.image_references()
+            if row.image_id == identity and row.reference != alias
+        ]
+        if others:
+            return
+        layers = self.image_layers(identity)
+        children = any(
+            self.image_layers(other)[: len(layers)] == layers
+            for other in self.image_ids() - {identity}
+        )
+        if identity in self.container_image_ids() or children:
+            raise lifecycle.ImageLifecycleError("engine refuses last tag with dependent consumer")
+        self.images.pop(identity, None)
+        self.registry_identities.pop(identity, None)
 
 
 def resource_environment(tmp_path, monkeypatch, root=None):

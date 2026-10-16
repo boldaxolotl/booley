@@ -513,7 +513,7 @@ def _read_owned_record(
         raise ImageLifecycleError(f"cannot read refresh image ownership: {exc}") from exc
 
 
-def _owned_image_blocker(image: str, docker: DockerPort) -> str:
+def _owned_image_blocker(image: str, docker: DockerPort, identity: str | None = None) -> str:
     if any(row.image_id == image for row in docker.image_references()):
         return "tag/keeper"
     if docker.repo_digests(image):
@@ -525,11 +525,11 @@ def _owned_image_blocker(image: str, docker: DockerPort) -> str:
         other_layers = docker.image_layers(other)
         if layers and other_layers[: len(layers)] == layers:
             return "child"
-    from booley.runtime.project_resources import proven_origin
+    from booley.runtime.project_resources import has_other_claim, proven_origin
 
-    if not proven_origin(image, docker):
-        return "unproven historical origin/acquisition"
-    return ""
+    if has_other_claim(image, identity):
+        return "other Project claimant"
+    return "" if proven_origin(image, docker) else "unproven historical origin/acquisition"
 
 
 def cleanup_owned_images(
@@ -553,7 +553,7 @@ def cleanup_owned_images(
         for image in reversed(owned):
             if image not in adapter.image_ids():
                 continue
-            reason = _owned_image_blocker(image, adapter)
+            reason = _owned_image_blocker(image, adapter, str(root))
             if reason:
                 remaining.append(image)
                 retained.append(f"{image}: retained ({reason})")
@@ -2571,6 +2571,7 @@ class _DockerCli:
                 ["docker", "image", "rm", "--no-prune", image],
                 capture_output=True,
                 text=True,
+                timeout=30,
                 check=False,
             )
         except (OSError, subprocess.SubprocessError) as exc:

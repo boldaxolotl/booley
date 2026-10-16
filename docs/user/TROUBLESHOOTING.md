@@ -717,11 +717,14 @@ with `booley projects forget /exact/deleted/project`.
 ## Retained Project Docker resources
 
 `booley session down` and Grant revocation retain issued-image keeper tags.
-`booley projects forget <project>` checks live Grants, releases an unused keeper,
-and reports remaining Project Docker images, app state volumes, containers and
+`booley projects forget <project>` checks live Grants, releases a proven unused
+keeper only when its dependencies permit, and reports remaining Project Docker
+images, app state volumes, containers and
 networks with their apparent sizes and retention reasons. Plain forget retains
-Project image tags and state volumes. An in-use keeper remains while forgetting
-succeeds. A present forgotten Project whose keeper was released needs
+Project image tags and state volumes. A retained keeper does not prevent
+forgetting. Its outcome is `retained-unproven` when created-ID/origin proof is
+missing, `retained-protected` for registry, child or other Project claims, or
+`retained-in-use` for a container dependency. A present forgotten Project whose keeper was released needs
 `booley init` before session reuse.
 
 To reclaim eligible resources, copy the exact absolute Project Root from the
@@ -767,8 +770,10 @@ booley projects prune-keepers --confirm <digest>
 
 Copy the digest from the preview. Confirmation rechecks the candidate set;
 a changed preview requires a new confirmation. Inventory absence is the explicit
-orphan policy, including historical issuance records: remember Projects whose
-pins you want to preserve. Inventoried roots (including missing, uninitialized,
+orphan policy, but cannot authorize deleting unproven historical image bytes.
+A keeper also needs exact created-ID/origin proof and must pass dependency and
+claimant checks. Historical issuance stamps alone are insufficient. Remember
+Projects whose pins you want to preserve. Inventoried roots (including missing, uninitialized,
 and Grant-only roots) and images used by any container are protected.
 Stopped and foreign containers count too. For a VS Code-owned Sandbox, close
 the window or stop it through Dev Containers, then explicitly remove its

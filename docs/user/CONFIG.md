@@ -235,8 +235,11 @@ are not imported by that scan. To import a nested Project, run
 
 `booley projects forget <project>` removes an obsolete remembered root only after
 its live Grants have been revoked. It releases that root's issued-image keeper
-when no container uses the image; an in-use keeper remains while the root is
-forgotten. Plain forget retains app state volumes and Project image tags, and
+only when exact created-ID/origin proof and Docker dependencies permit removal.
+A keeper otherwise remains while the root is forgotten: `retained-unproven`
+means acquisition proof is missing, `retained-protected` means registry, child
+or other Project claims protect it, and `retained-in-use` means a container
+uses the image. Plain forget retains app state volumes and Project image tags, and
 reports remaining Docker resources with their apparent sizes and retention
 reasons. Unknown sizes are shown explicitly; reported sizes cannot be summed
 into a promise of freed disk space. `--json` preserves the schema 1 `forgotten`
