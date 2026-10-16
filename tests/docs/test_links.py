@@ -6,6 +6,7 @@ import hashlib
 import json
 import subprocess
 from functools import cache
+from html.parser import HTMLParser
 from pathlib import Path
 from unicodedata import category
 from urllib.parse import unquote, urlsplit
@@ -115,9 +116,30 @@ def _github_slug(text: str) -> str:
     )
 
 
+class _HtmlAnchors(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.anchors: set[str] = set()
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        for name, value in attrs:
+            if name == "id" and value:
+                self.anchors.add(value)
+
+
+def _html_anchors(tokens: list[Token]) -> set[str]:
+    parser = _HtmlAnchors()
+    for token in tokens:
+        for child in (token, *(token.children or [])):
+            if child.type in {"html_block", "html_inline"}:
+                parser.feed(child.content)
+    parser.close()
+    return parser.anchors
+
+
 @cache
 def _markdown_anchors(document: Path) -> frozenset[str]:
-    """Return GitHub-style heading anchors, including duplicate suffixes."""
+    """Return HTML IDs and GitHub-style headings, including duplicate suffixes."""
     tokens = MarkdownIt().parse(document.read_text(encoding="utf-8"))
     anchors: set[str] = set()
     for index, token in enumerate(tokens[:-1]):
@@ -131,7 +153,7 @@ def _markdown_anchors(document: Path) -> frozenset[str]:
             anchor = f"{base}-{suffix}"
         if anchor:
             anchors.add(anchor)
-    return frozenset(anchors)
+    return frozenset(anchors | _html_anchors(tokens))
 
 
 def _destination_failure(target: Path, destination: str) -> str | None:
@@ -174,6 +196,26 @@ def test_heading_anchors_follow_github_ids(tmp_path: Path) -> None:
         "repeated",
         "repeated-1",
     }
+
+
+@pytest.mark.parametrize(
+    ("markup", "resolves"),
+    [
+        ('<details id="reproduce" markdown="1">\n<summary>Reproduce</summary>\n</details>', True),
+        ('Text <a id="reproduce"></a>.', True),
+        ('```html\n<a id="reproduce"></a>\n```', False),
+        ('`<a id="reproduce"></a>`', False),
+    ],
+)
+def test_html_anchor_links_ignore_code_examples(
+    tmp_path: Path, markup: str, resolves: bool
+) -> None:
+    document = tmp_path / "anchors.md"
+    document.write_text(markup + "\n", encoding="utf-8")
+
+    failure = _destination_failure(document, "#reproduce")
+
+    assert failure == (None if resolves else f"{document} has no anchor #reproduce")
 
 
 def test_repository_local_markdown_links_resolve() -> None:

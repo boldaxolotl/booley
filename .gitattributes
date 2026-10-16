@@ -17,3 +17,7 @@ tests/qa/fixtures/** -text -whitespace
 
 # Captured Cocotb console output keeps the producer's trailing spaces.
 tests/fixtures/cocotb_timeout_progress/2.1.0/*.log -text -whitespace
+
+# Frozen experiment downloads retain exact bytes, including blank patch context.
+website/docs/blog/posts/harness-matters/*.patch -text -whitespace
+website/docs/blog/posts/harness-matters/agent-prompt.txt -text
