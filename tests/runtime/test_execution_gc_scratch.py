@@ -361,6 +361,43 @@ def test_actual_guardian_returns_native_status_with_busy_scratch_lock(tmp_path):
     assert not root.exists()
 
 
+def test_public_guarded_call_and_workspace_exit_defer_busy_registry(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    ready, release, receipt = (tmp_path / name for name in ("ready", "release", "root"))
+    native = (
+        "import sys,time\nfrom pathlib import Path\n"
+        f"Path({str(ready)!r}).touch()\n"
+        "deadline = time.monotonic() + 30\n"
+        f"while not Path({str(release)!r}).exists() and time.monotonic() < deadline:\n"
+        "    time.sleep(.01)\n"
+        "print('native complete')\nsys.exit(17)\n"
+    )
+
+    def invoke():
+        with tw.temporary_workspace(parent=tmp_path) as raw:
+            receipt.write_text(raw)
+            result = tw.run_guarded(
+                [sys.executable, "-c", native], capture_output=True, text=True, timeout=10
+            )
+        return result
+
+    with ThreadPoolExecutor(max_workers=1) as workers:
+        result = workers.submit(invoke)
+        try:
+            wait_for(ready.exists, failure="Native did not become ready", timeout_s=15)
+            root = Path(receipt.read_text())
+            before = (root / tw._MARKER).read_bytes()
+            with tw._exclusion(tmp_path):
+                release.touch()
+                completed = result.result(timeout=3)
+                assert completed.returncode == 17 and completed.stdout.strip() == "native complete"
+                assert (root / tw._MARKER).read_bytes() == before
+        finally:
+            release.touch()
+    assert tw._delete_owned(root, require_dead=False)
+
+
 def _start_exit_after_native(state, execution_id, registry, ready, release, receipt):
     endpoint = (
         "import os,sys,time\nfrom pathlib import Path\n"
