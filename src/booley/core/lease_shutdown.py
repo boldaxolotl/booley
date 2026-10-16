@@ -341,6 +341,7 @@ class ShutdownGroup:
             if not stops:
                 return None
             stop = min(stops, key=lambda value: value["deadline"])
+            self._local_signal = stop["signal"]
             guards = {
                 value["identity"]["pid"]: value["identity"] for value in data["members"].values()
             }
@@ -487,11 +488,20 @@ class ShutdownGroup:
 
     def advance(self, signum: int | None = None) -> float | None:
         """Keep supervision alive if shared metadata or one signal operation fails."""
+        from booley.core.file_lock import LockTimeoutError
+
         if not self._degraded:
             try:
                 if signum is not None:
                     self.stop(signum)
-                return self.tick()
+                deadline = self.tick()
+                if deadline is not None:
+                    self._local_deadline = deadline
+                return deadline
+            except LockTimeoutError as error:
+                if signum is None and self._local_deadline is None:
+                    return None
+                self._degrade(error)
             except (OSError, ValueError, RuntimeError) as error:
                 self._degrade(error)
         return self._advance_local(signum)

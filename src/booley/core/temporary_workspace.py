@@ -262,19 +262,29 @@ def _settled_launches(data: dict[str, Any]) -> bool:
         reference = state.get("group")
         if not isinstance(reference, dict) or set(reference) != {"path", "identity"}:
             return False
-        from booley.core.lease_shutdown import ShutdownGroup
-
         path = Path(reference["path"])
         info = path.lstat()
         if [info.st_dev, info.st_ino] != reference["identity"]:
             return False
-        with ShutdownGroup(path).locked() as group:
-            member = group["members"].get(str(state["supervisor"]["pid"]))
-            if member is None or member["identity"] != state["supervisor"]:
-                return False
-            if not group["terminal"] and not member["terminal"]:
-                return False
+        if not _terminal_group_member(path, state):
+            return False
     return True
+
+
+def _terminal_group_member(path: Path, state: dict[str, Any]) -> bool:
+    from booley.core.file_lock import LockContentionError
+    from booley.core.lease_shutdown import ShutdownGroup
+
+    try:
+        with ShutdownGroup(path).locked(blocking=False) as group:
+            member = group["members"].get(str(state["supervisor"]["pid"]))
+            return (
+                member is not None
+                and member["identity"] == state["supervisor"]
+                and (group["terminal"] or member["terminal"])
+            )
+    except LockContentionError:
+        return False
 
 
 def _delete_owned(root: Path, *, require_dead: bool) -> bool:

@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -438,6 +439,73 @@ def test_brief_contention_does_not_strand_proven_cleanup(tmp_path, monkeypatch, 
             assert contended.wait(timeout=5)
         result.result(timeout=5)
     assert not roots[0].exists()
+
+
+def test_group_lock_stall_does_not_cancel_healthy_native(tmp_path):
+    ready, release, interrupted = (tmp_path / name for name in ("ready", "release", "interrupted"))
+    native = (
+        "import signal,sys,time\nfrom pathlib import Path\n"
+        "def stopped(*_):\n"
+        f"    Path({str(interrupted)!r}).touch()\n    sys.exit(99)\n"
+        "signal.signal(signal.SIGTERM, stopped)\n"
+        f"Path({str(ready)!r}).touch()\n"
+        "deadline = time.monotonic() + 30\n"
+        f"while not Path({str(release)!r}).exists() and time.monotonic() < deadline:\n"
+        "    time.sleep(.01)\n"
+        "print('healthy completion')\nsys.exit(17)\n"
+    )
+    with tw.temporary_workspace(parent=tmp_path) as raw:
+        process, launch = tw.guarded_popen(
+            [sys.executable, "-c", native],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            wait_for(ready.exists, failure="Native did not become ready", timeout_s=15)
+            marker, _ = tw._validated_marker(Path(raw))
+            group = ShutdownGroup(Path(marker["launches"][launch.token]["group"]["path"]))
+            with group.locked():
+                time.sleep(2)
+                assert not interrupted.exists(), "a metadata waiter cancelled healthy native work"
+            release.touch()
+            stdout, stderr = process.communicate(timeout=5)
+            assert process.returncode == 17 and stdout.strip() == "healthy completion", stderr
+        finally:
+            release.touch()
+            try:
+                process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate(timeout=5)
+        tw.launch_finished(launch)
+    assert not Path(raw).exists()
+
+
+def test_scratch_proof_does_not_wait_for_a_group_lock(completed_execution):
+    from concurrent.futures import ThreadPoolExecutor
+
+    _, _, root, group_path = completed_execution
+    before = (root / tw._MARKER).read_bytes()
+    with ThreadPoolExecutor(max_workers=1) as workers, ShutdownGroup(group_path).locked():
+        assert (
+            workers.submit(tw._delete_owned, root, require_dead=True).result(timeout=0.5) is False
+        )
+        assert (root / tw._MARKER).read_bytes() == before
+    assert tw._delete_owned(root, require_dead=True)
+
+
+def test_observed_shutdown_deadline_survives_later_group_lock_timeout(tmp_path, monkeypatch):
+    import signal
+
+    from booley.core import lease_shutdown
+
+    monkeypatch.setattr(lease_shutdown, "descendants", lambda _: set())
+    group = ShutdownGroup.create(tmp_path)
+    deadline = group.advance(signal.SIGINT)
+    assert deadline is not None
+    with group.locked():
+        assert group.advance() == deadline
 
 
 def _start_exit_after_native(state, execution_id, registry, ready, release, receipt):
