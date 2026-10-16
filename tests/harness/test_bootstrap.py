@@ -1726,18 +1726,21 @@ def test_cli_invalid_registration_never_prints_update_success(
 
 # These CLI regressions isolate external state while retaining real registration,
 # skill planning, cache validation, and sidecar orchestration.
-def _inspection_environment(monkeypatch, tmp_path, *, recorded=True):
+def _inspection_environment(monkeypatch, tmp_path, *, recorded=True, skills_current=False):
     from booley.config import editor
     from booley.runtime import session_refresh
 
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     source, path = _inspection_installation(monkeypatch, tmp_path, recorded)
     monkeypatch.setattr(session_refresh, "shared_recovery_blocks_command", lambda **_kwargs: False)
     monkeypatch.setattr(editor, "resolve_editor_management_command", lambda: "/fake/code")
     monkeypatch.setattr(bootstrap.shutil, "which", lambda name: "/fake/" + name)
+    if skills_current:
+        bootstrap.reconcile_host_skills(source, dry_run=False, allow_retarget=True)
     calls = []
     run = _inspection_subprocess(calls)
 
@@ -2085,8 +2088,7 @@ def test_complete_inspection_invalid_candidate_preserves_qa_warning(monkeypatch,
 def test_complete_inspection_all_current_and_warning_only(monkeypatch, tmp_path):
     from booley.harness import nangate_pdk
 
-    environment = _inspection_environment(monkeypatch, tmp_path)
-    bootstrap.reconcile_host_skills(environment.source, dry_run=False, allow_retarget=True)
+    environment = _inspection_environment(monkeypatch, tmp_path, skills_current=True)
     (environment.cache / "member").write_bytes(b"ok")
     (environment.cache / nangate_pdk.LICENSE_FILENAME).write_bytes(b"license")
 
