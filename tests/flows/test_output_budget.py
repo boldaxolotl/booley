@@ -12,6 +12,7 @@ from __future__ import annotations
 import pytest
 
 from booley.flows.output_budget import mcp_stdout_budget, scaled
+from booley.mcp import report_encoding
 
 _ENV = "BOOLEY_MCP_MAX_STDOUT_BYTES"
 
@@ -82,12 +83,11 @@ class TestScaled:
 @pytest.mark.parametrize("value", [None, "", "bad", "0", "-2", "300", "24000"])
 def test_stream_budgets_match_actual_mcp_server(monkeypatch, value):
     from booley.flows.output_budget import mcp_stderr_budget, mcp_stdout_budget
-    from booley.mcp.server import _max_stderr_bytes, _max_stdout_bytes
 
     for variable in ("BOOLEY_MCP_MAX_STDOUT_BYTES", "BOOLEY_MCP_MAX_STDERR_BYTES"):
         if value is None:
             monkeypatch.delenv(variable, raising=False)
         else:
             monkeypatch.setenv(variable, value)
-    assert mcp_stderr_budget() == _max_stderr_bytes()
-    assert mcp_stdout_budget() == _max_stdout_bytes()
+    assert mcp_stderr_budget() == report_encoding._max_stderr_bytes()
+    assert mcp_stdout_budget() == report_encoding._max_stdout_bytes()
