@@ -233,11 +233,17 @@ def baseline_kind(plan: TargetTestPlan | None, run: TestRun) -> tuple[str, str]:
 
 
 def _ignored_destination(root: Path, base: str) -> None:
-    destination = (worktree_state_dir(root) / f".baseline-wt-{os.getpid()}-{base[:7]}").resolve()
+    state_dir = worktree_state_dir(root).resolve()
+    destination = state_dir / f".baseline-wt-{os.getpid()}-{base[:7]}"
+    policy = state_dir / ".gitignore"
+    if destination.is_symlink():
+        raise ValueError(
+            f"baseline scratch directory {destination} is a symlink; "
+            f"expected an unused directory path (policy {policy})"
+        )
     owner = GoalCheckout(destination.parent).containing_repository()
     if owner is None:
         raise ValueError("baseline scratch has no repository owner")
-    policy = destination.parent / ".gitignore"
     try:
         ignored = ignored_paths(
             owner[0].resolve(), [destination], directories=frozenset({destination})

@@ -481,6 +481,27 @@ def test_scratch_refusal_names_selected_owner_policy_without_creating_directory(
     assert not scratch.exists()
 
 
+@pytest.mark.parametrize("exists", [False, True])
+def test_scratch_symlink_is_refused_without_touching_target(scratch_policy, exists):
+    from tests.conftest import symlink_or_skip
+    from tests.goals.conftest import git
+
+    layout = scratch_policy
+    (layout.control / ".gitignore").write_bytes(b"/.baseline-wt-*/\n")
+    base = git(layout.main, "rev-parse", "HEAD")
+    target = layout.control / ".baseline-wt-target"
+    if exists:
+        target.mkdir()
+    scratch = layout.control / f".baseline-wt-{os.getpid()}-{base[:7]}"
+    symlink_or_skip(scratch, target, target_is_directory=True)
+    with pytest.raises(ValueError, match=r"baseline scratch.*symlink"):
+        execution._ignored_destination(layout.worktree, base)
+    assert scratch.is_symlink()
+    assert target.exists() is exists
+    if exists:
+        assert list(target.iterdir()) == []
+
+
 def test_scratch_with_no_repository_owner_is_refused(scratch_policy, tmp_path, monkeypatch):
     from booley.core.booley_dir import reset_cache
 
