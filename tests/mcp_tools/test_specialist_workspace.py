@@ -17,7 +17,10 @@ from booley.specialists.specialist_workspace import (
     isolated_agent_workspace,
     restore_result_paths,
 )
-from tests.runtime.scratch_support import assert_native_workspace_lifetimes
+from tests.runtime.scratch_support import (
+    assert_native_workspace_lifetimes,
+    scratch_process_ownership_supported,
+)
 
 
 def _git(args: list[str], cwd: Path) -> None:
@@ -838,7 +841,9 @@ def test_spaced_source_cannot_gain_opposite_scope(tmp_path, category, suffix, co
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(sys.platform != "linux", reason="requires Linux owner identity")
+@pytest.mark.skipif(
+    not scratch_process_ownership_supported(), reason="requires Linux owner identity"
+)
 async def test_prelaunch_removes_actual_killed_snapshot_and_home(tmp_path, monkeypatch):
     import asyncio
     import json
@@ -906,7 +911,6 @@ async def _completed_provider_call(params, **kwargs):
 
 def _start_interrupted_specialist(script, repo, report, scratch):
     import os
-    import sys
 
     environment = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[2] / "src")}
     return subprocess.Popen(

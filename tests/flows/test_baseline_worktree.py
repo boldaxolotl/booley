@@ -900,7 +900,9 @@ def test_paired_baseline_without_progress_observer_emits_no_direct_output(tmp_pa
     assert captured.err == ""
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="requires Linux owner identity")
+@pytest.mark.skipif(
+    not scratch_process_ownership_supported(), reason="requires Linux owner identity"
+)
 def test_killed_paired_baseline_recovers_exact_registrations(tmp_path):
     from booley.flows.baseline_worktree import sweep_project_workspaces
 
@@ -944,7 +946,9 @@ def test_killed_paired_baseline_recovers_exact_registrations(tmp_path):
         child.wait(timeout=10)
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="requires Linux owner identity")
+@pytest.mark.skipif(
+    not scratch_process_ownership_supported(), reason="requires Linux owner identity"
+)
 def test_baseline_cleanup_failure_retains_marker_then_retries(tmp_path, monkeypatch):
     from booley.flows import baseline_worktree as module
 
@@ -962,7 +966,9 @@ def test_baseline_cleanup_failure_retains_marker_then_retries(tmp_path, monkeypa
     assert str(payload) not in _git(tmp_path, "worktree", "list", "--porcelain")
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="requires Linux owner identity")
+@pytest.mark.skipif(
+    not scratch_process_ownership_supported(), reason="requires Linux owner identity"
+)
 def test_partial_baseline_add_failure_cleans_registration(tmp_path, monkeypatch):
     from booley.flows import baseline_worktree as module
 
@@ -988,7 +994,9 @@ def test_partial_baseline_add_failure_cleans_registration(tmp_path, monkeypatch)
     assert str(added[0]) not in _git(tmp_path, "worktree", "list", "--porcelain")
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="requires Linux subreaper and flock")
+@pytest.mark.skipif(
+    not scratch_process_ownership_supported(), reason="requires Linux subreaper and flock"
+)
 def test_killed_baseline_sweeper_hands_exclusive_guard_to_native_descendants(
     tmp_path, monkeypatch, linux_subreaper
 ):
@@ -1052,7 +1060,9 @@ def _retained_dead_baseline(tmp_path, monkeypatch):
     return payload
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="requires Linux owner identity")
+@pytest.mark.skipif(
+    not scratch_process_ownership_supported(), reason="requires Linux owner identity"
+)
 def test_sim_recovery_reaps_the_actual_marked_baseline_layout(tmp_path, monkeypatch):
     from booley.mcp.sim_baseline_execution import reap_owned_checkout
 
@@ -1068,7 +1078,9 @@ def test_sim_recovery_reaps_the_actual_marked_baseline_layout(tmp_path, monkeypa
     assert str(payload) not in _git(tmp_path, "worktree", "list", "--porcelain")
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="requires Linux owner identity")
+@pytest.mark.skipif(
+    not scratch_process_ownership_supported(), reason="requires Linux owner identity"
+)
 def test_reviewer_snapshot_prelaunch_uses_original_project_cleanup_authority(
     tmp_path, monkeypatch
 ):
@@ -1088,7 +1100,9 @@ def test_reviewer_snapshot_prelaunch_uses_original_project_cleanup_authority(
     assert not Path(isolated.cwd).exists()
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="requires Linux owner identity")
+@pytest.mark.skipif(
+    not scratch_process_ownership_supported(), reason="requires Linux owner identity"
+)
 def test_foreign_project_cannot_authorize_baseline_cleanup(tmp_path, monkeypatch):
     from booley.flows.baseline_worktree import sweep_project_workspaces
 

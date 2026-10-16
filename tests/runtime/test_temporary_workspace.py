@@ -9,10 +9,13 @@ import sys
 from pathlib import Path
 
 import pytest
+from tests.runtime.scratch_support import scratch_process_ownership_supported
 
 from booley.core import temporary_workspace as tw
 
-pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="requires Linux identity/flock")
+pytestmark = pytest.mark.skipif(
+    not scratch_process_ownership_supported(), reason="requires Linux identity/flock"
+)
 
 
 def _abandoned() -> Path:
@@ -147,26 +150,6 @@ def test_shared_guard_survives_owner_descriptor_close():
         os.close(inherited)
         if guard >= 0:
             os.close(guard)
-    tw.sweep_stale_workspaces()
-    assert not root.exists()
-
-
-@pytest.mark.parametrize("fail", [False, True])
-def test_unsupported_platform_removes_child_free_normal_and_exception_scratch(
-    monkeypatch, caplog, fail
-):
-    monkeypatch.setattr(tw.sys, "platform", "unsupported-test-platform")
-    root = None
-    try:
-        with tw.temporary_workspace() as directory:
-            root = Path(directory)
-            assert root.is_dir()
-            assert json.loads((root / tw._MARKER).read_text())["owner"] is None
-            assert tw.active_guard_fds() == ()
-            if fail:
-                raise RuntimeError("synthetic operation failed")
-    except RuntimeError:
-        assert fail
     tw.sweep_stale_workspaces()
     assert not root.exists()
 

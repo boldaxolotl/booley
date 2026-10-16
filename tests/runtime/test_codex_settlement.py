@@ -8,12 +8,15 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from tests.runtime.scratch_support import scratch_process_ownership_supported
 
 from booley.core import temporary_workspace as tw
 from booley.core.models import AgentCallParams
 from booley.runtime import _codex_backend as cb
 
-pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="Linux native receipts")
+pytestmark = pytest.mark.skipif(
+    not scratch_process_ownership_supported(), reason="Linux native receipts"
+)
 
 
 @pytest.mark.asyncio

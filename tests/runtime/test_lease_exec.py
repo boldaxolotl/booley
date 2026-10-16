@@ -10,12 +10,14 @@ import time
 from pathlib import Path
 
 import pytest
-from tests.runtime.scratch_support import reap_guardian
+from tests.runtime.scratch_support import reap_guardian, scratch_process_ownership_supported
 from tests.runtime.scratch_support import wait as _wait
 
 from booley.core import temporary_workspace as tw
 
-pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="requires Linux subreaper/flock")
+pytestmark = pytest.mark.skipif(
+    not scratch_process_ownership_supported(), reason="requires Linux subreaper/flock"
+)
 
 
 @pytest.fixture

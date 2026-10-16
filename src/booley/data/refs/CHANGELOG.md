@@ -76,7 +76,12 @@ Packaged release history starts at 0.2.7. For older changes, see
   cleanup. Uncertain dead guardians count toward the 64-member admission limit
   until the enclosing execution ends; new launches fail safely at the limit.
   Identity-bound graceful signaling requires Linux pidfd support and permission;
-  unavailable signaling retains uncertain scratch.
+  unavailable signaling retains uncertain scratch. On Windows and macOS hosts,
+  each native Codex call retains its marked private home, including ordinary
+  session transcripts, because descendant ownership cannot be proven. Child-free
+  contexts are removed. Windows calls that link canonical credentials need
+  symlink creation permission (Developer Mode or elevated administrator rights); link
+  failure is reported instead of copying credentials.
 
 - Immutable-mode Pre-Sim Commands now run in the Project Root as documented,
   including shared and ordinary Simulation Campaign launches with `run_cwd` set.

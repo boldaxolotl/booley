@@ -8,13 +8,16 @@ import threading
 from pathlib import Path
 
 import pytest
+from tests.runtime.scratch_support import scratch_process_ownership_supported
 
 from booley.core import temporary_workspace as tw
 from booley.core.models import AgentCallParams
 from booley.runtime import _claude_backend as claude
 from booley.runtime import _codex_backend as codex
 
-pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="Linux lease handoffs")
+pytestmark = pytest.mark.skipif(
+    not scratch_process_ownership_supported(), reason="Linux lease handoffs"
+)
 
 
 async def _provider_attempt(provider, tmp_path):

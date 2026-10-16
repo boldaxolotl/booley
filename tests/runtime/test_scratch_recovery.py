@@ -11,10 +11,13 @@ import threading
 from pathlib import Path
 
 import pytest
+from tests.runtime.scratch_support import scratch_process_ownership_supported
 
 from booley.core import temporary_workspace as tw
 
-pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="Linux scratch identity")
+pytestmark = pytest.mark.skipif(
+    not scratch_process_ownership_supported(), reason="Linux scratch identity"
+)
 
 
 def test_marker_publication_failure_preserves_previous_complete_proof(monkeypatch):

@@ -13,12 +13,14 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from tests.runtime.scratch_support import reap_guardian, wait
+from tests.runtime.scratch_support import reap_guardian, scratch_process_ownership_supported, wait
 
 from booley.core import lease_shutdown as shutdown
 from booley.core import temporary_workspace as tw
 
-pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="Linux shutdown fault boundaries")
+pytestmark = pytest.mark.skipif(
+    not scratch_process_ownership_supported(), reason="Linux shutdown fault boundaries"
+)
 
 
 @pytest.mark.parametrize("failed_root", [0, 1])
