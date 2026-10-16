@@ -34,7 +34,7 @@ from booley.core.project_identity import matches_project_label
 from booley.core.user_paths import config_dir
 from booley.runtime import devcontainer as dc
 from booley.runtime.platform_paths import host_path_from_docker_mount
-from booley.runtime.timefmt import parse_timestamp, rfc3339_from_datetime
+from booley.runtime.timefmt import format_age, parse_timestamp, rfc3339_from_datetime
 
 Run = Callable[..., subprocess.CompletedProcess[str]]
 _SCHEMA_VERSION = 2
@@ -627,15 +627,6 @@ def _report_recovery_capacity(run: Run) -> None:
         )
 
 
-def _age(started_at: datetime, now: datetime) -> str:
-    seconds = max(0, int((now.astimezone(UTC) - started_at).total_seconds()))
-    hours, remainder = divmod(seconds, 3600)
-    minutes, trailing = divmod(remainder, 60)
-    if hours:
-        return f"{hours}h {minutes}m" if minutes else f"{hours}h"
-    return f"{minutes}m {trailing}s" if minutes else f"{trailing}s"
-
-
 def _refusal(
     policy: SandboxHostPolicy,
     live: tuple[Sandbox, ...],
@@ -646,7 +637,9 @@ def _refusal(
     lines = [f"Sandbox start refused: host is at sandbox.max_sessions={policy.max_sessions}."]
     for item in sorted(live, key=lambda value: (value.project_root, value.name)):
         started = item.started_at or item.created_at
-        lines.append(f"- {item.name}: Project {item.project_root} (age {_age(started, now)})")
+        lines.append(
+            f"- {item.name}: Project {item.project_root} (started {format_age(started, now=now)})"
+        )
     for claim in sorted(claims, key=lambda value: value.project_root):
         lines.append(f"- pending editor start: Project {claim.project_root}")
     roots = sorted({item.project_root for item in live} | {claim.project_root for claim in claims})

@@ -981,14 +981,14 @@ def test_progress_state_duplicates_do_not_postpone_heartbeat(monkeypatch, tty) -
     state.heartbeat(59.0)
     assert output.text == announcements
     state.heartbeat(60.0)
-    assert output.text == announcements + "  * [image build] elapsed: 60.0s\n"
+    assert output.text == announcements + "  * [image build] elapsed: 1m 00s\n"
     now = 100.0
     state.accept(">>> third\n")
     visible = output.text
     state.heartbeat(159.0)
     assert output.text == visible
     state.heartbeat(160.0)
-    assert output.text == visible + "  * [image build] elapsed: 160.0s\n"
+    assert output.text == visible + "  * [image build] elapsed: 2m 40s\n"
 
 
 class _CountingBrokenOutput(_BrokenOutput):

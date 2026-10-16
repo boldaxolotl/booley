@@ -177,7 +177,7 @@ def test_reported_metrics_and_legacy_elapsed_are_not_invented():
     from dataclasses import replace
     from pathlib import Path
 
-    from booley.harness.dashboard.app import _elapsed
+    from booley.harness.dashboard.app import job_detail
     from booley.harness.dashboard.jobs import JobView
 
     view = JobView(
@@ -196,9 +196,9 @@ def test_reported_metrics_and_legacy_elapsed_are_not_invented():
     assert "Estimated Fmax: 210.5" in rendered and "Cells: 42" in rendered
     assert "Failure reason: timing threshold missed" in rendered
     assert "raw log must remain hidden" not in rendered
-    assert _elapsed(view, now=1792000000) == "5s"
-    assert _elapsed(view, now=1892000000) == "5s"
-    assert _elapsed(replace(view, report=None), now=1892000000) == "unavailable"
+    assert "elapsed 5s" in job_detail(view, now=1792000000)
+    assert "elapsed 5s" in job_detail(view, now=1892000000)
+    assert "elapsed unavailable" in job_detail(replace(view, report=None), now=1892000000)
 
 
 def test_job_resources_include_eda_descendants_and_reject_child_reuse(tmp_path, monkeypatch):

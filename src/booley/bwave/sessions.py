@@ -40,7 +40,7 @@ from booley.bwave.contract import decode_list_metadata
 from booley.bwave.contract import exit_usage as _exit_usage
 from booley.bwave.waveform_store import ExistingStorePolicy, convert_vcd, inspect_store
 from booley.core.boundary import BoundaryError
-from booley.runtime.timefmt import utc_now_rfc3339
+from booley.runtime.timefmt import format_age, utc_now_rfc3339
 
 
 def _bwave_cache_root() -> Path:
@@ -168,21 +168,6 @@ def _trace_identity(trace: Path) -> str:
         return metadata.display_scope if metadata.signal_count > 0 else ""
     except (BoundaryError, json.JSONDecodeError):
         return ""
-
-
-def _trace_age_note(trace: Path) -> str:
-    """`(written Nm ago)` for a trace file, or "" if the mtime is unreadable."""
-    import time
-
-    try:
-        age_s = max(0.0, time.time() - trace.stat().st_mtime)
-    except OSError:
-        return ""
-    if age_s < 90:
-        return f"(written {age_s:.0f}s ago)"
-    if age_s < 5400:
-        return f"(written {age_s / 60:.0f}m ago)"
-    return f"(written {age_s / 3600:.1f}h ago)"
 
 
 def _headeronly_store_note(directory: Path) -> str:
@@ -328,7 +313,10 @@ def cmd_register(args: argparse.Namespace) -> None:
     # inferred later from nonsense signal names.
     if trace.suffix == ".fst":
         identity = _trace_identity(trace)
-        age = _trace_age_note(trace)
+        try:
+            age = f"(written {format_age(trace.stat().st_mtime)})"
+        except OSError:
+            age = ""
         identity_label = "top scopes" if ", " in identity else "top scope"
         detail = " ".join(
             part for part in (f"{identity_label}: {identity}" if identity else "", age) if part

@@ -17,6 +17,7 @@ from pathlib import Path
 
 from booley.core.boundary import as_float
 from booley.core.file_lock import nonblocking_file_lock
+from booley.runtime.timefmt import format_duration
 
 HeartbeatRenderer = Callable[[str, str, str], None]
 
@@ -71,15 +72,6 @@ def _read_valid_epoch(path: Path) -> float | None:
         return as_float(path.read_text(encoding="ascii").strip())
     except (OSError, ValueError):
         return None
-
-
-def fmt_elapsed(secs: float) -> str:
-    """Format seconds as human-readable string."""
-    m, s = divmod(secs, 60)
-    if m >= 60:
-        h, m = divmod(int(m), 60)
-        return f"{h}h {m}m {s:.0f}s"
-    return f"{int(m)}m {s:.1f}s" if m >= 1 else f"{s:.1f}s"
 
 
 class Heartbeat:
@@ -137,7 +129,7 @@ class Heartbeat:
                         extra = status
                 except (OSError, ValueError, RuntimeError):
                     pass
-            self._render(self._desc, fmt_elapsed(elapsed), extra)
+            self._render(self._desc, format_duration(elapsed), extra)
 
     def __enter__(self) -> Heartbeat:
         self.start()

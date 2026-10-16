@@ -679,6 +679,7 @@ def _observed_hook_request(tmp_path, observer):
     from tests.flows.sim.test_campaign_phase3_integrity import _executor, _handle, _request
     from tests.flows.sim.test_endpoint_campaign_lifecycle import _pre_sim_plan
 
+    (tmp_path / ".booley").mkdir(exist_ok=True)
     commands = ("echo observed-hook",)
     plan, _disclosures = _pre_sim_plan("immutable", commands, lambda document: None)
     store = CampaignStore(tmp_path / "reports/1/targets/sim/campaign")

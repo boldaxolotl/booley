@@ -112,7 +112,7 @@ class TestCheckStamp:
         msg = doctor_stamp.check_stamp(booley_dir, tmp_path, now=later)
 
         assert msg is not None
-        assert f"{doctor_stamp.MAX_AGE_DAYS + 3} days ago" in msg
+        assert f"{doctor_stamp.MAX_AGE_DAYS + 3}d ago" in msg
 
     def test_edited_booley_toml_invalidates_stamp(self, tmp_path):
         booley_dir = _write_project(tmp_path)

@@ -468,10 +468,10 @@ def test_configuration_and_artifact_links():
     text = job_detail(item)
     assert "python -m" not in text, "configuration exposes public selection flags only"
     assert "Target: top" in text and "Tests: a,b" in text and "Mode: run" in text
-    assert "1 more artifacts" in text and text.splitlines()[-1] == "/a/report"
+    assert "1 more artifacts" in text and text.splitlines()[-1] == str(Path("/a/report"))
     for field in ("Peak memory:", "Stage:", "End:", "EDA tool:"):
         assert field not in text
-    assert job_paths(item) == ("/a/log", "/a/two", "/a/three", "/a/report")
+    assert job_paths(item) == ("/a/log", "/a/two", "/a/three", str(Path("/a/report")))
     links = linked_text(text, job_paths(item))
     assert len(links.spans) == 4
 
