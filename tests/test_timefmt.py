@@ -170,12 +170,42 @@ def test_display_invalid_and_skew():
     assert clock(1000, now="bad", tz=UTC) == "unknown"
 
 
-def test_clock_local_rollover_and_dst(monkeypatch):
+def _new_york_2026():
+    from io import BytesIO
+    from struct import pack
     from zoneinfo import ZoneInfo
 
+    # A TZif v1 fixture keeps both 2026 transitions independent of host tzdata.
+    transitions = [
+        int(datetime(2026, 3, 8, 7, tzinfo=UTC).timestamp()),
+        int(datetime(2026, 11, 1, 6, tzinfo=UTC).timestamp()),
+    ]
+    header = b"TZif\0" + bytes(15) + pack(">6i", 0, 0, 0, 2, 2, 8)
+    records = pack(">2i", *transitions) + b"\x01\x00"
+    records += pack(">ibb", -18000, 0, 0) + pack(">ibb", -14400, 1, 4)
+    return ZoneInfo.from_file(BytesIO(header + records + b"EST\0EDT\0"), key="America/New_York")
+
+
+def test_clock_local_rollover_and_dst(monkeypatch):
     clock = _display_helper("format_clock")
-    tz = ZoneInfo("America/New_York")
+    tz = _new_york_2026()
+    before_spring = datetime(2026, 3, 8, 6, 30, tzinfo=UTC).astimezone(tz)
+    after_spring = datetime(2026, 3, 8, 7, 30, tzinfo=UTC).astimezone(tz)
+    assert (before_spring.hour, before_spring.utcoffset()) == (1, timedelta(hours=-5))
+    assert (after_spring.hour, after_spring.utcoffset()) == (3, timedelta(hours=-4))
     now = datetime(2026, 11, 1, 6, 30, tzinfo=UTC)
+    before_fold = datetime(2026, 11, 1, 5, 30, tzinfo=UTC).astimezone(tz)
+    after_fold = now.astimezone(tz)
+    assert (before_fold.hour, before_fold.fold, before_fold.utcoffset()) == (
+        1,
+        0,
+        timedelta(hours=-4),
+    )
+    assert (after_fold.hour, after_fold.fold, after_fold.utcoffset()) == (
+        1,
+        1,
+        timedelta(hours=-5),
+    )
     assert clock("2026-11-01T05:30:00Z", now=now, tz=tz) == "01:30:00"
     age = _display_helper("format_age")
     assert age("2026-11-01T05:30:00Z", now=now, tz=tz) == "1h ago"
