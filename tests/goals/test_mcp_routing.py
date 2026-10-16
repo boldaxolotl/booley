@@ -616,7 +616,7 @@ def test_goal_path_with_missing_git_metadata_refuses(goal_mode, monkeypatch):
     from booley.goals.store import WorktreeIdentityError
     from booley.runtime.project_repositories import GitDirectoryInspectionError
 
-    def missing(_path):
+    def missing(_path, **_kwargs):
         raise GitDirectoryInspectionError("worktree metadata missing")
 
     monkeypatch.setattr(store_module, "git_directories", missing)
